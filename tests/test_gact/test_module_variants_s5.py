@@ -1,23 +1,25 @@
-"""S5 part 2 (#948 / #953): declarable ``dspy.BestOfN`` / ``dspy.Refine`` variants.
+"""Spawn-requested ``dspy.BestOfN`` / ``dspy.Refine`` strategies (#948 / #953).
 
-Four layers are pinned:
+A parent asks for a strategy when it spawns a child (``strategy={variant, n, rubric,
+threshold, judge}``); the declared blueprint ``module.variant`` is gone. Four layers are
+pinned:
 
-* **Declaration matrix** (``runtime.type_parsing.parse_module_variant`` + the
-  ``expert_packs.parse_expert_file`` loader) — a valid ``best_of_n``/``refine`` parses;
-  an unknown variant / bad ``n`` / missing reward each raise the SAME typed error the
-  loader surfaces on the row.
-* **Reward compilation** (``module_variants.compile_reward_fn``) — the generated reward
+* **Variant parser** (``runtime.type_parsing.parse_module_variant``) -- the one parser a
+  strategy is validated by: a valid ``best_of_n``/``refine`` parses; an unknown variant /
+  bad ``n`` / missing reward each raise a typed error.
+* **Reward compilation** (``module_variants.compile_reward_fn``) -- the generated reward
   is a source-backed real ``def`` (``inspect.getsource`` succeeds, so ``dspy.Refine``
   can adopt it), scores via a stubbed judge ``dspy.Predict``, and a parse failure scores
   ``0.0`` with a typed log (never a crash).
-* **Wrap dispatch** (``module_variants.wrap_module_variant``) — a variant declaration
-  builds a REAL ``dspy.BestOfN``/``Refine`` wrapping the declared inner kind, selects by
-  the compiled reward, and stamps the winning try's index + score.
+* **Wrap dispatch** (``module_variants.wrap_strategy``) -- a strategy builds a REAL
+  ``dspy.BestOfN``/``Refine`` wrapping the inner module, selects by the compiled reward,
+  and stamps the winning try's index + score; the agent builder applies the strategy a
+  child session carries.
 * **ARC-plane run keying** (``context.run_keyed_scope`` through the real
   ``clio_react_record.arc_scope`` + ``read_steps`` fold + the ``lm_activity``/``tool_observer``
-  attribution seams) — two in-process tries of one module in one session read DISTINCT
-  ARC partitions (sabotage: drop the ``react_run`` fold → try 2's fold contains try 1's
-  trajectory → red), while every attribution reader keeps the BARE agent id.
+  attribution seams) -- two in-process tries of one module in one session read DISTINCT
+  ARC partitions (sabotage: drop the ``react_run`` fold -> try 2's fold contains try 1's
+  trajectory -> red), while every attribution reader keeps the BARE agent id.
 """
 
 from __future__ import annotations
@@ -33,16 +35,15 @@ from dspy.utils.dummies import DummyLM
 
 from clio_agent.arc.memory import ARCMemory
 from clio_agent.gact import context as ctx
+from clio_agent.gact.agents import builders
 from clio_agent.gact.agents import module_variants as mv
 from clio_agent.gact.agents.clio_react_record import arc_scope, read_steps
-from clio_agent.gact.app import _build_blueprint_dspy_module, build_app
-from clio_agent.gact.expert_packs import parse_expert_file
-from clio_agent.gact.runtime.type_parsing import (
-    VariantSpec,
-    _blueprint_module_variant,
-    parse_module_variant,
+from clio_agent.gact.agents.resolution import (
+    resolution_agent_def,
+    session_resolution,
 )
-from clio_agent.gact.types import AgentDef
+from clio_agent.gact.app import build_app
+from clio_agent.gact.runtime.type_parsing import VariantSpec, parse_module_variant
 from tests._scripted_engine import Reply, scripted_lm
 
 pytestmark = pytest.mark.usefixtures("clio_core_plane")
@@ -70,12 +71,13 @@ def _module(**over: Any) -> dict[str, Any]:
     return base
 
 
-def _agent(module: dict[str, Any], *, agent_id: str = "judge") -> types.SimpleNamespace:
-    return types.SimpleNamespace(id=agent_id, module=module)
+def _wrap(inner: dspy.Module, module: dict[str, Any], *, agent_id: str = "judge") -> Any:
+    """Wrap ``inner`` in the strategy ``module`` stands for (the spawn-strategy seam)."""
+    return mv.wrap_strategy(inner, agent_id, module)
 
 
 # --------------------------------------------------------------------------- #
-# 1. declaration matrix
+# 1. variant parser (the one parser a spawn strategy is validated by)
 # --------------------------------------------------------------------------- #
 
 
@@ -146,80 +148,8 @@ def test_invalid_declarations_raise_typed_errors(module: dict[str, Any], needle:
         parse_module_variant(module, agent_id="judge")
 
 
-def test_blueprint_module_variant_agentdef_adapter_matches_parser() -> None:
-    agent = _agent(_module())
-    spec = _blueprint_module_variant(agent)
-    assert spec is not None and spec.variant == "best_of_n"
-    # unset -> None
-    assert _blueprint_module_variant(_agent({"kind": "predict"})) is None
-
-
 # --------------------------------------------------------------------------- #
-# 2. loader validation surfaces the same typed error on the row
-# --------------------------------------------------------------------------- #
-
-
-def _write_expert(tmp_path: Path, frontmatter: str) -> Path:
-    path = tmp_path / "judge.md"
-    path.write_text(f"---\n{frontmatter}\n---\nDo the work.\n", encoding="utf-8")
-    return path
-
-
-def test_loader_accepts_valid_variant(tmp_path: Path) -> None:
-    row = parse_expert_file(
-        _write_expert(
-            tmp_path,
-            "id: judge\n"
-            "tier: 1\n"
-            "module:\n"
-            "  kind: predict\n"
-            "  variant: best_of_n\n"
-            "  n: 3\n"
-            "  threshold: 0.8\n"
-            "  reward:\n"
-            "    instructions: Score the answer.\n"
-            "    inputs:\n"
-            "      - question\n",
-        ),
-        scope="workspace",
-    )
-    assert row.enabled is True
-    assert not [e for e in row.validation_errors if "variant" in e]
-    assert row.module.get("variant") == "best_of_n"
-
-
-def test_loader_surfaces_typed_variant_error(tmp_path: Path) -> None:
-    row = parse_expert_file(
-        _write_expert(
-            tmp_path,
-            "id: judge\n"
-            "module:\n"
-            "  kind: predict\n"
-            "  variant: best_of_n\n"
-            "  n: 0\n"
-            "  reward:\n"
-            "    instructions: Score it.\n",
-        ),
-        scope="workspace",
-    )
-    assert row.enabled is False
-    assert any("requires n >= 1" in e for e in row.validation_errors)
-
-
-def test_loader_missing_reward_disables_row(tmp_path: Path) -> None:
-    row = parse_expert_file(
-        _write_expert(
-            tmp_path,
-            "id: judge\nmodule:\n  kind: predict\n  variant: refine\n  n: 2\n",
-        ),
-        scope="workspace",
-    )
-    assert row.enabled is False
-    assert any("requires a reward declaration" in e for e in row.validation_errors)
-
-
-# --------------------------------------------------------------------------- #
-# 3. reward compilation
+# 2. reward compilation
 # --------------------------------------------------------------------------- #
 
 
@@ -278,24 +208,24 @@ def test_clamp_score_raises_on_non_numeric() -> None:
 
 
 # --------------------------------------------------------------------------- #
-# 4. wrap dispatch — real dspy.BestOfN / Refine over the declared kind
+# 3. wrap dispatch — real dspy.BestOfN / Refine over the inner module
 # --------------------------------------------------------------------------- #
 
 
 def test_no_variant_returns_inner_unchanged() -> None:
     inner = dspy.Predict("question -> answer")
-    assert mv.wrap_module_variant(inner, _agent({"kind": "predict"})) is inner
+    assert _wrap(inner, {"kind": "predict"}) is inner
 
 
 @pytest.mark.parametrize(
     ("kind", "inner_cls"),
     [("predict", dspy.Predict), ("chain_of_thought", dspy.ChainOfThought)],
 )
-def test_wrap_builds_real_bestofn_over_declared_kind(kind: str, inner_cls: type) -> None:
+def test_wrap_builds_real_bestofn_over_inner_kind(kind: str, inner_cls: type) -> None:
     inner = inner_cls("question -> answer")
-    wrapped = mv.wrap_module_variant(inner, _agent(_module(kind=kind, variant="best_of_n")))
+    wrapped = _wrap(inner, _module(kind=kind, variant="best_of_n"))
     assert isinstance(wrapped, dspy.BestOfN)
-    # the run-keyed wrapper interposes, and its .inner is the declared kind.
+    # the run-keyed wrapper interposes, and its .inner is the wrapped module.
     assert isinstance(wrapped.module, mv._RunKeyedModule)
     assert wrapped.module.inner is inner
     assert wrapped.N == 3
@@ -303,7 +233,7 @@ def test_wrap_builds_real_bestofn_over_declared_kind(kind: str, inner_cls: type)
 
 def test_wrap_builds_real_refine() -> None:
     inner = dspy.Predict("question -> answer")
-    wrapped = mv.wrap_module_variant(inner, _agent(_module(variant="refine", n=2)))
+    wrapped = _wrap(inner, _module(variant="refine", n=2))
     assert isinstance(wrapped, dspy.Refine)
     assert wrapped.module.inner is inner
 
@@ -312,7 +242,7 @@ def test_wrapped_variant_runs_and_selects_by_reward() -> None:
     """End-to-end: the real BestOfN loop runs N tries, the compiled reward selects the
     best, and the winning index + score are stamped on the prediction."""
     inner = dspy.Predict("question -> answer")
-    wrapped = mv.wrap_module_variant(inner, _agent(_module(n=2, threshold=1.0)))
+    wrapped = _wrap(inner, _module(n=2, threshold=1.0))
     # DummyLM cycles: try0 answer, try0 judge, try1 answer, try1 judge.
     lm = DummyLM(
         [
@@ -338,7 +268,7 @@ def test_wrapped_variant_runs_and_selects_by_reward() -> None:
 
 
 # --------------------------------------------------------------------------- #
-# 4b. total variant failure — ALWAYS a typed error, never N-dependent (#953 [4])
+# 3a. total variant failure — ALWAYS a typed error, never N-dependent (#953 [4])
 # --------------------------------------------------------------------------- #
 
 
@@ -357,10 +287,10 @@ class _BoomInner(dspy.Module):
 
 @pytest.mark.parametrize("n", [1, 2, 3])
 def test_total_variant_failure_raises_typed_for_every_n(n: int) -> None:
-    """Every declared n (1, 2, 3) that totally fails raises the SAME typed error carrying
+    """Every requested n (1, 2, 3) that totally fails raises the SAME typed error carrying
     the real root cause. Sabotage/regression: the pre-fix wrapper returned None for n<=2
     (dspy fail_count off-by-one) → no raise → red here; n>=3 raised a bare RuntimeError."""
-    wrapped = mv.wrap_module_variant(_BoomInner(), _agent(_module(n=n, threshold=1.0)))
+    wrapped = _wrap(_BoomInner(), _module(n=n, threshold=1.0))
     with dspy.context(lm=DummyLM([{"answer": "x"}])):
         with pytest.raises(mv.VariantTotalFailure) as excinfo:
             wrapped(question="q")
@@ -376,7 +306,7 @@ def test_total_variant_failure_outcome_is_identical_across_n() -> None:
     wrapper normalizes BOTH into one typed outcome — identical type + last error for n=1,2,3."""
     outcomes: dict[int, mv.VariantTotalFailure] = {}
     for n in (1, 2, 3):
-        wrapped = mv.wrap_module_variant(_BoomInner(), _agent(_module(n=n, threshold=1.0)))
+        wrapped = _wrap(_BoomInner(), _module(n=n, threshold=1.0))
         with dspy.context(lm=DummyLM([{"answer": "x"}])):
             with pytest.raises(mv.VariantTotalFailure) as excinfo:
                 wrapped(question="q")
@@ -387,7 +317,7 @@ def test_total_variant_failure_outcome_is_identical_across_n() -> None:
 
 def test_total_refine_failure_is_typed_too() -> None:
     """Refine shares the same fail_count guard; total failure is likewise typed."""
-    wrapped = mv.wrap_module_variant(_BoomInner(), _agent(_module(variant="refine", n=2)))
+    wrapped = _wrap(_BoomInner(), _module(variant="refine", n=2))
     with dspy.context(lm=DummyLM([{"answer": "x"}])):
         with pytest.raises(mv.VariantTotalFailure) as excinfo:
             wrapped(question="q")
@@ -396,7 +326,7 @@ def test_total_refine_failure_is_typed_too() -> None:
 
 
 # --------------------------------------------------------------------------- #
-# 4d. a deterministic MCP protocol refusal is NEVER retried (#1282 F7)         #
+# 3b. a deterministic MCP protocol refusal is NEVER retried (#1282 F7)         #
 # --------------------------------------------------------------------------- #
 
 
@@ -437,7 +367,7 @@ def test_deterministic_refusal_is_never_retried(variant_kwargs: dict[str, Any]) 
     """#1282 F7: a deterministic MCP protocol refusal escalates AS ITSELF (never
     wrapped in ``VariantTotalFailure``, which would lose the typed reason/
     protocol_data D1/D2 carry), and the inner module runs exactly ONCE across
-    ``N`` declared tries -- BestOfN/Refine's own ``except Exception`` retry
+    ``N`` requested tries -- BestOfN/Refine's own ``except Exception`` retry
     loop cannot tell a refusal from an ordinary failure, so CLIO's own
     per-try wrapper (module_variants._RunKeyedModule) short-circuits every
     try after the first instead of re-invoking a call that can never
@@ -445,7 +375,7 @@ def test_deterministic_refusal_is_never_retried(variant_kwargs: dict[str, Any]) 
     from clio_agent.errors import MCPMissingRequiredClientCapabilityError
 
     inner, calls = _make_refusing_inner()
-    wrapped = mv.wrap_module_variant(inner, _agent(_module(**variant_kwargs)))
+    wrapped = _wrap(inner, _module(**variant_kwargs))
     with dspy.context(lm=DummyLM([{"answer": "x"}])):
         with pytest.raises(MCPMissingRequiredClientCapabilityError) as excinfo:
             wrapped(question="q")
@@ -454,7 +384,7 @@ def test_deterministic_refusal_is_never_retried(variant_kwargs: dict[str, Any]) 
 
 
 # --------------------------------------------------------------------------- #
-# 4c. builder integration lock — the wrap call at builders.py is exercised (#953 [10])
+# 3c. builder integration lock — the strategy wrap in builders.py is exercised (#953 [10])
 # --------------------------------------------------------------------------- #
 
 
@@ -472,9 +402,15 @@ def _build_variant_module(
     *,
     agent_id: str = "judge",
     lm: Any = None,
+    strategy: dict[str, Any] | None = None,
 ) -> Any:
-    """Build a REAL BlueprintExpertModule through the production builder (the ONLY
-    integration path that runs the ``self.program = _wrap_module_variant(...)`` seam)."""
+    """Build the active session's agent through the production builder.
+
+    ``build_agent_module`` is the ONLY integration path that runs the
+    ``self.program = wrap_strategy(...)`` seam; it reads the strategy a spawn stored on
+    the session (``variant_strategy``). ``strategy`` stores one first. The agent is
+    built without tools so no workspace fleet is needed.
+    """
     monkeypatch.setattr(
         "clio_agent.config.create_lm", lambda config: lm or DummyLM([{"answer": "x"}])
     )
@@ -483,32 +419,45 @@ def _build_variant_module(
         "clio_agent.gact.agents.builders._dynamic_agent_lm_config",
         lambda base_agent, agent_def: _resolved_spec_stub(),
     )
-    return _build_blueprint_dspy_module(
-        types.SimpleNamespace(),
-        AgentDef(
-            id=agent_id,
-            source="expert_pack",
-            title=agent_id,
-            module=module_decl,
-            # keep the runtime signature to just `answer` so a DummyLM forward is simple.
-            structured_outputs={"workflow_state": False},
-        ),
+    app, sid = ctx.active_app(), ctx.active_session_id()
+    if strategy is not None:
+        app.state.sessions.update(sid, metadata_patch={"variant_strategy": strategy})
+    resolution = session_resolution(app, sid)
+    agent_def = resolution_agent_def(resolution).model_copy(
+        update={
+            "id": agent_id,
+            "tools": [],
+            "module": module_decl,
+            # keep the runtime signature to just `answer` so a stub LM forward is simple.
+            "structured_outputs": {"workflow_state": False},
+        }
     )
+    return builders.build_agent_module(types.SimpleNamespace(), agent_def, resolution)
 
 
-@pytest.mark.parametrize("kind", ["predict", "chain_of_thought", "react"])
-def test_builder_wires_variant_over_declared_kind(
-    monkeypatch: pytest.MonkeyPatch, kind: str
+@pytest.mark.parametrize(
+    ("variant", "engine"), [("best_of_n", dspy.BestOfN), ("refine", dspy.Refine)]
+)
+def test_builder_wires_session_strategy_over_the_agent_program(
+    monkeypatch: pytest.MonkeyPatch, variant: str, engine: type
 ) -> None:
-    """The BUILT program is the real dspy engine wrapping the declared inner kind. Sabotage:
-    delete ``self.program = _wrap_module_variant(...)`` at builders.py → module.program is the
-    bare inner (not BestOfN) → red."""
-    module = _build_variant_module(monkeypatch, _module(kind=kind, variant="best_of_n", n=2))
-    assert isinstance(module.program, dspy.BestOfN)
+    """The BUILT program is the real dspy engine wrapping the agent's react program.
+    Sabotage: delete ``self.program = wrap_strategy(...)`` in builders.py → module.program
+    is the bare inner (not BestOfN/Refine) → red."""
+    strategy = mv.strategy_module({"variant": variant, "n": 2, "rubric": "x"}, agent_id="judge")
+    module = _build_variant_module(monkeypatch, {"kind": "react"}, strategy=strategy)
+    assert isinstance(module.program, engine)
     assert isinstance(module.program.module, mv._RunKeyedModule)
-    if kind == "react":
-        # the react program tag survives the wrap (inner is the real retaining-react cls).
-        assert getattr(module.program.module.inner, "_clio_expert_id", None) == "judge"
+    # the react program tag survives the wrap (inner is the real retaining-react cls).
+    assert getattr(module.program.module.inner, "_clio_expert_id", None) == "judge"
+
+
+def test_builder_without_a_session_strategy_keeps_the_bare_program(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    module = _build_variant_module(monkeypatch, {"kind": "react"})
+    assert not isinstance(module.program, (dspy.BestOfN, dspy.Refine))
+    assert getattr(module.program, "_clio_expert_id", None) == "judge"
 
 
 def test_variant_selection_reaches_assistant_message_metadata(
@@ -569,17 +518,17 @@ def test_builder_variant_forward_returns_winner_and_stamps_metadata(
     )
     module = _build_variant_module(
         monkeypatch,
-        _module(
-            kind="predict",
+        {"kind": "predict"},
+        lm=lm,
+        strategy=_module(
             variant="best_of_n",
             n=2,
             threshold=1.0,
+            judge="lm",
             reward=_reward_decl(inputs=["question"]),
         ),
-        lm=lm,
     )
-    clio_core_plane.state.sessions = {"s1": object()}
-    pred = module(question="pick the best", session_id="s1")
+    pred = module(question="pick the best", session_id=ctx.active_session_id())
     assert pred.answer == "second"
     assert pred.variant_selection is not None
     assert pred.variant_selection["winning_index"] == 1
@@ -587,7 +536,7 @@ def test_builder_variant_forward_returns_winner_and_stamps_metadata(
 
 
 # --------------------------------------------------------------------------- #
-# 5. ARC-plane run keying isolation (real fold) + attribution unchanged
+# 4. ARC-plane run keying isolation (real fold) + attribution unchanged
 # --------------------------------------------------------------------------- #
 
 _SESSION, _SCOPE = "sid-ensemble", "geospatial"
@@ -704,7 +653,7 @@ def test_attribution_reads_bare_scope_under_variant_run() -> None:
 
 
 # --------------------------------------------------------------------------- #
-# 5b. run keying driven through a REAL variant forward (the production seam, #953 [11])
+# 4b. run keying driven through a REAL variant forward (the production seam, #953 [11])
 # --------------------------------------------------------------------------- #
 
 _ARC_OBS: list[tuple[int, list[Any]]] = []
@@ -746,9 +695,8 @@ def test_variant_forward_run_keys_arc_partitions_through_real_bestofn(arc: ARCMe
     deterministically under a stub LM, so this drives the minimal real path — the real BestOfN
     loop + real _RunKeyedModule + real clio_react_record fold + real ARCMemory."""
     _ARC_OBS.clear()
-    wrapped = mv.wrap_module_variant(
-        _ArcWritingInner(),
-        _agent(_module(n=2, threshold=1.0, reward=_reward_decl(inputs=["question"]))),
+    wrapped = _wrap(
+        _ArcWritingInner(), _module(n=2, threshold=1.0, reward=_reward_decl(inputs=["question"]))
     )
     gen = _variant_scope_ctx(arc)
     next(gen)
@@ -782,9 +730,8 @@ def test_sabotage_neutralizing_set_react_run_hands_the_base_a_losing_line(
     _ARC_OBS.clear()
     orig_set = ctx.set_react_run
     monkeypatch.setattr(ctx, "set_react_run", lambda _idx: orig_set(0))
-    wrapped = mv.wrap_module_variant(
-        _ArcWritingInner(),
-        _agent(_module(n=2, threshold=1.0, reward=_reward_decl(inputs=["question"]))),
+    wrapped = _wrap(
+        _ArcWritingInner(), _module(n=2, threshold=1.0, reward=_reward_decl(inputs=["question"]))
     )
     gen = _variant_scope_ctx(arc)
     next(gen)
@@ -802,9 +749,8 @@ def test_sabotage_neutralizing_set_react_run_hands_the_base_a_losing_line(
 def test_the_base_continues_from_the_winning_try_in_real_forward(arc: ARCMemory) -> None:
     """The unsabotaged twin: try 0 wins, and its line is what the base scope continues."""
     _ARC_OBS.clear()
-    wrapped = mv.wrap_module_variant(
-        _ArcWritingInner(),
-        _agent(_module(n=2, threshold=1.0, reward=_reward_decl(inputs=["question"]))),
+    wrapped = _wrap(
+        _ArcWritingInner(), _module(n=2, threshold=1.0, reward=_reward_decl(inputs=["question"]))
     )
     gen = _variant_scope_ctx(arc)
     next(gen)

@@ -11,6 +11,7 @@ from contextlib import contextmanager
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
+from clio_agent.gact.owner_loop import on_owner_loop
 from clio_agent.gact.turn_revision_gate import TurnRevisionGate
 
 if TYPE_CHECKING:
@@ -201,9 +202,16 @@ class TurnRunner:
             try:
                 value = context.run(function)
             except BaseException as error:
-                logger.exception(
-                    "Task boundary reason=session_worker_failed error_type=%s", type(error).__name__
-                )
+                from clio_agent.gact.runtime.globals import _TurnCancelled  # noqa: PLC0415
+
+                if isinstance(error, _TurnCancelled):
+                    # Stop or cancel ended the turn: an outcome, not a worker failure.
+                    logger.info("Task boundary reason=session_worker_cancelled session=%s", sid)
+                else:
+                    logger.exception(
+                        "Task boundary reason=session_worker_failed error_type=%s",
+                        type(error).__name__,
+                    )
                 loop.call_soon_threadsafe(complete, None, error)
             else:
                 loop.call_soon_threadsafe(complete, value, None)
@@ -327,6 +335,7 @@ class TurnRunner:
             self._request_stop(resources)
             return resources.stop
 
+    @on_owner_loop
     async def stop(self, sid: str, *, reservation: threading.Event | None = None) -> None:
         """Stop the model segment and its waiters, preserving accepted background work."""
         with self._lock:

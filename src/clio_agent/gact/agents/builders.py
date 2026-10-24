@@ -1,13 +1,11 @@
-"""Dynamic-agent / Agent-Blueprint DSPy module builders for the GACT server (#714).
+"""Build the running DSPy module of a resolved plugin agent.
 
-These builders compile registered dynamic agents into concrete DSPy modules:
-
-* prompt-only user agents (:func:`_build_prompt_user_agent_module`);
-* tool-declaring user agents (:func:`_build_tool_user_agent_module`);
-* Agent-Blueprint experts (:func:`_build_blueprint_dspy_module`) using predict,
-  chain-of-thought, or ReAct modules.
-
-Supporting tool/LM resolution lives here; retaining ReAct and prompts stay in siblings.
+An agent's module is built from its pinned resolution
+(:mod:`clio_agent.gact.agents.resolution`): the composed prompt, the built-in
+tools its plugins claim (:mod:`~clio_agent.gact.agents.native_tool_registry`),
+its plugins' Python tools, every tool of its plugins' MCP servers, its plugins'
+skills and, when the ``delegation`` plugin claims them, the spawn tools. The
+agent's flow runs the program; ``react`` (from ``core``) is the default.
 """
 
 from __future__ import annotations
@@ -20,34 +18,11 @@ from clio_agent.gact import context as _ctx
 from clio_agent.gact.agents import skill_runtime as _skill_runtime
 from clio_agent.gact.agents import toolset_inventory
 from clio_agent.gact.agents.always_load_tools import attach_always_load_tools
-from clio_agent.gact.agents.auto_tools import build_configured_auto_tools
-from clio_agent.gact.agents.blueprint_tool_recording import (
-    recorded_load_skill_tool as _recorded_load_skill_tool,
-)
-from clio_agent.gact.agents.blueprint_tool_recording import (
-    recorded_spawn_skill_task_tool as _recorded_spawn_skill_task_tool,
-)
-from clio_agent.gact.agents.blueprint_tool_recording import (
-    recording_blueprint_tool as _recording_blueprint_tool,
-)
-from clio_agent.gact.agents.clio_react_submit import tool_names as _tool_names
-from clio_agent.gact.agents.composition import (
-    _runtime_active_workspace_context,
-    _runtime_dynamic_agent_children_context,
-)
-from clio_agent.gact.agents.declared_native_tools import (
-    declared_native_capabilities,
-    resolve_declared_native_tools,
-)
-from clio_agent.gact.agents.external_mcp_calls import (
-    _call_enabled_external_mcp_tool as _call_enabled_external_mcp_tool,
-)
-from clio_agent.gact.agents.external_mcp_calls import (
-    _run_external_mcp_tool_sync,
-)
-from clio_agent.gact.agents.invalid_tool_selection import (
-    _emit_invalid_tool_selection_event,
-    _invalid_tool_selection_from_exception,
+from clio_agent.gact.agents.composition import _runtime_active_workspace_context
+from clio_agent.gact.agents.live_tool_refresh import (
+    LiveToolScope,
+    live_tool_refresher,
+    refresh_executor_tools,
 )
 from clio_agent.gact.agents.lm_resolution import (
     _default_profile_spec as _default_profile_spec,
@@ -55,13 +30,24 @@ from clio_agent.gact.agents.lm_resolution import (
 from clio_agent.gact.agents.lm_resolution import (
     _dynamic_agent_lm_config as _dynamic_agent_lm_config,
 )
-from clio_agent.gact.agents.resolution import _active_workflow_state_schema
-from clio_agent.gact.agents.signatures import (
-    _prompt_user_agent_signature,
-    _tool_user_agent_signature,
+from clio_agent.gact.agents.native_tool_registry import (
+    AGENT_RUNTIME_TOOLS,
+    build_native_tools,
+    declared_native_capabilities,
 )
+from clio_agent.gact.agents.prompt_basis import unlisted_tool_names
+from clio_agent.gact.agents.resolution import session_workflow_state_schema
 from clio_agent.gact.agents.tool_executor_resolution import (
     resolve_active_base_agent_tool_executor,
+)
+from clio_agent.gact.agents.tool_recording import (
+    recorded_load_skill_tool as _recorded_load_skill_tool,
+)
+from clio_agent.gact.agents.tool_recording import (
+    recorded_spawn_skill_task_tool as _recorded_spawn_skill_task_tool,
+)
+from clio_agent.gact.agents.tool_recording import (
+    recording_tool as _recording_tool,
 )
 from clio_agent.gact.runtime.context_tokens import _resolve_expert_context_window
 from clio_agent.gact.runtime.globals import (
@@ -71,212 +57,27 @@ from clio_agent.gact.runtime.globals import (
     _UnsupportedSessionAgent,
 )
 from clio_agent.gact.runtime.type_parsing import (
-    _blueprint_module_kind,
     _parse_field_annotation,
     _structured_output_enabled,
 )
 from clio_agent.gact.task_declarations import build_spawn_runtime_tools
 from clio_agent.lm.session_clients import session_model
 from clio_agent.runtime import trace
-from clio_agent.tools.task_call_context import task_arguments
 
 logger = logging.getLogger(__name__)
 
 if TYPE_CHECKING:
     from clio_agent.gact.types import AgentDef
     from clio_agent.gact.workflow_state.schema import WorkflowStateSchema
-
-
-def _build_prompt_user_agent_module(base_agent: Any, agent_def: "AgentDef") -> Any:
-    """Build a DSPy module wrapper for a streamable prompt-only dynamic agent."""
-
-    import dspy  # noqa: PLC0415
-
-    from clio_agent.gact.app import (  # noqa: PLC0415
-        _cancelled_error_info,
-        _coerce_expert_handoff_rows,
-    )
-    from clio_agent.prompts import PromptRegistry  # noqa: PLC0415
-    from clio_agent.providers.credentials import CredentialResolver  # noqa: PLC0415
-
-    class PromptUserAgentModule(dspy.Module):
-        def __init__(self, base_agent: Any, agent_def: "AgentDef") -> None:
-            super().__init__()
-            self.agent_def = agent_def
-            # Per-expert provider identity as data; the credential is resolved
-            # fresh per forward() via ``self._resolved_spec.materialize`` (design
-            # §4). ``self.config`` is the init-time materialization kept for
-            # compatibility (adapter/context-window reads).
-            self._resolved_spec = _dynamic_agent_lm_config(base_agent, agent_def)
-            self._cred_resolver = CredentialResolver()
-            self.config = self._resolved_spec.materialize(self._cred_resolver)
-            self._provider_config = self.config
-            runtime = PromptRegistry().resolve("clio.runtime.prompt_user_agent")
-            runtime_text = str(getattr(runtime, "text", "") or "").strip()
-            agent_prompt = agent_def.system_prompt.strip() or agent_def.description
-            app = _ctx.active_app()
-            child_context = (
-                _runtime_dynamic_agent_children_context(
-                    app,
-                    agent_def,
-                    session_id=_ctx.active_session_id(),
-                )
-                if app is not None
-                else ""
-            )
-            skill_rt = _skill_runtime.skill_runtime_for_agent(
-                app, agent_def, session_id=_ctx.active_session_id()
-            )
-            self.system_prompt = "\n\n".join(
-                part
-                for part in (runtime_text, agent_prompt, child_context, skill_rt.bodies_block)
-                if part
-            )
-            self.has_declared_children = bool(child_context.strip())
-            # The same loop as every agent: the conversation is the scope's clio-core projection.
-            from clio_agent.gact.agents.clio_react import ClioReAct  # noqa: PLC0415
-
-            self.answer_synthesizer = ClioReAct(_prompt_user_agent_signature(), tools=[])
-            object.__setattr__(self.answer_synthesizer, "_clio_expert_id", agent_def.id)
-
-        def forward(
-            self,
-            question: str,
-            session_id: str,
-            session_mode: str = "edit",
-            session_edit_mode: str = "diff",
-            cancel_requested: Any | None = None,
-            images: list[Any] | None = None,
-            files: list[Any] | None = None,
-        ) -> Any:
-            _ = (
-                session_mode,
-                session_edit_mode,
-            )  # kept for a stable forward() signature; mode is surfaced in turn.py enrichment
-            if cancel_requested is not None and cancel_requested():
-                raise _TurnCancelled(
-                    _cancelled_error_info(session_id, execution_cancellation="cooperative")
-                )
-            # Resolve the credential per forward so rotated tokens take effect.
-            cfg = self._resolved_spec.materialize(self._cred_resolver)
-            scope_token = _ctx.set_react_scope(str(self.agent_def.id), "react")
-            session_token = _ctx.set_react_session(session_id)
-            window_token = _ctx.set_react_window(_resolve_expert_context_window(cfg))
-            try:
-                with session_model(cfg, self.agent_def.id, session_id) as lm:
-                    with dspy.track_usage(), dspy.context(lm=lm):
-                        result = self.answer_synthesizer(
-                            system_prompt=self.system_prompt,
-                            question=question,
-                            images=list(images or []),
-                            files=list(files or []),
-                        )
-            finally:
-                _ctx.reset(window_token)
-                _ctx.reset(session_token)
-                _ctx.reset(scope_token)
-            if cancel_requested is not None and cancel_requested():
-                raise _TurnCancelled(
-                    _cancelled_error_info(session_id, execution_cancellation="cooperative")
-                )
-            answer = str(getattr(result, "answer", "") or "")
-            return dspy.Prediction(
-                answer=answer,
-                assignment_disposition=getattr(result, "assignment_disposition", None),
-                clio_context_boundary=getattr(result, "clio_context_boundary", None),
-                selected_expert=self.agent_def.id,
-                routing_rationale=f"Session selected user agent {self.agent_def.id!r}.",
-                route_source="user_agent",
-                session_id=session_id,
-                expert_handoffs=_coerce_expert_handoff_rows(
-                    getattr(result, "expert_handoffs", None)
-                ),
-                error_info=None,
-            )
-
-    return PromptUserAgentModule(base_agent, agent_def)
-
-
-def _enabled_external_mcp_dspy_tools(
-    app: Any, requested_tools: list[str], sources: dict[str, str]
-) -> dict[str, Any]:
-    """Return DSPy Tool wrappers for enabled Agent Blueprint MCP tools."""
-
-    from clio_agent.gact.agents.tool_instrumentation import (  # noqa: PLC0415
-        boundary_observed_tool,
-        mcp_tool_title,
-    )
-    from clio_agent.tools.task_descriptions import mcp_task_description
-
-    requested = set(requested_tools)
-    available: dict[str, Any] = {}
-    installed = getattr(app.state, "external_mcp_servers", {}) or {}
-    for server_id, info in installed.items():
-        if not isinstance(info, Mapping):
-            continue
-        if str(info.get("status") or "") != "ready":
-            continue
-        for tool_row in info.get("tools") or []:
-            if not isinstance(tool_row, Mapping):
-                continue
-            tool_name = str(tool_row.get("name") or tool_row.get("id") or "").strip()
-            if not tool_name or tool_name not in requested or not bool(tool_row.get("enabled")):
-                continue
-            if str(tool_row.get("status") or "") != "ready":
-                continue
-            description = mcp_task_description(tool_row)
-            title = mcp_tool_title(tool_row)  # #1188: Tool.title, else ToolAnnotations.title
-            schema = tool_row.get("input_schema") or {}
-            properties = schema.get("properties", {}) if isinstance(schema, Mapping) else {}
-            if not isinstance(properties, dict):
-                properties = {}
-            tool_annotations = tool_row.get("annotations")
-
-            def tool_fn(
-                _tool_name: str = tool_name,
-                _server_id: str = str(server_id),
-                _info: Mapping[str, Any] = info,
-                _tool_annotations: Any = tool_annotations,
-                **kwargs: Any,
-            ) -> str:
-                return _run_external_mcp_tool_sync(
-                    app,
-                    _server_id,
-                    _info,
-                    _tool_name,
-                    kwargs,
-                    _tool_annotations,
-                )
-
-            tool_fn.__name__ = tool_name
-            tool_fn.__doc__ = description
-            # ``_run_external_mcp_tool_sync`` notifies the observer itself, so the construction
-            # is marked observed — the assembly seam must not add a second notification
-            # (exactly-once). ``title`` carries the upstream MCP tool declared title (#1188).
-            available[tool_name] = boundary_observed_tool(
-                tool_fn,
-                name=tool_name,
-                desc=description,
-                args=task_arguments(properties),
-                domain="agents",  # dynamic per-blueprint bridge, not a builtin catalog row (#1350)
-                title=title,
-            )
-            toolset_inventory.register_tool_source(sources, tool_name, str(server_id))
-    return available
+    from clio_agent.plugins.resolve import Resolution
 
 
 def _active_base_agent_tool_executor(base_agent: Any) -> Any:
     """Return the base agent's tool executor for the active session workspace.
 
-    Dynamic-agent (blueprint/expert) tools are bound to a concrete tool
-    executor instance: the DSPy tool calls that executor's ``call_tool``
-    directly, so the cwd of the executor's stdio MCP subprocesses is fixed at
-    bind time. When a session workspace is bound, the active tool-execution
-    contextvar carries its root, and the base agent exposes a per-workspace
-    executor (``_active_tool_executor``) whose stdio MCPs spawn with
-    ``cwd=<workspace root>``. Prefer that executor so staged artifacts land in
-    the bound workspace; fall back to the default (no-cwd) ``tool_executor``
-    when no workspace is active or the per-workspace seam is unavailable.
+    Tools are bound to a concrete executor, so the cwd of its stdio MCP
+    subprocesses is fixed at bind time; the per-workspace executor spawns them
+    with ``cwd=<workspace root>`` so staged artifacts land in the workspace.
     """
 
     return resolve_active_base_agent_tool_executor(
@@ -300,151 +101,172 @@ def _emit_mcp_downgrade_events(executor: Any) -> None:
     emit_downgrade_events_for_executor(app, _ctx.active_session_id(), executor)
 
 
-def _resolve_declared_tools_with_on_demand_mount(
-    tool_executor: Any, requested_tools: list[str]
-) -> tuple[dict[str, Any], dict[str, str]]:
-    """Build this resolve's available-tool map, mounting ON DEMAND any
-    requested tool whose DECLARED namespace was never listed yet (#1237).
-
-    A namespace is DECLARED when it appears on the executor's
-    ``_clio_namespace_specs`` map (stamped by ``ClioAgent._active_tool_executor``
-    at gateway-build time -- #1237 Gap 1 means this is routinely non-empty on
-    a cold workspace/blueprint, since activation mounts nothing eagerly). A
-    process-wide listing cache can make a tool name available before this
-    workspace owns the persistent namespace connection; both conditions are
-    checked before a turn is released.
-    Mounting goes through the session-readiness boundary, which joins the
-    discovery layer's single-flight attempt, reports lifecycle updates over
-    GACT, and applies a short increasing-wait retry ladder. A terminal failure
-    is reported in the returned ``mount_failures`` map (namespace -> typed
-    reason) for THIS resolve only -- it is never remembered, so a later
-    resolve/call can still re-attempt after the underlying condition changes.
-    """
-
-    from clio_agent.gact.mcp_readiness import (  # noqa: PLC0415
-        mount_namespaces_for_session,
-        namespaces_requiring_preparation,
-    )
-
-    available_tools = {
+def _listed_tools(tool_executor: Any) -> dict[str, Any]:
+    return {
         name: tool
         for tool in tool_executor.to_dspy_tools()
         for name in [str(getattr(tool, "name", "") or "")]
         if name
     }
+
+
+def _gateway_and_namespace_tools(
+    tool_executor: Any, gateway_names: list[str], namespaces: list[str]
+) -> tuple[dict[str, Any], dict[str, str]]:
+    """Gateway built-ins by name plus EVERY tool of each plugin MCP namespace.
+
+    A plugin's MCP server contributes all of its tools. A namespace whose tools
+    are not listed yet is mounted on demand through the session-readiness
+    boundary (#1237); a failed mount is returned as a typed reason per
+    namespace for this resolve only.
+    """
+
+    from clio_agent.gact.mcp_readiness import mount_namespaces_for_session  # noqa: PLC0415
+
+    available = _listed_tools(tool_executor)
     declared_specs: Mapping[str, Any] = getattr(tool_executor, "_clio_namespace_specs", None) or {}
-    mount_failures: dict[str, str] = {}
-    needed_namespaces = namespaces_requiring_preparation(
-        tool_executor,
-        requested_tools,
-        available_tools,
-        declared_specs,
-    )
-    mounted, failures = mount_namespaces_for_session(
-        tool_executor, {ns: declared_specs[ns] for ns in sorted(needed_namespaces)}, connect=False
-    )
-    mount_failures.update(failures)
-    if any(mounted.values()):
-        available_tools = {
-            name: tool
-            for tool in tool_executor.to_dspy_tools()
-            for name in [str(getattr(tool, "name", "") or "")]
-            if name
-        }
-    return available_tools, mount_failures
+    failures: dict[str, str] = {}
+    needed: dict[str, Any] = {}
+    for namespace in namespaces:
+        if namespace not in declared_specs:
+            failures[namespace] = "mcp_server_not_declared"
+            continue
+        if not any(name.startswith(f"{namespace}_") for name in available):
+            needed[namespace] = declared_specs[namespace]
+    for name in gateway_names:
+        namespace = name.partition("_")[0]
+        if name not in available and namespace in declared_specs:
+            needed.setdefault(namespace, declared_specs[namespace])
+    if needed:
+        mounted, mount_failures = mount_namespaces_for_session(tool_executor, needed, connect=False)
+        failures.update(mount_failures)
+        if any(mounted.values()):
+            available = _listed_tools(tool_executor)
+    wanted = set(gateway_names)
+    prefixes = tuple(f"{namespace}_" for namespace in namespaces)
+    picked = {
+        name: tool
+        for name, tool in available.items()
+        if name in wanted or (prefixes and name.startswith(prefixes))
+    }
+    for namespace in namespaces:
+        if namespace not in failures and not any(
+            name.startswith(f"{namespace}_") for name in picked
+        ):
+            failures[namespace] = "mcp_server_listed_no_tools"
+    return picked, failures
 
 
-def _dynamic_agent_tools(
+def _python_tools(resolution: "Resolution", sources: dict[str, str]) -> list[Any]:
+    """The plugins' own Python tools as DSPy tools."""
+
+    from clio_agent.gact.agents.tool_instrumentation import plugin_tool  # noqa: PLC0415
+    from clio_agent.plugins.loader import load_attribute  # noqa: PLC0415
+
+    tools = []
+    for row in resolution.tools:
+        if row["kind"] != "python":
+            continue
+        spec = load_attribute(row["root"], row["module"], row["attr"])
+        tools.append(
+            plugin_tool(
+                spec.function,
+                name=row["name"],
+                desc=row["description"] or None,
+                read_only=bool(row.get("read_only")),
+            )
+        )
+        toolset_inventory.register_tool_source(sources, row["name"], f"plugin:{row['plugin']}")
+    return tools
+
+
+def _agent_tools(
     base_agent: Any,
     agent_def: "AgentDef",
+    resolution: "Resolution",
     sources: dict[str, str],
-    **capabilities: bool,
+    *,
+    supports_vision: bool,
+    supports_pdf: bool,
+    live: LiveToolScope | None = None,
 ) -> list[Any]:
-    """Resolve the exact DSPy tools a tool-declaring dynamic agent may use."""
+    """Every tool the resolved agent's plugins provide, built for this turn.
 
-    requested_tools, available_tools, gateway_requested = resolve_declared_native_tools(
+    ``live`` receives the executor and the namespaces taken whole, for the agent's
+    mid-turn tool refresh (:mod:`clio_agent.gact.agents.live_tool_refresh`).
+    """
+
+    claimed = [row["name"] for row in resolution.tools if row["kind"] == "native"]
+    allowed = set(agent_def.tools)
+    claimed = [name for name in claimed if name in allowed and name not in AGENT_RUNTIME_TOOLS]
+    available, gateway_names, withheld = build_native_tools(
         agent_def,
+        claimed,
         sources,
-        **capabilities,
+        supports_vision=supports_vision,
+        supports_pdf=supports_pdf,
+        a2ui_catalogs=bool(resolution.catalogs),
     )
-    tool_executor = None
-    if gateway_requested:
+    namespaces = sorted(resolution.mcp_servers) if agent_def.tools else []
+    mount_failures: dict[str, str] = {}
+    if gateway_names or namespaces:
         try:
             tool_executor = _active_base_agent_tool_executor(base_agent)
         except Exception as exc:  # noqa: BLE001 - preserve the typed agent boundary
             from clio_agent.gact.mcp_readiness import mount_failure_reason  # noqa: PLC0415
 
-            resolution_failures = {"workspace_fleet": mount_failure_reason(exc)}
-            logger.exception(
-                "custom_agent_tool_executor_unavailable agent=%s tools=%s",
-                agent_def.id,
-                gateway_requested,
-            )
             raise _UnsupportedSessionAgent(
                 agent_def.id,
                 reason="custom_agent_tool_executor_unavailable",
-                tools=gateway_requested,
-                mount_failures=resolution_failures,
+                tools=[*gateway_names, *namespaces],
+                mount_failures={"workspace_fleet": mount_failure_reason(exc)},
             ) from exc
-    mount_failures: dict[str, str] = {}
-    if tool_executor is None or not hasattr(tool_executor, "to_dspy_tools"):
-        if gateway_requested:
+        if tool_executor is None or not hasattr(tool_executor, "to_dspy_tools"):
             raise _UnsupportedSessionAgent(
                 agent_def.id,
                 reason="custom_agent_tool_executor_unavailable",
-                tools=gateway_requested,
+                tools=[*gateway_names, *namespaces],
             )
-    else:
-        gateway_tools, mount_failures = _resolve_declared_tools_with_on_demand_mount(
-            tool_executor, gateway_requested
+        refresh_executor_tools(tool_executor)  # a server's tools/list_changed since last turn
+        picked, mount_failures = _gateway_and_namespace_tools(
+            tool_executor, gateway_names, namespaces
         )
-        if not (agent_def.parent_id or ""):
-            attach_always_load_tools(tool_executor, gateway_tools, mount_failures, requested_tools)
+        whole = set(namespaces) - set(mount_failures)
+        if not agent_def.parent_id:
+            whole |= attach_always_load_tools(tool_executor, picked, mount_failures, list(picked))
+        if live is not None:
+            live.executor, live.namespaces = tool_executor, whole
         mounted = toolset_inventory.mounted_namespace_set(tool_executor)
-        for name in gateway_tools:
-            # prefix is real provenance only if mounted (finding [D]); else "gateway".
+        for name in picked:
             prefix, sep, bare = name.partition("_")
             source = prefix if (sep and bare and prefix in mounted) else "gateway"
             toolset_inventory.register_tool_source(sources, name, source)
-        available_tools.update(gateway_tools)
-    app = _ctx.active_app()
-    if app is not None:
-        available_tools.update(_enabled_external_mcp_dspy_tools(app, gateway_requested, sources))
-    missing_tools = [name for name in requested_tools if name not in available_tools]
-    resolved_tools = [name for name in requested_tools if name in available_tools]
-    if missing_tools and not resolved_tools:  # nothing to degrade to -- brick TYPED (#1228 D3)
-        logger.warning(
-            "custom_agent_tools_unavailable diagnostics agent=%s available=%s "
-            "executor=%s mount_failures=%s",
-            agent_def.id,
-            sorted(available_tools)[:30],
-            type(tool_executor).__name__ if tool_executor is not None else None,
-            mount_failures,
-        )
-        raise _UnsupportedSessionAgent(
-            agent_def.id,
-            reason="custom_agent_tools_unavailable",
-            tools=missing_tools,
-            mount_failures=mount_failures,
-        )
-    if missing_tools:  # >=1 resolved -- degrade typed-and-loud per tool (#1228 D3)
+        available.update(picked)
+    missing = [name for name in gateway_names if name not in available]
+    unavailable = {**withheld, **dict.fromkeys(missing, "gateway_tool_unlisted")}
+    unavailable.update({f"{ns}_*": reason for ns, reason in mount_failures.items()})
+    if unavailable:
         toolset_inventory.record_tools_unavailable_degraded(
-            app, agent_def.id, missing_tools, mount_failures=mount_failures
+            _ctx.active_app(), agent_def.id, sorted(unavailable), mount_failures=unavailable
         )
-    return [_recording_blueprint_tool(available_tools[name]) for name in resolved_tools]
+    tools = [_recording_tool(tool) for tool in available.values()]
+    tools.extend(_recording_tool(tool) for tool in _python_tools(resolution, sources))
+    return tools
 
 
 def _tool_user_agent_max_iters(agent_def: "AgentDef", *, declared_children: int = 0) -> int:
-    """The react loop's iteration budget for this expert.
+    """The react loop's iteration budget for this agent.
 
-    #1226 D1b: UNLIMITED (``0``) default -- not the old #948 S4 scaling cap
-    that starved a long orchestrator (L3 died at a turn budget mid-task). A
-    cap is now only an explicit blueprint opt-in (``max_iters``).
+    #1226 D1b: UNLIMITED (``0``) default. A cap is only an explicit opt-in
+    (a defined subagent's ``max_iters``).
     """
-    from clio_agent.gact.app import _user_agent_int_param  # noqa: PLC0415
 
     del declared_children
-    max_iters = _user_agent_int_param(agent_def, "max_iters", 0)
+    raw = (agent_def.parameters or {}).get("max_iters", 0)
+    try:
+        max_iters = int(raw or 0)
+    except (TypeError, ValueError) as exc:
+        raise ValueError("agent parameter 'max_iters' must be an integer") from exc
     if max_iters < 0:
         raise ValueError("user agent parameter 'max_iters' must be zero (unlimited) or positive")
     return max_iters
@@ -453,10 +275,10 @@ def _tool_user_agent_max_iters(agent_def: "AgentDef", *, declared_children: int 
 def _injected_workflow_state_field_type(schema: "WorkflowStateSchema") -> Any:
     """Annotation for the auto-injected ``workflow_state`` output (Consumer A, #648).
 
-    The type is built FROM THE PACK SCHEMA, not hardcoded:
+    The type is built FROM THE PLUGIN SCHEMA, not hardcoded:
 
     * GENERIC schema (no declared sections) -> ``dict[str, Any]`` byte-identically,
-      preserving the historical free-dict contract for domain-free packs.
+      preserving the historical free-dict contract for domain-free agents.
     * A schema that declares its section vocabulary -> a nested pydantic model.
       Each declared section becomes ``Optional[<SectionModel>] = None``, and every
       ``SectionModel`` carries a single typed ``status: Optional[Literal[...]] = None``
@@ -489,14 +311,14 @@ def _injected_workflow_state_field_type(schema: "WorkflowStateSchema") -> Any:
     )
 
 
-def _blueprint_runtime_signature(
+def _agent_signature(
     agent_def: "AgentDef",
     *,
     app: Any = None,
     include_images: bool = False,
     include_files: bool = False,
 ) -> Any:
-    """Build a DSPy Signature from a blueprint's ordered signature fields.
+    """Build the DSPy Signature for an agent: system prompt and question in, answer out.
 
     ``app`` lets a caller that already holds the live app thread it in explicitly
     for the per-app children cache (#770 Site 2); when omitted the live turn's
@@ -552,10 +374,10 @@ def _blueprint_runtime_signature(
         raw_inputs,
         [("system_prompt", "Runtime instructions", str), ("question", "User request", str)],
     )
-    # A blueprint that declares its own inputs (e.g. just `question`) REPLACES the
-    # defaults, which silently dropped the `system_prompt` input -- so the expert's
-    # built system prompt (blueprint body + orchestrator briefing + workspace context,
-    # assembled into runtime_system_prompt) was never passed to the model at all; it
+    # An agent definition that declares its own inputs (e.g. just `question`) REPLACES
+    # the defaults, which silently dropped the `system_prompt` input -- so the agent's
+    # built system prompt (composed prompt + workspace context, assembled into
+    # runtime_system_prompt) was never passed to the model at all; it
     # ran on the generic 47-char signature instruction + the question only. Always
     # carry a `system_prompt` input so the body actually reaches the model. (Under the
     # contract state machine this was latent -- routing was deterministic -- but with
@@ -585,12 +407,12 @@ def _blueprint_runtime_signature(
     # a typed output field; nothing injects or reads an inert artifacts structured key.
     # Declaring them *required* only enlarged the contract and made strict-adapter
     # models (nemotron's remote JSONAdapter path) hard-fail an otherwise-correct run
-    # when they sensibly omitted an empty one -- so we no longer auto-inject them. (A
-    # blueprint that genuinely needs one can still declare it in its `outputs:`.)
+    # when they sensibly omitted an empty one -- so we no longer auto-inject them. (An
+    # agent definition that genuinely needs one can still declare it in its `outputs:`.)
     # Resolve the session's active workflow_state schema once. Consumer A (#648): the injected
-    # workflow_state field is TYPED FROM THE PACK SCHEMA -- a GENERIC (no declared
+    # workflow_state field is TYPED FROM THE PLUGIN SCHEMA -- a GENERIC (no declared
     # sections) schema keeps the historical free ``dict[str, Any]`` byte-identically,
-    # while a pack that declares its vocabulary gets a nested pydantic model whose
+    # while a plugin that declares its vocabulary gets a nested pydantic model whose
     # per-section ``status`` is a real ``Optional[Literal[...]]`` (undeclared keys and
     # undeclared sections still validate via ``extra="allow"`` at both levels).
     _route_app = app if app is not None else _ctx.active_app()
@@ -600,20 +422,20 @@ def _blueprint_runtime_signature(
     # (matching every other call site of the resolver -- turn.py and the two
     # delegate/seed sites below). Swallowing it would silently downgrade the
     # injected annotation with no recorded reason (no-silent-fallback ground rule).
-    _workflow_state_schema = _active_workflow_state_schema(_route_app, _route_sid)
+    _workflow_state_schema = session_workflow_state_schema(_route_app, _route_sid)
     _workflow_state_field_type = _injected_workflow_state_field_type(_workflow_state_schema)
     _structured_field_specs: dict[str, tuple[str, Any]] = {
         "workflow_state": (
-            "Typed semantic workflow state (a JSON object) used for blueprint continuation routing.",
+            "Typed semantic workflow state (a JSON object) handed back to the delegating agent.",
             _workflow_state_field_type,
         ),
     }
     _declared = {field for field, _, _ in outputs}
     for name, (desc, field_type) in _structured_field_specs.items():
-        if _structured_output_enabled(structured.get(name, True)) and name not in _declared:
+        if _structured_output_enabled(structured.get(name, False)) and name not in _declared:
             outputs.append((name, desc, field_type))
 
-    # #948 S4: an orchestrator (an expert with declared children) routes by CALLING
+    # #948 S4: an agent with defined subagents routes by CALLING
     # the spawn-runtime tools (spawn_agent_task / wait_agent_tasks), not by emitting a
     # typed routing field consumed by a settle loop. The signature therefore carries
     # NO routing field — its children are reachable as real child turns via the spawn
@@ -636,9 +458,7 @@ def _blueprint_runtime_signature(
             next((str(t) for n, d, t in outputs if n == "workflow_state"), "<none>"),
         )
 
-    namespace: dict[str, Any] = {
-        "__doc__": f"DSPy signature for Agent Blueprint expert {agent_def.id}."
-    }
+    namespace: dict[str, Any] = {"__doc__": f"DSPy signature for agent {agent_def.id}."}
     annotations: dict[str, Any] = {}
     for name, desc, field_type in inputs:
         annotations[name] = field_type
@@ -654,13 +474,13 @@ def _blueprint_runtime_signature(
         namespace[name] = dspy.OutputField(desc=desc)
     namespace["__annotations__"] = annotations
     return type(
-        f"{agent_def.id.title().replace('-', '').replace('_', '')}BlueprintSignature",
+        f"{agent_def.id.title().replace('-', '').replace('_', '')}AgentSignature",
         (dspy.Signature,),
         namespace,
     )
 
 
-def _emit_blueprint_llm_failure(agent_def: "AgentDef", kind: str, exc: BaseException) -> None:
+def _emit_agent_llm_failure(agent_def: "AgentDef", kind: str, exc: BaseException) -> None:
     """Best-effort failure event carrying the exception in the durable trace."""
 
     app = _ctx.active_app()
@@ -691,12 +511,22 @@ def _emit_blueprint_llm_failure(agent_def: "AgentDef", kind: str, exc: BaseExcep
         pass
 
 
-def _build_blueprint_dspy_module(base_agent: Any, agent_def: "AgentDef") -> Any:
-    """Compile an Agent Blueprint expert into the DSPy module declared by module.kind."""
+def _workflow_editor() -> dict[str, Any] | None:
+    """The active session's ``workflow_editor`` grant: set while it edits a running workflow."""
+
+    app = _ctx.active_app()
+    sessions = getattr(getattr(app, "state", None), "sessions", None)
+    session = sessions.get(_ctx.active_session_id()) if sessions is not None else None
+    editor = (getattr(session, "metadata", None) or {}).get("workflow_editor")
+    return dict(editor) if isinstance(editor, Mapping) else None
+
+
+def build_agent_module(base_agent: Any, agent_def: "AgentDef", resolution: "Resolution") -> Any:
+    """Compile a resolved plugin agent into its running DSPy module."""
 
     import dspy  # noqa: PLC0415
 
-    from clio_agent.gact.agents import module_variants as _mv  # noqa: PLC0415
+    from clio_agent.gact.agents import module_variants as _module_variants  # noqa: PLC0415
     from clio_agent.gact.agents.clio_react import ClioReAct  # noqa: PLC0415
     from clio_agent.gact.app import (  # noqa: PLC0415
         _cancelled_error_info,
@@ -705,159 +535,118 @@ def _build_blueprint_dspy_module(base_agent: Any, agent_def: "AgentDef") -> Any:
     )
     from clio_agent.providers.credentials import CredentialResolver  # noqa: PLC0415
 
-    class BlueprintExpertModule(dspy.Module):
-        def __init__(self, base_agent: Any, agent_def: "AgentDef") -> None:
+    class PluginAgentModule(dspy.Module):
+        def __init__(
+            self, base_agent: Any, agent_def: "AgentDef", resolution: "Resolution"
+        ) -> None:
             super().__init__()
             self.agent_def = agent_def
-            self.kind = _blueprint_module_kind(agent_def)
-            # Per-expert provider identity as data; the credential is resolved
-            # fresh per forward() via ``self._resolved_spec.materialize`` (design
-            # §4). ``self.config`` is the init-time materialization kept for
-            # compatibility (adapter/context-window reads).
+            self.resolution = resolution
+            self.kind = "react" if agent_def.module.get("kind", "react") == "react" else "predict"
+            # Per-agent provider identity as data; the credential is resolved fresh
+            # per forward() via ``self._resolved_spec.materialize``.
             self._resolved_spec = _dynamic_agent_lm_config(base_agent, agent_def)
             self._cred_resolver = CredentialResolver()
             self.config = self._resolved_spec.materialize(self._cred_resolver)
             self._provider_config = self.config
-            self.signature = _blueprint_runtime_signature(
-                agent_def,
-                include_images=True,
-                include_files=True,
-            )
+            self.signature = _agent_signature(agent_def, include_images=True, include_files=True)
             self.tools: list[Any] = []
             skill_rt = _skill_runtime.skill_runtime_for_agent(
                 _ctx.active_app(), agent_def, session_id=_ctx.active_session_id()
             )
-            if self.kind in ("predict", "chain_of_thought"):
-                # One loop for every kind: tool-less (only ``submit``), thinking is its reasoning.
-                self.program = ClioReAct(self.signature, tools=[])
-                object.__setattr__(self.program, "_clio_expert_id", agent_def.id)
-            else:
-                # #948 S4: react mains route by SPAWNING declared children as real
-                # child turns (spawn_agent_task / wait_agent_tasks / fanout); the
-                # old inline per-child delegate/fan-out tools and the settle loop
-                # are deleted. The spawn runtime re-emits the wire
-                # blueprint.delegation.* events for TUI parity.
-
-                _declared_tools = _dynamic_agent_tools(
+            live = LiveToolScope()
+            if self.kind == "react":
+                sources = cast(dict[str, str], {})
+                tools = _agent_tools(
                     base_agent,
                     agent_def,
-                    (_sources := cast(dict[str, str], {})),
+                    resolution,
+                    sources,
                     **declared_native_capabilities(self.config),
+                    live=live,
                 )
-                _spawn_tools = build_spawn_runtime_tools(
-                    base_agent,
-                    agent_def,
-                    enable_skill_task_collection=_skill_runtime.skill_runtime_spawns_subagents(
-                        skill_rt
-                    ),
-                )
-                toolset_inventory.register_tool_sources(_sources, _spawn_tools, "spawn-runtime")
-                tools = [
-                    *_declared_tools,
-                    *_spawn_tools,
-                ]
-                if skill_rt.resolved:
-                    # Auto-attached infra (like child-delegation tools), not a
-                    # curated domain tool (#919).
-                    _skill_tool = _recorded_load_skill_tool(agent_def, skill_rt)
-                    toolset_inventory.register_tool_sources(_sources, [_skill_tool], "native")
-                    tools.append(_skill_tool)
-                    if _skill_runtime.skill_runtime_spawns_subagents(skill_rt):
-                        _spawn_skill_tool = _recorded_spawn_skill_task_tool(agent_def, skill_rt)
-                        toolset_inventory.register_tool_sources(
-                            _sources, [_spawn_skill_tool], "spawn-runtime"
+                claimed = {row["name"] for row in resolution.tools if row["kind"] == "native"}
+                if claimed & {"spawn_agent_task", "spawn_agents_parallel"}:
+                    spawn_tools = [
+                        tool
+                        for tool in build_spawn_runtime_tools(
+                            base_agent, agent_def, resolution=resolution
                         )
-                        tools.append(_spawn_skill_tool)
-                # create_artifact (#969) + plan_exit (#1066) + write_todos (#1067): auto-attached.
-                _auto_tools = build_configured_auto_tools(agent_def, self.config)
-                toolset_inventory.register_tool_sources(_sources, _auto_tools, "native")
-                tools += _auto_tools
-                # THE assembly seam (owner 2026-08-05): every tool is observed by
-                # definition -- unmarked callables get the observer wrap + titles registered.
+                        if tool.name in claimed
+                    ]
+                    toolset_inventory.register_tool_sources(sources, spawn_tools, "spawn-runtime")
+                    tools.extend(spawn_tools)
+                if skill_rt.resolved and "load_skill" in claimed:
+                    skill_tool = _recorded_load_skill_tool(agent_def, skill_rt)
+                    toolset_inventory.register_tool_sources(sources, [skill_tool], "native")
+                    tools.append(skill_tool)
+                    if (
+                        "spawn_skill_task" in claimed
+                        and _skill_runtime.skill_runtime_spawns_subagents(skill_rt)
+                    ):
+                        spawn_skill = _recorded_spawn_skill_task_tool(agent_def, skill_rt)
+                        toolset_inventory.register_tool_sources(
+                            sources, [spawn_skill], "spawn-runtime"
+                        )
+                        tools.append(spawn_skill)
+                if "draft_alternatives" in claimed:
+                    from clio_agent.gact.agents.variant_drafts import (  # noqa: PLC0415
+                        build_draft_alternatives_tool,
+                    )
+
+                    draft_tool = build_draft_alternatives_tool()
+                    toolset_inventory.register_tool_sources(sources, [draft_tool], "native")
+                    tools.append(draft_tool)
+                editor = _workflow_editor()
+                if editor is not None:
+                    from clio_agent.gact.flow_tools import (  # noqa: PLC0415
+                        build_workflow_editor_tools,
+                    )
+
+                    editor_tools = build_workflow_editor_tools(editor)
+                    toolset_inventory.register_tool_sources(sources, editor_tools, "native")
+                    tools.extend(editor_tools)
                 from clio_agent.gact.agents.tool_instrumentation import (  # noqa: PLC0415
                     instrument_tools,
                 )
 
+                # THE assembly seam: every tool is observed by definition.
                 tools = instrument_tools(tools)
                 self.tools = tools
-                # Obs Tools tab "available" view: the REAL built toolset,
-                # captured once here where it is actually in hand.
-                toolset_inventory.emit_agent_toolset_recorded(agent_def, tools, _sources)
-                # The iteration default scales with the declared children — an
-                # orchestrator pays spawn+wait per child inside this loop (#948 S4).
-                _n_children = 0
-                _children_app = _ctx.active_app()
-                if _children_app is not None:
-                    from clio_agent.gact.agents.resolution import (  # noqa: PLC0415
-                        _runtime_declared_child_ids,
-                    )
-
-                    _n_children = len(
-                        _runtime_declared_child_ids(
-                            _children_app,
-                            agent_def.id,
-                            session_id=_ctx.active_session_id(),
-                        )
-                    )
+                toolset_inventory.emit_agent_toolset_recorded(agent_def, tools, sources)
                 self.program = ClioReAct(
-                    self.signature,
-                    tools=tools,
-                    max_iters=_tool_user_agent_max_iters(agent_def, declared_children=_n_children),
+                    self.signature, tools=tools, max_iters=_tool_user_agent_max_iters(agent_def)
                 )
-                # The loop attributes each step to this expert on the highway.
-                object.__setattr__(self.program, "_clio_expert_id", agent_def.id)
-            # Wrap in the declared (or spawn-requested) BestOfN / Refine variant, if any.
-            self.program = _mv.wrap_module_variant(
-                self.program, _mv.with_session_strategy(agent_def)
+            else:
+                # An agent stripped to zero tools (tool_allowlist == []) answers directly.
+                self.program = ClioReAct(self.signature, tools=[])
+            object.__setattr__(self.program, "_clio_expert_id", agent_def.id)
+            object.__setattr__(self.program, "_clio_tool_refresh", live_tool_refresher(live))
+            object.__setattr__(
+                self.program,
+                "_clio_unlisted",
+                unlisted_tool_names(agent_def.metadata, getattr(self.program, "tools", {})),
             )
-            agent_prompt = agent_def.system_prompt.strip() or agent_def.description
+            # A spawn-requested BestOfN / Refine strategy wraps the program.
+            strategy = _module_variants.session_strategy()
+            if strategy is not None:
+                self.program = _module_variants.wrap_strategy(self.program, agent_def.id, strategy)
             active_app = _ctx.active_app()
-            # Do not short-circuit on active_app is None: a build without the active
-            # app (the runner routes) still has the session, and the function returns
-            # the cached briefing there so the orchestrator grounding never drops.
-            child_context = _runtime_dynamic_agent_children_context(
-                active_app,
-                agent_def,
-                session_id=_ctx.active_session_id(),
-            )
             workspace_context = (
-                _runtime_active_workspace_context(
-                    active_app,
-                    session_id=_ctx.active_session_id(),
-                )
+                _runtime_active_workspace_context(active_app, session_id=_ctx.active_session_id())
                 if active_app is not None and self.kind == "react"
                 else ""
             )
-            # Progressive disclosure (#919): react experts get metadata + the
-            # load_skill tool; tool-less predict/CoT experts get the bodies.
+            # Progressive disclosure (#919): react agents get skill metadata and
+            # load_skill; a tool-less agent gets the bodies.
             skills_context = (
                 skill_rt.prompt_block if self.kind == "react" else skill_rt.bodies_block
             )
             self.system_prompt = "\n\n".join(
                 part
-                for part in (agent_prompt, workspace_context, child_context, skills_context)
+                for part in (agent_def.system_prompt.strip(), workspace_context, skills_context)
                 if part
             )
-            self.has_declared_children = bool(child_context.strip())
-            if trace.HF_ON:
-                import traceback as _pbtb  # noqa: PLC0415
-
-                _pb_frames = [
-                    ln.strip().split("\n")[0].split("/")[-1]
-                    for ln in _pbtb.format_stack()
-                    if "gact/app.py" in ln
-                ]
-                trace.hot(
-                    "PROMPT-BUILD",
-                    "%s :: kind=%s child_ctx=%d ORCH=%s sid=%r app=%s caller=%s",
-                    getattr(agent_def, "id", "?"),
-                    self.kind,
-                    len(child_context),
-                    "ORCHESTRATOR" in self.system_prompt,
-                    _ctx.active_session_id(),
-                    active_app is not None,
-                    " <- ".join(reversed(_pb_frames[-4:])),
-                )
 
         def forward(
             self,
@@ -869,105 +658,67 @@ def _build_blueprint_dspy_module(base_agent: Any, agent_def: "AgentDef") -> Any:
             images: list[Any] | None = None,
             files: list[Any] | None = None,
         ) -> Any:
-            _ = (
-                session_mode,
-                session_edit_mode,
-            )  # kept for a stable forward() signature; mode is surfaced in turn.py enrichment
+            _ = (session_mode, session_edit_mode)  # surfaced in turn.py enrichment
             if cancel_requested is not None and cancel_requested():
                 raise _TurnCancelled(
                     _cancelled_error_info(session_id, execution_cancellation="cooperative")
                 )
-            if trace.HF_ON:
-                trace.hot("FWD-ENTER", "%s kind=%s", getattr(self.agent_def, "id", "?"), self.kind)
-            runtime_system_prompt = self.system_prompt
-            active_app = _ctx.active_app()
-            active_session_id = _ctx.active_session_id()
-            if active_app is not None:
-                runtime_child_context = _runtime_dynamic_agent_children_context(
-                    active_app,
-                    self.agent_def,
-                    session_id=active_session_id,
-                )
-                if runtime_child_context:
-                    if runtime_child_context not in runtime_system_prompt:
-                        runtime_system_prompt = "\n\n".join(
-                            part for part in (runtime_system_prompt, runtime_child_context) if part
-                        )
             kwargs: dict[str, Any] = {"question": question}
             if "system_prompt" in self.signature.input_fields:
-                kwargs["system_prompt"] = runtime_system_prompt
+                kwargs["system_prompt"] = self.system_prompt
             if "images" in self.signature.input_fields:
                 kwargs["images"] = list(images or [])
             if "files" in self.signature.input_fields:
                 kwargs["files"] = list(files or [])
-            if trace.HF_ON:
-                trace.hot("FWD-A", "%s child-context+seed-done", getattr(self.agent_def, "id", "?"))
-            blueprint_tool_rows: list[dict[str, Any]] = []
-            blueprint_tool_rows_token = (
-                _ctx.set_blueprint_tool_rows(blueprint_tool_rows) if self.kind == "react" else None
-            )
-            _agent_id_for_stream = str(getattr(self.agent_def, "id", "") or "")
-            # ARC live-context-plane wiring (scope, session, window; harmless for
-            # predict/CoT). #878: module.kind rides the token; the gate is never by field.
-            _react_scope_token = _ctx.set_react_scope(_agent_id_for_stream, self.kind)
-            _react_session_token = _ctx.set_react_session(active_session_id)
-            _react_window_token = _ctx.set_react_window(_resolve_expert_context_window(self.config))
-            _structured_outputs = (
+            tool_rows: list[dict[str, Any]] = []
+            tool_rows_token = _ctx.set_agent_tool_rows(tool_rows) if self.kind == "react" else None
+            agent_id = str(getattr(self.agent_def, "id", "") or "")
+            # ARC live-context-plane wiring (scope, session, window).
+            scope_token = _ctx.set_react_scope(agent_id, self.kind)
+            session_token = _ctx.set_react_session(_ctx.active_session_id())
+            window_token = _ctx.set_react_window(_resolve_expert_context_window(self.config))
+            structured = (
                 self.agent_def.structured_outputs
                 if isinstance(self.agent_def.structured_outputs, Mapping)
                 else {}
             )
-            # An expert's typed ``answer`` streams live as a visible deliverable
-            # unless it declares a typed ``workflow_state`` extract (whose value flows
-            # to the return contract behind *show more*, not the visible answer lane).
-            # DECLARATIVE via the shared truthiness helper (#736/C): a quoted author
-            # error (workflow_state: "no"/"false") must NOT flip the gate — bool("no")
-            # is True. ``or False`` coalesces the off-by-default falsy values
-            # (absent/None/""/0) so only a real truthy value reaches it.
-            _answer_visible = not _structured_output_enabled(
-                _structured_outputs.get("workflow_state") or False
+            # A typed ``workflow_state`` extract keeps the answer behind *show more*.
+            answer_visible = not _structured_output_enabled(
+                structured.get("workflow_state") or False
             )
-            _visible_answer_token = _ctx.set_visible_answer_stream(_answer_visible)
+            visible_token = _ctx.set_visible_answer_stream(answer_visible)
             try:
-                # Resolve the credential per forward so rotated tokens take effect.
-                _fwd_config = self._resolved_spec.materialize(self._cred_resolver)
+                forward_config = self._resolved_spec.materialize(self._cred_resolver)
                 try:
-                    # track_usage installs the usage tracker so the live plane's
-                    # auto-compaction can read the call's exact prompt_tokens.
                     with (
-                        session_model(_fwd_config, self.agent_def.id, session_id) as lm,
+                        session_model(forward_config, self.agent_def.id, session_id) as lm,
                         dspy.track_usage(),
                         dspy.context(lm=lm),
                     ):
-                        result = self.program(**kwargs)
+                        result = self._run_flow(kwargs)
                 except Exception as exc:
-                    _emit_blueprint_llm_failure(self.agent_def, self.kind, exc)
+                    _emit_agent_llm_failure(self.agent_def, self.kind, exc)
                     raise
             finally:
-                # Single-var stack: each token captured the FULL context at its set,
-                # so reset MUST unwind in strict reverse-LIFO of the sets
-                # (window -> session -> scope -> rows) or an earlier reset would
-                # restore a snapshot that predates the later sets. (#714)
-                _ctx.reset(_visible_answer_token)
-                _ctx.reset(_react_window_token)
-                _ctx.reset(_react_session_token)
-                _ctx.reset(_react_scope_token)
-                if blueprint_tool_rows_token is not None:
-                    _ctx.reset(blueprint_tool_rows_token)
+                _ctx.reset(visible_token)
+                _ctx.reset(window_token)
+                _ctx.reset(session_token)
+                _ctx.reset(scope_token)
+                if tool_rows_token is not None:
+                    _ctx.reset(tool_rows_token)
             if cancel_requested is not None and cancel_requested():
                 raise _TurnCancelled(
                     _cancelled_error_info(session_id, execution_cancellation="cooperative")
                 )
             answer = str(getattr(result, "answer", "") or "")
-            tools_called = (
-                _merge_tool_call_rows([], blueprint_tool_rows) if blueprint_tool_rows else []
-            )
+            tools_called = _merge_tool_call_rows([], tool_rows) if tool_rows else []
             handoff_rows = _coerce_expert_handoff_rows(getattr(result, "expert_handoffs", None))
+            flow_id = str((self.agent_def.metadata.get("flow") or {}).get("id") or "react")
             return dspy.Prediction(
                 answer=answer,
                 selected_expert=self.agent_def.id,
-                routing_rationale=f"Session selected Agent Blueprint expert {self.agent_def.id!r}.",
-                route_source="agent_blueprint",
+                routing_rationale=f"Session runs agent {self.agent_def.metadata.get('agent_ref')!r}.",
+                route_source=f"flow:{flow_id}",
                 session_id=session_id,
                 expert_handoffs=handoff_rows,
                 workflow_state=getattr(result, "workflow_state", ""),
@@ -979,184 +730,16 @@ def _build_blueprint_dspy_module(base_agent: Any, agent_def: "AgentDef") -> Any:
                 assignment_disposition=getattr(result, "assignment_disposition", None),
                 clio_context_boundary=getattr(result, "clio_context_boundary", None),
                 termination_reason=getattr(result, "termination_reason", ""),
-                # #953 [5]: carry the variant winner stamp (else dropped here) to the turn.
                 variant_selection=getattr(result, "variant_selection", None),
                 error_info=getattr(result, "error_info", None),
             )
 
-    return BlueprintExpertModule(base_agent, agent_def)
+        def _run_flow(self, kwargs: dict[str, Any]) -> Any:
+            """Run the agent's selected flow (``react`` by default) on this turn."""
 
+            from clio_agent.flows.runner import accept_flow_input, run_agent_flow  # noqa: PLC0415
 
-def _build_tool_user_agent_module(base_agent: Any, agent_def: "AgentDef") -> Any:
-    """Build a DSPy ReAct wrapper for a streamable tool-declaring dynamic agent."""
+            accept_flow_input(self, str(kwargs["question"]), _ctx.active_session_id())
+            return run_agent_flow(self, kwargs)
 
-    import dspy  # noqa: PLC0415
-
-    from clio_agent.gact.app import (  # noqa: PLC0415
-        _cancelled_error_info,
-        _coerce_expert_handoff_rows,
-    )
-    from clio_agent.prompts import PromptRegistry  # noqa: PLC0415
-    from clio_agent.providers.credentials import CredentialResolver  # noqa: PLC0415
-
-    class ToolUserAgentModule(dspy.Module):
-        def __init__(self, base_agent: Any, agent_def: "AgentDef") -> None:
-            super().__init__()
-            self.agent_def = agent_def
-            self.kind = "react"  # always ReAct-with-extract; read by the #878 stream gate
-            # Per-expert provider identity as data; the credential is resolved
-            # fresh per forward() via ``self._resolved_spec.materialize`` (design
-            # §4). ``self.config`` is the init-time materialization kept for
-            # compatibility (adapter/context-window reads).
-            self._resolved_spec = _dynamic_agent_lm_config(base_agent, agent_def)
-            self._cred_resolver = CredentialResolver()
-            self.config = self._resolved_spec.materialize(self._cred_resolver)
-            self._provider_config = self.config
-            self.tools = _dynamic_agent_tools(
-                base_agent,
-                agent_def,
-                (_sources := cast(dict[str, str], {})),
-                **declared_native_capabilities(self.config),
-            )
-            skill_rt = _skill_runtime.skill_runtime_for_agent(
-                _ctx.active_app(), agent_def, session_id=_ctx.active_session_id()
-            )
-            if skill_rt.resolved:
-                # Same react tier-1 + load_skill contract as blueprint experts (#919).
-                _skill_tool = _recorded_load_skill_tool(agent_def, skill_rt)
-                toolset_inventory.register_tool_sources(_sources, [_skill_tool], "native")
-                self.tools.append(_skill_tool)
-            # create_artifact (#969) + plan_exit (#1066) + write_todos (#1067): auto-attached.
-            _auto_tools = build_configured_auto_tools(agent_def, self.config)
-            toolset_inventory.register_tool_sources(_sources, _auto_tools, "native")
-            self.tools += _auto_tools
-            # THE assembly seam (owner 2026-08-05): same default-on instrumentation as above.
-            from clio_agent.gact.agents.tool_instrumentation import (  # noqa: PLC0415
-                instrument_tools,
-            )
-
-            self.tools = instrument_tools(self.tools)
-            # Obs Tools tab "available" view: the REAL built toolset,
-            # captured once here where it is actually in hand.
-            toolset_inventory.emit_agent_toolset_recorded(agent_def, self.tools, _sources)
-            runtime = PromptRegistry().resolve("clio.runtime.tool_user_agent")
-            runtime_text = str(getattr(runtime, "text", "") or "").strip()
-            agent_prompt = agent_def.system_prompt.strip() or agent_def.description
-            app = _ctx.active_app()
-            child_context = (
-                _runtime_dynamic_agent_children_context(
-                    app,
-                    agent_def,
-                    session_id=_ctx.active_session_id(),
-                )
-                if app is not None
-                else ""
-            )
-            workspace_context = (
-                _runtime_active_workspace_context(
-                    app,
-                    session_id=_ctx.active_session_id(),
-                )
-                if app is not None
-                else ""
-            )
-            self.system_prompt = "\n\n".join(
-                part
-                for part in (
-                    runtime_text,
-                    agent_prompt,
-                    workspace_context,
-                    child_context,
-                    skill_rt.prompt_block,
-                )
-                if part
-            )
-            from clio_agent.gact.agents.clio_react import ClioReAct  # noqa: PLC0415
-
-            self.react_agent = ClioReAct(
-                _tool_user_agent_signature(),
-                tools=self.tools,
-                max_iters=_tool_user_agent_max_iters(agent_def),
-            )
-
-        def forward(
-            self,
-            question: str,
-            session_id: str,
-            session_mode: str = "edit",
-            session_edit_mode: str = "diff",
-            cancel_requested: Any | None = None,
-            images: list[Any] | None = None,
-            files: list[Any] | None = None,
-        ) -> Any:
-            _ = (
-                session_mode,
-                session_edit_mode,
-            )  # kept for a stable forward() signature; mode is surfaced in turn.py enrichment
-            if cancel_requested is not None and cancel_requested():
-                raise _TurnCancelled(
-                    _cancelled_error_info(session_id, execution_cancellation="cooperative")
-                )
-            # ARC live-context-plane wiring; #878: module.kind rides the scope token.
-            _scope_id = str(getattr(self.agent_def, "id", ""))
-            _react_scope_token = _ctx.set_react_scope(_scope_id, self.kind)
-            _react_session_token = _ctx.set_react_session(session_id)
-            _react_window_token = _ctx.set_react_window(_resolve_expert_context_window(self.config))
-            try:
-                # track_usage installs the tracker so auto-compaction can read each
-                # call's exact prompt_tokens.
-                # Resolve the credential per forward so rotated tokens take effect.
-                cfg = self._resolved_spec.materialize(self._cred_resolver)
-                with session_model(cfg, self.agent_def.id, session_id) as lm:
-                    with dspy.track_usage(), dspy.context(lm=lm):
-                        result = self.react_agent(
-                            system_prompt=self.system_prompt,
-                            question=question,
-                            images=list(images or []),
-                            files=list(files or []),
-                        )
-            except Exception as exc:
-                app = _ctx.active_app()
-                allowed_tools = _tool_names(self.tools)
-                requested_tool = _invalid_tool_selection_from_exception(
-                    exc,
-                    allowed_tools=allowed_tools,
-                )
-                if app is not None and requested_tool:
-                    _emit_invalid_tool_selection_event(
-                        app,
-                        session_id,
-                        self.agent_def,
-                        requested_tool=requested_tool,
-                        allowed_tools=allowed_tools,
-                        exc=exc,
-                    )
-                raise
-            finally:
-                # Reverse-LIFO reset of the single-var stack (window -> session ->
-                # scope); see the blueprint-forward note. (#714)
-                _ctx.reset(_react_window_token)
-                _ctx.reset(_react_session_token)
-                _ctx.reset(_react_scope_token)
-            if cancel_requested is not None and cancel_requested():
-                raise _TurnCancelled(
-                    _cancelled_error_info(session_id, execution_cancellation="cooperative")
-                )
-            answer = str(getattr(result, "answer", "") or "")
-            return dspy.Prediction(
-                answer=answer,
-                selected_expert=self.agent_def.id,
-                routing_rationale=f"Session selected tool user agent {self.agent_def.id!r}.",
-                route_source="user_agent",
-                session_id=session_id,
-                expert_handoffs=_coerce_expert_handoff_rows(
-                    getattr(result, "expert_handoffs", None)
-                ),
-                tools_called=[],
-                assignment_disposition=getattr(result, "assignment_disposition", None),
-                clio_context_boundary=getattr(result, "clio_context_boundary", None),
-                termination_reason=getattr(result, "termination_reason", ""),
-                error_info=getattr(result, "error_info", None),
-            )
-
-    return ToolUserAgentModule(base_agent, agent_def)
+    return PluginAgentModule(base_agent, agent_def, resolution)

@@ -602,150 +602,155 @@ async def execute_shell(
         _log_shell_phase(call_id, "confinement", phase_started, outcome="failed")
         raise
     phase_started = _log_shell_phase(call_id, "confinement", phase_started)
-    run_argv = [confined.command, *confined.args]
-    if os.name == "nt" and (launch_error := windows_launch_error(run_argv, command)):
-        return launch_error
-    run_env = {**os.environ, **prepared, "PYTHONUTF8": "1", **confined.env_overlay}
-    # The model's shell is not the authenticated human control channel.
-    for internal_credential in ("CLIO_AUTH_TOKEN", "CLIO_GACT_BEARER_TOKEN"):
-        run_env.pop(internal_credential, None)
-    # Prepared scratch is already inside this workspace's writable territory.
-    run_env.update({key: prepared[key] for key in ("TEMP", "TMP", "TMPDIR") if key in prepared})
-    from clio_agent.paths import workspace_state_dir  # noqa: PLC0415
-
-    # Skills run in isolated uv environments and cannot import this resolver.
-    # Supply the bound workspace's canonical path, never an inherited host value
-    # or an explicit command subdirectory. The existing write fence still applies.
-    run_env["CLIO_AGENT_WORKSPACE_STATE_DIR"] = str(workspace_state_dir(_spill_root(safe_cwd)))
-
-    spill_root = _spill_root(safe_cwd)
-    spill_dir = spill_directory(spill_root, session_id=active_session_id())
-    captures = [
-        StreamCapture(
-            name,
-            inline_limit=max_output_bytes,
-            spill_path=spill_dir / f"{call_id}.{name}.txt",
-        )
-        for name in ("stdout", "stderr")
-    ]
     try:
-        from clio_agent.runtime.task_process_tree import task_spawn_options
+        run_argv = [confined.command, *confined.args]
+        if os.name == "nt" and (launch_error := windows_launch_error(run_argv, command)):
+            return launch_error
+        run_env = {**os.environ, **prepared, "PYTHONUTF8": "1", **confined.env_overlay}
+        # The model's shell is not the authenticated human control channel.
+        for internal_credential in ("CLIO_AUTH_TOKEN", "CLIO_GACT_BEARER_TOKEN"):
+            run_env.pop(internal_credential, None)
+        # Prepared scratch is already inside this workspace's writable territory.
+        run_env.update({key: prepared[key] for key in ("TEMP", "TMP", "TMPDIR") if key in prepared})
+        from clio_agent.paths import workspace_state_dir  # noqa: PLC0415
 
-        process_options = task_spawn_options(confined.popen_kwargs)
-        if cleanup is not None:
-            cleanup.acquiring_effects()
-        spawn = asyncio.create_task(
-            asyncio.create_subprocess_exec(
-                *run_argv,
-                cwd=str(safe_cwd),
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE,
-                env=run_env,
-                **process_options,
-                # Give the child an immediately-EOF stdin. Without this the spawned
-                # shell inherits clio-agent's own stdin (a pipe the parent holds open
-                # and never closes), and PowerShell/cmd block at startup waiting on
-                # that stream â€” every command then hits the timeout with empty output.
-                stdin=subprocess.DEVNULL,
+        # Skills run in isolated uv environments and cannot import this resolver.
+        # Supply the bound workspace's canonical path, never an inherited host value
+        # or an explicit command subdirectory. The existing write fence still applies.
+        run_env["CLIO_AGENT_WORKSPACE_STATE_DIR"] = str(workspace_state_dir(_spill_root(safe_cwd)))
+
+        spill_root = _spill_root(safe_cwd)
+        spill_dir = spill_directory(spill_root, session_id=active_session_id())
+        captures = [
+            StreamCapture(
+                name,
+                inline_limit=max_output_bytes,
+                spill_path=spill_dir / f"{call_id}.{name}.txt",
             )
-        )
+            for name in ("stdout", "stderr")
+        ]
         try:
-            process = await asyncio.shield(spawn)
-        except asyncio.CancelledError:
-            # A cancelled submission waiter cannot abandon a newly created
-            # suspended process. Resolve this exact spawn before stopping it.
-            await _cancel_pending_spawn(spawn)
+            from clio_agent.runtime.task_process_tree import task_spawn_options
+
+            process_options = task_spawn_options(confined.popen_kwargs)
+            if cleanup is not None:
+                cleanup.acquiring_effects()
+            spawn = asyncio.create_task(
+                asyncio.create_subprocess_exec(
+                    *run_argv,
+                    cwd=str(safe_cwd),
+                    stdout=asyncio.subprocess.PIPE,
+                    stderr=asyncio.subprocess.PIPE,
+                    env=run_env,
+                    **process_options,
+                    # Give the child an immediately-EOF stdin. Without this the spawned
+                    # shell inherits clio-agent's own stdin (a pipe the parent holds open
+                    # and never closes), and PowerShell/cmd block at startup waiting on
+                    # that stream â€” every command then hits the timeout with empty output.
+                    stdin=subprocess.DEVNULL,
+                )
+            )
+            try:
+                process = await asyncio.shield(spawn)
+            except asyncio.CancelledError:
+                # A cancelled submission waiter cannot abandon a newly created
+                # suspended process. Resolve this exact spawn before stopping it.
+                await _cancel_pending_spawn(spawn)
+                if cleanup is not None:
+                    cleanup.confirm_cleanup()
+                raise
+        except Exception as exc:  # noqa: BLE001
             if cleanup is not None:
                 cleanup.confirm_cleanup()
-            raise
-    except Exception as exc:  # noqa: BLE001
-        if cleanup is not None:
-            cleanup.confirm_cleanup()
-        _log_shell_phase(call_id, "process_start", phase_started, outcome="failed")
-        if is_command_length_exception(exc):
-            return command_length_error(command, str(exc), bound="native_spawn")
-        return _error("execution_failed", str(exc), details={"command": command})
-    phase_started = _log_shell_phase(call_id, "process_start", phase_started)
+            _log_shell_phase(call_id, "process_start", phase_started, outcome="failed")
+            if is_command_length_exception(exc):
+                return command_length_error(command, str(exc), bound="native_spawn")
+            return _error("execution_failed", str(exc), details={"command": command})
+        phase_started = _log_shell_phase(call_id, "process_start", phase_started)
 
-    assert process.stdout is not None
-    assert process.stderr is not None
-    from clio_agent.runtime.task_process_tree import TaskProcessTree
+        assert process.stdout is not None
+        assert process.stderr is not None
+        from clio_agent.runtime.task_process_tree import TaskProcessTree
 
-    try:
-        tree = TaskProcessTree(process.pid)
-    except Exception:
-        # Windows ownership failure kills the still-suspended process; wait
-        # for its actual exit before allowing the worker to leave.
-        if process.returncode is None:
-            process.kill()
-        await process.wait()
-
-        raise
-    readers = [
-        asyncio.create_task(read_process_stream(pipe, capture=capture, ctx=ctx))
-        for pipe, capture in zip((process.stdout, process.stderr), captures, strict=True)
-    ]
-    timed_out = False
-    physical_settlement = False
-    result: dict[str, Any] | None = None
-
-    async def settle() -> None:
-        await process.wait()
-        while tree.active():
-            await asyncio.sleep(0.05)
-
-    try:
-        await asyncio.wait_for(settle(), timeout=timeout or None)
-        physical_settlement = True
-    except TimeoutError:
-        timed_out = True
-        tree.terminate()
-        await settle()
-        physical_settlement = True
-    except BaseException:
-        _log_shell_phase(call_id, "child_lifetime", phase_started, outcome="interrupted")
-        # Signal the owned OS tree directly; Core I/O may occupy the executor.
-        # The receipt still follows actual process exit and output-reader retirement.
-        tree.terminate()
-        await settle()
-        physical_settlement = True
-        raise
-    finally:
-        phase_started = _log_shell_phase(
-            call_id,
-            "child_lifetime",
-            phase_started,
-            outcome="timed_out"
-            if timed_out
-            else "completed"
-            if physical_settlement
-            else "unsettled",
-        )
         try:
-            await asyncio.gather(*readers)
-            _log_shell_phase(call_id, "output_drain", phase_started)
+            tree = TaskProcessTree(process.pid)
+        except Exception:
+            # Windows ownership failure kills the still-suspended process; wait
+            # for its actual exit before allowing the worker to leave.
+            if process.returncode is None:
+                process.kill()
+            await process.wait()
+
+            raise
+        readers = [
+            asyncio.create_task(read_process_stream(pipe, capture=capture, ctx=ctx))
+            for pipe, capture in zip((process.stdout, process.stderr), captures, strict=True)
+        ]
+        timed_out = False
+        physical_settlement = False
+        result: dict[str, Any] | None = None
+
+        async def settle() -> None:
+            await process.wait()
+            while tree.active():
+                await asyncio.sleep(0.05)
+
+        try:
+            await asyncio.wait_for(settle(), timeout=timeout or None)
+            physical_settlement = True
+        except TimeoutError:
+            timed_out = True
+            tree.terminate()
+            await settle()
+            physical_settlement = True
+        except BaseException:
+            _log_shell_phase(call_id, "child_lifetime", phase_started, outcome="interrupted")
+            # Signal the owned OS tree directly; Core I/O may occupy the executor.
+            # The receipt still follows actual process exit and output-reader retirement.
+            tree.terminate()
+            await settle()
+            physical_settlement = True
+            raise
         finally:
-            tree.close()
-            if physical_settlement:
-                if cleanup is not None and all(reader.done() for reader in readers):
-                    # A reader failure can leave output custody unconfirmed.
-                    if all(
-                        not reader.cancelled() and reader.exception() is None for reader in readers
-                    ):
-                        cleanup.confirm_cleanup()
-                base = {
-                    "command": command,
-                    "cwd": str(safe_cwd),
-                    "exit_code": None if timed_out else process.returncode,
-                    "timed_out": timed_out,
-                    "timeout_s": timeout,
-                }
-                result = compose_output_fields(
-                    base, captures, root=spill_root, budget=shell_result_char_budget()
-                )
-    if result is None:
-        raise RuntimeError("Shell exited without confirmed process-tree settlement")
-    return result
+            phase_started = _log_shell_phase(
+                call_id,
+                "child_lifetime",
+                phase_started,
+                outcome="timed_out"
+                if timed_out
+                else "completed"
+                if physical_settlement
+                else "unsettled",
+            )
+            try:
+                await asyncio.gather(*readers)
+                _log_shell_phase(call_id, "output_drain", phase_started)
+            finally:
+                tree.close()
+                if physical_settlement:
+                    if cleanup is not None and all(reader.done() for reader in readers):
+                        # A reader failure can leave output custody unconfirmed.
+                        if all(
+                            not reader.cancelled() and reader.exception() is None
+                            for reader in readers
+                        ):
+                            cleanup.confirm_cleanup()
+                    base = {
+                        "command": command,
+                        "cwd": str(safe_cwd),
+                        "exit_code": None if timed_out else process.returncode,
+                        "timed_out": timed_out,
+                        "timeout_s": timeout,
+                    }
+                    result = compose_output_fields(
+                        base, captures, root=spill_root, budget=shell_result_char_budget()
+                    )
+        if result is None:
+            raise RuntimeError("Shell exited without confirmed process-tree settlement")
+        return result
+    finally:
+        # The child has exited (or never started): its egress channel goes with it.
+        confined.release()
 
 
 async def _cancel_pending_spawn(spawn: asyncio.Task[asyncio.subprocess.Process]) -> None:

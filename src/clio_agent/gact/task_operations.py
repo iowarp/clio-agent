@@ -16,6 +16,11 @@ from itertools import islice
 from typing import Any, get_args
 
 from clio_agent.arc.task_types import CoordinationRight, TaskKind, TaskSnapshot, TaskSubscription
+from clio_agent.gact.assignment_input import (
+    AWAITING_INPUT,
+    awaiting_input_outcome,
+    waiting_for_input,
+)
 from clio_agent.gact.native_work import now
 from clio_agent.gact.task_access import TaskAccess, TaskAccessDenied, TaskCaller
 from clio_agent.gact.task_cursors import decode_cursor as _decode
@@ -60,14 +65,17 @@ def _timeout(value: float | None) -> float | None:
 
 
 def _wait_value(
-    outcomes: list[dict[str, Any]], pending: list[str], *, timed_out: bool
+    outcomes: list[dict[str, Any]], pending: list[str], *, timed_out: bool, interrupted: str = ""
 ) -> CollectedTaskResult:
     """Carry each disclosed wait outcome's permission to recipient-input commitment."""
     rows = [row for row in outcomes if row.get("handle") and not row.get("error")]
     reads = {row["handle"] for row in rows if row.get("pending") is False}
     observations = {row["handle"] for row in rows} | set(pending)
+    value: dict[str, Any] = {"outcomes": outcomes, "pending": pending, "timed_out": timed_out}
+    if interrupted:
+        value["interrupted"] = interrupted
     return CollectedTaskResult(
-        {"outcomes": outcomes, "pending": pending, "timed_out": timed_out},
+        value,
         (),
         tuple(sorted(reads)),
         observe_handles=tuple(sorted(observations - reads)),
@@ -110,6 +118,8 @@ class TaskOperations:
             raise ValueError("limit must be positive")
         access = TaskAccess(self.history, caller)
         query = query.strip() or None if query is not None else None
+        if query is not None and scope == "authorized" and not caller.human_action:
+            self._check_past_session_search(caller)
         start = end = None
         if message_after is not None or message_before is not None:
             from clio_agent.gact.task_transcripts import message_search_window
@@ -247,6 +257,18 @@ class TaskOperations:
             collect=False,
         )
 
+    def _check_past_session_search(self, caller: TaskCaller) -> None:
+        """Text search across other conversations follows the past-session switches."""
+        if self.app is None or not caller.session_id:
+            return
+        from clio_agent.gact.memory.policy import (  # noqa: PLC0415
+            PastSessionSearchWithheld,
+            past_session_search_reason,
+        )
+
+        if reason := past_session_search_reason(self.app, caller.session_id):
+            raise PastSessionSearchWithheld(reason)
+
     def _matches_text(
         self,
         caller: TaskCaller,
@@ -355,8 +377,15 @@ class TaskOperations:
         tasks: str | list[str],
         return_when: str = "all",
         timeout_s: float | None = None,
+        *,
+        settle_awaiting_input: bool = False,
     ) -> dict[str, Any]:
-        """Await mixed owner observations; timeout/cancellation never cancels a member."""
+        """Await mixed owner observations; timeout/cancellation never cancels a member.
+
+        ``settle_awaiting_input`` (a flow's wait) settles a child that yielded with nothing
+        left to wake it as ``awaiting_input`` instead of waiting on it forever
+        (:mod:`clio_agent.gact.assignment_input`).
+        """
         with track(timeout_s != 0, session_id=caller.session_id):
             if return_when not in {"all", "any"}:
                 raise ValueError("return_when must be all or any")
@@ -366,15 +395,37 @@ class TaskOperations:
             )
             deadline = None if timeout is None else asyncio.get_running_loop().time() + timeout
             changed, loop = asyncio.Event(), asyncio.get_running_loop()
+            # An agent's wait ends when its own conversation is stopped (the waited
+            # tasks keep running): Stop retires the turn only once this call returns.
+            # A cancellation is different: it cascades to the waited members, and the
+            # caller (a flow above all) keeps waiting to observe them settle.
+            own = (
+                None
+                if caller.human_action
+                else await self.history.io.run(self.history.latest_assignment, caller.session_id)
+            )
 
             def wake(_revision: int) -> None:
                 loop.call_soon_threadsafe(changed.set)
 
-            remove = self.history.listen(wake, handles=handles, recipient_session=caller.session_id)
+            watched = handles + ((own.handle,) if own is not None else ())
+            remove = self.history.listen(wake, handles=watched, recipient_session=caller.session_id)
             try:
                 while True:
                     changed.clear()
-                    outcomes, pending = await self.history.io.run(self._outcomes, caller, handles)
+                    outcomes, pending = await self.history.io.run(
+                        self._outcomes, caller, handles, settle_awaiting_input, wake
+                    )
+                    for handle in pending:
+                        # A cancellation can end unconfirmed with no further history change.
+                        if (job := self._cancellation_job(handle)) is not None:
+                            job.get_loop().call_soon_threadsafe(
+                                job.add_done_callback, lambda _job: wake(0)
+                            )
+                    if own is not None and await self.history.io.run(self._stopping, own.handle):
+                        return _wait_value(
+                            outcomes, pending, timed_out=False, interrupted="stopped"
+                        )
                     uncertain = any(
                         item.get("status") == "task_state_uncertain" for item in outcomes
                     )
@@ -387,11 +438,41 @@ class TaskOperations:
                         await asyncio.wait_for(changed.wait(), remaining)
                     except TimeoutError:
                         outcomes, pending = await self.history.io.run(
-                            self._outcomes, caller, handles
+                            self._outcomes, caller, handles, settle_awaiting_input
                         )
                         return _wait_value(outcomes, pending, timed_out=True)
             finally:
                 remove()
+
+    def _stopping(self, handle: str) -> bool:
+        """Whether the calling assignment was stopped (not cancelled) or has ended.
+
+        A cancellation unwinds through ``stopping`` too, before its request is recorded.
+        """
+        current = self.history.task_snapshot(handle)
+        if current is None:
+            return False
+        if current.terminal_at is not None:
+            return True
+        conversations = getattr(getattr(self.app, "state", None), "conversations", None)
+        cancelling = (
+            conversations.cancelling(current)
+            if conversations is not None
+            else current.cancellation_requested_at is not None
+        )
+        return current.activity == "stopping" and not cancelling
+
+    def _cancellation_settling(self, current: TaskSnapshot) -> bool:
+        """A cancellation still being confirmed is progress, not an uncertain state.
+
+        Its job marks a member uncertain while descendants settle; the wait goes on
+        until the job confirms the cancellation or records it as unconfirmed.
+        """
+        return self._cancellation_job(current.handle) is not None
+
+    def _cancellation_job(self, handle: str) -> asyncio.Task[None] | None:
+        conversations = getattr(getattr(self.app, "state", None), "conversations", None)
+        return conversations.cancellation_job(handle) if conversations is not None else None
 
     def _canonical_observed(self, caller: TaskCaller, handles: tuple[str, ...]) -> tuple[str, ...]:
         """Authorize aliases before registering for canonical owner observations."""
@@ -406,7 +487,11 @@ class TaskOperations:
             return tuple(dict.fromkeys(resolved))
 
     def _outcomes(
-        self, caller: TaskCaller, handles: tuple[str, ...]
+        self,
+        caller: TaskCaller,
+        handles: tuple[str, ...],
+        settle_awaiting_input: bool = False,
+        wake: Callable[[int], None] | None = None,
     ) -> tuple[list[dict[str, Any]], list[str]]:
         outcomes: list[dict[str, Any]] = []
         pending: list[str] = []
@@ -424,12 +509,26 @@ class TaskOperations:
                     outcomes.append(
                         {"handle": current.handle, "error": "cannot_wait_for_own_active_assignment"}
                     )
+                elif (
+                    current.terminal_at is None
+                    and (
+                        waiting := waiting_for_input(self.app, current)
+                        if settle_awaiting_input
+                        else ""
+                    )
+                    == AWAITING_INPUT
+                ):
+                    outcomes.append(awaiting_input_outcome(self.app, current))
                 elif current.terminal_at is None:
+                    if waiting == "retiring" and wake is not None:
+                        # No history change follows the release: look again once it lands.
+                        sid = current.owner.session_id
+                        self.app.state.conversations.runner.run_when_released(sid, lambda: wake(0))
                     pending.append(handle)
                     if (
                         current.status == "task_state_uncertain"
                         or current.attention_episode is not None
-                    ):
+                    ) and not self._cancellation_settling(current):
                         checks[len(outcomes)] = (handle, "observe")
                         outcomes.append({"handle": handle, "status": "task_state_uncertain"})
                 elif "read" in access.rights(current):

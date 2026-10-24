@@ -13,8 +13,12 @@ def attach_always_load_tools(
     gateway_tools: dict[str, Any],
     mount_failures: dict[str, str],
     requested_tools: list[str],
-) -> None:
-    """Mount always-load namespaces and merge their tools into root state."""
+) -> set[str]:
+    """Mount always-load namespaces and merge their tools into root state.
+
+    Returns the always-load namespaces, which the root agent takes whole (so a tool
+    their server adds later reaches it: :mod:`clio_agent.gact.agents.live_tool_refresh`).
+    """
 
     from clio_agent.gact.mcp_readiness import mount_failure_reason, mount_namespace_for_session
 
@@ -44,7 +48,7 @@ def attach_always_load_tools(
 
     prefixes = tuple(f"{namespace}_" for namespace in sorted(namespaces))
     if not prefixes:
-        return
+        return namespaces
     attached = {
         name: tool
         for tool in tool_executor.to_dspy_tools()
@@ -53,3 +57,4 @@ def attach_always_load_tools(
     }
     gateway_tools.update(attached)
     requested_tools.extend(name for name in attached if name not in requested_tools)
+    return namespaces

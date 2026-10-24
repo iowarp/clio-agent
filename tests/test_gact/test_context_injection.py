@@ -203,8 +203,8 @@ def test_path_outside_workspace_root_is_inlined_for_reads(setup, tmp_path: Path)
     """iowarp/clio-agent#5 (revised): the workspace-root check used to
     silently skip context_files outside the root, but the user
     explicitly attaches via the API — they know what they're doing.
-    Reads are trusted; writes still gated by _apply_edit_to_disk +
-    plan_mode. Verify the body of an outside-root file IS visible."""
+    Reads are trusted; the agent's writes still pass the permission gate
+    and file policy. Verify the body of an outside-root file IS visible."""
 
     from .conftest import complete_turn
 

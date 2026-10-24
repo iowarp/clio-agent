@@ -169,15 +169,15 @@ skill check and one for the ordered workflow outputs. Do not print raw JSON in t
 ## Scenario 10: workspace memory
 
 1. Search earlier sessions in this same workspace for Aurora Meridian. Call
-   memory_search_sessions exactly once with scope current_workspace, limit 5, and user intent
+   session_search exactly once with scope current_workspace, limit 5, and user intent
    "qualify same-workspace memory retrieval for the user". Report the matching session title and
    bounded excerpt in plain language.
 2. Read the bounded retained summary for <scenario-9-session-id>. Call
-   memory_read_session_summary exactly once with scope current_workspace and user intent "qualify
+   session_read_summary exactly once with scope current_workspace and user intent "qualify
    the retained session summary for the user". State title, status, message count, and the most
    relevant recent excerpt.
 3. Read retained context frame <context-frame-id> from the current session. Call
-   memory_read_context_frame exactly once with scope session. Explain which context items were
+   session_read_context_frame exactly once with scope session. Explain which context items were
    included without reproducing transcript contents.
 4. Attempt an explicitly denied cross-workspace summary read using scope current_workspace. Report
    the denial in plain language.

@@ -23,8 +23,8 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from clio_agent.arc.memory import ARCMemory
+from clio_agent.gact.agents.builders import build_agent_module
 from clio_agent.gact.app import (
-    _build_prompt_user_agent_module,
     _dynamic_agent_lm_config,
     _pop_stream_fallback,
     _pop_stream_fallback_notes,
@@ -40,8 +40,8 @@ from tests._config_layer import set_config
 from tests._harness import emit_live_text, install_scripted_module
 from tests.test_arc.child_worker_helpers import commit_model_input, execute_model_under_owner
 
-# #948 S4b: turns that POST through the engine now run the default blueprint react
-# ``main``; route that root to each test's ``build_app(agent=...)`` host fake.
+# #948 S4b: turns that POST through the engine now run the session's plugin agent;
+# route it to each test's ``build_app(agent=...)`` host fake.
 pytestmark = pytest.mark.usefixtures("host_agent_executor")
 
 
@@ -158,7 +158,7 @@ def _wait_for_turn_settlement(
     """Wait on confirmed assignment settlement and physical reservation release.
 
     30s for the same reason ``conftest.complete_turn`` uses it: every turn builds
-    and runs a blueprint module, and slow 2-core CI runners under coverage need
+    and runs an agent module, and slow 2-core CI runners under coverage need
     the margin. The wait returns the instant the task settles, so the bound only
     ever fires on a genuine hang.
     """
@@ -359,6 +359,30 @@ class _NativeInputAgent(dspy.Module):
         return dspy.Prediction(answer="saw them")
 
 
+@pytest.fixture
+def arc(arc: ARCMemory, monkeypatch: pytest.MonkeyPatch) -> ARCMemory:
+    """The owner-contract environment, given what a model turn's tool session reads.
+
+    Every turn resolves its session's pinned plugin agent (the test default
+    marketplace) to pick the plugin MCP server set, and reads the session's
+    workspace root (none is bound here).
+    """
+
+    from clio_agent.plugins.service import PluginService
+    from tests.test_arc import test_conversation_owner_contracts as owner_contracts
+
+    create = owner_contracts.create_environment
+
+    async def create_environment(arc: ARCMemory, tmp_path: Path) -> Any:
+        app, owner, root = await create(arc, tmp_path)
+        app.state.plugin_service = PluginService()
+        app.state.workspaces = {}
+        return app, owner, root
+
+    monkeypatch.setattr(owner_contracts, "create_environment", create_environment)
+    return arc
+
+
 def _never_cancelled() -> bool:
     return False
 
@@ -511,14 +535,19 @@ def test_dynamic_agent_module_carries_codex_provider_config() -> None:
             codex_transport="websocket",
         )
     )
-    module = _build_prompt_user_agent_module(
+    from clio_agent.plugins.service import PluginService
+
+    resolution = PluginService().resolve("clio/standard", pin=False)
+    module = build_agent_module(
         base_agent,
         AgentDef(
             id="reference",
-            source="expert_pack",
+            source="plugin",
             title="Reference Expert",
             system_prompt="Review reference evidence.",
+            module={"kind": "predict"},
         ),
+        resolution,
     )
     assert module._provider_config.provider == "codex"
     assert module._provider_config.codex_transport == "websocket"
@@ -542,9 +571,9 @@ def test_dynamic_agent_lm_config_preserves_claude_code_transport() -> None:
         base_agent,
         AgentDef(
             id="earthscope",
-            source="expert_pack",
+            source="plugin",
             title="EarthScope",
-            system_prompt="Use the EarthScope blueprint.",
+            system_prompt="Use the EarthScope agent.",
         ),
     ).materialize()
 

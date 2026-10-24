@@ -5,13 +5,12 @@ must answer BEFORE it arms: *can the watcher this session is about to depend on
 actually execute?*
 
 The live defect this closes (qualification sessions ``sess_71d5473bda17`` /
-``sess_a35cd5416d46``): the ``spotter-ai`` Agent Blueprint declares its MCP
+``sess_a35cd5416d46``): the ``spotter-ai`` agent's plugin declares its MCP
 server as ``uv run --project ${SPOTTER_IMPL_DIR} ... --clio-config
 ${SPOTTER_CLIO_CONFIG}``. With those deployment variables unset the declaration
 never resolves, so the watcher child mounts ZERO ``spotter_*`` tools and errors
 ``custom_agent_tools_unavailable`` on every wake — while arming itself reported
-success and ``GET /v1/agent-blueprints/spotter-ai`` still showed
-``enabled: true, validation_errors: []``. The fail-closed clearance barrier
+success and the agent still listed as installed and valid. The fail-closed clearance barrier
 (:mod:`clio_agent.gact.spotter_clearance`) then auto-denied EVERY destructive
 tool call with ``spotter_watcher_check_failed``: an armed session was a total
 write lockout whose first operator signal was a denial storm instead of an
@@ -28,7 +27,7 @@ layer deeper. So a recognized ``uv run`` launcher now also has its console
 script resolved against the project's virtual environment.
 
 **Static, never a probe.** Nothing is launched here: no subprocess is spawned,
-no handshake runs, no tool is listed. The watcher blueprint's declared servers
+no handshake runs, no tool is listed. The watcher agent's plugin servers
 are normalized through the SAME parser the runtime mounts them with
 (:func:`clio_agent.tools.mcp_config.spec_from_declaration`, which performs the
 ``${VAR}`` / ``${VAR:-default}`` expansion); a resolved stdio launcher's
@@ -70,7 +69,7 @@ raising, so the caller's 422 never leaves a half-armed session behind:
   ever observes the refused mode. Other fields in the same PATCH body stay
   applied — only the mode transition is refused, and the 422 says so.
 
-An absent watcher blueprint is refused with the existing unmountable reason.
+An absent or unresolvable watcher agent is refused with the unmountable reason.
 An installed watcher that declares no servers needs no server-path resolution.
 """
 
@@ -84,7 +83,6 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, NoReturn, Optional
 
-from clio_agent.gact.blueprint_identity import select_blueprint
 from clio_agent.runtime import trace
 from clio_agent.tools.uv_launcher import (
     VENV_STATE_ENTRYPOINT_ABSENT,
@@ -102,7 +100,7 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
-#: A declared MCP server for the watcher blueprint does not RESOLVE: an
+#: A declared MCP server for the watcher agent does not RESOLVE: an
 #: environment variable its declaration references is unset, or the declaration
 #: itself is invalid. The watcher would mount none of that server's tools.
 REFUSAL_WATCHER_UNMOUNTABLE = "spotter_watcher_unmountable"
@@ -132,7 +130,7 @@ REFUSAL_WATCHER_PROVENANCE_UNAVAILABLE = "spotter_watcher_provenance_unavailable
 SPOTTER_ARMING_REASONS: dict[str, str] = {
     REFUSAL_WATCHER_UNMOUNTABLE: (
         "SPOTTER surveillance was not armed: a declared MCP server for the watcher "
-        "Agent Blueprint does not resolve, so the watcher would start with none of "
+        "agent does not resolve, so the watcher would start with none of "
         "its tools and every protected tool call would be denied."
     ),
     REFUSAL_WATCHER_PROJECT_MISSING: (
@@ -151,9 +149,9 @@ SPOTTER_ARMING_REASONS: dict[str, str] = {
 }
 
 #: The typed reason emitted (never raised) when there is simply nothing to check.
-_SKIP_BLUEPRINT_NOT_INSTALLED = "watcher_blueprint_not_installed"
-_SKIP_NO_DECLARED_SERVERS = "watcher_blueprint_declares_no_servers"
-_SKIP_DISCOVERY_FAILED = "watcher_blueprint_discovery_failed"
+_SKIP_AGENT_NOT_INSTALLED = "watcher_agent_not_installed"
+_SKIP_NO_DECLARED_SERVERS = "watcher_agent_declares_no_servers"
+_SKIP_RESOLUTION_FAILED = "watcher_agent_resolution_failed"
 
 #: The typed reasons the ENTRY-POINT half declines to have an opinion (see the
 #: module docstring): an unmodeled launcher shape, a launcher that provisions
@@ -201,8 +199,8 @@ class WatcherArmingRefusal:
         reason: A :data:`SPOTTER_ARMING_REASONS` key (the stable vocabulary the
             API caller and the trace both key on).
         detail: The underlying declaration-level error text.
-        blueprint_id: The watcher Agent Blueprint whose declaration failed.
-        server: The declared MCP server name inside that blueprint.
+        agent_ref: The watcher agent whose plugin server declaration failed.
+        server: The declared MCP server name inside that agent's plugins.
         variable: The unset environment variable, when the failure names one.
         path: The missing directory, when the failure names one. For an
             entry-point refusal this is the launcher's project directory, which
@@ -216,7 +214,7 @@ class WatcherArmingRefusal:
 
     reason: str
     detail: str
-    blueprint_id: str
+    agent_ref: str
     server: str
     variable: str = ""
     path: str = ""
@@ -235,7 +233,7 @@ class WatcherArmingRefusal:
 
         payload = {
             "reason": self.reason,
-            "agent_blueprint_id": self.blueprint_id,
+            "agent_ref": self.agent_ref,
             "mcp_server": self.server,
             "detail": self.detail,
         }
@@ -255,65 +253,67 @@ class WatcherArmingRefusal:
         return payload
 
 
-def _record_skip(reason: str, blueprint_id: str, *, server: str = "", error: str = "") -> None:
+def _record_skip(reason: str, agent_ref: str, *, server: str = "", error: str = "") -> None:
     """Log + trace one typed "nothing to validate" outcome (no silent pass)."""
 
     logger.info(
-        "spotter_watcher_arm_check_skip reason=%s blueprint=%s server=%s error=%s",
+        "spotter_watcher_arm_check_skip reason=%s agent=%s server=%s error=%s",
         reason,
-        blueprint_id,
+        agent_ref,
         server,
         error,
     )
     trace.event(
         "SPOTTER",
-        "spotter_watcher_arm_check_skip reason=%s blueprint=%s server=%s error=%s",
+        "spotter_watcher_arm_check_skip reason=%s agent=%s server=%s error=%s",
         reason,
-        blueprint_id,
+        agent_ref,
         server,
         error,
     )
 
 
 def _declared_watcher_servers(
-    app: "FastAPI", blueprint_id: str, *, session_id: str = "", workspace_id: str = ""
+    app: "FastAPI", agent_ref: str, *, session_id: str = "", workspace_id: str = ""
 ) -> tuple[Mapping[str, Any], Mapping[str, Any], Optional[Path]]:
-    """Return the watcher blueprint's declared ``mcp_servers`` map (raw declarations).
+    """Return the watcher agent's plugin MCP servers (gateway and raw declarations).
 
-    Resolved by INSTALLED id, deterministically: the watcher child is bound to
-    its blueprint by id (``turn_spawn.TaskSpec.session_scope_metadata`` carries
-    ``active_agent_blueprint_id``), and arm time is a route context with no
-    active turn/tool contextvar to resolve a path-activated pack from. The
-    workspace scan root matches the one the runtime tool gateway uses
-    (``<workspace>/.clio/agent-blueprints`` alongside the global root), so a
-    workspace-local watcher pack is seen here exactly as it will be mounted.
+    The watcher agent is resolved exactly as its child session will resolve it
+    (``PluginService.resolve``), and its servers are expanded by the same
+    ``plugins.servers`` code the gateway mounts them with, including the
+    CLIO-supplied ``${CLIO_PROVENANCE_CONFIG}``.
 
-    Returns ``(servers, raw_declarations, workspace_root)``: the declarations
-    with clio-supplied placeholders substituted, the declarations as written,
-    and the scan root. Both mappings are empty — typed-logged, never silent —
-    when the blueprint is not installed, declares no servers, or discovery
-    itself fails.
+    Returns ``(servers, raw_declarations, workspace_root)``. Both mappings are
+    empty (typed-logged, never silent) when the agent declares no servers.
+    Raises ``ValueError`` when the agent is not installed or does not resolve.
     """
 
-    from clio_agent.gact.agent_blueprints import discover_agent_blueprints  # noqa: PLC0415
-    from clio_agent.gact.agents.resolution import _runtime_workspace_catalog_cwd  # noqa: PLC0415
-    from clio_agent.gact.blueprint_activation import blueprint_server_map  # noqa: PLC0415
+    from clio_agent.gact.agents.resolution import (  # noqa: PLC0415
+        _runtime_workspace_catalog_cwd,
+        plugin_service,
+        supplied_server_values,
+    )
+    from clio_agent.plugins.resolve import ResolutionError  # noqa: PLC0415
+    from clio_agent.plugins.servers import server_declarations  # noqa: PLC0415
+    from clio_agent.plugins.service import AgentNotFound  # noqa: PLC0415
 
     cwd = _runtime_workspace_catalog_cwd(app, workspace_id=workspace_id, session_id=session_id)
     try:
-        blueprints = discover_agent_blueprints(cwd=cwd)
-    except Exception as exc:  # noqa: BLE001 - discovery failure must not fail the route
-        _record_skip(_SKIP_DISCOVERY_FAILED, blueprint_id, error=repr(exc))
-        raise ValueError(f"Watcher blueprint discovery failed: {blueprint_id}") from exc
-    blueprint = select_blueprint(blueprints, blueprint_id)
-    if blueprint is None:
-        _record_skip(_SKIP_BLUEPRINT_NOT_INSTALLED, blueprint_id)
-        raise ValueError(f"Watcher blueprint is not installed: {blueprint_id}")
-    servers = blueprint_server_map(blueprint, app=app, workspace_root=cwd)
-    if not servers:
-        _record_skip(_SKIP_NO_DECLARED_SERVERS, blueprint_id)
-    raw = blueprint.metadata.get("mcp_servers")
-    return servers, (raw if isinstance(raw, Mapping) else {}), cwd
+        resolution = plugin_service(app).resolve(agent_ref, pin=False)
+    except AgentNotFound as exc:
+        _record_skip(_SKIP_AGENT_NOT_INSTALLED, agent_ref, error=exc.reason)
+        raise ValueError(f"Watcher agent is not installed: {agent_ref}") from exc
+    except ResolutionError as exc:
+        _record_skip(_SKIP_RESOLUTION_FAILED, agent_ref, error=str(exc))
+        raise ValueError(f"Watcher agent does not resolve: {agent_ref}: {exc}") from exc
+    raw = {name: dict(row["spec"]) for name, row in resolution.mcp_servers.items()}
+    if not raw:
+        _record_skip(_SKIP_NO_DECLARED_SERVERS, agent_ref)
+        return {}, {}, cwd
+    supplied = supplied_server_values(app, resolution.mcp_servers, workspace_root=cwd)
+    grouped = server_declarations(resolution.mcp_servers, supplied)
+    servers = {name: decl for group in grouped.values() for name, decl in group.items()}
+    return servers, raw, cwd
 
 
 def _unset_variable(errors: Sequence[str]) -> str:
@@ -370,7 +370,7 @@ def _environment_is_redirected(spec: "MCPServerSpec", *, env: Optional[Mapping[s
 
 
 def _entrypoint_refusal(
-    blueprint_id: str,
+    agent_ref: str,
     name: str,
     spec: "MCPServerSpec",
     *,
@@ -386,13 +386,13 @@ def _entrypoint_refusal(
 
     launcher = parse_uv_run_launcher(spec.command, spec.args)
     if launcher is None:
-        _record_skip(_SKIP_LAUNCHER_SHAPE_UNMODELED, blueprint_id, server=name)
+        _record_skip(_SKIP_LAUNCHER_SHAPE_UNMODELED, agent_ref, server=name)
         return None
     if not launcher.sync_disabled:
-        _record_skip(_SKIP_LAUNCHER_SYNCS_ON_START, blueprint_id, server=name)
+        _record_skip(_SKIP_LAUNCHER_SYNCS_ON_START, agent_ref, server=name)
         return None
     if _environment_is_redirected(spec, env=env):
-        _record_skip(_SKIP_LAUNCHER_ENVIRONMENT_REDIRECTED, blueprint_id, server=name)
+        _record_skip(_SKIP_LAUNCHER_ENVIRONMENT_REDIRECTED, agent_ref, server=name)
         return None
     state = entrypoint_venv_state(launcher.project_dir, launcher.entrypoint)
     if not state:
@@ -404,7 +404,7 @@ def _entrypoint_refusal(
             f"{launcher.entrypoint}' cannot start because "
             f"{_VENV_STATE_DETAIL[state]} (run 'uv sync --project {launcher.project_dir}')"
         ),
-        blueprint_id=blueprint_id,
+        agent_ref=agent_ref,
         server=name,
         path=launcher.project_dir,
         entrypoint=launcher.entrypoint,
@@ -414,7 +414,7 @@ def _entrypoint_refusal(
 
 
 def _refusal_for_declaration(
-    blueprint_id: str,
+    agent_ref: str,
     name: str,
     declaration: Any,
     *,
@@ -424,23 +424,21 @@ def _refusal_for_declaration(
 
     from clio_agent.tools.mcp_config import spec_from_declaration  # noqa: PLC0415
 
-    spec = spec_from_declaration(
-        name, declaration, source=f"agent-blueprint:{blueprint_id}", env=env
-    )
+    spec = spec_from_declaration(name, declaration, source=f"plugin-agent:{agent_ref}", env=env)
     if spec.validation_errors:
         variable = _unset_variable(spec.validation_errors)
         return WatcherArmingRefusal(
             reason=REFUSAL_WATCHER_UNMOUNTABLE,
             detail="; ".join(spec.validation_errors),
-            blueprint_id=blueprint_id,
+            agent_ref=agent_ref,
             server=name,
             variable=variable,
             remedy=(
                 f"set the {variable} environment variable for the clio service, or update "
-                f"the {blueprint_id} Agent Blueprint"
+                f"the plugins of the {agent_ref} agent"
                 if variable
-                else f"fix the {name!r} MCP server declaration in the {blueprint_id} "
-                "Agent Blueprint"
+                else f"fix the {name!r} MCP server declaration in the plugins of the "
+                f"{agent_ref} agent"
             ),
         )
     if spec.transport != "stdio":
@@ -453,12 +451,12 @@ def _refusal_for_declaration(
                     f"MCP server {name!r}: project directory {candidate!r} does not exist, "
                     f"so the stdio subprocess cannot start"
                 ),
-                blueprint_id=blueprint_id,
+                agent_ref=agent_ref,
                 server=name,
                 path=candidate,
-                remedy=f"reinstall the {blueprint_id} Agent Blueprint",
+                remedy=f"reinstall the marketplace that provides the {agent_ref} agent",
             )
-    return _entrypoint_refusal(blueprint_id, name, spec, env=env)
+    return _entrypoint_refusal(agent_ref, name, spec, env=env)
 
 
 def validate_watcher_arming(
@@ -466,19 +464,19 @@ def validate_watcher_arming(
     *,
     session_id: str = "",
     workspace_id: str = "",
-    blueprint_id: str = "",
+    agent_ref: str = "",
     env: Optional[Mapping[str, str]] = None,
     require_workspace: bool = True,
 ) -> Optional[WatcherArmingRefusal]:
     """Statically check that the spotter watcher could actually execute.
 
     Args:
-        app: The GACT app (workspace store, for the blueprint scan root).
-        session_id: The session being armed, used to resolve its workspace's
-            blueprint scan root. Empty falls back to ``workspace_id``.
+        app: The GACT app (plugin service and workspace store).
+        session_id: The session being armed, used to resolve its workspace
+            (the provenance handoff root). Empty falls back to ``workspace_id``.
         workspace_id: Explicit workspace scope when no session id is available.
-        blueprint_id: The watcher Agent Blueprint to validate; empty resolves
-            the configured one (``spotter.watcher_blueprint_id``).
+        agent_ref: The watcher agent to validate; empty resolves the
+            configured one (``spotter.watcher_agent``).
         env: Environment mapping for ``${VAR}`` expansion. ``None`` (the
             runtime default) reads the real process environment; tests inject a
             mapping so they never mutate ambient env.
@@ -495,9 +493,9 @@ def validate_watcher_arming(
         deployment missing two variables is fixed one named variable at a time.
     """
 
-    from clio_agent.gact.spotter_watcher import _watcher_blueprint_id  # noqa: PLC0415
+    from clio_agent.gact.spotter_watcher import _watcher_agent_ref  # noqa: PLC0415
 
-    resolved_id = blueprint_id or _watcher_blueprint_id()
+    resolved_id = agent_ref or _watcher_agent_ref()
     if not resolved_id:
         return None
     try:
@@ -507,7 +505,7 @@ def validate_watcher_arming(
     except ValueError as error:
         return WatcherArmingRefusal(
             reason=REFUSAL_WATCHER_UNMOUNTABLE,
-            blueprint_id=resolved_id,
+            agent_ref=resolved_id,
             server="",
             detail=str(error),
         )
@@ -526,7 +524,7 @@ def validate_watcher_arming(
 
 def _provenance_refusal(
     app: "FastAPI",
-    blueprint_id: str,
+    agent_ref: str,
     raw_declarations: Mapping[str, Any],
     workspace_root: Optional[Path],
     *,
@@ -539,13 +537,13 @@ def _provenance_refusal(
     certain start-up failure, not a guess.
     """
 
-    from clio_agent.gact.blueprint_placeholders import (  # noqa: PLC0415
-        PROVENANCE_CONFIG_VAR,
-        references_variable,
-    )
     from clio_agent.gact.provenance.handoff import (  # noqa: PLC0415
         PROBLEM_WORKSPACE_UNRESOLVED,
         build_provenance_handoff,
+    )
+    from clio_agent.plugins.servers import (  # noqa: PLC0415
+        PROVENANCE_CONFIG_VAR,
+        references_variable,
     )
 
     for name, declaration in raw_declarations.items():
@@ -563,7 +561,7 @@ def _provenance_refusal(
         return WatcherArmingRefusal(
             reason=REFUSAL_WATCHER_PROVENANCE_UNAVAILABLE,
             detail=f"MCP server {str(name)!r}: {problem.detail} ({problem.code})",
-            blueprint_id=blueprint_id,
+            agent_ref=agent_ref,
             server=str(name),
             remedy=problem.remedy,
         )
@@ -604,11 +602,11 @@ def refuse_watcher_arming(
         app.state.sessions.delete(session_id)
         rollback = "session_deleted"
     logger.warning(
-        "spotter_watcher_arm_refused reason=%s session=%s blueprint=%s server=%s "
+        "spotter_watcher_arm_refused reason=%s session=%s agent=%s server=%s "
         "variable=%s path=%s entrypoint=%s venv_state=%s rollback=%s detail=%s",
         refusal.reason,
         session_id,
-        refusal.blueprint_id,
+        refusal.agent_ref,
         refusal.server,
         refusal.variable,
         refusal.path,
@@ -619,11 +617,11 @@ def refuse_watcher_arming(
     )
     trace.event(
         "SPOTTER",
-        "spotter_watcher_arm_refused reason=%s session=%s blueprint=%s server=%s "
+        "spotter_watcher_arm_refused reason=%s session=%s agent=%s server=%s "
         "variable=%s path=%s entrypoint=%s venv_state=%s rollback=%s detail=%s",
         refusal.reason,
         session_id,
-        refusal.blueprint_id,
+        refusal.agent_ref,
         refusal.server,
         refusal.variable,
         refusal.path,

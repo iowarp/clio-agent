@@ -85,8 +85,8 @@ async def test_gateway_exposes_only_builtins_by_default():
 
     assert "shell_bash" in names
     assert "fs_read_file" in names
-    assert "fs_propose_edit" in names
-    assert "fs_apply_edit_write" in names
+    assert "fs_write_file" in names
+    assert "fs_edit_file" in names
     # No domain/case tools live in core anymore.
     assert not any(n.startswith("hdf5_") for n in names)
     assert not any(n.startswith("ndp_") for n in names)

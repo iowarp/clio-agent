@@ -51,7 +51,6 @@ __all__ = [
     "_usage_from_dspy_history",
     "_estimate_cost_usd",
     "_price_table_match",
-    "_PRICE_TABLE_PER_M",
     "_capture_reasoning_enabled",
     "capture_reasoning_log",
     "reported_cost_total",
@@ -496,52 +495,39 @@ def _usage_from_dspy_history() -> dict[str, Any]:
     }
 
 
-# iowarp/clio-agent#8: per-million-token prices (USD) for models we
-# expect to see through our presets. Best-effort — the LM provider
-# is the source of truth when it actually reports cost; this kicks
-# in only when the upstream usage dict has zero. Keys match the
-# substrings we look for in the reported model id (case-insensitive).
-_PRICE_TABLE_PER_M: dict[str, tuple[float, float]] = {
-    # (input $/M tokens, output $/M tokens) as of model-card pricing.
-    "claude-haiku-4-5": (1.0, 5.0),
-    "claude-sonnet-4": (3.0, 15.0),
-    "claude-sonnet-4-6": (3.0, 15.0),
-    "claude-opus-4": (15.0, 75.0),
-    "claude-opus-4-6": (15.0, 75.0),
-    "claude-3-5-haiku": (0.8, 4.0),
-    "claude-3-5-sonnet": (3.0, 15.0),
-    "claude-3-opus": (15.0, 75.0),
-    # OpenRouter free tier — by definition $0.
-    ":free": (0.0, 0.0),
-    # OpenAI defaults if someone wires direct.
-    "gpt-4o-mini": (0.15, 0.6),
-    "gpt-4o": (2.5, 10.0),
-}
-
-
 def _price_table_match(model_id: str) -> Optional[tuple[float, float]]:
-    """Return the ``_PRICE_TABLE_PER_M`` entry substring-matching ``model_id``.
+    """List price per million tokens (input, output) for ``model_id``, or ``None``.
 
-    ``None`` means the model is genuinely unpriced here (e.g. a local/self-hosted
-    model the marketplace can't look up) -- distinct from a matched entry that
-    happens to price at $0 (the OpenRouter ``:free`` tier). Callers use this to
-    tell "no cost data exists" apart from "the provider/table says it's free."
+    Read from the community model cost map (LiteLLM's, the same source the
+    provider catalog's pricing facts cite), never a table compiled into CLIO.
+    ``None`` means the model is genuinely unpriced (a local or self-hosted
+    model) -- distinct from a listed price of $0 (an OpenRouter ``:free``
+    model). Callers use this to tell "no cost data exists" apart from "free".
     """
 
     if not model_id:
         return None
-    needle = model_id.lower()
-    for key, prices in _PRICE_TABLE_PER_M.items():
-        if key in needle:
-            return prices
-    return None
+    from clio_agent.providers.handshake.sources.litellm_catalog import (  # noqa: PLC0415
+        lookup_litellm_info,
+    )
+
+    found = lookup_litellm_info(model_id, allow_fetch=False)
+    if found is None:
+        return None
+    info = found[1]
+    inp, out = info.get("input_cost_per_token"), info.get("output_cost_per_token")
+    if isinstance(inp, bool) or isinstance(out, bool):
+        return None
+    if not (isinstance(inp, int | float) and isinstance(out, int | float)):
+        return None
+    return inp * 1_000_000, out * 1_000_000
 
 
 def _estimate_cost_usd(model_id: str, input_tokens: int, output_tokens: int) -> float:
     """Best-effort cost estimate when the LM doesn't report one.
 
-    Substring-matches the model id against ``_PRICE_TABLE_PER_M``;
-    returns 0.0 when nothing matches (no false-precision number).
+    Prices the tokens at the model's list price (:func:`_price_table_match`);
+    returns 0.0 when the model has none (no false-precision number).
     """
 
     match = _price_table_match(model_id)

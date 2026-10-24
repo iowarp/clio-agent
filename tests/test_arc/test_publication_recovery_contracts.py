@@ -259,7 +259,6 @@ async def test_publication_retry_preserves_usage_after_lost_flush_and_never_repl
     monkeypatch.setattr(
         turn_finalize, "publish_turn_settled_status", lambda *_args, **_kwargs: None
     )
-    monkeypatch.setattr(turn_finalize, "_runtime_active_agent_blueprint_id", lambda *_args: "main")
     for target in (
         "clio_agent.gact.spotter_watcher.on_turn_finalized",
         "clio_agent.gact.hooks.stop_loop.dispatch_stop_at_finalize",
@@ -296,6 +295,8 @@ async def test_publication_retry_preserves_usage_after_lost_flush_and_never_repl
             cancelled_turn=False,
             publication_steps=set(),
             publication_usage=None,
+            publication_model_usage=None,
+            agent_runtime={},
             tools_called=[{"name": "shell.bash"}],
             pred=None,
             answer_text="Done",

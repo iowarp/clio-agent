@@ -426,6 +426,9 @@ class HookDecision:
     llm_response_present: bool = False
     model_override: str = ""
     request_patch: Mapping[str, Any] | None = None
+    # Answer-hook outputs: a line shown under the answer, and a pass/fail check.
+    note: str = ""
+    check: Mapping[str, Any] | None = None
 
 
 def parse_hook_output(
@@ -477,11 +480,13 @@ def parse_hook_output(
         modify_input=modify_input,
         synthesize_result=synthesize_result,
         synthesize_present=synthesize_present,
-        updated_output=str(raw.get("updatedToolOutput") or ""),
+        updated_output=str(raw.get("updatedToolOutput") or raw.get("updatedAnswer") or ""),
         llm_response=llm_response,
         llm_response_present=llm_response_present,
         model_override=model_override,
         request_patch=request_patch,
+        note=str(raw.get("note") or ""),
+        check=raw.get("check") if isinstance(raw.get("check"), Mapping) else None,
     )
 
 
@@ -503,6 +508,10 @@ class HookOutcome:
     llm_response_present: bool = False
     model_override: str = ""
     request_patch: Mapping[str, Any] | None = None
+    # Answer-hook outputs in hook order, each with the hook that gave it.
+    notes: list[dict[str, str]] = field(default_factory=list)
+    checks: list[dict[str, Any]] = field(default_factory=list)
+    updated_output_hook: str = ""
 
     @property
     def denied(self) -> bool:
@@ -605,9 +614,20 @@ class HookOutcome:
                     hook_id=winning[0].hook_id,
                     decision="synthesize",
                 )
+        outcome.notes = [{"hook_id": d.hook_id, "text": d.note} for d in decisions if d.note]
+        outcome.checks = [
+            {
+                "hook_id": d.hook_id,
+                "passed": bool(d.check.get("passed")),
+                "text": str(d.check.get("text") or ""),
+            }
+            for d in decisions
+            if d.check is not None
+        ]
         rewrites = [d for d in decisions if d.updated_output]
         if rewrites:
             outcome.updated_output = rewrites[0].updated_output
+            outcome.updated_output_hook = rewrites[0].hook_id
             if len(rewrites) > 1:
                 record_hook_reason(
                     "hook_conflicting_intercept",

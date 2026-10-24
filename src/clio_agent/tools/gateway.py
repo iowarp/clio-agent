@@ -3,7 +3,8 @@
 The gateway composes tool servers under namespaced prefixes
 (``<namespace>_<tool>``). Core ships only the universal in-process built-ins
 (``fs``/``shell``); every domain/case tool is a **declared MCP server** that the
-active blueprint/pack brings in (see ``tools/mcp_config.py``). ``build_gateway``
+session's resolved plugins bring in (``mcp.json``) or the user declares in
+``mcp.yaml`` (see ``tools/mcp_config.py``). ``build_gateway``
 proxy-mounts those declared servers next to the built-ins, and
 ``build_tool_catalog`` derives the tool catalog from the connected namespaces
 merged with the static built-in entries.
@@ -11,7 +12,7 @@ merged with the static built-in entries.
 Usage:
     >>> from clio_agent.tools.gateway import build_gateway
     >>> from clio_agent.tools.mcp_config import load_mcp_servers
-    >>> gw = build_gateway(load_mcp_servers(pack_servers=...))
+    >>> gw = build_gateway(load_mcp_servers(plugin_servers=...))
     >>> from fastmcp import Client
     >>> async with Client(gw) as client:
     ...     tools = await client.list_tools()
@@ -134,7 +135,11 @@ def _proxy_for_spec(
     from clio_agent.tools.mcp_runtime import make_mcp_client  # noqa: PLC0415
 
     base_backend = make_mcp_client(
-        transport, handlers=handlers, capabilities=capabilities, client_cls=ProxyClient
+        transport,
+        handlers=handlers,
+        capabilities=capabilities,
+        client_cls=ProxyClient,
+        list_changed_namespace=spec.name,
     )
 
     def _client_factory() -> Any:
@@ -146,8 +151,8 @@ def _proxy_for_spec(
         # MODERN front's mirror returns here, since our front (Client(proxy)
         # in mcp_executor.py) is always modern/in-process/instant --
         # fabricates a DiscoverResult locally and never contacts the peer. A
-        # genuinely legacy-only backend (fastmcp 3.4.7 in an agent-blueprint's
-        # own venv, e.g. spotter-ai/phenotype) then never gets the
+        # genuinely legacy-only backend (fastmcp 3.4.7 in a plugin server's
+        # own venv, e.g. the spotter plugin's server) then never gets the
         # `initialize` its session state machine requires first, so it
         # rejects every later request forever -- deterministic, live-
         # reproduced (#1206), not a timing race. Mirroring "legacy" is kept
@@ -686,7 +691,7 @@ def build_tool_catalog(
     Args:
         declared_gateway: A gateway whose tools should be enumerated. When
             ``None``, the catalog equals the static catalog (a copy).
-        experts: Loaded pack experts (objects with ``id``, ``tools``, optional
+        experts: Agent definitions (objects with ``id``, ``tools``, optional
             ``metadata``) used to derive declared-tool visibility.
         static_catalog: The base catalog to merge onto. Defaults to ``TOOL_CATALOG``.
 

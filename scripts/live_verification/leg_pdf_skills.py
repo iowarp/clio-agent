@@ -1,15 +1,14 @@
 #!/usr/bin/env python3
-"""Live PDF-skill acceptance: @-referenced and attached PDFs, three agents.
+"""Live PDF-skill acceptance: @-referenced and attached PDFs, two agents.
 
-Proves the ``work-with-pdfs`` skill end to end on a real model, on three
-agents:
+Proves the ``work-with-pdfs`` skill end to end on a real model, on two
+agents from the default marketplace:
 
-* ``builtin-main``: what a session runs when no Agent Blueprint is active (a
-  fresh deployment's new session); CLIO's code-shipped main declares the
-  built-in ``work-with-pdfs`` skill and ``view_image``.
-* ``base-agent``: the marketplace default agent; CLIO auto-declares its
-  built-in skills on this default blueprint's root expert.
-* ``factorio-flat``: a marketplace pack that ships its own copy of the skill.
+* ``clio/standard``: what a new session runs by default; it carries the
+  ``documents`` pack, whose ``pdf`` plugin brings the ``work-with-pdfs`` skill
+  and ``view_pdf``, and the ``workspace`` plugin's ``view_image``.
+* ``clio/factorio``: a domain agent built on the science agent, so the
+  same skill reaches it through the same plugins.
 
 Each is driven with the PDF supplied two ways, with exactly the wire shapes
 gact-tui sends:
@@ -37,8 +36,8 @@ Nothing is steered: the prompt is ordinary user wording and never names the
 skill or its tools.
 
 ``--plumbing-only`` exercises everything except the model: server boot,
-fixture generation, pack install/activation, reference listing, upload
-custody, and resolved agent tools.
+fixture generation, agent selection, reference listing, upload custody, and
+resolved agent tools.
 
 Run under a private real CTE daemon (never the ARC local store)::
 
@@ -62,12 +61,11 @@ from typing import Any, Callable
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import _common as common  # noqa: E402
 
-DEFAULT_MARKETPLACE = common.REPO / "external" / "clio-agent-marketplace"
 PROMPT = (
     'What does this PDF report? Quote the sentence that starts with "Finding:" '
     "exactly, and tell me what the label on the second page says."
 )
-AGENTS = ("builtin-main", "base-agent", "factorio-flat")
+AGENTS = ("clio/standard", "clio/factorio")
 DELIVERIES = ("at_reference", "attachment")
 UPLOAD_CHUNK_BYTES = 256 * 1024
 
@@ -305,13 +303,12 @@ def run_cell(
     root: Path,
     agent: str,
     delivery: str,
-    marketplace: Path,
     plumbing_only: bool,
     turn_timeout_s: float,
 ) -> dict[str, Any]:
     """Drive one (agent, delivery) cell in its own workspace."""
 
-    name = f"{agent}-{delivery}"
+    name = f"{common.agent_id_of(agent)}-{delivery}"
     ws_dir = root / name
     if ws_dir.exists():
         shutil.rmtree(ws_dir)
@@ -328,9 +325,7 @@ def run_cell(
             "image_canary": fixture.image_canary,
         },
     }
-    if agent != "builtin-main":
-        installed = common.install_blueprint(call, marketplace / agent, wsid)
-        common.activate_blueprint(call, sid, str(installed.get("id") or ""))
+    common.use_agent(call, sid, agent)
     session = call("GET", f"/v1/sessions/{sid}")
     cell["session_metadata"] = session.get("metadata") or {}
     cell["resolved_agent_tools"] = common.resolved_agent_tools(call, sid, workspace_id=wsid)
@@ -359,9 +354,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--port", type=int, default=18997)
     parser.add_argument("--provider", default="claude_code")
     parser.add_argument("--model", default="claude-sonnet-5")
-    parser.add_argument("--marketplace", default=str(DEFAULT_MARKETPLACE))
     parser.add_argument("--root", default=str(common.OUT_ROOT / "pdf-skills"))
-    parser.add_argument("--agents", default=",".join(AGENTS))
+    parser.add_argument("--agents", default=",".join(AGENTS), help="agent refs, comma-separated")
     parser.add_argument("--deliveries", default=",".join(DELIVERIES))
     parser.add_argument("--turn-timeout-s", type=float, default=1200.0)
     parser.add_argument("--plumbing-only", action="store_true")
@@ -373,7 +367,6 @@ def main() -> int:
     root = Path(args.root).resolve()
     root.mkdir(parents=True, exist_ok=True)
     out_path = root / "verdict.json"
-    marketplace = Path(args.marketplace).resolve()
     agents = [a for a in args.agents.split(",") if a]
     deliveries = [d for d in args.deliveries.split(",") if d]
     verdict: dict[str, Any] = {
@@ -381,7 +374,6 @@ def main() -> int:
         "prompt": PROMPT,
         "provider": {"provider": args.provider, "model": args.model},
         "plumbing_only": args.plumbing_only,
-        "marketplace": str(marketplace),
         "cells": [],
     }
     if not common.port_is_free(args.port):
@@ -418,13 +410,12 @@ def main() -> int:
                         root,
                         agent,
                         delivery,
-                        marketplace,
                         args.plumbing_only,
                         args.turn_timeout_s,
                     )
                 except Exception as exc:  # noqa: BLE001 - recorded per cell, run continues
                     cell = {
-                        "cell": f"{agent}-{delivery}",
+                        "cell": f"{common.agent_id_of(agent)}-{delivery}",
                         "pass": False,
                         "error": f"{type(exc).__name__}: {exc}",
                     }

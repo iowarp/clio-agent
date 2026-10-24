@@ -60,7 +60,7 @@ pytestmark = pytest.mark.usefixtures("host_agent_executor")
 
 _PLAYBOOK_JSON = (
     '[{"name": "Triage", "tools_allowed": ["fs_read_file"]}, '
-    '{"name": "Fix", "tools_allowed": ["fs_apply_edit_write"]}, '
+    '{"name": "Fix", "tools_allowed": ["fs_write_file"]}, '
     '{"name": "Verify", "tools_allowed": ["shell_bash"]}]'
 )
 
@@ -297,7 +297,7 @@ def test_active_step_narrowing_follows_advancement(tmp_path: Path) -> None:
     path is step-aware, not frozen at step 0 — the P1.6b residual)."""
     steps = (
         PlaybookStep(name="Triage", tools_allowed=("fs_read_file",)),
-        PlaybookStep(name="Fix", tools_allowed=("fs_apply_edit_write",)),
+        PlaybookStep(name="Fix", tools_allowed=("fs_write_file",)),
     )
     app, sid = _exec_session(tmp_path, steps=steps)
     # step 0: allowlist is the Triage step's
@@ -305,7 +305,7 @@ def test_active_step_narrowing_follows_advancement(tmp_path: Path) -> None:
     # advance to step 1 (one completed todo)
     assert advance_execution_step(app, sid, completed_todos=1) == 1
     # narrowing now follows the Fix step
-    assert active_playbook_allowed_tools(app.state.sessions.get(sid)) == ("fs_apply_edit_write",)
+    assert active_playbook_allowed_tools(app.state.sessions.get(sid)) == ("fs_write_file",)
 
 
 def test_step_advances_on_write_todos_completed_count(tmp_path: Path) -> None:

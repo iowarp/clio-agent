@@ -78,6 +78,7 @@ def test_probe_disk_only_default_is_ready(tmp_path):
             file_capacity="50GB",
             ram_budget="1GB",
             metadata_log="m",
+            indexer="",
         ),
         encoding="utf-8",
     )
@@ -282,3 +283,30 @@ def test_attach_row_wired_into_the_clio_core_aggregate(monkeypatch):
     finally:
         clio_core_attach.reset_attach_state()
     assert "clio_core_attach" in names
+
+
+def test_search_row_is_red_with_a_remedy_when_no_indexer_is_composed(tmp_path):
+    from clio_agent.arc.clio_core_indexer import indexer_block
+    from clio_agent.runtime.clio_core_health import probe_clio_core_search_health
+
+    rendered = clio_core_config._DEFAULT_CTE_CONFIG_TEMPLATE.format(
+        core_port=9413,
+        conf_dir="c",
+        file_tier="f",
+        file_capacity="50GB",
+        ram_budget="1GB",
+        metadata_log="m",
+        indexer="{indexer}",
+    )
+    bare = tmp_path / "bare.yaml"
+    bare.write_text(rendered.format(indexer=""), encoding="utf-8")
+    rows = probe_clio_core_search_health(env={"CLIO_ARC_STORE_CONFIG": str(bare)})
+    assert [(row.name, row.state, row.required) for row in rows] == [
+        ("clio_core_search", IntegrationState.UNAVAILABLE, True)
+    ]
+    assert rows[0].details["reason"] == "clio_core_search_unavailable"
+    assert "clio_cte_indexer" in rows[0].next_action
+
+    seeded = tmp_path / "seeded.yaml"
+    seeded.write_text(rendered.format(indexer=indexer_block("i.log")), encoding="utf-8")
+    assert probe_clio_core_search_health(env={"CLIO_ARC_STORE_CONFIG": str(seeded)}) == []

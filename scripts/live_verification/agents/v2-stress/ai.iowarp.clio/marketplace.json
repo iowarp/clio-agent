@@ -1,0 +1,4 @@
+{
+  "name": "lv-v2-stress",
+  "description": "Live-verification stress agent: the web MCP server and the synthetic v2 exerciser in one turn."
+}

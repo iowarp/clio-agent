@@ -1,7 +1,7 @@
 """In-memory ledger retention bounds for the GACT server (#770 Wave-C C3).
 
 Several of the server's in-memory ledgers (``command_audit``,
-``memory_tool_audit``, ``context_frames``, ``pending_diffs``, ``permissions``,
+``session_recall_audit``, ``context_frames``, ``file_changes``, ``permissions``,
 ``turn_attempts``, ``shared_tokens``) were append-only and grew unbounded for
 the life of the process. This module gives each a *bound* plus a **structured
 eviction reason** so a drop is never silent -- mirroring the ``stream_fallback``
@@ -12,7 +12,8 @@ Two eviction shapes are supported:
 
 * **FIFO** (``is_terminal is None``): the oldest entry is evicted first once the
   ledger exceeds ``max_entries``. Used for pure audit trails where every row is
-  equal (``command_audit``, ``memory_tool_audit``, per-session ``context_frames``).
+  equal (``command_audit``, ``session_recall_audit``, per-session ``context_frames`` and
+  ``file_changes``).
 * **terminal-first** (``is_terminal`` set): while the ledger exceeds the *soft*
   ``max_entries`` the oldest **terminal** row (resolved / applied / rejected /
   expired) is evicted, so a still-*pending* row is preserved through a slow HITL
@@ -164,6 +165,17 @@ def _config_fallback(key: str, raw: Any, default: int, why: str) -> None:
     )
 
 
+def subscriber_queue_capacity() -> int:
+    """Events one live SSE subscriber may have waiting before the bus drops them.
+
+    A drop is never silent: the subscriber reads a ``stream.gap`` next and the
+    client reconciles from the transcript (``clio_agent.gact.events``).
+    """
+    return _resolve_positive_int(
+        "gact.ledger_retention.subscriber_queue.max", "CLIO_LEDGER_SUBSCRIBER_QUEUE_MAX", 256
+    )
+
+
 def _resolve_positive_int(key: str, env: str, default: int) -> int:
     """Resolve a positive-int retention bound (config file → env → default).
 
@@ -194,14 +206,6 @@ def _terminal_permission(row: Any) -> bool:
     if not isinstance(row, Mapping):
         return False
     return str(row.get("status") or "pending") not in {"pending", ""}
-
-
-def _terminal_diff(row: Any) -> bool:
-    """A pending-diff row is terminal once applied / rejected / failed."""
-
-    if not isinstance(row, Mapping):
-        return False
-    return str(row.get("status") or "pending") in {"applied", "rejected", "apply_failed"}
 
 
 def _terminal_turn_attempt(row: Any) -> bool:
@@ -254,10 +258,10 @@ def build_ledger_bounds() -> dict[str, LedgerBound]:
                 "gact.ledger_retention.command_audit.max", "CLIO_LEDGER_COMMAND_AUDIT_MAX", 2000
             )
         ),
-        "memory_tool_audit": LedgerBound(
+        "session_recall_audit": LedgerBound(
             max_entries=_resolve_positive_int(
-                "gact.ledger_retention.memory_tool_audit.max",
-                "CLIO_LEDGER_MEMORY_TOOL_AUDIT_MAX",
+                "gact.ledger_retention.session_recall_audit.max",
+                "CLIO_LEDGER_SESSION_RECALL_AUDIT_MAX",
                 2000,
             )
         ),
@@ -266,14 +270,10 @@ def build_ledger_bounds() -> dict[str, LedgerBound]:
                 "gact.ledger_retention.context_frames.max", "CLIO_LEDGER_CONTEXT_FRAMES_MAX", 200
             )
         ),
-        "pending_diffs": LedgerBound(
+        "file_changes": LedgerBound(
             max_entries=_resolve_positive_int(
-                "gact.ledger_retention.pending_diffs.max", "CLIO_LEDGER_PENDING_DIFFS_MAX", 500
-            ),
-            hard_cap=_resolve_positive_int(
-                "gact.ledger_retention.pending_diffs.hard", "CLIO_LEDGER_PENDING_DIFFS_HARD", 1000
-            ),
-            is_terminal=_terminal_diff,
+                "gact.ledger_retention.file_changes.max", "CLIO_LEDGER_FILE_CHANGES_MAX", 500
+            )
         ),
         "permissions": LedgerBound(
             max_entries=_resolve_positive_int(
@@ -347,7 +347,7 @@ _GUARD_INSTALL_LOCK = threading.Lock()
 def ledger_guard(app: "FastAPI") -> threading.RLock:
     """The one re-entrant lock every in-memory list ledger mutation holds (#1334).
 
-    The list ledgers (``pending_diffs``, ``context_frames``, ...) are plain lists on
+    The list ledgers (``file_changes``, ``context_frames``, ...) are plain lists on
     ``app.state``, appended by turn finalize and scanned / popped by the diff and
     context routes. That was race-free only while finalize ran on the loop thread;
     finalize now runs on the turn executor, so every append, scan-and-pop

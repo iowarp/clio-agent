@@ -123,6 +123,19 @@ class ConfinedSpawn:
     popen_kwargs: dict[str, Any]
     result: SandboxResult
 
+    def release(self) -> None:
+        """Close this spawn's per-child egress channel once its child has exited (idempotent).
+
+        Each active spawn opens a loopback listener and an accept thread. A one-shot child (a
+        shell command, a document helper) releases them when it exits, or they pile up to the
+        channel cap and every later child's egress loses its attribution.
+        """
+        child = str(self.result.details.get("net_child_id") or "")
+        if child:
+            from clio_agent.runtime.net_chokepoint import close_child_channel  # noqa: PLC0415
+
+            close_child_channel(child)
+
 
 def _sandbox_enabled(env: Optional[Mapping[str, str]] = None) -> bool:
     """Whether confinement resolution is enabled (config ``sandbox.enabled``).

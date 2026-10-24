@@ -233,7 +233,7 @@ def register_sessions_routes(app: FastAPI, deps: "GactDeps") -> None:
                 ).model_dump(exclude_none=True),
             ) from exc
         await run_off_loop(deps.delete_session_messages, app, sid)  # clio-core first: 503 keeps it
-        existed = app.state.sessions.delete(sid)
+        existed = await run_off_loop(app.state.sessions.delete, sid)  # trusted: off-loop only
         if not existed:
             raise HTTPException(
                 status_code=404,

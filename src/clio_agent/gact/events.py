@@ -120,6 +120,23 @@ class Event:
         return envelope
 
 
+def queue_gap_event(session_id: str) -> Event:
+    """The ``stream.gap`` a subscriber gets after its queue dropped events.
+
+    A connection-local marker (id 0, like the stream preamble), not session
+    timeline: the client answers it by reconciling from the persisted
+    transcript, which holds every message part the drop cost it (#1214).
+    """
+    gap = Event(
+        type="stream.gap",
+        session_id=session_id,
+        payload={"reason": "subscriber_queue_full"},
+        transient=True,
+    )
+    gap.id = 0
+    return gap
+
+
 class EventBus:
     """Per-session asyncio.Queue fan-out.
 
@@ -142,14 +159,23 @@ class EventBus:
     replay history and run inline.
     """
 
-    def __init__(self, *, queue_capacity: int = 256, history_per_session: int = 256) -> None:
+    def __init__(
+        self, *, queue_capacity: int | None = None, history_per_session: int = 256
+    ) -> None:
         from uuid import uuid4
 
+        from clio_agent.gact.runtime.retention import subscriber_queue_capacity
+
         self.task_cursor_epoch = uuid4().hex
-        self._capacity = queue_capacity
+        # Unset: the configured bound (``gact.ledger_retention.subscriber_queue.max``).
+        self._capacity = subscriber_queue_capacity() if queue_capacity is None else queue_capacity
         self._history_cap = history_per_session
         # session_id -> list of subscriber queues
         self._subs: dict[str, list[asyncio.Queue[Event]]] = defaultdict(list)
+        # Subscriber queues (by id) that missed events since their reader last
+        # looked: the reader yields one ``stream.gap`` so the client reconciles
+        # from the persisted transcript instead of silently missing them.
+        self._gapped: set[int] = set()
         # session_id -> bounded replay log. New subscribers receive
         # ``history[last_event_id + 1:]`` on connect so they don't
         # miss events published before they arrived (SPEC §7.3 replay).
@@ -193,30 +219,14 @@ class EventBus:
 
         Drops events into live queues when a subscriber's queue is
         full rather than blocking the publisher — slow consumers
-        shouldn't stall the agent's turn loop. This is silent ON THE
-        WIRE: no gap-marker SSE event is emitted to the client (an
-        earlier version of this docstring claimed a ``server.disposed``-
-        equivalent gap event fired here; no such event was ever emitted
-        — iowarp/clio-agent#1214), so an attached client reading its
-        live stream simply never sees the dropped event.
-
-        ``Last-Event-ID`` resume does NOT reliably recover a drop either
-        (a second docstring inaccuracy this corrects — #1214 review): resume
-        replays ``history[id > last_event_id]`` — everything STRICTLY NEWER
-        than the client's own watermark. A client that stays connected and
-        keeps receiving LATER events after a drop never reconnects at all
-        (there is nothing to resume), and a client that DOES reconnect has
-        by then already advanced its watermark past the dropped id via
-        those later events — so the hole sits BELOW the watermark, exactly
-        where resume cannot look. Verified: delivered ``[2, 5]`` (3 and 4
-        dropped mid-stream), resume from ``last_event_id=5`` yields only
-        ``[6, ...]`` — 3 and 4 are gone for good via this path. The one
-        real recovery channel is ``GET /v1/sessions/{sid}/messages``, and
-        only for MESSAGE PARTS: the persisted transcript/message store
-        records parts independently of whether their SSE delivery
-        succeeded, so a full re-fetch shows them regardless. Anything NOT
-        projected into that message/parts model — ``tool.call.*``,
-        semantic/trace events — has NO recovery path at all once dropped.
+        shouldn't stall the agent's turn loop. ``Last-Event-ID`` resume
+        cannot recover such a drop (the hole sits below the client's own
+        watermark — #1214), so the subscriber that lost events gets one
+        ``stream.gap`` (reason ``subscriber_queue_full``) ahead of the next
+        event it reads, and the client reconciles from the persisted
+        transcript (``GET /v1/sessions/{sid}/messages``), which holds every
+        message part regardless of SSE delivery. Events not projected into
+        that model (``tool.call.*``, semantic/trace events) stay lost.
 
         Every drop IS accounted for: a per-session counter
         (:meth:`dropped_total`), a decade-boundary-throttled
@@ -304,6 +314,7 @@ class EventBus:
                     q.put_nowait(event)
                 except asyncio.QueueFull:
                     self._record_drop(subscriber_session, event.type)
+                    self._gapped.add(id(q))
                     dropped_this_delivery = True
             if not dropped_this_delivery:
                 self._note_delivery_recovered(subscriber_session)
@@ -457,10 +468,14 @@ class EventBus:
                         replayed_max = ev.id
             while True:
                 event = await q.get()
+                if id(q) in self._gapped:
+                    self._gapped.discard(id(q))
+                    yield queue_gap_event(session_id)
                 if event.id <= replayed_max:
                     continue
                 yield event
         finally:
+            self._gapped.discard(id(q))
             try:
                 self._subs[session_id].remove(q)
             except ValueError:

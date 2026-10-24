@@ -247,7 +247,6 @@ async def test_over_long_command_gets_actionable_write_a_file_message(workspace:
     assert error["details"]["max_chars"] == limits.max_command_chars
     assert error["details"]["received_chars"] == len(command)
     assert error["details"]["next_action"]
-    assert "fs_propose_edit only stages" in error["details"]["next_action"]
 
 
 @pytest.mark.asyncio

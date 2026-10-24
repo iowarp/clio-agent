@@ -41,8 +41,8 @@ export const faq: readonly { q: string; a: string }[] = [
 		a: 'Reading is always allowed. Anything that writes, runs, or reaches the network asks you first unless you have allowed it for the session or workspace. File access is limited to your workspace and temporary files, and an optional OS-level sandbox can enforce that.',
 	},
 	{
-		q: 'What is an agent blueprint?',
-		a: 'A blueprint is a folder of Markdown that defines an agent: its instructions, the experts it can call, and its tools. You can install blueprints from the marketplace, write your own, and switch blueprints per session.',
+		q: 'What is an agent?',
+		a: 'An agent is a name, a role, and a set of plugins. Plugins bring its tools, skills, subagents, and prompt guidance. You install agents and plugins from marketplaces, choose an agent for each session, add or remove plugins as you work, and save the result as your own agent.',
 	},
 	{
 		q: 'How mature is it?',

@@ -1,4 +1,4 @@
-"""A ``dspy.BestOfN`` / ``Refine`` agent keeps one conversation line across turns.
+"""A ``dspy.BestOfN`` / ``Refine`` spawn strategy keeps one conversation line across turns.
 
 Each try forks from the agent's base scope: it starts from the conversation as it
 stands (earlier turns, and the earlier winners), never from its own line of an
@@ -126,19 +126,11 @@ class _Inner(dspy.Module):
 
 
 def _call(label: str, **inner: Any) -> None:
-    wrapped = mv.wrap_module_variant(
-        _Inner(label, **inner),
-        types.SimpleNamespace(
-            id=_SCOPE,
-            module={
-                "kind": "predict",
-                "variant": "best_of_n",
-                "n": 2,
-                "threshold": 1.0,
-                "reward": {"instructions": "Score it.", "inputs": ["question"]},
-            },
-        ),
+    strategy = mv.strategy_module(
+        {"variant": "best_of_n", "n": 2, "threshold": 1.0, "rubric": "Score it."},
+        agent_id=_SCOPE,
     )
+    wrapped = mv.wrap_strategy(_Inner(label, **inner), _SCOPE, strategy)
     lm = DummyLM([{"answer": "a0"}, {"score": "0.1"}, {"answer": "a1"}, {"score": "0.9"}])
     with dspy.context(lm=lm):
         wrapped(question="q")

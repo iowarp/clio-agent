@@ -48,8 +48,8 @@ This change introduces no mailbox, task registry, worker or history store.
   a linked continuation in that stable session, preserving context and accepted
   operations; the historical handle/result never changes identity.
 
-The shipped `memory_search_sessions`, `memory_read_session_summary` and
-`memory_read_context_frame` aliases delegate for one compatibility cycle. New
+The shipped `session_search`, `session_read_summary` and
+`session_read_context_frame` aliases delegate for one compatibility cycle. New
 default root/child catalogs describe Tasks, not a separate memory tool family.
 The HTTP compatibility routes use the same read implementation and authorization.
 

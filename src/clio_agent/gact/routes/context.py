@@ -258,7 +258,7 @@ def register_context_routes(app: FastAPI, deps: "GactDeps") -> None:
         return SessionContextPolicy(
             session_id=sid,
             cross_session_read_available=True,
-            cross_session_read_endpoint=f"/v1/sessions/{sid}/memory/tools/search-sessions",
+            cross_session_read_endpoint=f"/v1/sessions/{sid}/session-recall/search",
             notes=[
                 "Conversation retrieval and writes are scoped to the active session.",
                 "Cross-session memory tools require explicit user intent or policy.",

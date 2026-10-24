@@ -27,7 +27,7 @@ from clio_agent.gact.types import AgentDef
 
 pytestmark = pytest.mark.usefixtures("host_agent_executor", "native_builtin_lifespan")
 
-_AGENT = AgentDef(id="main", source="expert_pack", title="Main", metadata={})
+_AGENT = AgentDef(id="main", source="plugin", title="Main", metadata={})
 
 
 def _run(app: Any, sid: str, fn: Callable[[], Any], *, thought: str = "") -> Any:

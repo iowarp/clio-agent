@@ -203,3 +203,26 @@ def configure_bearer_auth(app: FastAPI) -> None:
     app.add_middleware(OriginGuardMiddleware, state=app.state)
     if token is not None:
         app.add_middleware(BearerAuthMiddleware, token=token, state=app.state)
+
+
+class OpenBindRefused(SystemExit):
+    """``serve`` was asked to listen beyond loopback with no bearer token configured."""
+
+
+def refuse_open_bind(host: str) -> None:
+    """Refuse to serve a non-loopback address without a bearer token.
+
+    Loopback peers are admitted without a token, and the Host check only stops
+    browsers. Without a token, a server bound to ``0.0.0.0`` would hand anyone on
+    the network the install, trust and approval routes, so it does not start.
+    Set ``CLIO_GACT_BEARER_TOKEN`` (or ``gact.auth.bearer_token``) to serve one.
+    """
+
+    text = host.strip().strip("[]")
+    if text == "localhost" or is_loopback_address(text) or configured_bearer_token():
+        return
+    raise OpenBindRefused(
+        f"refusing to serve on {host}: no bearer token is configured, so anyone who can "
+        "reach this address could install and trust plugins. Set CLIO_GACT_BEARER_TOKEN "
+        "or bind 127.0.0.1."
+    )

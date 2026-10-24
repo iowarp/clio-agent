@@ -7,6 +7,7 @@ import threading
 from pathlib import Path
 from typing import Any
 
+import pytest
 import yaml
 from fastapi.testclient import TestClient
 
@@ -238,7 +239,7 @@ def test_unreachable_configuration_is_saved_and_remains_retryable_after_restart(
         assert "service offline" in status.json()["error"]
 
 
-def test_remove_user_override_restores_pack_local_fallback(
+def test_remove_user_override_restores_plugin_local_fallback(
     tmp_path: Path,
     monkeypatch,
 ) -> None:
@@ -267,9 +268,9 @@ def test_remove_user_override_restores_pack_local_fallback(
         home=tmp_path,
         cwd=tmp_path / "workspace",
         env={"CLIO_USER_DIR": str(user_dir)},
-        pack_servers={"base": {"web": "clio-kit mcp-server web"}},
+        plugin_servers={"web": {"web": {"command": "clio-kit", "args": ["mcp-server", "web"]}}},
     )
-    assert specs["web"].source == "pack:base"
+    assert specs["web"].source == "plugin:web"
     assert specs["web"].command == "clio-kit"
     assert specs["web"].args == ("mcp-server", "web")
 
@@ -352,3 +353,33 @@ def test_web_configuration_updates_document_conversion_live_and_remove_restores_
         assert app.state.resource_converter_factory.capabilities()[0]["endpoint"] == (
             "http://local.example:8089"
         )
+
+
+@pytest.mark.parametrize(
+    ("command", "retries"), [("uvx", 12), ("/usr/bin/npx", 12), ("python", None)]
+)
+def test_a_first_start_launcher_gets_time_to_prepare_its_server(
+    monkeypatch: pytest.MonkeyPatch, command: str, retries: int | None
+) -> None:
+    """``uvx git+...`` builds the server on its first start; the probe waits for it."""
+
+    from clio_agent.gact.routes import mcp_configuration
+    from clio_agent.tools import mcp_probe_hardening
+
+    seen: list[int | None] = []
+
+    class _Client:
+        async def __aenter__(self) -> None:
+            seen.append(mcp_probe_hardening._CURRENT_PROBE_TIMEOUT_RETRIES.get())
+            raise TimeoutError("Request 'server/discover' timed out")
+
+        async def __aexit__(self, *exc: object) -> None:
+            return None
+
+    monkeypatch.setattr(mcp_configuration, "transport_from_spec", lambda spec: object())
+    monkeypatch.setattr(mcp_configuration, "make_mcp_client", lambda *a, **k: _Client())
+    tools, detail = asyncio.run(
+        mcp_configuration._probe_user_mcp_server({"transport": "stdio", "command": command})
+    )
+    assert tools == [] and seen == [retries]
+    assert ("may still be preparing the server" in (detail or "")) is (retries is not None)

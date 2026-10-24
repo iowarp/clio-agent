@@ -1,6 +1,6 @@
 """Prepare a draft's workspace fleet without allocating a conversation.
 
-The selected default blueprint and always-load MCP services use the same
+The default agent's plugin MCP servers and always-load MCP services use the same
 workspace executor that a later session will use. Leaving the composer needs no
 session cleanup: the ordinary fleet idle reaper owns the warmed connections.
 """
@@ -15,7 +15,7 @@ from typing import Any, Literal, cast
 from clio_agent.gact import session_warmup
 from clio_agent.gact.runtime.globals import _gact_app_context
 from clio_agent.gact.warmup_revision import start_revision_warmup
-from clio_agent.tools.execution import tool_blueprint_context, tool_workspace_context
+from clio_agent.tools.execution import tool_server_set_context, tool_workspace_context
 from clio_agent.tools.workspace_root import canonical_workspace_root
 
 logger = logging.getLogger(__name__)
@@ -27,8 +27,8 @@ _lock = threading.Lock()
 def start_workspace_warmup(app: Any, root: str) -> WarmupStatus:
     """Start or join background preparation for a registered workspace root.
 
-    Uses the same persisted blueprint default as session creation. Concurrent
-    requests coalesce per app, canonical workspace root, and blueprint. No
+    Uses the same persisted default agent as session creation. Concurrent
+    requests coalesce per app, canonical workspace root, and server set. No
     session is created, selected, or used to attribute this preparation.
     """
     if not session_warmup.session_warmup_enabled():
@@ -39,15 +39,20 @@ def start_workspace_warmup(app: Any, root: str) -> WarmupStatus:
     root = canonical_workspace_root(root)
     if not root:
         return "unavailable"
-    blueprint_id = app.state.session_defaults.get().blueprint_id or ""
-    key = (id(app), root, blueprint_id)
+    from clio_agent.gact.agents.resolution import (  # noqa: PLC0415
+        agent_server_set,
+        default_agent_ref,
+    )
+
+    server_set = agent_server_set(app, default_agent_ref(app))
+    key = (id(app), root, server_set)
     with _lock:
         if key in _inflight:
             return "warming"
         _inflight.add(key)
     start_revision_warmup(
         app,
-        lambda: _warm_and_release(app, root, blueprint_id, key),
+        lambda: _warm_and_release(app, root, server_set, key),
         name="clio-workspace-warmup",
         aborted=lambda: _release(key),
     )
@@ -59,7 +64,7 @@ def _release(key: tuple[int, str, str]) -> None:
         _inflight.discard(key)
 
 
-def _warm_and_release(app: Any, root: str, blueprint_id: str, key: tuple[int, str, str]) -> None:
+def _warm_and_release(app: Any, root: str, server_set: str, key: tuple[int, str, str]) -> None:
     try:
         agent = app.state.agent
         lease = getattr(agent, "lease_workspace_fleet", None)
@@ -67,12 +72,12 @@ def _warm_and_release(app: Any, root: str, blueprint_id: str, key: tuple[int, st
             _gact_app_context(app),
             cast(AbstractContextManager[None], lease(root)) if callable(lease) else nullcontext(),
             tool_workspace_context(root),
-            tool_blueprint_context(blueprint_id),
+            tool_server_set_context(server_set),
         ):
             report = session_warmup.warm_session_servers(agent)
-        logger.info("workspace_warmup root=%s blueprint=%s servers=%s", root, blueprint_id, report)
+        logger.info("workspace_warmup root=%s server_set=%s servers=%s", root, server_set, report)
     except Exception:
         # Best-effort startup never blocks Send; the real turn retries failures.
-        logger.exception("workspace_warmup_failed root=%s blueprint=%s", root, blueprint_id)
+        logger.exception("workspace_warmup_failed root=%s server_set=%s", root, server_set)
     finally:
         _release(key)

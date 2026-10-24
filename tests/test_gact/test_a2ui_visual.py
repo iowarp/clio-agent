@@ -29,9 +29,9 @@ from clio_agent.gact.a2ui_visual import (
     VisualFeedbackError,
     decode_png,
 )
-from clio_agent.gact.agents.auto_tools import build_auto_react_tools
 from clio_agent.gact.agents.clio_react_record import result_part
-from clio_agent.gact.types import AgentDef
+from clio_agent.gact.agents.native_tool_registry import build_native_tools
+from clio_agent.gact.agents.resolution import session_agent_def
 from clio_agent.tools.execution import tool_workspace_context
 from tests.test_gact.test_a2ui_producer import _advertise_workspace_catalog, _session
 
@@ -186,14 +186,19 @@ def test_changed_state_requires_new_epoch_and_updated_renderer_can_catch_up() ->
 def test_capture_is_only_auto_attached_for_a_vision_capable_model(
     tmp_path: Path, monkeypatch: Any
 ) -> None:
-    _session(tmp_path, monkeypatch)
-    definition = AgentDef(
-        id="visual-main", title="CLIO", metadata={"definition_kind": "builtin_main"}
+    app, sid = _session(tmp_path, monkeypatch)
+    definition = session_agent_def(app, sid)
+    assert "capture_a2ui_surface" in definition.tools  # claimed by the visuals plugin
+    text_tools, _, text_withheld = build_native_tools(
+        definition, definition.tools, {}, supports_vision=False, a2ui_catalogs=True
     )
-    text_tools = build_auto_react_tools(definition, a2ui_producers=True, supports_vision=False)
-    image_tools = build_auto_react_tools(definition, a2ui_producers=True, supports_vision=True)
-    assert "capture_a2ui_surface" not in {tool.name for tool in text_tools}
-    assert "capture_a2ui_surface" in {tool.name for tool in image_tools}
+    image_tools, _, image_withheld = build_native_tools(
+        definition, definition.tools, {}, supports_vision=True, a2ui_catalogs=True
+    )
+    assert "capture_a2ui_surface" not in text_tools
+    assert text_withheld["capture_a2ui_surface"] == "model_lacks_image_input"
+    assert "capture_a2ui_surface" in image_tools
+    assert "capture_a2ui_surface" not in image_withheld
 
 
 def test_unready_view_never_returns_previous_pixels() -> None:

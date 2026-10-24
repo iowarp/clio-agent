@@ -10,7 +10,9 @@ Live symptom (fully reproduced, twice): calling ``spotter_list_runs`` /
 phenotype -- legacy fastmcp 3.4.7 stdio backends invoked by a direct exe
 path) failed with ``fastmcp.exceptions.ToolError: Unknown tool: 'list_runs'``
 even though the backend genuinely has that tool (proven live via a standalone
-probe) and clio's own tool catalog correctly lists the prefixed name.
+probe) and clio's own tool catalog correctly lists the prefixed name. (Both
+tools and the phenotype plugin have since left the marketplace; the stub
+backend below reproduces the protocol shape without them.)
 
 Root cause #1, traced through the REAL dispatch path
 (``AsyncMCPToolExecutor._route`` / ``_connect_namespace`` in

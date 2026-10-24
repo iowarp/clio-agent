@@ -86,8 +86,7 @@ _ALLOWED_RENDER_PLACEHOLDERS = {
     "memory.policy_summary",
     "permissions.policy_summary",
     "provider.current",
-    "session.active_pack",
-    "session.active_agent_blueprint",
+    "session.agent",
 }
 
 

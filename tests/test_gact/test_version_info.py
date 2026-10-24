@@ -13,24 +13,34 @@ from __future__ import annotations
 import platform
 import subprocess
 from pathlib import Path
-from typing import Any
+from types import SimpleNamespace
+from typing import Any, Callable
 
 import pytest
 from fastapi.testclient import TestClient
 
 from clio_agent import __version__
-from clio_agent.gact import version_info as version_info_module
 from clio_agent.gact.app import build_app
 from clio_agent.gact.version_info import build_version_info
 
 _DEFAULT_ROW = {
-    "id": "src_default",
+    "id": "clio",
     "source": "https://github.com/iowarp/clio-agent-marketplace.git",
     "ref": "main",
     "commit": "abc123installedcommit",
-    "pinned_commit": "def456pinnedcommit",
-    "is_default": True,
+    "pinned": True,
 }
+
+
+def _store_marketplaces(
+    monkeypatch: pytest.MonkeyPatch, read: Callable[[], dict[str, dict[str, Any]]]
+) -> None:
+    """Serve ``read`` as the plugin store's marketplace rows to ``version_info``."""
+
+    store = SimpleNamespace(marketplaces=read)
+    monkeypatch.setattr(
+        "clio_agent.plugins.service.PluginService", lambda: SimpleNamespace(store=store)
+    )
 
 
 @pytest.fixture()
@@ -54,10 +64,10 @@ def test_capabilities_exposes_versions_block(client: TestClient) -> None:
     assert versions["marketplace"] is None
 
 
-def test_marketplace_version_reflects_installed_source_row(monkeypatch) -> None:
-    """The default (``is_default``) source row populates ``marketplace``."""
+def test_marketplace_version_reflects_the_default_marketplace_row(monkeypatch) -> None:
+    """The plugin store's default marketplace (``clio``) row populates ``marketplace``."""
 
-    monkeypatch.setattr(version_info_module, "load_agent_blueprint_sources", lambda: [_DEFAULT_ROW])
+    _store_marketplaces(monkeypatch, lambda: {"clio": _DEFAULT_ROW})
 
     info = build_version_info()
 
@@ -65,15 +75,27 @@ def test_marketplace_version_reflects_installed_source_row(monkeypatch) -> None:
     assert info.marketplace.source == _DEFAULT_ROW["source"]
     assert info.marketplace.ref == "main"
     assert info.marketplace.installed_commit == "abc123installedcommit"
-    assert info.marketplace.pinned_commit == "def456pinnedcommit"
-    assert info.marketplace.source_id == "src_default"
+    assert info.marketplace.pinned_commit == "abc123installedcommit"
+    assert info.marketplace.source_id == "clio"
+
+
+def test_unpinned_default_marketplace_types_its_pin_as_unknown(monkeypatch) -> None:
+    """A marketplace installed from a moving ref has an installed commit but no pin."""
+
+    _store_marketplaces(monkeypatch, lambda: {"clio": {**_DEFAULT_ROW, "pinned": False}})
+
+    info = build_version_info()
+
+    assert info.marketplace is not None
+    assert info.marketplace.installed_commit == "abc123installedcommit"
+    assert info.marketplace.pinned_commit == "unknown"
 
 
 def test_marketplace_version_ignores_non_default_rows(monkeypatch) -> None:
-    """A registered source without ``is_default`` never surfaces as the pin."""
+    """Another installed marketplace never surfaces as the default's version."""
 
-    row = {**_DEFAULT_ROW, "is_default": False, "id": "src_user_added"}
-    monkeypatch.setattr(version_info_module, "load_agent_blueprint_sources", lambda: [row])
+    row = {**_DEFAULT_ROW, "id": "user-added"}
+    _store_marketplaces(monkeypatch, lambda: {"user-added": row})
 
     info = build_version_info()
 
@@ -81,22 +103,22 @@ def test_marketplace_version_ignores_non_default_rows(monkeypatch) -> None:
 
 
 def test_marketplace_version_none_when_no_source_row(monkeypatch) -> None:
-    """An empty ledger types ``marketplace=None``, never an empty placeholder row."""
+    """An empty store types ``marketplace=None``, never an empty placeholder row."""
 
-    monkeypatch.setattr(version_info_module, "load_agent_blueprint_sources", lambda: [])
+    _store_marketplaces(monkeypatch, dict)
 
     info = build_version_info()
 
     assert info.marketplace is None
 
 
-def test_marketplace_version_none_when_ledger_read_fails(monkeypatch) -> None:
-    """A broken ledger read degrades to ``marketplace=None``, never raises."""
+def test_marketplace_version_none_when_store_read_fails(monkeypatch) -> None:
+    """A broken store read degrades to ``marketplace=None``, never raises."""
 
-    def _boom() -> list[dict[str, Any]]:
-        raise OSError("ledger unreadable")
+    def _boom() -> dict[str, dict[str, Any]]:
+        raise OSError("plugin store unreadable")
 
-    monkeypatch.setattr(version_info_module, "load_agent_blueprint_sources", _boom)
+    _store_marketplaces(monkeypatch, _boom)
 
     info = build_version_info()
 
@@ -106,8 +128,8 @@ def test_marketplace_version_none_when_ledger_read_fails(monkeypatch) -> None:
 def test_blank_source_fields_type_as_unknown(monkeypatch) -> None:
     """A blank field on the default row types as ``"unknown"``, not ``""``."""
 
-    row = {"id": "", "source": "", "ref": "", "commit": "", "pinned_commit": "", "is_default": True}
-    monkeypatch.setattr(version_info_module, "load_agent_blueprint_sources", lambda: [row])
+    row = {"id": "", "source": "", "ref": "", "commit": "", "pinned": False}
+    _store_marketplaces(monkeypatch, lambda: {"clio": row})
 
     info = build_version_info()
 

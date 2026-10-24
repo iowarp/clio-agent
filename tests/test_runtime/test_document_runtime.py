@@ -252,7 +252,10 @@ def test_failed_helper_exit_retains_manifest_result(
         sandbox,
         "wrap_confined",
         lambda command, args, **kwargs: SimpleNamespace(
-            command="confined-python", args=args, env_overlay={"TEMP": "backend-cache"}
+            command="confined-python",
+            args=args,
+            env_overlay={"TEMP": "backend-cache"},
+            release=lambda: None,
         ),
     )
     result = runtime.run_document_helper(

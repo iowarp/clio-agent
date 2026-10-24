@@ -137,7 +137,14 @@ def present_memory_family(
 
     if declaration == "memory":
         memory_tool = str(row.get("tool") or "")
-        if memory_tool == "memory_search_sessions":
+        from clio_agent.gact.memory.presentation import (  # noqa: PLC0415
+            LONG_TERM_TOOLS,
+            present_long_term_memory,
+        )
+
+        if memory_tool in LONG_TERM_TOOLS:
+            summary, blocks, subject = present_long_term_memory(memory_tool, args, row)
+        elif memory_tool == "session_search":
             query = str(row.get("query") or args.get("query") or "").strip()
             if query:
                 subject = "query"
@@ -175,7 +182,7 @@ def present_memory_family(
                             "text": excerpt,
                         }
                     )
-        elif memory_tool == "memory_read_session_summary":
+        elif memory_tool == "session_read_summary":
             remembered = row.get("summary")
             if isinstance(remembered, Mapping):
                 session_id = str(remembered.get("session_id") or "")
@@ -216,7 +223,7 @@ def present_memory_family(
                             "text": text,
                         }
                     )
-        elif memory_tool == "memory_read_context_frame":
+        elif memory_tool == "session_read_context_frame":
             frame = row.get("frame")
             if isinstance(frame, Mapping):
                 session_id = str(frame.get("session_id") or "")

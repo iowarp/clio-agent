@@ -15,7 +15,7 @@ session's first user prompt/title, session-id-suffixed for per-session uniquenes
 ``session.metadata`` (:data:`_PLAN_FILE_METADATA_KEY`) via ``sessions.update(metadata_patch=…)`` —
 the #948 ``AgentTask`` no-fifth-store projection pattern, NOT ``workflow_state``, NOT a new store.
 The recorded path always falls within the P1.1 plan-ACL carve-out glob (``<plans>/*.md``) so the
-model can actually write it via ``fs_apply_edit_write`` (asserted at computation). Because the path
+model can actually write it via ``fs_write_file`` / ``fs_edit_file`` (asserted at computation). Because the path
 is recorded once and re-read thereafter, it is STABLE across turns regardless of derivation source.
 clio never pre-writes the file's content; the reminder only points the model at the path.
 

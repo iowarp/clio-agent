@@ -7,63 +7,45 @@ import pytest
 from clio_agent.providers.codex.errors import (
     CODEX_PLAN_LIMIT_MESSAGE_MARKER,
     CodexPlanLimitError,
-    CodexResponseError,
     codex_plan_limit_message,
     contains_codex_plan_limit,
-    is_retryable_status,
-    is_usage_limit_text,
+    is_usage_limit_body,
+    is_usage_limit_error,
     next_retry_delay_ms,
     parse_retry_after_ms,
-    raise_for_backend_error,
+    usage_limit_resets_at,
 )
 
 
 @pytest.mark.parametrize(
-    "text",
+    "payload",
     [
-        "You have hit your usage limit for this plan.",
-        "Quota exceeded for this account.",
-        "insufficient_quota",
-        "Please check your billing details.",
+        {"type": "error", "error": {"type": "usage_limit_reached", "message": "any words"}},
+        {"type": "error", "error": {"code": "insufficient_quota"}},
+        {"type": "response.failed", "response": {"error": {"code": "insufficient_quota"}}},
     ],
 )
-def test_is_usage_limit_text_detects_plan_limit_wording(text: str) -> None:
-    assert is_usage_limit_text(text) is True
+def test_usage_limit_is_read_from_the_error_code_or_type(payload: dict) -> None:
+    assert is_usage_limit_error(payload) is True
 
 
-def test_is_usage_limit_text_false_for_generic_rate_limit() -> None:
-    assert is_usage_limit_text("too many requests, please slow down") is False
+def test_usage_limit_wording_alone_is_not_a_usage_limit() -> None:
+    """The backend's prose is never interpreted: only its code or type counts."""
+    payload = {"type": "error", "error": {"code": "rate_limit_exceeded", "message": "usage limit"}}
+    assert is_usage_limit_error(payload) is False
+    assert is_usage_limit_body('{"error": {"message": "You have hit your usage limit"}}') is False
 
 
-def test_429_with_usage_limit_wording_is_not_retryable() -> None:
-    assert is_retryable_status(429, "usage limit reached") is False
+def test_usage_limit_body_parses_json_and_rejects_non_json() -> None:
+    assert is_usage_limit_body('{"error": {"type": "usage_limit_reached"}}') is True
+    assert is_usage_limit_body("usage limit reached") is False
 
 
-def test_429_without_usage_limit_wording_is_retryable() -> None:
-    assert is_retryable_status(429, "rate limited, try again") is True
-
-
-@pytest.mark.parametrize("status", [500, 502, 503, 504])
-def test_5xx_statuses_are_retryable(status: int) -> None:
-    assert is_retryable_status(status) is True
-
-
-def test_4xx_other_than_429_is_not_retryable() -> None:
-    assert is_retryable_status(400) is False
-    assert is_retryable_status(404) is False
-
-
-def test_raise_for_backend_error_terminal_plan_limit() -> None:
-    with pytest.raises(CodexPlanLimitError):
-        raise_for_backend_error(
-            code="rate_limit_exceeded", message="usage limit reached", status_code=429
-        )
-
-
-def test_raise_for_backend_error_generic_response_error() -> None:
-    with pytest.raises(CodexResponseError) as exc_info:
-        raise_for_backend_error(code="server_error", message="something broke")
-    assert not isinstance(exc_info.value, CodexPlanLimitError)
+def test_usage_limit_reset_time_from_either_field() -> None:
+    assert usage_limit_resets_at({"error": {"resets_at": 1_800_000_000}}) == 1_800_000_000
+    relative = usage_limit_resets_at({"error": {"resets_in_seconds": 60}})
+    assert relative is not None and relative > 1_700_000_000
+    assert usage_limit_resets_at({"error": {}}) is None
 
 
 def test_plan_limit_message_keeps_the_backends_own_words() -> None:

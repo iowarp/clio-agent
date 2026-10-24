@@ -6,9 +6,9 @@ step 6) makes a delegated turn's ``workflow_state`` the *recorded result* of a
 
 The reason this slice exists (design §2.8.d): the merge
 :func:`clio_agent.gact.workflow_state.merge._merge_workflow_state_mapping` is
-parameterized by the **live pack's** ``WorkflowStateSchema`` (``rank`` /
+parameterized by the **live plugin's** ``WorkflowStateSchema`` (``rank`` /
 ``normalize_section`` / ``sticky_true_fields_for``) and is *order-sensitive*. So
-re-folding the same handoff-row inputs under a *newer* pack schema yields a
+re-folding the same handoff-row inputs under a *newer* plugin schema yields a
 *different* dict — which would silently break the frozen §4.5 / surface-1.9
 ``workflow_state`` bytes on a reload. Per the owner's action->result ruling ("a
 compress event records what was folded and what it produced"), the merge **records
@@ -43,7 +43,7 @@ Design decisions (each answering a named constraint):
 * **Schema-free read (design (a)/(c)).** :func:`materialize_state_merge_projection`
   re-attaches ``produced`` onto each delegate row by a per-row scope key. It calls no
   schema method — no ``rank`` / ``normalize_section`` / ``sticky_true_fields_for`` — so
-  the served bytes are frozen at write regardless of the pack schema live at read time.
+  the served bytes are frozen at write regardless of the plugin schema live at read time.
 
 * **Session-scoped flag = the S5 regime pin (§4.4b/c).** The op write AND the read
   materialization both ride the **atoms** regime pinned by
@@ -346,7 +346,7 @@ def resolve_row_workflow_state(
     for the row's scope when present, else the verbatim value already on the row (also
     frozen-at-write, also schema-free — the graceful fallback when no op was recorded,
     e.g. a pre-S6 ledger). **No schema method is called** — the served bytes are frozen
-    at write time and identical under any pack schema live at read (the sabotage-a
+    at write time and identical under any plugin schema live at read (the sabotage-a
     invariant: swapping this for a ``_merge_workflow_state_mapping`` re-fold under the
     current schema would diverge and turn the replay test red).
 

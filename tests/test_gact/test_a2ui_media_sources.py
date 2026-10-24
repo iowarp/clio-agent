@@ -206,12 +206,3 @@ def test_the_unresolved_path_hint_names_the_download_recovery() -> None:
     hint = _DEFAULT_HINTS["a2ui_url_unresolved"]
     assert "shell" in hint
     assert "link" in hint
-
-
-def test_blueprint_validation_accepts_declared_native_tools() -> None:
-    from clio_agent.gact.agent_blueprints import _validate_agent_tool_references
-    from clio_agent.gact.types import AgentDef
-
-    row = AgentDef(id="leaf", title="Leaf", tools=["view_image", "view_pdf", "ask_user"])
-    [validated] = _validate_agent_tool_references([row], mcp_descriptors=[])
-    assert validated.validation_errors == []

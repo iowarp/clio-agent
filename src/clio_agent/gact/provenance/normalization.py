@@ -15,9 +15,11 @@ _SPAN_FAMILIES = {
     "llm.response.completed": "llm.request",
 }
 _TOOL_INPUT_FIELDS: dict[str, tuple[str, ...]] = {
-    "fs_apply_edit_write": ("filepath",),
-    "fs_propose_edit": ("filepath",),
+    "fs_write_file": ("filepath",),
+    "fs_edit_file": ("filepath",),
     "fs_read_file": ("filepath",),
+    "fs_list_directory": ("path",),
+    "fs_search_text": ("query", "path", "file_glob"),
     "web_search": ("query", "count"),
     "web_fetch": ("target", "to_file"),
     "workspace_resource_inspect": ("resource_id",),
@@ -54,7 +56,7 @@ def _event_kind(event_type: str) -> str:
         return "session"
     if event_type.startswith("turn."):
         return "turn"
-    if event_type.startswith(("expert.", "agent.", "delegation.", "blueprint.delegation.")):
+    if event_type.startswith(("expert.", "agent.", "delegation.")):
         return "agent"
     if event_type.startswith(("lm.", "provider.")):
         return "llm"

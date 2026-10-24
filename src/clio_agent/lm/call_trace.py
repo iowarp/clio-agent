@@ -41,7 +41,13 @@ class LMCallTrace(BaseCallback):
             instance, inputs = self._open.pop(call_id, (None, {}))
         try:
             _emit(
-                call_record(str(getattr(instance, "model", "") or ""), inputs, outputs, exception)
+                call_record(
+                    str(getattr(instance, "model", "") or ""),
+                    inputs,
+                    outputs,
+                    exception,
+                    response=_adapter_response(instance, outputs),
+                )
             )
         except Exception as exc:  # noqa: BLE001 - recording must never fail a call
             from clio_agent.runtime import trace  # noqa: PLC0415
@@ -54,15 +60,28 @@ LM_CALL_TRACE = LMCallTrace()
 
 
 def call_record(
-    model: str, inputs: dict[str, Any], outputs: Any, exception: BaseException | None
+    model: str,
+    inputs: dict[str, Any],
+    outputs: Any,
+    exception: BaseException | None,
+    *,
+    response: Any = None,
 ) -> dict[str, Any]:
-    """The ``lm.call`` payload for one call (typed Request/Response or adapter I/O)."""
+    """The ``lm.call`` payload for one call (typed Request/Response or adapter I/O).
+
+    ``response`` is the provider ``Response`` behind an adapter call's list outputs
+    (:func:`_adapter_response`): the list carries only text, so its finish reason and
+    usage -- how the model ended and how much it generated -- come from the Response.
+    """
     request = inputs.get("prompt") or inputs.get("kwargs", {}).get("request")
     if hasattr(request, "messages") and hasattr(request, "model"):
         messages: Any = _request_messages(request)
     else:
         messages = inputs.get("messages") or request
     content, reasoning, finish, usage = _outputs(outputs)
+    if response is not None and getattr(response, "message", None) is not None:
+        finish = str(response.finish_reason or "")
+        usage = _usage(getattr(response, "usage", None))
     record: dict[str, Any] = {
         "model": model,
         "messages": messages,
@@ -91,6 +110,20 @@ def call_record(
     if exception is not None:
         record["error"] = f"{type(exception).__name__}: {exception}"
     return record
+
+
+def _adapter_response(instance: Any, outputs: Any) -> Any:
+    """The ``Response`` behind an adapter call's list ``outputs``, else ``None``.
+
+    DSPy's history entry for the call holds that very list object next to the raw
+    Response, so the identity match is exact even when other threads share the LM.
+    """
+    if not isinstance(outputs, list):
+        return None
+    for entry in reversed(getattr(instance, "history", None) or []):
+        if isinstance(entry, dict) and entry.get("outputs") is outputs:
+            return entry.get("response")
+    return None
 
 
 def _response_id(outputs: Any) -> str:

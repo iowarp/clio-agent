@@ -289,7 +289,7 @@ def pack_declared_paths(
     workflow_state: Mapping[str, Any],
     path_specs: Any,
 ) -> list[str]:
-    """Return the path-string values a pack schema declares under ``artifact_paths``.
+    """Return the path-string values a plugin schema declares under ``artifact_paths``.
 
     The pack-declared designation channel (secondary/optional — owner decision
     #966.1): ``path_specs`` is the schema's ``[(section, key), ...]`` list; for

@@ -45,7 +45,7 @@ Three ways, in increasing scope:
 ```
 user prompt
   ↓
-blueprint ReAct agent             (resolved per turn)
+session agent's flow (react)      (pinned plugin resolution)
   ↓
 dspy.context(lm=route.lm)         (per-request LM scope)
   ↓

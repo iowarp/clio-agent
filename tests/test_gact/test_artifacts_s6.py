@@ -722,7 +722,7 @@ def test_finalize_under_budget_counter_is_pure_dict_lookup(tmp_path: Path, monke
 
 
 def test_harness_write_ingests_into_cas_and_survives_workspace_deletion(tmp_path: Path):
-    """Finding [3]: the diffs-apply / harness write is ingested (custody ``cas``), so
+    """Finding [3]: the diffs-revert / harness write is ingested (custody ``cas``), so
     its bytes survive a later deletion of the workspace file.
 
     Sabotage: revert ``mint_harness_write`` to hardcode WORKSPACE_REFERENCED (no ingest)
@@ -732,12 +732,18 @@ def test_harness_write_ingests_into_cas_and_survives_workspace_deletion(tmp_path
     reg = app.state.artifact_registry
     s = store.create(workspace_id="ws1", title="t")
     target = tmp_path / "report.md"
-    content = b"# Report\n\nParadigm deliverable authored via diffs/apply.\n"
+    content = b"# Report\n\nParadigm deliverable restored via diffs/revert.\n"
     target.write_bytes(content)
     sha = _sha(content)
     session = SimpleNamespace(id=s.id, workspace_id="ws1")
 
-    mint_harness_write(app, session, str(target), {"sha256": sha, "size_bytes": len(content)})
+    mint_harness_write(
+        app,
+        session,
+        str(target),
+        {"sha256": sha, "size_bytes": len(content)},
+        tool="diffs.revert",
+    )
 
     versions = [v for rec in reg.list_for_workspace("ws1") for v in rec.versions if v.sha256 == sha]
     assert versions, "the harness write minted no version"

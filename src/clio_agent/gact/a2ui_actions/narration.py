@@ -10,7 +10,7 @@ of what (if anything) it contains.
 
 S5b (clio-agent#1363 live-gate finding): a resumed turn read the legacy
 ``A2UI event: <name>`` + JSON form as a REPORT, not a REQUEST, and never
-acted on it. The event's MEANING is the pack author's to declare —
+acted on it. The event's MEANING is the catalog author's to declare —
 ``CatalogSidecar.events[<name>].narration`` (clio-schemas 0.3.2) — so
 :func:`narration_for` now renders that declared template
 (``clio_schemas.a2ui.sidecar.render_narration``) when the sidecar route
@@ -81,7 +81,7 @@ def narration_for(action_name: str, context: Mapping[str, Any], *, route: Any = 
         route: The action's resolved sidecar route (S5b), or ``None``. When
             it declares a ``narration`` template, that template — rendered
             against ``context`` via
-            ``clio_schemas.a2ui.sidecar.render_narration`` — IS the pack
+            ``clio_schemas.a2ui.sidecar.render_narration`` — IS the catalog
             author's declared meaning of this event and leads the text.
 
     Returns:

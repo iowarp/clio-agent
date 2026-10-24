@@ -267,7 +267,6 @@ def _estimate_message_context_tokens(message: Message) -> int:
         chars += len(str(getattr(part, "thinking", "") or ""))
         chars += len(part.path or "")
         chars += len(part.unified_diff or "")
-        chars += len(part.new_content or "")
     return max(1, chars // 4) if chars else 0
 
 
@@ -458,12 +457,12 @@ def register_system_routes(app: FastAPI, deps: "GactDeps") -> None:
                 search_messages=True,  # BBB27 — GET /sessions/{sid}/messages/search
                 cost_tracking=True,  # BBB24 — Message.tokens + Session.cost_usd rollup
                 files=True,  # BBB22 — /v1/sessions/{sid}/context/files CRUD
-                diffs=True,  # BBB21 — file_diff parts + /diffs/apply,reject
+                diffs=True,  # BBB21 — file_diff parts + /diffs (list) + /diffs/revert (undo)
                 permissions=True,  # BBB23 — /v1/permissions + permission.* events
                 # BBB25 — child agents. #948 S4 retired the nanoagent subsessions +
                 # subagent.* events; the capability is now provided by the spawn
                 # substrate: children run as real agent-task sessions
-                # (session_type=agent_task) surfaced via blueprint.delegation.* events.
+                # (session_type=agent_task) surfaced via delegation.* events.
                 subagents=True,
                 session_export=True,  # #16 — /v1/sessions/{sid}/export + import
                 # #760: no /summarize or /attachments routes exist — advertising
@@ -479,11 +478,14 @@ def register_system_routes(app: FastAPI, deps: "GactDeps") -> None:
                 session_tasks=True,  # #18 — per-session todo CRUD
                 plan_mode=True,  # session.mode=plan blocks destructive tools
                 edit_modes=True,  # session.edit_mode toggles diff/whole/patch
-                agent_write=True,  # #19 — POST/PUT/DELETE /v1/agents
+                # The GACT agent-write routes (POST/PUT/DELETE /v1/agents/{id}) and
+                # agent extraction are gone with blueprints: user agents are a parent
+                # plus a delta, advertised by x_clio_agent_plugins (/v1/agents/user).
+                agent_write=False,
                 hooks=True,  # #20 — pre/post_tool + pre/post_message hooks
                 scheduled_sessions=True,  # #21 — cron schedules
                 session_sharing=True,  # #22 — share tokens
-                skills_extraction=True,  # #23 — POST /v1/agents/extract
+                skills_extraction=False,
                 # v0.2 additions — advertised when the scaffold
                 # actually emits them. Turned on piecewise as the
                 # follow-on items land.
@@ -499,8 +501,7 @@ def register_system_routes(app: FastAPI, deps: "GactDeps") -> None:
                 x_clio_stream_fallback_reasons=_stream_fallback_reason_capabilities(),
                 x_clio_direct_delete_permissions=True,
                 x_clio_prompt_registry=True,
-                x_clio_expert_packs=True,
-                x_clio_agent_blueprints=True,
+                x_clio_agent_plugins=True,
                 x_clio_user_questions=True,
                 x_clio_interactions=True,
                 x_clio_retry_attempts=True,
@@ -577,7 +578,7 @@ def register_system_routes(app: FastAPI, deps: "GactDeps") -> None:
                 current="bearer" if bearer_enabled else "trust_socket",
             ),
         )
-        # Catalog discovery may initialize installed blueprint snapshots. Keep all
+        # Catalog discovery may initialize installed plugin snapshots. Keep all
         # filesystem work off the request loop so health/SSE remain responsive.
         return await run_off_loop(
             project_for_request,

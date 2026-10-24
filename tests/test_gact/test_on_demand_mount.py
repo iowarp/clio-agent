@@ -1,9 +1,11 @@
-"""On-demand tool mounting at the expert-tool resolve seam (#1237 Gap 2a).
+"""On-demand mounting of plugin MCP namespaces at the agent-tool resolve seam (#1237 Gap 2a).
 
-Owner ruling (2026-08-20): a declared tool whose server has not mounted yet
-is never a hard failure at resolve time -- the resolve triggers (or joins)
-the server's mount and, once it lands, the tool is used for real. A failed
-attempt is never a cached terminal state: the next resolve/call re-attempts.
+A resolved agent's plugins declare MCP servers; each server is a gateway namespace
+that contributes ALL of its tools. Owner ruling (2026-08-20): a namespace whose
+server has not mounted yet is never a hard failure at resolve time -- the resolve
+triggers (or joins) the server's mount and, once it lands, the tools are used for
+real. A failed attempt is never a cached terminal state: the next resolve/call
+re-attempts.
 """
 
 from __future__ import annotations
@@ -12,7 +14,7 @@ from typing import Any
 
 import pytest
 
-from clio_agent.gact.agents.builders import _resolve_declared_tools_with_on_demand_mount
+from clio_agent.gact.agents.builders import _gateway_and_namespace_tools
 from clio_agent.gact.runtime.globals import _UnsupportedSessionAgent
 from clio_agent.tools.mcp_config import MCPServerSpec
 
@@ -28,7 +30,7 @@ class _FakeTool:
 class _FakeExecutor:
     """Minimal stand-in for SyncMCPToolExecutor: declared namespace specs +
     a mergeable live tool table, exactly the surface
-    ``_resolve_declared_tools_with_on_demand_mount`` reads/writes."""
+    ``_gateway_and_namespace_tools`` reads/writes."""
 
     def __init__(self, declared_specs: dict[str, MCPServerSpec], preloaded: dict[str, Any]) -> None:
         self._clio_namespace_specs = declared_specs
@@ -54,6 +56,11 @@ def _spec(name: str) -> MCPServerSpec:
     return MCPServerSpec(name=name, transport="stdio", command="fake-launcher", args=())
 
 
+def _resolve(executor: _FakeExecutor, namespaces: list[str]) -> tuple[dict[str, Any], dict]:
+    """Resolve every tool of the plugin namespaces (no gateway built-ins)."""
+    return _gateway_and_namespace_tools(executor, [], namespaces)
+
+
 class TestOnDemandMount:
     def test_a_listed_namespace_needs_no_connection_before_the_first_model_call(
         self, monkeypatch: pytest.MonkeyPatch
@@ -68,9 +75,7 @@ class TestOnDemandMount:
             lambda ns, spec: pytest.fail("a listed namespace is not listed again"),
         )
 
-        available, mount_failures = _resolve_declared_tools_with_on_demand_mount(
-            executor, ["geo_geocode"]
-        )
+        available, mount_failures = _resolve(executor, ["geo"])
 
         assert "geo_geocode" in available
         assert mount_failures == {}
@@ -85,7 +90,7 @@ class TestOnDemandMount:
             lambda ns, spec: {"geo_geocode": _FakeTool("geo_geocode")},
         )
 
-        available, _ = _resolve_declared_tools_with_on_demand_mount(executor, ["geo_geocode"])
+        available, _ = _resolve(executor, ["geo"])
 
         assert "geo_geocode" in available
         assert executor.prepared_namespaces == set()
@@ -118,9 +123,7 @@ class TestOnDemandMount:
             return {f"{namespace}_x": _FakeTool(f"{namespace}_x")}
 
         monkeypatch.setattr("clio_agent.tools.mcp_discovery.ensure_namespace", slow_listing)
-        available, failures = _resolve_declared_tools_with_on_demand_mount(
-            executor, ["geo_x", "ndp_x"]
-        )
+        available, failures = _resolve(executor, ["geo", "ndp"])
 
         assert {"geo_x", "ndp_x"} <= set(available)
         assert failures == {}
@@ -135,9 +138,7 @@ class TestOnDemandMount:
             lambda ns, spec: {"geo_geocode": _FakeTool("geo_geocode")},
         )
 
-        available, mount_failures = _resolve_declared_tools_with_on_demand_mount(
-            executor, ["geo_geocode"]
-        )
+        available, mount_failures = _resolve(executor, ["geo"])
 
         assert "geo_geocode" in available
         assert mount_failures == {}
@@ -151,12 +152,62 @@ class TestOnDemandMount:
             lambda ns, spec: calls.append(ns) or {},
         )
 
-        available, mount_failures = _resolve_declared_tools_with_on_demand_mount(
-            executor, ["ghost_tool"]
+        available, mount_failures = _gateway_and_namespace_tools(
+            executor, ["ghost_tool"], ["ghost"]
         )
 
         assert calls == [], "an undeclared namespace must never trigger a mount attempt"
         assert "ghost_tool" not in available
+        # The resolved plugin declared a server the fleet does not know: a typed reason.
+        assert mount_failures == {"ghost": "mcp_server_not_declared"}
+
+    def test_a_namespace_contributes_all_of_its_tools_and_only_its_own(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        executor = _FakeExecutor(
+            declared_specs={"geo": _spec("geo"), "ndp": _spec("ndp")},
+            preloaded={"ndp_search": _FakeTool("ndp_search")},
+        )
+        monkeypatch.setattr(
+            "clio_agent.tools.mcp_discovery.ensure_namespace",
+            lambda ns, spec: {
+                "geo_geocode": _FakeTool("geo_geocode"),
+                "geo_reverse": _FakeTool("geo_reverse"),
+            },
+        )
+
+        available, mount_failures = _resolve(executor, ["geo"])
+
+        assert set(available) == {"geo_geocode", "geo_reverse"}
+        assert mount_failures == {}
+
+    def test_a_mounted_namespace_without_tools_is_a_typed_reason(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        executor = _FakeExecutor(declared_specs={"geo": _spec("geo")}, preloaded={})
+        monkeypatch.setattr("clio_agent.tools.mcp_discovery.ensure_namespace", lambda ns, spec: {})
+
+        available, mount_failures = _resolve(executor, ["geo"])
+
+        assert available == {}
+        assert mount_failures == {"geo": "mcp_server_listed_no_tools"}
+
+    def test_a_gateway_builtin_of_a_cold_declared_namespace_mounts_on_demand(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        executor = _FakeExecutor(declared_specs={"fs": _spec("fs")}, preloaded={})
+        monkeypatch.setattr(
+            "clio_agent.tools.mcp_discovery.ensure_namespace",
+            lambda ns, spec: {
+                "fs_read_file": _FakeTool("fs_read_file"),
+                "fs_list_directory": _FakeTool("fs_list_directory"),
+            },
+        )
+
+        available, mount_failures = _gateway_and_namespace_tools(executor, ["fs_read_file"], [])
+
+        # A built-in is picked by name: its namespace's other tools stay unclaimed.
+        assert set(available) == {"fs_read_file"}
         assert mount_failures == {}
 
     def test_transient_mount_retries_inside_first_resolve(
@@ -174,9 +225,7 @@ class TestOnDemandMount:
         monkeypatch.setattr("clio_agent.tools.mcp_discovery.ensure_namespace", _fake_ensure)
         monkeypatch.setattr("clio_agent.gact.mcp_readiness.time.sleep", lambda _delay: None)
 
-        available, mount_failures = _resolve_declared_tools_with_on_demand_mount(
-            executor, ["geo_geocode"]
-        )
+        available, mount_failures = _resolve(executor, ["geo"])
         assert "geo_geocode" in available
         assert mount_failures == {}
         assert len(attempts) == 2
@@ -194,9 +243,7 @@ class TestOnDemandMount:
 
         monkeypatch.setattr("clio_agent.tools.mcp_discovery.ensure_namespace", _missing_launcher)
 
-        available, mount_failures = _resolve_declared_tools_with_on_demand_mount(
-            executor, ["geo_geocode"]
-        )
+        available, mount_failures = _resolve(executor, ["geo"])
 
         assert "geo_geocode" not in available
         assert mount_failures["geo"]
@@ -214,9 +261,7 @@ class TestOnDemandMount:
             lambda ns, spec: calls.append(ns) or {},
         )
 
-        available, mount_failures = _resolve_declared_tools_with_on_demand_mount(
-            executor, ["geo_geocode"]
-        )
+        available, mount_failures = _resolve(executor, ["geo"])
 
         assert calls == []
         assert "geo_geocode" in available

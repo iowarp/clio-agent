@@ -236,55 +236,15 @@ def test_part_new_fields_are_additive_omitempty():
 
 
 # --------------------------------------------------------------------------- #
-# 3. artifact.proposed byte-parity contract (deletion rides, payload unchanged)
+# 3. artifact.proposed stays off the SSE wire
 # --------------------------------------------------------------------------- #
 
 
-def test_artifact_proposed_is_not_on_the_sse_wire_and_payload_shape_is_pinned():
-    # The proposal stage keeps its SPEC payload byte-identical: it is NOT widened
-    # onto the SSE family wire, and its payload keys are exactly the file_diff set.
-    # Sabotage: add "artifact.proposed" to SSE_UI_EVENT_TYPES -> the first assert
-    # goes red (the byte-parity lock: proposal stage unchanged).
-    from clio_agent.gact.artifacts.wire import PROPOSED_ARTIFACT_EVENT, proposed_diff_payload
-
-    assert PROPOSED_ARTIFACT_EVENT == "artifact.proposed"
+def test_artifact_proposed_is_not_on_the_sse_wire():
+    # The create_artifact proposal stage is trace-only: it is NOT widened onto the
+    # SSE family wire. Sabotage: add "artifact.proposed" to SSE_UI_EVENT_TYPES -> red.
     assert "artifact.proposed" not in SSE_UI_EVENT_TYPES
     assert event_reaches_ui("artifact.proposed") is False
-
-    # Bind the REAL emit payload: turn_finalize builds the artifact.proposed payload
-    # via proposed_diff_payload(...) (the owner-module projection it actually calls),
-    # so pinning that function's output pins the wire. Construct the event exactly as
-    # turn_finalize does and pin the projected shape — an added OR removed key reddens.
-    payload = proposed_diff_payload(
-        path="notebook.py",
-        unified_diff="@@ -1 +1 @@",
-        new_content="print('x')\n",
-        edit_mode="diff",
-        lines_added=1,
-        lines_removed=1,
-    )
-    event = SemanticEvent(
-        event_type="artifact.proposed",
-        session_id="s1",
-        trace_id="t1",
-        payload=payload,
-    )
-    full = project_full(event)
-    sse = project_sse(event)
-    expected_keys = {
-        "path",
-        "unified_diff",
-        "new_content",
-        "edit_mode",
-        "lines_added",
-        "lines_removed",
-    }
-    # Sabotage: add a 7th field (or drop one) in wire.proposed_diff_payload -> this
-    # EXACT set-equality goes red on BOTH projections (the byte-parity lock).
-    assert set(full["payload"]) == expected_keys
-    assert set(sse["payload"]) == expected_keys
-    # The full trace projection preserves the payload verbatim (values unchanged).
-    assert full["payload"] == payload
 
 
 # --------------------------------------------------------------------------- #
@@ -620,7 +580,7 @@ def test_harness_write_during_turn_yields_part(tmp_path: Path):
     write_result = {"sha256": "d" * 64, "size_bytes": 5}
     token = context.set_turn_id_token("T1")
     try:
-        mint_harness_write(app, sess, target, write_result)
+        mint_harness_write(app, sess, target, write_result, tool="diffs.revert")
     finally:
         context.reset(token)
     # The seam-b mint is buffered under the ACTIVE turn, so the finalize drain for

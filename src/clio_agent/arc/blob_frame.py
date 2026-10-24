@@ -12,6 +12,19 @@ exactly ``n`` characters after the colon and ignores anything after them.
 
 A blob written before the frame (plain base64; its alphabet has no ``:``) reads whole,
 as it always did.
+
+The stored body is padded with ``.`` up to a size class (:func:`stored_body`). Measured
+on iowarp-core 2.3.2: every put that grows a blob adds one storage block rounded up to
+whole 4 KiB pages, and every later put of that blob appends the blob's whole block
+list to the ``metadata.log`` write-ahead log, which is truncated only after a full
+metadata snapshot completes and is otherwise replayed into daemon memory on start. The
+ARC lanes re-put a chunk after each append, so a 512-atom chunk of 1.4 KB
+atoms grew 512 blocks, wrote 10 MiB of metadata log (73 bytes + 80 per block per put)
+and held its data in about three times its size in pages. With size classes a growing
+record gains a block only when it crosses a class: the same 5,120 appends wrote
+8 MiB of metadata log instead of 100 MiB, and the daemon stayed at 56 MiB resident
+instead of 589 MiB. Each class is a whole number of pages and at most a quarter above
+the record's own page-rounded size, which is what clio-core allocates for it anyway.
 """
 
 from __future__ import annotations
@@ -29,10 +42,15 @@ __all__ = [
     "BlobNameDecodeError",
     "frame",
     "read_framed_blob",
+    "size_class",
+    "stored_body",
     "unframe",
 ]
 
 _SEP = b":"
+_PAD = b"."  # never base64 and never read: the frame's length ends the record first
+_PAGE = 4096  # clio-core allocates blob storage in whole 4 KiB pages
+_CLASS_STEP = 4  # a class is at most 1/_CLASS_STEP above the one below it
 _MAX_HEADER = 20  # digits of the length; a body is far below 10**19 characters
 _logger = logging.getLogger(__name__)
 
@@ -87,6 +105,25 @@ def frame(data: bytes) -> bytes:
     """The stored body of ``data``: its base64 text behind a length header."""
     text = base64.b64encode(data)
     return str(len(text)).encode("ascii") + _SEP + text
+
+
+def size_class(length: int) -> int:
+    """The stored size of a body of ``length`` bytes: the smallest class that holds it.
+
+    Classes are whole 4 KiB pages: every page up to 32 KiB, then steps of about a
+    quarter (40, 48, 60, 72, 88, 108 KiB, ...), so a class is never more than a quarter
+    above the page-rounded size clio-core would allocate for the record anyway.
+    """
+    size = _PAGE
+    while size < length:
+        size += max(_PAGE, size // _CLASS_STEP // _PAGE * _PAGE)
+    return size
+
+
+def stored_body(data: bytes) -> bytes:
+    """The bytes CLIO puts for ``data``: its frame, padded up to its size class."""
+    body = frame(data)
+    return body + _PAD * (size_class(len(body)) - len(body))
 
 
 def read_framed_blob(name: str, reported_size: int, read: Callable[[int], bytes | str]) -> bytes:

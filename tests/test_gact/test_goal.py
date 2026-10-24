@@ -323,11 +323,12 @@ def test_when_state_arg_does_not_create_self_satisfiable_gate(
 # Injection-safety: NO model-callable set/clear tool; goal_status is armed-only #
 # =========================================================================== #
 def test_model_has_no_set_or_clear_goal_tool() -> None:
-    from clio_agent.gact.agents.auto_tools import build_auto_react_tools
+    from clio_agent.plugins.service import PluginService
 
-    agent_def = SimpleNamespace(id="agent", metadata={})
-    names = {getattr(t, "name", "") for t in build_auto_react_tools(agent_def)}
-    assert "goal_status" in names  # the read-only surface IS attached
+    resolution = PluginService().resolve("clio/standard", pin=False)
+    owners = {row["name"]: row["plugin"] for row in resolution.tools}
+    names = set(owners)
+    assert owners["goal_status"] == "core"  # the read-only surface IS claimed by core
     assert {"set_goal", "set_loop", "wait_for"} <= names
     assert "goal_clear" not in names
     assert "goal_set" not in names

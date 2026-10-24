@@ -1,4 +1,4 @@
-"""Explicit activation of the Fleet-backed CLIO Search blueprint."""
+"""Isolated read-only sessions that run the CLIO Search agent."""
 
 from __future__ import annotations
 
@@ -6,10 +6,11 @@ from fastapi import FastAPI, HTTPException, Query, Request
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, ConfigDict
 
+from clio_agent.gact.agents.resolution import SessionAgentUnavailable, prepare_session_agent
 from clio_agent.gact.fleet_settings import fleet_settings
+from clio_agent.gact.off_loop import join_off_loop
 from clio_agent.gact.protocol_v3 import project_for_request, session_to_v3
-from clio_agent.gact.routes.blueprint_selection import prepare_session_blueprint
-from clio_agent.gact.search_assistant import SEARCH_BLUEPRINT, read_search_source
+from clio_agent.gact.search_assistant import SEARCH_AGENT, read_search_source
 from clio_agent.gact.side_sessions import READ_ONLY_SIDE_PROFILE
 from clio_agent.gact.types import Session
 
@@ -49,12 +50,18 @@ def register_search_assistant_routes(app: FastAPI) -> None:
         parent = app.state.sessions.get(req.parent_session_id) if req.parent_session_id else None
         if req.parent_session_id and (parent is None or parent.workspace_id != req.workspace_id):
             raise HTTPException(404, detail="Conversation is unavailable in this workspace")
-        metadata = {
-            "active_agent_blueprint_id": SEARCH_BLUEPRINT,
+        metadata: dict[str, object] = {
             "search_session": {"ephemeral": True},
             "side_session": {"read_only": True, "ephemeral": True},
         }
-        await prepare_session_blueprint(app, req.workspace_id, metadata)
+        try:
+            resolution = await join_off_loop(prepare_session_agent, app, metadata, SEARCH_AGENT)
+        except SessionAgentUnavailable as exc:
+            from clio_agent.gact.routes.session_creation import (  # noqa: PLC0415
+                agent_unavailable_envelope,
+            )
+
+            raise HTTPException(422, detail=agent_unavailable_envelope(exc)) from exc
         choice = fleet_settings()["search"]
         defaults = app.state.session_defaults.get()
         model = (
@@ -71,7 +78,7 @@ def register_search_assistant_routes(app: FastAPI) -> None:
             title="CLIO Search",
             metadata=metadata,
             model=model,
-            agent={"id": "search"},
+            agent={"id": resolution.agent["id"]},
             approval_profile=READ_ONLY_SIDE_PROFILE,
         )
         return project_for_request(

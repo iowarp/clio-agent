@@ -13,7 +13,7 @@ CONSTRAINT DISCOVERED while building this package: ``GET /v1/mcp/handshake``
 correctly threads a workspace's ``root_path`` as the ``cwd`` used to discover
 its ``.clio/mcp.yaml`` (``gact/routes/mcp_specs.py::declared_mcp_specs`` ->
 ``load_mcp_servers(cwd=...)``), but the ACTUAL per-turn tool-gateway build
-(``agent.py::_build_tool_gateway``) calls ``load_mcp_servers(pack_servers=...)``
+(``agent.py::_build_tool_gateway``) calls ``load_mcp_servers(plugin_servers=...)``
 with NO ``cwd=`` at all, so it silently defaults to ``Path.cwd()`` -- the gact
 SERVER PROCESS's OS working directory, not the HTTP workspace's ``root_path``.
 The existing ``live_gate_1031.py`` P3/composed gates work around this by
@@ -26,27 +26,22 @@ real tool executor. A live leg that boots with one cwd and writes mcp.yaml
 into a different one would see the handshake pass (false-green) while the
 real turn's tool call fails to find the namespace -- exactly the trap #1286
 leg (ii) warns about. ``write_mcp_yaml``/``quoted_command`` remain here as
-general infra (``quoted_command`` is still used by the testing-pack
-materializer below), but legs B/C (C1-S6, #1301) no longer call
-``write_mcp_yaml`` themselves -- see the next paragraph.
+general infra for workspace ``mcp.yaml``, but legs B/C (C1-S6, #1301) no longer
+call ``write_mcp_yaml`` themselves -- see the next paragraph.
 
-TESTING-AGENT PACK PATH (C1-S6, #1301): legs B/C drive a purpose-built
-single-expert Agent Blueprint pack (``agents/web-testing``,
-``agents/v2ex-testing``) instead of a bare session + workspace ``mcp.yaml``.
-Investigation proved the bare-session builtin main's toolset is a hardcoded
-4-tool list, so a declared server's tools never reach it regardless of any
-``mcp.yaml`` -- the Python builtin main is being dissolved upstream (#1301).
-The Agent Blueprint path is the one real marketplace packs use, and it is
-provably the WORKING path: ``agent.py::_build_tool_gateway`` resolves a
-blueprint's declared ``mcp_servers`` into an ALREADY-RESOLVED spec dict
-(``_discover_pack_servers(blueprint_id, cwd=cwd)``, cwd correctly threaded
-from the per-workspace gateway) before ever reaching the
-``load_mcp_servers(pack_servers=...)`` call the paragraph above flags --  so
-a testing-agent pack's declared servers sidestep the workspace-``mcp.yaml``
-cwd-threading gap entirely, by construction, not by convention. See
-:func:`materialize_testing_pack`, :func:`install_blueprint`,
-:func:`activate_blueprint`, and :func:`resolved_agent_tools` below, and
-``RUNBOOK.md``'s "Testing-agent pack mechanism" section.
+TESTING AGENTS (C1-S6, #1301): legs B/C and the task qualification legs drive a
+purpose-built testing agent instead of a bare session + workspace ``mcp.yaml``.
+Each one under ``agents/<name>/`` is a small native marketplace (Agent Plugins
+1.0.0 plus a Python agent class; ``docs/PLUGINS_AND_FLOWS.md``): one plugin with
+the agent's prompt fragment and, when the leg needs one, an ``mcp.json`` the
+materializer writes at run time; the agent selects that plugin plus shared
+plugins from the default marketplace (``web``, ``workspace``, ``shell``,
+``delegation``). A plugin's MCP servers reach the real per-turn tool gateway
+through the session's pinned resolution, the same path every marketplace agent
+uses. See :func:`materialize_testing_marketplace`,
+:func:`install_testing_agent`, :func:`use_agent` and
+:func:`resolved_agent_tools` below, and ``RUNBOOK.md``'s "Testing-agent
+mechanism" section.
 """
 
 from __future__ import annotations
@@ -185,6 +180,8 @@ def boot_server(
     if sse_log is not None:
         sse_log.parent.mkdir(parents=True, exist_ok=True)
         env["CLIO_STREAM_AUDIT_LOG"] = str(sse_log.resolve())
+    # Plugin stdio servers name a bare command; ``python`` must be this interpreter.
+    env["PATH"] = str(Path(sys.executable).parent) + os.pathsep + env.get("PATH", "")
     if extra_env:
         env.update(extra_env)
     return subprocess.Popen(
@@ -441,119 +438,144 @@ def quoted_command(*tokens: str) -> str:
 
 
 # --------------------------------------------------------------------------- #
-# Testing-agent pack: the WORKING path (#1301) -- an Agent Blueprint whose
-# declared ``mcp_servers`` reaches the REAL per-turn tool gateway
-# (``agent.py::_build_tool_gateway`` -> ``_discover_pack_servers`` ->
-# ``load_mcp_servers(pack_servers=...)``), unlike the bare-session builtin
-# main (a hardcoded 4-tool list a declared server's tools never reach). See
-# ``scripts/live_verification/agents/{web-testing,v2ex-testing}/`` for the
-# committed templates and the module docstrings there.
+# Testing agents: small native marketplaces under ``agents/<name>/`` whose
+# plugin MCP servers reach the REAL per-turn tool gateway through the session's
+# pinned plugin resolution (unlike the bare-session builtin main of #1301).
 # --------------------------------------------------------------------------- #
-def materialize_testing_pack(template_dir: Path, ws_dir: Path, mcp_servers: dict[str, str]) -> Path:
-    """Copy a testing-agent pack template into ``ws_dir`` and rewrite its
-    ``AGENT.md`` frontmatter's ``mcp_servers`` block to ``mcp_servers``.
+#: Installed marketplace names are ``lv-<materialized folder>``.
+TESTING_MARKETPLACE_PREFIX = "lv-"
+_MCP_SCHEMA = "https://agent-plugins.org/schemas/1.0.0/mcp.schema.json"
 
-    ``AGENT.md`` frontmatter is a static file, but a server command may carry
-    a per-run resolved path (the v2ex exerciser's absolute interpreter +
+
+def materialize_testing_marketplace(
+    template_dir: Path,
+    ws_dir: Path,
+    mcp_servers: dict[str, list[str]],
+    *,
+    name: str = "",
+    agent_id: str = "",
+) -> Path:
+    """Copy a testing marketplace template into ``ws_dir`` and write its plugin's
+    ``mcp.json`` from ``mcp_servers`` (server name -> argv).
+
+    A server's argv may carry a per-run resolved path (the v2ex exerciser's
     script path -- see ``leg_c_synthetic_session.py``) that must never be a
-    hardcoded drive path committed to source (the same constraint
-    ``quoted_command`` documents for workspace ``mcp.yaml``: an unquoted
-    Windows path fed through POSIX-mode ``shlex.split`` has its backslashes
-    eaten). This materializes the template into the run's own workspace dir
-    and patches ONLY the ``mcp_servers`` key, so the committed template's
-    value stays a portable placeholder (``web-testing``'s is already a real,
-    static command -- routed through here too, for one mechanism instead of
-    two).
+    hardcoded drive path committed to source, so ``mcp.json`` is written here
+    rather than committed. Agent Plugins 1.0.0 requires a stdio ``command`` to be
+    a bare executable name, so a Python server is launched as ``python``:
+    :func:`boot_server` puts this interpreter's directory first on the server's
+    ``PATH``. JSON argv lists need no shell quoting. An empty ``mcp_servers``
+    writes no ``mcp.json``.
 
-    Returns the materialized pack's root directory (containing ``AGENT.md``),
-    suitable as the ``source`` for :func:`install_blueprint`.
+    ``name`` materializes the copy under another folder (and so another
+    marketplace name); ``agent_id`` renames the template's agent, for a leg that
+    needs two distinct agents from one template.
+
+    Returns the materialized marketplace root, the ``source`` for
+    :func:`install_testing_agent`.
     """
 
-    import yaml
-
-    dest = ws_dir / "testing-packs" / template_dir.name
+    dest = ws_dir / "testing-marketplaces" / (name or template_dir.name)
     if dest.exists():
         shutil.rmtree(dest)
     shutil.copytree(template_dir, dest)
-
-    agent_md = dest / "AGENT.md"
-    text = agent_md.read_text(encoding="utf-8")
-    lines = text.splitlines()
-    if not lines or lines[0].strip() != "---":
-        raise ValueError(f"{agent_md} has no YAML frontmatter to rewrite")
-    end = next((i for i in range(1, len(lines)) if lines[i].strip() == "---"), -1)
-    if end < 0:
-        raise ValueError(f"{agent_md} frontmatter has no closing '---'")
-    meta = yaml.safe_load("\n".join(lines[1:end])) or {}
-    if not isinstance(meta, dict):
-        raise ValueError(f"{agent_md} frontmatter did not parse to a mapping")
-    meta["mcp_servers"] = dict(mcp_servers)
-    body = "\n".join(lines[end + 1 :])
-    rewritten = (
-        "---\n" + yaml.safe_dump(meta, default_flow_style=False, sort_keys=False) + "---\n" + body
-    )
-    agent_md.write_text(rewritten, encoding="utf-8")
+    if agent_id:
+        for module in (dest / "agents").glob("*.py"):
+            text = module.read_text(encoding="utf-8")
+            marker = f'    id = "{template_dir.name}"\n'
+            if marker not in text:
+                raise ValueError(f"{module} does not declare agent id {template_dir.name!r}")
+            module.write_text(text.replace(marker, f'    id = "{agent_id}"\n'), encoding="utf-8")
+    if mcp_servers:
+        servers = {
+            server: {"type": "stdio", "command": argv[0], "args": list(argv[1:])}
+            for server, argv in mcp_servers.items()
+        }
+        (dest / "plugins" / template_dir.name / "mcp.json").write_text(
+            json.dumps({"$schema": _MCP_SCHEMA, "mcpServers": servers}, indent=2) + "\n",
+            encoding="utf-8",
+        )
     return dest
 
 
-def install_blueprint(
-    call: Callable[..., Any], source_path: Path, workspace_id: str
-) -> dict[str, Any]:
-    """``POST /v1/agent-blueprints/install`` a local pack, workspace-scoped.
+def testing_prompt(marketplace: Path, name: str = "main") -> Path:
+    """The prompt file ``name`` of a materialized testing marketplace's plugin.
 
-    Matches the shape ``tests/test_real_cases/clio_sut.py::invoke`` uses for
-    a ``marketplace_source`` install. Returns the installed blueprint's own
-    wire row (``{"id": ..., "root_expert": ..., ...}``), the entry an
-    activation call's ``blueprint_id`` needs. Idempotent: the underlying
-    installer overwrites an existing install at the same id/scope, so
-    re-running a leg never needs a manual uninstall first.
+    ``main`` is the agent's prompt fragment; ``worker`` is the defined worker
+    subagent's prompt (``task-subagent-testing``). Legs append mission-specific
+    instructions to these before install.
     """
 
-    resp = call(
-        "POST",
-        "/v1/agent-blueprints/install",
-        {"source": str(source_path), "scope": "workspace", "workspace_id": workspace_id},
-        ok=(200, 201),
-    )
-    installed = resp.get("installed") or []
-    if not installed:
-        raise RuntimeError(f"agent blueprint install produced no installed rows: {resp}")
-    return installed[0]
+    (plugin,) = (marketplace / "plugins").iterdir()
+    return plugin / "ai.iowarp.clio" / "prompt" / f"{name}.md"
 
 
-def activate_blueprint(call: Callable[..., Any], sid: str, blueprint_id: str) -> dict[str, Any]:
-    """``POST /v1/sessions/{sid}/agent-blueprint`` -- bind ``blueprint_id`` to ``sid``.
+def testing_prompts(marketplace: Path) -> list[Path]:
+    """Every prompt file of a materialized testing marketplace's plugin."""
 
-    NOTE the verb: ``POST``, not ``PUT`` (verified against
-    ``gact/routes/blueprints.py::set_session_agent_blueprint`` and the exact
-    call ``clio_sut.py`` makes for the same activation).
+    (plugin,) = (marketplace / "plugins").iterdir()
+    return sorted((plugin / "ai.iowarp.clio" / "prompt").glob("*.md"))
+
+
+def install_testing_agent(call: Callable[..., Any], marketplace: Path) -> str:
+    """Install a materialized testing marketplace, run the trust step, return its agent ref.
+
+    ``POST /v1/plugins/marketplaces`` then ``POST
+    /v1/plugins/marketplaces/{name}/trust``: a local marketplace's Python and MCP
+    servers load only after the trust step, and re-installing with a changed
+    ``mcp.json`` holds the update until trust runs again, so this always trusts
+    after installing. Idempotent: re-running a leg re-installs over the same name.
     """
 
-    return call("POST", f"/v1/sessions/{sid}/agent-blueprint", {"blueprint_id": blueprint_id})
+    name = TESTING_MARKETPLACE_PREFIX + marketplace.name
+    call("POST", "/v1/plugins/marketplaces", {"source": str(marketplace), "name": name})
+    trusted = call("POST", f"/v1/plugins/marketplaces/{name}/trust", {})
+    agents = list(trusted.get("agents") or [])
+    if len(agents) != 1:
+        raise RuntimeError(f"testing marketplace {name} must define one agent, got {agents}")
+    return f"{name}/{agents[0]}"
+
+
+def use_agent(call: Callable[..., Any], sid: str, ref: str) -> dict[str, Any]:
+    """``PATCH /v1/sessions/{sid}/agent`` -- resolve agent ``ref`` and pin it to ``sid``."""
+
+    return call("PATCH", f"/v1/sessions/{sid}/agent", {"ref": ref})
+
+
+def agent_id_of(ref: str) -> str:
+    """The agent id of a ``marketplace/id`` reference."""
+
+    return ref.rsplit("/", 1)[-1].partition("@")[0]
 
 
 def resolved_agent_tools(
     call: Callable[..., Any], sid: str, *, workspace_id: str = ""
 ) -> dict[str, list[str]]:
-    """``GET /v1/agents?session_id=...`` -- the resolved per-agent toolset.
+    """The session agent's resolved toolset, as ``{agent_id: [tool_name, ...]}``.
 
-    This is the seam ``gact/agents/resolution.py::_runtime_active_agent_
-    blueprint_rows`` shares with the REAL turn path (the route and the
-    executing agent can never disagree on what an agent resolves to -- #770
-    C1), so it is the pre-turn PROOF that a testing-agent pack's declared
-    ``tools:`` actually reached this session's active agent -- not merely
-    that the frontmatter parsed. Returns ``{agent_id: [tool_name, ...]}``.
-    ``session_id`` alone resolves the active blueprint; ``workspace_id`` is
-    passed too for the same cwd-discovery robustness the handshake call
-    uses.
+    ``GET /v1/sessions/{sid}/agent`` returns the pinned resolution the turn
+    path builds from: its built-in and Python tools by name, and its plugins'
+    MCP servers. A server's tools are listed live by ``GET /v1/mcp/handshake``
+    (``session_id`` makes the probe see the session's plugin servers) and
+    namespaced ``<server>_<tool>``, so this is the pre-turn PROOF that a
+    testing agent's servers reached this session's agent.
     """
 
-    params: dict[str, str] = {"session_id": sid}
-    if workspace_id:
-        params["workspace_id"] = workspace_id
-    resp = call("GET", "/v1/agents", params=params)
-    rows = resp.get("agents") or []
-    return {str(row.get("id") or ""): list(row.get("tools") or []) for row in rows}
+    view = call("GET", f"/v1/sessions/{sid}/agent")
+    resolution = view.get("resolution") or {}
+    agent_id = str((resolution.get("agent") or {}).get("id") or "")
+    tools = list(resolution.get("tool_names") or [])
+    servers = set(resolution.get("mcp_servers") or {})
+    if servers:
+        params: dict[str, str] = {"session_id": sid}
+        if workspace_id:
+            params["workspace_id"] = workspace_id
+        handshake = call("GET", "/v1/mcp/handshake", params=params)
+        for row in handshake.get("servers") or []:
+            name = str(row.get("name") or "")
+            if name in servers:
+                tools.extend(f"{name}_{tool}" for tool in row.get("tools") or [])
+    return {agent_id: tools}
 
 
 # --------------------------------------------------------------------------- #

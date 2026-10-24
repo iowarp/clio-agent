@@ -57,7 +57,7 @@ matcher; the green grid never substitutes for the trace read.
 
 **Case-specific harness wrinkle:** `main` never calls `web_search`/`web_fetch`
 itself — only its `researcher`/`critic` children do, each on its OWN session.
-`clio_sut.ClioAgent._to_run` (shared with earthscope/wildfire/case13) only
+`clio_sut.ClioAgent._to_run` (shared with earthscope/case13) only
 parses the TOP session's own `tools_called`, so
 `tests/test_real_cases/test_deep_researcher_case.py` re-fetches every direct
 child session's messages itself (`GET /v1/sessions` filtered by

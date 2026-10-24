@@ -109,6 +109,8 @@ The logical record families ARC persists are the single source of truth in
 | `conversations` | One `Conversation` per session (projected from the log). |
 | `invocations` | Per-turn `Invocation` records (projected from the log). |
 | `variants` | Optimizer prompt/program variants. |
+| `response_feedback` | Append-only ratings and comments on answers (`arc/response_feedback.py`). |
+| `task_index` | The task layer's per-owner index of task handles. |
 | `segments` | The live context plane: one record per `(session_id, scope)`, including the `_events` log chunks. |
 
 > Earlier revisions of this doc described `profiles` (dataset profiles) and
@@ -131,33 +133,62 @@ does not block writers). Metrics live under `.clio/agent/arc/lsm/sst_*.msgpack`.
 
 Durable records go through the `ARCStore` protocol (`arc/storage.py`):
 `put(kind, name, data, search_text=...)` / `get(kind, name)` /
-`scan(kind, prefix)` over opaque `bytes` keyed by `(kind, name)`. Any backend
-satisfying it plugs in. Two ship:
+`scan(kind, prefix)` over opaque `bytes` keyed by `(kind, name)`. One backend ships:
+**`ClioCoreStore` (`CLIO_ARC_STORE=cte`, the only value)**, the clio-core CTE binding.
+It connects to a shared per-host daemon (connect-or-spawn) and releases it at
+interpreter exit (see the shutdown note below). Data lives on one file tier at
+`<user_data_dir>/cte/hosts/<host>/storage.bin` with `persistence_level: "temporary"`,
+behind a DRAM working-memory budget, and the metadata write-ahead log
+(`metadata.log`) is replayed on restart. `arc/clio_core_durability.py` refuses a
+config without a durable tier. Measured on iowarp-core 2.3.2 (memory ledger P0-dur):
+a record written through the default topology reads back after a clean restart and
+after `kill -9` of the daemon.
 
-- **`ClioCoreStore` (default, `CLIO_ARC_STORE=cte`)** — the clio-core CTE (Convergent
-  Tiered Environment) binding. It connects to a shared per-user daemon
-  (connect-or-spawn) and stops it at interpreter exit via `atexit` (see the
-  shutdown note below). The daemon's DRAM tier is the live working set; a file
-  tier at `<user_data_dir>/cte/storage.bin` backs it. On-disk recovery of the
-  file tier is still WIP, so for guaranteed disk durability today prefer the
-  local backend.
-- **`LocalFSStore` (`CLIO_ARC_STORE=local`)** — plain files under the ARC data
-  dir: one `<kind>/<name>.msgpack` record per key, plus a `<kind>/<name>.search`
-  plain-text companion for the degraded keyword-overlap search. Durable on disk,
-  no external process.
+`LocalFSStore` and `CLIO_ARC_STORE=local` were deleted in the agent-loop rebuild (2026-09-28);
+`tests/test_arc/test_store_fail_stop.py` guards that. The in-process `_MemoryStore`
+in `arc/live.py` exists only for unit tests and has no search.
+
+### Search: the BM25 indexer
+
+`ARCStore.search` is BM25 over a record's plain-text `.text` companion, served by
+clio-core's optional `clio_cte_indexer` chimod (clio-core#905), an interposer in front
+of the CTE core. The seeded config composes it after the core
+(`arc/clio_core_indexer.py`), and the client binds to it with `CLIO_CTE_POOL`:
+
+```yaml
+  - mod_name: clio_cte_indexer
+    pool_name: clio_cte_indexer
+    pool_query: local
+    pool_id: "564.0"
+    restart: true
+    next_pool_id: "512.0"
+    tag_re: "(.+/)?(memories|segments)"
+    blob_re: ".*\\.text"
+    index_log_path: "<cte dir>/indexer_index.log"
+```
+
+Only the search companions of long-term memory documents and of the context
+plane's segment search records are tokenized; segment bodies and `_events` chunks
+are out of scope and cost one regex check per put. The index persists in its own
+snapshot and write-ahead log, so a restart or a killed daemon restores it without a
+rescan. A seeded config from before this was upgraded in place once. A config
+without the indexer cannot search: callers get the typed reason
+`clio_core_search_unavailable`, and `clio doctor` shows a required, red
+`clio_core_search` row with the remedy. Companions are padded with spaces to their
+size class, and a companion that shrinks across a class is deleted before it is
+rewritten, so a shorter document is never found by words it lost
+(`arc/companion_write.py`). Qualification: memory ledger P0, MD1 and MD9.
 
 **Selection is fail-loud, never a silent fallback** (`make_arc_store`,
-`arc/storage.py`). `cte` is the default; if its binding is absent or fails to
-initialize it **raises** — it does not quietly degrade to `LocalFSStore`, which
-would mask a misconfigured deploy and hide that ARC is no longer on clio-core.
-`LocalFSStore` is used only when `local` is selected explicitly. This is the
+`arc/storage.py`). If the clio-core binding is absent or fails to initialize,
+the store **raises** a typed `ArcStoreUnavailableError`. This is the
 `[[deliberate-config-fail-loud]]` policy.
 
 **Doctor surfaces the backend's real state.** `clio doctor` (`runtime/status.py`,
-`_probe_arc_clio_core` / `_probe_arc_local`) reports `arc` as a required integration:
+`_probe_arc_clio_core`) reports `arc` as a required integration:
 when the clio-core backend is selected but `iowarp_core` is not installed, or its
 shared daemon is not listening, the probe returns `UNAVAILABLE` (red) with a
-concrete next action (install the package or set `CLIO_ARC_STORE=local`) —
+concrete next action (install the package or start the daemon) —
 never a green "everything's fine" over a missing store.
 
 ### Shutdown story (atexit, deliberate)
@@ -176,12 +207,14 @@ while another process may still be attached. See the lifespan note in
 
 ARC is one materialization among several the running server keeps. Per RULE 4
 (honest topology), here is every durable location, its owner, and who reads it.
-The default paths below assume the LocalFS layout and the gact session store's
-default root `<cwd>/.clio/agent/`.
+The default paths below assume the gact session store's default root
+`<cwd>/.clio/agent/`.
 
 | # | Location | Owner | Path (default) | Reader |
 | --- | --- | --- | --- | --- |
-| 1 | ARC records (`ARC_KINDS`) | ARC (`arc/storage.py`) | CTE: daemon DRAM + `<user_data_dir>/cte/storage.bin`; LocalFS: `.clio/agent/arc/<kind>/*.msgpack` (+ `.search`) | `ARCMemory` reads/projections; `arc/context_compiler.py` |
+| 1 | ARC records (`ARC_KINDS`) | ARC (`arc/storage.py`) | CTE tags `<kind>` in the default namespace; data on `<user_data_dir>/cte/hosts/<host>/storage.bin` | `ARCMemory` reads/projections; `arc/context_compiler.py` |
+| 1a | Long-term memory (`memories`, `memory_versions`, `memory_proposals`, `memory_usage`) | `gact/memory/service.py`, the one writer | CTE tags `memory/<kind>` (namespace `memory`, its own kinds; not `ARC_KINDS`) on the same daemon and file tier | memory tools, the session snapshot, the memory page |
+| 1b | BM25 index of `.text` companions | clio-core `clio_cte_indexer` | `<user_data_dir>/cte/hosts/<host>/indexer_index.log` (+ `.wal`) | `ARCStore.search` |
 | 2 | LSM invocation metrics | ARC (`arc/lsm.py`) | `.clio/agent/arc/lsm/sst_*.msgpack` | `ARCMemory.store_invocation` range reads |
 | 3 | Session registry | gact (`gact/sessions.py`) | `.clio/agent/sessions.json` | gact session routes; TUI |
 | 4 | Message ledgers | gact (`gact/messages.py`, `MessageStore`) | `.clio/agent/messages/<session_id>.json` | gact message routes; the turn transcript prepend |
@@ -234,7 +267,7 @@ variables are:
 
 ```bash
 # Record backend selection (fail-loud; no silent fallback)
-CLIO_ARC_STORE=cte                    # "cte" (clio-core CTE, default) or "local" (file-based)
+CLIO_ARC_STORE=cte                    # "cte" (clio-core CTE), the only backend
 CLIO_ARC_STORE_CONFIG=                # path to a clio-core CTE config; blank = auto-discover
 
 # Live semantic-event log

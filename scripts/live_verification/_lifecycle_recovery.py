@@ -14,7 +14,7 @@ def recovery_cycle(
     call: Any,
     proof: Path,
     wid: str,
-    blueprint: str,
+    agent: str,
     server_pid: int,
     restart_service: Callable[[], int],
 ) -> dict[str, Any]:
@@ -24,7 +24,7 @@ def recovery_cycle(
     workspace = proof / "workspace"
     paths = evidence.worker_files(workspace, "recovery", "must-not-replay")
     sid = common.create_session(call, wid, "actual interrupted-run recovery")
-    common.activate_blueprint(call, sid, blueprint)
+    common.use_agent(call, sid, agent)
     command = common.quoted_command(sys.executable, str(paths["script"]))
     assignment = (
         f"Call shell_bash(command={command!r},background=true,timeout_s=0,cwd={str(workspace)!r}) "

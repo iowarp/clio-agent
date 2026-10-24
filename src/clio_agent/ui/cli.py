@@ -49,7 +49,7 @@ if str(_src_root) not in sys.path:
     sys.path.insert(0, str(_src_root))
 
 from clio_agent import __version__, serve
-from clio_agent.sdk import (
+from clio_agent.client import (
     ClioClient,
     ClioSDKError,
     Health,
@@ -756,7 +756,7 @@ def boot_client(
 
 
 def render_health(console: Console, health: Health) -> None:
-    """Render an SDK :class:`~clio_agent.sdk.Health` (the server's doctor view).
+    """Render an SDK :class:`~clio_agent.client.Health` (the server's doctor view).
 
     Reads the widened per-integration fields (#800): ``status`` plus
     ``summary`` / ``config_source`` / ``endpoint`` / ``next_action``. This is

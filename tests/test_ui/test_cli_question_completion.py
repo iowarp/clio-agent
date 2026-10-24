@@ -7,8 +7,8 @@ from typing import Any
 
 import pytest
 
-from clio_agent.sdk.events import MessageCompleted, StreamEvent
-from clio_agent.sdk.types import UserQuestion
+from clio_agent.client.events import MessageCompleted, StreamEvent
+from clio_agent.client.types import UserQuestion
 from clio_agent.ui.cli import ClioAgentCLI
 from tests.test_ui.test_cli_pause import _FakeStream, _recording_console
 

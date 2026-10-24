@@ -182,7 +182,8 @@ def test_fork_preserves_configuration_and_narrowing_policies(tmp_path: Path) -> 
             metadata={
                 "effort": "high",
                 "effort_source": "user",
-                "active_agent_blueprint_id": "blueprint",
+                "agent_ref": "clio/standard",
+                "agent_delta": {"add": [], "remove": ["visuals"]},
                 "mcp_tasks": [{"task_id": "pending"}],
                 "pinned": True,
             },
@@ -208,7 +209,8 @@ def test_fork_preserves_configuration_and_narrowing_policies(tmp_path: Path) -> 
         assert record.agent == {"id": "expert"}
         assert branch["session_kind"] == "branch"
         assert branch["effort"] == "high"
-        assert branch["active_blueprint_id"] == "blueprint"
+        assert record.metadata["agent_ref"] == "clio/standard"
+        assert record.metadata["agent_delta"] == {"add": [], "remove": ["visuals"]}
         assert not branch["pinned"]
         assert "mcp_tasks" not in record.metadata
         assert any(

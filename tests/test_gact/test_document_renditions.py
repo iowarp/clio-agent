@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+from collections.abc import Iterator
 from pathlib import Path
 from typing import cast
 
@@ -12,13 +13,26 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from clio_agent.gact import context
+from clio_agent.gact.agents.resolution import session_agent_def
+from clio_agent.gact.agents.tool_instrumentation import pop_declared_structured_content
 from clio_agent.gact.app import build_app
 from clio_agent.gact.artifacts.designation_tool import build_create_artifact_tool
-from clio_agent.gact.catalog import _builtin_main_agent
 from clio_agent.gact.documents import renditions
 from clio_agent.gact.documents.profiles import document_format
 from clio_agent.runtime.document_stack.process import _windows_dacl_protected
 from tests.test_gact.test_document_artifacts import _pin, _workspace_session
+
+
+@pytest.fixture(autouse=True)
+def _consume_declared_structured_content() -> Iterator[None]:
+    """Stand in for the tool boundary these tests bypass by calling ``.func`` directly.
+
+    The artifact tool declares its structured result for the boundary to pop. Left
+    in the worker's context, it was read as a later test's declaration.
+    """
+    yield
+    pop_declared_structured_content()
+
 
 pytestmark = pytest.mark.usefixtures("host_agent_executor")
 
@@ -53,7 +67,7 @@ def test_batch_preview_overrides_remain_bound_to_their_source_after_a_rejected_i
         app_token = context.set_app(cast(FastAPI, client.app))
         session_token = context.set_session_id(session_id)
         try:
-            result = build_create_artifact_tool(_builtin_main_agent()).func(
+            result = build_create_artifact_tool(session_agent_def(client.app, session_id)).func(
                 artifacts=[
                     {"path": str(sources[0]), "kind": "report", "pdf_preview": first},
                     {"path": str(root / "missing.docx"), "kind": "report"},
@@ -144,7 +158,7 @@ def test_unavailable_workspace_scratch_keeps_the_accepted_source_artifact(tmp_pa
         app_token = context.set_app(cast(FastAPI, client.app))
         session_token = context.set_session_id(session_id)
         try:
-            result = build_create_artifact_tool(_builtin_main_agent()).func(
+            result = build_create_artifact_tool(session_agent_def(client.app, session_id)).func(
                 path=str(source), kind="report"
             )
         finally:
@@ -180,7 +194,7 @@ def test_retained_pdf_restores_an_agent_addressable_workspace_copy_without_recon
         app_token = context.set_app(cast(FastAPI, client.app))
         session_token = context.set_session_id(session_id)
         try:
-            tool = build_create_artifact_tool(_builtin_main_agent()).func
+            tool = build_create_artifact_tool(session_agent_def(client.app, session_id)).func
             first = tool(path=str(source), kind="report")["pdf_previews"][0]
             preview_path = Path(first["path"])
             assert preview_path.resolve().is_relative_to(root)
@@ -282,7 +296,7 @@ def test_artifact_tool_publishes_optional_pdf_and_preserves_source_on_failure(
         app_token = context.set_app(app)
         session_token = context.set_session_id(session_id)
         try:
-            result = build_create_artifact_tool(_builtin_main_agent()).func(
+            result = build_create_artifact_tool(session_agent_def(client.app, session_id)).func(
                 path=str(source), kind="report", pdf_preview=preview_option
             )
         finally:

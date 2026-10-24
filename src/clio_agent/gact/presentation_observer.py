@@ -37,7 +37,7 @@ def _human_execution_error(error: str) -> str:
     code = str(envelope.get("error") or "")
     details = envelope.get("details", {})
     detail_map = details if isinstance(details, Mapping) else {}
-    if code == "memory_policy_denied":
+    if code == "session_recall_policy_denied":
         if detail_map.get("policy_decision") == "deny_other_workspace":
             return (
                 "This session belongs to another workspace and is not accessible "

@@ -52,10 +52,14 @@ def bind_folder_gate(app: FastAPI, gate: Callable[..., str]) -> Callable[..., st
 def requested_folders(name: str, args: Mapping[str, Any]) -> list[str]:
     """Return denied folders for declared built-in path arguments, without reading files."""
     paths: list[tuple[str, bool]] = []
-    if name in {"fs_read_file", "fs_propose_edit", "fs_apply_edit_write"}:
+    if name in {"fs_read_file", "fs_write_file", "fs_edit_file"}:
         value = args.get("filepath")
         if isinstance(value, str) and value:
             paths.append((value, False))
+    elif name in {"fs_list_directory", "fs_search_text"}:
+        value = args.get("path") or "."
+        if isinstance(value, str) and value:
+            paths.append((value, Path(value).expanduser().is_dir()))
     elif name == "shell_bash":
         cwd = args.get("cwd")
         if isinstance(cwd, str) and cwd:
@@ -78,7 +82,12 @@ def requested_folders(name: str, args: Mapping[str, Any]) -> list[str]:
         # Shell path declarations describe access, not write intent. The child
         # fence enforces writes; never turn an approved source read into a root
         # grant (which would incorrectly request read/write access).
-        reads_source = name in {"fs_read_file", "shell_bash"}
+        reads_source = name in {
+            "fs_read_file",
+            "fs_list_directory",
+            "fs_search_text",
+            "shell_bash",
+        }
         policy._check_connected_storage(path, field="path", write=not reads_source)
         from clio_agent.tools.file_policy import _has_symlink
 

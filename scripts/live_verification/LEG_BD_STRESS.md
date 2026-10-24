@@ -2,23 +2,23 @@
 
 **Owner addendum** (same rules as the rest of `scripts/live_verification/`:
 new files only, no live runs from this authoring session, no commits): before
-spending the real marketplace `deep-researcher` pack's expensive multi-session
+spending the real marketplace `deep-researcher` agent's expensive multi-session
 run (`leg_d_deep_researcher.md`, driven separately by the orchestrator
-against `external/clio-agent-marketplace/deep-researcher/` — **not** this
-script's scope), rehearse the SAME two-server, multi-step shape that pack
-relies on against a cheap, deterministic, purpose-built pack. This is the
-STRESS GATE for legs B and D: it should go green before the real pack is run.
+against `clio/deep-researcher` — **not** this script's scope), rehearse the
+SAME two-server, multi-step shape that agent relies on against a cheap,
+deterministic, purpose-built testing agent. This is the STRESS GATE for legs
+B and D: it should go green before the real agent is run.
 
 ## What it proves
 
-`agents/v2-stress/` declares BOTH the clio-kit `web` server (real network
-fetch/search, task=required — the same mechanics `agents/web-testing/`
-proves) AND the synthetic `v2ex` exerciser (`tests/test_tools/
-mcp_exerciser.py` — the same mechanics `agents/v2ex-testing/` and
-`agents/v2ex-avenues/` prove) on ONE `main` expert (six declared tools:
-`web_fetch`, `web_search`, `v2ex_task_echo`, `v2ex_task_optional_echo`,
-`v2ex_guarded_input`, `v2ex_staller` — within CLAUDE.md's RULE 5 5-7-tool
-ceiling).
+`agents/v2-stress/` carries BOTH the default marketplace's `web` plugin (the
+clio-kit `web` server: real network fetch/search, task=required — the same
+mechanics `agents/web-testing/` proves) AND its own plugin declaring the
+synthetic `v2ex` exerciser (`tests/test_tools/mcp_exerciser.py` — the same
+mechanics `agents/v2ex-testing/` and `agents/v2ex-avenues/` prove) on ONE
+agent. The readiness gate requires the six tools the turn uses: `web_fetch`,
+`web_search`, `v2ex_task_echo`, `v2ex_task_optional_echo`,
+`v2ex_guarded_input`, `v2ex_staller`.
 
 `leg_bd_stress.py` drives ONE session through ONE turn that forces, in a
 single agent flow:
@@ -50,7 +50,7 @@ requirement 2 in a real run. The HTML URL is already proven live by
 # Print the resolved prompt/nonce/needed-tools and exit. Boots nothing.
 uv run python scripts/live_verification/leg_bd_stress.py --dry-run
 
-# Boot the server, materialize+install+activate the v2-stress pack, assert
+# Boot the server, materialize+install+trust+select the v2-stress agent, assert
 # BOTH servers ready at handshake and all six tools resolved on the agent.
 # Zero LM spend.
 uv run python scripts/live_verification/leg_bd_stress.py --plumbing-only
@@ -87,4 +87,4 @@ exactly which of the five steps failed, plus `evidence` for the raw tool-call
 rows. A failure here BEFORE the real `deep-researcher` run is more actionable
 signal than a failure discovered only after that far more expensive,
 multi-session run: this stress gate isolates whether the two-server,
-multi-tool-call-in-one-turn SHAPE itself works before blaming the pack.
+multi-tool-call-in-one-turn SHAPE itself works before blaming the agent.

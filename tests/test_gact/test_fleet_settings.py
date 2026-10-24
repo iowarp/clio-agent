@@ -40,7 +40,9 @@ def test_independent_choices_persist_and_inherit_exact_caller(
     conf.reload()
     set_config("providers.private_key", "private-test-value")
     current = fleet_settings()
-    assert current["judges"] == dict.fromkeys(("goals", "variants", "permissions"))
+    assert current["judges"] == dict.fromkeys(
+        ("goals", "variants", "permissions", "memory_extract", "memory_consolidate")
+    )
     caller, adapter = object(), object()
     for role in ("goals", "variants", "permissions"):
         assert judge_route(role, caller, adapter) == (caller, adapter)

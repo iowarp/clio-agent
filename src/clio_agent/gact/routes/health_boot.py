@@ -1,8 +1,8 @@
 """Boot-time doctor collection for ``/v1/health`` (owner module).
 
 The first full doctor collection in a fresh server process is cold: it imports the
-tool-server stack to list the gateway and parses every installed Agent Blueprint to
-check the declared MCP launchers (~2-5 s on a cold host). ``/v1/health`` must
+tool-server stack to list the gateway and reads every installed plugin's MCP servers
+to check the declared launchers (~2-5 s on a cold host). ``/v1/health`` must
 answer within a second of the port binding whatever that costs (the ``clio start``
 launcher probes with a 1 s timeout; ares, 2026-09-25), and a probe that times out
 must not leave another cold collection running per retry.

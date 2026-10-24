@@ -645,25 +645,20 @@ class RuntimeProbe:
                 port=runtime.port,
                 log_path=str(runtime.log_path),
             )
-        # 905: "semantic-search" requires the indexer chimod to be composed;
-        # upgrading to a wheel that ships it does not change an existing config.
-        from clio_agent.arc import clio_core_config  # noqa: PLC0415 - keep import light
+        # 905: "semantic-search" needs the indexer chimod; its absence is the required
+        # clio_core_search row (runtime/clio_core_health.py), not a note on this one.
+        from clio_agent.arc import clio_core_indexer  # noqa: PLC0415 - keep import light
 
         capabilities = ["conversations", "invocations", "metrics", "variants"]
         summary = (
             "ARC clio-core backend is live: iowarp_core is installed and the shared "
             f"clio-core daemon is listening on port {runtime.port}."
         )
-        if clio_core_config.indexer_chimod_present(env=self.env):
+        if clio_core_indexer.indexer_chimod_present(env=self.env):
             capabilities.append("semantic-search")
         else:
-            issue = clio_core_config.UPSTREAM_INDEXER_ISSUE
-            summary += (
-                f" Semantic (BM25) scope search is unavailable (typed search_unavailable) -- the "
-                f"clio_cte_indexer chimod is not composed (clio-core#905: {issue})."
-            )
-            details = {**details, "reason": clio_core_config.CLIO_CORE_SEARCH_INDEXER_ABSENT}
-            details["upstream"] = issue
+            summary += " Search is unavailable: see the clio_core_search row."
+            details = {**details, "reason": clio_core_indexer.CLIO_CORE_SEARCH_UNAVAILABLE}
         return IntegrationStatus(
             name="arc",
             state=IntegrationState.READY,

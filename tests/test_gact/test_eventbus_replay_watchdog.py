@@ -173,7 +173,9 @@ def test_wedged_session_times_out_while_another_session_is_busy(
         neighbor = threading.Thread(target=busy_neighbor, name="busy-neighbor")
         neighbor.start()
         try:
-            assistant = complete_turn(client, wedged_sid, "hi", timeout=5.0)
+            # The settle bound is complete_turn's slow-runner default: the assertions
+            # below, not the wait, tell a fired watchdog from a late answer.
+            assistant = complete_turn(client, wedged_sid, "hi")
         finally:
             stop.set()
             neighbor.join(timeout=2.0)
@@ -235,7 +237,9 @@ def test_wedged_session_times_out_while_neighbor_holds_lm_call(
         neighbor = threading.Thread(target=neighbor_lm_call, name="neighbor-lm")
         neighbor.start()
         try:
-            assistant = complete_turn(client, wedged_sid, "hi", timeout=5.0)
+            # The settle bound is complete_turn's slow-runner default: the assertions
+            # below, not the wait, tell a fired watchdog from a late answer.
+            assistant = complete_turn(client, wedged_sid, "hi")
         finally:
             stop.set()
             neighbor.join(timeout=2.0)

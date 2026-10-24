@@ -1,0 +1,1 @@
+{"$schema": "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json", "name": "a2ui-basic", "version": "1.0.0", "description": "Test-only plugin naming the builtin Basic A2UI catalog, so an agent carrying it declares [clio-workspace (from core), basic].", "extensions": {"ai.iowarp.clio": {"catalogs": ["basic"]}}}

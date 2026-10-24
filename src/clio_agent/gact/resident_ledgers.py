@@ -611,8 +611,8 @@ def _estimate_bytes(messages: list["Message"]) -> int:
     Uses each message's JSON serialization (``model_dump_json``) so the byte cap —
     the PRIMARY memory guard — accounts for EVERY payload-bearing field, not just
     top-level ``part.text``: base64 image ``data``, tool ``input`` and nested
-    ``content`` parts (where ``tool_result`` bodies live), ``unified_diff`` /
-    ``new_content`` file diffs, compaction ``summary``, ``thought``, and per-message
+    ``content`` parts (where ``tool_result`` bodies live), ``unified_diff``
+    file diffs, compaction ``summary``, ``thought``, and per-message
     / per-part ``metadata``. Those heavy payloads are exactly what #889 exists to
     bound; the old text-only estimate under-counted a tool-result-heavy or
     multimodal ledger by orders of magnitude, letting the byte cap be effectively
@@ -744,6 +744,9 @@ def build_resident_ledger_set(app: "FastAPI") -> ResidentLedgerSet:
     registry with ``transcript.file`` off -- :mod:`clio_agent.gact.transcript_file`).
     """
 
+    from clio_agent.gact.evicted_session import (  # noqa: PLC0415 - avoid import cycle
+        forget_evicted_session,
+    )
     from clio_agent.gact.transcript_projection import (  # noqa: PLC0415 - avoid import cycle
         materialize_ledger,
     )
@@ -759,25 +762,7 @@ def build_resident_ledger_set(app: "FastAPI") -> ResidentLedgerSet:
         # list -- the SAME bytes this set's max_bytes cap governs -- so it
         # must not outlive the ledger it was folded from. One bound, no
         # second knob: drop it exactly when THIS set evicts the session.
-        on_evict=lambda sid: _forget_a2ui_projection(app, sid),
+        on_evict=lambda sid: forget_evicted_session(
+            app, sid, is_active=lambda: _session_is_active(app, sid)
+        ),
     )
-
-
-def _forget_a2ui_projection(app: "FastAPI", sid: str) -> None:
-    """Drop a just-evicted session's A2UI projection cache entry, if any.
-
-    ``app.state.a2ui_store`` is always set before this set is built (see
-    ``app.py``'s boot order), but stays defensive against a future reorder or
-    a test harness that wires a bare ``ResidentLedgerSet`` without it.
-
-    Calls ``forget_projection``, NOT ``forget_session`` (S8 review round 3,
-    issue #1374 item A, HIGH): eviction can fire for a session mid-write on
-    ANOTHER thread, and ``forget_session`` also drops the session's write
-    lock -- letting a concurrent second writer mint a fresh one and enter
-    the same critical section. Only a genuine session DELETE may drop the
-    lock; see ``A2UIStore.forget_projection``'s own docstring.
-    """
-
-    store = getattr(app.state, "a2ui_store", None)
-    if store is not None:
-        store.forget_projection(sid)

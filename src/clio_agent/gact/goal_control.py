@@ -73,7 +73,11 @@ async def maintain_goal_controls(app: Any) -> None:
                 expire_goal_budget(app, session.id, goal)
 
     await asyncio.to_thread(maintain)
-    app.state.conversations.signal_pending()
+    # The first scheduler tick can run before boot has built the conversation runtime;
+    # there is nothing pending to signal yet, and the next tick signals as usual.
+    conversations = getattr(app.state, "conversations", None)
+    if conversations is not None:
+        conversations.signal_pending()
 
 
 def pause_failed_goal(app: Any, sid: str, reason: str) -> None:

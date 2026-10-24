@@ -1,6 +1,6 @@
 """Read CMF lineage over the server's REST surface, with no local MLMD store.
 
-The query half of deployment shape (a). Adopted from the spotter-ai pack's
+The query half of deployment shape (a). Adopted from the spotter plugin's
 read-only CMF provider (``spotter_ai/providers/cmf.py``), which was written
 against the REST surface a *running* cmf-server exposes -- note that surface is
 NOT the one in the cmflib 0.1.0 sdist (which has no ``/api/pipeline-stages``);
@@ -41,7 +41,7 @@ import httpx
 from clio_agent.gact.artifacts.provenance.cmf_encoding import decode_property_value
 from clio_agent.gact.artifacts.provenance.cmf_worker import _bounded_component
 
-#: Row cap per listing call, mirroring the pack's bound.
+#: Row cap per listing call, mirroring the plugin reader's bound.
 _ROW_LIMIT = 10_000
 
 
@@ -351,7 +351,7 @@ def lineage_display_id(name: str, artifact_type: str) -> str:
     The lineage endpoint identifies artifacts by a label derived from the stored
     name and type, not by the name itself, so a reader has to derive the same
     label to join the two listings. Adopted verbatim in behaviour from the
-    spotter-ai pack's reader, which was calibrated against the deployed server.
+    spotter plugin's reader, which was calibrated against the deployed server.
 
     Args:
         name: The artifact's stored CMF name.

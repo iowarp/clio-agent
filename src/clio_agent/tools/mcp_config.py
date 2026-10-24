@@ -1,9 +1,10 @@
 """Standard MCP server declarations — low-friction, human-writable.
 
 clio-agent core does not hardcode domain tool servers. Domain/case tools are
-ordinary MCP servers, consumed like any installable MCP. A marketplace pack
-declares the servers it needs right in its ``AGENT.md`` frontmatter, as a simple
-``name: <command-or-url>`` map — no JSON, no nested objects required:
+ordinary MCP servers, consumed like any installable MCP. A plugin declares the
+servers it needs in its ``mcp.json`` (Agent Plugins 1.0.0, see
+``clio_agent.plugins.servers``); a person declares their own in ``mcp.yaml``, as
+a simple ``name: <command-or-url>`` map — no JSON, no nested objects required:
 
     mcp_servers:
       files: npx -y @modelcontextprotocol/server-filesystem /data
@@ -16,7 +17,7 @@ For the rare case that needs env vars, headers, or OAuth, a mapping value is
 also accepted (``{command, args, env}`` or ``{url, headers, auth}``), but the string form is
 the documented, default surface.
 
-Scopes: workspace ``.clio-agent/shared/mcp.yaml`` > user config > pack > built-ins.
+Scopes: workspace ``mcp.yaml`` > user config > the session's plugin servers > built-ins.
 
 This module is parsing only; ``transport_for`` is the single FastMCP glue that
 turns a spec into a transport the existing ``execution.py`` machinery accepts.
@@ -31,6 +32,7 @@ import shlex
 import shutil
 import sys
 import threading
+import weakref
 from collections.abc import Awaitable, Callable, Mapping, Sequence
 from dataclasses import dataclass, field, replace
 from pathlib import Path
@@ -59,7 +61,6 @@ __all__ = [
     "expand_env",
     "spec_from_declaration",
     "specs_from_mapping",
-    "resolve_expert_servers",
     "load_mcp_servers",
     "transport_for",
     "transport_from_spec",
@@ -107,7 +108,7 @@ class MCPTransportError(ValueError):
     """A raw ``{transport, command, args, url}`` dict spec cannot become a transport.
 
     Raised by :func:`transport_from_spec` when the stored spec of a REST-installed
-    or agent-blueprint MCP server is unusable: a stdio spec with no ``command``, an
+    MCP server is unusable: a stdio spec with no ``command``, an
     http/streamable-http/sse spec with no ``url``, or an unknown ``transport`` value
     outside the single canonical accepted set ``{stdio, http, streamable-http,
     sse}``. Callers map it to a client-actionable 4xx (e.g. ``mcp_spec_invalid``)
@@ -405,51 +406,11 @@ def specs_from_mapping(
     source: str,
     env: Mapping[str, str] | None = None,
 ) -> dict[str, MCPServerSpec]:
-    """Build specs from a ``name -> declaration`` mapping (e.g. AGENT.md frontmatter)."""
+    """Build specs from a ``name -> declaration`` mapping (e.g. a plugin's servers)."""
     return {
         str(name): spec_from_declaration(str(name), value, source=source, env=env)
         for name, value in servers.items()
     }
-
-
-def resolve_expert_servers(
-    global_specs: Mapping[str, MCPServerSpec],
-    selection: Any,
-    *,
-    env: Mapping[str, str] | None = None,
-    source: str = "expert",
-) -> dict[str, MCPServerSpec]:
-    """Resolve the MCP servers a single expert gets in its context.
-
-    Two-level model: ``AGENT.md`` declares the pack-global servers (``global_specs``);
-    each expert's frontmatter ``mcp_servers`` then says which it wants locally:
-
-    - a **list of names** -> pick those from ``global_specs`` (an undeclared name
-      is recorded as a validation error, not silently dropped),
-    - a **mapping** ``name -> command/url`` -> expert-LOCAL servers (added to, or
-      overriding by name, the global set for this expert only).
-
-    An expert that declares no ``mcp_servers`` simply gets nothing extra; its
-    fine-grained tool visibility still comes from its ``tools:`` list.
-    """
-    out: dict[str, MCPServerSpec] = {}
-    if isinstance(selection, Mapping):
-        return specs_from_mapping(selection, source=source, env=env)
-    if isinstance(selection, (list, tuple)):
-        for raw in selection:
-            name = str(raw).strip()
-            if not name:
-                continue
-            if name in global_specs:
-                out[name] = global_specs[name]
-            else:
-                out[name] = MCPServerSpec(
-                    name=name,
-                    transport="stdio",
-                    source=source,
-                    validation_errors=(f"expert references undeclared mcp server {name!r}",),
-                )
-    return out
 
 
 def _read_mcp_yaml(path: Path) -> dict[str, Any]:
@@ -488,14 +449,14 @@ def load_mcp_servers(
     *,
     home: Path | None = None,
     cwd: Path | None = None,
-    pack_servers: Mapping[str, Mapping[str, Any]] = (),  # type: ignore[assignment]
+    plugin_servers: Mapping[str, Mapping[str, Any]] = (),  # type: ignore[assignment]
     env: Mapping[str, str] | None = None,
 ) -> dict[str, MCPServerSpec]:
     """Discover + merge declared MCP servers across all scopes.
 
     Precedence (highest wins, merged whole by name): workspace
-    ``<cwd>/.clio/mcp.yaml`` > user ``<config>/clio-agent/mcp.yaml`` > pack
-    frontmatter (``pack_servers`` = ``{pack_id: {name: declaration}}``). Built-in
+    ``<cwd>/.clio/mcp.yaml`` > user ``<config>/clio-agent/mcp.yaml`` > the
+    session's plugin servers (``plugin_servers`` = ``{plugin_id: {name: declaration}}``). Built-in
     ``fs``/``shell`` are provided by core, not part of this map.
     """
     home = home or Path.home()
@@ -506,9 +467,9 @@ def load_mcp_servers(
         _UNREADABLE_MCP_YAML.clear()
 
     # lowest precedence first
-    for pack_id, servers in dict(pack_servers).items():
+    for plugin_id, servers in dict(plugin_servers).items():
         if isinstance(servers, Mapping):
-            merged.update(specs_from_mapping(servers, source=f"pack:{pack_id}", env=env))
+            merged.update(specs_from_mapping(servers, source=f"plugin:{plugin_id}", env=env))
     from clio_agent import paths  # noqa: PLC0415 - avoid import cycle at module load
 
     user_mcp = paths.user_config_dir_for(home, lookup) / "mcp.yaml"
@@ -670,6 +631,9 @@ def transport_for(spec: MCPServerSpec, *, cwd: str | None = None) -> Any:
             cwd=cwd,
             **confined.popen_kwargs,
         )
+        # A rebuilt fleet registers a new channel for this namespace; the replaced
+        # transport's channel closes when that transport goes, as it respawns on it.
+        weakref.finalize(transport, confined.release)
         desktop_log = dmr.desktop_mcp_log_file(spec.name)
         if desktop_log is not None and hasattr(transport, "log_file"):
             transport.log_file = desktop_log
@@ -687,14 +651,13 @@ def transport_for(spec: MCPServerSpec, *, cwd: str | None = None) -> Any:
 
 
 # The single canonical accepted transport set for raw dict specs. Every
-# REST-installed / agent-blueprint MCP server routes its construction through
+# REST-installed MCP server routes its construction through
 # :func:`transport_from_spec`, so this set is the one source of truth — no more
 # per-site ``{http}`` vs ``{http, streamable-http}`` vs ``{http, streamable-http,
 # sse}`` divergence. ``http``/``streamable-http`` share the Streamable-HTTP wire
 # protocol (``StreamableHttpTransport``); ``sse`` is a DISTINCT FastMCP wire
 # protocol (``SSETransport``) and is constructed separately in
-# :func:`transport_from_spec`. All three are accepted here and by the
-# agent-blueprint descriptor validator alike.
+# :func:`transport_from_spec`. All three are accepted here.
 _STREAMABLE_HTTP_TRANSPORTS = frozenset({"http", "streamable-http"})
 _HTTP_TRANSPORTS = _STREAMABLE_HTTP_TRANSPORTS | frozenset({"sse"})
 _CANONICAL_TRANSPORTS = frozenset({"stdio"}) | _HTTP_TRANSPORTS
@@ -729,7 +692,7 @@ def transport_from_spec(spec: Mapping[str, Any]) -> Any:
     """Turn a raw MCP runtime dict into a validated FastMCP transport.
 
     This is the ONE construction site for the runtime third-party MCP surface —
-    the REST-installed servers and agent-blueprint MCP descriptors stored on
+    the REST-installed MCP server specs stored on
     ``app.state.external_mcp_servers[sid]["spec"]``. It complements
     :func:`transport_for` (which takes the typed :class:`MCPServerSpec` and does
     ``which()`` / cwd / ``CLIO_KIT_ARTIFACTS`` pinning) by covering the dict-spec

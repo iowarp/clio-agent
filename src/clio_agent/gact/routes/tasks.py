@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from typing import Any, Literal
 from uuid import uuid4
 
@@ -18,6 +19,7 @@ from clio_agent.arc.task_types import (
 )
 from clio_agent.errors import ClioError
 from clio_agent.gact.auth import configured_bearer_token, has_valid_bearer
+from clio_agent.gact.fleet.child_model import recorded_choice
 from clio_agent.gact.human_controls import intervene
 from clio_agent.gact.native_work import now
 from clio_agent.gact.off_loop import run_off_loop
@@ -94,11 +96,18 @@ def process_view(app: Any, task: dict[str, Any]) -> dict[str, Any]:
             "waiting_for_input": "waiting_user",
         }.get(activity, activity or status)
     )
+    agent_task = task["kind"] in {"Session", "Subagent"}
+    child = app.state.sessions.get(owner["session_id"]) if agent_task else None
+    flow = ((getattr(child, "metadata", None) or {}).get("agent_flow") or {}) if child else {}
     return {
         **task,
         "id": task["handle"],
         "handle_id": task["handle"],
         "task_kind": task["kind"],
+        # A child conversation that runs a flow: the UI opens its run view, not a chat.
+        "flow": {"id": str(flow["id"])} if flow.get("id") else None,
+        # The model the child runs on and why, recorded when it was created.
+        "model_choice": recorded_choice(app, owner["session_id"]) if agent_task else None,
         "kind": "agent"
         if task["kind"] in {"Session", "Subagent"}
         else "question"
@@ -136,6 +145,7 @@ def agent_task_view(app: Any, task: dict[str, Any]) -> dict[str, Any]:
         "updated_at": task["updated_at"],
         "run_label": task["label"],
         "error_reason": process["error_reason"],
+        "model_choice": process["model_choice"],
     }
 
 
@@ -246,6 +256,29 @@ def register_task_routes(app: FastAPI) -> None:
             )
         except ValueError as error:
             raise HTTPException(404, str(error)) from error
+
+    @app.get("/v1/sessions/{sid}/tasks/{handle}/flow")
+    async def flow(sid: str, handle: str) -> dict[str, Any]:
+        """The flow run checkpointed under this task: the live plan, calls, events, outcome."""
+        from clio_agent.flows.run_view import flow_run
+        from clio_agent.gact.fleet.run_usage import call_models, run_spend
+
+        def read() -> tuple[str, dict[str, Any] | None]:
+            task = TaskAccess(app.state.task_history, caller(sid)).require(handle, "read")
+            run = flow_run(app.state.task_history, task.handle)
+            if run is not None:
+                run["usage"] = {"calls": call_models(app, run["calls"])}
+            return task.owner.session_id, run
+
+        try:
+            run_session, run = await app.state.task_history.io.run(read)
+        except ValueError as error:
+            raise HTTPException(404, str(error)) from error
+        if run is None:
+            raise HTTPException(404, f"No flow run is recorded under {handle}")
+        # Spend reads transcripts: off the task history's lane.
+        run["usage"].update(await asyncio.to_thread(run_spend, app, run_session))
+        return run
 
     @app.get("/v1/sessions/{sid}/tasks/mailbox")
     async def mailbox(sid: str) -> dict[str, Any]:

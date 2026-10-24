@@ -336,8 +336,15 @@ def test_proxy_for_spec_routes_backend_through_factory(
     stub = FastMCP("stub")
 
     def spy(
-        target: Any, *, handlers: Any = None, capabilities: Any = None, client_cls: Any = None
+        target: Any,
+        *,
+        handlers: Any = None,
+        capabilities: Any = None,
+        client_cls: Any = None,
+        list_changed_namespace: str = "",
     ) -> Any:  # noqa: A002
+        # The backend records the server's tools/list_changed under its namespace.
+        assert list_changed_namespace == "ext"
         calls.append((target, handlers, capabilities, client_cls))
         return Client(stub)  # a real client (has .new()) so the proxy accepts it
 

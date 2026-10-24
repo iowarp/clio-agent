@@ -152,7 +152,7 @@ def test_side_session_allows_declared_read_only_tools(tmp_path: Path) -> None:
     ("tool", "context"),
     [
         # Native tool whose catalog annotations declare a write.
-        ("fs_apply_edit_write", None),
+        ("fs_write_file", None),
         # Effectful native tool (open world, no read tag).
         ("shell_bash", None),
         # External MCP tool that declares a side effect.
@@ -270,7 +270,7 @@ def test_side_session_toolset_keeps_only_declared_read_only_natives(tmp_path: Pa
             _native("spawn_agent_task"),  # effectful native: never reaches the gate
             _native("raise_alert_card"),
             _native("workspace_resource_read", read_only=True),
-            _mcp_bridged("fs_apply_edit_write"),  # gated per call instead
+            _mcp_bridged("fs_write_file"),  # gated per call instead
         ]
         app_token = gact_context.set_app(app)
         try:
@@ -287,9 +287,9 @@ def test_side_session_toolset_keeps_only_declared_read_only_natives(tmp_path: Pa
         finally:
             gact_context.reset(app_token)
 
-    assert _names(side_tools) == ["fs_apply_edit_write", "workspace_resource_read"]
+    assert _names(side_tools) == ["fs_write_file", "workspace_resource_read"]
     assert _names(parent_tools) == [
-        "fs_apply_edit_write",
+        "fs_write_file",
         "raise_alert_card",
         "spawn_agent_task",
         "workspace_resource_read",
@@ -304,17 +304,17 @@ def test_natives_default_to_effectful_and_the_read_only_set_is_declared() -> Non
     assert getattr(build_goal_status_tool().func, READ_ONLY_ATTR) is True
 
 
-def test_proposed_edits_cannot_be_applied_from_a_side_session(tmp_path: Path) -> None:
-    """A read-tagged proposal tool may draft an edit; applying it is a write, refused."""
+def test_a_file_change_cannot_be_undone_from_a_side_session(tmp_path: Path) -> None:
+    """An aside is read-only: the Undo route is a write, so it is refused there."""
 
     app = build_app(sessions_path=tmp_path / "s.json")
     with TestClient(app) as client:
         side = _open_side(client, _parent_with_history(client, app)).json()["id"]
-        app.state.pending_diffs[side] = [
-            {"path": "notes.txt", "status": "pending", "new_content": "fajitas\n"}
+        app.state.file_changes[side] = [
+            {"id": "chg_1", "path": "notes.txt", "status": "applied", "created": True}
         ]
-        resp = client.post(f"/v1/sessions/{side}/diffs/apply", json={})
+        resp = client.post(f"/v1/sessions/{side}/diffs/revert", json={"id": "chg_1"})
 
     assert resp.status_code == 422, resp.text
     assert resp.json()["error"]["error"] == "side_session_read_only"
-    assert app.state.pending_diffs[side][0]["status"] == "pending"
+    assert app.state.file_changes[side][0]["status"] == "applied"

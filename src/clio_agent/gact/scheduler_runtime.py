@@ -163,6 +163,12 @@ def _scheduler_tick_once(app: "FastAPI") -> None:
         return
     for sch in due:
         _fire_one(app, sch)
+    try:
+        from clio_agent.gact.memory.background import memory_tick  # noqa: PLC0415
+
+        memory_tick(app, now)  # long-term memory's background pass (idle sessions)
+    except Exception:  # noqa: BLE001 - the tick loop must survive the memory pass
+        logger.error("scheduler tick error reason=memory_pass_failed", exc_info=True)
 
 
 def _fire_one(app: "FastAPI", sch: Any) -> None:
@@ -209,7 +215,9 @@ async def _scheduler_tick(app: "FastAPI") -> None:
             from clio_agent.gact.goal_control import maintain_goal_controls
 
             await maintain_goal_controls(app)
-        except (OSError, RuntimeError):
+        except Exception:  # noqa: BLE001 - one failed preparation must not end the loop
+            # Anything escaping here would end the task for good, and with it every
+            # scheduled turn and the memory pass, with nothing logged.
             logger.error("scheduler tick delayed reason=control_preparation_failed", exc_info=True)
         else:
             await asyncio.to_thread(_scheduler_tick_once, app)

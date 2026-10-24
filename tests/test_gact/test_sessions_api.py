@@ -119,9 +119,7 @@ def test_session_context_policy_reports_current_compartment_semantics(
     assert body["memory_scope"] == "session"
     assert body["writable_scope"] == "session"
     assert body["cross_session_read_available"] is True
-    assert body["cross_session_read_endpoint"] == (
-        f"/v1/sessions/{sid}/memory/tools/search-sessions"
-    )
+    assert body["cross_session_read_endpoint"] == (f"/v1/sessions/{sid}/session-recall/search")
     assert body["requires_user_consent"] is True
     assert body["metadata"]["source"] == "clio_backend_default"
     assert body["metadata"]["session_mode"] == "plan"
@@ -435,7 +433,7 @@ def test_post_v1_sessions_returns_created_session(client: TestClient) -> None:
         json={
             "workspace_id": "ws_default",
             "title": "my session",
-            "agent": {"id": "code_reviewer", "mode": "review"},
+            "agent": {"id": "clio/standard"},
             "model": {
                 "provider_id": "lm_studio",
                 "model_id": "qwopus3.5-9b-v3",
@@ -449,7 +447,8 @@ def test_post_v1_sessions_returns_created_session(client: TestClient) -> None:
     assert body["title"] == "my session"
     assert body["status"] == "idle"
     assert body["message_count"] == 0
-    assert body["agent"] == {"id": "code_reviewer", "mode": "review"}
+    # ``agent.id`` names an installed agent ref; the session records its agent id.
+    assert body["agent"]["id"] == "standard"
     assert body["model"] == {
         "provider_id": "lm_studio",
         "model_id": "qwopus3.5-9b-v3",

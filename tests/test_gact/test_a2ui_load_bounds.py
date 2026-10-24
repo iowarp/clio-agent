@@ -19,15 +19,6 @@ production traffic (never a synthetic pre-sized list):
    undeclared-destination actions, each of which records
    ``a2ui_event_destination_undeclared`` (never deduped, unlike the S5b
    narration-undeclared-once reason).
-3. Repeated surface production does not re-trigger Agent Blueprint
-   discovery per call (the registry's own documented cache doctrine, whose
-   absence was a BLOCKING perf finding: "a POST that reached message #30 in
-   a session cost ~2s, entirely spent re-discovering Agent Blueprints from
-   disk on every single message"). Asserted on the ``discover_agent_
-   blueprints`` CALL COUNT rather than wall-clock timing, per the
-   deliverable's own instruction -- a call-count assertion is deterministic;
-   a timing one is not.
-
 **Deviation from the issue's literal "1,000 surface updates"**, UPDATED
 after the S8 review round's item B fix: the original measurement here (50
 sequential updates ~1.8s, 100 ~11.7s, 200 ~56s) was real, but conflated TWO
@@ -43,10 +34,7 @@ persistence property) -- NOT fixed here, out of this item's scope. These
 tests exercise the store/dispatcher directly (or with ``message_store``
 swapped to ``MessageStore(path=None)``, an in-memory no-disk-write
 instance) specifically to isolate (1), the property this deliverable is
-actually about, from (2)'s separate, pre-existing cost -- see
-``test_repeated_production_does_not_rediscover_blueprints_per_call``'s own
-GET call for the one place this module still touches a real disk-backed
-store. 1,000 calls in a tight loop through the FULL persisted-ledger path
+actually about, from (2)'s separate, pre-existing cost. 1,000 calls in a tight loop through the FULL persisted-ledger path
 would still run into (2) and take minutes; each test below uses the
 smallest N that still crosses its own bound with a clear margin (60
 updates against a lowered 8-message cap; 260 actions against the
@@ -367,63 +355,3 @@ def test_sustained_actions_keep_the_per_session_reason_ring_at_256(
         assert attempts > A2UI_CATALOG_REASON_RING_MAXLEN
         assert len(undeclared) == A2UI_CATALOG_REASON_RING_MAXLEN
         assert len(reasons) <= A2UI_CATALOG_REASON_RING_MAXLEN
-
-
-def test_repeated_production_does_not_rediscover_blueprints_per_call(
-    tmp_path: Path, monkeypatch: Any
-) -> None:
-    """The registry's own cache doctrine (``a2ui_catalogs/registry.py``):
-    ``discover_agent_blueprints()`` runs at most ONCE per process for a
-    session that never installs/uninstalls a pack -- sustained surface
-    updates plus a full-ledger ``GET .../messages`` must not multiply that
-    count. The assertion is on the CALL COUNT, never wall-clock timing, per
-    the deliverable's own instruction."""
-
-    import clio_agent.gact.agent_blueprints as agent_blueprints_module
-
-    calls: list[int] = []
-    real_discover = agent_blueprints_module.discover_agent_blueprints
-
-    def _counting_discover(*args: Any, **kwargs: Any) -> Any:
-        calls.append(1)
-        return real_discover(*args, **kwargs)
-
-    monkeypatch.setattr(agent_blueprints_module, "discover_agent_blueprints", _counting_discover)
-
-    app = _isolated_app(tmp_path)
-    with TestClient(app) as client:
-        session = app.state.sessions.create(workspace_id="ws_default", title="discovery flat")
-        sid = session.id
-        app.state.a2ui_store.apply_batch(sid, _create_batch("flat_surface"))
-
-        updates = 60
-        for i in range(updates):
-            app.state.a2ui_store.apply_batch(
-                sid,
-                [
-                    {
-                        "version": "v0.9.1",
-                        "updateComponents": {
-                            "surfaceId": "flat_surface",
-                            "components": [
-                                {"id": "root", "component": "Text", "text": f"update {i}"}
-                            ],
-                        },
-                    }
-                ],
-            )
-
-        after_updates = len(calls)
-        assert after_updates <= 2, (
-            f"discover_agent_blueprints ran {after_updates} times across {updates} sustained "
-            "surface updates -- the registry's cache doctrine is not holding"
-        )
-
-        listed = client.get(f"/v1/sessions/{sid}/messages", params={"limit": 50})
-        assert listed.status_code == 200, listed.text
-        assert len(listed.json()["messages"]) == 50
-
-        after_get = len(calls)
-        assert after_get <= after_updates + 1, (
-            "GET /v1/sessions/{sid}/messages must not add its own rediscovery pass"
-        )

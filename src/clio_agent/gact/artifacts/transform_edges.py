@@ -21,7 +21,6 @@ from clio_agent.gact.artifacts.designation import (
     kind_for_path,
 )
 from clio_agent.gact.artifacts.external_inputs import (
-    external_file_arg_was_consumed,
     external_file_input_args,
     is_known_non_consuming_path_tool,
     is_path_schema_arg,
@@ -297,7 +296,6 @@ def detect_used_edges(
                 allow_external_inputs
                 and Path(raw).is_absolute()
                 and arg_name in external_file_input_args(tool_name)
-                and external_file_arg_was_consumed(tool_name, candidate)
             ):
                 resolved = str(candidate.expanduser().resolve(strict=False))
                 if resolved not in seen:
@@ -377,10 +375,9 @@ def detect_used_edges(
             # it stays the external leaf below (matching the arg channel's semantics,
             # and ``_script_instrument`` skips a hashless edge anyway). A non-SCRIPT
             # suffix (plain data/report input) also falls through unchanged.
-            granted_input = not candidate.resolve().is_relative_to(root) and (
-                arg_name in external_file_input_args(tool_name)
-                and external_file_arg_was_consumed(tool_name, candidate)
-            )
+            granted_input = not candidate.resolve().is_relative_to(
+                root
+            ) and arg_name in external_file_input_args(tool_name)
             if (
                 kind_for_path(resolved) is ArtifactKind.SCRIPT or granted_input
             ) and evidence.sha256:

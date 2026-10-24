@@ -31,7 +31,7 @@ from clio_agent.gact.artifacts.provenance.cmf_encoding import (
 # The real killer from the live run: tool arguments carrying Windows paths.
 _WINDOWS_INSTRUMENT = json.dumps(
     {
-        "tool": "fs_apply_edit_write",
+        "tool": "fs_write_file",
         "args": {"path": "D:\\Libraries\\Documents\\projects\\clio-agent\\a3.csv"},
         "cwd": "D:\\Libraries\\Documents",
     }
@@ -73,7 +73,7 @@ def test_encoded_values_carry_no_backslash_the_server_would_choke_on(value: str)
 
 def test_values_needing_nothing_are_returned_untouched() -> None:
     """The common case must not churn: no backslash, no percent, no change."""
-    assert encode_property_value("fs_apply_edit_write") == "fs_apply_edit_write"
+    assert encode_property_value("fs_write_file") == "fs_write_file"
     assert encode_property_value("{}") == "{}"
 
 
@@ -121,7 +121,7 @@ def _artifact_event(artifact_id: str, name: str) -> tuple[dict[str, Any], dict[s
         "path": "D:\\Libraries\\Documents\\a3.csv",
         "producer": {
             "call_id": "call_1",
-            "tool": "fs_apply_edit_write",
+            "tool": "fs_write_file",
             "storage_receipt": {"object_uri": "cmf+dvc://local/files/md5/ab/cd"},
         },
     }
@@ -133,7 +133,7 @@ def _transform_event(call_id: str) -> tuple[dict[str, Any], dict[str, Any]]:
     body = {
         "call_id": call_id,
         "instrument": {
-            "tool": "fs_apply_edit_write",
+            "tool": "fs_write_file",
             "args": {"path": "D:\\Libraries\\Documents\\a3.csv"},
         },
         "environment": {"tier": "container"},

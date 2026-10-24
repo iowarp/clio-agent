@@ -22,6 +22,7 @@ import json
 import sys
 from pathlib import Path
 from types import SimpleNamespace
+from typing import Any
 
 import pytest
 from fastmcp import Client
@@ -710,3 +711,38 @@ async def test_shell_out_of_root_write_succeeds_on_the_floor(
     assert state is not None
     assert state.mechanism == sandbox.MECHANISM_NONE
     assert state.reason  # a typed reason on the record, never blank
+
+
+def test_a_fleet_transport_releases_its_egress_channel_when_it_goes(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, floor_sandbox
+) -> None:
+    """A rebuilt fleet re-registers its namespace; the replaced transport's channel must close.
+
+    Live, every rebuild left the previous per-child listener open (53 after an hour).
+    """
+    import gc
+
+    from clio_agent.tools import mcp_config
+    from clio_agent.tools.mcp_config import MCPServerSpec, transport_for
+
+    released: list[str] = []
+    original = sandbox.wrap_confined
+
+    class Spawn(sandbox.ConfinedSpawn):
+        def release(self) -> None:
+            released.append("released")
+
+    def recorded(*args: Any, **kwargs: Any) -> sandbox.ConfinedSpawn:
+        confined = original(*args, **kwargs)
+        return Spawn(**{name: getattr(confined, name) for name in confined.__dataclass_fields__})
+
+    monkeypatch.setattr(sandbox, "wrap_confined", recorded)
+    monkeypatch.setattr(mcp_config.shutil, "which", lambda _n: "/usr/bin/python")
+    spec = MCPServerSpec(
+        name="demo", transport="stdio", command="python", args=["-m", "demo"], env={}, source="test"
+    )
+    transport = transport_for(spec, cwd=str(tmp_path))
+    assert released == []
+    del transport
+    gc.collect()
+    assert released == ["released"]

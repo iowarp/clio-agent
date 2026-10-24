@@ -21,6 +21,7 @@ from clio_agent.arc.clio_core_host_migration import (
     RUNTIME_STATE_MIGRATION_SKIPPED_SHARED,
     migrate_legacy_cte_store,
 )
+from clio_agent.arc.clio_core_indexer import indexer_block
 
 DEAD_PID = 1_999_999_999
 
@@ -62,6 +63,7 @@ def _legacy_store(home: Path, *, port: int | None = None) -> Path:
             file_capacity="50GB",
             ram_budget="1GB",
             metadata_log=(legacy / "metadata.log").as_posix(),
+            indexer=indexer_block((legacy / "indexer_index.log").as_posix()),
         ),
         encoding="utf-8",
     )

@@ -12,6 +12,14 @@ from clio_agent.gact.task_history import TaskHistory
 ALL_RIGHTS: frozenset[CoordinationRight] = frozenset({"read", "observe", "message", "control"})
 
 
+class AdmissionClosed(ValueError):
+    """A new descendant was refused because its lineage is stopping or out of time."""
+
+    def __init__(self, message: str, *, stopping: bool) -> None:
+        super().__init__(message)
+        self.stopping = stopping
+
+
 class TaskAccessDenied(ValueError):
     """An unavailable task cannot be disclosed or controlled by this caller."""
 

@@ -1,197 +1,313 @@
-"""Agent / blueprint / expert-pack resolution for the GACT server (#714).
+"""Which agent a session runs: its pinned plugin resolution.
 
-This module owns the stateless *resolution* helpers carved out of
-``clio_agent.gact.app``: given a session/workspace, resolve the runtime
-``AgentDef`` rows that actually execute -- from the active Agent Blueprint graph,
-the expert-pack/builtin hierarchy, and the user-agent registry -- applying the
-session agent-blueprint overlay and the prompt registry along the way.
+A session freezes its resolved plugin set at start (``plugins-and-composition.md``,
+"Sessions are pinned"). Session metadata carries:
 
-Every function here is a *query*: it reads ``app.state`` (sessions, workspaces,
-user agents, prompt registry) and the on-disk catalog through the leaf modules
-(:mod:`clio_agent.gact.catalog`, :mod:`clio_agent.gact.agent_blueprints`,
-:mod:`clio_agent.gact.expert_packs`), takes the ``FastAPI`` app as an explicit
-parameter (no closure over ``build_app`` locals, no DSPy), and never mutates
-state. It imports only the shared runtime base + gact leaves -- never
-``gact.app`` -- so the dependency graph stays acyclic.
+* ``agent_ref`` -- the agent (``clio/standard``, ``user/my-default``, ...);
+* ``agent_delta`` -- plugins added or removed inside this live session;
+* ``agent_resolution`` -- the digest of the pinned :class:`Resolution`.
 
-Resolution and prompt :mod:`~clio_agent.gact.agents.composition` co-depend
-(resolution applies the prompt registry while rendering rows; composition renders
-a tree from resolution's merge/child primitives). The cycle is broken here by
-importing the concrete composition helpers directly at module load -- composition
-in turn reaches back into this module through the package namespace at call time.
+Parent updates and newly installed plugin versions reach the next session.
+Adding or removing a plugin inside a live session reruns stage 2 and pins the
+new result (:func:`pin_session_agent`). A defined subagent's child session pins
+its own resolution, computed from the parent's.
+
+Every function here is a query or an explicit pin; nothing falls back silently.
+A session whose agent cannot resolve fails with the typed resolution errors.
 """
 
 from __future__ import annotations
 
-from collections.abc import Mapping
+from collections.abc import Iterable, Mapping
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Literal
+from typing import TYPE_CHECKING, Any
 
-from clio_agent.gact import skills as _skills
-from clio_agent.gact.agent_blueprints import (
-    discover_agent_blueprints,
-    load_agent_blueprint_path,
-    load_agent_blueprints,
-    load_mcp_descriptors,
-    parse_agent_blueprint_root,
-    validate_agent_hierarchy,
-)
-from clio_agent.gact.agents.composition import (
-    _agent_rows_prompt_render_context,
-    _apply_prompt_registry_to_agent,
-    _prompt_render_context,
-)
-from clio_agent.gact.agents.execution_blueprint import (
-    runtime_active_agent_blueprint_id as _runtime_active_agent_blueprint_id,
-)
-from clio_agent.gact.agents.execution_blueprint import (
-    runtime_active_agent_blueprint_path as _runtime_active_agent_blueprint_path,
-)
-from clio_agent.gact.agents.execution_blueprint import (
-    runtime_effective_agent_blueprint_id,
-    runtime_effective_agent_blueprint_path,
-)
-from clio_agent.gact.blueprint_identity import select_blueprint
-from clio_agent.gact.catalog import _builtin_agents
-from clio_agent.gact.expert_packs import (
-    load_expert_packs,
-    validate_expert_hierarchy,
-)
 from clio_agent.gact.runtime.app_state import per_app_dict
-from clio_agent.gact.types import AgentCapabilityRef, AgentDef
+from clio_agent.gact.types import AgentDef
 from clio_agent.gact.workflow_state.schema import (
     GENERIC_WORKFLOW_STATE_SCHEMA,
     WorkflowStateSchema,
 )
+from clio_agent.plugins.resolve import Delta, Resolution, ResolutionError, delegable_subagents
+from clio_agent.plugins.service import DEFAULT_AGENT, PluginService
 
 if TYPE_CHECKING:
     from fastapi import FastAPI
 
-    from clio_agent.prompts import PromptRegistry
+AGENT_REF_KEY = "agent_ref"
+AGENT_DELTA_KEY = "agent_delta"
+AGENT_RESOLUTION_KEY = "agent_resolution"
+SUBAGENT_KEY = "agent_subagent"
 
 
-def _merge_agent_def_rows(rows: list["AgentDef"]) -> list["AgentDef"]:
-    """Resolve agent rows by id while preserving provenance of overridden rows."""
+class SessionAgentUnavailable(RuntimeError):
+    """The session's agent cannot be resolved; ``errors`` are the typed reasons."""
 
-    merged: dict[str, AgentDef] = {}
-    chains: dict[str, list[dict[str, str]]] = {}
-    for row in rows:
-        chain = chains.setdefault(row.id, [])
-        if row.id in merged:
-            prior = merged[row.id]
-            chain.append(
-                {
-                    "source": prior.source,
-                    "scope": str(
-                        prior.metadata.get("expert_scope") or prior.metadata.get("pack_scope") or ""
-                    ),
-                    "pack_id": str(prior.metadata.get("pack_id") or ""),
-                    "definition_path": str(
-                        prior.metadata.get("definition_path")
-                        or prior.metadata.get("expert_path")
-                        or ""
-                    ),
-                }
-            )
-        current = {
-            "source": row.source,
-            "scope": str(row.metadata.get("expert_scope") or row.metadata.get("pack_scope") or ""),
-            "pack_id": str(row.metadata.get("pack_id") or ""),
-            "definition_path": str(
-                row.metadata.get("definition_path") or row.metadata.get("expert_path") or ""
-            ),
-        }
-        merged[row.id] = row.model_copy(
-            update={"metadata": {**row.metadata, "override_chain": [*chain, current]}}
-        )
-    return list(merged.values())
+    def __init__(self, ref: str, reason: str, errors: list[dict[str, Any]]) -> None:
+        detail = "; ".join(str(row.get("message") or row) for row in errors) or reason
+        super().__init__(f"agent {ref!r} cannot run: {detail}")
+        self.ref = ref
+        self.reason = reason
+        self.errors = errors
 
 
-def _agent_overlay_patchable_fields() -> set[str]:
-    """Expert fields a session agent overlay (the REST overlay API) may patch.
+def plugin_service(app: Any) -> PluginService:
+    """The app's plugin service (installed by ``build_app``)."""
 
-    This is the conservative set surfaced by ``/v1/sessions/{sid}/agent-overlay``:
-    it deliberately omits the blueprint-runtime structural fields (``module``,
-    ``signature``, ``structured_outputs``, ``fanout``) that
-    :func:`_runtime_apply_session_agent_overlay` accepts when assembling the live
-    runtime graph. Shared single-source by the overlay-validation +
-    overlay-apply paths in :mod:`clio_agent.gact.routes.agents` and
-    :mod:`clio_agent.gact.app`.
-    """
+    service = getattr(getattr(app, "state", None), "plugin_service", None)
+    if service is None:
+        raise RuntimeError("plugin service is not installed on this app")
+    return service
+
+
+def _session_metadata(app: Any, session_id: str) -> Mapping[str, Any]:
+    sess = app.state.sessions.get(session_id) if session_id else None
+    metadata = getattr(sess, "metadata", None) if sess is not None else None
+    return metadata if isinstance(metadata, Mapping) else {}
+
+
+def session_delta(app: Any, session_id: str) -> Delta:
+    raw = _session_metadata(app, session_id).get(AGENT_DELTA_KEY) or {}
+    if not isinstance(raw, Mapping):
+        return Delta()
+    return Delta(
+        tuple(str(v) for v in raw.get("add") or ()), tuple(str(v) for v in raw.get("remove") or ())
+    )
+
+
+def default_agent_ref(app: Any) -> str:
+    store = getattr(getattr(app, "state", None), "session_defaults", None)
+    defaults = store.get() if store is not None and hasattr(store, "get") else store
+    value = getattr(defaults, "agent_ref", "") if defaults is not None else ""
+    return str(value or DEFAULT_AGENT)
+
+
+def resolve_for_session(app: Any, ref: str, delta: Delta | None = None) -> Resolution:
+    """Resolve an agent for a session without touching any session."""
+
+    from clio_agent.plugins.service import AgentNotFound  # noqa: PLC0415
+
+    try:
+        return plugin_service(app).resolve(ref, delta=delta or Delta())
+    except AgentNotFound as exc:
+        raise SessionAgentUnavailable(
+            ref, exc.reason, [{"code": exc.reason, "message": str(exc)}]
+        ) from exc
+    except ResolutionError as exc:
+        raise SessionAgentUnavailable(
+            ref, "agent_resolution_failed", [row.to_dict() for row in exc.diagnostics]
+        ) from exc
+
+
+def resolution_metadata(resolution: Resolution, *, ref: str, delta: Delta) -> dict[str, Any]:
+    """The session metadata patch that pins ``resolution``."""
 
     return {
-        "title",
-        "description",
-        "system_prompt",
-        "prompt_id",
-        "prompt_profile",
-        "default_provider",
-        "default_model",
-        "api_base",
-        "credential_ref",
-        "transport",
-        "parent_id",
-        "tier",
-        "specialization",
-        "keywords",
-        "tools",
-        "skills",
-        "commands",
-        "parameters",
-        "enabled",
+        AGENT_REF_KEY: ref,
+        AGENT_DELTA_KEY: delta.to_dict(),
+        AGENT_RESOLUTION_KEY: resolution.digest,
     }
 
 
-def _resolve_dynamic_agent(
-    app: "FastAPI",
-    agent_id: str,
-    *,
-    prompt_registry: "PromptRegistry | None" = None,
-) -> "AgentDef | None":
-    """Return a registered user/builtin/expert-pack agent definition by id."""
-    if not agent_id:
-        return None
-    row = app.state.user_agents.get(agent_id)
-    if row is not None:
-        return _apply_prompt_registry_to_agent(
-            app,
-            AgentDef(**row.to_wire()),
-            prompt_registry=prompt_registry,
+def prepare_session_agent(app: Any, metadata: dict[str, Any], ref: str = "") -> Resolution:
+    """Resolve a new session's agent and add its pin to ``metadata`` (in place).
+
+    ``ref`` (or ``metadata["agent_ref"]``) names the agent; the session
+    defaults' agent, else ``clio/standard``, otherwise. A session whose agent
+    does not resolve is refused with the typed resolution errors.
+    """
+
+    chosen = ref or str(metadata.get(AGENT_REF_KEY) or "") or default_agent_ref(app)
+    delta = Delta()
+    raw = metadata.get(AGENT_DELTA_KEY)
+    if isinstance(raw, Mapping):
+        delta = Delta(
+            tuple(str(v) for v in raw.get("add") or ()),
+            tuple(str(v) for v in raw.get("remove") or ()),
         )
-    expert_rows = validate_expert_hierarchy(
-        _merge_agent_def_rows(_builtin_agents() + load_expert_packs())
+    resolution = resolve_for_session(app, chosen, delta)
+    metadata.update(resolution_metadata(resolution, ref=chosen, delta=delta))
+    return resolution
+
+
+def pin_session_agent(
+    app: Any, session_id: str, *, ref: str | None = None, delta: Delta | None = None
+) -> Resolution:
+    """Rerun stage 2 for a session and pin the result to it."""
+
+    metadata = _session_metadata(app, session_id)
+    if metadata.get(SUBAGENT_KEY):
+        raise SessionAgentUnavailable(
+            str(metadata.get(AGENT_REF_KEY) or ""),
+            "subagent_plugins_fixed",
+            [
+                {
+                    "code": "subagent_plugins_fixed",
+                    "message": "a defined subagent's plugins come from its definition",
+                }
+            ],
+        )
+    chosen = ref or str(metadata.get(AGENT_REF_KEY) or "") or default_agent_ref(app)
+    applied = delta if delta is not None else session_delta(app, session_id)
+    resolution = resolve_for_session(app, chosen, applied)
+    patch = resolution_metadata(resolution, ref=chosen, delta=applied)
+    app.state.sessions.update(
+        session_id, metadata_patch=patch, agent={"id": resolution.agent["id"]}
     )
-    for expert in expert_rows:
-        if expert.id == agent_id and expert.enabled:
-            return _apply_prompt_registry_to_agent(app, expert, prompt_registry=prompt_registry)
-    # LAST resort, after every real agent namespace (#918): an id that matches a
-    # discovered skill gets the typed pointer error instead of a bare not-found.
-    # Skills no longer occupy the agent-id namespace, so they never shadow a
-    # real agent. Same process-cwd basis as the load_expert_packs() call above.
-    skill_hit = _skills.SkillCatalog().resolve(agent_id)
-    if skill_hit.status != "missing":
-        raise _skills.SkillNotDelegatableError(agent_id, getattr(skill_hit.skill, "path", "") or "")
-    return None
+    return resolution
 
 
-def _agent_definition_is_agent_blueprint(agent_def: "AgentDef") -> bool:
-    """Return whether an AgentDef came from an Agent Blueprint graph."""
+def pinned_resolution(app: Any, digest: str, ref: str = "") -> Resolution:
+    """The stored resolution with ``digest`` (cached per app)."""
 
-    metadata = agent_def.metadata if isinstance(agent_def.metadata, Mapping) else {}
-    return bool(
-        metadata.get("agent_blueprint_id") or metadata.get("definition_kind") == "agent_blueprint"
+    cache = per_app_dict("pinned_resolutions", app=app)
+    cached = cache.get(digest)
+    if cached is not None:
+        return cached
+    pinned = plugin_service(app).pinned(digest)
+    if pinned is None:
+        raise SessionAgentUnavailable(
+            ref,
+            "agent_resolution_missing",
+            [
+                {
+                    "code": "agent_resolution_missing",
+                    "message": f"pinned resolution {digest} is not stored",
+                }
+            ],
+        )
+    cache[digest] = pinned
+    return pinned
+
+
+def session_resolution(app: Any, session_id: str) -> Resolution:
+    """The resolution pinned to ``session_id``; pins one at first use."""
+
+    metadata = _session_metadata(app, session_id)
+    digest = str(metadata.get(AGENT_RESOLUTION_KEY) or "")
+    if digest:
+        return pinned_resolution(app, digest, str(metadata.get(AGENT_REF_KEY) or ""))
+    return pin_session_agent(app, session_id)
+
+
+def resolution_agent_def(resolution: Resolution) -> AgentDef:
+    """The executable ``AgentDef`` of a resolved agent or subagent."""
+
+    agent = resolution.agent
+    metadata = {
+        "definition_kind": "plugin_agent",
+        "agent_ref": agent.get("ref", ""),
+        "agent_kind": agent.get("kind", "agent"),
+        "resolution_digest": resolution.digest,
+        "flow": dict(agent.get("flow") or {"id": "react", "options": {}}),
+        "plugins": [row["id"] for row in resolution.plugins],
+        "mcp_namespaces": sorted(resolution.mcp_servers),
+        "prefers": dict(resolution.model.get("prefers") or {}),
+        "skill_folders": sorted(
+            {(row["plugin"], str(Path(row["path"]).parent.parent)) for row in resolution.skills}
+        ),
+    }
+    structured = dict(agent.get("structured_outputs") or {})
+    if resolution.workflow_state is not None:
+        # A plugin declaring a workflow_state vocabulary makes its agents emit it.
+        structured.setdefault("workflow_state", True)
+    parameters: dict[str, Any] = {}
+    if int(agent.get("max_iters") or 0) > 0:
+        parameters["max_iters"] = int(agent["max_iters"])
+    return AgentDef(
+        id=str(agent["id"]),
+        source="plugin",
+        title=str(agent.get("name") or agent["id"]),
+        description=str(agent.get("description") or ""),
+        parent_id=str(agent.get("parent") or "") if agent.get("kind") == "subagent" else "",
+        system_prompt=resolution.prompt_text,
+        module={"kind": "react"},
+        structured_outputs=structured,
+        tools=[row["name"] for row in resolution.tools],
+        skills=[row["id"] for row in resolution.skills],
+        # An agent may invoke exactly the commands its plugins ship.
+        commands=[row["id"] for row in resolution.commands],
+        parameters=parameters,
+        metadata=metadata,
+        tier=2 if agent.get("kind") == "subagent" else 1,
     )
 
 
-def _agent_definition_uses_blueprint_runtime(agent_def: "AgentDef") -> bool:
-    # An Agent Blueprint expert ALWAYS runs on the blueprint runtime: the legacy
-    # native-expert runtime it could route to (the deleted Tier-1 planner) is gone
-    # (#948 S4b), so there is no configuration under which it routes elsewhere.
-    # The in-code builtin react main (catalog._builtin_main_agent) shares that
-    # runtime: a bare session executes it through the same module builder.
-    metadata = agent_def.metadata if isinstance(agent_def.metadata, Mapping) else {}
-    return _agent_definition_is_agent_blueprint(agent_def) or (
-        metadata.get("definition_kind") == "builtin_main"
+def session_agent_def(app: Any, session_id: str) -> AgentDef:
+    """The session's agent, with the zero-tool allowlist applied.
+
+    A memory tool this session may not have (memory off, a delegated child's writes)
+    is withheld at build time; its prompt fragment leaves with it (memory ledger MD8).
+    """
+
+    resolution = session_resolution(app, session_id)
+    agent_def = withhold_session_tools(
+        app, session_id, resolution_agent_def(resolution), resolution
+    )
+    return apply_session_tool_allowlist(app, agent_def, session_id=session_id)
+
+
+def session_withheld_tools(app: Any, session_id: str, names: Iterable[str]) -> dict[str, str]:
+    """``{tool: typed reason}`` for the memory tools of ``names`` this session may not have."""
+    session = app.state.sessions.get(session_id)
+    if session is None:
+        return {}
+    from clio_agent.gact.memory.policy import session_policy  # noqa: PLC0415
+
+    policy = session_policy(app, session)
+    out = {name: policy.withheld(name) for name in names}
+    return {name: reason for name, reason in out.items() if reason}
+
+
+def withhold_session_tools(
+    app: Any, session_id: str, agent_def: AgentDef, *resolutions: Resolution
+) -> AgentDef:
+    """``agent_def`` without the memory tools this session may not have, and their
+    prompt fragments (memory ledger MD8). ``resolutions`` composed its prompt.
+    """
+    from clio_agent.plugins.compose import prompt_text_without  # noqa: PLC0415
+
+    withheld = set(session_withheld_tools(app, session_id, agent_def.tools))
+    if not withheld:
+        return agent_def
+    prompt = agent_def.system_prompt
+    for resolution in resolutions:
+        prompt = prompt_text_without(prompt, resolution.prompt, withheld)
+    tools = [name for name in agent_def.tools if name not in withheld]
+    return agent_def.model_copy(update={"system_prompt": prompt, "tools": tools})
+
+
+def resolve_session_agent(app: Any, agent_id: str, *, session_id: str) -> AgentDef | None:
+    """The session's agent, or one of its defined subagents, by id (None if neither)."""
+
+    try:
+        resolution = session_resolution(app, session_id)
+    except SessionAgentUnavailable:
+        return None
+    if not agent_id or agent_id in (resolution.agent.get("id"), resolution.agent.get("ref")):
+        return session_agent_def(app, session_id)
+    if not any(row["id"] == agent_id for row in resolution.subagents):
+        return None
+    child = plugin_service(app).resolve_subagent(resolution, agent_id)
+    return resolution_agent_def(child)
+
+
+def apply_session_tool_allowlist(
+    app: Any, agent_def: AgentDef, *, session_id: str = ""
+) -> AgentDef:
+    """Force an agent to ZERO tools when its session carries an empty ``tool_allowlist``.
+
+    The agent-driven elicitation answer child turn must have no tool surface at
+    all, so a server's elicitation message cannot drive a tool-capable turn.
+    ``tool_allowlist`` is stamped when the child session is minted. Only the
+    explicit empty list is handled; an absent or non-empty allowlist is a no-op.
+    """
+
+    allowlist = _session_metadata(app, session_id).get("tool_allowlist")
+    if not isinstance(allowlist, (list, tuple)) or allowlist:
+        return agent_def
+    return agent_def.model_copy(
+        update={"tools": [], "skills": [], "module": {"kind": "chain_of_thought"}}
     )
 
 
@@ -201,6 +317,8 @@ def _runtime_workspace_catalog_cwd(
     workspace_id: str = "",
     session_id: str = "",
 ) -> Path | None:
+    """The bound workspace root of a session (or workspace), if any."""
+
     wid = workspace_id
     if session_id:
         sess = app.state.sessions.get(session_id)
@@ -215,615 +333,123 @@ def _runtime_workspace_catalog_cwd(
     return Path(root_path).expanduser() if root_path else None
 
 
-def _runtime_effective_agent_blueprint_id(app: "FastAPI", session_id: str = "") -> str:
-    return runtime_effective_agent_blueprint_id(
-        app,
-        session_id,
-        active_resolver=_runtime_active_agent_blueprint_id,
-    )
-
-
-def _runtime_effective_agent_blueprint_path(app: "FastAPI", session_id: str = "") -> Path | None:
-    return runtime_effective_agent_blueprint_path(
-        app,
-        session_id,
-        active_resolver=_runtime_active_agent_blueprint_path,
-    )
-
-
-def _active_workflow_state_schema(
+def session_workflow_state_schema(
     app: "FastAPI | None", session_id: str = ""
-) -> "WorkflowStateSchema":
-    """THE one seam mapping a session's active blueprint to its typed
-    workflow_state schema.
+) -> WorkflowStateSchema:
+    """The typed ``workflow_state`` vocabulary a session's plugins declare.
 
-    A valid blueprint-level ``workflow_state`` declaration compiles to the typed
-    engine; a bool-only / absent declaration falls back to
-    ``GENERIC_WORKFLOW_STATE_SCHEMA`` (domain-free, presence-only). App-less /
-    session-less callers get GENERIC too (out-of-band — nothing to attribute).
-    The result is cached per (session, active-blueprint identity) on
-    ``app.state.workflow_state_schemas`` so a blueprint switch re-resolves.
-
-    Falling back to GENERIC records a loud, queryable
-    ``workflow_state_schema_absent`` reason in the dedicated per-app ledger
-    (``app.state.workflow_schema_fallbacks``; Slice E, no-silent-fallback rule).
-    The cache guarantees the reason is recorded at most once per (session,
-    active-blueprint identity). Malformed declarations are rejected at blueprint
-    load (the blueprint is disabled with a ``validation_errors`` entry) and so
-    never reach here — only an absent / bool-only declaration falls through.
+    A plugin declares it under ``ai.iowarp.clio.workflow_state``. When no
+    resolved plugin declares one, the generic presence-only engine runs and a
+    ``workflow_state_schema_absent`` reason is recorded once per pinned
+    resolution (no silent fallback).
     """
 
     if app is None or not session_id or getattr(app, "state", None) is None:
-        # App-less, session-less, or a state-less app carrier: nothing to attribute
-        # a blueprint to, so the generic engine is the honest answer (mirrors the
-        # defensive ``getattr(app, "state", None)`` style of the ledger helpers).
         return GENERIC_WORKFLOW_STATE_SCHEMA
-    blueprint_id = _runtime_effective_agent_blueprint_id(app, session_id)
-    blueprint_path = _runtime_effective_agent_blueprint_path(app, session_id)
+    try:
+        resolution = session_resolution(app, session_id)
+    except SessionAgentUnavailable:
+        return GENERIC_WORKFLOW_STATE_SCHEMA
     cache = per_app_dict("workflow_state_schemas", app=app)
-    key = (blueprint_id, str(blueprint_path or ""))
     cached = cache.get(session_id)
-    if cached is not None and cached[0] == key:
+    if cached is not None and cached[0] == resolution.digest:
         return cached[1]
-    declaration: Any = None
-    if blueprint_path is not None or blueprint_id:
-        blueprint = (
-            parse_agent_blueprint_root(blueprint_path, scope="session")
-            if blueprint_path is not None
-            else select_blueprint(
-                discover_agent_blueprints(
-                    cwd=_runtime_workspace_catalog_cwd(app, session_id=session_id)
-                ),
-                blueprint_id,
-            )
-        )
-        if blueprint is not None and blueprint.enabled:
-            declaration = blueprint.metadata.get("workflow_state")
+    declaration = resolution.workflow_state
     if isinstance(declaration, Mapping):
         schema = WorkflowStateSchema.model_validate(declaration)
     else:
         schema = GENERIC_WORKFLOW_STATE_SCHEMA
-        # Loud, queryable degradation (no-silent-fallback): the active blueprint
-        # declares no workflow_state schema, so the generic presence-only engine
-        # runs. Recorded once per (session, blueprint) — the cache below dedupes
-        # re-resolutions. Lazy import mirrors the ambient-LM ledger seam and keeps
-        # this resolution leaf free of a top-level ``streaming`` dependency.
-        from clio_agent.gact.streaming import (  # noqa: PLC0415
-            _record_workflow_schema_fallback,
-        )
+        from clio_agent.gact.streaming import _record_workflow_schema_fallback  # noqa: PLC0415
 
         _record_workflow_schema_fallback(
             app,
             session_id,
             "workflow_state_schema_absent",
-            f"active blueprint {blueprint_id or '(none)'} declares no workflow_state schema",
+            f"agent {resolution.agent.get('ref')} has no plugin declaring a workflow_state schema",
         )
-    cache[session_id] = (key, schema)
+    cache[session_id] = (resolution.digest, schema)
     return schema
 
 
-def _runtime_active_session_expert_pack_id(app: "FastAPI", session_id: str = "") -> str:
-    """Return a session's active expert-pack id from its metadata (``""`` if none)."""
+def spawn_targets(resolution: Resolution) -> list[dict[str, str]]:
+    """Agents this agent may start as children: its defined subagents.
 
-    if not session_id:
-        return ""
-    sess = app.state.sessions.get(session_id)
-    if sess is None:
-        return ""
-    metadata = getattr(sess, "metadata", {}) or {}
-    if not isinstance(metadata, Mapping):
-        return ""
-    return str(
-        metadata.get("active_expert_pack_id") or metadata.get("expert_pack_id") or ""
-    ).strip()
-
-
-def _runtime_active_session_expert_pack_path(app: "FastAPI", session_id: str = "") -> Path | None:
-    """Return a session's active expert-pack path from its metadata (``None`` if none)."""
-
-    if not session_id:
-        return None
-    sess = app.state.sessions.get(session_id)
-    if sess is None:
-        return None
-    metadata = getattr(sess, "metadata", {}) or {}
-    if not isinstance(metadata, Mapping):
-        return None
-    raw = str(metadata.get("active_expert_pack_path") or "").strip()
-    return Path(raw).expanduser() if raw else None
-
-
-def _runtime_session_agent_overlay(app: "FastAPI", session_id: str = "") -> dict[str, Any]:
-    if not session_id:
-        return {}
-    sess = app.state.sessions.get(session_id)
-    if sess is None:
-        return {}
-    metadata = getattr(sess, "metadata", {}) or {}
-    if not isinstance(metadata, Mapping):
-        return {}
-    overlay = metadata.get("agent_blueprint_overlay")
-    return dict(overlay) if isinstance(overlay, Mapping) else {}
-
-
-def _runtime_apply_session_agent_overlay(
-    app: "FastAPI",
-    rows: list["AgentDef"],
-    *,
-    session_id: str = "",
-) -> list["AgentDef"]:
-    overlay = _runtime_session_agent_overlay(app, session_id)
-    agents = overlay.get("agents") if isinstance(overlay, Mapping) else None
-    if not isinstance(agents, Mapping):
-        return rows
-    patchable = {
-        "title",
-        "description",
-        "system_prompt",
-        "prompt_id",
-        "prompt_profile",
-        "default_provider",
-        "default_model",
-        "api_base",
-        "credential_ref",
-        "transport",
-        "parent_id",
-        "tier",
-        "specialization",
-        "keywords",
-        "tools",
-        "skills",
-        "commands",
-        "parameters",
-        "module",
-        "signature",
-        "structured_outputs",
-        "fanout",
-        "enabled",
-    }
-    out: list[AgentDef] = []
-    for row in rows:
-        raw_patch = agents.get(row.id)
-        if not isinstance(raw_patch, Mapping):
-            out.append(row)
-            continue
-        update = {key: value for key, value in raw_patch.items() if key in patchable}
-        metadata = {
-            **row.metadata,
-            "agent_blueprint_overlay": {
-                "session_id": session_id,
-                "fields": sorted(update),
-                "status": "applied",
-            },
-        }
-        out.append(row.model_copy(update={**update, "metadata": metadata}))
-    return out
-
-
-def _agent_with_capability_refs(app: "FastAPI", agent_def: "AgentDef") -> "AgentDef":
-    """Attach normalized capability metadata to an AgentDef row.
-
-    Projects the agent's declared tools/skills/commands into the
-    ``capability_refs`` the TUI renders, folding the backend command table into
-    the ``main`` orchestrator and self-registering a skill-sourced agent as its
-    own skill. Takes ``app`` explicitly (no ``build_app`` closure) so both the
-    ``/v1/agents`` route and the runtime turn path attach identical refs.
+    General subagents (installed agents started with only a task prompt) are
+    available through the ``delegation`` plugin and are listed by the spawn
+    tool itself.
     """
 
-    from clio_agent.gact.runtime.commands import BACKEND_COMMANDS  # noqa: PLC0415
-
-    refs: list[AgentCapabilityRef] = [
-        AgentCapabilityRef(kind="tool", id=tool_id, title=tool_id, source="builtin")
-        for tool_id in agent_def.tools
-    ]
-    refs.extend(
-        AgentCapabilityRef(kind="skill", id=skill_id, title=skill_id, source=agent_def.source)
-        for skill_id in agent_def.skills
-    )
-    refs.extend(
-        AgentCapabilityRef(
-            kind="command",
-            id=command_id,
-            title=command_id,
-            source="builtin",
-        )
-        for command_id in agent_def.commands
-    )
-    refs.extend(agent_def.capability_refs)
-
-    if agent_def.id == "main":
-        command_ids = set(agent_def.commands)
-        for row in BACKEND_COMMANDS:
-            command_id = row["id"]
-            if command_id in command_ids:
-                continue
-            raw_status = row.get("status")
-            status: Literal["available", "unavailable", "unknown"] = (
-                raw_status if raw_status in {"available", "unavailable", "unknown"} else "available"
-            )
-            refs.append(
-                AgentCapabilityRef(
-                    kind="command",
-                    id=command_id,
-                    title=row.get("title", command_id),
-                    description=row.get("description", ""),
-                    source=row.get("source", "builtin"),
-                    status=status,
-                    metadata=({"error": row["error"]} if row.get("error") else {}),
-                )
-            )
-            command_ids.add(command_id)
-        agent_def = agent_def.model_copy(update={"commands": sorted(command_ids)})
-
-    deduped: list[AgentCapabilityRef] = []
-    seen: set[tuple[str, str]] = set()
-    for ref in refs:
-        key = (ref.kind, ref.id)
-        if key in seen:
-            continue
-        seen.add(key)
-        deduped.append(ref)
-
-    return agent_def.model_copy(update={"capability_refs": deduped})
-
-
-def _enabled_agent_blueprint_mcp_tool_names(app: "FastAPI", blueprint_id: str = "") -> set[str]:
-    """Return the names of MCP tools a ready blueprint server currently exposes."""
-
-    names: set[str] = set()
-    for server in (getattr(app.state, "external_mcp_servers", {}) or {}).values():
-        if not isinstance(server, Mapping):
-            continue
-        if str(server.get("status") or "") != "ready":
-            continue
-        if blueprint_id and str(server.get("agent_blueprint_id") or "") != blueprint_id:
-            continue
-        for tool in server.get("tools") or []:
-            if not isinstance(tool, Mapping):
-                continue
-            if not bool(tool.get("enabled")) or str(tool.get("status") or "") != "ready":
-                continue
-            tool_name = str(tool.get("name") or tool.get("id") or "").strip()
-            if tool_name:
-                names.add(tool_name)
-    return names
-
-
-def _agent_blueprint_descriptor_tools(rows: list["AgentDef"]) -> dict[str, str]:
-    """Map each blueprint-declared MCP tool name to its on-disk descriptor id."""
-
-    descriptors_by_tool: dict[str, str] = {}
-    roots: dict[str, tuple[str, str]] = {}
-    for row in rows:
-        root_file = str(row.metadata.get("agent_blueprint_definition_path") or "").strip()
-        if not root_file:
-            continue
-        roots[root_file] = (
-            str(row.metadata.get("agent_blueprint_scope") or "session"),
-            str(row.metadata.get("agent_blueprint_id") or ""),
-        )
-    for root_file, (scope, blueprint_id) in sorted(roots.items()):
-        root = Path(root_file).expanduser().parent
-        try:
-            descriptors = load_mcp_descriptors(root, scope=scope, blueprint_id=blueprint_id)
-        except Exception:  # noqa: BLE001 - disk read; a broken descriptor gates nothing
-            continue
-        for descriptor in descriptors:
-            descriptor_id = str(descriptor.get("id") or "")
-            for tool in descriptor.get("tools") or []:
-                if not isinstance(tool, Mapping):
-                    continue
-                tool_name = str(tool.get("name") or tool.get("id") or "").strip()
-                if tool_name:
-                    descriptors_by_tool[tool_name] = descriptor_id
-    return descriptors_by_tool
-
-
-def _apply_agent_blueprint_mcp_descriptor_validation(
-    app: "FastAPI",
-    rows: list["AgentDef"],
-) -> list["AgentDef"]:
-    """Disable experts whose declared MCP tools require (absent) explicit enablement."""
-
-    descriptor_tools = _agent_blueprint_descriptor_tools(rows)
-    if not descriptor_tools:
-        return rows
-    out: list[AgentDef] = []
-    for row in rows:
-        enabled_tools = _enabled_agent_blueprint_mcp_tool_names(
-            app, str(row.metadata.get("agent_blueprint_id") or "").strip()
-        )
-        errors = list(row.validation_errors)
-        diagnostics = list(row.metadata.get("tool_diagnostics", []))
-        for tool_name in row.tools:
-            if tool_name not in descriptor_tools or tool_name in enabled_tools:
-                continue
-            descriptor_id = descriptor_tools[tool_name]
-            message = f"MCP tool requires explicit enablement: {tool_name}" + (
-                f" (descriptor: {descriptor_id})" if descriptor_id else ""
-            )
-            if message not in errors:
-                errors.append(message)
-            if not any(
-                isinstance(diag, Mapping)
-                and str(diag.get("tool") or "") == tool_name
-                and str(diag.get("source") or "") == "agent_blueprint_mcp_descriptor"
-                for diag in diagnostics
-            ):
-                diagnostics.append(
-                    {
-                        "tool": tool_name,
-                        "status": "disabled",
-                        "source": "agent_blueprint_mcp_descriptor",
-                        "descriptor_id": descriptor_id,
-                    }
-                )
-        metadata = dict(row.metadata)
-        if diagnostics:
-            metadata["tool_diagnostics"] = diagnostics
-        if errors != list(row.validation_errors):
-            metadata["mcp_descriptor_validation_disabled"] = True
-        out.append(
-            row.model_copy(
-                update={
-                    "enabled": row.enabled and not errors,
-                    "validation_errors": errors,
-                    "metadata": metadata,
-                }
-            )
-        )
-    return out
-
-
-def _apply_enabled_agent_blueprint_mcp_tools(
-    app: "FastAPI",
-    rows: list["AgentDef"],
-) -> list["AgentDef"]:
-    """Re-enable experts whose declared MCP tools became ready on a live server."""
-
-    out: list[AgentDef] = []
-    cache: dict[str, set[str]] = {}
-    for row in rows:
-        blueprint_id = str(row.metadata.get("agent_blueprint_id") or "").strip()
-        enabled_tools = cache.setdefault(
-            blueprint_id,
-            _enabled_agent_blueprint_mcp_tool_names(app, blueprint_id),
-        )
-        if not enabled_tools:
-            out.append(row)
-            continue
-        row_tools = {str(tool).strip() for tool in row.tools if str(tool).strip()}
-        resolved_tools = row_tools & enabled_tools
-        if not resolved_tools:
-            out.append(row)
-            continue
-        errors = [
-            error
-            for error in row.validation_errors
-            if not any(
-                error.startswith(f"MCP tool requires explicit enablement: {tool}")
-                for tool in resolved_tools
-            )
-        ]
-        diagnostics = [
-            diag
-            for diag in row.metadata.get("tool_diagnostics", [])
-            if not (
-                isinstance(diag, Mapping)
-                and str(diag.get("source") or "") == "agent_blueprint_mcp_descriptor"
-                and str(diag.get("tool") or "") in resolved_tools
-            )
-        ]
-        metadata = dict(row.metadata)
-        if diagnostics:
-            metadata["tool_diagnostics"] = diagnostics
-        else:
-            metadata.pop("tool_diagnostics", None)
-        disabled_by_mcp_validation = bool(metadata.pop("mcp_descriptor_validation_disabled", False))
-        out.append(
-            row.model_copy(
-                update={
-                    "enabled": row.enabled or (disabled_by_mcp_validation and not errors),
-                    "validation_errors": errors,
-                    "metadata": metadata,
-                }
-            )
-        )
-    return out
-
-
-def _runtime_active_agent_blueprint_rows(
-    app: "FastAPI",
-    *,
-    session_id: str = "",
-    workspace_id: str = "",
-    prompt_registry: "PromptRegistry | None" = None,
-) -> list["AgentDef"]:
-    """Resolve the effective blueprint AgentDef rows for a session.
-
-    This is the ONE seam both ``GET /v1/agents`` (via ``_agent_rows`` in
-    :mod:`clio_agent.gact.app`) and the runtime turn path share. It applies, in
-    order: the session's EXPLICITLY activated blueprint (never an implicit
-    default — an unbound session resolves no blueprint at all), the
-    session agent overlay, hierarchy validation, MCP tool-gating (descriptor
-    validation + live-server re-enable), capability-ref projection, and the
-    prompt registry -- so the route and the executing agent can never disagree
-    on what an agent resolves to.
-    """
-
-    if not session_id:
-        return []
-    cwd = _runtime_workspace_catalog_cwd(app, workspace_id=workspace_id, session_id=session_id)
-    active_blueprint_id = _runtime_effective_agent_blueprint_id(app, session_id)
-    active_blueprint_path = _runtime_effective_agent_blueprint_path(app, session_id)
-    if active_blueprint_path is not None:
-        rows = load_agent_blueprint_path(active_blueprint_path, scope="session")
-    elif active_blueprint_id:
-        rows = load_agent_blueprints(cwd=cwd, blueprint_id=active_blueprint_id)
-    else:
-        rows = []
-    if not rows:
-        return []
-    rows = _runtime_apply_session_agent_overlay(app, rows, session_id=session_id)
-    rows = validate_agent_hierarchy(_merge_agent_def_rows(rows))
-    rows = _apply_agent_blueprint_mcp_descriptor_validation(app, rows)
-    rows = _apply_enabled_agent_blueprint_mcp_tools(app, rows)
-    render_context = _prompt_render_context(app)
-    render_context.update(_agent_rows_prompt_render_context(rows))
-    render_context["session.active_agent_blueprint"] = (
-        active_blueprint_id or "(no active agent blueprint)"
-    )
-    render_context["session.active_pack"] = active_blueprint_id or "(no active expert pack)"
     return [
-        _apply_prompt_registry_to_agent(
-            app,
-            _agent_with_capability_refs(app, row),
-            prompt_registry=prompt_registry,
-            render_context=render_context,
-        )
-        for row in rows
+        {"id": row["id"], "plugin": row["plugin"], "description": row["description"]}
+        for row in delegable_subagents(resolution)
     ]
 
 
-def _runtime_active_agent_blueprint_agent_ids(app: "FastAPI", session_id: str = "") -> set[str]:
-    return {
-        row.id
-        for row in _runtime_active_agent_blueprint_rows(app, session_id=session_id)
-        if row.enabled
-    }
+def supplied_server_values(
+    app: Any, mcp_servers: Mapping[str, Mapping[str, Any]], *, workspace_root: Path | None
+) -> dict[str, str]:
+    """The CLIO-supplied values a resolution's MCP servers reference.
 
-
-def _runtime_child_agent_rows(
-    app: "FastAPI",
-    parent_id: str,
-    *,
-    session_id: str = "",
-) -> list["AgentDef"]:
-    """Return the enabled child experts declared for ``parent_id``.
-
-    Child discovery must mirror the resolution path that actually executes the
-    delegated agents. ``_runtime_active_agent_blueprint_rows`` only covers agents
-    sourced from an active Agent Blueprint graph; experts resolved through the
-    expert-pack/builtin hierarchy (``_resolve_dynamic_agent``) are invisible to
-    it. When the running parent is not part of the active blueprint, fall back to
-    the same hierarchy so its declared children are still discoverable for
-    synchronous delegation, continuation contracts, and child-tool wiring.
+    ``${CLIO_PROVENANCE_CONFIG}`` writes the provenance handoff for the
+    session's workspace. An incomplete handoff is traced, not hidden; the
+    server reads the problems from the file it was given.
     """
 
-    if not parent_id:
-        return []
-    blueprint_rows = _runtime_active_agent_blueprint_rows(app, session_id=session_id)
-    children = [row for row in blueprint_rows if row.enabled and row.parent_id == parent_id]
-    if children:
-        return children
-    if any(row.id == parent_id and row.enabled for row in blueprint_rows):
-        # The parent lives in the active blueprint and simply has no children.
-        return []
-    cwd = _runtime_workspace_catalog_cwd(app, session_id=session_id)
-    expert_rows = validate_expert_hierarchy(
-        _merge_agent_def_rows(_builtin_agents() + load_expert_packs(cwd=cwd))
+    from clio_agent.plugins.servers import (  # noqa: PLC0415
+        PROVENANCE_CONFIG_VAR,
+        references_variable,
     )
-    return [row for row in expert_rows if row.enabled and row.parent_id == parent_id]
+
+    specs = {name: row.get("spec") for name, row in mcp_servers.items()}
+    if not references_variable(specs, PROVENANCE_CONFIG_VAR):
+        return {}
+    from clio_agent.gact.provenance.handoff import write_provenance_handoff  # noqa: PLC0415
+    from clio_agent.runtime import trace  # noqa: PLC0415
+
+    path, handoff = write_provenance_handoff(app, workspace_root=workspace_root)
+    if handoff.problems:
+        trace.event(
+            "PLUGIN-SERVERS",
+            "provenance_handoff_incomplete path=%s problems=%s",
+            path,
+            ",".join(problem.code for problem in handoff.problems),
+        )
+    return {PROVENANCE_CONFIG_VAR: str(path)}
 
 
-def _runtime_declared_child_ids(
-    app: "FastAPI",
-    parent_id: str,
-    *,
-    session_id: str = "",
-) -> set[str]:
-    """Return the set of enabled child expert ids declared for ``parent_id``."""
+def session_server_set(app: Any, session_id: str) -> str:
+    """The plugin MCP server set of a session's agent ("" when it has none).
 
-    return {row.id for row in _runtime_child_agent_rows(app, parent_id, session_id=session_id)}
-
-
-def _runtime_active_agent_blueprint_root_id(app: "FastAPI", session_id: str = "") -> str:
-    rows = _runtime_active_agent_blueprint_rows(app, session_id=session_id)
-    if not rows:
-        return ""
-    requested_root = str(rows[0].metadata.get("agent_blueprint_root_expert") or "").strip()
-    if requested_root and any(row.id == requested_root for row in rows):
-        # The DECLARED root is the root, enabled or not. A disabled root is a
-        # fact the turn path fails TYPED on (_BlueprintRootDisabled) — silently
-        # substituting another enabled expert as root ran a leaf as the
-        # orchestrator on the live gate (#948 S4). Substitution below applies
-        # only when the manifest declares no resolvable root at all.
-        return requested_root
-    roots = [row for row in rows if row.enabled and not row.parent_id]
-    if len(roots) == 1:
-        return roots[0].id
-    enabled = [row for row in rows if row.enabled]
-    if not enabled:
-        return ""
-    return sorted(enabled, key=lambda row: (row.tier, row.id))[0].id
-
-
-def _apply_session_tool_allowlist(
-    app: "FastAPI", rows: list["AgentDef"], *, session_id: str = ""
-) -> list["AgentDef"]:
-    """Force a session's bound agent to ZERO tools per an empty ``tool_allowlist``.
-
-    #1309 C1-S7 F1: the agent-driven-elicitation answer child turn must have NO
-    tool surface at all -- declared, auto-attached (``create_artifact``/
-    ``plan_exit``/``write_todos``/... -- ``agents/auto_tools.py::
-    build_auto_react_tools`` attaches these UNCONDITIONALLY to every ``react``
-    module, not gated by ``AgentDef.tools``), or skill -- so a malicious
-    server's elicitation ``message`` (embedded verbatim in the answer prompt)
-    cannot drive a tool-capable turn. Emptying ``AgentDef.tools`` alone cannot
-    reach the auto-attached set; forcing ``module.kind`` to ``chain_of_thought``
-    does, because ``BlueprintExpertModule`` only populates ``self.tools`` at
-    all inside its ``kind == "react"`` branches (see ``agents/builders.py``).
-
-    Reads ``session.metadata["tool_allowlist"]`` (stamped at spawn MINT time,
-    see ``turn_spawn.py::spawn_child_turn`` -- never patched in afterward, so
-    this is true before the session's first turn build, not by timing). Only
-    the explicit EMPTY list/tuple is handled -- a present-but-non-empty
-    allowlist and an absent one are both untouched no-ops (no caller needs
-    partial restriction yet). Applies to every row whose id matches the
-    session's OWN bound agent (the only one that can ever actually execute).
+    An unresolvable agent mounts no plugin servers; its turn fails with the
+    typed resolution errors on its own path.
     """
 
-    if not session_id:
-        return rows
-    sess = app.state.sessions.get(session_id)
-    metadata = getattr(sess, "metadata", None) if sess is not None else None
-    if not isinstance(metadata, Mapping):
-        return rows
-    allowlist = metadata.get("tool_allowlist")
-    if not isinstance(allowlist, (list, tuple)) or allowlist:
-        return rows
-    from clio_agent.gact.runtime.globals import _session_agent_id  # noqa: PLC0415
+    from clio_agent.plugins.servers import register_server_set  # noqa: PLC0415
 
-    bound_id = _session_agent_id(sess)
-    return [
-        row.model_copy(update={"tools": [], "module": {"kind": "chain_of_thought"}})
-        if row.id == bound_id
-        else row
-        for row in rows
-    ]
+    if app is None or not session_id:
+        return ""
+    from clio_agent.gact.agents.prompt_basis import mounted_servers  # noqa: PLC0415
+
+    try:
+        servers = mounted_servers(app, session_id, session_resolution(app, session_id))
+    except SessionAgentUnavailable:
+        return ""
+    if not servers:
+        return ""
+    supplied = supplied_server_values(
+        app, servers, workspace_root=_runtime_workspace_catalog_cwd(app, session_id=session_id)
+    )
+    return register_server_set(servers, supplied)
 
 
-def _resolve_runtime_dynamic_agent(
-    app: "FastAPI",
-    agent_id: str,
-    *,
-    session_id: str = "",
-    workspace_id: str = "",
-    prompt_registry: "PromptRegistry | None" = None,
-) -> "AgentDef | None":
-    resolved: "AgentDef | None" = None
-    if session_id:
-        for row in _runtime_active_agent_blueprint_rows(
-            app,
-            session_id=session_id,
-            workspace_id=workspace_id,
-            prompt_registry=prompt_registry,
-        ):
-            if row.id == agent_id and row.enabled:
-                resolved = row
-                break
-    if resolved is None:
-        resolved = _resolve_dynamic_agent(app, agent_id, prompt_registry=prompt_registry)
-    if resolved is None:
-        return None
-    return _apply_session_tool_allowlist(app, [resolved], session_id=session_id)[0]
+def agent_server_set(app: Any, ref: str) -> str:
+    """The plugin MCP server set an agent would mount (draft warm-up, no session)."""
+
+    from clio_agent.plugins.servers import register_server_set  # noqa: PLC0415
+
+    try:
+        resolution = plugin_service(app).resolve(ref, pin=False)
+    except Exception:  # noqa: BLE001 - warm-up is best effort; the turn reports typed errors
+        return ""
+    supplied = supplied_server_values(app, resolution.mcp_servers, workspace_root=None)
+    return register_server_set(resolution.mcp_servers, supplied)

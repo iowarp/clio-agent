@@ -172,7 +172,7 @@ def _artifact_event(artifact_id: str, name: str, *, kind: str = "dataset") -> di
             "sha256": "a" * 64,
             "size_bytes": 12,
             "workspace_id": "ws_1",
-            "producer": {"call_id": "call_1", "tool": "fs_apply_edit_write"},
+            "producer": {"call_id": "call_1", "tool": "fs_write_file"},
         },
     }
 
@@ -185,7 +185,7 @@ def _transform_event(call_id: str, generated: list[str]) -> dict[str, Any]:
             "call_id": call_id,
             "session_id": "sess_1",
             "status": "success",
-            "instrument": {"tool": "fs_apply_edit_write"},
+            "instrument": {"tool": "fs_write_file"},
             "generated": [{"artifact_id": item, "name": item} for item in generated],
         },
     }

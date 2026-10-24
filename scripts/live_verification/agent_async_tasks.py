@@ -33,7 +33,6 @@ from _task_missions import folder_input, mission
 from _task_outcomes import outcomes
 
 CORE = Path(__file__).resolve().parents[2]
-WEB_DIGEST = "c255bef9ae43d911188ad2385659121cbfb9c3d42f7ebf9b2e23a8d65a09abc4"
 TARGET = (
     "https://raw.githubusercontent.com/modelcontextprotocol/modelcontextprotocol/main/README.md"
 )
@@ -108,16 +107,9 @@ def main() -> int:
     )
     payload_server = PayloadServer(proof) if args.slow_payload else None
     target = payload_server.url if payload_server is not None else TARGET
-    web = Path.home() / ".cache/clio-kit/mcp-projects/web" / WEB_DIGEST
-    web_python = (
-        Path.home()
-        / ".cache/clio-kit/mcp-environments"
-        / ("web-c255bef9ae43d911188ad238/Scripts/python.exe")
-    )
-    command = common.quoted_command(
-        str(web_python), str(web / "src/web_mcp/server.py"), "--provider", "ddg"
-    )
-    pack = common.materialize_testing_pack(
+    # The MCP kind's web server comes from the default marketplace's ``web``
+    # plugin, which the web-testing agent carries (``clio-kit mcp-server web``).
+    pack = common.materialize_testing_marketplace(
         CORE
         / "scripts/live_verification/agents"
         / (
@@ -128,7 +120,7 @@ def main() -> int:
             else "task-testing"
         ),
         workspace,
-        {"web": command} if args.kind == "MCP" else {},
+        {},
     )
     prompt_mission = (
         question_mission(workspace, args.question_mode)
@@ -231,8 +223,7 @@ def main() -> int:
                 source["source_id"] = registered["id"]
                 prompt_mission = mission(args.kind, workspace, source=source)
             verdict["owned_source"] = source
-            installed = common.install_blueprint(call, pack, wid)
-            common.activate_blueprint(call, sid, str(installed["id"]))
+            common.use_agent(call, sid, common.install_testing_agent(call, pack))
             # Normal product binding, with discovery/readiness guards intact.
             call(
                 "PUT",

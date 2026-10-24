@@ -1,9 +1,9 @@
 """A parent asks for a strategy when it spawns a subagent (Phase 9, use 1).
 
-``spawn_agent_task(..., strategy={variant, n, rubric, threshold})`` wraps the CHILD in the
-same BestOfN / Refine the blueprint declaration uses, validated by the same parser before
-any child exists; the strategy rides the child session's metadata and the builder applies
-it when it builds the child's program.
+``spawn_agent_task(..., strategy={variant, n, rubric, threshold})`` wraps the CHILD in a
+BestOfN / Refine, validated by the shared variant parser before any child exists; the
+strategy rides the child session's metadata and the builder applies it when it builds the
+child's program.
 """
 
 from __future__ import annotations

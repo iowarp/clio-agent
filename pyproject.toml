@@ -123,7 +123,7 @@ dependencies = [
     # The default WebSocket protocol must avoid the deprecated websockets.legacy API.
     "uvicorn>=0.54.0",
     "sse-starlette>=1.6.0",
-    # clio_agent.sdk (#799) — the typed GACT client imports httpx directly
+    # clio_agent.client (#799) — the typed GACT client imports httpx directly
     # (already present transitively via fastmcp/dspy; declared so the SDK
     # does not lean on someone else's dependency tree).
     "httpx>=0.27.0",
@@ -340,6 +340,9 @@ warn_unused_configs = true
 disallow_untyped_defs = false  # Set to true for stricter typing
 ignore_missing_imports = true
 disable_error_code = ["import-untyped"]
+# Built-in plugins' code is loaded by path, as any installed plugin's is, not imported as
+# part of the clio_agent package; their folders repeat module names (tools/runtime.py).
+exclude = ['src/clio_agent/plugins/builtin/[^/]+/ai\.iowarp\.clio/']
 
 [tool.mutmut]
 # Mutation-testing pilot scope (#773 slice 19): the two correctness-critical

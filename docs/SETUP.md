@@ -190,18 +190,21 @@ You should see the assistant's reply with a populated `tokens` and
 ## Try one of these to see CLIO routing in action
 
 Each prompt below exercises a different code path. Run them through
-the TUI (or via curl) once you have the LM configured. Each should
-produce the documented behaviour — see
-[`docs/archive/CAPABILITIES_MATRIX.md`](archive/CAPABILITIES_MATRIX.md) for the full
-end-to-end verification matrix.
+the TUI (or via curl) once you have the LM configured. A new session runs
+the default `clio/standard` agent; the data prompts need the
+`clio/clio-data` agent, which carries the HDF5, ADIOS2 and Parquet servers and
+their skills (pick it when creating the session, or
+`PATCH /v1/sessions/{sid}/agent` with `{"ref": "clio/clio-data"}`; see
+[PLUGINS_AND_FLOWS.md](PLUGINS_AND_FLOWS.md)). The model decides which tools
+to call and whether to start subagents.
 
-| Prompt | What it exercises |
-|---|---|
-| `"What is the schema of /tmp/clio-demo/clio_demo.parquet?"` | analysis expert (direct Parquet inspection) |
-| `"Inspect /tmp/clio-demo/clio_demo.h5"` | data expert (direct HDF5 inspection) |
-| `"validate parquet schema and statistics in parallel"` | analysis expert spawns 2 nanoagents (#9) — child sessions appear under the parent in the sidebar |
-| `"propose an edit to /path/to/file.py — replace string concat with f-string"` | chat path → fs.propose_edit → file_diff Part rendered inline |
-| `"hello, who are you?"` | chat agent (CLIO identity reply) |
+| Prompt | Agent | What it exercises |
+|---|---|---|
+| `"What is the schema of /tmp/clio-demo/clio_demo.parquet?"` | `clio/clio-data` | Parquet inspection with the `parquet` tools and skill |
+| `"Inspect /tmp/clio-demo/clio_demo.h5"` | `clio/clio-data` | HDF5 inspection with the `hdf5` tools and skill |
+| `"validate parquet schema and statistics in parallel"` | `clio/clio-data` | parallel child tasks (`spawn_agents_parallel`) — child sessions appear under the parent in the sidebar |
+| `"edit /path/to/file.py — replace string concat with f-string"` | `clio/standard` | `fs_edit_file` asks by the session's permission mode, writes the file, and records an applied file_diff with Undo |
+| `"hello, who are you?"` | `clio/standard` | identity reply from the composed prompt |
 
 ## Try a third-party MCP server
 

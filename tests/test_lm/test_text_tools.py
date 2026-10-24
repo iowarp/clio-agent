@@ -186,6 +186,49 @@ def test_orphaned_single_call_data_and_examples_remain_answers(raw: str, tools: 
     assert (split.text, split.calls) == (raw, [])
 
 
+@pytest.mark.parametrize(
+    "raw",
+    [
+        pytest.param(
+            '{"name":"colab_open","arguments":{"_clio_task_description":"open"}}\n[/tool_calls]',
+            id="closing-tag",
+        ),
+        pytest.param(
+            '[tool_calls]\n[{"name":"colab_open","arguments":{}}]\n[/tool_calls]', id="both-tags"
+        ),
+    ],
+)
+def test_a_call_in_bracket_tags_is_a_protocol_error_not_an_answer(raw: str) -> None:
+    """A live Haiku reply was one call object closed by [/tool_calls], with no fence."""
+    split = split_reply(raw, call_prefix="t", available_tools={"colab_open"})
+    [call] = split.calls
+    assert call.name == INVALID_TOOL_CALL
+    assert call.input["block"] == raw
+    assert "[tool_calls] tags are not calls" in str(call.input["error"])
+    assert not split.text
+
+
+@pytest.mark.parametrize(
+    ("raw", "tools"),
+    [
+        pytest.param('{"name":"colab_open","arguments":{}}\n[/tool_calls]', set(), id="no-tools"),
+        pytest.param(
+            '{"name":"other","arguments":{}}\n[/tool_calls]', {"colab_open"}, id="unknown"
+        ),
+        pytest.param(
+            'Write [tool_calls] then {"name":"colab_open","arguments":{}} [/tool_calls].',
+            {"colab_open"},
+            id="prose",
+        ),
+    ],
+)
+def test_bracket_tags_around_anything_but_a_whole_call_remain_answers(
+    raw: str, tools: set[str]
+) -> None:
+    split = split_reply(raw, call_prefix="t", available_tools=tools)
+    assert (split.text, split.calls) == (raw.strip(), [])
+
+
 def test_corrupted_tool_fence_is_a_protocol_error_without_submitting_work() -> None:
     """The live Haiku reply replaced its opening fence with an underscore."""
     raw = '_tool_calls\n[{"name":"spawn_agent_task","arguments":{"agent":"worker"}}]\n```'
@@ -552,3 +595,51 @@ def test_the_stream_holds_a_partial_fence_until_it_resolves() -> None:
     assert splitter.push("a ``") == "a "
     assert splitter.push("x") == "``x"
     assert splitter.push(" done") == " done"
+
+
+def test_the_stream_does_not_show_a_call_also_written_as_invoke_markup() -> None:
+    """Only the fenced block runs; the same call written as invoke markup in the prose
+    is a duplicate the person should not read as text, wherever the chunks break."""
+
+    reply = (
+        "I'll inspect the data first.\n\n"
+        '<invoke name="shell_bash"> <parameter name="command">ls</parameter> </invoke>\n\n'
+        "Then I'll report.\n\n"
+        '```tool_calls\n[{"name": "shell_bash", "arguments": {"command": "ls"}}]\n```'
+    )
+    for size in (1, 3, 7, len(reply)):
+        splitter = StreamSplitter()
+        shown = "".join(splitter.push(reply[i : i + size]) for i in range(0, len(reply), size))
+        assert shown == "I'll inspect the data first.\n\n\n\nThen I'll report.", size
+        assert "<" not in shown
+        assert splitter.dropped_invoke_markup == 1
+
+
+def test_the_stream_holds_an_unfinished_invoke_and_keeps_ordinary_angle_brackets() -> None:
+    splitter = StreamSplitter()
+    assert splitter.push("a < b and ") == "a < b and "
+    assert splitter.push("<inv") == ""
+    assert splitter.push('oke name="x">') == ""
+    assert splitter.push("</invoke> done") == " done"
+    assert splitter.dropped_invoke_markup == 1
+
+
+def test_a_corrupted_fence_word_on_its_own_line_is_not_shown() -> None:
+    """``_tool_calls`` (the fence without its backticks) beside a real call is protocol
+    markup: never shown, counted for the audit, whatever the chunking."""
+    reply = (
+        "_tool_calls\nI'll remember that.\n_tool_call\n"
+        '```tool_calls\n[{"name": "create_memory", "arguments": {}}]\n```'
+    )
+    for size in (1, 3, 7, len(reply)):
+        splitter = StreamSplitter()
+        shown = "".join(splitter.push(reply[i : i + size]) for i in range(0, len(reply), size))
+        assert shown == "I'll remember that.", size
+        assert splitter.dropped_fence_words == 2
+
+
+def test_words_that_merely_start_like_the_fence_word_are_shown() -> None:
+    splitter = StreamSplitter()
+    assert splitter.push("_tool") == ""
+    assert splitter.push("_calls_are documented here\n") == "_tool_calls_are documented here"
+    assert splitter.dropped_fence_words == 0

@@ -8,8 +8,10 @@ plus the slash-command dispatch path:
 * ``GET /v1/tools`` + ``GET /v1/tools/{tool_id}`` -- the unified live tool catalog:
   every tool the bundled in-process gateway and the installed third-party MCP
   servers expose, flattened with owner/tags/visibility metadata.
-* ``GET /v1/commands`` (#14) -- the backend slash-command catalog (built-ins +
-  user/skill/agent-blueprint command files), optionally filtered to the
+* ``GET /v1/commands`` (#14) -- the backend slash-command catalog (built-ins,
+  user command files, the ``commands/`` folders of the session agent's
+  resolved plugins and skill-declared commands; see
+  :mod:`clio_agent.gact.runtime.commands`), optionally filtered to the
   planner-visible, agent-invocable subset.
 * ``POST /v1/sessions/{sid}/commands/{cmd}`` -- dispatch one command: run a
   user/agent command's target agent, or apply a built-in side effect
@@ -34,6 +36,7 @@ from typing import TYPE_CHECKING, Any, Optional
 
 from fastapi import FastAPI, HTTPException, Request
 
+from clio_agent.gact.agents.runners import run_resolved_agent
 from clio_agent.gact.agents.tool_instrumentation import mcp_tool_title
 from clio_agent.gact.catalog import (
     _tool_owner_for_catalog,
@@ -66,6 +69,7 @@ from clio_agent.gact.types import (
     ErrorInfo,
     ListToolsResponse,
 )
+from clio_agent.gact.user_command_turn import submit_user_command
 from clio_agent.tools.mcp_config import MCPTransportError, transport_from_spec
 
 if TYPE_CHECKING:
@@ -142,31 +146,6 @@ def register_catalog_routes(app: FastAPI, deps: "GactDeps") -> None:
             except Exception:  # noqa: BLE001
                 Client = None  # type: ignore
             for sid, info in sorted(installed.items()):
-                for declared in info.get("tools") or []:
-                    if not isinstance(declared, Mapping):
-                        continue
-                    tool_name = str(declared.get("name") or declared.get("id") or "").strip()
-                    if not tool_name:
-                        continue
-                    rows.append(
-                        {
-                            "id": tool_name,
-                            "name": tool_name,
-                            "title": str(declared.get("title") or ""),
-                            "description": declared.get("description") or "",
-                            "server_id": sid,
-                            "source": "agent_blueprint_mcp_descriptor",
-                            "status": declared.get("status") or info.get("status") or "unknown",
-                            "enabled": bool(declared.get("enabled", False)),
-                            "input_schema": declared.get("input_schema") or {},
-                            "output_schema": declared.get("output_schema") or {},
-                            "owner": _tool_owner_for_catalog(tool_name),
-                            "tags": _tool_tags_for_catalog(tool_name),
-                            "visible_to": _tool_visible_to_for_catalog(tool_name),
-                            "agent_blueprint_id": info.get("agent_blueprint_id") or "",
-                            "descriptor_id": info.get("descriptor_id") or "",
-                        }
-                    )
                 spec = info.get("spec", {})
                 if Client is None:
                     continue
@@ -272,28 +251,6 @@ def register_catalog_routes(app: FastAPI, deps: "GactDeps") -> None:
             except Exception:  # noqa: BLE001 - optional fastmcp client; None when unavailable
                 Client = None  # type: ignore
             for sid, info in installed.items():
-                for declared in info.get("tools") or []:
-                    if not isinstance(declared, Mapping):
-                        continue
-                    tool_name = str(declared.get("name") or declared.get("id") or "").strip()
-                    if tool_name == tool_id:
-                        return {
-                            "id": tool_id,
-                            "name": tool_id,
-                            "title": str(declared.get("title") or ""),
-                            "description": declared.get("description") or "",
-                            "server_id": sid,
-                            "source": "agent_blueprint_mcp_descriptor",
-                            "status": declared.get("status") or info.get("status") or "unknown",
-                            "enabled": bool(declared.get("enabled", False)),
-                            "input_schema": declared.get("input_schema") or {},
-                            "output_schema": declared.get("output_schema") or {},
-                            "owner": _tool_owner_for_catalog(tool_id),
-                            "tags": _tool_tags_for_catalog(tool_id),
-                            "visible_to": _tool_visible_to_for_catalog(tool_id),
-                            "agent_blueprint_id": info.get("agent_blueprint_id") or "",
-                            "descriptor_id": info.get("descriptor_id") or "",
-                        }
                 if Client is None:
                     break
                 try:
@@ -390,6 +347,22 @@ def register_catalog_routes(app: FastAPI, deps: "GactDeps") -> None:
         )
         return row
 
+    def _agent_resolution(agent_ref: str) -> Any:
+        """``agent_ref``'s resolution, for a planner listing that names no session."""
+
+        from clio_agent.gact.agents.resolution import plugin_service
+        from clio_agent.plugins.service import AgentNotFound
+
+        try:
+            return plugin_service(app).resolve(agent_ref, pin=False)
+        except AgentNotFound as exc:
+            raise HTTPException(
+                status_code=404,
+                detail=ErrorEnvelope(
+                    error=ErrorInfo(error=exc.reason, message=str(exc), recoverable=True)
+                ).model_dump(exclude_none=True),
+            ) from exc
+
     @app.get("/v1/commands")
     def list_commands(
         agent_id: Optional[str] = None,
@@ -401,15 +374,20 @@ def register_catalog_routes(app: FastAPI, deps: "GactDeps") -> None:
 
         cwd, extra_roots = command_context_for_request(app, session_id or "", workspace_id or "")
         if planner:
+            # The planner sees the commands one agent may invoke: the session's agent
+            # (or its subagent ``agent_id``), or, without a session, agent ``agent_id``.
+            agent_def = None
+            if session_id:
+                agent_def = deps.resolve_session_agent(agent_id or "", session_id=session_id)
+            elif agent_id:
+                from clio_agent.gact.agents.resolution import resolution_agent_def
+                from clio_agent.gact.runtime.commands import resolution_command_roots
+
+                resolution = _agent_resolution(agent_id)
+                agent_def = resolution_agent_def(resolution)
+                extra_roots = resolution_command_roots(resolution)
             return {
-                "commands": planner_command_rows(
-                    app,
-                    deps.resolve_runtime_dynamic_agent,
-                    agent_id=agent_id or "",
-                    cwd=cwd,
-                    extra_roots=extra_roots,
-                    session_id=session_id or "",
-                )
+                "commands": planner_command_rows(app, agent_def, cwd=cwd, extra_roots=extra_roots)
             }
         return {"commands": all_command_rows(app, cwd=cwd, extra_roots=extra_roots)}
 
@@ -485,11 +463,7 @@ def register_catalog_routes(app: FastAPI, deps: "GactDeps") -> None:
             or ""
         ).strip()
         if caller_type == "agent":
-            caller_agent = deps.resolve_runtime_dynamic_agent(
-                caller_agent_id,
-                session_id=sid,
-                workspace_id=sess.workspace_id,
-            )
+            caller_agent = deps.resolve_session_agent(caller_agent_id, session_id=sid)
             allowed_ids = agent_allowed_command_ids(caller_agent) if caller_agent else set()
             deny_reason = ""
             if command_meta.get("agent_invocable") is not True:
@@ -528,11 +502,7 @@ def register_catalog_routes(app: FastAPI, deps: "GactDeps") -> None:
 
         if command_meta.get("source") == "user":
             agent_id = str(command_meta.get("agent_id") or "")
-            agent_def = deps.resolve_runtime_dynamic_agent(
-                agent_id,
-                session_id=sid,
-                workspace_id=sess.workspace_id,
-            )
+            agent_def = deps.resolve_session_agent(agent_id, session_id=sid)
             if agent_def is None:
                 raise HTTPException(
                     status_code=404,
@@ -545,6 +515,7 @@ def register_catalog_routes(app: FastAPI, deps: "GactDeps") -> None:
                         )
                     ).model_dump(exclude_none=True),
                 )
+            agent_id = agent_def.id
             args = request_body.get("args")
             if args is None:
                 args = request_body.get("arguments")
@@ -588,19 +559,25 @@ def register_catalog_routes(app: FastAPI, deps: "GactDeps") -> None:
                 cmd_id=cmd_id,
                 agent_id=agent_id,
             )
-            # #755: the runner is a full (blocking) DSPy agent turn that can
-            # take minutes. Run it off the event loop so /health, SSE
-            # heartbeats, and other sessions stay responsive, mirroring how
-            # turn.py executes blueprint runners. Copy the request context
-            # with the app contextvar bound so the runner's dynamic-agent
-            # tool wrappers still resolve ``app`` inside the worker thread;
-            # the synchronous response shape and audit rows are unchanged.
+            if caller_type != "agent":
+                # The person typed it: it runs as a turn of the conversation.
+                return await submit_user_command(
+                    app,
+                    deps,
+                    sid,
+                    cmd_id=cmd_id,
+                    user_input=user_input,
+                    rendered=question,
+                    command_meta=dict(command_meta),
+                )
+            # An agent's call (#755): the blocking run stays off the event loop, with the
+            # app contextvar bound so its tool wrappers resolve ``app`` in the worker.
             with _gact_app_context(app):
                 command_turn_context = contextvars.copy_context()
             pred = await asyncio.get_running_loop().run_in_executor(
                 None,
                 lambda: command_turn_context.run(
-                    deps.blueprint_runner_for_agent(agent_def),
+                    run_resolved_agent,
                     app.state.agent,
                     agent_def,
                     question,

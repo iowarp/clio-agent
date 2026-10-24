@@ -70,7 +70,7 @@ Check these references against current code before relying on them. Line numbers
 - **Evals:** copy `factorio-flat/evals/` (`behavioral-cases.json`, `README.md` trace format, a grader script, fixtures). For live grinding, see the `grind-clio-case` skill.
 
 ## Names already taken
-`phenotype*` (the synthetic SPOTTER workload) and `spotter*` / `SPOTTER_*` (the forensic provenance watcher). Check `ls external/clio-agent-marketplace` before naming a pack.
+`spotter*` / `SPOTTER_*` (the forensic provenance watcher), plus every agent and plugin id under `external/clio-agent-marketplace/agents` and `plugins` (see its `ARCHITECTURE.md`). Check `ls external/clio-agent-marketplace/plugins` before naming a pack.
 
 ## Agent Plugins v1.0 (where packaging is heading)
 - **The spec** ([agentplugins/agent-plugins-spec](https://github.com/agentplugins/agent-plugins-spec)) defines a plugin as `plugin.json` (`name` required) + `skills/` + optional `mcp.json`, with `${PLUGIN_ROOT}` / `${PLUGIN_DATA}` expanded in args/env/cwd, plus client extension dirs.

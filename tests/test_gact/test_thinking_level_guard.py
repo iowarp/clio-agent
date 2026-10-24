@@ -43,6 +43,10 @@ def test_a_model_without_thinking_control_refuses_every_level(monkeypatch) -> No
     monkeypatch.setattr(
         "clio_agent.gact.model_selection.surrogate_selection_error", lambda *a: None
     )
+    # The agent-requirement check has its own tests (test_fleet_session_check).
+    monkeypatch.setattr(
+        "clio_agent.gact.fleet.session_check.model_requirement_error", lambda *a: None
+    )
     with pytest.raises(HTTPException) as raised:
         guard.raise_if_selection_unusable(_app(), MODEL, "high", "s1")
     assert raised.value.status_code == 422

@@ -235,45 +235,11 @@ providers.model_catalog_ttl_s: 86400.0
 # attachment leaves CLIO unbounded and unattributed.
 # providers.native_image_url_allowlist:  # default unset; resolved in code
 
-# CLIO_SUMMARIZER_API_BASE  (str)  <- src/clio_agent/lm/secondary.py
-# Optional summary endpoint override; empty inherits the effective caller
-# endpoint.
-# summarizer.api_base:  # default unset; resolved in code
-
-# CLIO_SUMMARIZER_CREDENTIAL_REF  (str)  <- src/clio_agent/lm/secondary.py
-# Optional summary credential reference resolved at each invocation.
-# summarizer.credential_ref:  # default unset; resolved in code
-
-# CLIO_SUMMARIZER_MAX_TOKENS  (int)  <- src/clio_agent/lm/secondary.py
-# Optional summary output cap; zero omits the client cap and empty inherits.
-# summarizer.max_tokens:  # default unset; resolved in code
-
-# CLIO_SUMMARIZER_MODEL  (str)  <- src/clio_agent/lm/secondary.py
-# Optional summary model override; empty inherits the effective caller
-# model.
-# summarizer.model:  # default unset; resolved in code
-
-# CLIO_SUMMARIZER_PROVIDER  (str)  <- src/clio_agent/lm/secondary.py
-# Optional summary provider override; changing it resolves provider-scoped
-# defaults.
-# summarizer.provider:  # default unset; resolved in code
-
-# CLIO_SUMMARIZER_TRANSPORT  (str)  <- src/clio_agent/lm/secondary.py
-# Optional summary transport override for providers with selectable
-# transports.
-# summarizer.transport:  # default unset; resolved in code
-
 # ==========================================================================
 # Limits, timeouts and retries
 # ==========================================================================
 # Per-call byte/character/time bounds and bounded-retry budgets across the
 # tool and LM paths.
-
-# CLIO_AGENT_TASK_ARTIFACT_CONTEXT_CHARS  (int)  <- src/clio_agent/gact/agent_task_artifacts.py
-# Character bound on registered artifact content injected into a
-# commissioning parent when a child blueprint returns; raise for larger
-# reports, lower to bound resumed parent context growth.
-limits.agent_task_artifact_context_chars: 64000
 
 # CLIO_AGENT_TASK_OUTPUT_DIGEST_CHARS  (int)  <- src/clio_agent/gact/agents/agent_task_output_digest.py
 # Character bound above which a completed spawned child's full output is
@@ -396,7 +362,7 @@ limits.view_pdf_source_max_bytes: 536870912
 # ==========================================================================
 # Agents, workflows and scheduling
 # ==========================================================================
-# Child-agent concurrency, declared-workflow step liveness, goal judging and
+# Installed plugins and agents, child-agent concurrency, goal judging and
 # the cron scheduler.
 
 # CLIO_MAX_CONCURRENT_AGENT_TASKS  (int)  <- src/clio_agent/gact/agent_task_limits.py
@@ -411,18 +377,6 @@ agent_tasks.max_concurrent: 3
 # visible.
 agent_tasks.max_depth: 8
 
-# CLIO_DEFAULT_AGENT_BLUEPRINT_ID  (str)  <- src/clio_agent/gact/agent_blueprint_refresh.py
-# Installed marketplace Agent Blueprint a fresh deployment bootstraps and
-# binds as its default (base-agent: one react root over CLIO's native
-# workspace tools); set it to ship a different agent, never to define one in
-# code.
-agents.default_blueprint_id: "base-agent"
-
-# CLIO_AGENT_DISABLE_DEFAULT_REGISTRY_BOOTSTRAP  (bool)  <- src/clio_agent/gact/agent_blueprint_refresh.py
-# Disables auto-installing the default marketplace Agent-Blueprint registry
-# on first boot; set true for an offline deployment.
-agents.disable_default_registry_bootstrap: false
-
 # CLIO_REACT_EXTRACT_AFTER_STEPS  (int)  <- src/clio_agent/gact/agents/clio_react_extract.py
 # Model steps a ReAct loop must exceed before DSPy's extract may fill the
 # outputs it did not produce (a max_iters ending, or a signature's extra
@@ -434,6 +388,13 @@ agents.react_extract.after_steps: 3
 # not produce; never replaces the model's own answer. Set false for the
 # strict one-call-per-step contract.
 agents.react_extract.enabled: true
+
+# CLIO_FLEET_DELEGATION  (str)  <- src/clio_agent/gact/fleet/guard.py
+# Per account id, whether the agent may run delegated work on it without
+# asking. Unset accounts follow their billing: subscriptions and free
+# accounts yes, metered and credit accounts ask once per conversation.
+# CLIO_FLEET_DELEGATION accepts JSON. Settings Usage writes this mapping.
+# fleet.delegation:  # computed at runtime: {}
 
 # CLIO_FLEET_JUDGES  (str)  <- src/clio_agent/gact/fleet_settings.py
 # Independent judge choices keyed by goals, variants and permissions. Each
@@ -449,11 +410,29 @@ agents.react_extract.enabled: true
 # Fleet writes this choice independently of judges.
 # fleet.search:  # default unset; resolved in code
 
+# CLIO_FLEET_USAGE_POLL_SECONDS  (int)  <- src/clio_agent/providers/usage/openrouter.py
+# How old an account's usage reading may be before reading the fleet asks
+# the provider again (OpenRouter's key endpoint). Subscriptions report usage
+# on every call instead.
+fleet.usage_poll_seconds: 300
+
 # CLIO_GOAL_JUDGE_MODEL  (str)  <- src/clio_agent/gact/goal.py
 # Legacy goal judge model override on the caller provider; Fleet goals
 # selection takes precedence, including an explicit null to inherit the
 # conversation model.
 # goal.judge_model:  # default unset; resolved in code
+
+# CLIO_DEFAULT_MARKETPLACE  (str)  <- src/clio_agent/plugins/service.py
+# Source of the shipped default marketplace (a folder or git URL); unset
+# uses the bundled marketplace, else the pinned default URL. Point it at a
+# mirror or an offline copy.
+# plugins.default_marketplace:  # default unset; resolved in code
+
+# CLIO_PLUGIN_STORE  (str)  <- src/clio_agent/plugins/service.py
+# Folder holding installed marketplaces, plugin snapshots, user agents and
+# pinned session resolutions; unset uses <config>/plugins. Set it for an
+# isolated or shared store.
+# plugins.store_root:  # default unset; resolved in code
 
 # CLIO_SCHEDULER_JITTER_WINDOW_S  (int)  <- src/clio_agent/gact/scheduler.py
 # Seconds-wide window a schedule's fire time is deterministically jittered
@@ -486,6 +465,16 @@ scheduler.min_interval_s: 60
 # strategy); a larger request is capped to it. Each try is a full agent run,
 # so it bounds the cost.
 variants.max_n: 8
+
+# CLIO_WORKFLOW_MAX_ADDED_STEPS  (int)  <- src/clio_agent/flows/limits.py
+# Ceiling on steps a workflow's editors may add to one run; 0 means
+# unlimited. A workflow may ask for fewer.
+workflows.max_added_steps: 0
+
+# CLIO_WORKFLOW_MAX_EDIT_ROUNDS  (int)  <- src/clio_agent/flows/limits.py
+# Ceiling on editing rounds in one workflow run; 0 means unlimited. A
+# workflow may ask for fewer.
+workflows.max_edit_rounds: 0
 
 # ==========================================================================
 # GACT server
@@ -539,22 +528,6 @@ compaction.keep.last_turns: 0
 # Optional bearer token required on non-loopback GACT API requests; set to
 # protect a server exposed beyond localhost.
 # gact.auth.bearer_token:  # default unset; resolved in code
-
-# CLIO_BLUEPRINT_REGISTRY_URL  (str)  <- src/clio_agent/gact/agent_blueprints.py
-# Git URL of the default agent-blueprint marketplace registry; override to
-# point at a private/mirrored marketplace.
-gact.blueprint_registry.url: "https://github.com/iowarp/clio-agent-marketplace.git"
-
-# CLIO_BLUEPRINT_SOURCE_CLONE_TIMEOUT_S  (float)  <- src/clio_agent/gact/agent_blueprint_sources.py
-# Seconds a temporary `git clone --depth 1` of a remote blueprint source may
-# run before timing out; raise for a large repo or slow link.
-gact.blueprint_source.clone_timeout_s: 30.0
-
-# CLIO_BLUEPRINT_SOURCE_LS_REMOTE_TIMEOUT_S  (float)  <- src/clio_agent/gact/blueprint_update_check.py
-# Seconds a read-only `git ls-remote`/`rev-parse` marketplace update check
-# may run before timing out; lower to keep the desktop versions panel
-# snappy, raise for a slow link.
-gact.blueprint_source.ls_remote_timeout_s: 10.0
 
 # CLIO_CONTEXT_REFERENCE_BROWSE_LIMIT  (int)  <- src/clio_agent/gact/context_reference_search.py
 # Rows returned per reference kind when the picker opens with no query
@@ -618,26 +591,17 @@ gact.ledger_retention.command_audit.max: 2000
 # raise to retain more attached-context history.
 gact.ledger_retention.context_frames.max: 200
 
-# CLIO_LEDGER_MEMORY_TOOL_AUDIT_MAX  (int)  <- src/clio_agent/gact/runtime/retention.py
-# Max entries kept in the in-memory memory-tool-audit ledger before FIFO
-# eviction; raise for more memory-tool audit history.
-gact.ledger_retention.memory_tool_audit.max: 2000
+# CLIO_LEDGER_FILE_CHANGES_MAX  (int)  <- src/clio_agent/gact/runtime/retention.py
+# Max file changes the agent made that each session keeps (oldest first
+# out); an evicted change stays in the transcript but can no longer be
+# undone.
+gact.ledger_retention.file_changes.max: 500
 
 # CLIO_LEDGER_NATIVE_DELIVERY_NOTES_MAX  (int)  <- src/clio_agent/gact/native_delivery_outcome.py
 # Unsettled native-attachment decline notes buffered before the oldest are
 # dropped; each is normally consumed by the turn that planned it, so raise
 # only if a deployment leaves many plans unsettled.
 gact.ledger_retention.native_delivery_notes.max: 256
-
-# CLIO_LEDGER_PENDING_DIFFS_HARD  (int)  <- src/clio_agent/gact/runtime/retention.py
-# Absolute ceiling on the pending-diffs ledger; past this even a still-
-# pending diff is force-evicted oldest-first.
-gact.ledger_retention.pending_diffs.hard: 1000
-
-# CLIO_LEDGER_PENDING_DIFFS_MAX  (int)  <- src/clio_agent/gact/runtime/retention.py
-# Soft cap on the pending-diffs ledger where terminal
-# (resolved/applied/rejected) entries evict first, protecting pending diffs.
-gact.ledger_retention.pending_diffs.max: 500
 
 # CLIO_LEDGER_PERMISSIONS_HARD  (int)  <- src/clio_agent/gact/runtime/retention.py
 # Absolute ceiling on the in-memory permissions ledger; past this even a
@@ -648,6 +612,11 @@ gact.ledger_retention.permissions.hard: 4000
 # Soft cap on the permissions ledger where terminal (resolved) entries evict
 # first, protecting still-pending approval requests.
 gact.ledger_retention.permissions.max: 2000
+
+# CLIO_LEDGER_SESSION_RECALL_AUDIT_MAX  (int)  <- src/clio_agent/gact/runtime/retention.py
+# Max entries kept in the in-memory session-recall audit ledger before FIFO
+# eviction; raise for more past-session search audit history.
+gact.ledger_retention.session_recall_audit.max: 2000
 
 # CLIO_LEDGER_SHARED_TOKENS_HARD  (int)  <- src/clio_agent/gact/runtime/retention.py
 # Absolute ceiling on the shared-token ledger; past this even a still-
@@ -664,6 +633,12 @@ gact.ledger_retention.shared_tokens.max: 5000
 # model input, for example); raise to keep a longer degradation trail on
 # very long sessions.
 gact.ledger_retention.stream_fallback_notes.max: 32
+
+# CLIO_LEDGER_SUBSCRIBER_QUEUE_MAX  (int)  <- src/clio_agent/gact/runtime/retention.py
+# Events one live stream subscriber may have waiting before the server drops
+# them; after a drop the client is told and reloads the conversation, so
+# raise it for slow connections.
+gact.ledger_retention.subscriber_queue.max: 256
 
 # CLIO_LEDGER_TURN_ATTEMPTS_HARD  (int)  <- src/clio_agent/gact/runtime/retention.py
 # Absolute ceiling on the turn-attempts ledger; past this even a still-
@@ -1341,10 +1316,10 @@ tools.mcp.probe_timeout_retries: 3
 tools.mcp.response_cache_enabled: false
 
 # CLIO_MCP_SESSION_WARMUP  (bool)  <- src/clio_agent/gact/session_warmup.py
-# Start a session's MCP servers (its blueprint's and any always-load
-# service) in the background when the session is created or a blueprint is
-# activated, so the first message does not wait for them; set false to start
-# servers only when a turn needs them.
+# Start a session's MCP servers (its plugins' and any always-load service)
+# in the background when the session is created or its agent changes, so the
+# first message does not wait for them; set false to start servers only when
+# a turn needs them.
 tools.mcp.session_warmup: true
 
 # CLIO_MCP_SPAWN_DIET  (bool)  <- src/clio_agent/tools/spawn_diet.py
@@ -1688,12 +1663,7 @@ spotter.clearance_progress_timeout_s: 180.0
 # for many concurrent protected sessions.
 spotter.max_clearance_events: 256
 
-# CLIO_SPOTTER_BLUEPRINT_ID  (str)  <- src/clio_agent/gact/spotter_watcher.py
-# Agent-Blueprint id used to build the SPOTTER standing watcher child
-# session; change to point spotter-ai at a custom watcher blueprint.
-spotter.watcher_blueprint_id: "spotter-ai"
-
-# CLIO_SPOTTER_EXPERT_ID  (str)  <- src/clio_agent/gact/spotter_watcher.py
-# Expert id within the watcher blueprint SPOTTER arms as the standing
-# watcher; change alongside watcher_blueprint_id for a custom expert.
-spotter.watcher_expert_id: "spotter_watcher"
+# CLIO_SPOTTER_AGENT  (str)  <- src/clio_agent/gact/spotter_watcher.py
+# Installed agent (marketplace/id) that runs as the SPOTTER standing watcher
+# child session; change to point spotter-ai at a custom watcher agent.
+spotter.watcher_agent: "clio/spotter-ai"

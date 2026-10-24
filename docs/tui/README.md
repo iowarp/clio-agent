@@ -9,7 +9,7 @@ This folder is the spec and reference for building a first-class terminal UI on 
 | # | Doc | When to read |
 |---|---|---|
 | 02 | [Agent graph](02-agent-graph.md) | How a single turn flows end-to-end |
-| 03 | [Experts](03-experts.md) | What an Expert is, current roster, routing |
+| 03 | [Agents and subagents](03-experts.md) | What replaced experts: plugin agents, subagents, flows |
 | 04 | ARC memory → [`../ARC_MEMORY_LAYER.md`](../ARC_MEMORY_LAYER.md) | Persistent memory layout + what to surface in the TUI |
 | 05 | Tools → [`../MCP_TOOL_INTEGRATION.md`](../MCP_TOOL_INTEGRATION.md) | The FastMCP gateway + tool catalogue |
 | 06 | [Endpoints](06-endpoints.md) | CLI + REST API + MCP surface |
@@ -22,7 +22,7 @@ This folder is the spec and reference for building a first-class terminal UI on 
 - CLIO ships **`clio-agent serve`**, a FastAPI backend that speaks the native GACT `/v1/...` contract used by `gact-tui`.
 - The legacy **`clio-agent-api`** surface (`POST /query`, `GET /health`, `GET /experts`, `GET /metrics`) has been removed; its console script is now a deprecation shim that points at `clio-agent serve`.
 - One GACT turn = `POST /v1/sessions/{sid}/messages`; the request acks quickly and progress streams over `GET /v1/sessions/{sid}/events` as `message.created`, `message.part.*`, tool telemetry when available, and `message.completed`.
-- Routing is a one-pass DSPy planner over live tools and registered experts; it selects a tool, `expert:data|analysis|visualization`, `answer`/chat, or an explicit `none` route.
+- There is no router: each session runs its pinned plugin agent (`clio/standard` by default; see [`../PLUGINS_AND_FLOWS.md`](../PLUGINS_AND_FLOWS.md)), and the model delegates by calling the spawn tools or starting a flow.
 - CLIO's GACT backend owns sessions through `/v1/sessions`.
 - Cancellation is available as best effort through `POST /v1/sessions/{sid}/cancel`.
 - Text delivery carries explicit provenance. `stream_source="live"` means the text came through the live DSPy/LiteLLM streaming path; `stream_source="batch"` means the backend already had a completed answer before it could emit live provider-token deltas. Deterministic tool-result summaries can still be synthetic because there are no provider tokens to stream; see [REAL_GAPS.md](REAL_GAPS.md).

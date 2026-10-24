@@ -149,83 +149,79 @@ server activation):
 
 - **Installed** (`CatalogRegistry.installed()`): every catalog this server
   CAN validate against — the two builtins (Basic, CLIO workspace) plus every
-  catalog any discovered Agent Blueprint pack declares, active or not. This
-  is what `GET /v1/a2ui/catalogs` and `GET /v1/capabilities`'s
-  `a2ui_capabilities` (no session in scope) answer.
+  catalog an installed plugin ships in `ai.iowarp.clio/a2ui/<name>/`, whether
+  or not any session's agent carries that plugin. This is what
+  `GET /v1/a2ui/catalogs` and `GET /v1/capabilities`'s `a2ui_capabilities`
+  (no session in scope) answer. The installed list is cached and invalidated
+  by the plugin routes on install, trust, update and uninstall; a failure to
+  read the installed plugins is the typed `a2ui_plugin_discovery_failed`.
 - **Producible** (`a2ui_catalogs.activation.session_producible_catalog_ids`):
   the narrower set ONE session may actually `createSurface` against —
-  exactly the catalogs the session's agent declares, in its declared order.
-  An installed-but-undeclared catalog (a builtin the agent did not list, or
-  an inactive pack's catalog) still resolves for validation (replay of an
-  old surface never breaks) but is not producible in that session.
+  exactly the catalogs the session agent's resolved plugins declare, in
+  resolution order. An installed-but-undeclared catalog (a builtin no
+  resolved plugin names, or another plugin's catalog) still resolves for
+  validation (replay of an old surface never breaks) but is not producible in
+  that session.
 
-### The per-agent allowlist (v15 S8)
+### Catalogs are declared per plugin
 
-**Upgrades.** A deployed install clones the marketplace on first run and does
-not re-sync a remote registry, so an upgraded box could keep pre-S8 pack
-snapshots. `gact/default_registry_migration.py` re-installs the unedited
-default-registry packs once whenever the running clio-agent version differs
-from the version recorded at the last sync. It runs on a startup thread (never
-on a request), under a non-blocking cross-process file lock
-(`default_registry_migration_busy` when another process holds it), and swaps
-each pack in atomically (staged beside the install root, the old copy restored
-on any failure). Packs that are locally edited
-(`default_registry_pack_locally_edited`), from another source
-(`default_registry_pack_foreign_source`), deliberately pinned
-(`default_registry_pack_pinned`) or user-uninstalled are left alone. Any
-failure is `default_registry_migration_failed`, never an exception; the same
-version is retried after 1 h, 6 h, then every 24 h, and a new version (an
-"Update all" restart) immediately. An installed blueprint that still declares
-no catalogs shows the `a2ui_declaration_missing_after_upgrade` notice on its
-agent and blueprint list rows and in `clio doctor`; nothing adds catalogs
-for it implicitly. A session bound to a blueprint that does not resolve reports
-`a2ui_blueprint_unresolved` (not "declares nothing").
+Catalogs are plugin content (`docs/PLUGINS_AND_FLOWS.md`). A plugin declares
+them in two ways:
 
-An agent's `a2ui_catalogs` is the **complete** allowlist of catalogs it may
-produce against. Nothing is implicit: the builtins are producible only for
-an agent that lists them, exactly like a pack's own catalog.
+- **A builtin, by name**, in its `plugin.json`:
+  `extensions["ai.iowarp.clio"].catalogs` (`["clio-workspace"]` or
+  `["basic"]`). The `core` plugin, which every agent carries, declares
+  `clio-workspace`.
+- **Its own catalog**, as a folder `ai.iowarp.clio/a2ui/<name>/` holding
+  `catalog.json` (required for discovery), `catalog.clio.json` and
+  `instructions.md`.
 
-```yaml
-a2ui_catalogs:
-  - clio-workspace                                      # builtin, by name (or basic)
-  - earthscope-stations: catalogs/earthscope-stations   # pack-local: name: relative/dir
-```
+Resolution (stage 2, `plugins/resolve.py`) collects these into the
+resolution's `catalogs` rows (`{"id", "plugin", "path"}`; an empty `path`
+names a builtin), in plugin resolution order, and the session pins them with
+the rest of its agent. `a2ui_catalogs/activation.py::session_declaration_sources`
+turns the session's pinned resolution into one `CatalogDeclarationSource` per
+plugin through `a2ui_catalogs/declarations.py::plugin_catalog_sources`; each
+plugin version's executable and text digests become the install checksum
+stamped on the entries it loads (`a2ui_catalogs/plugin.py`).
 
-- **Order is preference.** The written order is the agent's preference
-  order: `supportedCatalogIds`, the session catalog route's producible rows,
-  the catalog skill index, and `select_catalog` all follow it. (Before S8
-  these lists were sorted alphabetically by `catalogId`, which made Basic
-  the default for a surface that named no catalog.)
-- **The builtin main declares too.** A session with no active Agent
-  Blueprint runs the code-shipped builtin main, which declares
-  `[clio-workspace]` in its own definition
-  (`gact/catalog.py::BUILTIN_MAIN_A2UI_CATALOGS`,
-  `builtin_main_catalog_source`) -- a declaration like any other, not an
-  implicit add-all. A bound blueprint that does not resolve contributes
-  nothing (typed `a2ui_blueprint_unresolved`) rather than falling back to it.
-- **The executing agent decides.** Resolution follows the live turn's
-  execution overlay (a deep-research turn runs the deep-researcher
-  blueprint), not only the stored `active_agent_blueprint_id`.
-- **No declaration, no A2UI.** An agent that declares nothing (no
-  `a2ui_catalogs`, or an explicit `a2ui_catalogs: []`) has no producible
-  catalogs. A root agent then gets no producer tools
-  (`agents/auto_tools.py`), no catalog skill is disclosed, and the typed
-  reason `a2ui_no_catalogs_declared` is recorded on the session ledger and
-  the trace. An agent whose declarations resolve to nothing records
-  `a2ui_no_catalogs_resolved`. A child's producer tools still come only from
-  an explicit `tools:` declaration; a child that declares them in such a
-  session gets a typed refusal with the same reason. Resolution runs on every
-  request and turn build, so each issue and each empty-resolution reason is
-  recorded once per (session, reason, catalog), not once per call.
+The union of the resolved plugins' catalogs is the agent's **complete**
+allowlist. Nothing is implicit: the builtins are producible only when a
+resolved plugin names them, exactly like a plugin's own catalog.
+
+- **Order is preference.** Plugin resolution order (so `core`'s
+  `clio-workspace` first), then declaration order within a plugin, is the
+  agent's preference order: `supportedCatalogIds`, the session catalog
+  route's producible rows, the catalog skill index, and `select_catalog` all
+  follow it. (Before S8 these lists were sorted alphabetically by
+  `catalogId`, which made Basic the default for a surface that named no
+  catalog.)
+- **The executing agent decides.** Resolution follows the session's pinned
+  resolution, so a plugin added or removed in a live session
+  (`PATCH /v1/sessions/{sid}/agent`) changes the producible set from the next
+  lookup. A defined subagent's child session pins its own resolution.
+- **An unresolved agent produces nothing.** A session whose agent does not
+  resolve contributes one `unresolved` source and records
+  `a2ui_agent_unresolved` (not "declares nothing"); no builtin is substituted.
+- **No declaration, no A2UI.** A resolution with no catalogs has no
+  producible catalogs. The A2UI producer tools (claimed by the `visuals`
+  plugin) are withheld from the agent with the typed reason
+  `no_a2ui_catalog_resolved` (`agents/native_tool_registry.py`), no catalog
+  skill is disclosed, and selection refuses with `a2ui_no_catalogs_declared`.
+  Declarations that resolve to nothing record `a2ui_no_catalogs_resolved`.
+  Resolution runs on every request and turn build, so each issue and each
+  empty-resolution reason is recorded once per (session, reason, catalog),
+  not once per call.
 - **Basic stays installed.** Basic is still in the registry and still
-  renders, but only an agent that lists `basic` can produce against it.
-- **Validation.** An unknown builtin name, a malformed entry, a pack
-  directory that is missing or does not load, or a conflicting declaration
-  is a validation error at blueprint validate, install, and activation
-  (`a2ui_catalogs/blueprint.py::validate_blueprint_catalogs`, which runs the
-  same resolution the runtime uses). The legacy mapping form
-  (`name: relative/dir` entries under a mapping) is still read, as pack-local
-  catalogs only, in written order.
+  renders, but only an agent with a plugin that names `basic` can produce
+  against it.
+- **Validation.** An unknown builtin name is `a2ui_catalog_builtin_unknown`;
+  a catalog folder that does not load is `a2ui_catalog_declaration_invalid`
+  (or `a2ui_catalog_file_invalid` / `a2ui_sidecar_invalid` for its files);
+  two plugins declaring the same name with a different origin, or two names
+  resolving to one `catalogId`, is `a2ui_catalog_declaration_conflict`. Each
+  is found when the session resolves its catalogs and recorded on its ledger;
+  the refused declaration contributes nothing.
 
 **One resolution.** Every consumer that decides producibility or disclosure
 derives from `a2ui_catalogs.activation.resolve_session_catalogs`: session
@@ -233,39 +229,33 @@ producibility, the agent capability advertisement, `select_catalog`, the
 catalog skill index (`skills.SkillCatalog._catalog_refs`), producer-tool
 attachment, the session catalog and capability routes, and the session
 catalog resolver the action dispatcher resolves a surface's catalog through.
+A session pinned to a plugin version that is no longer the installed one still
+validates against the catalogs its own resolution names
+(`activation.session_catalog_resolver`).
 
-**Forward shape: resolution over declaration sources.** Agent-plugins 1.0
-will replace blueprints, and an agent will be a concatenation of plugins,
-each declaring its own catalogs. So resolution is written as an ordered
-union over declaration sources, not over "the blueprint":
-`a2ui_catalogs/declarations.py::resolve_agent_catalogs(sources) ->
-ResolvedCatalogs`. Today there is exactly one source (the active
-blueprint's `a2ui_catalogs`, `session_declaration_sources`); each plugin
-becomes one more `CatalogDeclarationSource` and no consumer changes. Each
-`CatalogDeclaration` is self-contained: its name plus its origin (a
-builtin, or a directory already resolved against its own declaring unit's
-root). The merge keeps source order, then declaration order; the same name
-with the same origin is deduplicated; the same name with a different origin,
-or two names resolving to one `catalogId`, is the typed
-`a2ui_catalog_declaration_conflict` and the later declaration is refused —
-never a silent override.
+**Merge rules.** `a2ui_catalogs/declarations.py::resolve_agent_catalogs(sources)
+-> ResolvedCatalogs` is an ordered union over the per-plugin sources. Each
+`CatalogDeclaration` is self-contained: its name plus its origin (a builtin,
+or a directory inside its own plugin). The merge keeps source order, then
+declaration order; the same name with the same origin is deduplicated; the
+same name with a different origin, or two names resolving to one
+`catalogId`, is the typed `a2ui_catalog_declaration_conflict` and the later
+declaration is refused — never a silent override.
 
-`GET /v1/sessions/{sid}/a2ui/capabilities`'s `agent` field and every
-`a2ui_capabilities` row on `GET /v1/agents` / `GET /v1/agents/{id}` use the
-PRODUCIBLE scoping (a session's own set, or — for an agent-listing row — that
-row's own blueprint's declared set), never the full installed catalog.
+`GET /v1/sessions/{sid}/a2ui/capabilities`'s `agent` field uses the
+PRODUCIBLE scoping (the session's own set), never the full installed catalog.
 
 **S4: producers learn catalogs through skills, not this document's shapes.**
 This document is the wire/negotiation contract; it is never where a model
 learns a component's properties. Each of a session's producible catalogs is
 disclosed as a generated skill id `a2ui-catalog-<slug>`
-(`gact/a2ui_catalogs/skills.py`), auto-declared onto any expert that declares
-a producer tool or is a root agent (`agents/skill_runtime.py`), in the
-agent's declared order. An agent with no declared catalogs gets no catalog
-skill lines at all. Each generated body states the catalog's own `catalogId`
-and whether it is this agent's default (its first declared catalog); a
-non-default catalog's body gives the exact `catalog_id` to pass. Pack
-`instructions.md` files never hand-type their catalogId. Its body is
+(`gact/a2ui_catalogs/skills.py`), added for any agent that has a producer
+tool (`agents/skill_runtime.py`), in the agent's preference order, so a
+plugin never spells out catalog skill ids. An agent with no producible
+catalogs gets no catalog skill lines at all. Each generated body states the
+catalog's own `catalogId` and whether it is this agent's default (its first
+catalog); a non-default catalog's body gives the exact `catalog_id` to pass.
+A catalog's `instructions.md` never hand-types its catalogId. Its body is
 the catalog's own `instructions.md` plus a generated component/function/event
 index; the exact schema for one component comes from
 `load_skill("a2ui-catalog-<slug>", file="catalog.json#/components/<Name>")`
@@ -273,55 +263,50 @@ index; the exact schema for one component comes from
 `select_catalog` and the S2 validator resolve against, never a second
 maintained copy. A component-schema validation failure a producer tool
 catches carries this exact `load_skill(...)` call as its `hint` (see
-`gact/a2ui_producer/_refusal.py`).
+`gact/a2ui_producer/_refusal.py`). The `core.rendering` prompt fragment's
+generated half lists the session's catalogs and their components
+(`plugins/service.py::ui_catalog_text`).
 
-## Pack-borne catalogs: a worked example
+## Plugin-borne catalogs: a worked example
 
 S7 (docs/design/a2ui-compat-campaign-2026-09.md, iowarp/clio-agent-marketplace#69)
-is the campaign's composability proof: a marketplace pack ships its own
+is the campaign's composability proof: a marketplace plugin ships its own
 catalog and this binding accepts it with **no clio-agent source edit** — a
-pack author needs nothing beyond the files below and the declaration in
-`AGENT.md`.
+plugin author needs nothing beyond the files below.
 
-`external/clio-agent-marketplace/earthscope-single-agent/` ships
-`catalogs/earthscope-stations/{catalog.json, catalog.clio.json,
+`external/clio-agent-marketplace/plugins/earthscope/` ships
+`ai.iowarp.clio/a2ui/earthscope-stations/{catalog.json, catalog.clio.json,
 instructions.md}` — `StationMap`/`StationPicker` aliasing the renderer's
 `clio.map.v1`/`ChoicePicker` kernels (the latter preset to
 `variant: "multipleSelection"`), plus the unmodified Basic `Text`/`Column`/
 `Row`/`Button`, and one declared event: `earthscope.stations.selected`
 (`destination: "agent"`, a `context_schema` requiring `searchId` and a
-non-empty `stationIds` array). Its `AGENT.md` frontmatter declares it exactly
-like an MCP server:
-
-```yaml
-a2ui_catalogs:
-  - clio-workspace
-  - earthscope-stations: catalogs/earthscope-stations
-```
-
-(the builtin workspace catalog first, as the default for general views, then
-its own catalog; since v15 S8 the list is the agent's complete allowlist; a
+non-empty `stationIds` array). The folder is the whole declaration; the
+plugin's `plugin.json` names no builtin. The `clio/earthscope`
+agent carries `core` (so `clio-workspace` comes first, the default for
+general views), `visuals` (the producer tools) and `earthscope`, so
+its sessions get both catalogs and the generated skills
+`a2ui-catalog-clio-workspace` and `a2ui-catalog-earthscope-stations`; a
 station surface names its catalog, whose id the generated catalog skill
-states), and `experts/main.md` lists the same
-names under its own `a2ui_catalogs:` so the root expert gets the generated
-skills `a2ui-catalog-earthscope-stations` and `a2ui-catalog-clio-workspace`. Installing the pack (`install_agent_blueprint`,
-the same path an MCP server's declaration takes) registers the catalog under
-`(catalogId, "0.9.1")`; activating the blueprint in a session makes it
+states. Installing the marketplace registers the catalog under
+`(catalogId, "0.9.1")`; a session whose agent resolves the plugin makes it
 **producible** there (see "Producible vs. installed" above) — nothing else
 changes: the same `select_catalog`, the same `create_a2ui_surface` producer
 tool, the same `POST /v1/sessions/{sid}/a2ui/actions` dispatcher route this
 document already describes.
 
 `tests/test_gact/test_a2ui_pack_composability.py` is the CI-run proof: it
-installs this real pack into an isolated user config dir, activates it,
-and — against an otherwise unmodified server — asserts the catalog is
-producible with its file/sidecar/instructions, is listed in both
-`GET /v1/capabilities` and a client-preference-first `select_catalog`, that
-`create_a2ui_surface` renders the pack's own worked example (parsed straight
-out of `instructions.md`, so the test cannot drift from the docs), and that
+installs this real plugin (and the plugins it requires, from the pinned
+submodule) into an isolated plugin store, adds it to a session's agent, and —
+against an otherwise unmodified server — asserts the catalog is producible
+with its file/sidecar/instructions, is listed in both `GET /v1/capabilities`
+and a client-preference-first `select_catalog`, that `create_a2ui_surface`
+renders the plugin's own worked example (parsed straight out of
+`instructions.md`, so the test cannot drift from the docs), and that
 `earthscope.stations.selected` round-trips through the idle, duplicate, and
-waiting-user delivery paths. `tests/test_real_cases/test_earthscope_interactive.py`
-carries the live-provider twin of the same three scenes.
+waiting-user delivery paths.
+`tests/test_real_cases/test_earthscope_interactive.py` carries the
+live-provider twin of the same three scenes.
 
 ## Catalog selection
 
@@ -395,20 +380,13 @@ always resolve it from the addressed surface's own record.
   the producible rows first, in the agent's declared order (v15 S8), then
   every other installed catalog; a client that advertises its rows in order
   therefore advertises the agent's preference.
-- `GET /v1/agents`, `GET /v1/agents/{id}` — each row's `metadata` gains
-  `a2ui_capabilities`: that row's OWN declaring blueprint's resolved
-  catalogs, in declared order (not the caller session's active blueprint — a listing enumerates
-  every agent, most of which are not the session's current one). Resolution
-  mirrors S2's own session activation (path-activated blueprints included,
-  not only installed ones); an unresolved `agent_blueprint_id` records the
-  typed `a2ui_blueprint_unresolved` reason and reports no catalogs. A row
-  with no blueprint declares nothing and reports none.
+- `GET /v1/sessions/{sid}/agent` / `GET /v1/agents/resolve` (plugin routes,
+  `docs/PLUGINS_AND_FLOWS.md`) — a resolution's `catalogs` rows show which
+  plugin declares each catalog; they are the input to the session's producible
+  set above.
 - `GET /v1/sessions/{sid}/references/resolve?uri=` (A2) -- resolves one
   content reference to its metadata and byte route (see *Content
   references* below).
-- `GET /v1/agent-blueprints/{id}` — the detail response gains top-level
-  `a2ui_capabilities`: that ONE blueprint's resolved catalog ids, in
-  declared order.
 
 ## Surface snapshot wire shape: `message_revisions` (coordinator design, 2026-10-01)
 
@@ -506,7 +484,7 @@ server that created the surface," and orchestrators "MUST strip it before
 sub-agents." `strip_renderer_metadata` removes both raw wire keys
 (`a2uiClientCapabilities`, `a2uiClientDataModel`) and BOTH accepted-record
 renamed keys (`a2ui_client_capabilities`, `a2ui_client_data_model`) from any
-metadata mapping about to ride onto a spawned child/expert turn.
+metadata mapping about to ride onto a spawned child turn.
 
 **The strip belongs at the FORWARDING boundary only — never at a genuine
 client door.** A client steering a running child directly
@@ -534,13 +512,12 @@ reason.
     if it ever gains one, THAT call site is where `strip_renderer_metadata`
     belongs, mirroring `_launch`.
 
-`gact/turn_forward.py`, `gact/delegation.py`, `gact/delegation_return.py`,
-`gact/child_forward.py`, and `gact/agents/spawn_runtime*.py` were audited and
-carry no other site that forwards a parent turn's *message* metadata
-wholesale into a child: `spawn_context.inherited_session_scope_metadata`
-copies only an allowlisted SESSION-level prefix set
-(`active_agent_blueprint_*`, `active_expert_pack_*`, `expert_pack_id`) that
-never matches the renderer keys, by construction.
+A child (a spawned subagent, a flow's `ctx.call`, `run_flow`/`run_plan`) is
+started through `Conversations.spawn` with its assignment text, the evidence
+the caller passes explicitly (`input_task_refs`) and only the session metadata
+its caller names (`agent_flow`, `plan_editor`, the child's pinned agent
+resolution); no parent message metadata is copied, so the renderer keys
+cannot reach a child by construction.
 
 ## Typed reasons (S2 ledger, reused)
 
@@ -559,12 +536,13 @@ per-session history cannot grow unbounded (bounded memory is release-gating):
 | `a2ui_client_capabilities_unknown` | selection attempted, no advertisement yet |
 | `a2ui_preferred_catalog_not_selectable` | `preferred` not in client-supported ∩ producible |
 | `a2ui_catalog_no_client_match` | selection attempted, zero intersection |
-| `a2ui_blueprint_unresolved` | (S2, reused) a row's `agent_blueprint_id` did not resolve via path-activation or the installed registry -- its `a2ui_capabilities` is empty |
-| `a2ui_no_catalogs_declared` | (v15 S8) the session's agent declares no `a2ui_catalogs` -- no producer tools, no catalog skills, selection refuses |
-| `a2ui_no_catalogs_resolved` | (v15 S8) the agent declares `a2ui_catalogs` but none resolved to a loadable catalog |
-| `a2ui_catalog_builtin_unknown` | (v15 S8) an entry names a builtin this server does not ship |
-| `a2ui_catalog_declaration_invalid` | (v15 S8) an entry is malformed, or its catalog directory does not load |
-| `a2ui_catalog_declaration_conflict` | (v15 S8) the same name (or `catalogId`) declared with a different origin -- the later declaration is refused |
+| `a2ui_agent_unresolved` | the session's agent did not resolve from its plugins -- the catalogs its plugins declare are unavailable |
+| `a2ui_plugin_discovery_failed` | reading the installed plugins raised while building the installed catalog list -- their catalogs are unavailable, never replaced by a stale list |
+| `a2ui_no_catalogs_declared` | (v15 S8) no resolved plugin declares a catalog -- no producer tools, no catalog skills, selection refuses |
+| `a2ui_no_catalogs_resolved` | (v15 S8) the plugins declare catalogs but none resolved to a loadable catalog |
+| `a2ui_catalog_builtin_unknown` | (v15 S8) a plugin's `ai.iowarp.clio.catalogs` names a builtin this server does not ship |
+| `a2ui_catalog_declaration_invalid` | (v15 S8) a declaration is malformed, or its catalog directory does not load |
+| `a2ui_catalog_declaration_conflict` | (v15 S8) the same name (or `catalogId`) declared with a different origin by another plugin -- the later declaration is refused |
 | `a2ui_data_model_foreign_surface` | (S5) `a2uiClientDataModel` named a surfaceId this session never created -- that entry is dropped, the rest of the request still proceeds |
 | `a2ui_action_duplicate` | (S5) an action resubmitted the same idempotency key -- the existing record is returned, nothing re-delivered |
 | `a2ui_waiting_user_uncorrelated` | (S5) the session is `waiting_user` but no pending question correlates to the action's surface or `context.question_id` -- refused 409 |
@@ -635,7 +613,7 @@ canonical context JSON, plus `context.userMessage` when the renderer sends
 one. That fallback is prose an agent can misread as a REPORT rather than a
 REQUEST (clio-agent#1363's live-gate finding: a resumed turn read `A2UI
 event: earthscope.stations.selected` + JSON and never staged the selected
-stations). The event's MEANING is the pack author's to declare, the same way
+stations). The event's MEANING is the catalog author's to declare, the same way
 0.9.1's own `context_schema` already declares its SHAPE: clio-schemas 0.3.2
 adds `CatalogSidecar.events[<name>].narration`, a template string rendered
 against the resolved `context` via `clio_schemas.a2ui.sidecar.
@@ -644,7 +622,7 @@ is left literal, never raises; a list/dict value renders as compact JSON, so
 `{stationIds}` against `{"stationIds": ["MTA1", "PKRD"]}` reads
 `["MTA1","PKRD"]`). When a `context_schema` is ALSO declared, every
 `narration` placeholder must name one of its `properties` -- checked at
-sidecar-construction time, not at render time, so a typo in a pack's own
+sidecar-construction time, not at render time, so a typo in a plugin's own
 `catalog.clio.json` fails loudly at install, not silently at delivery. When
 declared, the rendered template IS the narration (bounded to the same <=2 KiB
 ceiling, same truncation marker), followed by the canonical context JSON on
@@ -656,7 +634,7 @@ S5 fallback form is unchanged, and the session records the typed reason
 `gact/a2ui_catalogs/registry.py::CatalogRegistry.
 record_narration_undeclared_once`). This mirrors 1.0's own `userMessage`
 action field (the campaign's seam-point item 19): 0.9.1 carries no such field
-on the wire, so `narration` is 0.9.1-sidecar-declared, early metadata a pack
+on the wire, so `narration` is 0.9.1-sidecar-declared, early metadata a plugin
 author already controls today, not a wire change.
 
 **Consumed.** `gact/a2ui_actions/record.py::mark_a2ui_action_consumed` flips
@@ -757,7 +735,7 @@ WebView rather than recording HTTP — so that fixture is derived from the
 Rust bridge source above) and proves both are remembered byte-for-byte
 identically.
 
-Consequence for a pack/catalog author: nothing in a catalog's sidecar or
+Consequence for a plugin/catalog author: nothing in a catalog's sidecar or
 instructions may assume "this session is a browser" or "this session is
 desktop" — that distinction does not exist past the CORS preflight, and nothing
 downstream of `apply_client_metadata_guards` (catalog selection, producer

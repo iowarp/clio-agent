@@ -36,7 +36,7 @@ def _reported(call: Any, sid: str, token: str) -> bool:
 
 
 def human_control_cycle(
-    call: Any, proof: Path, wid: str, blueprint: str, number: int, server_pid: int
+    call: Any, proof: Path, wid: str, agent: str, number: int, server_pid: int
 ) -> dict[str, Any]:
     """Prove busy iteration injection, idle wake, owned cancellation and restart identity."""
     output = proof / f"cycle-{number}"
@@ -53,7 +53,7 @@ def human_control_cycle(
     boundary_command = common.quoted_command(sys.executable, str(boundary_files["script"]))
     nonce = "HUMAN_STEER_" + secrets.token_hex(12)
     sid = common.create_session(call, wid, f"human control cycle {number}")
-    common.activate_blueprint(call, sid, blueprint)
+    common.use_agent(call, sid, agent)
     assignment = (
         f"Start shell_bash(command={child_command!r}, background=true, timeout_s=0, "
         f"cwd={str(workspace)!r}) exactly once, then wait_tasks on its handle without a timeout. "

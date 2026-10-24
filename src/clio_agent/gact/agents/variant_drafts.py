@@ -16,7 +16,7 @@ Selection is DSPy's, never clio's:
   ``judge: lm`` -- the reward is the compiled LM judge over ``rubric``;
   ``judge: user`` -- the reward is the user's pick (1.0 for it, 0.0 for the others).
 * ``refine`` with ``judge: lm`` -- ``dspy.Refine`` over the tries (sequential by
-  definition: each needs the previous one's feedback), as a blueprint declares it.
+  definition: each needs the previous one's feedback), as the strategy declares it.
 * ``refine`` with ``judge: user`` -- one try, then the user picks and comments; the
   comment is the advice (a recorded ``variant_advice`` injection) for another try
   forked from the pick, until the user accepts (a pick without a comment) or ``n``
@@ -169,6 +169,7 @@ def try_module(agent: Any, *, rubric: str = "") -> Any:
         )
     module = ClioReAct(signature, tools=tools, max_iters=agent.max_iters)
     module._clio_expert_id = getattr(agent, "_clio_expert_id", "")
+    module._clio_unlisted = getattr(agent, "_clio_unlisted", frozenset())
     return module
 
 
@@ -713,7 +714,7 @@ def build_draft_alternatives_tool() -> Any:
 
 
 class UserJudgedVariant(dspy.Module):
-    """A blueprint or spawn-strategy variant whose judge is the user.
+    """A spawn-strategy variant whose judge is the user.
 
     Not a DSPy loop: the tries run (in parallel for ``best_of_n``, one for ``refine``),
     then the agent's turn yields them to the user; the answer resumes it

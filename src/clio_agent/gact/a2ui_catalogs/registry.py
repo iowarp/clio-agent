@@ -3,27 +3,24 @@
 Replaces the single hard-coded ``CLIO_A2UI_CATALOG_ID`` equality check
 (deleted, docs/design/a2ui-compat-campaign-2026-09.md S2) with a real
 registry keyed ``(catalogId, protocolVersion)``: the two builtin catalogs
-(Basic, CLIO workspace) plus every catalog a discovered Agent Blueprint pack
-declares. ``CatalogRegistry`` never decides what a session may PRODUCE — that
+(Basic, CLIO workspace) plus every catalog an installed plugin ships in its
+``ai.iowarp.clio/a2ui/`` folder. ``CatalogRegistry`` never decides what a session may PRODUCE — that
 is ``activation.session_producible_catalog_ids`` — it only answers "does this
 id resolve to a catalog this server can validate against."
 
 **Cache doctrine** (adversarial review, BLOCKING perf: a POST that reached
-message #30 in a session cost ~2s, entirely spent re-discovering Agent
-Blueprints from disk on every single message). A cache accelerates; it never
+message #30 in a session cost ~2s, entirely spent re-discovering installed
+packs from disk on every single message). A cache accelerates; it never
 owns truth, and staleness is explicit, never an implicit per-call
 re-validation:
 
 - Builtin catalogs are immutable package data, loaded once at construction;
   ``.get()`` checks them FIRST with zero I/O, regardless of pack state.
-- Blueprint discovery (``discover_agent_blueprints()`` — a real filesystem
-  scan + per-``AGENT.md`` parse) and the pack-catalog list it produces are
-  each cached on the instance after the first call. The cache is exactly as
-  fresh as the last install/update/uninstall — it is invalidated ONLY by an
-  explicit :meth:`CatalogRegistry.invalidate` call from the blueprint
-  mutation routes (``routes/blueprints.py``), never by re-scanning per
-  lookup. A session that never installs/uninstalls a pack pays the discovery
-  cost once, not once per message.
+- The installed plugins' catalog list is cached on the instance after the
+  first call. The cache is exactly as fresh as the last
+  install/update/uninstall -- it is invalidated ONLY by an explicit
+  :meth:`CatalogRegistry.invalidate` call from the plugin routes, never by
+  re-scanning per lookup.
 - Validator compilation (``jsonschema.Draft202012Validator``, via
   ``clio_schemas.a2ui.validation.catalog_validators``) is additionally cached
   by the catalog file's content checksum, so a pack catalog whose bytes are
@@ -45,7 +42,7 @@ from jsonschema import Draft202012Validator
 
 from clio_agent.gact.protocol.constants import A2UI_V091
 
-CatalogSource = Literal["builtin", "blueprint"]
+CatalogSource = Literal["builtin", "plugin"]
 
 
 @dataclass(frozen=True)
@@ -193,7 +190,6 @@ class CatalogRegistry:
             (entry.catalog_id, entry.protocol_version): entry for entry in self._builtin
         }
         self._lock = threading.Lock()
-        self._discovered_blueprints: list[Any] | None = None
         self._pack_cache: list[CatalogEntry] | None = None
         # S8 review round (issue #1374 item B): a cheap integer callers can
         # compare against to know "has the installed-catalog set possibly
@@ -381,13 +377,12 @@ class CatalogRegistry:
     def invalidate(self) -> None:
         """Drop the cached discovery + pack-catalog list.
 
-        Called by ``routes/blueprints.py``'s install/update/uninstall
+        Called by the plugin routes' install/update/uninstall
         handlers after a mutation completes; the next lookup re-discovers
         once and repopulates both caches. Also bumps :attr:`generation`.
         """
 
         with self._lock:
-            self._discovered_blueprints = None
             self._pack_cache = None
             self._generation += 1
 
@@ -397,42 +392,22 @@ class CatalogRegistry:
 
         return self._generation
 
-    def discovered_blueprints(self) -> list[Any]:
-        """Return the cached ``discover_agent_blueprints()`` result.
-
-        Shared by this registry's own pack-catalog loading AND
-        ``activation._active_blueprint``'s no-path-active branch, so a
-        session resolving its active blueprint and this registry resolving
-        pack catalogs never each trigger their own independent filesystem
-        scan for the same lookup.
-        """
-
-        with self._lock:
-            if self._discovered_blueprints is not None:
-                return self._discovered_blueprints
-        from clio_agent.gact.a2ui_catalogs.reasons import (  # noqa: PLC0415
-            record_a2ui_catalog_reason,
-        )
-        from clio_agent.gact.agent_blueprints import discover_agent_blueprints  # noqa: PLC0415
-
-        try:
-            blueprints = discover_agent_blueprints()
-        except Exception as exc:  # noqa: BLE001 - typed, recorded, never silent
-            record_a2ui_catalog_reason("a2ui_blueprint_discovery_failed", detail=str(exc))
-            blueprints = []
-        with self._lock:
-            self._discovered_blueprints = blueprints
-            return blueprints
-
     def _packs(self) -> list[CatalogEntry]:
         with self._lock:
             if self._pack_cache is not None:
                 return self._pack_cache
-        from clio_agent.gact.a2ui_catalogs.blueprint import (  # noqa: PLC0415
-            load_all_blueprint_catalogs,
+        from clio_agent.gact.a2ui_catalogs.plugin import installed_plugin_catalogs  # noqa: PLC0415
+        from clio_agent.gact.a2ui_catalogs.reasons import (  # noqa: PLC0415
+            record_a2ui_catalog_reason,
         )
+        from clio_agent.plugins.service import PluginService  # noqa: PLC0415
 
-        entries = load_all_blueprint_catalogs(self.discovered_blueprints())
+        try:
+            records = PluginService().store.records()
+        except Exception as exc:  # noqa: BLE001 - typed, recorded, never silent
+            record_a2ui_catalog_reason("a2ui_plugin_discovery_failed", detail=str(exc))
+            records = []
+        entries = installed_plugin_catalogs(records)
         with self._lock:
             self._pack_cache = entries
             return entries

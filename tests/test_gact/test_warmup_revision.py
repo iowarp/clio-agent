@@ -1,9 +1,15 @@
-"""Background warm-ups drain and queue with real blueprint revision changes."""
+"""Background warm-ups drain and queue with real runtime revision changes.
+
+A runtime revision is any writer of the turn runner's ``revision_gate``: it waits for
+live turns, their descendants and every background fleet warm-up to finish, then
+applies exclusively while new warm-ups queue behind it.
+"""
 
 from __future__ import annotations
 
 import asyncio
 import threading
+from collections.abc import Callable
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
@@ -11,8 +17,13 @@ from typing import Any
 import pytest
 
 from clio_agent.gact import session_warmup, workspace_warmup
-from clio_agent.gact.blueprint_reload import apply_blueprint_change
 from tests.test_gact.runner_records import admit_segment, make_runner
+
+
+async def apply_revision(app: Any, mutation: Callable[[], dict[str, Any]]) -> dict[str, Any]:
+    """Apply ``mutation`` as an exclusive runtime revision through the real gate."""
+    async with app.state.turn_runner.revision_gate.change():
+        return await asyncio.to_thread(mutation)
 
 
 def _app() -> Any:
@@ -27,7 +38,7 @@ def _app() -> Any:
             agent=agent,
             turn_runner=make_runner(),
             sessions=SimpleNamespace(list=lambda: []),
-            session_defaults=SimpleNamespace(get=lambda: SimpleNamespace(blueprint_id="")),
+            session_defaults=SimpleNamespace(agent_ref=""),
             bus=SimpleNamespace(publish=lambda event: None),
         )
     )
@@ -42,10 +53,10 @@ async def _closed(app: Any) -> None:
 
 
 @pytest.mark.asyncio
-async def test_blueprint_change_drains_session_warmup_fleet_lease(
+async def test_revision_change_drains_session_warmup_fleet_lease(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Session creation followed by blueprint selection cannot fail on its warm-up."""
+    """Session creation followed by a runtime revision cannot fail on its warm-up."""
     app = _app()
     entered, finish = threading.Event(), threading.Event()
     seen: list[str] = []
@@ -69,16 +80,14 @@ async def test_blueprint_change_drains_session_warmup_fleet_lease(
     try:
         assert await asyncio.to_thread(entered.wait, 5)
         change = asyncio.create_task(
-            apply_blueprint_change(
-                app, lambda: seen.append("change") or {"installed": []}, label="Select blueprint"
-            )
+            apply_revision(app, lambda: seen.append("change") or {"installed": []})
         )
         await _closed(app)
         assert seen == []
         finish.set()
         result = await asyncio.wait_for(change, timeout=5)
         await worker
-        assert result["operation"]["status"] == "applied"
+        assert result == {"installed": []}
         assert seen == ["warmup finished", "change"]
     finally:
         finish.set()
@@ -86,7 +95,7 @@ async def test_blueprint_change_drains_session_warmup_fleet_lease(
 
 
 @pytest.mark.asyncio
-async def test_workspace_warmup_queues_behind_blueprint_change(
+async def test_workspace_warmup_queues_behind_revision_change(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
     """A draft opened during a revision cannot acquire an old-policy fleet lease."""
@@ -100,14 +109,14 @@ async def test_workspace_warmup_queues_behind_blueprint_change(
         seen.append("change")
         return {"installed": []}
 
-    def warm(owner: Any, root: str, blueprint_id: str, key: tuple[int, str, str]) -> None:
+    def warm(owner: Any, root: str, server_set: str, key: tuple[int, str, str]) -> None:
         seen.append("warmup")
         workspace_warmup._release(key)
         warmed.set()
 
     monkeypatch.setattr(session_warmup, "session_warmup_enabled", lambda: True)
     monkeypatch.setattr(workspace_warmup, "_warm_and_release", warm)
-    change = asyncio.create_task(apply_blueprint_change(app, mutation, label="Reload"))
+    change = asyncio.create_task(apply_revision(app, mutation))
     try:
         assert await asyncio.to_thread(entered.wait, 5)
         assert workspace_warmup.start_workspace_warmup(app, str(tmp_path)) == "warming"
@@ -154,9 +163,7 @@ async def test_cancelled_warmup_keeps_revision_reader_until_thread_exits(
         assert await asyncio.to_thread(entered.wait, 5)
         worker.cancel()
         change = asyncio.create_task(
-            apply_blueprint_change(
-                app, lambda: seen.append("change") or {"installed": []}, label="Reload"
-            )
+            apply_revision(app, lambda: seen.append("change") or {"installed": []})
         )
         await _closed(app)
         for _ in range(cancel_count - 1):
@@ -196,9 +203,7 @@ async def test_running_turn_warmup_can_finish_while_writer_waits(
     parent = admit_segment(app.state.turn_runner, turn(), sid="parent", turn_id="parent")
     await entered.wait()
     change = asyncio.create_task(
-        apply_blueprint_change(
-            app, lambda: seen.append("change") or {"installed": []}, label="Reload"
-        )
+        apply_revision(app, lambda: seen.append("change") or {"installed": []})
     )
     await _closed(app)
     proceed.set()

@@ -20,8 +20,12 @@ FS_ANNOTATIONS: dict[str, dict[str, bool]] = {
     "list_directory": {"readOnlyHint": True, "openWorldHint": False},
     "search_text": {"readOnlyHint": True, "openWorldHint": False},
     "read_file": {"readOnlyHint": True, "openWorldHint": False},
-    "propose_edit": {"readOnlyHint": True, "openWorldHint": False},
-    "apply_edit_write": {
+    "write_file": {
+        "readOnlyHint": False,
+        "destructiveHint": True,
+        "openWorldHint": False,
+    },
+    "edit_file": {
         "readOnlyHint": False,
         "destructiveHint": True,
         "openWorldHint": False,

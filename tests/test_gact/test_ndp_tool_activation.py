@@ -10,8 +10,8 @@ from typing import Any
 import dspy
 import pytest
 
-from clio_agent.gact.agents.auto_tools import build_auto_react_tools
 from clio_agent.gact.agents.clio_react import ClioReAct, _function_tool
+from clio_agent.gact.agents.native_tool_registry import build_native_tools
 from clio_agent.gact.catalog import _builtin_tool_declarations
 from clio_agent.gact.storage.models import CreateSource
 from clio_agent.gact.storage.ndp_catalog import NDPDataset, NDPResource
@@ -39,14 +39,23 @@ NDP_TOOLS = {
 }
 
 
-def _tool_names(*, child: bool = False) -> set[str]:
+#: What the connected-data and NDP plugins claim for an agent that carries them.
+CLAIMED = frozenset(
+    NDP_TOOLS | {"connected_data_status", "connected_data_connect", "connected_data_open"}
+)
+
+
+def _built(claimed: frozenset[str] = CLAIMED) -> tuple[set[str], dict[str, str]]:
+    """Build the claimed tools; return the model's function names and withheld reasons."""
+    agent = AgentDef(id="main", title="Main", tools=sorted(claimed))
+    available, _gateway, withheld = build_native_tools(agent, claimed, {})
+    program = ClioReAct(dspy.Signature("question -> answer"), tools=list(available.values()))
+    return {_function_tool(tool).name for tool in program.tools.values()}, withheld
+
+
+def _tool_names(claimed: frozenset[str] = CLAIMED) -> set[str]:
     """Inspect the actual ReAct function declarations sent to the model."""
-    agent = AgentDef(id="main", title="Main", parent_id="parent" if child else "")
-    program = ClioReAct(
-        dspy.Signature("question -> answer"),
-        tools=build_auto_react_tools(agent, a2ui_producers=False),
-    )
-    return {_function_tool(tool).name for tool in program.tools.values()}
+    return _built(claimed)[0]
 
 
 def _source(service: StorageService, root: Path, workspace_id: str = "ws_default") -> Any:
@@ -82,9 +91,11 @@ def test_unrelated_workspace_has_no_ndp_model_schemas_or_credential_reads(
     monkeypatch.setattr(service.auth, "token", forbidden)
     monkeypatch.setattr(service.ndp, "endpoints", forbidden)
     assert not session_ndp_tools_enabled()
-    names = _tool_names()
+    names, withheld = _built()
     assert names & NDP_TOOLS == NDP_SETUP
     assert {"connected_data_status", "connected_data_connect", "connected_data_open"} <= names
+    # Claimed but unusable tools are withheld with a typed reason, never dropped silently.
+    assert withheld == dict.fromkeys(NDP_TOOLS - NDP_SETUP, "ndp_source_not_connected")
 
 
 def test_dataset_activation_is_recomputed_for_each_turn_of_the_same_session(
@@ -104,7 +115,8 @@ def test_dataset_activation_is_recomputed_for_each_turn_of_the_same_session(
     }
     assert "url" not in json.dumps(selected)
     assert _tool_names() & NDP_TOOLS == NDP_TOOLS
-    assert not _tool_names(child=True) & NDP_TOOLS
+    # An agent whose plugins do not claim the NDP tools never gets them.
+    assert not _tool_names(frozenset({"connected_data_status"})) & NDP_TOOLS
     service.disconnect(record)
     assert _tool_names() & NDP_TOOLS == NDP_SETUP
     # A retained snapshot or saved selection must not keep NDP enabled.

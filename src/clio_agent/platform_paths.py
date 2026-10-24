@@ -273,7 +273,7 @@ def _extended_absolute(path: str | Path) -> str:
 def copytree_extended(source: str | Path, destination: str | Path) -> None:
     """``shutil.copytree`` with both trees addressed in extended-length form.
 
-    A pack or skill tree copied under a long user dir (a long user name, a packaged
+    A plugin or skill tree copied under a long user dir (a long user name, a packaged
     app's ``LocalCache`` redirection, a staging name) crosses 260 characters deep in
     the tree, where a legacy path raises ``WinError 206``. The extended form lifts the
     limit for every ``scandir`` / ``makedirs`` / ``copy2`` the copy makes.

@@ -6,8 +6,9 @@
 
 - **test_core/** — errors, config, instrumentation, runner
 - **test_gact/test_clio_react.py** — the agent loop (`ClioReAct`)
-- **test_gact/test_agent_blueprints.py** — registry bootstrap, Agent Blueprint parsing,
-  DSPy module compilation, child expert tools, and native-expert removal guards
+- **test_plugins/**, **test_flows/** — plugin loading, the Claude Code importer, trust,
+  two-stage resolution, flows and plans, and the guard against the removed blueprint
+  modules (`test_removal_guard.py`)
 - **test_tools/** — FastMCP gateway + HDF5 / Parquet servers end-to-end
 - **test_arc/** — memory coverage, context compiler, retrieval, storage tiers
 - **integration-contract / benchmark evidence** — real provider and marketplace
@@ -22,14 +23,14 @@ Fixtures (`conftest.py:1-102`) create real files (HDF5 / Parquet) with determini
 A turn is `POST /v1/sessions/{sid}/messages`. The turn engine (`gact/turn.py`,
 `gact/turn_forward.py`):
 
-1. resolves the session's agent -- the activated Agent Blueprint's root expert, or
-   the builtin `main` for a session with no blueprint (an explicit activation that
-   resolves nothing is a typed `no_resolvable_agent` failure, never a substitute);
-2. builds that expert's DSPy module by its declared `module.kind` (`react` experts
-   run `ClioReAct`, `gact/agents/clio_react.py`; `predict` / `chain_of_thought`
-   run the DSPy module of that name, optionally wrapped in a declared
-   `BestOfN` / `Refine` variant);
-3. runs the module's `forward` ONCE in the turn's forward executor;
+1. resolves the session's agent -- its pinned plugin resolution (the session's
+   agent ref, by default `clio/standard`; `docs/PLUGINS_AND_FLOWS.md`). An agent
+   that does not resolve is a typed `agent_unavailable` failure, never a
+   substitute;
+2. builds that agent's DSPy module from its resolved tools, servers and skills
+   (`gact/agents/builders.py`);
+3. runs the agent's flow ONCE in the turn's forward executor (`react`, the
+   default, runs `ClioReAct`, `gact/agents/clio_react.py`);
 4. finalizes the assistant message (parts, tokens, cost, `stop_reason`).
 
 ### The agent loop (`ClioReAct`)
@@ -58,12 +59,13 @@ or hits a declared `max_iters` / a parse error / the context window. Nothing
 calls the model after the loop (`docs/design/react-loop-completion-2026-09.md`).
 A terminal MCP protocol refusal escalates as a typed turn failure.
 
-Delegation is the model's choice: a react expert with declared children spawns
-them as real child sessions through `spawn_agent_task` /
-`spawn_agents_parallel` and collects them with `wait_agent_tasks` /
-`observe_agent_tasks`.
+Delegation is the model's choice: an agent with the `delegation` plugin spawns
+its defined subagents (or installed agents) as real child sessions through
+`spawn_agent_task` / `spawn_agents_parallel`, or starts a flow with `run_flow` /
+`run_plan`, and collects results with the shared task controls (`wait_tasks`,
+`observe_tasks`, `get_task_result`).
 
-(`tests/test_gact/test_clio_react.py`, `tests/test_gact/test_agent_blueprints.py`)
+(`tests/test_gact/test_clio_react.py`, `tests/test_flows/`)
 
 ### Cancellation
 
@@ -152,8 +154,9 @@ uses it before destructive mutations, not only after the fact.
   stored policy allows or denies first.
 - Session `mode="plan"` and `mode="architect"` auto-deny destructive
   tool calls.
-- `/diffs/apply` records an auto-approved permission audit row because
-  the user explicitly clicked apply.
+- The agent's file writes (`fs_write_file`, `fs_edit_file`) go through the
+  gate like any write; `/diffs/revert` (the person's Undo) consults the
+  same policies and records a permission audit row.
 - Direct destructive GACT DELETE endpoints (`sessions`, `messages`,
   context file attachments, tasks, schedules, agents, workspaces, hooks,
   and external MCP server registrations) consult permission policies
@@ -165,8 +168,8 @@ CLIO does not use fallback value substitution for agent or provider failures.
 Failed routes and failed LM calls surface as structured `error_info` with retry,
 reconfigure-provider, and exit recovery actions.
 
-- An agent that cannot be resolved → structured `no_resolvable_agent` /
-  `blueprint_root_disabled`, never a substitute agent.
+- An agent that cannot be resolved → structured `agent_unavailable` carrying every
+  resolution error, never a substitute agent.
 - Provider/LM failure → structured `provider_error`; CLIO must not hide
   an upstream/provider failure behind repeated, canned, or locally synthesized
   assistant text.
@@ -224,16 +227,20 @@ arc.get_metrics("data")         # latest
 
 ## Routing semantics
 
-- There is no planner. The session's active expert runs its own loop; routing to
-  other experts is the model calling the spawn tools for its declared children.
+- There is no planner. The session's agent runs its own flow; routing to other
+  agents is the model calling the spawn tools or starting a flow.
 - Session `routing_mode` is recorded metadata only; no code path branches on it.
 
-## Expert semantics
+## Agent semantics
 
-- Agent Blueprint experts compile by declared `module.kind`, not by tool list.
-- Empty blueprint signatures default to `system_prompt`, `question`, and `answer`; structured outputs add their declared fields, which ride the `submit` tool.
-- ReAct blueprint experts receive their declared tools, the spawn tools for their declared children, `load_skill` when they have skills, and the auto-attached `create_artifact` / `plan_exit` / `write_todos`.
-- A child runs as a real child session; its result returns to the parent through `wait_agent_tasks`.
+- An agent's tools are exactly what its resolved plugins bring (claimed built-in
+  tools, Python tools, MCP servers' tools, skills); `core` brings the task
+  controls, `ask_user`, planning and artifact tools.
+- Signatures default to `system_prompt`, `question`, and `answer`; structured
+  outputs (for example a plugin's `workflow_state` vocabulary) add their declared
+  fields, which ride the `submit` tool.
+- A child runs as a real child session; its result returns to the parent through
+  the mailbox or `wait_tasks`.
 - Native Python domain expert modules are not runtime-importable and must not be used as a fallback.
 
 ## Tool semantics
@@ -289,5 +296,5 @@ $ curl -s http://127.0.0.1:8100/v1/sessions/$SID/messages   # newest first
 | Errors | `test_errors.py` — structured `to_dict()`, no traceback leak |
 | ARC memory | `test_memory_coverage.py:35-150` — Invocation + Metrics schemas pinned |
 | Tools | `test_hdf5_server.py:37-120` — file_policy validation BEFORE open, error dict on failure |
-| Registry | `test_registry.py` — registry-backed Agent Blueprint experts |
+| Plugins | `tests/test_plugins/` — loader, importer, trust, resolution; `tests/test_flows/` — flows and plans |
 | Variants | `test_runner.py:141-218` — SIMBA + stat-sig gating + VariantRecord in ARC |

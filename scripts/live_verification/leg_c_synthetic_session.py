@@ -4,23 +4,22 @@
 Every existing exerciser conformance test drives it through an in-process
 ``AsyncMCPToolExecutor``/``Client(server)`` -- never through a live gact
 session with a real model turn. This leg closes that gap: declare the
-exerciser as a purpose-built single-expert Agent Blueprint pack's declared
-MCP server (``agents/v2ex-testing/`` -- ``AGENT.md`` frontmatter's
-``mcp_servers: {v2ex: "<python>" "<EXERCISER_PATH>"}``, materialized at run
-time -- see the quoting note below and ``_common.py::
-materialize_testing_pack``), boot a gact server, and drive it through two
-real turns on ONE session.
+exerciser as the MCP server of a purpose-built testing agent's plugin
+(``agents/v2ex-testing/``, a native marketplace whose plugin ``mcp.json``
+declares ``v2ex: python <EXERCISER_PATH>``, written at run time by
+``_common.py::materialize_testing_marketplace``), boot a gact server, and drive
+it through two real turns on ONE session.
 
 This leg used to declare the exerciser via a bare session + workspace
 ``.clio/mcp.yaml``. Investigation proved the bare-session builtin main's
 toolset is a hardcoded 4-tool list, so a declared server's tools never reach
 it no matter what ``mcp.yaml`` declares (#1301, deferred upstream -- the
 Python builtin main is being dissolved). This leg now rides the WORKING path
-instead: the ``v2ex-testing`` pack's ``main`` expert declares ``tools:
-[v2ex_task_echo, v2ex_guarded_input]`` -- the same Agent Blueprint mechanism
-every real marketplace pack uses. The workspace ``mcp.yaml`` declaration this
-leg used to write is now REDUNDANT (the pack frontmatter declares the
-server) and has been dropped.
+instead: the ``v2ex-testing`` agent carries the plugin that declares the
+server, so ``v2ex_task_echo`` and ``v2ex_guarded_input`` reach it through its
+pinned plugin resolution -- the same mechanism every marketplace agent uses.
+The workspace ``mcp.yaml`` declaration this leg used to write is REDUNDANT
+(the plugin declares the server) and has been dropped.
 
 Turn 1 proves live task=required plumbing through a real model turn: instruct
 the agent to call ``task_echo`` with a given payload and report the result;
@@ -44,9 +43,9 @@ gap was found; if a live run ever finds the question never surfaces within
 the wait window, the verdict below fails NAMED (never silently passes).
 
 ``--plumbing-only`` stops after the PRE-TURN READINESS GATE (``v2ex``
-reachable with its 9 tools at handshake, AND the resolved ``main`` agent's
-``tools`` include ``v2ex_task_echo``/``v2ex_guarded_input`` --
-``GET /v1/agents?session_id=...``) -- before provider bind, before either
+reachable with its 9 tools at handshake, AND the session agent's resolved
+tools include ``v2ex_task_echo``/``v2ex_guarded_input`` --
+``GET /v1/sessions/{sid}/agent``) -- before provider bind, before either
 turn.
 
 Verdict JSON: ``out/live-verification/leg_c_synthetic_session.json``.
@@ -87,12 +86,12 @@ EXPECTED_TOOLS = {
     "silent_sleeper",
 }
 
-#: The v2ex-testing pack template this leg materializes per run.
+#: The v2ex-testing marketplace template this leg materializes per run.
 PACK_TEMPLATE_DIR = Path(__file__).resolve().parent / "agents" / "v2ex-testing"
 
-#: The root ``main`` expert's tools that must be resolved BEFORE any turn is
-#: driven (mind the ``<namespace>_<tool>`` naming -- the readiness gate that
-#: proves the blueprint path, not the old hardcoded-4-tool bare-session path).
+#: The session agent's tools that must be resolved BEFORE any turn is driven
+#: (mind the ``<namespace>_<tool>`` naming -- the readiness gate that proves the
+#: plugin path, not the old hardcoded-4-tool bare-session path).
 NEEDED_AGENT_TOOLS = {
     f"{EXERCISER_NAMESPACE}_task_echo",
     f"{EXERCISER_NAMESPACE}_guarded_input",
@@ -121,7 +120,7 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def _assert_v2ex_handshake(call: Any, wsid: str, sid: str) -> dict[str, Any]:
-    # ``session_id`` is REQUIRED to see the pack-declared server -- see
+    # ``session_id`` is REQUIRED to see the plugin-declared server -- see
     # leg_b_web_fetch.py's ``_assert_web_handshake`` for the same note.
     handshake = call("GET", "/v1/mcp/handshake", params={"workspace_id": wsid, "session_id": sid})
     rows = handshake.get("servers") or []
@@ -136,12 +135,12 @@ def _assert_v2ex_handshake(call: Any, wsid: str, sid: str) -> dict[str, Any]:
     return result
 
 
-def _assert_readiness(call: Any, sid: str, wsid: str) -> dict[str, Any]:
-    """PRE-TURN READINESS GATE: the resolved ``main`` agent must already carry
+def _assert_readiness(call: Any, sid: str, wsid: str, agent_id: str) -> dict[str, Any]:
+    """PRE-TURN READINESS GATE: the session agent must already carry
     ``NEEDED_AGENT_TOOLS`` before any provider is bound or turn is driven."""
 
     resolved = common.resolved_agent_tools(call, sid, workspace_id=wsid)
-    main_tools = set(resolved.get("main") or [])
+    main_tools = set(resolved.get(agent_id) or [])
     return {
         "resolved_agent_tools": resolved,
         "readiness_gate": {
@@ -158,16 +157,12 @@ def main() -> int:
     ws_dir = Path(args.ws_dir).resolve()
     ws_dir.mkdir(parents=True, exist_ok=True)
 
-    # Quoting constraint discovered building this package: tools/mcp_config.py's
-    # string-command form parses via shlex.split (POSIX mode) -- an unquoted
-    # Windows backslash path is silently mangled (backslashes eaten). Verified
-    # both the failure and the fix (double-quote every token) directly against
-    # shlex.split, matching mcp_config's exact call. The SAME format governs an
-    # Agent Blueprint's ``mcp_servers`` frontmatter value, so the exerciser's
-    # command must be resolved at RUN time (never a hardcoded drive path
-    # committed to the template) -- materialize_testing_pack patches it in.
-    command = common.quoted_command(sys.executable, str(EXERCISER_PATH))
-    pack_root = common.materialize_testing_pack(
+    # The exerciser's path is resolved at RUN time (never a hardcoded drive path
+    # committed to the template): materialize_testing_marketplace writes it into
+    # the plugin's mcp.json as a JSON argv, so no shell quoting is involved, and
+    # ``python`` resolves to this interpreter (boot_server puts it first on PATH).
+    command = ["python", str(EXERCISER_PATH)]
+    pack_root = common.materialize_testing_marketplace(
         PACK_TEMPLATE_DIR, ws_dir, {EXERCISER_NAMESPACE: command}
     )
 
@@ -200,15 +195,14 @@ def main() -> int:
         verdict["workspace_id"] = wsid
         verdict["session_id"] = sid
 
-        install_result = common.install_blueprint(call, pack_root, wsid)
-        blueprint_id = str(install_result.get("id") or "")
-        common.activate_blueprint(call, sid, blueprint_id)
-        verdict["blueprint_id"] = blueprint_id
+        agent_ref = common.install_testing_agent(call, pack_root)
+        common.use_agent(call, sid, agent_ref)
+        verdict["agent_ref"] = agent_ref
 
         handshake_result = _assert_v2ex_handshake(call, wsid, sid)
         verdict.update(handshake_result)
 
-        readiness_result = _assert_readiness(call, sid, wsid)
+        readiness_result = _assert_readiness(call, sid, wsid, common.agent_id_of(agent_ref))
         verdict.update(readiness_result)
         readiness_ok = readiness_result["readiness_gate"]["ready"]
 

@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import logging
 from collections.abc import Mapping
+from pathlib import Path
 from typing import Any
 from urllib.parse import urljoin
 
@@ -17,6 +18,7 @@ from clio_agent.gact.resource_processing import DocumentProcessorClient
 from clio_agent.gact.routes._body import json_body
 from clio_agent.gact.routes.mcp_server_specs import stdio_server_spec
 from clio_agent.tools.mcp_config import transport_from_spec
+from clio_agent.tools.mcp_probe_hardening import probe_server_context
 from clio_agent.tools.mcp_redaction import redact_mcp_spec
 from clio_agent.tools.mcp_runtime import make_mcp_client
 
@@ -42,7 +44,11 @@ def _configuration_spec(body: dict[str, Any]) -> dict[str, Any]:
         url = body.get("url")
         if not isinstance(url, str) or not url.strip():
             raise HTTPException(status_code=422, detail="http transport requires 'url'")
-        return {"transport": "http", "url": url.strip()}
+        return {
+            "transport": "http",
+            "url": url.strip(),
+            "always_load": bool(body.get("always_load") or body.get("alwaysLoad")),
+        }
     raise HTTPException(
         status_code=422,
         detail=f"unknown transport: {transport_kind!r} (use stdio|http)",
@@ -92,16 +98,30 @@ async def _probe_web_search_remote(remote_url: str) -> None:
         raise RuntimeError(f"Web Search dependency not ready: {', '.join(unavailable)}")
 
 
+#: Launchers that download and build the server on its first start (``uvx git+...``
+#: can take a minute): the person is waiting on this probe, so it waits that long too.
+_FETCHING_LAUNCHERS = frozenset({"uvx", "uv", "npx", "pnpx", "bunx", "pipx"})
+_FIRST_START_PROBE_RETRIES = 12
+
+
 async def _probe_user_mcp_server(spec: Mapping[str, Any]) -> tuple[list[str], str | None]:
     """Return live tools and a degraded detail for one saved spec."""
 
+    launcher = Path(str(spec.get("command") or "")).name
+    fetching = spec.get("transport", "stdio") == "stdio" and launcher in _FETCHING_LAUNCHERS
     try:
         transport = transport_from_spec(dict(spec))
-        async with make_mcp_client(transport, server_id="user-configuration-probe") as client:
-            tools = await client.list_tools()
+        with probe_server_context(
+            "", timeout_retries=_FIRST_START_PROBE_RETRIES if fetching else None
+        ):
+            async with make_mcp_client(transport, server_id="user-configuration-probe") as client:
+                tools = await client.list_tools()
         tool_names = [str(tool.name) for tool in tools]
     except Exception as exc:  # noqa: BLE001 - saved configuration remains durable
-        return [], f"{type(exc).__name__}: {exc}"
+        detail = f"{type(exc).__name__}: {exc}"
+        if fetching and "timed out" in str(exc):
+            detail += f" ({launcher} may still be preparing the server on its first start; retry)"
+        return [], detail
 
     remote_url = _configured_web_remote_url(spec)
     if not remote_url:
@@ -190,9 +210,32 @@ def register_mcp_configuration_routes(app: FastAPI) -> None:
     from clio_agent.gact.mcp_user_configuration import (
         McpUserConfigurationError,
         get_user_mcp_server,
+        list_user_mcp_servers,
         remove_user_mcp_server,
         set_user_mcp_server,
     )
+
+    @app.get("/v1/mcp/configuration")
+    async def list_mcp_configuration() -> dict[str, Any]:
+        """The services the person saved, without starting them (a row's GET probes it)."""
+
+        try:
+            servers = await asyncio.to_thread(list_user_mcp_servers)
+        except McpUserConfigurationError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+        return {
+            "servers": [
+                {
+                    "name": name,
+                    "configured": True,
+                    "scope": "user",
+                    "transport": str(spec.get("transport") or "stdio"),
+                    "always_load": bool(spec.get("always_load")),
+                    "spec": redact_mcp_spec(dict(spec)),
+                }
+                for name, spec in sorted(servers.items())
+            ]
+        }
 
     @app.get("/v1/mcp/configuration/{name}")
     async def get_mcp_configuration(name: str) -> dict[str, Any]:

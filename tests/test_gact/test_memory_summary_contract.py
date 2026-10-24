@@ -6,7 +6,7 @@ from types import SimpleNamespace
 from fastapi.testclient import TestClient
 
 from clio_agent.gact.app import build_app
-from clio_agent.gact.memory_tools import build_memory_summary_tool
+from clio_agent.gact.session_recall_tools import build_session_summary_tool
 from clio_agent.gact.session_store import _replace_session_messages
 from clio_agent.gact.types import Message, Part
 from tests.test_gact.task_records import active_turn_fixture, record_assignment_fixture
@@ -35,7 +35,7 @@ def test_summary_without_a_model_returns_recent_source_excerpts(tmp_path: Path) 
         rows[5] = _message(sid, 5, "Recorded qualification", "thinking")
         app.state.messages[sid] = rows
 
-        response = client.post(f"/v1/sessions/{sid}/memory/tools/read-session-summary", json={})
+        response = client.post(f"/v1/sessions/{sid}/session-recall/read-summary", json={})
 
         assert response.status_code == 200, response.text
         assert app.state.agent is None
@@ -71,10 +71,10 @@ def test_agent_summary_tool_and_route_read_the_same_persisted_messages(tmp_path:
         _replace_session_messages(original, sid, [_message(sid, 0, "Fernhill: 8:15")])
     restored = build_app(sessions_path=sessions_path, agent=None)
     with TestClient(restored) as client:
-        route = client.post(f"/v1/sessions/{sid}/memory/tools/read-session-summary", json={})
+        route = client.post(f"/v1/sessions/{sid}/session-recall/read-summary", json={})
         assert route.status_code == 200, route.text
         with active_turn_fixture(restored, sid):
-            result = build_memory_summary_tool(SimpleNamespace(id="main")).func(
+            result = build_session_summary_tool(SimpleNamespace(id="main")).func(
                 target_session_id=sid
             )
 
@@ -85,7 +85,7 @@ def test_agent_summary_tool_and_route_read_the_same_persisted_messages(tmp_path:
         assert result["agent_target"]["task_handle"] == (
             restored.state.task_history.latest_assignment(sid).handle
         )
-        assert restored.state.memory_tool_audit[-1]["tool_name"] == "memory_read_session_summary"
+        assert restored.state.session_recall_audit[-1]["tool_name"] == "session_read_summary"
 
 
 def test_empty_session_has_no_invented_summary(tmp_path: Path) -> None:
@@ -93,7 +93,7 @@ def test_empty_session_has_no_invented_summary(tmp_path: Path) -> None:
     app = build_app(sessions_path=tmp_path / "sessions.json", agent=None)
     with TestClient(app) as client:
         sid = client.post("/v1/sessions", json={"title": "Not started"}).json()["id"]
-        response = client.post(f"/v1/sessions/{sid}/memory/tools/read-session-summary", json={})
+        response = client.post(f"/v1/sessions/{sid}/session-recall/read-summary", json={})
         assert response.status_code == 200, response.text
         summary = response.json()["summary"]
         assert summary["message_count"] == 0
@@ -117,7 +117,7 @@ def test_context_frame_reports_partial_coverage_and_source_descriptions(tmp_path
             }
         ]
         response = client.post(
-            f"/v1/sessions/{sid}/memory/tools/read-context-frame", json={"frame_id": "frame_1"}
+            f"/v1/sessions/{sid}/session-recall/read-context-frame", json={"frame_id": "frame_1"}
         )
         assert response.status_code == 200, response.text
         frame = response.json()["frame"]

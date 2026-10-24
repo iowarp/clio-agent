@@ -181,7 +181,7 @@ def register_native_storage(
             context.provider_continuation and context.provider_continuation.cancellation_only
         )
 
-    @root.server.tool(name="connected_data_continue", task=TaskConfig(mode="required"))
+    @root.tool(name="connected_data_continue", task=TaskConfig(mode="required"))
     async def continue_job(
         ctx: Context, operation_id: str, _clio_submission: str
     ) -> dict[str, Any]:
@@ -459,7 +459,7 @@ def register_native_storage(
     native.provider_recovery = recover_provider
     native.provider_cancel = cancel_provider
 
-    @root.server.tool(name="connected_data_download", task=TaskConfig(mode="required"))
+    @root.tool(name="connected_data_download", task=TaskConfig(mode="required"))
     async def download(
         ctx: Context, source_id: str, _clio_submission: str, paths: list[str] | None = None
     ) -> dict[str, Any]:
@@ -684,7 +684,7 @@ def register_native_storage(
         )
         return await asyncio.to_thread(result, latest, settled)
 
-    @root.server.tool(name="connected_data_connect", task=TaskConfig(mode="required"))
+    @root.tool(name="connected_data_connect", task=TaskConfig(mode="required"))
     async def connect(
         ctx: Context,
         provider: str,
@@ -710,7 +710,7 @@ def register_native_storage(
 
         return await work.run(_clio_submission, "connected_data_connect", arguments, body)
 
-    @root.server.tool(name="connected_data_index", task=TaskConfig(mode="required"))
+    @root.tool(name="connected_data_index", task=TaskConfig(mode="required"))
     async def index(ctx: Context, source_id: str, _clio_submission: str) -> dict[str, Any]:
         """Refresh a connected folder manifest as a task, retaining its previous manifest on failure."""
 

@@ -19,7 +19,9 @@ export default defineConfig({
 		'/contributing.html': '/docs/contributing/',
 		'/tutorials': '/docs/examples/',
 		'/tutorials/guides/first-analysis': '/docs/examples/ground-motion/',
-		'/tutorials/guides/install-a-blueprint': '/docs/marketplaces/#choose-a-blueprint-for-a-conversation',
+		'/tutorials/guides/install-a-blueprint': '/docs/agents-and-plugins/#pick-an-agent-for-a-conversation',
+		// Agent blueprints were replaced by agents and plugins.
+		'/docs/blueprints': '/docs/agents-and-plugins/',
 	},
 	integrations: [
 		starlight({
@@ -91,6 +93,8 @@ export default defineConfig({
 						},
 						{ label: 'Answer a question', slug: 'docs/questions' },
 						{ label: 'Follow work in progress', slug: 'docs/following-work' },
+						{ label: 'Flows and workflows', slug: 'docs/flows' },
+						{ label: 'Models and usage', slug: 'docs/models-and-usage' },
 						{ label: 'Updates during a conversation', slug: 'docs/injections' },
 						{ label: 'Continue work over time', slug: 'docs/long-running-work' },
 						{ label: 'Choose what CLIO may do', slug: 'docs/permissions' },
@@ -112,6 +116,7 @@ export default defineConfig({
 					collapsed: true,
 					items: [
 						{ label: 'Search files and conversations', slug: 'docs/search' },
+						{ label: 'Long-term memory', slug: 'docs/long-term-memory' },
 						{ label: 'What CLIO remembers', slug: 'docs/memory' },
 						{ label: 'Try another approach', slug: 'docs/branch-and-rewind' },
 					],
@@ -132,8 +137,9 @@ export default defineConfig({
 					label: 'Customize CLIO',
 					collapsed: true,
 					items: [
-						{ label: 'Choose a specialist agent', slug: 'docs/marketplaces' },
-						{ label: 'Install and update blueprints', slug: 'docs/marketplaces/manage' },
+						{ label: 'Agents and plugins', slug: 'docs/agents-and-plugins' },
+						{ label: 'Plugin marketplaces', slug: 'docs/marketplaces' },
+						{ label: 'Add and manage marketplaces', slug: 'docs/marketplaces/manage' },
 						{ label: 'Connect tools and services', slug: 'docs/mcp-servers' },
 						{ label: 'Interactive views and controls', slug: 'docs/widgets' },
 					],
@@ -156,7 +162,6 @@ export default defineConfig({
 						{ label: 'Server and terminal setup', slug: 'docs/server-setup' },
 						{ label: 'Command line', slug: 'docs/cli' },
 						{ label: 'Configuration', slug: 'docs/configuration' },
-						{ label: 'Write an agent blueprint', slug: 'docs/blueprints' },
 						{ label: 'Hooks and automation', slug: 'docs/hooks' },
 						{ label: 'Background work and limits', slug: 'docs/background-work-reference' },
 						{ label: 'Interactive component catalog', slug: 'docs/widgets/components' },

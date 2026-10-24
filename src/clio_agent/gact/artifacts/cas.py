@@ -451,10 +451,10 @@ def harness_write_identity(
     in_hand_sha: str,
     in_hand_size: int,
 ) -> IngestedIdentity:
-    """Resolve a just-written (diffs-apply / harness) file's identity + custody.
+    """Resolve a just-written (diffs-revert / harness) file's identity + custody.
 
-    Owner decision, finding [3]: a user-approved harness write is a paradigm deliverable
-    (``report.md`` via diffs/apply), so its bytes get the same CAS durability as every
+    Owner decision, finding [3]: a person-initiated harness write (an Undo restoring
+    ``report.md``) is a deliverable, so its bytes get the same CAS durability as every
     other path-mint seam — :func:`ingest_identity` streams them into the store (custody
     ``cas``; over threshold → referenced + typed size). On a stat/hash failure it falls
     back to the writer's in-hand sha256 (typed workspace-referenced, no disk read).

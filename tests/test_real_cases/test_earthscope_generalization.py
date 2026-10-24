@@ -1,15 +1,16 @@
-"""EarthScope generalization — one blueprint, many query shapes (#682).
+"""EarthScope generalization — one agent, many query shapes (#682).
 
-The original EarthScope case (``test_earthscope_case.py``) proves the blueprint
-on ONE verbose query across models. This file proves the SAME blueprint
-generalizes across distinct, SHORT, generic query shapes on one driver model
+The original EarthScope case (``test_earthscope_case.py``) proves the
+``clio/earthscope`` marketplace agent on ONE verbose query across
+models. This file proves the SAME agent generalizes across distinct, SHORT,
+generic query shapes on one driver model
 (gemma4/ALCF first), judged on the *structured* trace — the tool path actually
 taken — not on prose:
 
   (b) #684  city -> coordinates via the geo_geocode tool (grounded, not a prior)
   (c) #685  explicit coordinates supplied -> geocoding is SKIPPED
   (d) #686  an explicit radius in the prompt is honored (and never widened)
-  (a) #683  variable-N multi-station overlay        [added with its blueprint work]
+  (a) #683  variable-N multi-station overlay
   (e) #687  progressive multi-turn in one session   [added with its harness work]
 
 Run one cell on gemma4/ALCF (use a DISTINCT fixture port so it never collides
@@ -31,7 +32,7 @@ from pathlib import Path
 import pytest
 from agent_test import matcher
 
-BLUEPRINT = "earthscope-gnss-region"
+AGENT_REF = "clio/earthscope"
 CASE_DIR = "benchmark/case02-earthscope-csv-seismic-geography"
 
 
@@ -194,8 +195,17 @@ def geocode_was_called(run):
 
 @matcher
 def geocode_grounded_region(run):
-    """The region center came from the tool, not a model prior."""
-    return str(_geospatial_state(run).get("provenance") or "") == "osm_nominatim"
+    """The region center came from the tool, not a model prior: a ``geo_geocode``
+    call returned a real OpenStreetMap Nominatim match (each match carries
+    ``provenance="osm_nominatim"``)."""
+    import json as _json
+
+    return any(
+        call.name == "geo_geocode"
+        and call.output
+        and "osm_nominatim" in _json.dumps(call.output, default=str)
+        for call in run.tool_calls
+    )
 
 
 @matcher
@@ -237,7 +247,7 @@ def test_earthscope_progressive_session(agent, gact_server, tmp_path):
     run = agent.run(
         {
             "turns": list(PROGRESSIVE_TURNS),
-            "blueprint_id": BLUEPRINT,
+            "agent_ref": AGENT_REF,
             "case_dir": CASE_DIR,
             "run_label": "progressive",
             "workdir": str(tmp_path),
@@ -247,7 +257,7 @@ def test_earthscope_progressive_session(agent, gact_server, tmp_path):
     )
 
     assert run.error is None, run.error
-    assert run.extra["blueprint_activated"], run.extra.get("active_agent_blueprint_id")
+    assert run.extra["agent_activated"], run.extra.get("active_agent_ref")
     assert run.extra.get("session_id"), "no session id"
 
     turn_runs = run.extra.get("turn_runs") or []
@@ -282,7 +292,7 @@ def test_earthscope_multistation(agent, gact_server, n, tmp_path):
     run = agent.run(
         {
             "task": prompt,
-            "blueprint_id": BLUEPRINT,
+            "agent_ref": AGENT_REF,
             "case_dir": CASE_DIR,
             "run_label": f"multistation_n{n}",
             "workdir": str(tmp_path),
@@ -292,7 +302,7 @@ def test_earthscope_multistation(agent, gact_server, n, tmp_path):
     )
 
     assert run.error is None, run.error
-    assert run.extra["blueprint_activated"], run.extra.get("active_agent_blueprint_id")
+    assert run.extra["agent_activated"], run.extra.get("active_agent_ref")
 
     staged = _resolver_staged_station_ids(run)
     radius, distances = _filter_facts(run)
@@ -336,7 +346,7 @@ def test_earthscope_generalization(agent, gact_server, cell, tmp_path):
     run = agent.run(
         {
             "task": cell.prompt,
-            "blueprint_id": BLUEPRINT,
+            "agent_ref": AGENT_REF,
             "case_dir": CASE_DIR,
             "run_label": cell.label,
             "workdir": str(tmp_path),
@@ -346,12 +356,14 @@ def test_earthscope_generalization(agent, gact_server, cell, tmp_path):
     )
 
     assert run.error is None, run.error
-    assert run.extra["blueprint_activated"], run.extra.get("active_agent_blueprint_id")
+    assert run.extra["agent_activated"], run.extra.get("active_agent_ref")
 
     # Query-shape-specific tool-path checks (the point of this file).
     if cell.geocode == "called":
         assert geocode_was_called(run), f"geo_geocode not called: {run.tool_names}"
-        assert geocode_grounded_region(run), _geospatial_state(run)
+        assert geocode_grounded_region(run), [
+            call.output for call in run.tool_calls if call.name == "geo_geocode"
+        ]
     elif cell.geocode == "skipped":
         assert not geocode_was_called(run), (
             f"geo_geocode called even though coordinates were supplied: {run.tool_names}"
@@ -370,8 +382,6 @@ def test_earthscope_generalization(agent, gact_server, cell, tmp_path):
         return
 
     # Positive: the full real pipeline ran and plotted on-region station(s).
-    assert run.routed_to("data"), run.steps
-    assert run.routed_to("synthesis"), run.steps
     assert ran_acquisition_to_plot_pipeline(run), run.tool_names
     assert staged_station_on_region(run), (
         f"staged station off-region/unverifiable; ids={_staged_station_ids(run)}, "

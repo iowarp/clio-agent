@@ -21,12 +21,14 @@ import pytest
 from dspy.dsp.utils.settings import main_thread_config
 
 from clio_agent.config import LMProviderConfig, create_lm
+from clio_agent.gact import context as gact_context
 from clio_agent.gact.agents import clio_react
-from clio_agent.gact.agents.builders import _build_blueprint_dspy_module
+from clio_agent.gact.agents.builders import build_agent_module
 from clio_agent.gact.agents.clio_react import ClioReAct
 from clio_agent.gact.app import build_app
 from clio_agent.gact.types import AgentDef
 from clio_agent.lm.policy import LMOutputTruncatedError
+from clio_agent.plugins.resolve import Resolution
 from tests._scripted_engine import calls, scripted_lm
 from tests.turn_signals import wait_for_terminal_status
 
@@ -200,7 +202,31 @@ def test_output_truncation_is_visible_terminal_state(tmp_path: Path) -> None:
         assert terminal["error_info"]["details"]["reason"] == "output_truncated"
 
 
-def test_blueprint_factory_failure_preserves_original_exception(
+def _empty_resolution(agent_id: str) -> Resolution:
+    """A resolved agent with no plugins (the bare chatbot)."""
+
+    return Resolution(
+        agent={"id": agent_id, "ref": f"clio/{agent_id}", "kind": "agent"},
+        plugins=[],
+        removed=[],
+        tools=[],
+        mcp_servers={},
+        skills=[],
+        hooks=[],
+        subagents=[],
+        flows=[],
+        catalogs=[],
+        commands=[],
+        prompt={},
+        model={},
+        workflow_state=None,
+        delta={"add": [], "remove": []},
+        diagnostics=[],
+        digest="factory-failure-digest",
+    )
+
+
+def test_agent_factory_failure_preserves_original_exception(
     monkeypatch: pytest.MonkeyPatch,
     clio_core_plane: Any,
 ) -> None:
@@ -211,7 +237,6 @@ def test_blueprint_factory_failure_preserves_original_exception(
         raise failure
 
     monkeypatch.setattr("clio_agent.config.create_lm", fail_factory)
-    clio_core_plane.state.sessions = {"factory-failure": object()}
     base = type(
         "Base",
         (),
@@ -223,18 +248,20 @@ def test_blueprint_factory_failure_preserves_original_exception(
             )
         },
     )()
-    module = _build_blueprint_dspy_module(
+    module = build_agent_module(
         base,
         AgentDef(
             id="factory-failure",
             title="Factory failure",
-            source="expert_pack",
+            source="plugin",
             module={"kind": "predict"},
             structured_outputs={"workflow_state": True},
+            metadata={"agent_ref": "clio/factory-failure", "flow": {"id": "react"}},
         ),
+        _empty_resolution("factory-failure"),
     )
 
     with pytest.raises(RuntimeError) as captured:
-        module(question="report", session_id="factory-failure")
+        module(question="report", session_id=gact_context.active_session_id())
 
     assert captured.value is failure

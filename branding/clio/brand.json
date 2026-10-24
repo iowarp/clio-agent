@@ -26,9 +26,7 @@
     "showExpertPackPicker": false,
     "blueprintDisplayNames": {
       "earthscope-gnss-region": "EarthScope",
-      "EarthScope GNSS Region": "EarthScope",
-      "wildfire-smoke-impact-review": "NIFC",
-      "Wildfire Smoke Impact Review": "NIFC"
+      "EarthScope GNSS Region": "EarthScope"
     }
   },
   "backendRepository": {
@@ -60,8 +58,8 @@
       "label": "What recent ground motion is EarthScope's GNSS network showing around Los Angeles? Pull a real station time series, plot it, and tell me how much to trust the data."
     },
     {
-      "eyebrow": "NDP",
-      "label": "Find current California wildfire feature data through NDP and summarize the active records with sources."
+      "eyebrow": "Data",
+      "label": "Inspect the HDF5 or Parquet files in this workspace, check their data quality, and convert one to Parquet with a verified read-back."
     },
     {
       "eyebrow": "Weather",

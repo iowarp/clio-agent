@@ -9,14 +9,16 @@ every other ``stream_fallback`` reason (``gact/streaming.py``).
 from __future__ import annotations
 
 import email.utils
+import json
 import time
+from collections.abc import Mapping
 from dataclasses import dataclass
+from typing import Any
 
 from clio_agent.providers.codex.constants import (
     RETRY_BASE_DELAY_MS,
     RETRY_MAX_DELAY_MS,
-    RETRYABLE_STATUS_CODES,
-    USAGE_LIMIT_MARKERS,
+    USAGE_LIMIT_CODES,
 )
 from clio_agent.providers.terminal_signal import (
     TerminalProviderSignal,
@@ -83,15 +85,22 @@ CODEX_PLAN_LIMIT_MESSAGE_MARKER = "Codex account usage limit reached"
 
 
 class CodexPlanLimitError(CodexResponseError):
-    """A 429 whose text names the Codex plan window -- terminal, never retried."""
+    """The backend's code names the Codex plan window or quota -- terminal, never retried."""
 
     reason = "codex_plan_limit"
 
     def __init__(
-        self, message: str, *, code: str | None = None, status_code: int | None = None
+        self,
+        message: str,
+        *,
+        code: str | None = None,
+        status_code: int | None = None,
+        resets_at: int | None = None,
     ) -> None:
         #: The Codex backend's own words (kept verbatim, unprefixed).
         self.detail = message
+        #: When the exhausted window resets (Unix seconds), when the backend said.
+        self.resets_at = resets_at
         super().__init__(
             f"{CODEX_PLAN_LIMIT_MESSAGE_MARKER}: {message}", code=code, status_code=status_code
         )
@@ -147,24 +156,47 @@ def contains_codex_authentication_error(error: BaseException | str) -> bool:
     return any(marker in lowered for marker in _AUTH_FAILURE_MARKERS)
 
 
-def is_usage_limit_text(text: str) -> bool:
-    """Whether ``text`` (a 429 response body, or an in-stream error message) names
-    the account's plan window rather than a transient rate limit (A.7)."""
+def _error_object(payload: Mapping[str, Any]) -> Mapping[str, Any]:
+    error = payload.get("error")
+    if not isinstance(error, Mapping):
+        response = payload.get("response")
+        error = response.get("error") if isinstance(response, Mapping) else None
+    return error if isinstance(error, Mapping) else {}
 
-    lowered = (text or "").casefold()
-    return any(marker in lowered for marker in USAGE_LIMIT_MARKERS)
 
+def is_usage_limit_error(payload: Mapping[str, Any]) -> bool:
+    """Whether a Codex error payload names the account's plan window or quota (A.7).
 
-def is_retryable_status(status_code: int, body_text: str = "") -> bool:
-    """Whether a response with this status should be retried with backoff.
-
-    A 429 is retried UNLESS its body identifies a terminal plan-limit
-    condition (see :func:`is_usage_limit_text`).
+    Read from the backend's own ``error.code`` / ``error.type`` fields
+    (``usage_limit_reached`` and its kin), never from the message wording.
     """
 
-    if status_code == 429:
-        return not is_usage_limit_text(body_text)
-    return status_code in RETRYABLE_STATUS_CODES
+    error = _error_object(payload)
+    kinds = {str(error.get("code") or ""), str(error.get("type") or "")}
+    return bool(kinds & USAGE_LIMIT_CODES)
+
+
+def is_usage_limit_body(body: str) -> bool:
+    """:func:`is_usage_limit_error` over a JSON response body; a non-JSON body is not one."""
+
+    try:
+        payload = json.loads(body or "")
+    except ValueError:
+        return False
+    return isinstance(payload, Mapping) and is_usage_limit_error(payload)
+
+
+def usage_limit_resets_at(payload: Mapping[str, Any]) -> int | None:
+    """When the exhausted window resets (Unix seconds), from ``resets_at`` or ``resets_in_seconds``."""
+
+    error = _error_object(payload)
+    resets_at = error.get("resets_at")
+    if isinstance(resets_at, int | float) and not isinstance(resets_at, bool):
+        return int(resets_at)
+    seconds = error.get("resets_in_seconds")
+    if isinstance(seconds, int | float) and not isinstance(seconds, bool):
+        return int(time.time() + seconds)
+    return None
 
 
 @dataclass(frozen=True)
@@ -232,25 +264,9 @@ def next_retry_delay_ms(
     return RetryDecision(should_retry=True, delay_ms=computed)
 
 
-def raise_for_backend_error(
-    *, code: str | None, message: str | None, status_code: int | None = None
-) -> None:
-    """Raise the typed error for a backend-reported ``error``/``response.failed`` event.
-
-    Classifies a terminal plan-limit condition even when it arrives as an
-    in-stream event rather than an HTTP 429 -- the Codex backend can fail a
-    turn mid-stream with the same usage-limit wording.
-    """
-
-    text = message or "Codex backend request failed"
-    if is_usage_limit_text(text):
-        raise CodexPlanLimitError(text, code=code, status_code=status_code)
-    raise CodexResponseError(text, code=code, status_code=status_code)
-
-
 def _codex_plan_limit_extra_details(node: object) -> dict[str, object]:
     if isinstance(node, CodexPlanLimitError):
-        return {"code": node.code, "status_code": node.status_code}
+        return {"code": node.code, "status_code": node.status_code, "resets_at": node.resets_at}
     return {}
 
 
@@ -297,6 +313,9 @@ def codex_plan_limit_message(value: object) -> str | None:
 
 
 __all__ = [
+    "is_usage_limit_body",
+    "is_usage_limit_error",
+    "usage_limit_resets_at",
     "CODEX_VARIANT_REMOVED_MESSAGE",
     "CODEX_AUTHENTICATION_ERROR_MESSAGE",
     "CODEX_PLAN_LIMIT_MESSAGE_MARKER",
@@ -313,9 +332,6 @@ __all__ = [
     "codex_plan_limit_message",
     "contains_codex_authentication_error",
     "contains_codex_plan_limit",
-    "is_retryable_status",
-    "is_usage_limit_text",
     "next_retry_delay_ms",
     "parse_retry_after_ms",
-    "raise_for_backend_error",
 ]

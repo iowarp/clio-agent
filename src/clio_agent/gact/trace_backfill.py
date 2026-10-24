@@ -153,7 +153,7 @@ def semantic_event_from_trace_dict(line: dict[str, Any]) -> SemanticEvent:
     """Rebuild a SemanticEvent from ONE ``to_dict("full")`` durable-trace line.
 
     The trace line is a SUPERSET of the ``_events`` content (it carries the full
-    envelope: ``span_id`` / ``parent_span_id`` / ``workspace_id`` / ``blueprint`` /
+    envelope: ``span_id`` / ``parent_span_id`` / ``workspace_id`` / ``agent`` /
     ``live_observed`` / ``detail_level`` / ``schema_version``), so — unlike the
     ``_events``-content fold — this reconstruction is lossless for every SemanticEvent
     field. Feeding the result back through
@@ -179,7 +179,7 @@ def semantic_event_from_trace_dict(line: dict[str, Any]) -> SemanticEvent:
         summary=str(line.get("summary", "") or ""),
         actor=dict(line.get("actor") or {}),
         subject=dict(line.get("subject") or {}),
-        blueprint=dict(line.get("blueprint") or {}),
+        agent=dict(line.get("agent") or {}),
         provider=dict(line.get("provider") or {}),
         payload=dict(line.get("payload") or {}),
         live_observed=bool(line.get("live_observed", True)),

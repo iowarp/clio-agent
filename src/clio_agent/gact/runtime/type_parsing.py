@@ -1,7 +1,7 @@
 """Type / signature-DSL leaf helpers for the GACT server (#714 decomposition).
 
-This module owns the pure, leaf-level helpers that translate a marketplace
-blueprint's ``signature`` field-type DSL (e.g. ``region: list[float]``,
+This module owns the pure, leaf-level helpers that translate a
+declared ``signature`` field-type DSL (e.g. ``region: list[float]``,
 ``status: Literal["staged","blocked"]``) into real Python / Pydantic annotations
 the DSPy adapter can force, parse, and validate -- replacing post-hoc regex
 inference. It is deliberately a *leaf*: every function here is pure (no closures,
@@ -12,13 +12,11 @@ move free of any ``app.py`` import.
 
 Responsibilities:
 
-* :func:`_parse_field_annotation` -- map a blueprint field-type spec to a real
+* :func:`_parse_field_annotation` -- map a declared field-type spec to a real
   annotation (scalars, ``dict``/``object``/``json``, ``list[...]``/``array[...]``,
   ``optional[...]``, ``Literal[...]``, and nested ``object`` with ``fields:``).
 * :func:`_sanitize_model_name` -- make a safe Pydantic model class name.
 * :func:`_is_optional_annotation` -- detect ``Optional[X]`` / ``X | None``.
-* :func:`_blueprint_module_kind` -- the validated ``module.kind`` of a blueprint
-  AgentDef (``predict`` / ``chain_of_thought`` / ``react``).
 * :data:`_SCALAR_FIELD_TYPES` -- the DSL scalar/collection keyword -> type table.
 """
 
@@ -27,10 +25,7 @@ from __future__ import annotations
 import re
 from collections.abc import Mapping
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any, Literal, Optional
-
-if TYPE_CHECKING:
-    from clio_agent.gact.types import AgentDef
+from typing import Any, Literal, Optional
 
 _MODULE_VARIANTS = frozenset({"best_of_n", "refine"})
 _MODULE_JUDGES = frozenset({"lm", "user"})
@@ -54,26 +49,11 @@ def _structured_output_enabled(value: Any) -> bool:
     return value is not False
 
 
-def _blueprint_module_kind(agent_def: "AgentDef") -> str:
-    """Return the validated ``module.kind`` of a blueprint AgentDef.
-
-    One of ``predict`` / ``chain_of_thought`` / ``react`` (defaulting to
-    ``predict`` when unset). Raises ``ValueError`` on an unsupported kind -- a
-    blueprint authoring error that must fail loud, not silently degrade.
-    """
-    module = agent_def.module if isinstance(agent_def.module, Mapping) else {}
-    kind = str(module.get("kind") or "predict").strip().lower()
-    if kind not in {"predict", "chain_of_thought", "react"}:
-        raise ValueError(f"unsupported module.kind for {agent_def.id!r}: {kind}")
-    return kind
-
-
 @dataclass(frozen=True)
 class VariantSpec:
-    """A validated ``dspy.BestOfN`` / ``dspy.Refine`` blueprint module variant (#948 S5).
+    """A validated ``dspy.BestOfN`` / ``dspy.Refine`` strategy (#948 S5).
 
-    A blueprint widens ``module`` from ``{kind}`` to
-    ``{kind, variant, n, threshold, reward}``. The ``reward`` sub-mapping declares an
+    A spawn ``strategy`` normalizes to ``{variant, n, threshold, judge, reward}``. The ``reward`` sub-mapping declares an
     LM-as-judge SIGNATURE (``instructions`` + optional ``inputs`` + ``target``) that
     :mod:`clio_agent.gact.agents.module_variants` compiles to a source-backed real
     ``def`` (so ``inspect.getsource`` works for ``dspy.Refine``). Fields:
@@ -102,9 +82,9 @@ class VariantSpec:
 
 
 def parse_module_variant(module: Mapping[str, Any], *, agent_id: str) -> VariantSpec | None:
-    """Validate a blueprint ``module`` mapping's variant declaration (``None`` when absent).
+    """Validate a strategy mapping's variant (``None`` when it names none).
 
-    Raises ``ValueError`` (a loud blueprint-authoring error, never a silent degrade) on:
+    Raises ``ValueError`` (a loud error, never a silent degrade) on:
     an unknown ``variant``; a missing/non-integer/``< 1`` ``n``; a malformed
     ``threshold``; a missing/empty ``reward`` declaration; or a malformed
     ``reward.inputs``. ``refine`` composes with a ``react`` inner (verified against the
@@ -181,16 +161,6 @@ def parse_module_variant(module: Mapping[str, Any], *, agent_id: str) -> Variant
     )
 
 
-def _blueprint_module_variant(agent_def: "AgentDef") -> VariantSpec | None:
-    """The validated variant of a blueprint AgentDef (``None`` when unset).
-
-    Thin AgentDef adapter over :func:`parse_module_variant` (the pure validator the
-    loader also calls) — same typed errors, so a build-time wrap and a load-time
-    diagnostic agree."""
-    module = agent_def.module if isinstance(agent_def.module, Mapping) else {}
-    return parse_module_variant(module, agent_id=str(getattr(agent_def, "id", "?")))
-
-
 _SCALAR_FIELD_TYPES: dict[str, Any] = {
     "str": str,
     "string": str,
@@ -228,7 +198,7 @@ def _is_optional_annotation(annotation: Any) -> bool:
 
 
 def _parse_field_annotation(spec: Any, *, model_name: str) -> Any:
-    """Map a pack ``signature`` field 'type' DSL to a real Python annotation.
+    """Map a declared ``signature`` field 'type' DSL to a real Python annotation.
 
     Supports scalars (``str``/``int``/``float``/``bool``), ``dict``/``object``/
     ``json`` (generic JSON object), ``list[...]``/``array[...]``,
@@ -249,11 +219,11 @@ def _parse_field_annotation(spec: Any, *, model_name: str) -> Any:
                 model_name=f"{model_name}_{fname}",
             )
             # Precedence for a field's default: an EXPLICIT ``default:`` in the
-            # blueprint DSL wins (lets an author mark a stage-invariant field --
+            # declared signature DSL wins (lets an author mark a stage-invariant field --
             # e.g. discovery's ``analysis_ready: false`` -- so a model that drops
             # the boilerplate key gets the correct value instead of crashing the
             # whole delegation on a Pydantic "Field required"). This is NOT clio
-            # deciding semantics: the default is declared by the blueprint and is
+            # deciding semantics: the default is declared by the author and is
             # the field's known value at this stage; routing-critical fields (e.g.
             # ``status``) simply omit ``default`` and stay required. Otherwise an
             # Optional[...] field defaults to None; everything else stays required.
@@ -278,7 +248,7 @@ def _parse_field_annotation(spec: Any, *, model_name: str) -> Any:
 
     match = re.fullmatch(r"(?:list|array)\[(.+)\]", low)
     if match:
-        # Runtime type construction from a blueprint string: the inner is a real
+        # Runtime type construction from a declared type string: the inner is a real
         # type at runtime but is statically Any, which mypy cannot use as a
         # subscript. This is intentional dynamic typing, not a defect.
         inner_list = _parse_field_annotation({"type": match.group(1)}, model_name=model_name)

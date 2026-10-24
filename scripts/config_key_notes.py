@@ -13,7 +13,7 @@ SECTIONS: list[tuple[str, tuple[str, ...], str]] = [
     ),
     (
         "Language models + providers",
-        ("lm", "lm15", "providers", "summarizer"),
+        ("lm", "lm15", "providers"),
         "LM sampling/provider selection and the per-provider transport knobs (Claude Code, Codex).",
     ),
     (
@@ -24,8 +24,8 @@ SECTIONS: list[tuple[str, tuple[str, ...], str]] = [
     ),
     (
         "Agents, workflows and scheduling",
-        ("agents", "agent_tasks", "workflows", "goal", "scheduler", "variants", "fleet"),
-        "Child-agent concurrency, declared-workflow step liveness, goal judging and the cron "
+        ("agents", "agent_tasks", "plugins", "workflows", "goal", "scheduler", "variants", "fleet"),
+        "Installed plugins and agents, child-agent concurrency, goal judging and the cron "
         "scheduler.",
     ),
     (
@@ -95,6 +95,14 @@ KEY_NOTES: dict[str, str] = {
         "Maximum nesting level for new subagents (first child is level 1); 0 means unlimited. "
         "Changes apply to new spawns; existing deeper descendants remain visible."
     ),
+    "workflows.max_added_steps": (
+        "Ceiling on steps a workflow's editors may add to one run; 0 means unlimited. A "
+        "workflow may ask for fewer."
+    ),
+    "workflows.max_edit_rounds": (
+        "Ceiling on editing rounds in one workflow run; 0 means unlimited. A workflow may ask "
+        "for fewer."
+    ),
     "gact.mailbox.max_pending_messages": (
         "Undelivered peer-message ceiling per session; 0 means unlimited. Task results and human "
         "input are exempt, and delivered history is retained."
@@ -123,14 +131,13 @@ KEY_NOTES: dict[str, str] = {
     "gact.tasks.storage.concurrency": (
         "Native Download/Indexing worker concurrency; positive, default 10, independent of Shell."
     ),
-    "agents.default_blueprint_id": (
-        "Installed marketplace Agent Blueprint a fresh deployment bootstraps and binds as its "
-        "default (base-agent: one react root over CLIO's native workspace tools); set it to ship a "
-        "different agent, never to define one in code."
+    "plugins.store_root": (
+        "Folder holding installed marketplaces, plugin snapshots, user agents and pinned session "
+        "resolutions; unset uses <config>/plugins. Set it for an isolated or shared store."
     ),
-    "agents.disable_default_registry_bootstrap": (
-        "Disables auto-installing the default marketplace Agent-Blueprint registry on first boot; "
-        "set true for an offline deployment."
+    "plugins.default_marketplace": (
+        "Source of the shipped default marketplace (a folder or git URL); unset uses the bundled "
+        "marketplace, else the pinned default URL. Point it at a mirror or an offline copy."
     ),
     "agents.react_extract.after_steps": (
         "Model steps a ReAct loop must exceed before DSPy's extract may fill the outputs it did "
@@ -409,18 +416,6 @@ KEY_NOTES: dict[str, str] = {
         "Optional bearer token required on non-loopback GACT API requests; set to protect a server "
         "exposed beyond localhost."
     ),
-    "gact.blueprint_registry.url": (
-        "Git URL of the default agent-blueprint marketplace registry; override to point at a "
-        "private/mirrored marketplace."
-    ),
-    "gact.blueprint_source.clone_timeout_s": (
-        "Seconds a temporary `git clone --depth 1` of a remote blueprint source may run before "
-        "timing out; raise for a large repo or slow link."
-    ),
-    "gact.blueprint_source.ls_remote_timeout_s": (
-        "Seconds a read-only `git ls-remote`/`rev-parse` marketplace update check may run before "
-        "timing out; lower to keep the desktop versions panel snappy, raise for a slow link."
-    ),
     "gact.context_references.browse_limit_per_kind": (
         "Rows returned per reference kind when the picker opens with no query typed; raise to "
         "browse more of a large workspace at a glance."
@@ -483,17 +478,18 @@ KEY_NOTES: dict[str, str] = {
         "Max per-session context-frame entries kept in memory before FIFO eviction; raise to "
         "retain more attached-context history."
     ),
-    "gact.ledger_retention.memory_tool_audit.max": (
-        "Max entries kept in the in-memory memory-tool-audit ledger before FIFO eviction; raise "
-        "for more memory-tool audit history."
+    "gact.ledger_retention.file_changes.max": (
+        "Max file changes the agent made that each session keeps (oldest first out); an evicted "
+        "change stays in the transcript but can no longer be undone."
     ),
-    "gact.ledger_retention.pending_diffs.hard": (
-        "Absolute ceiling on the pending-diffs ledger; past this even a still-pending diff is "
-        "force-evicted oldest-first."
+    "gact.ledger_retention.subscriber_queue.max": (
+        "Events one live stream subscriber may have waiting before the server drops them; "
+        "after a drop the client is told and reloads the conversation, so raise it for "
+        "slow connections."
     ),
-    "gact.ledger_retention.pending_diffs.max": (
-        "Soft cap on the pending-diffs ledger where terminal (resolved/applied/rejected) entries "
-        "evict first, protecting pending diffs."
+    "gact.ledger_retention.session_recall_audit.max": (
+        "Max entries kept in the in-memory session-recall audit ledger before FIFO eviction; raise "
+        "for more past-session search audit history."
     ),
     "gact.ledger_retention.permissions.hard": (
         "Absolute ceiling on the in-memory permissions ledger; past this even a still-pending "
@@ -553,6 +549,16 @@ KEY_NOTES: dict[str, str] = {
         "mapping. Null inherits the current conversation model, then service defaults. "
         "CLIO_FLEET_SEARCH accepts JSON. Settings Fleet writes this choice independently of judges."
     ),
+    "fleet.usage_poll_seconds": (
+        "How old an account's usage reading may be before reading the fleet asks the provider "
+        "again (OpenRouter's key endpoint). Subscriptions report usage on every call instead."
+    ),
+    "fleet.delegation": (
+        "Per account id, whether the agent may run delegated work on it without asking. Unset "
+        "accounts follow their billing: subscriptions and free accounts yes, metered and credit "
+        "accounts ask once per conversation. CLIO_FLEET_DELEGATION accepts JSON. Settings Usage "
+        "writes this mapping."
+    ),
     "hooks.allow_managed_only": (
         "Lockdown flag dropping every non-managed (user/project) hook source, keeping only "
         "admin-managed hooks; enable for a locked-down deployment."
@@ -582,11 +588,6 @@ KEY_NOTES: dict[str, str] = {
         "(excerpt + a durable session/message reference) instead of inlined verbatim into the "
         "parent's wait_agent_tasks result; raise to inline larger child answers, lower to bound "
         "coordinator context growth sooner."
-    ),
-    "limits.agent_task_artifact_context_chars": (
-        "Character bound on registered artifact content injected into a commissioning parent "
-        "when a child blueprint returns; raise for larger reports, lower to bound resumed "
-        "parent context growth."
     ),
     "limits.context_inline_bytes": (
         "Byte cap per attached file inlined into context injection; raise to inline larger "
@@ -782,12 +783,6 @@ KEY_NOTES: dict[str, str] = {
         "to human escalation; lower to fail fast."
     ),
     "permissions.ai_review_model": "Optional reviewer model override on the effective caller provider and endpoint.",
-    "summarizer.api_base": "Optional summary endpoint override; empty inherits the effective caller endpoint.",
-    "summarizer.credential_ref": "Optional summary credential reference resolved at each invocation.",
-    "summarizer.max_tokens": "Optional summary output cap; zero omits the client cap and empty inherits.",
-    "summarizer.model": "Optional summary model override; empty inherits the effective caller model.",
-    "summarizer.provider": "Optional summary provider override; changing it resolves provider-scoped defaults.",
-    "summarizer.transport": "Optional summary transport override for providers with selectable transports.",
     "provenance.agentic.flowcept.campaign_id": (
         "Free-text campaign label attached to every Flowcept provenance record; set to group runs "
         "under one campaign."
@@ -1126,17 +1121,13 @@ KEY_NOTES: dict[str, str] = {
         "Retention bound on the per-session SPOTTER clearance-event map; raise only for many "
         "concurrent protected sessions."
     ),
-    "spotter.watcher_blueprint_id": (
-        "Agent-Blueprint id used to build the SPOTTER standing watcher child session; change to "
-        "point spotter-ai at a custom watcher blueprint."
+    "spotter.watcher_agent": (
+        "Installed agent (marketplace/id) that runs as the SPOTTER standing watcher child "
+        "session; change to point spotter-ai at a custom watcher agent."
     ),
     "system.release_manifest_url": (
         "Release manifest the server reads to report the latest CLIO release to clients; point "
         "at a mirror or a fork's releases feed."
-    ),
-    "spotter.watcher_expert_id": (
-        "Expert id within the watcher blueprint SPOTTER arms as the standing watcher; change "
-        "alongside watcher_blueprint_id for a custom expert."
     ),
     "tools.circuit_breaker.failure_limit": (
         "Consecutive failures of one tool before CLIO blocks further calls to it (the agent is "
@@ -1229,9 +1220,9 @@ KEY_NOTES: dict[str, str] = {
         "default (enabling it wraps the message handler, visible to a caller that type-checks it)."
     ),
     "tools.mcp.session_warmup": (
-        "Start a session's MCP servers (its blueprint's and any always-load service) in the "
-        "background when the session is created or a blueprint is activated, so the first "
-        "message does not wait for them; set false to start servers only when a turn needs them."
+        "Start a session's MCP servers (its plugins' and any always-load service) in the "
+        "background when the session is created or its agent changes, so the first message "
+        "does not wait for them; set false to start servers only when a turn needs them."
     ),
     "tools.mcp.spawn_diet": (
         "Enables the learned direct-interpreter spawn shortcut for clio-kit servers (skips ~90MB "

@@ -32,9 +32,13 @@ def call_lm(lm: Any, request: Request) -> Response:
         _raise_if_cancelled,
         _turn_cancelled,
     )
+    from clio_agent.runtime.lm_activity import note_lm_call_start  # noqa: PLC0415
 
     session_id = _ctx.active_session_id() or ""
     progress = StreamProgress()
+    # Each model call's text is its own part: the boundary is ordered after the
+    # previous call's deltas and before this call's first one.
+    note_lm_call_start()
 
     async def run() -> Response:
         send, receive = anyio.create_memory_object_stream(math.inf)

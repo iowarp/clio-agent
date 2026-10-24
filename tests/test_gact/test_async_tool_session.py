@@ -19,6 +19,13 @@ from clio_agent.tools.workspace_root import canonical_workspace_root
 from tests.test_gact.test_workspace_tool_executor import _bare_agent
 
 
+@pytest.fixture(autouse=True)
+def _no_plugin_servers(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Fleet leasing is the subject: the session's agent mounts no plugin servers."""
+
+    monkeypatch.setattr("clio_agent.gact.agents.resolution.session_server_set", lambda *_a: "")
+
+
 def _owner(root: Path) -> tuple[Any, Any]:
     agent = _bare_agent()
     owner = SimpleNamespace(

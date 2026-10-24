@@ -62,6 +62,99 @@ class AsyncNamespacePreparationMixin:
         del namespace
         self._mcp_tools.update(tools)
 
+    @property
+    def tools_revision(self) -> int:
+        """Bumped each time a refresh changes this executor's tool table."""
+
+        return self.__dict__.get("_clio_tools_revision", 0)
+
+    def namespaces_pending_refresh(self) -> dict[str, int]:
+        """Connected namespaces whose server announced a tool-list change not yet re-listed.
+
+        Only a namespace this executor has talked to qualifies: the notification came
+        from a process one of its connections reached. Cheap and lock-free for callers
+        (a dictionary read), so an agent loop may ask before every step.
+        """
+
+        from clio_agent.tools.mcp_tools_changed import changed_since  # noqa: PLC0415
+
+        seen: dict[str, int] = self.__dict__.setdefault("_clio_tools_seen", {})
+        return changed_since(seen, self._namespace_servers)
+
+    async def refresh_changed_namespaces(self) -> dict[str, tuple[list[str], list[str]]]:
+        """Re-list each changed namespace over this executor's persistent connection.
+
+        The listing goes over :meth:`_namespace_client` (the proxy front, whose backend
+        is the kept-alive process that sent the notification), never a fresh listing
+        transport, which would start a new process without the change. The namespace's
+        definitions are then replaced, so removed tools disappear too. Returns
+        ``{namespace: (added, removed)}`` for each namespace re-listed; every skip and
+        failure is a typed trace reason, and a failed re-list keeps the old definitions.
+        """
+
+        from anyio import BrokenResourceError, ClosedResourceError  # noqa: PLC0415
+        from mcp.shared.exceptions import MCPError  # noqa: PLC0415
+
+        from clio_agent.runtime import trace  # noqa: PLC0415
+        from clio_agent.tools import mcp_tools_changed as changed  # noqa: PLC0415
+
+        # A server that cannot answer the re-list: protocol error, closed or broken
+        # connection, OS-level failure, timeout, or a closed executor/transport.
+        unreachable = (
+            MCPError,
+            OSError,
+            TimeoutError,
+            RuntimeError,
+            BrokenResourceError,
+            ClosedResourceError,
+        )
+
+        seen: dict[str, int] = self.__dict__.setdefault("_clio_tools_seen", {})
+        results: dict[str, tuple[list[str], list[str]]] = {}
+        for namespace, generation in self.namespaces_pending_refresh().items():
+            seen[namespace] = generation
+            if namespace not in self._connected_namespaces:
+                trace.event(
+                    "TOOLS",
+                    "%s namespace=%s generation=%d",
+                    changed.MCP_TOOLS_REFRESH_NOT_CONNECTED,
+                    namespace,
+                    generation,
+                )
+                continue
+            try:
+                client = await self._namespace_client(namespace, self._namespace_servers[namespace])
+                listed = await client.list_tools()
+            except unreachable as exc:  # typed below; the old definitions stay
+                trace.event(
+                    "TOOLS",
+                    "%s namespace=%s generation=%d error=%r",
+                    changed.MCP_TOOLS_REFRESH_FAILED,
+                    namespace,
+                    generation,
+                    exc,
+                )
+                continue
+            tools = changed.prefixed_namespace_tools(namespace, listed)
+            table, added, removed = changed.replace_namespace_entries(
+                self._mcp_tools, namespace, tools
+            )
+            # One assignment: a reader holding the old table keeps a consistent view.
+            self._mcp_tools = table
+            if added or removed:
+                self.__dict__["_clio_tools_revision"] = self.tools_revision + 1
+            results[namespace] = (added, removed)
+            trace.event(
+                "TOOLS",
+                "%s namespace=%s generation=%d added=%s removed=%s",
+                changed.MCP_TOOLS_REFRESHED,
+                namespace,
+                generation,
+                ",".join(added) or "-",
+                ",".join(removed) or "-",
+            )
+        return results
+
     async def prepare_namespace(self, namespace: str) -> None:
         """Establish one declared namespace's persistent client connection."""
 
@@ -171,6 +264,26 @@ class SyncNamespacePreparationMixin:
         """Merge freshly mounted definitions into the live async executor."""
 
         self._async_executor.merge_namespace_tools(namespace, tools)
+
+    @property
+    def tools_revision(self) -> int:
+        """Bumped each time a refresh changes the tool table (see the async executor)."""
+
+        return self._async_executor.tools_revision
+
+    def refresh_changed_namespaces(self) -> dict[str, tuple[list[str], list[str]]]:
+        """Re-list namespaces whose server announced a tool-list change (no-op when none).
+
+        The pending check is a plain read, so the executor loop is only used when a
+        connected namespace actually changed.
+        """
+
+        if self._closed or not self._async_executor.namespaces_pending_refresh():
+            return {}
+        return self._run_while_server_works(
+            self._async_executor.refresh_changed_namespaces(),
+            action="MCP tool list refresh",
+        )
 
     def prepare_namespace(self, namespace: str) -> None:
         """Establish and cache a declared namespace's persistent connection.

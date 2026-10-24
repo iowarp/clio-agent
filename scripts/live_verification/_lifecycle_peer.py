@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import json
 import secrets
-import shutil
 import sys
 from pathlib import Path
 from typing import Any
@@ -13,40 +12,38 @@ import _common as common
 import _lifecycle_evidence as evidence
 
 
-def peer_cycle(call: Any, proof: Path, wid: str, blueprint: str) -> dict[str, Any]:
+def peer_cycle(call: Any, proof: Path, wid: str, agent: str) -> dict[str, Any]:
     """Exercise lexical discovery, scoped addressing, iteration delivery and idle wake."""
     output = proof / "peer-messaging"
     output.mkdir()
     workspace = proof / "workspace"
     # Test exact peer routing with autonomous roots. Coordinator delegation is a
-    # separate behavior; it must not substitute a child lacking memory tools.
-    peer_pack = workspace / "peer-testing-pack"
-    shutil.copytree(workspace / "testing-packs/task-subagent-testing", peer_pack)
-    manifest = peer_pack / "AGENT.md"
-    manifest.write_text(
-        manifest.read_text(encoding="utf8").replace(
-            "id: task-subagent-testing", "id: lifecycle-peer-testing"
-        ),
-        encoding="utf8",
-    )
-    expert = peer_pack / "experts/main.md"
-    expert.write_text(
-        expert.read_text(encoding="utf8")
-        .replace("children:\n  - worker\n", "")
-        .replace("Task Qualification Coordinator", "Peer Messaging Qualification Agent")
-        .replace(
-            "The exact qualification mission to coordinate.", "The exact peer messaging mission."
-        )
+    # separate behavior; it must not substitute a child lacking memory tools, so
+    # the peer is its own agent without the delegation plugin, keeping the
+    # coordinator prompt's run-specific instructions.
+    coordinator = common.testing_prompt(workspace / "testing-marketplaces/task-subagent-testing")
+    body = (
+        coordinator.read_text(encoding="utf8")
+        .split("---", 2)[2]
         .replace(
             "Spawn only the explicitly requested worker assignment. Use shared task controls\n"
             "yourself for status and waits; do not delegate those observations to the worker.",
             "Execute the peer discovery, messaging and task-control mission yourself.\n"
             "Do not spawn or delegate any of those actions.",
         )
-        + "\nPerform this peer messaging mission directly with your own declared tools.\n",
-        encoding="utf8",
+        + "\nPerform this peer messaging mission directly with your own declared tools.\n"
     )
-    blueprint = common.install_blueprint(call, peer_pack, wid)["id"]
+    peer_pack = common.materialize_testing_marketplace(
+        Path(__file__).resolve().parent / "agents" / "task-testing",
+        workspace,
+        {},
+        name="peer-testing",
+        agent_id="lifecycle-peer-testing",
+    )
+    prompt = common.testing_prompt(peer_pack)
+    header = prompt.read_text(encoding="utf8").split("---", 2)[1]
+    prompt.write_text("---" + header + "---\n" + body.lstrip("\n"), encoding="utf8")
+    agent = common.install_testing_agent(call, peer_pack)
     marker = "PEER_DISCOVERY_" + secrets.token_hex(8)
     busy_message = "BUSY_PEER_MESSAGE_" + secrets.token_hex(8)
     idle_message = "IDLE_PEER_MESSAGE_" + secrets.token_hex(8)
@@ -54,7 +51,7 @@ def peer_cycle(call: Any, proof: Path, wid: str, blueprint: str) -> dict[str, An
     peer = common.create_session(call, wid, marker)
     sender = common.create_session(call, wid, "authorized peer sender")
     for sid in (peer, sender):
-        common.activate_blueprint(call, sid, blueprint)
+        common.use_agent(call, sid, agent)
     command = common.quoted_command(sys.executable, str(paths["script"]))
     common.post_message(
         call,
@@ -77,9 +74,9 @@ def peer_cycle(call: Any, proof: Path, wid: str, blueprint: str) -> dict[str, An
         proof,
         sender,
         f"The human authorizes sending one qualification message to the peer in this workspace "
-        f"whose transcript contains {marker!r}. Find it using memory_search_sessions(query={marker!r}, "
+        f"whose transcript contains {marker!r}. Find it using session_search(query={marker!r}, "
         "scope='workspace',user_intent='human requested peer messaging qualification'). "
-        "Read that exact session with memory_read_session_summary using the same scope/intent. "
+        "Read that exact session with session_read_summary using the same scope/intent. "
         f"Then message_agent(target=the returned exact session address,message={busy_message!r}, "
         "scope='workspace',user_intent='human requested peer messaging qualification', "
         "correlation_id='lifecycle-peer-busy'). Use these native tools yourself; do not spawn "
@@ -89,8 +86,8 @@ def peer_cycle(call: Any, proof: Path, wid: str, blueprint: str) -> dict[str, An
     )
     ack = evidence.observation(discovery["invocation"])
     assert ack["target_session_id"] == peer and ack["source_session_id"] == sender
-    assert evidence.tool_events(proof, sender, "memory_search_sessions")
-    assert evidence.tool_events(proof, sender, "memory_read_session_summary")
+    assert evidence.tool_events(proof, sender, "session_search")
+    assert evidence.tool_events(proof, sender, "session_read_summary")
     held = next(row for row in evidence.mail(call, peer) if row["message_id"] == ack["message_id"])
     assert not held["delivered_at"], "Busy waiter mail must wait for its next model iteration"
     paths["release"].write_text("release real peer work", encoding="utf8")

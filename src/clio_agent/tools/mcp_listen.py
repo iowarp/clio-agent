@@ -89,15 +89,12 @@ async def watch_list_changed(
     )
     from mcp.shared.exceptions import MCPError
 
-    from clio_agent.tools import listing_cache
-
     trace.event("TOOLS", "mcp_listen_start namespace=%s", namespace)
     try:
         async with listen(client.session, tools_list_changed=True) as subscription:
             async for event in subscription:
                 if isinstance(event, ToolsListChanged):
-                    listing_cache.invalidate_namespace(namespace, reason="list_changed")
-                    trace.event("TOOLS", "mcp_listen_tools_list_changed namespace=%s", namespace)
+                    _record_list_changed(namespace)
                     if on_change is not None:
                         await on_change()
     except ListenNotSupportedError as exc:
@@ -143,12 +140,24 @@ def list_changed_message_handler(namespace: str) -> Callable[[Any], Awaitable[No
         from mcp_types import ToolListChangedNotification
 
         if isinstance(message, ToolListChangedNotification):
-            from clio_agent.tools import listing_cache
-
-            listing_cache.invalidate_namespace(namespace, reason="list_changed")
-            trace.event("TOOLS", "mcp_listen_tools_list_changed namespace=%s", namespace)
+            _record_list_changed(namespace)
 
     return _handler
+
+
+def _record_list_changed(namespace: str) -> None:
+    """One ``tools/list_changed``: drop the stale cached listing and mark the change.
+
+    The mark (:func:`clio_agent.tools.mcp_tools_changed.mark_tools_changed`) is what
+    lets an executor that talked to this server re-list it over its own connection.
+    """
+
+    from clio_agent.tools import listing_cache
+    from clio_agent.tools.mcp_tools_changed import mark_tools_changed
+
+    listing_cache.invalidate_namespace(namespace, reason="list_changed")
+    trace.event("TOOLS", "mcp_listen_tools_list_changed namespace=%s", namespace)
+    mark_tools_changed(namespace)
 
 
 def combined_message_handler(
@@ -180,7 +189,5 @@ def combined_message_handler(
         await invalidate(message)
         if user_handler is not None:
             await user_handler(message)
-
-    return _handler
 
     return _handler

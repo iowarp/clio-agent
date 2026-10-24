@@ -60,7 +60,7 @@ SSE_KEEP_KEYS_BY_EVENT: dict[str, frozenset[str]] = {
 # trace + ARC (a serving-layer filter, never a capture filter). Any FAILED/ERROR
 # event passes regardless, EXCEPT ``SSE_TRACE_ONLY_EVENT_TYPES`` (unconditional).
 # See the four ReAct atoms:
-#   a) delegation  = blueprint.delegation.* + the orchestrator's reasoning
+#   a) delegation  = delegation.* + the orchestrator's reasoning
 #                    (carried on expert.response.completed for CoT orchestrators)
 #   b) tool calls   } react.step.completed (thought + tool_calls: every call of the
 #   c) tool results }                       step with its observation), for ReAct leaves
@@ -89,22 +89,12 @@ SSE_UI_EVENT_TYPES: frozenset[str] = frozenset(
         "expert.extract.completed",
         "expert.response.completed",
         "expert.lifecycle.started",
-        # The delegation atom rides one of two prefixes depending on the runtime:
-        # ``blueprint.delegation.*`` for Agent Blueprint experts and the plain
-        # ``delegation.*`` for expert-pack / prompt-agent delegations. Both are the
-        # SAME atom and both must reach the UI (``.failed`` also passes via the
-        # always-status gate, but is listed for explicitness).
-        "blueprint.delegation.started",
-        "blueprint.delegation.completed",
-        "blueprint.delegation.parent_resumed",
-        "blueprint.delegation.failed",
+        # The delegation atom (``.failed`` also passes via the always-status
+        # gate, but is listed for explicitness).
         "delegation.started",
         "delegation.completed",
         "delegation.parent_resumed",
         "delegation.failed",
-        # Memory search is an agent ACTION the user opts into (a retrieval step in
-        # the trajectory), not lifecycle bookkeeping -- surface its result live.
-        "memory.search.completed",
         # A skill load is an agent ACTION with provenance the UI renders
         # (#920; gact-tui#315): which procedure the expert pulled in, from where.
         "skill.loaded",
@@ -238,7 +228,7 @@ def event_reaches_ui(event_type: str, status: str = "") -> bool:
 # sensitive payloads that are captured in FULL durably but projected/redacted
 # for SSE and hooks. The envelope fields (ids, status, summary, timestamps) are
 # never redacted.
-_BODY_FIELDS = ("actor", "subject", "blueprint", "provider", "payload")
+_BODY_FIELDS = ("actor", "subject", "agent", "provider", "payload")
 
 
 def _utcnow_iso() -> str:
@@ -332,7 +322,7 @@ class SemanticEvent:
     summary: str = ""
     actor: dict[str, Any] = field(default_factory=dict)
     subject: dict[str, Any] = field(default_factory=dict)
-    blueprint: dict[str, Any] = field(default_factory=dict)
+    agent: dict[str, Any] = field(default_factory=dict)
     provider: dict[str, Any] = field(default_factory=dict)
     payload: dict[str, Any] = field(default_factory=dict)
     live_observed: bool = True
@@ -474,7 +464,7 @@ EVENTS_CONTENT_UNCARRIED_TRACE_FIELDS: frozenset[str] = frozenset(
         "span_id",
         "parent_span_id",
         "workspace_id",
-        "blueprint",
+        "agent",
         "live_observed",
         "detail_level",
         "schema_version",

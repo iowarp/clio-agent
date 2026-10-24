@@ -371,7 +371,7 @@ class MemoryStats(BaseModel):
     model_config = {"populate_by_name": True}
 
 
-class MemorySearchHit(BaseModel):
+class SessionRecallHit(BaseModel):
     """One transcript-memory match.
 
     This is intentionally provenance-heavy so a future orchestrator or TUI can
@@ -392,13 +392,13 @@ class MemorySearchHit(BaseModel):
     metadata: dict[str, Any] = Field(default_factory=dict)
 
 
-class MemorySearchResponse(BaseModel):
-    """GET /v1/memory/search response."""
+class SessionRecallResponse(BaseModel):
+    """GET /v1/session-recall/search response."""
 
     query: str
     include_cross_session: bool = False
     searched_sessions: list[str] = Field(default_factory=list)
-    hits: list[MemorySearchHit] = Field(default_factory=list)
+    hits: list[SessionRecallHit] = Field(default_factory=list)
     metadata: dict[str, Any] = Field(default_factory=dict)
 
 
@@ -609,13 +609,13 @@ class AgentCapabilityRef(BaseModel):
 class AgentDef(BaseModel):
     """GACT §6.5 + v0.2 §4.3.1 multi-tier additions.
 
-    Prompt/provider/model fields are explicit so clients can inspect
-    and persist user or skill agent definitions without hiding their
-    execution semantics in metadata.
+    The executable view of a resolved plugin agent (``resolution_agent_def``), with
+    prompt/provider/model explicit so the turn engine reads them directly.
     """
 
     id: str
-    source: Literal["builtin", "user", "recipe", "skill", "expert_pack"] = "builtin"
+    #: plugin agent or subagent; ``skill`` command shim; ``builtin`` internal describer.
+    source: Literal["plugin", "skill", "builtin"] = "builtin"
     title: str
     description: str = ""
     parent_id: str = ""

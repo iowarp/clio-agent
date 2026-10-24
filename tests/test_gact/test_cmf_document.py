@@ -98,7 +98,7 @@ def _artifact_event(
         "path": f"/w/{name}",
         "producer": {
             "call_id": call_id,
-            "tool": "fs_apply_edit_write",
+            "tool": "fs_write_file",
             "storage_receipt": {
                 "object_uri": f"cmf+dvc://local/files/md5/ab/{artifact_id}",
                 "digests": {"md5": "b" * 32, "sha256": "a" * 64},
@@ -117,7 +117,7 @@ def _transform_event(
         "session_id": "sess_1",
         "turn_id": "msg_1",
         "status": "success",
-        "instrument": {"tool": "fs_apply_edit_write"},
+        "instrument": {"tool": "fs_write_file"},
         "used": [{"artifact_id": item, "name": item} for item in used or []],
         "generated": [{"artifact_id": item, "name": item} for item in generated or []],
     }
@@ -160,7 +160,7 @@ def test_golden_document_matches_the_shape_the_merger_reads() -> None:
     assert execution["type"] == "clio-agent/artifacts"
     assert execution["properties"]["Context_Type"] == "clio-agent/artifacts"
     assert execution["properties"]["Execution_uuid"] == "call_1"
-    assert execution["properties"]["Execution"] == "fs_apply_edit_write"
+    assert execution["properties"]["Execution"] == "fs_write_file"
     assert execution["custom_properties"]["clio_call_id"] == "call_1"
 
     events = execution["events"]

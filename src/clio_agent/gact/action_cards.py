@@ -23,7 +23,7 @@ EVERY react tool-using expert exactly like ``create_artifact`` / ``load_skill``
 (:mod:`clio_agent.gact.agents.auto_tools`) — NOT counted against the 5-7 curated
 domain-tool budget, and available regardless of whether an expert's OWN curated
 ``tools:`` list declares it. This is deliberate: any spawned child (spotter's
-watcher included) needs the ability to notify its parent without every blueprint
+watcher included) needs the ability to notify its parent without every plugin
 author having to remember to declare it.
 """
 
@@ -84,7 +84,7 @@ def action_card_part(
         source: Emitter identity, a free string (e.g. ``"spotter-ai"``; future:
             a tool name).
         severity: An open string; MVP values are ``"info" | "warning" | "critical"``.
-        title: Headline text (e.g. "SPOTTER AI has detected an issue").
+        title: Headline text (e.g. "SPOTTER has detected an issue").
         body: Detail text (markdown allowed, rendered like other part bodies).
         actions: A list of ``{id, label, enabled, behavior}`` action objects. Each
             ``behavior`` is an open discriminated union on ``kind`` — unknown kinds
@@ -356,16 +356,12 @@ def build_raise_alert_card_tool(agent_def: Any) -> Any:
             if uncertainty:
                 body = f"{body}\n\nUncertainty: {uncertainty}"
 
-        # Branded emitter identity: the calling session's OWN activated Agent
-        # Blueprint (e.g. "spotter-ai"), never the bare expert id -- the card
-        # header reads as the PRODUCT ("SPOTTER AI"), not an internal expert
-        # name. Falls back to the expert id only when no blueprint is activated
-        # (e.g. a bare/loose expert running without one).
+        # Branded emitter identity: the calling session's agent (e.g.
+        # "clio/spotter-ai"), so the card header reads as the product. Falls back
+        # to the calling agent id for a session without a pinned agent.
         caller_session = app.state.sessions.get(sid)
-        blueprint_id = str(
-            (getattr(caller_session, "metadata", None) or {}).get("active_agent_blueprint_id") or ""
-        )
-        source = blueprint_id or caller_expert_id
+        agent_ref = str((getattr(caller_session, "metadata", None) or {}).get("agent_ref") or "")
+        source = agent_ref.rsplit("/", 1)[-1] or caller_expert_id
 
         part = action_card_part(
             source=source,

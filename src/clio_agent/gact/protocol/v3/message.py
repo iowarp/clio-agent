@@ -12,6 +12,7 @@ from pydantic import ValidationError
 from clio_agent.gact.a2ui import project_a2ui_parts
 from clio_agent.gact.command_presentation import legacy_goal_receipt
 from clio_agent.gact.evidence import _bounded_tool_call_result
+from clio_agent.gact.memory.presentation import memory_used_projection
 from clio_agent.gact.protocol.v3 import utcnow_iso
 from clio_agent.gact.protocol.v3.tool_outcome import MISSING_EXECUTION_OUTCOME, tool_execution_state
 from clio_agent.gact.reasoning_timing import reasoning_timing
@@ -90,6 +91,8 @@ def _message_presentation_metadata(metadata: Mapping[str, Any]) -> dict[str, Any
                 "app_instance_id": app_instance_id,
                 "state": "pending" if metadata.get("pending_steer") is True else "delivered",
             }
+    if used := memory_used_projection(metadata):
+        projected["memory_used"] = used
     return projected
 
 
@@ -305,7 +308,9 @@ def part_to_v3_block(part: Mapping[str, Any]) -> dict[str, Any]:
             **common,
         }
     if part_type == "notice":
-        # A UI/provenance record the model was never told (a failed compaction).
+        # A UI/provenance record the model was never told (a failed compaction, or
+        # what an answer hook did: which hook, and the answer part a revision replaces).
+        attributed = {k: str(metadata[k]) for k in ("hook", "revises") if metadata.get(k)}
         return {
             "id": part_id,
             "type": "notice",
@@ -314,6 +319,7 @@ def part_to_v3_block(part: Mapping[str, Any]) -> dict[str, Any]:
             "code": str(part.get("code") or ""),
             **({"trigger": str(part["trigger"])} if part.get("trigger") else {}),
             **({"compaction_id": str(part["compaction_id"])} if part.get("compaction_id") else {}),
+            **({"metadata": attributed} if attributed else {}),
             **common,
         }
     if part_type == "action_card":

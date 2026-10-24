@@ -76,8 +76,6 @@ from clio_agent.gact.agents.clio_react_recovery import recover_stream
 from clio_agent.gact.agents.clio_react_stream_call import call_lm as _call_lm
 from clio_agent.gact.agents.clio_react_submit import active_react_scope_safe, record_submit_audit
 from clio_agent.gact.agents.clio_react_submit import submit_tool as _submit_tool
-from clio_agent.gact.agents.github_shell_guidance import github_shell_guidance
-from clio_agent.gact.agents.task_guidance import task_guidance
 from clio_agent.gact.injection_parts import emit_injection
 from clio_agent.lm.engines.text_tools import INVALID_TOOL_CALL
 from clio_agent.lm.request_builder import sendable_lm_kwargs
@@ -167,6 +165,9 @@ class ClioReAct(dspy.Module):
         # read it and set a per-rollout copy; unset, the context's LM is used.
         self.lm: Any = None
         self._clio_expert_id: str = ""
+        # Tools that run but stay out of the request's tool list (a plugin change
+        # held as a note: :mod:`clio_agent.gact.agents.prompt_basis`).
+        self._clio_unlisted: frozenset[str] = frozenset()
         user_tools = [t if isinstance(t, dspy.Tool) else dspy.Tool(t) for t in tools]
         self.tools: dict[str, dspy.Tool] = {}
         for tool in user_tools:
@@ -211,18 +212,10 @@ def _function_tool(tool: dspy.Tool) -> FunctionTool:
 
 
 def _system(signature: Any, inputs: dict[str, Any], tools: Iterable[str] = ()) -> str:
-    """Compose the expert's prompt with guidance for its actual declared capabilities."""
+    """The agent's composed prompt (capability guidance comes from its plugins' fragments)."""
+    del tools
     expert = str(inputs.get(_SYSTEM_INPUT) or "").strip()
-    tool_names = tuple(tools)
-    return "\n\n".join(
-        part
-        for part in (
-            expert or signature.instructions.strip(),
-            github_shell_guidance(tool_names),
-            task_guidance(tool_names),
-        )
-        if part
-    )
+    return expert or signature.instructions.strip()
 
 
 def _head(signature: Any, inputs: dict[str, Any]) -> Message:
@@ -329,7 +322,7 @@ class _Loop:
             raise NoLanguageModelError()
         self.system = _system(agent.signature, self.inputs, agent.tools)
         self.head = _head(agent.signature, self.inputs)
-        self.tools = tuple(_function_tool(t) for t in agent.tools.values())
+        self.tools = self._listed_tools()
         self.config = _with_cache_key(config_from_lm_kwargs(sendable_lm_kwargs(self.lm)), self.lm)
         self.tool_media = str(getattr(self.lm, "_clio_tool_result_media", "native"))
         self.arc, self.session, self.scope = record.arc_scope()
@@ -397,6 +390,20 @@ class _Loop:
             if continue_token is not None:
                 _CONTINUING.reset(continue_token)
 
+    def _listed_tools(self) -> tuple[FunctionTool, ...]:
+        unlisted: frozenset[str] = getattr(self.agent, "_clio_unlisted", frozenset())
+        return tuple(_function_tool(t) for t in self.agent.tools.values() if t.name not in unlisted)
+
+    def _refresh_tools(self) -> None:
+        """Offer the tools a connected MCP server added or removed (``tools/list_changed``).
+
+        :mod:`clio_agent.gact.agents.live_tool_refresh` owns the refresh; a call this
+        step that unlocked tools makes them callable at the next step.
+        """
+        refresh = getattr(self.agent, "_clio_tool_refresh", None)
+        if refresh is not None and refresh(self.agent.tools):
+            self.tools = self._listed_tools()
+
     def _tool_use_note(self) -> list[tuple[str, str]]:
         """Tell an agent with tools, once, that one step may call several at once."""
         return [("tool_use", TOOL_USE_NOTE)] if set(self.agent.tools) - {"submit"} else []
@@ -419,6 +426,7 @@ class _Loop:
 
         _raise_if_cancelled()
         self._arrivals()
+        self._refresh_tools()
         maybe_autocompact(self.autocompact)
         attempt = 0
 

@@ -147,7 +147,7 @@ def _app(tmp_path: Path) -> FastAPI:
         messages={"sess_a": message_rows, "sess_b": [], "sess_other": []},
         artifact_registry=ArtifactRegistry(),
         resource_store=_Resources(),
-        pending_diffs={},
+        file_changes={},
         context_frames={},
         arc=ARCMemory(store=make_arc_store(backend="cte", namespace="test-context-" + uuid4().hex)),
         human_principal="context-test-human",
@@ -477,10 +477,10 @@ def test_search_and_delivery_share_the_evidence_inventory(tmp_path: Path) -> Non
             ],
         )
     )
-    app.state.pending_diffs["sess_a"] = [
+    app.state.file_changes["sess_a"] = [
         {
             "path": "analysis/stations.py",
-            "status": "pending",
+            "status": "applied",
             "unified_diff": "--- a\n+++ b\n",
             "message_id": "msg_evidence",
             "part_id": "diff_1",

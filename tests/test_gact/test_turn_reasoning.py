@@ -378,6 +378,24 @@ def test_child_on_a_different_model_records_why_it_did_not_inherit() -> None:
     }
 
 
+def test_a_preferred_effort_sets_the_childs_level_before_the_parents() -> None:
+    app = _parent_app("claude_code", "claude-fable-5-1", level="max")
+    child = AgentDef(
+        id="child", title="Child", default_provider="claude_code", default_model="claude-fable-5-1"
+    )
+    session = SimpleNamespace(metadata={"model_choice": {"source": "prefers", "effort": "low"}})
+
+    resolved = apply_turn_reasoning(
+        _child_message(),
+        child,
+        app=app,  # type: ignore[arg-type]
+        session=session,
+    )
+
+    assert resolved.parameters["thinking_level"] == "low"
+    assert resolved.metadata["turn_reasoning_source"] == "prefers"
+
+
 def test_child_does_not_inherit_a_global_level() -> None:
     app = _parent_app("codex", "gpt-5.5", level="high", source="global")
     child = AgentDef(id="child", title="Child", default_provider="codex", default_model="gpt-5.5")

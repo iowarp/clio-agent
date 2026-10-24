@@ -74,13 +74,16 @@ def thinking_level_error(
 
 
 def raise_if_selection_unusable(app: Any, model: ModelRef, level: str | None, sid: str) -> None:
-    """Raise a typed 422 for a surrogate chat model or an unsupported thinking level."""
+    """Raise a typed 422 for a surrogate chat model, an unsupported thinking level, or a
+    model that lacks what the conversation's agent requires."""
 
     from fastapi import HTTPException  # noqa: PLC0415
 
+    from clio_agent.gact.fleet.session_check import model_requirement_error  # noqa: PLC0415
     from clio_agent.gact.model_selection import surrogate_selection_error  # noqa: PLC0415
 
     error = surrogate_selection_error(app, model.provider_id, model.model_id)
     error = error or thinking_level_error(app, model, level, session_id=sid)
+    error = error or model_requirement_error(app, model.provider_id, model.model_id, sid)
     if error is not None:
         raise HTTPException(status_code=422, detail=error.model_dump(exclude_none=True))

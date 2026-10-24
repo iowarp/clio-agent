@@ -81,11 +81,11 @@ def test_first_turn_bringup_phases_reach_stream_audit(
     assert "turn.accept_gap" in phase_names
     assert "enrichment" in phase_names
     assert "workspace.lease" not in phase_names
-    assert "blueprint.resolve" in phase_names
+    assert "agent.resolve" in phase_names
 
     # Session ownership replaces the removed whole-workspace execution lease.
     # Blueprint resolution is finite preparation at the outer level.
-    resolve_row = next(r for r in phase_rows if r["phase"] == "blueprint.resolve")
+    resolve_row = next(r for r in phase_rows if r["phase"] == "agent.resolve")
     # No removed workspace lease may reappear as an enclosing phase.
     assert resolve_row["depth"] == 0
     assert resolve_row["forced_close"] is False

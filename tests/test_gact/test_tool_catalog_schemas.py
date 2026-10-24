@@ -70,8 +70,8 @@ def test_gateway_builtins_carry_gateway_description_and_schema() -> None:
         ("fs_read_file", "workspace", "filepath"),
         ("fs_list_directory", "workspace", "path"),
         ("fs_search_text", "workspace", "query"),
-        ("fs_propose_edit", "workspace", "filepath"),
-        ("fs_apply_edit_write", "workspace", "filepath"),
+        ("fs_write_file", "workspace", "filepath"),
+        ("fs_edit_file", "workspace", "old_string"),
         ("shell_bash", "shell", "command"),
     ):
         row = rows[name]

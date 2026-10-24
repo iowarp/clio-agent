@@ -97,9 +97,9 @@ def matches_task_text(
 ) -> bool:
     """Match explicit search text only after the task's content authorization."""
     TaskAccess(app.state.task_history, caller).require(task.handle, "read")
-    from clio_agent.gact.runtime.memory_search import _memory_search_terms
+    from clio_agent.gact.runtime.session_recall_search import _recall_search_terms
 
-    terms = _memory_search_terms(query) if query is not None else []
+    terms = _recall_search_terms(query) if query is not None else []
     if query is not None and not terms:
         raise ValueError("Task query must contain searchable text")
     windowed = message_after is not None or message_before is not None
@@ -488,7 +488,7 @@ def search_session_alias(
     app: Any, session_id: str, *, query: str, scope: str = "session", limit: int = 20
 ) -> Any:
     """Retain the shipped search projection over the shared task access policy."""
-    from clio_agent.gact.runtime.memory_search import _memory_search_response
+    from clio_agent.gact.runtime.session_recall_search import _recall_search_response
     from clio_agent.gact.task_access import TaskAccess
     from clio_agent.gact.workspace_scope import GLOBAL_WORKSPACE_ID
 
@@ -506,7 +506,7 @@ def search_session_alias(
     }.get(scope, scope)
     if selected_scope not in {"session", "current_workspace", "global", "authorized"}:
         raise ValueError("Memory scope must be session, current_workspace, global or authorized")
-    response = _memory_search_response(
+    response = _recall_search_response(
         app,
         query=query,
         limit=limit,

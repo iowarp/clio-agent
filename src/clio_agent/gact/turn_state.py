@@ -50,7 +50,7 @@ if TYPE_CHECKING:
 #:   function -- i.e. the turn's cancel token tripped mid-prologue.
 #: * ``completed`` -- the prologue ran to its own end (whatever outcome string
 #:   it returned: proceed/blocked/deferred). Every prologue-derived field
-#:   (context_frame/context_file_provenance/enriched_text/memory_search_metadata)
+#:   (context_frame/context_file_provenance/enriched_text)
 #:   is assigned by this point.
 #: * ``failed`` -- an exception OTHER than a cancel signal escaped the
 #:   prologue (e.g. the deferred transcript job raising ``TranscriptIngestError``).
@@ -170,7 +170,7 @@ class TurnState:
     # --- Turn-scoped infra (set once, early, in the linear body) ---
     transcript: "TurnTranscript" = field(init=False)
     turn_cancel_event: "threading.Event" = field(init=False)
-    # #767 Phase C: the turn's active pack workflow_state schema, resolved once
+    # #767 Phase C: the turn's plugin workflow_state schema, resolved once
     # (the single resolver seam) in the linear body just before the transcript
     # opens; every delegation/grounding/scrub seam reads it off ``state``.
     workflow_schema: "WorkflowStateSchema" = field(init=False)
@@ -194,7 +194,6 @@ class TurnState:
     context_frame: Any = None
     context_file_provenance: dict[str, Any] = field(default_factory=_unset_context_file_provenance)
     enriched_text: str = ""
-    memory_search_metadata: dict[str, Any] = field(default_factory=dict)
     #: CLIO's own additions for this turn, ``(source, text)`` in order; the agent loop
     #: records each as a message of its own ahead of the user message.
     injections: list[tuple[str, str]] = field(default_factory=list)
@@ -221,7 +220,6 @@ class TurnState:
     prompt_resolution: dict[str, Any] = field(default_factory=dict)
     tools_called: list[dict[str, Any]] = field(default_factory=list)
     expert_handoffs: list[dict[str, Any]] = field(default_factory=list)
-    proposed_diffs: list[Any] = field(default_factory=list)
     nanoagents: list[Any] = field(default_factory=list)
     thinking_text: str = ""
     turn_tokens: dict[str, int] = field(
@@ -243,6 +241,8 @@ class TurnState:
     cancelled_turn: bool = False
     publication_steps: set[str] = field(default_factory=set)
     publication_usage: tuple[int, int, float, bool] | None = None
+    #: The session's per-model rollup after this turn (set once, so a retried flush is exact).
+    publication_model_usage: dict[str, dict[str, Any]] | None = None
     assistant_metadata: dict[str, Any] = field(default_factory=dict)
 
 
@@ -282,13 +282,11 @@ def new_turn_state(
     # rail for ALL turn paths, incl. the CLIO orchestrator forward (#735 3).
     behavior = user_msg.metadata.get("behavior") if isinstance(user_msg.metadata, dict) else None
     execution_mode = str(behavior.get("execution_mode") or "") if isinstance(behavior, dict) else ""
-    execution_blueprint_id = ""
-    if execution_mode == "deep_research":
-        from clio_agent.gact.message_contract import (  # noqa: PLC0415
-            DEEP_RESEARCH_BLUEPRINT_ID,
-        )
+    if execution_mode == "deep_research" and not turn_agent_id:
+        # A deep-research turn runs the deep-researcher agent for this turn only.
+        from clio_agent.gact.message_contract import DEEP_RESEARCH_AGENT  # noqa: PLC0415
 
-        execution_blueprint_id = DEEP_RESEARCH_BLUEPRINT_ID
+        turn_agent_id = DEEP_RESEARCH_AGENT
 
     admitted = _ctx.current_turn()
     _ctx.set_turn_identity(
@@ -296,7 +294,6 @@ def new_turn_state(
         session_id=sid,
         turn_id=turn_id,
         trace_id=trace_id,
-        execution_blueprint_id=execution_blueprint_id,
         assignment_handle=admitted.assignment_handle if admitted.session_id == sid else "",
         input_notification_id=admitted.input_notification_id if admitted.session_id == sid else "",
         context_epoch=admitted.context_epoch if admitted.session_id == sid else "",

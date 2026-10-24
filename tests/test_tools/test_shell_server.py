@@ -578,3 +578,38 @@ async def test_shell_bash_operator_ceiling_bounds_unspecified_and_larger_timeout
     assert capped["timed_out"] is True
     assert capped["timeout_s"] == 3.0
     assert refused["error"]["code"] == "invalid_timeout"
+
+
+@pytest.mark.asyncio
+async def test_shell_bash_releases_its_egress_channel_when_the_command_exits(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Each command's per-child egress channel closes with the command, not with the server.
+
+    Live, every command left a listener and an accept thread behind until the channel cap.
+    """
+    from dataclasses import replace
+
+    from clio_agent.runtime import net_chokepoint, sandbox
+
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    monkeypatch.setenv("CLIO_ALLOWED_ROOTS", str(workspace))
+    original = sandbox.wrap_confined
+    minted: list[str] = []
+
+    def with_channel(*args: Any, **kwargs: Any) -> sandbox.ConfinedSpawn:
+        confined = original(*args, **kwargs)
+        child = f"child-{len(minted)}"
+        minted.append(child)
+        details = {**confined.result.details, "net_child_id": child}
+        return replace(confined, result=replace(confined.result, details=details))
+
+    closed: list[str] = []
+    monkeypatch.setattr(sandbox, "wrap_confined", with_channel)
+    monkeypatch.setattr(net_chokepoint, "close_child_channel", closed.append)
+    with tool_workspace_context(str(workspace)):
+        async with Client(shell_server) as client:
+            await client.call_tool("bash", {"command": "echo one"})
+            await client.call_tool("bash", {"command": "exit 3"})
+    assert closed == minted == ["child-0", "child-1"]

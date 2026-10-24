@@ -22,7 +22,7 @@ from paramiko.common import (
 )
 
 from clio_agent.gact import ssh_tools
-from clio_agent.gact.agents.auto_tools import build_auto_react_tools
+from clio_agent.gact.agents.native_tool_registry import build_native_tools
 from clio_agent.gact.infrastructure import ssh_execution
 from clio_agent.gact.infrastructure.models import SshRoute
 from clio_agent.gact.tool_result_presentation import ToolPresentation
@@ -282,10 +282,13 @@ def test_actual_approval_gate_precedes_connection(
         worker = threading.Thread(target=run, daemon=True)
         worker.start()
         if mode == "ask":
-            deadline = time.monotonic() + 5
-            while time.monotonic() < deadline and not app.state.permissions:
+            # Wait for the prompt itself (or for the call to end without one): admission
+            # and the permission request can take well over 5 s on a loaded CI runner.
+            deadline = time.monotonic() + 60
+            while time.monotonic() < deadline and not app.state.permissions and worker.is_alive():
                 time.sleep(0.01)
-            assert app.state.permissions and not calls
+            assert app.state.permissions, f"no permission prompt; call ended with {outcomes}"
+            assert not calls
             pending = next(iter(app.state.permissions.values()))
             assert pending["tool_call"]["tool_name"] == "ssh_execute"
             assert "login → compute.example" in pending["summary"]
@@ -319,19 +322,24 @@ def test_invalid_arguments_never_reach_connector(kwargs: dict[str, Any]) -> None
         ssh_tools.ssh_execute("hostname", **kwargs)
 
 
-def test_only_shell_capable_agents_receive_ssh() -> None:
-    for tools, expected in (([], False), (["fs_read_file"], False), (["shell_bash"], True)):
+def test_only_agents_whose_plugins_claim_ssh_receive_it() -> None:
+    """A local shell does not imply remote execution: ssh comes only from its own claim."""
+    for tools, expected in (
+        ([], False),
+        (["fs_read_file"], False),
+        (["shell_bash"], False),
+        (["shell_bash", "ssh_execute"], True),
+    ):
         agent = SimpleNamespace(id="specialist", parent_id="main", tools=tools)
-        names = {tool.name for tool in build_auto_react_tools(agent, a2ui_producers=False)}
-        assert ("ssh_execute" in names) is expected
+        native, gateway, withheld = build_native_tools(agent, tools, {})
+        assert ("ssh_execute" in native) is expected
+        assert "ssh_execute" not in gateway and withheld == {}
 
 
 def test_ssh_is_declarable_without_enabling_local_shell() -> None:
-    from clio_agent.gact.agents.declared_native_tools import resolve_declared_native_tools
-
     agent = SimpleNamespace(id="remote", tools=["ssh_execute"])
-    requested, native, gateway = resolve_declared_native_tools(agent, {})
-    assert requested == ["ssh_execute"] and gateway == []
+    native, gateway, withheld = build_native_tools(agent, ["ssh_execute"], {})
+    assert list(native) == ["ssh_execute"] and gateway == [] and withheld == {}
     schema = native["ssh_execute"].format_as_litellm_function_call()["function"]["parameters"]
     assert schema["required"] == ["command"]
     route_schema = schema["properties"]["ssh_route"]

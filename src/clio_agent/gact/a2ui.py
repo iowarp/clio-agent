@@ -227,7 +227,7 @@ def validate_server_message(
 
     Args:
         message: One raw server-to-client envelope.
-        catalogs: Resolver over every installed catalog (builtin ∪ packs).
+        catalogs: Resolver over every installed catalog (builtin ∪ plugins).
         catalog_entry: The surface's already-resolved catalog, for
             ``updateComponents``/``updateDataModel``/``deleteSurface`` on an
             EXISTING surface (a surface's catalog is fixed for its

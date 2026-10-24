@@ -16,8 +16,7 @@ lives under [archive/](archive/README.md).
 - [CLIO_AGENT_ARCHITECTURE.md](CLIO_AGENT_ARCHITECTURE.md) — how the whole system fits together.
 - [SYSTEM_IDENTITY.md](SYSTEM_IDENTITY.md) — what CLIO is (and is not).
 - [ARC_MEMORY_LAYER.md](ARC_MEMORY_LAYER.md) — the ARC memory model and storage.
-- [DSPY_BLUEPRINT_EXPERT_RUNTIME.md](DSPY_BLUEPRINT_EXPERT_RUNTIME.md) — DSPy-backed expert runtime.
-- [AGENT_BLUEPRINT_RUNTIME.md](AGENT_BLUEPRINT_RUNTIME.md) — agent blueprint composition and runtime.
+- [PLUGINS_AND_FLOWS.md](PLUGINS_AND_FLOWS.md) — Agent Plugins, the Python Agent SDK, resolution, trust and flows.
 - [HOOKS.md](HOOKS.md) — the declarative hook system: wire contract, config, trust, events.
 - [PROMPT_SYSTEM.md](PROMPT_SYSTEM.md) — the external, editable prompt system.
 - [PROMPT_ALIGNMENT_REFERENCE_MATRIX.md](PROMPT_ALIGNMENT_REFERENCE_MATRIX.md) — prompt families mapped to public sources.
@@ -42,7 +41,7 @@ lives under [archive/](archive/README.md).
 - [tui/README.md](tui/README.md) — the gact-tui integration docs index.
 - [tui/REAL_GAPS.md](tui/REAL_GAPS.md) — the authoritative TUI gap tracker.
 - [tui/02-agent-graph.md](tui/02-agent-graph.md) — agent graph surface.
-- [tui/03-experts.md](tui/03-experts.md) — experts surface.
+- [tui/03-experts.md](tui/03-experts.md) — agents and subagents (formerly experts).
 - [tui/06-endpoints.md](tui/06-endpoints.md) — endpoint families.
 - [tui/08-semantics-and-lifecycle.md](tui/08-semantics-and-lifecycle.md) — semantics and lifecycle.
 - [tui/09-integration-plan.md](tui/09-integration-plan.md) — the integration plan.

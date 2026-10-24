@@ -160,14 +160,15 @@ def default_decision(
 
     * ``allow`` — ``bypass`` (any non-read call), ``auto-edits`` for an fs WRITE (a call whose
       static catalog entry carries the ``write`` tag), or the server-owned
-      ``spotter-watcher`` profile for the exact containment/alert-card tools;
+      ``spotter-watcher`` profile for CLIO's native ``raise_alert_card`` (containment itself
+      is CLIO's SPOTTER clearance, not a tool call);
     * ``ask``   — ``ask`` (default), ``auto-edits`` for a non-write (e.g. ``shell_bash``, whose
       writes live behind the OS fence, not a catalog ``write`` tag), ``ai-review`` (the caller
       stamps the typed ``ai_review_reviewer_pending`` reason on the pending row), or
       ``spotter-ai`` (deliberately identical to ``ask`` — spotter-ai only ARMS a watcher
       child that observes the session; it grants no auto-approval axis of its own, so a
       non-read call still prompts the interactive gate exactly as the default mode would),
-      or ``spotter-watcher`` for every other tool, including quarantine release.
+      or ``spotter-watcher`` for every other tool.
 
     ``kind``/``args`` are accepted for a stable signature (a future kind may inspect them) but the
     two current signals (mode + the catalog ``write`` tag) do not consult them.
@@ -175,7 +176,7 @@ def default_decision(
 
     _ = (kind, args)
     if approval_mode == "spotter-watcher":
-        return "allow" if name in {"spotter_raise_alert", "raise_alert_card"} else "ask"
+        return "allow" if name == "raise_alert_card" else "ask"
     if approval_mode == "bypass":
         return "allow"
     if approval_mode == "auto-edits":
@@ -211,7 +212,7 @@ def _policy_action_for_tool(
     ``/v1/policies`` endpoint is user-facing configuration, so storing policies
     without enforcing them is a silent safety bypass; matching stays small and
     predictable (scope, tool glob, optional path glob, then the raw action).
-    Kept as a named shim because ``enrichment``/``proposal_effects`` bind it.
+    Kept as a named shim because ``file_change_revert`` binds it.
 
     ``mode`` (P1.1 #1063) is the session's mode: passing it makes ``resolve``
     consult the built-in plan-mode ACL (deny every non-read tool in
@@ -625,6 +626,10 @@ def _make_permission_gate(app: "FastAPI"):
             args=args,
             mode=mode,
         )
+        # A decision only a person makes (trusting code before it runs): it asks even under
+        # bypass or ai-review, and an allow policy does not stand in for it. A deny still wins.
+        if context and context.get("always_ask") and policy_action != "deny":
+            policy_action = "ask"
         if policy_action == "deny":
             _record_resolved_permission(
                 app,

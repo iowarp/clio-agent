@@ -1,0 +1,4 @@
+{
+  "name": "lv-web-testing",
+  "description": "Live-verification agent for the web MCP server (web_fetch, web_search, web_fetch_events)."
+}

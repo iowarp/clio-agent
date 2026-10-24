@@ -21,6 +21,8 @@ from clio_agent.arc.task_types import (
     TaskSnapshot,
     argument_digest,
 )
+from clio_agent.gact.fleet.child_model import warm_model_catalog
+from clio_agent.gact.fleet.guard import guard_spending
 from clio_agent.gact.native_work import now
 from clio_agent.gact.session_input import input_delivery
 from clio_agent.gact.task_access import TaskCaller
@@ -278,6 +280,23 @@ def _new_assignment(
     return task
 
 
+def assignment_outputs(history: Any, details: AssignmentDetails, outputs: Any) -> Any:
+    """A turn's outputs, carrying the tool calls of the assignment's earlier turns first.
+
+    An assignment can span turns: a child that yields on a question resumes once it is
+    answered. Its result is what the assignment did, so an editor's proposal made before
+    it yielded still reaches the workflow that reads its tool calls.
+    """
+
+    if not details.last_output or not isinstance(outputs, dict):
+        return outputs
+    earlier = history.read_content(details.last_output)
+    calls = earlier.get("tools_called") if isinstance(earlier, dict) else None
+    if not calls:
+        return outputs
+    return {**outputs, "tools_called": [*calls, *(outputs.get("tools_called") or [])]}
+
+
 def _finish_segment(
     self: Conversations, segment: ConversationSegment, outcome: ConversationOutcome
 ) -> None:
@@ -374,7 +393,10 @@ def _finish_segment(
             and outcome.error.get("recoverable") is True
         )
         execution_failed = outcome.error is not None and not presentation_only
-        output = self.history.write_content(segment.session_id, outcome.error or outcome.outputs)
+        output = self.history.write_content(
+            segment.session_id,
+            outcome.error or assignment_outputs(self.history, details, outcome.outputs),
+        )
         detail_ref = self.history.write_content(
             segment.session_id,
             details.model_copy(
@@ -518,8 +540,13 @@ async def spawn(
     approval_profile: str | None = None,
     resource_id: str | None = None,
     start: bool = True,
+    model: str = "",
 ) -> dict[str, Any]:
-    """Persist the original assignment before enrichment or child inference starts."""
+    """Persist the original assignment before enrichment or child inference starts.
+
+    ``model`` names the model the child runs on (``account/model`` or a bare id);
+    empty lets the child's preferences, then the caller's model, decide.
+    """
     if not assignment.strip():
         raise ValueError("Subagent assignment cannot be empty")
     from clio_agent.gact.assignment_evidence import validate_assignment_evidence
@@ -564,11 +591,20 @@ async def spawn(
     prepared_parent = await self.history.io.run(preflight)
     from clio_agent.gact.off_loop import join_off_loop
 
+    if prepared_parent is not None:
+        await warm_model_catalog(self.app)
+
     prepared_child = (
-        await join_off_loop(self.prepare_child, caller.session_id, agent_id, target_scope)
+        await join_off_loop(self.prepare_child, caller.session_id, agent_id, target_scope, model)
         if prepared_parent is not None
         else None
     )
+    if prepared_child is not None and (
+        refused := await guard_spending(
+            self.app, caller.session_id, dict(getattr(prepared_child, "model_choice", {}) or {})
+        )
+    ):
+        return refused
 
     def create() -> TaskSnapshot:
         with self.history.serialized(writing=True):
@@ -580,7 +616,7 @@ async def spawn(
                     existing.description != assignment
                     or existing.owner.human_id != caller.human_id
                     or session is None
-                    or session.agent.get("id") != agent_id
+                    or session.metadata.get("spawn_target", session.agent.get("id")) != agent_id
                 ):
                     raise ValueError("Spawn invocation was reused with different work")
                 if session.metadata.get("variant_strategy") != normalized_strategy:
@@ -625,6 +661,7 @@ async def spawn(
                     "metadata": session_metadata,
                     "approval_profile": approval_profile,
                     "resource": resource_id,
+                    **({"model": model} if model else {}),
                 }
             )
             initial_metadata = dict(session_metadata or {})

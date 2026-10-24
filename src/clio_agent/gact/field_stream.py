@@ -140,6 +140,19 @@ class FieldStream:
                         reason="already_streamed",
                         fallback_len=len(fallback_text),
                     )
+                if self.part_id is None:
+                    # The channel's part closed before this settle (another part opened
+                    # after it): it is this channel's last landed part, by its field.
+                    self.part_id = next(
+                        (
+                            p.id
+                            for p in reversed(transcript._parts)
+                            if p.type == "text"
+                            and p.agent_id in self._covers
+                            and p.metadata.get("signature_field_name") == self._field
+                        ),
+                        None,
+                    )
                 closed = next(
                     (p for p in transcript._parts if p.id == self.part_id),
                     None,

@@ -30,7 +30,8 @@ import pytest
 import clio_agent.config as config_mod
 from clio_agent.config import PROVIDER_DEFAULTS, LMProviderConfig
 from clio_agent.gact import context as _ctx
-from clio_agent.gact.agents.builders import _build_prompt_user_agent_module
+from clio_agent.gact.agents.builders import build_agent_module
+from clio_agent.gact.agents.resolution import plugin_service
 from clio_agent.gact.app import build_app
 from clio_agent.gact.providers.profile_store import ProviderProfileStore
 from clio_agent.gact.types import AgentDef
@@ -311,35 +312,42 @@ def test_two_experts_two_providers_resolve_off_store_default(monkeypatch, tmp_pa
 
     monkeypatch.setattr(config_mod, "create_lm", _recording_create_lm)
 
-    class _FakePredict:
-        def __init__(self, *_a: Any, **_k: Any) -> None:
-            pass
-
-        def __call__(self, *_a: Any, **_k: Any) -> Any:
-            return SimpleNamespace(answer="ok", expert_handoffs=[])
-
+    # Neutralize the agent's flow so forward() never hits a network/LM: the LM is
+    # built (and bound) by forward() before the flow runs.
     monkeypatch.setattr(
-        "clio_agent.gact.agents.clio_react.ClioReAct.forward",
-        lambda self, **kwargs: _FakePredict()(**kwargs),
+        "clio_agent.flows.runner.run_agent_flow",
+        lambda module, kwargs: SimpleNamespace(answer="ok", expert_handoffs=[]),
     )
+    resolution = plugin_service(app).resolve("clio/standard", pin=False)
 
     # Build the two expert modules under the ACTIVE app so _dynamic_agent_lm_config
     # reads the per-app store at __init__ time.
     token = _ctx.set_app(app)
     try:
-        undeclared = _build_prompt_user_agent_module(
+        undeclared = build_agent_module(
             base_agent,
-            AgentDef(id="expert-undeclared", title="Undeclared"),  # inherits store default
+            AgentDef(  # inherits the store default
+                id="expert-undeclared",
+                title="Undeclared",
+                source="plugin",
+                module={"kind": "predict"},
+                metadata={"agent_ref": "clio/standard", "flow": {"id": "react"}},
+            ),
+            resolution,
         )
-        cross = _build_prompt_user_agent_module(
+        cross = build_agent_module(
             base_agent,
             AgentDef(
                 id="expert-cross",
                 title="Cross Provider",
+                source="plugin",
+                module={"kind": "predict"},
                 default_provider="openai",
                 default_model="gpt-4o",
                 credential_ref="openai:acctB",
+                metadata={"agent_ref": "clio/standard", "flow": {"id": "react"}},
             ),
+            resolution,
         )
     finally:
         _ctx.reset(token)

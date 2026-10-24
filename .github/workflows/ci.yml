@@ -4,7 +4,9 @@ on:
   push:
     branches: [main, develop, "v*"]
   pull_request:
-    branches: [main, develop, "campaign/**", "codex/**"]
+    # claude/** covers stacked campaign PRs (a PR into claude/sdk-megachange-setup
+    # ran no tests at all before this).
+    branches: [main, develop, "campaign/**", "codex/**", "claude/**"]
   # provider-sdk-bump.yml dispatches CI on its bump branch: a PR opened with
   # GITHUB_TOKEN does not trigger pull_request workflows.
   workflow_dispatch: {}
@@ -78,12 +80,12 @@ jobs:
       # Tests marked `marketplace` read the pinned submodule and FAIL (never
       # skip) without it (tests/_marketplace.py); say so here, before the suite.
       - name: Assert the marketplace submodule is checked out
-        run: ls external/clio-agent-marketplace/*/AGENT.md > /dev/null
+        run: ls external/clio-agent-marketplace/agents/*.py > /dev/null
       - uses: astral-sh/setup-uv@v5
         with:
           version: "latest"
       - run: uv sync --python ${{ matrix.python-version }} --extra dev --extra optimizers --extra claude-code
-      - run: uv run ruff check src/ tests/ scripts/create_demo_data.py scripts/validate_marketplace_blueprints.py scripts/mcp_mem_attribution.py
+      - run: uv run ruff check src/ tests/ scripts/create_demo_data.py scripts/mcp_mem_attribution.py
       # Formatting is checked, never rewritten by CI: drift fails the job and the
       # author runs `uv run ruff format src/ tests/ scripts/` locally.
       - name: ruff format (check only)

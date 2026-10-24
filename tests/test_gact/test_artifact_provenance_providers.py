@@ -783,7 +783,7 @@ def _artifact_event(artifact_id: str, name: str, *, call_id: str = "") -> dict[s
         "version": 1,
     }
     if call_id:
-        payload["producer"] = {"call_id": call_id, "tool": "fs_apply_edit_write"}
+        payload["producer"] = {"call_id": call_id, "tool": "fs_write_file"}
     return {
         "event_type": "artifact.created",
         "event_id": f"sem_{artifact_id}",
@@ -827,7 +827,7 @@ def test_cmf_worker_does_not_duplicate_the_edge_when_the_transform_arrives_later
             "event_id": "sem_t",
             "payload": {
                 "call_id": "call_write",
-                "instrument": {"tool": "fs_apply_edit_write"},
+                "instrument": {"tool": "fs_write_file"},
                 "generated": [{"artifact_id": "art_a", "name": "a3.csv"}],
             },
         }

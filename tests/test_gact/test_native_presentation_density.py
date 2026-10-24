@@ -215,7 +215,7 @@ def test_memory_results_are_linked_bounded_and_hide_opaque_context_ids(
         "memory",
         {},
         {
-            "tool": "memory_read_session_summary",
+            "tool": "session_read_summary",
             "summary": {
                 "session_id": "session-1",
                 "title": "Qualification session",
@@ -239,7 +239,7 @@ def test_memory_results_are_linked_bounded_and_hide_opaque_context_ids(
         "memory",
         {},
         {
-            "tool": "memory_read_context_frame",
+            "tool": "session_read_context_frame",
             "frame": {
                 "session_id": "session-1",
                 "items": [

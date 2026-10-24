@@ -6,6 +6,11 @@ With ``search.backend: local_searxng`` (the default) and
 when it is installed but not running -- unless the person's last action on it was to
 stop, uninstall or delete it. Every step is an ordinary infrastructure operation, so
 it is visible (and cancellable) in Infrastructure like one the person started.
+
+A recorded SearXNG whose installation is missing (an install that failed) is not
+started: a start can only fail with "install first", once per boot. Boot records
+``auto_start_skipped`` on the service record instead, and the person installs it
+from Infrastructure.
 """
 
 from __future__ import annotations
@@ -14,7 +19,11 @@ import asyncio
 import logging
 from typing import Any, Literal
 
-from clio_agent.gact.infrastructure.models import ServiceActionRequest
+from clio_agent.gact.infrastructure.models import (
+    AutoStartSkip,
+    ServiceActionRequest,
+    ServiceRecord,
+)
 from clio_agent.gact.infrastructure.searxng_service import SERVICE_ID, VARIANT_ID
 from clio_agent.search.backend import register_local_endpoint_resolver
 from clio_agent.search.settings import (
@@ -48,15 +57,29 @@ def register_local_endpoint(app: Any) -> None:
         store = getattr(app.state, "infrastructure_store", None)
         if runtime is not None and _in_flight(runtime):
             return "starting"
+        record = store.service(LOCAL_TARGET, SERVICE_ID) if store is not None else None
+        if record is not None and _missing_installation(record) is not None:
+            return "not_installed"
         if runtime is not None and _last_failed(runtime):
             # A failed install/start is not fixed by "start it": report it unavailable.
             return None
-        record = store.service(LOCAL_TARGET, SERVICE_ID) if store is not None else None
         if record is not None and record.state == "stopped":
             return "stopped"
         return None
 
     register_local_endpoint_resolver(resolve, phase)
+
+
+def _missing_installation(record: ServiceRecord) -> str | None:
+    """Why the recorded SearXNG is not installed, or ``None`` when it may be."""
+
+    observation = record.observation
+    if record.state == "not_installed" or (
+        observation is not None and not observation.installed and observation.phase != "installing"
+    ):
+        error = observation.error if observation is not None else None
+        return f"The last installation did not finish ({error})." if error else "Not installed."
+    return None
 
 
 def _last_failed(runtime: Any) -> bool:
@@ -121,7 +144,8 @@ async def ensure_local_searxng(
     """Install and/or start the local SearXNG when the configuration asks for it.
 
     Returns what happened: ``not_selected``, ``auto_install_off``, ``declined``,
-    ``incompatible``, ``running``, ``started``, ``install_failed`` or ``start_failed``.
+    ``incompatible``, ``running``, ``not_installed``, ``started``, ``install_failed``
+    or ``start_failed``.
     """
 
     chosen = settings or load_search_settings()
@@ -139,10 +163,23 @@ async def ensure_local_searxng(
         return "incompatible"
     if service.state == "running":
         return "running"
-    if runtime.store.service(LOCAL_TARGET, SERVICE_ID) is None:
+    # ``catalog`` just reconciled the record with what the computer reports.
+    record = runtime.store.service(LOCAL_TARGET, SERVICE_ID)
+    if record is None:
         logger.info("installing CLIO's private SearXNG (first run, search.backend=local_searxng)")
         if await _run(runtime, "install", poll_seconds) != "succeeded":
             return "install_failed"
+    elif (missing := _missing_installation(record)) is not None:
+        # Retrying the install every boot would repeat the same failure; the person
+        # installs it from Infrastructure, which clears this note.
+        logger.warning("local SearXNG not started reason=not_installed: %s", missing)
+        runtime.store.update_service(
+            LOCAL_TARGET,
+            SERVICE_ID,
+            state="not_installed",
+            auto_start_skipped=AutoStartSkip(reason="not_installed", detail=missing),
+        )
+        return "not_installed"
     state = await _run(runtime, "start", poll_seconds)
     return "started" if state == "succeeded" else "start_failed"
 

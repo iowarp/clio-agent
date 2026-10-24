@@ -87,8 +87,19 @@ def register_session_fork_route(
         metadata = {
             key: value
             for key, value in sess.metadata.items()
-            if key.startswith("active_agent_blueprint_")
-            or key in {"effort", "effort_source", "thinking_level", "branch", "git_branch"}
+            if key
+            in {
+                "agent_ref",
+                "agent_delta",
+                "agent_resolution",
+                "effort",
+                "effort_source",
+                "thinking_level",
+                "branch",
+                "git_branch",
+                "memory_snapshot",  # memory as of the fork point (MD16)
+                "memory_off",
+            }
         }
         metadata["session_kind"] = "branch"
         agent = {key: value for key, value in sess.agent.items() if key != "mode"}

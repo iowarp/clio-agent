@@ -37,6 +37,7 @@ from clio_agent.gact.hooks.audit import emit_hook_audit, should_audit
 from clio_agent.gact.hooks.config import HookEntry, discover_hook_entries
 from clio_agent.gact.hooks.events import (
     AFTER_MODEL,
+    ANSWER,
     BEFORE_MODEL,
     KNOWN_EVENTS,
     POST_TOOL_BATCH,
@@ -49,6 +50,7 @@ from clio_agent.gact.hooks.events import (
     STOP,
     SUBAGENT_START,
     SUBAGENT_STOP,
+    USER_PROMPT_EXPANSION,
     USER_PROMPT_SUBMIT,
     is_deny_capable,
 )
@@ -93,10 +95,18 @@ class HookDispatcher:
         return list(self._entries)
 
     def matching(self, event: str, envelope: HookEnvelope) -> list[HookEntry]:
-        """Return the enabled hooks that run for ``event`` given ``envelope``."""
+        """Return the enabled hooks that run for ``event`` given ``envelope``.
+
+        The session's plugin hooks run first, in their resolved order (child to
+        parent, then ``before``/``after``), then the configured ``hooks.json``
+        entries.
+        """
+
+        from clio_agent.gact.hooks.plugin_hooks import plugin_hook_entries  # noqa: PLC0415
 
         with self._lock:
             entries = list(self._entries)
+        entries = [*plugin_hook_entries(envelope.session_id), *entries]
         return [entry for entry in entries if entry.runs_for(event, envelope)]
 
     def has_hooks_for(self, event: str) -> bool:
@@ -108,8 +118,12 @@ class HookDispatcher:
         ``BeforeModel``/``AfterModel`` hook actually exists.
         """
 
+        from clio_agent.gact import context as _ctx  # noqa: PLC0415
+        from clio_agent.gact.hooks.plugin_hooks import plugin_hook_entries  # noqa: PLC0415
+
         with self._lock:
             entries = list(self._entries)
+        entries += plugin_hook_entries(_ctx.active_session_id() or "")
         return any(entry.enabled and entry.is_trusted and event in entry.on for entry in entries)
 
     def dispatch(
@@ -439,6 +453,29 @@ def dispatch_user_prompt_submit(
     return dispatcher.dispatch(USER_PROMPT_SUBMIT, envelope, cancel_event=cancel_event)
 
 
+def dispatch_user_prompt_expansion(
+    command_name: str,
+    command_args: str,
+    prompt: str,
+    *,
+    session_id: str = "",
+    cwd: str = "",
+) -> HookOutcome:
+    """Fire ``UserPromptExpansion`` hooks for a typed slash command. A deny stops it."""
+
+    dispatcher = _GLOBAL
+    if dispatcher is None:
+        return HookOutcome()
+    envelope = HookEnvelope(
+        hook_event_name=USER_PROMPT_EXPANSION,
+        session_id=session_id,
+        cwd=cwd,
+        prompt=prompt,
+        payload={"command_name": command_name, "command_args": command_args},
+    )
+    return dispatcher.dispatch(USER_PROMPT_EXPANSION, envelope)
+
+
 def dispatch_stop(
     payload: Mapping[str, Any],
     *,
@@ -466,6 +503,32 @@ def dispatch_stop(
         payload=dict(payload),
     )
     return dispatcher.dispatch(STOP, envelope)
+
+
+def dispatch_answer(
+    payload: Mapping[str, Any],
+    *,
+    session_id: str = "",
+    turn_id: str = "",
+    cwd: str = "",
+) -> HookOutcome:
+    """Fire ``Answer`` hooks on the turn's settled final answer and merge them.
+
+    Not a gate: notes, checks and a replacement answer ride the outcome; an infra
+    failure is recorded on its record and never fails the turn.
+    """
+
+    dispatcher = _GLOBAL
+    if dispatcher is None:
+        return HookOutcome()
+    envelope = HookEnvelope(
+        hook_event_name=ANSWER,
+        session_id=session_id,
+        turn_id=turn_id,
+        cwd=cwd,
+        payload=dict(payload),
+    )
+    return dispatcher.dispatch(ANSWER, envelope)
 
 
 def dispatch_semantic_event(

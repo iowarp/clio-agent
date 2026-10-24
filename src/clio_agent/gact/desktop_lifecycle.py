@@ -172,6 +172,9 @@ def serve_foreground(app: "FastAPI", *, host: str, port: int) -> None:
     """
     import uvicorn
 
+    from clio_agent.gact.auth import refuse_open_bind  # noqa: PLC0415
+
+    refuse_open_bind(host)
     server = uvicorn.Server(
         uvicorn.Config(
             app,

@@ -8,8 +8,7 @@ one — stayed invisible unless someone remembered to hand-wrap it. This owner
 module replaces that per-tool opt-in with ONE assembly seam:
 
 * :func:`instrument_tools` — called where the final tool list is handed to the
-  react runtime (``builders._build_blueprint_dspy_module`` /
-  ``builders._build_tool_user_agent_module``). EVERY tool whose callable is not
+  react runtime (``builders.build_agent_module``). EVERY tool whose callable is not
   already marked observed gets wrapped with the observer notification
   (``started`` with bound args, ``completed`` with the verbatim result, the
   error surfaced on raise — never re-authored).
@@ -21,7 +20,7 @@ module replaces that per-tool opt-in with ONE assembly seam:
   - ``"row"`` (default): the live observer appends real ``tool_call`` /
     ``tool_result`` parts (with ``tool_title`` when curated);
   - ``"handoff"``: the action's wire representation IS its ``expert_handoff``
-    part (spawn_agent_task / spawn_agents_parallel / run_workflow) — that part
+    part (spawn_skill_task) — that part
     already IS call evidence, so the observer records telemetry (semantic
     events + ledger) but skips the redundant ``tool_call``/``tool_result`` row;
   - ``"chip"``: the action gets its normal ``tool_call``/``tool_result`` row
@@ -40,7 +39,7 @@ module replaces that per-tool opt-in with ONE assembly seam:
   ``TOOL_OBSERVED_ATTR`` from construction and the seam never double-wraps
   them (exactly-once notification).
 * :func:`rebuilt_tool` — for wrappers that re-construct a tool around a new
-  callable (``builders._recording_blueprint_tool``): propagates the
+  callable (``tool_recording.recording_tool``): propagates the
   instrumentation markers so a re-wrapped boundary tool stays exactly-once.
 
 The observer (``gact.tool_observer._make_tool_observer``) reads the declared
@@ -85,7 +84,6 @@ START_PRESENTER_ATTR = "_clio_tool_start_presenter"
 DOMAIN_ATTR = "_clio_tool_domain"
 _RESULT_PRESENTERS: dict[str, Any] = {}
 _START_PRESENTERS: dict[str, Callable[[Mapping[str, Any]], dict[str, Any]]] = {}
-_PRESENTER_KEYWORD_CONTAINERS: dict[str, tuple[str, ...]] = {}
 
 DEFAULT_REPRESENTATION = "row"
 TOOL_REPRESENTATIONS = frozenset({"row", "handoff", "chip"})
@@ -325,6 +323,20 @@ def native_tool(
     return tool
 
 
+def plugin_tool(func: Callable[..., Any], *, name: str, desc: str | None, read_only: bool) -> Any:
+    """Construct a plugin's Python tool (``clio_agent.sdk.tool``), instrumented by definition.
+
+    A plugin tool declares only its name, description and read-only posture; its
+    arguments come from the function signature, it renders as a plain ``row``
+    titled by its name, and it carries no native domain.
+    """
+
+    setattr(func, REPRESENTATION_ATTR, DEFAULT_REPRESENTATION)
+    setattr(func, TITLE_ATTR, sanitize_tool_title(name))
+    setattr(func, READ_ONLY_ATTR, bool(read_only))
+    return _clio_native_tool_class()(func=func, name=name, desc=desc)
+
+
 def boundary_observed_tool(
     func: Callable[..., Any],
     *,
@@ -368,7 +380,7 @@ def rebuilt_tool(
     """Re-construct a tool around a replacement callable, keeping its markers.
 
     A wrapper that re-creates a ``dspy.Tool`` with a new callable (the
-    blueprint recording wrapper) would otherwise DROP the inner callable's
+    recorded-tool wrapper) would otherwise DROP the inner callable's
     instrumentation markers — a re-wrapped boundary tool would get
     double-wrapped at the seam and notify twice. Propagates the observed /
     representation / title / domain markers from ``inner_tool``'s callable
@@ -390,7 +402,15 @@ def rebuilt_tool(
             setattr(func, attr, value)
     import dspy  # noqa: PLC0415
 
-    return dspy.Tool(func=func, name=name, desc=desc, args=args)
+    native = _clio_native_tool_class()
+    if not isinstance(inner_tool, native):
+        return dspy.Tool(func=func, name=name, desc=desc, args=args)
+    # The replacement validates the call before the inner tool sees it, so it
+    # takes the inner signature and class: null for a defaulted argument means
+    # the default, and an invalid call is recorded as one.
+    if inner_func is not None:
+        func.__signature__ = inspect.signature(inner_func)  # type: ignore[attr-defined]
+    return native(func=func, name=name, desc=desc, args=args)
 
 
 def tool_domain(tool: Any) -> ToolDomain | None:
@@ -474,6 +494,28 @@ def pop_declared_structured_content() -> dict[str, Any] | None:
     return value
 
 
+def _call_arguments(
+    func: Callable[..., Any], call_args: tuple[Any, ...], call_kwargs: dict[str, Any]
+) -> dict[str, Any]:
+    """The call's own arguments: bound, defaults applied, ``**keywords`` unwrapped.
+
+    A callable that takes ``**keywords`` (the recording wrapper's
+    ``call_tool(**kwargs)`` over a plain tool, or a tool declared that way)
+    binds the whole call under the container's name. The observer reports the
+    arguments the tool was called with, so its row merges with the agent's own
+    record of the same call instead of listing it twice.
+    """
+
+    signature = inspect.signature(func)
+    bound = signature.bind(*call_args, **call_kwargs)
+    bound.apply_defaults()
+    args = dict(bound.arguments)
+    for parameter in signature.parameters.values():
+        if parameter.kind is inspect.Parameter.VAR_KEYWORD:
+            args.update(args.pop(parameter.name, {}))
+    return args
+
+
 def observed_tool_callable(func: Callable[..., Any], tool_name: str) -> Callable[..., Any]:
     """Route a native tool callable through the live tool observer.
 
@@ -506,9 +548,7 @@ def observed_tool_callable(func: Callable[..., Any], tool_name: str) -> Callable
                 observe_native_call,
             )
 
-            bound = inspect.signature(func).bind(*call_args, **call_kwargs)
-            bound.apply_defaults()
-            args = dict(bound.arguments)
+            args = _call_arguments(func, call_args, call_kwargs)
             try:
                 await observe_native_call(tool_name, args, "started")
                 pop_declared_structured_content()
@@ -539,9 +579,7 @@ def observed_tool_callable(func: Callable[..., Any], tool_name: str) -> Callable
         # test monkeypatching) always sees the live seam.
         from clio_agent.tools import execution as _execution  # noqa: PLC0415
 
-        bound = inspect.signature(func).bind(*call_args, **call_kwargs)
-        bound.apply_defaults()
-        args = dict(bound.arguments)
+        args = _call_arguments(func, call_args, call_kwargs)
         _execution.notify_global_tool_observer(tool_name, args, "started")
         # Belt-and-braces: THIS call hasn't run ``func`` yet, so nothing it
         # declares exists -- any value still sitting here belongs to an
@@ -617,11 +655,6 @@ def _instrument_tool(tool: Any) -> Any:
     presenter = getattr(func, PRESENTER_ATTR, None)
     if presenter is not None:
         _RESULT_PRESENTERS[name] = presenter
-        _PRESENTER_KEYWORD_CONTAINERS[name] = tuple(
-            parameter.name
-            for parameter in inspect.signature(func).parameters.values()
-            if parameter.kind is inspect.Parameter.VAR_KEYWORD
-        )
     start_presenter = getattr(func, START_PRESENTER_ATTR, None)
     if start_presenter is not None:
         _START_PRESENTERS[name] = start_presenter
@@ -655,24 +688,13 @@ def present_native_result(
     presenter = _RESULT_PRESENTERS.get(name)
     if presenter is None:
         return None
-    args = _presentation_arguments(name, args)
+    args = copy.deepcopy(dict(args))
     if callable(presenter):
-        presented = presenter(copy.deepcopy(args), copy.deepcopy(result), copy.deepcopy(structured))
+        presented = presenter(args, copy.deepcopy(result), copy.deepcopy(structured))
         if not isinstance(presented, dict):
             raise TypeError("A native result presenter must return a mapping")
         return presented
     return native_presentation(presenter, args, result, structured)
-
-
-def _presentation_arguments(name: str, args: Mapping[str, Any]) -> dict[str, Any]:
-    """Unbind declared **keywords only for the observer's presentation copy."""
-    projected = copy.deepcopy(dict(args))
-    for container in _PRESENTER_KEYWORD_CONTAINERS.get(name, ()):
-        keywords = projected.get(container)
-        if isinstance(keywords, Mapping):
-            projected.pop(container)
-            projected.update(keywords)
-    return projected
 
 
 def present_native_start(name: str, args: Mapping[str, Any]) -> dict[str, Any] | None:
@@ -683,9 +705,9 @@ def present_native_start(name: str, args: Mapping[str, Any]) -> dict[str, Any] |
     if presenter is None:
         return None
     try:
-        return ToolPresentation.model_validate(
-            presenter(_presentation_arguments(name, args))
-        ).model_dump(exclude_none=True)
+        return ToolPresentation.model_validate(presenter(copy.deepcopy(dict(args)))).model_dump(
+            exclude_none=True
+        )
     except Exception:
         logger.exception("Starting native presentation failed: %s", name)
         return {"summary": "", "blocks": [], "diagnostic": "presentation_failed"}

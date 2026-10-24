@@ -3,16 +3,15 @@
 
 Formerly the inline prologue of ``turn.py::_run_turn_in_background``, which ran ON the
 server loop: the user message's transcript persist (deferred here from the accept path),
-the ``turn.started`` semantic event, context enrichment (a memory search is a BM25 store
-RPC), the ``memory.search.completed`` event, and the ``UserPromptSubmit`` hooks (operator
+the ``turn.started`` semantic event, context enrichment, the long-term memory snapshot
+(a store read on a session's first turn), and the ``UserPromptSubmit`` hooks (operator
 subprocesses). Each store write is ~90 ms of ``threading.wait`` on the loop; the live
 #1334 gate measured ~1.7 s per turn start. The orchestrator now awaits
 :func:`prepare_turn_off_loop` through ``turn_forward._run_turn_setup_off_loop`` (turn
 executor, contextvars copied), the same rail the forward and finalize use.
 
 Order is preserved exactly: the transcript job first (so the user message's atoms
-precede everything the turn appends), then the event, enrichment, the frame, the search
-event, the hooks. The ``run_user_prompt_submit`` outcome is returned; anything but
+precede everything the turn appends), then the event, enrichment, the frame, the hooks. The ``run_user_prompt_submit`` outcome is returned; anything but
 ``"proceed"`` ends the turn in the orchestrator, as before. An attached-context failure
 is carried on ``state.context_file_error`` and raised at the commit-to-run seam.
 
@@ -42,12 +41,15 @@ from __future__ import annotations
 import logging
 from typing import TYPE_CHECKING, Any, Callable
 
+from clio_agent.gact.agents.prompt_basis import PLUGIN_CHANGE_SOURCE, plugin_change_note
 from clio_agent.gact.enrichment import (
     _context_file_turn_provenance,
     _record_context_frame,
     enrich_turn_context,
 )
 from clio_agent.gact.events import _publish_transcript_event
+from clio_agent.gact.memory.snapshot import SOURCE as MEMORY_SOURCE
+from clio_agent.gact.memory.snapshot import memory_snapshot_text
 from clio_agent.gact.part_atom_minter import open_turn_minter
 from clio_agent.gact.plan_mode import plan_mode_reminder
 from clio_agent.gact.replanning import replan_suggestion
@@ -138,28 +140,32 @@ def _prepare_turn_off_loop_steps(
     state.context_file_provenance = _context_file_turn_provenance(
         state.app, state.sid, status="prepared"
     )
-    state.memory_search_metadata = {}
-    _check_not_cancelled(state)  # the memory-search/enrichment step is checked too
+    _check_not_cancelled(state)  # the enrichment step is checked too
     try:
         # #1215 S5: enrich_turn_context times BOTH mechanisms below as ONE
         # "enrichment" bring-up phase (owner module gact/enrichment.py).
-        state.enriched_text, memory_hits, state.memory_search_metadata = enrich_turn_context(
+        state.enriched_text = enrich_turn_context(
             state.app, state.sid, state.user_text, state.user_msg
         )
+        # Long-term memory: the session's pinned snapshot (built on its first turn).
+        memory = memory_snapshot_text(state.app, state.sid, state.sess, state.turn_id)
         # P1.2 #1064: surface plan mode to the model each turn (survives compaction; no-op otherwise).
         reminder = plan_mode_reminder(state.app, state.sid, state.sess)
         todos = todo_recitation(state.app, state.sid, state.sess)
         # P1.6d #1068: surface a pending stall-triggered replanning suggestion once (no-op otherwise).
         replan = replan_suggestion(state.app, state.sid, state.sess)
+        # Plugin changes applied as a note, until a compaction folds them into the prompt.
+        plugin_change = plugin_change_note(state.app, state.sid)
         # CLIO's own additions: recorded by the agent loop as messages of their own,
         # ahead of the user's message, never glued into the user's text.
         state.injections = [
             (source, block)
             for source, block in (
-                ("memory_search", memory_hits),
+                (MEMORY_SOURCE, memory),
                 ("plan_mode", reminder),
                 ("todos", todos),
                 ("replan", replan),
+                (PLUGIN_CHANGE_SOURCE, plugin_change),
             )
             if block
         ]
@@ -180,19 +186,6 @@ def _prepare_turn_off_loop_steps(
         context_error=state.context_file_error,
         injections=state.injections,
     )
-    if state.memory_search_metadata:
-        _check_not_cancelled(state)
-        _emit_semantic_event(
-            state.app,
-            state.sid,
-            "memory.search.completed",
-            turn_id=state.turn_id,
-            trace_id=state.trace_id,
-            summary="Requested memory search was injected into turn context.",
-            actor={"role": "runtime", "component": "memory"},
-            subject={"message_id": state.user_msg.id},
-            payload=state.memory_search_metadata,
-        )
     # P2.2 #1070 / P2.6 #1074: UserPromptSubmit hooks (the ported ``pre_message``
     # consumer). A deny VETOES the turn (session -> error); a ``defer`` SUSPENDS it for
     # out-of-band approval (waiting_user, resume as a new turn). The whole finalize-

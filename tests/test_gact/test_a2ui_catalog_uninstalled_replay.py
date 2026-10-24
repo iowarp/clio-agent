@@ -6,8 +6,8 @@ as ``state=unknown`` with ``a2ui_catalog_unavailable`` recorded and
 retrievable" half (S2's
 ``test_replay_catalog_unavailable_is_recorded_in_the_retrievable_session_ledger``).
 This module covers the other half the S8 deliverable adds: reinstalling the
-pack that declares the missing catalog (the real ``POST /v1/agent-blueprints/
-install`` route, not a direct function call) makes the SAME already-folded
+plugin that ships the missing catalog (the real ``POST /v1/plugins/
+marketplaces`` route, not a direct function call) makes the SAME already-folded
 transcript resolve normally on the NEXT read, in the SAME process — no
 restart, no new ``CatalogRegistry`` instance — proving the install route's
 ``registry.invalidate()`` call actually reaches the live fold path.
@@ -22,15 +22,15 @@ from fastapi.testclient import TestClient
 from clio_agent.gact.app import build_app
 from clio_agent.gact.parts import Part
 from clio_agent.gact.types import Message
+from tests.test_gact.a2ui_catalog_binding import A2UI_PLUGINS, MINIMAL_CATALOG_ID, MINIMAL_PLUGIN
 
-PACK_ROOT = Path(__file__).resolve().parents[1] / "fixtures" / "a2ui_packs" / "minimal"
-MINIMAL_CATALOG_ID = "https://example.test/a2ui/catalogs/minimal"
+PLUGIN_ROOT = A2UI_PLUGINS / MINIMAL_PLUGIN
 
 
 def _seed_surface_on_minimal_catalog(app, session_id: str) -> None:
     """Directly seed a persisted ``a2ui`` part naming the not-yet-installed
-    ``minimal`` pack catalog -- a replay scenario, not a live production
-    (the minimal pack is intentionally NOT installed when this runs)."""
+    ``minimal`` plugin catalog -- a replay scenario, not a live production
+    (the minimal plugin is intentionally NOT installed when this runs)."""
 
     part = Part(
         id="part_minimal",
@@ -63,7 +63,7 @@ def _seed_surface_on_minimal_catalog(app, session_id: str) -> None:
     ]
 
 
-def test_reinstalling_the_pack_resolves_the_replay_without_a_restart(tmp_path: Path) -> None:
+def test_reinstalling_the_plugin_resolves_the_replay_without_a_restart(tmp_path: Path) -> None:
     app = build_app(sessions_path=tmp_path / "sessions.json")
     session = app.state.sessions.create(workspace_id="ws_default", title="reinstall replay")
     sid = session.id
@@ -78,19 +78,15 @@ def test_reinstalling_the_pack_resolves_the_replay_without_a_restart(tmp_path: P
     before_reasons = app.state.a2ui_catalogs.session_reasons(sid)
     assert any(row["reason"] == "a2ui_catalog_unavailable" for row in before_reasons)
 
-    # Install the pack declaring MINIMAL_CATALOG_ID through the REAL HTTP
+    # Install the plugin shipping MINIMAL_CATALOG_ID through the REAL HTTP
     # install route -- same running app, same CatalogRegistry instance, no
     # restart -- proving the route's registry.invalidate() call is what
-    # makes this work, not a fresh process picking up the pack on next boot.
+    # makes this work, not a fresh process picking up the plugin on next boot.
     with TestClient(app) as client:
         installed = client.post(
-            "/v1/agent-blueprints/install",
-            json={"source": str(PACK_ROOT), "scope": "global"},
+            "/v1/plugins/marketplaces", json={"source": str(PLUGIN_ROOT), "name": "minimal"}
         )
         assert installed.status_code == 201, installed.text
-        assert any(
-            row["id"] == "a2ui-minimal-pack" for row in installed.json().get("installed", [])
-        )
 
     # AFTER install, in the SAME process: the SAME transcript now folds
     # normally -- no restart, no rebuild of the app.
@@ -100,11 +96,11 @@ def test_reinstalling_the_pack_resolves_the_replay_without_a_restart(tmp_path: P
     assert after.catalog_id == MINIMAL_CATALOG_ID
     registry_entry = app.state.a2ui_catalogs.get(MINIMAL_CATALOG_ID)
     assert registry_entry is not None
-    assert registry_entry.source == "blueprint"
+    assert registry_entry.source == "plugin"
 
 
 def test_uninstalling_again_makes_the_same_surface_unknown_again(tmp_path: Path) -> None:
-    """The registry invalidation cuts both ways: uninstalling the pack after
+    """The registry invalidation cuts both ways: uninstalling the plugin after
     a successful replay makes the SAME transcript degrade again, never
     keeping a stale "it used to resolve" cache."""
 
@@ -115,15 +111,12 @@ def test_uninstalling_again_makes_the_same_surface_unknown_again(tmp_path: Path)
 
     with TestClient(app) as client:
         installed = client.post(
-            "/v1/agent-blueprints/install",
-            json={"source": str(PACK_ROOT), "scope": "global"},
+            "/v1/plugins/marketplaces", json={"source": str(PLUGIN_ROOT), "name": "minimal"}
         )
         assert installed.status_code == 201, installed.text
         assert app.state.a2ui_store.get(sid, "surface_minimal").state == "ready"
 
-        deleted = client.delete(
-            "/v1/agent-blueprints/a2ui-minimal-pack", params={"scope": "global"}
-        )
+        deleted = client.delete("/v1/plugins/marketplaces/minimal")
         assert deleted.status_code == 200, deleted.text
 
     after_uninstall = app.state.a2ui_store.get(sid, "surface_minimal")

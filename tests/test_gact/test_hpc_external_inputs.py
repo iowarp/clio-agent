@@ -154,7 +154,7 @@ def test_read_only_or_path_shaped_unknown_tool_does_not_imply_consumption(
         assert not scan.notes
 
 
-def test_propose_edit_records_existing_external_source_but_not_new_file(tmp_path: Path) -> None:
+def test_edit_records_its_external_source_and_write_consumes_nothing(tmp_path: Path) -> None:
     root = tmp_path / "workspace"
     root.mkdir()
     existing = tmp_path.parent / "existing.txt"
@@ -163,21 +163,21 @@ def test_propose_edit_records_existing_external_source_but_not_new_file(tmp_path
     consumed = detect_used_edges(
         app,
         session.id,
-        args={"filepath": str(existing), "new_content": "new"},
+        args={"filepath": str(existing), "old_string": "old", "new_string": "new"},
         workspace_id="ws1",
         turn_id="",
         trace_id="",
-        tool_name="fs_propose_edit",
+        tool_name="fs_edit_file",
         allow_external_inputs=True,
     )
     created = detect_used_edges(
         app,
         session.id,
-        args={"filepath": str(tmp_path.parent / "new.txt"), "new_content": "new"},
+        args={"filepath": str(tmp_path.parent / "new.txt"), "content": "new"},
         workspace_id="ws1",
         turn_id="",
         trace_id="",
-        tool_name="fs_propose_edit",
+        tool_name="fs_write_file",
         allow_external_inputs=True,
     )
     assert [edge.name for edge in consumed.edges] == ["existing.txt"]

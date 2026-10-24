@@ -11,14 +11,14 @@ import _common as common
 import _lifecycle_evidence as evidence
 
 
-def ui_cycle(call: Any, proof: Path, wid: str, blueprint: str, server_pid: int) -> dict[str, Any]:
+def ui_cycle(call: Any, proof: Path, wid: str, agent: str, server_pid: int) -> dict[str, Any]:
     """Publish real owned task identities, then require browser actions and process settlement."""
     output = proof / "ui-gate"
     output.mkdir()
     workspace = proof / "workspace"
     paths = evidence.worker_files(workspace, "ui-control", "must-not-complete")
     sid = common.create_session(call, wid, "Actual lifecycle UI qualification")
-    common.activate_blueprint(call, sid, blueprint)
+    common.use_agent(call, sid, agent)
     command = common.quoted_command(sys.executable, str(paths["script"]))
     assignment = (
         f"Call shell_bash(command={command!r},background=true,timeout_s=0,cwd={str(workspace)!r}) "

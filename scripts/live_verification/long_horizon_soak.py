@@ -182,9 +182,7 @@ class Soak:
                 "metadata": {"effort": "low"},
             },
         )["id"]
-        self.call(
-            "POST", f"/v1/sessions/{self.sid}/agent-blueprint", {"blueprint_id": "base-agent"}
-        )
+        self.call("PATCH", f"/v1/sessions/{self.sid}/agent", {"ref": "clio/standard"})
         instruction = (
             f"This is a fictional 48-hour software soak, marker {MARKER}. No science, subagents, questions, web, "
             "shell, packages or extra tools, except optional read-only goal_status checks. "

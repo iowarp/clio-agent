@@ -173,7 +173,7 @@ def test_depth_updates_and_unlimited_preserve_deep_history_and_task_paths(
                 app.state.conversations.spawn,
                 caller,
                 "Keep the original assignment",
-                "main",
+                "self",
                 invocation,
                 start=False,
             )
