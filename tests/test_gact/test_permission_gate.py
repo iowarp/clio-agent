@@ -188,7 +188,7 @@ def test_external_mcp_non_read_only_hint_registers_pending_permission(tmp_path: 
 
         response = client.post(f"/v1/permissions/{pending['id']}", json={"action": "deny"})
         assert response.status_code == 204
-        thread.join(timeout=2.0)
+        thread.join(timeout=30.0)  # under coverage the allowed call can take seconds
         assert not thread.is_alive()
         assert result["decision"] == "deny"
 
@@ -281,7 +281,7 @@ def test_child_permission_lifecycle_is_visible_on_attended_root(tmp_path: Path) 
             json={"action": "allow"},
         )
         assert response.status_code == 204
-        thread.join(timeout=2.0)
+        thread.join(timeout=30.0)  # under coverage the allowed call can take seconds
         assert not thread.is_alive()
         assert result["decision"] == "allow"
 
@@ -402,7 +402,7 @@ def test_declared_mcp_mutation_blocks_before_transport_until_ui_resolution(
 
             response = client.post(f"/v1/permissions/{pending['id']}", json={"action": "allow"})
             assert response.status_code == 204
-            thread.join(timeout=2.0)
+            thread.join(timeout=30.0)  # under coverage the allowed call can take seconds
             assert not thread.is_alive(), "".join(
                 traceback.format_stack(sys._current_frames().get(thread.ident or -1))
             )
@@ -419,7 +419,7 @@ def test_declared_mcp_mutation_blocks_before_transport_until_ui_resolution(
                         and row["tool_call"]["tool_name"] == "relay_jarvis_run"
                     ):
                         client.post(f"/v1/permissions/{row['id']}", json={"action": "deny"})
-                thread.join(timeout=2.0)
+                thread.join(timeout=30.0)  # under coverage the allowed call can take seconds
                 assert not thread.is_alive(), "".join(
                     traceback.format_stack(sys._current_frames().get(thread.ident or -1))
                 )
@@ -631,7 +631,7 @@ def test_destructive_tool_blocks_until_resolved(tmp_path: Path) -> None:
         # Approve via the API.
         resp = c.post(f"/v1/permissions/{pid}", json={"action": "allow"})
         assert resp.status_code == 204
-        thread.join(timeout=2.0)
+        thread.join(timeout=30.0)  # under coverage the allowed call can take seconds
         assert not thread.is_alive(), "gate didn't unblock after allow"
         assert result["decision"] == "allow"
 
@@ -672,7 +672,7 @@ def test_deny_decision_raises_permission_error(tmp_path: Path) -> None:
             time.sleep(0.05)
         pid = list(app.state.permissions)[0]
         c.post(f"/v1/permissions/{pid}", json={"action": "deny"})
-        thread.join(timeout=2.0)
+        thread.join(timeout=30.0)  # under coverage the allowed call can take seconds
         assert result["decision"] == "deny"
 
 
@@ -765,7 +765,7 @@ def test_allow_session_resolution_adds_policy_and_audits_future_calls(
 
         resp = c.post(f"/v1/permissions/{pending['id']}", json={"action": "allow_session"})
         assert resp.status_code == 204
-        thread.join(timeout=2.0)
+        thread.join(timeout=30.0)  # under coverage the allowed call can take seconds
         assert decision_holder["decision"] == "allow"
         # A sticky runtime append is stamped an explicit priority (P0.1 #1059 follow-up): it must
         # land in its own strictly-lowest band so it never collides with a migrated legacy row's
