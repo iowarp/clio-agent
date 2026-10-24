@@ -71,6 +71,40 @@ def test_a_child_waiting_for_input_settles_the_call_instead_of_holding_the_flow(
     assert child.terminal_at is None and child.activity == "yielded"
 
 
+def test_a_child_whose_turn_stopped_settles_the_call_as_a_typed_outcome(
+    flow_app: TestClient,
+) -> None:
+    """A child whose turn stopped with nothing to resume it no longer holds its flow.
+
+    Live: a deep-research critic's model call stalled, the no-progress bound ended its
+    turn, and the flow waited on the open child for good. The child stays open, so a
+    person can still resume it.
+    """
+
+    sid = new_session(flow_app, "clio/stopperer")
+    post(flow_app, sid, "go")
+    history = flow_app.app.state.task_history
+
+    def running_child() -> Any:
+        rows = flow_app.get(f"/v1/sessions/{sid}/tasks/query?kind=Subagent&limit=50").json()
+        for row in rows.get("tasks", []):
+            child = history.task_snapshot(row["handle"])
+            if child is not None and child.owner.session_id != sid and child.activity == "busy":
+                return child
+        return None
+
+    child = wait_until(running_child)
+    stopped = flow_app.post(f"/v1/sessions/{child.owner.session_id}/cancel")
+    assert stopped.status_code in {200, 202, 204}, stopped.text
+
+    message = _answer(flow_app, sid)
+    assert text_of(message) == "CallStopped: call_stopped"
+    (row,) = _checkpoint(flow_app, sid)["calls"].values()
+    assert row["status"] == "stopped"
+    child = history.task_snapshot(row["handle"])
+    assert child.terminal_at is None and child.activity == "stopped"
+
+
 def test_gather_failure_is_a_typed_outcome(flow_app: TestClient) -> None:
     sid = new_session(flow_app, "clio/stricter")
     post(flow_app, sid, "go")

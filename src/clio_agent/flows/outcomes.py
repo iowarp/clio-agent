@@ -62,6 +62,17 @@ class CallAwaitingInput(CallFailed):
         return "" if result is None else str(result)
 
 
+class CallStopped(CallFailed):
+    """The called agent's turn stopped (Stop, or an error such as a provider timeout).
+
+    ``result`` carries what its turn recorded last, its error when it failed; the child
+    stays open, so a person can still resume it. A flow that catches ``CallFailed``
+    treats it as a failed call.
+    """
+
+    reason = "call_stopped"
+
+
 class TaskStateUncertain(FlowOutcome):
     """The task's state cannot be confirmed; it is never resubmitted."""
 
@@ -152,6 +163,7 @@ STATUS_OUTCOMES: dict[str, type[FlowOutcome]] = {
     "never_started": CallInterrupted,
     "task_state_uncertain": TaskStateUncertain,
     "awaiting_input": CallAwaitingInput,
+    "stopped": CallStopped,
 }
 
 
@@ -175,6 +187,7 @@ __all__ = [
     "CallFailed",
     "CallInterrupted",
     "CallRefused",
+    "CallStopped",
     "FlowCheckpointLimit",
     "FlowLimitExceeded",
     "FlowOutcome",

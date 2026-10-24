@@ -18,6 +18,7 @@ from typing import Any, get_args
 from clio_agent.arc.task_types import CoordinationRight, TaskKind, TaskSnapshot, TaskSubscription
 from clio_agent.gact.assignment_input import (
     AWAITING_INPUT,
+    STOPPED,
     awaiting_input_outcome,
     waiting_for_input,
 )
@@ -382,9 +383,9 @@ class TaskOperations:
     ) -> dict[str, Any]:
         """Await mixed owner observations; timeout/cancellation never cancels a member.
 
-        ``settle_awaiting_input`` (a flow's wait) settles a child that yielded with nothing
-        left to wake it as ``awaiting_input`` instead of waiting on it forever
-        (:mod:`clio_agent.gact.assignment_input`).
+        ``settle_awaiting_input`` (a flow's wait) settles a child that yielded, or whose
+        turn stopped, with nothing left to wake it as ``awaiting_input`` or ``stopped``
+        instead of waiting on it forever (:mod:`clio_agent.gact.assignment_input`).
         """
         with track(timeout_s != 0, session_id=caller.session_id):
             if return_when not in {"all", "any"}:
@@ -509,16 +510,10 @@ class TaskOperations:
                     outcomes.append(
                         {"handle": current.handle, "error": "cannot_wait_for_own_active_assignment"}
                     )
-                elif (
-                    current.terminal_at is None
-                    and (
-                        waiting := waiting_for_input(self.app, current)
-                        if settle_awaiting_input
-                        else ""
-                    )
-                    == AWAITING_INPUT
-                ):
-                    outcomes.append(awaiting_input_outcome(self.app, current))
+                elif current.terminal_at is None and (
+                    waiting := waiting_for_input(self.app, current) if settle_awaiting_input else ""
+                ) in {AWAITING_INPUT, STOPPED}:
+                    outcomes.append(awaiting_input_outcome(self.app, current, waiting))
                 elif current.terminal_at is None:
                     if waiting == "retiring" and wake is not None:
                         # No history change follows the release: look again once it lands.

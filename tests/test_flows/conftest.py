@@ -56,6 +56,19 @@ class Yielder(Flow):
         return "the child completed"
 
 
+class Stopper(Flow):
+    id = "stopper"
+
+    async def forward(self, task, ctx):
+        from clio_agent.flows.outcomes import CallStopped
+
+        try:
+            await ctx.call("self", "STALL until stopped")
+        except CallStopped as stopped:
+            return f"{type(stopped).__name__}: {stopped.reason}"
+        return "the child completed"
+
+
 class Strict(Flow):
     id = "strict"
 
@@ -188,6 +201,7 @@ def _agent(agent_id, flow):
 Fanouter = _agent("fanouter", "fanout")
 Tolerater = _agent("tolerater", "tolerant")
 Yielderer = _agent("yielderer", "yielder")
+Stopperer = _agent("stopperer", "stopper")
 Stricter = _agent("stricter", "strict")
 Askerer = _agent("askerer", "asker")
 Stepperer = _agent("stepperer", "stepper")
@@ -256,6 +270,18 @@ class ScriptedFlowModule:
 def default_program(question: str = "", **_: Any) -> Any:
     if "FAIL" in question:
         raise RuntimeError("scripted failure")
+    if "STALL" in question:
+        # Works until its turn is asked to stop, as a model call does when Stop or the
+        # no-progress bound ends it.
+        from clio_agent.agent import cancellation_requested
+        from clio_agent.gact.agents.clio_react import _turn_cancelled
+
+        deadline = time.monotonic() + 60
+        while not cancellation_requested():
+            if time.monotonic() > deadline:
+                raise RuntimeError("the test never stopped the child")
+            time.sleep(0.05)
+        raise _turn_cancelled()
     if "YIELD" in question:
         # The child keeps its assignment open for a follow-up nobody will send.
         return dspy.Prediction(answer="need approval to continue", assignment_disposition="yield")
