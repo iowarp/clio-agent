@@ -68,10 +68,11 @@ class WorkflowScrubAliases(BaseModel):
     in :mod:`clio_agent.gact.delegation`, both DELETED in #881: the client renders
     model prose VERBATIM and the server fixes leaks at the root, so clio no longer
     edits a model's visible text by matching a declared vocabulary. The fields are
-    RETAINED (not removed) purely for plugin compatibility — marketplace plugins
-    (``earthscope``, ``earthscope-skills``) still declare ``workflow_state.aliases``
-    and :class:`WorkflowStateSchema` is ``extra="forbid"``, so dropping the field
-    would reject those plugins at load. Nothing in core reads these values.
+    RETAINED (not removed) purely for plugin compatibility — no plugin in the default
+    marketplace declares ``workflow_state.aliases`` any more (``earthscope`` dropped it
+    in the 2026-10 restructure), but :class:`WorkflowStateSchema` is ``extra="forbid"``,
+    so dropping the field would reject an older third-party plugin that still declares
+    it at load. Nothing in core reads these values.
     """
 
     model_config = ConfigDict(frozen=True, extra="forbid")

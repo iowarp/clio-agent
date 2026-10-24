@@ -3,7 +3,7 @@
 docs/design/a2ui-compat-campaign-2026-09.md S7 / iowarp/clio-agent-marketplace
 issue #69 deliverable 4 (the clio-agent half): the campaign's composability
 proof runs against an UNMODIFIED clio-agent server. A marketplace plugin,
-``external/clio-agent-marketplace/plugins/earthscope-skills/``, ships its OWN
+``external/clio-agent-marketplace/plugins/earthscope/``, ships its OWN
 A2UI catalog (``ai.iowarp.clio/a2ui/earthscope-stations/{catalog.json,
 catalog.clio.json, instructions.md}``) exactly the way it ships skills and
 prompt fragments. This installs that REAL plugin (and the plugins it requires,
@@ -53,7 +53,7 @@ HEADERS = {"X-GACT-Version": "0.3", "X-A2UI-Version": "0.9.1"}
 pytestmark = [pytest.mark.marketplace, pytest.mark.usefixtures("native_builtin_lifespan")]
 
 MARKETPLACE_PLUGINS = MARKETPLACE_ROOT / "plugins"
-PLUGIN_ID = "earthscope-skills"
+PLUGIN_ID = "earthscope"
 PLUGIN_ROOT = MARKETPLACE_PLUGINS / PLUGIN_ID
 PACK_CATALOG_ID = "https://iowarp.ai/a2ui/catalogs/earthscope-stations/v1"
 BASIC_CATALOG_ID = basic_catalog_id()

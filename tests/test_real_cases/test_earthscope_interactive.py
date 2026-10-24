@@ -1,9 +1,9 @@
 """EarthScope interactive multi-turn semantics — demo-confidence suite (#682/#687).
 
 Every scene drives the ``clio/earthscope`` marketplace agent: one
-EarthScope GNSS scientist that loads the ``earthscope-skills`` plugin's
-procedures on demand (resolve-earthscope-region, acquire-earthscope-gnss,
-analyze-earthscope-gnss, visualize-earthscope-gnss, ...) and keeps its own typed
+EarthScope GNSS scientist that loads the ``earthscope`` and ``geodesy`` plugins'
+procedures on demand (resolve-region, station-catalogs, acquire-earthscope-gnss,
+gnss-time-series, ...) and keeps its own typed
 ``workflow_state`` across turns. The agent is pinned at session creation by its
 ref; the default ``clio`` marketplace (the pinned submodule) provides it, so no
 install step is needed.
@@ -25,9 +25,11 @@ Incremental-reuse *efficiency* (5->7 == stage only 2 more) is reported from the 
 rather than hard-asserted here — it's the thing we're measuring.
 
 The conversational scenes advertise no A2UI client capabilities, so the agent's
-interactive views (station map/picker, live chart) are refused and its
-``visualize-earthscope-gnss`` procedure degrades to the static
-``plot_plot_timeseries`` PNG export the plot checks read.
+interactive views (station map/picker, live chart) are refused, and the plot checks
+read the static ``plot_plot_timeseries`` PNG export. Since the 2026-10 marketplace
+restructure (EarthScope 0.6.0) the agent no longer carries the ``plot`` and ``pandas``
+plugins, so those checks need re-deriving from a fresh live grind before these
+scenes can pass again.
 
 Bar: gemma4/ALCF must pass; qwopus is best-effort. Run, e.g.::
 
@@ -38,7 +40,7 @@ Bar: gemma4/ALCF must pass; qwopus is best-effort. Run, e.g.::
 
 A2UI live gate (S7, docs/design/a2ui-compat-campaign-2026-09.md /
 iowarp/clio-agent-marketplace#69 deliverable 5): three scenes below advertise
-the ``earthscope-stations`` A2UI catalog (shipped by ``earthscope-skills``) and
+the ``earthscope-stations`` A2UI catalog (shipped by ``earthscope``) and
 drive a real GNSS-station-selection round trip on "Show me the GNSS stations
 around Los Angeles": idle (the turn ends with the surface ready, the harness
 posts the selection, the NEXT turn's tool calls stage exactly those two
@@ -78,7 +80,7 @@ import pytest
 AGENT_REF = "clio/earthscope"
 CASE_DIR = "benchmark/case02-earthscope-csv-seismic-geography"
 
-# --- S7 A2UI live gate: the earthscope-skills plugin's station catalog --------
+# --- S7 A2UI live gate: the earthscope plugin's station catalog ----------------
 
 A2UI_CATALOG_ID = "https://iowarp.ai/a2ui/catalogs/earthscope-stations/v1"
 A2UI_HEADERS = {"X-GACT-Version": "0.3", "X-A2UI-Version": "0.9.1"}

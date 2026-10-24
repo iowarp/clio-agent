@@ -310,26 +310,25 @@ def test_workspace_skill_command_shadows_global(
 
 
 @pytest.mark.marketplace
-def test_marketplace_data_semantics_plugin_skills_resolve(tmp_path: Path) -> None:
-    """The shipped plugin resolves end-to-end: every skill the data-semantics
+def test_marketplace_clio_data_plugin_skills_resolve(tmp_path: Path) -> None:
+    """The shipped plugin resolves end-to-end: every skill the clio-data
     plugin ships exists plugin-locally and resolves with plugin scope."""
 
-    skills_root = MARKETPLACE_ROOT / "plugins" / "data-semantics" / "skills"
+    skills_root = MARKETPLACE_ROOT / "plugins" / "clio-data" / "skills"
     catalog = SkillCatalog(
         home=tmp_path / "no-home",
         cwd=tmp_path / "no-cwd",
-        plugin_skills=[("data-semantics", str(skills_root))],
+        plugin_skills=[("clio-data", str(skills_root))],
     )
     declared = [
-        "route-dataset-questions",
-        "inspect-dataset-structure",
-        "compare-variables",
-        "reason-about-quality",
-        "recommend-visual-checks",
+        "assess-data-quality",
+        "convert-scientific-data",
     ]
+    shipped = sorted(d.name for d in skills_root.iterdir() if (d / "SKILL.md").is_file())
+    assert shipped == declared
     out = catalog.resolve_declared(declared)
     for skill_id, res in out.items():
         assert res.status == "resolved", f"{skill_id}: {res.detail}"
         assert res.skill is not None and res.skill.scope == "plugin"
-        assert res.skill.source == "data-semantics"
+        assert res.skill.source == "clio-data"
         assert read_skill_body(res.skill).strip(), f"{skill_id} body is empty"

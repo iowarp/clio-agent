@@ -1,11 +1,11 @@
 """Slice F — the EarthScope workflow_state schema ships in the installed plugin.
 
 Phase C extracted the EarthScope ``workflow_state`` vocabulary out of a core
-hardcode; it now lives in the marketplace's ``earthscope-skills`` plugin, as the
+hardcode; it now lives in the marketplace's ``earthscope`` plugin, as the
 ``ai.iowarp.clio.workflow_state`` extension of its ``plugin.json`` (marketplace
 submodule, pinned here). These end-to-end tests check what ships:
 
-* **typed declaration** — the *shipped* ``earthscope-skills`` plugin declares a
+* **typed declaration** — the *shipped* ``earthscope`` plugin declares a
   ``workflow_state`` vocabulary with named sections (never the GENERIC dict).
   The Slice-B goldens pin the engine against their own fixture
   (``tests/test_gact/earthscope_schema.py``), independent of any plugin.
@@ -39,7 +39,7 @@ from tests._marketplace import MARKETPLACE_ROOT
 
 pytestmark = pytest.mark.marketplace
 
-_EARTHSCOPE_PLUGIN = MARKETPLACE_ROOT / "plugins" / "earthscope-skills"
+_EARTHSCOPE_PLUGIN = MARKETPLACE_ROOT / "plugins" / "earthscope"
 
 
 def _shipped_schema() -> WorkflowStateSchema:
@@ -85,7 +85,7 @@ def test_resolver_returns_typed_schema_for_earthscope_session_without_fallback(
     )
     metadata: dict[str, Any] = {}
     resolution = prepare_session_agent(app, metadata, "clio/earthscope")
-    assert "earthscope-skills" in [row["id"] for row in resolution.plugins]
+    assert "earthscope" in [row["id"] for row in resolution.plugins]
     sid = app.state.sessions.create(workspace_id="ws_default", metadata=metadata).id
 
     schema = session_workflow_state_schema(app, sid)

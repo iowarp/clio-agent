@@ -5,8 +5,8 @@ The real EarthScope case test (supersedes the EarthScope-specific
 ``clio/earthscope`` marketplace agent must resolve the geography,
 acquire real EarthScope/NDP GNSS station CSV evidence, analyze it, render a PNG,
 and synthesize — judged on the *structured* trace, not on the model's prose.
-The agent is one EarthScope GNSS scientist that loads the ``earthscope-skills``
-procedures on demand, so the pathway is read from its own tool calls (and any
+The agent is one EarthScope GNSS scientist that loads the ``earthscope`` and
+``geodesy`` procedures on demand, so the pathway is read from its own tool calls (and any
 regional child turns it fans out to, which the harness folds into the run).
 
 Provider/model are injected, not in the test. As a blast-radius guardrail the
@@ -22,6 +22,11 @@ The matchers below guard the data pathway with structured checks (on-region
 station from the filter result, real non-empty PNG, full acquisition pipeline).
 Judging whether the synthesis is *honest* about the evidence is the agent's
 trace-review job; what review finds gets frozen as new matchers here.
+
+Since the 2026-10 marketplace restructure (EarthScope 0.6.0) the agent no longer
+carries the ``plot`` and ``pandas`` plugins, so the matchers that read
+``pandas_profile_csv`` / ``plot_plot_timeseries`` need re-deriving from a fresh live
+grind before the positive cells can pass again.
 """
 
 from __future__ import annotations

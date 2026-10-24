@@ -70,7 +70,7 @@ MINIMAL_DIR = catalog_dir("a2ui-minimal", "minimal")
 SECOND_DIR = catalog_dir("a2ui-second", "second")
 # Shipped plugins whose catalogs the shipped-marketplace test must see; guards
 # against a vacuous pass.
-SHIPPED_PLUGINS_WITH_CATALOGS = ("earthscope-skills", "topology")
+SHIPPED_PLUGINS_WITH_CATALOGS = ("earthscope", "abaqus")
 PRODUCER_TOOLS = {
     "create_a2ui_surface",
     "update_a2ui_components",
