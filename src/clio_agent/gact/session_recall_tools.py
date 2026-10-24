@@ -1,4 +1,7 @@
-"""Compatibility names for session/transcript tools; Tasks is the default surface."""
+"""Session recall tools: search and read past sessions' retained transcripts.
+
+These are not long-term memory (``memory_*`` tools); they read what happened.
+"""
 
 from __future__ import annotations
 
@@ -12,7 +15,7 @@ def _active() -> tuple[Any, str, Any]:
     app = context.active_app()
     session_id = context.active_session_id()
     if app is None or not session_id:
-        raise ValueError("memory tool called outside an active session")
+        raise ValueError("session recall tool called outside an active session")
     session = app.state.sessions.get(session_id)
     if session is None:
         raise ValueError(f"active session not found: {session_id}")
@@ -50,7 +53,7 @@ def _search_result(
     limit: int,
     user_intent: str,
 ) -> dict[str, Any]:
-    from clio_agent.gact.routes.memory import _memory_tool_audit
+    from clio_agent.gact.routes.session_recall import _recall_tool_audit
 
     app, session_id, active = _active()
     normalized_scope = scope.strip() or "session"
@@ -59,16 +62,16 @@ def _search_result(
     active_workspace = str(getattr(active, "workspace_id", "") or "")
     caller = _caller(agent_def)
 
-    from clio_agent.gact.runtime.memory_search import agent_memory_search
+    from clio_agent.gact.runtime.session_recall_search import agent_session_search
 
-    response = agent_memory_search(
+    response = agent_session_search(
         app, session_id, query=query, scope=normalized_scope, limit=bounded_limit
     )
     policy_decision = response.metadata["policy_decision"]
     policy_scope = response.metadata["policy_scope"]
-    audit = _memory_tool_audit(
+    audit = _recall_tool_audit(
         app,
-        tool_name="memory_search_sessions",
+        tool_name="session_search",
         session_id=session_id,
         caller=caller,
         policy_decision=policy_decision,
@@ -83,7 +86,7 @@ def _search_result(
         },
     )
     return {
-        "tool": "memory_search_sessions",
+        "tool": "session_search",
         "query": response.query,
         "searched_sessions": response.searched_sessions,
         "hits": [
@@ -106,36 +109,36 @@ def _summary_result(
     scope: str,
     user_intent: str,
 ) -> dict[str, Any]:
-    from clio_agent.gact.routes.memory import (  # noqa: PLC0415
-        _memory_session_summary,
-        _memory_tool_audit,
-        _memory_tool_policy,
-        _raise_memory_policy_denied,
+    from clio_agent.gact.routes.session_recall import (  # noqa: PLC0415
+        _raise_recall_policy_denied,
+        _recall_session_summary,
+        _recall_tool_audit,
+        _recall_tool_policy,
     )
 
     app, session_id, _active_session = _active()
     target_id = target_session_id.strip() or session_id
     caller = _caller(agent_def)
     body = {"scope": scope, "user_intent": user_intent}
-    policy = _memory_tool_policy(
+    policy = _recall_tool_policy(
         app,
         session_id=session_id,
         target_session_id=target_id,
         body=body,
     )
     if not policy.get("allowed"):
-        _raise_memory_policy_denied(
+        _raise_recall_policy_denied(
             app,
-            tool_name="memory_read_session_summary",
+            tool_name="session_read_summary",
             session_id=session_id,
             target_session_id=target_id,
             caller=caller,
             policy=policy,
         )
-    summary = _memory_session_summary(app, target_id, caller_id=session_id)
-    audit = _memory_tool_audit(
+    summary = _recall_session_summary(app, target_id, caller_id=session_id)
+    audit = _recall_tool_audit(
         app,
-        tool_name="memory_read_session_summary",
+        tool_name="session_read_summary",
         session_id=session_id,
         target_session_id=target_id,
         caller=caller,
@@ -149,7 +152,7 @@ def _summary_result(
         },
     )
     return {
-        "tool": "memory_read_session_summary",
+        "tool": "session_read_summary",
         "summary": summary,
         "agent_target": _session_address(app, target_id),
         "metadata": {
@@ -168,12 +171,12 @@ def _frame_result(
     scope: str,
     user_intent: str,
 ) -> dict[str, Any]:
-    from clio_agent.gact.routes.memory import (  # noqa: PLC0415
+    from clio_agent.gact.routes.session_recall import (  # noqa: PLC0415
         _bounded_context_frame,
-        _memory_tool_audit,
-        _memory_tool_error,
-        _memory_tool_policy,
-        _raise_memory_policy_denied,
+        _raise_recall_policy_denied,
+        _recall_tool_audit,
+        _recall_tool_error,
+        _recall_tool_policy,
     )
 
     app, session_id, _active_session = _active()
@@ -181,23 +184,23 @@ def _frame_result(
     normalized_frame_id = frame_id.strip()
     caller = _caller(agent_def)
     if not normalized_frame_id:
-        raise _memory_tool_error(
+        raise _recall_tool_error(
             status_code=422,
             error="invalid_request",
             message="frame_id is required",
-            details={"tool_name": "memory_read_context_frame"},
+            details={"tool_name": "session_read_context_frame"},
             recoverable=True,
         )
-    policy = _memory_tool_policy(
+    policy = _recall_tool_policy(
         app,
         session_id=session_id,
         target_session_id=target_id,
         body={"scope": scope, "user_intent": user_intent},
     )
     if not policy.get("allowed"):
-        _raise_memory_policy_denied(
+        _raise_recall_policy_denied(
             app,
-            tool_name="memory_read_context_frame",
+            tool_name="session_read_context_frame",
             session_id=session_id,
             target_session_id=target_id,
             caller=caller,
@@ -212,7 +215,7 @@ def _frame_result(
         None,
     )
     if frame is None:
-        raise _memory_tool_error(
+        raise _recall_tool_error(
             status_code=404,
             error="not_found",
             message=f"context frame not found: {normalized_frame_id}",
@@ -220,9 +223,9 @@ def _frame_result(
             recoverable=False,
         )
     bounded_frame = _bounded_context_frame(frame)
-    audit = _memory_tool_audit(
+    audit = _recall_tool_audit(
         app,
-        tool_name="memory_read_context_frame",
+        tool_name="session_read_context_frame",
         session_id=session_id,
         target_session_id=target_id,
         caller=caller,
@@ -232,7 +235,7 @@ def _frame_result(
         details={"frame_id": normalized_frame_id},
     )
     return {
-        "tool": "memory_read_context_frame",
+        "tool": "session_read_context_frame",
         "frame": bounded_frame,
         "metadata": {
             "policy_decision": policy.get("decision", ""),
@@ -243,12 +246,12 @@ def _frame_result(
     }
 
 
-def build_memory_search_tool(agent_def: Any) -> Any:
+def build_session_search_tool(agent_def: Any) -> Any:
     """Build the bounded retained-session search tool."""
 
     from clio_agent.gact.agents.tool_instrumentation import native_tool  # noqa: PLC0415
 
-    def memory_search_sessions(
+    def session_search(
         query: str,
         scope: str = "session",
         limit: int = 10,
@@ -257,11 +260,11 @@ def build_memory_search_tool(agent_def: Any) -> Any:
         return _search_result(agent_def, query, scope, limit, user_intent)
 
     return native_tool(
-        memory_search_sessions,
-        name="memory_search_sessions",
+        session_search,
+        name="session_search",
         presentation="memory",
         domain="memory",
-        title="Search sessions (compatibility alias)",
+        title="Search past sessions",
         representation="row",
         desc=(
             "Search retained transcript excerpts in your session, delegated tree and explicitly granted peers. "
@@ -283,12 +286,12 @@ def build_memory_search_tool(agent_def: Any) -> Any:
     )
 
 
-def build_memory_summary_tool(agent_def: Any) -> Any:
+def build_session_summary_tool(agent_def: Any) -> Any:
     """Build the bounded session-summary reader."""
 
     from clio_agent.gact.agents.tool_instrumentation import native_tool  # noqa: PLC0415
 
-    def memory_read_session_summary(
+    def session_read_summary(
         target_session_id: str,
         scope: str = "session",
         user_intent: str = "",
@@ -296,13 +299,13 @@ def build_memory_summary_tool(agent_def: Any) -> Any:
         return _summary_result(agent_def, target_session_id, scope, user_intent)
 
     return native_tool(
-        memory_read_session_summary,
-        name="memory_read_session_summary",
+        session_read_summary,
+        name="session_read_summary",
         presentation="memory",
         domain="memory",
-        title="Read recent session activity (compatibility alias)",
+        title="Read session activity",
         representation="row",
-        desc="Compatibility alias for recent session activity. Prefer query_tasks and observe_tasks(view='transcript' or 'summary') on an authorized task handle.",
+        desc="Read a compact summary of a past session's recent activity. For a running task prefer observe_tasks(view='summary') on its handle.",
         args={
             "target_session_id": {"type": "string", "description": "Session to summarize."},
             "scope": {"type": "string", "description": "Requested memory scope."},
@@ -315,12 +318,12 @@ def build_memory_summary_tool(agent_def: Any) -> Any:
     )
 
 
-def build_memory_context_frame_tool(agent_def: Any) -> Any:
+def build_session_context_frame_tool(agent_def: Any) -> Any:
     """Build the bounded retained-context reader."""
 
     from clio_agent.gact.agents.tool_instrumentation import native_tool  # noqa: PLC0415
 
-    def memory_read_context_frame(
+    def session_read_context_frame(
         target_session_id: str,
         frame_id: str,
         scope: str = "session",
@@ -329,11 +332,11 @@ def build_memory_context_frame_tool(agent_def: Any) -> Any:
         return _frame_result(agent_def, target_session_id, frame_id, scope, user_intent)
 
     return native_tool(
-        memory_read_context_frame,
-        name="memory_read_context_frame",
+        session_read_context_frame,
+        name="session_read_context_frame",
         presentation="memory",
         domain="memory",
-        title="Read context frame (compatibility alias)",
+        title="Read context frame",
         representation="row",
         desc=(
             "Read one bounded retained context frame with source and policy provenance. "
@@ -352,19 +355,19 @@ def build_memory_context_frame_tool(agent_def: Any) -> Any:
     )
 
 
-def build_memory_tools(agent_def: Any) -> list[Any]:
+def build_session_recall_tools(agent_def: Any) -> list[Any]:
     """Build all retained-memory tools in stable prompt order."""
 
     return [
-        build_memory_search_tool(agent_def),
-        build_memory_summary_tool(agent_def),
-        build_memory_context_frame_tool(agent_def),
+        build_session_search_tool(agent_def),
+        build_session_summary_tool(agent_def),
+        build_session_context_frame_tool(agent_def),
     ]
 
 
 __all__ = [
-    "build_memory_context_frame_tool",
-    "build_memory_search_tool",
-    "build_memory_summary_tool",
-    "build_memory_tools",
+    "build_session_context_frame_tool",
+    "build_session_search_tool",
+    "build_session_summary_tool",
+    "build_session_recall_tools",
 ]

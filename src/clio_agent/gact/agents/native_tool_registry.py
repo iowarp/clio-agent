@@ -112,17 +112,18 @@ def _singles(agent_def: Any) -> dict[str, Callable[[], Any]]:
         build_set_goal_tool,
     )
     from clio_agent.gact.loop_control import build_set_loop_tool  # noqa: PLC0415
-    from clio_agent.gact.memory_tools import (  # noqa: PLC0415
-        build_memory_context_frame_tool,
-        build_memory_search_tool,
-        build_memory_summary_tool,
-    )
+    from clio_agent.gact.memory.tool_builders import BUILDERS as MEMORY_BUILDERS  # noqa: PLC0415
     from clio_agent.gact.plan_mode import build_plan_exit_tool  # noqa: PLC0415
     from clio_agent.gact.plugin_authoring import build_make_plugin_tool  # noqa: PLC0415
     from clio_agent.gact.recall_context_tool import build_recall_context_tool  # noqa: PLC0415
     from clio_agent.gact.search_assistant import (  # noqa: PLC0415
         build_clio_search_read_tool,
         build_clio_search_tool,
+    )
+    from clio_agent.gact.session_recall_tools import (  # noqa: PLC0415
+        build_session_context_frame_tool,
+        build_session_search_tool,
+        build_session_summary_tool,
     )
     from clio_agent.gact.ssh_tools import build_ssh_execute_tool  # noqa: PLC0415
     from clio_agent.gact.storage.connect_tool import (  # noqa: PLC0415
@@ -168,9 +169,10 @@ def _singles(agent_def: Any) -> dict[str, Callable[[], Any]]:
         "ssh_execute": build_ssh_execute_tool,
         "clio_search": build_clio_search_tool,
         "clio_search_read": build_clio_search_read_tool,
-        "memory_search_sessions": lambda: build_memory_search_tool(agent_def),
-        "memory_read_session_summary": lambda: build_memory_summary_tool(agent_def),
-        "memory_read_context_frame": lambda: build_memory_context_frame_tool(agent_def),
+        **MEMORY_BUILDERS,
+        "session_search": lambda: build_session_search_tool(agent_def),
+        "session_read_summary": lambda: build_session_summary_tool(agent_def),
+        "session_read_context_frame": lambda: build_session_context_frame_tool(agent_def),
         "create_a2ui_surface": build_create_a2ui_surface_tool,
         "update_a2ui_components": build_update_a2ui_components_tool,
         "update_a2ui_data_model": build_update_a2ui_data_model_tool,
@@ -215,9 +217,15 @@ _SINGLE_NAMES = frozenset(
         "ssh_execute",
         "clio_search",
         "clio_search_read",
-        "memory_search_sessions",
-        "memory_read_session_summary",
-        "memory_read_context_frame",
+        "session_search",
+        "session_read_summary",
+        "session_read_context_frame",
+        "memory_search",
+        "memory_read",
+        "create_memory",
+        "update_memory",
+        "forget_memory",
+        "propose_memory_change",
         "get_weather_forecast",
         "connected_data_download",
         "connected_data_status",
@@ -333,6 +341,10 @@ def build_native_tools(
         for name in _A2UI_PRODUCERS:
             if name in wanted:
                 withheld.setdefault(name, "no_a2ui_catalog_resolved")
+    from clio_agent.gact.memory.policy import withheld_memory_tools  # noqa: PLC0415
+
+    for name, reason in withheld_memory_tools(wanted).items():
+        withheld.setdefault(name, reason)  # memory off, a read-only session, recall off
     wanted -= set(withheld)
     available: dict[str, Any] = {}
     if wanted & TASK_TOOL_NAMES:

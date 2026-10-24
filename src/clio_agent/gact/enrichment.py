@@ -11,14 +11,10 @@ This module prepares one turn's *prompt context* and records what went into it:
   ``_context_file_access_error`` rather than proceeding with missing context),
   and ``_BINARY_CONTEXT_INSPECTORS`` is the generic extension->inspector hook for
   scientific formats.
-* **Explicit memory search** -- ``_requested_memory_search`` runs the opt-in request
-  off the user message metadata and returns the ranked hits as a CLIO addition,
-  emitting ``memory.search.completed`` so the recall stays visible.
 * **Context frames** -- ``_record_context_frame`` snapshots the assembled context
   (visible transcript, attached files, CLIO's additions, with token estimates) into
-  ``app.state.context_frames`` and publishes ``context.frame.created``;
-  ``_finalize_context_frame`` stamps the assistant message id + terminal status
-  and publishes ``context.frame.completed``. ``_message_text_for_frame`` /
+  ``app.state.context_frames`` (served by ``GET /v1/sessions/{sid}/context/frames``);
+  ``_finalize_context_frame`` stamps the assistant message id + terminal status. ``_message_text_for_frame`` /
   ``_estimate_context_tokens`` are their leaf token-accounting helpers.
 * **Turn provenance** -- ``_context_file_turn_provenance`` returns non-secret
   provenance for the context files attached to a turn.
@@ -30,14 +26,13 @@ module top. ``app`` is passed explicitly so handlers do not close over app local
 
 from __future__ import annotations
 
-from collections.abc import Mapping, Sequence
+from collections.abc import Sequence
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Optional
 
 from clio_agent.gact import context_reference_delivery
 from clio_agent.gact.conversation_projection import model_context_messages
-from clio_agent.gact.events import Event
 from clio_agent.gact.providers.config import _active_lm_model_ref
 from clio_agent.gact.resource_enrichment import enrich_with_workspace_resources
 from clio_agent.gact.runtime import bringup_timing
@@ -47,7 +42,6 @@ from clio_agent.gact.runtime.globals import (
     _new_context_frame_id,
     _session_agent_id,
 )
-from clio_agent.gact.runtime.memory_search import _memory_search_response
 from clio_agent.gact.runtime.retention import enforce_list_bound, ledger_guard
 from clio_agent.gact.types import ErrorInfo
 
@@ -413,129 +407,18 @@ def _enrich_with_context_files(app: "FastAPI", sid: str, user_text: str) -> str:
     )
 
 
-def _memory_search_request_from_message(
-    message: "Message", user_text: str
-) -> dict[str, Any] | None:
-    raw = message.metadata.get("memory_search") if isinstance(message.metadata, Mapping) else None
-    if raw is None and isinstance(message.metadata, Mapping):
-        if not message.metadata.get("include_cross_session_memory"):
-            return None
-        raw = {
-            "enabled": True,
-            "query": message.metadata.get("memory_search_query") or user_text,
-            "include_cross_session": True,
-            "reason": message.metadata.get("memory_search_reason") or "",
-        }
-    if not isinstance(raw, Mapping):
-        return None
-    if raw.get("enabled") is False:
-        return None
-    return dict(raw)
-
-
-def _requested_memory_search(
-    app: "FastAPI",
-    sid: str,
-    user_text: str,
-    user_msg: "Message",
-) -> tuple[str, dict[str, Any]]:
-    """Explicitly requested memory-search hits as this turn's CLIO addition.
-
-    Returns ``(block, metadata)``; the block is empty without a request or hits. This
-    is intentionally opt-in through user message metadata. It gives the
-    orchestrator/TUI a tool-like way to make cross-session recall visible to the
-    model without weakening the default per-session context boundary.
-    """
-
-    req = _memory_search_request_from_message(user_msg, user_text)
-    if req is None:
-        return "", {}
-
-    query = str(req.get("query") or user_text).strip()
-    include_cross_session = bool(req.get("include_cross_session", False))
-    workspace_id = str(req.get("workspace_id") or "").strip()
-    reason = str(req.get("reason") or "").strip()
-    try:
-        limit = int(req.get("limit", 5) or 5)
-    except (TypeError, ValueError):
-        limit = 5
-    response = _memory_search_response(
-        app,
-        query=query,
-        session_id=sid,
-        workspace_id=workspace_id,
-        include_cross_session=include_cross_session,
-        limit=limit,
-        exclude_message_id=user_msg.id,
-    )
-    metadata = {
-        "query": response.query,
-        "include_cross_session": response.include_cross_session,
-        "searched_sessions": response.searched_sessions,
-        "hit_count": len(response.hits),
-        "reason": reason,
-        "scope": response.metadata.get("scope", ""),
-        "hits": [
-            {
-                "session_id": hit.session_id,
-                "session_title": hit.session_title,
-                "message_id": hit.message_id,
-                "part_id": hit.part_id,
-                "role": hit.role,
-                "match_terms": hit.match_terms,
-                "score": hit.score,
-                "cross_session": bool(hit.metadata.get("cross_session", False)),
-            }
-            for hit in response.hits
-        ],
-    }
-    app.state.bus.publish(
-        Event(
-            type="memory.search.completed",
-            session_id=sid,
-            payload=metadata,
-        )
-    )
-    if not response.hits:
-        return "", metadata
-
-    blocks = []
-    for idx, hit in enumerate(response.hits, start=1):
-        cross = "cross-session" if hit.metadata.get("cross_session") else "current-session"
-        title = hit.session_title or hit.session_id
-        blocks.append(
-            f"### Memory hit {idx}: {title} ({cross})\n"
-            f"- session_id: {hit.session_id}\n"
-            f"- message_id: {hit.message_id}\n"
-            f"- role: {hit.role}\n"
-            f"- matched_terms: {', '.join(hit.match_terms)}\n"
-            f"```\n{hit.text}\n```"
-        )
-    return (
-        "## Explicit Memory Search Results\n\n"
-        + f"Query: {response.query}\n"
-        + f"Reason: {reason or 'not provided'}\n"
-        + f"Scope: {metadata['scope']}\n\n"
-        + "\n\n".join(blocks)
-    ), metadata
-
-
-def enrich_turn_context(
-    app: "FastAPI", sid: str, user_text: str, user_msg: "Message"
-) -> tuple[str, str, dict[str, Any]]:
+def enrich_turn_context(app: "FastAPI", sid: str, user_text: str, user_msg: "Message") -> str:
     """#1215 S5: the enrichment mechanisms as ONE timed "enrichment" phase.
 
-    Returns ``(text, memory_block, memory_metadata)``: the user's message with the
-    user's own attachments (files, resources, context references), and the requested
-    memory hits as a separate CLIO addition (never glued into the user's text).
+    Returns the user's message with the user's own attachments (files, resources,
+    context references). Recall of other sessions is the agent's own call
+    (``session_search``); long-term memory arrives as the session's pinned snapshot.
     """
 
     with bringup_timing.timer_for_session(app, sid).phase("enrichment"):
         text = _enrich_with_context_files(app, sid, user_text)
         text = enrich_with_workspace_resources(app, sid, text, user_msg)
-        text = context_reference_delivery.enrich_with_context_references(app, sid, text, user_msg)
-        block, metadata = _requested_memory_search(app, sid, user_text, user_msg)
-        return text, block, metadata
+        return context_reference_delivery.enrich_with_context_references(app, sid, text, user_msg)
 
 
 # Clio-owned marker for the server-composed observe-later notification block

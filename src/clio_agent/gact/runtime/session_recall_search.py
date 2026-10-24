@@ -1,14 +1,9 @@
-"""Shared transcript-memory search primitives for the GACT server (#714).
+"""Shared session recall search primitives for the GACT server (#714).
 
-CLIO's retained-transcript search powers two distinct surfaces that must score
-and excerpt identically:
-
-* the agent-run path -- ``_requested_memory_search`` in
-  :mod:`clio_agent.gact.app` injects a requested memory search into a turn's
-  context before the LM call; and
-* the memory routes -- ``GET /v1/memory/search`` and the agent-callable
-  ``POST .../memory/tools/search-sessions`` in
-  :mod:`clio_agent.gact.routes.memory`.
+CLIO's retained-transcript search powers surfaces that must score and excerpt
+identically: the recall routes -- ``GET /v1/session-recall/search`` and the
+agent-callable ``POST .../session-recall/search`` in
+:mod:`clio_agent.gact.routes.session_recall` -- and the search assistant.
 
 Those pure, ``app.state``-reading helpers therefore live here as a leaf module
 both surfaces import, keeping a single source of truth for query
@@ -29,9 +24,9 @@ from clio_agent.gact.attention.rendered import _project
 from clio_agent.gact.types import (
     ErrorEnvelope,
     ErrorInfo,
-    MemorySearchHit,
-    MemorySearchResponse,
     Message,
+    SessionRecallHit,
+    SessionRecallResponse,
 )
 from clio_agent.gact.workspace_scope import GLOBAL_WORKSPACE_ID, session_scope_label
 
@@ -39,7 +34,7 @@ if TYPE_CHECKING:
     from fastapi import FastAPI
 
 
-def _memory_search_terms(query: str) -> list[str]:
+def _recall_search_terms(query: str) -> list[str]:
     """Normalize a memory search query into unique lowercase terms."""
 
     terms = [term.lower() for term in re.findall(r"[\w.@/-]+", query, re.UNICODE)]
@@ -53,7 +48,7 @@ def _memory_search_terms(query: str) -> list[str]:
     return deduped
 
 
-def _memory_search_phrase(text: str, query: str) -> tuple[int, int] | None:
+def _recall_search_phrase(text: str, query: str) -> tuple[int, int] | None:
     """Find pasted rendered prose even when the stored Markdown contains emphasis or links."""
     if not query.strip():
         return None
@@ -66,7 +61,7 @@ def _memory_search_phrase(text: str, query: str) -> tuple[int, int] | None:
     return (offsets[found.start()], offsets[found.end() - 1] + 1) if found else None
 
 
-def _memory_search_excerpt(
+def _recall_search_excerpt(
     text: str, terms: list[str], *, max_chars: int = 480, query: str = ""
 ) -> str:
     """Excerpt the exact phrase, otherwise the densest cluster of matching terms."""
@@ -74,7 +69,7 @@ def _memory_search_excerpt(
     if len(text) <= max_chars:
         return text
     lowered = text.lower()
-    phrase = _memory_search_phrase(text, query)
+    phrase = _recall_search_phrase(text, query)
     positions = sorted(
         [
             (match.start(), term)
@@ -124,16 +119,16 @@ def _message_text_excerpt(message: "Message", *, max_chars: int = 360) -> str:
     return text[: max_chars - 3].rstrip() + "..."
 
 
-def agent_memory_search(
+def agent_session_search(
     app: "FastAPI", session_id: str, *, query: str, scope: str = "session", limit: int = 20
-) -> MemorySearchResponse:
+) -> SessionRecallResponse:
     """Compatibility entry point for task-backed session discovery."""
     from clio_agent.gact.task_transcripts import search_session_alias
 
     return search_session_alias(app, session_id, query=query, scope=scope, limit=limit)
 
 
-def _memory_search_response(
+def _recall_search_response(
     app: "FastAPI",
     *,
     query: str,
@@ -143,7 +138,7 @@ def _memory_search_response(
     limit: int = 20,
     exclude_message_id: str = "",
     allowed_session_ids: set[str] | None = None,
-) -> MemorySearchResponse:
+) -> SessionRecallResponse:
     """Search retained GACT transcript memory with explicit scope controls.
 
     Normal calls are session-scoped. Cross-session search is opt-in via
@@ -151,7 +146,7 @@ def _memory_search_response(
     global workspace) by default; crossing a workspace boundary raises 403.
     """
 
-    terms = _memory_search_terms(query)
+    terms = _recall_search_terms(query)
     if not terms:
         raise HTTPException(
             status_code=422,
@@ -253,7 +248,7 @@ def _memory_search_response(
     if allowed_session_ids is not None:
         session_ids = [sid for sid in session_ids if sid in allowed_session_ids]
     sessions_by_id = {sid: app.state.sessions.get(sid) for sid in session_ids}
-    hits: list[MemorySearchHit] = []
+    hits: list[SessionRecallHit] = []
     for sid in session_ids:
         sess = sessions_by_id.get(sid)
         if sess is None:
@@ -271,7 +266,7 @@ def _memory_search_response(
                 matched = [term for term in terms if term in lowered]
                 if not matched:
                     continue
-                phrase_match = _memory_search_phrase(text, query) is not None
+                phrase_match = _recall_search_phrase(text, query) is not None
                 if not phrase_match and len(matched) * 2 < len(terms):
                     continue
                 score = 1.0 if phrase_match else 0.9 * len(set(matched)) / len(set(terms))
@@ -282,7 +277,7 @@ def _memory_search_response(
                     active_session_id=session_id,
                 )
                 hits.append(
-                    MemorySearchHit(
+                    SessionRecallHit(
                         session_id=sid,
                         session_title=sess.title,
                         workspace_id=sess.workspace_id,
@@ -291,7 +286,7 @@ def _memory_search_response(
                         role=message.role,
                         created_at=message.created_at,
                         updated_at=message.updated_at,
-                        text=_memory_search_excerpt(text, matched, query=query),
+                        text=_recall_search_excerpt(text, matched, query=query),
                         score=round(score, 4),
                         match_terms=sorted(set(matched)),
                         metadata={
@@ -305,7 +300,7 @@ def _memory_search_response(
                 )
 
     hits.sort(key=lambda hit: (hit.score, hit.created_at), reverse=True)
-    return MemorySearchResponse(
+    return SessionRecallResponse(
         query=query,
         include_cross_session=include_cross_session,
         searched_sessions=session_ids,
@@ -324,8 +319,8 @@ def _memory_search_response(
 
 
 __all__ = [
-    "_memory_search_terms",
-    "_memory_search_excerpt",
+    "_recall_search_terms",
+    "_recall_search_excerpt",
     "_message_text_excerpt",
-    "_memory_search_response",
+    "_recall_search_response",
 ]

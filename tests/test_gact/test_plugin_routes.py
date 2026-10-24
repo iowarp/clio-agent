@@ -23,6 +23,7 @@ from tests.test_plugins.helpers import plugin, tools_module, write
 FIXTURE_PLUGINS = {"workspace", "shell", "visuals", "delegation", "document-runtime"}
 STANDARD_PLUGINS = [
     "core",
+    "memory",
     "workspace",
     "shell",
     "visuals",
@@ -133,7 +134,13 @@ def test_installed_marketplace_is_untrusted_until_the_trust_step(
     assert resolved.status_code == 200, resolved.text
     # ``notes`` hard-requires ``shell``, which comes from the default marketplace.
     assert resolved.json()["agent"]["id"] == "helper"
-    assert [row["id"] for row in resolved.json()["plugins"]] == ["core", "notes", "fleet", "shell"]
+    assert [row["id"] for row in resolved.json()["plugins"]] == [
+        "core",
+        "memory",
+        "notes",
+        "fleet",
+        "shell",
+    ]
 
 
 def test_marketplace_install_requires_a_source(client: TestClient) -> None:

@@ -158,7 +158,7 @@ def test_process_attach_identity_is_preserved_by_later_store_construction(
         monkeypatch.setattr(
             storage, "TagIds", lambda *_args: SimpleNamespace(prewarm=lambda _: None)
         )
-        monkeypatch.setattr(storage, "indexer_chimod_present", lambda **_kwargs: False)
+        monkeypatch.setattr(storage, "indexer_pool", lambda _config: "")
         store = storage.ClioCoreStore(config_path=config, namespace="later")
         assert store._gate._attached_identity == expected
         store._gate.note_rpc_stalled()

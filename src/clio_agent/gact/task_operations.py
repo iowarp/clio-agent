@@ -113,6 +113,8 @@ class TaskOperations:
             raise ValueError("limit must be positive")
         access = TaskAccess(self.history, caller)
         query = query.strip() or None if query is not None else None
+        if query is not None and scope == "authorized" and not caller.human_action:
+            self._check_past_session_search(caller)
         start = end = None
         if message_after is not None or message_before is not None:
             from clio_agent.gact.task_transcripts import message_search_window
@@ -249,6 +251,18 @@ class TaskOperations:
             observe_handles=(last[1],) if last is not None and not last_readable else (),
             collect=False,
         )
+
+    def _check_past_session_search(self, caller: TaskCaller) -> None:
+        """Text search across other conversations follows the past-session switches."""
+        if self.app is None or not caller.session_id:
+            return
+        from clio_agent.gact.memory.policy import (  # noqa: PLC0415
+            PastSessionSearchWithheld,
+            past_session_search_reason,
+        )
+
+        if reason := past_session_search_reason(self.app, caller.session_id):
+            raise PastSessionSearchWithheld(reason)
 
     def _matches_text(
         self,

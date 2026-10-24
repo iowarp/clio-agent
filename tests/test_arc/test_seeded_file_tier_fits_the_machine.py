@@ -63,6 +63,7 @@ def _old_seed(tmp_path: Path) -> Path:
             file_capacity="50GB",
             ram_budget="1GB",
             metadata_log=clio_core_config._cte_yaml_path(tmp_path / "cte" / "metadata.log"),
+            indexer="",
         ),
         encoding="utf-8",
     )

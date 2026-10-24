@@ -116,6 +116,7 @@ export default defineConfig({
 					collapsed: true,
 					items: [
 						{ label: 'Search files and conversations', slug: 'docs/search' },
+						{ label: 'Long-term memory', slug: 'docs/long-term-memory' },
 						{ label: 'What CLIO remembers', slug: 'docs/memory' },
 						{ label: 'Try another approach', slug: 'docs/branch-and-rewind' },
 					],

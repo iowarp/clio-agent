@@ -26,6 +26,7 @@ from clio_agent.arc.clio_core_config import (
     _default_cte_dir,
     parse_capacity_bytes,
 )
+from clio_agent.arc.clio_core_indexer import indexer_block
 
 logger = logging.getLogger(__name__)
 _GIB = 1 << 30
@@ -65,7 +66,7 @@ def _managed_config(config: Path, text: str) -> dict[str, Any] | None:
     if not isinstance(document, dict):
         return None
     try:
-        ram, module = document["compose"]
+        ram, module, *indexer = document["compose"]
         (tier,) = module["storage"]
         capacity = parse_capacity_bytes(tier["capacity_limit"])
         # Older generated configs have no journal. Adopt only the unchanged seed
@@ -80,6 +81,9 @@ def _managed_config(config: Path, text: str) -> dict[str, Any] | None:
             file_tier=_cte_yaml_path(config.parent / "storage.bin"),
             file_capacity=tier["capacity_limit"],
             metadata_log=_cte_yaml_path(config.parent / "metadata.log"),
+            indexer=indexer_block(_cte_yaml_path(config.parent / "indexer_index.log"))
+            if indexer
+            else "",
         )
     except (KeyError, TypeError, ValueError):
         return None

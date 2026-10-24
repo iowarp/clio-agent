@@ -1,7 +1,7 @@
 """In-memory ledger retention bounds for the GACT server (#770 Wave-C C3).
 
 Several of the server's in-memory ledgers (``command_audit``,
-``memory_tool_audit``, ``context_frames``, ``file_changes``, ``permissions``,
+``session_recall_audit``, ``context_frames``, ``file_changes``, ``permissions``,
 ``turn_attempts``, ``shared_tokens``) were append-only and grew unbounded for
 the life of the process. This module gives each a *bound* plus a **structured
 eviction reason** so a drop is never silent -- mirroring the ``stream_fallback``
@@ -12,7 +12,7 @@ Two eviction shapes are supported:
 
 * **FIFO** (``is_terminal is None``): the oldest entry is evicted first once the
   ledger exceeds ``max_entries``. Used for pure audit trails where every row is
-  equal (``command_audit``, ``memory_tool_audit``, per-session ``context_frames`` and
+  equal (``command_audit``, ``session_recall_audit``, per-session ``context_frames`` and
   ``file_changes``).
 * **terminal-first** (``is_terminal`` set): while the ledger exceeds the *soft*
   ``max_entries`` the oldest **terminal** row (resolved / applied / rejected /
@@ -165,6 +165,17 @@ def _config_fallback(key: str, raw: Any, default: int, why: str) -> None:
     )
 
 
+def subscriber_queue_capacity() -> int:
+    """Events one live SSE subscriber may have waiting before the bus drops them.
+
+    A drop is never silent: the subscriber reads a ``stream.gap`` next and the
+    client reconciles from the transcript (``clio_agent.gact.events``).
+    """
+    return _resolve_positive_int(
+        "gact.ledger_retention.subscriber_queue.max", "CLIO_LEDGER_SUBSCRIBER_QUEUE_MAX", 256
+    )
+
+
 def _resolve_positive_int(key: str, env: str, default: int) -> int:
     """Resolve a positive-int retention bound (config file → env → default).
 
@@ -247,10 +258,10 @@ def build_ledger_bounds() -> dict[str, LedgerBound]:
                 "gact.ledger_retention.command_audit.max", "CLIO_LEDGER_COMMAND_AUDIT_MAX", 2000
             )
         ),
-        "memory_tool_audit": LedgerBound(
+        "session_recall_audit": LedgerBound(
             max_entries=_resolve_positive_int(
-                "gact.ledger_retention.memory_tool_audit.max",
-                "CLIO_LEDGER_MEMORY_TOOL_AUDIT_MAX",
+                "gact.ledger_retention.session_recall_audit.max",
+                "CLIO_LEDGER_SESSION_RECALL_AUDIT_MAX",
                 2000,
             )
         ),

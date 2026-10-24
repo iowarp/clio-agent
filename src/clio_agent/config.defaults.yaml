@@ -597,11 +597,6 @@ gact.ledger_retention.context_frames.max: 200
 # undone.
 gact.ledger_retention.file_changes.max: 500
 
-# CLIO_LEDGER_MEMORY_TOOL_AUDIT_MAX  (int)  <- src/clio_agent/gact/runtime/retention.py
-# Max entries kept in the in-memory memory-tool-audit ledger before FIFO
-# eviction; raise for more memory-tool audit history.
-gact.ledger_retention.memory_tool_audit.max: 2000
-
 # CLIO_LEDGER_NATIVE_DELIVERY_NOTES_MAX  (int)  <- src/clio_agent/gact/native_delivery_outcome.py
 # Unsettled native-attachment decline notes buffered before the oldest are
 # dropped; each is normally consumed by the turn that planned it, so raise
@@ -618,6 +613,11 @@ gact.ledger_retention.permissions.hard: 4000
 # first, protecting still-pending approval requests.
 gact.ledger_retention.permissions.max: 2000
 
+# CLIO_LEDGER_SESSION_RECALL_AUDIT_MAX  (int)  <- src/clio_agent/gact/runtime/retention.py
+# Max entries kept in the in-memory session-recall audit ledger before FIFO
+# eviction; raise for more past-session search audit history.
+gact.ledger_retention.session_recall_audit.max: 2000
+
 # CLIO_LEDGER_SHARED_TOKENS_HARD  (int)  <- src/clio_agent/gact/runtime/retention.py
 # Absolute ceiling on the shared-token ledger; past this even a still-
 # pending token is force-evicted oldest-first.
@@ -633,6 +633,12 @@ gact.ledger_retention.shared_tokens.max: 5000
 # model input, for example); raise to keep a longer degradation trail on
 # very long sessions.
 gact.ledger_retention.stream_fallback_notes.max: 32
+
+# CLIO_LEDGER_SUBSCRIBER_QUEUE_MAX  (int)  <- src/clio_agent/gact/runtime/retention.py
+# Events one live stream subscriber may have waiting before the server drops
+# them; after a drop the client is told and reloads the conversation, so
+# raise it for slow connections.
+gact.ledger_retention.subscriber_queue.max: 256
 
 # CLIO_LEDGER_TURN_ATTEMPTS_HARD  (int)  <- src/clio_agent/gact/runtime/retention.py
 # Absolute ceiling on the turn-attempts ledger; past this even a still-

@@ -74,9 +74,9 @@ def peer_cycle(call: Any, proof: Path, wid: str, agent: str) -> dict[str, Any]:
         proof,
         sender,
         f"The human authorizes sending one qualification message to the peer in this workspace "
-        f"whose transcript contains {marker!r}. Find it using memory_search_sessions(query={marker!r}, "
+        f"whose transcript contains {marker!r}. Find it using session_search(query={marker!r}, "
         "scope='workspace',user_intent='human requested peer messaging qualification'). "
-        "Read that exact session with memory_read_session_summary using the same scope/intent. "
+        "Read that exact session with session_read_summary using the same scope/intent. "
         f"Then message_agent(target=the returned exact session address,message={busy_message!r}, "
         "scope='workspace',user_intent='human requested peer messaging qualification', "
         "correlation_id='lifecycle-peer-busy'). Use these native tools yourself; do not spawn "
@@ -86,8 +86,8 @@ def peer_cycle(call: Any, proof: Path, wid: str, agent: str) -> dict[str, Any]:
     )
     ack = evidence.observation(discovery["invocation"])
     assert ack["target_session_id"] == peer and ack["source_session_id"] == sender
-    assert evidence.tool_events(proof, sender, "memory_search_sessions")
-    assert evidence.tool_events(proof, sender, "memory_read_session_summary")
+    assert evidence.tool_events(proof, sender, "session_search")
+    assert evidence.tool_events(proof, sender, "session_read_summary")
     held = next(row for row in evidence.mail(call, peer) if row["message_id"] == ack["message_id"])
     assert not held["delivered_at"], "Busy waiter mail must wait for its next model iteration"
     paths["release"].write_text("release real peer work", encoding="utf8")

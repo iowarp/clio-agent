@@ -119,7 +119,7 @@ def test_catalog_tools_describes_the_claimable_builtin_surface(
         "send_agent_message",
     } <= names
     # Claimable by a plugin even though the test standard agent does not claim it.
-    assert "memory_search_sessions" in names
+    assert "session_search" in names
     assert {
         "spawn_agent_task",
         "query_tasks",

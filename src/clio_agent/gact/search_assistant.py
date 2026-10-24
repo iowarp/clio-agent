@@ -14,10 +14,10 @@ from fastapi import FastAPI, HTTPException
 from clio_agent.gact import context
 from clio_agent.gact.routes.workspace_file_listing import collect_workspace_file_entries
 from clio_agent.gact.routes.workspace_file_read import readable_workspace_file
-from clio_agent.gact.runtime.memory_search import (
-    _memory_search_excerpt,
-    _memory_search_response,
-    _memory_search_terms,
+from clio_agent.gact.runtime.session_recall_search import (
+    _recall_search_excerpt,
+    _recall_search_response,
+    _recall_search_terms,
 )
 from clio_agent.gact.side_sessions import is_read_only_side_session
 
@@ -132,7 +132,7 @@ async def search_connected_service(
                 )
     if kind in {"all", "messages"}:
         response = await asyncio.to_thread(
-            _memory_search_response,
+            _recall_search_response,
             app,
             query=query,
             workspace_id=workspace_id,
@@ -210,8 +210,8 @@ async def search_connected_service(
                         "workspace_id": workspace.id,
                         "path": path,
                         "line": line,
-                        "text": _memory_search_excerpt(
-                            text, _memory_search_terms(query), query=query
+                        "text": _recall_search_excerpt(
+                            text, _recall_search_terms(query), query=query
                         )
                         if position >= 0
                         else "",

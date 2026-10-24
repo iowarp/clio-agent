@@ -2494,7 +2494,7 @@ def _probe_workspace_memory_scope_for_case(
         )
 
         denied = http.post(
-            f"/v1/sessions/{session_id}/memory/tools/search-sessions",
+            f"/v1/sessions/{session_id}/session-recall/search",
             json={"query": query, "scope": "current_workspace", "limit": 10},
             timeout=timeout_s,
         )
@@ -2510,7 +2510,7 @@ def _probe_workspace_memory_scope_for_case(
         )
 
         allowed = http.post(
-            f"/v1/sessions/{session_id}/memory/tools/search-sessions",
+            f"/v1/sessions/{session_id}/session-recall/search",
             json={
                 "query": query,
                 "scope": "current_workspace",
@@ -2538,7 +2538,7 @@ def _probe_workspace_memory_scope_for_case(
         )
 
         other_denied = http.post(
-            f"/v1/sessions/{session_id}/memory/tools/read-session-summary",
+            f"/v1/sessions/{session_id}/session-recall/read-summary",
             json={
                 "target_session_id": other_session_id,
                 "scope": "current_workspace",
@@ -2573,7 +2573,7 @@ def _probe_workspace_memory_scope_for_case(
             "checks": checks,
             "provenance": {
                 "source": "gact_memory_tool",
-                "tool_name": "memory_search_sessions",
+                "tool_name": "session_search",
             },
         }
     except Exception as exc:  # noqa: BLE001

@@ -24,5 +24,42 @@
       "sha256": "a0b4109cbfe2fef59c85a44ecb30f4a16b869614dfa16d0047683ec5f29cf066"
     }
   ],
-  "observability_review": "Test-only fictional fixture: four child agents and twelve tool calls, not a model run"
+  "observability_review": "Test-only fictional fixture: four child agents and twelve tool calls, not a model run",
+  "long_term_memory": {
+    "captured": "2026-10-23",
+    "theme": "light",
+    "scale": 2,
+    "model_run": true,
+    "source": "live verification, docs/design/sdk/memory-ledger.md",
+    "captures": [
+      {
+        "file": "docs-memory-documents.png",
+        "sha256": "773d4d3b0809f0fc80fdaca07a25e416591ed259575a027f099f702a4cc28cfd"
+      },
+      {
+        "file": "docs-memory-inbox.png",
+        "sha256": "ae8eca8d2068ad8c0c1dedae8baab0dc565fd3fc29813b071a1960687d79c011"
+      },
+      {
+        "file": "docs-memory-document.png",
+        "sha256": "c8a00453c4b22ca06a08138b758c7145aacd60fc5a580c3dd064af300afdcd7a"
+      },
+      {
+        "file": "docs-memory-history.png",
+        "sha256": "1725cd39ed374983e1be872836dbea8e96f285f8f7510d898f9e961fb8dffbc6"
+      },
+      {
+        "file": "docs-memory-popover.png",
+        "sha256": "d8d93edf28f6bb1d90fec210ad2359c4fa3cab49d4de3bbf48bb6344a297702f"
+      },
+      {
+        "file": "docs-memory-notice.png",
+        "sha256": "740337b39e8a0bf46f9f615cf831bb94e52ce0ec857652ec7d31d862a8aea1d6"
+      },
+      {
+        "file": "docs-memory-off.png",
+        "sha256": "bdc10b81edc39554d7ccf58f0ff39ce7a6076951502885ad990cc64bd1dd5594"
+      }
+    ]
+  }
 }

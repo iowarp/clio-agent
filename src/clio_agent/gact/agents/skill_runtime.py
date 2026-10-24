@@ -236,8 +236,12 @@ def skills_prompt_block(runtime: SkillRuntime) -> str:
         EFFECT_SPAWN_SUBAGENT,
         parse_skill_effect,
     )
+    from clio_agent.gact.memory.turn_use import note_skill  # noqa: PLC0415
 
     for skill_id, res in resolved.items():
+        note_skill(
+            "loaded", skill_id, str(res.skill.source or res.skill.scope) if res.skill else ""
+        )
         if res.skill is None:
             continue
         effect = parse_skill_effect(res.skill.meta)
@@ -413,6 +417,9 @@ def build_load_skill_tool(agent_def: "AgentDef", runtime: SkillRuntime) -> Any:
             if app is None or not sid:
                 trace.event("SKILLS", "skill.loaded outside app/session: %s %s", skill_id, ref.path)
                 return
+            from clio_agent.gact.memory.turn_use import note_skill  # noqa: PLC0415
+
+            note_skill("read", skill_id, str(ref.source or ref.scope))
             payload: dict[str, Any] = {
                 "skill_id": skill_id,
                 "scope": ref.scope,

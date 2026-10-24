@@ -371,7 +371,7 @@ class MemoryStats(BaseModel):
     model_config = {"populate_by_name": True}
 
 
-class MemorySearchHit(BaseModel):
+class SessionRecallHit(BaseModel):
     """One transcript-memory match.
 
     This is intentionally provenance-heavy so a future orchestrator or TUI can
@@ -392,13 +392,13 @@ class MemorySearchHit(BaseModel):
     metadata: dict[str, Any] = Field(default_factory=dict)
 
 
-class MemorySearchResponse(BaseModel):
-    """GET /v1/memory/search response."""
+class SessionRecallResponse(BaseModel):
+    """GET /v1/session-recall/search response."""
 
     query: str
     include_cross_session: bool = False
     searched_sessions: list[str] = Field(default_factory=list)
-    hits: list[MemorySearchHit] = Field(default_factory=list)
+    hits: list[SessionRecallHit] = Field(default_factory=list)
     metadata: dict[str, Any] = Field(default_factory=dict)
 
 

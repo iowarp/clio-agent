@@ -18,7 +18,7 @@ A session whose agent cannot resolve fails with the typed resolution errors.
 
 from __future__ import annotations
 
-from collections.abc import Mapping
+from collections.abc import Iterable, Mapping
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -28,7 +28,7 @@ from clio_agent.gact.workflow_state.schema import (
     GENERIC_WORKFLOW_STATE_SCHEMA,
     WorkflowStateSchema,
 )
-from clio_agent.plugins.resolve import Delta, Resolution, ResolutionError
+from clio_agent.plugins.resolve import Delta, Resolution, ResolutionError, delegable_subagents
 from clio_agent.plugins.service import DEFAULT_AGENT, PluginService
 
 if TYPE_CHECKING:
@@ -234,10 +234,47 @@ def resolution_agent_def(resolution: Resolution) -> AgentDef:
 
 
 def session_agent_def(app: Any, session_id: str) -> AgentDef:
-    """The session's agent, with the zero-tool allowlist applied."""
+    """The session's agent, with the zero-tool allowlist applied.
 
-    agent_def = resolution_agent_def(session_resolution(app, session_id))
+    A memory tool this session may not have (memory off, a delegated child's writes)
+    is withheld at build time; its prompt fragment leaves with it (memory ledger MD8).
+    """
+
+    resolution = session_resolution(app, session_id)
+    agent_def = withhold_session_tools(
+        app, session_id, resolution_agent_def(resolution), resolution
+    )
     return apply_session_tool_allowlist(app, agent_def, session_id=session_id)
+
+
+def session_withheld_tools(app: Any, session_id: str, names: Iterable[str]) -> dict[str, str]:
+    """``{tool: typed reason}`` for the memory tools of ``names`` this session may not have."""
+    session = app.state.sessions.get(session_id)
+    if session is None:
+        return {}
+    from clio_agent.gact.memory.policy import session_policy  # noqa: PLC0415
+
+    policy = session_policy(app, session)
+    out = {name: policy.withheld(name) for name in names}
+    return {name: reason for name, reason in out.items() if reason}
+
+
+def withhold_session_tools(
+    app: Any, session_id: str, agent_def: AgentDef, *resolutions: Resolution
+) -> AgentDef:
+    """``agent_def`` without the memory tools this session may not have, and their
+    prompt fragments (memory ledger MD8). ``resolutions`` composed its prompt.
+    """
+    from clio_agent.plugins.compose import prompt_text_without  # noqa: PLC0415
+
+    withheld = set(session_withheld_tools(app, session_id, agent_def.tools))
+    if not withheld:
+        return agent_def
+    prompt = agent_def.system_prompt
+    for resolution in resolutions:
+        prompt = prompt_text_without(prompt, resolution.prompt, withheld)
+    tools = [name for name in agent_def.tools if name not in withheld]
+    return agent_def.model_copy(update={"system_prompt": prompt, "tools": tools})
 
 
 def resolve_session_agent(app: Any, agent_id: str, *, session_id: str) -> AgentDef | None:
@@ -248,9 +285,7 @@ def resolve_session_agent(app: Any, agent_id: str, *, session_id: str) -> AgentD
     except SessionAgentUnavailable:
         return None
     if not agent_id or agent_id in (resolution.agent.get("id"), resolution.agent.get("ref")):
-        return apply_session_tool_allowlist(
-            app, resolution_agent_def(resolution), session_id=session_id
-        )
+        return session_agent_def(app, session_id)
     if not any(row["id"] == agent_id for row in resolution.subagents):
         return None
     child = plugin_service(app).resolve_subagent(resolution, agent_id)
@@ -346,7 +381,7 @@ def spawn_targets(resolution: Resolution) -> list[dict[str, str]]:
 
     return [
         {"id": row["id"], "plugin": row["plugin"], "description": row["description"]}
-        for row in resolution.subagents
+        for row in delegable_subagents(resolution)
     ]
 
 

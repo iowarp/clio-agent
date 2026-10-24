@@ -465,6 +465,22 @@ def _check_private_daemon_survives(_clio_private_cte_daemon):
 
 
 @pytest.fixture(autouse=True)
+def _clear_declared_structured_content():
+    """Drop a tool presentation a test declared but never consumed.
+
+    A test that calls a native tool body directly (no observer to pop the
+    declaration) leaves it in this worker's context, where it would surface on an
+    unrelated later call.
+    """
+    yield
+    from clio_agent.gact.agents.tool_instrumentation import (  # noqa: PLC0415
+        pop_declared_structured_content,
+    )
+
+    pop_declared_structured_content()
+
+
+@pytest.fixture(autouse=True)
 def _block_outbound_network(request):
     """Fail a unit test that reaches a non-loopback host (tests/_network_guard.py)."""
     if any(request.node.get_closest_marker(m) for m in _network_guard.EXEMPT_MARKERS):

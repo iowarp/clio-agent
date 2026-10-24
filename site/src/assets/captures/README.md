@@ -175,3 +175,17 @@ model run; none is painted or composited.
 Reproduce with `bash scripts/cloud/stack.sh start` and
 `node scripts/cloud/ui_check.mjs --steps <file>`, setting `localStorage.theme`
 to `light` before each page loads.
+
+## Long-term memory — 23 October 2026
+
+The `docs-memory-*` images other than `docs-memory-search.png` are light-mode browser captures at two device pixels per CSS pixel (1200 × 820 viewport) of the production memory page and conversations, from the live verification run recorded in `docs/design/sdk/memory-ledger.md` (`claude_code` provider, conversations on `claude-haiku-5-5`, background memory on `claude-sonnet-5-5`). The conversations are real model runs; the memory they show was written by those runs, by edits on the memory page and by imports in the same run. Nothing is painted or composited. Reproduce with `scripts/cloud/capture_memory_docs.mjs` against `bash scripts/cloud/stack.sh start`.
+
+| File | What to inspect |
+| --- | --- |
+| `docs-memory-documents.png` | What is remembered: account documents by category, then a workspace's own |
+| `docs-memory-inbox.png` | One imported proposal waiting for review, with its marker and evidence |
+| `docs-memory-document.png` | The preferences document: facts, source icons (person, wrench), replaced values |
+| `docs-memory-history.png` | A document's history with a diff and Restore |
+| `docs-memory-popover.png` | An answer that used a remembered preference, with its memory popover |
+| `docs-memory-notice.png` | A memory write in a conversation, expanded: the fact it saved and Edit in memory |
+| `docs-memory-off.png` | Memory off in the composer for a new conversation |

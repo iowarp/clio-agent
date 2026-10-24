@@ -62,12 +62,13 @@ def test_formatting_loop_returns_bounded_protocol_feedback(width: int) -> None:
         "A useful answer.\n" * 2000,
         "Show line breaks: <br>\n" * 2000,
         "\n<br>" * 20,
+        "_tool_calls\n" * 3 + "I'll save that.\n",
         FENCE
         + "\n"
         + json.dumps([{"name": "query_tasks", "arguments": {"description": "\n<br>" * 2000}}])
         + "\n```",
     ],
-    ids=["useful_answer", "useful_html", "short_breaks", "tool_arguments"],
+    ids=["useful_answer", "useful_html", "short_breaks", "a_few_stray_words", "tool_arguments"],
 )
 def test_meaningful_long_output_and_tool_arguments_remain_valid(reply: str) -> None:
     turn = _Turn("haiku", available_tools=frozenset({"query_tasks"}))
@@ -232,3 +233,122 @@ async def test_abandoned_stream_is_dead_before_deferred_disconnect(
         finally:
             entry.close_blocking()
             pool.release_session_resources("formatting-test")
+
+
+@pytest.mark.parametrize("word", ["_tool_calls_placeholder", "_check_placeholder", "_memory"])
+def test_a_repeated_placeholder_word_gets_the_same_bounded_recovery(word: str) -> None:
+    """Asked to remember, a model looped on one placeholder word for ten minutes before
+    its call (memory ledger MD51); the reply is cut and the model gets the feedback."""
+    turn = _Turn("haiku", available_tools=frozenset({"create_memory"}))
+    reply = f"{word}\n\n" * 2000
+    for index in range(0, len(reply), 5):
+        push(turn, reply[index : index + 5])
+        if turn.protocol_error:
+            break
+    assert turn.protocol_error == "formatting_only_repetition"
+    assert turn.reply.count(word) == 32
+    calls = [
+        event.delta
+        for event in turn.finish("looped")
+        if event.type == "delta" and event.delta.type == "tool_call"
+    ]
+    assert len(calls) == 1 and calls[0].name == INVALID_TOOL_CALL
+
+
+def _shown(events: list[Any]) -> str:
+    return "".join(e.delta.text for e in events if e.type == "delta" and e.delta.type == "text")
+
+
+def test_a_reply_of_a_repeated_word_is_never_shown_and_never_the_answer() -> None:
+    """Twice is enough at the end of a reply: the turn gets feedback, not that answer."""
+    turn = _Turn("haiku", available_tools=frozenset({"create_memory"}))
+    streamed = push(turn, "_call_placeholder\n\n") + push(turn, "_call_placeholder")
+    closing = turn.finish("short")
+    assert _shown(streamed + closing) == ""
+    calls = [e.delta for e in closing if e.type == "delta" and e.delta.type == "tool_call"]
+    assert len(calls) == 1 and calls[0].name == INVALID_TOOL_CALL
+    assert json.loads(calls[0].input)["reason"] == "formatting_only_repetition"
+
+
+def test_a_looping_word_is_held_back_until_it_is_cut() -> None:
+    turn = _Turn("haiku", available_tools=frozenset({"create_memory"}))
+    streamed: list[Any] = []
+    for _ in range(40):
+        streamed += push(turn, "_tool_calls_placeholder\n\n")
+    assert turn.protocol_error == "formatting_only_repetition"
+    assert _shown(streamed + turn.finish("looped")) == ""
+
+
+def test_words_stream_at_once_and_a_one_word_answer_is_still_an_answer() -> None:
+    turn = _Turn("haiku", available_tools=frozenset({"create_memory"}))
+    assert _shown(push(turn, "I'll save that ")) == "I'll save that "
+    one = _Turn("haiku", available_tools=frozenset({"create_memory"}))
+    held = push(one, "42")
+    assert _shown(held) == ""
+    closing = one.finish("short answer")
+    assert _shown(closing) == "42"
+    assert not [e for e in closing if e.type == "delta" and e.delta.type == "tool_call"]
+
+
+def test_a_single_word_beside_calls_is_not_shown() -> None:
+    """The step's only text was one placeholder word and the reply still made its call."""
+    turn = _Turn("haiku", available_tools=frozenset({"create_memory"}))
+    streamed = push(turn, "_tool_call_placeholder\n")
+    turn.reply += FENCE + '\n[{"name":"create_memory","arguments":{}}]\n```'  # assembled block
+    closing = turn.finish("beside a call")
+    assert _shown(streamed + closing) == ""
+    calls = [e.delta for e in closing if e.type == "delta" and e.delta.type == "tool_call"]
+    assert [c.name for c in calls] == ["create_memory"]
+
+
+@pytest.mark.parametrize("size", [1, 4, 9, 400])
+def test_one_word_before_the_fence_is_not_shown(size: int) -> None:
+    """``_check_placeholder`` then the real block: the word is no preamble, the call runs."""
+    turn = _Turn("haiku", available_tools=frozenset({"create_memory"}))
+    reply = "_check_placeholder\n" + FENCE + '\n[{"name":"create_memory","arguments":{}}]\n```'
+    streamed: list[Any] = []
+    for index in range(0, len(reply), size):
+        streamed += push(turn, reply[index : index + size])
+    closing = turn.finish("word then fence")
+    assert _shown(streamed + closing) == ""
+    calls = [e.delta for e in closing if e.type == "delta" and e.delta.type == "tool_call"]
+    assert [c.name for c in calls] == ["create_memory"]
+
+
+@pytest.mark.parametrize("size", [1, 7, 400])
+def test_repeated_opening_words_before_prose_and_a_call_are_not_shown(size: int) -> None:
+    """Seen live: the word five times, then the preamble and the call; only prose shows."""
+    turn = _Turn("haiku", available_tools=frozenset({"create_memory"}))
+    reply = (
+        "_projectid_placeholder\n\n" * 5
+        + "I'll save that as a fact.\n"
+        + FENCE
+        + '\n[{"name":"create_memory","arguments":{}}]\n```'
+    )
+    streamed: list[Any] = []
+    for index in range(0, len(reply), size):
+        streamed += push(turn, reply[index : index + size])
+    closing = turn.finish("words then prose")
+    assert _shown(streamed + closing) == "I'll save that as a fact."
+    calls = [e.delta for e in closing if e.type == "delta" and e.delta.type == "tool_call"]
+    assert [c.name for c in calls] == ["create_memory"]
+
+
+def test_an_opening_word_before_an_answer_is_not_shown() -> None:
+    turn = _Turn("haiku", available_tools=frozenset({"create_memory"}))
+    reply = "_memory\n_memory\nYour project ID is CSC123."
+    assert _shown(push(turn, reply) + turn.finish("word then answer")) == (
+        "Your project ID is CSC123."
+    )
+
+
+def test_a_sentence_before_the_fence_is_still_shown() -> None:
+    turn = _Turn("haiku", available_tools=frozenset({"create_memory"}))
+    reply = "I'll save that.\n" + FENCE + '\n[{"name":"create_memory","arguments":{}}]\n```'
+    assert _shown(push(turn, reply) + turn.finish("sentence")) == "I'll save that."
+
+
+def test_a_one_word_preamble_in_prose_is_still_shown() -> None:
+    turn = _Turn("haiku", available_tools=frozenset({"create_memory"}))
+    reply = "Looking.\n" + FENCE + '\n[{"name":"create_memory","arguments":{}}]\n```'
+    assert _shown(push(turn, reply) + turn.finish("prose word")) == "Looking."

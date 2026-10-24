@@ -410,6 +410,22 @@ def _without_invoke_markup(text: str) -> tuple[str, int]:
     return cleaned, removed
 
 
+#: The fence's corrupted spelling on a line of its own (the opening backticks lost),
+#: which models write next to a real block; protocol markup, never prose.
+_FENCE_WORD_LINE = re.compile(r"(?m)^[ \t]*_tool_calls?[ \t]*\r?\n")
+_FENCE_WORDS = ("_tool_calls", "_tool_call")
+
+
+def _without_fence_words(text: str) -> tuple[str, int]:
+    """``text`` without corrupted-fence lines; a last line that could still become one
+    waits for its newline. Returns the text and how many lines were removed."""
+    cleaned, removed = _FENCE_WORD_LINE.subn("", text)
+    last = cleaned.rsplit("\n", 1)[-1].strip(" \t\r")
+    if last and any(word.startswith(last) for word in _FENCE_WORDS):
+        cleaned = cleaned[: len(cleaned) - len(cleaned.rsplit("\n", 1)[-1])]
+    return cleaned, removed
+
+
 class StreamSplitter:
     """Stream a reply's visible text live, holding back the tool-call block.
 
@@ -417,7 +433,8 @@ class StreamSplitter:
     fence, minus a tail that could still be the start of the fence. Once the fence is
     seen nothing more streams (the block is parsed at the end by :func:`split_reply`).
     A call the model also wrote as invoke markup in its prose is not shown: only the
-    fenced block runs. ``dropped_invoke_markup`` counts those fragments, for the audit.
+    fenced block runs. ``dropped_invoke_markup`` counts those fragments, for the audit;
+    ``dropped_fence_words`` counts lines that were only the fence's corrupted spelling.
     """
 
     def __init__(self) -> None:
@@ -425,6 +442,7 @@ class StreamSplitter:
         self._shown = 0
         self._stopped = False
         self.dropped_invoke_markup = 0
+        self.dropped_fence_words = 0
 
     def push(self, chunk: str) -> str:
         """Add ``chunk``; return the newly showable text (possibly empty)."""
@@ -438,6 +456,7 @@ class StreamSplitter:
         else:
             safe = self._buffer[: len(self._buffer) - _partial_fence_len(self._buffer)]
         safe, self.dropped_invoke_markup = _without_invoke_markup(safe)
+        safe, self.dropped_fence_words = _without_fence_words(safe)
         # Trailing newlines wait for what follows: before the fence they are not text.
         safe = safe.rstrip("\n")
         out = safe[self._shown :]

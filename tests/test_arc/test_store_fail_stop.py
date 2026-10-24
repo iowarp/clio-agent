@@ -41,6 +41,7 @@ def test_a_clio_core_init_failure_is_a_typed_error_not_local_files(
             file_capacity="50GB",
             ram_budget="1GB",
             metadata_log="C:/x/metadata.log",
+            indexer="",
         ),
         encoding="utf-8",
     )

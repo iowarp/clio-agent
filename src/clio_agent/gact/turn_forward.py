@@ -28,6 +28,7 @@ from clio_agent.gact.agents.resolution import (
     resolution_agent_def,
     resolve_for_session,
     session_resolution,
+    withhold_session_tools,
 )
 from clio_agent.gact.evidence import _dynamic_agent_runtime_provenance
 from clio_agent.gact.messaging import _prediction_summary
@@ -120,6 +121,12 @@ def _apply_turn_model_selection(state: "TurnState", agent_def: "AgentDef") -> "A
 
     source = str(state.user_msg.metadata.get("model_selection_source") or "global_active")
     raw = state.user_msg.metadata.get("effective_model")
+    session = getattr(state, "sess", None)  # absent on states built without a session
+    role = str(((session.metadata if session else None) or {}).get("model_role") or "")
+    if role:  # a server-run session on a fleet role (the memory curator), every segment
+        from clio_agent.gact.memory.models import memory_model_identity  # noqa: PLC0415
+
+        raw, source = memory_model_identity(role), "fleet_role"  # type: ignore[arg-type]
     if source == "global_active" or not isinstance(raw, dict):
         # A turn no person's message started (a child's assignment, a wake) runs on
         # the model its session pinned: a child's model is chosen when it is created.
@@ -174,6 +181,7 @@ async def _forward_turn_leased(state: "TurnState") -> Any:
         turn_def, build_resolution = await _run_turn_setup_off_loop(
             state, lambda: turn_agent_def(state.app, state.sid, resolution)
         )
+    turn_def = withhold_session_tools(state.app, state.sid, turn_def, resolution, build_resolution)
     dynamic_agent = apply_session_tool_allowlist(state.app, turn_def, session_id=state.sid)
     state.active_agent_id = dynamic_agent.id
     _ctx.set_primary_agent_id(state.active_agent_id)

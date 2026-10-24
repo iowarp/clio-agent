@@ -1,6 +1,6 @@
 """#770 Wave-C C3: retention bounds on the in-memory GACT ledgers.
 
-Seven in-memory ledgers (command_audit, memory_tool_audit, context_frames,
+Seven in-memory ledgers (command_audit, session_recall_audit, context_frames,
 file_changes, permissions, turn_attempts, shared_tokens) grew unbounded for
 the life of the process. These tests prove each is now bounded and that every
 eviction emits a *structured* reason (no silent drop), mirroring the

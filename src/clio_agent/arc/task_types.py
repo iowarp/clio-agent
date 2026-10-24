@@ -69,6 +69,7 @@ MailKind = Literal[
     "hook",
     "a2ui",
     "spotter",
+    "memory",  # a memory curator's brief (gact/memory/background.py)
     "approval",
     "composer",
 ]

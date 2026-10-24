@@ -28,6 +28,7 @@ import asyncio
 import json
 import logging
 import os
+import re
 import threading
 import uuid
 from collections.abc import AsyncGenerator, Iterator
@@ -57,6 +58,7 @@ from dspy.lm15 import TimeoutError as LMTimeoutError
 
 from clio_agent.lm.engines.conversations import ConversationRegistry, Send, conversation_key
 from clio_agent.lm.engines.text_tools import (
+    FENCE,
     INVALID_TOOL_CALL,
     TURN_REMINDER,
     ReplySplit,
@@ -94,6 +96,11 @@ __all__ = ["AsyncClaudeCodeEngine", "ClaudeCodeEngine"]
 
 
 logger = logging.getLogger(__name__)
+#: A bare protocol-like word (``_tool_calls``, ``_check_placeholder``, ``_memory``): a
+#: snake_case identifier starting with an underscore. Never prose, never a preamble.
+_PROTOCOL_WORD = re.compile(r"_[a-z][a-z0-9_]*")
+#: A reply's opening lines that are each blank or one protocol word.
+_PROTOCOL_LINES = re.compile(r"(?:[ \t]*(?:_[a-z][a-z0-9_]*)?[ \t]*\r?\n)+")
 
 
 def _capacity() -> int:
@@ -307,6 +314,9 @@ class _Turn:
         self._splitter = StreamSplitter()
         self.protocol_error: str | None = None
         self._progress = FormattingProgress(enabled=bool(available_tools))
+        self._held = ""  # streamed text held back while it could still be non-progress
+        self.dropped_word = ""  # one word written before the fence, not shown
+        self._released = False  # whether any of this reply's text was released yet
 
     def handle(self, message: Any) -> list[Any]:
         if self.protocol_error:
@@ -332,9 +342,14 @@ class _Turn:
                 if cutoff is not None:
                     self.protocol_error = "formatting_only_repetition"
                     self.reply = (self.reply + text[:cutoff])[:4096]
+                    self._held = ""  # never shown
                     return out
                 self.reply += text
-                shown = self._splitter.push(text)
+                if self._progress.undecided:
+                    self._held += text
+                    return out
+                release, self._held = self._without_word_preamble(self._held, text), ""
+                shown = self._splitter.push(release)
                 if shown:
                     out.append(StreamDeltaEvent(delta=TextDelta(text=shown, part_index=1)))
             return out
@@ -369,6 +384,22 @@ class _Turn:
             _audit_message("provider.message_unhandled", self.model, message)
         return []
 
+    def _without_word_preamble(self, held: str, text: str) -> str:
+        """Text released to the splitter. In the reply's first release, opening lines of
+        protocol words (``_projectid_placeholder`` a few times, then prose) and one such word
+        right before the fence are not a preamble and are not shown."""
+        release, first, self._released = held + text, not self._released, True
+        if not first:
+            return release
+        if (lines := _PROTOCOL_LINES.match(release)) and "_" in lines.group():
+            self.dropped_word, release = lines.group().strip(), release[lines.end() :]
+        fence_at = release.find(FENCE)
+        before = release[:fence_at].strip() if fence_at >= 0 else ""
+        if _PROTOCOL_WORD.fullmatch(before):
+            self.dropped_word = f"{self.dropped_word}\n{before}".strip()
+            release = release[fence_at:]
+        return release
+
     def _note_usage(self, message: Any) -> None:
         if usage := _bridge.sdk_result_usage(message):
             self.usage = usage
@@ -382,6 +413,11 @@ class _Turn:
             self.protocol_error = "formatting_only_repetition"
             reply = reply[:4096]
             self.fallback = reply
+        if not self.protocol_error and self._progress.only_repeats():
+            # A whole reply of one word repeated (``_call_placeholder`` twice) is not an
+            # answer either; the model gets the same feedback instead of ending the turn.
+            self.protocol_error = "formatting_only_repetition"
+            reply = reply[:4096]
         if not reply.strip():
             raise ServerError(f"claude agent sdk returned empty content (model={self.model})")
         out: list[Any] = []
@@ -389,6 +425,7 @@ class _Turn:
             shown = self._splitter.push(self.fallback)
             if shown:
                 out.append(StreamDeltaEvent(delta=TextDelta(text=shown, part_index=1)))
+        held, self._held = ("" if self.protocol_error else self._held), ""
         split = (
             ReplySplit(
                 text="",
@@ -398,7 +435,7 @@ class _Turn:
                         name=INVALID_TOOL_CALL,
                         input={
                             "reason": self.protocol_error,
-                            "error": "The response repeated only HTML line breaks without an action. "
+                            "error": "The response repeated only line breaks or one word without an action. "
                             "Continue with meaningful text or one complete tool_calls block. "
                             "No operation was submitted by this response; accepted tasks still run.",
                         },
@@ -410,6 +447,39 @@ class _Turn:
                 reply, call_prefix=f"call_{call_id[:8]}", available_tools=self.available_tools
             )
         )
+        if self.dropped_word:
+            # Opening protocol words were not a preamble and were never shown. On the record.
+            logger.info(
+                "provider reply text dropped word reason=%s model=%s call_id=%s chars=%d "
+                "fenced_calls=%d",
+                "word_only_beside_calls" if split.calls else "protocol_words_before_text",
+                self.model,
+                call_id,
+                len(self.dropped_word),
+                len(split.calls),
+            )
+        if held and split.calls and _PROTOCOL_WORD.fullmatch(held.strip()):
+            # A step's only text was one protocol word beside its calls (such as
+            # ``_tool_call_placeholder``): not a preamble, so it is not shown. On the record.
+            logger.info(
+                "provider reply text dropped word reason=word_only_beside_calls "
+                "model=%s call_id=%s chars=%d fenced_calls=%d",
+                self.model,
+                call_id,
+                len(held),
+                len(split.calls),
+            )
+        elif held and (shown := self._splitter.push(held)):
+            out.append(StreamDeltaEvent(delta=TextDelta(text=shown, part_index=1)))  # an answer
+        if words := self._splitter.dropped_fence_words:
+            logger.info(
+                "provider reply text dropped fence words reason=fence_word_in_text "
+                "model=%s call_id=%s lines=%d fenced_calls=%d",
+                self.model,
+                call_id,
+                words,
+                len(split.calls),
+            )
         if dropped := self._splitter.dropped_invoke_markup:
             # The model also wrote its calls as invoke markup in its prose; only the fenced
             # block runs, so the markup was not shown. On the record, never silent.
