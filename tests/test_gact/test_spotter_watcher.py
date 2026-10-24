@@ -169,12 +169,16 @@ def test_cancelled_watcher_late_probe_cannot_start_a_model(
     ]
 
 
-def test_watcher_profile_allows_containment_but_never_release_without_approval() -> None:
+def test_watcher_profile_auto_allows_only_the_native_alert_card() -> None:
+    """The watcher raises alerts through CLIO's ``raise_alert_card``; containment is CLIO's
+    SPOTTER clearance, so every other non-read call (including a name that merely looks like
+    an alert tool) still asks the person."""
     from clio_agent.gact.permission_gate import default_decision
 
-    assert default_decision("spotter-watcher", "tool", "spotter_raise_alert", {}) == "allow"
-    assert default_decision("spotter-watcher", "tool", "spotter_lift_quarantine", {}) == "ask"
+    assert default_decision("spotter-watcher", "tool", "raise_alert_card", {}) == "allow"
+    assert default_decision("spotter-watcher", "tool", "spotter_raise_alert", {}) == "ask"
     assert default_decision("spotter-watcher", "tool", "shell_bash", {}) == "ask"
+    assert default_decision("spotter-watcher", "tool", "fs_write_file", {}) == "ask"
 
 
 def test_cancelled_watcher_cannot_accept_new_evidence(watcher_world: tuple[Any, str, str]) -> None:
@@ -217,28 +221,27 @@ def test_tool_outcome_fact_is_empty_when_nothing_list_shaped() -> None:
 
 def test_wake_text_tool_completed_carries_the_tool_name_and_fact() -> None:
     text = _wake_text(
-        tool_name="phenotype_measure_cohort", tool_ok=True, tool_result={"runs": [1, 2, 3, 4, 5]}
+        tool_name="fs_list_directory", tool_ok=True, tool_result={"entries": [1, 2, 3, 4, 5]}
     )
     assert text == (
-        "Watched session activity: phenotype_measure_cohort completed "
-        "(5 runs reported). The provenance store may have new entries."
+        "Watched session activity: fs_list_directory completed "
+        "(5 entries reported). The provenance store may have new entries."
     )
 
 
 def test_wake_text_tool_completed_with_no_derivable_fact_omits_the_parenthetical() -> None:
-    text = _wake_text(tool_name="spotter_lift_quarantine", tool_ok=True, tool_result={"ok": True})
+    text = _wake_text(tool_name="fs_write_file", tool_ok=True, tool_result={"ok": True})
     assert text == (
-        "Watched session activity: spotter_lift_quarantine completed. "
+        "Watched session activity: fs_write_file completed. "
         "The provenance store may have new entries."
     )
     assert "(" not in text
 
 
 def test_wake_text_tool_failed_states_the_failure_as_the_fact() -> None:
-    text = _wake_text(tool_name="phenotype_measure_cohort", tool_ok=False, tool_result=None)
+    text = _wake_text(tool_name="shell_bash", tool_ok=False, tool_result=None)
     assert text == (
-        "Watched session activity: phenotype_measure_cohort failed. "
-        "The provenance store may have new entries."
+        "Watched session activity: shell_bash failed. The provenance store may have new entries."
     )
 
 
@@ -262,8 +265,8 @@ def test_coalesced_wake_text_names_no_single_tool() -> None:
 @pytest.mark.parametrize(
     "text",
     [
-        _wake_text(tool_name="phenotype_measure_cohort", tool_ok=True, tool_result={"r": [1]}),
-        _wake_text(tool_name="phenotype_measure_cohort", tool_ok=False),
+        _wake_text(tool_name="fs_list_directory", tool_ok=True, tool_result={"r": [1]}),
+        _wake_text(tool_name="shell_bash", tool_ok=False),
         _wake_text(),
         _WAKE_COALESCED_TEXT,
     ],

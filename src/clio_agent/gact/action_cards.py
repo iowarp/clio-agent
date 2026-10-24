@@ -84,7 +84,7 @@ def action_card_part(
         source: Emitter identity, a free string (e.g. ``"spotter-ai"``; future:
             a tool name).
         severity: An open string; MVP values are ``"info" | "warning" | "critical"``.
-        title: Headline text (e.g. "SPOTTER AI has detected an issue").
+        title: Headline text (e.g. "SPOTTER has detected an issue").
         body: Detail text (markdown allowed, rendered like other part bodies).
         actions: A list of ``{id, label, enabled, behavior}`` action objects. Each
             ``behavior`` is an open discriminated union on ``kind`` — unknown kinds

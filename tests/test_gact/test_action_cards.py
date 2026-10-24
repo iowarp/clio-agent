@@ -69,7 +69,7 @@ def test_action_card_part_wire_shape_matches_frozen_contract() -> None:
     part = action_card_part(
         source="spotter-ai",
         severity="critical",
-        title="SPOTTER AI has detected an issue",
+        title="SPOTTER has detected an issue",
         body="run-012 anomalous (mean_biomass z=6.1). Campaign quarantined.",
         actions=_CONTRACT_ACTIONS,
     )
@@ -78,7 +78,7 @@ def test_action_card_part_wire_shape_matches_frozen_contract() -> None:
     assert wire["type"] == "action_card"
     assert wire["source"] == "spotter-ai"
     assert wire["severity"] == "critical"
-    assert wire["title"] == "SPOTTER AI has detected an issue"
+    assert wire["title"] == "SPOTTER has detected an issue"
     assert wire["body"] == "run-012 anomalous (mean_biomass z=6.1). Campaign quarantined."
     # status reuses the existing shared field-group slot; MVP default is "active".
     assert wire["status"] == "active"

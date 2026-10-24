@@ -152,7 +152,7 @@ def _proxy_for_spec(
         # in mcp_executor.py) is always modern/in-process/instant --
         # fabricates a DiscoverResult locally and never contacts the peer. A
         # genuinely legacy-only backend (fastmcp 3.4.7 in a plugin server's
-        # own venv, e.g. the spotter and phenotype plugins) then never gets the
+        # own venv, e.g. the spotter plugin's server) then never gets the
         # `initialize` its session state machine requires first, so it
         # rejects every later request forever -- deterministic, live-
         # reproduced (#1206), not a timing race. Mirroring "legacy" is kept

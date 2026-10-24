@@ -80,7 +80,7 @@ from clio_agent.sdk import Agent
 class SpotterAI(Agent):
     id = "spotter-ai"
     version = "0.3.0"
-    name = "SPOTTER AI"
+    name = "SPOTTER"
     role = "a forensic watcher that protects the parent session while it works"
     description = "Live anomaly surveillance for the arming gate tests."
     plugins = Agent.plugins + ["spotter"]

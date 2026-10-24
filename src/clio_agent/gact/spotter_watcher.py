@@ -24,6 +24,7 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 SPOTTER_APPROVAL_MODE = "spotter-ai"
+# gact-tui recognizes the watcher card by this title prefix (subagent-card.tsx); change both together.
 WATCHER_RUN_LABEL = "SPOTTER AI"
 _WAKE_TURN_FINAL_TEXT = "Watched session activity: the session's turn completed. The provenance store may have new entries."
 _WAKE_COALESCED_TEXT = "Watched session activity: multiple tool calls completed. The provenance store may have new entries."
