@@ -83,6 +83,7 @@ from clio_agent.gact.types import (
 )
 from clio_agent.providers.model_discovery import resolve_cloud_api_key
 from clio_agent.providers.support_restore import missing_support_status
+from clio_agent.runtime.fresh_loop import run_in_new_loop
 
 if TYPE_CHECKING:
     from clio_agent.gact.routes.deps import GactDeps
@@ -748,7 +749,7 @@ def register_providers_routes(app: FastAPI, deps: "GactDeps") -> None:
             loop = asyncio.get_running_loop()
             info = await loop.run_in_executor(
                 None,
-                lambda: asyncio.run(_apply_lm_provider(req)),
+                lambda: run_in_new_loop(_apply_lm_provider(req)),
             )
         except HTTPException as exc:
             detail = exc.detail
@@ -852,7 +853,7 @@ def register_providers_routes(app: FastAPI, deps: "GactDeps") -> None:
             app.state.lm_config_task = current_task
         info = await asyncio.get_running_loop().run_in_executor(
             None,
-            lambda: asyncio.run(_apply_lm_provider(req)),
+            lambda: run_in_new_loop(_apply_lm_provider(req)),
         )
         app.state.lm_config_status = {
             "state": "ready",

@@ -22,6 +22,7 @@ from clio_agent.providers.model_discovery.overlay import (
     record_refresh,
     resolve_cloud_api_key,
 )
+from clio_agent.runtime.fresh_loop import run_in_new_loop
 
 logger = logging.getLogger(__name__)
 
@@ -264,9 +265,9 @@ def refresh_all_sync(
     try:
         asyncio.get_running_loop()
     except RuntimeError:
-        return asyncio.run(_go())
+        return run_in_new_loop(_go())
     with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
-        return pool.submit(lambda: asyncio.run(_go())).result()
+        return pool.submit(lambda: run_in_new_loop(_go())).result()
 
 
 def build_refresh_provider_models_tool() -> Any:

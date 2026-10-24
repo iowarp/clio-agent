@@ -8,9 +8,9 @@ runs the agent's ClioReAct program through ``ctx.react``.
 
 from __future__ import annotations
 
-import asyncio
 from typing import Any
 
+from clio_agent.runtime.fresh_loop import run_in_new_loop
 from clio_agent.sdk.flow import Flow, FlowOptionsInvalid
 
 
@@ -146,7 +146,7 @@ def run_agent_flow(module: Any, kwargs: dict[str, Any]) -> Any:
         kwargs=kwargs,
     )
     ctx.journal.resume_from = resume_from
-    return asyncio.run(ctx.run())
+    return run_in_new_loop(ctx.run())
 
 
 def _lineage(app: Any, handle: str) -> tuple[str, str]:

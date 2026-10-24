@@ -20,6 +20,8 @@ import asyncio
 import logging
 from typing import Any
 
+from clio_agent.runtime.fresh_loop import run_in_new_loop
+
 logger = logging.getLogger(__name__)
 
 #: Seconds the CLI ``initialize`` read may take before it is abandoned.
@@ -57,7 +59,7 @@ def read_cli_model_catalog(
     """Return ``(cli_models, failure)``; ``failure`` is a typed reason or ``""``."""
 
     try:
-        models = asyncio.run(_initialize_models(timeout))
+        models = run_in_new_loop(_initialize_models(timeout))
     except Exception as exc:  # noqa: BLE001 - any read failure becomes a typed reason
         failure = f"claude_code_cli_model_catalog_unavailable: {exc}"
         logger.warning("claude_code effort levels: %s", failure)

@@ -36,7 +36,6 @@ Ordinary agent Questions remain inputs to the current conversation.
 
 from __future__ import annotations
 
-import asyncio
 import contextlib
 import contextvars
 import dataclasses
@@ -80,6 +79,7 @@ from clio_agent.gact.injection_parts import emit_injection
 from clio_agent.lm.engines.text_tools import INVALID_TOOL_CALL
 from clio_agent.lm.request_builder import sendable_lm_kwargs
 from clio_agent.lm.request_config import config_from_lm_kwargs
+from clio_agent.runtime.fresh_loop import run_in_new_loop
 from clio_agent.tools import injections
 
 __all__ = ["ClioReAct"]
@@ -536,7 +536,7 @@ class _Loop:
         try:
             if inspect.iscoroutinefunction(getattr(tool, "func", None)):
                 # The worker thread has no running loop; the task copies this context.
-                return _CallOutcome(asyncio.run(tool.acall(**call.input)), False)
+                return _CallOutcome(run_in_new_loop(tool.acall(**call.input)), False)
             return _CallOutcome(tool(**call.input), False)
         except Exception as err:  # noqa: BLE001 - a tool error is the model's observation
             refusal = err if isinstance(err, MCPProtocolError) else typed_mcp_protocol_error(err)

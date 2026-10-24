@@ -44,6 +44,7 @@ from clio_agent.providers.handshake.noop import NoOpHandshake
 from clio_agent.providers.handshake.ollama import OllamaHandshake
 from clio_agent.providers.handshake.openai_compat import OpenAICompatHandshake
 from clio_agent.providers.handshake.sources import resolve_context
+from clio_agent.runtime.fresh_loop import run_in_new_loop
 
 __all__ = [
     "ProviderHandshake",
@@ -150,6 +151,6 @@ def run_handshake_sync(
     try:
         asyncio.get_running_loop()
     except RuntimeError:
-        return asyncio.run(_go())
+        return run_in_new_loop(_go())
     with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
-        return pool.submit(lambda: asyncio.run(_go())).result()
+        return pool.submit(lambda: run_in_new_loop(_go())).result()

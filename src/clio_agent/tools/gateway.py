@@ -30,6 +30,7 @@ from collections.abc import Callable, Iterable, Mapping
 from contextlib import suppress
 from typing import TYPE_CHECKING, Any
 
+from clio_agent.runtime.fresh_loop import run_in_new_loop
 from clio_agent.tools.mcp_client_lifecycle import owned_transport_lifespan
 
 if TYPE_CHECKING:
@@ -559,9 +560,9 @@ def _run_coro_sync(factory: Callable[[], Any]) -> Any:
     try:
         asyncio.get_running_loop()
     except RuntimeError:
-        return asyncio.run(factory())
+        return run_in_new_loop(factory())
     with concurrent.futures.ThreadPoolExecutor() as pool:
-        return pool.submit(lambda: asyncio.run(factory())).result()
+        return pool.submit(lambda: run_in_new_loop(factory())).result()
 
 
 def _list_tools_sync(gw: FastMCP) -> list[Any]:
