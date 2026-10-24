@@ -531,6 +531,42 @@ def test_xml_data_and_examples_remain_answers(reply: str, tools: set[str]) -> No
     assert (split.text, split.calls) == (reply, [])
 
 
+@pytest.mark.parametrize(
+    "raw",
+    [
+        pytest.param("\n<invoke_tool>\nsubmit\n</invoke_tool>", id="live-tool-name"),
+        pytest.param("<function_call>search</function_call>", id="other-tag"),
+        pytest.param('<call kind="tool"> submit </call>', id="attributes"),
+    ],
+)
+def test_a_tool_name_inside_one_markup_element_is_a_protocol_error(raw: str) -> None:
+    """A typed child ended with ``<invoke_tool>submit</invoke_tool>``; it became the answer."""
+    split = split_reply(raw, call_prefix="t", available_tools={"search", "submit"})
+    [call] = split.calls
+    assert call.name == INVALID_TOOL_CALL
+    assert call.input["block"] == raw.strip()
+    assert "markup tags are not calls" in str(call.input["error"])
+    assert not split.text
+
+
+@pytest.mark.parametrize(
+    ("reply", "tools"),
+    [
+        ("<invoke_tool>submit</invoke_tool>", set()),
+        ("<invoke_tool>other</invoke_tool>", {"submit"}),
+        ("<b>submit</b> is the tool that ends a typed turn.", {"submit"}),
+        ("Call it like <tool>submit</tool>.", {"submit"}),
+        ("<answer>The default is 8 MiB.</answer>", {"submit"}),
+        ('<note name="submit">ordinary text</note>', {"submit"}),
+    ],
+)
+def test_markup_around_anything_but_a_declared_tool_or_call_remains_an_answer(
+    reply: str, tools: set[str]
+) -> None:
+    split = split_reply(reply, call_prefix="t", available_tools=tools)
+    assert (split.text, split.calls) == (reply, [])
+
+
 def test_turn_reminder_requires_both_fences_without_opening_a_block() -> None:
     assert FENCE not in TURN_REMINDER
     assert "opening line" in TURN_REMINDER and "closing line" in TURN_REMINDER

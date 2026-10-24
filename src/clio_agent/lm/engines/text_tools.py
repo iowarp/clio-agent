@@ -219,6 +219,14 @@ def split_reply(
                 "XML tool-call fragments require a complete ```tool_calls JSON block",
                 call_prefix,
             )
+        if _element_call_block(reply, available_tools):
+            return _invalid_reply(
+                "",
+                reply.strip(),
+                "markup tags are not calls; a call needs a complete fenced ```tool_calls "
+                "JSON list; no operation was submitted",
+                call_prefix,
+            )
         if _orphaned_call_block(reply, available_tools):
             return _invalid_reply(
                 "", reply.strip(), "missing opening ```tool_calls fence", call_prefix
@@ -288,6 +296,23 @@ def _xml_call_block(reply: str, available_tools: Collection[str]) -> bool:
         and "</parameter>" in reply[parameter.end() :]
         and "</invoke>" in reply[parameter.end() :]
     )
+
+
+def _element_call_block(reply: str, available_tools: Collection[str]) -> bool:
+    """Reject a reply that is one markup element around a declared tool's name.
+
+    Live, a typed child ended with ``<invoke_tool>submit</invoke_tool>`` and that markup
+    became its answer. Whatever the tag, an element whose whole body is a declared
+    tool's name is a call in a shape the host does not run; a name is never data.
+    Attributes are not read, and markup inside prose, or around anything else, stays
+    an answer.
+    """
+    element = re.fullmatch(
+        r"\s*<(?P<tag>[A-Za-z_][\w:.-]*)(?:\s[^<>]*)?>(?P<body>.*?)</(?P=tag)>\s*",
+        reply,
+        re.DOTALL,
+    )
+    return bool(available_tools and element and element["body"].strip() in available_tools)
 
 
 def _orphaned_call_block(reply: str, available_tools: Collection[str]) -> bool:
