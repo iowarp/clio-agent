@@ -7,10 +7,9 @@ live inline in ``_run_turn_in_background`` moves here as a free function taking
 The rollup is behavior-preserving — it mutates ``state.turn_tokens`` in place and
 reassigns the ``state.turn_cost`` scalar, exactly as the former linear body did
 (TRICKY #3 in the Phase B spec). Real DSPy predictions do not always populate
-``.tokens`` / ``.cost_usd`` directly, so the usage is pulled from the per-turn
-``UsageTracker`` history slice first (works across threads + streaming), then the
-DSPy LM history, then a character-based estimate — but only when the LM actually
-fired this turn.
+``.tokens`` / ``.cost_usd`` directly, so the usage is summed over the calls the turn
+made (its LM ledger, which every thread and the LM loop share), then a character-based
+estimate — but only when the LM actually fired this turn.
 """
 
 from __future__ import annotations
@@ -23,11 +22,10 @@ from clio_agent.gact.providers.config import _current_lm_model_id
 from clio_agent.gact.usage import (
     _estimate_cost_usd,
     _estimated_prompt_usage,
-    _last_prompt_usage_from_history_slice,
+    _last_prompt_usage_from_turn_calls,
     _price_table_match,
-    _snapshot_lm_history_index,
-    _usage_from_dspy_history,
-    _usage_from_history_slice,
+    _turn_call_count,
+    _usage_from_turn_calls,
 )
 
 if TYPE_CHECKING:
@@ -55,10 +53,10 @@ def roll_up_usage(state: "TurnState", pred: Any) -> None:
     """Roll the turn's token counts + cost into ``state`` (#767 Phase B).
 
     Mutates ``state.turn_tokens`` in place and writes ``state.turn_cost``. Pulls
-    usage from the prediction's ``.tokens`` when present; otherwise diffs the LM
-    history slice for this turn (planner + expert + chat calls), falling back to
-    the DSPy history and finally a character-based estimate when the upstream
-    proxy reports zero usage but the LM demonstrably fired.
+    usage from the prediction's ``.tokens`` when present; otherwise sums the calls
+    this turn made (planner + expert + chat), falling back to a character-based
+    estimate when the upstream proxy reports zero usage but the LM demonstrably
+    fired.
 
     Args:
         state: The active turn's mutable working set.
@@ -67,8 +65,7 @@ def roll_up_usage(state: "TurnState", pred: Any) -> None:
 
     # cost + token rollup. Real DSPy
     # predictions don't always populate .tokens / .cost_usd
-    # directly — pull from the per-turn UsageTracker first
-    # (works across threads + streaming), then LM history.
+    # directly — sum the turn's calls (works across threads + streaming).
     raw_tokens = getattr(pred, "tokens", None)
     if raw_tokens is not None:
         for key in state.turn_tokens:
@@ -78,30 +75,22 @@ def roll_up_usage(state: "TurnState", pred: Any) -> None:
                 v = getattr(raw_tokens, key, 0)
             state.turn_tokens[key] = int(v or 0)
     else:
-        # Diff the LM history slice for this turn first — captures
-        # planner + expert + chat calls cleanly. Falls back to
-        # ``last entry only`` for older code paths, then to a
-        # character-based estimate when the upstream proxy
-        # reports zero (some OpenAI-compatible proxies don't
-        # populate usage on chunked replies).
-        history_end = _snapshot_lm_history_index(state.app)
-        history_made_calls = any(
-            history_end.get(k, 0) > state.history_start.get(k, 0)
-            for k in {*state.history_start.keys(), *history_end.keys()}
-        )
-        usage = _usage_from_history_slice(state.history_start, state.app)
-        if not usage.get("output"):
-            usage = _usage_from_dspy_history()
+        # Sum the calls this turn made (planner + expert + chat), then fall
+        # back to a character-based estimate when the upstream proxy reports
+        # zero (some OpenAI-compatible proxies don't populate usage on chunked
+        # replies).
+        made_calls = _turn_call_count() > state.calls_start
+        usage = _usage_from_turn_calls(state.calls_start)
         for key in state.turn_tokens:
             state.turn_tokens[key] = int(usage.get(key, 0) or 0)
         state.turn_cost = float(usage.get("cost_usd", 0.0) or 0.0)
         state.turn_cost_known = bool(usage.get("cost_known", False))
         # Char-based fallback only when the LM actually fired
-        # this turn (history grew) but the upstream proxy
+        # this turn (it made calls) but the upstream proxy
         # reported zero usage. Don't synthesize numbers when
         # there was no real call (e.g. unit tests with a fake
         # agent that bypasses dspy.LM entirely).
-        if history_made_calls:
+        if made_calls:
             # Record WHICH estimate strategies fired this turn so the degraded
             # rollup is queryable instead of silent (#772). One structured
             # warning per turn, not per strategy.
@@ -114,7 +103,7 @@ def roll_up_usage(state: "TurnState", pred: Any) -> None:
                 estimate_strategies.append("input_chars_div_4")
             if not state.turn_cost_known:
                 # A second attempt keyed off the CURRENT LM's model id (the
-                # history slice's ``last_model`` may be blank for providers
+                # calls' ``last_model`` may be blank for providers
                 # that omit it per-entry). Still honestly unknown when this
                 # model id has no price-table entry either (#775 no silent
                 # fallback -- state.turn_cost stays 0.0 and NOT "known").
@@ -139,7 +128,7 @@ def roll_up_usage(state: "TurnState", pred: Any) -> None:
         if pred_cost is not None:
             state.turn_cost = float(pred_cost or 0.0)
             state.turn_cost_known = True
-    state.last_prompt_usage = _last_prompt_usage_from_history_slice(state.history_start, state.app)
+    state.last_prompt_usage = _last_prompt_usage_from_turn_calls(state.calls_start)
     if (
         not state.last_prompt_usage
         and state.enriched_text

@@ -19,7 +19,6 @@ from clio_agent.lm.resources import (
     model_resources,
     transfer_created_lm,
 )
-from clio_agent.runtime import turn_lm_ledger
 from clio_agent.runtime.stream_audit import stream_audit
 
 if TYPE_CHECKING:
@@ -139,7 +138,6 @@ def session_model(config: LMProviderConfig, scope: str, sid: str) -> Iterator[An
             stream_audit(
                 "lm.work_client.leased", session_id=sid, scope=scope, client_id=id(entry.lm)
             )
-            turn_lm_ledger.record(view)
             yield wrap_lm_with_hooks(view)
         except BaseException as exc:
             primary = exc

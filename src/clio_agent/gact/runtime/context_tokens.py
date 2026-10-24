@@ -174,8 +174,8 @@ def _last_prompt_tokens() -> int:
     (not a running sum). Primary source is the provider-exact ``prompt_tokens`` from
     ``dspy.track_usage()``. Some providers (e.g. the ALCF/Argonne vLLM endpoint)
     report ``prompt_tokens: 0`` — in that case we fall back to a client-side
-    ``litellm.token_counter`` over the LAST call's actual messages
-    (``lm.history[-1]['messages']``). Approximate for non-tiktoken local models, but
+    ``litellm.token_counter`` over the LAST call's actual messages (the turn's newest
+    call in its LM ledger). Approximate for non-tiktoken local models, but
     non-zero and monotonic with context growth, which is what the threshold needs.
     """
     import dspy  # noqa: PLC0415
@@ -208,8 +208,10 @@ def _last_prompt_tokens() -> int:
 
     # 2. Provider didn't report prompt_tokens: count the last call's real messages.
     try:
-        history = getattr(lm, "history", None)
-        messages = history[-1].get("messages") if history else None
+        from clio_agent.runtime.turn_lm_ledger import last_call  # noqa: PLC0415
+
+        last = last_call()
+        messages = last.get("messages") if last else None
         if messages:
             # Only spend litellm's tiktoken counter for models it counts EXACTLY
             # (OpenAI). Every other model would just pin the ~40 MB cl100k vocab to

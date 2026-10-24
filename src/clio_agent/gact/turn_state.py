@@ -190,7 +190,8 @@ class TurnState:
     # ``"failed"`` -- carried so the guard can settle with its actual cause
     # instead of a fabricated ``turn_prologue_never_ran``.
     prologue_error: "Optional[BaseException]" = field(default=None, init=False, repr=False)
-    history_start: dict[int, int] = field(default_factory=dict)
+    # How many calls the turn's LM ledger held when the turn began (its own come after).
+    calls_start: int = 0
     context_frame: Any = None
     context_file_provenance: dict[str, Any] = field(default_factory=_unset_context_file_provenance)
     enriched_text: str = ""

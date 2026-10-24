@@ -620,15 +620,13 @@ from clio_agent.gact.types import (
     ErrorInfo,
 )
 from clio_agent.gact.usage import (  # noqa: E402,F401
-    _all_known_lms,
     _entry_prompt_text,
     _entry_reasoning_text,
     _entry_response_text,
     _estimate_cost_usd,
-    _reasoning_records_from_history_slice,
-    _snapshot_lm_history_index,
-    _usage_from_dspy_history,
-    _usage_from_history_slice,
+    _reasoning_records_from_turn_calls,
+    _turn_call_count,
+    _usage_from_turn_calls,
 )
 from clio_agent.gact.workspaces import WorkspaceStore
 from clio_agent.gact.workspaces import _default_store_path as _ws_default_store_path

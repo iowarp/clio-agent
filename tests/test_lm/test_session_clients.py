@@ -90,19 +90,19 @@ def test_21_goal_cycles_reuse_work_pool_while_owned_checkers_close(
     monkeypatch.setattr("clio_agent.gact.fleet_settings.model_route", checker)
 
     def work() -> None:
-        from clio_agent.gact.usage import _usage_from_history_slice
+        from clio_agent.gact.usage import _usage_from_turn_calls
 
         token = turn_lm_ledger.open_ledger()
         try:
             with bound(app, sid), session_model(cfg, "registered-agent", sid) as lm:
                 assert lm.history == []
-                assert lm in turn_lm_ledger.ledger_lms()
                 views.append(lm)
                 call(lm)
                 call(lm)
-                assert len(lm.history) == 2
-                with dspy.context(lm=lm):
-                    usage = _usage_from_history_slice({}, app)
+                # The calls are the turn's; the LM keeps none of them.
+                assert lm.history == []
+                assert len(turn_lm_ledger.ledger_calls()) == 2
+                usage = _usage_from_turn_calls(0)
                 assert usage["input"] == usage["output"] == 2
         finally:
             turn_lm_ledger.close_ledger(token)
@@ -127,7 +127,7 @@ def test_21_goal_cycles_reuse_work_pool_while_owned_checkers_close(
             assert len(constructed) == 1
             assert all(view._engine_store is constructed[0]._engine_store for view in views)
             assert len(constructed[0]._engine_store) == 1
-            assert all(len(view.history) == 2 for view in views)
+            assert all(view.history == [] for view in views)
             assert all(not checker._engine_store for checker in checkers)
             assert state["active"] == 0 and state["max_active"] == 1
         finally:
@@ -388,7 +388,7 @@ def test_rebuilt_registered_agents_reuse_clients_and_refresh_credentials(
         assert views[0]._engine_store is views[1]._engine_store
         assert not constructed[0]._engine_store
         assert constructed[1]._engine_store
-        assert all(len(view.history) == 1 for view in views)
+        assert all(view.history == [] for view in views)  # no LM keeps its calls
     finally:
         close_session_model_clients(app)
     asyncio.run(_closed(state))

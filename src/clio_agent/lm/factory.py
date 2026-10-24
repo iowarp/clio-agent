@@ -20,7 +20,6 @@ if TYPE_CHECKING:  # pragma: no cover
 
 from clio_agent.lm.request_builder import build_request_kwargs
 from clio_agent.providers.codex.constants import LITELLM_PROVIDER as _CODEX_LITELLM_PREFIX
-from clio_agent.runtime import turn_lm_ledger
 
 _dspy_cache = None
 logger = logging.getLogger(__name__)
@@ -168,8 +167,6 @@ def _record_identity(lm: Any, config: LMProviderConfig) -> Any:
         lm._clio_reasoning_fallback = provider_id not in {"codex", "claude_code"}
     except Exception:  # noqa: BLE001,S110 - never let tagging break LM construction
         pass
-    # A per-forward LM reaches the running turn's usage rollup only via this.
-    turn_lm_ledger.record(lm)
     from clio_agent.lm.resources import record_created_lm  # noqa: PLC0415
 
     record_created_lm(lm)

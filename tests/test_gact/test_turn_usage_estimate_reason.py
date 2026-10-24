@@ -24,7 +24,7 @@ def _fake_state(**overrides: Any) -> SimpleNamespace:
     base: dict[str, Any] = {
         "app": SimpleNamespace(),
         "sid": "sess_test",
-        "history_start": {0: 0},
+        "calls_start": 0,
         "turn_tokens": {"input": 0, "output": 0, "cache_read": 0, "cache_write": 0},
         "answer_text": "",
         "enriched_text": "",
@@ -38,14 +38,11 @@ def _fake_state(**overrides: Any) -> SimpleNamespace:
 
 @pytest.fixture
 def zero_usage_proxy(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Force the estimate branch: history grew but every usage source is zero."""
+    """Force the estimate branch: the turn made calls but every usage source is zero."""
 
-    monkeypatch.setattr(turn_usage, "_snapshot_lm_history_index", lambda _app: {0: 3})
-    monkeypatch.setattr(turn_usage, "_usage_from_history_slice", lambda _start, _app: {})
-    monkeypatch.setattr(
-        turn_usage, "_last_prompt_usage_from_history_slice", lambda _start, _app: {}
-    )
-    monkeypatch.setattr(turn_usage, "_usage_from_dspy_history", lambda: {})
+    monkeypatch.setattr(turn_usage, "_turn_call_count", lambda: 3)
+    monkeypatch.setattr(turn_usage, "_usage_from_turn_calls", lambda _start: {})
+    monkeypatch.setattr(turn_usage, "_last_prompt_usage_from_turn_calls", lambda _start: {})
     monkeypatch.setattr(turn_usage, "_current_lm_model_id", lambda: "test/model")
     monkeypatch.setattr(turn_usage, "_estimate_cost_usd", lambda _m, _i, _o: 0.0042)
 
@@ -81,14 +78,11 @@ def test_no_calls_case_is_silent_and_synthesizes_nothing(
 ) -> None:
     """No real LM call this turn -> no warning, no synthesized tokens/cost."""
 
-    # History did NOT grow (history_made_calls is False), so the estimate
+    # The turn made no calls (made_calls is False), so the estimate
     # branch must not run even though answer/enriched text is present.
-    monkeypatch.setattr(turn_usage, "_snapshot_lm_history_index", lambda _app: {0: 0})
-    monkeypatch.setattr(turn_usage, "_usage_from_history_slice", lambda _start, _app: {})
-    monkeypatch.setattr(
-        turn_usage, "_last_prompt_usage_from_history_slice", lambda _start, _app: {}
-    )
-    monkeypatch.setattr(turn_usage, "_usage_from_dspy_history", lambda: {})
+    monkeypatch.setattr(turn_usage, "_turn_call_count", lambda: 0)
+    monkeypatch.setattr(turn_usage, "_usage_from_turn_calls", lambda _start: {})
+    monkeypatch.setattr(turn_usage, "_last_prompt_usage_from_turn_calls", lambda _start: {})
 
     def _boom(*_a: Any, **_k: Any) -> float:  # pragma: no cover - must not run
         raise AssertionError("price-table estimate must not run with no calls")
@@ -107,15 +101,12 @@ def test_no_calls_case_is_silent_and_synthesizes_nothing(
     assert state.last_prompt_usage == {}
 
 
-def test_prompt_context_is_estimated_when_cli_provider_has_no_history(
+def test_prompt_context_is_estimated_when_cli_provider_records_no_call(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setattr(turn_usage, "_snapshot_lm_history_index", lambda _app: {0: 0})
-    monkeypatch.setattr(turn_usage, "_usage_from_history_slice", lambda _start, _app: {})
-    monkeypatch.setattr(
-        turn_usage, "_last_prompt_usage_from_history_slice", lambda _start, _app: {}
-    )
-    monkeypatch.setattr(turn_usage, "_usage_from_dspy_history", lambda: {})
+    monkeypatch.setattr(turn_usage, "_turn_call_count", lambda: 0)
+    monkeypatch.setattr(turn_usage, "_usage_from_turn_calls", lambda _start: {})
+    monkeypatch.setattr(turn_usage, "_last_prompt_usage_from_turn_calls", lambda _start: {})
     monkeypatch.setattr(turn_usage, "_current_lm_model_id", lambda: "codex/gpt-5")
     monkeypatch.setattr(
         turn_usage,

@@ -61,7 +61,7 @@ from clio_agent.gact.turn_stream import bind_live_emitter, settle_turn_transcrip
 from clio_agent.gact.turn_usage import roll_up_usage
 from clio_agent.gact.turn_watchdog import make_turn_cancel_event
 from clio_agent.gact.types import ErrorInfo, Message, Part, Session
-from clio_agent.gact.usage import _snapshot_lm_history_index
+from clio_agent.gact.usage import _turn_call_count
 from clio_agent.runtime import turn_lm_ledger
 from clio_agent.tools.mcp_runtime import wire_value
 
@@ -357,15 +357,12 @@ async def _run_turn_in_background(
     # contextvars.copy_context() at the forward sites below.
     bind_live_emitter(state, asyncio.get_running_loop())
 
-    # iowarp/clio-agent#8: snapshot LM history before the turn so we
-    # can sum every call this turn made. ContextVars don't propagate
-    # to asyncio executor threads (so dspy.settings.usage_tracker is
-    # unreliable from worker threads), but ``lm.history`` IS shared
-    # across threads — list.append under the GIL gives us a clean,
-    # thread-safe ledger. We diff history[start:end] post-turn. The LMs the
-    # forward builds itself (one per expert forward) join the turn LM ledger.
+    # iowarp/clio-agent#8: every LM call the turn makes -- planner, experts, chat,
+    # in any worker thread or on the LM loop -- lands in the turn's LM ledger, the
+    # only place a call's history entry lives; the usage rollup reads the calls made
+    # after this point.
     lm_ledger_token = turn_lm_ledger.open_ledger()
-    state.history_start = _snapshot_lm_history_index(state.app)
+    state.calls_start = _turn_call_count()
     _pop_stream_fallback(state.app, state.sid)
     # #767 Phase B Slice 5: mint + register the cancel event and derive the
     # no-progress watchdog cadence onto ``state`` (formerly the inline setup

@@ -29,7 +29,14 @@ class LMCallTrace(BaseCallback):
         self._open: dict[str, tuple[Any, dict[str, Any]]] = {}
 
     def on_lm_start(self, call_id: str, instance: Any, inputs: dict[str, Any]) -> None:
-        """Remember the call's LM and inputs until it ends."""
+        """Remember the call's LM and inputs until it ends.
+
+        The LM's history goes to the turn ledger, not DSPy's process-wide histories
+        (:func:`clio_agent.runtime.turn_lm_ledger.route_history`).
+        """
+        from clio_agent.runtime.turn_lm_ledger import route_history  # noqa: PLC0415
+
+        route_history(instance)
         with self._lock:
             self._open[call_id] = (instance, inputs)
 
@@ -46,7 +53,7 @@ class LMCallTrace(BaseCallback):
                     inputs,
                     outputs,
                     exception,
-                    response=_adapter_response(instance, outputs),
+                    response=_adapter_response(outputs),
                 )
             )
         except Exception as exc:  # noqa: BLE001 - recording must never fail a call
@@ -112,18 +119,17 @@ def call_record(
     return record
 
 
-def _adapter_response(instance: Any, outputs: Any) -> Any:
+def _adapter_response(outputs: Any) -> Any:
     """The ``Response`` behind an adapter call's list ``outputs``, else ``None``.
 
-    DSPy's history entry for the call holds that very list object next to the raw
-    Response, so the identity match is exact even when other threads share the LM.
+    The call's history entry holds that very list object next to the raw Response;
+    the turn ledger hands it over to this call's end handler
+    (:func:`clio_agent.runtime.turn_lm_ledger.take_adapter_entry`).
     """
-    if not isinstance(outputs, list):
-        return None
-    for entry in reversed(getattr(instance, "history", None) or []):
-        if isinstance(entry, dict) and entry.get("outputs") is outputs:
-            return entry.get("response")
-    return None
+    from clio_agent.runtime.turn_lm_ledger import take_adapter_entry  # noqa: PLC0415
+
+    entry = take_adapter_entry(outputs)
+    return entry.get("response") if entry is not None else None
 
 
 def _response_id(outputs: Any) -> str:
