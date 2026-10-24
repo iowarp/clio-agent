@@ -23,18 +23,18 @@ An agent starts from a parent agent and lists the plugins it adds. The agents yo
 ```python title="agents/earthscope.py"
 class Earthscope(ScienceAgent):
     id = "earthscope"
-    version = "0.5.0"
+    version = "0.6.0"
     name = "EarthScope"
     role = (
-        "an EarthScope GNSS scientist who loads focused procedures on demand and grounds every "
-        "answer in observed tool results"
+        "a geodesist who analyses EarthScope GNSS station data found through the National Data "
+        "Platform"
     )
-    plugins = ScienceAgent.plugins + ["earthscope-skills", "ndp", "geo", "pandas", "plot"]
+    plugins = ScienceAgent.plugins + ["earthscope", "geodesy", "geo", "ndp"]
 ```
 
-It starts from the science agent, which carries the standard agent's plugins, and adds EarthScope procedures and the data, mapping, table, and plotting plugins they use.
+It starts from the science agent, which carries the standard agent's plugins, and adds its own `earthscope` plugin (its mission, data acquisition and station map), the `geodesy` methods, and the mapping and National Data Platform plugins they use.
 
-Agents are named `<marketplace>/<id>`, optionally with a version range: `clio/standard`, `clio/earthscope@^0.5`. A bare id such as `earthscope` works when only one installed marketplace provides it. Agents you save yourself are named `user/<id>`.
+Agents are named `<marketplace>/<id>`, optionally with a version range: `clio/standard`, `clio/earthscope@^0.6`. A bare id such as `earthscope` works when only one installed marketplace provides it. Agents you save yourself are named `user/<id>`.
 
 The default agent, shown as **CLIO**, is `clio/standard`. Its plugins:
 
@@ -178,7 +178,7 @@ The same view is under **Preview** on the Agents settings page. From a terminal 
 
 ## Where agents come from
 
-Agents and plugins are installed from marketplaces. The `clio` marketplace ships with CLIO and holds the standard agent, the shared plugins, and domain agents such as `earthscope`, `factorio`, `deep-researcher`, and `wildfire-smoke-impact-review`. The `core` and `orchestration` plugins are part of CLIO itself.
+Agents and plugins are installed from marketplaces. The `clio` marketplace ships with CLIO and holds the standard agent, the shared plugins, and domain agents such as `earthscope`, `factorio`, `deep-researcher`, and `clio-data`. The `core` and `orchestration` plugins are part of CLIO itself.
 
 You can add other marketplaces, including Claude Code plugin marketplaces. A Claude Code marketplace brings plugins rather than agents: add them to a conversation with the + menu, then save the result as your own agent.
 

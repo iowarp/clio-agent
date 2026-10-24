@@ -274,7 +274,7 @@ is the campaign's composability proof: a marketplace plugin ships its own
 catalog and this binding accepts it with **no clio-agent source edit** — a
 plugin author needs nothing beyond the files below.
 
-`external/clio-agent-marketplace/plugins/earthscope-skills/` ships
+`external/clio-agent-marketplace/plugins/earthscope/` ships
 `ai.iowarp.clio/a2ui/earthscope-stations/{catalog.json, catalog.clio.json,
 instructions.md}` — `StationMap`/`StationPicker` aliasing the renderer's
 `clio.map.v1`/`ChoicePicker` kernels (the latter preset to
@@ -282,9 +282,9 @@ instructions.md}` — `StationMap`/`StationPicker` aliasing the renderer's
 `Row`/`Button`, and one declared event: `earthscope.stations.selected`
 (`destination: "agent"`, a `context_schema` requiring `searchId` and a
 non-empty `stationIds` array). The folder is the whole declaration; the
-plugin's `plugin.json` names no builtin. The `clio/earthscope-single-agent`
+plugin's `plugin.json` names no builtin. The `clio/earthscope`
 agent carries `core` (so `clio-workspace` comes first, the default for
-general views), `visuals` (the producer tools) and `earthscope-skills`, so
+general views), `visuals` (the producer tools) and `earthscope`, so
 its sessions get both catalogs and the generated skills
 `a2ui-catalog-clio-workspace` and `a2ui-catalog-earthscope-stations`; a
 station surface names its catalog, whose id the generated catalog skill

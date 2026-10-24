@@ -14,8 +14,9 @@ plugins bring the tools, MCP servers, skills, defined subagents, flows and
 prompt fragments. Agents are Python classes in a marketplace's `agents/*.py`;
 the default marketplace (`external/clio-agent-marketplace`, installed as
 `clio`) ships `clio/standard` (the default agent) and domain agents such as
-`clio/data-semantics`, whose `data`, `analysis`, `hdf5` and `visualization`
-subagents replace the old blueprint experts. Users save their own agents as a
+`clio/clio-data` (HDF5, ADIOS2 and Parquet files) and `clio/factorio`, whose
+defined subagents (for example `abaqus_engineer`) replace the old blueprint
+experts. Users save their own agents as a
 parent plus a delta (`user/<id>`).
 
 CLIO core ships no privileged native domain classes; the native `DataExpert`,

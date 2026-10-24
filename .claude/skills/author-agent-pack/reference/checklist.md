@@ -13,7 +13,7 @@
 - [ ] Instance facts live only in experiment cards stored with the data.
 - [ ] Lessons are written as checks. Promoted checks have evidence from 2 or more instances, or the format docs.
 - [ ] No format-specific MCP. Deterministic helpers are bundled skill scripts (PEP 723, `uv run --no-project`).
-- [ ] Existing packs' skills were checked for overlap first (e.g. `data-semantics`) and reused or referenced.
+- [ ] Existing packs' skills were checked for overlap first (e.g. `clio-data`, `hdf5`, `parquet`) and reused or referenced.
 
 ## Capabilities and limits
 - [ ] The expert has the general-purpose toolset (at least base-agent's: shell, fs read/propose/apply, view_image, view_pdf, web_fetch, ask_user); auto-attached tools aren't listed.
