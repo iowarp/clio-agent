@@ -47,6 +47,13 @@ from tests.turn_signals import TURN_SIGNAL_BACKSTOP_S
 pytestmark = pytest.mark.usefixtures("host_agent_executor")
 
 
+class _StubTransport:
+    """A stand-in stdio transport: records its argv and, like the real one, can be collected."""
+
+    def __init__(self, command: str, args: list[str], env: dict[str, str] | None = None) -> None:
+        self.command, self.args = command, args
+
+
 def _use_external_client_class(monkeypatch: pytest.MonkeyPatch, client_cls: type[Any]) -> None:
     """Inject an external-call double without replacing the native SDK class."""
     from clio_agent.tools import mcp_runtime
@@ -1184,7 +1191,9 @@ def test_external_mcp_call_policy_allow_executes_without_prompt(
 
     _use_external_client_class(monkeypatch, FakeClient)
     monkeypatch.setattr(
-        transports, "StdioTransport", lambda command, args, env=None: (command, args)
+        transports,
+        "StdioTransport",
+        _StubTransport,
     )
 
     app = build_app(sessions_path=tmp_path / "s.json")
@@ -1253,7 +1262,9 @@ def test_external_mcp_call_uses_explicit_session_for_policy_and_telemetry(
 
     _use_external_client_class(monkeypatch, FakeClient)
     monkeypatch.setattr(
-        transports, "StdioTransport", lambda command, args, env=None: (command, args)
+        transports,
+        "StdioTransport",
+        _StubTransport,
     )
 
     app = build_app(sessions_path=tmp_path / "s.json")
