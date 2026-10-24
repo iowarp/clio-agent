@@ -180,9 +180,21 @@ async def wait_while_server_works(
             task.cancel()
 
 
+def connection_context() -> contextvars.Context:
+    """A fresh context for a connection that outlives the call that opens it.
+
+    It carries only the current wait's server tree, so a server the connection spawns
+    still counts as the wait's progress (:func:`install_spawn_tracking`).
+    """
+    context = contextvars.Context()
+    context.run(_SERVER_TREE.set, _SERVER_TREE.get())
+    return context
+
+
 __all__ = [
     "REMOVED_DEADLINE_KEYS",
     "NoProgressTimeout",
+    "connection_context",
     "install_spawn_tracking",
     "mcp_max_wait_s",
     "mcp_no_progress_s",

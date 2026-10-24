@@ -35,7 +35,7 @@ from clio_agent.tools.mcp_result_projection import (
 from clio_agent.tools.mcp_result_projection import (
     model_tool_result_chars as model_tool_result_chars,
 )
-from clio_agent.tools.mcp_runtime import make_mcp_client
+from clio_agent.tools.mcp_runtime import enter_connection, make_mcp_client
 from clio_agent.tools.mcp_task_routing import (
     record_namespace_route_decision,
     resolve_and_build_direct_client,
@@ -317,7 +317,7 @@ class AsyncMCPToolExecutor(AsyncNamespacePreparationMixin):
         client_ctx = self._client_factory(self._server)
         client_entered = False
         try:
-            client = await client_ctx.__aenter__()
+            client = await enter_connection(client_ctx)
             client_entered = True
             tools = None if self._preloaded_tools is not None else await client.list_tools()
         except BaseException as exc:
@@ -508,9 +508,9 @@ class AsyncMCPToolExecutor(AsyncNamespacePreparationMixin):
             ctx = direct_client if direct_client is not None else self._client_factory(proxy)
             if spec is not None and uses_shared_launcher_cache(spec):
                 async with aacquire_launcher_cache_lock(namespace):
-                    client = await ctx.__aenter__()
+                    client = await enter_connection(ctx)
             else:
-                client = await ctx.__aenter__()
+                client = await enter_connection(ctx)
         except Exception:
             spawn_diet.spawn_failed(namespace)
             raise

@@ -28,6 +28,7 @@ churn.
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
@@ -376,6 +377,23 @@ def _capability_session_class(declaration: MCPClientCapabilities, base: type) ->
     )
     _CAPABILITY_SESSION_CLASSES[key] = session_class
     return session_class
+
+
+async def enter_connection(client_ctx: Any) -> Any:
+    """Enter a persistent MCP client outside the turn whose tool call opens it.
+
+    Entering a FastMCP client starts its session task (and an in-process server's
+    tasks), and a task copies the context it is created in. A connection opened by a
+    turn's first tool call carried that turn's context -- its ReAct loop, module, tools,
+    LM views and call ledger -- for as long as the pooled connection lived (live, #1846:
+    eleven finished agents kept alive by eleven pooled connections). The session starts
+    in :func:`~clio_agent.tools.mcp_server_progress.connection_context` instead.
+    """
+    from clio_agent.runtime import asyncio_wait_release  # noqa: PLC0415
+    from clio_agent.tools.mcp_server_progress import connection_context  # noqa: PLC0415
+
+    asyncio_wait_release.install()  # each call's wait must not pin its task on the session
+    return await asyncio.create_task(client_ctx.__aenter__(), context=connection_context())
 
 
 def make_mcp_client(

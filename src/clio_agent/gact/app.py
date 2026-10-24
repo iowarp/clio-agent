@@ -73,7 +73,7 @@ from clio_agent.gact.semantic_events import (
     build_trace_backend,
 )
 from clio_agent.prompts import PromptRegistry, PromptSource
-from clio_agent.runtime import trace
+from clio_agent.runtime import asyncio_wait_release, trace
 
 logger = logging.getLogger(__name__)
 
@@ -982,6 +982,7 @@ def build_app(
     )
 
     install_protocol_negotiation(app)
+    asyncio_wait_release.install()  # a pooled MCP session never keeps a tool call's turn
 
     configure_bearer_auth(app)
 
