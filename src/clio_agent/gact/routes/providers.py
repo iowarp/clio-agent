@@ -748,8 +748,7 @@ def register_providers_routes(app: FastAPI, deps: "GactDeps") -> None:
         try:
             loop = asyncio.get_running_loop()
             info = await loop.run_in_executor(
-                None,
-                lambda: run_in_new_loop(_apply_lm_provider(req)),
+                None, lambda: run_in_new_loop(_apply_lm_provider(req))
             )
         except HTTPException as exc:
             detail = exc.detail

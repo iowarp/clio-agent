@@ -108,10 +108,9 @@ def test_a_streamed_call_asks_for_and_records_the_provider_usage(metis: str) -> 
 
     lm = create_lm(_metis_config(metis))
     import dspy
+    from dspy.clients.base_lm import GLOBAL_HISTORY
 
     from clio_agent.gact.agents.clio_react import ClioReAct
-
-    from dspy.clients.base_lm import GLOBAL_HISTORY
 
     before = len(GLOBAL_HISTORY)
     # The agent loop streams every call.
@@ -175,11 +174,10 @@ def test_a_turn_on_a_per_forward_alcf_lm_rolls_up_its_tokens(metis: str) -> None
 
 def test_a_call_outside_a_turn_is_kept_nowhere(metis: str) -> None:
     import dspy
+    from dspy.clients.base_lm import GLOBAL_HISTORY
 
     from clio_agent.gact.agents.clio_react import ClioReAct
     from clio_agent.lm.factory import create_lm
-
-    from dspy.clients.base_lm import GLOBAL_HISTORY
 
     before = len(GLOBAL_HISTORY)
     lm = create_lm(_metis_config(metis))
