@@ -30,6 +30,7 @@ pytestmark = pytest.mark.usefixtures("clio_core_plane")
 def test_async_native_observation_waits_for_body_and_cleans_declarations(
     monkeypatch: pytest.MonkeyPatch, failure: str | None
 ) -> None:
+    pop_declared_structured_content()  # start from this test's own context, not a neighbour's
     events: list[tuple[str, dict[str, Any], str | None, Any]] = []
     body_ran = False
 

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+from collections.abc import Iterator
 from pathlib import Path
 from typing import cast
 
@@ -13,12 +14,25 @@ from fastapi.testclient import TestClient
 
 from clio_agent.gact import context
 from clio_agent.gact.agents.resolution import session_agent_def
+from clio_agent.gact.agents.tool_instrumentation import pop_declared_structured_content
 from clio_agent.gact.app import build_app
 from clio_agent.gact.artifacts.designation_tool import build_create_artifact_tool
 from clio_agent.gact.documents import renditions
 from clio_agent.gact.documents.profiles import document_format
 from clio_agent.runtime.document_stack.process import _windows_dacl_protected
 from tests.test_gact.test_document_artifacts import _pin, _workspace_session
+
+
+@pytest.fixture(autouse=True)
+def _consume_declared_structured_content() -> Iterator[None]:
+    """Stand in for the tool boundary these tests bypass by calling ``.func`` directly.
+
+    The artifact tool declares its structured result for the boundary to pop. Left
+    in the worker's context, it was read as a later test's declaration.
+    """
+    yield
+    pop_declared_structured_content()
+
 
 pytestmark = pytest.mark.usefixtures("host_agent_executor")
 
