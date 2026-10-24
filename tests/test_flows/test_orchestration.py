@@ -4,11 +4,13 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import threading
 from concurrent.futures import ThreadPoolExecutor
 from typing import Annotated, Any, ClassVar
 
 import dspy
+import pytest
 from fastapi.testclient import TestClient
 from pydantic import Field
 
@@ -285,6 +287,26 @@ def test_a_message_after_the_run_ended_does_not_run_the_flow_again(flow_app: Tes
     assert started["attempts"] == {"gather": 1, "measure": 1, "report": 1}
     result = history.read_content(later.result)
     assert "already ended" in json.dumps(result) and "one more thing" in json.dumps(result)
+
+
+def test_rebuilt_history_reads_a_finished_workflow_without_a_decoder_error(
+    flow_app: TestClient, caplog: pytest.LogCaptureFixture
+) -> None:
+    """Live, every restart logged "Historical workflow unavailable" per checkpoint of a run."""
+    sid = new_session(flow_app, "clio/orchestrator")
+    started = _plan_starter(flow_app, set())
+    post(flow_app, sid, "run the workflow")
+    handle = wait_until(lambda: started.get("handle"))
+    wait_until(lambda: _snapshot(flow_app, handle).status == "completed", timeout=60)
+    history = flow_app.app.state.task_history
+
+    with caplog.at_level(logging.ERROR):
+        history.restore()
+
+    assert history.workflow_reference_error(handle) is None
+    assert handle not in history.pending_workflow_references()
+    assert history.workflow_checkpoint(handle) is not None
+    assert not [r for r in caplog.records if "Historical workflow" in r.getMessage()]
 
 
 def test_run_flow_describes_the_flows_this_session_resolves(monkeypatch: Any) -> None:

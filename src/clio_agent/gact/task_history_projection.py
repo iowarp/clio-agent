@@ -104,6 +104,12 @@ def _legacy_workflow(self: TaskHistory, snapshot: TaskSnapshot) -> None:
         workflow = AssignmentDetails.model_validate(raw).workflow
         if workflow is not None:
             reference = CoreReference.model_validate(workflow)
+            latest = self._workflow_latest.get(snapshot.handle)
+            if latest is not None and latest.content == reference:
+                # The owner points at a checkpoint recorded canonically (the flow journal
+                # records it before pointing its owner at it): nothing legacy to decode.
+                self._workflow_dirty.discard(snapshot.handle)
+                return
             content = self.read_content(reference)
             if (
                 isinstance(content, dict)
