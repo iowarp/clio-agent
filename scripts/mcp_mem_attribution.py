@@ -13,7 +13,7 @@ to make a regression pass).
 Usage (the #921/#929 acceptance shape — 3 concurrent claude-haiku sessions):
 
     uv run python scripts/mcp_mem_attribution.py \
-        --agent clio/data-semantics \
+        --agent clio/clio-data \
         --workspace <dir with sensor_readings.csv> \
         --sessions 3 --settle-s 180 --runs 3 --assert-budget
 
@@ -30,13 +30,13 @@ Background-children scenario (#955): pass ``--children-agent <agent ref with
 defined alpha and beta subagents>`` (e.g. a canary agent installed with
 ``--marketplace``). Session 0 then drives that agent and fans out 2 BACKGROUND
 children (alpha+beta) via the async spawn
-tools instead of the data-semantics load; the other sessions keep the standard
+tools instead of the clio-data load; the other sessions keep the standard
 load. The children are REAL sessions — ``resident_ledgers`` caps their
 transcripts and the #933 workspace-fleet reaper cleans their fleets — so the
 gate exercises the bound with real child sessions resident.
 
 HONEST CAVEAT (the load is a SWAP, not an add): session 0 runs the canary agent
-INSTEAD of the data-semantics agent, so this scenario has 2 MCP-fleet data
+INSTEAD of the clio-data agent, so this scenario has 2 MCP-fleet data
 sessions (1-2) vs the baseline's 3, and the canary children carry NO MCP
 servers (they add transcript + provider-CLI cost, not a fleet). The
 children peak is therefore a LIGHTER fleet load than the baseline and is NOT a
@@ -508,7 +508,7 @@ def summarize_runs(runs: list[RunMeasurement]) -> RunSummary:
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
-        "--agent", default="clio/data-semantics", help="agent ref each session is pinned to"
+        "--agent", default="clio/clio-data", help="agent ref each session is pinned to"
     )
     parser.add_argument(
         "--marketplace",
@@ -779,7 +779,7 @@ def _run_once(args: argparse.Namespace) -> RunMeasurement | int:
         def _assign(i: int) -> tuple[str, str]:
             # Children scenario: session 0 drives the agent with alpha and beta
             # subagents and fans out 2 background children; the rest run the
-            # standard data-semantics load so the fleet cost is measured WITH real
+            # standard clio-data load so the fleet cost is measured WITH real
             # child sessions resident alongside the normal acceptance load.
             if args.children_agent is not None and i == 0:
                 return args.children_agent, CHILDREN_PROMPT

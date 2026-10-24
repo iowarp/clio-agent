@@ -92,7 +92,7 @@ def check_marketplace_submodule() -> dict[str, Any]:
     marketplace = common.REPO / "external" / "clio-agent-marketplace"
     # The default marketplace: plugins in plugins/<id>/, agent classes in agents/*.py.
     deep_researcher = marketplace / "plugins" / "deep-research" / "plugin.json"
-    data_semantics = marketplace / "plugins" / "data-semantics" / "plugin.json"
+    clio_data = marketplace / "plugins" / "clio-data" / "plugin.json"
     agents = marketplace / "agents" / "deep_researcher.py"
     submodule_present = marketplace.is_dir() and any(marketplace.iterdir())
     ok = submodule_present and deep_researcher.is_file() and agents.is_file()
@@ -105,7 +105,7 @@ def check_marketplace_submodule() -> dict[str, Any]:
             "submodule_present": submodule_present,
             "deep_research_plugin": deep_researcher.is_file(),
             "deep_researcher_agent_class": agents.is_file(),
-            "data_semantics_plugin": data_semantics.is_file(),
+            "clio_data_plugin": clio_data.is_file(),
         },
         "remediation": None
         if ok

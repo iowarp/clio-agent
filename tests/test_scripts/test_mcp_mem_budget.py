@@ -160,7 +160,7 @@ def _argv(tmp_path: Path, *extra: str) -> list[str]:
     return [
         "mcp_mem_attribution.py",
         "--agent",
-        "clio/data-semantics",
+        "clio/clio-data",
         "--workspace",
         str(tmp_path),
         *extra,
@@ -341,14 +341,14 @@ def test_setup_http_failure_aborts_before_any_acceptance_turn(
     monkeypatch.setattr(_mod, "drive_session", drive)
     out: dict[int, str] = {}
     sids: dict[int, str] = {}
-    assert not _mod.drive_load("http://gate", [("clio/data-semantics", "prompt")] * 3, out, sids)
+    assert not _mod.drive_load("http://gate", [("clio/clio-data", "prompt")] * 3, out, sids)
     drive.assert_not_called()
     assert sids == {0: "session-0"}
     assert "setup failed" in out[1]
     assert len(sessions) == 2
     sessions[0].patch.assert_any_call(
         "http://gate/v1/sessions/session-0/agent",
-        json={"ref": "clio/data-semantics"},
+        json={"ref": "clio/clio-data"},
         timeout=120,
     )
     assert sessions[1].patch.call_count == (0 if failed_phase == "create" else 1)

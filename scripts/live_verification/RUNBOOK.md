@@ -120,8 +120,8 @@ client built through the GATEWAY construction path, assert `fetch` reaches
 already covered by `test_mcp_v2_conformance.py`.
 
 **Leg (i) — v1 fleet regression.** See `leg_a_v1_fleet.md` in full. Go = zero
-non-benign diffs in the baseline comparison AND earthscope/wildfire live runs
-pass.
+non-benign diffs in the baseline comparison AND the earthscope live run
+passes.
 
 **Leg (iii)/(iv) — the marketplace deep-research expert works on clio-agent.**
 See `leg_d_deep_researcher.md` in full. Go = `test_deep_researcher_web_synthesis`
@@ -144,7 +144,7 @@ other assertion still gates).
 - **Zero-cost**: preflight, both `--plumbing-only` runs, leg A's baseline
   diff.
 - **Cheap live**: leg B (one turn), leg C (two turns, same session).
-- **Moderate live**: leg A's earthscope/wildfire runs (one session each).
+- **Moderate live**: leg A's earthscope run (one session).
 - **Most expensive**: leg D (an unbounded number of dynamically-spawned
   `researcher`/`critic` children).
 

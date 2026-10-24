@@ -7,6 +7,10 @@ Dockerfile:13-16` (geo ndp pandas plot hdf5 parquet web); handshake-row diff vs
 the develop baseline. Preflights (`runtime/mcp_launcher.py` probes) so
 PATH/YAML issues never score as protocol failures."
 
+Since the 2026-10 marketplace restructure the wildfire pack is gone and
+data-semantics is folded into the `clio-data` agent, so the live runs below
+cover earthscope and clio-data.
+
 This leg already has its harness (`tests/test_real_cases/` + `scripts/
 mcp_v1_baseline.py`); this file is the precise runbook, not a new script.
 
@@ -56,9 +60,9 @@ git diff --no-index \
 Any non-benign diff is a FAIL — do not proceed to the live agent-test runs
 below until it is understood.
 
-## 2. Live agent-test runs (earthscope, wildfire, data-semantics)
+## 2. Live agent-test runs (earthscope, clio-data)
 
-All three follow the same `gact_server` fixture pattern
+Both follow the same `gact_server` fixture pattern
 (`tests/test_real_cases/conftest.py`, dedicated port `:17960`, one CLEAN
 server per cell). Guardrail cell for a subscription-safe run: `claude_code` /
 `sonnet` (matches case14's own convention, and CLAUDE.md's live-tests-use-
@@ -70,23 +74,16 @@ box unattended).
 CLIO_RUN_LIVE=1 uv run pytest \
   tests/test_real_cases/test_earthscope_case.py \
   --provider claude_code --model sonnet -o addopts="" -p no:cacheprovider -q
-
-# wildfire
-CLIO_RUN_LIVE=1 uv run pytest \
-  tests/test_real_cases/test_wildfire_case.py \
-  --provider claude_code --model sonnet -o addopts="" -p no:cacheprovider -q
 ```
 
-**data-semantics (hdf5/parquet breadth, agent-driven):** no committed
-`tests/test_real_cases/test_data_semantics_*.py` file exists yet (confirmed
-by search — only earthscope/wildfire/case13/case14 have real-case test
-files). The marketplace agent itself IS present in the default marketplace
-(`clio/data-semantics`; its `data-semantics` plugin declares
-`hdf5`/`parquet`/`pandas`/`plot` exactly like the canonical fleet). Two
-options, in order of preference:
+**clio-data (hdf5/parquet breadth, agent-driven):** no committed
+`tests/test_real_cases/test_clio_data_*.py` file exists yet (only
+earthscope/case13/case14 have real-case test files). The marketplace agent
+itself IS present in the default marketplace (`clio/clio-data`, composing the
+`hdf5`, `adios` and `parquet` plugins). Two options, in order of preference:
 
 1. **Preferred — author a thin real-case test** the same shape as
-   `test_deep_researcher_case.py` (the `clio/data-semantics` agent, a prompt
+   `test_deep_researcher_case.py` (the `clio/clio-data` agent, a prompt
    that exercises an hdf5 inspect + a parquet read), gated
    `CLIO_RUN_LIVE`/`live`/`real_case` exactly like its siblings. This is
    scoped OUTSIDE this prep slice (touches `tests/test_real_cases/` +
@@ -96,14 +93,14 @@ options, in order of preference:
    hdf5/parquet with "breadth", not "agent behavior").
 2. **Ad hoc** — drive it through the SAME `gact_server` fixture pattern by
    hand (a throwaway pytest function or a REPL session against a locally
-   booted server) with a session pinned to `clio/data-semantics`
-   (`PATCH /v1/sessions/{sid}/agent` with `{"ref": "clio/data-semantics"}`).
+   booted server) with a session pinned to `clio/clio-data`
+   (`PATCH /v1/sessions/{sid}/agent` with `{"ref": "clio/clio-data"}`).
 
 ## 3. Green means
 
 - Step 1's diff has zero non-benign changes.
-- Steps 2's earthscope/wildfire tests pass (all matchers).
-- data-semantics breadth is either agent-proven (option 1) or accepted via
+- Step 2's earthscope test passes (all matchers).
+- clio-data breadth is either agent-proven (option 1) or accepted via
   step 1's schema/handshake coverage (option 2).
 
 ## Cost note
