@@ -24,6 +24,14 @@ task-result notices alone do not turn an all-wait into any-wait. Explicit false
 keeps an outcome-only wait. The shared `TaskOperations.wait` API keeps false as
 its default, so authored flow waits retain their existing control-flow contract.
 
+An MCP-to-native Shell handoff retains the original approval for one exact
+observer invocation. It does not create a session or workspace grant. Changed
+arguments, app/session/workspace/assignment ownership, approval posture, applicable
+policies or active playbook restrictions require the normal gate again. Reuse is
+one-shot; current folder/source/symlink policy and SPOTTER clearance still apply
+before native submission. PreToolUse interception remains at its original boundary;
+a hook that changes the command cannot inherit approval for the old arguments.
+
 `spawn_agent_task` takes `agent`, `task`, `placement`, `input_task_ids` and
 `strategy`; `agent` names a defined subagent of the session's agent or an
 installed agent (`marketplace/id`). The former `blueprint_id` argument is gone

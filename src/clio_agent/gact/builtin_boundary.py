@@ -316,6 +316,51 @@ class BuiltinBoundary:
         session = self.app.state.sessions.get(sid)
         if session is None:
             raise ValueError("Task submission requires an active session")
+        workspace = self.app.state.workspaces.get(session.workspace_id)
+        if workspace is None:
+            raise ValueError("Task submission requires an active workspace")
+        assignment = await self.app.state.task_history.io.run(
+            self.app.state.task_history.latest_assignment, sid
+        )
+        if assignment is None:
+            raise ValueError("Task submission requires a confirmed assignment")
+        call = captured.run(TASK_CALL.get)
+        inherited_approval = (
+            kind == "Shell"
+            and call.approval is not None
+            and call.approval.consume(
+                self.app, sid, assignment.handle, call.invocation_id, name, public
+            )
+        )
+        if inherited_approval:
+            from clio_agent.gact.folder_access import requested_folders
+            from clio_agent.tools.execution import tool_workspace_context
+
+            # Folder/symlink/source policy can change without a tool-policy row.
+            with tool_workspace_context(workspace.root_path):
+                inherited_approval = not requested_folders("shell_bash", public)
+        if inherited_approval and session.approval_mode == "spotter-ai":
+            from clio_agent.gact.permission_gate import (
+                _record_resolved_permission,
+                _spotter_clearance,
+            )
+
+            denial = await run_owned_callable(
+                functools.partial(
+                    _spotter_clearance,
+                    self.app,
+                    sid,
+                    session,
+                    name,
+                    public,
+                    "destructive tool",
+                    _record_resolved_permission,
+                ),
+                captured=captured.copy(),
+                name="clio-spotter-" + name,
+            )
+            if denial:
+                raise PermissionError(denial)
         approved, permission_arguments, selection_digest = None, public, None
         if name == "connected_data_connect":
             from clio_agent.gact.storage.connect_tool import connection_approval
@@ -327,7 +372,7 @@ class BuiltinBoundary:
             ) = await self.app.state.task_history.io.run(
                 connection_approval, self.app.state.connected_storage, session.workspace_id, public
             )
-        if approved is None:
+        if approved is None and not inherited_approval:
             metadata = {"kind": "native"}
             if name == "connected_data_connect":
                 metadata["summary"] = f"Connect {public['label']}"
@@ -349,13 +394,6 @@ class BuiltinBoundary:
             )
             if decision != "allow":
                 raise PermissionError("Task submission was not approved")
-        assignment = await self.app.state.task_history.io.run(
-            self.app.state.task_history.latest_assignment, sid
-        )
-        if assignment is None:
-            raise ValueError("Task submission requires a confirmed assignment")
-        workspace = self.app.state.workspaces.get(session.workspace_id)
-        call = captured.run(TASK_CALL.get)
         attribution: dict[str, Any] = {"agent": captured.run(context.active_react_scope)}
         if selection_digest is not None:
             attribution["ndp_selection_digest"] = selection_digest

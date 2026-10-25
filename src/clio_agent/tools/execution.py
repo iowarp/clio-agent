@@ -652,6 +652,7 @@ class SyncMCPToolExecutor(SyncNamespacePreparationMixin):
             get_active_tool_workspace_root(),
         )
 
+        approval = task_calls.capture_approval(name, effective_args) if permission_gate else None
         if permission_gate is not None:
             permission_context = _declared_mcp_permission_context(
                 name,
@@ -668,9 +669,8 @@ class SyncMCPToolExecutor(SyncNamespacePreparationMixin):
             except Exception as exc:  # noqa: BLE001
                 raise PermissionError(f"permission gate raised: {exc!r}") from exc
             if decision != "allow":
-                # P1.2 #1064: surface a mode-aware ``deny_message`` (a ``str`` subclass; duck-typed
-                # via getattr so this layer imports no gact) instead of the generic string; a plain
-                # "deny" falls back. The typed audit reason (``policy_deny``) is unchanged.
+                # Preserve mode-aware denials without importing GACT; legacy string hooks
+                # retain the generic refusal. The typed policy audit reason is unchanged.
                 deny_message = getattr(decision, "deny_message", "")
                 message = deny_message or f"tool call {name!r} denied by permission gate"
                 raise notify_refused_call(tool_observer, name, effective_args, message)
@@ -731,7 +731,7 @@ class SyncMCPToolExecutor(SyncNamespacePreparationMixin):
 
         app_loop = task_calls.application_loop()
         timeout = foreground_cancel.inline_timeout(self._async_executor, name, effective_args)
-        task_call_token = task_calls.begin_invocation()
+        task_call_token = task_calls.begin_invocation(approval=approval)
         try:
             with commitment_activity.track(timeout is None):
                 outcome = foreground_cancel._run_foreground_coroutine(
