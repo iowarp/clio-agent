@@ -242,11 +242,11 @@ def test_file_diff_exposes_trailing_newline_change(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, before: str, after: str
 ) -> None:
     target = tmp_path / "newline.txt"
-    target.write_text(before, encoding="utf-8")
+    target.write_text(before, encoding="utf-8", newline="")
     monkeypatch.setenv("CLIO_ALLOWED_ROOTS", str(tmp_path))
     args = {"filepath": str(target), "content": after}
     snapshot = capture_tool_presentation("fs_write_file", args)
-    target.write_text(after, encoding="utf-8")
+    target.write_text(after, encoding="utf-8", newline="")
     original = {"content": [], "structuredContent": {"path": str(target), "ok": True}}
     diff = enrich_tool_observer_result(original, args, snapshot, name="fs_write_file")[
         "presentation"
@@ -260,16 +260,19 @@ def test_non_file_tool_has_no_presentation_snapshot() -> None:
     assert capture_tool_presentation("shell_bash", {"command": "echo hi"}) is None
 
 
+@pytest.mark.parametrize("newline", ["\n", "\r\n"])
 def test_diff_preview_uses_one_context_line_not_a_ten_line_quota(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, newline: str
 ) -> None:
     target = tmp_path / "context.txt"
-    before = "\n".join(f"line {index}" for index in range(20)) + "\n"
-    target.write_text(before, encoding="utf-8")
+    before = newline.join(f"line {index}" for index in range(20)) + newline
+    target.write_text(before, encoding="utf-8", newline="")
     monkeypatch.setenv("CLIO_ALLOWED_ROOTS", str(tmp_path))
     args = {"filepath": str(target)}
     snapshot = capture_tool_presentation("fs_edit_file", args)
-    target.write_text(before.replace("line 10\n", "edited\n"), encoding="utf-8")
+    target.write_text(
+        before.replace(f"line 10{newline}", f"edited{newline}"), encoding="utf-8", newline=""
+    )
     view = enrich_tool_observer_result(
         {"structuredContent": {"path": str(target), "ok": True}},
         args,
@@ -278,5 +281,5 @@ def test_diff_preview_uses_one_context_line_not_a_ten_line_quota(
     )["presentation"]
     diff = view["blocks"][1]["text"]
     assert len(diff.splitlines()) == 7
-    assert " line 9\n-line 10\n+edited\n line 11\n" in diff
+    assert f" line 9{newline}-line 10{newline}+edited{newline} line 11{newline}" in diff
     assert view["summary"] == ""

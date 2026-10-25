@@ -452,8 +452,12 @@ def _diff(args: Mapping[str, Any], result: Any, snapshot: Any) -> dict[str, Any]
         # A compact view: one context line around each change, from the pre-write copy.
         before = snapshot.content if snapshot.existed else ""
         if before is not None:
-            after = Path(validate_read_path(snapshot.path)).read_text(
-                encoding="utf-8", errors="replace"
+            # The captured before-copy preserves line endings. A text-mode read
+            # here normalizes CRLF and makes unchanged Windows lines look edited.
+            after = (
+                Path(validate_read_path(snapshot.path))
+                .read_bytes()
+                .decode("utf-8", errors="replace")
             )
             diff = unified_file_diff(before, after, Path(snapshot.path).name, context=1)
     return {
@@ -507,6 +511,8 @@ def _terminal(args: Mapping[str, Any], result: Any, snapshot: Any) -> dict[str, 
 
 def _web(args: Mapping[str, Any], result: Any, snapshot: Any) -> dict[str, Any]:
     del snapshot
+    if structured_tool_result_error(result) is not None:
+        return standard_mcp_presentation(result)
     row = _structured(result)
     blocks: list[dict[str, Any]] = []
     document = row.get("document")
