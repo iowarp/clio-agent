@@ -374,11 +374,10 @@ def _agent_run_results(app: "FastAPI", workspace_id: str) -> list[dict[str, Any]
     access = TaskAccess(history, TaskCaller("", app.state.human_principal, human_action=True))
     results: list[dict[str, Any]] = []
     handles = history.task_handles(human_id=access.caller.human_id)
-    handles.intersection_update(
-        history.task_handles(kind="Session") | history.task_handles(kind="Subagent")
-    )
     for handle in handles:
         task = access.require(handle, "read")
+        if task.kind not in {"Session", "Subagent"}:
+            continue
         owner = app.state.sessions.get(task.owner.session_id)
         if owner is None or owner.workspace_id != workspace_id:
             continue

@@ -1,12 +1,14 @@
-"""In-memory artifact registry — projection, fold semantics, minting, boot rebuild.
+"""Artifact registry — fold semantics, minting, queries over a pluggable backend.
 
-Storage is a PROJECTION over the existing semantic-event log (RULE 4 / #737 —
-owner decision #966.8), not a new store: the authoritative capture is
-``artifact.*`` semantic events emitted via ``_emit_semantic_event`` (ARC
-``_events`` + durable trace); the in-memory :class:`ArtifactRegistry` on
-``app.state.artifact_registry`` rebuilds from the fold set on first access; a
-SMALL bounded SessionStore ``metadata`` patch is a fast badge index only, NEVER
-the rebuild source.
+The authoritative capture is the ``artifact.*`` semantic-event log emitted via
+``_emit_semantic_event`` (ARC ``_events`` + durable trace; RULE 4 / #737). The
+:class:`ArtifactRegistry` on ``app.state.artifact_registry`` owns the DECISIONS
+(fold idempotency, atomic version assignment, alias last-writer-wins); where their
+results live is its backend (:mod:`~clio_agent.gact.artifacts.registry_backend`):
+clio-core ``artifact_index`` records served by point gets behind a bounded cache
+(:mod:`~clio_agent.gact.artifacts.registry_store` — the process is stateless, boot
+folds nothing), or, only when no clio-core record store exists, the in-process full
+fold. A SMALL bounded SessionStore ``metadata`` patch is a fast badge index only.
 
 Fold idempotency (owner decision #966): dedupe by ``event_id`` then
 ``(workspace_id, name, version)``; a same-sha replay is a no-op; a conflicting sha
@@ -20,6 +22,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import threading
+from collections.abc import Iterable
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Optional
@@ -29,12 +32,16 @@ from clio_agent.gact.artifacts.records import (
     ArtifactRecord,
     ArtifactVersion,
     Custody,
-    EvidenceClass,
     IdentityEvidence,
     InvalidAliasError,
     Mechanism,
     alias_rejection_reason,
-    new_artifact_id,
+)
+from clio_agent.gact.artifacts.registry_backend import MemoryBackend, PendingWrite
+from clio_agent.gact.artifacts.registry_events import (
+    _artifact_event_from_payload,
+    _ArtifactEvent,
+    _version_from_event,
 )
 from clio_agent.gact.artifacts.registry_index import (
     build_session_index,
@@ -79,102 +86,6 @@ _FOLD_EVENT_TYPES: frozenset[str] = frozenset(
         ARTIFACT_ENRICHED_EVENT,
     }
 )
-
-
-@dataclass(frozen=True)
-class _ArtifactEvent:
-    """A normalized artifact event, extracted from a semantic event's payload.
-
-    Source-agnostic: the same shape is read from an ARC ``_events`` segment, a
-    JSONL trace line, or a freshly minted event — so the fold never branches on
-    provenance.
-    """
-
-    event_id: str
-    workspace_id: str
-    name: str
-    version: int
-    artifact_id: str
-    sha256: Optional[str]
-    size_bytes: Optional[int]
-    kind: str
-    custody: str
-    mechanism: str
-    evidence_class: str
-    mtime: Optional[float]
-    authority: str
-    producer: dict[str, Any]
-    path: str
-    created_at: str
-    annotation: str
-    #: S4 revision-edge + custody markers (on ``version.added``; defaulted on v1).
-    prior_version: Optional[int]
-    prior_sha256: Optional[str]
-    kind_warning: str
-    custody_gap: Optional[dict[str, Any]]
-    #: S6 over-threshold non-ingestion marker (bytes; ``None`` when ingested/small).
-    not_ingested_size: Optional[int]
-
-
-def _artifact_event_from_payload(payload: dict[str, Any]) -> Optional[_ArtifactEvent]:
-    """Parse an ``artifact.created`` payload into a normalized event, or ``None``.
-
-    Returns ``None`` when the payload lacks the load-bearing identity fields
-    (workspace/name/version) — a malformed record is dropped from the fold with a
-    typed reason by the caller, never crashes the boot.
-    """
-    ws = str(payload.get("workspace_id") or "")
-    name = str(payload.get("name") or "")
-    if not name:
-        return None
-    try:
-        version = int(payload.get("version") or 0)
-    except (TypeError, ValueError):
-        return None
-    if version < 1:
-        return None
-    raw_evidence = payload.get("evidence")
-    evidence: dict[str, Any] = raw_evidence if isinstance(raw_evidence, dict) else {}
-    return _ArtifactEvent(
-        event_id=str(payload.get("event_id") or ""),
-        workspace_id=ws,
-        name=name,
-        version=version,
-        artifact_id=str(payload.get("artifact_id") or ""),
-        sha256=(str(payload["sha256"]) if payload.get("sha256") else None),
-        size_bytes=(int(payload["size_bytes"]) if payload.get("size_bytes") is not None else None),
-        kind=str(payload.get("kind") or ArtifactKind.OTHER.value),
-        custody=str(payload.get("custody") or Custody.WORKSPACE_REFERENCED.value),
-        mechanism=str(payload.get("mechanism") or Mechanism.TOOL_SCHEMA.value),
-        evidence_class=str(
-            (evidence.get("evidence_class") if evidence else None)
-            or payload.get("evidence_class")
-            or EvidenceClass.HASHED_AT_USE.value
-        ),
-        mtime=(
-            float(evidence["mtime"])
-            if evidence.get("mtime") is not None
-            else (float(payload["mtime"]) if payload.get("mtime") is not None else None)
-        ),
-        authority=str((evidence.get("authority") if evidence else "") or ""),
-        producer=dict(payload.get("producer") or {}),
-        path=str(payload.get("path") or ""),
-        created_at=str(payload.get("created_at") or ""),
-        annotation=str(payload.get("annotation") or ""),
-        prior_version=(
-            int(payload["prior_version"]) if payload.get("prior_version") is not None else None
-        ),
-        prior_sha256=(str(payload["prior_sha256"]) if payload.get("prior_sha256") else None),
-        kind_warning=str(payload.get("kind_warning") or ""),
-        custody_gap=(
-            dict(payload["custody_gap"]) if isinstance(payload.get("custody_gap"), dict) else None
-        ),
-        not_ingested_size=(
-            int(payload["not_ingested_size"])
-            if payload.get("not_ingested_size") is not None
-            else None
-        ),
-    )
 
 
 @dataclass
@@ -222,40 +133,32 @@ class RegistryFoldOnLoopError(RuntimeError):
 
 
 class ArtifactRegistry:
-    """In-memory projection of the artifact event log, rebuilt at boot.
+    """The artifact projection's decisions over a backend (in-memory or clio-core).
 
-    Thread-safe (a single lock guards the chains). The fold is idempotent and
-    replay-order-tolerant: it dedupes by ``event_id`` then ``(workspace_id, name,
-    version)`` and keeps the first content-hash on a conflict. It never reads the
-    SessionStore badge index — that index is a projection OF this registry, not a
-    source FOR it.
+    Thread-safe (a single lock guards every read-modify-write). The fold is
+    idempotent and replay-order-tolerant: it dedupes by ``event_id`` then
+    ``(workspace_id, name, version)`` and keeps the first content-hash on a conflict.
+    It never reads the SessionStore badge index — that index is a projection OF this
+    registry, not a source FOR it. ``backend`` defaults to the in-memory projection
+    (a fold target); the boot wires the clio-core record backend when it exists.
     """
 
-    def __init__(self) -> None:
+    def __init__(self, backend: Optional[Any] = None) -> None:
         self._lock = threading.Lock()
-        self._records: dict[tuple[str, str], ArtifactRecord] = {}
-        self._seen_event_ids: set[str] = set()
-        #: TransformRecords keyed by ``call_id`` (the activity id; S5 #971). Folded
-        #: idempotently by ``event_id`` then ``call_id`` — the first record for a
-        #: ``call_id`` wins (a coarse transform is one call).
-        self._transforms: dict[str, Any] = {}
+        self._backend: Any = backend if backend is not None else MemoryBackend()
         self.fold_conflicts: list[dict[str, Any]] = []
         #: Typed reason recorded when boot found no fold source at all.
         self.capture_released: Optional[dict[str, Any]] = None
-        #: Last-writer-wins bookkeeping for the alias fold (S4 #970): maps
-        #: ``(workspace_id, name, alias)`` → the winning move's ``(at, event_id)``, so
-        #: an order-shuffled replay rebuilds the identical alias map (greatest wins).
-        self._alias_move_keys: dict[tuple[str, str, str], tuple[str, str]] = {}
-        #: Per-session USE index (#1191): ``session_id`` -> relay ``artifact_id``s
-        #: that session USED via a same-sha dedup (never produced). Folded
-        #: idempotently (:meth:`fold_artifact_used`) or recorded live at mint time
-        #: (:meth:`record_artifact_used`); read by ``?include_used=true``.
-        self._used_by_session: dict[str, set[str]] = {}
-        #: Dedup-enrichment side index (A9, #1176): ``artifact_id`` -> a SUPPLEMENTAL
-        #: annotation a later ``create_artifact`` dedup declared (decision logic in
-        #: :mod:`~clio_agent.gact.artifacts.dedup_enrichment`; read via
-        #: :meth:`supplemental_annotation`).
-        self._supplemental_annotations: dict[str, str] = {}
+
+    @property
+    def _seen_event_ids(self) -> Any:
+        """Event ids already applied (fold dedup; bounded on the clio-core backend)."""
+        return self._backend.seen_event_ids
+
+    def confirm_event(self, event_id: str) -> None:
+        """The ``artifact.*`` event ``event_id`` is recorded — clear its pending marks."""
+        with self._lock:
+            self._backend.confirm(event_id)
 
     # ---- fold --------------------------------------------------------------
 
@@ -308,43 +211,58 @@ class ArtifactRegistry:
                 return FoldResult(applied=False, reason="duplicate_event_id")
             if event_id:
                 self._seen_event_ids.add(event_id)
-            if record.call_id in self._transforms:
+            if self._backend.transform(record.call_id) is not None:
                 return FoldResult(applied=False, reason="duplicate_call_id")
-            self._transforms[record.call_id] = record
+            self._backend.add_transform(record)
             return FoldResult(applied=True, reason="")
 
     def record_transform(self, record: Any) -> bool:
         """Store a live-minted TransformRecord idempotently (S5 #971).
 
-        Marks the record's ``event_id`` seen so a boot replay of its
-        ``artifact.transform.recorded`` event is a ``duplicate_event_id`` no-op,
+        Called BEFORE its ``artifact.transform.recorded`` event is emitted (the index
+        record lands first, pending until the event is recorded). Marks the record's
+        ``event_id`` seen so a replay of that event is a ``duplicate_event_id`` no-op,
         exactly like :meth:`mint`. Returns whether it was newly stored (``False``
         when the ``call_id`` was already recorded).
         """
         with self._lock:
             if record.event_id:
                 self._seen_event_ids.add(record.event_id)
-            if record.call_id in self._transforms:
+            if self._backend.transform(record.call_id) is not None:
                 return False
-            self._transforms[record.call_id] = record
+            pending = PendingWrite(str(record.event_id or ""), str(record.session_id or ""))
+            self._backend.add_transform(record, pending=pending)
             return True
 
     def get_transform(self, call_id: str) -> Optional[Any]:
         """Return the TransformRecord for ``call_id`` (the activity id), or ``None``."""
         with self._lock:
-            return self._transforms.get(call_id)
+            return self._backend.transform(call_id)
 
     def transforms_for_session(self, session_id: str) -> list[Any]:
         """Every TransformRecord produced in ``session_id`` (chronological by call)."""
         with self._lock:
-            return [t for t in self._transforms.values() if t.session_id == session_id]
+            return self._backend.session_transforms(session_id)
+
+    def transforms_generating(self, artifact_id: str) -> list[Any]:
+        """TransformRecords with a generated edge on ``artifact_id`` (record order)."""
+        with self._lock:
+            return self._backend.generating(artifact_id)
+
+    def transforms_using(self, artifact_id: str) -> list[Any]:
+        """TransformRecords with a used edge on ``artifact_id`` (record order)."""
+        with self._lock:
+            return self._backend.using(artifact_id)
 
     def record_artifact_used(
         self, session_id: str, artifact_id: str, *, event_id: str = ""
     ) -> bool:
         """Record a live same-sha-dedup USE for ``session_id`` (#1191, materialize half —
         paired with the durable :func:`~clio_agent.gact.artifacts.versions.emit_artifact_used`
-        emit). Idempotent by ``event_id``; returns whether newly recorded."""
+        emit, which follows). Idempotent by ``event_id``; returns whether newly recorded."""
+        return self._record_used(session_id, artifact_id, event_id, live=True)
+
+    def _record_used(self, session_id: str, artifact_id: str, event_id: str, *, live: bool) -> bool:
         if not session_id or not artifact_id:
             return False
         with self._lock:
@@ -352,44 +270,45 @@ class ArtifactRegistry:
                 if event_id in self._seen_event_ids:
                     return False
                 self._seen_event_ids.add(event_id)
-            used = self._used_by_session.setdefault(session_id, set())
-            if artifact_id in used:
+            if artifact_id in self._backend.used(session_id):
                 return False
-            used.add(artifact_id)
+            pending = PendingWrite(event_id, session_id) if live else None
+            self._backend.add_used(session_id, artifact_id, pending=pending)
             return True
 
     def fold_artifact_used(self, payload: dict[str, Any]) -> FoldResult:
-        """Fold one ``artifact.used`` payload (#1191) via :meth:`record_artifact_used`
-        (the SAME index the live mint path writes) — malformed (no session/artifact
-        id) is dropped with a typed reason."""
+        """Fold one ``artifact.used`` payload (#1191) into the SAME index the live mint
+        path writes — malformed (no session/artifact id) is dropped with a typed reason."""
         session_id = str(payload.get("session_id") or "")
         artifact_id = str(payload.get("artifact_id") or "")
         event_id = str(payload.get("event_id") or "")
         if not session_id or not artifact_id:
             return FoldResult(applied=False, reason="malformed")
-        if not self.record_artifact_used(session_id, artifact_id, event_id=event_id):
+        if not self._record_used(session_id, artifact_id, event_id, live=False):
             return FoldResult(applied=False, reason="duplicate_event_id")
         return FoldResult(applied=True, reason="")
 
     def used_artifact_ids_for_session(self, session_id: str) -> set[str]:
         """Relay ``artifact_id``s ``session_id`` USED via dedup (#1191, never produced)."""
         with self._lock:
-            return set(self._used_by_session.get(session_id, ()))
+            return self._backend.used(session_id)
 
     def record_artifact_enrichment(
-        self, artifact_id: str, *, annotation: str = "", event_id: str = ""
+        self, artifact_id: str, *, annotation: str = "", event_id: str = "", session_id: str = ""
     ) -> str:
         """Attach a SUPPLEMENTAL annotation to ``artifact_id`` (A9, #1176).
 
         Decision logic lives in the owner module
         :func:`~clio_agent.gact.artifacts.dedup_enrichment.decide_enrichment`
-        (no-accretion — this file is at its ratchet ceiling); returns one of its
-        typed reasons, never a silent drop.
+        (no-accretion); returns one of its typed reasons, never a silent drop. A live
+        call passes the emitting ``session_id`` (its index write is pending until the
+        ``artifact.enriched`` event is recorded); a fold passes none.
         """
         from clio_agent.gact.artifacts.dedup_enrichment import decide_enrichment  # noqa: PLC0415
 
+        pending = PendingWrite(event_id, session_id) if session_id else None
         with self._lock:
-            return decide_enrichment(self, artifact_id, annotation, event_id)
+            return decide_enrichment(self, artifact_id, annotation, event_id, pending=pending)
 
     def fold_artifact_enriched(self, payload: dict[str, Any]) -> FoldResult:
         """Fold one ``artifact.enriched`` payload (A9, #1176) via
@@ -408,12 +327,13 @@ class ArtifactRegistry:
     def supplemental_annotation(self, artifact_id: str) -> str:
         """The dedup-enrichment annotation attached to ``artifact_id``, or ``""``."""
         with self._lock:
-            return self._supplemental_annotations.get(artifact_id, "")
+            return self._backend.enrichment(artifact_id)
 
     def all_transforms(self) -> list[Any]:
-        """A snapshot of every TransformRecord known (for lineage traversal / tests)."""
+        """Every TransformRecord (in-memory projection only — the clio-core backend
+        serves transforms by session / artifact id and raises a typed error here)."""
         with self._lock:
-            return list(self._transforms.values())
+            return self._backend.all_transforms()
 
     def find_version_by_path(
         self,
@@ -425,7 +345,7 @@ class ArtifactRegistry:
         """Resolve a registered version by its referenced ``path`` (S5 used-edge match).
 
         Returns the ``(record, version)`` whose ``version.path`` resolves to the same
-        absolute path (``None`` when none does). Linear over the bounded fleet.
+        absolute path (``None`` when none does). Linear over the searched workspaces.
 
         ``allowed_workspace_ids`` (P3.1 #1038 — cross-job lineage bind) gates which
         workspaces a match may come from. ``None`` (default, drop-in for existing
@@ -435,20 +355,19 @@ class ArtifactRegistry:
         allowed_workspace_ids`` matches on absolute path equality, with a
         DETERMINISTIC cross-record tie-break — prefer an exact ``ws == workspace_id``
         match, else the newest by ``(created_at, ws, name, version)``, a total order
-        independent of dict iteration (flag #4), never the naive per-record HEAD-wins.
+        independent of iteration order (flag #4), never the naive per-record HEAD-wins.
         """
         if not path:
             return None
         target = Path(str(path)).expanduser().resolve(strict=False)
+        searched = (
+            [workspace_id] if allowed_workspace_ids is None else sorted(allowed_workspace_ids)
+        )
         with self._lock:
             best_key: Optional[tuple[Any, ...]] = None
             best: Optional[tuple[ArtifactRecord, ArtifactVersion]] = None
-            for (ws, name), record in self._records.items():
-                if allowed_workspace_ids is None:
-                    if ws != workspace_id:
-                        continue
-                elif ws not in allowed_workspace_ids:
-                    continue
+            for record in (r for ws in searched for r in self._backend.workspace_records(ws)):
+                ws, name = record.workspace_id, record.name
                 for version in record.versions:
                     if not version.path:
                         continue
@@ -460,7 +379,7 @@ class ArtifactRegistry:
                         continue
                     # Default: HEAD (highest version) wins. Cross-job: prefer local ws,
                     # else newest by (created_at, ws, name, version) — a deterministic
-                    # total order, never dict iteration order (flag #4).
+                    # total order, never iteration order (flag #4).
                     key: tuple[Any, ...] = (
                         (version.version,)
                         if allowed_workspace_ids is None
@@ -480,11 +399,7 @@ class ArtifactRegistry:
         with self._lock:
             if event.event_id and event.event_id in self._seen_event_ids:
                 return FoldResult(applied=False, reason="duplicate_event_id")
-            key = (event.workspace_id, event.name)
-            record = self._records.get(key)
-            if record is None:
-                record = ArtifactRecord(workspace_id=event.workspace_id, name=event.name)
-                self._records[key] = record
+            record = self._backend.ensure_record(event.workspace_id, event.name)
 
             existing = next((v for v in record.versions if v.version == event.version), None)
             if existing is not None:
@@ -520,6 +435,7 @@ class ArtifactRegistry:
 
             version = _version_from_event(event)
             record.add_version(version)
+            self._backend.save_record(record, new_version=version)
             if event.event_id:
                 self._seen_event_ids.add(event.event_id)
             return FoldResult(applied=True, reason="", version=version)
@@ -549,10 +465,7 @@ class ArtifactRegistry:
         with self._lock:
             if event_id and event_id in self._seen_event_ids:
                 return FoldResult(applied=False, reason="duplicate_event_id")
-            record = self._records.get((ws, name))
-            if record is None:
-                record = ArtifactRecord(workspace_id=ws, name=name)
-                self._records[(ws, name)] = record
+            record = self._backend.ensure_record(ws, name)
             applied = self._apply_alias_move_locked(
                 record, alias=alias, to_version=to_version, at=at, event_id=event_id
             )
@@ -570,6 +483,7 @@ class ArtifactRegistry:
         to_version: int,
         at: str,
         event_id: str,
+        pending: Optional[PendingWrite] = None,
     ) -> bool:
         """Apply one alias move under the ``(at, event_id)`` last-writer-wins order.
 
@@ -580,14 +494,15 @@ class ArtifactRegistry:
         applied (``False`` == stale no-op). Caller holds ``self._lock``; ``latest`` is
         derived from the head, so its pointer is not stored but its key IS recorded.
         """
-        alias_id = (record.workspace_id, record.name, alias)
         move_key = (at, event_id)
-        best = self._alias_move_keys.get(alias_id)
+        best = self._backend.alias_key(record, alias)
         if best is not None and move_key <= best:
             return False
-        self._alias_move_keys[alias_id] = move_key
+        undo = {"op": "alias", "alias": alias, "prev": record.aliases.get(alias), "prev_key": best}
+        self._backend.set_alias_key(record, alias, move_key)
         if alias != "latest":
             record.aliases[alias] = to_version
+        self._backend.save_record(record, pending=pending, undo=undo)
         return True
 
     # ---- mint (atomic version assignment) ----------------------------------
@@ -609,6 +524,7 @@ class ArtifactRegistry:
         producing: bool = True,
         lease_clean: bool = False,
         not_ingested_size: Optional[int] = None,
+        session_id: str = "",
     ) -> MintOutcome:
         """Atomically decide-and-append the next version for ``(workspace_id, name)``.
 
@@ -618,18 +534,14 @@ class ArtifactRegistry:
         version-number / revision logic lives here — which, on the locked chain
         snapshot, returns a dedup (``created=False``) or a new version carrying its
         number, the ``wasRevisionOf`` edge, and any kind / custody-gap markers. This
-        only MATERIALIZES that decision, appends it, and marks ``event_id`` seen so a
-        boot replay is a ``duplicate_event_id`` no-op. Never emits; the caller emits
-        ``artifact.created`` (v1) / ``artifact.version.added`` (v2+) when ``created``.
-        ``producing`` / ``lease_clean`` forward to the decision point's drift path.
+        only MATERIALIZES that decision, persists it (pending under ``event_id`` until
+        the event emitted into ``session_id`` is recorded), and marks ``event_id``
+        seen. Never emits; the caller emits ``artifact.created`` (v1) /
+        ``artifact.version.added`` (v2+) when ``created``. ``producing`` /
+        ``lease_clean`` forward to the decision point's drift path.
         """
         with self._lock:
-            key = (workspace_id, name)
-            record = self._records.get(key)
-            if record is None:
-                record = ArtifactRecord(workspace_id=workspace_id, name=name)
-                self._records[key] = record
-
+            record = self._backend.ensure_record(workspace_id, name)
             decision = decide_version(
                 record,
                 sha256=evidence.sha256,
@@ -666,6 +578,10 @@ class ArtifactRegistry:
                 not_ingested_size=not_ingested_size,
             )
             record.add_version(version)
+            sid = session_id or str(producer.get("session_id") or "")
+            self._backend.save_record(
+                record, new_version=version, pending=PendingWrite(event_id, sid)
+            )
             if event_id:
                 self._seen_event_ids.add(event_id)
             return MintOutcome(
@@ -684,6 +600,7 @@ class ArtifactRegistry:
         to_version: int,
         at: str,
         event_id: str,
+        session_id: str = "",
     ) -> Optional[tuple[Optional[int], int, bool]]:
         """Live alias move under the lock — ``(from_version, to_version, applied)``.
 
@@ -692,20 +609,26 @@ class ArtifactRegistry:
         Finding [5]: decided by the SAME ``(at, event_id)`` comparator the fold uses
         (:meth:`_apply_alias_move_locked`), so a stale live move is a no-op
         (``applied=False``) exactly as the fold refuses it. ``None`` when the record or
-        target version is missing; the emitted event MUST carry this ``at`` + ``event_id``.
+        target version is missing; the emitted event (into ``session_id``) MUST carry
+        this ``at`` + ``event_id``.
         """
         reason = alias_rejection_reason(alias)
         if reason:
             raise InvalidAliasError(f"alias {alias!r} is not a legal user alias", reason=reason)
         with self._lock:
-            record = self._records.get((workspace_id, name))
+            record = self._backend.record(workspace_id, name)
             if record is None:
                 return None
             if not any(v.version == to_version for v in record.versions):
                 return None
             from_version = record.aliases.get(alias)
             applied = self._apply_alias_move_locked(
-                record, alias=alias, to_version=to_version, at=at, event_id=event_id
+                record,
+                alias=alias,
+                to_version=to_version,
+                at=at,
+                event_id=event_id,
+                pending=PendingWrite(event_id, session_id),
             )
             return (from_version, to_version, applied)
 
@@ -714,12 +637,12 @@ class ArtifactRegistry:
     def get(self, workspace_id: str, name: str) -> Optional[ArtifactRecord]:
         """Return the logical record for ``(workspace_id, name)``, or ``None``."""
         with self._lock:
-            return self._records.get((workspace_id, name))
+            return self._backend.record(workspace_id, name)
 
     def list_for_workspace(self, workspace_id: str) -> list[ArtifactRecord]:
-        """Every logical artifact in a workspace."""
+        """Every logical artifact in a workspace (creation order)."""
         with self._lock:
-            return [r for (ws, _n), r in self._records.items() if ws == workspace_id]
+            return self._backend.workspace_records(workspace_id)
 
     def is_sha_alias_reachable(self, workspace_id: str, sha256: str) -> bool:
         """Whether any pinned alias in ``workspace_id`` currently targets ``sha256``.
@@ -733,9 +656,7 @@ class ArtifactRegistry:
         if not sha256:
             return False
         with self._lock:
-            for (ws, _name), record in self._records.items():
-                if ws != workspace_id:
-                    continue
+            for record in self._backend.workspace_records(workspace_id):
                 by_number = {v.version: v for v in record.versions}
                 for target in record.aliases.values():
                     version = by_number.get(target)
@@ -746,12 +667,20 @@ class ArtifactRegistry:
     def count(self) -> int:
         """Total number of logical artifacts known."""
         with self._lock:
-            return len(self._records)
+            return len(self._backend.all_records())
 
     def all_records(self) -> list[ArtifactRecord]:
-        """A snapshot of every logical record (for introspection / tests)."""
+        """A snapshot of every logical record (introspection / tests; walks every
+        workspace — hot paths query by workspace, session or artifact id instead)."""
         with self._lock:
-            return list(self._records.values())
+            return self._backend.all_records()
+
+    def versions_produced_in(
+        self, session_ids: Iterable[str]
+    ) -> list[tuple[ArtifactRecord, ArtifactVersion]]:
+        """Every ``(record, version)`` whose ``producer.session_id`` is in ``session_ids``."""
+        with self._lock:
+            return self._backend.produced_in(sorted(set(session_ids)))
 
     def get_by_artifact_id(
         self, artifact_id: str
@@ -760,69 +689,12 @@ class ArtifactRegistry:
 
         Returns the ``(record, version)`` pair whose version carries that id, or
         ``None`` when none matches. Each version's ``artifact_id`` is unique (one per
-        immutable version — owner decision #966.3). Linear over the bounded fleet.
+        immutable version — owner decision #966.3).
         """
         if not artifact_id:
             return None
         with self._lock:
-            for record in self._records.values():
-                for version in record.versions:
-                    if version.artifact_id == artifact_id:
-                        return (record, version)
-        return None
-
-
-def _version_from_event(event: _ArtifactEvent) -> ArtifactVersion:
-    """Reconstruct an :class:`ArtifactVersion` from a normalized fold event."""
-    try:
-        evidence_class = EvidenceClass(event.evidence_class)
-    except ValueError:
-        evidence_class = EvidenceClass.HASHED_AT_USE
-    evidence = IdentityEvidence(
-        evidence_class=evidence_class,
-        sha256=event.sha256,
-        size_bytes=event.size_bytes,
-        mtime=event.mtime,
-        authority=event.authority,
-    )
-    return ArtifactVersion(
-        artifact_id=event.artifact_id or new_artifact_id(),
-        version=event.version,
-        kind=_safe_kind(event.kind),
-        custody=_safe_custody(event.custody),
-        mechanism=_safe_mechanism(event.mechanism),
-        evidence=evidence,
-        producer=event.producer,
-        path=event.path,
-        created_at=event.created_at,
-        annotation=event.annotation,
-        prior_version=event.prior_version,
-        prior_sha256=event.prior_sha256,
-        kind_warning=event.kind_warning,
-        custody_gap=event.custody_gap,
-        not_ingested_size=event.not_ingested_size,
-    )
-
-
-def _safe_kind(value: str) -> ArtifactKind:
-    try:
-        return ArtifactKind(value)
-    except ValueError:
-        return ArtifactKind.OTHER
-
-
-def _safe_custody(value: str) -> Custody:
-    try:
-        return Custody(value)
-    except ValueError:
-        return Custody.WORKSPACE_REFERENCED
-
-
-def _safe_mechanism(value: str) -> Mechanism:
-    try:
-        return Mechanism(value)
-    except ValueError:
-        return Mechanism.TOOL_SCHEMA
+            return self._backend.locate(artifact_id)
 
 
 #: Guards the lazy first-access rebuild so two concurrent first-accessors build
@@ -861,11 +733,13 @@ def _retry_boot_fold(app: "FastAPI") -> Optional[ArtifactRegistry]:
 
 
 def get_registry(app: "FastAPI") -> ArtifactRegistry:
-    """Return the app's artifact registry, rebuilding it from the log on first access.
+    """Return the app's artifact registry, opening it on first access.
 
-    The projection rebuilds LAZILY (RULE 4 / #737): the first consumer triggers
-    :func:`rebuild_registry_at_boot` (ARC ``_events`` UNION the JSONL trace; neither
-    reachable → typed ``capture_released``). Thread-safe via double-checked locking
+    The first consumer without a boot-installed registry triggers
+    :func:`rebuild_registry_at_boot`: the clio-core record index when its migration
+    marker exists (no fold), else the one-time migration fold (ARC ``_events`` UNION
+    the JSONL trace; neither reachable → typed ``capture_released``). Thread-safe via
+    double-checked locking
     (finding [7]/[13]): concurrent first accessors share the single installed
     instance. Loop-safe (finding [9]): the rebuild's synchronous I/O must not run on
     the event loop, so a first access there raises :class:`RegistryFoldOnLoopError` —

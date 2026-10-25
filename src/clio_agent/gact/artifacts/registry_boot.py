@@ -1,26 +1,31 @@
-"""Boot fold — rebuild the artifact registry projection from the durable log.
+"""Boot — open the artifact registry from clio-core records, or migrate once.
 
-Split out of :mod:`clio_agent.gact.artifacts.registry` (no-accretion): the registry
-file owns the in-memory projection + fold + mint + queries; this module owns the
-one-time BOOT rebuild that reconstructs that projection from the event log (ARC
-``_events`` UNION the durable JSONL trace).
-
-UNION-folds BOTH sources (owner decision #966.8): the fold is idempotent
-(``event_id`` dedup + same-sha no-op + keep-first), so folding both is safe and
-recovers deleted-session history. Only when NEITHER source is reachable does the
-registry boot empty with a typed ``capture_released`` reason (a reachable-but-empty
-source is a clean empty registry, not a degrade).
+Split out of :mod:`clio_agent.gact.artifacts.registry` (no-accretion). The agent
+process is stateless: clio-core is the memory. When the ``artifact_index`` migration
+marker exists, boot reads that ONE record and serves the registry from point gets
+(:mod:`~clio_agent.gact.artifacts.registry_store`) — it folds nothing. A store that
+predates the records (no marker) is migrated ONCE: the full fold below (ARC
+``_events`` UNION the durable JSONL trace, owner decision #966.8 — idempotent by
+``event_id`` dedup + same-sha no-op + keep-first, so folding both is safe and
+recovers deleted-session history) feeds
+:func:`~clio_agent.gact.artifacts.registry_migration.migrate`, which writes the
+records and the marker last. Only a process with NO clio-core record store keeps
+the full fold as its in-process registry (typed ``artifact_index_unavailable``).
+Only when NEITHER fold source is reachable does the registry boot empty with a
+typed ``capture_released`` reason (a reachable-but-empty source is a clean empty
+registry, not a degrade).
 """
 
 from __future__ import annotations
 
 import logging
 from collections.abc import Callable, Iterable
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, cast
 
 from clio_agent.arc.clio_core_liveness import ClioCoreRuntimeLostError
+from clio_agent.gact.artifacts import registry_migration, registry_store
 from clio_agent.gact.artifacts.registry import _FOLD_EVENT_TYPES, ArtifactRegistry
 
 if TYPE_CHECKING:
@@ -89,38 +94,66 @@ class _SourceFold:
 
     reachable: bool
     folded_any: bool
+    #: Sessions whose ``_events`` could not be read (skipped, typed) — recorded on
+    #: the migration marker so the gap stays visible after boot stops folding.
+    skipped_sessions: tuple[str, ...] = field(default_factory=tuple)
 
 
 def rebuild_registry_at_boot(app: "FastAPI") -> ArtifactRegistry:
-    """Rebuild ``app.state.artifact_registry`` from the durable event log at boot.
+    """Open ``app.state.artifact_registry`` at boot (or first access).
 
-    UNION-folds BOTH sources (owner decision #966.8, finding [2]): ARC ``_events``
-    AND the durable JSONL trace. The fold is idempotent (``event_id`` dedup + same-sha
-    no-op + keep-first), so folding both is safe and recovers deleted-session history.
-    Only when NEITHER source is reachable does the registry boot empty with a typed
-    ``capture_released`` reason (finding [11] — a reachable-but-empty source is a clean
-    empty registry, not a degrade). ``app.state`` is assigned only after the fold
-    completes, so a concurrent reader never sees a half-built projection.
+    Migrated store (marker present): a registry over the clio-core records — ONE
+    marker read, no fold. Otherwise the full UNION fold (owner decision #966.8,
+    finding [2]) runs once and, with a record store, is written as records (marker
+    last) by :func:`~clio_agent.gact.artifacts.registry_migration.migrate`. A failed
+    migration or no record store keeps the folded projection in process, typed. Only
+    when NEITHER source is reachable does the registry boot empty with a typed
+    ``capture_released`` reason (finding [11]); no marker is written then, so the
+    lazy retry migrates. ``app.state`` is assigned only once the registry is
+    complete, so a concurrent reader never sees a half-built projection.
     """
-    registry = ArtifactRegistry()
+    from clio_agent.gact.runtime.globals import _PROCESS_ARC  # noqa: PLC0415
+
+    _arc = getattr(app.state, "arc", None) or _PROCESS_ARC
+    store = registry_store.index_store(app)
+    if store is not None:
+        try:
+            marker = registry_migration.read_marker(store)
+        except ClioCoreRuntimeLostError as exc:
+            raise _raise_stall(_arc, exc, scope=registry_store.ARTIFACT_INDEX_KIND) from exc
+        except registry_store.STORE_ERRORS as exc:
+            logger.warning(
+                "artifact index marker unreadable reason=artifact_index_unreadable cause=%r; "
+                "serving the in-process fold this boot",
+                exc,
+            )
+            store, marker = None, None
+        if marker is not None and store is not None:
+            registry = ArtifactRegistry(registry_store.store_backend(app, store))
+            logger.info(
+                "artifact registry served from clio-core records reason=artifact_index_ready "
+                "store=%s migrated_at=%s (no boot fold)",
+                _arc_store_path(_arc),
+                marker.get("migrated_at"),
+            )
+            app.state.artifact_registry = registry
+            return registry
 
     # LOUD pre-fold marker (#971 defect 1b): emitted BEFORE the first native RPC so that,
     # even if a clio-core GetBlob wedges holding the GIL and freezes the process, the LAST
     # log line points squarely at the artifact-registry fold + the store to rotate.
-    from clio_agent.gact.runtime.globals import _PROCESS_ARC  # noqa: PLC0415
-
-    _arc = getattr(app.state, "arc", None) or _PROCESS_ARC
     logger.info(
-        "artifact registry boot fold starting store=%s scope=%s",
+        "artifact registry boot fold starting store=%s scope=%s migrate=%s",
         _arc_store_path(_arc),
         _ARC_FOLD_SCOPE,
+        store is not None,
     )
-
-    arc_fold = _fold_from_arc(app, registry)
-    jsonl_fold = _fold_from_jsonl(app, registry)
+    folded = ArtifactRegistry()
+    arc_fold = _fold_from_arc(app, folded)
+    jsonl_fold = _fold_from_jsonl(app, folded)
 
     if not arc_fold.reachable and not jsonl_fold.reachable:
-        registry.capture_released = {
+        folded.capture_released = {
             "reason": "capture_released",
             "detail": "neither ARC _events nor the durable JSONL trace was reachable at boot",
         }
@@ -133,29 +166,47 @@ def rebuild_registry_at_boot(app: "FastAPI") -> ArtifactRegistry:
             "artifact registry boot fold arc_reachable=%s jsonl_reachable=%s records=%d conflicts=%d",
             arc_fold.reachable,
             jsonl_fold.reachable,
-            registry.count(),
-            len(registry.fold_conflicts),
+            folded.count(),
+            len(folded.fold_conflicts),
         )
+    registry = folded
+    if store is not None and folded.capture_released is None:
+        try:
+            registry_migration.migrate(store, folded, skipped_sessions=arc_fold.skipped_sessions)
+        except ClioCoreRuntimeLostError as exc:
+            raise _raise_stall(_arc, exc, scope=registry_store.ARTIFACT_INDEX_KIND) from exc
+        except registry_store.STORE_ERRORS as exc:
+            logger.warning(
+                "artifact index migration failed reason=artifact_index_migration_failed "
+                "cause=%r; serving the in-process fold this boot, the next boot retries",
+                exc,
+            )
+        else:
+            registry = ArtifactRegistry(registry_store.store_backend(app, store))
+            registry.fold_conflicts = list(folded.fold_conflicts)
     app.state.artifact_registry = registry
     return registry
 
 
-def _raise_stall(arc: object, exc: Exception) -> "ArtifactRegistryBootStalled":
+def _raise_stall(
+    arc: object, exc: Exception, *, scope: str = _ARC_FOLD_SCOPE
+) -> "ArtifactRegistryBootStalled":
     """Convert a hung-native-RPC liveness loss into the typed, actionable stall."""
     store_path = _arc_store_path(arc)
     logger.error(
         "artifact registry boot fold STALLED reason=arc_boot_fold_stalled store=%s "
         "scope=%s cause=%r",
         store_path,
-        _ARC_FOLD_SCOPE,
+        scope,
         exc,
     )
     raise ArtifactRegistryBootStalled(
-        f"artifact registry boot fold stalled reading ARC scope {_ARC_FOLD_SCOPE!r} "
+        f"artifact registry boot fold stalled reading ARC scope {scope!r} "
         f"from store {store_path}: a native clio-core RPC hung and the liveness "
         "ladder could not recover it. Rotate the ARC store aside (rename it) or run "
         "`clio doctor`, then restart.",
         store_path=store_path,
+        scope=scope,
     ) from exc
 
 
@@ -209,7 +260,7 @@ def _fold_from_arc(app: "FastAPI", registry: ArtifactRegistry) -> _SourceFold:
                 exc,
             )
             return _SourceFold(reachable=False, folded_any=folded_any)
-        skipped = 0
+        skipped: list[str] = []
         for session_id in session_ids:
             try:
                 for segment in read_session_segments(session_id):
@@ -217,7 +268,7 @@ def _fold_from_arc(app: "FastAPI", registry: ArtifactRegistry) -> _SourceFold:
             except ClioCoreRuntimeLostError as exc:
                 raise _raise_stall(arc, exc) from exc
             except Exception as exc:  # noqa: BLE001 — skip ONE session, keep folding
-                skipped += 1
+                skipped.append(session_id)
                 logger.warning(
                     "artifact boot fold skipped a session reason=segment_unreadable "
                     "session=%s cause=%r",
@@ -229,10 +280,10 @@ def _fold_from_arc(app: "FastAPI", registry: ArtifactRegistry) -> _SourceFold:
             logger.warning(
                 "artifact boot fold completed with skips reason=segment_unreadable "
                 "skipped_sessions=%d folded_any=%s",
-                skipped,
+                len(skipped),
                 folded_any,
             )
-        return _SourceFold(reachable=True, folded_any=folded_any)
+        return _SourceFold(reachable=True, folded_any=folded_any, skipped_sessions=tuple(skipped))
 
     try:
         for content in reader():
@@ -305,17 +356,16 @@ def _fold_from_jsonl(app: "FastAPI", registry: ArtifactRegistry) -> _SourceFold:
 async def boot_fold_artifact_registry_offloop(
     app: "FastAPI", loop: "asyncio.AbstractEventLoop"
 ) -> bool:
-    """Fold the artifact registry projection ONCE at boot, OFF the event loop (#971).
+    """Open the artifact registry at boot, OFF the event loop (#971).
 
     The gact lifespan calls this from agent construction, before the agent is announced
-    ready. The registry is a projection over the ARC ``_events`` log; rebuilding it is an
-    O(corpus) native-RPC-heavy scan. Folding here — off-loop, once — means the
-    tool-completion hot path (``observe_tool_transform -> get_registry``) always finds a
-    PRE-BUILT projection and never pays the fold (defect 2); ``get_registry``'s lazy
-    first-access rebuild remains only as the in-process/test fallback for apps built
-    without this lifespan.
+    ready. A migrated store costs one marker read here (no fold); an unmigrated one pays
+    the one-time O(corpus) migration fold. Opening here — off-loop — means the
+    tool-completion hot path (``observe_tool_transform -> get_registry``) always finds an
+    installed registry (defect 2); ``get_registry``'s lazy first-access open remains only
+    as the in-process/test fallback for apps built without this lifespan.
 
-    Returns ``True`` when the fold completed (registry stamped on ``app.state``) and the
+    Returns ``True`` when the registry is installed (registry stamped on ``app.state``) and the
     agent may be announced ready. Returns ``False`` when the ARC store WEDGED on a hung
     native RPC (defect 1b): the store path is stamped into ``app.state.agent_init_error``
     and logged LOUD + actionable so ``POST /messages`` 503s with an operator-actionable

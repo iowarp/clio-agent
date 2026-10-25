@@ -273,6 +273,11 @@ def append_turn_child_resource_links(
         if part.type == "resource_link"
     }
     published = child_response_owners(app, sessions)
+    # Point lookups: versions produced in these sessions + the published ids.
+    registry = get_registry(app)
+    hits = registry.versions_produced_in(sessions)
+    hits += [hit for aid in published if (hit := registry.get_by_artifact_id(aid)) is not None]
+    unique = {version.artifact_id: (record, version) for record, version in hits}
     entries: list[dict[str, Any]] = [
         {
             "workspace_id": record.workspace_id,
@@ -281,13 +286,8 @@ def append_turn_child_resource_links(
             "purpose": "deliverable" if version.artifact_id in published else None,
             "response_session_id": published.get(version.artifact_id),
         }
-        for record in get_registry(app).all_records()
-        for version in record.versions
-        if (
-            str(version.producer.get("session_id") or "") in sessions
-            or version.artifact_id in published
-        )
-        and version.artifact_id not in already
+        for record, version in unique.values()
+        if version.artifact_id not in already
     ]
     entries.sort(key=lambda entry: entry["version"].created_at or "")
     for entry in response_deliverables(entries):

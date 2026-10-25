@@ -267,13 +267,14 @@ def test_progress_replay_reads_immutable_assignment_content_once(
     original = history.task_snapshot(task.handle)
     assert original is not None and original.description_reference is not None
     reads: list[CoreReference] = []
-    read_content = TaskHistory.read_content
+    # Every content read, the lazy tree loader's included, goes through _read_content.
+    read_content = TaskHistory._read_content
 
     def counted(self: TaskHistory, reference: CoreReference) -> Any:
         reads.append(reference)
         return read_content(self, reference)
 
-    monkeypatch.setattr(TaskHistory, "read_content", counted)
+    monkeypatch.setattr(TaskHistory, "_read_content", counted)
     restored = TaskHistory(arc)
     restored.restore()
     assert restored.task_snapshot(task.handle) == original

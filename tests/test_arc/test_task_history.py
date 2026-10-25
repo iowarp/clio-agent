@@ -79,7 +79,7 @@ def test_failed_projection_does_not_publish_an_in_memory_success(
     original = task_history_projection._project
 
     def fail_projection(selected: TaskHistory, *args: Any, **kwargs: Any) -> None:
-        if selected is history:
+        if getattr(selected, "history", selected) is history:
             raise RuntimeError("injected projection failure")
         original(selected, *args, **kwargs)
 
@@ -165,7 +165,7 @@ def test_crash_after_context_commit_recovers_acknowledgement(
     accept_input = task_history_projection._accept_input
 
     def crash_after_commit(selected: TaskHistory, committed: RecipientInput) -> None:
-        if selected is history:
+        if getattr(selected, "history", selected) is history:
             raise OSError("crash after input commit")
         accept_input(selected, committed)
 

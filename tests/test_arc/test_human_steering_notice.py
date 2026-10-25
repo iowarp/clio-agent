@@ -189,7 +189,7 @@ def test_parent_projection_failure_replays_confirmed_notice_without_duplicate_ma
         selected: TaskHistory, event: str, payload: dict[str, Any], **kwargs: Any
     ) -> None:
         if (
-            selected is history
+            getattr(selected, "history", selected) is history
             and event == "session.mail.accepted"
             and payload.get("recipient_session") == "parent"
         ):

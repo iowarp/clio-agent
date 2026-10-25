@@ -205,13 +205,12 @@ def sha_used_by_retained_session(
             producer_sid = str(version.producer.get("session_id") or "")
             if producer_sid in retained_ids:
                 return producer_sid
-    for transform in registry.all_transforms():
-        sid = str(getattr(transform, "session_id", "") or "")
-        if sid not in retained_ids:
-            continue
-        edges = list(getattr(transform, "used", [])) + list(getattr(transform, "generated", []))
-        for edge in edges:
-            if getattr(edge, "sha256", None) == sha256:
+    # Per retained session (point lookups on the registry), never a pass over every
+    # transform: a retained session's transforms are exactly the ones that can refuse.
+    for sid in sorted(retained_ids):
+        for transform in registry.transforms_for_session(sid):
+            edges = list(getattr(transform, "used", [])) + list(getattr(transform, "generated", []))
+            if any(getattr(edge, "sha256", None) == sha256 for edge in edges):
                 return sid
     return None
 
@@ -230,7 +229,7 @@ def enforce_cas_budget(
     is checked first). Roots: pinned aliases + export manifests. A candidate still
     used by a retained session is REFUSED (typed), never evicted. Every eviction is
     a typed ``artifact.cas.evicted`` trace-only event. MUST run off the event loop
-    (it triggers the registry boot fold on first access).
+    (registry reads are clio-core point gets; a first access opens the registry).
     """
     from clio_agent.gact.artifacts.registry import get_registry  # noqa: PLC0415
 

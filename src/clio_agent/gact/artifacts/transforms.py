@@ -489,8 +489,9 @@ def record_transform(
         candidates=candidates,
         notes=notes,
     )
-    _emit_transform_recorded(app, sid, record, turn_id=turn_id, trace_id=trace_id)
+    # Index record first (pending), then the event that confirms it (crash-safe order).
     get_registry(app).record_transform(record)
+    _emit_transform_recorded(app, sid, record, turn_id=turn_id, trace_id=trace_id)
     return record
 
 

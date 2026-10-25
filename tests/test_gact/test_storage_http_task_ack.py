@@ -58,7 +58,7 @@ def _diagnose_shutdown(monkeypatch: pytest.MonkeyPatch) -> None:
             history = app.state.task_history
             calls = []
             for handle in tuple(native._calls):
-                current = history._tasks.get(handle)
+                current = history.task_snapshot(handle)
                 calls.append(
                     {
                         "handle": handle,

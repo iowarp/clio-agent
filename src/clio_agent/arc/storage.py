@@ -117,6 +117,9 @@ ARC_KINDS: tuple[str, ...] = (
     "response_feedback",  # immutable user ratings; never added to model context
     "segments",  # live context plane: one record per (session_id, scope)
     "task_index",  # historical duplicate pointers, retained only for ordinary history cleanup
+    "task_lookup",  # derived handle/session/tree lookups, read by exact name only
+    "task_open",  # derived open-work obligations, the one small listing done at boot
+    "artifact_index",  # artifact registry records, read by exact name only (point gets)
 )
 
 # Suffix for the optional plain-text companion blob (BM25 discovery, Thread D) a

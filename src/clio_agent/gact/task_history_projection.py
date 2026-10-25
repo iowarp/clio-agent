@@ -1,15 +1,16 @@
-"""Replay and passive indexes for the existing confirmed Core task writer."""
+"""Passive per-tree indexes for the existing confirmed Core task writer.
+
+Every function projects into one :class:`~clio_agent.gact.task_tree_state.TreeState`;
+the history façade chooses the tree and owns locking, records and wake hints.
+"""
 
 from __future__ import annotations
 
 import json
 import logging
-import time
 from bisect import bisect_left
-from collections.abc import Sequence
 from typing import TYPE_CHECKING, Any
 
-from clio_agent.arc.loop_guard import assert_store_write_off_loop
 from clio_agent.arc.task_types import (
     AssignmentDetails,
     CoordinationGrant,
@@ -27,9 +28,10 @@ from clio_agent.errors import ClioError
 
 if TYPE_CHECKING:
     from clio_agent.gact.task_history import TaskHistory
+    from clio_agent.gact.task_tree_state import TreeState
 
 
-def _project_workflow(self: TaskHistory, record: WorkflowCheckpoint) -> None:
+def _project_workflow(self: TreeState, record: WorkflowCheckpoint) -> None:
     """Index immutable invocation bindings; canonical checkpoints outrank legacy projections."""
     binding_key = record.root_handle, record.invocation_id
     execution_key = record.root_handle, record.execution_id
@@ -60,11 +62,15 @@ def _project_workflow(self: TaskHistory, record: WorkflowCheckpoint) -> None:
 
 def record_workflow(self: TaskHistory, record: WorkflowCheckpoint) -> None:
     """Write existing runner provenance through the same confirmed Core writer."""
+    from clio_agent.gact import task_index_writes
+
     with self._writing():
         owner = self.task_snapshot(record.root_handle)
+        state = self._handle_state(record.root_handle)
         body = self.read_content(record.content)
         if (
             owner is None
+            or state is None
             or owner.owner.session_id != record.session_id
             or record.content.session_id != record.session_id
             or not isinstance(body, dict)
@@ -76,7 +82,7 @@ def record_workflow(self: TaskHistory, record: WorkflowCheckpoint) -> None:
             or record.source != "checkpoint"
         ):
             raise ValueError("Workflow checkpoint differs from its owner or declared identity")
-        previous = self._workflow_bindings.get((record.root_handle, record.invocation_id))
+        previous = state._workflow_bindings.get((record.root_handle, record.invocation_id))
         if previous is not None and (
             previous.execution_id,
             previous.declaration,
@@ -84,16 +90,17 @@ def record_workflow(self: TaskHistory, record: WorkflowCheckpoint) -> None:
         ) != (record.execution_id, record.declaration, record.request_digest):
             raise ValueError("Workflow invocation identity was reused")
         payload = record.model_dump(mode="json")
+        task_index_writes.open_workflow(self, record.root_handle)
         self._record(
             "workflow.checkpoint",
             record.session_id,
             record.root_handle + ":" + record.invocation_id + ":" + record.content.sha256,
             payload,
         )
-        self._project("workflow.checkpoint", payload)
+        self._project(state, "workflow.checkpoint", payload)
 
 
-def _legacy_workflow(self: TaskHistory, snapshot: TaskSnapshot) -> None:
+def _legacy_workflow(self: TreeState, snapshot: TaskSnapshot) -> None:
     """Decode retained workflow provenance without disabling unrelated canonical history."""
     if snapshot.details is None:
         return
@@ -154,83 +161,13 @@ def _legacy_workflow(self: TaskHistory, snapshot: TaskSnapshot) -> None:
         self._workflow_unresolved[snapshot.handle] = str(error)
 
 
-def tree_handles(self: TaskHistory, session_id: str, *, active_only: bool = False) -> set[str]:
-    """Return the stable session's work and delegated descendants, never its ancestors."""
-    with self._view_lock:
-        if active_only:
-            return set(self._active_trees.get(session_id, ()))
-        handles = set(self._session_tasks.get(session_id, set()))
-        pending = list(handles)
-        while pending:
-            for child in self._children.get(pending.pop(), set()):
-                if child not in handles:
-                    handles.add(child)
-                    pending.append(child)
-        return handles
-
-
-def session_handles(self: TaskHistory, session_id: str) -> set[str]:
-    """Read the passive session index without loading or scanning task history."""
-    with self._view_lock:
-        return set(self._session_tasks.get(session_id, set()))
-
-
-def task_handles(
-    self: TaskHistory,
-    *,
-    kind: str | None = None,
-    human_id: str | None = None,
-    session_id: str | None = None,
-    active_only: bool = False,
-) -> set[str]:
-    """Read passive Core indexes; callers authorize before disclosing selected rows."""
-    with self._view_lock:
-        indexes = (
-            (kind, self._kind_tasks),
-            (human_id, self._human_tasks),
-            (session_id, self._session_tasks),
-        )
-        selections = [index.get(key, set()) for key, index in indexes if key is not None]
-        if active_only:
-            selections.append(self._active_tasks)
-        if not selections:
-            return set(self._tasks)
-        return set.intersection(*sorted(selections, key=len))
-
-
-def resource_handles(self: TaskHistory, resource_id: str) -> set[str]:
-    """Read owner-published resource associations from a passive Core index."""
-    with self._view_lock:
-        return set(self._resource_tasks.get(resource_id, ()))
-
-
-def task_order(
-    self: TaskHistory,
-    domain: str,
-    identity: str,
-    *,
-    human_id: str = "",
-    kind: str = "",
-    active_only: bool = False,
-) -> Sequence[tuple[str, str]]:
-    """Borrow a passive ordering while the caller holds the confirmed read view."""
-    with self._view_lock:
-        return self._query_order.get((domain, identity, human_id, kind, active_only), ())
-
-
-def session_tree_ids(self: TaskHistory, session_id: str, *, human_id: str = "") -> set[str]:
-    """Read stable descendant addresses without enumerating their retained assignments."""
-    with self._view_lock:
-        return set(self._tree_sessions.get((session_id, human_id), ()))
-
-
 def _encoded(value: Any) -> bytes:
     return json.dumps(
         value, sort_keys=True, separators=(",", ":"), ensure_ascii=False, allow_nan=False
     ).encode()
 
 
-def _index_task_order(self: TaskHistory, snapshot: TaskSnapshot, *, known: bool) -> None:
+def _index_task_order(self: TreeState, snapshot: TaskSnapshot, *, known: bool) -> None:
     """Project immutable ordering and active tree membership from confirmed observations."""
     pending, seen = [snapshot.handle], set()
     while pending:
@@ -324,65 +261,7 @@ _PROJECTION_FIELDS = (
 )
 
 
-def restore(self: TaskHistory) -> None:
-    """Rebuild Core indexes off to the side; readers retain the last confirmed view."""
-    assert_store_write_off_loop("task.restore")
-    started = time.monotonic()
-    with self._lock:
-        candidate = type(self)(self.arc)
-        try:
-            candidate._replaying = True
-            for content in candidate.arc._live.iter_event_contents():
-                event_type = str(content.get("event_type", ""))
-                payload = content.get("payload") or {}
-                if (
-                    event_type
-                    in {
-                        "task.observed",
-                        "task.submission",
-                        "task.native_attempt",
-                        "task.subscription",
-                        "task.alias",
-                        "session.mail.accepted",
-                        "session.mail.updated",
-                        "session.mail.withdrawn",
-                        "session.coordination.grant",
-                        "session.input.prepared",
-                        "workflow.checkpoint",
-                    }
-                    and not {"schema_version", "observation_id", "record"} <= payload.keys()
-                ):
-                    if "schema_version" in payload:
-                        raise ValueError("Task history observation envelope is incomplete")
-                    continue  # unversioned historical formats are decoded at startup migration
-                candidate._project(event_type, payload)
-            # Build from latest observations once, with complete parent identities.
-            # Startup order may group sessions rather than follow global creation time.
-            for snapshot in candidate._tasks.values():
-                _index_task_order(candidate, snapshot, known=True)
-            for ordering in candidate._query_order.values():
-                ordering.sort()
-            scopes: dict[tuple[str, str], dict[str, RecipientInput]] = {}
-            for locator in candidate._input_locations.values():
-                key = (locator["session_id"], locator["scope"])
-                if key not in scopes:
-                    scopes[key] = candidate.context_inputs(*key)
-                recovered = scopes[key].get(locator["id"])
-                if recovered is not None:
-                    _accept_input(candidate, recovered)
-        except Exception:
-            self.requires_recovery = True
-            raise
-        with self._view_lock:
-            for name in _PROJECTION_FIELDS:
-                setattr(self, name, getattr(candidate, name))
-            self.revision = max(self.revision, candidate.revision) + 1
-            self.replay_seconds = time.monotonic() - started
-            self.requires_recovery = False
-    _notify(self, restored=True)
-
-
-def _prepare_snapshot(self: TaskHistory, payload: dict[str, Any]) -> TaskSnapshot:
+def _prepare_snapshot(self: TreeState, payload: dict[str, Any]) -> TaskSnapshot:
     """Resolve content before publishing; legacy vocabulary belongs to replay only."""
     record = payload.get("record", payload)
     snapshot = (
@@ -405,7 +284,7 @@ def _prepare_snapshot(self: TaskHistory, payload: dict[str, Any]) -> TaskSnapsho
 
 
 def _project(
-    self: TaskHistory,
+    self: TreeState,
     event_type: str,
     payload: dict[str, Any],
     *,
@@ -496,87 +375,11 @@ def _project(
     else:
         return
     self.revision += 1
-    if self._replaying:
-        return
-    handle = payload.get("handle")
-    recipient = payload.get("recipient_session")
-    mail_targets: tuple[str, ...] = ()
-    if event_type == "session.coordination.grant":
-        changed_grant = self._grants[str(payload["id"])]
-        if "message" in changed_grant.rights:
-            # Sending rights change on the grantee; retained peer input lives
-            # in the target's mailbox and needs the same admission recheck.
-            targets = {changed_grant.target_session}
-            if changed_grant.target_handle is not None:
-                target = self._tasks.get(changed_grant.target_handle)
-                targets = {target.owner.session_id} if target is not None else set()
-            elif changed_grant.target_scope == "tree":
-                targets.update(
-                    self.session_tree_ids(
-                        changed_grant.target_session, human_id=changed_grant.granting_human
-                    )
-                )
-            mail_targets = tuple(sorted(target for target in targets if self._pending.get(target)))
-    _notify(
-        self,
-        handle=handle,
-        recipient=recipient,
-        mail_changed=event_type.startswith("session.mail.")
-        or event_type == "session.coordination.grant",
-        mail_targets=mail_targets,
-    )
 
 
-def _notify(
-    self: TaskHistory,
-    *,
-    handle: Any = None,
-    recipient: Any = None,
-    restored: bool = False,
-    mail_changed: bool = False,
-    mail_targets: tuple[str, ...] = (),
-) -> None:
-    """Signal indexes once after replay, rather than waking on historical rows."""
-    with self._listener_lock:
-        listeners = set(self._listeners)
-        if restored:
-            for callbacks in (
-                *self._handle_listeners.values(),
-                *self._recipient_listeners.values(),
-            ):
-                listeners.update(callbacks)
-        else:
-            listeners.update(self._handle_listeners.get(str(handle), set()))
-            listeners.update(self._recipient_listeners.get(str(recipient), set()))
-        mail_listeners = tuple(self._mail_listeners)
-    for listener in listeners:
-        try:
-            listener(self.revision)
-        except Exception as error:
-            logger.exception(
-                "Task boundary reason=task_wake_hint_failed error_type=%s", type(error).__name__
-            )
-            logger.warning("Task wake hint failed after Core commit: %s", type(error).__name__)
-    changed_recipients = (str(recipient),) if recipient and mail_changed else ()
-    pending_recipients = (
-        self.pending_sessions()
-        if restored
-        else tuple(dict.fromkeys((*changed_recipients, *mail_targets)))
-    )
-    for pending_recipient in pending_recipients:
-        for mail_listener in mail_listeners:
-            try:
-                mail_listener(pending_recipient)
-            except Exception as error:
-                logger.exception(
-                    "Task boundary reason=mail_wake_hint_failed error_type=%s", type(error).__name__
-                )
-                logger.warning(
-                    "Mailbox wake hint failed after Core commit: %s", type(error).__name__
-                )
-
-
-def _scope_inputs(self: TaskHistory, session_id: str, scope: str) -> dict[str, RecipientInput]:
+def _scope_inputs(
+    self: TreeState | TaskHistory, session_id: str, scope: str
+) -> dict[str, RecipientInput]:
     records: dict[str, RecipientInput] = {}
     for segment in self.arc.list_segments(session_id, scope, include_tombstoned=True):
         if segment.kind != "recipient_input":
@@ -594,12 +397,12 @@ def _scope_inputs(self: TaskHistory, session_id: str, scope: str) -> dict[str, R
 
 
 def _find_input(
-    self: TaskHistory, session_id: str, scope: str, identity: str
+    self: TreeState, session_id: str, scope: str, identity: str
 ) -> RecipientInput | None:
     return self.context_inputs(session_id, scope).get(identity)
 
 
-def _accept_input(self: TaskHistory, record: RecipientInput) -> None:
+def _accept_input(self: TreeState, record: RecipientInput) -> None:
     from clio_agent.gact.context import scope_epoch
 
     key = (record.session_id, record.id)
@@ -629,7 +432,7 @@ def _accept_input(self: TaskHistory, record: RecipientInput) -> None:
     self.revision += 1
 
 
-def _validate_observed_input(self: TaskHistory, record: RecipientInput) -> None:
+def _validate_observed_input(self: TreeState, record: RecipientInput) -> None:
     """An empty/subset acknowledgement cannot authenticate undisclosed result members."""
     reference = record.tool_observation
     if reference is None:
@@ -658,7 +461,7 @@ def _validate_observed_input(self: TaskHistory, record: RecipientInput) -> None:
         raise ValueError("Collected observation contains results outside the committed selection")
 
 
-def _validate_input_eligibility(self: TaskHistory, record: RecipientInput) -> None:
+def _validate_input_eligibility(self: TreeState, record: RecipientInput) -> None:
     iteration = (record.session_id, record.assignment_id, record.iteration_id)
     if iteration in self._iterations:
         raise ValueError("The model iteration already has a committed input")

@@ -111,27 +111,32 @@ def _activity_node(transform: Any) -> dict[str, Any]:
 
 
 class _LineageIndex:
-    """Reverse indexes over TransformRecords for O(1) neighbour lookup."""
+    """Per-artifact neighbour lookups (the registry's generated/used edge indexes).
+
+    Served by the registry's per-artifact point lookups and memoized for one
+    traversal — no pass over every TransformRecord.
+    """
 
     def __init__(self, registry: "ArtifactRegistry") -> None:
         self._registry = registry
-        self._produced_by: dict[str, Any] = {}
+        self._produced_by: dict[str, Optional[Any]] = {}
         self._used_by: dict[str, list[Any]] = {}
-        for transform in registry.all_transforms():
-            for edge in transform.generated:
-                if edge.artifact_id:
-                    self._produced_by[edge.artifact_id] = transform
-            for edge in transform.used:
-                if edge.artifact_id:
-                    self._used_by.setdefault(edge.artifact_id, []).append(transform)
 
     def produced_by(self, artifact_id: str) -> Optional[Any]:
-        """The activity that generated ``artifact_id`` (one producer per version)."""
-        return self._produced_by.get(artifact_id)
+        """The activity that generated ``artifact_id`` (one producer per version;
+        the latest-recorded generator wins, as the full scan's overwrite did)."""
+        if artifact_id not in self._produced_by:
+            generators = self._registry.transforms_generating(artifact_id) if artifact_id else []
+            self._produced_by[artifact_id] = generators[-1] if generators else None
+        return self._produced_by[artifact_id]
 
     def used_by(self, artifact_id: str) -> list[Any]:
         """Activities that used ``artifact_id`` as an input."""
-        return self._used_by.get(artifact_id, [])
+        if artifact_id not in self._used_by:
+            self._used_by[artifact_id] = (
+                self._registry.transforms_using(artifact_id) if artifact_id else []
+            )
+        return self._used_by[artifact_id]
 
     def version(self, artifact_id: str) -> Optional[tuple[ArtifactRecord, ArtifactVersion]]:
         """Resolve a version by relay ``artifact_id``."""

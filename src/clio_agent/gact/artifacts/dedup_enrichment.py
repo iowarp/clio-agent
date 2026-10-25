@@ -26,6 +26,7 @@ if TYPE_CHECKING:
 
     from clio_agent.gact.artifacts.records import ArtifactVersion
     from clio_agent.gact.artifacts.registry import ArtifactRegistry
+    from clio_agent.gact.artifacts.registry_backend import PendingWrite
 
 logger = logging.getLogger(__name__)
 
@@ -53,31 +54,32 @@ DUPLICATE_EVENT_ID = "duplicate_event_id"
 
 
 def decide_enrichment(
-    registry: "ArtifactRegistry", artifact_id: str, annotation: str, event_id: str
+    registry: "ArtifactRegistry",
+    artifact_id: str,
+    annotation: str,
+    event_id: str,
+    *,
+    pending: "PendingWrite | None" = None,
 ) -> str:
     """Decide + apply the enrichment for ``artifact_id``. Caller holds ``registry._lock``.
 
-    Reaches into the registry's private dicts directly (the SAME cross-module
-    convention ``transform_edges``/``versions`` already use for ``minting._contained``
-    / ``minting._workspace_root`` — this pairing is a tightly-coupled owner-module
-    split, not a public API).
+    Reaches into the registry's backend directly (a tightly-coupled owner-module
+    split, not a public API). ``pending`` marks a live write (its index record is
+    pending until the ``artifact.enriched`` event is recorded); a fold passes none.
     """
     if not annotation:
         return NO_ANNOTATION_GIVEN
-    if event_id and event_id in registry._seen_event_ids:  # noqa: SLF001
+    backend = registry._backend  # noqa: SLF001
+    if event_id and event_id in backend.seen_event_ids:
         return DUPLICATE_EVENT_ID
-    version = None
-    for record in registry._records.values():  # noqa: SLF001
-        version = next((v for v in record.versions if v.artifact_id == artifact_id), None)
-        if version is not None:
-            break
-    if version is None:
+    found = backend.locate(artifact_id)
+    if found is None:
         return UNKNOWN_ARTIFACT
     if event_id:
-        registry._seen_event_ids.add(event_id)  # noqa: SLF001
-    if version.annotation or artifact_id in registry._supplemental_annotations:  # noqa: SLF001
+        backend.seen_event_ids.add(event_id)
+    if found[1].annotation or backend.enrichment(artifact_id):
         return ANNOTATION_ALREADY_PRESENT
-    registry._supplemental_annotations[artifact_id] = annotation  # noqa: SLF001
+    backend.set_enrichment(artifact_id, annotation, pending=pending)
     return MERGED
 
 
@@ -111,7 +113,7 @@ def emit_artifact_enriched(
 
         event_id = _event_id()
         reason = get_registry(app).record_artifact_enrichment(
-            version.artifact_id, annotation=annotation, event_id=event_id
+            version.artifact_id, annotation=annotation, event_id=event_id, session_id=sid
         )
         if reason != MERGED:
             return reason

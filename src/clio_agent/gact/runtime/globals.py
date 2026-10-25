@@ -378,7 +378,12 @@ def _emit_semantic_event(
         )
         trace.event("ARC-AS-SOURCE", "%s", msg)
         raise RuntimeError(msg)
-    return rec(event)
+    recorded = rec(event)
+    if event_type.startswith("artifact."):  # its index record was written first; confirm it
+        from clio_agent.gact.artifacts.registry_store import confirm_artifact_event  # noqa: PLC0415
+
+        confirm_artifact_event(app, payload)
+    return recorded
 
 
 def _emit_react_step_event(

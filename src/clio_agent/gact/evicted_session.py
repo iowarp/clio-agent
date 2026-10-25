@@ -8,6 +8,9 @@ bytes, count and idle time. Two other in-process copies of the same session foll
   it in its memory or disk tier, and reloads a scope from clio-core on its next access.
   Its in-process copy was never dropped, so a long-running server held every session
   it had served (#1846).
+* the session's task tree (:mod:`clio_agent.gact.task_tree_state`), loaded from
+  clio-core on demand; an idle tree is dropped with its members' ARC scopes, and
+  reloads from clio-core on its next use.
 * the session's model clients (an LM and its connection pools per agent scope). A
   multi-agent run creates a child session per member, and each finished child kept its
   clients until the session was deleted; its next turn, if any, builds new ones.
@@ -76,8 +79,30 @@ def _release_arc_session(app: "FastAPI", sid: str, is_active: Callable[[], bool]
             released.get("segments", 0),
             released.get("inflight_pending", 0),
         )
+        _release_task_tree(app, sid)
 
     schedule_off_loop(release, label="resident_ledger.arc_release")
+
+
+def _release_task_tree(app: "FastAPI", sid: str) -> None:
+    """Drop the idle task tree holding ``sid``; busy members keep it resident."""
+
+    history = getattr(app.state, "task_history", None)
+    if history is None:
+        return
+    runner = getattr(app.state, "turn_runner", None)
+    busy = runner.busy if runner is not None else None
+    try:
+        dropped = history.release_session_tree(sid, busy=busy)
+    except Exception as error:  # noqa: BLE001 - a kept tree only costs memory; say so
+        trace.event(
+            "RESIDENT-LEDGER",
+            "task_tree_release_failed session=%s reason=task_tree_release_failed error_type=%s",
+            sid,
+            type(error).__name__,
+        )
+        return
+    trace.event("RESIDENT-LEDGER", "task_tree_released session=%s dropped=%s", sid, dropped)
 
 
 def _release_model_clients(app: "FastAPI", sid: str, is_active: Callable[[], bool]) -> None:

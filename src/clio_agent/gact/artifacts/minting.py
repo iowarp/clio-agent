@@ -229,6 +229,7 @@ def mint_artifact_outcome(
         producing=producing,
         lease_clean=lease_clean,
         not_ingested_size=not_ingested_size,
+        session_id=sid,
     )
     version = outcome.version
     if not outcome.created:

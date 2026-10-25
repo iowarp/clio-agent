@@ -45,6 +45,19 @@ def publish_task_notice(
     attention_content: CoreReference | None = None,
 ) -> None:
     """Confirm an outcome/attention notification; reads and progress never acknowledge it."""
+    _publish_task_notice(history, current, episode=episode, attention_content=attention_content)
+    if current.terminal_at is not None and current.kind in {"Session", "Subagent"}:
+        # Every recipient now holds the outcome: boot no longer needs to retry it.
+        history.task_obligation_settled(current)
+
+
+def _publish_task_notice(
+    history: TaskHistory,
+    current: TaskSnapshot,
+    *,
+    episode: str,
+    attention_content: CoreReference | None,
+) -> None:
     with history.serialized():
         if current.terminal_at is not None:
             kind: MailKind = (

@@ -78,11 +78,15 @@ def _input_committed(self: Conversations, staged: StagedInput) -> None:
                 metadata if isinstance(metadata, dict) else None,
             )
 
-        async def project(update: Callable[[], None] = update) -> None:
-            await self.history.io.run(update)
+        def settle(item: MailItem = item, update: Callable[[], None] = update) -> None:
+            update()
+            self.history.display_settled(item)
+
+        async def project(settle: Callable[[], None] = settle) -> None:
+            await self.history.io.run(settle)
 
         try:
-            update()
+            settle()
         except Exception:
             logger.exception("Confirmed input display projection remains pending id=%s", item.id)
             if self._loop is None:

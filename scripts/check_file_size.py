@@ -498,7 +498,7 @@ RATCHET_BASELINE: dict[str, int] = {
     # supplemental_annotation methods) — mirrors the #1191 USE-index footprint above.
     # The actual decision logic was pushed OUT to the new owner module
     # artifacts/dedup_enrichment.py (not appended here) precisely to hold this down.
-    "src/clio_agent/gact/artifacts/registry.py": 938,
+    "src/clio_agent/gact/artifacts/registry.py": 812,
     # #971 GAP B (S5 live gate): +51 for ``?include_children=true`` parent
     # aggregation — a parent orchestrator's own listing is empty while its spawned
     # children hold everything, so the flag unions descendant child-session
@@ -671,7 +671,7 @@ RATCHET_BASELINE: dict[str, int] = {
     # gact/compaction.py::compact_session_context (one operation, two triggers); the
     # whole manual-compact body, gact/compact_memory.py's import, and the dead
     # session_archives snapshot are gone -- 1407 -> 1176.
-    "src/clio_agent/gact/routes/sessions.py": 852,  # fork and question routes have their own owners
+    "src/clio_agent/gact/routes/sessions.py": 850,  # fork and question routes have their own owners
     # #1215 S5: crossed the 800 new-file cap (793 -> 809) for enrich_turn_context —
     # a thin timed combinator wrapping the TWO existing enrichment calls
     # (_enrich_with_context_files + _enrich_with_requested_memory_search) in ONE
