@@ -16,12 +16,21 @@ import yaml
 
 from clio_agent import paths
 from clio_agent.platform_paths import atomic_write_text
+from clio_agent.tools.mcp_config import _validate_server_name
 
 _CONFIG_LOCK = threading.RLock()
 
 
 class McpUserConfigurationError(ValueError):
     """The durable user MCP configuration could not be read or updated safely."""
+
+
+def validate_user_mcp_server_name(name: str) -> None:
+    """Reject names that cannot form a valid runtime MCP tool namespace."""
+
+    error = _validate_server_name(name)
+    if error is not None:
+        raise McpUserConfigurationError(error)
 
 
 def user_mcp_configuration_path() -> Path:
@@ -109,6 +118,7 @@ def configured_web_remote_url() -> str:
 def set_user_mcp_server(name: str, declaration: Mapping[str, Any]) -> dict[str, Any]:
     """Create or replace one named declaration with an atomic file swap."""
 
+    validate_user_mcp_server_name(name)
     with _CONFIG_LOCK:
         path = user_mcp_configuration_path()
         document = _read_document(path)

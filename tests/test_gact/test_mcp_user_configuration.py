@@ -12,6 +12,10 @@ import yaml
 from fastapi.testclient import TestClient
 
 from clio_agent.gact.app import build_app
+from clio_agent.gact.mcp_user_configuration import (
+    McpUserConfigurationError,
+    set_user_mcp_server,
+)
 from clio_agent.gact.routes.mcp_configuration import (
     _configured_web_remote_url,
     _probe_web_search_remote,
@@ -119,6 +123,124 @@ def test_user_mcp_configuration_persists_across_restart_and_preserves_siblings(
     assert document["mcp_servers"]["sibling"]["command"] == "sibling-command"
     assert document["mcp_servers"]["web"]["args"][-1] == "http://search.internal:8089"
     assert document["mcp_servers"]["web"]["always_load"] is True
+
+
+@pytest.mark.parametrize(
+    "name",
+    ["Qualification Fetch package 20261025", "UpperCase", "bad_name"],
+)
+def test_put_rejects_invalid_runtime_names_before_persist_or_probe(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    name: str,
+) -> None:
+    user_dir = tmp_path / "user"
+    monkeypatch.setenv("CLIO_USER_DIR", str(user_dir))
+    probes: list[Any] = []
+
+    async def ready_probe(spec: Any) -> tuple[list[str], str | None]:
+        probes.append(spec)
+        return ["example_tool"], None
+
+    monkeypatch.setattr(
+        "clio_agent.gact.routes.mcp_configuration._probe_user_mcp_server", ready_probe
+    )
+    app = build_app(sessions_path=tmp_path / "sessions.json")
+
+    with TestClient(app) as client:
+        response = client.put(
+            f"/v1/mcp/configuration/{name}", json=_web_spec("https://example.test")
+        )
+
+    assert response.status_code == 422
+    assert "invalid MCP server name" in response.json()["error"]["message"]
+    assert probes == []
+    assert not (user_dir / "mcp.yaml").exists()
+
+
+def test_put_accepts_canonical_name_and_probes_saved_declaration(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    user_dir = tmp_path / "user"
+    monkeypatch.setenv("CLIO_USER_DIR", str(user_dir))
+    probes: list[Any] = []
+
+    async def ready_probe(spec: Any) -> tuple[list[str], str | None]:
+        probes.append(spec)
+        return ["example_tool"], None
+
+    monkeypatch.setattr(
+        "clio_agent.gact.routes.mcp_configuration._probe_user_mcp_server", ready_probe
+    )
+    app = build_app(sessions_path=tmp_path / "sessions.json")
+
+    with TestClient(app) as client:
+        response = client.put(
+            "/v1/mcp/configuration/climate-storage-2",
+            json=_web_spec("https://example.test"),
+        )
+
+    assert response.status_code == 200, response.text
+    assert response.json()["status"] == "ready"
+    assert len(probes) == 1
+    assert (
+        yaml.safe_load((user_dir / "mcp.yaml").read_text(encoding="utf-8"))["mcp_servers"][
+            "climate-storage-2"
+        ]["transport"]
+        == "stdio"
+    )
+
+
+def test_durable_setter_rejects_invalid_name_before_touching_configuration(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config_path = tmp_path / "user" / "mcp.yaml"
+    monkeypatch.setattr(
+        "clio_agent.gact.mcp_user_configuration.user_mcp_configuration_path",
+        lambda: config_path,
+    )
+
+    with pytest.raises(McpUserConfigurationError, match="invalid MCP server name"):
+        set_user_mcp_server("bad_name", _web_spec("https://example.test"))
+
+    assert not config_path.exists()
+
+
+def test_legacy_invalid_name_remains_readable_and_deletable(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    user_dir = tmp_path / "user"
+    user_dir.mkdir()
+    monkeypatch.setenv("CLIO_USER_DIR", str(user_dir))
+    legacy_name = "Qualification Fetch package 20261025"
+    config_path = user_dir / "mcp.yaml"
+    config_path.write_text(
+        yaml.safe_dump({"mcp_servers": {legacy_name: _web_spec("https://example.test")}}),
+        encoding="utf-8",
+    )
+
+    async def ready_probe(spec: Any) -> tuple[list[str], str | None]:
+        del spec
+        return ["example_tool"], None
+
+    monkeypatch.setattr(
+        "clio_agent.gact.routes.mcp_configuration._probe_user_mcp_server", ready_probe
+    )
+    app = build_app(sessions_path=tmp_path / "sessions.json")
+    path = "/v1/mcp/configuration/Qualification%20Fetch%20package%2020261025"
+
+    with TestClient(app) as client:
+        read = client.get(path)
+        removed = client.delete(path)
+
+    assert read.status_code == 200, read.text
+    assert read.json()["configured"] is True
+    assert removed.status_code == 200, removed.text
+    assert removed.json()["removed"] is True
+    assert legacy_name not in yaml.safe_load(config_path.read_text(encoding="utf-8"))["mcp_servers"]
 
 
 def test_edit_replaces_named_server_without_duplicate_runtime_or_yaml_rows(

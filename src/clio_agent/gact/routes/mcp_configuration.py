@@ -218,6 +218,7 @@ def register_mcp_configuration_routes(app: FastAPI) -> None:
         list_user_mcp_servers,
         remove_user_mcp_server,
         set_user_mcp_server,
+        validate_user_mcp_server_name,
     )
 
     @app.get("/v1/mcp/configuration")
@@ -254,6 +255,10 @@ def register_mcp_configuration_routes(app: FastAPI) -> None:
     @app.put("/v1/mcp/configuration/{name}")
     async def put_mcp_configuration(name: str, request: Request) -> dict[str, Any]:
         key = _configuration_name(name)
+        try:
+            validate_user_mcp_server_name(key)
+        except McpUserConfigurationError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
         body = await json_body(request, route="PUT /v1/mcp/configuration/{name}")
         spec = _configuration_spec(body)
         try:
