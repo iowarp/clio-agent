@@ -484,7 +484,8 @@ class _WorkflowRun:
                         other.options,
                     )
             self.status[repairing] = "repaired"
-        await self.ctx.record_event({**event, "event": "step_added"})
+        # `approved` records that the person was asked and said yes, so a client can show it.
+        await self.ctx.record_event({**event, "event": "step_added", "approved": self.approve})
         return True
 
     async def _cancel(self, step_id: str, origin: str) -> bool:

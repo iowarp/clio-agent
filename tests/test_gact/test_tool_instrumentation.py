@@ -1192,3 +1192,16 @@ def test_guard_fails_on_a_synthetic_bare_dspy_tool(tmp_path: Path) -> None:
 def test_guard_passes_the_real_tree() -> None:
     repo_root = Path(__file__).resolve().parents[2]
     assert check_tool_instrumentation(repo_root / "src" / "clio_agent", rel_to=repo_root) == []
+
+
+def test_mcp_tool_without_a_declared_title_is_named_by_its_own_words() -> None:
+    """colab-mcp declares no title for open_colab_browser_connection: show words, not an id."""
+    from types import SimpleNamespace
+
+    from clio_agent.gact.agents.tool_instrumentation import TITLE_ATTR, stamp_mcp_tool_title
+
+    def call() -> None:
+        return None
+
+    stamp_mcp_tool_title(call, SimpleNamespace(name="open_colab_browser_connection"))
+    assert getattr(call, TITLE_ATTR) == "Open colab browser connection"

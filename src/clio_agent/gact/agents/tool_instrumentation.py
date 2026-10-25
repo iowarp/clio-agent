@@ -239,14 +239,23 @@ def stamp_mcp_tool_title(func: Callable[..., Any], mcp_tool: object) -> None:
     ``ToolAnnotations.title``), sanitized through the same
     :func:`sanitize_tool_title` curated native titles use, so it rides the
     assembly seam (:func:`instrument_tools`) onto ``Part.tool_title`` exactly
-    like a curated native title. Absent when the server declares neither —
-    never invented. No ``server_title`` yet (needs the serverInfo surface,
-    tracked on the issue).
+    like a curated native title. When the server declares neither, the title is
+    the upstream tool's own name written as words (``open_colab_browser_connection``
+    -> "Open colab browser connection"), never CLIO's namespaced identifier. No
+    ``server_title`` yet (needs the serverInfo surface, tracked on the issue).
     """
 
-    title = mcp_tool_title(mcp_tool)
+    title = mcp_tool_title(mcp_tool) or _name_as_words(mcp_tool)
     if title:
         setattr(func, TITLE_ATTR, sanitize_tool_title(title))
+
+
+def _name_as_words(mcp_tool: object) -> str:
+    """The upstream tool name as a sentence-case phrase (formatting only, no new meaning)."""
+
+    name = mcp_tool.get("name") if isinstance(mcp_tool, dict) else getattr(mcp_tool, "name", "")
+    words = " ".join(str(name or "").replace("-", "_").split("_")).strip()
+    return words[:1].upper() + words[1:]
 
 
 def _validated_representation(representation: object, *, tool_name: str) -> str:
