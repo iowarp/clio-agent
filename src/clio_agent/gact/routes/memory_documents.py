@@ -322,7 +322,11 @@ def register_memory_document_routes(app: FastAPI) -> None:
             stamp = md.today()
             run_id = "mcr_manual_" + uuid4().hex
             started = md.now_stamp()
-            from clio_agent.gact.memory.creation_runs import begin_run, update_run  # noqa: PLC0415
+            from clio_agent.gact.memory.creation_runs import (  # noqa: PLC0415
+                begin_run,
+                known_zero_usage,
+                update_run,
+            )
 
             begin_run(
                 service.store,
@@ -357,8 +361,8 @@ def register_memory_document_routes(app: FastAPI) -> None:
                                     "reason": "already_present",
                                     "completed_at": md.now_stamp(),
                                     "targets": [str(address)],
-                                    "_extract_usage": _known_zero_usage(),
-                                    "_curator_usage": _known_zero_usage(),
+                                    "_extract_usage": known_zero_usage(),
+                                    "_curator_usage": known_zero_usage(),
                                 },
                             )
                             return stored_to_wire(current) if current is not None else {}
@@ -419,8 +423,8 @@ def register_memory_document_routes(app: FastAPI) -> None:
                         "state": "failed",
                         "reason": error.error_type,
                         "completed_at": md.now_stamp(),
-                        "_extract_usage": _known_zero_usage(),
-                        "_curator_usage": _known_zero_usage(),
+                        "_extract_usage": known_zero_usage(),
+                        "_curator_usage": known_zero_usage(),
                     },
                 )
                 raise
@@ -432,8 +436,8 @@ def register_memory_document_routes(app: FastAPI) -> None:
                     "reason": "created_by_user",
                     "completed_at": started,
                     "targets": [str(address)],
-                    "_extract_usage": _known_zero_usage(),
-                    "_curator_usage": _known_zero_usage(),
+                    "_extract_usage": known_zero_usage(),
+                    "_curator_usage": known_zero_usage(),
                 },
             )
             return stored_to_wire(stored)
@@ -634,18 +638,6 @@ def _session_usage(session: Any) -> dict[str, Any]:
         "output_known": tokens_known,
         "cost_usd": float(getattr(session, "cost_usd", 0) or 0) if known else None,
         "cost_known": known,
-    }
-
-
-def _known_zero_usage() -> dict[str, Any]:
-    """No model call was made for a manual memory write."""
-    return {
-        "input_tokens": 0,
-        "output_tokens": 0,
-        "input_known": True,
-        "output_known": True,
-        "cost_usd": 0.0,
-        "cost_known": True,
     }
 
 

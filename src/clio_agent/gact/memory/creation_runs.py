@@ -262,7 +262,7 @@ def _legacy_session_row(session: Any, state: dict[str, Any], *, current: bool) -
         "proposal_counts": {"accepted": 0, "pending": 0, "rejected": 0},
         "targets": [],
         "_extract_usage": _normalize_usage(report.get("usage")),
-        "_curator_usage": _empty_usage(known=True) if no_candidates else _empty_usage(known=False),
+        "_curator_usage": known_zero_usage() if no_candidates else _empty_usage(known=False),
     }
 
 
@@ -270,6 +270,13 @@ def public_run(row: dict[str, Any]) -> dict[str, Any]:
     """Project private bookkeeping into the stable API row; no fact text is stored."""
     extract_usage = _normalize_usage(row.get("_extract_usage"))
     curator_usage = _normalize_usage(row.get("_curator_usage"))
+    if (
+        row.get("reason") == "no_candidates"
+        and not row.get("curator_session")
+        and not row.get("handle")
+    ):
+        # Older rows omitted token-known markers for a curator phase that never ran.
+        curator_usage = known_zero_usage()
     input_known = bool(extract_usage["input_known"] and curator_usage["input_known"])
     output_known = bool(extract_usage["output_known"] and curator_usage["output_known"])
     cost_known = bool(extract_usage["cost_known"] and curator_usage["cost_known"])
@@ -369,6 +376,11 @@ def _empty_usage(*, known: bool) -> dict[str, Any]:
         "cost_usd": 0.0 if known else None,
         "cost_known": known,
     }
+
+
+def known_zero_usage() -> dict[str, Any]:
+    """Describe a phase known not to have made any model calls."""
+    return _empty_usage(known=True)
 
 
 def _normalize_usage(value: Any) -> dict[str, Any]:

@@ -272,6 +272,88 @@ def test_transcript_cache_tracks_the_current_minimum_user_turns(
     assert background.skip_reason(app, app.state.sessions.get(session.id), datetime.now(UTC)) == ""
 
 
+def test_no_candidate_import_counts_extractor_usage_and_marks_curator_zero(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from clio_agent.gact.memory.creation_runs import load_run_rows, public_run
+
+    app = client.app
+    report = {
+        "model": {"provider_id": "test-provider", "model_id": "extractor", "source": "fleet"},
+        "returned": 0,
+        "kept": 0,
+        "dropped": {"sensitive": 0, "uncited": 0},
+        "usage": {
+            "input_tokens": 31,
+            "output_tokens": 7,
+            "cost_usd": 0.002,
+            "cost_known": True,
+        },
+    }
+    monkeypatch.setattr(
+        "clio_agent.gact.memory.extract.extract_candidates",
+        lambda *_args, **_kwargs: ([], report),
+    )
+
+    result = background.import_pasted_text(
+        app, "Imported notes with no durable facts.", scope="user", import_id="no-candidate-usage"
+    )
+
+    rows, _cursor = load_run_rows(memory_service(app).store)
+    raw = next(row for row in rows if row["id"] == result["run_id"])
+    assert raw["_curator_usage"] == {
+        "input_tokens": 0,
+        "output_tokens": 0,
+        "input_known": True,
+        "output_known": True,
+        "cost_usd": 0.0,
+        "cost_known": True,
+    }
+    public = public_run(raw)
+    assert public["usage"] == {
+        "input_tokens": 31,
+        "output_tokens": 7,
+        "cost_usd": 0.002,
+        "cost_known": True,
+    }
+
+
+def test_legacy_no_candidate_row_projects_known_zero_curator_usage() -> None:
+    from clio_agent.gact.memory.creation_runs import public_run
+
+    row = {
+        "id": "legacy-no-candidates",
+        "origin": "import:legacy",
+        "state": "completed",
+        "reason": "no_candidates",
+        "curator_session": "",
+        "handle": "",
+        "_extract_usage": {
+            "input_tokens": 31,
+            "output_tokens": 7,
+            "input_known": True,
+            "output_known": True,
+            "cost_usd": 0.002,
+            "cost_known": True,
+        },
+        "_curator_usage": {
+            "input_tokens": 0,
+            "output_tokens": 0,
+            "cost_usd": 0.0,
+            "cost_known": True,
+        },
+    }
+
+    public = public_run(row)
+
+    assert public["usage"] == {
+        "input_tokens": 31,
+        "output_tokens": 7,
+        "cost_usd": 0.002,
+        "cost_known": True,
+    }
+
+
 @pytest.mark.parametrize("tool_error", [False, True])
 def test_completed_curator_with_no_proposals_only_fails_on_recorded_tool_errors(
     client: TestClient, monkeypatch: pytest.MonkeyPatch, tool_error: bool

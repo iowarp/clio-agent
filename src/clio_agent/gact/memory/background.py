@@ -375,6 +375,7 @@ def _start_pass(app: Any, session: Any) -> None:
     from clio_agent.gact.memory.creation_runs import (  # noqa: PLC0415
         begin_run,
         creation_run_id,
+        known_zero_usage,
         record_extract,
         update_run,
     )
@@ -433,12 +434,7 @@ def _start_pass(app: Any, session: Any) -> None:
                 "state": "skipped",
                 "reason": "conversation_changed_during_extract",
                 "completed_at": datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ"),
-                "_curator_usage": {
-                    "input_tokens": 0,
-                    "output_tokens": 0,
-                    "cost_usd": 0.0,
-                    "cost_known": True,
-                },
+                "_curator_usage": known_zero_usage(),
             },
         )
         return
@@ -454,12 +450,7 @@ def _start_pass(app: Any, session: Any) -> None:
                 "state": "completed",
                 "reason": "no_candidates",
                 "completed_at": datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ"),
-                "_curator_usage": {
-                    "input_tokens": 0,
-                    "output_tokens": 0,
-                    "cost_usd": 0.0,
-                    "cost_known": True,
-                },
+                "_curator_usage": known_zero_usage(),
             },
         )
         return
@@ -626,6 +617,7 @@ def import_pasted_text(app: Any, text: str, *, scope: str, import_id: str) -> di
     from clio_agent.gact.memory.creation_runs import (  # noqa: PLC0415
         begin_run,
         creation_run_id,
+        known_zero_usage,
         record_extract,
         update_run,
     )
@@ -668,12 +660,7 @@ def import_pasted_text(app: Any, text: str, *, scope: str, import_id: str) -> di
                 "state": "completed",
                 "reason": "no_candidates",
                 "completed_at": datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ"),
-                "_curator_usage": {
-                    "input_tokens": 0,
-                    "output_tokens": 0,
-                    "cost_usd": 0.0,
-                    "cost_known": True,
-                },
+                "_curator_usage": known_zero_usage(),
             },
         )
         return {"import_id": import_id, "candidates": 0, "extract": report, "run_id": run_id}
