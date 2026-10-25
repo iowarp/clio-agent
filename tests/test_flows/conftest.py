@@ -185,6 +185,16 @@ class BudgetWorker(Flow):
 
     async def forward(self, task, ctx):
         return (await ctx.call("self", task)).answer
+
+
+class CrashFanout(Flow):
+    id = "crashfanout"
+
+    async def forward(self, task, ctx):
+        calls = [ctx.call("self", f"STALL member {index}") for index in range(3)]
+        calls.append(ctx.call("self", "FAIL-SPAWN"))
+        await ctx.gather(calls)
+        return "unreachable"
 """
 
 SUBAGENTS = """
@@ -229,6 +239,7 @@ Greedier = _agent("greedier", Flow("greedy", max_model_calls=2))
 Budgeter = _agent("budgeter", "budgeted")
 Planner = _agent("planner", "workflowrunner")
 Nesterer = _agent("nesterer", "nester")
+CrashFanouter = _agent("crashfanouter", "crashfanout")
 
 
 class Orchestrator(Agent):

@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+import asyncio
+import threading
+import time
 from typing import Any
 
 import pytest
@@ -49,6 +52,59 @@ def test_gather_member_failure_never_cancels_the_others(flow_app: TestClient) ->
     sid = new_session(flow_app, "clio/tolerater")
     post(flow_app, sid, "go")
     assert text_of(_answer(flow_app, sid)) == "CallResult,CallFailed,CallResult"
+
+
+def test_arbitrary_spawn_error_quiesces_only_accepted_gather_children(
+    flow_app: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """An infrastructure error cancels and settles this gather's accepted siblings."""
+    owner = flow_app.app.state.conversations
+    original_spawn = owner.spawn
+    accepted: list[str] = []
+    all_children_accepted = threading.Event()
+
+    async def fail_one(
+        caller: Any, assignment: str, agent_id: str, invocation_id: str, **kwargs: Any
+    ) -> dict[str, Any]:
+        if assignment == "FAIL-SPAWN":
+            deadline = time.monotonic() + 10
+            while not all_children_accepted.is_set() and time.monotonic() < deadline:
+                await asyncio.sleep(0.01)
+            assert all_children_accepted.is_set()
+            raise PermissionError("injected spawn failure")
+        result = await original_spawn(caller, assignment, agent_id, invocation_id, **kwargs)
+        accepted.append(result["handle"])
+        if len(accepted) == 3:
+            all_children_accepted.set()
+        return result
+
+    monkeypatch.setattr(owner, "spawn", fail_one)
+    sid = new_session(flow_app, "clio/crashfanouter")
+    post(flow_app, sid, "trigger")
+    history = flow_app.app.state.task_history
+    parent = wait_until(
+        lambda: (task if task is not None and task.terminal_at is not None else None)
+        if (task := history.latest_assignment(sid))
+        else None,
+        timeout=60,
+    )
+    assert parent.status == "failed"
+    assert len(accepted) == 3
+
+    checkpoint = history.workflow_checkpoint(parent.handle)
+    assert checkpoint is not None
+    run = history.read_content(checkpoint.content)
+    assert run["status"] == "flow_error"
+    children = [history.task_snapshot(handle) for handle in accepted]
+    assert all(child is not None for child in children)
+    assert all(child.owner.parent_handle == parent.handle for child in children)
+    assert all(child.terminal_at is not None for child in children)
+    assert all(child.status == "cancelled" for child in children)
+    statuses = [row["status"] for row in run["calls"].values()]
+    assert statuses.count("cancelled") == 3
+    not_accepted = [row for row in run["calls"].values() if row["status"] == "not_accepted"]
+    assert len(not_accepted) == 1
+    assert "handle" not in not_accepted[0]
 
 
 def test_a_child_waiting_for_input_settles_the_call_instead_of_holding_the_flow(

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import threading
 from collections.abc import Callable
 from pathlib import Path
 from types import SimpleNamespace
@@ -31,6 +32,10 @@ from clio_agent.gact.agents.resolution import (
     AGENT_RESOLUTION_KEY,
     SUBAGENT_KEY,
     session_resolution,
+)
+from clio_agent.gact.conversation_dispatch_fence import (
+    close_spawn_invocations,
+    release_spawn_invocations,
 )
 from clio_agent.gact.conversations import ConversationOutcome, Conversations, ConversationSegment
 from clio_agent.gact.core_recovery import CoreRecovery
@@ -87,6 +92,206 @@ async def test_spawn_strategy_is_validated_before_child_creation_and_immutable(
             strategy={**strategy, "rubric": "Different"},
         )
     assert len(app.state.sessions.list()) == before + 1
+    await owner.recovery.drain()
+
+
+@pytest.mark.asyncio
+async def test_delayed_spawn_commit_is_found_and_cancelled_after_fence_timeout(
+    arc: ARCMemory, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A queued commit ahead of the fence is recovered through normal cancellation."""
+    _, owner, root = await create_environment(arc, tmp_path)
+    owner._loop = asyncio.get_running_loop()
+    caller = TaskCaller(root.owner.session_id, "human")
+    prepare_entered, release_prepare = threading.Event(), threading.Event()
+    core_entered, release_core = threading.Event(), threading.Event()
+    create_queued = threading.Event()
+    original_prepare, original_submit = owner.prepare_child, owner.history.io.submit
+
+    def blocked_prepare(
+        parent: str,
+        agent: str,
+        scope: dict[str, Any] | None,
+        model: str = "",
+    ) -> CreatePreparedChild:
+        prepare_entered.set()
+        assert release_prepare.wait(10)
+        return original_prepare(parent, agent, scope, model)
+
+    def observed_submit(operation: Callable[..., Any], *args: Any, **kwargs: Any) -> Any:
+        if getattr(operation, "__name__", "") == "create":
+            create_queued.set()
+        return original_submit(operation, *args, **kwargs)
+
+    def block_core() -> None:
+        core_entered.set()
+        assert release_core.wait(10)
+
+    monkeypatch.setattr(owner, "prepare_child", blocked_prepare)
+    monkeypatch.setattr(owner.history.io, "submit", observed_submit)
+    spawning = asyncio.create_task(
+        owner.spawn(caller, "Delayed child", "writer", "late-intent", start=False)
+    )
+    assert await asyncio.to_thread(prepare_entered.wait, 10)
+    blocker = owner.history.io.submit(block_core)
+    assert await asyncio.to_thread(core_entered.wait, 10)
+    release_prepare.set()
+    assert await asyncio.to_thread(create_queued.wait, 10)
+
+    fence = owner.history.io.submit(close_spawn_invocations, owner, root.handle, ("late-intent",))
+    with pytest.raises(TimeoutError):
+        await asyncio.wait_for(asyncio.shield(asyncio.wrap_future(fence)), timeout=0.05)
+    release_core.set()
+    await asyncio.wrap_future(blocker)
+    accepted = await asyncio.wait_for(spawning, timeout=10)
+    found = await asyncio.wait_for(asyncio.wrap_future(fence), timeout=10)
+    assert found == {"late-intent": (accepted["handle"],)}
+
+    deadline = asyncio.get_running_loop().time() + 10
+    while owner.history.task_snapshot(accepted["handle"]).terminal_at is None:
+        assert asyncio.get_running_loop().time() < deadline
+        await asyncio.sleep(0.02)
+    child = owner.history.task_snapshot(accepted["handle"])
+    assert child is not None and child.status == "cancelled"
+
+    monkeypatch.setattr(owner, "prepare_child", original_prepare)
+    await owner.history.io.run(close_spawn_invocations, owner, root.handle, ("blocked-intent",))
+    with pytest.raises(ValueError, match="closed before acceptance"):
+        await owner.spawn(caller, "Must remain unaccepted", "writer", "blocked-intent")
+    assert (
+        await owner.history.io.run(
+            owner.history.direct_child_by_invocation,
+            root.handle,
+            "blocked-intent",
+            session_id=root.owner.session_id,
+            human_id="human",
+        )
+        == ()
+    )
+    unrelated = await owner.spawn(
+        caller, "Independent child", "writer", "unrelated-intent", start=False
+    )
+    assert unrelated["accepted"] is True
+    await owner.history.io.run(release_spawn_invocations, owner, root.handle, ("late-intent",))
+    await owner.recovery.drain()
+
+
+@pytest.mark.asyncio
+async def test_cancelled_spawn_cannot_commit_after_parent_terminal_and_fence_release(
+    arc: ARCMemory, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A cancelled waiter does not settle a queued create; terminal ownership still fences it."""
+    _, owner, root = await create_environment(arc, tmp_path)
+    caller = TaskCaller(root.owner.session_id, "human")
+    owner._loop = asyncio.get_running_loop()
+    create_entered, release_create = threading.Event(), threading.Event()
+    original_submit = owner.history.io.submit
+    create_future: Any = None
+
+    def observed_submit(operation: Callable[..., Any], *args: Any, **kwargs: Any) -> Any:
+        nonlocal create_future
+        if getattr(operation, "__name__", "") == "create":
+
+            def delayed_create() -> Any:
+                create_entered.set()
+                assert release_create.wait(10)
+                return operation(*args, **kwargs)
+
+            future = original_submit(delayed_create)
+            create_future = future
+            return future
+        return original_submit(operation, *args, **kwargs)
+
+    monkeypatch.setattr(owner.history.io, "submit", observed_submit)
+    spawning = asyncio.create_task(
+        owner.spawn(caller, "Late child", "writer", "terminal-intent", start=False)
+    )
+    assert await asyncio.to_thread(create_entered.wait, 10)
+    with pytest.raises(TimeoutError):
+        await asyncio.wait_for(asyncio.shield(asyncio.wrap_future(create_future)), timeout=0.05)
+
+    # Cancelling the coroutine cannot stop a create already running on CoreIO.
+    assert create_future.running()
+    spawning.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await spawning
+
+    terminal = root.model_copy(
+        update={
+            "status": "failed",
+            "raw_status": "failed",
+            "settlement": "confirmed",
+            "terminal_at": now(),
+            "updated_at": now(),
+        }
+    )
+    await asyncio.to_thread(
+        owner.history.record_snapshot, terminal, observation_id="terminal-parent"
+    )
+    fence = original_submit(close_spawn_invocations, owner, root.handle, ("terminal-intent",))
+    release = original_submit(release_spawn_invocations, owner, root.handle, ("terminal-intent",))
+
+    release_create.set()
+    with pytest.raises(ValueError, match="active owning assignment|closed before acceptance"):
+        await asyncio.wrap_future(create_future)
+    found = await asyncio.wrap_future(fence)
+    assert found == {"terminal-intent": ()}
+    await asyncio.wrap_future(release)
+    children = await owner.history.io.run(
+        owner.history.direct_child_by_invocation,
+        root.handle,
+        "terminal-intent",
+        session_id=root.owner.session_id,
+        human_id="human",
+    )
+    assert children == ()
+    await owner.recovery.drain()
+
+
+@pytest.mark.asyncio
+async def test_terminal_parent_fence_pruning_does_not_mutate_during_iteration(
+    arc: ARCMemory, tmp_path: Path
+) -> None:
+    """A later active parent's spawn safely prunes stale fences from terminal owners."""
+    app, owner, old_root = await create_environment(arc, tmp_path)
+    await owner.history.io.run(close_spawn_invocations, owner, old_root.handle, ("old-intent",))
+    stamp = now()
+    terminal = old_root.model_copy(update={"status": "failed", "terminal_at": stamp})
+    new_session = await owner.history.io.run(
+        app.state.sessions.create, workspace_id="workspace", agent={"id": "main"}
+    )
+    new_root = old_root.model_copy(
+        update={
+            "handle": "task_new_root",
+            "owner": TaskOwner(
+                human_id="human",
+                session_id=new_session.id,
+                assignment_id="task_new_root",
+            ),
+            "invocation_id": "new-human-assignment",
+            "status": "active",
+            "terminal_at": None,
+            "created_at": stamp,
+            "updated_at": stamp,
+        }
+    )
+    await owner.history.io.run(
+        owner.history.record_snapshot, terminal, observation_id="terminal-old-root"
+    )
+    await owner.history.io.run(owner.history.record_snapshot, new_root, observation_id="new-root")
+    await owner.history.io.run(session_resolution, app, new_session.id)
+
+    accepted = await owner.spawn(
+        TaskCaller(new_session.id, "human"),
+        "Independent active child",
+        "writer",
+        "new-intent",
+        parent_handle=new_root.handle,
+        start=False,
+    )
+
+    assert accepted["accepted"] is True
+    assert not any(parent == old_root.handle for parent, _ in owner._closed_spawn_invocations)
     await owner.recovery.drain()
 
 

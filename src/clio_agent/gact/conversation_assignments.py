@@ -650,6 +650,25 @@ async def spawn(
                 or parent.owner.human_id != caller.human_id
             ):
                 raise ValueError("Spawning requires an active owning assignment")
+            terminal_parents = {
+                closed_parent
+                for closed_parent, _ in self._closed_spawn_invocations
+                if (closed_task := self.history.task_snapshot(closed_parent)) is None
+                or closed_task.terminal_at is not None
+            }
+            if terminal_parents:
+                self._closed_spawn_invocations.difference_update(
+                    {
+                        (closed_parent, closed_invocation)
+                        for closed_parent, closed_invocation in self._closed_spawn_invocations
+                        if closed_parent in terminal_parents
+                    }
+                )
+            if (
+                existing is None
+                and (parent.handle, invocation_id) in self._closed_spawn_invocations
+            ):
+                raise ValueError("Spawn invocation was closed before acceptance")
             self.require_admission(parent)
             if prepared_parent is not None and parent.handle != prepared_parent:
                 raise ValueError("Owning assignment changed during child preparation")

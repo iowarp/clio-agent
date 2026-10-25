@@ -465,3 +465,71 @@ def test_option_only_question_cannot_complete_without_an_option(
     answered = commands.answer(accepted.handle, QuestionReply(selected_options=("first",)))
     assert answered.status == "completed"
     assert answered.result is not None
+
+
+def test_direct_child_invocation_lookup_requires_exact_parent_and_human(arc: ARCMemory) -> None:
+    """A lost flow receipt resolves only a direct child of its exact same-human owner."""
+    history = TaskHistory(arc)
+    root = snapshot().model_copy(
+        update={
+            "handle": "flow-root",
+            "owner": TaskOwner(
+                human_id="human", session_id="parent-session", assignment_id="flow-root"
+            ),
+        }
+    )
+    child = snapshot().model_copy(
+        update={
+            "handle": "child",
+            "owner": TaskOwner(
+                human_id="human",
+                session_id="child-session",
+                assignment_id="child",
+                parent_handle="flow-root",
+            ),
+            "invocation_id": "intent-1",
+        }
+    )
+    nested = child.model_copy(
+        update={
+            "handle": "nested",
+            "owner": TaskOwner(
+                human_id="human",
+                session_id="nested-session",
+                assignment_id="nested",
+                parent_handle="child",
+            ),
+        }
+    )
+    wrong_human = child.model_copy(
+        update={
+            "handle": "wrong-human",
+            "owner": TaskOwner(
+                human_id="other",
+                session_id="other-session",
+                assignment_id="wrong-human",
+                parent_handle="flow-root",
+            ),
+        }
+    )
+    history.record_snapshot(root, observation_id="flow-root")
+    history.record_snapshot(child, observation_id="child")
+    history.record_snapshot(nested, observation_id="nested")
+    history.record_snapshot(wrong_human, observation_id="wrong-human")
+
+    found = history.direct_child_by_invocation(
+        "flow-root", "intent-1", session_id="parent-session", human_id="human"
+    )
+    assert tuple(task.handle for task in found) == ("child",)
+    assert (
+        history.direct_child_by_invocation(
+            "flow-root", "intent-1", session_id="wrong-session", human_id="human"
+        )
+        == ()
+    )
+    assert (
+        history.direct_child_by_invocation(
+            "flow-root", "intent-1", session_id="parent-session", human_id="other"
+        )
+        == ()
+    )

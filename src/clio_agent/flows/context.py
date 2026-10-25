@@ -32,11 +32,10 @@ from pathlib import Path
 from typing import Any
 
 from clio_agent.flows.budget import FlowBudget
-from clio_agent.flows.call_metadata import child_model, child_session_metadata
+from clio_agent.flows.call_metadata import child_model
 from clio_agent.flows.journal import FlowJournal, digest
 from clio_agent.flows.outcomes import (
     STATUS_OUTCOMES,
-    CallCancelled,
     CallFailed,
     CallRefused,
     FlowCheckpointLimit,
@@ -361,7 +360,15 @@ class FlowContext:
         if return_when == "any" and tasks:
             done, _ = await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
             return [task.result() if task in done else None for task in tasks]
-        results = list(await asyncio.gather(*tasks))
+        try:
+            results = list(await asyncio.gather(*tasks))
+        except Exception:
+            # A raw infrastructure exception can escape before ``gather`` has
+            # received the accepted handles. Retire only this gather's calls.
+            from clio_agent.flows.gather_cleanup import quiesce_gather  # noqa: PLC0415
+
+            await quiesce_gather(self, items, tasks)
+            raise
         await self.merge_results(results)
         if not return_exceptions and any(isinstance(r, FlowOutcome) for r in results):
             raise GatherFailed(
@@ -594,63 +601,9 @@ class FlowContext:
             return await self._wait(handle, call.invocation, kind=call.kind, name=call.name)
 
     async def _accept(self, call: FlowCall) -> str:
-        from clio_agent.gact.task_access import AdmissionClosed  # noqa: PLC0415
+        from clio_agent.flows.dispatch import accept_call  # noqa: PLC0415
 
-        row = self.journal.call(call.invocation)
-        if row is not None and row.get("handle"):
-            return str(row["handle"])
-        await self._budget.check(call.name)
-        app = self.app
-        agent_id = "self" if call.kind == "flow" else call.name
-        session_metadata = child_session_metadata(call, self._depth + 1, self.journal.run_id)
-        launch_context: dict[str, Any] | None = None
-        try:
-            if call.evidence:
-                from clio_agent.gact.assignment_evidence import (  # noqa: PLC0415
-                    select_assignment_evidence,
-                )
-
-                pins = await app.state.task_history.io.run(
-                    select_assignment_evidence, app.state.task_history, self.caller, call.evidence
-                )
-                launch_context = {"input_task_refs": [pin.model_dump(mode="json") for pin in pins]}
-            accepted = await app.state.conversations.spawn(
-                self.caller,
-                render_input(call.input),
-                agent_id,
-                call.invocation,
-                launch_context=launch_context,
-                session_metadata=session_metadata,
-                parent_handle=self.root_handle,
-                model=call.model,
-            )
-        except AdmissionClosed as exc:
-            if exc.stopping:
-                # The run is being cancelled: the call is cancelled with it.
-                raise CallCancelled(str(exc), target=call.name, status="cancelled") from exc
-            raise CallRefused(str(exc), target=call.name) from exc
-        except ValueError as exc:
-            code = str(getattr(exc, "code", "") or "")
-            raise CallRefused(str(exc), target=call.name, reason_code=code) from exc
-        if not accepted.get("accepted", False):
-            raise CallRefused(
-                str(accepted.get("error") or accepted.get("reason") or "call was not accepted"),
-                target=call.name,
-                reason_code=accepted.get("reason", ""),
-            )
-        handle = str(accepted["handle"])
-        await self.journal.record_call(
-            call.invocation,
-            {
-                "kind": call.kind,
-                "target": call.name,
-                "handle": handle,
-                "session_id": accepted.get("session_id", ""),
-                "status": "accepted",
-                **({"together": call.together} if call.together else {}),
-            },
-        )
-        return handle
+        return await accept_call(self, call)
 
     def _collect(self, handle: str) -> None:
         """Retire the settled task's notice: the flow consumed its result.

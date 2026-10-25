@@ -13,7 +13,13 @@ import logging
 from collections.abc import Callable, Sequence
 from typing import TYPE_CHECKING, Any
 
-from clio_agent.arc.task_types import CoreReference, MailItem, RecipientInput, TaskAlias
+from clio_agent.arc.task_types import (
+    CoreReference,
+    MailItem,
+    RecipientInput,
+    TaskAlias,
+    TaskSnapshot,
+)
 from clio_agent.gact.task_index_writes import needs_record
 from clio_agent.gact.task_tree_state import TreeState, load_tree
 
@@ -110,6 +116,34 @@ def descendant_handles(self: TaskHistory, root_handle: str) -> set[str]:
                     handles.add(child)
                     pending.append(child)
         return handles
+
+
+def direct_child_by_invocation(
+    self: TaskHistory, root_handle: str, invocation_id: str, *, session_id: str, human_id: str
+) -> tuple[TaskSnapshot, ...]:
+    """Find exact direct children for a durable dispatch intent.
+
+    The owner and invocation checks are repeated against immutable task snapshots; this
+    query is for recovering a lost acceptance receipt, not for granting task access.
+    """
+    state = self._handle_state(root_handle)
+    if state is None:
+        return ()
+    with self._view_lock:
+        root = state._tasks.get(root_handle)
+        if root is None or root.owner.session_id != session_id or root.owner.human_id != human_id:
+            return ()
+        matches = []
+        for handle in state._children.get(root_handle, set()):
+            child = state._tasks.get(handle)
+            if (
+                child is not None
+                and child.owner.parent_handle == root_handle
+                and child.owner.human_id == human_id
+                and child.invocation_id == invocation_id
+            ):
+                matches.append(child)
+        return tuple(matches)
 
 
 def tree_handles(self: TaskHistory, session_id: str, *, active_only: bool = False) -> set[str]:

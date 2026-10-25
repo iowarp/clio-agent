@@ -84,6 +84,7 @@ class Conversations:
         self._controls: dict[str, asyncio.Task[None]] = {}
         self._cancel_watches: dict[str, Callable[[], None]] = {}
         self._control_holds: set[str] = set()
+        self._closed_spawn_invocations: set[tuple[str, str]] = set()
         self._model_recording: dict[str, set[str]] = {}
         self._paused: dict[str, str] = {}
         self._inference: dict[int, anyio.CapacityLimiter] = {}
