@@ -22,6 +22,7 @@ is the direct path CLIO itself uses.
 
 from __future__ import annotations
 
+import json
 import logging
 import os
 import socket
@@ -334,6 +335,7 @@ class LocalSearxngBackend(SearxngJsonBackend):
         return {
             "WEB_SEARCH_PROVIDER": "searxng",
             "WEB_SEARXNG_BASE_URL": self.base_url(),
+            "WEB_SEARXNG_DEFAULT_ENGINES": json.dumps(list(self.settings.engines)),
             "NO_PROXY": ",".join(bypass),
             "no_proxy": ",".join(bypass),
         }

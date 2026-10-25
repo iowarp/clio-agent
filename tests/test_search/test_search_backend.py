@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import socket
 from collections.abc import Iterator
 from typing import Any
@@ -86,6 +87,7 @@ def test_local_searxng_routes_the_web_mcp_to_the_recorded_instance(
     env = web_mcp_environment(*WEB_MCP, {}, settings=build_settings())
     assert env["WEB_SEARCH_PROVIDER"] == "searxng"
     assert env["WEB_SEARXNG_BASE_URL"] == "http://127.0.0.1:24001"
+    assert json.loads(env["WEB_SEARXNG_DEFAULT_ENGINES"]) == list(build_settings().engines)
     # A host proxy must not carry the loopback requests; the host's own bypasses stay.
     assert env["NO_PROXY"] == env["no_proxy"] == "internal.example,127.0.0.1,localhost,::1"
 
