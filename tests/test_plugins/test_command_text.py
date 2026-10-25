@@ -34,7 +34,8 @@ def test_an_include_inside_the_plugin_is_inlined_and_others_say_why_not(tmp_path
     root = _plugin(tmp_path / "paper")
     text = (root / "commands" / "new-paper.md").read_text()
     out = expand_plugin_text(text, root)
-    assert f'<file path="{root}/project/README.md">\nRecords live under project/.\n</file>' in out
+    included = root / "project" / "README.md"
+    assert f'<file path="{included}">\nRecords live under project/.\n</file>' in out
     assert "missing.md\n(not inlined: no such file in the plugin)" in out
     assert "/etc/hostname\n(not inlined: outside the plugin folder)" in out
     assert f"Use {root}/templates/outline.md for $ARGUMENTS." in out

@@ -71,7 +71,9 @@ def test_dependencies_on_content_become_requirements_and_hooks_map(tmp_path: Pat
     }
     [hook] = record.hooks
     assert hook.event == "PostToolUse" and hook.kind == "command"
-    assert hook.command == "python3" and hook.args == (str(root / "scripts/v.py"), "hook")
+    assert hook.command == "python3"
+    assert len(hook.args) == 2 and Path(hook.args[0]) == root / "scripts/v.py"
+    assert hook.args[1] == "hook"
     assert hook.tools == "fs_write_file|fs_edit_file"
     assert hook.timeout_ms == 30000 and record.format == "claude-code"
     assert [d.code for d in record.diagnostics] == ["hook_event_unmapped"]

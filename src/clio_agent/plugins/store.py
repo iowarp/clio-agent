@@ -47,6 +47,7 @@ from clio_agent.plugins.marketplace import (
     load_agent_specs,
     read_marketplace,
 )
+from clio_agent.plugins.package_files import ignored_package_names
 from clio_agent.plugins.records import Diagnostic, PluginRecord
 from clio_agent.plugins.sources import SourceError, fetch
 from clio_agent.sdk.agent import AgentSpec
@@ -123,7 +124,7 @@ def _copy_tree(source: Path, target: Path) -> None:
         source,
         staging,
         symlinks=False,
-        ignore=shutil.ignore_patterns(".git", "__pycache__", "*.pyc", ".venv", "node_modules"),
+        ignore=ignored_package_names,
     )
     try:
         staging.rename(target)
@@ -287,7 +288,7 @@ class PluginStore:
                 )
             entry: dict[str, Any] = {
                 "id": market,
-                "source": source,
+                "source": fetched.url if fetched.local else source,
                 "url": fetched.url,
                 "ref": ref,
                 "commit": fetched.commit,
@@ -545,7 +546,7 @@ class PluginStore:
             )
         commit = entry["commit"] if entry.get("pinned") else ""
         return self.install(
-            entry["source"],
+            entry.get("url") or entry["source"],
             ref=entry.get("ref", ""),
             commit=commit,
             name=market,
