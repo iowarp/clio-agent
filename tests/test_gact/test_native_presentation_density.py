@@ -61,6 +61,86 @@ def test_idle_goal_and_empty_schedule_list_have_no_empty_panels() -> None:
     assert native_presentation("schedules", {}, {"schedules": []}, None)["blocks"] == []
 
 
+def test_specialized_typed_error_is_unsuccessful_and_keeps_its_diagnostic() -> None:
+    view = native_presentation(
+        "specialized",
+        {},
+        {
+            "error": "no_parent_session",
+            "message": "This session has no parent session at all.",
+        },
+        None,
+    )
+
+    assert view["status"] == "failed"
+    assert view["summary"] == "Action unsuccessful"
+    assert view["blocks"] == [
+        {
+            "id": "outcome",
+            "type": "text",
+            "label": "Reason",
+            "severity": "error",
+            "text": "This session has no parent session at all.",
+            "detail": "no_parent_session",
+        }
+    ]
+
+
+def test_specialized_emission_receipt_reports_delivery_and_preserves_ids() -> None:
+    view = native_presentation(
+        "specialized",
+        {},
+        {"emitted": True, "session_id": "parent-1", "part_id": "part-1"},
+        None,
+    )
+
+    assert view["summary"] == "Notification delivered"
+    assert "status" not in view
+    assert [block["id"] for block in view["blocks"]] == ["outcome", "parent-session"]
+    assert view["blocks"][1]["uri"] == "parent-1"
+    assert view["blocks"][0]["detail"] == "Notification ID: part-1"
+
+
+def test_specialized_frozen_parent_receipt_is_failed_not_transport_success() -> None:
+    view = native_presentation(
+        "specialized",
+        {},
+        {
+            "emitted": False,
+            "reason": "parent transcript frozen",
+            "session_id": "parent-1",
+        },
+        None,
+    )
+
+    assert view["status"] == "failed"
+    assert view["summary"] == "Notification not delivered"
+    assert view["blocks"][0]["detail"] == "parent transcript frozen"
+    assert view["blocks"][1]["uri"] == "parent-1"
+
+
+def test_specialized_non_emission_without_reason_still_reports_failure() -> None:
+    view = native_presentation("specialized", {}, {"emitted": False}, None)
+
+    assert view["status"] == "failed"
+    assert view["summary"] == "Notification not delivered"
+    assert view["blocks"] == [
+        {
+            "id": "outcome",
+            "type": "text",
+            "label": "Notification",
+            "text": "Not delivered",
+            "severity": "error",
+        }
+    ]
+
+
+def test_specialized_payload_without_typed_outcome_is_not_guessed() -> None:
+    view = native_presentation("specialized", {}, {"success": False, "value": "x"}, None)
+
+    assert view == {"summary": "", "blocks": []}
+
+
 def test_loaded_skill_header_owns_identity_without_repeating_it_as_a_large_heading() -> None:
     view = native_presentation(
         "text",

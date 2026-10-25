@@ -505,7 +505,7 @@ def build_resource_tools(agent_def: "AgentDef") -> list[Any]:
             name="workspace_resource_inspect",
             presentation="resource",
             domain="resources",
-            title="Inspect",
+            title="Inspect resource",
             representation="row",
             desc=(
                 "Inspect one uploaded resource without reading its bytes. Returns custody, "
@@ -544,7 +544,7 @@ def build_resource_tools(agent_def: "AgentDef") -> list[Any]:
             name="workspace_resource_read",
             presentation="resource",
             domain="resources",
-            title="Read",
+            title="Read resource",
             representation="row",
             desc=(
                 "Read a bounded textual upload or named Docling textual derivative. Use this "
@@ -567,7 +567,7 @@ def build_resource_tools(agent_def: "AgentDef") -> list[Any]:
             name="workspace_resource_search",
             presentation="resource",
             domain="resources",
-            title="Search",
+            title="Search resource",
             representation="row",
             desc=(
                 "Search bounded original text or a named Docling textual derivative. Use "
