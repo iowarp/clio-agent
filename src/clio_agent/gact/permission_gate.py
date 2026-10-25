@@ -466,6 +466,12 @@ def _resolve_permission(
                 "action": action,
                 "kind": row.get("kind") or "",
                 "grantor": grantor,
+                **({"reason": row["reason"]} if row.get("reason") else {}),
+                **(
+                    {"policy_refresh_source": row["policy_refresh_source"]}
+                    if row.get("policy_refresh_source")
+                    else {}
+                ),
             },
         )
     except Exception as exc:  # noqa: BLE001 - observability, never fatal to a resolution
@@ -486,8 +492,17 @@ def _resolve_permission(
             "session_id": owner_session_id,
             "grantor": grantor,
             **({"reason": row["reason"]} if row.get("reason") else {}),
+            **(
+                {"policy_refresh_source": row["policy_refresh_source"]}
+                if row.get("policy_refresh_source")
+                else {}
+            ),
         },
     )
+    if policy is not None:
+        from clio_agent.gact.permission_policy_refresh import settle_pending_tool_grants
+
+        settle_pending_tool_grants(app, row)
     return row
 
 
