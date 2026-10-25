@@ -9,6 +9,7 @@ from typing import TYPE_CHECKING
 from uuid import uuid4
 
 from clio_agent.arc.task_types import MailItem, TaskSnapshot, argument_digest
+from clio_agent.gact import task_history_queries
 from clio_agent.gact.native_work import now
 from clio_agent.gact.task_access import TaskAccess, TaskCaller
 from clio_agent.gact.task_publication import publish_control_outcome
@@ -157,7 +158,9 @@ async def prepare_terminal_restart(
         return cancellation, None
 
     owner._control_holds.add(handle)
-    descendants_index = await owner.history.io.run(owner.history.descendant_handles, handle)
+    descendants_index = await owner.history.io.run(
+        task_history_queries.descendant_handles, owner.history, handle
+    )
     descendants = tuple(sorted(descendants_index - {handle}))
     if not descendants:
         owner._control_holds.discard(handle)
@@ -185,3 +188,5 @@ async def prepare_terminal_restart(
             )
 
     return cancellation, verify_settled
+
+
