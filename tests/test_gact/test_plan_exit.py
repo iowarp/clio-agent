@@ -78,10 +78,13 @@ def test_plan_exit_no_plan_file_hard_errors_naming_path(tmp_path: Path) -> None:
         _call_plan_exit(app, sess.id, summary="done")
     msg = str(exc.value)
     assert "no plan file exists at" in msg
-    # The message names the expected plans-dir path (the model can act on it).
-    from clio_agent.gact.runtime.grant_resolver import plans_dir
+    # Session plans belong to their workspace state, not the global plans folder.
+    from clio_agent import paths
 
-    assert str(plans_dir()) in msg
+    workspace = app.state.workspaces.get(sess.workspace_id)
+    assert workspace is not None
+    expected_plans = paths.workspace_state_dir(workspace.root_path) / "plans"
+    assert str(expected_plans) in msg
     # Mode is unchanged and no pending request was stashed.
     fresh = app.state.sessions.get(sess.id)
     assert fresh.mode == "plan"

@@ -371,7 +371,11 @@ def _question_interaction(app: FastAPI, question: UserQuestion) -> PendingIntera
                 if isinstance(bundle, dict)
                 else {}
             ),
-            **(plan_exit_payload(question) if is_plan_exit_question(question) else {}),
+            **(
+                {"plan_exit": plan_exit_payload(question)}
+                if is_plan_exit_question(question)
+                else {}
+            ),
             "task_handle": question.task_handle,
             "response_mode": question.response_mode,
         },
