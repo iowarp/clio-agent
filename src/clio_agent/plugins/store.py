@@ -586,13 +586,19 @@ class PluginStore:
 
     # ------------------------------------------------------------------ pins
     def save_resolution(self, digest: str, payload: dict[str, Any]) -> Path:
+        """Pin a resolution atomically, with staging owned by this writer."""
         base = self.root / "resolved"
         base.mkdir(parents=True, exist_ok=True)
         path = base / f"{digest}.json"
         if not path.is_file():
-            temporary = path.with_suffix(".tmp")
-            temporary.write_text(json.dumps(payload, sort_keys=True), encoding="utf-8")
-            os.replace(temporary, path)
+            temporary = path.with_suffix(f".{uuid.uuid4().hex}.tmp")
+            try:
+                temporary.write_text(json.dumps(payload, sort_keys=True), encoding="utf-8")
+                with self.lock:
+                    if not path.is_file():
+                        os.replace(temporary, path)
+            finally:
+                temporary.unlink(missing_ok=True)
         return path
 
     def load_resolution(self, digest: str) -> dict[str, Any] | None:

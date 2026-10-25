@@ -3,7 +3,10 @@
 from __future__ import annotations
 
 import json
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
+from threading import Barrier
+from typing import Any
 
 import pytest
 
@@ -57,6 +60,28 @@ def _market(root: Path, *, version: str = "1.0.0") -> Path:
 
 def _service(tmp_path: Path) -> PluginService:
     return PluginService(PluginStore(tmp_path / "store"), native_tools=_native())
+
+
+def test_parallel_resolution_pins(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Parallel child launches can pin the same resolution without sharing staging files."""
+    stores = [PluginStore(tmp_path / "store") for _ in range(3)]
+    ready = Barrier(len(stores))
+    write_text = Path.write_text
+
+    def simultaneous_staging(path: Path, data: str, *args: Any, **kwargs: Any) -> int:
+        count = write_text(path, data, *args, **kwargs)
+        if path.parent == tmp_path / "store" / "resolved" and path.suffix == ".tmp":
+            ready.wait(timeout=5)
+        return count
+
+    monkeypatch.setattr(Path, "write_text", simultaneous_staging)
+    payload = {"plugins": ["core", "web"], "prompt": "researcher"}
+    with ThreadPoolExecutor(max_workers=len(stores)) as pool:
+        futures = [pool.submit(store.save_resolution, "same-digest", payload) for store in stores]
+        paths = [future.result(timeout=10) for future in futures]
+    assert len(set(paths)) == 1
+    assert stores[0].load_resolution("same-digest") == payload
+    assert list(paths[0].parent.iterdir()) == [paths[0]]
 
 
 def test_external_marketplace_needs_the_trust_step(tmp_path: Path) -> None:
