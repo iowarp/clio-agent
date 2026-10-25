@@ -113,6 +113,51 @@ async def test_model_can_submit_nullable_spawn_options(
 
 
 @pytest.mark.asyncio
+async def test_spawn_name_is_persisted_and_part_of_idempotency(
+    arc: ARCMemory, tmp_path: Path
+) -> None:
+    """Names survive acceptance/replay and cannot change under an accepted invocation."""
+    from clio_agent.gact.task_access import TaskCaller
+
+    app, owner, root = await create_environment(arc, tmp_path)
+    caller = TaskCaller(root.owner.session_id, "human")
+    try:
+        accepted = await owner.spawn(
+            caller,
+            "Inspect source layout",
+            "data_expert",
+            "named-invocation",
+            session_metadata={"subagent_name": "Source layout"},
+        )
+        child = owner.sessions.get(accepted["session_id"])
+        task = owner.history.task_snapshot(accepted["handle"])
+        assert child is not None and child.title == "Source layout"
+        assert child.metadata["subagent_name"] == "Source layout"
+        assert task is not None and task.label == "Source layout"
+        assert (
+            await owner.spawn(
+                caller,
+                "Inspect source layout",
+                "data_expert",
+                "named-invocation",
+                session_metadata={"subagent_name": "Source layout"},
+            )
+            == accepted
+        )
+        with pytest.raises(ValueError, match="different work or name"):
+            await owner.spawn(
+                caller,
+                "Inspect source layout",
+                "data_expert",
+                "named-invocation",
+                session_metadata={"subagent_name": "Different name"},
+            )
+    finally:
+        await owner.shutdown()
+        await owner.recovery.drain()
+
+
+@pytest.mark.asyncio
 async def test_model_can_inherit_batch_placement(
     arc: ARCMemory, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -126,7 +171,12 @@ async def test_model_can_inherit_batch_placement(
     ):
         result = await boundary.call(
             tools["spawn_agents_parallel"],
-            {"spawns": [{"agent": "data_expert", "task": "Inspect owned data"}], "placement": None},
+            {
+                "spawns": [
+                    {"agent": "data_expert", "task": "Inspect owned data", "name": "Data scan"}
+                ],
+                "placement": None,
+            },
             captured,
         )
         assert result["outcomes"] == result["spawned"]
@@ -134,6 +184,9 @@ async def test_model_can_inherit_batch_placement(
         assert child["accepted"] is True and child["task_id"] == child["handle"]
         current = await asyncio.to_thread(owner.history.task_snapshot, child["handle"])
         assert current is not None and current.description == "Inspect owned data"
+        assert current.label == "Data scan"
+        saved = owner.sessions.get(child["session_id"])
+        assert saved is not None and saved.metadata["subagent_name"] == "Data scan"
         assert resolved == ["data_expert"]
         assert len(await asyncio.to_thread(owner.history.task_handles, kind="Subagent")) == 1
 
@@ -141,8 +194,14 @@ async def test_model_can_inherit_batch_placement(
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
     "invalid",
-    [{"task": None}, {"agent": 1}, {"input_task_ids": "task_x"}, {"strategy": "best_of_n"}],
-    ids=["task", "agent", "inputs", "strategy"],
+    [
+        {"task": None},
+        {"agent": 1},
+        {"input_task_ids": "task_x"},
+        {"strategy": "best_of_n"},
+        {"name": ["not", "a", "string"]},
+    ],
+    ids=["task", "agent", "inputs", "strategy", "name"],
 )
 async def test_invalid_spawn_arguments_are_rejected_before_submission(
     arc: ARCMemory, tmp_path: Path, invalid: dict[str, Any], monkeypatch: pytest.MonkeyPatch

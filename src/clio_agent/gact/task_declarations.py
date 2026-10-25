@@ -608,6 +608,7 @@ def build_spawn_runtime_tools(
         strategy: dict[str, Any] | None,
         invocation: str,
         model: str = "",
+        name: str = "",
     ) -> dict[str, Any]:
         local_placement(placement)
         app, caller = _runtime()
@@ -616,6 +617,9 @@ def build_spawn_runtime_tools(
         target = str(agent or "").strip()
         if not target:
             raise ValueError("agent must name a subagent or an installed agent")
+        if not isinstance(name, str):
+            raise ValueError("name must be a string")
+        child_name = name.strip()
         pins = await app.state.task_history.io.run(
             select_assignment_evidence, app.state.task_history, caller, input_task_ids
         )
@@ -627,6 +631,7 @@ def build_spawn_runtime_tools(
             inference_concurrency=concurrency,
             strategy=strategy,
             launch_context={"input_task_refs": [pin.model_dump(mode="json") for pin in pins]},
+            session_metadata={"subagent_name": child_name} if child_name else None,
             model=str(model or "").strip(),
         )
         return {
@@ -642,6 +647,7 @@ def build_spawn_runtime_tools(
         input_task_ids: list[str] | None = None,
         strategy: dict[str, Any] | None = None,
         model: str = "",
+        name: str = "",
     ) -> dict[str, Any]:
         return await prepare_and_spawn(
             agent,
@@ -651,6 +657,7 @@ def build_spawn_runtime_tools(
             strategy,
             TASK_CALL.get().invocation_id or uuid4().hex,
             model,
+            name,
         )
 
     async def spawn_agents_parallel(
@@ -674,6 +681,7 @@ def build_spawn_runtime_tools(
                         assignment.get("strategy"),
                         invocation + ":" + str(index),
                         assignment.get("model") or "",
+                        assignment.get("name") or "",
                     )
                 )
             except Exception as error:
@@ -728,6 +736,11 @@ def build_spawn_runtime_tools(
             {
                 "agent": {"type": "string", "description": targets},
                 "task": {"type": "string"},
+                "name": {
+                    "type": "string",
+                    "default": "",
+                    "description": "Optional short caller-authored name for this task, shown in the task list.",
+                },
                 "placement": _STRING,
                 "input_task_ids": {
                     "anyOf": [{"type": "array", "items": {"type": "string"}}, {"type": "null"}],
@@ -753,6 +766,10 @@ def build_spawn_runtime_tools(
                         "properties": {
                             "agent": {"type": "string", "description": targets},
                             "task": {"type": "string"},
+                            "name": {
+                                "type": "string",
+                                "description": "Optional short caller-authored name for this task, shown in the task list.",
+                            },
                             "input_task_ids": {
                                 "anyOf": [
                                     {"type": "array", "items": {"type": "string"}},

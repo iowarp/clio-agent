@@ -220,7 +220,7 @@ class TaskAccess:
             result["supported_actions"] = [
                 action
                 for action in task.supported_actions
-                if required.get(action, "read") in rights
+                if required.get(action, "read") in rights and self._action_is_current(task, action)
             ]
             return result
         if "observe" not in rights:
@@ -244,3 +244,15 @@ class TaskAccess:
             "connection_freshness": task.connection_freshness,
             "supported_actions": ["observe", "wait"],
         }
+
+    def _action_is_current(self, task: TaskSnapshot, action: str) -> bool:
+        """Hide lifecycle actions that cannot apply to this assignment snapshot."""
+        if task.kind not in {"Session", "Subagent"} or task.tool != "conversation":
+            return True
+        if action in {"resume", "restart"}:
+            latest = self.history.latest_assignment(task.owner.session_id)
+            if latest is None or latest.handle != task.handle:
+                return False
+            if action == "resume":
+                return task.activity in {"paused", "stopped", "stopping"}
+        return True

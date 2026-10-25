@@ -101,6 +101,65 @@ def test_parent_work_keeps_flow_but_excludes_its_agents_and_tools(
     assert {task["handle"] for task in legacy["processes"]} == full
 
 
+def test_lifecycle_actions_follow_latest_assignment_and_activity(
+    world: tuple[Any, TestClient, str],
+) -> None:
+    """Only a current paused assignment can resume; restart targets the current row."""
+    app, _client, sid = world
+    history = app.state.task_history
+    first = history.latest_assignment(sid)
+    assert first is not None
+    first = first.model_copy(
+        update={
+            "supported_actions": (
+                "observe",
+                "wait",
+                "message",
+                "pause",
+                "resume",
+                "cancel",
+                "restart",
+            )
+        }
+    )
+    history.record_snapshot(first, observation_id=uuid4().hex)
+    caller = TaskCaller(sid, app.state.human_principal)
+    access = TaskAccess(history, caller)
+    active_actions = access.view(first)["supported_actions"]
+    assert "restart" in active_actions
+    assert "resume" not in active_actions
+
+    paused = first.model_copy(
+        update={"activity": "paused", "supported_actions": (*first.supported_actions, "resume")}
+    )
+    history.record_snapshot(paused, observation_id=uuid4().hex)
+    assert "resume" in access.view(paused)["supported_actions"]
+
+    successor = record_assignment_fixture(app, sid)
+    successor = successor.model_copy(update={"supported_actions": first.supported_actions})
+    history.record_snapshot(successor, observation_id=uuid4().hex)
+    successor_actions = access.view(successor)["supported_actions"]
+    old_actions = access.view(paused)["supported_actions"]
+    assert "restart" in successor_actions and "resume" not in successor_actions
+    assert "restart" not in old_actions and "resume" not in old_actions
+
+    external = successor.model_copy(
+        update={
+            "handle": "task_external_capabilities",
+            "kind": "MCP",
+            "tool": "mcp_server",
+            "invocation_id": "external-capabilities",
+            "owner": successor.owner.model_copy(
+                update={"assignment_id": "task_external_capabilities"}
+            ),
+            "supported_actions": ("observe", "resume", "restart"),
+        }
+    )
+    history.record_snapshot(external, observation_id=uuid4().hex)
+    external_actions = access.view(external)["supported_actions"]
+    assert "resume" in external_actions and "restart" in external_actions
+
+
 def test_direct_pages_span_assignments_and_do_not_reuse_a_tree_cursor(
     world: tuple[Any, TestClient, str],
 ) -> None:

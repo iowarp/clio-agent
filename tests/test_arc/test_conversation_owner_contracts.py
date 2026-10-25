@@ -160,6 +160,7 @@ async def create_environment(
         ) -> Any:
             return app.state.sessions.create(
                 workspace_id="workspace",
+                title=str(initial_metadata.get("subagent_name") or ""),
                 parent_session_id=parent,
                 agent={"id": agent},
                 # As spawn_context.prepare_child_session records it: the spawn's target

@@ -157,7 +157,7 @@ def prepare_child_session(
         inherited = {**launch["metadata"], **(target_scope or {}), **initial_metadata, **pin}
         return store.create(
             workspace_id=parent.workspace_id,
-            title=title,
+            title=str(inherited.get("subagent_name") or title),
             parent_session_id=parent_id,
             model={**choice.ran, "variant": ""} if choice.ran else dict(parent.model),
             agent={"id": child.agent["id"]},
