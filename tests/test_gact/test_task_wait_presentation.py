@@ -40,10 +40,38 @@ def test_mail_interrupt_receipt_explains_pending_work_without_claiming_completio
         },
     )
     assert "New input received" in presentation["summary"]
+    assert presentation["status"] == "interrupted"
+    assert "Interrupted by mail" in presentation["diagnostic"]
     assert "1 pending" in presentation["summary"]
     assert any(
         "New input is available" in block.get("text", "") for block in presentation["blocks"]
     )
+
+
+def test_stop_interrupt_is_marked_without_making_pending_tasks_unsuccessful() -> None:
+    presentation = wait_presentation(
+        {"tasks": ["task_child"], "return_when": "all"},
+        {"outcomes": [], "pending": ["task_child"], "interrupted": "stopped"},
+    )
+    assert presentation["status"] == "interrupted"
+    assert "stop request" in presentation["diagnostic"]
+    assert "1 pending" in presentation["summary"]
+    assert not any(block.get("severity") == "error" for block in presentation["blocks"])
+
+
+def test_wait_interruption_keeps_independent_child_failure_detail() -> None:
+    presentation = wait_presentation(
+        {"tasks": ["failed", "pending"]},
+        {
+            "outcomes": [{"handle": "failed", "status": "failed", "result": "Bad input"}],
+            "pending": ["pending"],
+            "interrupted": "mail_received",
+        },
+    )
+    assert presentation["status"] == "interrupted"
+    assert "1 unsuccessful" in presentation["summary"]
+    failed = next(block for block in presentation["blocks"] if block.get("severity") == "error")
+    assert failed["text"] == "Bad input"
 
 
 @pytest.mark.parametrize("timeout", [0, 2.5, None])

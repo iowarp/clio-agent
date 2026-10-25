@@ -34,6 +34,7 @@ from clio_agent.gact.runtime.globals import (
     _new_message_id,
     _resolve_tool_session,
 )
+from clio_agent.gact.task_wait_presentation import is_wait_task_tool, mark_wait_interrupted
 from clio_agent.gact.thought_dedup import TOOL_THOUGHT_STAGE, resolve_started_tool_call_thought
 from clio_agent.gact.tool_call_merge import (
     _merge_tool_call_rows as _merge_tool_call_rows,
@@ -654,9 +655,11 @@ def _make_tool_observer(app: "FastAPI"):
                 completion_error = structured_tool_result_error(result)
             cancellation_metadata: dict[str, Any] = {}
             if completed_after_cancel:
-                completion_error = (
-                    completion_error or "tool call completed after session cancellation"
-                )
+                # A wait returns a truthful snapshot when it unwinds after Stop.
+                # Its interruption is not an execution failure; preserve this
+                # exception only for that read-only task-control operation.
+                if completion_error is None and not is_wait_task_tool(name):
+                    completion_error = "tool call completed after session cancellation"
                 cancellation_metadata = {"execution_cancellation": "best_effort"}
             ok = completion_error is None
             # A native tool may DECLARE its typed structured payload (P5; the model's
@@ -672,9 +675,26 @@ def _make_tool_observer(app: "FastAPI"):
                     else None
                 )
             )
-            result_summary = f"Tool {name} {'completed' if ok else 'failed'}."
             result, presentation = completed_presentation(
                 name, args, result, structured_content, terminal_output, error=completion_error
+            )
+            if completed_after_cancel and completion_error is None and is_wait_task_tool(name):
+                interruption = (
+                    result.get("interrupted", "session_cancelled")
+                    if isinstance(result, Mapping)
+                    else "session_cancelled"
+                )
+                mark_wait_interrupted(
+                    cast(dict[str, Any], presentation),
+                    interruption if isinstance(interruption, str) else "",
+                )
+            wait_interrupted = (
+                ok and is_wait_task_tool(name) and presentation.get("status") == "interrupted"
+            )
+            result_summary = (
+                f"Tool {name} interrupted."
+                if wait_interrupted
+                else f"Tool {name} {'completed' if ok else 'failed'}."
             )
             # Seam #966 S1+S5 (#971): TransformRecord before the SSE payload (reload==live).
             from clio_agent.gact.artifacts.transforms import observe_tool_transform  # noqa: PLC0415
@@ -743,7 +763,9 @@ def _make_tool_observer(app: "FastAPI"):
                         "tool.call.completed",
                         turn_id=_ctx.active_turn_id(),
                         trace_id=_ctx.active_trace_id(),
-                        status="completed" if ok else "failed",
+                        status=(
+                            "interrupted" if wait_interrupted else "completed" if ok else "failed"
+                        ),
                         summary=result_summary,
                         actor={"tool": name},
                         subject={"call_id": call_id},
