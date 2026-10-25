@@ -86,6 +86,9 @@ def skip_reason(app: Any, session: Any, now: datetime) -> str:
         return policy.reason or "memory_not_writable"
     if session.status not in ("idle", "error", "cancelled"):
         return "session_busy"
+    runner = getattr(app.state, "turn_runner", None)
+    if runner is not None and runner.busy(session.id):
+        return "session_busy"
     last = _parse(str(session.last_interaction_at or session.updated_at or ""))
     idle = timedelta(minutes=int(setting("memory.idle_minutes", 30)))
     if last is None or now - last < idle:
@@ -113,13 +116,14 @@ def _transcript_reason(app: Any, session: Any) -> str:
     messages = app.state.messages.get(session.id, [])
     failed = metadata.get(LAST_PASS) or {}
     if (
-        failed.get("status", "completed") != "completed"
+        failed.get("status", "completed") not in {"completed", "no_candidates"}
         and messages
         and failed.get("read_to") == messages[-1].id
     ):
         return "last_pass_failed"  # retried once the conversation has new messages
     fresh = _messages_after(messages, metadata.get(WATERMARK, ""))
-    if sum(1 for message in fresh if message.role == "user") < MIN_USER_MESSAGES:
+    minimum = 1 if int(setting("memory.idle_minutes", 30)) == 0 else MIN_USER_MESSAGES
+    if sum(1 for message in fresh if message.role == "user") < minimum:
         return "too_few_new_messages"
     return ""
 
@@ -211,6 +215,11 @@ def start_curator(
     all derived from it, so a repeated call (a restart between ticks) re-attaches.
     """
     from clio_agent.arc.task_types import MailItem  # noqa: PLC0415
+    from clio_agent.gact.memory.creation_runs import (  # noqa: PLC0415
+        creation_run_id,
+        update_run,
+    )
+    from clio_agent.gact.memory.models import memory_model_identity  # noqa: PLC0415
     from clio_agent.gact.memory.proposals import ProposalStore  # noqa: PLC0415
     from clio_agent.gact.memory.runtime import memory_service, memory_usage  # noqa: PLC0415
     from clio_agent.gact.memory.usage import document_subject  # noqa: PLC0415
@@ -223,8 +232,12 @@ def start_curator(
     rejected = [f"{p.target}: {'; '.join(p.facts)}" for p in kept if p.status == "rejected"]
     # Already waiting for review: proposing them again only doubles the inbox.
     pending = [f"{p.target}: {'; '.join(p.facts)}" for p in kept if p.status == "pending"]
-    expiry = timedelta(days=int(setting("memory.expiry_days", 60)))
-    cutoff = (datetime.now(UTC) - expiry).strftime("%Y-%m-%dT%H:%M:%SZ")
+    expiry_days = int(setting("memory.expiry_days", 60))
+    cutoff = (
+        (datetime.now(UTC) - timedelta(days=expiry_days)).strftime("%Y-%m-%dT%H:%M:%SZ")
+        if expiry_days > 0
+        else None
+    )
     documents, retire = [], []
     for stored in service.documents(scopes):
         counted = usage.get(document_subject(str(stored.name)))
@@ -237,7 +250,7 @@ def start_curator(
             }
         )
         last = counted.last_read or stored.document.updated
-        if stored.name.category not in ("profile", "preferences") and last < cutoff:
+        if cutoff and stored.name.category not in ("profile", "preferences") and last < cutoff:
             retire.append(str(stored.name))
     proposals = ProposalStore(service)
     for name in retire:  # the expiry rule: a document nobody read for expiry_days
@@ -263,6 +276,8 @@ def start_curator(
         documents=documents,
     )
     human = str(app.state.human_principal)
+    run_id = creation_run_id(origin, run_key)
+    curator_model = memory_model_identity("memory_consolidate")
     metadata = {
         **pin,
         "session_type": "agent_task",
@@ -271,6 +286,8 @@ def start_curator(
         SCOPES: list(scopes),
         ORIGIN: origin,
         "model_role": "memory_consolidate",
+        "memory_creation_run_id": run_id,
+        "memory_creation_model": curator_model,
         "owner_human_id": human,
     }
     creation = f"memory-curate:{run_key}"
@@ -312,43 +329,145 @@ def start_curator(
                     handle=handle,
                 )
             )
-    return {"session": session.id, "handle": handle}  # recording the mail signals its runner
+    update_run(
+        service.store,
+        run_id,
+        {
+            "state": "running",
+            "reason": "",
+            "curator_session": session.id,
+            "workspace_id": workspace_id,
+            "handle": handle,
+            "models": {"curator": curator_model},
+        },
+    )
+    return {"session": session.id, "handle": handle, "run_id": run_id}  # mail signals runner
 
 
 def _start_pass(app: Any, session: Any) -> None:
+    from clio_agent.gact.memory.creation_runs import (  # noqa: PLC0415
+        begin_run,
+        creation_run_id,
+        record_extract,
+        update_run,
+    )
     from clio_agent.gact.memory.extract import extract_candidates, transcript_items  # noqa: PLC0415
     from clio_agent.gact.memory.runtime import memory_service  # noqa: PLC0415
 
     metadata = session.metadata or {}
-    messages = app.state.messages.get(session.id, [])
+    messages = list(app.state.messages.get(session.id, []))
     items = transcript_items(messages, after=str(metadata.get(WATERMARK, "")))
     last = messages[-1].id if messages else ""
     policy = session_policy(app, session)
     service = memory_service(app)
-    candidates, report = extract_candidates(
-        items,
-        session_id=session.id,
-        forgotten=_forgotten_facts(service, policy.scopes),
-        include_sensitive=bool(setting("memory.sensitive", False)),
+    origin = f"session:{session.id}"
+    run_key = f"{session.id}:{last}"
+    run_id = creation_run_id(origin, run_key)
+    begin_run(
+        service.store,
+        run_id=run_id,
+        origin=origin,
+        source_session=session.id,
+        workspace_id=session.workspace_id,
     )
+    try:
+        candidates, report = extract_candidates(
+            items,
+            session_id=session.id,
+            forgotten=_forgotten_facts(service, policy.scopes),
+            include_sensitive=bool(setting("memory.sensitive", False)),
+        )
+    except Exception as error:
+        update_run(
+            service.store,
+            run_id,
+            {
+                "state": "failed",
+                "reason": _failure_reason(error),
+                "completed_at": datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ"),
+            },
+        )
+        raise
+    record_extract(service.store, run_id, report)
+    current = app.state.sessions.get(session.id)
+    runner = getattr(app.state, "turn_runner", None)
+    latest = list(app.state.messages.get(session.id, []))
+    if (
+        current is None
+        or (runner is not None and runner.busy(session.id))
+        or current.status not in ("idle", "error", "cancelled")
+        or len(latest) != len(messages)
+        or (latest and latest[-1].id != last)
+    ):
+        update_run(
+            service.store,
+            run_id,
+            {
+                "state": "skipped",
+                "reason": "conversation_changed_during_extract",
+                "completed_at": datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ"),
+                "_curator_usage": {
+                    "input_tokens": 0,
+                    "output_tokens": 0,
+                    "cost_usd": 0.0,
+                    "cost_known": True,
+                },
+            },
+        )
+        return
     logger.info("memory pass session=%s extract=%s", session.id, report)
     if not candidates:  # nothing worth keeping: the pass is done, and says so
         empty = {"read_to": last, "extract": report}
         patch = collect_patch(empty, "no_candidates", datetime.now(UTC))
         app.state.sessions.update(session.id, metadata_patch={**patch, WATERMARK: last})
+        update_run(
+            service.store,
+            run_id,
+            {
+                "state": "completed",
+                "reason": "no_candidates",
+                "completed_at": datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ"),
+                "_curator_usage": {
+                    "input_tokens": 0,
+                    "output_tokens": 0,
+                    "cost_usd": 0.0,
+                    "cost_known": True,
+                },
+            },
+        )
         return
-    run = start_curator(
-        app,
-        origin=f"session:{session.id}",
-        source_session=session,
-        workspace_id=session.workspace_id,
-        scopes=policy.scopes,
-        candidates=[candidate.to_record() for candidate in candidates],
-        run_key=f"{session.id}:{last}",
-    )
+    try:
+        run = start_curator(
+            app,
+            origin=origin,
+            source_session=session,
+            workspace_id=session.workspace_id,
+            scopes=policy.scopes,
+            candidates=[candidate.to_record() for candidate in candidates],
+            run_key=run_key,
+        )
+    except Exception as error:
+        update_run(
+            service.store,
+            run_id,
+            {
+                "state": "failed",
+                "reason": _failure_reason(error),
+                "completed_at": datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ"),
+            },
+        )
+        raise
     app.state.sessions.update(
         session.id,
-        metadata_patch={IN_FLIGHT: {**run, "read_to": last, "extract": report}},
+        metadata_patch={
+            IN_FLIGHT: {
+                **run,
+                "run_id": run_id,
+                "origin": origin,
+                "read_to": last,
+                "extract": report,
+            }
+        },
     )
 
 
@@ -374,6 +493,12 @@ def collect_patch(run: dict[str, Any], status: str, now: datetime) -> dict[str, 
 
 
 def _collect(app: Any, session: Any) -> None:
+    from clio_agent.gact.memory.creation_runs import (  # noqa: PLC0415
+        proposal_summary,
+        update_run,
+    )
+    from clio_agent.gact.memory.runtime import memory_service  # noqa: PLC0415
+
     run = (session.metadata or {}).get(IN_FLIGHT) or {}
     task = app.state.task_history.task_snapshot(str(run.get("handle", "")))
     if task is not None and task.terminal_at is None:
@@ -388,6 +513,26 @@ def _collect(app: Any, session: Any) -> None:
             status,
         )
     app.state.sessions.update(session.id, metadata_patch=patch)
+    run_id = str(run.get("run_id") or "")
+    if run_id:
+        service = memory_service(app)
+        counts, targets = proposal_summary(
+            service,
+            str(run.get("origin") or ""),
+            str(run.get("handle") or ""),
+        )
+        update_run(
+            service.store,
+            run_id,
+            {
+                "state": status,
+                "reason": "" if status == "completed" else f"curator_{status}",
+                "completed_at": datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ"),
+                "proposal_counts": counts,
+                "targets": targets,
+                "_curator_usage": _curator_usage(app.state.sessions.get(run.get("session", ""))),
+            },
+        )
 
 
 def memory_tick(app: Any, now: datetime | None = None) -> None:
@@ -444,6 +589,12 @@ def memory_tick(app: Any, now: datetime | None = None) -> None:
 
 def import_pasted_text(app: Any, text: str, *, scope: str, import_id: str) -> dict[str, Any]:
     """Assistant import: extract from pasted text (``source: imported``), then curate."""
+    from clio_agent.gact.memory.creation_runs import (  # noqa: PLC0415
+        begin_run,
+        creation_run_id,
+        record_extract,
+        update_run,
+    )
     from clio_agent.gact.memory.extract import extract_candidates, pasted_items  # noqa: PLC0415
     from clio_agent.gact.memory.runtime import memory_service  # noqa: PLC0415
     from clio_agent.gact.memory.scope import check_scope  # noqa: PLC0415
@@ -451,26 +602,104 @@ def import_pasted_text(app: Any, text: str, *, scope: str, import_id: str) -> di
 
     target = check_scope(scope)
     service = memory_service(app)
-    candidates, report = extract_candidates(
-        pasted_items(text, import_id=import_id),
-        session_id=import_id,
-        forgotten=_forgotten_facts(service, (target,)),
-        include_sensitive=bool(setting("memory.sensitive", False)),
-        imported=True,
-    )
-    if not candidates:
-        return {"import_id": import_id, "candidates": 0, "extract": report}
     workspace = target.split("/", 1)[1] if target.startswith("project/") else GLOBAL_WORKSPACE_ID
-    run = start_curator(
-        app,
-        origin=f"import:{import_id}",
-        source_session=None,
-        workspace_id=workspace,
-        scopes=(target,),
-        candidates=[candidate.to_record() for candidate in candidates],
-        run_key=import_id,
-    )
+    origin = f"import:{import_id}"
+    run_id = creation_run_id(origin, import_id)
+    begin_run(service.store, run_id=run_id, origin=origin, workspace_id=workspace)
+    try:
+        candidates, report = extract_candidates(
+            pasted_items(text, import_id=import_id),
+            session_id=import_id,
+            forgotten=_forgotten_facts(service, (target,)),
+            include_sensitive=bool(setting("memory.sensitive", False)),
+            imported=True,
+        )
+    except Exception as error:
+        update_run(
+            service.store,
+            run_id,
+            {
+                "state": "failed",
+                "reason": _failure_reason(error),
+                "completed_at": datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ"),
+            },
+        )
+        raise
+    record_extract(service.store, run_id, report)
+    if not candidates:
+        update_run(
+            service.store,
+            run_id,
+            {
+                "state": "completed",
+                "reason": "no_candidates",
+                "completed_at": datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ"),
+                "_curator_usage": {
+                    "input_tokens": 0,
+                    "output_tokens": 0,
+                    "cost_usd": 0.0,
+                    "cost_known": True,
+                },
+            },
+        )
+        return {"import_id": import_id, "candidates": 0, "extract": report, "run_id": run_id}
+    try:
+        run = start_curator(
+            app,
+            origin=origin,
+            source_session=None,
+            workspace_id=workspace,
+            scopes=(target,),
+            candidates=[candidate.to_record() for candidate in candidates],
+            run_key=import_id,
+        )
+    except Exception as error:
+        update_run(
+            service.store,
+            run_id,
+            {
+                "state": "failed",
+                "reason": _failure_reason(error),
+                "completed_at": datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ"),
+            },
+        )
+        raise
     return {"import_id": import_id, "candidates": len(candidates), "extract": report, **run}
+
+
+def _failure_reason(error: Exception) -> str:
+    """Expose a typed failure code or exception class, never transcript/error text."""
+    return str(getattr(error, "error_type", "") or type(error).__name__)
+
+
+def _curator_usage(session: Any) -> dict[str, Any]:
+    """The curator's existing session rollup; preserve unknown cost as unknown."""
+    if session is None:
+        return {
+            "input_tokens": None,
+            "output_tokens": None,
+            "input_known": False,
+            "output_known": False,
+            "cost_usd": None,
+            "cost_known": False,
+        }
+    known = bool(getattr(session, "cost_known", False))
+    by_model = getattr(session, "usage_by_model", None) or {}
+    tokens_known = bool(by_model) or bool(
+        getattr(session, "tokens_input", 0) or getattr(session, "tokens_output", 0)
+    )
+    return {
+        "input_tokens": max(0, int(getattr(session, "tokens_input", 0) or 0))
+        if tokens_known
+        else None,
+        "output_tokens": max(0, int(getattr(session, "tokens_output", 0) or 0))
+        if tokens_known
+        else None,
+        "input_known": tokens_known,
+        "output_known": tokens_known,
+        "cost_usd": float(getattr(session, "cost_usd", 0) or 0) if known else None,
+        "cost_known": known,
+    }
 
 
 __all__ = [

@@ -31,6 +31,17 @@ def memory_model_identity(role: MemoryRole) -> dict[str, str]:
 def memory_model(role: MemoryRole) -> tuple[Any, Any, dict[str, str]]:
     """``(lm, adapter, identity)`` for one background-pass call."""
     identity = memory_model_identity(role)
+    if role == "memory_consolidate":
+        from clio_agent.gact import context  # noqa: PLC0415
+
+        app, sid = context.active_app(), context.active_session_id()
+        session = app.state.sessions.get(sid) if app is not None and sid else None
+        run_id = str((getattr(session, "metadata", None) or {}).get("memory_creation_run_id") or "")
+        if run_id:
+            from clio_agent.gact.memory.creation_runs import update_run  # noqa: PLC0415
+            from clio_agent.gact.memory.runtime import memory_service  # noqa: PLC0415
+
+            update_run(memory_service(app).store, run_id, {"models": {"curator": identity}})
     lm, adapter = model_route(identity["provider_id"], identity["model_id"])
     return lm, adapter, identity
 

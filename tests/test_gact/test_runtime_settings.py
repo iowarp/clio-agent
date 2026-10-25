@@ -175,3 +175,32 @@ def test_history_mode_requires_transcript_files(
             UpdateRuntimeSettings(revision=initial.revision, changes={row.key: False})
         )
     assert read_config().get("transcript", {}).get("file", True) is True
+
+
+def test_memory_settings_expose_opt_in_modes_and_zero_duration_choices(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    conf.reload()
+    rows = {row.key: row for row in get_runtime_settings().settings}
+    assert rows["memory.auto_accept"].value == "user_stated"
+    assert {choice["value"] for choice in rows["memory.auto_accept"].choices} == {
+        "user_stated",
+        "all",
+        "none",
+    }
+    assert {choice["label"] for choice in rows["memory.auto_accept"].choices} == {
+        "Facts I state directly",
+        "All new and updated memories",
+        "Review every change",
+    }
+    idle = rows["memory.idle_minutes"]
+    expiry = rows["memory.expiry_days"]
+    assert idle.title == "Create memories"
+    assert expiry.title == "Review unused memories after"
+    assert "model usage" in rows["memory.background"].description
+    assert "saved memories" in rows["memory.session_search"].description
+    assert idle.minimum == expiry.minimum == 0
+    assert idle.unlimited_value == expiry.unlimited_value == 0
+    assert idle.presets[0] == {"value": 0, "label": "After each completed turn"}
+    assert expiry.presets[0] == {"value": 0, "label": "Never"}

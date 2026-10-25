@@ -12,11 +12,18 @@ from __future__ import annotations
 from clio_agent import conf
 from clio_agent.arc.store_protocol import ARCStore
 
-MEMORY_KINDS: tuple[str, ...] = ("memories", "memory_versions", "memory_proposals", "memory_usage")
+MEMORY_KINDS: tuple[str, ...] = (
+    "memories",
+    "memory_versions",
+    "memory_proposals",
+    "memory_usage",
+    "memory_creation_runs",
+)
 DOCUMENTS = "memories"
 VERSIONS = "memory_versions"
 PROPOSALS = "memory_proposals"
 USAGE = "memory_usage"
+CREATION_RUNS = "memory_creation_runs"
 
 
 def memory_namespace() -> str:
@@ -35,6 +42,7 @@ def open_memory_store() -> ARCStore:
 
 __all__ = [
     "DOCUMENTS",
+    "CREATION_RUNS",
     "MEMORY_KINDS",
     "PROPOSALS",
     "USAGE",

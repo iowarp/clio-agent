@@ -6,9 +6,9 @@ document when it is new), supersede a fact, merge documents, retire a document -
 candidates it rests on. The server stamps each new fact's provenance from those
 candidates (the model never writes annotations), previews the result against the
 current document, and stores a ``memory_proposals`` record. A proposal changes memory
-only when it is accepted: by the user in the inbox, or by the auto-accept rule
-(``memory.auto_accept: user_stated``) when every source it rests on is ``user``.
-Anything resting on a ``tool`` or ``imported`` source always waits for review.
+only when it is accepted: by the user in the inbox, or by the selected auto-accept
+rule. ``user_stated`` applies only when every source is ``user``; ``all`` also applies
+changes based on tool and imported evidence. The source is always retained on the fact.
 
 Accepting re-applies the change to the document as it is then (so a document edited in
 between keeps its edits) and writes it through the memory service with the proposal
@@ -84,7 +84,7 @@ class Proposal:
     @property
     def needs_review(self) -> bool:
         """Whether any source keeps it out of auto-accept."""
-        return bool(REVIEW_SOURCES & set(self.sources))
+        return self.status == "pending" and bool(REVIEW_SOURCES & set(self.sources))
 
 
 def _now() -> str:
@@ -287,7 +287,7 @@ class ProposalStore:
         proposal.base_text = current.text if current else ""
         proposal.proposed_text = md.serialize(document) if document is not None else ""
         self._put(proposal)
-        if auto_accept == "user_stated" and proposal.sources == ["user"]:
+        if auto_accept == "all" or (auto_accept == "user_stated" and proposal.sources == ["user"]):
             return self.accept(proposal.id, decided_by="auto_accept")
         return proposal
 

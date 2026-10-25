@@ -41,6 +41,7 @@ def test_the_memory_store_has_its_own_namespace_and_kinds(service: MemoryService
         "memory_versions",
         "memory_proposals",
         "memory_usage",
+        "memory_creation_runs",
     )
 
 

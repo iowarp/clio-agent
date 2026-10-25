@@ -123,7 +123,11 @@ def test_an_idle_session_starts_one_curator_run_and_its_proposals_apply_by_sourc
         candidates=curator.metadata["memory_candidates"],
         run_key=f"{session.id}:{run['read_to']}",
     )
-    assert reattached == {"session": run["session"], "handle": run["handle"]}
+    assert reattached == {
+        "session": run["session"],
+        "handle": run["handle"],
+        "run_id": run["run_id"],
+    }
 
     # The curator's input stages as plain model input (a root assignment has no parent
     # to render a delegation from; that mail kind failed every curator turn live).
@@ -195,6 +199,211 @@ def test_background_off_runs_no_pass(client: TestClient, monkeypatch: pytest.Mon
     assert not app.state.sessions.get(session.id).metadata.get(background.IN_FLIGHT)
 
 
+def test_no_candidate_last_pass_is_not_reported_as_failed(client: TestClient) -> None:
+    app = client.app
+    session = _idle_conversation(app)
+    messages = app.state.messages.get(session.id, [])
+    app.state.sessions.update(
+        session.id,
+        metadata_patch={
+            background.WATERMARK: messages[-1].id,
+            background.LAST_PASS: {
+                "status": "no_candidates",
+                "read_to": messages[-1].id,
+                "at": "2026-10-24T04:58:00Z",
+                "extract": {"returned": 0, "kept": 0},
+            },
+        },
+    )
+    refreshed = app.state.sessions.get(session.id)
+    assert background._transcript_reason(app, refreshed) == "too_few_new_messages"
+    response = client.get("/v1/memory/creation-runs")
+    row = next(item for item in response.json()["runs"] if item["source_session"] == session.id)
+    assert row["state"] == "completed"
+    assert row["reason"] == "no_candidates"
+    assert row["completed_at"] == "2026-10-24T04:58:00Z"
+    assert row["extract"] == {
+        "returned": 0,
+        "kept": 0,
+        "dropped": {"sensitive": 0, "uncited": 0},
+    }
+    assert row["usage"]["input_tokens"] is None
+    assert row["usage"]["cost_known"] is False
+
+
+def test_zero_idle_delay_makes_one_completed_user_turn_eligible(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    app = client.app
+    session = app.state.sessions.create(workspace_id="ws_global", title="Immediate memory")
+    _say(app, session.id, 1, "user", "I prefer the concise summary first.")
+    old = (datetime.now(UTC) - timedelta(hours=2)).strftime("%Y-%m-%dT%H:%M:%SZ")
+    app.state.sessions._sessions[session.id].last_interaction_at = old  # noqa: SLF001
+    original_setting = background.setting
+    monkeypatch.setattr(
+        background,
+        "setting",
+        lambda key, default: 0 if key == "memory.idle_minutes" else original_setting(key, default),
+    )
+    assert background.eligible(app, app.state.sessions.get(session.id), datetime.now(UTC))
+
+
+def test_run_history_keeps_legacy_last_pass_when_a_new_pass_is_in_flight(
+    client: TestClient,
+) -> None:
+    from clio_agent.gact.memory.creation_runs import creation_run_id
+
+    app = client.app
+    session = _idle_conversation(app)
+    messages = app.state.messages.get(session.id, [])
+    app.state.sessions.update(
+        session.id,
+        metadata_patch={
+            background.LAST_PASS: {
+                "status": "no_candidates",
+                "read_to": "old_message",
+                "at": "2026-10-24T04:58:00Z",
+                "extract": {"returned": 0, "kept": 0},
+            },
+            background.IN_FLIGHT: {
+                "origin": f"session:{session.id}",
+                "read_to": messages[-1].id,
+                "session": "sess_curator",
+                "handle": "task_curator",
+                "run_id": "mcr_inflight",
+                "extract": {"returned": 1, "kept": 1},
+            },
+        },
+    )
+    response = client.get("/v1/memory/creation-runs")
+    assert response.status_code == 200, response.text
+    rows = [row for row in response.json()["runs"] if row["source_session"] == session.id]
+    assert {row["id"] for row in rows} == {
+        "mcr_inflight",
+        creation_run_id(f"session:{session.id}", f"{session.id}:old_message"),
+    }
+    assert {row["state"] for row in rows} == {"completed", "unknown"}
+    assert next(row for row in rows if row["state"] == "unknown")["reason"] == (
+        "curator_task_unavailable"
+    )
+
+
+def test_run_ledger_skips_persisting_an_unchanged_refresh(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from clio_agent.gact.memory import creation_runs
+
+    store = memory_service(client.app).store
+    run_id = "mcr_noop_test"
+    creation_runs.begin_run(store, run_id=run_id, origin="test")
+    writes: list[dict[str, Any]] = []
+    monkeypatch.setattr(creation_runs, "_write", lambda _store, row: writes.append(row))
+    unchanged = creation_runs.update_run(store, run_id, {"state": "extracting"})
+    assert unchanged is not None and unchanged["state"] == "extracting"
+    assert writes == []
+    changed = creation_runs.update_run(store, run_id, {"state": "failed"})
+    assert changed is not None and changed["state"] == "failed"
+    assert len(writes) == 1
+
+
+def test_creation_run_pages_are_stable_newest_first(client: TestClient) -> None:
+    from clio_agent.gact.memory.creation_runs import begin_run
+
+    store = memory_service(client.app).store
+    for suffix, started in (
+        ("old", "2026-10-20T10:00:00Z"),
+        ("middle", "2026-10-21T10:00:00Z"),
+        ("new", "2026-10-22T10:00:00Z"),
+    ):
+        begin_run(store, run_id=f"mcr_page_{suffix}", origin=f"page:{suffix}", started_at=started)
+    first = client.get("/v1/memory/creation-runs", params={"limit": 2}).json()
+    assert [row["id"] for row in first["runs"]] == ["mcr_page_new", "mcr_page_middle"]
+    assert first["next_cursor"]
+    second = client.get(
+        "/v1/memory/creation-runs",
+        params={"limit": 2, "cursor": first["next_cursor"]},
+    ).json()
+    assert [row["id"] for row in second["runs"]] == ["mcr_page_old"]
+    assert second["next_cursor"] is None
+
+
+@pytest.mark.parametrize("limit", [1, 2])
+def test_creation_run_pagination_filters_legacy_rows_after_cursor(
+    client: TestClient, limit: int
+) -> None:
+    from clio_agent.gact.memory.creation_runs import begin_run, load_run_rows
+
+    store = memory_service(client.app).store
+    begin_run(
+        store,
+        run_id="mcr_mixed_persisted",
+        origin="page:persisted",
+        started_at="2026-10-22T10:00:00Z",
+    )
+    legacy = [
+        {"id": "mcr_legacy_a", "started_at": ""},
+        {"id": "mcr_legacy_b", "started_at": ""},
+    ]
+    observed: list[str] = []
+    cursor = None
+    while True:
+        rows, cursor = load_run_rows(store, limit=limit, cursor=cursor, extra_rows=legacy)
+        observed.extend(str(row["id"]) for row in rows)
+        if cursor is None:
+            break
+        assert len(observed) <= 3  # a repeated legacy row must fail the test promptly
+    assert set(observed) == {"mcr_mixed_persisted", "mcr_legacy_a", "mcr_legacy_b"}
+    assert len(observed) == len(set(observed)) == 3
+
+
+def test_creation_run_proposal_counts_are_scoped_to_each_pass_handle(
+    client: TestClient,
+) -> None:
+    from clio_agent.gact.memory.creation_runs import begin_run, update_run
+
+    app = client.app
+    service = memory_service(app)
+    origin = "session:same-conversation"
+    attempts = (
+        ("mcr_same_source_1", "task_same_source_1", "user/topics/first-pass", "all"),
+        ("mcr_same_source_2", "task_same_source_2", "user/topics/second-pass", "none"),
+    )
+    store = ProposalStore(service)
+    for index, (run_id, handle, target, policy) in enumerate(attempts):
+        begin_run(
+            service.store,
+            run_id=run_id,
+            origin=origin,
+            started_at=f"2026-10-2{index + 1}T10:00:00Z",
+        )
+        update_run(
+            service.store,
+            run_id,
+            {"state": "completed", "handle": handle, "reason": ""},
+        )
+        store.propose(
+            target=target,
+            change="add",
+            facts=[f"Memory from pass {index + 1}"],
+            replaces=[],
+            merge_from=[],
+            description="",
+            evidence=[Evidence("c1", "same-conversation", (f"msg_{index + 1}",), "user")],
+            rationale="Separate pass evidence",
+            origin=origin,
+            handle=handle,
+            auto_accept=policy,
+        )
+
+    rows = client.get("/v1/memory/creation-runs").json()["runs"]
+    first = next(row for row in rows if row["handle"] == "task_same_source_1")
+    second = next(row for row in rows if row["handle"] == "task_same_source_2")
+    assert first["proposal_counts"] == {"accepted": 1, "pending": 0, "rejected": 0}
+    assert first["targets"] == ["user/topics/first-pass"]
+    assert second["proposal_counts"] == {"accepted": 0, "pending": 1, "rejected": 0}
+    assert second["targets"] == []
+
+
 def test_a_document_nobody_read_past_expiry_gets_a_retire_proposal_for_review(
     client: TestClient,
 ) -> None:
@@ -236,6 +445,57 @@ def test_a_document_nobody_read_past_expiry_gets_a_retire_proposal_for_review(
     # A server rule, not a stated fact: it rests on no source, so it can never auto-apply.
     assert retire[0].origin.startswith("expiry:") and retire[0].sources == []
     assert retire[0].status == "pending"
+
+
+def test_zero_expiry_days_disables_retirement_proposals(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from clio_agent.arc import memory_document as md
+    from clio_agent.gact.memory.service import Author
+
+    app = client.app
+    stale = md.MemoryDocument(
+        name="old-cluster",
+        description="A retired cluster",
+        category="environments",
+        updated="2025-01-01T00:00:00Z",
+        facts=(
+            md.Fact(
+                id="f1a2b3c",
+                text="Uses the Theta cluster",
+                source="user",
+                session="sess_x",
+                at="2025-01-01",
+            ),
+        ),
+    )
+    memory_service(app).write(
+        "user/environments/old-cluster",
+        stale,
+        expected_sha=None,
+        author=Author("import", "seed"),
+    )
+    session = _idle_conversation(app)
+    original_setting = background.setting
+    monkeypatch.setattr(
+        background,
+        "setting",
+        lambda key, default: 0 if key == "memory.expiry_days" else original_setting(key, default),
+    )
+    background.start_curator(
+        app,
+        origin=f"session:{session.id}",
+        source_session=session,
+        workspace_id="ws_global",
+        scopes=("user",),
+        candidates=[],
+        run_key=f"{session.id}:expiry-never",
+    )
+    assert [
+        proposal
+        for proposal in ProposalStore(memory_service(app)).all()
+        if proposal.change == "retire"
+    ] == []
 
 
 def test_an_idle_conversation_is_read_once_per_change(client: TestClient) -> None:
