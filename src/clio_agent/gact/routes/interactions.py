@@ -392,8 +392,12 @@ def project_pending_interactions(
     caller = TaskCaller(root_session_id, app.state.human_principal, human_action=True)
     access = TaskAccess(history, caller)
     owners = _session_scope(app, root_session_id, include_children)
-    handles = set().union(*(history.session_handles(owner) for owner in owners))
-    handles.intersection_update(history.task_handles(kind="Question", human_id=caller.human_id))
+    handles = set().union(
+        *(
+            history.task_handles(kind="Question", human_id=caller.human_id, session_id=owner)
+            for owner in owners
+        )
+    )
     pending: list[PendingInteraction] = []
     resolved: list[PendingInteraction] = []
     degradations: list[dict[str, str]] = []
