@@ -14,7 +14,7 @@ from clio_agent.gact.agents.tool_instrumentation import native_tool
 from clio_agent.gact.fleet.child_model import accepted_model
 from clio_agent.gact.off_loop import join_off_loop
 from clio_agent.gact.task_access import TaskAccess
-from clio_agent.gact.task_publication import publish_task_notice
+from clio_agent.gact.task_tool_collection import collected as _collected
 from clio_agent.gact.tool_observation import CollectedTaskResult
 from clio_agent.tools.task_call_context import TASK_CALL
 
@@ -49,38 +49,6 @@ def _runtime() -> tuple[Any, Any]:
     if app is None or not context.active_session_id():
         raise ValueError("Task controls require a product conversation")
     return app, app.state.conversations.caller(context.active_session_id())
-
-
-def _collected(app: Any, caller: Any, value: dict[str, Any]) -> CollectedTaskResult:
-    if value.get("result_kind") == "shared_evidence":
-        return CollectedTaskResult(value, ())
-    handles = {
-        row["handle"]
-        for row in value.get("outcomes", [])
-        if row.get("handle")
-        and row.get("pending") is False
-        and not row.get("error")
-        and row.get("status") != "task_state_uncertain"
-    }
-    if value.get("handle") and value.get("pending") is False:
-        handles.add(value["handle"])
-    read_handles = handles | ({value["handle"]} if value.get("handle") else set())
-    observe_handles: tuple[str, ...] = ()
-    if isinstance(value, CollectedTaskResult):
-        read_handles.update(value.read_handles)
-        observe_handles = value.observe_handles
-    with app.state.task_history.serialized():
-        for handle in handles:
-            current = TaskAccess(app.state.task_history, caller).require(handle, "read")
-            publish_task_notice(app.state.task_history, current)
-        identities = tuple(
-            item.id
-            for item in app.state.task_history.pending_mail(caller.session_id)
-            if item.handle in handles and item.kind in {"task_result", "question_answer"}
-        )
-    return CollectedTaskResult(
-        value, identities, tuple(sorted(read_handles)), observe_handles=observe_handles
-    )
 
 
 def _task_read(value: dict[str, Any]) -> CollectedTaskResult:
@@ -188,10 +156,15 @@ def build_task_tools() -> list[Any]:
         return _task_read(value)
 
     async def wait_tasks(
-        tasks: str | list[str], return_when: str = "all", timeout_s: float | None = None
+        tasks: str | list[str],
+        return_when: str = "all",
+        timeout_s: float | None = None,
+        interrupt_on_mail: bool = True,
     ) -> dict[str, Any]:
         app, caller = _runtime()
-        value = await app.state.task_operations.wait(caller, tasks, return_when, timeout_s)
+        value = await app.state.task_operations.wait(
+            caller, tasks, return_when, timeout_s, interrupt_on_mail=interrupt_on_mail
+        )
         return await app.state.task_history.io.run(_collected, app, caller, value)
 
     async def cancel_tasks(tasks: str | list[str]) -> dict[str, Any]:
@@ -285,8 +258,9 @@ def build_task_tools() -> list[Any]:
                 "tasks": _TASKS,
                 "return_when": {"type": "string", "enum": ["any", "all"], "default": "all"},
                 "timeout_s": _TIMEOUT,
+                "interrupt_on_mail": {"type": "boolean", "default": True},
             },
-            "Collect independent task outcomes. With return_when='any', a member error is an available outcome; other handles remain explicitly pending and continue running. task_state_uncertain requires inspection, not repeated waits for the same receipt. Default wait is unbounded; zero snapshots; positive expiry or Stop ends only this waiter.",
+            "Collect independent task outcomes. With return_when='any', a member error is an available outcome; other handles remain explicitly pending and continue running. task_state_uncertain requires inspection, not repeated waits for the same receipt. Default wait is unbounded; zero snapshots; positive expiry or Stop ends only this waiter. By default, authorized messages or answers return interrupted=mail_received with pending tasks so you can coordinate before waiting again. Set interrupt_on_mail=false to wait only for task outcomes; task-result notices alone do not interrupt all.",
         ),
         _tool(
             cancel_tasks,

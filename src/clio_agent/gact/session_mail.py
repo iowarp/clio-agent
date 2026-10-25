@@ -151,6 +151,24 @@ class SessionMail:
                 used += len(text)
             return StagedInput(tuple(items), tuple(injections), collected)
 
+    def interrupting_input(self, caller: TaskCaller) -> tuple[str, ...]:
+        """Inspect authorized, eligible coordination/input without consuming any mail.
+
+        Selected-task completion notices do not interrupt an all-wait. Actual
+        messages and question answers can require the waiting model's attention;
+        their existing recipient-input commitment remains the delivery owner.
+        """
+        with self.history.serialized():
+            access = TaskAccess(self.history, caller)
+            return tuple(
+                item.id
+                for item in self.history.pending_mail(caller.session_id)
+                if item.kind in {"peer", "human", "composer", "question_answer"}
+                and item.delivery == "eligible"
+                and self.eligible(caller.session_id, item)
+                and self._authorized(item, access)
+            )
+
     def bound_rendered(
         self, staged: StagedInput, rendered: Mapping[str, dict[str, Any]]
     ) -> StagedInput:

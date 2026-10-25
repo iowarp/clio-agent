@@ -14,6 +14,16 @@ explicitly request these shipped aliases for one Tasks release cycle:
 `cancel_agent_tasks` was an unfinished branch addition, not a shipped alias in
 the selected compatibility baseline. Use `cancel_tasks`.
 
+Native model-facing `wait_tasks` defaults `interrupt_on_mail` to true. An
+authorized, eligible peer message, live human input, or question answer can
+return `interrupted="mail_received"` with the actual still-pending handles.
+This does not satisfy `return_when="all"`, settle/cancel a child, or consume mail.
+The existing model-input commit delivers the addressed input before the next
+model decision. Already committed messages do not interrupt a later wait;
+task-result notices alone do not turn an all-wait into any-wait. Explicit false
+keeps an outcome-only wait. The shared `TaskOperations.wait` API keeps false as
+its default, so authored flow waits retain their existing control-flow contract.
+
 `spawn_agent_task` takes `agent`, `task`, `placement`, `input_task_ids` and
 `strategy`; `agent` names a defined subagent of the session's agent or an
 installed agent (`marketplace/id`). The former `blueprint_id` argument is gone

@@ -230,12 +230,15 @@ class TaskOperations:
         timeout_s: float | None = None,
         *,
         settle_awaiting_input: bool = False,
+        interrupt_on_mail: bool = False,
     ) -> dict[str, Any]:
         """Await mixed owner observations; timeout/cancellation never cancels a member.
 
         ``settle_awaiting_input`` (a flow's wait) settles a child that yielded, or whose
         turn stopped, with nothing left to wake it as ``awaiting_input`` or ``stopped``
         instead of waiting on it forever (:mod:`clio_agent.gact.assignment_input`).
+        ``interrupt_on_mail`` returns a truthful pending snapshot when authorized
+        coordination/input needs the caller. It never settles or consumes a task.
         """
         with track(timeout_s != 0, session_id=caller.session_id):
             if return_when not in {"all", "any"}:
@@ -285,6 +288,12 @@ class TaskOperations:
                     remaining = None if deadline is None else max(0.0, deadline - loop.time())
                     if remaining == 0:
                         return _wait_value(outcomes, pending, timed_out=True)
+                    if interrupt_on_mail and await self.history.io.run(
+                        self._has_interrupting_input, caller
+                    ):
+                        return _wait_value(
+                            outcomes, pending, timed_out=False, interrupted="mail_received"
+                        )
                     try:
                         await asyncio.wait_for(changed.wait(), remaining)
                     except TimeoutError:
@@ -294,6 +303,11 @@ class TaskOperations:
                         return _wait_value(outcomes, pending, timed_out=True)
             finally:
                 remove()
+
+    def _has_interrupting_input(self, caller: TaskCaller) -> bool:
+        """Use the sole mailbox's authorization and delivery policy for addressed input."""
+        owner = getattr(getattr(self.app, "state", None), "conversations", None)
+        return bool(owner is not None and owner.mail.interrupting_input(caller))
 
     def _stopping(self, handle: str) -> bool:
         """Whether the calling assignment was stopped (not cancelled) or has ended.

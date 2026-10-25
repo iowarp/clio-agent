@@ -118,6 +118,11 @@ When your answer depends on delegated work, collect it with
 snapshot; it does not wait for completion. Pending handles with no results mean
 the required work has not returned an answer. Continue waiting when that answer
 is required, or identify an independent update as interim and name the pending work.
+An authorized message or question answer can interrupt the wait with
+`interrupted="mail_received"`; pending children have not completed. The next model
+input contains the actual message. Coordinate as needed, then wait on the same
+handles. `interrupt_on_mail=false` opts into waiting only for task outcomes.
+Task-result notices alone never interrupt an all-wait.
 An unavailable member is an independent outcome; continue using the valid handles.
 `task_state_uncertain` means inspect the last confirmed observations and effects,
 then deliberately reconnect, retry or revise. Repeating the same wait does not

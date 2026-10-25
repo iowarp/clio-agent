@@ -92,6 +92,8 @@ def wait_presentation(args: Mapping[str, Any], result: Mapping[str, Any]) -> dic
         policy = "Immediate status check; this call did not wait."
     if result.get("timed_out") and not poll:
         policy += " The deadline expired; pending tasks continue running."
+    elif result.get("interrupted") == "mail_received":
+        policy += " New input is available to this agent; pending tasks continue running."
     elif pending:
         policy += " Pending tasks continue running."
     blocks: list[dict[str, Any]] = [
@@ -171,6 +173,8 @@ def wait_presentation(args: Mapping[str, Any], result: Mapping[str, Any]) -> dic
     collected = sum(not uncollected(row) for row in rows)
     attention = sum(row.get("status") == "task_state_uncertain" for row in rows)
     counts = [f"{collected} {'result' if collected == 1 else 'results'} collected"]
+    if result.get("interrupted") == "mail_received":
+        counts.insert(0, "New input received")
     if pending:
         counts.insert(0, f"{len(pending)} pending")
     if failed:

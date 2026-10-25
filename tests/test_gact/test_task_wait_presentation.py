@@ -19,6 +19,7 @@ def test_wait_defaults_are_explicit_in_the_agent_visible_declaration() -> None:
         assert parameters["required"] == ["tasks"]
         assert parameters["properties"]["timeout_s"]["default"] is None
         assert parameters["properties"]["return_when"]["default"] == "all"
+        assert parameters["properties"]["interrupt_on_mail"]["default"] is True
         assert parameters["properties"]["timeout_s"]["anyOf"] == [
             {"type": "number", "minimum": 0},
             {"type": "null"},
@@ -26,6 +27,23 @@ def test_wait_defaults_are_explicit_in_the_agent_visible_declaration() -> None:
         description = declaration["description"]
         assert "unbounded" in description and "zero snapshots" in description
         assert "positive expiry or Stop ends only this waiter" in description
+
+
+def test_mail_interrupt_receipt_explains_pending_work_without_claiming_completion() -> None:
+    presentation = wait_presentation(
+        {"tasks": ["task_child"], "return_when": "all", "timeout_s": None},
+        {
+            "outcomes": [],
+            "pending": ["task_child"],
+            "timed_out": False,
+            "interrupted": "mail_received",
+        },
+    )
+    assert "New input received" in presentation["summary"]
+    assert "1 pending" in presentation["summary"]
+    assert any(
+        "New input is available" in block.get("text", "") for block in presentation["blocks"]
+    )
 
 
 @pytest.mark.parametrize("timeout", [0, 2.5, None])
