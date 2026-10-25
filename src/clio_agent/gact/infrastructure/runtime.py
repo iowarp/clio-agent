@@ -599,7 +599,7 @@ class InfrastructureRuntime(ExternalConnectionsMixin, ServerAccessMixin, ModelRo
                     plan.readiness, execute, tracker.message, sink=tracker.log_text
                 )
             for spec in plan.after_ready:
-                tracker.enter("after-ready", "Preparing the model")
+                tracker.enter("after-ready", "Completing service setup")
                 tracker.command_started(None, spec)
                 result = await self._execute(request.target_id, spec, tracker.output)
                 tracker.command_finished(None, result)
@@ -611,7 +611,7 @@ class InfrastructureRuntime(ExternalConnectionsMixin, ServerAccessMixin, ModelRo
                         or f"{spec.program} exited with code {result.exit_code}"
                     )
             if plan.after_ready_hook is not None:
-                tracker.enter("after-ready", "Preparing the model")
+                tracker.enter("after-ready", "Completing service setup")
                 chosen = await plan.after_ready_hook(execute, tracker.message)
                 base = plan.configuration or request.configuration
                 plan = dataclasses.replace(plan, configuration={**base, **chosen})

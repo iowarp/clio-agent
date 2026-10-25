@@ -188,5 +188,3 @@ async def prepare_terminal_restart(
             )
 
     return cancellation, verify_settled
-
-

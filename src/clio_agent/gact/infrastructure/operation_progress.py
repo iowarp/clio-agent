@@ -254,7 +254,7 @@ class OperationTracker:
                 )
             )
         if plan.after_ready or plan.after_ready_hook is not None:
-            steps.append(OperationStep(id="after-ready", label="Prepare the model"))
+            steps.append(OperationStep(id="after-ready", label="Complete service setup"))
         steps.append(OperationStep(id="finish", label="Record the deployment"))
         self.put(steps=steps, current_step=None)
 
