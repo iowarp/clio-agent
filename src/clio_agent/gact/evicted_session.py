@@ -92,16 +92,7 @@ def _release_task_tree(app: "FastAPI", sid: str) -> None:
         return
     runner = getattr(app.state, "turn_runner", None)
     busy = runner.busy if runner is not None else None
-    try:
-        dropped = history.release_session_tree(sid, busy=busy)
-    except Exception as error:  # noqa: BLE001 - a kept tree only costs memory; say so
-        trace.event(
-            "RESIDENT-LEDGER",
-            "task_tree_release_failed session=%s reason=task_tree_release_failed error_type=%s",
-            sid,
-            type(error).__name__,
-        )
-        return
+    dropped = history.release_session_tree(sid, busy=busy)
     trace.event("RESIDENT-LEDGER", "task_tree_released session=%s dropped=%s", sid, dropped)
 
 

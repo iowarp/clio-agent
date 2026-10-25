@@ -89,7 +89,7 @@ def reference_row(reference: str, handle: str, session_id: str) -> Row:
 
 
 def list_row(prefix: str, identity: str, rows: list[Any]) -> Row:
-    """``a.``/``res.``/``hum.`` rows: a short list under one exact identity."""
+    """``a.``/``res.``/``hum.``/``wait.`` rows: a short list under one exact identity."""
     return prefix + record_key(identity), {"identity": identity, "rows": rows}
 
 

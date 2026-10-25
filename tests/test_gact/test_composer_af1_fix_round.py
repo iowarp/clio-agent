@@ -890,7 +890,10 @@ def test_interactions_read_only_the_owning_app_core_history(tmp_path: Path) -> N
         assert (
             second_client.get(f"/v1/sessions/{right.id}/interactions").json()["interactions"] == []
         )
-        assert second.state.task_history.task_snapshot(q.id) is None
+        # The apps share one clio-core store, and clio-core is the memory: the second
+        # app reads the same task, yet nothing surfaces it in another session's list.
+        shared = second.state.task_history.task_snapshot(q.id)
+        assert shared == first.state.task_history.task_snapshot(q.id)
 
 
 def test_interaction_projection_is_bounded(tmp_path) -> None:

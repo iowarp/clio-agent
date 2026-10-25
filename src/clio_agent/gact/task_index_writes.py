@@ -150,10 +150,18 @@ def join_session(history: TaskHistory, snapshot: TaskSnapshot) -> None:
     index = history.index
     session_id, human_id = snapshot.owner.session_id, snapshot.owner.human_id
     parent_root: str | None = None
-    if snapshot.owner.parent_handle is not None:
-        row = index.handle(snapshot.owner.parent_handle)
+    parent = snapshot.owner.parent_handle
+    if parent is not None:
+        row = index.handle(parent)
         if row is not None:
             parent_root = index.session_root(str(row["session_id"]))
+        else:
+            # The parent is not recorded yet: it adopts this session when it is.
+            waiting = index.rows("wait.", parent)
+            if session_id not in waiting:
+                history.confirm_write(
+                    lambda: index.put_lookup(list_row("wait.", parent, [*waiting, session_id]))
+                )
     if not index.session_known(session_id):
         root = parent_root if parent_root is not None else session_id
         if root != session_id:
@@ -174,6 +182,20 @@ def join_session(history: TaskHistory, snapshot: TaskSnapshot) -> None:
         history.confirm_write(
             lambda: index.put_lookup(list_row("hum.", human_id, sorted({*roots, root})))
         )
+    _adopt_waiting(history, snapshot.handle, root, human_id)
+
+
+def _adopt_waiting(history: TaskHistory, handle: str, root: str, human_id: str) -> None:
+    """Sessions recorded before their parent ``handle`` join its tree now that it exists."""
+    index = history.index
+    waiting = index.rows("wait.", handle)
+    if not waiting:
+        return
+    for session_id in waiting:
+        orphan_root = index.session_root(session_id)
+        if orphan_root != root:
+            _merge(history, orphan_root, root, human_id)
+    history.confirm_write(lambda: index.put_lookup(list_row("wait.", handle, [])))
 
 
 def _absorb(history: TaskHistory, session_id: str, root: str) -> None:

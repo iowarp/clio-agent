@@ -206,7 +206,8 @@ async def test_confirmed_question_answer_survives_cancel_before_callback_checkpo
         current = await app.state.task_history.io.run(app.state.task_history.task_snapshot, handle)
         details = await app.state.task_history.io.run(external._details, current)
         assert details["answers"]["c-d"]["content"] == {"format": "png"}
-        assert app.state.task_history.task_handles(kind="Question") == {qid}
+        human = current.owner.human_id
+        assert app.state.task_history.task_handles(kind="Question", human_id=human) == {qid}
     finally:
         release.set()
         if worker is not None and not worker.done():
@@ -284,7 +285,9 @@ async def test_cancellation_preserves_an_already_confirmed_input_answer(
         replay = await asyncio.wait_for(external._input(host, params, request), 5)
         assert replay == confirmed and replay.action == "accept"
         assert replay.content == {"format": "png"}
-        assert app.state.task_history.task_handles(kind="Question") == {qid}
+        history = app.state.task_history
+        human = (await history.io.run(history.task_snapshot, qid)).owner.human_id
+        assert history.task_handles(kind="Question", human_id=human) == {qid}
     finally:
         if worker is not None and not worker.done():
             worker.cancel()

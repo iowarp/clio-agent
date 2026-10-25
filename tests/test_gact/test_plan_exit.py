@@ -273,7 +273,8 @@ def test_approval_decision_commits_posture_and_exact_resume_input(
         == reply
     )
     assert world.resume_items() == items
-    assert len(world.app.state.task_history.task_handles(kind="Question")) == 1
+    history = world.app.state.task_history
+    assert len(history.task_handles(kind="Question", session_id=world.sid)) == 1
 
 
 def test_approval_reuses_the_reviewed_immutable_plan_artifact(
