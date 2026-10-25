@@ -94,6 +94,24 @@ def latest_input(self: TaskHistory, assignment_id: str, epoch: str | None) -> Re
 # ---- per-tree queries ------------------------------------------------------
 
 
+def descendant_handles(self: TaskHistory, root_handle: str) -> set[str]:
+    """Read one assignment and its confirmed children, excluding session siblings."""
+    state = self._handle_state(root_handle)
+    if state is None:
+        return set()
+    with self._view_lock:
+        if root_handle not in state._tasks:
+            return set()
+        handles = {root_handle}
+        pending = [root_handle]
+        while pending:
+            for child in state._children.get(pending.pop(), set()):
+                if child not in handles:
+                    handles.add(child)
+                    pending.append(child)
+        return handles
+
+
 def tree_handles(self: TaskHistory, session_id: str, *, active_only: bool = False) -> set[str]:
     """Return the stable session's work and delegated descendants, never its ancestors."""
     state = self._session_state(session_id)

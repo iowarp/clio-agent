@@ -7,6 +7,8 @@ surface; the frozen spec produced at install is the runtime contract.
 See ``docs/design/sdk/agent-sdk.md`` and ``plugins-and-composition.md``.
 """
 
+from typing import TYPE_CHECKING
+
 from clio_agent.sdk.agent import Agent, AgentDefinitionError, AgentSpec
 from clio_agent.sdk.hooks import HOOK_EVENTS, HookEvent, hook
 from clio_agent.sdk.model import Prefers, Requires
@@ -15,6 +17,9 @@ from clio_agent.sdk.subagent import PromptFile, Subagent
 from clio_agent.sdk.tools import native_tool, tool
 from clio_agent.sdk.versions import PluginRef
 from clio_agent.sdk.workflow import Step, Workflow, WorkflowError
+
+if TYPE_CHECKING:
+    from clio_agent.sdk.flow import Flow as Flow
 
 __all__ = [
     "HOOK_EVENTS",

@@ -508,6 +508,21 @@ class FlowContext:
         await self.journal.record_step(invocation, {"name": name, "result": _plain(result)})
         return result
 
+    async def permission_receipts(self, *, refresh: bool = False) -> dict[str, Any]:
+        """Snapshot attributable tool-permission history for this run and its children.
+
+        Each call is checkpointed: replay sees the same evidence for that point
+        in the flow, while a later call may observe new decisions. The receipts
+        omit request arguments and describe history, never current authority.
+        Legacy events without confirmed assignment attribution are excluded.
+        ``refresh=True`` explicitly observes current durable history and pins a
+        content-versioned snapshot. Use that at a new review boundary after
+        reattaching earlier calls, not to change an accepted call's original input.
+        """
+        from clio_agent.flows.permission_evidence import permission_receipts  # noqa: PLC0415
+
+        return await permission_receipts(self, refresh=refresh)
+
     async def react(self, task: Any) -> Any:
         """Run the agent's own ReAct program on ``task`` inside this assignment."""
 
