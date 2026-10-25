@@ -22,6 +22,10 @@ from typing import TYPE_CHECKING
 
 from clio_agent.arc.clio_core_attach import ClioCoreAttachPhase, attach_state_snapshot
 from clio_agent.arc.clio_core_config import RamTierCap, effective_ram_cap, parse_capacity_bytes
+from clio_agent.arc.clio_core_liveness import (
+    SOCKET_PROBE_UNAVAILABLE_REASON,
+    runtime_socket_status,
+)
 from clio_agent.arc.runtime_crash import read_crash_record, summarize_crash
 from clio_agent.runtime.cte_cold_tier import (
     metadata_log_bytes,
@@ -186,6 +190,23 @@ def probe_clio_core_ram_cap(*, env: Mapping[str, str] | None = None) -> list[Int
     ]
 
 
+def socket_probe_unavailable_row(
+    name: str, *, source: str, port: int, details: dict[str, object]
+) -> IntegrationStatus:
+    """Expose a local diagnostic failure without prescribing daemon replacement."""
+    return IntegrationStatus(
+        name=name,
+        state=IntegrationState.DEGRADED,
+        summary=f"The local socket check could not establish Core availability on port {port}.",
+        config_source=source,
+        next_action="Retry the operation; an existing client can verify its original Core process.",
+        endpoint=f"127.0.0.1:{port}",
+        fallback="none",
+        details={**details, "reason": SOCKET_PROBE_UNAVAILABLE_REASON},
+        required=True,
+    )
+
+
 def daemon_not_listening_row(
     name: str, *, source: str, endpoint: str, details: dict[str, object], port: int, log_path: str
 ) -> IntegrationStatus:
@@ -196,6 +217,8 @@ def daemon_not_listening_row(
     its first agent build. It is UNAVAILABLE when this process's attach failed, when an
     attached daemon is gone, or when the daemon left a crash record.
     """
+    if details.get("reason") == SOCKET_PROBE_UNAVAILABLE_REASON:
+        return socket_probe_unavailable_row(name, source=source, port=port, details=details)
     snap = attach_state_snapshot()
     crash = read_crash_record(Path(log_path).parent)
     lost = snap.phase in (ClioCoreAttachPhase.UNAVAILABLE, ClioCoreAttachPhase.ATTACHED)
@@ -293,9 +316,21 @@ def probe_clio_core_attach(*, state: object | None = None) -> list[IntegrationSt
         summary = f"clio-core attach in progress ({where}); ARC is not live yet."
         next_action = "Wait; this row turns ready (attached) or names the failure."
     elif snap.phase is ClioCoreAttachPhase.ATTACHED:
-        from clio_agent.arc.clio_core_liveness import _runtime_alive  # noqa: PLC0415
-
-        if live_snapshot and snap.port is not None and not _runtime_alive(snap.port):
+        alive, probe_reason = (
+            runtime_socket_status(snap.port)
+            if live_snapshot and snap.port is not None
+            else (True, None)
+        )
+        if probe_reason and snap.port is not None:
+            return [
+                socket_probe_unavailable_row(
+                    "clio_core_attach",
+                    source="runtime:clio_core_attach",
+                    port=snap.port,
+                    details=details,
+                )
+            ]
+        if not alive:
             state_, required = IntegrationState.DEGRADED, True
             details["reason"] = "clio_core_daemon_lost_after_attach"
             summary = f"clio-core was attached, but its daemon is no longer listening ({where})."
@@ -409,6 +444,19 @@ def probe_clio_core_liveness(*, snapshot: list[dict] | None = None) -> list[Inte
         gate = quarantined[0]
         port = gate.get("port")
         restart_required = any(item.get("restart_required") for item in quarantined)
+        if (
+            gate.get("reason") == SOCKET_PROBE_UNAVAILABLE_REASON
+            and not restart_required
+            and isinstance(port, int)
+        ):
+            return [
+                socket_probe_unavailable_row(
+                    "clio_core_liveness",
+                    source="runtime:clio_core_liveness_gate",
+                    port=port,
+                    details={"quarantined_gates": len(quarantined), "total_gates": len(snapshot)},
+                )
+            ]
         recovery_summary = (
             "ClioCoreRuntimeLostError until the agent restarts."
             if restart_required
@@ -444,13 +492,23 @@ def probe_clio_core_liveness(*, snapshot: list[dict] | None = None) -> list[Inte
             )
         ]
     if live_snapshot:
-        from clio_agent.arc.clio_core_liveness import _runtime_alive  # noqa: PLC0415
-
-        missing = [
-            gate
-            for gate in snapshot
-            if isinstance(gate.get("port"), int) and not _runtime_alive(gate["port"])
-        ]
+        missing = []
+        for gate in snapshot:
+            port = gate.get("port")
+            if not isinstance(port, int):
+                continue
+            alive, probe_reason = runtime_socket_status(port)
+            if probe_reason:
+                return [
+                    socket_probe_unavailable_row(
+                        "clio_core_liveness",
+                        source="runtime:clio_core_liveness_gate",
+                        port=port,
+                        details={"total_gates": len(snapshot)},
+                    )
+                ]
+            if not alive:
+                missing.append(gate)
         if missing:
             port = missing[0]["port"]
             return [

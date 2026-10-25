@@ -346,7 +346,12 @@ def _ensure_runtime_daemon(iowarp_core: object, config_path: str, log_level: str
         _register_client()  # prunes nothing here; release-side prunes. We are now live.
         state = runtime_state_dir()
         running = daemon_version.running_daemon_config(state, config_path)
-        if _runtime_alive(_resolve_runtime_port(running)):
+        try:
+            alive = _runtime_alive(_resolve_runtime_port(running))
+        except ClioCoreRuntimeLostError:
+            _deregister_client()
+            raise
+        if alive:
             return daemon_version.resolve_effective_config(
                 state, config_path, on_failure=_deregister_client
             )
