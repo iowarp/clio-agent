@@ -218,6 +218,23 @@ def test_resource_link_ui_payload_variant():
     assert wire["mime_type"] == UI_PAYLOAD_MIME
 
 
+def test_ui_payload_with_json_filename_is_projected_as_data_not_an_html_app():
+    v = _version(kind=ArtifactKind.UI_PAYLOAD, path="/ws/agenda-builder-components.json")
+    part = resource_link_part("ws1", "agenda-builder-components.json", v, part_id="p-json")
+
+    wire = part.to_wire()
+
+    assert wire["uri"] == "ui://ws1/agenda-builder-components.json@v2"
+    assert wire["mime_type"] == "application/json"
+
+
+def test_ui_payload_with_unknown_format_is_not_assumed_to_be_executable_html():
+    v = _version(kind=ArtifactKind.UI_PAYLOAD, path="/ws/components.payload")
+    part = resource_link_part("ws1", "components.payload", v, part_id="p-unknown")
+
+    assert part.to_wire()["mime_type"] == "application/octet-stream"
+
+
 def test_part_new_fields_are_additive_omitempty():
     """Existing part types must serialize byte-identically — new fields drop by default."""
     text = Part(id="t1", type="text", text="hello").to_wire()

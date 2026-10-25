@@ -6,8 +6,8 @@ were zero emit sites before #968). At turn finalize one ``resource_link`` part i
 emitted per artifact generated that turn — this is what finally gives a plot PNG
 (or any deliverable) a wire reference instead of a path string the client must
 guess. ``ui_payload`` artifacts (mcpui/a2ui) ride the SAME part with a ``ui://``
-URI and the mcp-app HTML mime — record + delivery only; rendering is a later
-campaign.
+URI. MIME follows the published format: HTML MCP Apps retain the mcp-app
+profile while JSON remains data; rendering is a later campaign.
 
 Pure projection: no app state, no I/O. It reads an :class:`ArtifactVersion` and
 the logical ``(workspace_id, name)`` identity and returns a
@@ -76,7 +76,6 @@ _MIME_BY_KIND: dict[ArtifactKind, str] = {
     ArtifactKind.SCRIPT: "text/plain",
     ArtifactKind.CONFIG: "text/plain",
     ArtifactKind.MODEL: "application/octet-stream",
-    ArtifactKind.UI_PAYLOAD: UI_PAYLOAD_MIME,
     ArtifactKind.OTHER: "application/octet-stream",
 }
 
@@ -123,7 +122,17 @@ def workspace_file_fetch_url(workspace_id: str, source: Path, root: Path) -> str
 def mime_for(version: ArtifactVersion, name: str) -> str:
     """Prefer a published filename's type, then the source for friendly labels."""
     if version.kind == ArtifactKind.UI_PAYLOAD:
-        return UI_PAYLOAD_MIME
+        # ``ui_payload`` is the storage/delivery designation used by both HTML
+        # MCP Apps and declarative UI payloads such as A2UI JSON. Preserve the
+        # MCP App profile for authored HTML, but do not tell clients to render
+        # JSON as an HTML app merely because the artifact has this kind.
+        for candidate in (name, version.path):
+            suffix = Path(candidate).suffix.lower()
+            if suffix in {".html", ".htm"}:
+                return UI_PAYLOAD_MIME
+            if suffix in _MIME_BY_SUFFIX:
+                return _MIME_BY_SUFFIX[suffix]
+        return "application/octet-stream"
     from clio_agent.gact.documents.profiles import document_format, supported_extensions
 
     for candidate in (name, version.path):
