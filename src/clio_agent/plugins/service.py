@@ -253,17 +253,19 @@ class PluginService:
             out.append(AgentEntry(ref, USER_MARKETPLACE, parent.spec, user_agent))
         return out
 
-    def lookup(self, ref: str) -> AgentEntry:
+    def lookup(self, ref: str, *, _seen: frozenset[str] = frozenset()) -> AgentEntry:
         """Find an agent by ``market/id``, ``id`` or ``user/id``, honoring ``@range``."""
 
         self.ready()
         text = str(ref or "").strip() or DEFAULT_AGENT
         name, _, version_range = text.partition("@")
         if name.startswith(f"{USER_MARKETPLACE}/"):
+            if name in _seen:
+                raise AgentNotFound(text, reason="user_agent_cycle")
             user_agent = self.store.user_agents().get(name)
             if user_agent is None:
                 raise AgentNotFound(text)
-            parent = self.lookup(user_agent.extends)
+            parent = self.lookup(user_agent.extends, _seen=_seen | {name})
             return AgentEntry(name, USER_MARKETPLACE, parent.spec, user_agent)
         specs = self.store.agent_specs()
         if "/" in name:
@@ -377,23 +379,32 @@ class PluginService:
         remove: list[str],
         name: str = "",
         description: str = "",
+        create_only: bool = False,
     ) -> AgentEntry:
-        parent = self.lookup(extends)
-        if parent.user_agent is None and "@" not in extends:
-            major = parent.spec.version.split(".", 1)[0]
-            extends = f"{parent.ref}@^{major}"
-        user_agent = UserAgent(
-            id=agent_id,
-            name=name or agent_id,
-            extends=extends,
-            add=tuple(add),
-            remove=tuple(remove),
-            description=description,
-        )
-        # Refuse a delta that does not resolve before anything is stored.
-        self.resolve(extends, delta=Delta(tuple(add), tuple(remove)), pin=False)
-        self.store.save_user_agent(user_agent)
-        return self.lookup(f"{USER_MARKETPLACE}/{agent_id}")
+        """Validate and save a local variation without creating inheritance cycles."""
+        self.ready()
+        with self.store.lock:
+            parent = self.lookup(extends)
+            ancestor = parent
+            while ancestor.user_agent is not None:
+                if ancestor.user_agent.id == agent_id:
+                    raise StoreError("user_agent_cycle", "This variation would inherit from itself")
+                ancestor = self.lookup(ancestor.user_agent.extends)
+            if parent.user_agent is None and "@" not in extends:
+                major = parent.spec.version.split(".", 1)[0]
+                extends = f"{parent.ref}@^{major}"
+            user_agent = UserAgent(
+                id=agent_id,
+                name=name or agent_id,
+                extends=extends,
+                add=tuple(add),
+                remove=tuple(remove),
+                description=description,
+            )
+            # Refuse a delta that does not resolve before anything is stored.
+            self.resolve(extends, delta=Delta(tuple(add), tuple(remove)), pin=False)
+            self.store.save_user_agent(user_agent, create_only=create_only)
+            return self.lookup(f"{USER_MARKETPLACE}/{agent_id}")
 
 
 def resolution_error_payload(exc: ResolutionError) -> dict[str, Any]:

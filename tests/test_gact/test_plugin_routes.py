@@ -72,6 +72,36 @@ def _demo_marketplace(root: Path) -> Path:
 # --------------------------------------------------------------------- plugins
 
 
+def test_inspection_reads_one_exact_catalog_reference_and_rejects_paths(client: TestClient) -> None:
+    core = next(row for row in client.get("/v1/plugins").json()["plugins"] if row["id"] == "core")
+    response = client.get("/v1/plugins/inspect", params={"ref": core["ref"]})
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body["plugin"]["ref"] == core["ref"]
+    assert any(row["path"].endswith("plugin.json") for row in body["files"])
+    assert client.get("/v1/plugins/inspect", params={"ref": "../../config.yaml"}).status_code == 404
+    assert (
+        client.get(
+            "/v1/plugins/inspect", params={"ref": core["ref"], "pending": "true"}
+        ).status_code
+        == 404
+    )
+
+
+def test_inspection_does_not_trust_or_execute_an_untrusted_plugin(
+    client: TestClient, tmp_path: Path
+) -> None:
+    source = _demo_marketplace(tmp_path / "inspect-untrusted")
+    installed = client.post("/v1/plugins/marketplaces", json={"source": str(source)})
+    assert installed.status_code == 201, installed.text
+    response = client.get("/v1/plugins/inspect", params={"ref": "demo/notes"})
+    assert response.status_code == 200, response.text
+    assert not response.json()["plugin"]["trusted"]
+    assert any(row["path"].endswith("t.py") for row in response.json()["files"])
+    markets = client.get("/v1/plugins/marketplaces").json()["marketplaces"]
+    assert not next(row for row in markets if row["name"] == "demo")["trusted"]
+
+
 def test_list_plugins_shows_core_and_the_default_marketplace_trusted(
     client: TestClient,
 ) -> None:
@@ -418,3 +448,35 @@ def test_session_create_refuses_an_unresolvable_agent(client: TestClient) -> Non
     assert error["error"] == "agent_unavailable"
     assert error["details"]["agent_ref"] == "clio/nope"
     assert error["details"]["reason"] == "agent_not_installed"
+
+
+def test_local_variation_conflicts_and_cycles_preserve_the_original(client: TestClient) -> None:
+    body = {
+        "id": "local-copy",
+        "name": "Local copy",
+        "extends": "clio/standard",
+        "add": [],
+        "remove": [],
+        "create_only": True,
+    }
+    created = client.post("/v1/agents/user", json=body)
+    assert created.status_code == 201, created.text
+    before = client.get("/v1/agents/resolve", params={"ref": "user/local-copy"}).json()
+    conflict = client.post("/v1/agents/user", json={**body, "name": "Replacement"})
+    assert conflict.status_code == 409 and _error(conflict)["error"] == "user_agent_exists"
+    cycle = client.post(
+        "/v1/agents/user", json={**body, "extends": "user/local-copy", "create_only": False}
+    )
+    assert cycle.status_code == 409 and _error(cycle)["error"] == "user_agent_cycle"
+    child = client.post(
+        "/v1/agents/user", json={**body, "id": "local-child", "extends": "user/local-copy"}
+    )
+    assert child.status_code == 201, child.text
+    indirect = client.post(
+        "/v1/agents/user", json={**body, "extends": "user/local-child", "create_only": False}
+    )
+    assert indirect.status_code == 409 and _error(indirect)["error"] == "user_agent_cycle"
+    invalid = client.post("/v1/agents/user", json={**body, "create_only": "false"})
+    assert invalid.status_code == 422
+    after = client.get("/v1/agents/resolve", params={"ref": "user/local-copy"}).json()
+    assert after == before

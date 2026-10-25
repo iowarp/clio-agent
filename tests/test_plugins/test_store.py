@@ -13,7 +13,7 @@ import pytest
 from clio_agent.plugins.check import check
 from clio_agent.plugins.resolve import Delta, ResolutionError
 from clio_agent.plugins.service import PluginService
-from clio_agent.plugins.store import PluginStore, StoreError, builtin_records
+from clio_agent.plugins.store import PluginStore, StoreError, UserAgent, builtin_records
 from tests.test_plugins.helpers import NATIVE, fragment, plugin, tools_module, write
 
 AGENTS = """
@@ -269,3 +269,23 @@ def test_a_changed_reader_rereads_installed_snapshots_and_keeps_trust(tmp_path: 
     assert reread["plugins"]["demo/pdf"]["description"] != "read by an older reader"
     assert service.store.marketplaces()["demo"]["trusted"] is True
     assert service.store.reread_installed() == []
+
+
+def test_create_only_user_agent_preserves_existing_bytes(tmp_path: Path) -> None:
+    store = PluginStore(tmp_path / "local-store")
+    original = UserAgent("mine", "My agent", "demo/standard")
+    path = store.save_user_agent(original, create_only=True)
+    before = path.read_bytes()
+    with pytest.raises(StoreError) as caught:
+        store.save_user_agent(UserAgent("mine", "Replacement", "demo/standard"), create_only=True)
+    assert caught.value.code == "user_agent_exists"
+    assert path.read_bytes() == before
+    assert not list(path.parent.glob("*.tmp"))
+
+
+def test_legacy_user_agent_cycle_has_a_typed_lookup_failure(tmp_path: Path) -> None:
+    service = _service(tmp_path)
+    service.store.save_user_agent(UserAgent("cycle", "Cycle", "user/cycle"))
+    with pytest.raises(LookupError) as caught:
+        service.lookup("user/cycle")
+    assert getattr(caught.value, "reason", "") == "user_agent_cycle"

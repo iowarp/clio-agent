@@ -567,7 +567,8 @@ class PluginStore:
             self._write_state(state)
 
     # ------------------------------------------------------------ user agents
-    def save_user_agent(self, agent: UserAgent) -> Path:
+    def save_user_agent(self, agent: UserAgent, *, create_only: bool = False) -> Path:
+        """Publish one local definition atomically; create-only refuses name collisions."""
         if not valid_plugin_id(agent.id):
             raise StoreError("user_agent_id_invalid", f"agent id {agent.id!r} is not a valid id")
         for value in (*agent.add, *agent.remove):
@@ -575,7 +576,17 @@ class PluginStore:
         base = self.root / "user-agents"
         base.mkdir(parents=True, exist_ok=True)
         path = base / f"{agent.id}.json"
-        path.write_text(json.dumps(agent.to_dict(), indent=1), encoding="utf-8")
+        with self.lock:
+            if create_only and path.exists():
+                raise StoreError(
+                    "user_agent_exists", f"Agent {agent.id!r} already exists; choose another name"
+                )
+            temporary = path.with_suffix(f".{uuid.uuid4().hex}.tmp")
+            try:
+                temporary.write_text(json.dumps(agent.to_dict(), indent=1), encoding="utf-8")
+                os.replace(temporary, path)
+            finally:
+                temporary.unlink(missing_ok=True)
         return path
 
     def delete_user_agent(self, agent_id: str) -> None:
