@@ -387,6 +387,13 @@ async def start(app: Any) -> None:
                         "handle": task.handle,
                         "kind": task.kind,
                         "revision": history.revision,
+                        "owner_session_id": task.owner.session_id,
+                        **(
+                            {"invocation_id": task.invocation_id}
+                            if task.backend is not None
+                            and task.backend.owner in {"native", "external_mcp"}
+                            else {}
+                        ),
                     },
                 )
             )

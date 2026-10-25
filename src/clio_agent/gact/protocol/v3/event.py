@@ -240,6 +240,8 @@ def _tool_completed(event: Event, payload: dict[str, Any], session: Any) -> _Pro
 
     del session
     entity_id = str(payload.get("call_id") or "")
+    if isinstance(payload.get("execution"), Mapping):
+        return _Projection("tool.upserted", dict(payload["execution"]), entity_id)
     ok = bool(payload.get("ok"))
     projected = {
         "id": entity_id,

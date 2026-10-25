@@ -174,33 +174,21 @@ def register_messages_routes(app: FastAPI, deps: "GactDeps") -> None:
 
     @app.get("/v1/sessions/{sid}/tools/{call_id}/presentation/{block_id}")
     async def get_tool_presentation_content(
-        sid: str, call_id: str, block_id: str, cursor: int = 0
+        sid: str,
+        call_id: str,
+        block_id: str,
+        cursor: int = 0,
+        result_sha256: str | None = None,
     ) -> dict[str, Any]:
         """Page persisted presentation content within the owning session only."""
 
-        from clio_agent.gact.tool_result_presentation import (
-            presentation_page,
-            recorded_presentation,
-        )
+        from clio_agent.gact.tool_presentation_content import tool_presentation_content
 
         if app.state.sessions.get(sid) is None:
             raise _session_not_found(sid)
-        parts = [part for message in app.state.messages.get(sid, []) for part in message.parts]
-        parts.extend(getattr(app.state, "live_assistant_parts", {}).get(sid, []))
-        for part in reversed(parts):
-            if part.call_id != call_id:
-                continue
-            args = next(
-                (p.input for p in parts if p.call_id == call_id and p.type == "tool_call"), None
-            )
-            presentation = recorded_presentation(part.model_dump(), args) or {}
-            for block in presentation.get("blocks", []):
-                if block["id"] == block_id:
-                    try:
-                        return presentation_page(block, cursor)
-                    except ValueError as exc:
-                        raise HTTPException(status_code=400, detail=str(exc)) from exc
-        raise HTTPException(status_code=404, detail="Presentation content not found in session")
+        return await run_off_loop(
+            tool_presentation_content, app, sid, call_id, block_id, cursor, result_sha256
+        )
 
     @app.get("/v1/sessions/{sid}/messages/search")
     async def search_messages(sid: str, q: str = "") -> dict[str, Any]:
@@ -341,6 +329,7 @@ def register_messages_routes(app: FastAPI, deps: "GactDeps") -> None:
                 ).model_dump(exclude_none=True),
             )
 
+        projection_cursor = str(app.state.bus.latest_event_id(sid))
         # TUI (and SPEC §6.4) expect newest-first with an optional
         # cursor for older pages. We store chronologically so reverse
         # at read time. Apply filters against the chronological list
@@ -469,14 +458,19 @@ def register_messages_routes(app: FastAPI, deps: "GactDeps") -> None:
                 catalogs=session_catalog_resolver(app, sid),
                 active_message_ids=active_ids,
             )
-            snapshot["cursor"] = str(app.state.bus.latest_event_id(sid))
+            from clio_agent.gact.tool_execution_projection import join_task_executions
+
+            snapshot["tools"] = join_task_executions(app, sid, snapshot["tools"])
+            # Replay from before materialization so a concurrent task change is not lost.
+            snapshot["cursor"] = projection_cursor
             # The paging cursor is a MESSAGE id and a different fact from the
             # event cursor above; dropping it left a v3 client with no way to
             # page into the past that a v2 client had.
             snapshot["next_cursor"] = next_cursor
             return JSONResponse(content=snapshot)
 
-        return project_for_request(
+        return await run_off_loop(
+            project_for_request,
             request,
             v3=project_v3,
             v2=lambda: {
