@@ -341,6 +341,155 @@ async def test_human_arrival_during_cancellation_admits_after_settlement(
 
 
 @pytest.mark.asyncio
+async def test_restart_of_failed_parent_settles_only_its_active_descendants(
+    arc: ARCMemory,
+    tmp_path: Path,
+) -> None:
+    """A terminal failed parent cannot restart above live children it already accepted."""
+    from tests.test_gact.task_records import record_assignment_fixture, record_delegation_fixture
+
+    app, owner, root = await create_environment(arc, tmp_path)
+    history = owner.history
+    children = []
+    for index in range(3):
+        children.append(
+            await asyncio.to_thread(
+                record_delegation_fixture,
+                app,
+                root.owner.session_id,
+                handle=f"task_restart_child_{index}",
+            )
+        )
+    unrelated_session = await asyncio.to_thread(
+        app.state.sessions.create,
+        workspace_id="workspace",
+        agent={"id": "unrelated"},
+        title="Unrelated work",
+    )
+    unrelated = await asyncio.to_thread(
+        record_assignment_fixture, app, unrelated_session.id, handle="task_restart_unrelated"
+    )
+    stamp = now()
+    failed = root.model_copy(
+        update={
+            "status": "failed",
+            "raw_status": "failed",
+            "activity": "",
+            "settlement": "confirmed",
+            "terminal_at": stamp,
+            "updated_at": stamp,
+            "supported_actions": ("get_result", "message", "restart"),
+        }
+    )
+    await asyncio.to_thread(history.record_snapshot, failed, observation_id="failed-parent")
+
+    try:
+        reply = await owner.restart(
+            TaskCaller(root.owner.session_id, "human", human_action=True), root.handle
+        )
+        assert reply["restart_requested"] is True
+        restart_job = owner._controls["restart:" + root.handle]
+        await asyncio.wait_for(asyncio.shield(restart_job), 5)
+
+        successor = await history.io.run(history.latest_assignment, root.owner.session_id)
+        assert successor is not None and successor.handle != root.handle
+        successor_details = AssignmentDetails.model_validate(
+            await history.io.run(history.read_content, successor.details)
+        )
+        assert successor_details.predecessor == root.handle
+        for child in children:
+            settled = await history.io.run(history.task_snapshot, child.handle)
+            assert (
+                settled is not None
+                and settled.terminal_at is not None
+                and settled.status == "cancelled"
+                and settled.settlement == "confirmed"
+            )
+        still_active = await history.io.run(history.task_snapshot, unrelated.handle)
+        assert still_active is not None and still_active.terminal_at is None
+        assert still_active.status == "active"
+    finally:
+        await owner.shutdown()
+        await owner.recovery.drain()
+
+
+@pytest.mark.asyncio
+async def test_restart_does_not_launch_when_terminal_parent_descendant_settlement_is_unknown(
+    arc: ARCMemory,
+    tmp_path: Path,
+) -> None:
+    """An unknown physical descendant outcome keeps the old lineage and blocks restart."""
+    app, owner, root = await create_environment(arc, tmp_path)
+    history = owner.history
+    stamp = now()
+    external = TaskSnapshot(
+        handle="task_restart_unknown_external",
+        kind="MCP",
+        tool="external",
+        owner=root.owner.model_copy(
+            update={"assignment_id": "task_restart_unknown_external", "parent_handle": root.handle}
+        ),
+        label="Uncertain external operation",
+        invocation_id="restart-unknown-external",
+        created_at=stamp,
+        updated_at=stamp,
+        status="running",
+        raw_status="running",
+    )
+    failed = root.model_copy(
+        update={
+            "status": "failed",
+            "raw_status": "failed",
+            "activity": "",
+            "settlement": "confirmed",
+            "terminal_at": stamp,
+            "updated_at": stamp,
+            "supported_actions": ("get_result", "message", "restart"),
+        }
+    )
+    await asyncio.to_thread(history.record_snapshot, external, observation_id="unknown-child")
+    await asyncio.to_thread(history.record_snapshot, failed, observation_id="failed-parent")
+
+    async def refuse_cancellation(task: TaskSnapshot) -> dict[str, str]:
+        assert task.handle == external.handle
+
+        def record_uncertainty() -> None:
+            current = history.task_snapshot(task.handle)
+            assert current is not None
+            history.record_snapshot(
+                current.model_copy(
+                    update={
+                        "status": "task_state_uncertain",
+                        "raw_status": "failed",
+                        "settlement": "unknown",
+                        "terminal_at": now(),
+                    }
+                ),
+                observation_id="external-settlement-unknown",
+            )
+
+        await history.io.run(record_uncertainty)
+        return {"error": "external cleanup was not confirmed"}
+
+    owner.cancel_work = refuse_cancellation
+    try:
+        await owner.restart(
+            TaskCaller(root.owner.session_id, "human", human_action=True), root.handle
+        )
+        restart_job = owner._controls["restart:" + root.handle]
+        with pytest.raises(ValueError, match="descendant settlement remains unconfirmed"):
+            await asyncio.wait_for(asyncio.shield(restart_job), 5)
+        latest = await history.io.run(history.latest_assignment, root.owner.session_id)
+        assert latest is not None and latest.handle == root.handle
+        assert owner._control_holds >= {root.handle}
+        unknown = await history.io.run(history.task_snapshot, external.handle)
+        assert unknown is not None and unknown.settlement == "unknown"
+    finally:
+        await owner.shutdown()
+        await owner.recovery.drain()
+
+
+@pytest.mark.asyncio
 async def test_consumed_plain_question_does_not_requeue_healthy_recovery(
     arc: ARCMemory, tmp_path: Path
 ) -> None:
