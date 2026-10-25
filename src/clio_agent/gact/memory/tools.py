@@ -283,6 +283,7 @@ def update_memory(fact_id: str, fact: str, reason: str = "") -> dict[str, Any]:
         return {
             "tool": "update_memory",
             "fact": _fact_wire(new),
+            "previous_fact": _fact_wire(old),
             "superseded": fact_id,
             "memory": _notice("updated", written, new.id),
         }
@@ -308,6 +309,8 @@ def forget_memory(fact_id: str = "", name: str = "", reason: str = "") -> dict[s
         return {
             "tool": "forget_memory",
             "forgotten": list(forgotten),
+            "forgotten_facts": [_fact_wire(fact) for fact in stored.document.live_facts],
+            "document_removed": True,
             "memory": _notice("forgotten", stored),
         }
     for _attempt in range(_CONFLICT_RETRIES):

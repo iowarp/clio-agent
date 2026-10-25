@@ -132,6 +132,13 @@ def test_a_resumed_run_proposing_again_makes_no_duplicate(service: MemoryService
     again = store.propose(**kwargs)  # type: ignore[arg-type]
     assert first.id == again.id and len(store.pending()) == 1
     accepted = store.accept(first.id, decided_by="user", edited_facts=["Project id is CSC124"])
+    actual = service.require(first.target)
+    assert accepted.applied_text == actual.text
+    assert accepted.applied_before_text != accepted.applied_text
+    assert "CSC124" in accepted.applied_text
+    assert "CSC123" in accepted.proposed_text
+    assert accepted.proposed_text != accepted.applied_text
+
     assert accepted.status == "accepted"
     doc = service.require("user/environments/frontier").document
     assert [f.text for f in doc.live_facts] == ["Project id is CSC124"]

@@ -80,6 +80,8 @@ class Proposal:
     base_text: str = ""
     proposed_text: str = ""
     notes: list[str] = field(default_factory=list)
+    applied_before_text: str = ""
+    applied_text: str | None = None
 
     @property
     def needs_review(self) -> bool:
@@ -313,17 +315,28 @@ class ProposalStore:
         ]
         author = Author("proposal", proposal.id, session=proposal.origin)
         document, base_sha = apply_change(self._service, proposal, evidence)
+        before = self._service.get(proposal.target)
+        if (before.sha if before else "") != base_sha:
+            from clio_agent.gact.memory.service import MemoryConflict  # noqa: PLC0415
+
+            raise MemoryConflict(
+                proposal.target, expected=base_sha, current=before.sha if before else ""
+            )
         if document is None:
             self._service.remove(proposal.target, expected_sha=base_sha, author=author)
+            applied_text = ""
         else:
-            self._service.write(
+            written = self._service.write(
                 proposal.target, document, expected_sha=base_sha or None, author=author
             )
+            applied_text = written.text
         for name in proposal.merge_from if proposal.change == "merge" else []:
             other = self._service.get(name)
             if other is not None:
                 self._service.remove(name, expected_sha=other.sha, author=author)
         proposal.status = "accepted"
+        proposal.applied_before_text = before.text if before else ""
+        proposal.applied_text = applied_text
         proposal.decided_by = decided_by
         proposal.decided_at = _now()
         self._put(proposal)

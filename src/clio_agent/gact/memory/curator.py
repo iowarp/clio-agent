@@ -82,6 +82,12 @@ def curator_proposal(
         handle=context.active_assignment_handle() or session.id,
         auto_accept=str(setting("memory.auto_accept", "user_stated")),
     )
+    from clio_agent.gact.memory.change_preview import fact_changes, snapshot_label  # noqa: PLC0415
+
+    before = (
+        proposal.applied_before_text if proposal.applied_text is not None else proposal.base_text
+    )
+    after = proposal.applied_text if proposal.applied_text is not None else proposal.proposed_text
     return {
         "tool": "propose_memory_change",
         "proposal": proposal.id,
@@ -89,6 +95,8 @@ def curator_proposal(
         "change": proposal.change,
         "status": proposal.status,
         "sources": proposal.sources,
+        "description": snapshot_label(before, after, proposal.target),
+        "changes": fact_changes(before, after),
     }
 
 

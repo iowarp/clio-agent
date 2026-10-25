@@ -617,7 +617,17 @@ def proposal_wire(proposal: Any) -> dict[str, Any]:
     """The JSON shape of a proposal for the inbox."""
     from dataclasses import asdict  # noqa: PLC0415
 
-    return {**asdict(proposal), "needs_review": proposal.needs_review}
+    from clio_agent.gact.memory.change_preview import fact_changes, snapshot_label
+
+    return {
+        **asdict(proposal),
+        "needs_review": proposal.needs_review,
+        "changes": fact_changes(proposal.base_text, proposal.proposed_text),
+        "applied_changes": fact_changes(proposal.applied_before_text, proposal.applied_text)
+        if proposal.applied_text is not None
+        else None,
+        "target_label": snapshot_label(proposal.base_text, proposal.proposed_text, proposal.target),
+    }
 
 
 def _session_usage(session: Any) -> dict[str, Any]:

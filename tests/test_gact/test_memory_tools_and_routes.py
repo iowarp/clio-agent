@@ -89,14 +89,17 @@ def test_remember_correct_and_forget_in_a_root_conversation(client: TestClient) 
         assert forgotten["fact"]["text"] == "My Frontier project id is CSC456"
         # Each write's row names the fact itself; the link opens its document.
         summary, blocks, subject = present_long_term_memory("create_memory", {}, created)
-        assert (summary, subject) == ("Memory updated", "fact")
-        assert blocks[0] == {"id": "fact", "type": "text", "text": created["fact"]["text"]}
-        assert blocks[1]["label"] == "Edit in memory"
+        assert (summary, subject) == ("Memory updated", "memory")
+        assert blocks[0]["type"] == "markdown"
+        assert created["fact"]["text"] in blocks[0]["text"]
+        assert blocks[1]["label"] == created["memory"]["description"]
         assert blocks[1]["uri"] == f"{name}#{fact_id}"  # opens the page on this fact
         summary, blocks, subject = present_long_term_memory("forget_memory", {}, forgotten)
-        assert (summary, subject) == ("Memory forgotten", "fact")
+        assert (summary, subject) == ("Memory forgotten", "memory")
         assert forgotten["document_removed"] is True
-        assert blocks == [{"id": "fact", "type": "text", "text": forgotten["fact"]["text"]}]
+        assert forgotten["fact"]["text"] in blocks[0]["text"]
+        assert not any(block["type"] == "link" for block in blocks)
+        assert updated["previous_fact"]["text"] == created["fact"]["text"]
         assert memory_tools.memory_search("Frontier project id")["hits"] == []
     finally:
         _leave(tokens)
