@@ -127,14 +127,10 @@ def create_lm(config: LMProviderConfig) -> dspy.LM:
 
     extras = build_request_kwargs(config)
     connection = _connection_kwargs(config)
-    # An API key that reports rate limits runs on engines that own its connection.
-    engines = _usage_recording_engines(config, model_name, connection, extras)
-    if engines:
-        connection = {}
     lm = _construct_lm(
         model=model_name,
         # A keyless local server has no credential: an empty key is omitted, never sent.
-        **({"api_key": config.api_key} if config.api_key and not engines else {}),
+        **({"api_key": config.api_key} if config.api_key else {}),
         max_tokens=config.max_tokens or None,
         model_type="chat",
         # iowarp/clio-agent#8: disable DSPy LM cache so token usage
@@ -145,7 +141,6 @@ def create_lm(config: LMProviderConfig) -> dspy.LM:
         cache=False,
         **connection,
         **extras,
-        **engines,
     )
     # Only the Anthropic Messages API takes images/documents inside a tool result;
     # every chat-completions server takes text-only tool rows (lm15 refuses media there).
@@ -157,28 +152,6 @@ def create_lm(config: LMProviderConfig) -> dspy.LM:
     # engines retain their own recovery policy.
     lm._clio_stream_recovery = _resolved_litellm_prefix(config) == "openai"
     return _record_identity(lm, config)
-
-
-def _usage_recording_engines(
-    config: LMProviderConfig, model: str, connection: dict[str, str], extras: dict[str, Any]
-) -> dict[str, Any]:
-    """An Anthropic or OpenAI API key's engines, which record its rate-limit headers (M-D12)."""
-    from clio_agent.providers.usage.recording_transport import (  # noqa: PLC0415
-        RECORDED_ACCOUNTS,
-        recording_engines,
-    )
-
-    account = config.provider_id or str(config.provider)
-    if account not in RECORDED_ACCOUNTS or not config.api_key:
-        return {}
-    engine, async_engine = recording_engines(
-        account,
-        model,
-        api_key=config.api_key,
-        api_base=connection.get("api_base", ""),
-        timeout=extras.get("timeout"),
-    )
-    return {"engine": engine, "async_engine": async_engine}
 
 
 def _record_identity(lm: Any, config: LMProviderConfig) -> Any:

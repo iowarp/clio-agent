@@ -5,7 +5,6 @@ from __future__ import annotations
 from collections.abc import Iterable, Mapping
 from typing import Any
 
-from clio_agent.providers.usage.api_key_headers import api_key_snapshot
 from clio_agent.providers.usage.readers import (
     claude_snapshot,
     codex_snapshot_from_event,
@@ -41,17 +40,7 @@ def record_codex_event(event: Mapping[str, Any]) -> None:
         USAGE_BOARD.record(snapshot)
 
 
-def record_api_key_headers(
-    account: str, headers: Mapping[str, str] | Iterable[tuple[str, str]]
-) -> None:
-    """Record the windows in an Anthropic or OpenAI API-key response's headers."""
-
-    if snapshot := api_key_snapshot(account, headers):
-        USAGE_BOARD.record(snapshot)
-
-
 __all__ = [
-    "record_api_key_headers",
     "record_codex_event",
     "CLAUDE_CODE_ACCOUNT",
     "CODEX_ACCOUNT",
