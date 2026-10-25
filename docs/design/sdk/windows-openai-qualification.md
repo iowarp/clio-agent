@@ -2,11 +2,105 @@
 
 Run: 2026-10-24/25, America/Chicago (trace timestamps are UTC). **Overall: fail.** Live backend successes do not erase the failures below. No OpenAI API key was available.
 
+## Ongoing semantic qualification
+
+The 48-hour investigation started at **2026-10-25 04:50:27 UTC** and ends at
+**2026-10-27 04:50:27 UTC**. It investigates whether people can accomplish useful
+work across the product, expanding from discoveries and contradictions. The
+earlier mechanism receipts below establish only their stated scope. They do not
+establish research quality, autonomous orchestration, useful planning, or an
+acceptable overall experience. Windows CI was already known to pass.
+
+The first substantial journey asked the shipped Deep Researcher for a defensible
+storage decision for a climate collaboration: 2 TB of arrays growing by 250 GB a
+month, a 40 GB observation table, 15 xarray/pandas users, shared storage now and
+object storage later, with a restriction against retaining three array copies.
+The request required inspected primary sources, reconciled tradeoffs, a phased
+migration, measurable validation, and a saved report. It named no tools or flow.
+
+**Result: failed before producing a report.** In session
+`sess_3068a44f70c2`, Codex / `gpt-6.1-sol` autonomously selected `deep-research`.
+The planner separated baseline HDF5/NetCDF viability from Zarr implementation and
+layout questions, with explicit evidence requirements and cautions against
+universal performance claims. These are useful planning observations; the
+research and recommendation remain unqualified.
+
+Concurrent research startup hit [#1855](https://github.com/iowarp/clio-agent/issues/1855):
+writers shared a resolved-plugin staging filename. One replaced it and another
+raised `FileNotFoundError` / WinError 2. The flow session
+`sess_ea22642cf09416bd60fe39619e6e86cd` failed while two accepted researchers
+continued. The parent accurately said no verified report had been produced.
+Later, five document-fetch permission requests appeared beneath that finished
+failure. Cancellation of the surviving children was requested and their terminal
+states captured; no duplicate research run was assumed from observation timeouts.
+
+The repair gives each cache writer its own staging file and serializes immutable
+publication under the existing store lock. Unique filenames alone were
+insufficient on Windows: synchronized replacements reproduced WinError 5. The
+concurrent regression and all nine plugin-store checks pass with serialized
+publication. On the loaded repair, the original conversation retained its brief
+and launched all six researchers successfully. Research quality and final
+delivery still require verification.
+
+The retry exposed a consequential handoff defect,
+[#1857](https://github.com/iowarp/clio-agent/issues/1857). The first critic
+received only later addenda for directions d1, d4 and d5, although their child
+transcripts contain substantive baseline, capacity/migration and benchmark
+packets. For example, d5's handoff contained only 336 characters of provenance
+closure while its transcript contains an earlier 18,826-character benchmark
+packet. Public text classified as `next_thought` was omitted from the final
+prediction's `answer`, which the flow forwards as evidence. The critic correctly
+reported missing evidence and launched six follow-up branches. This is useful
+independent scrutiny, but also avoidable repeated work. The runtime/output
+contract is under investigation; no repair or successful final research outcome
+is claimed for this defect yet.
+
+The same journey produced 17 source-reading permission requests. The old cards
+hid source URLs and intent inside JSON. [GACT PR #681](https://github.com/iowarp/gact-tui/pull/681)
+shows those facts before technical details and retains accessible consent
+controls, with desktop/phone rendered review. Its subsequent folder-disclosure
+and save-label refinements still need final live repetition. Choosing workspace
+consent released only one request, leaving 16 covered reads parked in the same
+workspace ([#1856](https://github.com/iowarp/clio-agent/issues/1856)). Those reads
+were individually approved as a recorded workaround. The backend repair now
+applies saved grants through the existing matcher/resolution path, with tests
+covering scope, higher-priority asks/denies, special gates and source-grant
+provenance. Loading and live-repeating that repair remains outstanding.
+
+The earlier queued-budget failure also reproduced with the real task layer:
+all three prepared children ran after the first spent the budget. The repair
+checks recorded child-subtree spend when work is admitted after its execution
+slot opens. Direct and nested-flow regression cases now refuse the later
+children. This is a stop-admitting-work budget; it cannot retract tokens already
+spent by an in-flight request. Live re-verification of the recorded budget
+scenario remains outstanding.
+
+The isolated runtime initially had no search backend. Its typed diagnostic
+identified that condition; it is a setup limitation, not evidence of bad research
+reasoning. Through the normal Infrastructure UI, native SearXNG was installed in
+the disposable root and reached ready state. A subsequent normal stop retired
+every worker and descendant in the observed creation-identity record. Installation
+took about 24 seconds after target inspection. Its progress UI incorrectly called
+a search-service step "Prepare the model"; permission-request clarity and
+late attention after a failed flow remain product concerns to investigate and fix.
+
+Evidence under the disposable root: `research-storage-plain.txt`,
+`evidence/research-submitted.json`, recursive `evidence/journey-research-*.json`
+(complete conversations, model requests, task trees, and flow views),
+`evidence/shots/research-failed-1440-0-result.png`,
+`evidence/searxng-process-observation.json`, and
+`evidence/searxng-first-stop.json`. The evolving charter and execution state are
+`GOAL-48H.md` and `CAMPAIGN-STATE.json` there.
+
 ## Failures first
 
 | Defect | Issue | Disposition |
 | --- | --- | --- |
-| Token budget admits queued calls after exhaustion, even with concurrency one | [clio-agent#1849](https://github.com/iowarp/clio-agent/issues/1849) | Open; live failure |
+| Research critic receives only addenda while substantial earlier public answers remain in child transcripts | [clio-agent#1857](https://github.com/iowarp/clio-agent/issues/1857) | Live semantic failure; repair under investigation |
+| Workspace consent leaves matching parallel tool requests parked | [clio-agent#1856](https://github.com/iowarp/clio-agent/issues/1856) | Source repaired; boundary checks passed; loaded live repeat pending |
+| Research permission cards hide source and intent in JSON | [gact-tui#680](https://github.com/iowarp/gact-tui/issues/680) | Source repaired in companion PR #681; rendered before/after; final refinements pending live repetition |
+| Concurrent research startup races while pinning the same plugin resolution | [clio-agent#1855](https://github.com/iowarp/clio-agent/issues/1855) | Repaired; concurrent regression passed; six real research branches launched on retry |
+| Token budget admits queued calls after exhaustion, even with concurrency one | [clio-agent#1849](https://github.com/iowarp/clio-agent/issues/1849) | Source repaired; direct/nested queued admission checks passed; live repeat pending |
 | Settings-added MCP service missing from new turns until restart | [clio-agent#1852](https://github.com/iowarp/clio-agent/issues/1852) | Open; restart recovery verified |
 | Modern MCP list-change event does not refresh the callable toolset | [clio-agent#1853](https://github.com/iowarp/clio-agent/issues/1853) | Open; independent subscribed control passed |
 | One shell call asks Allow once twice | [clio-agent#1850](https://github.com/iowarp/clio-agent/issues/1850) | Open; real permission receipts retained |
@@ -29,7 +123,7 @@ The pre-existing edit to `docs/design/agent-facing-async-tasks.md`, the GACT unt
 
 Every qualification runtime, generated workspace, session, fixture, log, screenshot, dependency, browser profile and cache is beneath:
 
-`D:LibrariesDocumentsprojectsclio-workspacewindows-codex-20261024`
+`D:\Libraries\Documents\projects\clio-workspace\windows-codex-20261024`
 
 `environment.ps1` redirects HOME/USERPROFILE, APPDATA/LOCALAPPDATA, TEMP, XDG, CODEX_HOME, all CLIO roles, uv/npm/pip/ruff/mypy caches and build output there. Installed executables and the existing sign-in were read from their normal locations; no intentional C: writes were made. The sign-in copy stays private in this root and is not committed. A Python write audit guard rejects out-of-root runtime writes, while the separate native fence probe checks the actual Windows child boundary. This is not a machine-wide filesystem audit of the Codex desktop application's own bookkeeping.
 
