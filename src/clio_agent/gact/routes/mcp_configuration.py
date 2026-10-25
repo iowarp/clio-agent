@@ -107,10 +107,15 @@ _FIRST_START_PROBE_RETRIES = 12
 async def _probe_user_mcp_server(spec: Mapping[str, Any]) -> tuple[list[str], str | None]:
     """Return live tools and a degraded detail for one saved spec."""
 
+    transport_spec = dict(spec)
+    if "transport" not in transport_spec:
+        transport_spec["transport"] = str(spec.get("type") or "").strip().lower() or (
+            "http" if spec.get("url") and not spec.get("command") else "stdio"
+        )
     launcher = Path(str(spec.get("command") or "")).name
-    fetching = spec.get("transport", "stdio") == "stdio" and launcher in _FETCHING_LAUNCHERS
+    fetching = transport_spec["transport"] == "stdio" and launcher in _FETCHING_LAUNCHERS
     try:
-        transport = transport_from_spec(dict(spec))
+        transport = transport_from_spec(transport_spec)
         with probe_server_context(
             "", timeout_retries=_FIRST_START_PROBE_RETRIES if fetching else None
         ):
