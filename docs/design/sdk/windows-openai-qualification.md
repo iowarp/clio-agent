@@ -52,8 +52,24 @@ packet. Public text classified as `next_thought` was omitted from the final
 prediction's `answer`, which the flow forwards as evidence. The critic correctly
 reported missing evidence and launched six follow-up branches. This is useful
 independent scrutiny, but also avoidable repeated work. The runtime/output
-contract is under investigation; no repair or successful final research outcome
-is claimed for this defect yet.
+contract now carries canonical public response parts separately from the final
+value. Research, council, arena and workflow consumers use the complete public
+response where they need authored evidence. A real ReAct regression with a late
+task result and a downstream workflow reviewer passes; 47 focused assignment,
+hook and orchestration checks and 27 initial/marketplace checks passed. The
+repaired source still needs the original live journey repeated.
+
+The unpatched retry eventually completed three review rounds (18 researchers,
+three critics), with 25 verified claims, five rejected claims and six unresolved
+gaps. Its flow recorded 14,269,750 tokens including cache reads and an estimated
+$16.26, not a claim of a Codex subscription charge. The report was saved, but
+contained a stale assertion that persistence was outstanding. The coordinator
+then delegated artifact persistence and registered another copy. Independent
+readback found identical text after newline normalization; the coordinator's
+final answer explicitly explained the stale limitation. This delivery friction
+and the critic's repeated demands for unavailable project measurements need
+further investigation. A produced report does not erase the lost evidence or
+establish overall research quality.
 
 The same journey produced 17 source-reading permission requests. The old cards
 hid source URLs and intent inside JSON. [GACT PR #681](https://github.com/iowarp/gact-tui/pull/681)
@@ -96,7 +112,7 @@ Evidence under the disposable root: `research-storage-plain.txt`,
 
 | Defect | Issue | Disposition |
 | --- | --- | --- |
-| Research critic receives only addenda while substantial earlier public answers remain in child transcripts | [clio-agent#1857](https://github.com/iowarp/clio-agent/issues/1857) | Live semantic failure; repair under investigation |
+| Research critic receives only addenda while substantial earlier public answers remain in child transcripts | [clio-agent#1857](https://github.com/iowarp/clio-agent/issues/1857) | Source repaired; late-result workflow regression passed; original live repetition pending |
 | Workspace consent leaves matching parallel tool requests parked | [clio-agent#1856](https://github.com/iowarp/clio-agent/issues/1856) | Source repaired; boundary checks passed; loaded live repeat pending |
 | Research permission cards hide source and intent in JSON | [gact-tui#680](https://github.com/iowarp/gact-tui/issues/680) | Source repaired in companion PR #681; rendered before/after; final refinements pending live repetition |
 | Concurrent research startup races while pinning the same plugin resolution | [clio-agent#1855](https://github.com/iowarp/clio-agent/issues/1855) | Repaired; concurrent regression passed; six real research branches launched on retry |

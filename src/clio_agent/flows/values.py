@@ -34,7 +34,7 @@ def render_input(value: Any) -> str:
     if isinstance(value, str):
         return value
     if isinstance(value, CallResult):
-        return value.answer
+        return value.response_text
     try:
         return "Input:\n```json\n" + json.dumps(value, indent=2, sort_keys=True) + "\n```"
     except (TypeError, ValueError):
@@ -58,8 +58,10 @@ def _plain(value: Any) -> Any:
 class CallResult(Mapping[str, Any]):
     """A settled call's result: its outputs, readable as a mapping or by attribute.
 
-    ``result.answer`` is the child's answer; any other attribute reads the output
-    of that name, then the child's typed ``workflow_state`` section of that name.
+    ``result.answer`` is the child's final value. ``result.response_text`` reads
+    its complete public response in order, including earlier material followed
+    by an addendum. Other attributes read the output of that name, then the
+    child's typed ``workflow_state`` section of that name.
     """
 
     def __init__(
@@ -93,6 +95,25 @@ class CallResult(Mapping[str, Any]):
         if isinstance(self._value, Mapping):
             return str(self._value.get("answer", "") or "")
         return "" if self._value is None else str(self._value)
+
+    @property
+    def response_text(self) -> str:
+        """Authored public text, with superseded revisions excluded.
+
+        Conversation results carry canonical ``response_parts``. Tool values and
+        older results without that transcript projection use their final answer.
+        This is an ordered response, not a synthesized replacement for ``answer``.
+        """
+
+        if not isinstance(self._value, Mapping) or "response_parts" not in self._value:
+            return self.answer
+        return "\n\n".join(
+            part["text"]
+            for part in self._value["response_parts"]
+            if part.get("type") == "text"
+            and part.get("text")
+            and not part.get("metadata", {}).get("superseded_by")
+        )
 
     @property
     def workflow_state(self) -> dict[str, Any]:

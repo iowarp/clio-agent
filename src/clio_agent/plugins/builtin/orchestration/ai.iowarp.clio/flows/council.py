@@ -77,7 +77,7 @@ council = sequence(choice(terminal("member 1"), terminal("member 2"), terminal("
         ]
         views = await ctx.gather(calls, limit=len(calls))
         labelled = [
-            f"{view or member}: {result.answer}"
+            f"{view or member}: {result.response_text}"
             for (member, view), result in zip(pairs, views, strict=True)
         ]
         handles = [result.handle for result in views]
@@ -96,7 +96,7 @@ council = sequence(choice(terminal("member 1"), terminal("member 2"), terminal("
             )
             who.append(_on("synthesis", final.model))
             return {
-                "answer": f"{final.answer}\n\nMembers:\n" + "\n".join(who),
+                "answer": f"{final.response_text}\n\nMembers:\n" + "\n".join(who),
                 "members": handles,
                 "synthesizer": final.handle,
                 **asked,

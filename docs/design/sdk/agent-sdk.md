@@ -84,6 +84,21 @@ class Factorio(ScienceAgent):
 
 **Flow.** A flow is the agent's orchestration program, a `dspy.Module` whose `forward(task, ctx)` calls subagents, peers and tools through the runtime context. It lives in the `flows/` folder of the plugin that contributes it, and the agent selects one by id. `react` from `core` is the default. Every `ctx` call is an ordinary CLIO task, so flows get handles, Stop, cancellation and restart recovery from the task layer. The orchestration document defines the primitives and their semantics.
 
+A conversation call's final value and its public response are distinct.
+`result.answer` (also `result["answer"]`) remains the final value; use it for
+scalar parsing or an explicit value reference. `result.response_text` presents
+the responder's public text in arrival order, including substantial material
+followed by an addendum when asynchronous results arrive. Research, comparison
+and synthesis consumers use this complete response. It does not synthesize a
+new conclusion. Canonical `response_parts` in the durable task result retain
+part ids, authors and revision links; the text projection excludes superseded
+parts. Provider thinking, tool payloads and other agents' prose are excluded.
+Parts survive assignment yield/resume. Tool and historical results without
+`response_parts` present their final answer. Passing a `CallResult` directly as
+a child's input uses `response_text`; returning it as a flow value retains its
+final-value contract. Workflows pass additional public response text in implicit
+dependency context while explicit `$step` references retain final values.
+
 ```python
 # ai.iowarp.clio/flows/council.py
 class Council(Flow):

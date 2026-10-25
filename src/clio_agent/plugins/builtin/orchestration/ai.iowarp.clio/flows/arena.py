@@ -62,7 +62,7 @@ arena = sequence(choice(terminal("entry 1"), terminal("entry 2"), terminal("entr
                 for i, c in enumerate(self.contestants)
             ]
         )
-        numbered = [f"[{n}] {entry.answer}" for n, entry in enumerate(entries, 1)]
+        numbered = [f"[{n}] {entry.response_text}" for n, entry in enumerate(entries, 1)]
         verdict = await ctx.step(self._verdict, text, numbered)
         winner = verdict["winner"]
         if not 1 <= winner <= len(entries):
@@ -78,11 +78,11 @@ arena = sequence(choice(terminal("entry 1"), terminal("entry 2"), terminal("entr
         else:
             await ctx.record_event({"event": "votes_not_recorded", "reason": "no_workspace"})
         others = "\n\n".join(
-            f"[{n}] {entry.answer}" for n, entry in enumerate(entries, 1) if n != winner
+            f"[{n}] {entry.response_text}" for n, entry in enumerate(entries, 1) if n != winner
         )
         # The caller reads the answer: it carries the verdict, not only the winning text.
         answer = (
-            f"{entries[winner - 1].answer}\n\nJudge's choice: entry [{winner}] of {len(entries)}. "
+            f"{entries[winner - 1].response_text}\n\nJudge's choice: entry [{winner}] of {len(entries)}. "
             f"{verdict['rationale']}\n\nOther entries:\n\n{others}"
         )
         return {

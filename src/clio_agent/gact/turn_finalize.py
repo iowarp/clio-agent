@@ -737,6 +737,15 @@ def turn_outputs(state: Any) -> dict[str, Any]:
     outputs = (
         _prediction_summary(state.pred) if state.pred is not None else {"answer": state.answer_text}
     )
+    from clio_agent.gact.assignment_response import response_parts
+
+    transcript = getattr(state, "transcript", None)
+    if transcript is not None:
+        responder = state.selected_agent or state.invocation_agent_id or "main"
+        outputs["response_parts"] = response_parts(
+            transcript.snapshot(),
+            {responder, state.active_agent_id or state.invocation_agent_id or "main"},
+        )
     if state.tools_called:
         # The turn's merged tool calls (the prediction's trace plus every call the
         # tool observer saw): a plan reads an editor's proposals from them.

@@ -281,20 +281,26 @@ def _new_assignment(
 
 
 def assignment_outputs(history: Any, details: AssignmentDetails, outputs: Any) -> Any:
-    """A turn's outputs, carrying the tool calls of the assignment's earlier turns first.
+    """A turn's outputs, retaining earlier tool calls and public response parts.
 
     An assignment can span turns: a child that yields on a question resumes once it is
-    answered. Its result is what the assignment did, so an editor's proposal made before
-    it yielded still reaches the workflow that reads its tool calls.
+    answered. An editor's proposals and authored evidence from before that yield
+    still reach the caller. The final value remains the completing turn's answer.
     """
 
     if not details.last_output or not isinstance(outputs, dict):
         return outputs
     earlier = history.read_content(details.last_output)
-    calls = earlier.get("tools_called") if isinstance(earlier, dict) else None
-    if not calls:
+    if not isinstance(earlier, dict):
         return outputs
-    return {**outputs, "tools_called": [*calls, *(outputs.get("tools_called") or [])]}
+    merged = dict(outputs)
+    if calls := earlier.get("tools_called"):
+        merged["tools_called"] = [*calls, *(outputs.get("tools_called") or [])]
+    if parts := earlier.get("response_parts"):
+        from clio_agent.gact.assignment_response import merge_response_parts
+
+        merged["response_parts"] = merge_response_parts(parts, outputs.get("response_parts") or [])
+    return merged if merged != outputs else outputs
 
 
 def _finish_segment(

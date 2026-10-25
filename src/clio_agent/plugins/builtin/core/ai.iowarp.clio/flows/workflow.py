@@ -170,8 +170,15 @@ class _WorkflowRun:
     def _dependency(self, step_id: str) -> Any:
         result = self.results.get(step_id)
         answer = getattr(result, "answer", "")
+        response = getattr(result, "response_text", answer)
         state = getattr(result, "workflow_state", {}) if result is not None else {}
-        return {"answer": answer, "workflow_state": state} if state else answer
+        if state or response != answer:
+            return {
+                "answer": answer,
+                **({"response_text": response} if response != answer else {}),
+                **({"workflow_state": state} if state else {}),
+            }
+        return answer
 
     def summary(self) -> dict[str, Any]:
         return {
@@ -258,7 +265,7 @@ class _WorkflowRun:
             result = self.results[step_id]
             model = str(getattr(result, "model", "") or "")
             label = f"{step_id}, on {model}" if model else step_id
-            return f"[{label}]\n{str(getattr(result, 'answer', '')).strip()}"
+            return f"[{label}]\n{str(getattr(result, 'response_text', '')).strip()}"
 
         earlier = [n for n in self.steps if n in self.results and n not in sinks]
         answer = "\n\n".join(section(n) for n in sinks)
