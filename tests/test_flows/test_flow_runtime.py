@@ -146,6 +146,35 @@ def test_model_call_limit_is_typed(flow_app: TestClient) -> None:
     assert error.get("details", {}).get("limit") == "max_model_calls"
 
 
+@pytest.mark.parametrize("target", ["direct", "nested"])
+def test_budget_refuses_queued_children_after_the_first_spends_it(
+    flow_app: TestClient, target: str
+) -> None:
+    """Calls prepared together must recheck spend when their execution slot opens."""
+    from clio_agent.gact import context
+    from tests.test_flows.conftest import default_program
+
+    executed: list[str] = []
+
+    def spending_program(question: str = "", **kwargs: Any) -> Any:
+        executed.append(question)
+        flow_app.app.state.sessions.update(
+            context.active_session_id(), add_tokens_input=10, add_tokens_output=1
+        )
+        return default_program(question, **kwargs)
+
+    flow_app.app.state.flow_program["run"] = spending_program
+    sid = new_session(flow_app, "clio/budgeter")
+    post(flow_app, sid, target)
+    assert text_of(_answer(flow_app, sid)) == "CallResult,FlowLimitExceeded,FlowLimitExceeded"
+    assert executed == ["budgeted part 0"]
+    (row,) = _checkpoint(flow_app, sid)["calls"].values()
+    history = flow_app.app.state.task_history
+    child_ids = {row["session_id"], *history.session_tree_ids(row["session_id"])}
+    children = [flow_app.app.state.sessions.get(child_id) for child_id in child_ids]
+    assert sum(child.tokens_input + child.tokens_output for child in children) == 11
+
+
 def test_ask_waits_on_a_question_task(flow_app: TestClient) -> None:
     sid = new_session(flow_app, "clio/askerer")
     post(flow_app, sid, "go")

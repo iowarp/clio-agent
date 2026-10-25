@@ -31,6 +31,7 @@ from collections.abc import AsyncIterator, Callable, Iterable, Mapping
 from pathlib import Path
 from typing import Any
 
+from clio_agent.flows.budget import FlowBudget
 from clio_agent.flows.call_metadata import child_model, child_session_metadata
 from clio_agent.flows.journal import FlowJournal, digest
 from clio_agent.flows.outcomes import (
@@ -137,7 +138,7 @@ class FlowContext:
         self._open_lock = asyncio.Lock()
         self._occurrences: dict[str, int] = {}
         self._model_calls = 0
-        self._spent_tokens = 0
+        self._budget = FlowBudget(app, self.journal, self.limits["budget_tokens"])
         concurrency = self.limits["max_concurrency"]
         self._slots = asyncio.Semaphore(concurrency if concurrency > 0 else 1_000_000)
         self.workflow_state: dict[str, Any] = {}
@@ -554,14 +555,6 @@ class FlowContext:
                 limit="max_model_calls",
                 target=name,
             )
-        budget = self.limits["budget_tokens"]
-        if budget and self._spent_tokens >= budget:
-            raise FlowLimitExceeded(
-                f"flow {self.journal.flow_id} spent its {budget}-token budget",
-                limit="budget_tokens",
-                spent=self._spent_tokens,
-                target=name,
-            )
         if kind == "flow":
             max_depth = self.limits["max_depth"]
             if max_depth and self._depth + 1 > max_depth:
@@ -585,6 +578,7 @@ class FlowContext:
         row = self.journal.call(call.invocation)
         if row is not None and row.get("handle"):
             return str(row["handle"])
+        await self._budget.check(call.name)
         app = self.app
         agent_id = "self" if call.kind == "flow" else call.name
         session_metadata = child_session_metadata(call, self._depth + 1, self.journal.run_id)
@@ -673,7 +667,6 @@ class FlowContext:
             raise CallFailed(
                 f"{kind} {name!r}: {outcome['error']}", handle=handle, error=outcome["error"]
             )
-        await self._account(outcome)
         if status != "completed":
             await self._settle(invocation, status or "unknown")
             exception = STATUS_OUTCOMES.get(status, CallFailed)
@@ -703,23 +696,6 @@ class FlowContext:
         row = self.journal.call(invocation)
         if row is not None and row.get("status") != status:
             await self.journal.record_call(invocation, {**row, "status": status})
-
-    async def _account(self, outcome: Mapping[str, Any]) -> None:
-        """Add the child's model tokens to the run's spend (the budget limit)."""
-
-        if not self.limits["budget_tokens"]:
-            return
-        row = next(
-            (
-                r
-                for r in self.journal.content["calls"].values()
-                if r.get("handle") == outcome.get("handle")
-            ),
-            None,
-        )
-        session = self.app.state.sessions.get(str((row or {}).get("session_id") or ""))
-        if session is not None:
-            self._spent_tokens += int(session.tokens_input or 0) + int(session.tokens_output or 0)
 
     async def _run_tool(self, call: FlowCall) -> CallResult:
         recorded = self.journal.step(call.invocation)
