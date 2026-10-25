@@ -19,7 +19,7 @@ import sys
 import threading
 import time
 import uuid
-from contextlib import contextmanager, suppress
+from contextlib import contextmanager, nullcontext, suppress
 from pathlib import Path
 from typing import Any, Iterator
 from urllib.parse import urlsplit
@@ -704,7 +704,8 @@ def control(request: dict[str, Any]) -> dict[str, Any]:
             # is nothing to undo, so do not raise the same refusal again (F020).
             return {"phase": "untouched", "installed": False, "running": False, "serving": False}
         raise
-    with locked(root):
+    # Read-only status must not occupy the lock a starting worker needs.
+    with locked(root) if action != "status" else nullcontext():
         if action in {"install", "start"}:
             launch(root, request)
         elif action in {"stop", "uninstall"}:
@@ -783,7 +784,7 @@ def control(request: dict[str, Any]) -> dict[str, Any]:
             return {"logs": "\n".join(tails)[-16000:]}
         elif action not in {"status", "prepare"}:
             raise ValueError("Unsupported native service action")
-        return observation(root, key=request.get("api_key") or "")
+    return observation(root, key=request.get("api_key") or "")
 
 
 if __name__ == "__main__":

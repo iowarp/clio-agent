@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import csv
 import ctypes
+import errno
 import io
 import json
 import os
@@ -27,6 +28,7 @@ from urllib.request import ProxyHandler, Request, build_opener
 
 _JOB: Any = None
 LOG_GENERATIONS = 3
+WINDOWS_LOCK_WAIT_SECONDS = 60.0
 
 
 def write_json(path: Path, value: dict[str, Any]) -> None:
@@ -106,7 +108,7 @@ def locked(root: Path) -> Iterator[None]:
 
             stream.seek(0)
             # Lock one byte beyond EOF if this is a new file; Windows permits it.
-            msvcrt.locking(stream.fileno(), msvcrt.LK_LOCK, 1)
+            _acquire_windows_lock(stream.fileno(), path)
             try:
                 yield
             finally:
@@ -120,6 +122,46 @@ def locked(root: Path) -> Iterator[None]:
                 yield
             finally:
                 fcntl.flock(stream, fcntl.LOCK_UN)
+
+
+def _acquire_windows_lock(descriptor: int, path: Path) -> None:
+    """Wait through lifecycle handoff without the CRT's implicit ten-retry exit."""
+    import msvcrt
+
+    started = time.monotonic()
+    announced = False
+    while True:
+        try:
+            msvcrt.locking(descriptor, msvcrt.LK_NBLCK, 1)
+            break
+        except OSError as exc:
+            if exc.errno not in {errno.EACCES, errno.EAGAIN, errno.EDEADLK}:
+                raise
+            elapsed = time.monotonic() - started
+            if elapsed >= WINDOWS_LOCK_WAIT_SECONDS:
+                raise TimeoutError(f"Native service lifecycle lock timed out: {path}") from exc
+            if elapsed >= 1 and not announced:
+                print(
+                    json.dumps(
+                        {"event": "lifecycle_lock_wait", "pid": os.getpid(), "path": str(path)}
+                    ),
+                    file=sys.stderr,
+                    flush=True,
+                )
+                announced = True
+            time.sleep(min(0.05, WINDOWS_LOCK_WAIT_SECONDS - elapsed))
+    if announced:
+        print(
+            json.dumps(
+                {
+                    "event": "lifecycle_lock_acquired",
+                    "pid": os.getpid(),
+                    "seconds": round(time.monotonic() - started, 3),
+                }
+            ),
+            file=sys.stderr,
+            flush=True,
+        )
 
 
 def protect_root(root: Path) -> None:
