@@ -523,6 +523,12 @@ class FlowContext:
 
         return await permission_receipts(self, refresh=refresh)
 
+    async def tool_results(self, handle: str) -> list[dict[str, Any]]:
+        """Read pinned terminal tool results from this flow's confirmed child subtree."""
+        from clio_agent.flows.tool_evidence import tool_results  # noqa: PLC0415
+
+        return await tool_results(self, handle)
+
     async def react(self, task: Any) -> Any:
         """Run the agent's own ReAct program on ``task`` inside this assignment."""
 
