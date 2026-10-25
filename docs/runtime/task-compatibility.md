@@ -49,6 +49,16 @@ and serialization describe how to reconstruct it. Explicit
 collection is acknowledged through the recipient-input commitment used by
 automatic delivery. Readable results remain available afterward.
 
+`get_task_result(handle, select=["/workflow_state/delivery"])` reads selected
+RFC 6901 JSON Pointer paths into a pointer-keyed result object. Escape `/` in a
+dictionary key as `~1` and `~` as `~0`; array positions use canonical zero-based
+indices. Missing paths fail explicitly. Selection does not change the immutable
+source reference or authorization; both normal and committed delegated-evidence
+reads retain their original scope. A continuation pins the selection: omit
+`select` or repeat the same list. Selected large values still use the existing
+page bound. Unselected dictionary reads include bounded `result_keys` metadata.
+The REST result route accepts repeated `select` query parameters.
+
 `input_task_ids` selects finished children owned by the spawning session. The
 child receives bounded quoted evidence and a pinned `get_task_result` cursor.
 That cursor reads only the exact snapshot in its confirmed delegation input,

@@ -201,6 +201,28 @@ async def test_shared_evidence_cursor_survives_grant_revocation_and_successor_re
 
 
 @pytest.mark.asyncio
+async def test_selected_shared_evidence_preserves_delegated_snapshot(
+    arc: ARCMemory, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _app, owner, source, critic, body = await evidence_children(arc, tmp_path)
+    monkeypatch.setenv("CLIO_TOOL_RESULT_CHARS", "31")
+    await asyncio.to_thread(commit_delegation, owner, critic)
+    monkeypatch.setenv("CLIO_TOOL_RESULT_CHARS", "12000")
+    operations = TaskOperations(owner.history, forbidden_cancel)
+    page = await asyncio.to_thread(
+        operations.result,
+        TaskCaller(critic.owner.session_id, "human"),
+        source.handle,
+        select=["/untrusted"],
+    )
+    assert page["result_kind"] == "shared_evidence"
+    assert page["result"] == {"/untrusted": body["untrusted"]}
+    assert page["result_reference"] == source.result.model_dump(mode="json")
+    assert page["next_cursor"] is None
+    await owner.recovery.drain()
+
+
+@pytest.mark.asyncio
 async def test_result_corruption_is_not_hidden_by_shared_evidence_fallback(
     arc: ARCMemory,
     tmp_path: Path,

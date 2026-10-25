@@ -3,10 +3,10 @@
 from __future__ import annotations
 
 import asyncio
-from typing import Any, Literal
+from typing import Annotated, Any, Literal
 from uuid import uuid4
 
-from fastapi import FastAPI, HTTPException, Request
+from fastapi import FastAPI, HTTPException, Query, Request
 from pydantic import BaseModel, ConfigDict, Field
 
 from clio_agent.arc.task_types import (
@@ -248,13 +248,19 @@ def register_task_routes(app: FastAPI) -> None:
             raise HTTPException(400, str(error)) from error
 
     @app.get("/v1/sessions/{sid}/tasks/{handle}/result")
-    async def result(sid: str, handle: str, cursor: str | None = None) -> dict[str, Any]:
+    async def result(
+        sid: str,
+        handle: str,
+        cursor: str | None = None,
+        select: Annotated[list[str] | None, Query()] = None,
+    ) -> dict[str, Any]:
         try:
             return await app.state.task_history.io.run(
                 app.state.task_operations.result,
                 await app.state.task_history.io.run(caller, sid),
                 handle,
                 cursor,
+                select,
             )
         except ValueError as error:
             raise HTTPException(404, str(error)) from error

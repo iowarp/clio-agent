@@ -198,10 +198,12 @@ def build_task_tools() -> list[Any]:
         app, caller = _runtime()
         return await app.state.task_operations.cancel(caller, tasks)
 
-    async def get_task_result(handle: str, cursor: str | None = None) -> dict[str, Any]:
+    async def get_task_result(
+        handle: str, cursor: str | None = None, select: list[str] | None = None
+    ) -> dict[str, Any]:
         app, caller = _runtime()
         value = await app.state.task_history.io.run(
-            app.state.task_operations.result, caller, handle, cursor
+            app.state.task_operations.result, caller, handle, cursor, select
         )
         return await app.state.task_history.io.run(_collected, app, caller, value)
 
@@ -295,8 +297,23 @@ def build_task_tools() -> list[Any]:
         _tool(
             get_task_result,
             "get_task_result",
-            {"handle": {"type": "string"}, "cursor": _STRING},
-            "Collect retained terminal output and publish its completion notices, or report pending. Follow next_cursor for bounded output; concatenate JSON chunks before parsing. A delegated evidence cursor reads only its committed snapshot. Later explicit reads remain possible.",
+            {
+                "handle": {"type": "string"},
+                "cursor": _STRING,
+                "select": {
+                    "anyOf": [
+                        {
+                            "type": "array",
+                            "items": {"type": "string"},
+                            "minItems": 1,
+                            "maxItems": 32,
+                        },
+                        {"type": "null"},
+                    ],
+                    "default": None,
+                },
+            },
+            "Collect retained terminal output and publish its completion notices, or report pending. Optional select lists JSON Pointers, e.g. ['/workflow_state'], returning a pointer-keyed result object without paging unrelated report text. Escape key / as ~1 and ~ as ~0. Unselected dictionary reads list result_keys. Missing paths are errors. Follow next_cursor for bounded output; concatenate JSON chunks before parsing. The cursor pins source, selection and recipient; omit select on continuation or repeat it unchanged. A delegated evidence cursor reads only its committed snapshot. Later explicit reads remain possible.",
         ),
         _tool(
             send_agent_message,

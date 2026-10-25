@@ -122,9 +122,15 @@ class TaskOperations:
             message_before=message_before,
         )
 
-    def result(self, caller: TaskCaller, handle: str, cursor: str | None = None) -> dict[str, Any]:
+    def result(
+        self,
+        caller: TaskCaller,
+        handle: str,
+        cursor: str | None = None,
+        select: list[str] | None = None,
+    ) -> dict[str, Any]:
         """Read immutable result content outside the writer lock, then recheck disclosure."""
-        value = self._read_result(caller, handle, cursor)
+        value = self._read_result(caller, handle, cursor, select)
         if value.get("result_kind") == "shared_evidence":
             pin = committed_evidence(self.history, caller, value["handle"])
             if value.get("result_reference") != pin.result.model_dump(mode="json"):
@@ -133,7 +139,9 @@ class TaskOperations:
             TaskAccess(self.history, caller).require(value["handle"], "read")
         return value
 
-    def _read_result(self, caller: TaskCaller, handle: str, cursor: str | None) -> dict[str, Any]:
+    def _read_result(
+        self, caller: TaskCaller, handle: str, cursor: str | None, select: list[str] | None
+    ) -> dict[str, Any]:
         """Capture a retained reference and read its bounded page without serializing writers."""
         canonical = self.history.resolve_handle(handle) or handle
         position = read_cursor(cursor, caller, canonical) if cursor is not None else {}
@@ -157,7 +165,13 @@ class TaskOperations:
                 "description_missing": pin.description_missing,
                 "partial": pin.partial,
                 **result_page(
-                    self.history, caller, pin.handle, pin.result, "shared_evidence", position
+                    self.history,
+                    caller,
+                    pin.handle,
+                    pin.result,
+                    "shared_evidence",
+                    position,
+                    select,
                 ),
             }
         result: dict[str, Any] = {
@@ -183,6 +197,7 @@ class TaskOperations:
                         current.backend_observation,
                         "task_result",
                         position,
+                        select,
                     )
                 )
                 result.update(
@@ -196,7 +211,13 @@ class TaskOperations:
             return result
         result.update(
             result_page(
-                self.history, caller, current.handle, current.result, "task_result", position
+                self.history,
+                caller,
+                current.handle,
+                current.result,
+                "task_result",
+                position,
+                select,
             )
         )
         return result
