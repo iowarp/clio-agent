@@ -761,6 +761,27 @@ class StepRecorder:
                 exc_info=True,
             )
 
+    def cancelled(self, exc: Exception) -> None:
+        """Close the expert lifecycle on cooperative cancellation without adding a note."""
+        from clio_agent.gact.runtime.globals import _emit_expert_lifecycle_event  # noqa: PLC0415
+
+        reason = str(getattr(exc, "reason", "") or type(exc).__name__)
+        try:
+            _emit_expert_lifecycle_event(
+                "expert.lifecycle.cancelled",
+                expert_id=self.expert_id,
+                expert_span_id=self.expert_span_id,
+                status="cancelled",
+                payload={"reason": reason, "error": str(exc)},
+            )
+        except Exception:  # noqa: BLE001 - cleanup must never mask the real cancellation
+            logger.warning(
+                "clio_react cancellation cleanup failed expert_id=%s reason=%s",
+                self.expert_id,
+                reason,
+                exc_info=True,
+            )
+
     def _write(self, kind: str, content: dict[str, Any], step: int, span: str) -> str:
         """Append one segment to the scope; its id (typed failure on a lost write)."""
         if self.arc is None:

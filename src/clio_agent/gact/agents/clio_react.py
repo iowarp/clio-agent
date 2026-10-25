@@ -346,6 +346,7 @@ class _Loop:
 
     def run(self) -> dspy.Prediction:
         from clio_agent.gact import context as _ctx  # noqa: PLC0415
+        from clio_agent.gact.runtime.globals import _TurnCancelled  # noqa: PLC0415
 
         expert_span = uuid.uuid4().hex[:16]
         self.recorder.started(expert_span, self.inputs)
@@ -381,6 +382,9 @@ class _Loop:
                 if done is not None:
                     return done
             return self._stop("max_iters")
+        except _TurnCancelled as exc:
+            self.recorder.cancelled(exc)
+            raise
         except ClioError as exc:
             self.recorder.failed(exc, self.step, self.span)
             raise

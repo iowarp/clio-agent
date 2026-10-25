@@ -68,6 +68,27 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
+def _emit_unsettled_agent_invocation(state: "TurnState") -> None:
+    """Record the terminal for an invocation that failed before returning a prediction."""
+    if not state.invocation_agent_id or state.pred is not None or state.error_info is None:
+        return
+    cancelled = state.error_info.error == "cancelled"
+    suffix = "cancelled" if cancelled else "failed"
+    status = "cancelled" if cancelled else "failed"
+    _emit_semantic_event(
+        state.app,
+        state.sid,
+        f"agent.invocation.{suffix}",
+        turn_id=state.turn_id,
+        trace_id=state.trace_id,
+        status=status,
+        summary=f"{state.invocation_agent_id} invocation {suffix}.",
+        actor={"agent_id": state.invocation_agent_id},
+        subject={"message_id": state.user_msg.id},
+        payload={"error": state.error_info.error},
+    )
+
+
 def finalize_turn(
     state: "TurnState",
     pred: Any,
@@ -434,6 +455,12 @@ def publish_finalized_turn(
         **completed_payload,
         **final_message_embed(state.app, state.sid, assistant_msg),
     }
+    publication_step(
+        steps,
+        "agent_invocation_terminal",
+        lambda: _emit_unsettled_agent_invocation(state),
+        retry=True,
+    )
     publication_step(
         steps,
         "semantic",

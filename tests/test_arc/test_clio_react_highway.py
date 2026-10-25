@@ -304,6 +304,41 @@ def test_generic_crash_escalates_unchanged_no_arc_enrichment(
     )
 
 
+def test_cooperative_cancellation_closes_expert_lifecycle_without_escalation_note(
+    tmp_path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    cancelled = runtime_globals._TurnCancelled(
+        runtime_globals._cancelled_error_info(SID, execution_cancellation="cooperative")
+    )
+
+    def raise_cancelled() -> None:
+        raise cancelled
+
+    monkeypatch.setattr(clio_react, "_raise_if_cancelled", raise_cancelled)
+    lifecycle_events: list[tuple[str, dict[str, Any]]] = []
+    monkeypatch.setattr(
+        runtime_globals,
+        "_emit_expert_lifecycle_event",
+        lambda event_type, **kwargs: lifecycle_events.append((event_type, kwargs)),
+    )
+    arc = ARCMemory(data_dir=str(tmp_path / "arc"))
+    lm, _ = scripted_lm([])
+
+    with pytest.raises(runtime_globals._TurnCancelled):
+        _run_in_plane(arc, _build_agent(), lm)
+
+    assert [event_type for event_type, _ in lifecycle_events] == [
+        "expert.lifecycle.started",
+        "expert.lifecycle.cancelled",
+    ]
+    assert lifecycle_events[-1][1]["status"] == "cancelled"
+    assert lifecycle_events[-1][1]["payload"]["reason"] == "_TurnCancelled"
+    assert not any(
+        segment.kind == "user" and segment.content.get("source") == "turn_escalated"
+        for segment in arc.render_segments(SID, SCOPE)
+    )
+
+
 def test_a_file_policy_refusal_reaches_the_model_without_a_traceback(
     tmp_path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

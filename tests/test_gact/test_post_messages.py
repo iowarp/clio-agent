@@ -707,6 +707,13 @@ def test_post_message_agent_exception_populates_error_info(
         err = a["error_info"]
         assert err["error"] == "agent_error"
         assert "simulated agent failure" in err["message"]
+        events = c.get(f"/v1/sessions/{sid}/trace").json()["events"]
+        invocation_terminal = [
+            event for event in events if event["event_type"] == "agent.invocation.failed"
+        ]
+        assert len(invocation_terminal) == 1
+        assert invocation_terminal[0]["turn_id"] == a["turn_id"]
+        assert invocation_terminal[0]["actor"]["agent_id"]
         # Session left in error state.
         sess = c.get(f"/v1/sessions/{sid}").json()
         assert sess["status"] == "error"
