@@ -187,6 +187,12 @@ def _index_task_order(self: TreeState, snapshot: TaskSnapshot, *, known: bool) -
             parent = ancestor.owner.parent_handle
         key = task.created_at, handle
         buckets = {("human", task.owner.human_id, ""), ("session", task.owner.session_id, "")}
+        direct_parent = self._tasks.get(task.owner.parent_handle or "")
+        if direct_parent is not None and direct_parent.kind in {"Session", "Subagent"}:
+            buckets.update(
+                ("direct", direct_parent.owner.session_id, human)
+                for human in ("", task.owner.human_id)
+            )
         buckets.update(
             ("tree", sid, human) for sid in scopes for human in ("", task.owner.human_id)
         )

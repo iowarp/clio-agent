@@ -37,11 +37,21 @@ CHILD_ACTIVITY_PROJECTION_CAPABILITY: dict[str, Any] = {
 }
 
 
-def _task_index(app: "FastAPI", root_session_id: str) -> dict[str, dict[str, Any]]:
+def _task_index(
+    app: "FastAPI",
+    root_session_id: str,
+    *,
+    include_children: bool = True,
+) -> dict[str, dict[str, Any]]:
     """Project delegated attribution from the common indexed Core snapshots."""
     rows = {}
     history = app.state.task_history
-    for handle in history.tree_handles(root_session_id):
+    handles = (
+        history.tree_handles(root_session_id)
+        if include_children
+        else history.session_handles(root_session_id)
+    )
+    for handle in handles:
         task = history.task_snapshot(handle)
         if task is None or task.kind != "Subagent":
             continue
@@ -59,7 +69,11 @@ def _task_index(app: "FastAPI", root_session_id: str) -> dict[str, dict[str, Any
 
 
 def child_session_lineage(
-    app: "FastAPI", root_session_id: str, *, max_depth: int | None = _DEFAULT_DESCENDANT_DEPTH
+    app: "FastAPI",
+    root_session_id: str,
+    *,
+    max_depth: int | None = _DEFAULT_DESCENDANT_DEPTH,
+    include_children: bool = True,
 ) -> tuple[list[dict[str, Any]], bool]:
     """Return breadth-first lineage with optional explicit truncation.
 
@@ -85,6 +99,8 @@ def child_session_lineage(
             "attribution": "root",
         }
     ]
+    if not include_children:
+        return rows, False
     task_by_id = _task_index(app, root_session_id)
     path_by_session: dict[str, list[str]] = {root_session_id: []}
     descendants, truncated = descendant_walk(app, root_session_id, max_depth=max_depth)
@@ -144,11 +160,11 @@ def project_child_execution(
     """
 
     projected = dict(result)
-    lineage, truncated = child_session_lineage(app, root_session_id)
-    if not include_children:
-        lineage, truncated = lineage[:1], False
+    lineage, truncated = child_session_lineage(
+        app, root_session_id, include_children=include_children
+    )
     by_session = {str(row["session_id"]): row for row in lineage}
-    task_by_id = _task_index(app, root_session_id)
+    task_by_id = _task_index(app, root_session_id, include_children=include_children)
     degradations: list[dict[str, str]] = [
         row for row in (result.get("degradations") or []) if isinstance(row, dict)
     ]

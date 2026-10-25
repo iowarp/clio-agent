@@ -183,6 +183,7 @@ def register_task_routes(app: FastAPI) -> None:
         query: str | None = None,
         message_after: str | None = None,
         message_before: str | None = None,
+        relation: str = "tree",
     ) -> dict[str, Any]:
         try:
             return await run_off_loop(
@@ -200,6 +201,7 @@ def register_task_routes(app: FastAPI) -> None:
                 query=query,
                 message_after=message_after,
                 message_before=message_before,
+                relation=relation,
             )
         except ValueError as error:
             raise HTTPException(400, str(error)) from error
@@ -307,9 +309,20 @@ def register_task_routes(app: FastAPI) -> None:
 
     @app.get("/v1/sessions/{sid}/async-processes")
     async def processes(
-        sid: str, cursor: str | None = None, limit: int = 50, active_only: bool = False
+        sid: str,
+        cursor: str | None = None,
+        limit: int = 50,
+        active_only: bool = False,
+        include_descendants: bool = True,
     ) -> dict[str, Any]:
-        page = await tasks(sid, cursor=cursor, limit=limit, active_only=active_only)
+        """Project retained work; the Work pane explicitly requests direct children."""
+        page = await tasks(
+            sid,
+            cursor=cursor,
+            limit=limit,
+            active_only=active_only,
+            relation="tree" if include_descendants else "direct",
+        )
 
         def project() -> dict[str, Any]:
             return {
