@@ -19,6 +19,7 @@ verbatim downloads (no real network probe is available here).
 from __future__ import annotations
 
 import json
+import time
 from pathlib import Path
 from typing import Any
 
@@ -121,6 +122,40 @@ def test_resolve_repo_follows_gguf_base_model(router: _UrlRouter) -> None:
     assert resolution.repo == "Qwen/Qwen3-8B"
     assert resolution.requested == "bartowski/Qwen3-8B-GGUF"
     assert resolution.sha == "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+
+
+def test_resolve_repo_card_keeps_the_selected_gguf_repository(router: _UrlRouter) -> None:
+    router.add_json(
+        "https://huggingface.co/api/models/bartowski/Qwen3-8B-GGUF",
+        _load_json("qwen3_8b_gguf_meta.json"),
+    )
+
+    resolution = hf_repo.resolve_repo_card("bartowski/Qwen3-8B-GGUF")
+
+    assert resolution is not None
+    assert resolution.repo == "bartowski/Qwen3-8B-GGUF"
+    assert resolution.requested == "bartowski/Qwen3-8B-GGUF"
+
+
+def test_model_card_failure_preserves_status_from_cached_miss(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    resolution = hf_repo.RepoResolution(repo="org/model", sha="a" * 40, requested="org/model")
+    key = f"file:{resolution.repo}@{resolution.sha}/README.md"
+    now = time.monotonic()
+    for reason, expected in (
+        ("http_status_404", "missing"),
+        ("http_status_401", "access_required"),
+        ("too_large: 9000000 bytes > 8388608", "truncated"),
+        ("transport_error: timeout", "unavailable"),
+    ):
+        monkeypatch.setitem(hf_repo._misses, key, (now, reason))
+        assert hf_repo.model_card_failure(resolution) == expected
+    gated = hf_repo.RepoResolution(
+        repo="org/model", sha="a" * 40, requested="org/model", metadata={"gated": "manual"}
+    )
+    monkeypatch.setitem(hf_repo._misses, key, (now, "http_status_404"))
+    assert hf_repo.model_card_failure(gated) == "access_required"
 
 
 def test_resolve_repo_returns_none_when_repo_does_not_exist(router: _UrlRouter) -> None:
@@ -359,6 +394,27 @@ def test_config_json_vision_and_audio_configs_name_their_modalities() -> None:
     assert modalities == frozenset({"text", "image", "audio"})
     assert "config.json vision_config" in detail
     assert "config.json audio_config" in detail
+
+
+@pytest.mark.parametrize(
+    ("pipeline_tag", "expected"),
+    [
+        ("visual-question-answering", frozenset({"text", "image"})),
+        ("automatic-speech-recognition", frozenset({"text", "audio"})),
+        ("video-text-to-text", frozenset({"text", "video"})),
+    ],
+)
+def test_pipeline_tasks_are_input_modality_evidence(
+    pipeline_tag: str, expected: frozenset[str]
+) -> None:
+    resolution = hf_repo.RepoResolution(
+        repo="org/model", sha="a" * 40, requested="org/model", pipeline_tag=pipeline_tag
+    )
+
+    modalities, detail = hf_repo.modalities_from_repo(resolution, config=None)
+
+    assert modalities == expected
+    assert f"pipeline_tag={pipeline_tag}" in detail
 
 
 def test_a_repo_without_config_json_reads_its_processor_and_params() -> None:

@@ -29,7 +29,29 @@ PIPELINE_TASKS: dict[str, str] = {tag: tag for tag in HF_PIPELINE_TAGS} | {
 
 #: ``pipeline_tag`` values that name an input modality outright.
 _PIPELINE_INPUT_MODALITY: dict[str, str] = {
+    "automatic-speech-recognition": "audio",
+    "audio-classification": "audio",
+    "audio-to-audio": "audio",
     "image-text-to-text": "image",
+    "image-classification": "image",
+    "image-feature-extraction": "image",
+    "image-segmentation": "image",
+    "image-to-3d": "image",
+    "image-to-image": "image",
+    "image-to-text": "image",
+    "image-to-video": "image",
+    "keypoint-detection": "image",
+    "depth-estimation": "image",
+    "document-question-answering": "image",
+    "mask-generation": "image",
+    "object-detection": "image",
+    "video-classification": "video",
+    "video-text-to-text": "video",
+    "video-to-video": "video",
+    "visual-document-retrieval": "image",
+    "visual-question-answering": "image",
+    "voice-activity-detection": "audio",
+    "zero-shot-image-classification": "image",
     "audio-text-to-text": "audio",
 }
 

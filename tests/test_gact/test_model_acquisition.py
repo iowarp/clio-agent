@@ -21,7 +21,9 @@ from clio_agent.gact.infrastructure import node_models
 from clio_agent.gact.infrastructure.model_registry import (
     ModelAcquisition,
     ModelDownloadRequest,
+    _search_params,
     search_models,
+    search_models_page,
 )
 from clio_agent.gact.infrastructure.models import (
     CommandResult,
@@ -294,6 +296,67 @@ def test_registry_search_contract_and_input_validation() -> None:
         ModelDownloadRequest(repository="https://example/unsafe")
     with pytest.raises(ValueError):
         ModelDownloadRequest(repository="org/model", revision="../escape")
+
+
+def test_registry_search_page_forwards_server_filters_and_validates_link_cursor() -> None:
+    assert _search_params("gemma", []).get("filter") is None
+    assert _search_params("", [])["filter"] == "text-generation"
+    calls: list[httpx.Request] = []
+
+    async def run() -> dict[str, Any]:
+        def respond(request: httpx.Request) -> httpx.Response:
+            calls.append(request)
+            assert request.url.host == "huggingface.co"
+            if request.url.params.get("search") == "evil":
+                return httpx.Response(
+                    200,
+                    json=[],
+                    headers={
+                        "Link": '<https://attacker.invalid/api/models?cursor=bad>; rel="next"'
+                    },
+                )
+            if request.url.params.get("cursor"):
+                return httpx.Response(200, json=[])
+            assert request.url.params.get("pipeline_tag") == "image-text-to-text"
+            assert request.url.params.get("author") == "google"
+            assert request.url.params.get("filter") == "image"
+            next_url = str(
+                request.url.copy_with(params=request.url.params.set("cursor", "opaque-next"))
+            )
+            return httpx.Response(
+                200,
+                json=[{"id": "google/gemma-4-31B-it", "sha": "a" * 40}],
+                headers={"Link": f'<{next_url}>; rel="next"'},
+            )
+
+        async with httpx.AsyncClient(transport=httpx.MockTransport(respond)) as client:
+            page = await search_models_page(
+                "gemma",
+                filters=["input:image", "task:image-text-to-text", "provider:google"],
+                client=client,
+            )
+            assert page["next_cursor"]
+            assert "Hub filters" in page["scope"]
+            await search_models_page(
+                "gemma",
+                cursor=page["next_cursor"],
+                filters=["input:image", "task:image-text-to-text", "provider:google"],
+                client=client,
+            )
+            with pytest.raises(ValueError, match="does not match"):
+                await search_models_page(
+                    "other",
+                    cursor=page["next_cursor"],
+                    filters=["input:image", "task:image-text-to-text", "provider:google"],
+                    client=client,
+                )
+            malicious = await search_models_page("evil", client=client)
+            assert malicious["next_cursor"] is None
+            return page
+
+    page = asyncio.run(run())
+    assert len(page["models"]) == 1
+    assert len(calls) == 3
 
 
 def test_disconnected_host_keeps_receipts_and_explains_transport_first(tmp_path: Path) -> None:

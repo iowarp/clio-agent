@@ -20,6 +20,7 @@ from clio_agent.gact.infrastructure.model_registry import (
     ModelDownloadRequest,
     model_details,
     search_models,
+    search_models_page,
 )
 from clio_agent.gact.infrastructure.models import CommandSpec
 from clio_agent.gact.infrastructure.operation_models import ReuseReport
@@ -164,6 +165,22 @@ def register_infrastructure_model_routes(app: FastAPI) -> None:
         """Search the public registry; host credentials stay on the execution side."""
         try:
             return {"models": await search_models(q)}
+        except httpx.HTTPError as exc:
+            raise HTTPException(
+                502, "Model registry is unavailable; retry or use an exact repository"
+            ) from exc
+
+    @app.get("/v1/infrastructure/models/search-page")
+    async def search_page(
+        q: str = Query(default="", max_length=180),
+        cursor: str | None = Query(default=None, max_length=8192),
+        filters: list[str] = Query(default_factory=list, max_length=24),  # noqa: B008
+    ) -> dict[str, Any]:
+        """Search a bounded public Hub page with optional picker filters."""
+        try:
+            return await search_models_page(q, cursor=cursor, filters=filters)
+        except ValueError as exc:
+            raise HTTPException(400, str(exc)) from exc
         except httpx.HTTPError as exc:
             raise HTTPException(
                 502, "Model registry is unavailable; retry or use an exact repository"
