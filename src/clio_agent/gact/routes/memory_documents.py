@@ -178,6 +178,8 @@ def register_memory_document_routes(app: FastAPI) -> None:
         limit: int = Query(default=50, ge=1, le=100), cursor: str | None = Query(default=None)
     ) -> dict[str, Any]:
         from clio_agent.gact.memory.creation_runs import (  # noqa: PLC0415
+            curator_run_outcome,
+            failed_memory_tool_count,
             legacy_run_rows,
             load_run_rows,
             proposal_summaries,
@@ -194,7 +196,7 @@ def register_memory_document_routes(app: FastAPI) -> None:
         except ValueError as error:
             raise HTTPException(status_code=400, detail=str(error)) from error
 
-        def read_owners() -> list[tuple[Any, Any]]:
+        def read_owners() -> list[tuple[Any, Any, int]]:
             observations = []
             for row in rows:
                 handle = str(row.get("handle") or "")
@@ -205,9 +207,16 @@ def register_memory_document_routes(app: FastAPI) -> None:
                     or task.kind != "Session"
                     or task.owner.session_id != curator_session
                 ):
-                    observations.append((None, None))
+                    observations.append((None, None, 0))
                 else:
-                    observations.append((task, app.state.sessions.get(curator_session)))
+                    messages = app.state.messages.get(curator_session, [])
+                    observations.append(
+                        (
+                            task,
+                            app.state.sessions.get(curator_session),
+                            failed_memory_tool_count(messages),
+                        )
+                    )
             return observations
 
         observations = await app.state.task_history.io.run(read_owners)
@@ -215,7 +224,7 @@ def register_memory_document_routes(app: FastAPI) -> None:
         def refresh_page(
             service: MemoryService,
             selected_rows: list[dict[str, Any]] = rows,
-            selected_observations: list[tuple[Any, Any]] = observations,
+            selected_observations: list[tuple[Any, Any, int]] = observations,
         ) -> list[dict[str, Any]]:
             summaries = proposal_summaries(
                 service,
@@ -225,7 +234,7 @@ def register_memory_document_routes(app: FastAPI) -> None:
                 },
             )
             projected_rows = []
-            for selected_row, (selected_task, selected_curator) in zip(
+            for selected_row, (selected_task, selected_curator, failed_tool_count) in zip(
                 selected_rows, selected_observations, strict=True
             ):
                 origin = str(selected_row.get("origin") or "")
@@ -243,12 +252,13 @@ def register_memory_document_routes(app: FastAPI) -> None:
                     patch["reason"] = "curator_task_unavailable"
                 if selected_task is not None:
                     terminal = selected_task.terminal_at is not None
-                    patch["state"] = str(selected_task.status) if terminal else "running"
-                    patch["reason"] = (
-                        ""
-                        if terminal and selected_task.status == "completed"
-                        else (f"curator_{selected_task.status}" if terminal else "")
-                    )
+                    if terminal:
+                        patch["state"], patch["reason"] = curator_run_outcome(
+                            str(selected_task.status), counts, failed_tool_count
+                        )
+                    else:
+                        patch["state"] = "running"
+                        patch["reason"] = ""
                     if terminal:
                         patch["completed_at"] = str(selected_task.terminal_at)
                 if selected_curator is not None:

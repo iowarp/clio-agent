@@ -183,8 +183,8 @@ _DEFINITIONS = (
         "memory.enabled",
         "CLIO_MEMORY_ENABLED",
         "Use memory",
-        "Let the agent read and keep long-term memory about you and your projects. "
-        "Turning it off keeps existing memories.",
+        "Use saved facts and preferences in later conversations. Turning this off keeps "
+        "existing memories.",
         "Memory",
         True,
         "Applies to sessions that start after the change.",
@@ -193,8 +193,7 @@ _DEFINITIONS = (
         "memory.background",
         "CLIO_MEMORY_BACKGROUND",
         "Create memories from conversations",
-        "Uses background extraction and curator models to find and organize durable facts "
-        "from conversations. These calls consume model usage; choose the models in Fleet.",
+        "Uses background model calls, which count toward model usage. Models are set in Fleet.",
         "Memory",
         True,
         "Applies on the next background scheduler pass.",
@@ -203,9 +202,8 @@ _DEFINITIONS = (
         "memory.session_search",
         "CLIO_MEMORY_SESSION_SEARCH",
         "Use conversation history",
-        "Lets the agent retrieve original messages from earlier conversations, separate from "
-        "saved memories. Retrieved text can add to a model request's context and usage; this "
-        "switch does not start background model runs.",
+        "Recall earlier messages, separate from saved memories. Retrieved text can add model "
+        "usage; no background jobs.",
         "Memory",
         True,
         "Applies to upcoming session-recall requests.",
@@ -223,8 +221,7 @@ _DEFINITIONS = (
         "memory.auto_accept",
         "CLIO_MEMORY_AUTO_ACCEPT",
         "Apply background changes without review",
-        "Choose which new and updated memories are saved automatically. Retiring a memory "
-        "always requires review.",
+        "Choose which new and updated memories save automatically. Retirement needs review.",
         "Memory",
         "user_stated",
         "Applies to proposals made after the change.",
@@ -238,8 +235,7 @@ _DEFINITIONS = (
         "memory.idle_minutes",
         "CLIO_MEMORY_IDLE_MINUTES",
         "Create memories",
-        "Choose when background processing is eligible. After each completed turn becomes "
-        "eligible at the next scheduler pass, with no idle delay.",
+        "Runs after a completed turn or idle delay, at the next background check.",
         "Memory",
         30.0,
         "Applies on the next scheduler pass, normally checked once a minute.",
@@ -259,8 +255,7 @@ _DEFINITIONS = (
         "memory.expiry_days",
         "CLIO_MEMORY_EXPIRY_DAYS",
         "Review unused memories after",
-        "Propose retiring unused memories after this time. Choose Never to keep them "
-        "indefinitely. Profile and preferences are always kept.",
+        "Profile and preferences are always kept. Other retirement proposals need review.",
         "Memory",
         60.0,
         "Applies at the next background pass.",

@@ -103,10 +103,17 @@ def skip_reason(app: Any, session: Any, now: datetime) -> str:
 
 def _checked(session: Any, reason: str) -> dict[str, Any]:
     """The transcript verdict, keyed by what changes when the conversation does."""
+    metadata = session.metadata or {}
+    last_pass = metadata.get(LAST_PASS) or {}
+    minimum = _minimum_user_messages()
     return {
         "count": session.message_count,
         "at": str(session.last_interaction_at or ""),
         "reason": reason,
+        "minimum_user_messages": minimum,
+        "watermark": str(metadata.get(WATERMARK) or ""),
+        "last_pass_status": str(last_pass.get("status") or ""),
+        "last_pass_read_to": str(last_pass.get("read_to") or ""),
     }
 
 
@@ -122,10 +129,15 @@ def _transcript_reason(app: Any, session: Any) -> str:
     ):
         return "last_pass_failed"  # retried once the conversation has new messages
     fresh = _messages_after(messages, metadata.get(WATERMARK, ""))
-    minimum = 1 if int(setting("memory.idle_minutes", 30)) == 0 else MIN_USER_MESSAGES
+    minimum = _minimum_user_messages()
     if sum(1 for message in fresh if message.role == "user") < minimum:
         return "too_few_new_messages"
     return ""
+
+
+def _minimum_user_messages() -> int:
+    """Minimum fresh user turns required by the configured scheduling mode."""
+    return 1 if int(setting("memory.idle_minutes", 30)) == 0 else MIN_USER_MESSAGES
 
 
 def eligible(app: Any, session: Any, now: datetime) -> bool:
@@ -182,20 +194,34 @@ def _forgotten_facts(service: Any, scopes: tuple[str, ...]) -> list[str]:
 def _curator_brief(
     candidates: list[dict[str, Any]],
     *,
+    allowed_scopes: tuple[str, ...],
     forgotten: list[str],
     rejected: list[str],
     pending: list[str],
     documents: list[dict[str, Any]],
 ) -> str:
-    return "Curate long-term memory from these candidates.\n\n" + json.dumps(
-        {
-            "candidates": candidates,
-            "forgotten": forgotten,
-            "rejected": rejected,
-            "pending": pending,
-            "documents": documents,
-        },
-        indent=1,
+    return (
+        "Curate long-term memory from these candidates.\n"
+        "Only use the exact allowed scopes supplied below. A memory document address is "
+        "<scope>/<category>/<slug>, such as user/areas/field-notes or "
+        "project/ws_123/areas/field-notes. For a project scope, include the workspace id "
+        "as the second path component. Categories are profile, preferences, topics, areas, "
+        "people, and environments. The singleton documents are <scope>/profile/profile "
+        "and <scope>/preferences/preferences. Never use a scope itself as a document name.\n"
+        "Use memory_search to find relevant existing documents. Read a listed document "
+        "before changing it; when no relevant document exists, propose a new document "
+        "within an allowed scope without trying to read the scope.\n\n"
+        + json.dumps(
+            {
+                "allowed_scopes": list(allowed_scopes),
+                "candidates": candidates,
+                "forgotten": forgotten,
+                "rejected": rejected,
+                "pending": pending,
+                "documents": documents,
+            },
+            indent=1,
+        )
     )
 
 
@@ -270,6 +296,7 @@ def start_curator(
         )
     brief = _curator_brief(
         candidates,
+        allowed_scopes=scopes,
         forgotten=_forgotten_facts(service, scopes),
         rejected=rejected,
         pending=pending,
@@ -494,6 +521,8 @@ def collect_patch(run: dict[str, Any], status: str, now: datetime) -> dict[str, 
 
 def _collect(app: Any, session: Any) -> None:
     from clio_agent.gact.memory.creation_runs import (  # noqa: PLC0415
+        curator_run_outcome,
+        failed_memory_tool_count,
         proposal_summary,
         update_run,
     )
@@ -504,6 +533,17 @@ def _collect(app: Any, session: Any) -> None:
     if task is not None and task.terminal_at is None:
         return
     status = task.status if task is not None else "missing"
+    run_id = str(run.get("run_id") or "")
+    service = memory_service(app) if run_id else None
+    counts, targets = (
+        proposal_summary(service, str(run.get("origin") or ""), str(run.get("handle") or ""))
+        if service is not None
+        else ({"accepted": 0, "pending": 0, "rejected": 0}, [])
+    )
+    curator_messages = app.state.messages.get(str(run.get("session") or ""), [])
+    status, run_reason = curator_run_outcome(
+        status, counts, failed_memory_tool_count(curator_messages)
+    )
     patch = collect_patch(run, status, datetime.now(UTC))
     if WATERMARK not in patch:
         logger.warning(
@@ -513,20 +553,14 @@ def _collect(app: Any, session: Any) -> None:
             status,
         )
     app.state.sessions.update(session.id, metadata_patch=patch)
-    run_id = str(run.get("run_id") or "")
     if run_id:
-        service = memory_service(app)
-        counts, targets = proposal_summary(
-            service,
-            str(run.get("origin") or ""),
-            str(run.get("handle") or ""),
-        )
+        assert service is not None
         update_run(
             service.store,
             run_id,
             {
                 "state": status,
-                "reason": "" if status == "completed" else f"curator_{status}",
+                "reason": run_reason,
                 "completed_at": datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ"),
                 "proposal_counts": counts,
                 "targets": targets,

@@ -158,12 +158,21 @@ def build_propose_memory_change_tool() -> Any:
             "Propose one change to memory; the user or the auto-accept rule decides it. "
             "change: add (facts to target, creating it if new), supersede (replaces one "
             "fact id with one fact), merge (merge_from documents into target), or retire "
-            "(target is no longer read)."
+            "(target is no longer read). target must be a full document address: "
+            "<scope>/<category>/<slug>, for example user/areas/field-notes or "
+            "project/ws_123/areas/field-notes. Use only the allowed scopes in the "
+            "curator assignment. profile and preferences are singleton documents named "
+            "<scope>/profile/profile and <scope>/preferences/preferences."
         ),
         args={
             "target": {
                 "type": "string",
-                "description": "Document name, e.g. user/environments/frontier.",
+                "description": (
+                    "Full <scope>/<category>/<slug> address; project scope includes its "
+                    "workspace id, e.g. project/ws_123/areas/field-notes. Use only an "
+                    "allowed scope. profile/profile and preferences/preferences are "
+                    "the singleton targets."
+                ),
             },
             "change": {"type": "string", "description": "add, supersede, merge or retire."},
             "evidence": {

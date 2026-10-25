@@ -5,6 +5,7 @@ from __future__ import annotations
 from collections.abc import Iterator
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 
 import pytest
@@ -135,6 +136,8 @@ def test_an_idle_session_starts_one_curator_run_and_its_proposals_apply_by_sourc
     staged = owner.mail.stage(owner.caller(curator.id))
     texts = [str(text) for _source, text in staged.injections]
     assert any("Prefers SI units" in text for text in texts)
+    assert any('"allowed_scopes":' in text and '"user"' in text for text in texts)
+    assert any("<scope>/<category>/<slug>" in text for text in texts)
     assert [item.kind for item in staged.items] == ["memory"]
 
     from clio_agent.gact.memory.curator import curator_proposal
@@ -217,6 +220,18 @@ def test_no_candidate_last_pass_is_not_reported_as_failed(client: TestClient) ->
     )
     refreshed = app.state.sessions.get(session.id)
     assert background._transcript_reason(app, refreshed) == "too_few_new_messages"
+    app.state.sessions.update(
+        session.id,
+        metadata_patch={
+            background.CHECKED: {
+                "count": session.message_count,
+                "at": session.last_interaction_at,
+                "reason": "last_pass_failed",
+            }
+        },
+    )
+    refreshed = app.state.sessions.get(session.id)
+    assert background.skip_reason(app, refreshed, datetime.now(UTC)) == "too_few_new_messages"
     response = client.get("/v1/memory/creation-runs")
     row = next(item for item in response.json()["runs"] if item["source_session"] == session.id)
     assert row["state"] == "completed"
@@ -229,6 +244,137 @@ def test_no_candidate_last_pass_is_not_reported_as_failed(client: TestClient) ->
     }
     assert row["usage"]["input_tokens"] is None
     assert row["usage"]["cost_known"] is False
+
+
+def test_transcript_cache_tracks_the_current_minimum_user_turns(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    app = client.app
+    session = app.state.sessions.create(workspace_id="ws_global", title="One-turn memory")
+    _say(app, session.id, 1, "user", "Remember my preference for concise notes.")
+    old = (datetime.now(UTC) - timedelta(hours=2)).strftime("%Y-%m-%dT%H:%M:%SZ")
+    app.state.sessions._sessions[session.id].last_interaction_at = old  # noqa: SLF001
+    original_setting = background.setting
+    monkeypatch.setattr(
+        background,
+        "setting",
+        lambda key, default: 30 if key == "memory.idle_minutes" else original_setting(key, default),
+    )
+    app.state.sessions.update(
+        session.id,
+        metadata_patch={background.CHECKED: background._checked(session, "too_few_new_messages")},
+    )
+    monkeypatch.setattr(
+        background,
+        "setting",
+        lambda key, default: 0 if key == "memory.idle_minutes" else original_setting(key, default),
+    )
+    assert background.skip_reason(app, app.state.sessions.get(session.id), datetime.now(UTC)) == ""
+
+
+@pytest.mark.parametrize("tool_error", [False, True])
+def test_completed_curator_with_no_proposals_only_fails_on_recorded_tool_errors(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch, tool_error: bool
+) -> None:
+    from clio_agent.gact.memory.creation_runs import begin_run, creation_run_id, list_run_rows
+
+    app = client.app
+    source = _idle_conversation(app)
+    read_to = app.state.messages.get(source.id)[-1].id
+    origin = f"session:{source.id}"
+    run_key = "completed-without-proposals"
+    run_id = creation_run_id(origin, run_key)
+    begin_run(
+        memory_service(app).store,
+        run_id=run_id,
+        origin=origin,
+        source_session=source.id,
+        workspace_id="ws_global",
+    )
+    run = background.start_curator(
+        app,
+        origin=origin,
+        source_session=source,
+        workspace_id="ws_global",
+        scopes=("user",),
+        candidates=[
+            {
+                "id": "c1",
+                "fact": "Prefers concise notes",
+                "category": "preferences",
+                "subject": "Writing",
+                "session": source.id,
+                "messages": [read_to],
+                "source": "user",
+            }
+        ],
+        run_key=run_key,
+    )
+    app.state.sessions.update(
+        source.id,
+        metadata_patch={
+            background.IN_FLIGHT: {
+                **run,
+                "origin": origin,
+                "read_to": read_to,
+                "extract": {"kept": 1},
+            }
+        },
+    )
+    if tool_error:
+        _append_session_message(
+            app,
+            run["session"],
+            Message(
+                id="curator_tool_error",
+                session_id=run["session"],
+                role="assistant",
+                created_at="2026-10-25T10:00:00Z",
+                updated_at="2026-10-25T10:00:00Z",
+                parts=[
+                    Part(
+                        id="failed_proposal",
+                        type="tool_result",
+                        tool_name="propose_memory_change",
+                        is_error=True,
+                    )
+                ],
+            ),
+        )
+    monkeypatch.setattr(
+        app.state.task_history,
+        "task_snapshot",
+        lambda _handle: SimpleNamespace(
+            status="completed",
+            terminal_at="2026-10-25T10:01:00Z",
+            kind="Session",
+            owner=SimpleNamespace(session_id=run["session"]),
+            settlement="never_started",
+            result=None,
+            backend=None,
+        ),
+    )
+
+    background._collect(app, app.state.sessions.get(source.id))
+
+    after = app.state.sessions.get(source.id)
+    rows, _cursor = list_run_rows(memory_service(app).store)
+    row = next(item for item in rows if item["id"] == run_id)
+    refreshed = client.get("/v1/memory/creation-runs").json()
+    public_row = next(item for item in refreshed["runs"] if item["id"] == run_id)
+    if tool_error:
+        assert background.WATERMARK not in after.metadata
+        assert after.metadata[background.LAST_PASS]["status"] == "failed"
+        assert row["state"] == "failed"
+        assert row["reason"] == "curator_tool_errors_no_proposals"
+        assert public_row["state"] == "failed"
+        assert public_row["reason"] == "curator_tool_errors_no_proposals"
+    else:
+        assert after.metadata[background.WATERMARK] == read_to
+        assert after.metadata[background.LAST_PASS]["status"] == "completed"
+        assert row["state"] == "completed"
+        assert row["reason"] == ""
+        assert public_row["state"] == "completed"
 
 
 def test_zero_idle_delay_makes_one_completed_user_turn_eligible(

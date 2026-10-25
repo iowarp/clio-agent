@@ -5,6 +5,7 @@ from __future__ import annotations
 import base64
 import json
 import threading
+from collections.abc import Iterable, Mapping
 from datetime import UTC, datetime
 from hashlib import sha256
 from typing import Any
@@ -13,6 +14,28 @@ from clio_agent.arc.store_protocol import ARCStore
 from clio_agent.gact.memory.store import CREATION_RUNS
 
 _LOCK = threading.RLock()
+
+
+def failed_memory_tool_count(messages: Iterable[Any]) -> int:
+    """Count explicit failed results from the curator's recorded memory tools."""
+    relevant = {"memory_search", "memory_read", "propose_memory_change"}
+    return sum(
+        1
+        for message in messages
+        for part in getattr(message, "parts", ())
+        if getattr(part, "type", "") == "tool_result"
+        and getattr(part, "tool_name", "") in relevant
+        and bool(getattr(part, "is_error", False))
+    )
+
+
+def curator_run_outcome(
+    task_status: str, proposal_counts: Mapping[str, int], failed_tool_count: int
+) -> tuple[str, str]:
+    """Keep completed no-op runs, but retain source messages after failed curation."""
+    if task_status == "completed" and not any(proposal_counts.values()) and failed_tool_count:
+        return "failed", "curator_tool_errors_no_proposals"
+    return task_status, "" if task_status == "completed" else f"curator_{task_status}"
 
 
 def creation_run_id(origin: str, run_key: str) -> str:
