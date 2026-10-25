@@ -59,7 +59,9 @@ reads retain their original scope. A continuation pins the selection: omit
 page bound. Unselected dictionary reads include bounded `result_keys` metadata.
 The REST result route accepts repeated `select` query parameters.
 
-`input_task_ids` selects finished children owned by the spawning session. The
+`input_task_ids` selects readable finished task results in the spawning session's
+own same-human tree, including a child's completed tool results. A read grant
+for an unrelated peer does not make its result shareable. The
 child receives bounded quoted evidence and a pinned `get_task_result` cursor.
 That cursor reads only the exact snapshot in its confirmed delegation input,
 including after a successor continues the stable session. It grants no sibling

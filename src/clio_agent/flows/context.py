@@ -604,16 +604,16 @@ class FlowContext:
         agent_id = "self" if call.kind == "flow" else call.name
         session_metadata = child_session_metadata(call, self._depth + 1, self.journal.run_id)
         launch_context: dict[str, Any] | None = None
-        if call.evidence:
-            from clio_agent.gact.assignment_evidence import (  # noqa: PLC0415
-                select_assignment_evidence,
-            )
-
-            pins = await app.state.task_history.io.run(
-                select_assignment_evidence, app.state.task_history, self.caller, call.evidence
-            )
-            launch_context = {"input_task_refs": [pin.model_dump(mode="json") for pin in pins]}
         try:
+            if call.evidence:
+                from clio_agent.gact.assignment_evidence import (  # noqa: PLC0415
+                    select_assignment_evidence,
+                )
+
+                pins = await app.state.task_history.io.run(
+                    select_assignment_evidence, app.state.task_history, self.caller, call.evidence
+                )
+                launch_context = {"input_task_refs": [pin.model_dump(mode="json") for pin in pins]}
             accepted = await app.state.conversations.spawn(
                 self.caller,
                 render_input(call.input),

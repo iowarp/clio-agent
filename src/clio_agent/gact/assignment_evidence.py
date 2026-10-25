@@ -13,17 +13,15 @@ from clio_agent.gact.task_result_content import result_cursor
 
 
 def _pin(history: TaskHistory, caller: TaskCaller, handle: str) -> AssignmentEvidence:
-    task = TaskAccess(history, caller).require(handle, "read")
-    parent = history.task_snapshot(task.owner.parent_handle or "")
+    access = TaskAccess(history, caller)
+    task = access.require(handle, "read")
     if (
-        task.kind != "Subagent"
-        or parent is None
-        or parent.owner.session_id != caller.session_id
-        or parent.owner.human_id != caller.human_id
+        task.owner.human_id != caller.human_id
+        or not access.in_scope(task, "tree")
         or task.terminal_at is None
         or task.result is None
     ):
-        raise ValueError("Input evidence must be a readable finished child of this session")
+        raise ValueError("Input evidence must be a readable finished task in this session's tree")
     return AssignmentEvidence(
         handle=task.handle,
         owner=task.owner,
