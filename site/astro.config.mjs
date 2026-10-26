@@ -135,6 +135,7 @@ export default defineConfig({
 						{ label: 'Choose a specialist agent', slug: 'docs/marketplaces' },
 						{ label: 'Install and update blueprints', slug: 'docs/marketplaces/manage' },
 						{ label: 'Connect tools and services', slug: 'docs/mcp-servers' },
+						{ label: 'Extensions preview', slug: 'docs/extensions' },
 						{ label: 'Interactive views and controls', slug: 'docs/widgets' },
 					],
 				},
