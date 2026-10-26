@@ -1,7 +1,7 @@
 # Discover, connect and compose extensions
 
 Status: implemented and exercised in real browser and Codex-sign-in journeys,
-2026-10-25. Website publication is tracked separately from the implementation PRs.
+2026-10-26. Website publication is tracked separately from the implementation PRs.
 
 The product journey is **discover → inspect → add → enable for an agent or
 conversation**. Installed content, a configured connection, successful sign-in and
@@ -11,11 +11,14 @@ plugins and imported files.
 
 ## Product surfaces
 
-- One extension library with **Yours / Discover**, search and type filters for
-  connectors, skills and plugins. Show name, purpose, publisher/source and meaningful
-  availability. Keep the installation machinery out of the primary listing.
-- One Add menu: remote MCP URL, local command/package, repository/folder/skill upload,
-  create a skill and compose a plugin. URL + display name are sufficient for the common
+- Four distinct views: **Marketplaces, MCP connections, Skills, Plugins**. Marketplaces
+  owns source install, trust and updates once; the other views have **Yours / Discover**,
+  search and their own contextual Add actions. Do not mount the full source and plugin
+  settings page inside another inventory. Skills open their actual instructions directly.
+- Shared Add machinery with category-specific choices: MCP URL/local command, skill
+  create/import/upload, and plugin compose/import/upload. Upload is a clickable drop zone
+  naming the required archive structure; the server validates the selected kind.
+  URL + display name are sufficient for the common
   remote connection. Authentication is discovered; headers, legacy SSE and client
   registration overrides belong under Advanced.
 - Details reuse the plugin explorer, file tree and shared reader. Skill contents stay
@@ -36,6 +39,22 @@ including pinned source, trust/update handling and typed diagnostics. Add local 
 authoring through that owner. Import/archive staging is bounded and
 rejects traversal, links, conflicting names and partial publication. No imported setup
 script runs merely because somebody browsed a source.
+
+Created and uploaded items share the **private-local** marketplace, preserving each
+plugin's identity and the usual per-executable trust digests. Adding an item must not
+silently trust it or invalidate siblings. Existing standalone local marketplace references
+remain valid. Native collections can contain native plugins, Claude plugins and standalone
+skills through the same existing readers.
+
+Marketplaces offers a portable ZIP for a user-managed private GitHub backup. This is
+explicitly manual, with no claim of synchronization or automatic repository creation.
+Saved connection credentials are outside the exported source. Referenced upstream sources
+and named connections must be available on the destination host. A fresh restore remains
+untrusted. Windows snapshot copies and failed staging cleanup use extended-length paths.
+
+Saved MCP detail and the tools inventory reuse the connection-field renderer, inventory
+rows and readable input-schema renderer. Only an explicit check starts the saved server;
+the response includes names, descriptions and schemas from the actual MCP tools/list call.
 
 Extend saved MCP declarations with explicit authentication settings and secret handling.
 Reuse the installed MCP SDK's OAuth provider for protected-resource/AS discovery, PKCE,

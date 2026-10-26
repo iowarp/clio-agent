@@ -9,8 +9,6 @@ from typing import Any
 
 import pytest
 import yaml
-from fastapi.testclient import TestClient
-
 from clio_agent.gact.app import build_app
 from clio_agent.gact.mcp_user_configuration import (
     McpUserConfigurationError,
@@ -21,6 +19,7 @@ from clio_agent.gact.routes.mcp_configuration import (
     _probe_web_search_remote,
 )
 from clio_agent.tools.mcp_config import load_mcp_servers
+from fastapi.testclient import TestClient
 
 
 def _web_spec(remote_url: str) -> dict[str, Any]:
@@ -93,7 +92,7 @@ def test_user_mcp_configuration_persists_across_restart_and_preserves_siblings(
     )
     monkeypatch.setenv("CLIO_USER_DIR", str(user_dir))
 
-    async def ready_probe(spec: Any) -> tuple[list[str], str | None]:
+    async def ready_probe(spec: Any, *, details: bool = False) -> tuple[list[str], str | None]:
         del spec
         return ["web_search", "web_fetch"], None
 
@@ -138,7 +137,7 @@ def test_put_rejects_invalid_runtime_names_before_persist_or_probe(
     monkeypatch.setenv("CLIO_USER_DIR", str(user_dir))
     probes: list[Any] = []
 
-    async def ready_probe(spec: Any) -> tuple[list[str], str | None]:
+    async def ready_probe(spec: Any, *, details: bool = False) -> tuple[list[str], str | None]:
         probes.append(spec)
         return ["example_tool"], None
 
@@ -166,7 +165,7 @@ def test_put_accepts_canonical_name_and_probes_saved_declaration(
     monkeypatch.setenv("CLIO_USER_DIR", str(user_dir))
     probes: list[Any] = []
 
-    async def ready_probe(spec: Any) -> tuple[list[str], str | None]:
+    async def ready_probe(spec: Any, *, details: bool = False) -> tuple[list[str], str | None]:
         probes.append(spec)
         return ["example_tool"], None
 
@@ -222,7 +221,7 @@ def test_legacy_invalid_name_remains_readable_and_deletable(
         encoding="utf-8",
     )
 
-    async def ready_probe(spec: Any) -> tuple[list[str], str | None]:
+    async def ready_probe(spec: Any, *, details: bool = False) -> tuple[list[str], str | None]:
         del spec
         return ["example_tool"], None
 
@@ -250,7 +249,7 @@ def test_edit_replaces_named_server_without_duplicate_runtime_or_yaml_rows(
     user_dir = tmp_path / "user"
     monkeypatch.setenv("CLIO_USER_DIR", str(user_dir))
 
-    async def ready_probe(spec: Any) -> tuple[list[str], str | None]:
+    async def ready_probe(spec: Any, *, details: bool = False) -> tuple[list[str], str | None]:
         del spec
         return ["web_search"], None
 
@@ -292,7 +291,7 @@ def test_saved_configuration_refreshes_the_running_agent_gateway(
 
     monkeypatch.setenv("CLIO_USER_DIR", str(tmp_path / "user"))
 
-    async def ready_probe(spec: Any) -> tuple[list[str], str | None]:
+    async def ready_probe(spec: Any, *, details: bool = False) -> tuple[list[str], str | None]:
         del spec
         return ["web_search"], None
 
@@ -334,7 +333,9 @@ def test_unreachable_configuration_is_saved_and_remains_retryable_after_restart(
     user_dir = tmp_path / "user"
     monkeypatch.setenv("CLIO_USER_DIR", str(user_dir))
 
-    async def unavailable_probe(spec: Any) -> tuple[list[str], str | None]:
+    async def unavailable_probe(
+        spec: Any, *, details: bool = False
+    ) -> tuple[list[str], str | None]:
         del spec
         return [], "ConnectionError: service offline"
 
@@ -368,7 +369,7 @@ def test_remove_user_override_restores_plugin_local_fallback(
     user_dir = tmp_path / "user"
     monkeypatch.setenv("CLIO_USER_DIR", str(user_dir))
 
-    async def ready_probe(spec: Any) -> tuple[list[str], str | None]:
+    async def ready_probe(spec: Any, *, details: bool = False) -> tuple[list[str], str | None]:
         del spec
         return ["web_search"], None
 
@@ -452,7 +453,7 @@ def test_web_configuration_updates_document_conversion_live_and_remove_restores_
     monkeypatch.setenv("CLIO_USER_DIR", str(tmp_path / "user"))
     monkeypatch.setenv("CLIO_DOCUMENT_PROCESSOR_URL", "http://local.example:8089")
 
-    async def ready_probe(spec: Any) -> tuple[list[str], str | None]:
+    async def ready_probe(spec: Any, *, details: bool = False) -> tuple[list[str], str | None]:
         del spec
         return ["web_fetch"], None
 

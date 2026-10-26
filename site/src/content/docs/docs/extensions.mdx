@@ -13,26 +13,27 @@ import connection from '../../../assets/captures/extensions-connect.png';
 import skill from '../../../assets/captures/extensions-skill.png';
 import composition from '../../../assets/captures/extensions-compose.png';
 import consent from '../../../assets/captures/extensions-sign-in.png';
+import backup from '../../../assets/captures/extensions-backup.png';
 
 <Aside type="note" title="Development preview">
 These controls are being qualified for the next release in [CLIO #1854](https://github.com/iowarp/clio-agent/pull/1854) and [GACT #681](https://github.com/iowarp/gact-tui/pull/681). The captures below show that development build.
 </Aside>
 
 Open **Settings → Extensions**, or choose **Browse extensions** from the conversation's plugin menu.
-**Yours** holds installed skills and plugins, plus your saved MCP connections. **Discover** offers public sources and a search of the [MCP Registry](https://registry.modelcontextprotocol.io).
+Choose **Marketplaces**, **MCP connections**, **Skills**, or **Plugins**. Each has its own Add actions. Marketplaces manages source trust and updates; the other views provide **Yours**, **Discover**, and search. MCP discovery searches the [MCP Registry](https://registry.modelcontextprotocol.io).
 
 Browsing the directory starts no servers. A saved connection, a trusted source, and a plugin enabled in a conversation are separate choices.
 
 <Capture client:visible image={await captureImage(library)}
-  alt="CLIO Extensions in light mode, with Yours and Discover, type filters, and Home Assistant source cards"
-  caption="One library for connections, instructions and reusable bundles."
+  alt="CLIO Extensions in light mode with separate Marketplaces, MCP connections, Skills and Plugins views"
+  caption="Separate views and Add actions, with shared inspection and installation underneath."
 />
 
 ## Connect an MCP
 
 <Steps>
 
-1. Choose **Add → MCP server URL**. Enter a name and the endpoint supplied by your server.
+1. Open **MCP connections → Add MCP → MCP server URL**. Enter a name and the endpoint supplied by your server.
 
 2. Choose **Connect**. CLIO saves the connection and checks whether the MCP answers. A failed check remains visible as a failed check.
 
@@ -56,17 +57,19 @@ OAuth uses the MCP SDK's discovery, PKCE and token exchange. Automatic client re
 
 Closing a pending sign-in cancels that attempt. Declining access does not mark the connection successful. **Sign out** removes CLIO's stored authorization; provider-side access is managed in the provider's account settings.
 
-For a local server, choose **Add → Local MCP command**. The command runs on the connected agent host. Arguments are separate strings, for example `["ha-mcp"]` with `uvx`. Environment variables have a table and a raw input mode.
+Open a saved connection and choose **Check connection** to see its live tools, descriptions and expandable inputs. A server that requires authorization shows **Sign-in required** instead of an empty successful inventory.
+
+For a local server, choose **Add MCP → Local MCP command**. The command runs on the connected agent host. Arguments are separate strings, for example `["ha-mcp"]` with `uvx`. Environment variables have a table and a raw input mode.
 
 By default, a new library connection is available through plugins that include it. **Conversation access → Available in every conversation** makes it available globally instead.
 
 ## Add and explore skills
 
-Choose **Add → Repository or host folder** to import a marketplace, plugin or portable Agent Skills directory. Native Agent Plugins and Claude Code plugins use the same install and trust lifecycle. **Upload ZIP** accepts up to 128 UTF-8 source files and 2 MiB uncompressed; use a repository or host folder for larger packages or binary assets.
+In **Skills**, choose **Add skill → Repository or host folder** to import an Agent Skills source. Native Agent Plugins and Claude Code plugins use the same install and trust lifecycle. **Upload skill ZIP** opens a clickable drop zone: drop a skill folder containing `SKILL.md` and its references, or click to choose the ZIP. Uploads accept up to 128 UTF-8 files and 2 MiB uncompressed; use a repository or host folder for larger packages or binary assets. The Plugins view offers a separate **Upload plugin ZIP** for a folder containing `plugin.json` or `.claude-plugin/plugin.json`.
 
 To write your own instructions, choose **Create a skill**. Give it a name, description and instructions. This writes local files without a model call.
 
-Open an installed plugin to inspect its capabilities. Click a skill to open its own `SKILL.md` and reference tree. The shared file reader provides rendered and source views, copy and download.
+Click a skill to open its own `SKILL.md` and reference tree directly. Open a plugin from Plugins to inspect the capabilities it combines. Both use the shared file reader for rendered and source views, copy and download.
 
 <Capture client:visible image={await captureImage(skill)}
   alt="Home Assistant Best Practices open in the shared inspector with its skill file and references"
@@ -79,7 +82,7 @@ Inspect a new source before choosing **Trust source**. Trust allows that source'
 
 ## Combine tools and instructions
 
-Choose **Add → Compose a plugin**. Select installed skills or plugins and the saved MCP connections they should use. The bundle records references to those capabilities. Connection credentials remain on the agent host and are not copied into the plugin manifest.
+Choose **Plugins → Add plugin → Compose a plugin**. Select installed skills or plugins and the saved MCP connections they should use. **Save to private marketplace** saves the bundle to your **Private local marketplace**. The bundle records references to those capabilities. Connection credentials remain on the agent host and are not copied into the plugin manifest.
 
 <Capture client:visible image={await captureImage(composition)}
   alt="Compose a plugin with an installed Home Assistant skill and a named read-only qualification connection"
@@ -87,6 +90,19 @@ Choose **Add → Compose a plugin**. Select installed skills or plugins and the 
 />
 
 Add the resulting plugin from the conversation's **+** plugin menu. **Save as agent** keeps that composition for future conversations.
+
+## Your private marketplace and GitHub backup
+
+Skills and plugins you create or upload share one private marketplace on the agent host. They are not published. Open **Marketplaces** to inspect its source location and manage trust. Importing an upstream repository retains that repository as a separate source.
+
+Choose **Back up with GitHub** to download the marketplace's source ZIP. Unpack it and upload the files to a private repository you control. Another host can install that repository through **Add marketplace**, using its own GitHub access. Install any referenced upstream sources and configure the named MCP connections there as well.
+
+This is a manual backup: later local edits are not automatically pushed to GitHub. Saved MCP connections and their credentials are not included. Restored source requires the normal trust step.
+
+<Capture client:visible image={await captureImage(backup)}
+  alt="Private marketplace backup dialog with a source ZIP download and steps for a private GitHub repository"
+  caption="Portable source files with an explicit manual backup workflow."
+/>
 
 ### Example: Home Assistant
 

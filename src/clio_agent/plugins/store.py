@@ -38,6 +38,7 @@ from typing import Any
 
 from filelock import FileLock
 
+from clio_agent.platform_paths import rename_extended, rmtree_extended, win_extended_path
 from clio_agent.plugins.claude_code import import_claude_plugin
 from clio_agent.plugins.loader import PluginLoadError, load_plugin, tree_digests
 from clio_agent.plugins.manifest import within
@@ -120,20 +121,19 @@ def _copy_tree(source: Path, target: Path) -> None:
     if target.exists():
         return
     staging = target.with_name(f"{target.name}.partial-{uuid.uuid4().hex[:12]}")
-    shutil.copytree(
-        source,
-        staging,
-        symlinks=False,
-        ignore=ignored_package_names,
-    )
     try:
-        staging.rename(target)
+        shutil.copytree(
+            win_extended_path(source.absolute()),
+            win_extended_path(staging.absolute()),
+            symlinks=False,
+            ignore=ignored_package_names,
+        )
+        rename_extended(staging, target)
     except OSError:
+        rmtree_extended(staging, ignore_errors=True)
         if not target.is_dir():
-            shutil.rmtree(staging, ignore_errors=True)
             raise
         # Another install of the same content finished first: its copy is identical.
-        shutil.rmtree(staging, ignore_errors=True)
 
 
 def builtin_records() -> list[PluginRecord]:

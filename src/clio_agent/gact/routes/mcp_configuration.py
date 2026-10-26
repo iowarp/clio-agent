@@ -17,7 +17,11 @@ from clio_agent.gact.mcp_user_configuration import mcp_server_arg_value
 from clio_agent.gact.resource_processing import DocumentProcessorClient
 from clio_agent.gact.routes._body import json_body
 from clio_agent.gact.routes.mcp_server_specs import stdio_server_spec
-from clio_agent.tools.mcp_config import MCPTransportError, spec_from_declaration, transport_for
+from clio_agent.tools.mcp_config import (
+    MCPTransportError,
+    spec_from_declaration,
+    transport_for,
+)
 from clio_agent.tools.mcp_oauth_storage import DurableFileTokenStorage
 from clio_agent.tools.mcp_probe_hardening import probe_server_context
 from clio_agent.tools.mcp_redaction import redact_mcp_error, redact_mcp_spec
@@ -79,7 +83,8 @@ def _configuration_spec(body: dict[str, Any]) -> dict[str, Any]:
             or len(headers) > 16
         ):
             raise HTTPException(
-                422, "Request headers must contain at most 16 single-line name/value pairs"
+                422,
+                "Request headers must contain at most 16 single-line name/value pairs",
             )
         spec: dict[str, Any] = {
             "transport": "sse" if transport_kind == "sse" else "http",
@@ -150,7 +155,9 @@ _FETCHING_LAUNCHERS = frozenset({"uvx", "uv", "npx", "pnpx", "bunx", "pipx"})
 _FIRST_START_PROBE_RETRIES = 12
 
 
-async def _probe_user_mcp_server(spec: Mapping[str, Any]) -> tuple[list[str], str | None]:
+async def _probe_user_mcp_server(
+    spec: Mapping[str, Any], *, details: bool = False
+) -> tuple[list[Any], str | None]:
     """Return live tools and a degraded detail for one saved spec."""
 
     transport_spec = dict(spec)
@@ -159,7 +166,8 @@ async def _probe_user_mcp_server(spec: Mapping[str, Any]) -> tuple[list[str], st
     if (
         spec.get("auth")
         and not DurableFileTokenStorage(
-            str(spec.get("url") or ""), connection_id=(spec.get("auth") or {}).get("connection_id")
+            str(spec.get("url") or ""),
+            connection_id=(spec.get("auth") or {}).get("connection_id"),
         ).has_tokens()
     ):
         transport_spec.pop("auth", None)
@@ -180,7 +188,12 @@ async def _probe_user_mcp_server(spec: Mapping[str, Any]) -> tuple[list[str], st
         ):
             async with make_mcp_client(transport, server_id="user-configuration-probe") as client:
                 tools = await client.list_tools()
-        tool_names = [str(tool.name) for tool in tools]
+        tool_names = [
+            tool.model_dump(mode="json", by_alias=True, exclude_none=True)
+            if details
+            else str(tool.name)
+            for tool in tools
+        ]
     except Exception as exc:  # noqa: BLE001 - saved configuration remains durable
         # MCP 2 can turn an HTTP failure into a JSON-RPC error without retaining
         # the response. Read only challenge headers without client registration
@@ -204,7 +217,11 @@ async def _probe_user_mcp_server(spec: Mapping[str, Any]) -> tuple[list[str], st
                             "POST",
                             str(spec["url"]),
                             headers=headers,
-                            json={"jsonrpc": "2.0", "id": "clio-auth-discovery", "method": "ping"},
+                            json={
+                                "jsonrpc": "2.0",
+                                "id": "clio-auth-discovery",
+                                "method": "ping",
+                            },
                         ) as response:
                             status = response.status_code
                     if status == 401:
@@ -231,7 +248,11 @@ async def _probe_user_mcp_server(spec: Mapping[str, Any]) -> tuple[list[str], st
                 pending.append(error.__context__)
         detail = redact_mcp_error(
             exc,
-            {"url": normalized.url, "headers": normalized.headers, "env": normalized.env}
+            {
+                "url": normalized.url,
+                "headers": normalized.headers,
+                "env": normalized.env,
+            }
             if normalized is not None
             else spec,
         )
@@ -303,7 +324,10 @@ async def _configuration_row(name: str, spec: Mapping[str, Any] | None) -> dict[
             "tools_count": 0,
             "retryable": False,
         }
-    tools, error = await _probe_user_mcp_server(spec)
+    inventory, error = await _probe_user_mcp_server(spec, details=True)
+    tools = [
+        str(tool.get("name", "")) if isinstance(tool, dict) else str(tool) for tool in inventory
+    ]
     row: dict[str, Any] = {
         "name": name,
         "configured": True,
@@ -316,6 +340,7 @@ async def _configuration_row(name: str, spec: Mapping[str, Any] | None) -> dict[
         "transport": str(spec.get("transport") or "stdio"),
         "spec": redact_mcp_spec(dict(spec)),
         "tools": tools,
+        "tool_details": [tool for tool in inventory if isinstance(tool, dict)],
         "tools_count": len(tools),
         "retryable": error is not None,
     }

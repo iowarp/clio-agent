@@ -5,16 +5,24 @@ from __future__ import annotations
 import asyncio
 import base64
 import binascii
+import io
 import json
+import zipfile
 from typing import Any
 
 import httpx
 from fastapi import FastAPI, HTTPException, Request
+from fastapi.responses import Response
 
 from clio_agent.gact.agents.resolution import plugin_service
 from clio_agent.gact.plugin_authoring import installed_changed
 from clio_agent.gact.routes._body import json_body
-from clio_agent.plugins.local import MAX_BYTES, archive_files, create_local
+from clio_agent.plugins.local import (
+    MAX_BYTES,
+    PRIVATE_MARKETPLACE,
+    archive_files,
+    create_local,
+)
 from clio_agent.plugins.store import StoreError
 
 
@@ -42,7 +50,9 @@ def register_extension_routes(app: FastAPI) -> None:
         return await install(await json_body(request, route="Create local extension"))
 
     @app.post("/v1/plugins/upload", status_code=201)
-    async def upload(request: Request, name: str) -> dict[str, Any]:
+    async def upload(request: Request, name: str, kind: str = "") -> dict[str, Any]:
+        if kind not in {"", "skill", "plugin"}:
+            raise HTTPException(422, "Choose a skill or plugin upload")
         raw = bytearray()
         async for chunk in request.stream():
             raw.extend(chunk)
@@ -52,9 +62,51 @@ def register_extension_routes(app: FastAPI) -> None:
             payload = json.loads(raw)
             encoded = base64.b64decode(payload["archive"], validate=True)
             files = await asyncio.to_thread(archive_files, encoded)
+            if kind == "skill" and "SKILL.md" not in files:
+                raise ValueError("Upload a skill folder with SKILL.md at its root")
+            if kind == "plugin" and not (
+                {"plugin.json", ".claude-plugin/plugin.json"} & files.keys()
+            ):
+                raise ValueError(
+                    "Upload a plugin folder containing plugin.json or .claude-plugin/plugin.json"
+                )
         except (ValueError, KeyError, TypeError, binascii.Error) as exc:
             raise HTTPException(422, str(exc)) from None
         return await install({"name": name, "files": files})
+
+    @app.get("/v1/plugins/local/export")
+    async def export_local() -> Response:
+        """Export portable source files for an explicit, user-managed GitHub backup."""
+        service = plugin_service(app)
+
+        def archive() -> bytes:
+            root = service.store.root / "local" / PRIVATE_MARKETPLACE
+            with service.store.lock:
+                if not root.is_dir():
+                    raise HTTPException(404, "Create a local skill or plugin first")
+                output = io.BytesIO()
+                size = 0
+                with zipfile.ZipFile(output, "w", compression=zipfile.ZIP_DEFLATED) as zipped:
+                    for path in sorted(root.rglob("*")):
+                        if path.is_symlink() or not path.resolve().is_relative_to(root.resolve()):
+                            raise HTTPException(
+                                409, "The local marketplace contains an external link"
+                            )
+                        if path.is_file():
+                            size += path.stat().st_size
+                            if size > 16 * MAX_BYTES:
+                                raise HTTPException(
+                                    413,
+                                    "Use the marketplace folder to back up this larger collection",
+                                )
+                            zipped.write(path, path.relative_to(root).as_posix())
+                return output.getvalue()
+
+        return Response(
+            await asyncio.to_thread(archive),
+            media_type="application/zip",
+            headers={"Content-Disposition": 'attachment; filename="private-local-marketplace.zip"'},
+        )
 
     @app.get("/v1/extensions/mcp-registry")
     async def registry(search: str = "", cursor: str = "") -> dict[str, Any]:
@@ -65,7 +117,12 @@ def register_extension_routes(app: FastAPI) -> None:
                 async with client.stream(
                     "GET",
                     "https://registry.modelcontextprotocol.io/v0.1/servers",
-                    params={"search": search, "limit": 24, "version": "latest", "cursor": cursor},
+                    params={
+                        "search": search,
+                        "limit": 24,
+                        "version": "latest",
+                        "cursor": cursor,
+                    },
                 ) as response:
                     response.raise_for_status()
                     raw = bytearray()
@@ -82,5 +139,6 @@ def register_extension_routes(app: FastAPI) -> None:
             }
         except (httpx.HTTPError, ValueError, KeyError):
             raise HTTPException(
-                502, "The MCP Registry could not be read. Retry or add a custom connection"
+                502,
+                "The MCP Registry could not be read. Retry or add a custom connection",
             ) from None

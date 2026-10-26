@@ -20,7 +20,7 @@ import hashlib
 import json
 import sys
 import types
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any
 
@@ -221,7 +221,10 @@ def load_agent_specs(root: Path, marketplace: str) -> tuple[list[AgentSpec], lis
                 except AgentDefinitionError as exc:
                     diagnostics.append(
                         Diagnostic(
-                            "error", "agent_invalid", f"{value.__name__}: {exc}", marketplace
+                            "error",
+                            "agent_invalid",
+                            f"{value.__name__}: {exc}",
+                            marketplace,
                         )
                     )
                     continue
@@ -247,14 +250,31 @@ def read_native_marketplace(
         index = json.loads((root / NATIVE_INDEX).read_text(encoding="utf-8"))
     name = str(name_hint or index.get("name") or root.name)
     contents = MarketplaceContents(
-        name=name, format="agent-plugins", description=str(index.get("description") or "")
+        name=name,
+        format="agent-plugins",
+        description=str(index.get("description") or ""),
     )
     plugins_dir = root / "plugins"
     for child in sorted(plugins_dir.iterdir()) if plugins_dir.is_dir() else []:
-        if not (child / "plugin.json").is_file():
+        kind = detect_format(child) if child.is_dir() else ""
+        if kind not in {
+            "plugin",
+            "claude-code-plugin",
+            "skills",
+        }:
             continue
         try:
-            contents.plugins.append(load_plugin(child, marketplace=name, trusted=trusted))
+            imported = read_marketplace(
+                child, trusted=trusted, name_hint=child.name if kind == "skills" else name
+            )
+            # A standalone skills folder takes its identity from its folder,
+            # while native and Claude manifests declare their own plugin name.
+            if kind == "skills":
+                imported.plugins = [
+                    replace(record, marketplace=name) for record in imported.plugins
+                ]
+            contents.plugins.extend(imported.plugins)
+            contents.diagnostics.extend(imported.diagnostics)
         except PluginLoadError as exc:
             contents.diagnostics.append(Diagnostic("error", "plugin_invalid", str(exc), child.name))
     if trusted:

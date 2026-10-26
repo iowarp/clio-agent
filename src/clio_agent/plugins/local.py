@@ -7,15 +7,17 @@ import json
 import shutil
 import stat
 import zipfile
-from pathlib import PurePosixPath
+from pathlib import Path, PurePosixPath
 from typing import Any
 
 from clio_agent.plugins.manifest import NAMESPACE, PLUGIN_SCHEMA
+from clio_agent.plugins.marketplace import NATIVE_INDEX, read_marketplace
 from clio_agent.plugins.store import PluginStore
 from clio_agent.sdk.versions import valid_plugin_id
 
 MAX_BYTES = 2 * 1024 * 1024
 MAX_FILES = 128
+PRIVATE_MARKETPLACE = "private-local"
 
 
 def archive_files(raw: bytes) -> dict[str, str]:
@@ -117,22 +119,46 @@ def create_local(store: PluginStore, body: dict[str, Any]) -> dict[str, Any]:
         raise ValueError("Local extensions must be smaller than 2 MiB")
     if "plugin.json" in clean:
         manifest = json.loads(clean["plugin.json"])
+        if not isinstance(manifest, dict):
+            raise ValueError("plugin.json must contain a plugin object")
         manifest["name"] = name
         clean["plugin.json"] = json.dumps(manifest, indent=2)
     if ".claude-plugin/plugin.json" in clean:
         manifest = json.loads(clean[".claude-plugin/plugin.json"])
+        if not isinstance(manifest, dict):
+            raise ValueError(".claude-plugin/plugin.json must contain a plugin object")
         manifest["name"] = name
         clean[".claude-plugin/plugin.json"] = json.dumps(manifest, indent=2)
     with store.lock:
-        folder = store.root / "local" / name
-        if name in store.marketplaces() or folder.exists():
+        root = store.root / "local" / PRIVATE_MARKETPLACE
+        folder = root / "plugins" / name
+        existing = store.marketplaces().get(PRIVATE_MARKETPLACE)
+        if existing and Path(str(existing.get("source", ""))).resolve() != root.resolve():
+            raise ValueError("The private-local marketplace name belongs to another source")
+        if folder.exists() or (store.root / "local" / name).exists():
             raise ValueError("That name already exists. Save this as a new variation instead")
         try:
             for relative, text in clean.items():
                 target = folder / relative
                 target.parent.mkdir(parents=True, exist_ok=True)
                 target.write_text(text, encoding="utf-8")
-            return store.install(str(folder), name=name)
+            contents = read_marketplace(folder, trusted=False, name_hint=PRIVATE_MARKETPLACE)
+            if len(contents.plugins) != 1 or any(
+                row.severity == "error" for row in contents.diagnostics
+            ):
+                raise ValueError("Upload one complete skill or plugin folder")
+            index = root / NATIVE_INDEX
+            index.parent.mkdir(parents=True, exist_ok=True)
+            index.write_text(
+                json.dumps(
+                    {
+                        "name": PRIVATE_MARKETPLACE,
+                        "description": "Your private local skills and plugins",
+                    }
+                ),
+                encoding="utf-8",
+            )
+            return store.install(str(root), name=PRIVATE_MARKETPLACE)
         except Exception:
             # Only this call's newly created directory is owned by the operation.
             if folder.resolve().is_relative_to((store.root / "local").resolve()):

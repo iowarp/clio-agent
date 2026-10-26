@@ -9,12 +9,11 @@ from collections.abc import Iterator
 from pathlib import Path
 
 import pytest
-from fastapi.testclient import TestClient
-
 from clio_agent.gact.agents.resolution import SessionAgentUnavailable, agent_server_set
 from clio_agent.gact.app import build_app
 from clio_agent.gact.mcp_user_configuration import remove_user_mcp_server, set_user_mcp_server
 from clio_agent.plugins.servers import server_set_declarations
+from fastapi.testclient import TestClient
 
 
 @pytest.fixture
@@ -54,13 +53,13 @@ def test_create_inspect_variation_and_compose_saved_connection(client: TestClien
     assert "Original guidance" in next(
         row["text"] for row in unchanged["files"] if row["path"] == skill_path
     )
-    assert client.post("/v1/plugins/marketplaces/ha-notes/trust").status_code == 200
+    assert client.post("/v1/plugins/marketplaces/private-local/trust").status_code == 200
     set_user_mcp_server(
         "home",
         {
             "transport": "http",
             "url": "https://example.invalid/mcp",
-            "headers": {"Secret": "private"},
+            "headers": {"Secret": "test-credential-not-for-export"},
         },
     )
     composed = client.post(
@@ -68,25 +67,47 @@ def test_create_inspect_variation_and_compose_saved_connection(client: TestClien
         json={"name": "my-ha", "requires": [original["ref"]], "connections": {"ha": "home"}},
     )
     assert composed.status_code == 201, composed.text
-    assert client.post("/v1/plugins/marketplaces/my-ha/trust").status_code == 200
+    assert client.post("/v1/plugins/marketplaces/private-local/trust").status_code == 200
     preview = client.get(
-        "/v1/agents/resolve", params={"ref": "clio/standard", "add": "my-ha/my-ha"}
+        "/v1/agents/resolve", params={"ref": "clio/standard", "add": "private-local/my-ha"}
     )
     assert preview.status_code == 200, preview.text
     assert "ha" in preview.json()["mcp_servers"]
     # Mounting receives the runtime connection, while the portable source contains only its name.
     saved = client.post(
         "/v1/agents/user",
-        json={"id": "test-ha", "extends": "clio/standard", "add": ["my-ha/my-ha"]},
+        json={"id": "test-ha", "extends": "clio/standard", "add": ["private-local/my-ha"]},
     )
     assert saved.status_code == 201, saved.text
     declarations = server_set_declarations(agent_server_set(client.app, "user/test-ha"))
-    assert declarations["my-ha"]["ha"]["headers"]["Secret"] == "private"
-    inspect_composed = client.get("/v1/plugins/inspect", params={"ref": "my-ha/my-ha"})
-    assert "private" not in inspect_composed.text
+    assert declarations["my-ha"]["ha"]["headers"]["Secret"] == "test-credential-not-for-export"
+    inspect_composed = client.get("/v1/plugins/inspect", params={"ref": "private-local/my-ha"})
+    assert "test-credential-not-for-export" not in inspect_composed.text
     remove_user_mcp_server("home")
     with pytest.raises(SessionAgentUnavailable, match="Add the saved MCP connection 'home'"):
         agent_server_set(client.app, "user/test-ha")
+
+
+def test_private_marketplace_export_and_contextual_upload(client: TestClient) -> None:
+    raw = io.BytesIO()
+    with zipfile.ZipFile(raw, "w") as archive:
+        archive.writestr(
+            "portable/SKILL.md", "---\nname: portable\ndescription: Guidance\n---\n# Keep this"
+        )
+        archive.writestr("portable/references/details.md", "Reference contents")
+    encoded = base64.b64encode(raw.getvalue()).decode()
+    wrong = client.post("/v1/plugins/upload?name=portable&kind=plugin", json={"archive": encoded})
+    assert wrong.status_code == 422
+    saved = client.post("/v1/plugins/upload?name=portable&kind=skill", json={"archive": encoded})
+    assert saved.status_code == 201, saved.text
+    assert saved.json()["marketplace"] == "private-local"
+    exported = client.get("/v1/plugins/local/export")
+    assert exported.status_code == 200
+    with zipfile.ZipFile(io.BytesIO(exported.content)) as archive:
+        files = archive.namelist()
+        assert "ai.iowarp.clio/marketplace.json" in files
+        assert archive.read("plugins/portable/references/details.md") == b"Reference contents"
+        assert not any("oauth" in path or path.endswith("mcp.yaml") for path in files)
 
 
 def test_upload_portable_skill_and_reject_duplicate_name(client: TestClient) -> None:
