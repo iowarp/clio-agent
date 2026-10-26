@@ -1,6 +1,7 @@
 # Install and startup paths: current state and proposed unification
 
-Status: findings, 2026-10-26. Nothing here is fixed yet.
+Status: findings, 2026-10-26. Nothing here is fixed yet. The plan built on these findings is
+[install-and-startup-plan.md](install-and-startup-plan.md).
 Observed by building `iowarp/gact-tui@develop` (`e58bbfe`) on Windows 11 with the
 CLIO brand, launching the debug desktop app, and reading the installers.
 
