@@ -55,9 +55,13 @@ A person judges Clio in its first minutes. Install and setup are different jobs:
 
 | Stage | Synchronous? | Does | Budget |
 |---|---|---|---|
-| **Install** | **Yes.** It finishes completely before it says it's done | Puts every component on disk: the runtime, the TUI and web UI, the document runtime (Office renderer, managed Node and Python packages), the clio-kit science runtime and the launcher. Writes the manifest, then runs the "can it serve" check | 1 min target, 3 min at most |
+| **Install** | **Yes.** It finishes completely before it says it's done | Puts every component on disk: the runtime, the web UI, the document runtime (Office renderer, managed Node and Python packages), the clio-kit science runtime and the launcher. Writes the manifest, then runs the "can it serve" check | 1 min target, 3 min at most |
 | **First open** | Only until the window shows and accepts a message | Window shown, backend started, the configured model reachable, the default agent ready | Window at once; first message accepted within 6 s |
 | **Setup** | **No.** It runs in the background after the window is up | Everything Clio prepares or checks for itself at runtime | Each item reports its progress and has its own budget |
+
+**The TUI is no longer installed.** It hasn't been worked on in months. Installs stop downloading it
+(today the script fetches `clio-tui-*` from the release and the source mode builds it with Go), and the
+desktop app and the web UI are the front ends. Whether releases keep building it is a separate decision.
 
 **Install is fast because it's prebuilt, not because it's partial.** Today it builds or resolves its
 components on the user's machine, one after another: a Python environment from PyPI, then the document
@@ -104,10 +108,10 @@ There are three official ways to get Clio, and they are equals. Each must work a
 |---|---|---|
 | **Installers** (MSI/NSIS, DMG, deb/rpm, AppImage) | Desktop users | The desktop app and Clio in one download |
 | **From source** | Developers, and **macOS users while installers are unsigned** | Must give the same result as an installer, not a developer-only setup |
-| **Script** (`curl \| bash`, `irm \| iex`) | Servers, HPC nodes, CLI and TUI users, and every SSH deployment | The desktop app deploys to a remote host by running this there |
+| **Script** (`curl \| bash`, `irm \| iex`) | Servers, HPC nodes, command-line users, and every SSH deployment | The desktop app deploys to a remote host by running this there |
 
 What makes them equals is that they differ in exactly one step: where the runtime comes from. The runtime
-is Clio's backend with its own Python, the locked packages, the TUI and the web UI. Everything after that
+is Clio's backend with its own Python, the locked packages and the web UI. Everything after that
 step is the same code on every path and every OS:
 
 | Step | Installer | From source | Script |
@@ -116,7 +120,7 @@ step is the same code on every path and every OS:
 | 2. Install it | Shared | Shared | Shared |
 | 3. Record it in the install manifest | Shared | Shared | Shared |
 | 4. Check it (start, wait until it can serve, stop) | Shared | Shared | Shared |
-| 5. Front end | The desktop app, in the installer | **The desktop app built locally** (Tauri) against the runtime from step 1, when asked for | TUI and web UI; the desktop app when asked for |
+| 5. Front end | The desktop app, in the installer | **The desktop app built locally** (Tauri) against the runtime from step 1, when asked for | The web UI; the desktop app when asked for |
 
 So a fix or speedup in any of steps 2–4 reaches all three paths on all three OSes at once. Step 1 is the
 only place a path differs, and even there the installer and the script use the **same artifact**, and the
@@ -125,7 +129,7 @@ source path **builds that artifact**, rather than producing a different kind of 
 The commands, the same on every OS:
 
 ```
-install                  # Clio: backend, TUI and web UI. Servers, HPC and SSH deployment use exactly this
+install                  # Clio: backend and web UI. Servers, HPC and SSH deployment use exactly this
 install --desktop        # the same, plus the desktop app, on the same backend
 install --source         # step 1 builds the runtime from source: clones, or uses the checkout it runs from
 install --source --desktop   # also builds the desktop app locally: the macOS path today
@@ -234,8 +238,7 @@ Two more problems:
 
 ### 1. One runtime artifact, one builder
 
-The runtime is one artifact per OS and CPU: one Python version, the locked packages, the TUI and the
-web UI, with the same layout everywhere. One builder makes it, from a checkout and the lock file:
+The runtime is one artifact per OS and CPU: one Python version, the locked packages and the web UI, with the same layout everywhere. One builder makes it, from a checkout and the lock file:
 - **CI** runs the builder to make release artifacts for every OS and CPU, Intel Mac and Linux AppImage
   included, so no installer is attach-only.
 - **`install --source`** runs the same builder on the user's machine.
@@ -266,7 +269,7 @@ Nothing else installs Clio. The program also replaces:
 
 The installer writes a versioned manifest in one OS-standard location: install root, version, mode,
 components, runtime paths, the result of the last check, and step timings. Every consumer reads it and
-nothing guesses paths: the desktop launcher, the TUI, `clio doctor`, the agent itself and SSH deployment
+nothing guesses paths: the desktop launcher, `clio doctor`, the agent itself and SSH deployment
 (which reads it back over SSH). The desktop's bundled runtime manifest (gact-tui #311) becomes this
 manifest. When the desktop app and the CLI are both installed, the manifest names the one backend they
 share.
@@ -363,7 +366,7 @@ against it.
 
 ### Phase 1: never fails
 
-- The install manifest. The launcher, TUI, desktop app and SSH deploy read it, and their path-guessing
+- The install manifest. The launcher, desktop app and SSH deploy read it, and their path-guessing
   code is deleted.
 - Resumable steps, `install repair`, and atomic upgrades.
 - Typed reasons for every step that can fail; no warn-and-continue.
@@ -414,7 +417,7 @@ against it.
 
 1. **What the installer program is written in.** Go is the proposal:
    - It ships as a single binary per OS, which runs before any Python exists.
-   - Releases already build Go for every OS (the TUI and the desktop launcher).
+   - Releases already build Go for every OS (the desktop launcher).
    - It can replace both launchers.
    - It removes the need for bash on Windows.
 
@@ -423,3 +426,4 @@ against it.
 2. **The budgets above.**
 3. **Whether every installer carries the runtime,** or some download it on first run.
 4. **macOS signing:** owner and date, so macOS installers can join the matrix.
+5. **The TUI:** it is no longer installed; decide whether releases still build and publish it.
