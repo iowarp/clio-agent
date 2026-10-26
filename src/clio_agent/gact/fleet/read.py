@@ -14,6 +14,7 @@ from clio_agent.gact.fleet.entries import FleetAccount, FleetEntry, project_flee
 from clio_agent.gact.fleet.guard import delegation_allowed
 from clio_agent.gact.fleet.spend import SpendReport, spend_by_account, workspace_spend
 from clio_agent.gact.provider_catalog_snapshot import read_catalog
+from clio_agent.providers.usage.capture import CLAUDE_CODE_ACCOUNT, CODEX_ACCOUNT
 from clio_agent.providers.usage.openrouter import refresh_openrouter_usage
 from clio_agent.providers.usage.snapshot import USAGE_BOARD, UsageSnapshot, now_iso, unmetered
 
@@ -22,6 +23,7 @@ if TYPE_CHECKING:
 
 #: Accounts whose usage is read from an endpoint when the fleet is read.
 _POLLED = {"openrouter": refresh_openrouter_usage}
+_PASSIVE = frozenset({CLAUDE_CODE_ACCOUNT, CODEX_ACCOUNT})
 
 
 @dataclass(frozen=True)
@@ -46,8 +48,15 @@ class Fleet:
         return {
             **account.to_dict(),
             "usage": snapshot.to_dict() if snapshot is not None else None,
-            # Typed, so a reader never mistakes "not yet observed" for "no limits".
-            "usage_missing_reason": "" if snapshot is not None else "no_reading_yet",
+            # Absence from an unsupported connection is not a promise that calling
+            # a model will produce an account-limit reading.
+            "usage_missing_reason": (
+                ""
+                if snapshot is not None
+                else "no_reading_yet"
+                if account.id in _PASSIVE or account.id in _POLLED
+                else "not_supported"
+            ),
             "spend": spend.to_dict() if spend is not None else None,
             "delegation_allowed": delegation_allowed(account.id, account.billing),
         }

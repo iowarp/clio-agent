@@ -11,7 +11,8 @@ import httpx
 import pytest
 
 from clio_agent.gact.fleet.entries import project_fleet
-from clio_agent.gact.fleet.spend import spend_by_account
+from clio_agent.gact.fleet.read import Fleet
+from clio_agent.gact.fleet.spend import Spend, SpendReport, spend_by_account
 from clio_agent.providers.usage import openrouter
 from clio_agent.providers.usage.capture import record_rate_limit_usage
 from clio_agent.providers.usage.readers import (
@@ -112,6 +113,38 @@ def test_the_fleet_lists_connected_accounts_and_their_chat_models() -> None:
     assert (text_only.tool_calling, text_only.vision) == (False, False)
     # An unhealthy account's models are listed but unavailable, with the reason.
     assert routed.available is False and routed.unavailable_reason == "account_unavailable"
+
+
+def test_recorded_spend_does_not_promise_account_limits_from_unsupported_connections() -> None:
+    accounts, entries = project_fleet(
+        {
+            "providers": [
+                *_catalog()["providers"],
+                {
+                    "id": "anthropic",
+                    "name": "Anthropic API",
+                    "kind": "anthropic",
+                    "auth": "ok",
+                    "health": "ready",
+                    "models": [_model("claude-sonnet")],
+                },
+            ]
+        }
+    )
+    fleet = Fleet(
+        accounts=accounts,
+        entries=entries,
+        usage={},
+        spend=SpendReport({"anthropic/claude-sonnet": Spend(tokens_input=40_000, cost_usd=0.005)}),
+        observed_at="",
+    )
+    rows = {row["id"]: row for row in fleet.to_wire()["accounts"]}
+    assert rows["anthropic"]["usage"] is None
+    assert rows["anthropic"]["usage_missing_reason"] == "not_supported"
+    assert rows["anthropic"]["spend"]["tokens"] == 40_000
+    assert rows["anthropic"]["spend"]["cost_usd"] == 0.005
+    assert rows["claude_code"]["usage_missing_reason"] == "no_reading_yet"
+    assert rows["openrouter"]["usage_missing_reason"] == "no_reading_yet"
 
 
 def test_claude_windows_come_from_the_unified_windows_of_the_rate_limit_event() -> None:
