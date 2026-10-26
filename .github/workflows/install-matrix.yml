@@ -7,7 +7,7 @@ name: Install and startup matrix
 
 on:
   pull_request:
-    branches: [develop, main]
+    branches: [develop, main, 'claude/**']
     paths:
       - 'install/**'
       - 'src/clio_agent/gact/app.py'
