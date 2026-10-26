@@ -462,15 +462,15 @@ against it.
 
 ## Decisions needed
 
-1. **What the installer program is written in.** Go is the proposal:
-   - It ships as a single binary per OS, which runs before any Python exists.
-   - Releases already build Go for every OS (the desktop launcher).
-   - It can replace both launchers.
-   - It removes the need for bash on Windows.
+Decided 2026-10-26:
+- **The installer program is written in Go.** It ships as a single binary per OS that runs before any
+  Python exists. Releases already build Go for every OS (the desktop launcher), so it can replace both
+  launchers and Windows needs no bash.
+- **Where the runtime comes from:** the download installers carry it, so they work offline; the
+  script downloads the release artifact; the source path builds it.
 
-   The alternative is Python run through uv. That keeps everything in one language with the backend, but
-   needs uv before anything else can run.
-2. **The budgets above.**
-3. **Whether every installer carries the runtime,** or some download it on first run.
-4. **macOS signing:** owner and date, so macOS installers can join the matrix.
-5. **The TUI:** it is no longer installed; decide whether releases still build and publish it.
+Still open:
+
+1. **The budgets above.**
+2. **macOS signing:** owner and date, so macOS installers can join the matrix.
+3. **The TUI:** it is no longer installed; decide whether releases still build and publish it.
