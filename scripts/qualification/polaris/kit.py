@@ -905,13 +905,18 @@ def step_spotter_vllm():
         "param.gpu_memory_utilization": env("SPOTTER_GPU_UTIL", "0.9"),
         "param.max_num_seqs": env("SPOTTER_MAX_NUM_SEQS", "4"),
         "param.cuda_devices": env("SPOTTER_GPU", "1"),
+        # A named instance is not sized by Fit to GPU: without this it served 4096 tokens,
+        # less than SPOTTER's own prompt.
+        "param.max_model_len": env("SPOTTER_MAX_MODEL_LEN", "65536"),
     }
     variant = env("SPOTTER_VLLM_VARIANT", "native-cuda")
 
     def matches(row):
         held = row.get("configuration") or {}
-        return held.get("model") == model and held.get("param.cuda_devices") == env(
-            "SPOTTER_GPU", "1"
+        return (
+            held.get("model") == model
+            and held.get("param.cuda_devices") == configuration["param.cuda_devices"]
+            and held.get("param.max_model_len") == configuration["param.max_model_len"]
         )
 
     row, steps = ensure_service(SPOTTER_SERVICE, variant, configuration, "spotter-vllm", 5400, matches)
