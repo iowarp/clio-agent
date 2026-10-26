@@ -30,9 +30,22 @@ Rules, in priority order:
 |---|---|---|
 | Install Clio from the website | **The installer**: click Download | The desktop app with Clio in it |
 | Install Clio from a terminal | **The install script**: one line | Short enough for a business card. Without `--desktop` it installs just Clio, which is how a server, an HPC node or an SSH deployment from the desktop app is set up. With `--desktop` it adds the desktop app |
-| Build Clio myself | **From source**: a checkout and one command | For technical users and contributors |
+| Build Clio myself | **From source**, through the same script | For technical users and contributors. `--source` clones and builds for you. The docs also show how to do it from your own `git clone` |
 
-The website shows the installer first and the script second; the source build is in the docs. While
+From your own checkout, the source build is the same installer, run from the checkout instead of
+cloning one:
+
+```
+git clone --recurse-submodules https://github.com/iowarp/clio-agent
+cd clio-agent
+./install/install.sh --source              # Clio, built from this checkout
+./install/install.sh --source --desktop    # also builds the desktop app locally
+```
+
+(`install\install.ps1 --source` on Windows.) The script detects it is running inside a checkout and
+builds from it, so a contributor's edits are what gets installed.
+
+The website shows the installer first and the script second; the source build, both ways, is in the docs. While
 the macOS installers are unsigned, the website's macOS download points to the script with `--desktop`
 and to the source build instead.
 
@@ -67,7 +80,7 @@ The commands, the same on every OS:
 ```
 install                  # Clio: backend, TUI and web UI. Servers, HPC and SSH deployment use exactly this
 install --desktop        # the same, plus the desktop app, on the same backend
-install --source         # step 1 builds the runtime from this checkout instead of downloading it
+install --source         # step 1 builds the runtime from source: clones, or uses the checkout it runs from
 install --source --desktop   # also builds the desktop app locally: the macOS path today
 install --dev            # the latest pre-release instead of the latest release
 install repair           # finish or fix an interrupted or broken install
