@@ -279,6 +279,18 @@ def register_task_routes(app: FastAPI) -> None:
             run = flow_run(app.state.task_history, task.handle, reconcile_children=True)
             if run is not None:
                 run["usage"] = {"calls": call_models(app, run["calls"])}
+                # The diagram needs timestamps, not one full agent projection per node.
+                # Read these from the same authorized task view and history lane.
+                handles = {task.handle, *(row["handle"] for row in run["calls"] if row["handle"])}
+                run["timings"] = {}
+                for child_handle in handles:
+                    snapshot = app.state.task_history.task_snapshot(child_handle)
+                    if snapshot is not None and snapshot.owner.human_id == task.owner.human_id:
+                        run["timings"][child_handle] = {
+                            "created_at": snapshot.created_at,
+                            "updated_at": snapshot.updated_at,
+                            "terminal_at": snapshot.terminal_at,
+                        }
             return task.owner.session_id, run
 
         try:

@@ -46,6 +46,14 @@ def test_gather_runs_children_as_tasks_and_checkpoints_them(flow_app: TestClient
         child = history.task_snapshot(row["handle"])
         assert child.kind == "Subagent" and child.owner.parent_handle == owner.handle
         assert child.status == "completed"
+    response = flow_app.get(f"/v1/sessions/{sid}/tasks/{owner.handle}/flow")
+    assert response.status_code == 200
+    timings = response.json()["timings"]
+    assert set(timings) == {owner.handle, *(row["handle"] for row in calls)}
+    for handle, timing in timings.items():
+        snapshot = history.task_snapshot(handle)
+        assert timing["created_at"] == snapshot.created_at
+        assert timing["terminal_at"] == snapshot.terminal_at
 
 
 def test_gather_member_failure_never_cancels_the_others(flow_app: TestClient) -> None:
