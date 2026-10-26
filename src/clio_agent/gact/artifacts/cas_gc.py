@@ -346,6 +346,28 @@ def _refuse(
     )
 
 
+def start_boot_cas_gc(app: "FastAPI", loop: asyncio.AbstractEventLoop) -> "asyncio.Task[Any]":
+    """Run :func:`run_boot_cas_gc` off the loop as a boot task (#972).
+
+    Best-effort: a failure is logged with ``reason=cas_boot_gc_failed`` (and recorded as
+    the ``cas_gc`` startup step's outcome) and never blocks the agent coming ready.
+    """
+    from clio_agent.gact import boot_timing  # noqa: PLC0415
+
+    task = asyncio.ensure_future(
+        boot_timing.timed(app, "cas_gc", loop.run_in_executor(None, run_boot_cas_gc, app))
+    )
+
+    def _report(done: "asyncio.Future[Any]") -> None:
+        if not done.cancelled() and done.exception() is not None:
+            logger.warning(
+                "cas boot gc skipped reason=cas_boot_gc_failed error=%r", done.exception()
+            )
+
+    task.add_done_callback(_report)
+    return task
+
+
 def run_boot_cas_gc(app: "FastAPI", *, budget_bytes: Optional[int] = None) -> list[CASGCResult]:
     """Enforce the CAS budget across every workspace at boot (off-loop, #1001 cadence).
 

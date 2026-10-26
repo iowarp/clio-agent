@@ -163,7 +163,9 @@ def _record_context_mode(app: "FastAPI", mode: Any) -> None:
 
 
 async def _construct(app: "FastAPI") -> Any:
-    return await asyncio.to_thread(process_arc, app)
+    from clio_agent.gact import boot_timing  # noqa: PLC0415
+
+    return await boot_timing.timed(app, "clio_core_and_store", asyncio.to_thread(process_arc, app))
 
 
 async def process_arc_off_loop(app: "FastAPI") -> Any:

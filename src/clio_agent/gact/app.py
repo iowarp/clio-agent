@@ -62,7 +62,7 @@ from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from clio_agent import conf
 from clio_agent.arc import loop_guard
-from clio_agent.gact import composer_runtime, server_boot
+from clio_agent.gact import boot_timing, composer_runtime, server_boot
 from clio_agent.gact.auth import configure_bearer_auth
 from clio_agent.gact.cors import gact_cors_origins as _gact_cors_origins
 from clio_agent.gact.error_middleware import install_error_envelope, install_typed_error_handlers
@@ -664,6 +664,7 @@ async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
 
     desktop_lifecycle.reset_for_boot()
     app.state.started_at = time.time()
+    boot_timing.mark(app, "lifespan_started")
     app.state.mcp_app_loop = asyncio.get_running_loop()
     # #948 S1 (#662): anchor turn tasks to THIS app-lifetime loop, not whatever
     # transient request/portal loop submits them.
@@ -688,11 +689,13 @@ async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
     # Reap proven CLIO orphans before the MCP-cache liveness check (order matters,
     # off-loop). The direct Codex provider owns one durable credential file,
     # not a spawned CLI's scratch home, so there is nothing here for it to reap.
-    app.state.mcp_cache_prune_task = asyncio.create_task(server_boot.prune_orphans_and_cache(app))
+    app.state.mcp_cache_prune_task = asyncio.create_task(
+        boot_timing.timed(app, "orphans_and_mcp_cache", server_boot.prune_orphans_and_cache(app))
+    )
     # Install or refresh the shipped default marketplace off the loop; a turn that
     # resolves before it finishes waits on the same lock (PluginService.ready).
     app.state.plugin_sync_task = asyncio.create_task(
-        asyncio.to_thread(app.state.plugin_service.ready)
+        boot_timing.timed(app, "marketplace", asyncio.to_thread(app.state.plugin_service.ready))
     )
 
     task: Optional[asyncio.Task] = None
@@ -721,6 +724,7 @@ async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
     try:
         if not getattr(app.state, "server_boot", False):
             await asyncio.shield(readiness)
+        boot_timing.mark(app, "serving")
         yield
     finally:
         # Agent construction runs on an executor thread. Cancelling its asyncio task
@@ -850,7 +854,7 @@ async def _construct_agent_async(app: "FastAPI") -> None:
         return agent
 
     try:
-        agent = await loop.run_in_executor(None, _build)
+        agent = await boot_timing.timed(app, "agent_construct", loop.run_in_executor(None, _build))
     except Exception as exc:  # noqa: BLE001
         from clio_agent.gact.agent_initialization import record_init_failure  # noqa: PLC0415
 
@@ -866,27 +870,23 @@ async def _construct_agent_async(app: "FastAPI") -> None:
     # #971: boot-fold the artifact registry off-loop before ready (defects 2 + 1b; owner helper).
     from clio_agent.gact.artifacts import registry_boot  # noqa: PLC0415
 
-    if not await registry_boot.boot_fold_artifact_registry_offloop(app, loop):
+    if not await boot_timing.timed(
+        app, "artifact_registry", registry_boot.boot_fold_artifact_registry_offloop(app, loop)
+    ):
         return  # wedged store — agent stays unready with a typed agent_init_error
     agent_initialization.mark_agent_ready(app, agent, boot=True)
     starting = getattr(app.state, "task_runtime_start", None)
     if starting is not None:
         await asyncio.shield(starting)
-        for sid in await app.state.task_history.io.run(app.state.task_history.pending_sessions):
-            app.state.turn_runner.signal(sid)
+        with boot_timing.step(app, "pending_mail_wake"):
+            for sid in await app.state.task_history.io.run(app.state.task_history.pending_sessions):
+                app.state.turn_runner.signal(sid)
 
     # #972: enforce the CAS store byte budget across every workspace at boot (off-loop,
     # #1001 cadence — the registry is now folded, so the reachability scan is ready).
-    # Best-effort: a GC failure never blocks the agent coming ready.
-    async def _boot_cas_gc() -> None:
-        try:
-            from clio_agent.gact.artifacts.cas_gc import run_boot_cas_gc  # noqa: PLC0415
+    from clio_agent.gact.artifacts.cas_gc import start_boot_cas_gc  # noqa: PLC0415
 
-            await loop.run_in_executor(None, run_boot_cas_gc, app)
-        except Exception as exc:  # noqa: BLE001 — boot CAS GC is best-effort
-            logger.warning("cas boot gc skipped reason=cas_boot_gc_failed error=%r", exc)
-
-    app.state.cas_boot_gc_task = asyncio.create_task(_boot_cas_gc())
+    app.state.cas_boot_gc_task = start_boot_cas_gc(app, loop)
 
     # Install the deferred permission gate + tool observer now that we
     # know an agent exists to gate. See build_app for why these aren't

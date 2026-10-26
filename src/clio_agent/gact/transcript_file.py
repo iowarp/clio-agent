@@ -309,6 +309,7 @@ def _seed_from_atoms(app: "FastAPI") -> None:
 def _atom_boot(app: "FastAPI") -> None:
     """Retain legacy evidence, reconcile interruptions and seed canonical metrics."""
 
+    from clio_agent.gact import boot_timing  # noqa: PLC0415
     from clio_agent.gact.session_store import (  # noqa: PLC0415 - import cycle
         _reconcile_restart_interrupted_sessions,
     )
@@ -316,12 +317,16 @@ def _atom_boot(app: "FastAPI") -> None:
     from clio_agent.gact.transcript_migration import migrate_transcripts
 
     if getattr(app.state, "task_history", None) is None:
-        history = TaskHistory(app.state.arc)
-        history.restore()
+        with boot_timing.step(app, "task_history_restore"):
+            history = TaskHistory(app.state.arc)
+            history.restore()
         app.state.task_history = history
-    migrate_transcripts(app)  # Capture legacy content before any reconciliation/cache update.
-    _reconcile_restart_interrupted_sessions(app)
-    _seed_from_atoms(app)
+    with boot_timing.step(app, "transcript_migration"):
+        migrate_transcripts(app)  # Capture legacy content before any reconciliation/cache update.
+    with boot_timing.step(app, "interrupted_sessions"):
+        _reconcile_restart_interrupted_sessions(app)
+    with boot_timing.step(app, "interaction_times"):
+        _seed_from_atoms(app)
     app.state.transcript_boot_ready.set()
 
 

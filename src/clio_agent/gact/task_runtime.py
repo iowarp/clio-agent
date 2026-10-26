@@ -9,6 +9,7 @@ from functools import partial
 from typing import Any
 
 from clio_agent.arc.task_types import AssignmentDetails, SubmissionContext, TaskSnapshot
+from clio_agent.gact import boot_timing
 from clio_agent.gact.builtin_boundary import BuiltinBoundary
 from clio_agent.gact.conversations import ConversationOutcome, Conversations, ConversationSegment
 from clio_agent.gact.core_recovery import CoreRecovery
@@ -55,6 +56,7 @@ async def run_lifespan(
         readiness.exception()
         return (failure,)
     readiness.set_result(None)
+    boot_timing.mark(app, "task_runtime_ready")
     await stopping.wait()
     return await close(app)
 
@@ -71,7 +73,7 @@ async def start(app: Any) -> None:
     if history is None:
         history = TaskHistory(arc)
         app.state.task_history = history  # Startup failure still owns and retires this writer.
-        await history.io.run(history.restore)
+        await boot_timing.timed(app, "task_history_restore", history.io.run(history.restore))
     recovery = CoreRecovery(history)
     app.state.task_history, app.state.task_recovery = history, recovery
     app.state.human_principal = "human:" + str(app.state.connected_storage.store.clio_id)
@@ -80,9 +82,10 @@ async def start(app: Any) -> None:
         # the derived task records are written. Later boots replay nothing.
         from clio_agent.gact.task_migration import migrate_history
 
-        await history.io.run(migrate_history, app)
-        await history.io.run(history.complete_index_build)
-    await history.io.run(history.reconcile_open)
+        with boot_timing.step(app, "task_history_migration"):
+            await history.io.run(migrate_history, app)
+            await history.io.run(history.complete_index_build)
+    await boot_timing.timed(app, "reconcile_open_tasks", history.io.run(history.reconcile_open))
     app.state.questions = QuestionCommands(history)
     app.state.question_events = QuestionEvents(app)
     app.state.questions.on_change = app.state.question_events.changed
@@ -405,14 +408,16 @@ async def start(app: Any) -> None:
     register_native_storage(native.roots["storage"], native.work["storage"], app, native=native)
     app.state.native_tools = await stack.enter_async_context(native)
     app.state.builtin_boundary = await stack.enter_async_context(BuiltinBoundary(app, authorize))
-    await native.restore()
-    await app.state.external_tasks.restore()
+    await boot_timing.timed(app, "native_task_recovery", native.restore())
+    await boot_timing.timed(app, "external_task_recovery", app.state.external_tasks.restore())
     conversations.start()
-    await conversations.restore()
+    await boot_timing.timed(app, "conversation_recovery", conversations.restore())
     if not history.requires_recovery:
-        await history.io.run(app.state.questions.restore)
-        await app.state.question_events.restore()
-        conversations.signal_pending()
+        with boot_timing.step(app, "question_recovery"):
+            await history.io.run(app.state.questions.restore)
+            await app.state.question_events.restore()
+        with boot_timing.step(app, "pending_conversations_signal"):
+            conversations.signal_pending()
 
 
 async def close(app: Any) -> tuple[BaseException, ...]:

@@ -97,6 +97,9 @@ class HealthResponse(BaseModel):
     # — see ``agent_init_error``).
     tool_hooks_installed: Optional[bool] = None
     context_mode: Optional[Literal["clio_core", "history"]] = None  # history: no clio-core
+    # When each startup step ran, in seconds since the process started (gact/boot_timing.py):
+    # ``steps`` (finished), ``running`` and ``marks`` such as ``serving`` and ``agent_ready``.
+    boot: Optional[dict[str, Any]] = None
 
 
 class BackendInfo(BaseModel):
