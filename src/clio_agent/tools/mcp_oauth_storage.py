@@ -7,13 +7,12 @@ even against a server the user already authorized.
 :class:`DurableFileTokenStorage` persists the SDK's own ``TokenStorage``
 protocol (``get_tokens``/``set_tokens``/``get_client_info``/
 ``set_client_info``) to a single JSON file under the user's config dir,
-keyed by server URL -- the only identity the SDK's
-``OAuthClientProvider(server_url=...)`` construction site has available
-(H8's ideal is per-AS-issuer keying; issuer resolution happens later, during
-metadata discovery, than where a ``TokenStorage`` is constructed today, so
-server-URL keying is the closest available proxy, not literal issuer
-binding). ``_oauth_provider_from_config`` now builds one of these as its
-DEFAULT (an explicit ``MCPAuthConfig(storage=...)`` always wins).
+keyed by server URL and, for saved connections, their name. Discovery happens
+after storage construction; validated authorization-server metadata and absolute
+token expiry are retained alongside the SDK credentials for subsequent clients.
+The runtime verifies the persisted client issuer before using that metadata.
+``_oauth_provider_from_config`` uses this storage by default; an explicit
+``MCPAuthConfig(storage=...)`` always wins.
 """
 
 from __future__ import annotations
@@ -21,6 +20,7 @@ from __future__ import annotations
 import json
 import os
 import threading
+import time
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -42,7 +42,7 @@ def _default_path() -> Path:
 
 
 class DurableFileTokenStorage:
-    """Disk-persisted ``mcp.client.auth.oauth2.TokenStorage`` for one server URL.
+    """Disk-persisted SDK token storage for one server and optional saved connection.
 
     Args:
         server_url: The MCP server URL this instance's tokens/client-info are
@@ -50,11 +50,23 @@ class DurableFileTokenStorage:
             credentials never reused across authorization servers).
         path: Override for the backing JSON file (tests only; defaults to
             ``paths.user_config_dir() / "mcp_oauth_tokens.json"``).
+        connection_id: Saved connection name; isolates separate accounts at the same URL.
     """
 
-    def __init__(self, server_url: str, *, path: Path | None = None) -> None:
+    def __init__(
+        self, server_url: str, *, path: Path | None = None, connection_id: str | None = None
+    ) -> None:
         self._server_url = server_url
+        self._entry_key = (
+            json.dumps([server_url, connection_id], separators=(",", ":"))
+            if connection_id
+            else server_url
+        )
         self._path = path or _default_path()
+        with _lock:
+            self._generation = (self._load_entries().get(self._entry_key) or {}).get(
+                "generation", 0
+            )
 
     def _load_entries(self) -> dict[str, dict[str, object]]:
         try:
@@ -115,7 +127,7 @@ class DurableFileTokenStorage:
         from mcp.shared.auth import OAuthToken
 
         with _lock:
-            entry = self._load_entries().get(self._server_url)
+            entry = self._load_entries().get(self._entry_key)
         raw = entry.get("tokens") if entry else None
         if raw is None:
             return None
@@ -130,15 +142,76 @@ class DurableFileTokenStorage:
             )
             return None
 
+    def has_tokens(self) -> bool:
+        """Check durable authorization without starting discovery or browser interaction."""
+        from mcp.shared.auth import OAuthToken
+
+        with _lock:
+            entry = self._load_entries().get(self._entry_key) or {}
+        if entry.get("generation", 0) != self._generation:
+            return False
+        try:
+            return bool(OAuthToken.model_validate(entry.get("tokens")).access_token)
+        except (ValueError, TypeError):
+            return False
+
+    def clear(self, *, client_only: bool = False) -> None:
+        """Forget this connection's credentials, preserving other server entries."""
+        with _lock:
+            entries = self._load_entries()
+            if client_only:
+                entry = dict(entries.get(self._entry_key) or {})
+                entry.pop("client_info", None)
+                entries[self._entry_key] = entry
+            else:
+                previous = entries.get(self._entry_key) or {}
+                generation = previous.get("generation", 0)
+                entries[self._entry_key] = {
+                    "generation": int(generation) + 1 if isinstance(generation, int) else 1
+                }
+            self._save_entries(entries)
+
+    def authorization_context(self) -> dict[str, object]:
+        """Read the validated SDK metadata and absolute expiry needed after restart."""
+        with _lock:
+            entry = self._load_entries().get(self._entry_key) or {}
+            if entry.get("generation", 0) != self._generation:
+                return {}
+            context = entry.get("authorization_context")
+            return dict(context) if isinstance(context, dict) else {}
+
+    def save_authorization_context(self, metadata: dict[str, object], issuer: str | None) -> None:
+        """Persist SDK-validated discovery metadata without changing credential ownership."""
+        with _lock:
+            entries = self._load_entries()
+            entry = dict(entries.get(self._entry_key) or {})
+            if entry.get("generation", 0) != self._generation:
+                return
+            entry["authorization_context"] = {"metadata": metadata, "issuer": issuer}
+            entries[self._entry_key] = entry
+            self._save_entries(entries)
+
+    def token_expiry(self) -> float | None:
+        """Return the original expiry, never a new lifetime measured from process start."""
+        with _lock:
+            entry = self._load_entries().get(self._entry_key) or {}
+            expiry = entry.get("token_expires_at")
+            return float(expiry) if isinstance(expiry, (int, float)) else None
+
     async def set_tokens(self, tokens: "OAuthToken") -> None:
         """Persist the token bundle for this instance's server URL."""
 
         try:
             with _lock:
                 entries = self._load_entries()
-                entry = dict(entries.get(self._server_url) or {})
+                entry = dict(entries.get(self._entry_key) or {})
+                if entry.get("generation", 0) != self._generation:
+                    return  # An in-flight refresh cannot restore credentials after sign-out.
                 entry["tokens"] = tokens.model_dump(mode="json", exclude_none=True)
-                entries[self._server_url] = entry
+                entry["token_expires_at"] = (
+                    time.time() + tokens.expires_in if tokens.expires_in is not None else None
+                )
+                entries[self._entry_key] = entry
                 self._save_entries(entries)
         except Exception as exc:  # noqa: BLE001 - a durability failure must never break the OAuth
             # flow itself; the token still lives for THIS process (the caller's live
@@ -156,7 +229,7 @@ class DurableFileTokenStorage:
         from mcp.shared.auth import OAuthClientInformationFull
 
         with _lock:
-            entry = self._load_entries().get(self._server_url)
+            entry = self._load_entries().get(self._entry_key)
         raw = entry.get("client_info") if entry else None
         if raw is None:
             return None
@@ -177,9 +250,11 @@ class DurableFileTokenStorage:
         try:
             with _lock:
                 entries = self._load_entries()
-                entry = dict(entries.get(self._server_url) or {})
+                entry = dict(entries.get(self._entry_key) or {})
+                if entry.get("generation", 0) != self._generation:
+                    return
                 entry["client_info"] = client_info.model_dump(mode="json", exclude_none=True)
-                entries[self._server_url] = entry
+                entries[self._entry_key] = entry
                 self._save_entries(entries)
         except Exception as exc:  # noqa: BLE001 - see set_tokens: durability-only failure
             trace.event(

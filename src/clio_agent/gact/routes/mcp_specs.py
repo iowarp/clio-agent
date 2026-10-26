@@ -76,11 +76,21 @@ def session_mcp_inventory(
             agent_ref = str(session_resolution(app, session_id).agent.get("ref") or "")
         except SessionAgentUnavailable as exc:
             agent_ref = exc.ref
-        specs = declared_mcp_specs(app, cwd=cwd, session_id=session_id)
+        try:
+            specs = declared_mcp_specs(app, cwd=cwd, session_id=session_id)
+            connection_error = ""
+        except SessionAgentUnavailable as exc:
+            specs = {}
+            connection_error = str(exc)
     else:
         # No conversation chosen: what a new one here would get, on the default agent.
         agent_ref = default_agent_ref(app)
-        specs = _draft_mcp_specs(app, cwd, agent_ref)
+        try:
+            specs = _draft_mcp_specs(app, cwd, agent_ref)
+            connection_error = ""
+        except SessionAgentUnavailable as exc:
+            specs = {}
+            connection_error = str(exc)
     # A declaration file that failed to PARSE is not the same as one that is
     # absent: without this the listing is simply shorter and says nothing.
     degradations: list[dict[str, str]] = [
@@ -91,6 +101,8 @@ def session_mcp_inventory(
         for row in unreadable_mcp_yaml_snapshot()
     ]
     snapshot = WorkspaceMcpSnapshot()
+    if connection_error:
+        degradations.append({"reason": "mcp_connection_unavailable", "detail": connection_error})
     if cwd is not None:
         snapshot = workspace_mcp_snapshot(getattr(app.state, "agent", None), str(cwd))
     degraded = snapshot.degraded

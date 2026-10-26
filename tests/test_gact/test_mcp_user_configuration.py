@@ -498,7 +498,7 @@ def test_a_first_start_launcher_gets_time_to_prepare_its_server(
         async def __aexit__(self, *exc: object) -> None:
             return None
 
-    monkeypatch.setattr(mcp_configuration, "transport_from_spec", lambda spec: object())
+    monkeypatch.setattr(mcp_configuration, "transport_for", lambda spec: object())
     monkeypatch.setattr(mcp_configuration, "make_mcp_client", lambda *a, **k: _Client())
     tools, detail = asyncio.run(
         mcp_configuration._probe_user_mcp_server({"transport": "stdio", "command": command})

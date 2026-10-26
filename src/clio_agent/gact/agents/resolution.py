@@ -424,7 +424,10 @@ def session_server_set(app: Any, session_id: str) -> str:
     typed resolution errors on its own path.
     """
 
-    from clio_agent.plugins.servers import register_server_set  # noqa: PLC0415
+    from clio_agent.plugins.servers import (  # noqa: PLC0415
+        ConnectionUnavailable,
+        register_server_set,
+    )
 
     if app is None or not session_id:
         return ""
@@ -439,17 +442,40 @@ def session_server_set(app: Any, session_id: str) -> str:
     supplied = supplied_server_values(
         app, servers, workspace_root=_runtime_workspace_catalog_cwd(app, session_id=session_id)
     )
-    return register_server_set(servers, supplied)
+    from clio_agent.gact.mcp_user_configuration import list_user_mcp_servers  # noqa: PLC0415
+
+    try:
+        return register_server_set(servers, supplied, connections=list_user_mcp_servers())
+    except ConnectionUnavailable as exc:
+        raise SessionAgentUnavailable(
+            "",
+            "mcp_connection_unavailable",
+            [{"code": "mcp_connection_unavailable", "message": str(exc)}],
+        ) from exc
 
 
 def agent_server_set(app: Any, ref: str) -> str:
     """The plugin MCP server set an agent would mount (draft warm-up, no session)."""
 
-    from clio_agent.plugins.servers import register_server_set  # noqa: PLC0415
+    from clio_agent.plugins.servers import (  # noqa: PLC0415
+        ConnectionUnavailable,
+        register_server_set,
+    )
 
     try:
         resolution = plugin_service(app).resolve(ref, pin=False)
     except Exception:  # noqa: BLE001 - warm-up is best effort; the turn reports typed errors
         return ""
     supplied = supplied_server_values(app, resolution.mcp_servers, workspace_root=None)
-    return register_server_set(resolution.mcp_servers, supplied)
+    from clio_agent.gact.mcp_user_configuration import list_user_mcp_servers  # noqa: PLC0415
+
+    try:
+        return register_server_set(
+            resolution.mcp_servers, supplied, connections=list_user_mcp_servers()
+        )
+    except ConnectionUnavailable as exc:
+        raise SessionAgentUnavailable(
+            ref,
+            "mcp_connection_unavailable",
+            [{"code": "mcp_connection_unavailable", "message": str(exc)}],
+        ) from exc

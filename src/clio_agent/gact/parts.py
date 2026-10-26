@@ -77,6 +77,7 @@ class CapabilityFlags(DocumentCapabilityFields):
     x_clio_direct_delete_permissions: bool = False
     x_clio_prompt_registry: bool = False
     x_clio_agent_plugins: bool = False
+    x_clio_extension_library: bool = False
     x_clio_user_questions: bool = False
     x_clio_interactions: bool = False
     x_clio_retry_attempts: bool = False

@@ -127,6 +127,8 @@ dependencies = [
     # (already present transitively via fastmcp/dspy; declared so the SDK
     # does not lean on someone else's dependency tree).
     "httpx>=0.27.0",
+    # MCP 2's OAuth auth-flow request/response types and consent revocation guard.
+    "httpx2>=2.9.1",
     # Connected storage uses file APIs, never an implicit FUSE mount.
     "fsspec>=2025.9.0",
     "paramiko>=3.5.0",

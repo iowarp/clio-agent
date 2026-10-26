@@ -19,7 +19,22 @@ from __future__ import annotations
 from collections.abc import Mapping, Sequence
 from typing import Any
 
-__all__ = ["redact_mcp_spec"]
+
+def redact_mcp_error(error: Exception, spec: Mapping[str, Any]) -> str:
+    """Keep a bounded diagnostic without reprinting saved credentials or endpoint URLs."""
+    detail = f"{type(error).__name__}: {error}"[:2000]
+    private: list[str] = [str(spec.get("url") or "")]
+    for key in ("headers", "env"):
+        values = spec.get(key)
+        if isinstance(values, Mapping):
+            private.extend(str(value) for value in values.values())
+    for value in sorted(set(private), key=len, reverse=True):
+        if value:
+            detail = detail.replace(value, "[redacted]")
+    return detail
+
+
+__all__ = ["redact_mcp_spec", "redact_mcp_error"]
 
 
 def redact_mcp_spec(spec: Mapping[str, Any]) -> dict[str, Any]:

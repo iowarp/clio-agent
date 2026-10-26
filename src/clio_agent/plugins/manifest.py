@@ -42,6 +42,7 @@ _EXTENSION_FIELDS = (
     "prefers",
     "workflow_state",
     "catalogs",
+    "connections",
 )
 _STDIO_FIELDS = {"type", "command", "args", "env", "cwd"}
 _REMOTE_FIELDS = {"type", "url", "headers"}
@@ -162,6 +163,17 @@ def clio_extension(manifest: Mapping[str, Any], plugin: str) -> dict[str, Any]:
             except VersionRangeError as exc:
                 raise ManifestError(f"{plugin}: {NAMESPACE}.{key}: {exc}") from exc
     catalogs = ext.get("catalogs", [])
+    connections = ext.get("connections", {})
+    from clio_agent.tools.mcp_config import _validate_server_name  # noqa: PLC0415
+
+    if not isinstance(connections, dict) or any(
+        not isinstance(key, str)
+        or _validate_server_name(key) is not None
+        or not isinstance(value, str)
+        or _validate_server_name(value) is not None
+        for key, value in connections.items()
+    ):
+        raise ManifestError(f"{plugin}: connections must map tool namespaces to saved MCP names")
     if not isinstance(catalogs, list) or not all(isinstance(c, str) and c for c in catalogs):
         raise ManifestError(f"{plugin}: {NAMESPACE}.catalogs must list built-in A2UI catalog ids")
     for key in ("model", "prefers", "workflow_state"):

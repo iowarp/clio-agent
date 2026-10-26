@@ -145,6 +145,8 @@ class MCPAuthConfig:
     redirect_handler: Callable[[str], Awaitable[None]] | None = None
     callback_handler: Callable[[], Awaitable[AuthorizationCodeResult]] | None = None
     client_metadata_url: str | None = None
+    require_existing_tokens: bool = False
+    connection_id: str | None = None
 
     def __repr__(self) -> str:
         """Return a representation that can never disclose OAuth credentials."""
@@ -163,6 +165,7 @@ class MCPServerSpec:
     url: str = ""
     headers: Mapping[str, str] = field(default_factory=dict, repr=False)
     auth: MCPAuthConfig | None = field(default=None, repr=False)
+    legacy_sse: bool = False
     always_load: bool = False
     timeout_ms: int | None = None
     probe_timeout_retries: int | None = None
@@ -211,6 +214,8 @@ _OAUTH_AUTH_FIELDS = frozenset(
         "redirect_handler",
         "callback_handler",
         "client_metadata_url",
+        "require_existing_tokens",
+        "connection_id",
     }
 )
 
@@ -246,6 +251,12 @@ def _oauth_config_from_value(value: Any) -> MCPAuthConfig | None:
     client_metadata_url = value.get("client_metadata_url")
     if client_metadata_url is not None and not isinstance(client_metadata_url, str):
         raise MCPTransportError("MCP OAuth 'client_metadata_url' must be a string")
+    require_existing = value.get("require_existing_tokens", False)
+    connection_id = value.get("connection_id")
+    if connection_id is not None and (not isinstance(connection_id, str) or not connection_id):
+        raise MCPTransportError("MCP OAuth 'connection_id' must be a non-empty string")
+    if not isinstance(require_existing, bool):
+        raise MCPTransportError("MCP OAuth 'require_existing_tokens' must be a boolean")
     return MCPAuthConfig(
         client_metadata=metadata,
         storage=storage,
@@ -254,6 +265,8 @@ def _oauth_config_from_value(value: Any) -> MCPAuthConfig | None:
             "Callable[[], Awaitable[AuthorizationCodeResult]] | None", callback_handler
         ),
         client_metadata_url=client_metadata_url,
+        require_existing_tokens=require_existing,
+        connection_id=connection_id,
     )
 
 
@@ -299,7 +312,9 @@ def _spec_from_mapping(
 ) -> MCPServerSpec:
     """Advanced form (only when env/headers/auth/timeout are needed)."""
     errors: list[str] = []
-    declared = str(entry.get("type") or "").strip().lower()
+    declared = str(entry.get("type") or entry.get("transport") or "").strip().lower()
+    if declared and declared not in _CANONICAL_TRANSPORTS:
+        errors.append(f"unknown MCP transport {declared!r}")
     has_command = bool(entry.get("command"))
     has_url = bool(entry.get("url"))
     transport: Literal["stdio", "http"] = (
@@ -364,6 +379,7 @@ def _spec_from_mapping(
         url=url,
         headers=headers,
         auth=auth,
+        legacy_sse=declared == "sse",
         always_load=bool(entry.get("alwaysLoad") or entry.get("always_load") or False),
         timeout_ms=timeout_ms,
         probe_timeout_retries=probe_timeout_retries,
@@ -500,6 +516,10 @@ def _merge_mcp_yaml(
             _UNREADABLE_MCP_YAML.append({"path": str(path), "error": str(exc)})
         return
     for name, value in declared.items():
+        if isinstance(value, Mapping) and value.get("connection_only") is True:
+            # Saved connection credentials are injected only by an enabled
+            # plugin. They neither override that plugin nor mount globally.
+            continue
         merged[name] = spec_from_declaration(name, value, source=source, env=env)
 
 
@@ -639,11 +659,12 @@ def transport_for(spec: MCPServerSpec, *, cwd: str | None = None) -> Any:
             transport.log_file = desktop_log
         return transport
 
-    from fastmcp.client.transports import StreamableHttpTransport  # noqa: PLC0415
+    from fastmcp.client.transports import SSETransport, StreamableHttpTransport  # noqa: PLC0415
 
     from clio_agent.tools.mcp_runtime import _oauth_provider_from_config  # noqa: PLC0415
 
-    return StreamableHttpTransport(
+    remote_transport = SSETransport if spec.legacy_sse else StreamableHttpTransport
+    return remote_transport(
         url=spec.url,
         headers=dict(spec.headers),
         auth=_oauth_provider_from_config(spec.url, spec.auth),

@@ -36,6 +36,16 @@ _LOCK = threading.Lock()
 _SETS: dict[str, dict[str, dict[str, dict[str, Any]]]] = {}
 
 
+class ConnectionUnavailable(ValueError):
+    """A portable plugin references a connection not configured on this host."""
+
+    def __init__(self, name: str) -> None:
+        self.name = name
+        super().__init__(
+            f"Add the saved MCP connection {name!r} in Extensions before using this plugin"
+        )
+
+
 def plugin_data_dir(plugin_id: str) -> Path:
     """The persistent ``PLUGIN_DATA`` folder of one installed plugin."""
 
@@ -66,6 +76,8 @@ def _expand(value: str, root: str, data: str, supplied: Mapping[str, str]) -> st
 def server_declarations(
     mcp_servers: Mapping[str, Mapping[str, Any]],
     supplied: Mapping[str, str] | None = None,
+    *,
+    connections: Mapping[str, Mapping[str, Any]] | None = None,
 ) -> dict[str, dict[str, dict[str, Any]]]:
     """Gateway declarations for a resolution's ``mcp_servers``, grouped by plugin.
 
@@ -76,9 +88,15 @@ def server_declarations(
     out: dict[str, dict[str, dict[str, Any]]] = {}
     for name, row in sorted(mcp_servers.items()):
         spec = dict(row["spec"])
+        if spec.get("type") == "clio-connection":
+            connection = str(spec["connection"])
+            saved = (connections or {}).get(connection)
+            if saved is None:
+                raise ConnectionUnavailable(connection)
+            spec = dict(saved)
         root = str(row["root"])
         data = str(plugin_data_dir(str(row["plugin"])))
-        if spec.get("type") == "stdio":
+        if spec.get("type") == "stdio" or spec.get("command"):
             env = {
                 key: _expand(str(value), root, data, values)
                 for key, value in (spec.get("env") or {}).items()
@@ -96,21 +114,25 @@ def server_declarations(
             }
         else:
             out.setdefault(str(row["plugin"]), {})[name] = {
-                "type": "http",
+                "type": spec.get("type") or spec.get("transport") or "http",
                 "url": spec["url"],
                 "headers": dict(spec.get("headers") or {}),
+                **({"auth": spec["auth"]} if spec.get("auth") else {}),
             }
     return out
 
 
 def register_server_set(
-    mcp_servers: Mapping[str, Mapping[str, Any]], supplied: Mapping[str, str] | None = None
+    mcp_servers: Mapping[str, Mapping[str, Any]],
+    supplied: Mapping[str, str] | None = None,
+    *,
+    connections: Mapping[str, Mapping[str, Any]] | None = None,
 ) -> str:
     """Register a resolution's servers; return the set key ("" for none)."""
 
     if not mcp_servers:
         return ""
-    declarations = server_declarations(mcp_servers, supplied)
+    declarations = server_declarations(mcp_servers, supplied, connections=connections)
     blob = json.dumps(declarations, sort_keys=True, separators=(",", ":"))
     key = "servers-" + hashlib.sha256(blob.encode("utf-8")).hexdigest()[:16]
     with _LOCK:

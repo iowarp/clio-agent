@@ -138,6 +138,7 @@ export default defineConfig({
 					collapsed: true,
 					items: [
 						{ label: 'Agents and plugins', slug: 'docs/agents-and-plugins' },
+						{ label: 'Extensions preview', slug: 'docs/extensions' },
 						{ label: 'Plugin marketplaces', slug: 'docs/marketplaces' },
 						{ label: 'Add and manage marketplaces', slug: 'docs/marketplaces/manage' },
 						{ label: 'Connect tools and services', slug: 'docs/mcp-servers' },

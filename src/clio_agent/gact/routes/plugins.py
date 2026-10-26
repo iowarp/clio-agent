@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import Mapping
+from dataclasses import replace
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -156,6 +157,9 @@ def _query_delta(request: Request) -> Delta:
 
 def register_plugin_routes(app: FastAPI, deps: "GactDeps") -> None:
     """Register the plugin, agent and session-agent routes."""
+    from clio_agent.gact.routes.extensions import register_extension_routes  # noqa: PLC0415
+
+    register_extension_routes(app)
 
     def installed_changed() -> None:
         plugin_authoring.installed_changed(app)
@@ -176,7 +180,9 @@ def register_plugin_routes(app: FastAPI, deps: "GactDeps") -> None:
         return await _call(rows)
 
     @app.get("/v1/plugins/inspect")
-    async def inspect_installed_plugin(ref: str, pending: bool = False) -> dict[str, Any]:
+    async def inspect_installed_plugin(
+        ref: str, pending: bool = False, skill: str = ""
+    ) -> dict[str, Any]:
         """Inspect one exact catalog reference; inspection never changes trust."""
         service = plugin_service(app)
 
@@ -186,11 +192,23 @@ def register_plugin_routes(app: FastAPI, deps: "GactDeps") -> None:
             record = next((row for row in records if f"{row.marketplace}/{row.id}" == ref), None)
             if record is None:
                 raise StoreError("plugin_not_found", f"Plugin {ref!r} is not installed")
+            inspected = record
+            if skill:
+                found = next((row for row in record.skills if row.id == skill), None)
+                if found is None:
+                    raise StoreError("skill_not_found", "That skill is not part of this plugin")
+                folder = Path(found.path).resolve().parent
+                if not folder.is_relative_to(Path(record.root).resolve()):
+                    raise ValueError("The skill folder is outside its installed source")
+                inspected = replace(record, root=str(folder))
             return {
                 "plugin": plugin_row(
                     record, trusted=service.store.trusted(record), pending=pending
                 ),
-                **inspect_plugin_files(record),
+                "skill": skill,
+                **inspect_plugin_files(
+                    inspected, inherited_root=Path(record.root) if skill else None
+                ),
             }
 
         return await _call(inspect)

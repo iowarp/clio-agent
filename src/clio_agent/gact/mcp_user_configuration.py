@@ -49,6 +49,9 @@ def _read_document(path: Path) -> dict[str, Any]:
     if not isinstance(loaded, Mapping):
         raise McpUserConfigurationError(f"{path} must contain a YAML mapping")
     document = dict(loaded)
+    labels = document.get("mcp_service_labels")
+    if labels is not None and not isinstance(labels, Mapping):
+        raise McpUserConfigurationError(f"{path} mcp_service_labels must be a mapping")
     servers = document.get("mcp_servers", {})
     if servers is None:
         document["mcp_servers"] = {}
@@ -68,7 +71,7 @@ def _write_document(path: Path, document: Mapping[str, Any]) -> None:
         sort_keys=False,
     )
     try:
-        atomic_write_text(path, rendered)
+        atomic_write_text(path, rendered, file_mode=0o600)
     except OSError as exc:
         raise McpUserConfigurationError(f"could not write {path}: {exc}") from exc
 
@@ -115,7 +118,9 @@ def configured_web_remote_url() -> str:
     return mcp_server_arg_value(get_user_mcp_server("web"), "--remote-url")
 
 
-def set_user_mcp_server(name: str, declaration: Mapping[str, Any]) -> dict[str, Any]:
+def set_user_mcp_server(
+    name: str, declaration: Mapping[str, Any], *, label: str | None = None
+) -> dict[str, Any]:
     """Create or replace one named declaration with an atomic file swap."""
 
     validate_user_mcp_server_name(name)
@@ -125,8 +130,23 @@ def set_user_mcp_server(name: str, declaration: Mapping[str, Any]) -> dict[str, 
         servers = dict(document.get("mcp_servers", {}))
         servers[name] = dict(declaration)
         document["mcp_servers"] = servers
+        if label is not None:
+            labels = dict(document.get("mcp_service_labels") or {})
+            labels[name] = label[:120]
+            document["mcp_service_labels"] = labels
         _write_document(path, document)
         return dict(servers[name])
+
+
+def user_mcp_labels() -> dict[str, str]:
+    """Read human names separately from executable transport declarations."""
+    with _CONFIG_LOCK:
+        labels = _read_document(user_mcp_configuration_path()).get("mcp_service_labels") or {}
+        return (
+            {str(key): value for key, value in labels.items() if isinstance(value, str)}
+            if isinstance(labels, Mapping)
+            else {}
+        )
 
 
 def remove_user_mcp_server(name: str) -> bool:
@@ -140,5 +160,8 @@ def remove_user_mcp_server(name: str) -> bool:
         if not removed:
             return False
         document["mcp_servers"] = servers
+        labels = dict(document.get("mcp_service_labels") or {})
+        labels.pop(name, None)
+        document["mcp_service_labels"] = labels
         _write_document(path, document)
         return True

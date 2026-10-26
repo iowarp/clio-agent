@@ -19,13 +19,26 @@ MAX_FILES = 128
 MAX_DIRECTORIES = 256
 
 
-def inspect_plugin_files(record: PluginRecord) -> dict[str, Any]:
+def inspect_plugin_files(
+    record: PluginRecord, *, inherited_root: Path | None = None
+) -> dict[str, Any]:
     """Read text within this record's root without importing or executing source.
 
     Limits and unreadable files are explicit. Symlinked files/directories never
     extend the installed record's root into unrelated filesystem content.
     """
     root = Path(record.root).resolve()
+    inherited: dict[str, Path] = {}
+    if inherited_root is not None:
+        for name in ("LICENSE", "LICENSE.md", "LICENSE.txt", "NOTICE", "NOTICE.md", "COPYING"):
+            candidate = inherited_root / name
+            if (
+                candidate.is_file()
+                and not candidate.is_symlink()
+                and candidate.resolve().is_relative_to(inherited_root.resolve())
+                and not (root / name).exists()
+            ):
+                inherited[name] = candidate
     files: list[dict[str, Any]] = []
     total = 0
     visited = 0
@@ -53,7 +66,12 @@ def inspect_plugin_files(record: PluginRecord) -> dict[str, Any]:
         )
         for name in sorted(names):
             path = Path(folder) / name
-            if path.suffix.lower() not in TEXT_SUFFIXES or path.is_symlink():
+            if (
+                path.suffix.lower() not in TEXT_SUFFIXES
+                and name not in {"LICENSE", "NOTICE", "COPYING"}
+                or path.is_symlink()
+            ):
+                incomplete = True
                 continue
             if not path.resolve().is_relative_to(root):
                 continue
@@ -96,4 +114,32 @@ def inspect_plugin_files(record: PluginRecord) -> dict[str, Any]:
         if len(files) >= MAX_FILES or total >= MAX_TOTAL_BYTES:
             incomplete = True
             break
+    # A skill-only local variation must retain the source's license/notice,
+    # even when the marketplace keeps those beside the skill directory.
+    for name, path in inherited.items():
+        try:
+            if len(files) >= MAX_FILES or path.stat().st_size > min(
+                MAX_FILE_BYTES, MAX_TOTAL_BYTES - total
+            ):
+                incomplete = True
+                continue
+            budget = min(MAX_FILE_BYTES, MAX_TOTAL_BYTES - total)
+            with path.open("rb") as source:
+                raw = source.read(budget + 1)
+            if len(raw) > budget:
+                incomplete = True
+                continue
+            files.append(
+                {
+                    "path": name,
+                    "text": raw.decode("utf-8"),
+                    "bytes": len(raw),
+                    "sha256": hashlib.sha256(raw).hexdigest(),
+                    "truncated": False,
+                    "error": "",
+                }
+            )
+            total += len(raw)
+        except (OSError, UnicodeDecodeError):
+            incomplete = True
     return {"files": files, "incomplete": incomplete, "reason": ""}

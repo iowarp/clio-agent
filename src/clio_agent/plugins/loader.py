@@ -538,6 +538,12 @@ def load_plugin(root: Path, *, marketplace: str = "", trusted: bool) -> PluginRe
     except ManifestError as exc:
         raise PluginLoadError(str(exc)) from exc
     servers, server_diags = read_mcp_config(root, plugin)
+    for namespace, connection in (ext.get("connections") or {}).items():
+        if namespace in servers:
+            raise PluginLoadError(
+                f"{plugin}: connection namespace {namespace!r} is already declared"
+            )
+        servers[namespace] = {"type": "clio-connection", "connection": connection}
     exec_digest, text_digest = tree_digests(root, referenced=referenced_files(root, servers))
     skills, skill_diags = _skills(root, plugin)
     if library is not None:

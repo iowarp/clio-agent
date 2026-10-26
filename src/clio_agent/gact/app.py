@@ -732,6 +732,9 @@ async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
         # #1334: no request is served on this loop any more, so the teardown flushes below
         # (the turn drain, the trace close) must LAND rather than be refused and dropped.
         loop_guard.begin_server_loop_drain(app.state.mcp_app_loop)
+        mcp_sign_ins = getattr(app.state, "mcp_sign_ins", None)
+        if mcp_sign_ins is not None:
+            await mcp_sign_ins.close()
         await asyncio.to_thread(app.state.document_store.close)
         # #948 S1 (#662): quiesce the internal turn-PRODUCERS (the scheduler tick, the
         # agent-construction and lm-config tasks) BEFORE draining turns, so nothing can
