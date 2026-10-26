@@ -1,90 +1,140 @@
-# Install and startup paths: findings and optimization proposal
+# Install and startup paths: current state and proposed unification
 
-Status: findings, 2026-10-26. Nothing here has been fixed yet.
-Observed building `iowarp/gact-tui@develop` (`e58bbfe`) on Windows 11 with the
-CLIO brand and launching the debug desktop app.
+Status: findings, 2026-10-26. Nothing here is fixed yet.
+Observed by building `iowarp/gact-tui@develop` (`e58bbfe`) on Windows 11 with the
+CLIO brand, launching the debug desktop app, and reading the installers.
 
 ## Summary
 
-There are two ways to get CLIO Desktop running: a **binary download** (double
-click) and a **source build**. Only part of the binary path is optimized. The
-rest falls through to the shell installers (`install.ps1` / `install.sh`) in
-source-build mode, which is slow, needs a toolchain, and is fragile.
+There is no single installer. There are five separate entry points, written
+separately per OS, with different defaults and different prerequisites. Only one
+combination (Windows, bundled desktop) is an optimized, fast install. The others
+differ in what they install, how, and from where.
 
-## The two paths, by OS
+Proposal: one installer, `install`, with options:
 
-| | Windows | macOS | Linux |
-|---|---|---|---|
-| **Binary** | MSI/NSIS. *Bundled* variant ships a compressed runtime (`gact-runtime.tar.zst`) expanded by `runtime_pack.rs`: the optimized path. *Lite* has no runtime. | DMG. Bundled for **arm64 only**; x86_64 is lite only (excluded in `.github/desktop-bundle-matrix.json`). | deb, rpm, AppImage (x86_64, arm64). Bundled is **deb/rpm only**; AppImage is lite. |
-| **Source** | Bare `tauri build`, no runtime. First run falls back to `install.ps1`. | Same, falls back to `install.sh`. | Same, falls back to `install.sh`. |
+```
+install              # stable release: backend + TUI (+ web)
+install --desktop    # the desktop app
+install --dev        # latest non-stable (pre-release)
+install --source     # build from source
+```
 
-*Lite* and *source* builds both boot with no backend, get exit 2 from the
-sidecar launcher ("routing to first-run install"), and run the upstream
-installer from inside the app.
+## Current entry points
 
-The runtime-pack fast path is `cfg(windows)`-only (`runtime_pack.rs`). Linux and
-macOS bundled builds ship the runtime as plain resources instead, so the
-"optimized installer" work does not carry over.
+| # | Entry point | OS | Installs | Source of truth |
+|---|---|---|---|---|
+| 1 | `install.sh` / `install.ps1` (`curl \| bash`, `irm \| iex`) | Linux, macOS / Windows | `clio-agent` backend (PyPI), TUI (prebuilt release binary), web UI bundle (best-effort), `clio-kit`, launcher. **No desktop app.** | PyPI + GitHub Releases |
+| 2 | `desktop.ps1` | Windows | Desktop app: downloads the **bundled** NSIS setup, verifies SHA256, runs it silently. The bundled setup carries its own `clio-agent` runtime. | GitHub Releases |
+| 3 | `desktop.sh` | macOS only | Desktop app. Apple Silicon: bundled DMG. Intel: lite (attach-only) DMG. Needs macOS 14+. | GitHub Releases |
+| 4 | Native installers (MSI/NSIS, DMG, deb, rpm, AppImage) | all | Desktop app. `-bundled` variants include the backend; the others (all AppImage, Intel DMG) are attach-only and need a separately installed `clio-agent` (`docs/INSTALL.md`). | GitHub Releases |
+| 5 | Build the desktop from source (`pnpm ... tauri:build`) | all | A bare binary with no runtime. On first launch the app falls back to the in-app install below. | `gact-tui` repo |
 
-## What happened on a source build (Windows)
+Plus the **in-app first-run install**: when a managed-brand build finds no
+backend, the app runs entry point 1 itself with `CLIO_REF=develop`, which puts
+it in source-build mode (see below).
 
-1. `pnpm build` and `pnpm --filter @clio/desktop tauri:build:debug`: fine
-   (needs Rust, MSVC Build Tools, Node 20+, pnpm 9.15.9, Go for the sidecar).
-2. First launch: the app runs
-   `powershell -Command "$env:CLIO_REF='develop'; irm .../install.ps1 | iex"`.
-   The CLIO brand sets `install.ref: "develop"` (`branding/clio/brand.json`),
-   and `CLIO_REF` switches `install.ps1` into **source-build mode**: git clone,
-   `uv sync` (Python 3.14, ~240 packages, a 145 MB `openai-codex-cli-bin`),
-   Office renderer, Node/pnpm document packages, then a Go build of the TUI.
-   Release mode (PyPI plus prebuilt TUI) is the script's documented default.
-3. **Failure 1 - bare `bash`.** The TUI step runs `bash ./scripts/build_clio_tui.sh`.
-   On a machine with WSL, `bash` resolves to the WSL launcher
-   (`WindowsApps\bash.exe`) and, with the distro stopped, died with
-   `HCS_E_CONNECTION_TIMEOUT`. Git Bash is not on PATH by default. The script's
-   `Have bash` check passes on the WSL stub, so it does not catch this.
-4. **Failure 2 - partial install guard.** The retry stopped with
-   "Source reinstall refused: the installation already exists", because the
-   failed run left `%LOCALAPPDATA%\clio-agent\data\app` behind. The folder had
-   to be moved aside by hand.
-5. **Failure 3 - launcher path drift.** After a successful install the sidecar
-   launcher still reported "clio-agent-gact not found". `sidecar-launcher`
-   searches `%LOCALAPPDATA%\clio\clio-agent\.venv\Scripts\`, but the installer
-   now writes to `%LOCALAPPDATA%\clio-agent\data\app\clio-agent\.venv\Scripts\`.
-   Setting `CLIO_AGENT_GACT_BIN` worked around it.
+### Things no entry point does
+
+- Install the desktop app and the CLI/TUI together: entry points 1 and 2/3 are
+  separate, and the bundled desktop carries its own backend, so running both
+  gives two backends.
+- Install the desktop app on Linux from a script (`desktop.sh` refuses; use the
+  bundled `.deb`/`.rpm`).
+- "Latest pre-release": today you must pin one (`CLIO_VERSION=v0.9.5-beta.8`);
+  `CLIO_REF=<branch>` is a source build, not a pre-release install.
+
+## What `install.ps1` does (release mode, the default)
+
+1. Needs `uv` or `pip` (pip also needs Python 3.13).
+2. Creates a Python 3.13 venv under
+   `%LOCALAPPDATA%\clio-agent\data\app\clio-agent\.venv` (wiped each run) and
+   installs `clio-agent` plus pinned `dspy`/`fastmcp` from PyPI.
+3. Runs `clio_agent.runtime.document_install --setup-protected-execution`
+   (managed Python/Node packages, Office renderer, protected-execution check).
+4. `uv tool install clio-kit==2.10.6` (warn-only on failure).
+5. Downloads `clio-tui-windows-{amd64,arm64}.exe` as `gact.exe` from the latest
+   release.
+6. Downloads and unpacks the web UI bundle (`clio --web`), best-effort.
+7. Installs the `clio.cmd`/`clio.ps1` launcher and an uninstaller.
+
+No `git`, `go` or `bash` needed. Setting `CLIO_REF` (and optionally `GACT_REF`)
+switches to **source-build mode**: `git clone`, `uv sync --python 3.14`, then
+`bash ./scripts/build_clio_tui.sh` (a Go build). It also refuses to run if the
+install directory already exists. The two modes install different Python stacks
+(3.13 vs 3.14) and behave differently on reinstall (wipe vs refuse).
+`install.sh` mirrors this for Linux and macOS.
+
+## What happened on a source desktop build (Windows)
+
+1. `pnpm build` and `tauri:build:debug`: fine (needs Rust, MSVC Build Tools,
+   Node 20+, pnpm 9.15.9, and Go for the sidecar launcher).
+2. First launch: the managed brand (`branding/clio/brand.json`) sets
+   `install.ref: "develop"`, so the app runs
+   `$env:CLIO_REF='develop'; irm .../install.ps1 | iex`, i.e. source-build mode:
+   clone, `uv sync` (about 240 packages, a 145 MB `openai-codex-cli-bin`), Office
+   renderer, Node/pnpm packages, Go build of the TUI. Slow, and none of it is
+   needed to connect to a remote server.
+3. **Failure 1, bare `bash`.** The TUI step runs `bash ./scripts/build_clio_tui.sh`.
+   With WSL installed, `bash` resolves to the WSL launcher
+   (`WindowsApps\bash.exe`); with the distro stopped it died with
+   `HCS_E_CONNECTION_TIMEOUT`. Git Bash is not on PATH by default, and the
+   script's `Have bash` check passes on the WSL stub.
+4. **Failure 2, partial-install guard.** The retry stopped with "Source
+   reinstall refused: the installation already exists" because the failed run
+   left `%LOCALAPPDATA%\clio-agent\data\app` behind. Recovery was a manual rename.
+5. **Failure 3, launcher path drift.** After a successful install the sidecar
+   launcher still said "clio-agent-gact not found": it searches
+   `%LOCALAPPDATA%\clio\clio-agent\.venv\Scripts\` but the installer writes to
+   `%LOCALAPPDATA%\clio-agent\data\app\clio-agent\.venv\Scripts\`.
+   `CLIO_AGENT_GACT_BIN` worked around it.
 
 Workarounds used: Git Bash and Go first on PATH when launching the app;
-`CLIO_AGENT_GACT_BIN` set to the installed backend; the stale `data\app` folder
-renamed.
+`CLIO_AGENT_GACT_BIN` set; stale `data\app` renamed.
 
 ## Problems
 
-1. **Source-build is the first-run default for any build without a bundled
-   runtime**, because the brand's `install.ref` is `develop`. Not verified:
-   whether released *lite* installers inherit this (CI only asserts the brand is
-   `managed/clio-agent`; no `install.ref` override found).
-2. **Windows source mode depends on bash.** It should not: Windows is Windows,
-   not Windows plus WSL or Git Bash. The TUI is a Go program and can be built
-   with `go build` directly.
-3. **Partial installs are not resumable** (guard refuses; recovery is manual).
-4. **Launcher search paths are out of sync** with the installer prefix.
-5. **Fast path is per-OS and per-variant**: runtime pack on Windows, resources
-   on Linux deb/rpm, arm64-only on macOS. AppImage and Intel macOS get nothing.
+1. **Five entry points, with OS-specific scripts each** (`.ps1`/`.sh`/native).
+   Fixes and optimizations apply to one path and miss the others.
+2. **The fast path is narrow.** The packed runtime (`gact-runtime.tar.zst`,
+   `runtime_pack.rs`) is `cfg(windows)`-only. Linux bundles deb/rpm only (no
+   bundled AppImage); macOS bundles Apple Silicon only.
+3. **Desktop and CLI installs are separate** and can leave two backends.
+4. **Source-build mode is a second implementation** of the install, with its own
+   Python version, reinstall behavior, and prerequisites (git, go, bash).
+5. **Windows depends on bash** in source mode. Windows should not require WSL or
+   Git Bash; the TUI is a Go program and can be built with `go build` directly.
+6. **Launcher search paths are hard-coded** and have drifted from the
+   installer's prefix.
+7. **Partial installs are not resumable.**
+8. **A source desktop build defaults to the slowest path** (`install.ref: develop`).
 
-## Proposal
+## Proposal: one installer, options instead of paths
 
-- Make the in-app first-run install use **release mode** by default (empty or
-  release `install.ref`); keep `CLIO_REF` an explicit developer opt-in. This
-  fixes Windows, macOS and Linux at once and removes the git/go/bash needs.
-- On Windows, do not call `bash` anywhere in `install.ps1`; build the TUI with
-  `go build` (or drop source-mode TUI builds on Windows).
-- Derive the launcher search path from the installer's prefix, or have the
-  installer record it, instead of two hard-coded locations.
-- Make the "installation already exists" guard offer resume/repair, or clean up
-  after a failed run.
-- Decide on one provisioning contract (a prebuilt runtime artifact consumed the
-  same way on every OS) rather than a separate fast path per OS.
+| Option | Meaning | Replaces |
+|---|---|---|
+| (none) | Latest stable: backend + TUI + web | `install.sh` / `install.ps1` release mode |
+| `--desktop` | Desktop app (bundled where it exists); combinable with the above so there is one backend | `desktop.sh`, `desktop.ps1`, manual native installers |
+| `--dev` | Latest non-stable (pre-release), no pinning by hand | `CLIO_VERSION=<beta>` |
+| `--source` | Build from source (git, uv, go as needed; never bash on Windows) | `CLIO_REF` / `GACT_REF` |
+
+Supporting changes:
+
+- One implementation per step, shared across OSes where possible (a single
+  entry that dispatches, rather than parallel `.sh`/`.ps1` logic).
+- The in-app first-run install should call the same installer in release mode
+  (not `CLIO_REF=develop`); source stays an explicit developer choice.
+- Drop `bash` from Windows source builds (`go build`).
+- Have the installer record its prefix so the launcher does not search
+  hard-coded paths.
+- Make the "already exists" case a repair or resume, not a hard refusal.
+- Treat a prebuilt runtime as the one provisioning contract across all OSes
+  rather than a per-OS fast path.
 
 ## Open questions
 
-- Do released lite builds really run source-build on first run?
-- Is there a plan for a bundled Intel macOS build and a bundled AppImage?
+- Why does a managed-brand build ship with the in-app install fallback at all,
+  when released lite builds are documented as attach-only?
+- Plans for a bundled Intel macOS build, a bundled AppImage, and a Linux desktop
+  script?
+- Not tested: `desktop.ps1` end to end on this machine.
