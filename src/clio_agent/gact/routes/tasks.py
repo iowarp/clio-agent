@@ -29,6 +29,7 @@ from clio_agent.gact.routes.session_question_helpers import (
     normalize_question_options,
 )
 from clio_agent.gact.task_access import TaskAccess, TaskCaller
+from clio_agent.gact.task_flow_summary import task_flow_summary
 from clio_agent.gact.task_history import RecordingUnconfirmed
 from clio_agent.gact.types import CreateUserQuestionRequest, UserQuestion
 
@@ -105,7 +106,9 @@ def process_view(app: Any, task: dict[str, Any]) -> dict[str, Any]:
         "handle_id": task["handle"],
         "task_kind": task["kind"],
         # A child conversation that runs a flow: the UI opens its run view, not a chat.
-        "flow": {"id": str(flow["id"])} if flow.get("id") else None,
+        "flow": task_flow_summary(app.state.task_history, task, str(flow["id"]))
+        if flow.get("id")
+        else None,
         # The model the child runs on and why, recorded when it was created.
         "model_choice": recorded_choice(app, owner["session_id"]) if agent_task else None,
         "kind": "agent"
