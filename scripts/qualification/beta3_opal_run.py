@@ -176,6 +176,13 @@ def run_locked(
             save(receipt_path, receipt)
         turn = receipt["turns"][index]
         if "ack" not in turn:
+            # A settled reply can precede the session going idle (post-turn work); posting
+            # then is accepted as a steer into the active turn, not a new round.
+            idle_by = time.monotonic() + timeout
+            while request("GET", f"/v1/sessions/{session_id}").get("status") == "running":
+                if time.monotonic() > idle_by:
+                    raise TimeoutError("The session never went idle; inspect it in CLIO")
+                time.sleep(2)
             turn["ack"] = request(
                 "POST", f"/v1/sessions/{session_id}/messages", json=turn["request"]
             )

@@ -254,10 +254,26 @@ def _wait_agent_ready(log_path, timeout):
             health = call("GET", "/v1/health", timeout=15, allow=(503,))
             if health.get("tool_hooks_installed") is True:
                 return "health"
+            # CLIO builds its agent at boot only for a user-selected provider; before the
+            # kit binds vLLM there is none, so "agent ready" never comes: stop waiting.
+            for row in health.get("integrations") or []:
+                if row.get("name") == "lm_provider" and row.get("reason") == "lm_provider_unconfigured":
+                    return "no-boot-agent"
         except KitError:
             pass
         time.sleep(5)
     return ""
+
+
+#: Settings the kit reads that must not reach CLIO (or the vLLM processes it spawns).
+_SCRIPT_ONLY_ENV = frozenset(
+    ["CLIO_PORT", "VLLM_VARIANT", "VLLM_TP", "VLLM_GPU_UTIL", "VLLM_MAX_NUM_SEQS", "VLLM_MAX_MODEL_LEN"]
+)
+SPOTTER_SERVICE = "vllm@spotter"
+
+
+def _dedicated_spotter():
+    return env("SPOTTER_MODE", "shared") == "dedicated"
 
 
 def serve_start():
@@ -285,10 +301,15 @@ def serve_start():
     workspace = os.path.join(ROOT, "workspace-default")
     os.makedirs(workspace, exist_ok=True)
     command = [clio_bin, "serve", "--host", "127.0.0.1", "--port", str(chosen)]
+    # The clio-core runtime daemon CLIO spawns reads CLIO_PORT as ITS listen port: the kit's
+    # CLIO_PORT (CLIO's HTTP port, given by --port) would make it collide with CLIO itself.
+    # The kit's own VLLM_* settings are not vLLM variables: keep them out of the vLLMs CLIO spawns.
+    child_env = dict((k, v) for k, v in os.environ.items() if k not in _SCRIPT_ONLY_ENV)
     with open(log_path, "ab") as log:
         process = subprocess.Popen(
             command,
             cwd=workspace,
+            env=child_env,
             stdout=log,
             stderr=subprocess.STDOUT,
             stdin=subprocess.DEVNULL,
@@ -665,6 +686,7 @@ def step_vllm():
         "param.dtype": "bfloat16",
         "param.gpu_memory_utilization": env("VLLM_GPU_UTIL", "0.9"),
         "param.max_num_seqs": env("VLLM_MAX_NUM_SEQS", "1"),
+        "param.cuda_devices": env("VLLM_GPUS", ",".join(str(i) for i in range(int(tp)))),
     }
     if env("VLLM_MAX_MODEL_LEN"):
         configuration["param.max_model_len"] = env("VLLM_MAX_MODEL_LEN")
@@ -686,6 +708,7 @@ def step_vllm():
             held.get("model") == model
             and held.get("param.tensor_parallel_size", "1") == tp
             and held.get("flowcept_settings") == flowcept["settings_path"]
+            and held.get("param.cuda_devices", "") == configuration["param.cuda_devices"]
         )
 
     row, steps = ensure_service("vllm", variant, configuration, "vllm", 5400, matches)
@@ -830,7 +853,7 @@ def step_bind():
         (
             s
             for s in servers
-            if s.get("preset_id") == "vllm" and (s.get("address") or "").rstrip("/") == address
+            if (s.get("address") or "").rstrip("/") == address
         ),
         None,
     )
@@ -865,6 +888,109 @@ def step_bind():
         model={"provider_id": saved.get("id", "vllm"), "model_id": model_id},
         credential_ref=saved.get("credential_ref"),
     )
+
+
+def step_spotter_vllm():
+    """SPOTTER_MODE=dedicated: a second vLLM (no attention connector) on its own GPU for SPOTTER."""
+    if not _dedicated_spotter():
+        return receipt("06b-spotter-vllm", "skipped", mode=env("SPOTTER_MODE", "shared"))
+    model = prior("04-model", {"path": "<dry:model snapshot>"}).get("path")
+    if not model:
+        raise KitError("run the model step first (04-model receipt)")
+    configuration = {
+        "model": model,
+        "model_revision": env("MODEL_REVISION"),
+        "param.tensor_parallel_size": "1",
+        "param.dtype": "bfloat16",
+        "param.gpu_memory_utilization": env("SPOTTER_GPU_UTIL", "0.9"),
+        "param.max_num_seqs": env("SPOTTER_MAX_NUM_SEQS", "4"),
+        "param.cuda_devices": env("SPOTTER_GPU", "1"),
+    }
+    variant = env("SPOTTER_VLLM_VARIANT", "native-cuda")
+
+    def matches(row):
+        held = row.get("configuration") or {}
+        return held.get("model") == model and held.get("param.cuda_devices") == env(
+            "SPOTTER_GPU", "1"
+        )
+
+    row, steps = ensure_service(SPOTTER_SERVICE, variant, configuration, "spotter-vllm", 5400, matches)
+    return receipt(
+        "06b-spotter-vllm",
+        "ok",
+        service_id=SPOTTER_SERVICE,
+        variant=variant,
+        steps=steps,
+        url=row.get("connection_url"),
+        model=model,
+        cuda_devices=configuration["param.cuda_devices"],
+        effective_parameters=row.get("effective_parameters"),
+    )
+
+
+def step_spotter_bind():
+    """Save the SPOTTER vLLM as its own model server and record its fleet ref."""
+    if not _dedicated_spotter():
+        return receipt("08b-spotter-bind", "skipped", mode=env("SPOTTER_MODE", "shared"))
+    spotter = prior("06b-spotter-vllm", {"url": "http://127.0.0.1:41235", "model": "<dry:model>"})
+    url = service_row(catalog(), SPOTTER_SERVICE).get("connection_url") or spotter.get("url")
+    url = url or ("http://127.0.0.1:41235" if DRY else "")
+    if not url:
+        raise KitError("the SPOTTER vLLM has no connection URL in the catalog")
+    address = url.rstrip("/") + ("" if url.rstrip("/").endswith("/v1") else "/v1")
+    dry_saved = {"id": "server-vllm-spotter", "check": {"reachable": True, "models": ["<m>"]}}
+    servers = call("GET", "/v1/providers/servers", dry={"servers": []}).get("servers", [])
+    held = next((s for s in servers if (s.get("address") or "").rstrip("/") == address), None)
+    if held:
+        saved = call("POST", "/v1/providers/servers/%s/check" % held["id"], dry=dry_saved)
+    else:
+        saved = call(
+            "POST", "/v1/providers/servers", {"address": address, "preset_id": "vllm"}, dry=dry_saved
+        )
+    write_json(os.path.join(JOB_EVIDENCE, "bind-spotter-server.json"), saved)
+    check = saved.get("check") or {}
+    models = check.get("models") or []
+    if not check.get("reachable") or not models:
+        raise KitError("the SPOTTER vLLM is not reachable or lists no model: %s" % json.dumps(check)[:600])
+    model_id = next((m for m in models if m == spotter.get("model")), models[0])
+    fleet = call(
+        "GET",
+        "/v1/fleet",
+        timeout=300,
+        dry={"entries": [{"account": saved.get("id"), "model": model_id}]},
+    )
+    write_json(os.path.join(JOB_EVIDENCE, "fleet.json"), fleet)
+    ref = next(
+        (
+            e.get("ref") or "%s/%s" % (e.get("account"), e.get("model"))
+            for e in fleet.get("entries", [])
+            if e.get("account") == saved.get("id") and e.get("model") == model_id
+        ),
+        "",
+    )
+    if not ref:
+        raise KitError(
+            "the SPOTTER server %s is not a fleet account; GET /v1/fleet lists %s"
+            % (saved.get("id"), sorted({e.get("account") for e in fleet.get("entries", [])}))
+        )
+    return receipt(
+        "08b-spotter-bind",
+        "ok",
+        server_id=saved.get("id"),
+        address=address,
+        spotter_model=ref,
+        credential_ref=saved.get("credential_ref"),
+    )
+
+
+def _spotter_model():
+    """The fleet ref SPOTTER runs on: the dedicated instance, else the conversation's model."""
+    if not _dedicated_spotter():
+        return ""
+    bound = prior("08b-spotter-bind", {"spotter_model": "server-vllm-spotter/<dry:model>"})
+    if not bound.get("spotter_model"):
+        raise KitError("SPOTTER_MODE=dedicated but no 08b-spotter-bind receipt; run 02_services_up.sh")
+    return bound["spotter_model"]
 
 
 def _session_model():
@@ -902,6 +1028,8 @@ def _session(workspace_id, title, agent_ref, approval):
     }
     if agent_ref:
         body["agent"] = {"id": agent_ref}
+    if approval == "spotter-ai" and _spotter_model():
+        body["metadata"] = {"spotter_model": _spotter_model()}
     return call("POST", "/v1/sessions", body, dry={"id": "sess_dry_" + uuid.uuid4().hex[:8]})
 
 
@@ -1360,6 +1488,8 @@ COMMANDS = {
     "vllm": lambda a: step_vllm(),
     "provenance": lambda a: step_provenance(),
     "bind": lambda a: step_bind(),
+    "spotter-vllm": lambda a: step_spotter_vllm(),
+    "spotter-bind": lambda a: step_spotter_bind(),
     "smoke": lambda a: step_smoke(),
     "opal-setup": lambda a: step_opal_setup(),
     "opal-report": lambda a: step_opal_report(a[0]),

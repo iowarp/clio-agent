@@ -11,7 +11,7 @@ set -euo pipefail
 [ "$DRY_RUN" = 1 ] || [ -s "$CONNECTOR_SOURCE_FILE" ] || die "no connector build ($CONNECTOR_SOURCE_FILE); run 01_stage_up.sh"
 [ "$FLOWCEPT_VARIANT" = managed ] && load_modules   # Apptainer databases
 log "CLIO connector source: ${CLIO_VLLM_ATTN_CONNECTOR:-(CLIO pin; will not build)}"
-for step in serve-start storage model flowcept vllm provenance bind; do
+for step in serve-start storage model flowcept vllm spotter-vllm provenance bind spotter-bind; do
   log "== $step"
   "${KIT_PY[@]}" "$step" || die "$step (receipts and op logs in $JOB_EVIDENCE)"
 done

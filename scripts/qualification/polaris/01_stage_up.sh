@@ -39,6 +39,12 @@ if [ "$("$TOOLS/pnpm/node_modules/.bin/pnpm" --version 2>/dev/null)" != "$PNPM_V
 fi
 details+=("node=\"$NODE_VERSION\"" "pnpm=\"$PNPM_VERSION\"")
 
+# --- clio-kit (MCP launcher for the parquet/web/adios plugins; Desktop bundles it) ----------
+if [ "$(uv tool list 2>/dev/null | awk '$1=="clio-kit"{print $2}')" != "v$CLIO_KIT_VERSION" ]; then
+  run env UV_TOOL_BIN_DIR="$TOOLS/bin" uv tool install --force "clio-kit==$CLIO_KIT_VERSION"
+fi
+details+=("clio_kit=\"$CLIO_KIT_VERSION\"")
+
 # --- repositories ---------------------------------------------------------------------------
 # clone_at DIR URL REF: clone or fast-forward; a dirty checkout is left alone (recorded).
 clone_at() {
@@ -51,7 +57,14 @@ clone_at() {
   fi
   run git -C "$dir" fetch --quiet origin "$ref" 2>/dev/null || run git -C "$dir" fetch --quiet origin
   if git -C "$dir" rev-parse --verify --quiet "origin/$ref" >/dev/null 2>&1; then
-    run git -C "$dir" checkout --quiet -B "$ref" "origin/$ref"
+    # Fast-forward only: local commits ahead of the remote (an operator's fixes) are kept.
+    if git -C "$dir" rev-parse --verify --quiet "refs/heads/$ref" >/dev/null 2>&1; then
+      run git -C "$dir" checkout --quiet "$ref"
+      run git -C "$dir" merge --quiet --ff-only "origin/$ref" \
+        || log "WARNING: $dir $ref has diverged from origin/$ref; left as is"
+    else
+      run git -C "$dir" checkout --quiet -b "$ref" "origin/$ref"
+    fi
   else
     run git -C "$dir" checkout --quiet --detach "$ref"
   fi
@@ -59,7 +72,16 @@ clone_at() {
 clone_at "$CLIO_SRC" "$GITHUB/iowarp/clio-agent.git" "$BRANCH"
 run git -C "$CLIO_SRC" submodule sync --quiet
 run git -C "$CLIO_SRC" submodule update --init --recursive
-clone_at "$SRC/clio-schemas" "$GITHUB/iowarp/clio-schemas.git" "$BRANCH"
+# CLIO installs clio-schemas from its uv.lock pin; this checkout only feeds the version check
+# below. The branch may not be pushed to clio-schemas: then use its default branch, loudly.
+SCHEMAS_REF="$BRANCH"
+if ! git ls-remote --exit-code --heads "$GITHUB/iowarp/clio-schemas.git" "$BRANCH" >/dev/null 2>&1; then
+  SCHEMAS_REF="$(git ls-remote --symref "$GITHUB/iowarp/clio-schemas.git" HEAD 2>/dev/null | awk '/^ref:/{sub("refs/heads/","",$2); print $2}')"
+  SCHEMAS_REF="${SCHEMAS_REF:-main}"
+  log "WARNING: clio-schemas has no branch $BRANCH; using $SCHEMAS_REF (CLIO's lock pin is what runs)"
+fi
+clone_at "$SRC/clio-schemas" "$GITHUB/iowarp/clio-schemas.git" "$SCHEMAS_REF"
+details+=("clio_schemas_ref=\"$SCHEMAS_REF\"")
 clone_at "$SRC/experiments" "$GITHUB/spotter-ai-genesis/experiments.git" "$EXPERIMENTS_REV"
 clone_at "$SRC/vllm-attn-connector" "$GITHUB/spotter-ai-genesis/vllm-attn-connector.git" "$CONNECTOR_REV"
 
@@ -96,7 +118,9 @@ details+=("python=\"$("$CLIO_SRC/.venv/bin/python" -V 2>&1 || echo none)\"")
 
 # --- UI with the CLIO brand -----------------------------------------------------------------------
 brand_digest=$(cd "$CLIO_SRC/branding" 2>/dev/null && find . -type f -exec sha256sum {} + | sort | sha256sum | cut -c1-16 || echo none)
-ui_id="$(head_of "$GACT_SRC") $brand_digest"
+# Uncommitted UI changes rebuild too: the id carries a digest of the working-tree diff.
+ui_dirty=$(git -C "$GACT_SRC" diff HEAD 2>/dev/null; git -C "$GACT_SRC" ls-files --others --exclude-standard -z 2>/dev/null | xargs -0 -r cat 2>/dev/null)
+ui_id="$(head_of "$GACT_SRC") $(printf '%s' "$ui_dirty" | sha256sum | cut -c1-12) $brand_digest"
 if [ "$DRY_RUN" = 1 ] || [ "$(cat "$BUILD/clio-web/BUILD-ID.txt" 2>/dev/null)" != "$ui_id" ]; then
   log "building the web UI with the CLIO brand"
   run bash -c "printf '{\"profile\":\"clio\",\"brandingRoot\":\"%s\"}\n' '$CLIO_SRC/branding' > '$GACT_SRC/brand.config.local.json'"
