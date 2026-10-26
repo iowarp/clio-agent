@@ -166,10 +166,11 @@ def default_decision(
     * ``ask``   — ``ask`` (default), ``auto-edits`` for a non-write (e.g. ``shell_bash``, whose
       writes live behind the OS fence, not a catalog ``write`` tag), ``ai-review`` (the caller
       stamps the typed ``ai_review_reviewer_pending`` reason on the pending row), or
-      ``spotter-ai`` (deliberately identical to ``ask`` — spotter-ai only ARMS a watcher
-      child that observes the session; it grants no auto-approval axis of its own, so a
-      non-read call still prompts the interactive gate exactly as the default mode would),
-      or ``spotter-watcher`` for every other tool.
+      ``spotter-watcher`` for every other tool.
+
+    ``spotter-ai`` is bypass plus the SPOTTER watcher: it returns ``allow`` like ``bypass``.
+    The human is not prompted; SPOTTER's clearance (``_spotter_clearance``, consulted before
+    this default) is what can still stop a call it has contained.
 
     ``kind``/``args`` are accepted for a stable signature (a future kind may inspect them) but the
     two current signals (mode + the catalog ``write`` tag) do not consult them.
@@ -178,18 +179,15 @@ def default_decision(
     _ = (kind, args)
     if approval_mode == "spotter-watcher":
         return "allow" if name == "raise_alert_card" else "ask"
-    if approval_mode == "bypass":
+    if approval_mode in ("bypass", "spotter-ai"):
         return "allow"
     if approval_mode == "auto-edits":
         entry = get_tool_entry(name)
         if entry is not None and "write" in entry.tags:
             return "allow"
         return "ask"
-    if approval_mode in ("ask", "ai-review", "spotter-ai"):
-        # ask (default), ai-review, and spotter-ai all route to the existing interactive
-        # prompt. spotter-ai is pinned here EXPLICITLY (not via fall-through) so its
-        # "behaves exactly like ask" semantics are a deliberate contract, not an accident
-        # of an unmatched-mode default.
+    if approval_mode in ("ask", "ai-review"):
+        # ask (default) and ai-review route to the existing interactive prompt.
         return "ask"
     # Unknown/future mode: never manufacture a denial (see docstring) — fall through to
     # the same interactive prompt as the default.

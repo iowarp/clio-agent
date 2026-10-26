@@ -140,16 +140,15 @@ def test_default_decision_ask_and_ai_review_prompt() -> None:
     assert default_decision("ai-review", "tool", _FS_WRITE, {}) == "ask"
 
 
-def test_default_decision_spotter_ai_behaves_exactly_like_ask() -> None:
-    """spotter-ai ARMS a watcher child (gact/spotter_watcher.py) but grants no
-    auto-approval axis of its own — pinned EXPLICITLY in default_decision, not by
-    fall-through accident (see the branch's docstring/comment)."""
+def test_default_decision_spotter_ai_is_bypass_plus_watcher() -> None:
+    """spotter-ai is bypass plus the SPOTTER watcher: no human prompt; SPOTTER's
+    clearance (checked before this default) is what can still stop a call."""
 
     for name, args in ((_FS_WRITE, {"filepath": "x", "content": "y"}), (_UNCLASSIFIED, {})):
         assert default_decision("spotter-ai", "tool", name, args) == default_decision(
-            "ask", "tool", name, args
+            "bypass", "tool", name, args
         )
-    assert default_decision("spotter-ai", "tool", _FS_WRITE, {}) == "ask"
+    assert default_decision("spotter-ai", "tool", _FS_WRITE, {}) == "allow"
 
 
 # --------------------------------------------------------------------------- #
