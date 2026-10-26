@@ -65,23 +65,30 @@ packages and the Office renderer, then the science runtime. In the target, all o
 inside the per-OS runtime artifact. The install downloads or carries them, unpacks and checks them,
 in parallel where the steps are independent.
 
-**Setup is what runs in the background.** These are the things Clio prepares or checks once it's
-running:
+**Setup never installs anything.** It downloads nothing, builds no environment, and runs no `npm`,
+`pnpm`, `uv` or `pip` install. Installing happens in exactly two places, and both finish before they
+report done:
+- **Installing Clio:** every component, including the MCP server environments of the plugins that ship
+  with Clio, prebuilt in the runtime artifact.
+- **Adding a plugin:** the plugin is not reported installed until its MCP server environments are built
+  and checked, with progress shown while it happens. Today these environments are built on the server's
+  first start (`uvx`), which is installation hidden inside startup; that moves into the plugin install.
+
+**Setup is what runs in the background:** what Clio prepares or checks once it's running.
 
 | Item | Needed for | Until it's ready |
 |---|---|---|
 | Restoring conversations and tasks from clio-core | Opening an older conversation | A new conversation starts at once; older ones open as they load |
-| Each plugin's MCP server environment, built on its first start | That plugin's tools | The tool waits for its environment, then runs; the request is kept, not refused |
 | Provider sign-in check and model catalog refresh | The model picker's full list | The configured model works; the list fills in |
-| Marketplace update check | New plugin versions | Runs at low priority |
+| Marketplace update check | Telling the person a new plugin version exists; installing it is a separate, explicit action | Runs at low priority |
 | Cache pruning | Disk use | Runs last, at low priority |
 
 Rules for setup:
 - **Visible.** Each item shows in the app: preparing, ready, or failed with the cause and the fix.
 - **Never silent.** A failure is shown where the person will look, not only written to a log.
 - **Never in the way.** A first conversation never waits for an item it doesn't use.
-- **Things that need an item wait for it.** A tool that needs an unfinished item waits for it and then
-  runs; it doesn't fail.
+- **Things that need an item wait for it.** A request that needs an unfinished item (an older
+  conversation still loading, for example) waits for it and then runs; it doesn't fail.
 - **In order of likely use.** What a first conversation is likely to need is prepared first.
 - **Resumable.** If Clio closes mid-setup, the next start continues where it stopped.
 - **Prepared once.** Done items are recorded and never redone at boot.
