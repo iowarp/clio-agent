@@ -91,8 +91,12 @@ Rules for setup:
 - **Visible.** Each item shows in the app: preparing, ready, or failed with the cause and the fix.
 - **Never silent.** A failure is shown where the person will look, not only written to a log.
 - **Never in the way.** A first conversation never waits for an item it doesn't use.
-- **Things that need an item wait for it.** A request that needs an unfinished item (an older
-  conversation still loading, for example) waits for it and then runs; it doesn't fail.
+- **Block only when needed, and only that request.** Nothing blocks up front. A request that needs an
+  unfinished item waits for it and then runs; it doesn't fail, and the rest of the app stays usable.
+  Opening an older conversation waits for that conversation alone; switching to a model whose provider
+  hasn't been checked waits for that check. The configured model is checked during first open, so the
+  first message never waits on setup. A wait says what it is waiting for, has a time limit, and if the
+  item fails, that request shows the cause and the fix.
 - **In order of likely use.** What a first conversation is likely to need is prepared first.
 - **Resumable.** If Clio closes mid-setup, the next start continues where it stopped.
 - **Prepared once.** Done items are recorded and never redone at boot.
