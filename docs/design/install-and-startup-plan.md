@@ -24,31 +24,75 @@ Rules, in priority order:
    on all three OSes.
 7. **Delete what is replaced, in the same change.** We never again keep two ways of doing one thing.
 
-## Who installs Clio, and how
+## Three paths, one pipeline
 
-There are three official ways to install. They must all work and all be fast:
+There are three official ways to get Clio, and they are equals. Each must work and be fast on every OS:
 
-| Way | Who | Today |
+| Path | Who | Notes |
 |---|---|---|
-| **Script** (`curl \| bash`, `irm \| iex`) | CLI and TUI users, servers, HPC nodes, and every SSH deployment (the desktop app runs the script on the remote host) | `install.sh` and `install.ps1`, written separately |
-| **From source** | Developers, and the in-app first-run install of a source-built desktop app | The same scripts in a second mode (`CLIO_REF`), with a different Python, different reinstall behaviour, and git, go and bash required |
-| **Installers** (MSI/NSIS, DMG, deb/rpm, AppImage) | Desktop users | Tauri bundles; only the Windows bundle carries the packed runtime. macOS installers are blocked on signing |
+| **Installers** (MSI/NSIS, DMG, deb/rpm, AppImage) | Desktop users | The desktop app and Clio in one download |
+| **From source** | Developers, and **macOS users while installers are unsigned** | Must give the same result as an installer, not a developer-only setup |
+| **Script** (`curl \| bash`, `irm \| iex`) | Servers, HPC nodes, CLI and TUI users, and every SSH deployment | The desktop app deploys to a remote host by running this there |
 
-The target command set, run the same way on every OS:
+What makes them equals is that they differ in exactly one step: where the runtime comes from. The runtime
+is Clio's backend with its own Python, the locked packages, the TUI and the web UI. Everything after that
+step is the same code on every path and every OS:
+
+| Step | Installer | From source | Script |
+|---|---|---|---|
+| 1. Get the runtime | Carried inside the installer | **Built from the checkout**, with the same builder CI uses for releases | Downloaded: the release artifact for this OS and CPU |
+| 2. Install it | Shared | Shared | Shared |
+| 3. Record it in the install manifest | Shared | Shared | Shared |
+| 4. Check it (start, wait until it can serve, stop) | Shared | Shared | Shared |
+| 5. Front end | The desktop app, in the installer | **The desktop app built locally** (Tauri) against the runtime from step 1, when asked for | TUI and web UI; the desktop app when asked for |
+
+So a fix or speedup in any of steps 2–4 reaches all three paths on all three OSes at once. Step 1 is the
+only place a path differs, and even there the installer and the script use the **same artifact**, and the
+source path **builds that artifact**, rather than producing a different kind of install.
+
+The commands, the same on every OS:
 
 ```
 install                  # Clio: backend, TUI and web UI. Servers, HPC and SSH deployment use exactly this
 install --desktop        # the same, plus the desktop app, on the same backend
+install --source         # step 1 builds the runtime from this checkout instead of downloading it
+install --source --desktop   # also builds the desktop app locally: the macOS path today
 install --dev            # the latest pre-release instead of the latest release
-install --source         # build from a checkout instead of downloading
 install repair           # finish or fix an interrupted or broken install
 install uninstall
 ```
 
-An SSH deployment is plain `install` on the remote host. The installers run the same program in
-`--desktop` mode. The in-app first-run install runs it in release mode, never `--source`.
+The installers run the same program with the runtime they carry. An SSH deployment is plain `install` on
+the remote host. The in-app first-run install runs release mode; it never builds from source.
+
+Contributor work in a checkout (`uv sync`, `uv run clio-agent serve`) stays as it is: that is editing Clio,
+not installing it. It runs the same startup code, so the startup work below applies to it too.
+
+### macOS
+
+Until the macOS installers are signed, `install --source --desktop` is how Mac users get the desktop
+app. An app built on the user's own machine is not quarantined, so Gatekeeper doesn't block it. That
+makes the source path a release-quality path on macOS: the same budgets and CI coverage as an
+installer. It also covers Intel Macs, which today get only the attach-only app, with no backend
+included.
 
 ## Where we are
+
+### Three paths, three different runtimes
+
+Today each path produces a different kind of Clio:
+
+| Path | Runtime | Python | How the desktop app finds the backend |
+|---|---|---|---|
+| Installers | A portable runtime built in CI by `build-gact-runtime.sh`/`.ps1`. **Windows**: packed, then unpacked at install. **Linux deb/rpm and Apple Silicon DMG**: carried as a directory. **AppImage and Intel DMG**: none (attach-only) | 3.14 | The bundled runtime manifest |
+| From source, contributors | `uv sync` in the checkout | 3.14 | Not at all: a locally built desktop app has no backend and falls back to the in-app install |
+| From source, in-app or `CLIO_REF` | The script's second mode: clone, `uv sync`, Go build of the TUI, with git, go and bash required | 3.14 | Hard-coded search paths |
+| Script | A virtual environment built from PyPI wheels at install time, wiped on every reinstall | 3.13 | Hard-coded search paths, which have drifted (below) |
+
+So the layout, the Python version, how Clio is started and how it's found all differ by path. A fix to
+any of them has to be made up to four times. macOS CI already proves the target shape: it builds the
+portable runtime from source with `build-gact-runtime.sh`, then builds the desktop app around it with
+Tauri (`macos-bundle-smoke.yml`).
 
 ### Install code
 
@@ -116,24 +160,35 @@ Two more problems:
 
 ## Target architecture
 
-### 1. One installer program
+### 1. One runtime artifact, one builder
 
-One program does every step on every OS. The `install.sh` and `install.ps1` that users paste become
-bootstraps of a few lines each: detect the OS and CPU, download the installer program for it, check its
-checksum, run it. The desktop installers carry the same program and call it. SSH deployment runs it on
-the remote host. Nothing else installs Clio.
+The runtime is one artifact per OS and CPU: one Python version, the locked packages, the TUI and the
+web UI, with the same layout everywhere. One builder makes it, from a checkout and the lock file:
+- **CI** runs the builder to make release artifacts for every OS and CPU, Intel Mac and Linux AppImage
+  included, so no installer is attach-only.
+- **`install --source`** runs the same builder on the user's machine.
 
-It also replaces the two `clio` launchers (`clio start`, `stop`, `restart`, `status`, `logs`, `doctor`),
-both runtime builders, both uninstallers and the install half of both SSH deploy implementations.
+The portable runtime that installers carry today is the starting point. Its two builders
+(`build-gact-runtime.sh` and `.ps1`) become one. Whether the artifact is compressed into a single file
+(as on Windows today) or carried as a directory becomes a build option, the same on every OS, not a
+Windows-only path.
 
-### 2. One runtime artifact
+### 2. One installer program
 
-CI builds one runtime per OS and CPU architecture from the lock file: Python, the locked wheels, the
-TUI and the web UI. This is the packed runtime that makes the Windows desktop install fast today,
-generalized to every OS. The script and the installers both install that same artifact. `--source`
-builds the same artifact locally from the checkout, then installs it the same way. So "install" is the
-same two steps everywhere, get the artifact and install it, and a speedup to either step reaches every
-user.
+One program does steps 2–4 on every OS, and step 1 for the script and source paths:
+- **Installers** carry it next to the runtime and run it, in place of the NSIS hooks and the desktop
+  app's own unpacking, directory swap and runtime-stop code.
+- **From source**, it runs the builder, then installs the result; with `--desktop`, it builds the
+  desktop app with Tauri around that runtime.
+- **The script's** `install.sh` and `install.ps1` become bootstraps of a few lines each: detect the OS
+  and CPU, download the program, check its checksum, run it.
+- **SSH deployment** runs it on the remote host.
+
+Nothing else installs Clio. The program also replaces:
+- the two `clio` launchers (`start`, `stop`, `restart`, `status`, `logs`, `doctor`);
+- the desktop sidecar launcher;
+- both uninstallers;
+- the install half of SSH deployment.
 
 ### 3. One install record
 
@@ -204,8 +259,13 @@ Built first, so it measures today's code before anything changes, and every late
 against it.
 
 - **Operating systems:** Ubuntu, macOS and Windows runners. Add ARM where the runners exist.
-- **Paths:** script, `--source`, installers (macOS once signing is in place), and SSH deployment to a
-  fresh container.
+- **Paths:**
+  - **Installers:** on Linux (deb/rpm and AppImage) and Windows, and on macOS once signing is in place;
+    built unsigned for CI before that.
+  - **From source:** `install --source` and `install --source --desktop`, on all three OSes. On macOS
+    this is a release-quality path, on both Apple Silicon and Intel runners.
+  - **Script.**
+  - **SSH deployment** to a fresh container.
 - **Scenarios:**
   - a fresh install;
   - first start;
@@ -238,10 +298,13 @@ against it.
 - Shutdown cause found and fixed (#1401).
 - **Budgets enforced for:** install success, repair, upgrade and shutdown.
 
-### Phase 2: one installer
+### Phase 2: one pipeline
 
-- The installer program, and the bootstraps.
-- Installers and SSH deployment call it, and the in-app first run uses release mode.
+- One runtime builder, run by CI for every OS and CPU (Intel Mac and AppImage included, so no installer
+  is attach-only) and by `install --source`.
+- The installer program and the bootstraps.
+- Installers, source builds (with `--desktop` building the app locally) and SSH deployment all call it.
+  The in-app first run uses release mode.
 - In the same pull requests, delete the replaced scripts, launchers, runtime builders and deploy code.
 
 ### Phase 3: fast
