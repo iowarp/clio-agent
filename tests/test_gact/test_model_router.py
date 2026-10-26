@@ -466,7 +466,7 @@ def test_a_failed_stop_does_not_start_a_second_router(tmp_path: Path) -> None:
 
 
 def _bind_app(store: InfrastructureStore, monkeypatch: pytest.MonkeyPatch) -> TestClient:
-    async def fake_check(preset: Any, address: str) -> dict[str, Any]:
+    async def fake_check(preset: Any, address: str, server_id: str = "") -> dict[str, Any]:
         return {"reachable": True, "connectivity": "ok", "models": [], "error": ""}
 
     monkeypatch.setattr(local_servers, "check_address", fake_check)

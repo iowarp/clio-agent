@@ -66,17 +66,25 @@ def _checks(app: FastAPI) -> dict[str, dict[str, Any]]:
     return checks
 
 
-async def check_address(preset: "LMProviderPreset", address: str) -> dict[str, Any]:
-    """One live handshake of ``preset`` at ``address``: reachability and served models."""
+async def check_address(
+    preset: "LMProviderPreset", address: str, server_id: str = ""
+) -> dict[str, Any]:
+    """One live handshake of ``preset`` at ``address``: reachability and served models.
+
+    ``server_id`` names a saved server whose own key (its linked deployment's, for a
+    custom entry such as ``vllm@<name>``) is sent instead of the preset's.
+    """
     from clio_agent.gact.provider_catalog import probe_api_key  # noqa: PLC0415
     from clio_agent.providers.handshake import HandshakeContext, run_handshake  # noqa: PLC0415
+    from clio_agent.providers.model_discovery import resolve_cloud_api_key  # noqa: PLC0415
 
+    own_key = resolve_cloud_api_key(server_id) if server_id and server_id != preset.id else ""
     report = await run_handshake(
         HandshakeContext(
             provider_id=preset.id,
             provider_kind=preset.provider,
             api_base=address,
-            api_key=probe_api_key(preset),
+            api_key=own_key or probe_api_key(preset),
             auth_mode="passive",
             allow_external_sources=True,
         ),
@@ -112,7 +120,7 @@ def register_local_server_routes(app: FastAPI, presets: "list[LMProviderPreset]"
         invalidate_provider(app, entry.id if entry.custom else entry.preset_id)
 
     async def checked(entry: store.LocalServerEntry) -> dict[str, Any]:
-        result = await check_address(preset_for(entry.preset_id), entry.address)
+        result = await check_address(preset_for(entry.preset_id), entry.address, entry.id)
         _checks(app)[entry.id] = result
         return {**entry.to_wire(), "check": result}
 

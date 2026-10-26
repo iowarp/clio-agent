@@ -32,7 +32,7 @@ def probes(monkeypatch: pytest.MonkeyPatch) -> list[tuple[str, str]]:
     """Replace the live handshake: ``:9999`` answers with two models, anything else is down."""
     calls: list[tuple[str, str]] = []
 
-    async def fake_check(preset: Any, address: str) -> dict[str, Any]:
+    async def fake_check(preset: Any, address: str, server_id: str = "") -> dict[str, Any]:
         calls.append((preset.id, address))
         up = ":9999" in address
         return {
@@ -274,3 +274,28 @@ def test_a_keyless_server_is_probed_with_the_placeholder_key(
     assert probe_api_key(presets["openrouter"]) == ""
     monkeypatch.setattr(model_discovery, "resolve_cloud_api_key", lambda _id: "sk-stored")
     assert probe_api_key(presets["vllm"]) == "sk-stored"
+
+
+async def test_a_custom_server_is_probed_with_its_own_key(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A saved vllm@<name> carries its deployment's key; the preset's key would be refused."""
+    from types import SimpleNamespace
+
+    from clio_agent.providers import handshake, model_discovery
+
+    sent: list[str] = []
+
+    async def fake_handshake(context: Any, force: bool = False) -> Any:
+        sent.append(context.api_key)
+        return SimpleNamespace(
+            connectivity=SimpleNamespace(value="ok"), models=[], error="", generated_at=""
+        )
+
+    keys = {"vllm": "main-key", "server-vllm-spotter": "spotter-key"}
+    monkeypatch.setattr(handshake, "run_handshake", fake_handshake)
+    monkeypatch.setattr(model_discovery, "resolve_cloud_api_key", lambda pid: keys.get(pid, ""))
+    preset = SimpleNamespace(
+        id="vllm", provider="openai", auth_method="api_key", requires_api_key=False
+    )
+    await local_servers.check_address(preset, "http://127.0.0.1:35507/v1", "server-vllm-spotter")
+    await local_servers.check_address(preset, "http://127.0.0.1:8000/v1", "vllm")
+    assert sent == ["spotter-key", "main-key"]
