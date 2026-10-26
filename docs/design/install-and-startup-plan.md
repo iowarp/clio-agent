@@ -24,6 +24,42 @@ Rules, in priority order:
    on all three OSes.
 7. **Delete what is replaced, in the same change.** We never again keep two ways of doing one thing.
 
+## The runtime model (every track follows it)
+
+**Durability.**
+- clio-core is the record. Every write (messages, task events, mail, workflow state, session metadata)
+  is committed to clio-core before it is acknowledged or acted on.
+- Clio's memory is only a read cache, so Clio can die at any moment and lose nothing.
+- Shutdown and a crash are the same event. Work that was running is recorded as interrupted and becomes
+  an obligation on the next start.
+
+**Four kinds of work, each with its own trigger and priority:**
+
+| Kind | What | Triggered by | When |
+|---|---|---|---|
+| **Startup** | What makes every later request correct: clio-core connected, workspaces, the rail's first page of records (title, time, status flags), the marketplace and the default agent resolved, the provider checked | the process starting | before `ready`; nothing else runs first |
+| **View** | What a person is looking at: rail pages; the opened conversation's latest page; then at once in the background its panels (tasks, child conversations, artifacts, workflow state) and its agent with that agent's MCP servers; older pages on scroll | a person's action | immediately on that action |
+| **Obligations** | Work Clio owes whether or not anyone is looking: pending mail, interrupted turns, open tasks waiting on results, questions answered while it was down, scheduled tasks | the open-work records in clio-core | after `ready`, in the background, on their own |
+| **Maintenance** | Cache pruning, the marketplace update check, garbage collection | timers | when idle |
+
+**Rules:**
+- **A lower row never delays a higher row.**
+  - Startup never waits for obligations.
+  - A click never waits for obligations or maintenance.
+  - An obligation never waits for a click.
+- **Obligations drain in bounded batches, oldest first** (concurrency is a setting).
+  - Each loads only its own working set, runs, and releases it.
+  - A three-month backlog of flow children can't flood memory or the model provider.
+  - An obligation whose conversation is opened is either already running or moves up to view priority.
+- **The cache keeps an item while a view or a running obligation uses it**, and releases it when
+  neither does. Memory is bounded by the open views plus the running obligations, never by history.
+- **Startup cost is flat in history.** No conversation contents and no task trees are read before
+  `ready`.
+- **Install follows the same split.**
+  - Install puts every component on disk.
+  - Migrations run at install or upgrade, never at boot.
+  - An agent's MCP servers are prepared when a view or an obligation loads that agent (B3).
+
 ## How a person chooses
 
 | I want to... | I use | |
@@ -169,20 +205,23 @@ So a fix or speedup in any of steps 2–4 reaches all three paths on all three O
 only place a path differs, and even there the installer and the script use the **same artifact**, and the
 source path **builds that artifact**, rather than producing a different kind of install.
 
-The commands, the same on every OS:
+The commands, the same on every OS. The one-line script (`install.sh`, `install.ps1`) only downloads
+and verifies the `clio-agent` program, then runs `clio-agent install` with the same flags:
 
 ```
-install                  # Clio: backend and web UI. Servers, HPC and SSH deployment use exactly this
-install --desktop        # the same, plus the desktop app, on the same backend
-install --source         # step 1 builds the runtime from source: clones, or uses the checkout it runs from
-install --source --desktop   # also builds the desktop app locally: the macOS path today
-install --dev            # the latest pre-release instead of the latest release
-install repair           # finish or fix an interrupted or broken install
-install uninstall
+clio-agent install                     # Clio: backend and web UI. Servers, HPC and SSH deployment use exactly this
+clio-agent install --desktop           # the same, plus the desktop app, on the same backend
+clio-agent install --source            # step 1 builds the runtime from source: clones, or uses the checkout it runs from
+clio-agent install --source --desktop  # also builds the desktop app locally: the macOS path today
+clio-agent install --dev               # the latest pre-release instead of the latest release
+clio-agent repair                      # finish or fix an interrupted or broken install
+clio-agent upgrade
+clio-agent uninstall
 ```
 
-The installers run the same program with the runtime they carry. An SSH deployment is plain `install` on
-the remote host. The in-app first-run install runs release mode; it never builds from source.
+The installers run the same program with the runtime they carry. An SSH deployment is plain
+`clio-agent install` on the remote host. The in-app first-run install runs release mode; it never builds
+from source.
 
 Contributor work in a checkout (`uv sync`, `uv run clio-agent serve`) stays as it is: that is editing Clio,
 not installing it. It runs the same startup code, so the startup work below applies to it too.
@@ -291,9 +330,13 @@ The portable runtime that installers carry today is the starting point. Its two 
 (as on Windows today) or carried as a directory becomes a build option, the same on every OS, not a
 Windows-only path.
 
-### 2. One installer program
+### 2. One installer program: `clio-agent`, written in Rust
 
-One program does steps 2–4 on every OS, and step 1 for the script and source paths:
+One program does steps 2–4 on every OS, and step 1 for the script and source paths. It is written in
+Rust because the desktop app's install code (runtime unpacking, the atomic directory swap, stopping
+runtime processes) is already Rust: that code moves into a shared library instead of being ported. The
+desktop app links the library directly; the same crate builds the standalone `clio-agent` binary (static
+on Linux, so old HPC systems work).
 - **Installers** carry it next to the runtime and run it, in place of the NSIS hooks and the desktop
   app's own unpacking, directory swap and runtime-stop code.
 - **From source**, it runs the builder, then installs the result; with `--desktop`, it builds the
@@ -303,10 +346,13 @@ One program does steps 2–4 on every OS, and step 1 for the script and source p
 - **SSH deployment** runs it on the remote host.
 
 Nothing else installs Clio. The program also replaces:
-- the two `clio` launchers (`start`, `stop`, `restart`, `status`, `logs`, `doctor`);
+- the two `clio` launchers (`start`, `stop`, `restart`, `status`, `logs`, `doctor`), now
+  `clio-agent start` and so on;
 - the desktop sidecar launcher;
 - both uninstallers;
 - the install half of SSH deployment.
+
+Any other `clio-agent` subcommand (`serve`, `plugin`, `sandbox`) passes through to the runtime.
 
 ### 3. One install record
 
@@ -320,7 +366,7 @@ share.
 ### 4. Steps that resume
 
 The install is a list of idempotent steps. Each step records its result in the manifest. A failed step
-reports a typed reason and the fix. Running the installer again, or `install repair`, continues from the
+reports a typed reason and the fix. Running the installer again, or `clio-agent repair`, continues from the
 first unfinished step instead of refusing ("already exists") or wiping everything. Upgrades install the
 new runtime next to the old one and switch over atomically, so a failed upgrade leaves the working
 version in place (generalizing the desktop's `installer_dir_swap`). Settings and tokens are never
@@ -341,21 +387,21 @@ where it matters.
 
 ### 7. Startup that is correct, then fast
 
-- **Honest readiness.** Health reports `starting` with the steps still running, then `ready`. Nothing
-  claims to be ready before it can serve.
-- **The UI never shows a failure for a normal start.** A saved service that is starting shows that it
-  is starting, the UI keeps checking, and it opens the workspace by itself when the agent is ready. A
-  real failure, after a bounded wait, names the cause and what to do.
-- **Usable in about 5 s.** The server accepts requests as soon as it binds. Restoring history, loading
-  plugins, discovering providers and starting MCP servers run in the background, in parallel. A message
-  sent before the step it needs has finished is queued and runs when that step is done.
-- **Startup reads small records, never whole histories.** Waking conversations with unread mail uses the
-  mail records; a conversation's history loads only when it is opened. The transcript import is marked
-  done once and skipped afterwards. Open-task cleanup reads task records, not trees.
-- **Nothing is reinstalled at boot.** With rule 5 above, the shipped marketplace is never modified, so the
-  boot check is a version comparison.
-- **Heavy libraries load on first use, and MCP servers start in parallel** (#702).
-- **Shutdown finishes in seconds** and always releases the port and the store (#1401).
+Startup follows the runtime model above. The case that matters is the start after months of flow-heavy
+use, with thousands of conversations, not a clean first start.
+- **Startup does the startup row and nothing else:** clio-core, workspaces, the rail's first page of
+  records, the marketplace and the default agent, the provider. Then `ready`. No conversation contents
+  and no task trees are read, so its cost doesn't grow with history.
+- **Honest readiness.** Health reports `starting` with the steps still running, then `ready`. The UI
+  shows that Clio is starting and opens by itself; it never shows a failure for a normal start.
+- **Obligations run after `ready`, on their own:** pending mail, interrupted turns, open tasks. They
+  drain in bounded batches while the person is already using Clio.
+- **Views load on demand:** an opened conversation's latest page first, then at once its panels, then
+  older pages on scroll.
+- **Migrations run at install or upgrade**, never at boot. Nothing is reinstalled or rescanned at boot;
+  cache pruning runs as maintenance.
+- **Shutdown takes seconds** because every write is already in clio-core: it stops, and running work
+  becomes an obligation for the next start (#1401).
 
 ## Quality bar
 
@@ -400,53 +446,11 @@ against it.
 - **Fixture:** a reference store generated in CI with about 400 conversations, open tasks, unread mail
   and 15 declared MCP servers, so startup is measured at a realistic size.
 
-## Phases
+## Implementation
 
-### Phase 0: measure everything
-
-- The CI matrix running against today's code, reporting without failing.
-- Startup step timers in the server's own startup trace.
-- **Deliverable:** a baseline table per OS and path. This also confirms or corrects the budgets above.
-
-### Phase 1: never fails
-
-- The install manifest. The launcher, desktop app and SSH deploy read it, and their path-guessing
-  code is deleted.
-- Resumable steps, `install repair`, and atomic upgrades.
-- Typed reasons for every step that can fail; no warn-and-continue.
-- Windows needs no bash.
-- Honest readiness states. The UI waits for a starting service and uses clear wording.
-- Shutdown cause found and fixed (#1401).
-- Plugin MCP servers prepared when an agent that uses them is loaded: a visible, recorded setup item,
-  separate from starting the server, with status and retry. `uvx` no longer builds environments inside
-  a server's start.
-- **Budgets enforced for:** install success, repair, upgrade and shutdown.
-
-### Phase 2: one pipeline
-
-- One runtime builder, run by CI for every OS and CPU (Intel Mac and AppImage included, so no installer
-  is attach-only) and by `install --source`.
-- The installer program and the bootstraps.
-- Installers, source builds (with `--desktop` building the app locally) and SSH deployment all call it.
-  The in-app first run uses release mode.
-- In the same pull requests, delete the replaced scripts, launchers, runtime builders and deploy code.
-
-### Phase 3: fast
-
-- The per-OS runtime artifact, and parallel install steps.
-- **Startup work:**
-  - background, parallel boot steps, with queued messages;
-  - mail-record wake-up;
-  - a marketplace that is never modified, and the shared cache;
-  - the one-time transcript import;
-  - lazy imports and parallel MCP starts.
-- Remove the boot-time MCP cache cleanup.
-- **Budgets enforced for:** time.
-
-### Phase 4: one set of docs
-
-- One `INSTALL.md` describing the commands above.
-- Close the issues this plan covers.
+The work is ordered in [install-and-startup-implementation.md](install-and-startup-implementation.md):
+track R (the runtime model), track B (startup and setup) and track A (install), with each step's files,
+deletions and checks.
 
 ## Issues this plan covers
 
@@ -463,9 +467,9 @@ against it.
 ## Decisions needed
 
 Decided 2026-10-26:
-- **The installer program is written in Go.** It ships as a single binary per OS that runs before any
-  Python exists. Releases already build Go for every OS (the desktop launcher), so it can replace both
-  launchers and Windows needs no bash.
+- **The installer program is written in Rust and installed as `clio-agent`.** It ships as a single
+  binary per OS that runs before any Python exists, reuses the desktop app's Rust install code, and
+  needs no bash on Windows.
 - **Where the runtime comes from:** the download installers carry it, so they work offline; the
   script downloads the release artifact; the source path builds it.
 
