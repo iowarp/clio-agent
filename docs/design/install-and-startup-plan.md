@@ -24,6 +24,18 @@ Rules, in priority order:
    on all three OSes.
 7. **Delete what is replaced, in the same change.** We never again keep two ways of doing one thing.
 
+## How a person chooses
+
+| I want to... | I use | |
+|---|---|---|
+| Install Clio from the website | **The installer**: click Download | The desktop app with Clio in it |
+| Install Clio from a terminal | **The install script**: one line | Short enough for a business card. Without `--desktop` it installs just Clio, which is how a server, an HPC node or an SSH deployment from the desktop app is set up. With `--desktop` it adds the desktop app |
+| Build Clio myself | **From source**: a checkout and one command | For technical users and contributors |
+
+The website shows the installer first and the script second; the source build is in the docs. While
+the macOS installers are unsigned, the website's macOS download points to the script with `--desktop`
+and to the source build instead.
+
 ## Three paths, one pipeline
 
 There are three official ways to get Clio, and they are equals. Each must work and be fast on every OS:
