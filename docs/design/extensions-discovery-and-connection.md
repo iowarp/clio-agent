@@ -108,3 +108,11 @@ skill variation, plugin composition, denial, retry and cancellation. A fresh pro
 expired credentials and made four parallel read-only calls without new registration or consent.
 Native Windows callback sockets were exercised; a complete installed Desktop OAuth journey and
 authorization against an actual Home Assistant deployment remain separate acceptance work.
+
+Expanded transcript review found that the standard MCP presenter discarded duplicate JSON
+text without rendering its structured counterpart. The common presenter now emits a bounded,
+literal data outline when no human content is supplied. Specialized presenters and failure
+classification remain authoritative. Historical empty SDK presentations can use their exact
+retained result without rewriting records or trusting a truncated preview. A second fresh
+workspace/session verified a newly recorded readable result, including its actual producer
+event, one-time permission, raw returned values and rendered disclosure.

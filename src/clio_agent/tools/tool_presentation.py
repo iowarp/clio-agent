@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import copy
+import html
 import json
 import logging
 from collections.abc import Callable, Mapping
@@ -128,7 +129,7 @@ def _semantic_error_message(value: Any, fallback: str) -> str:
 
 
 def standard_mcp_presentation(result: Any) -> dict[str, Any]:
-    """Present standard MCP content; structured results remain technical detail."""
+    """Present standard MCP content or readable recorded structured values."""
 
     blocks: list[dict[str, Any]] = []
     semantic_error = structured_tool_result_error(result)
@@ -191,6 +192,14 @@ def standard_mcp_presentation(result: Any) -> dict[str, Any]:
                             "label": str(resource.get("name") or resource["uri"]),
                         }
                     )
+    if not failed and not blocks and _structured(result):
+        blocks.append(
+            {
+                "id": "structured-result",
+                "type": "markdown",
+                "text": _structured_markdown(_structured(result)),
+            }
+        )
     if failed and not blocks:
         message = result.get("message") if isinstance(result, Mapping) else None
         blocks.append(
@@ -209,6 +218,86 @@ def standard_mcp_presentation(result: Any) -> dict[str, Any]:
         "summary": "",
         "blocks": blocks,
     }
+
+
+def _structured_markdown(value: Mapping[str, Any]) -> str:
+    """Bound a literal data outline without inferring domain meaning or outcomes."""
+    lines: list[str] = []
+    omitted = False
+
+    def literal(text: str) -> str:
+        return "".join(
+            "\\" + char if char in r"\`*_{}[]()#+-.!|>" else char
+            for char in html.escape(text, quote=False)
+        )
+
+    def visit(item: Any, label: str, depth: int) -> None:
+        nonlocal omitted
+        if len(lines) >= 24:
+            omitted = True
+            return
+        if depth < 4 and isinstance(item, Mapping) and item:
+            for key, child in item.items():
+                if len(lines) >= 24:
+                    omitted = True
+                    break
+                name = str(key).replace("_", " ")
+                visit(
+                    child, f"{label} › {name}" if label else name[:1].upper() + name[1:], depth + 1
+                )
+            return
+        if depth < 4 and isinstance(item, list) and item:
+            for index, child in enumerate(item):
+                if len(lines) >= 24:
+                    omitted = True
+                    break
+                visit(child, f"{label} › {index + 1}", depth + 1)
+            return
+        if isinstance(item, (Mapping, list)):
+            text = f"{len(item)} {'fields' if isinstance(item, Mapping) else 'items'}"
+            omitted |= bool(item)
+        else:
+            text = (
+                "null"
+                if item is None
+                else "true"
+                if item is True
+                else "false"
+                if item is False
+                else str(item)
+            )
+        if len(text) > 1000 or len(label) > 160:
+            omitted = True
+        label = label.replace("\r", " ").replace("\n", " ")
+        lines.append(
+            f"- **{literal(label[:160])}:** {literal(text[:1000]).replace(chr(10), chr(10) + '  ')}"
+            + ("…" if len(text) > 1000 else "")
+        )
+
+    visit(value, "", 0)
+    if omitted:
+        lines.append("\nMore recorded values are available in Technical details.")
+    return "\n".join(lines)
+
+
+def legacy_standard_mcp_presentation(part: Mapping[str, Any]) -> dict[str, Any] | None:
+    """Repair an empty historical SDK presentation from its exact retained result."""
+    current = part.get("presentation")
+    if not isinstance(current, Mapping) or any(
+        current.get(key)
+        for key in ("action", "subject", "status", "summary", "blocks", "diagnostic")
+    ):
+        return None
+    metadata = part.get("metadata")
+    raw = metadata.get("result") if isinstance(metadata, Mapping) else None
+    if (
+        not isinstance(raw, Mapping)
+        or not isinstance(raw.get("content"), list)
+        or not _structured(raw)
+        or raw.get("truncated")
+    ):
+        return None
+    return standard_mcp_presentation(raw)
 
 
 def present_mcp_result(
