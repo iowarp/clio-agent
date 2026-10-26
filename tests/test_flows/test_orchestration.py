@@ -58,7 +58,12 @@ def _member_handles(client: TestClient, handle: str) -> list[str] | None:
     if checkpoint is None:
         return None
     calls = client.app.state.task_history.read_content(checkpoint.content)["calls"]
-    return [row["handle"] for row in calls.values()] if len(calls) == 3 else None
+    # Dispatch is journaled before acceptance; a dispatching row has no handle yet.
+    return (
+        [row["handle"] for row in calls.values()]
+        if len(calls) == 3 and all(row.get("handle") for row in calls.values())
+        else None
+    )
 
 
 def _tree(client: TestClient, sid: str) -> list[dict[str, Any]]:
@@ -91,6 +96,13 @@ def test_run_flow_returns_the_handle_and_council_settles_under_it(flow_app: Test
     assert len(calls) == 4 and {row["status"] for row in calls} == {"completed"}
     for row in calls:
         assert _snapshot(flow_app, row["handle"]).owner.parent_handle == handle
+    named_children = [
+        flow_app.app.state.sessions.get(_snapshot(flow_app, row["handle"]).owner.session_id)
+        for row in calls
+    ]
+    assert len({child.title for child in named_children}) == 4
+    assert any(child.title == "Synthesis" for child in named_children)
+    assert all(child.metadata["subagent_name"] == child.title for child in named_children)
     assert run["result"]["synthesizer"] in {row["handle"] for row in calls}
     assert len(run["result"]["members"]) == 3
     # The caller reads only the answer: it names each member and the synthesis.
@@ -348,9 +360,8 @@ def test_an_arena_returns_the_winner_with_the_judges_verdict(flow_app: TestClien
     """Three contestants answer; the judge's choice, rationale and the other entries reach
     the caller in the answer, and the votes are recorded in the run."""
 
-    from dspy.utils.dummies import DummyLM
-
     from clio_agent.gact.flow_tools import start_flow
+    from dspy.utils.dummies import DummyLM
 
     started: dict[str, Any] = {}
     count = {"n": 0}
@@ -382,7 +393,11 @@ def test_an_arena_returns_the_winner_with_the_judges_verdict(flow_app: TestClien
     assert sum(1 for row in run["calls"].values() if row["kind"] == "agent") == 3
     # The conversation's task list marks the run as a flow, so its view opens, not a chat.
     rows = flow_app.get(f"/v1/sessions/{sid}/async-processes").json()["processes"]
-    assert next(row for row in rows if row["handle"] == handle)["flow"] == {"id": "arena"}
+    assert next(row for row in rows if row["handle"] == handle)["flow"] == {
+        "id": "arena",
+        "status": "completed",
+        "outcome": None,
+    }
 
 
 def test_restarting_a_flow_after_late_messages_resumes_its_last_run(
@@ -448,9 +463,8 @@ def test_each_restart_keeps_everything_finished_before_it(flow_app: TestClient) 
 def test_a_plan_node_can_be_an_arena_with_its_own_contestants(flow_app: TestClient) -> None:
     """A model-written workflow composes flows: one step is an arena of two contestants."""
 
-    from dspy.utils.dummies import DummyLM
-
     from clio_agent.gact.flow_tools import start_flow
+    from dspy.utils.dummies import DummyLM
 
     started: dict[str, Any] = {}
     workflow = {
@@ -548,7 +562,6 @@ def test_flow_options_are_checked_against_the_types_the_flow_declares() -> None:
     """A count where a list of members belongs is refused by name, not crashed on later."""
 
     import pytest
-
     from clio_agent.sdk.flow import FlowOptionsInvalid
 
     council = _council_class()
@@ -565,7 +578,6 @@ def test_flow_options_keep_declared_constraints_and_refuse_a_flag_for_a_count() 
     """``Annotated`` bounds hold, and True is not read as 1 for an int option."""
 
     import pytest
-
     from clio_agent.sdk.flow import Flow, FlowOptionsInvalid
 
     class Bounded(Flow):

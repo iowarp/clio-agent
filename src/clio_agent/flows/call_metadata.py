@@ -33,9 +33,13 @@ def child_session_metadata(call: "FlowCall", depth: int, run_id: str) -> dict[st
             }
         }
     if call.editor is not None:
-        return {**(metadata or {}), "workflow_editor": dict(call.editor)}
-    if call.name == "self":
-        return {"agent_flow": {"id": "react", "options": {}, "depth": depth, "parent_run": run_id}}
+        metadata = {**(metadata or {}), "workflow_editor": dict(call.editor)}
+    elif call.name == "self":
+        metadata = {
+            "agent_flow": {"id": "react", "options": {}, "depth": depth, "parent_run": run_id}
+        }
+    if call.label:
+        metadata = {**(metadata or {}), "subagent_name": call.label}
     return metadata
 
 

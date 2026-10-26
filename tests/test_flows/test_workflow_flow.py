@@ -38,6 +38,10 @@ def test_workflow_steps_run_after_their_dependencies(flow_app: TestClient) -> No
     assert len(set(handles)) == 4
     tasks = [history.task_snapshot(h) for h in handles]
     assert all(t.status == "completed" for t in tasks)
+    # The same durable session title names each worker in questions and permissions.
+    children = [flow_app.app.state.sessions.get(task.owner.session_id) for task in tasks]
+    assert {child.title for child in children} == {"survey", "left", "right", "merge"}
+    assert all(child.metadata["subagent_name"] == child.title for child in children)
     merge = next(t for t in tasks if '"left"' in t.description and '"right"' in t.description)
     # The merge step waited on both branches and received both answers; each
     # branch received its instructions and the survey's answer.
@@ -108,7 +112,9 @@ def test_approval_question_gates_an_added_step(flow_app: TestClient) -> None:
         owner = history.latest_assignment(sid)
         checkpoint = history.workflow_checkpoint(owner.handle) if owner else None
         outer = history.read_content(checkpoint.content) if checkpoint else {}
-        rows = [r for r in outer.get("calls", {}).values() if r["kind"] == "flow"]
+        rows = [
+            r for r in outer.get("calls", {}).values() if r["kind"] == "flow" and r.get("handle")
+        ]
         if not rows:
             return None
         child = history.task_snapshot(rows[0]["handle"])
@@ -162,7 +168,9 @@ def test_cancelling_a_workflow_waiting_for_approval_settles_it(flow_app: TestCli
         owner = history.latest_assignment(sid)
         checkpoint = history.workflow_checkpoint(owner.handle) if owner else None
         outer = history.read_content(checkpoint.content) if checkpoint else {}
-        rows = [r for r in outer.get("calls", {}).values() if r["kind"] == "flow"]
+        rows = [
+            r for r in outer.get("calls", {}).values() if r["kind"] == "flow" and r.get("handle")
+        ]
         if not rows:
             return None
         child = history.task_snapshot(rows[0]["handle"])
@@ -188,6 +196,7 @@ def test_cancelling_one_step_cancels_it_and_ends_the_workflow_cancelled(
 
     from clio_agent.agent import cancellation_requested
     from clio_agent.gact.agents.clio_react import _turn_cancelled
+
     from tests.test_flows.conftest import default_program
 
     def program(question: str = "", **kwargs: Any) -> Any:
@@ -270,6 +279,7 @@ def test_a_cancelled_workflow_ends_cancelled_not_stalled(flow_app: TestClient) -
 
     from clio_agent.agent import cancellation_requested
     from clio_agent.gact.agents.clio_react import _turn_cancelled
+
     from tests.test_flows.conftest import default_program
 
     def program(question: str = "", **kwargs: Any) -> Any:

@@ -65,9 +65,11 @@ class FlowCall:
         invocation: str,
         evidence: list[str] | None,
         model: str = "",
+        label: str = "",
     ) -> None:
         self.ctx = ctx
         self.model = model  #: The model the child runs on; empty lets the child decide.
+        self.label = label.strip()  #: The child's human-facing name, separate from its target.
         self.target = target
         self.kind = kind
         self.name = name
@@ -269,6 +271,7 @@ class FlowContext:
         evidence: list[str] | None = None,
         key: str = "",
         model: str = "",
+        label: str = "",
     ) -> FlowCall:
         """Run a subagent, agent, flow or tool and return its result (awaitable).
 
@@ -281,6 +284,8 @@ class FlowContext:
         ``key`` replaces the call site in the invocation id when the caller
         starts calls in an order replay may not repeat (the workflow flow keys each
         node's call by node id); keys must be unique within the run.
+        ``label`` names the child in its conversation, permissions and work views;
+        it does not replace the target or the durable invocation identity.
         """
 
         kind, name, spec = self._resolve_target(target)
@@ -297,6 +302,7 @@ class FlowContext:
             invocation,
             evidence,
             model or self.default_model,
+            label,
         )
         if kind == "flow":
             call.target = spec
@@ -310,10 +316,11 @@ class FlowContext:
         evidence: list[str] | None = None,
         key: str = "",
         model: str = "",
+        label: str = "",
     ) -> str:
         """Like :meth:`call`, but return the task handle once it is accepted."""
 
-        call = self.call(target, input, evidence=evidence, key=key, model=model)
+        call = self.call(target, input, evidence=evidence, key=key, model=model, label=label)
         if call.kind == "tool":
             raise CallRefused(
                 "ctx.start needs a subagent, agent or flow, not a tool", target=call.name
