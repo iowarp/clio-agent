@@ -47,6 +47,8 @@ import atexit
 import logging
 import socket
 import threading
+import urllib.parse
+import urllib.request
 from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -326,7 +328,7 @@ class Chokepoint:
                 if not self._gate_allows(child_id, host, port, "connect"):
                     client.sendall(b"HTTP/1.1 403 Forbidden\r\n\r\n")
                     return
-                upstream = socket.create_connection((host, port), timeout=_CONNECT_READ_TIMEOUT_S)
+                upstream = _dial_tunnel(host, port)
                 upstream.settimeout(None)  # the dial is bounded; the tunnel waits on the peers
                 self._record_open(child_id, host, port, upstream, "connect")
                 client.sendall(b"HTTP/1.1 200 Connection established\r\n\r\n")
@@ -346,7 +348,14 @@ class Chokepoint:
             if not self._gate_allows(child_id, host, port, "http", method):
                 client.sendall(b"HTTP/1.1 403 Forbidden\r\n\r\n")
                 return
-            upstream = socket.create_connection((host, port), timeout=_CONNECT_READ_TIMEOUT_S)
+            relay = _upstream_proxy(host, "http")
+            if relay is not None:
+                # Behind a site proxy the origin is unreachable directly: hand the proxy the
+                # request in its original absolute form.
+                upstream = socket.create_connection(relay, timeout=_CONNECT_READ_TIMEOUT_S)
+                origin_head = header
+            else:
+                upstream = socket.create_connection((host, port), timeout=_CONNECT_READ_TIMEOUT_S)
             upstream.settimeout(None)  # the dial is bounded; the tunnel waits on the peers
             self._record_open(child_id, host, port, upstream, "http", method)
             upstream.sendall(origin_head)
@@ -587,6 +596,46 @@ def _safe_close(sock: socket.socket) -> None:
         sock.close()
     except OSError:
         pass
+
+
+def _upstream_proxy(host: str, scheme: str) -> Optional[tuple[str, int]]:
+    """The site proxy CLIO itself must use to reach ``host`` (``*_proxy``/``no_proxy``), or None.
+
+    On networks without direct egress (e.g. HPC compute nodes) the chokepoint chains through
+    the proxy the CLIO process was given, so a confined child reaches the same hosts CLIO can.
+    """
+    proxies = urllib.request.getproxies_environment()
+    url = proxies.get(scheme) or proxies.get("https" if scheme == "http" else "http")
+    url = url or proxies.get("all")
+    if not url or urllib.request.proxy_bypass_environment(host):
+        return None
+    parsed = urllib.parse.urlsplit(url if "://" in url else "http://" + url)
+    if not parsed.hostname:
+        return None
+    return parsed.hostname, parsed.port or 8080
+
+
+def _dial_tunnel(host: str, port: int) -> socket.socket:
+    """A socket carrying bytes to ``host:port``: direct, or CONNECT through the site proxy."""
+    relay = _upstream_proxy(host, "https")
+    if relay is None:
+        return socket.create_connection((host, port), timeout=_CONNECT_READ_TIMEOUT_S)
+    upstream = socket.create_connection(relay, timeout=_CONNECT_READ_TIMEOUT_S)
+    try:
+        upstream.sendall(f"CONNECT {host}:{port} HTTP/1.1\r\nHost: {host}:{port}\r\n\r\n".encode())
+        reply = b""
+        while b"\r\n\r\n" not in reply and len(reply) < 16 * 1024:
+            chunk = upstream.recv(4096)
+            if not chunk:
+                break
+            reply += chunk
+        status = reply.split(b"\r\n", 1)[0].split()
+        if len(status) < 2 or status[1] != b"200":
+            raise OSError(f"site proxy refused CONNECT {host}:{port}: {reply[:80]!r}")
+    except BaseException:
+        _safe_close(upstream)
+        raise
+    return upstream
 
 
 def _parse_connect_target(header: bytes) -> Optional[tuple[str, int]]:

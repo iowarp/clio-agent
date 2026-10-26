@@ -137,7 +137,12 @@ def test_detect_codex_non_win32_uses_plain_name_only() -> None:
         seen.append(name)
         return "/usr/local/bin/codex" if name == "codex" else None
 
-    det = sc.detect_codex(which=_which, version_reader=lambda _b: "0.145.0", platform="linux")
+    det = sc.detect_codex(
+        which=_which,
+        version_reader=lambda _b: "0.145.0",
+        platform="linux",
+        wheel_binary=lambda: None,
+    )
     assert det.installed is True
     assert det.binary_path == "/usr/local/bin/codex"
     assert seen == ["codex"]  # never probed .cmd/.exe off-Windows
@@ -149,6 +154,7 @@ def test_detect_codex_old_version_is_unsupported() -> None:
         which=_fake_which({"codex": "/usr/bin/codex"}),
         version_reader=lambda _b: "0.100.0",
         platform="linux",
+        wheel_binary=lambda: None,
     )
     assert det.installed is True
     assert det.version == "0.100.0"
@@ -161,6 +167,7 @@ def test_detect_codex_unreadable_version_is_unsupported() -> None:
         which=_fake_which({"codex": "/usr/bin/codex"}),
         version_reader=lambda _b: "",
         platform="linux",
+        wheel_binary=lambda: None,
     )
     assert det.installed is True
     assert det.version == ""
@@ -176,7 +183,10 @@ def test_detect_codex_passes_resolved_binary_to_version_reader() -> None:
         return "0.145.0"
 
     sc.detect_codex(
-        which=_fake_which({"codex": "/opt/codex"}), version_reader=_reader, platform="linux"
+        which=_fake_which({"codex": "/opt/codex"}),
+        version_reader=_reader,
+        platform="linux",
+        wheel_binary=lambda: None,
     )
     assert captured == ["/opt/codex"]
 
@@ -463,6 +473,35 @@ def test_detect_windows_managed_wheel_precedes_ambient_path(tmp_path: Path) -> N
     assert detection.version == "0.162.1"
 
 
+def test_detect_linux_wheel_precedes_path(tmp_path: Path) -> None:
+    """A Linux source/venv install uses CLIO's own codex wheel, not a separate PATH install."""
+
+    def unexpected_path(_name: str) -> None:
+        raise AssertionError("PATH should not mask CLIO's own installed runtime")
+
+    binary = tmp_path / "codex_cli_bin" / "bin" / "codex"
+    detection = sc.detect_codex(
+        which=unexpected_path,
+        platform="linux",
+        bundled_root=lambda: None,
+        wheel_binary=lambda: binary,
+        version_reader=lambda _path: "0.162.1",
+    )
+    assert detection.installed and detection.source == sc.CODEX_SOURCE_BUNDLED
+    assert detection.binary_path == str(binary)
+
+
+def test_wheel_binary_name_follows_platform(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """The wheel ships ``codex`` on POSIX and ``codex.exe`` on Windows."""
+    package = tmp_path / "codex_cli_bin"
+    (package / "bin").mkdir(parents=True)
+    (package / "__init__.py").write_text("", encoding="utf-8")
+    (package / "bin" / "codex").write_text("", encoding="utf-8")
+    monkeypatch.syspath_prepend(str(tmp_path))
+    assert sc._wheel_codex_binary(platform="linux") == package / "bin" / "codex"
+    assert sc._wheel_codex_binary(platform="win32") is None
+
+
 def test_detect_windows_path_when_managed_runtime_is_absent() -> None:
     """A plain installation retains its launchable host-client fallback."""
     detection = sc.detect_codex(
@@ -486,9 +525,9 @@ def test_active_windows_wheel_discovery_only_reads_location(
     binary.write_bytes(b"test-only inert executable")
     spec = ModuleSpec("codex_cli_bin", loader=None, origin=str(package / "__init__.py"))
     monkeypatch.setattr(sc.importlib.util, "find_spec", lambda _name: spec)
-    assert sc._wheel_codex_binary() == binary
+    assert sc._wheel_codex_binary(platform="win32") == binary
     binary.unlink()
-    assert sc._wheel_codex_binary() is None
+    assert sc._wheel_codex_binary(platform="win32") is None
 
 
 def test_write_layer_omits_windows_block_off_win32(tmp_path: Path) -> None:
