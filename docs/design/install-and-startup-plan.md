@@ -55,7 +55,7 @@ A person judges Clio in its first minutes. Install and setup are different jobs:
 
 | Stage | Synchronous? | Does | Budget |
 |---|---|---|---|
-| **Install** | **Yes.** It finishes completely before it says it's done | Puts every component on disk: the runtime, the web UI, the document runtime (Office renderer, managed Node and Python packages), the clio-kit science runtime and the launcher. Writes the manifest, then runs the "can it serve" check | 1 min target, 3 min at most |
+| **Install** | **Yes.** It finishes completely before it says it's done | Puts every component on disk: the runtime, the web UI, the document runtime (Office renderer, managed Node and Python packages) and the `clio-kit` launcher. Writes the manifest, then runs the "can it serve" check | 1 min target, 3 min at most |
 | **First open** | Only until the window shows and accepts a message | Window shown, backend started, the configured model reachable, the default agent ready | Window at once; first message accepted within 6 s |
 | **Setup** | **No.** It runs in the background after the window is up | Everything Clio prepares or checks for itself at runtime | Each item reports its progress and has its own budget |
 
@@ -69,27 +69,58 @@ packages and the Office renderer, then the science runtime. In the target, all o
 inside the per-OS runtime artifact. The install downloads or carries them, unpacks and checks them,
 in parallel where the steps are independent.
 
-**Setup never installs anything.** It downloads nothing, builds no environment, and runs no `npm`,
-`pnpm`, `uv` or `pip` install. Installing happens in exactly two places, and both finish before they
-report done:
-- **Installing Clio:** every component, including the MCP server environments of the plugins that ship
-  with Clio, prebuilt in the runtime artifact.
-- **Adding a plugin:** the plugin is not reported installed until its MCP server environments are built
-  and checked, with progress shown while it happens.
+**Setup installs only what a loaded agent needs, and nothing else.** It never installs Clio itself:
+no runtime component, no `npm` or `pnpm`, no global packages. Those belong to install. The one install
+work setup does is preparing the MCP servers of the plugins an agent uses, when that agent is loaded:
+- **Not at install, not at startup for every plugin.** Plugins declare MCP servers, and most people use
+  a few agents. Building every plugin's servers up front costs time and disk for tools nobody calls, and
+  the cost grows with every plugin added.
+- **When an agent is loaded, its plugins' servers are prepared.** Loading an agent (opening a
+  conversation with it, or the default agent at first open) starts a setup item per server it needs that
+  isn't prepared yet. The item is visible: "Preparing the hdf5 tools", with progress, then ready, or
+  failed with the cause and the fix.
+- **Prepare once, start every time.** Preparing (downloading and building the server's environment) is
+  done once per server version and recorded. Starting a prepared server is cheap and happens each
+  session. The two have separate time limits, so a slow first download never looks like a server that
+  failed to start.
+- **Only the requests that need those tools wait.** The conversation opens and accepts messages at once.
+  A turn that calls a tool from a server still being prepared waits for that server, says so, and runs
+  when it's ready. Turns that don't use it never wait.
+- **In parallel, with a time limit each.** Servers are prepared and started concurrently. One slow or
+  broken server never holds up another.
+- **Status and retry.** Each server shows preparing, ready or failed in the app, and a failed one can be
+  retried without restarting Clio.
+- **Shipped servers are already prepared.** Servers of the plugins that ship with Clio (today `web`) are
+  built into the runtime artifact, so the default agent never waits on this.
+
+How the others do it:
+- **Claude Code:** an enabled plugin's MCP servers connect when a session starts, in the background. A
+  request waits only when it needs a server that is still connecting. Each server shows connected,
+  needs authentication or failed, with a reconnect action. `MCP_TIMEOUT` bounds startup.
+- **Codex:** servers in `config.toml` or bundled with a plugin start when Codex builds its tool catalog.
+  `startup_timeout_sec` (10 s) bounds startup; optional servers get a short grace period and a server
+  marked `required` fails startup if it can't initialize.
+- **Hermes Agent:** servers in `config.yaml` start at startup and their tools are registered then, with
+  `connect_timeout` and per-server `enabled`.
+- **What none of them do:** none has a separate prepare step. A server configured as `npx -y ...` or
+  `uvx ...` downloads and builds itself inside its startup timeout on first use, so a slow first download
+  shows up as a server that failed to start. Clio's split between prepare and start is the fix for that,
+  and it is the case Clio hits today.
 
 How much this matters today: the default agent runs one MCP server, `web`, which is already built into
 the runtime. The installer no longer installs the whole clio-kit science runtime, only the small
 `clio-kit` launcher. Eight marketplace plugins declare servers (adios, geo, hdf5, ndp, pandas, parquet,
 plot, spotter), and only science agents use them. The launcher starts each one through `uvx`, which
-downloads and builds the server's environment on its first use, so the first science conversation still
-does install work at startup. That is the one case to move into the plugin install. It is small today,
-but the rule has to hold as the number of servers grows.
+downloads and builds the server's environment inside its start, invisibly. Moving that into a visible,
+recorded prepare step when a science agent is loaded is the change. It is small today, but the rule has
+to hold at 15 servers and beyond.
 
 **Setup is what runs in the background:** what Clio prepares or checks once it's running.
 
 | Item | Needed for | Until it's ready |
 |---|---|---|
 | Restoring conversations and tasks from clio-core | Opening an older conversation | A new conversation starts at once; older ones open as they load |
+| Preparing a loaded agent's plugin MCP servers | Calling that server's tools | The conversation works; a turn that calls those tools waits for that server |
 | Provider sign-in check and model catalog refresh | The model picker's full list | The configured model works; the list fills in |
 | Marketplace update check | Telling the person a new plugin version exists; installing it is a separate, explicit action | Runs at low priority |
 | Cache pruning | Disk use | Runs last, at low priority |
@@ -106,7 +137,8 @@ Rules for setup:
   item fails, that request shows the cause and the fix.
 - **In order of likely use.** What a first conversation is likely to need is prepared first.
 - **Resumable.** If Clio closes mid-setup, the next start continues where it stopped.
-- **Prepared once.** Done items are recorded and never redone at boot.
+- **Prepared once.** Done items are recorded and never redone at boot. A plugin upgrade prepares its
+  servers again, once.
 
 The CI matrix measures each stage separately: install time, time to first window, time to first
 accepted message, and time to each setup item.
@@ -296,7 +328,8 @@ touched by an upgrade (#1777).
 
 ### 5. One shared cache
 
-The installer owns one cache for packages, plugin environments and MCP server environments. Plugins
+One cache, owned by Clio and shared by install and setup, holds packages, plugin environments and MCP
+server environments. Plugins
 never write into installed copies, so installed content stays identical to what was shipped and needs no
 re-checking at boot. Cache size is bounded by uv's own pruning, run outside startup.
 
@@ -384,6 +417,9 @@ against it.
 - Windows needs no bash.
 - Honest readiness states. The UI waits for a starting service and uses clear wording.
 - Shutdown cause found and fixed (#1401).
+- Plugin MCP servers prepared when an agent that uses them is loaded: a visible, recorded setup item,
+  separate from starting the server, with status and retry. `uvx` no longer builds environments inside
+  a server's start.
 - **Budgets enforced for:** install success, repair, upgrade and shutdown.
 
 ### Phase 2: one pipeline
