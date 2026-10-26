@@ -325,17 +325,18 @@ def task_order(
 
 
 def pending_sessions(self: TaskHistory) -> tuple[str, ...]:
-    """Recipients with pending mail, from ``task_open`` and each recipient's tree."""
+    """Recipients with accepted, undelivered mail, read from the ``m~`` open records alone.
+
+    No conversation tree is loaded: the answer costs the open records, never history. A
+    record that outlived its mail (``reconcile_open`` closes those) only costs one wake
+    that finds nothing to deliver.
+    """
     global_state = self._global
     if global_state is not None:
         with self._lock:
             return tuple(session for session, pending in global_state._pending.items() if pending)
-    sessions: set[str] = set()
-    for _name, row in self.index.open_records("m~"):
-        session_id = str(row.get("session_id", ""))
-        if session_id and session_id not in sessions:
-            if self._session_state(session_id)._pending.get(session_id):
-                sessions.add(session_id)
+    sessions = {str(row.get("session_id", "")) for _name, row in self.index.open_records("m~")}
+    sessions.discard("")
     return tuple(sorted(sessions))
 
 

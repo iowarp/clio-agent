@@ -269,6 +269,15 @@ class TaskIndex:
             LOOKUP_KIND, MARKER, _encode({"version": INDEX_VERSION, "built_at": built_at})
         )
 
+    def done_marker(self, name: str) -> dict[str, Any] | None:
+        """A one-time job's completion record (``meta.<name>``), or None if it never finished."""
+        row = self._get(LOOKUP_KIND, "meta." + name)
+        return row if isinstance(row, dict) else None
+
+    def put_done_marker(self, name: str, value: dict[str, Any]) -> None:
+        """Record that a one-time job finished, after everything it wrote."""
+        self.store.put(LOOKUP_KIND, "meta." + name, _encode(value))
+
     # ---- task_open: the small listed tag --------------------------------
 
     def put_open(self, row: Row) -> None:
