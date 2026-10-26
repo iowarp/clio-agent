@@ -180,19 +180,6 @@ def _parse_env_line(line: str) -> tuple[str, str] | None:
 # ============================================================================
 
 
-def _saved_server(provider_id: str) -> Any:
-    """The saved custom model server with this id (``None`` for a catalog provider)."""
-    from clio_agent.gact import local_server_store  # noqa: PLC0415
-
-    try:
-        entry = local_server_store.get_server(provider_id)
-    except local_server_store.LocalServerStoreError:
-        return None
-    if entry is None or not entry.preset_id or entry.id == entry.preset_id:
-        return None
-    return entry
-
-
 @dataclass
 class LMProviderConfig:
     """Multi-provider LM configuration.
@@ -292,19 +279,6 @@ class LMProviderConfig:
         preset = _catalog_provider(identity)
         if preset is None and not self.provider_id:
             preset = _catalog_kind_default(identity)
-        # A saved model server (``server-<slug>``, e.g. a CLIO-managed vllm@<name>) speaks
-        # its preset's protocol at its own address with its own key.
-        server = _saved_server(identity) if preset is None and self.provider_id else None
-        if server is not None:
-            preset = _catalog_provider(server.preset_id)
-            if not self.api_base:
-                self.api_base = server.address
-            if not self.api_key:
-                from clio_agent.providers.model_discovery import (  # noqa: PLC0415
-                    resolve_cloud_api_key,
-                )
-
-                self.api_key = resolve_cloud_api_key(server.id)
         if preset is not None:
             self.provider_id = preset.id
             self.provider = cast(Any, preset.provider_kind)
