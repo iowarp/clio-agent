@@ -36,6 +36,7 @@ from fastapi.testclient import TestClient
 from clio_agent.gact.app import build_app
 from clio_agent.gact.spotter_arming import (
     REFUSAL_WATCHER_ENTRYPOINT_MISSING,
+    REFUSAL_WATCHER_MODEL_REFUSED,
     REFUSAL_WATCHER_PROJECT_MISSING,
     REFUSAL_WATCHER_PROVENANCE_UNAVAILABLE,
     REFUSAL_WATCHER_UNMOUNTABLE,
@@ -425,6 +426,33 @@ def test_create_into_spotter_ai_arms_when_the_declaration_resolves(
     assert tasks[0].activity == "idle"
 
 
+def test_a_fresh_arm_grants_the_watcher_parent_read_and_disarm_revokes_it(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The watcher's review tools read the parent through an arm-scoped Core grant."""
+    from clio_agent.gact.task_access import TaskAccess
+
+    _install_watcher(tmp_path, monkeypatch)
+    _set_deployment_env(monkeypatch, tmp_path)
+
+    app = build_app(sessions_path=tmp_path / "s.json")
+    with TestClient(app) as client:
+        sid = client.post(
+            "/v1/sessions", json={"title": "t", "approval_mode": "spotter-ai"}
+        ).json()["id"]
+        [task] = _live_watcher_tasks(app, sid)
+        child = task.owner.session_id
+
+        def reads() -> bool:
+            caller = app.state.conversations.caller(child)
+            return sid in TaskAccess(app.state.task_history, caller).session_candidates("read")
+
+        assert reads()
+        resp = client.patch(f"/v1/sessions/{sid}", json={"approval_mode": "ask"})
+        assert resp.status_code == 200, resp.text
+        assert not reads()
+
+
 def test_arming_without_an_installed_watcher_agent_is_refused(tmp_path: Path) -> None:
     """A missing executable watcher cannot leave an apparently protected session."""
     app = build_app(sessions_path=tmp_path / "s.json")
@@ -633,6 +661,7 @@ def test_every_refusal_reason_is_in_the_closed_set() -> None:
         REFUSAL_WATCHER_PROJECT_MISSING,
         REFUSAL_WATCHER_ENTRYPOINT_MISSING,
         REFUSAL_WATCHER_PROVENANCE_UNAVAILABLE,
+        REFUSAL_WATCHER_MODEL_REFUSED,
     }
     assert all(SPOTTER_ARMING_REASONS.values())
 
@@ -643,3 +672,207 @@ def test_validate_watcher_arming_is_a_no_op_without_a_declared_server(
     _install_watcher(tmp_path, monkeypatch, servers=False)
     app = build_app(sessions_path=tmp_path / "s.json")
     assert validate_watcher_arming(app, env={}) is None
+
+
+# --------------------------------------------------------------------------- #
+# 5. The watcher's model: the person's choice, checked before arming
+# --------------------------------------------------------------------------- #
+
+_SPOTTER_ACCOUNT = "server-vllm-spotter"
+
+
+def _spotter_catalog() -> dict[str, object]:
+    """A fleet with one saved vLLM server serving two models."""
+
+    def model(model_id: str) -> dict[str, object]:
+        return {
+            "model_id": model_id,
+            "chat_selectable": True,
+            "native_tool_calling": True,
+            "availability": "available",
+        }
+
+    return {
+        "catalog_id": "active",
+        "authoritative": "live_handshake",
+        "providers": [
+            {
+                "id": _SPOTTER_ACCOUNT,
+                "name": "vLLM spotter",
+                "kind": "openai",
+                "auth": "not_required",
+                "health": "ready",
+                "saved_server": True,
+                "preset_id": "vllm",
+                "models": [model("Qwen3-8B"), model("Qwen3-32B")],
+            }
+        ],
+    }
+
+
+def _armed_app(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):  # type: ignore[no-untyped-def]
+    _install_watcher(tmp_path, monkeypatch)
+    _set_deployment_env(monkeypatch, tmp_path)
+    app = build_app(sessions_path=tmp_path / "s.json")
+    return app
+
+
+def _watcher(app, sid: str):  # type: ignore[no-untyped-def]
+    [task] = _live_watcher_tasks(app, sid)
+    return app.state.sessions.get(task.owner.session_id)
+
+
+def test_an_unknown_watcher_model_refuses_the_create_and_rolls_it_back(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    app = _armed_app(tmp_path, monkeypatch)
+    with TestClient(app) as client:
+        app.state.provider_catalog = _spotter_catalog()
+        resp = client.post(
+            "/v1/sessions",
+            json={
+                "title": "t",
+                "approval_mode": "spotter-ai",
+                "metadata": {"spotter_model": "server-vllm-spotter/missing"},
+            },
+        )
+        assert resp.status_code == 422, resp.text
+        error = resp.json()["error"]
+        assert error["error"] == REFUSAL_WATCHER_MODEL_REFUSED
+        assert error["details"]["code"] == "model_unknown"
+        assert error["details"]["model"] == "server-vllm-spotter/missing"
+        assert error["details"]["available"] == [
+            "server-vllm-spotter/Qwen3-32B",
+            "server-vllm-spotter/Qwen3-8B",
+        ]
+        assert app.state.sessions.list() == []
+
+
+def test_a_chosen_watcher_model_is_the_persons_and_runs_the_watcher(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    app = _armed_app(tmp_path, monkeypatch)
+    with TestClient(app) as client:
+        app.state.provider_catalog = _spotter_catalog()
+        resp = client.post(
+            "/v1/sessions",
+            json={
+                "title": "t",
+                "approval_mode": "spotter-ai",
+                "metadata": {"spotter_model": "server-vllm-spotter/Qwen3-8B"},
+            },
+        )
+        assert resp.status_code == 200, resp.text
+        watcher = _watcher(app, resp.json()["id"])
+    chosen = {"provider_id": _SPOTTER_ACCOUNT, "model_id": "Qwen3-8B"}
+    assert watcher.metadata["model_choice"]["source"] == "person"
+    assert watcher.metadata["model_choice"]["ran"] == chosen
+    assert {key: watcher.model[key] for key in chosen} == chosen
+    # The parent's choice key is never copied into the watcher's own metadata.
+    assert "spotter_model" not in watcher.metadata
+
+
+def test_the_server_default_watcher_model_applies_when_the_session_names_none(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from clio_agent import conf
+
+    monkeypatch.setenv(
+        "CLIO_FLEET_SPOTTER", '{"provider_id": "server-vllm-spotter", "model_id": "Qwen3-32B"}'
+    )
+    conf.reload()
+    app = _armed_app(tmp_path, monkeypatch)
+    with TestClient(app) as client:
+        app.state.provider_catalog = _spotter_catalog()
+        resp = client.post("/v1/sessions", json={"title": "t", "approval_mode": "spotter-ai"})
+        assert resp.status_code == 200, resp.text
+        watcher = _watcher(app, resp.json()["id"])
+    assert watcher.metadata["model_choice"]["source"] == "person"
+    assert watcher.metadata["model_choice"]["ran"]["model_id"] == "Qwen3-32B"
+
+
+def test_without_a_choice_the_watcher_inherits(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    app = _armed_app(tmp_path, monkeypatch)
+    with TestClient(app) as client:
+        app.state.provider_catalog = _spotter_catalog()
+        resp = client.post("/v1/sessions", json={"title": "t", "approval_mode": "spotter-ai"})
+        assert resp.status_code == 200, resp.text
+        watcher = _watcher(app, resp.json()["id"])
+    assert watcher.metadata["model_choice"]["source"] == "inherited"
+
+
+def test_patch_into_spotter_ai_with_an_unknown_model_keeps_the_prior_mode(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    app = _armed_app(tmp_path, monkeypatch)
+    with TestClient(app) as client:
+        app.state.provider_catalog = _spotter_catalog()
+        sid = client.post("/v1/sessions", json={"title": "t"}).json()["id"]
+        resp = client.patch(
+            f"/v1/sessions/{sid}",
+            json={"approval_mode": "spotter-ai", "metadata": {"spotter_model": "nope"}},
+        )
+        assert resp.status_code == 422, resp.text
+        assert resp.json()["error"]["error"] == REFUSAL_WATCHER_MODEL_REFUSED
+        assert app.state.sessions.get(sid).approval_mode == "ask"
+        assert _live_watcher_tasks(app, sid) == []
+
+
+def test_changing_the_watcher_model_on_an_armed_session_rearms_it(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    app = _armed_app(tmp_path, monkeypatch)
+    with TestClient(app) as client:
+        app.state.provider_catalog = _spotter_catalog()
+        sid = client.post(
+            "/v1/sessions",
+            json={
+                "title": "t",
+                "approval_mode": "spotter-ai",
+                "metadata": {"spotter_model": "server-vllm-spotter/Qwen3-8B"},
+            },
+        ).json()["id"]
+        before = _live_watcher_tasks(app, sid)[0]
+
+        refused = client.patch(
+            f"/v1/sessions/{sid}", json={"metadata": {"spotter_model": "server-vllm-spotter/x"}}
+        )
+        assert refused.status_code == 422, refused.text
+        assert refused.json()["error"]["details"]["code"] == "model_unknown"
+        # Refused: the old choice is back and the old watcher still watches.
+        assert app.state.sessions.get(sid).metadata["spotter_model"] == (
+            "server-vllm-spotter/Qwen3-8B"
+        )
+        assert [task.handle for task in _live_watcher_tasks(app, sid)] == [before.handle]
+
+        resp = client.patch(
+            f"/v1/sessions/{sid}",
+            json={"metadata": {"spotter_model": "server-vllm-spotter/Qwen3-32B"}},
+        )
+        assert resp.status_code == 200, resp.text
+        assert resp.json()["approval_mode"] == "spotter-ai"
+        [after] = _live_watcher_tasks(app, sid)
+        assert after.handle != before.handle
+        watcher = app.state.sessions.get(after.owner.session_id)
+        assert watcher.metadata["model_choice"]["ran"]["model_id"] == "Qwen3-32B"
+        assert watcher.metadata["model_choice"]["source"] == "person"
+
+
+def test_rearming_after_a_disarm_arms_a_new_watcher(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The cancelled watcher's invocation is never reused for the next arming."""
+    app = _armed_app(tmp_path, monkeypatch)
+    with TestClient(app) as client:
+        app.state.provider_catalog = _spotter_catalog()
+        sid = client.post(
+            "/v1/sessions", json={"title": "t", "approval_mode": "spotter-ai"}
+        ).json()["id"]
+        [first] = _live_watcher_tasks(app, sid)
+        assert client.patch(f"/v1/sessions/{sid}", json={"approval_mode": "ask"}).status_code == 200
+        resp = client.patch(f"/v1/sessions/{sid}", json={"approval_mode": "spotter-ai"})
+        assert resp.status_code == 200, resp.text
+        [second] = _live_watcher_tasks(app, sid)
+        assert second.handle != first.handle

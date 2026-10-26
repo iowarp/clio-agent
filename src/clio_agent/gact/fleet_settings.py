@@ -1,5 +1,6 @@
-"""Independent, durable model choices for CLIO's judges, search assistant and the
-long-term memory background pass (``memory_extract``, ``memory_consolidate``)."""
+"""Independent, durable model choices for CLIO's judges, search assistant, the
+long-term memory background pass (``memory_extract``, ``memory_consolidate``) and
+the server-default SPOTTER watcher model (``spotter``)."""
 
 from __future__ import annotations
 
@@ -59,6 +60,26 @@ class FleetUpdate(BaseModel):
     revision: str
     judges: dict[JudgeRole, JudgeModel | None]
     search: JudgeModel | None = None
+    #: The model a SPOTTER watcher runs on when its session names none
+    #: (``metadata.spotter_model``); null inherits the watched session's model.
+    spotter: JudgeModel | None = None
+
+
+def _model_setting(key: str, env: str) -> dict[str, Any] | None:
+    raw = conf.resolve(
+        key,
+        env=env,
+        default=None,
+        cast=lambda value: json.loads(value) if isinstance(value, str) else value,
+    )
+    return JudgeModel.model_validate(raw).model_dump() if raw else None
+
+
+def _known_account(provider_id: str) -> bool:
+    """A built-in provider, or a saved custom server (its own fleet account)."""
+    from clio_agent.gact.fleet.entries import account_provider
+
+    return account_provider(provider_id) is not None
 
 
 def fleet_settings() -> dict[str, Any]:
@@ -69,29 +90,26 @@ def fleet_settings() -> dict[str, Any]:
         for role in ROLES
         for value in [raw.get(role)]
     }
-    search_raw = conf.resolve(
-        "fleet.search",
-        env="CLIO_FLEET_SEARCH",
-        default=None,
-        cast=lambda value: json.loads(value) if isinstance(value, str) else value,
-    )
-    search = JudgeModel.model_validate(search_raw).model_dump() if search_raw else None
+    search = _model_setting("fleet.search", "CLIO_FLEET_SEARCH")
+    spotter = _model_setting("fleet.spotter", "CLIO_FLEET_SPOTTER")
+    # An unset SPOTTER default leaves the revision every earlier client computed.
     revision = hashlib.sha256(
-        json.dumps({"judges": judges, "search": search}, sort_keys=True).encode()
+        json.dumps(
+            {"judges": judges, "search": search, **({"spotter": spotter} if spotter else {})},
+            sort_keys=True,
+        ).encode()
     ).hexdigest()
-    return {"revision": revision, "judges": judges, "search": search}
+    return {"revision": revision, "judges": judges, "search": search, "spotter": spotter}
 
 
 def save_fleet_settings(update: FleetUpdate) -> dict[str, Any]:
     """Save only the changed roles under the shared configuration lock."""
-    from clio_agent.providers.catalog import get_provider
-
     with USER_CONFIG_LOCK:
         conf.reload()
         if update.revision != fleet_settings()["revision"]:
             raise ValueError("Fleet settings changed; reload before saving")
-        for choice in [*update.judges.values(), update.search]:
-            if choice and (not choice.model_id.strip() or get_provider(choice.provider_id) is None):
+        for choice in [*update.judges.values(), update.search, update.spotter]:
+            if choice and (not choice.model_id.strip() or not _known_account(choice.provider_id)):
                 raise ValueError("Choose a configured provider and a nonempty model")
         path = user_config_path()
         document = read_document(path)
@@ -106,6 +124,8 @@ def save_fleet_settings(update: FleetUpdate) -> dict[str, Any]:
         fleet["judges"] = judges
         if "search" in update.model_fields_set:
             fleet["search"] = update.search.model_dump() if update.search else None
+        if "spotter" in update.model_fields_set:
+            fleet["spotter"] = update.spotter.model_dump() if update.spotter else None
         document["fleet"] = fleet
         write_document(path, document)
         conf.reload()

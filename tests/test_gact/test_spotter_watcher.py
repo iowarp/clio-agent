@@ -279,3 +279,74 @@ def test_no_wake_form_carries_a_directive(text: str) -> None:
 
     lowered = text.lower()
     assert not any(fragment in lowered for fragment in _FORBIDDEN_DIRECTIVE_FRAGMENTS), text
+
+
+def _watcher_reads_parent(app: Any, child: str, parent: str) -> bool:
+    from clio_agent.gact.routes.session_recall import _recall_tool_policy
+    from clio_agent.gact.task_access import TaskAccess
+
+    access = TaskAccess(app.state.task_history, app.state.conversations.caller(child))
+    in_candidates = parent in access.session_candidates("read")
+    policy = _recall_tool_policy(app, session_id=child, target_session_id=parent, body={})
+    assert policy["allowed"] is in_candidates
+    return in_candidates
+
+
+def test_arming_grants_the_watcher_read_on_its_parent_and_disarm_revokes_it(
+    watcher_world: tuple[Any, str, str],
+) -> None:
+    from clio_agent.gact.spotter_watcher import ensure_spotter_watcher
+
+    app, parent, child = watcher_world
+    assert not _watcher_reads_parent(app, child, parent)
+    session = app.state.sessions.get(parent)
+    task = ensure_spotter_watcher(app, session)
+    assert task is not None and task.owner.session_id == child
+    ensure_spotter_watcher(app, session)  # idempotent: one grant, no rewrite
+    grants = [
+        grant
+        for grant in app.state.task_history.coordination_grants(child)
+        if grant.id.startswith("spotter-read:")
+    ]
+    assert [(g.id, g.target_session, g.rights) for g in grants] == [
+        ("spotter-read:" + task.handle, parent, ("read", "observe"))
+    ]
+    assert grants[0].granting_human == task.owner.human_id and grants[0].revoked_at is None
+    assert _watcher_reads_parent(app, child, parent)
+
+    disarm_spotter_watcher(app, session)
+    [revoked] = [
+        grant
+        for grant in app.state.task_history.coordination_grants(child)
+        if grant.id == "spotter-read:" + task.handle
+    ]
+    assert revoked.revoked_at is not None
+    assert not _watcher_reads_parent(app, child, parent)
+
+
+def test_watcher_model_is_the_sessions_choice_then_the_default_then_inherited(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from types import SimpleNamespace
+
+    from clio_agent import conf
+    from clio_agent.gact.fleet.spotter_model import is_person_choice, watcher_model_ref
+
+    def session(**metadata: Any) -> Any:
+        return SimpleNamespace(id="s", approval_mode="spotter-ai", metadata=metadata)
+
+    monkeypatch.delenv("CLIO_FLEET_SPOTTER", raising=False)
+    conf.reload()
+    assert watcher_model_ref(None, session()) == ""  # type: ignore[arg-type]
+    monkeypatch.setenv("CLIO_FLEET_SPOTTER", '{"provider_id": "server-b", "model_id": "small"}')
+    conf.reload()
+    assert watcher_model_ref(None, session()) == "server-b/small"  # type: ignore[arg-type]
+    assert watcher_model_ref(None, session(spotter_model="  ")) == "server-b/small"  # type: ignore[arg-type]
+    own = session(spotter_model=" server-a/big ")
+    assert watcher_model_ref(None, own) == "server-a/big"  # type: ignore[arg-type]
+    # Only the watcher agent's spawn with exactly that model is the person's choice.
+    assert is_person_choice(None, own, "clio/spotter-ai", "server-a/big")  # type: ignore[arg-type]
+    assert not is_person_choice(None, own, "clio/other", "server-a/big")  # type: ignore[arg-type]
+    assert not is_person_choice(None, own, "clio/spotter-ai", "server-b/small")  # type: ignore[arg-type]
+    own.approval_mode = "ask"
+    assert not is_person_choice(None, own, "clio/spotter-ai", "server-a/big")  # type: ignore[arg-type]

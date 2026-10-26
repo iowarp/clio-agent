@@ -13,7 +13,8 @@ from collections.abc import Mapping
 from typing import TYPE_CHECKING, Any
 from uuid import uuid4
 
-from clio_agent.arc.task_types import MailItem, TaskSnapshot
+from clio_agent.arc.task_types import CoordinationGrant, MailItem, TaskSnapshot
+from clio_agent.gact.fleet.spotter_model import model_refusal, watcher_model_ref
 from clio_agent.gact.native_work import now
 from clio_agent.gact.spotter_clearance import release_clearance_event, signal_clearance
 
@@ -168,7 +169,7 @@ def sync_watcher_for_mode(
             validate_watcher_arming,
         )
 
-        refusal = validate_watcher_arming(app, session_id=session.id)
+        refusal = validate_watcher_arming(app, session_id=session.id) or model_refusal(app, session)
         if refusal is not None:
             refuse_watcher_arming(app, session, refusal, prior_approval_mode=prior_approval_mode)
         task = ensure_spotter_watcher(app, session)
@@ -207,6 +208,66 @@ def _live_watcher_tasks(app: "FastAPI", parent_session_id: str) -> list[TaskSnap
     return live
 
 
+def _watcher_read_grant_id(task: TaskSnapshot) -> str:
+    """The configuration grant identity for one armed watcher assignment."""
+    return "spotter-read:" + task.handle
+
+
+def _grant_watcher_read(app: "FastAPI", parent_session_id: str, task: TaskSnapshot) -> None:
+    """Let one armed watcher read/observe its protected parent (idempotent, off-loop).
+
+    Arming is a human configuration act, so it may convey the content rights a
+    delegation-reply grant deliberately withholds; the grant is scoped to the
+    parent session and to this exact watcher handle's lifetime (disarm revokes
+    it). An existing grant with the same identity — live or revoked — or any
+    live SPOTTER read grant on the same parent is kept and nothing is written.
+    """
+    history = app.state.task_history
+    grant_id = _watcher_read_grant_id(task)
+    with history.serialized(writing=True):
+        if any(
+            grant.id == grant_id
+            or (
+                grant.id.startswith("spotter-read:")
+                and grant.target_session == parent_session_id
+                and grant.revoked_at is None
+            )
+            for grant in history.coordination_grants(task.owner.session_id)
+        ):
+            return
+        history.record_grant(
+            CoordinationGrant(
+                id=grant_id,
+                granting_human=task.owner.human_id,
+                recipient_session=task.owner.session_id,
+                target_session=parent_session_id,
+                rights=("read", "observe"),
+                created_at=now(),
+            ),
+            observation_id=uuid4().hex,
+        )
+
+
+def _revoke_watcher_read(app: "FastAPI", watcher_session_id: str, parent_session_id: str) -> None:
+    """Revoke every live SPOTTER read grant a watcher session holds on its parent.
+
+    Each grant is re-recorded with ``revoked_at`` (its identity, rights and
+    target unchanged), so the revocation is a durable historical observation.
+    """
+    history = app.state.task_history
+    with history.serialized(writing=True):
+        for grant in history.coordination_grants(watcher_session_id):
+            if (
+                grant.id.startswith("spotter-read:")
+                and grant.target_session == parent_session_id
+                and grant.revoked_at is None
+            ):
+                history.record_grant(
+                    grant.model_copy(update={"revoked_at": now()}),
+                    observation_id=uuid4().hex,
+                )
+
+
 def ensure_spotter_watcher(app: "FastAPI", session: "Session") -> TaskSnapshot | None:
     """Arm one idle watcher through Conversations, without launching a check."""
     if session.approval_mode != SPOTTER_APPROVAL_MODE:
@@ -215,6 +276,7 @@ def ensure_spotter_watcher(app: "FastAPI", session: "Session") -> TaskSnapshot |
     with history.serialized():
         existing = _live_watcher_tasks(app, session.id)
         if existing:
+            _grant_watcher_read(app, session.id, existing[0])  # backfill pre-grant arms
             return existing[0]
         parent = history.latest_assignment(session.id)
         if parent is None or parent.terminal_at is not None:
@@ -225,7 +287,10 @@ def ensure_spotter_watcher(app: "FastAPI", session: "Session") -> TaskSnapshot |
                 predecessor=parent,
                 invocation_id="spotter-arm:" + uuid4().hex,
             )
-        invocation = "spotter:" + parent.handle
+        # A re-arm after a disarm (or a changed watcher model) is a new invocation,
+        # never the cancelled watcher's identity.
+        armed = len(history.resource_handles("spotter:" + session.id))
+        invocation = "spotter:" + parent.handle + (f":{armed}" if armed else "")
     # Route callers run this finite adapter off the application loop.
     receipt = asyncio.run_coroutine_threadsafe(
         owner.spawn(
@@ -238,12 +303,14 @@ def ensure_spotter_watcher(app: "FastAPI", session: "Session") -> TaskSnapshot |
             approval_profile="spotter-watcher",
             start=False,
             standing=True,
+            model=watcher_model_ref(app, session),
         ),
         owner._loop,
     ).result()
     task = history.task_snapshot(receipt["handle"])
     if task is None:
         raise RuntimeError("Watcher acceptance was not recorded")
+    _grant_watcher_read(app, session.id, task)
     app.state.sessions.update(task.owner.session_id, title=WATCHER_RUN_LABEL)
     signal_clearance(app, session.id)
     return task
@@ -289,6 +356,7 @@ def disarm_spotter_watcher(app: "FastAPI", session: "Session") -> None:
     """Request targeted cancellation from the real conversation owner."""
     owner = app.state.conversations
     for task in _live_watcher_tasks(app, session.id):
+        _revoke_watcher_read(app, task.owner.session_id, session.id)
         asyncio.run_coroutine_threadsafe(
             owner.cancel(owner.caller(session.id), task.handle), owner._loop
         ).result()

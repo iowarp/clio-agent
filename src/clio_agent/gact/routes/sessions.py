@@ -74,6 +74,10 @@ def register_sessions_routes(app: FastAPI, deps: "GactDeps") -> None:
     ``gact.app``. The rollback + ask-user/retry helper closures are concern-private.
     """
 
+    from clio_agent.gact.fleet.spotter_model import (  # noqa: PLC0415
+        SPOTTER_MODEL_KEY,
+        rearm_on_model_change,
+    )
     from clio_agent.gact.spotter_watcher import sync_watcher_for_mode  # noqa: PLC0415
 
     def _session_not_found(sid: str) -> HTTPException:
@@ -97,7 +101,9 @@ def register_sessions_routes(app: FastAPI, deps: "GactDeps") -> None:
     ) -> Session | JSONResponse:
         """Update session settings and durable user navigation metadata."""
 
-        prior_mode = str(getattr(app.state.sessions.get(sid), "approval_mode", "") or "")
+        prior = app.state.sessions.get(sid)
+        prior_mode = str(getattr(prior, "approval_mode", "") or "")
+        prior_spotter_model = (getattr(prior, "metadata", None) or {}).get(SPOTTER_MODEL_KEY)
         sess = app.state.sessions.update(
             sid,
             title=req.title,
@@ -123,6 +129,13 @@ def register_sessions_routes(app: FastAPI, deps: "GactDeps") -> None:
                 ).model_dump(exclude_none=True),
             )
         await join_off_loop(sync_watcher_for_mode, app, sess, prior_approval_mode=prior_mode)
+        await join_off_loop(
+            rearm_on_model_change,
+            app,
+            sess,
+            prior_approval_mode=prior_mode,
+            prior_spotter_model=prior_spotter_model,
+        )
         # Publish so live SSE subscribers see mode flips immediately.
         app.state.bus.publish(
             Event(

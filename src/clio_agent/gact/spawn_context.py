@@ -159,8 +159,16 @@ def prepare_child_session(
         model = "/".join(
             str(source.model.get(key) or "") for key in ("provider_id", "model_id")
         ).strip("/")
+    from clio_agent.gact.fleet.spotter_model import is_person_choice  # noqa: PLC0415
+
+    # A SPOTTER watcher's model the person picked is theirs, not the caller's.
     choice = choose_child_model(
-        app, parent, child, explicit=model, same_agent=agent_id == "self" or source is not None
+        app,
+        parent,
+        child,
+        explicit=model,
+        same_agent=agent_id == "self" or source is not None,
+        chooser="person" if is_person_choice(app, parent, agent_id, model) else "explicit",
     )
     pin = {**pin, "spawn_target": agent_id, MODEL_CHOICE_KEY: choice.to_dict()}
     title = (

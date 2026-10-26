@@ -194,11 +194,15 @@ def choose_model(
     requires: Requires,
     attribution: dict[str, list[str]],
     inherited: dict[str, str],
+    explicit_source: ChoiceSource = "explicit",
 ) -> ModelChoice:
     """Choose the model a child runs on (the order in the module docstring).
 
     ``inherited`` is the caller's ``{provider_id, model_id}``; empty ids mean the
     caller runs on the server's active model, which a child then shares.
+    ``explicit_source`` records who named ``explicit``: ``"person"`` when the
+    person picked it in settings (a SPOTTER watcher's model), which the
+    spending guard treats as already consented.
 
     Raises:
         ModelSelectionRefused: An explicit model, or the inherited one, cannot
@@ -217,7 +221,7 @@ def choose_model(
     if effort:
         reasons.append(f"effort {effort} from {effort_origin}")
     if explicit.strip():
-        candidate = Candidate(explicit.strip(), "explicit", effort=effort)
+        candidate = Candidate(explicit.strip(), explicit_source, effort=effort)
         entry = check_candidate(
             entries,
             candidate,

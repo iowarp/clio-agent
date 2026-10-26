@@ -79,7 +79,7 @@ import logging
 import os
 import re
 from collections.abc import Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, NoReturn, Optional
 
@@ -124,6 +124,11 @@ REFUSAL_WATCHER_ENTRYPOINT_MISSING = "spotter_watcher_entrypoint_missing"
 #: its settings file, ...), so the server would exit on its config at start.
 REFUSAL_WATCHER_PROVENANCE_UNAVAILABLE = "spotter_watcher_provenance_unavailable"
 
+#: The watcher's chosen model (``metadata.spotter_model`` or the server's
+#: ``fleet.spotter`` default) is not one the fleet can run it on: unknown,
+#: unavailable now, or short of the watcher agent's requirements.
+REFUSAL_WATCHER_MODEL_REFUSED = "spotter_watcher_model_refused"
+
 #: Closed set of typed arm-time refusals -> the operator-facing explanation.
 #: Every refusal :func:`validate_watcher_arming` returns is a key here, so a
 #: caller can neither invent a reason nor lose the distinction between them.
@@ -145,6 +150,10 @@ SPOTTER_ARMING_REASONS: dict[str, str] = {
     REFUSAL_WATCHER_PROVENANCE_UNAVAILABLE: (
         "SPOTTER surveillance was not armed: the watcher reads clio's provenance records, "
         "and the current provenance configuration gives it no store to read."
+    ),
+    REFUSAL_WATCHER_MODEL_REFUSED: (
+        "SPOTTER surveillance was not armed: the model chosen for the watcher is not "
+        "one the connected fleet can run it on; choose one of the available models."
     ),
 }
 
@@ -221,6 +230,8 @@ class WatcherArmingRefusal:
     entrypoint: str = ""
     venv_state: str = ""
     remedy: str = ""
+    #: Further typed details (a model refusal's ``code``, ``model``, ``available``).
+    extra: Mapping[str, Any] = field(default_factory=dict)
 
     @property
     def message(self) -> str:
@@ -228,10 +239,10 @@ class WatcherArmingRefusal:
 
         return f"{SPOTTER_ARMING_REASONS[self.reason]} ({self.detail})"
 
-    def details(self, session_id: str = "") -> dict[str, str]:
+    def details(self, session_id: str = "") -> dict[str, Any]:
         """The structured ``ErrorInfo.details`` payload for the typed 422."""
 
-        payload = {
+        payload: dict[str, Any] = {
             "reason": self.reason,
             "agent_ref": self.agent_ref,
             "mcp_server": self.server,
@@ -250,7 +261,7 @@ class WatcherArmingRefusal:
             payload["project_dir"] = self.path
         if self.remedy:
             payload["remedy"] = self.remedy
-        return payload
+        return {**payload, **self.extra}
 
 
 def _record_skip(reason: str, agent_ref: str, *, server: str = "", error: str = "") -> None:
@@ -574,6 +585,7 @@ def refuse_watcher_arming(
     refusal: WatcherArmingRefusal,
     *,
     prior_approval_mode: str = "",
+    restore_metadata: Optional[Mapping[str, Any]] = None,
 ) -> NoReturn:
     """Undo the just-persisted spotter-ai transition and raise the typed 422.
 
@@ -584,6 +596,9 @@ def refuse_watcher_arming(
         prior_approval_mode: The mode the session held BEFORE this request.
             Empty means a fresh CREATE (there is no prior mode), whose rollback
             is deleting the just-minted row; otherwise the mode is restored.
+        restore_metadata: For a re-arm of a session that stays in spotter-ai
+            (its watcher model changed), the metadata to put back instead; the
+            session keeps its mode and its current watcher.
 
     Raises:
         fastapi.HTTPException: Always — HTTP 422 whose ``ErrorInfo.error`` IS
@@ -595,7 +610,10 @@ def refuse_watcher_arming(
     from clio_agent.gact.types import ErrorEnvelope, ErrorInfo  # noqa: PLC0415
 
     session_id = session.id
-    if prior_approval_mode:
+    if restore_metadata is not None:
+        app.state.sessions.update(session_id, metadata_patch=dict(restore_metadata))
+        rollback = f"metadata_restored:{','.join(sorted(restore_metadata))}"
+    elif prior_approval_mode:
         app.state.sessions.update(session_id, approval_mode=prior_approval_mode)
         rollback = f"approval_mode_restored:{prior_approval_mode}"
     else:

@@ -17,6 +17,7 @@ import asyncio
 from typing import TYPE_CHECKING, Any
 
 from clio_agent import conf
+from clio_agent.gact.fleet.entries import account_provider
 from clio_agent.providers.catalog import get_provider
 from clio_agent.user_config_document import (
     USER_CONFIG_LOCK,
@@ -45,7 +46,7 @@ def delegation_allowed(account: str, billing: str = "") -> bool:
     """Whether Clio may run delegated work on ``account`` without asking."""
 
     if not billing:
-        preset = get_provider(account)
+        preset = account_provider(account)
         billing = preset.billing if preset is not None else "metered"
     return _overrides().get(account, billing in ALLOWED_BY_DEFAULT)
 
@@ -57,7 +58,7 @@ def set_delegation_allowed(account: str, allowed: bool) -> None:
         ValueError: ``account`` is not a provider CLIO knows.
     """
 
-    if get_provider(account) is None:
+    if account_provider(account) is None:
         raise ValueError(f"unknown account {account!r}")
     with USER_CONFIG_LOCK:
         path = user_config_path()

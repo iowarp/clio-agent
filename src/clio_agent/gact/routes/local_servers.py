@@ -106,11 +106,10 @@ def register_local_server_routes(app: FastAPI, presets: "list[LMProviderPreset]"
         return preset
 
     def retire(entry: store.LocalServerEntry) -> None:
-        if entry.custom:
-            return
         from clio_agent.gact.provider_catalog_snapshot import invalidate_provider  # noqa: PLC0415
 
-        invalidate_provider(app, entry.preset_id)
+        # A custom server is its own catalog provider (and fleet account), keyed by its id.
+        invalidate_provider(app, entry.id if entry.custom else entry.preset_id)
 
     async def checked(entry: store.LocalServerEntry) -> dict[str, Any]:
         result = await check_address(preset_for(entry.preset_id), entry.address)
