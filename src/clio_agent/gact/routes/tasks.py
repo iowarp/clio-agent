@@ -276,7 +276,7 @@ def register_task_routes(app: FastAPI) -> None:
 
         def read() -> tuple[str, dict[str, Any] | None]:
             task = TaskAccess(app.state.task_history, caller(sid)).require(handle, "read")
-            run = flow_run(app.state.task_history, task.handle)
+            run = flow_run(app.state.task_history, task.handle, reconcile_children=True)
             if run is not None:
                 run["usage"] = {"calls": call_models(app, run["calls"])}
             return task.owner.session_id, run
