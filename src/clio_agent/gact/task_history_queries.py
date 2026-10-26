@@ -340,27 +340,32 @@ def pending_sessions(self: TaskHistory) -> tuple[str, ...]:
     return tuple(sorted(sessions))
 
 
-def acknowledged_mail(self: TaskHistory, kinds: tuple[str, ...]) -> tuple[MailItem, ...]:
-    """Committed interactive mail whose display repair is still owed."""
+def acknowledged_mail(
+    self: TaskHistory, kinds: tuple[str, ...], session_id: str | None = None
+) -> tuple[MailItem, ...]:
+    """Committed interactive mail whose display repair is still owed (of one session if given)."""
     global_state = self._global
     if global_state is not None:
         with self._lock:
             return tuple(
                 item
                 for sid, identities in global_state._acknowledged.items()
+                if session_id is None or sid == session_id
                 for identity in identities
                 if (item := global_state._mail.get(sid, {}).get(identity)) is not None
                 and item.kind in kinds
             )
     items: list[MailItem] = []
     for _name, row in self.index.open_records("d~"):
-        session_id, mail_id = str(row.get("session_id", "")), str(row.get("mail_id", ""))
-        state = self._session_state(session_id)
-        item = state.mail_item(session_id, mail_id)
+        owner, mail_id = str(row.get("session_id", "")), str(row.get("mail_id", ""))
+        if session_id is not None and owner != session_id:
+            continue
+        state = self._session_state(owner)
+        item = state.mail_item(owner, mail_id)
         if (
             item is not None
             and item.kind in kinds
-            and mail_id in state._acknowledged.get(session_id, set())
+            and mail_id in state._acknowledged.get(owner, set())
         ):
             items.append(item)
     return tuple(items)

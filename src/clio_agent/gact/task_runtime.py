@@ -16,6 +16,7 @@ from clio_agent.gact.core_recovery import CoreRecovery
 from clio_agent.gact.external_tasks import ExternalTasks
 from clio_agent.gact.native_storage import register_native_storage
 from clio_agent.gact.native_tools import NativeTools
+from clio_agent.gact.obligations import Obligations
 from clio_agent.gact.question_events import QuestionEvents
 from clio_agent.gact.question_surface import prepare_question_gate
 from clio_agent.gact.questions import QuestionCommands
@@ -85,7 +86,6 @@ async def start(app: Any) -> None:
         with boot_timing.step(app, "task_history_migration"):
             await history.io.run(migrate_history, app)
             await history.io.run(history.complete_index_build)
-    await boot_timing.timed(app, "reconcile_open_tasks", history.io.run(history.reconcile_open))
     app.state.questions = QuestionCommands(history)
     app.state.question_events = QuestionEvents(app)
     app.state.questions.on_change = app.state.question_events.changed
@@ -411,13 +411,15 @@ async def start(app: Any) -> None:
     await boot_timing.timed(app, "native_task_recovery", native.restore())
     await boot_timing.timed(app, "external_task_recovery", app.state.external_tasks.restore())
     conversations.start()
-    await boot_timing.timed(app, "conversation_recovery", conversations.restore())
     if not history.requires_recovery:
-        with boot_timing.step(app, "question_recovery"):
-            await history.io.run(app.state.questions.restore)
-            await app.state.question_events.restore()
-        with boot_timing.step(app, "pending_conversations_signal"):
-            conversations.signal_pending()
+        # Work left open at the last stop is an obligation: only the conversations that
+        # hold some wait, and it resumes in the background once startup is done.
+        obligations = Obligations(conversations)
+        await boot_timing.timed(app, "obligations_held", obligations.hold())
+        app.state.obligations = obligations
+        app.state.obligations_task = asyncio.create_task(
+            boot_timing.timed(app, "obligations", obligations.run()), name="clio-obligations"
+        )
 
 
 async def close(app: Any) -> tuple[BaseException, ...]:
@@ -425,6 +427,10 @@ async def close(app: Any) -> tuple[BaseException, ...]:
     conversations = getattr(app.state, "conversations", None)
     if conversations is not None:
         conversations.close_admission()
+    obligations_task = getattr(app.state, "obligations_task", None)
+    if obligations_task is not None and not obligations_task.done():
+        obligations_task.cancel()
+        await asyncio.wait({obligations_task})
     native = getattr(app.state, "native_tools", None)
     if native is not None:
         await native.request_shutdown()

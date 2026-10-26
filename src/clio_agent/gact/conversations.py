@@ -93,6 +93,10 @@ class Conversations:
         self._pause_tokens: dict[str, str] = {}
         self._deadlines: dict[str, asyncio.TimerHandle] = {}
         self._restoring = True
+        # Conversations whose open work the obligations lane has not recovered and released
+        # yet: only these wait, every other conversation is admitted (gact/obligations.py).
+        self._recovering: set[str] = set()
+        self.obligations: Any = None
         self._closing = False
 
     def _input_committed(self, staged: StagedInput) -> None:
@@ -151,10 +155,15 @@ class Conversations:
 
     _restore_input_projections = conversation_recovery._restore_input_projections
     restore = conversation_recovery.restore
+    restore_session = conversation_recovery.restore_session
     _record_interrupted_calls = conversation_recovery._record_interrupted_calls
 
     def eligible(self, sid: str, item: MailItem) -> bool:
         """One admission/injection policy; producers do not independently spawn turns."""
+        if sid in self._recovering:
+            if self.obligations is not None:
+                self.obligations.wanted(sid)  # someone is waiting: recover it next
+            return False
         if self._restoring or self._model_recording.get(sid):
             return False
         session = self.sessions.get(sid)

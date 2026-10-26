@@ -877,10 +877,7 @@ async def _construct_agent_async(app: "FastAPI") -> None:
     agent_initialization.mark_agent_ready(app, agent, boot=True)
     starting = getattr(app.state, "task_runtime_start", None)
     if starting is not None:
-        await asyncio.shield(starting)
-        with boot_timing.step(app, "pending_mail_wake"):
-            for sid in await app.state.task_history.io.run(app.state.task_history.pending_sessions):
-                app.state.turn_runner.signal(sid)
+        await asyncio.shield(starting)  # pending mail resumes in the obligations lane
 
     # #972: enforce the CAS store byte budget across every workspace at boot (off-loop,
     # #1001 cadence — the registry is now folded, so the reachability scan is ready).

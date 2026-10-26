@@ -377,6 +377,12 @@ agent_tasks.max_concurrent: 3
 # visible.
 agent_tasks.max_depth: 8
 
+# CLIO_OBLIGATION_CONCURRENCY  (int)  <- src/clio_agent/gact/obligations.py
+# Conversations resumed at once after startup to finish work left open at
+# the last stop (pending mail, interrupted turns); raise it to drain a
+# backlog faster.
+agent_tasks.obligation_concurrency: 4
+
 # CLIO_REACT_EXTRACT_AFTER_STEPS  (int)  <- src/clio_agent/gact/agents/clio_react_extract.py
 # Model steps a ReAct loop must exceed before DSPy's extract may fill the
 # outputs it did not produce (a max_iters ending, or a signature's extra

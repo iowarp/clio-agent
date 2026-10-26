@@ -310,17 +310,21 @@ def _stale(history: TaskHistory, name: str, row: dict[str, object]) -> bool:
     return False
 
 
-def reconcile_open(history: TaskHistory) -> int:
+def reconcile_open(history: TaskHistory, *, prefix: str = "", session_id: str | None = None) -> int:
     """Remove open records whose event never landed or whose obligation already closed.
 
-    Runs under the writer lock, so no opening record is between its put and its
-    event. Returns the number of records removed.
+    ``prefix`` limits it to one record kind (``"w~"``); ``session_id`` to the records of
+    one conversation, so recovery reads only that conversation's trees. Runs under the
+    writer lock, so no opening record is between its put and its event. Returns the
+    number of records removed.
     """
     if history._global is not None or history.requires_recovery:
         return 0
     removed = 0
     with history._lock:
-        for name, row in history.index.open_records():
+        for name, row in history.index.open_records(prefix):
+            if session_id is not None and str(row.get("session_id", "")) != session_id:
+                continue
             try:
                 stale = _stale(history, name, row)
             except Exception as error:
