@@ -173,3 +173,26 @@ def test_a_typed_utilization_wins_over_the_share() -> None:
     arguments = planned["manifest"]["arguments"]  # type: ignore[index]
     assert arguments[arguments.index("--gpu-memory-utilization") + 1] == "0.4"
     assert planned["configuration"][UTILIZATION_KEY] == "0.4"  # type: ignore[index]
+
+
+def test_instances_pinned_to_disjoint_gpus_do_not_compete(tmp_path: Path) -> None:
+    store = InfrastructureStore(tmp_path / "infra.json")
+    main = _record("vllm")
+    main.configuration["param.cuda_devices"] = "0"
+    store.put_service(main)  # vLLM's 0.9 of GPU 0
+
+    pinned = {"context.gpu_share": "0.9", "param.cuda_devices": "1"}
+    check_gpu_share(store, "local", "vllm@spotter", "start", "native-cuda", pinned)
+    with pytest.raises(GpuShareExceededError):  # overlapping devices still share memory
+        check_gpu_share(
+            store,
+            "local",
+            "vllm@spotter",
+            "start",
+            "native-cuda",
+            {**pinned, "param.cuda_devices": "0,1"},
+        )
+    with pytest.raises(GpuShareExceededError):  # an unpinned launch may use GPU 0 too
+        check_gpu_share(
+            store, "local", "vllm@spotter", "start", "native-cuda", {"context.gpu_share": "0.9"}
+        )

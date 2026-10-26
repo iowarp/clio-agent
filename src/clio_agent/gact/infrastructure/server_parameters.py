@@ -175,6 +175,20 @@ ENGINE_PARAMETERS: dict[EngineId, tuple[ServerParameter, ...]] = {
             effective_key="xpu_devices",
         ),
         ServerParameter(
+            id="cuda_devices",
+            label="NVIDIA GPU devices",
+            description=(
+                "CUDA devices the server may use, such as 1 or 2,3, so instances on one host "
+                "do not share a GPU. Match the count to the tensor parallel size."
+            ),
+            kind="text",
+            delivery="env",
+            name="CUDA_VISIBLE_DEVICES",
+            variants=["cuda"],
+            default_behavior="All devices this host exposes",
+            effective_key="cuda_devices",
+        ),
+        ServerParameter(
             id="cpu_omp_threads_bind",
             label="CPU cores",
             description="Cores the CPU build pins its threads to, such as 0-15, or auto.",

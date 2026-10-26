@@ -132,6 +132,21 @@ def test_xpu_layers_add_ons_over_the_host_vllm_build() -> None:
     assert "install_probe()" not in plain["launcher"]
 
 
+def test_cuda_devices_pin_a_cuda_instance_through_its_environment() -> None:
+    manifest = json.loads(
+        build_driver_plan(
+            service_id="vllm@spotter",
+            action="install",
+            variant_id="native-cuda",
+            configuration={"model": "/data/models/qualified", "param.cuda_devices": "1"},
+            facts=facts(),
+        )
+        .commands[-1]
+        .stdin
+    )["manifest"]
+    assert manifest["environment"]["CUDA_VISIBLE_DEVICES"] == "1"
+
+
 def test_xpu_setup_lines_are_part_of_the_reusable_identity() -> None:
     first = json.loads(xpu_plan().commands[-1].stdin)["manifest"]["definition_version"]
     other = json.loads(xpu_plan(host_setup="module load frameworks/2025.3.1").commands[-1].stdin)
