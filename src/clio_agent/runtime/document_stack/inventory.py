@@ -7,6 +7,7 @@ import importlib.metadata
 import importlib.util
 import json
 import platform
+import shutil
 import sys
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
@@ -35,6 +36,37 @@ PACKAGES = {
 }
 
 NATIVE_TOOLS = ("soffice", "pandoc", "pdftoppm", "tesseract")
+
+
+def execution_host_inventory() -> dict[str, Any]:
+    """Inspect existing packages and tools without preparing a document stack."""
+    packages: dict[str, Any] = {}
+    for distribution, module in PACKAGES.items():
+        try:
+            version = importlib.metadata.version(distribution)
+        except importlib.metadata.PackageNotFoundError:
+            packages[distribution] = {"status": "missing", "import": module}
+        else:
+            packages[distribution] = {
+                "status": "available",
+                "version": version,
+                "import": module,
+                "verification": "installed_metadata",
+            }
+    node = shutil.which("node")
+    return {
+        "python": sys.executable,
+        "python_version": platform.python_version(),
+        "inventory_scope": "execution_host",
+        "os": platform.system(),
+        "architecture": platform.machine(),
+        "packages": packages,
+        "node": node,
+        "javascript": {
+            "status": "available" if node else "missing",
+            "node_argv": [node] if node else [],
+        },
+    }
 
 
 def _native_tool(name: str, cwd: Path) -> dict[str, Any]:
@@ -136,5 +168,11 @@ if __name__ == "__main__":
 
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--execution-only", action="store_true")
+    parser.add_argument("--execution-host", action="store_true")
     arguments = parser.parse_args()
-    print(json.dumps(inventory(execution_only=arguments.execution_only), ensure_ascii=False))
+    result = (
+        execution_host_inventory()
+        if arguments.execution_host
+        else inventory(execution_only=arguments.execution_only)
+    )
+    print(json.dumps(result, ensure_ascii=False))

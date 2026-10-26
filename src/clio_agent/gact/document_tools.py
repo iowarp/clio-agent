@@ -6,6 +6,7 @@ from pathlib import Path
 from typing import Any
 
 from clio_agent.runtime.document_runtime import (
+    inspect_execution_runtime,
     inspect_python_imports,
     prepare_document_runtime,
     run_document_helper,
@@ -45,23 +46,23 @@ def build_prepare_document_runtime_tool(*, execution: bool = False) -> Any:
     from clio_agent.gact.agents.tool_instrumentation import native_tool
 
     def prepare_runtime(required_imports: list[str] | None = None) -> dict[str, Any]:
-        """Resolve Clio's managed executable paths, current packages and workspace.
+        """Resolve Clio's executable paths, current packages and workspace.
 
         Resolve the managed tools when a standalone script needs executable paths
         or an explicit import check. This is not required before every shell call
         or turn. Use a project's own environment for project work.
-        It selects bundled Python/uv and
-        Node/pnpm, or automatically prepares their locked local equivalents.
-        The shell receives these tools after preparation. Use returned commands
-        for standalone scripts; preserve project-owned dependency environments.
-        The package list is exhaustive for the managed stack, not a promise that
-        arbitrary modules exist. Pass required_imports to check the modules your
+        Use returned commands for standalone scripts; preserve project-owned
+        dependency environments. Execution inspection uses the current Clio
+        interpreter and existing tools; it never installs or repairs dependencies.
+        Document preparation separately provisions its locked package stack.
+        The package list covers the document catalog and is not exhaustive for
+        the execution host. Pass required_imports to check the modules your
         standalone script will import before running it. Missing modules need explicit
         uv --with dependencies; do not install them into the locked managed environment.
         """
         imports = required_imports or []
         runtime = (
-            prepare_document_runtime(_workspace(), discovery_only=True)
+            inspect_execution_runtime(_workspace())
             if execution
             else prepare_document_runtime(_workspace())
         )
@@ -69,9 +70,7 @@ def build_prepare_document_runtime_tool(*, execution: bool = False) -> Any:
             # Execution discovery probes live packages and tools without
             # launching Office/converters or opening fonts. Document preparation
             # owns that separate, explicitly requested inventory.
-            # Font files and PATH overlays can consume the bounded result before
-            # its commands appear. The overlay is already published to shell tools;
-            # full paths remain available from document-specific discovery.
+            # Keep document-specific fields out of the execution response.
             runtime = {
                 key: value
                 for key, value in runtime.items()
@@ -99,6 +98,7 @@ def build_prepare_document_runtime_tool(*, execution: bool = False) -> Any:
 
     inventory_description = (
         "Read current package versions and discover modules without importing every package. "
+        "This inspection never installs dependencies or creates a document environment. "
         "required_imports performs real import checks. Converter and font probes are omitted: "
         "use prepare_document_runtime for the complete document inventory.\n\n"
         if execution

@@ -10,7 +10,6 @@ from types import ModuleType
 from typing import Any
 
 import pytest
-
 from clio_agent.runtime.document_runtime import STACK_ROOT
 
 
@@ -135,3 +134,28 @@ def test_execution_inventory_reads_fresh_metadata_without_converter_or_font_work
     assert second["inventory_scope"] == "execution"
     assert second["font_files"] == []
     assert all(tool["status"] == "not_checked" for tool in second["native_tools"].values())
+
+
+def test_host_inventory_accepts_missing_packages_without_setup(
+    inventory_module: ModuleType, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A minimal host stays usable without installing the document dependency catalog."""
+    monkeypatch.setattr(inventory_module, "PACKAGES", {"present": "present", "absent": "absent"})
+
+    def version(name: str) -> str:
+        if name == "absent":
+            raise inventory_module.importlib.metadata.PackageNotFoundError(name)
+        return "1.2.3"
+
+    def forbidden(*args: Any, **kwargs: Any) -> Any:
+        raise AssertionError("Host inspection must not import packages or launch installers")
+
+    monkeypatch.setattr(inventory_module.importlib.metadata, "version", version)
+    monkeypatch.setattr(inventory_module.importlib, "import_module", forbidden)
+    monkeypatch.setattr(inventory_module, "run", forbidden)
+    monkeypatch.setattr(inventory_module.shutil, "which", lambda name: None)
+    result = inventory_module.execution_host_inventory()
+    assert result["python"] == sys.executable
+    assert result["packages"]["present"]["version"] == "1.2.3"
+    assert result["packages"]["absent"] == {"status": "missing", "import": "absent"}
+    assert result["javascript"] == {"status": "missing", "node_argv": []}

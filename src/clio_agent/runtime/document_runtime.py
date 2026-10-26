@@ -146,11 +146,38 @@ for name in json.loads(sys.argv[1]):
         checks[name] = {"status": "ready"}
 print(json.dumps(checks))
 """
-    output = _run([str(python), "-c", source, json.dumps(names)], cwd=python.parent)
+    output = _run([str(python), "-B", "-c", source, json.dumps(names)], cwd=python.parent)
     checks = json.loads(output)
     if not isinstance(checks, dict) or set(checks) != set(names):
         raise DocumentRuntimeError("Import checks did not return the requested modules")
     return checks
+
+
+def inspect_execution_runtime(workspace: Path) -> dict[str, Any]:
+    """Inspect existing tools without installing dependencies or creating runtime caches."""
+    workspace = workspace.resolve(strict=True)
+    inventory = json.loads(
+        _run(
+            [sys.executable, "-B", str(STACK_ROOT / "inventory.py"), "--execution-host"],
+            cwd=workspace,
+            env={**os.environ, "PYTHONDONTWRITEBYTECODE": "1"},
+        )
+    )
+    if not isinstance(inventory, dict) or inventory.get("inventory_scope") != "execution_host":
+        raise DocumentRuntimeError("Execution inventory did not describe the current host")
+    uv = _document_uv()
+    inventory.update(
+        {
+            "status": "ready",
+            "distribution": "execution-host",
+            "python_argv": [inventory["python"], "-B"],
+            "uv": uv,
+            "uv_argv": [uv] if uv else [],
+            "workspace": str(workspace),
+            "installs_dependencies": False,
+        }
+    )
+    return inventory
 
 
 def _python_runtime(
