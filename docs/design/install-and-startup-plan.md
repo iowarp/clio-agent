@@ -49,43 +49,45 @@ The website shows the installer first and the script second; the source build, b
 the macOS installers are unsigned, the website's macOS download points to the script with `--desktop`
 and to the source build instead.
 
-## First impression: install fast, then set up in the background
+## First impression: a fast, complete install, then setup in the background
 
-A person judges Clio in its first minutes. Three stages, each with its own job:
+A person judges Clio in its first minutes. Install and setup are different jobs:
 
-| Stage | Blocks the person? | Does | Budget |
+| Stage | Synchronous? | Does | Budget |
 |---|---|---|---|
-| **Install** | Yes, so it does the minimum | The runtime, the launcher and the manifest, then the "can it serve" check. Nothing a first conversation doesn't need | 1 min from a prebuilt artifact (3 min at most) |
-| **First open** | Only until the window shows and accepts a message | Window shown, the backend started, the configured model reachable, the default agent ready | Window at once; first message accepted within 6 s |
-| **Background setup** | No | Everything else, in parallel, after the window is up, with progress visible in the app | Each item has its own budget and shows its progress |
+| **Install** | **Yes.** It finishes completely before it says it's done | Puts every component on disk: the runtime, the TUI and web UI, the document runtime (Office renderer, managed Node and Python packages), the clio-kit science runtime and the launcher. Writes the manifest, then runs the "can it serve" check | 1 min target, 3 min at most |
+| **First open** | Only until the window shows and accepts a message | Window shown, backend started, the configured model reachable, the default agent ready | Window at once; first message accepted within 6 s |
+| **Setup** | **No.** It runs in the background after the window is up | Everything Clio prepares or checks for itself at runtime | Each item reports its progress and has its own budget |
 
-Today the install does all of it up front, in one blocking run: the Python environment, then managed
-Python and Node packages and the Office renderer, then the clio-kit science runtime, the TUI and the web
-bundle. Only the runtime and the launcher are needed to start.
+**Install is fast because it's prebuilt, not because it's partial.** Today it builds or resolves its
+components on the user's machine, one after another: a Python environment from PyPI, then the document
+packages and the Office renderer, then the science runtime. In the target, all of those come prebuilt
+inside the per-OS runtime artifact. The install downloads or carries them, unpacks and checks them,
+in parallel where the steps are independent.
 
-Moves to background setup:
+**Setup is what runs in the background.** These are the things Clio prepares or checks once it's
+running:
 
 | Item | Needed for | Until it's ready |
 |---|---|---|
-| Office renderer, managed Node and Python document packages | Reading and writing Office documents and PDFs | Those tools say "preparing" and run when it's done; the request is kept, not refused |
-| clio-kit science runtime and each plugin's MCP server environment | That plugin's tools | The same: the tool waits for its environment |
-| Provider model catalog refresh | The model picker's full list | The configured model works; the list fills in |
-| Marketplace update check, cache pruning | Nothing urgent | Runs last, at low priority |
+| Restoring conversations and tasks from clio-core | Opening an older conversation | A new conversation starts at once; older ones open as they load |
+| Each plugin's MCP server environment, built on its first start | That plugin's tools | The tool waits for its environment, then runs; the request is kept, not refused |
+| Provider sign-in check and model catalog refresh | The model picker's full list | The configured model works; the list fills in |
+| Marketplace update check | New plugin versions | Runs at low priority |
+| Cache pruning | Disk use | Runs last, at low priority |
 
-Rules for background setup:
+Rules for setup:
 - **Visible.** Each item shows in the app: preparing, ready, or failed with the cause and the fix.
 - **Never silent.** A failure is shown where the person will look, not only written to a log.
 - **Never in the way.** A first conversation never waits for an item it doesn't use.
 - **Things that need an item wait for it.** A tool that needs an unfinished item waits for it and then
   runs; it doesn't fail.
-- **In order of likely use.** What a first conversation is likely to need is set up first.
+- **In order of likely use.** What a first conversation is likely to need is prepared first.
 - **Resumable.** If Clio closes mid-setup, the next start continues where it stopped.
-- **Prepared once.** Done items are recorded in the manifest and never redone at boot.
+- **Prepared once.** Done items are recorded and never redone at boot.
 
-The installer and the startup work below follow this split: `install` ends at a working Clio, and
-everything else is prepared by Clio itself, in the background, on first open. The CI matrix measures
-each stage separately: install time, time to first window, time to first accepted message, and
-time to each background item.
+The CI matrix measures each stage separately: install time, time to first window, time to first
+accepted message, and time to each setup item.
 
 ## Three paths, one pipeline
 
@@ -310,7 +312,7 @@ CI matrix fails the build when one is exceeded.
 |---|---|
 | Fresh install, release mode, from a prebuilt artifact | 1 min target, 3 min maximum, on Linux, macOS and Windows |
 | First window after launch | Immediate (under 2 s) |
-| Background setup, all items | Each item reported; total within 5 min on a normal connection |
+| Setup, all items | Each item reported; total within 5 min on a normal connection |
 | Upgrade from the previous release | 1 min |
 | Repair after an interrupted install | Completes; never asks the user to delete anything |
 | Start to UI usable (can accept a message) | 6 s |
