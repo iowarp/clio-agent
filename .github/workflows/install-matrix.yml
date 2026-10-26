@@ -113,6 +113,14 @@ jobs:
         with:
           python-version: '3.13'
       - uses: astral-sh/setup-uv@v5
+      # The release path runs the script people get (main), which installs the latest
+      # release; the checkout's script installs that release too, but may already call
+      # code the release does not have. The source path below runs this checkout.
+      - name: Fetch the published install script
+        shell: bash
+        run: |
+          curl -fsSL https://raw.githubusercontent.com/iowarp/clio-agent/main/install/install.sh -o "$RUNNER_TEMP/install.sh"
+          curl -fsSL https://raw.githubusercontent.com/iowarp/clio-agent/main/install/install.ps1 -o "$RUNNER_TEMP/install.ps1"
       - name: Release install, start, stop, re-run, interrupted re-run, uninstall (POSIX)
         if: runner.os != 'Windows'
         continue-on-error: true
@@ -123,12 +131,13 @@ jobs:
           CLIO_AGENT_HOME: ${{ runner.temp }}/clio/home
         run: |
           rec() { python scripts/ci/record_step.py --file "$TIMINGS" "$@"; }
-          rec --name "script: fresh install" -- bash install/install.sh
+          release="$RUNNER_TEMP/install.sh"
+          rec --name "script: fresh install" -- bash "$release"
           rec --name "script: start" -- "$CLIO_BIN_DIR/clio" start
           rec --name "script: stop" -- "$CLIO_BIN_DIR/clio" stop
-          rec --name "script: re-run over an install" -- bash install/install.sh
-          rec --name "script: interrupted after 20s" --kill-after 20 -- bash install/install.sh
-          rec --name "script: re-run after interruption" -- bash install/install.sh
+          rec --name "script: re-run over an install" -- bash "$release"
+          rec --name "script: interrupted after 20s" --kill-after 20 -- bash "$release"
+          rec --name "script: re-run after interruption" -- bash "$release"
           rec --name "script: start after re-run" -- "$CLIO_BIN_DIR/clio" start
           rec --name "script: stop after re-run" -- "$CLIO_BIN_DIR/clio" stop
           rec --name "script: uninstall" -- "$CLIO_BIN_DIR/clio" uninstall --yes
@@ -156,12 +165,13 @@ jobs:
           CLIO_AGENT_HOME: ${{ runner.temp }}\clio\home
         run: |
           function Rec { python scripts/ci/record_step.py --file $env:TIMINGS @args }
-          Rec --name "script: fresh install" -- pwsh -NoProfile -File install/install.ps1
+          $release = Join-Path $env:RUNNER_TEMP "install.ps1"
+          Rec --name "script: fresh install" -- pwsh -NoProfile -File $release
           Rec --name "script: start" -- pwsh -NoProfile -File "$env:CLIO_BIN_DIR\clio.ps1" start
           Rec --name "script: stop" -- pwsh -NoProfile -File "$env:CLIO_BIN_DIR\clio.ps1" stop
-          Rec --name "script: re-run over an install" -- pwsh -NoProfile -File install/install.ps1
-          Rec --kill-after 20 --name "script: interrupted after 20s" -- pwsh -NoProfile -File install/install.ps1
-          Rec --name "script: re-run after interruption" -- pwsh -NoProfile -File install/install.ps1
+          Rec --name "script: re-run over an install" -- pwsh -NoProfile -File $release
+          Rec --kill-after 20 --name "script: interrupted after 20s" -- pwsh -NoProfile -File $release
+          Rec --name "script: re-run after interruption" -- pwsh -NoProfile -File $release
           Rec --name "script: uninstall" -- pwsh -NoProfile -File "$env:CLIO_BIN_DIR\clio.ps1" uninstall -Yes
       - name: Report
         if: always()
@@ -192,7 +202,8 @@ jobs:
         continue-on-error: true
         run: |
           remote() { ssh -i "$RUNNER_TEMP/key" -p 2222 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null clio@127.0.0.1 "$@"; }
-          scp -i "$RUNNER_TEMP/key" -P 2222 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null install/install.sh clio@127.0.0.1:install.sh
+          curl -fsSL https://raw.githubusercontent.com/iowarp/clio-agent/main/install/install.sh -o "$RUNNER_TEMP/install.sh"
+          scp -i "$RUNNER_TEMP/key" -P 2222 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null "$RUNNER_TEMP/install.sh" clio@127.0.0.1:install.sh
           rec() { python3 scripts/ci/record_step.py --file "$TIMINGS" "$@"; }
           # The desktop's SSH deployment installs uv on the host first, then runs install.sh.
           rec --name "ssh: install uv" -- bash -c "$(declare -f remote); remote 'curl -LsSf https://astral.sh/uv/install.sh | sh'"

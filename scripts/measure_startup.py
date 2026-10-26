@@ -171,16 +171,20 @@ def _stop_leftover_daemon(env: dict[str, str], copy: Path) -> bool:
     """Stop a clio-core daemon the server left behind; report whether there was one."""
     for key in ("CLIO_AGENT_HOME", "CLIO_RUNTIME_STATE_DIR", "CLIO_CORE_PORT"):
         os.environ[key] = env[key]
-    os.chdir(copy / "workspace")
-    from clio_agent.arc import runtime_stop, storage  # noqa: PLC0415
-    from clio_agent.arc.clio_core_config import _resolve_config_path  # noqa: PLC0415
+    previous = Path.cwd()
+    os.chdir(copy / "workspace")  # the config resolves the way the server resolved it
+    try:
+        from clio_agent.arc import runtime_stop, storage  # noqa: PLC0415
+        from clio_agent.arc.clio_core_config import _resolve_config_path  # noqa: PLC0415
 
-    if not storage._daemon_pidfile().is_file():
-        return False
-    config = str(_resolve_config_path(os.environ))
-    if not runtime_stop.cleanup_runtime_after_client_crash(config, wait_timeout_seconds=30.0):
-        runtime_stop.kill_daemon_pidfile()
-    return True
+        if not storage._daemon_pidfile().is_file():
+            return False
+        config = str(_resolve_config_path(os.environ))
+        if not runtime_stop.cleanup_runtime_after_client_crash(config, wait_timeout_seconds=30.0):
+            runtime_stop.kill_daemon_pidfile()
+        return True
+    finally:
+        os.chdir(previous)
 
 
 def main() -> int:
@@ -194,6 +198,7 @@ def main() -> int:
     parser.add_argument("--work-dir", type=Path, default=None, help="where the store copy goes")
     parser.add_argument("--keep", action="store_true", help="keep the copy and server log")
     args = parser.parse_args()
+    args.out = args.out.resolve() if args.out else None  # measuring changes directory
     result = measure(args)
     text = json.dumps(result, indent=2)
     if args.out:

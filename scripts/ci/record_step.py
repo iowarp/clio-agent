@@ -24,14 +24,19 @@ from pathlib import Path
 
 def run(args: argparse.Namespace, command: list[str]) -> int:
     started = time.monotonic()
-    process = subprocess.Popen(command)  # noqa: S603 - the workflow's own command
     killed = False
     try:
-        code = process.wait(timeout=args.kill_after or args.timeout)
-    except subprocess.TimeoutExpired:
-        process.kill()
-        code = process.wait()
-        killed = True
+        process = subprocess.Popen(command)  # noqa: S603 - the workflow's own command
+    except OSError as error:  # e.g. the launcher a failed install never wrote
+        print(f"{args.name}: cannot run {command[0]}: {error}", file=sys.stderr)
+        code = 127
+    else:
+        try:
+            code = process.wait(timeout=args.kill_after or args.timeout)
+        except subprocess.TimeoutExpired:
+            process.kill()
+            code = process.wait()
+            killed = True
     row = {
         "name": args.name,
         "os": f"{platform.system()} {platform.machine()}",
