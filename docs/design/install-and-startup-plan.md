@@ -75,8 +75,15 @@ report done:
 - **Installing Clio:** every component, including the MCP server environments of the plugins that ship
   with Clio, prebuilt in the runtime artifact.
 - **Adding a plugin:** the plugin is not reported installed until its MCP server environments are built
-  and checked, with progress shown while it happens. Today these environments are built on the server's
-  first start (`uvx`), which is installation hidden inside startup; that moves into the plugin install.
+  and checked, with progress shown while it happens.
+
+How much this matters today: the default agent runs one MCP server, `web`, which is already built into
+the runtime. The installer no longer installs the whole clio-kit science runtime, only the small
+`clio-kit` launcher. Eight marketplace plugins declare servers (adios, geo, hdf5, ndp, pandas, parquet,
+plot, spotter), and only science agents use them. The launcher starts each one through `uvx`, which
+downloads and builds the server's environment on its first use, so the first science conversation still
+does install work at startup. That is the one case to move into the plugin install. It is small today,
+but the rule has to hold as the number of servers grows.
 
 **Setup is what runs in the background:** what Clio prepares or checks once it's running.
 
