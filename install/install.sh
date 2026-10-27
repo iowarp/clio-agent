@@ -1,27 +1,28 @@
 #!/usr/bin/env bash
 # CLIO installer (Linux / macOS).
 #
-# Default: pulls clio-agent from PyPI and downloads a prebuilt CLIO-branded
-# `clio-tui` binary from clio-agent's GitHub Releases. No `git` or `go` required;
-# you only need `uv` or `pip`.
+#   install.sh                 the latest stable release
+#   install.sh --dev           the latest release overall, pre-releases included
+#   install.sh --source        source at `main`, with what main pins (submodules, uv.lock)
+#   install.sh --dev --source  source at `develop`
 #
-# Source-build mode (opt-in for tracking unreleased work): set
-# CLIO_REF=<branch> and/or GACT_REF=<branch> to clone-and-build the
-# selected component instead. Source mode for clio-agent needs `git`
-# + `uv`; source mode for gact-tui needs `git` + `go` 1.26+.
+# --source run from inside a clio-agent checkout (`./install/install.sh`) installs that
+# checkout in place, on whatever branch it is; streamed (`curl ... | bash`) it clones.
+# A release is installed from PyPI, constrained by that release tag's own uv.lock, on
+# the Python that release declares (.python-version; 3.13 before the file existed).
+#
+# Pins for deployments and CI: --version <pypi version> (release) and --ref <git ref>
+# (source). Older environment spellings still work: CLIO_VERSION=<v> is --version,
+# CLIO_REF=<ref> is --source --ref <ref>.
 #
 # Honours environment overrides:
-#   CLIO_PREFIX        install root         (default: $HOME/.local/share/clio)
+#   CLIO_PREFIX        install root         (default: <agent data>/app)
 #   CLIO_BIN_DIR       launcher location    (default: $HOME/.local/bin)
-#   CLIO_VERSION       pin clio-agent       (default: latest from PyPI)
 #   GACT_VERSION       legacy override for TUI release tag (default: match CLIO)
-#   CLIO_INSTALLER_REF pin launcher scripts (default: v<installed clio-agent>)
-#   CLIO_REF           clio-agent branch    (default: release mode)
-#   GACT_REF           gact-tui branch      (default: release mode)
-#   CLIO_KIT_PACKAGE   local candidate wheel/base spec (default: empty;
-#                                            released 2.10.6 remains legacy)
-#   CLIO_GIT_PROTOCOL  https | ssh          (default: https; only used
-#                                            in source-build mode)
+#   CLIO_INSTALLER_REF pin launcher scripts (default: the installed release's tag)
+#   GACT_REF           gact-tui branch for the TUI (source mode only)
+#   CLIO_KIT_PACKAGE   local candidate wheel/base spec (default: released 2.10.6)
+#   CLIO_GIT_PROTOCOL  https | ssh          (default: https; source mode only)
 #
 # NOTE: invoke via `bash` (not `sh`). On Debian/Ubuntu `sh` is dash,
 # which doesn't support `set -o pipefail`. The one-liner in the README
@@ -40,6 +41,26 @@ if [ -z "${BASH_VERSION:-}" ]; then
 fi
 set -euo pipefail
 
+usage() { sed -n '2,20p' "${BASH_SOURCE[0]:-/dev/null}" 2>/dev/null | sed 's/^# \{0,1\}//'; }
+
+OPT_SOURCE=0
+OPT_DEV=0
+OPT_VERSION=""
+OPT_REF=""
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --source|-Source) OPT_SOURCE=1 ;;
+    --dev|-Dev) OPT_DEV=1 ;;
+    --version|-Version) OPT_VERSION="${2:?--version needs a value}"; shift ;;
+    --version=*) OPT_VERSION="${1#*=}" ;;
+    --ref|-Ref) OPT_REF="${2:?--ref needs a value}"; shift ;;
+    --ref=*) OPT_REF="${1#*=}" ;;
+    -h|--help) usage; exit 0 ;;
+    *) echo "clio installer: unknown option '$1' (try --help)" >&2; exit 2 ;;
+  esac
+  shift
+done
+
 GREEN='\033[0;32m'; YELLOW='\033[0;33m'; RED='\033[0;31m'; RESET='\033[0m'
 say()  { printf "${GREEN}==>${RESET} %s\n" "$*"; }
 warn() { printf "${YELLOW}!! ${RESET} %s\n" "$*" >&2; }
@@ -54,7 +75,9 @@ release_tag() {
     printf 'v%s-beta.%s.%s' "${BASH_REMATCH[1]}" "${BASH_REMATCH[2]}" "${BASH_REMATCH[3]}"
   elif [[ "$version" =~ ^([0-9]+\.[0-9]+\.[0-9]+(\.[0-9]+)?)b([0-9]+)$ ]]; then
     printf 'v%s-beta.%s' "${BASH_REMATCH[1]}" "${BASH_REMATCH[3]}"
-  elif [[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+(\.[0-9]+)?(-beta\.[0-9]+(\.[0-9]+)?)?$ ]]; then
+  elif [[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+(\.[0-9]+)?(-beta\.[0-9]+(\.[0-9]+)?|(a|rc)[0-9]+)?$ ]]; then
+    # Only betas have their own tag spelling; alphas and release candidates
+    # are tagged as their package version (0.10.0a1 is v0.10.0a1).
     printf 'v%s' "$version"
   else
     die "no GitHub release tag for package version: $version"
@@ -79,10 +102,15 @@ if [[ -z "${CLIO_PREFIX:-}" && -z "${CLIO_AGENT_HOME:-}${CLIO_AGENT_DATA_DIR:-}$
   PREFIX="$HOME/.local/share/clio"
 fi
 BIN_DIR="${CLIO_BIN_DIR:-$HOME/.local/bin}"
-CLIO_VERSION="${CLIO_VERSION:-}"
+OPT_VERSION="${OPT_VERSION:-${CLIO_VERSION:-}}"
+if [ -n "${CLIO_REF:-}" ] && [ -z "$OPT_REF" ]; then
+  OPT_SOURCE=1
+  OPT_REF="$CLIO_REF"
+fi
+[ "$OPT_SOURCE" = 1 ] && [ -n "$OPT_VERSION" ] && die "--version pins a release; use --ref <tag or commit> with --source"
+[ "$OPT_SOURCE" = 0 ] && [ -n "$OPT_REF" ] && die "--ref pins source; add --source"
 GACT_VERSION="${GACT_VERSION:-latest}"
 CLIO_INSTALLER_REF="${CLIO_INSTALLER_REF:-}"
-CLIO_REF="${CLIO_REF:-}"
 GACT_REF="${GACT_REF:-}"
 CLIO_KIT_PACKAGE="${CLIO_KIT_PACKAGE:-}"
 CLIO_GIT_PROTOCOL="${CLIO_GIT_PROTOCOL:-https}"
@@ -116,69 +144,140 @@ esac
 # ---------- prerequisite checks ---------------------------------------
 have curl || die "curl is required"
 
-# Need a Python installer for clio-agent. uv is preferred (handles
-# venv + Python toolchain itself). Source builds use standard Python 3.14.
-# Published releases still pin clio-core 2.2.x, whose wheels require Python 3.13.
-PYINSTALL=""
-if   have uv;   then PYINSTALL=uv
-elif have pip3; then PYINSTALL=pip3
-elif have pip;  then PYINSTALL=pip
-else
-  die "need uv or pip to install clio-agent. install uv with: curl -LsSf https://astral.sh/uv/install.sh | sh"
+# uv installs Python, the environment and the locked dependencies in every mode.
+mkdir -p "$PREFIX" "$BIN_DIR"
+if ! have uv; then
+  say "Installing uv into $BIN_DIR"
+  curl -LsSf https://astral.sh/uv/install.sh | env UV_INSTALL_DIR="$BIN_DIR" UV_NO_MODIFY_PATH=1 sh >/dev/null \
+    || die "could not install uv; install it (https://docs.astral.sh/uv/) and run this installer again"
+  export PATH="$BIN_DIR:$PATH"
 fi
-
-if [ "$PYINSTALL" != "uv" ]; then
-  python3 -c 'import sys; sys.exit(0 if sys.version_info[:2] == (3, 13) else 1)' \
-    || die "pip release installation requires Python 3.13. Install uv for source builds with Python 3.14."
-fi
-
-if [ -n "$CLIO_REF" ]; then
-  have git || die "git required when CLIO_REF is set (source-build mode)"
-  have uv  || die "uv required to build clio-agent from source"
-  have go  || die "go (>= 1.26) required when CLIO_REF is set so the CLIO TUI can be built"
+if [ "$OPT_SOURCE" = 1 ]; then
+  have git || die "git is required for --source"
 fi
 if [ -n "$GACT_REF" ]; then
   have git || die "git required when GACT_REF is set (source-build mode)"
   have go  || die "go (>= 1.26) required to build gact from source"
-  [ -n "$CLIO_REF" ] || die "GACT_REF source-build mode now requires CLIO_REF so CLIO branding scripts are available"
+  [ "$OPT_SOURCE" = 1 ] || die "GACT_REF builds the TUI from source and needs --source"
 fi
 
-mkdir -p "$PREFIX" "$BIN_DIR"
+# The checkout this script runs from, when it runs from one (not when streamed).
+CHECKOUT=""
+script_path="${BASH_SOURCE[0]:-}"
+if [ -n "$script_path" ] && [ -f "$script_path" ]; then
+  candidate="$(cd "$(dirname "$script_path")/.." && pwd)"
+  if [ -f "$candidate/pyproject.toml" ] && grep -q '^name = "clio-agent"' "$candidate/pyproject.toml" \
+     && [ -e "$candidate/.git" ]; then
+    CHECKOUT="$candidate"
+  fi
+fi
+
+# A ref's Python: its .python-version, or 3.13 for releases from before that file.
+python_of() {
+  local value
+  value="$(tr -d '[:space:]' 2>/dev/null < "$1" || true)"
+  printf '%s' "${value:-3.13}"
+}
 
 # ---------- install clio-agent ----------------------------------------
 VENV="$PREFIX/clio-agent/.venv"
+SRC=""
 
-if [ -n "$CLIO_REF" ]; then
-  say "Cloning clio-agent at $CLIO_REF (source-build mode)"
-  if [[ -e "$PREFIX/clio-agent" ]]; then
-    die "Source reinstall refused: '$PREFIX/clio-agent' already exists. Choose a new CLIO_PREFIX or explicitly move the existing installation after migrating its user data."
+if [ "$OPT_SOURCE" = 1 ]; then
+  if [ -n "$CHECKOUT" ] && [ -z "$OPT_REF" ]; then
+    SRC="$CHECKOUT"
+    say "Installing the checkout in place: $SRC ($(git -C "$SRC" rev-parse --abbrev-ref HEAD 2>/dev/null || echo detached))"
+    if [ -L "$PREFIX/clio-agent" ] || [ ! -e "$PREFIX/clio-agent" ]; then
+      :
+    elif [ -e "$PREFIX/clio-agent/.git" ]; then
+      die "Source reinstall refused: '$PREFIX/clio-agent' is a clone that may hold your changes. Move it, or choose another CLIO_PREFIX."
+    else
+      rm -rf "$PREFIX/clio-agent"  # a release install's environment; data lives elsewhere
+    fi
+    ln -sfn "$SRC" "$PREFIX/clio-agent"
+    git -C "$SRC" submodule update --init --recursive
+    py="$(python_of "$SRC/.python-version")"
+    say "Installing clio-agent deps (uv sync --python $py --extra argonne --extra flowcept)"
+    ( cd "$SRC" && uv sync --python "$py" --extra argonne --extra flowcept )
+  else
+    ref="${OPT_REF:-$([ "$OPT_DEV" = 1 ] && echo develop || echo main)}"
+    SRC="$PREFIX/clio-agent"
+    if [[ -e "$SRC" ]]; then
+      die "Source reinstall refused: '$SRC' already exists. Choose a new CLIO_PREFIX or explicitly move the existing installation after migrating its user data."
+    fi
+    say "Cloning clio-agent at $ref"
+    if ! git clone --quiet --recurse-submodules --shallow-submodules --branch "$ref" --depth 1 "$CLIO_REPO" "$SRC" 2>/dev/null; then
+      # A commit is not a branch or tag: fetch it by id.
+      git init -q "$SRC" && git -C "$SRC" remote add origin "$CLIO_REPO" \
+        && git -C "$SRC" fetch -q --depth 1 origin "$ref" && git -C "$SRC" checkout -q FETCH_HEAD \
+        && git -C "$SRC" submodule update --init --recursive --depth 1 \
+        || die "could not fetch clio-agent at '$ref'"
+    fi
+    py="$(python_of "$SRC/.python-version")"
+    say "Installing clio-agent deps from uv.lock (uv sync --locked --python $py --extra argonne --extra flowcept)"
+    ( cd "$SRC" && uv sync --locked --python "$py" --extra argonne --extra flowcept )
   fi
-  git clone --quiet --recurse-submodules --shallow-submodules --branch "$CLIO_REF" --depth 1 "$CLIO_REPO" "$PREFIX/clio-agent"
-  say "Installing clio-agent deps (uv sync --python 3.14 --extra argonne --extra flowcept)"
-  ( cd "$PREFIX/clio-agent" && uv sync --python 3.14 --extra argonne --extra flowcept )
 else
-  package_version="$CLIO_VERSION"
-  if [[ "$package_version" =~ ^v?([0-9]+\.[0-9]+\.[0-9]+)-beta\.([0-9]+)\.([0-9]+)$ ]]; then
-    package_version="${BASH_REMATCH[1]}b${BASH_REMATCH[2]}.post${BASH_REMATCH[3]}"
+  if [ -n "$OPT_VERSION" ]; then
+    package_version="$OPT_VERSION"
+    if [[ "$package_version" =~ ^v?([0-9]+\.[0-9]+\.[0-9]+)-beta\.([0-9]+)\.([0-9]+)$ ]]; then
+      package_version="${BASH_REMATCH[1]}b${BASH_REMATCH[2]}.post${BASH_REMATCH[3]}"
+    elif [[ "$package_version" =~ ^v?([0-9]+\.[0-9]+\.[0-9]+)-beta\.([0-9]+)$ ]]; then
+      package_version="${BASH_REMATCH[1]}b${BASH_REMATCH[2]}"
+    fi
+    package_version="${package_version#v}"
+  else
+    # The published GitHub Releases are the release list (PyPI can hold strays that
+    # never became a release). The default takes the highest stable version; --dev the
+    # most recently published release, pre-releases included.
+    which="stable"; [ "$OPT_DEV" = 1 ] && which="any"
+    say "Resolving the latest $([ "$which" = any ] && echo release || echo stable release)"
+    package_version="$(curl -fsSL "https://api.github.com/repos/iowarp/clio-agent/releases?per_page=100" \
+      | uv run --quiet --no-project --python 3.13 --with packaging python -c '
+import json, re, sys
+from packaging.version import InvalidVersion, Version
+found = []
+for release in json.load(sys.stdin):
+    if release.get("draft"):
+        continue
+    tag = release.get("tag_name", "")
+    match = re.fullmatch(r"v(\d+\.\d+\.\d+(?:\.\d+)?)-beta\.(\d+)(?:\.(\d+))?", tag)
+    text = (f"{match[1]}b{match[2]}" + (f".post{match[3]}" if match[3] else "")) if match else tag[1:]
+    try:
+        version = Version(text)
+    except InvalidVersion:
+        continue  # not a clio-agent release tag
+    if sys.argv[1] == "stable" and version.is_prerelease:
+        continue
+    found.append((release.get("published_at") or "", version))
+# Stable: the highest stable version. --dev: the most recently published release,
+# whatever its version says (an old alpha can sort above the newest beta).
+print(max(v for _, v in found) if sys.argv[1] == "stable" else max(found)[1])
+' "$which")" || die "could not read the clio-agent releases from GitHub"
   fi
-  pkg_spec="clio-agent[argonne,flowcept]${package_version:+==$package_version}"
+  tag="$(release_tag "$package_version")"
+  lockdir="$(mktemp -d)"
+  trap 'rm -rf "$lockdir"' EXIT
+  for f in pyproject.toml uv.lock .python-version; do
+    curl -fsSL "https://raw.githubusercontent.com/iowarp/clio-agent/$tag/$f" -o "$lockdir/$f" 2>/dev/null \
+      || { [ "$f" = .python-version ] || die "release $tag has no $f on GitHub"; }
+  done
+  py="$(python_of "$lockdir/.python-version")"
+  ( cd "$lockdir" && uv export --quiet --frozen --no-hashes --no-emit-project \
+      --extra argonne --extra flowcept -o constraints.txt ) \
+    || die "could not read the dependency lock of release $tag"
+  pkg_spec="clio-agent[argonne,flowcept]==$package_version"
   # On macOS, select an available Rasterio wheel for the user's OS instead
   # of trying to compile a newer release against a missing system GDAL.
   wheel_arg=""
   [ "$OS" != darwin ] || wheel_arg="--only-binary=rasterio"
-  say "Installing $pkg_spec from PyPI"
+  say "Installing $pkg_spec from PyPI (Python $py, locked by $tag)"
   rm -rf "$VENV"
   mkdir -p "$PREFIX/clio-agent"
-  if [ "$PYINSTALL" = "uv" ]; then
-    uv venv --python 3.13 "$VENV" >/dev/null
-    uv pip install --quiet --python "$VENV/bin/python" ${wheel_arg:+"$wheel_arg"} "$pkg_spec" \
-      "dspy==3.4.0" "fastmcp==4.1.0" "fastmcp-slim==4.1.0" \
-      "fastmcp-tasks==4.1.0"
-  else
-    python3 -m venv "$VENV"
-    "$VENV/bin/$PYINSTALL" install --quiet --upgrade pip
-    "$VENV/bin/$PYINSTALL" install --quiet ${wheel_arg:+"$wheel_arg"} "$pkg_spec"
-  fi
+  uv venv --python "$py" "$VENV" >/dev/null
+  uv pip install --quiet --python "$VENV/bin/python" ${wheel_arg:+"$wheel_arg"} \
+    --constraint "$lockdir/constraints.txt" "$pkg_spec"
+  CLIO_VERSION="$package_version"
 fi
 
 CLIO_INSTALLED_VERSION=""
@@ -186,8 +285,13 @@ if [ -x "$VENV/bin/python" ]; then
   CLIO_INSTALLED_VERSION="$("$VENV/bin/python" -c 'from importlib.metadata import version; print(version("clio-agent"))' 2>/dev/null || true)"
 fi
 
-say 'Installing managed Python/uv and Node/pnpm packages and Office rendering'
-"$VENV/bin/python" -m clio_agent.runtime.document_install
+if "$VENV/bin/python" -c 'import importlib.util, sys; sys.exit(0 if importlib.util.find_spec("clio_agent.runtime.document_install") else 3)' 2>/dev/null; then
+  say 'Installing managed Python/uv and Node/pnpm packages and Office rendering'
+  "$VENV/bin/python" -m clio_agent.runtime.document_install
+else
+  # Releases before the managed document runtime set it up on their own.
+  say "clio-agent $CLIO_INSTALLED_VERSION has no managed document runtime step; skipping it"
+fi
 
 # ---------- provision clio-kit MCP runtime ----------------------------
 # Marketplace packs launch their MCP servers via the installed `clio-kit
@@ -217,15 +321,19 @@ fi
 # ---------- install gact ----------------------------------------------
 GACT_BIN="$PREFIX/gact"
 
-if [ -n "$CLIO_REF" ] && [ -z "$GACT_REF" ]; then
-  say "Building CLIO-branded TUI from clio-agent submodule"
-  ( cd "$PREFIX/clio-agent" && ./scripts/build_clio_tui.sh "$GACT_BIN" )
+if [ "$OPT_SOURCE" = 1 ] && [ -z "$GACT_REF" ]; then
+  if have go; then
+    say "Building CLIO-branded TUI from clio-agent submodule"
+    ( cd "$SRC" && ./scripts/build_clio_tui.sh "$GACT_BIN" )
+  else
+    warn "TUI not built: go (>= 1.26) is not installed. Install go and run this installer again for the terminal UI; the desktop app and 'clio --web --dev' work without it."
+  fi
 elif [ -n "$GACT_REF" ]; then
   say "Cloning gact-tui at $GACT_REF (source-build mode)"
   rm -rf "$PREFIX/gact-tui"
   git clone --quiet --branch "$GACT_REF" --depth 1 "$GACT_REPO" "$PREFIX/gact-tui"
   say "Building CLIO-branded TUI"
-  GACT_TUI_ROOT="$PREFIX/gact-tui" "$PREFIX/clio-agent/scripts/build_clio_tui.sh" "$GACT_BIN"
+  GACT_TUI_ROOT="$PREFIX/gact-tui" "$SRC/scripts/build_clio_tui.sh" "$GACT_BIN"
 else
   tag="$GACT_VERSION"
   if [ "$tag" = "latest" ]; then
@@ -267,25 +375,43 @@ fi
 # When we cloned clio-agent (source mode), the scripts are already on
 # disk. In release mode, fetch them from the ref that matches the
 # installed PyPI version, unless an explicit installer ref is provided.
-launcher_ref="${CLIO_REF:-${CLIO_INSTALLER_REF:-}}"
+launcher_ref="${CLIO_INSTALLER_REF:-}"
 if [ -z "$launcher_ref" ] && [ -n "$CLIO_INSTALLED_VERSION" ]; then
   launcher_ref="$(release_tag "$CLIO_INSTALLED_VERSION")"
 fi
 launcher_ref="${launcher_ref:-main}"
 RAW="https://raw.githubusercontent.com/iowarp/clio-agent/${launcher_ref}/install"
 
+# The installed release's own launcher lives in the install; `clio` on PATH pins
+# this install's location, so a launcher from any release (whose built-in default
+# location may differ) finds it.
 LAUNCHER="$BIN_DIR/clio"
+RELEASE_LAUNCHER="$PREFIX/libexec/clio"
 say "Installing launcher: $LAUNCHER"
-if [ -n "$CLIO_REF" ]; then
-  cp "$PREFIX/clio-agent/install/clio" "$LAUNCHER"
+mkdir -p "$PREFIX/libexec"
+if [ "$OPT_SOURCE" = 1 ]; then
+  cp "$SRC/install/clio" "$RELEASE_LAUNCHER"
 else
-  curl -fsSL "$RAW/clio" -o "$LAUNCHER"
+  curl -fsSL "$RAW/clio" -o "$RELEASE_LAUNCHER"
 fi
+chmod +x "$RELEASE_LAUNCHER"
+# An install made for its own data home (an SSH deployment's <root>/user) keeps it,
+# so starting it by hand uses the same conversations as the deployment does.
+agent_home_line=""
+[ -n "${CLIO_AGENT_HOME:-}" ] && agent_home_line="export CLIO_AGENT_HOME=\"\${CLIO_AGENT_HOME:-$CLIO_AGENT_HOME}\""
+cat > "$LAUNCHER" <<LAUNCH
+#!/usr/bin/env bash
+# CLIO: the installation in $PREFIX, through that installation's own launcher.
+export CLIO_PREFIX="\${CLIO_PREFIX:-$PREFIX}"
+export CLIO_BIN_DIR="\${CLIO_BIN_DIR:-$BIN_DIR}"
+$agent_home_line
+exec "$RELEASE_LAUNCHER" "\$@"
+LAUNCH
 chmod +x "$LAUNCHER"
 
 say "Installing uninstaller: $PREFIX/uninstall.sh"
-if [ -n "$CLIO_REF" ]; then
-  cp "$PREFIX/clio-agent/install/uninstall.sh" "$PREFIX/uninstall.sh"
+if [ "$OPT_SOURCE" = 1 ]; then
+  cp "$SRC/install/uninstall.sh" "$PREFIX/uninstall.sh"
 else
   curl -fsSL "$RAW/uninstall.sh" -o "$PREFIX/uninstall.sh"
 fi
@@ -293,8 +419,8 @@ chmod +x "$PREFIX/uninstall.sh"
 
 # ---------- finishing notes -------------------------------------------
 say "Done."
-clio_src="$(if [ -n "$CLIO_REF" ]; then echo "source: $CLIO_REF"; else echo "PyPI: ${CLIO_VERSION:-latest}"; fi)"
-gact_src="$(if [ -n "$GACT_REF" ]; then echo "source: $GACT_REF"; else echo "release: $tag"; fi)"
+clio_src="$(if [ "$OPT_SOURCE" = 1 ]; then echo "source: $SRC ($(git -C "$SRC" rev-parse --short HEAD 2>/dev/null))"; else echo "PyPI: $CLIO_VERSION"; fi)"
+gact_src="$(if [ -n "$GACT_REF" ]; then echo "source: $GACT_REF"; elif [ "$OPT_SOURCE" = 1 ]; then echo "built from the checkout's submodule"; else echo "release: $tag"; fi)"
 cat <<EOF
 
 Installed to:        $PREFIX

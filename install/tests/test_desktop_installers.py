@@ -7,11 +7,19 @@ import os
 import shlex
 import shutil
 import subprocess
+import sys
 from pathlib import Path
 
 import pytest
 
 ROOT = Path(__file__).resolve().parents[2]
+
+
+# The shared installer shims live in the repo's test package; this suite also runs
+# from install/tests alone (macos-bundle-smoke), where the repo root isn't importable.
+_REPO = str(Path(__file__).resolve().parents[2])
+if _REPO not in sys.path:
+    sys.path.insert(0, _REPO)
 
 
 def _bash_path(path: Path) -> str:
@@ -26,46 +34,16 @@ def test_backend_installer_requests_compatible_mac_wheels(
     tmp_path: Path, system: str, version: str
 ) -> None:
     """The registry install uses wheel-only resolution on Mac, retaining Linux source support."""
-    binaries = tmp_path / "bin"
-    binaries.mkdir()
-    args_file = tmp_path / "uv-args"
-    shims = {
-        "uname": f'if [ "$1" = -s ]; then echo {system}; else echo arm64; fi',
-        "curl": "exit 99",
-        "uv": 'if [ "$1" = venv ]; then exit 0; fi\nprintf "%s\\n" "$@" > "$TEST_UV_ARGS"\nexit 77',
-    }
-    for name, contents in shims.items():
-        shim = binaries / name
-        shim.write_text("#!/bin/bash\n" + contents + "\n", newline="\n")
-        shim.chmod(0o755)
-    env = {key: value for key, value in os.environ.items() if not key.startswith("CLIO_")}
-    env.update(
-        HOME=_bash_path(tmp_path),
-        TEST_PATH=f"{_bash_path(binaries)}:/usr/bin:/bin",
-        CLIO_PREFIX=_bash_path(tmp_path / "install"),
-        CLIO_BIN_DIR=_bash_path(tmp_path / "launchers"),
-        CLIO_VERSION=version,
-        TEST_UV_ARGS=_bash_path(args_file),
-    )
-    bash = "C:/Program Files/Git/bin/bash.exe" if os.name == "nt" else "bash"
-    result = subprocess.run(
-        [
-            bash,
-            "-c",
-            'export PATH="$TEST_PATH"; exec bash "$1"',
-            "installer-test",
-            _bash_path(ROOT / "install/install.sh"),
-        ],
-        env=env,
-        capture_output=True,
-        text=True,
-        timeout=10,
-    )
-    assert result.returncode == 77, result.stdout + result.stderr
-    args = args_file.read_text().splitlines()
+    from tests.test_scripts.installer_shims import STOP, run_installer, write_release
+
+    for tag in ("v0.9.5-beta.2", "v0.9.5-beta.5.1"):
+        write_release(tmp_path / "fixtures", tag, python="3.14")
+    result, calls = run_installer(tmp_path, "--version", version, system=system)
+    assert result.returncode == STOP, result.stdout + result.stderr
+    install = next(call for call in calls if call.startswith("uv pip install"))
     package_version = "0.9.5b5.post1" if version == "v0.9.5-beta.5.1" else version
-    assert f"clio-agent[argonne,flowcept]=={package_version}" in args
-    assert ("--only-binary=rasterio" in args) == (system == "Darwin")
+    assert f"clio-agent[argonne,flowcept]=={package_version}" in install
+    assert ("--only-binary=rasterio" in install) == (system == "Darwin")
 
 
 @pytest.mark.parametrize(

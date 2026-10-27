@@ -77,57 +77,55 @@ one-line installer remains the supported path when you also want the CLIO-brande
 
 To opt into CLIO v0.9.5-beta.8, replace the package pin above with
 `clio-agent==0.9.5b8`. For the complete beta frontend/backend install, use
-`CLIO_VERSION=v0.9.5-beta.8` with the installer. Beta selection is explicit;
+`install.sh --dev` (or `--version 0.9.5b8`). Beta selection is explicit;
 the examples for the default channel continue to name the current stable release.
 
-## Source-build mode (track unreleased work)
+## The four ways to install
 
-Set `CLIO_REF` and optionally `GACT_REF` to a branch/tag to clone-and-build
-instead of using PyPI/GitHub Releases:
+| Command | Installs |
+|---|---|
+| `install.sh` | the latest stable release |
+| `install.sh --dev` | the most recently published release, pre-releases included |
+| `install.sh --source` | source at `main`, with what `main` pins (submodules, `uv.lock`) |
+| `install.sh --dev --source` | source at `develop` |
 
 ```sh
-# Linux / macOS — build clio-agent and its pinned GACT submodule from develop
-CLIO_REF=develop \
-  curl -fsSL https://raw.githubusercontent.com/iowarp/clio-agent/main/install/install.sh | bash
+URL=https://raw.githubusercontent.com/iowarp/clio-agent/main/install/install.sh
+curl -fsSL $URL | bash                          # latest stable release
+curl -fsSL $URL | bash -s -- --dev              # latest release, betas included
+curl -fsSL $URL | bash -s -- --source           # main, from source
+curl -fsSL $URL | bash -s -- --dev --source     # develop, from source
 
-# Build clio-agent from source and override the GACT submodule ref
-CLIO_REF=develop GACT_REF=develop \
-  curl -fsSL https://raw.githubusercontent.com/iowarp/clio-agent/main/install/install.sh | bash
+# From your own clone: installs that checkout in place, on whatever branch it is
+git clone --recurse-submodules https://github.com/iowarp/clio-agent.git
+cd clio-agent && ./install/install.sh --source
 ```
 
 ```powershell
-# Windows
-$env:CLIO_REF = 'develop'
-irm https://raw.githubusercontent.com/iowarp/clio-agent/main/install/install.ps1 | iex
+$u = 'https://raw.githubusercontent.com/iowarp/clio-agent/main/install/install.ps1'
+& ([scriptblock]::Create((irm $u))) --dev --source   # same options; -Dev -Source work too
 ```
 
-Source mode needs:
+- **Releases** come from PyPI, constrained by that release tag's own `uv.lock`, on the
+  Python that release declares in `.python-version` (3.13 for releases before it).
+  The release list is GitHub Releases: the default takes the highest stable version,
+  `--dev` the most recently published release.
+- **Source** uses `uv sync --locked` (a clone) or `uv sync` (your checkout, in place).
+  It needs `git`. The terminal UI is built when `go` 1.26+ is installed; without it
+  the installer says so and the rest of CLIO is installed.
+- `uv` is installed into the launcher directory when it is missing.
+- `clio` on PATH runs the installed release's own launcher with this installation's
+  location, so any release finds its install.
 
-- `git` (always)
-- `uv` (when `CLIO_REF` is set — Python deps from `uv sync`)
-- `go` 1.26+ (source mode builds the CLIO-branded TUI)
+**Pins** (deployments and CI): `--version <pypi version>` for a release,
+`--ref <branch, tag or commit>` for source. The older spellings still work:
+`CLIO_VERSION=<v>` is `--version <v>`, `CLIO_REF=<ref>` is `--source --ref <ref>`.
+`GACT_REF` builds the TUI from another gact-tui ref (source only); `GACT_VERSION`
+remains a legacy escape hatch for an alternate TUI release asset, and
+`CLIO_INSTALLER_REF` for a different launcher-script ref.
 
-If both repos are private and HTTPS clone returns 404, switch to SSH:
-
-```sh
-CLIO_REF=develop CLIO_GIT_PROTOCOL=ssh \
-  bash <(curl -fsSL https://raw.githubusercontent.com/iowarp/clio-agent/main/install/install.sh)
-```
-
-## Pinning a specific release
-
-```sh
-# Pin the PyPI version and matching clio-agent GitHub release tag
-CLIO_VERSION=0.9.4.24 \
-  curl -fsSL https://raw.githubusercontent.com/iowarp/clio-agent/main/install/install.sh | bash
-```
-
-`CLIO_VERSION` is a PyPI version string (no `v` prefix). The installer downloads
-`clio-tui-*`, launcher scripts, and uninstallers from the matching
-`v<CLIO_VERSION>` GitHub release. `GACT_VERSION` remains as a legacy escape hatch
-for testing an alternate TUI asset tag. Use `CLIO_INSTALLER_REF` only when you
-intentionally need a different launcher-script ref. Leave release pins unset to
-track "latest".
+If a repository is private and an HTTPS clone returns 404, use SSH:
+`CLIO_GIT_PROTOCOL=ssh bash install/install.sh --source`.
 
 ## Using `clio`
 
