@@ -10,8 +10,12 @@ def release_tag(version: str) -> str:
 
     PyPI normalizes ``0.9.5-beta.1`` to ``0.9.5b1``. Keep the package
     version untouched for registry operations and translate only GitHub refs.
+    Only betas have their own tag spelling; an alpha or release candidate is
+    tagged as its package version (``0.10.0a1`` is ``v0.10.0a1``).
     """
 
+    if re.fullmatch(r"\d+\.\d+\.\d+(?:\.\d+)?(?:a|rc)\d+", version):
+        return f"v{version}"
     match = re.fullmatch(
         r"(\d+\.\d+\.\d+(?:\.\d+)?)(?:b(\d+)(?:\.post(\d+))?|-beta\.(\d+)(?:\.(\d+))?)?",
         version,

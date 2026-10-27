@@ -54,13 +54,17 @@ def test_release_installers_explicitly_root_intentional_prereleases() -> None:
     """Every official uv path admits exact betas without a global prerelease policy."""
 
     expected_commands = {
+        # A release is constrained by its own tag's uv.lock, whose exact pins root
+        # the betas; source installs sync that lock.
         "install/install.sh": (
-            "uv sync --python 3.14 --extra argonne",
-            '"dspy==3.4.0" "fastmcp==4.1.0" "fastmcp-slim==4.1.0"',
+            '--constraint "$lockdir/constraints.txt"',
+            "uv export --quiet --frozen --no-hashes --no-emit-project",
+            'uv sync --locked --python "$py" --extra argonne --extra flowcept',
         ),
         "install/install.ps1": (
-            "RunNative uv @('sync', '--python', '3.14')",
-            "'fastmcp-slim==4.1.0', 'fastmcp-tasks==4.1.0'",
+            "'--constraint', $Constraints",
+            "'export', '--quiet', '--frozen', '--no-hashes', '--no-emit-project'",
+            "RunNative uv @('sync', '--locked', '--python', $py, '--extra', 'argonne', '--extra', 'flowcept')",
         ),
         "install/clio": ('"dspy==3.4.0" "fastmcp==4.1.0" "fastmcp-slim==4.1.0"',),
     }
