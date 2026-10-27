@@ -73,7 +73,7 @@ from clio_agent.tools.gateway import (
     namespace_proxies,
     namespace_specs,
 )
-from clio_agent.tools.mcp_discovery import NamespaceDiscoveryHealer, discover_declared_tools_bounded
+from clio_agent.tools.mcp_discovery import NamespaceDiscoveryHealer, boot_discovery_pass
 from clio_agent.tools.reaper import WorkspaceExecutorReaper
 from clio_agent.tools.workspace_root import canonical_workspace_root
 
@@ -373,7 +373,7 @@ class ClioAgent(dspy.Module):
         self._mcp_namespace_healer = healer
 
         def _initial_pass() -> None:
-            outcome = discover_declared_tools_bounded(specs)
+            outcome = boot_discovery_pass(specs, healer.merge_listed)
             if tools := with_web_placeholders(outcome.tools, outcome.degraded, specs):
                 self._merge_discovered_tools(tool_gateway, experts, None, tools)
             for namespace, reason in outcome.degraded.items():

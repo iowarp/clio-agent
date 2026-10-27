@@ -133,9 +133,8 @@ def _resolve_tool_session(app: "FastAPI") -> tuple[str, Any | None]:
     sid = _ctx.active_tool_session_id().strip()
     if sid:
         return sid, app.state.sessions.get(sid)
-    sessions_by_recency = app.state.sessions.list()
-    if sessions_by_recency:
-        current = sessions_by_recency[0]
+    current = app.state.sessions.most_recent()
+    if current is not None:
         return current.id, current
     return "", None
 

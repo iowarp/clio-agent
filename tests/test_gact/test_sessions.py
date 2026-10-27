@@ -211,16 +211,14 @@ def test_persistence_roundtrip(tmp_path: Path) -> None:
     assert {s.id for s in got} == {s1.id, s2.id}
 
 
-def test_persistence_file_is_valid_json(tmp_path: Path) -> None:
+def test_persistence_is_one_row_per_session(tmp_path: Path) -> None:
+    """Rows live in ``sessions.sqlite3`` beside the legacy path, one per session."""
     path = tmp_path / "sessions.json"
     store = SessionStore(path=path)
     store.create(workspace_id="ws", title="x")
-    # File exists after the first write.
-    assert path.exists()
-    # Valid JSON, keyed by session id.
-    raw = json.loads(path.read_text())
-    assert isinstance(raw, dict)
-    assert len(raw) == 1
+    assert path.with_name("sessions.sqlite3").exists()
+    assert not path.exists()  # nothing rewrites a whole-registry JSON file any more
+    assert SessionStore(path=path).count() == 1
 
 
 def test_corrupted_store_file_starts_empty(tmp_path: Path) -> None:
@@ -249,29 +247,14 @@ def test_count_tracks_create_delete(mem_store: SessionStore) -> None:
     assert mem_store.count() == 1
 
 
-def test_flush_fsyncs_before_rename(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    """#771 truth pass: the docstring's durability claim is now real.
-
-    ``_flush`` (through ``platform_paths.atomic_write_text``) must ``os.fsync``
-    the staged file's descriptor before the atomic
-    rename publishes it, so a crash can't leave a half-written blob on disk.
-    """
-
-    import os as _os
-
-    fsynced: list[int] = []
-    real_fsync = _os.fsync
-
-    def _spy_fsync(fd: int) -> None:
-        fsynced.append(fd)
-        real_fsync(fd)
-
-    monkeypatch.setattr("clio_agent.platform_paths.os.fsync", _spy_fsync)
+def test_each_write_is_committed_durably(tmp_path: Path) -> None:
+    """Every change commits its one row with a full sync before the call returns."""
 
     store = SessionStore(path=tmp_path / "sessions.json")
     store.create(workspace_id="ws", title="durable")
-
-    assert fsynced, "os.fsync was never called on the persisted session file"
+    db = store._records._db
+    assert db.execute("PRAGMA synchronous").fetchone()[0] == 2  # FULL
+    assert db.execute("PRAGMA journal_mode").fetchone()[0] == "wal"
     # And the record actually landed on disk.
     reloaded = SessionStore(path=tmp_path / "sessions.json")
     assert reloaded.count() == 1

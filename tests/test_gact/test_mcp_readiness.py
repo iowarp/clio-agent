@@ -13,38 +13,72 @@ from clio_agent.gact import mcp_readiness
 from clio_agent.gact.events import EventBus
 
 
+class _Tool:
+    """A listed MCP tool: a name and the rename a mount applies."""
+
+    def __init__(self, name: str) -> None:
+        self.name = name
+
+    def model_copy(self, *, update: dict[str, Any]) -> "_Tool":
+        return _Tool(update["name"])
+
+
 class _Executor:
-    def __init__(self, *, fail_connect_once: bool = False, stall: bool = False) -> None:
-        self.fail_connect_once = fail_connect_once
+    """The executor surface a preparation uses: one start lists over its connection."""
+
+    def __init__(
+        self, *, fail_start_once: bool = False, stall: bool = False, listed: tuple[str, ...] = ()
+    ) -> None:
+        self.fail_start_once = fail_start_once
         self.stall = stall
-        self.connect_attempts = 0
-        self.merged: dict[str, Any] = {}
+        self.start_attempts = 0
+        self.connects = 0
+        self.merged: dict[str, Any] = {name: _Tool(name) for name in listed}
+
+    def get_tool_names(self) -> list[str]:
+        return list(self.merged)
 
     def merge_namespace_tools(self, namespace: str, tools: dict[str, Any]) -> None:
         del namespace
         self.merged.update(tools)
 
-    def prepare_namespace(self, namespace: str) -> None:
+    def list_namespace_tools(self, namespace: str) -> list[Any]:
         assert namespace == "geo"
-        self.connect_attempts += 1
+        self.start_attempts += 1
         if self.stall:
             from clio_agent.tools.mcp_server_progress import NoProgressTimeout
 
             raise NoProgressTimeout("connect", "no_progress", 30.0, 30.0)
-        if self.fail_connect_once and self.connect_attempts == 1:
+        if self.fail_start_once and self.start_attempts == 1:
             raise ConnectionRefusedError("private endpoint detail")
+        return [_Tool("geocode")]
+
+    def prepare_namespace(self, namespace: str) -> None:
+        assert namespace == "geo"
+        self.connects += 1
 
 
-def test_mount_retries_persistent_connect_with_a_typed_reason(
+@pytest.fixture(autouse=True)
+def _no_provisioning(monkeypatch: pytest.MonkeyPatch) -> Any:
+    """These servers have nothing to provision; their preparation state is reset."""
+
+    from clio_agent.tools import mcp_prepare
+
+    monkeypatch.setattr(
+        mcp_prepare, "provision", lambda namespace, spec: mcp_prepare.PROVISION_NOT_APPLICABLE
+    )
+    yield
+    mcp_prepare.forget("geo")
+
+
+def test_mount_retries_a_failed_start_with_a_typed_reason(
     monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
 ) -> None:
-    executor = _Executor(fail_connect_once=True)
+    from clio_agent.tools import mcp_prepare
+
+    executor = _Executor(fail_start_once=True)
     sleeps: list[float] = []
     events: list[dict[str, Any]] = []
-    monkeypatch.setattr(
-        "clio_agent.tools.mcp_discovery.ensure_namespace",
-        lambda namespace, spec: {"geo_geocode": SimpleNamespace(name="geo_geocode")},
-    )
     monkeypatch.setattr(mcp_readiness.time, "sleep", sleeps.append)
     monkeypatch.setattr(
         mcp_readiness,
@@ -61,19 +95,26 @@ def test_mount_retries_persistent_connect_with_a_typed_reason(
         )
 
     assert set(tools) == {"geo_geocode"}
-    assert executor.connect_attempts == 2
+    assert set(executor.merged) == {"geo_geocode"}
+    # One start per attempt: the listing rides the connection, no second spawn.
+    assert executor.start_attempts == 2
+    assert executor.connects == 0
     assert sleeps == [0.25]
     assert [(event["phase"], event["state"]) for event in events] == [
+        ("provision", "running"),
         ("launch", "running"),
-        ("connect", "running"),
         ("retry", "retrying"),
+        ("provision", "running"),
         ("launch", "running"),
-        ("connect", "running"),
-        ("connect", "ready"),
+        ("launch", "ready"),
     ]
-    assert events[2]["reason"] == "mcp_namespace_discovery_unreachable"
+    assert events[2]["reason"] == mcp_prepare.START_FAILED
     assert events[2]["retry_in_ms"] == 250
     assert events[-1]["tool_count"] == 1
+    state = mcp_prepare.preparation_state("geo")
+    assert state is not None
+    assert state["state"] == mcp_prepare.READY
+    assert state["provision"] == mcp_prepare.PROVISION_NOT_APPLICABLE
 
     retries = [
         record
@@ -83,14 +124,77 @@ def test_mount_retries_persistent_connect_with_a_typed_reason(
     assert len(retries) == 1
     message = retries[0].getMessage()
     assert "namespace=geo" in message
-    assert "phase=connect" in message
+    assert "phase=launch" in message
     assert "attempt=1/2" in message
     assert "retry_in_ms=250" in message
     # The raw subprocess/endpoint detail never rides the readiness reason.
     assert "private endpoint detail" not in message
 
 
-def test_terminal_launcher_failure_raises_without_retrying(
+def test_a_listed_namespace_only_connects(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A cached listing needs no listing: the one start is the connection."""
+
+    executor = _Executor(listed=("geo_geocode",))
+    events: list[dict[str, Any]] = []
+    monkeypatch.setattr(
+        mcp_readiness,
+        "_publish_dependency_state",
+        lambda namespace, **payload: events.append({"namespace": namespace, **payload}),
+    )
+
+    tools = mcp_readiness.mount_namespace_for_session(
+        executor, "geo", SimpleNamespace(name="g"), retry_delays_s=()
+    )
+
+    assert set(tools) == {"geo_geocode"}
+    assert (executor.connects, executor.start_attempts) == (1, 0)
+    assert [(event["phase"], event["state"]) for event in events] == [
+        ("provision", "running"),
+        ("connect", "running"),
+        ("connect", "ready"),
+    ]
+
+
+def test_a_provision_failure_is_a_typed_terminal_failed_state(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from clio_agent.tools import mcp_prepare
+
+    executor = _Executor()
+    events: list[dict[str, Any]] = []
+    monkeypatch.setattr(
+        mcp_readiness,
+        "_publish_dependency_state",
+        lambda namespace, **payload: events.append({"namespace": namespace, **payload}),
+    )
+
+    def _broken(namespace: str, spec: Any) -> str:
+        raise mcp_prepare.PrepareError(mcp_prepare.PROVISION_FAILED, "uv sync exited 2")
+
+    monkeypatch.setattr(mcp_prepare, "provision", _broken)
+
+    with pytest.raises(mcp_prepare.PrepareError):
+        mcp_readiness.mount_namespace_for_session(
+            executor, "geo", SimpleNamespace(name="g"), retry_delays_s=(0.0, 0.0)
+        )
+
+    # Not retried (a broken environment does not heal in a second), never started.
+    assert executor.start_attempts == 0
+    assert [(event["phase"], event["state"]) for event in events] == [
+        ("provision", "running"),
+        ("provision", "failed"),
+    ]
+    state = mcp_prepare.preparation_state("geo")
+    assert state is not None
+    assert (state["state"], state["phase"], state["reason"]) == (
+        mcp_prepare.FAILED,
+        mcp_prepare.PHASE_PROVISION,
+        mcp_prepare.PROVISION_FAILED,
+    )
+    assert state["detail"] == "uv sync exited 2"
+
+
+def test_terminal_launcher_failure_of_a_listing_only_mount_raises_without_retrying(
     monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
 ) -> None:
     executor = _Executor()
@@ -117,6 +221,7 @@ def test_terminal_launcher_failure_raises_without_retrying(
                 "geo",
                 SimpleNamespace(name="Geospatial tools"),
                 retry_delays_s=(0.25, 1.0),
+                connect=False,
             )
 
     # A non-retryable launcher failure is raised on attempt 1, never retried,
@@ -133,27 +238,27 @@ def test_terminal_launcher_failure_raises_without_retrying(
     assert events[-1]["reason"] == "mcp_namespace_discovery_unreachable"
 
 
-def test_a_connect_that_stopped_progressing_is_not_restarted(
+def test_a_start_that_stopped_progressing_is_not_restarted(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """The connect already waited out its no-progress window (the server's own tree did
+    """The start already waited out its no-progress window (the server's own tree did
     nothing); restarting it would only repeat that. Typed, terminal, one attempt.
 
-    **Sabotage:** treat ``NoProgressTimeout`` as retryable -> 3 connect attempts.
+    **Sabotage:** treat ``NoProgressTimeout`` as retryable -> 3 start attempts.
     """
+    from clio_agent.tools import mcp_prepare
     from clio_agent.tools.mcp_server_progress import NoProgressTimeout
 
     executor = _Executor(stall=True)
-    monkeypatch.setattr(
-        "clio_agent.tools.mcp_discovery.ensure_namespace",
-        lambda namespace, spec: {"geo_geocode": SimpleNamespace(name="geo_geocode")},
-    )
     monkeypatch.setattr(mcp_readiness, "_publish_dependency_state", lambda *a, **k: None)
     with pytest.raises(NoProgressTimeout):
         mcp_readiness.mount_namespace_for_session(
             executor, "geo", SimpleNamespace(name="g"), retry_delays_s=(0.0, 0.0)
         )
-    assert executor.connect_attempts == 1
+    assert executor.start_attempts == 1
+    state = mcp_prepare.preparation_state("geo")
+    assert state is not None
+    assert state["reason"] == mcp_prepare.START_NO_PROGRESS
 
 
 def test_namespace_title_preserves_known_acronyms() -> None:

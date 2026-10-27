@@ -8,6 +8,7 @@ import logging
 from collections import defaultdict
 from collections.abc import Awaitable, Callable
 from contextlib import suppress
+from typing import Literal
 from urllib.parse import urlsplit
 
 import httpx
@@ -301,7 +302,11 @@ class InfrastructureRuntime(ExternalConnectionsMixin, ServerAccessMixin, ModelRo
             return "unknown"
 
     def start_action(
-        self, service_id: str, request: ServiceActionRequest
+        self,
+        service_id: str,
+        request: ServiceActionRequest,
+        *,
+        initiator: Literal["person", "clio"] = "person",
     ) -> InfrastructureOperation:
         """Start one operation and return its durable receipt immediately."""
 
@@ -313,6 +318,7 @@ class InfrastructureRuntime(ExternalConnectionsMixin, ServerAccessMixin, ModelRo
                 service_id=service_id,
                 target_id=request.target_id,
                 action=request.action,
+                initiator=initiator,
             )
         )
         task = asyncio.create_task(self._run_operation(row, request))

@@ -33,6 +33,8 @@ if TYPE_CHECKING:
 
     from fastapi import FastAPI
 
+    from clio_agent.arc.store_protocol import ARCStore
+
 logger = logging.getLogger(__name__)
 
 #: The ARC segment scope the boot fold scans (the ``_events`` log). Named in the typed
@@ -112,9 +114,7 @@ def rebuild_registry_at_boot(app: "FastAPI") -> ArtifactRegistry:
     lazy retry migrates. ``app.state`` is assigned only once the registry is
     complete, so a concurrent reader never sees a half-built projection.
     """
-    from clio_agent.gact.runtime.globals import _PROCESS_ARC  # noqa: PLC0415
-
-    _arc = getattr(app.state, "arc", None) or _PROCESS_ARC
+    _arc = _boot_arc(app)
     store = registry_store.index_store(app)
     if store is not None:
         try:
@@ -138,7 +138,48 @@ def rebuild_registry_at_boot(app: "FastAPI") -> ArtifactRegistry:
             )
             app.state.artifact_registry = registry
             return registry
+    if store is not None:
+        # The one-time migration fold: checked and run through the store-migration owner,
+        # so an owed fold at boot is typed (``migration_owed_at_boot``) and reported.
+        from clio_agent.gact import store_migrations  # noqa: PLC0415 - import cycle
 
+        if store_migrations.ensure_at_boot(app, "artifact_index"):
+            return cast(ArtifactRegistry, app.state.artifact_registry)
+        return rebuild_registry_at_boot(app)  # migrated meanwhile: open the records
+    return _fold_registry(app, None)
+
+
+def artifact_index_owed(app: "FastAPI") -> bool:
+    """Whether this store has a record store but no artifact-index marker yet.
+
+    A store with no record store has nothing to migrate (the registry is the in-process
+    fold, typed ``artifact_index_unavailable``). An unreadable marker is not decided
+    here: :func:`rebuild_registry_at_boot` re-reads it and types the failure.
+    """
+    store = registry_store.index_store(app)
+    if store is None:
+        return False
+    try:
+        return registry_migration.read_marker(store) is None
+    except (ClioCoreRuntimeLostError, *registry_store.STORE_ERRORS):
+        return False
+
+
+def migrate_artifact_index(app: "FastAPI") -> dict[str, int]:
+    """The store migration ``artifact_index``: fold once and write the records + marker."""
+    registry = _fold_registry(app, registry_store.index_store(app))
+    return {"records": registry.count(), "fold_conflicts": len(registry.fold_conflicts)}
+
+
+def _boot_arc(app: "FastAPI") -> object:
+    from clio_agent.gact.runtime.globals import _PROCESS_ARC  # noqa: PLC0415
+
+    return getattr(app.state, "arc", None) or _PROCESS_ARC
+
+
+def _fold_registry(app: "FastAPI", store: "ARCStore | None") -> ArtifactRegistry:
+    """The full UNION fold; with a record store, written as records (marker last)."""
+    _arc = _boot_arc(app)
     # LOUD pre-fold marker (#971 defect 1b): emitted BEFORE the first native RPC so that,
     # even if a clio-core GetBlob wedges holding the GIL and freezes the process, the LAST
     # log line points squarely at the artifact-registry fold + the store to rotate.

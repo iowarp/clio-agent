@@ -513,9 +513,15 @@ class UpdateSessionRequest(BaseModel):
 
 
 class ListSessionsResponse(BaseModel):
-    """GET /v1/sessions body."""
+    """GET /v1/sessions body.
+
+    ``next_cursor`` and ``total`` are set on a paged request (``limit`` or
+    ``cursor`` given); an unpaged request returns every row and leaves them unset.
+    """
 
     sessions: list[Session]
+    next_cursor: Optional[str] = None
+    total: Optional[int] = None
 
 
 # ---------------------------------------------------------------------------

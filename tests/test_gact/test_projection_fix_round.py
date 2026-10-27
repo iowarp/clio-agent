@@ -460,7 +460,8 @@ def test_the_execution_route_survives_a_deleted_child(tmp_path) -> None:
         child = app.state.sessions.create(workspace_id="ws_default", title="child")
         _seed_task(app, parent=root.id, child=child.id, task_id="task_a")
         # Drop the session WITHOUT the route's purge, reproducing a torn write.
-        app.state.sessions._sessions.pop(child.id, None)
+        app.state.sessions._records.delete(child.id)
+        app.state.sessions._forget(child.id)
         response = client.get(f"/v1/sessions/{root.id}/provenance/execution")
 
     assert response.status_code == 200, response.text

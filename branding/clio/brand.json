@@ -44,7 +44,7 @@
     "attachPortEnv": "CLIO_PORT",
     "attachUrlEnv": "CLIO_GACT_URL",
     "install": {
-      "ref": "develop",
+      "ref": "",
       "refEnv": "CLIO_REF",
       "forceEnv": "CLIO_FORCE",
       "windowsUrl": "https://raw.githubusercontent.com/iowarp/clio-agent/main/install/install.ps1",

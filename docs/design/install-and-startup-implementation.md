@@ -114,17 +114,36 @@ The same model is in the design document; it is repeated here so this plan reads
   - `migrate_history` and `_full_replay` (`task_migration.py`, `task_index_build.py:52`);
   - the artifact registry fold (`artifacts/registry_boot.py:151`).
 
-  Boot only checks the marker, and refuses with a typed reason if a migration is owed.
+  Boot only checks the markers (one record read each). A migration still owed (an install
+  that skipped the step, a runtime swapped in without it) runs once at that boot, before
+  `ready`, as the boot step `migration.<name>` with the typed reason `migration_owed_at_boot`
+  and the `store_migrations` health row; boot does not refuse, because the desktop and
+  SSH-deployed agents start unattended and every migration writes its marker last.
+  - Owner module `gact/store_migrations.py` (the registry: a new migration is one function
+    and one `StoreMigration` entry); command `gact/store_migrate_command.py`.
+  - Run by `install.sh` / `install.ps1` after installing or upgrading, and by
+    `document_install` in the desktop's install-time prepare (not its per-start reuse check).
 - **R3. The rail reads small records.**
   - `SessionStore` (`sessions.py:266`) keeps every session's metadata resident and rewrites the whole
     `sessions.json` file on each change. It moves to clio-core records with a recent-first index.
   - `GET /v1/sessions` is paged with a cursor.
   - The first page of the rail is part of startup; in gact-tui, more pages load as you scroll.
+  - *Done (first step):* one row per session in `sessions.sqlite3` beside the legacy
+    `sessions.json` (`gact/session_records.py`; the JSON is imported once, marker in the
+    table). A change writes one row; rows load on first use into a bounded cache. The table
+    is not yet clio-core: moving it is a backend swap behind `SessionRecords`.
+  - *API:* `GET /v1/sessions` without `limit`/`cursor` is unchanged (every row). With
+    `limit` (and `cursor` from the previous page) it returns one page newest interaction
+    first, plus `next_cursor` and `total`; `kinds=conversation,branch` is the rail's filter.
 - **R4. Opening reads one page first.**
   - `GET .../messages` (`routes/messages.py:283`) materializes the whole ledger and then pages it.
     Instead it reads the latest page from the message lane by range, and older pages on scroll.
   - The rest of the conversation loads in the background, after its first page.
   - In gact-tui, the conversation view requests the first page, then the rest.
+  - *Done:* `GET .../messages?limit=N` reads the newest page from the lane by range
+    (`gact/transcript_pages.py`), `before=<message id>` the page before it; `next_cursor`
+    names the oldest message of a page when older ones remain. Without `limit` the whole
+    ledger is returned as before.
 - **R5. A task tree reads task events only.** `load_tree` (`task_tree_state.py:149`) reads each
   member's whole `_events` log, including `lm.call` records with full prompts. Task events get their own
   lane, migrated once by R2's upgrade step.
@@ -188,6 +207,24 @@ The same model is in the design document; it is repeated here so this plan reads
   - preparing and failed states, and reconnect for plugin servers.
 
   It is triggered by R4: opening a conversation loads its agent.
+
+  As built (`claude/b3-mcp-prepare`):
+  - `tools/mcp_prepare.py` provisions a server before it starts (`uv sync` into
+    `<cache>/mcp-project-envs/`, or `clio-kit mcp-server --prepare <name>` when the installed
+    clio-kit offers it, else the typed `mcp_prepare_provision_unsupported_launcher`), and keeps
+    each server's visible state: `preparing` (phase `provision`, `launch` or `connect`), `ready`
+    or `failed` with a typed `mcp_prepare_*` reason.
+  - `gact/mcp_readiness.py` starts a cold server once: the first start connects directly
+    (`mcp_prepare_first_start_direct`) and lists over that connection.
+  - `GET /v1/sessions/{sid}/messages` (newest page) starts the warm-up; a request made while
+    the agent is still starting runs when it is ready. Boot lists stdio servers from the cache
+    only (`mcp_namespace_not_prepared_at_boot`).
+  - A turn waits at most `tools.mcp.turn_prepare_grace_s` (2 s); a server still preparing is
+    offered through `wait_for_tools` and joins the agent's tools at its next step.
+  - `GET /v1/mcp/servers?session_id=` rows carry `status` `preparing`/`failed`, `reason` and a
+    `preparation` block; `POST /v1/sessions/{sid}/mcp/{namespace}/reconnect` restarts one.
+  - Still for clio-kit: `mcp-server --prepare <name>` (build the locked environment and exit 0)
+    and `mcp-server --status <name>`.
 - **B4. Nothing reinstalled or rescanned at boot; maintenance runs in its own lane.**
   - The marketplace check compares the recorded source version, not a full-tree hash
     (`plugins/service.py`; the mismatch itself was fixed on develop in #1854).

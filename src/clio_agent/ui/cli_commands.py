@@ -14,6 +14,10 @@ def handle_local_command(arguments: Sequence[str]) -> bool:
 
         migrate_main(list(arguments[1:]))
         return True
+    if arguments[0] == "migrate":
+        from clio_agent.gact.store_migrate_command import main as store_migrate_main
+
+        raise SystemExit(store_migrate_main(arguments[1:]))
     if arguments[0] == "plugin":
         from clio_agent.plugins.cli import run_plugin_cli
 

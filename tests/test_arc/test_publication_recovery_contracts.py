@@ -303,17 +303,17 @@ async def test_publication_retry_preserves_usage_after_lost_flush_and_never_repl
             answer_text="Done",
             turn_cancel_event=threading.Event(),
         )
-        flush = app.state.sessions._flush
+        persist = app.state.sessions._persist
         failed = False
 
-        def lost_flush_reply() -> None:
+        def lost_flush_reply(session: Any) -> None:
             nonlocal failed
-            flush()
+            persist(session)
             if not failed:
                 failed = True
                 raise OSError("Projection was saved; its reply was lost")
 
-        monkeypatch.setattr(app.state.sessions, "_flush", lost_flush_reply)
+        monkeypatch.setattr(app.state.sessions, "_persist", lost_flush_reply)
         payload = {"message_id": message.id, "stop_reason": "end_turn"}
 
         def update(status: str, **_kwargs: Any) -> None:
