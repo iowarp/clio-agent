@@ -78,14 +78,12 @@ async def start(app: Any) -> None:
     recovery = CoreRecovery(history)
     app.state.task_history, app.state.task_recovery = history, recovery
     app.state.human_principal = "human:" + str(app.state.connected_storage.store.clio_id)
-    if history.index_build_pending:
-        # One-time: historical formats migrate from the build's full replay, then
-        # the derived task records are written. Later boots replay nothing.
-        from clio_agent.gact.task_migration import migrate_history
+    # One-time (normally done by `clio-agent migrate`): historical formats migrate from
+    # the build's full replay, then the derived task records are written. Boot reads
+    # the marker; later boots replay nothing.
+    from clio_agent.gact.store_migrations import ensure_at_boot
 
-        with boot_timing.step(app, "task_history_migration"):
-            await history.io.run(migrate_history, app)
-            await history.io.run(history.complete_index_build)
+    await history.io.run(ensure_at_boot, app, "task_index_build")
     app.state.questions = QuestionCommands(history)
     app.state.question_events = QuestionEvents(app)
     app.state.questions.on_change = app.state.question_events.changed

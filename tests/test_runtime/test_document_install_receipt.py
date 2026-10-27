@@ -283,4 +283,15 @@ def test_startup_cli_forwards_reuse_request(
         return result
 
     monkeypatch.setattr(installer, "install_document_runtime", install)
+    # The store-migration step is the install-time prepare's; the per-start reuse skips it.
+    from clio_agent.gact import store_migrate_command
+
+    migrations: list[str] = []
+
+    def run_migrations(emit: Any) -> tuple[int, dict[str, Any]]:
+        migrations.append("run")
+        return 0, {"status": "done", "seconds": 0.0, "migrations": []}
+
+    monkeypatch.setattr(store_migrate_command, "run_migrations", run_migrations)
     installer.main()
+    assert migrations == ([] if reuse else ["run"])

@@ -343,10 +343,29 @@ if (Test-Path $VenvPython) {
     }
 }
 
+# ---------- upgrade the store: migrations run here, never at boot ------
+# Idempotent; a second run is a no-op. A running CLIO refuses it (store_in_use): its
+# next boot runs the owed migrations once and reports them in the health rows.
+$DocFlags = @('--setup-protected-execution')
+& $VenvPython -c 'import importlib.util, sys; sys.exit(0 if importlib.util.find_spec("clio_agent.gact.store_migrate_command") else 3)'
+if ($LASTEXITCODE -eq 0) {
+    Say 'Migrating the CLIO store (clio-agent migrate)'
+    & $VenvPython -m clio_agent.gact.store_migrate_command
+    $MigrateStatus = $LASTEXITCODE
+    if ($MigrateStatus -eq 3) {
+        Warn "store in use by a running CLIO: its next start runs the owed migrations once (or run 'clio stop' then 'clio-agent migrate')"
+    } elseif ($MigrateStatus -ne 0) {
+        Warn "clio-agent migrate failed (exit $MigrateStatus, see the lines above): CLIO's next start retries the owed migrations once and reports them in 'clio doctor'"
+    }
+    $DocFlags += '--skip-store-migrations'
+} else {
+    Say "clio-agent $InstalledClioVersion has no 'clio-agent migrate'; its boot migrates the store"
+}
+
 & $VenvPython -c 'import importlib.util, sys; sys.exit(0 if importlib.util.find_spec("clio_agent.runtime.document_install") else 3)'
 if ($LASTEXITCODE -eq 0) {
     Say 'Installing managed Python/uv and Node/pnpm packages and Office rendering'
-    RunNative $VenvPython @('-m', 'clio_agent.runtime.document_install', '--setup-protected-execution')
+    RunNative $VenvPython (@('-m', 'clio_agent.runtime.document_install') + $DocFlags)
 } else {
     # Releases before the managed document runtime set it up on their own.
     Say "clio-agent $InstalledClioVersion has no managed document runtime step; skipping it"
