@@ -73,7 +73,10 @@ def _open_store() -> Any:
     _set_app_arc(app, arc)
     history = TaskHistory(arc)
     app.state.task_history = history
-    history.io.submit(history.restore).result()
+    if history.index.marker() is not None:
+        history.io.submit(history.restore).result()
+    # Without the task-index marker, restore IS the build's full replay: the
+    # task_index_build migration runs it, so its time is reported as that step's.
     app.state.human_principal = "human:" + str(app.state.connected_storage.store.clio_id)
     return app
 
