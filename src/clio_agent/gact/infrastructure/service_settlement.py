@@ -79,7 +79,7 @@ async def settle_service(
             configuration={
                 k: v
                 for k, v in request.configuration.items()
-                if k not in {"on_conflict", "conflict_pid", "conflict_root"}
+                if k not in {"on_conflict", "conflict_pid", "conflict_root", "conflict_state"}
             },
             state=state,
             # A previous observation survives only for the same variant: a

@@ -69,6 +69,15 @@ def test_unprefixed_or_unknown_vllm_keys_are_rejected(key: str, hint: str) -> No
                 "conflict_root": "/home/alice/clio",
             },
         ),
+        # The answer about an agent installed but stopped, exactly as the dialog sends it.
+        (
+            "clio_agent",
+            {
+                "on_conflict": "connect",
+                "conflict_root": "/home/alice/.local/share/clio-agent/app",
+                "conflict_state": "stopped",
+            },
+        ),
         ("flowcept", {"container_runtime": "apptainer", "redis_port": "16379"}),
         # "Reinstall from scratch" applies to every service's install.
         ("web_search", {"container_runtime": "apptainer", "install.from_scratch": "true"}),

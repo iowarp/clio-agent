@@ -33,6 +33,8 @@ CONTROL_KEYS = frozenset(
         "on_conflict",
         "conflict_pid",
         "conflict_root",
+        # "stopped" when the agent the answer is about was installed but not running.
+        "conflict_state",
         # The Desktop instance that owns a remote CLIO launch.
         "desktop_id",
         "keep_running",
