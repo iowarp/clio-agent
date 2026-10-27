@@ -19,7 +19,7 @@ import time
 from collections.abc import Awaitable, Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass
-from typing import Any, TypeVar
+from typing import Any, Literal, TypeVar
 
 from clio_agent.runtime import trace
 
@@ -169,7 +169,7 @@ def snapshot(app: Any) -> dict[str, Any]:
     return timeline(app).snapshot()
 
 
-def readiness(app: Any) -> tuple[str, list[str]]:
+def readiness(app: Any) -> tuple[Literal["starting", "ready"], list[str]]:
     """``("ready", [])`` once the startup row is up, else ``("starting", <pending items>)``.
 
     The startup row is what makes every later request correct: the task runtime
