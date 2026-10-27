@@ -33,6 +33,8 @@ import msgspec
 
 from clio_agent.arc import lane_chunking
 from clio_agent.arc.live import EVENTS_SCOPE, build_event_content
+from clio_agent.arc.loop_guard import assert_store_write_off_loop
+from clio_agent.gact.task_index_records import LOOKUP_KIND
 
 if TYPE_CHECKING:
     from clio_agent.arc.memory import ARCMemory
@@ -45,6 +47,8 @@ logger = logging.getLogger(__name__)
 TASK_EVENT_LANE = f"{EVENTS_SCOPE}/t/log"
 #: Done marker (``task_lookup`` record ``meta.task_event_lane``) of the one-time copy.
 LANE_DONE = "task_event_lane"
+#: Done marker of :func:`clio_agent.gact.task_lane_reads.migrate_task_lane_reads`.
+READS_DONE = "task_lane_reads"
 LANE_VERSION = 1
 
 #: The event types a task tree projects; only these enter the lane.
@@ -61,20 +65,51 @@ TASK_EVENTS = frozenset(
         "session.coordination.grant",
         "session.input.prepared",
         "workflow.checkpoint",
+        # Lane-only: the receipt of a model input committed to its context scope
+        # (:mod:`clio_agent.gact.task_lane_reads`); never in the ``_events`` log.
+        "session.input.committed",
     }
 )
+#: Envelope key of the lane-only read annotations on a ``task.observed`` event.
+LANE_KEY = "lane"
 
 
 def _capacity(arc: ARCMemory) -> int:
     return int(getattr(arc, "_events_chunk_segments", 512))
 
 
-def record(arc: ARCMemory, event: Any) -> Any:
+def append_lane(
+    arc: ARCMemory,
+    session_id: str,
+    content: dict[str, Any],
+    *,
+    turn_id: str = "",
+    expert_span_id: str = "",
+) -> None:
+    """Append one record to a session's task-event lane (the lane's only append seam)."""
+    store = arc._segments
+    scope = lane_chunking.chunk_for_append(
+        store, session_id, TASK_EVENT_LANE, capacity=_capacity(arc)
+    )
+    store.append(
+        session_id,
+        scope,
+        "semantic_event",
+        content,
+        step=-1,
+        turn_id=turn_id,
+        expert_span_id=expert_span_id,
+    )
+
+
+def record(arc: ARCMemory, event: Any, *, lane: dict[str, Any] | None = None) -> Any:
     """Confirm a task event in its lane, then in the canonical log and highway.
 
     Args:
         arc: The process ARC (clio-core segment store).
         event: The task layer's ``SemanticEvent``.
+        lane: Read annotations stored with the lane copy only (under ``LANE_KEY`` in
+            its payload), never in the canonical log.
 
     Returns:
         What :meth:`ARCMemory.record_semantic_event` returns (the highway projection).
@@ -82,20 +117,40 @@ def record(arc: ARCMemory, event: Any) -> Any:
     session_id = str(getattr(event, "session_id", "") or "")
     content = build_event_content(event)
     if session_id and content is not None and content["event_type"] in TASK_EVENTS:
-        store = arc._segments
-        scope = lane_chunking.chunk_for_append(
-            store, session_id, TASK_EVENT_LANE, capacity=_capacity(arc)
-        )
-        store.append(
+        if lane:
+            content["payload"] = {**content["payload"], LANE_KEY: lane}
+        append_lane(
+            arc,
             session_id,
-            scope,
-            "semantic_event",
             content,
-            step=-1,
             turn_id=str(getattr(event, "turn_id", "") or ""),
             expert_span_id=str(getattr(event, "expert_span_id", "") or ""),
         )
     return arc.record_semantic_event(event)
+
+
+def record_event(
+    history: TaskHistory,
+    event_type: str,
+    session_id: str,
+    identity: str,
+    payload: dict[str, Any],
+    *,
+    lane: dict[str, Any] | None = None,
+) -> None:
+    """``TaskHistory._record``: one versioned task observation through the confirmed writer."""
+    # Import only the existing data envelope; no GACT application or execution owner.
+    from clio_agent.gact.semantic_events import SemanticEvent
+
+    assert_store_write_off_loop("task.observation")
+    event = SemanticEvent(
+        event_type=event_type,
+        session_id=session_id,
+        trace_id="",
+        span_id=identity,
+        payload={"schema_version": 1, "observation_id": identity, "record": payload},
+    )
+    history.confirm_write(lambda: record(history.arc, event, lane=lane))
 
 
 def session_task_events(arc: ARCMemory, session_id: str) -> Iterator[tuple[str, dict[str, Any]]]:
@@ -189,6 +244,8 @@ def migrate_task_event_lane(history: TaskHistory) -> dict[str, Any]:
             "events": copied,
             "seconds": round(time.monotonic() - started, 3),
         }
+        # A rebuilt lane holds no read annotations or input receipts: owe them again.
+        history.index.store.delete(LOOKUP_KIND, "meta." + READS_DONE)
         history.index.put_done_marker(LANE_DONE, report)
     return report
 
@@ -231,6 +288,10 @@ def ensure_task_event_lane(history: TaskHistory) -> dict[str, Any] | None:
 
 __all__ = [
     "LANE_DONE",
+    "LANE_KEY",
+    "READS_DONE",
+    "append_lane",
+    "record_event",
     "TASK_EVENTS",
     "TASK_EVENT_LANE",
     "ensure_task_event_lane",

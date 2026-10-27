@@ -315,6 +315,7 @@ def _atom_boot(app: "FastAPI") -> None:
     )
     from clio_agent.gact.task_event_lane import ensure_task_event_lane
     from clio_agent.gact.task_history import TaskHistory
+    from clio_agent.gact.task_lane_reads import ensure_task_lane_reads
     from clio_agent.gact.transcript_migration import migrate_transcripts
 
     if getattr(app.state, "task_history", None) is None:
@@ -323,6 +324,8 @@ def _atom_boot(app: "FastAPI") -> None:
             history.restore()
         with boot_timing.step(app, "task_event_lane"):
             ensure_task_event_lane(history)  # before any tree loads; owed to the upgrade step
+        with boot_timing.step(app, "task_lane_reads"):
+            ensure_task_lane_reads(history)  # after the lane copy; owed to the upgrade step
         app.state.task_history = history
     with boot_timing.step(app, "transcript_migration"):
         migrate_transcripts(app)  # Capture legacy content before any reconciliation/cache update.

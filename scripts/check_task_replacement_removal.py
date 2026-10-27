@@ -266,6 +266,8 @@ def violations(root: Path = ROOT) -> list[str]:
                 not in {
                     "src/clio_agent/gact/task_history_projection.py",
                     "src/clio_agent/gact/task_migration.py",
+                    # The one-time lane pass decodes stored observations as replay does.
+                    "src/clio_agent/gact/task_lane_reads.py",
                 }
             ):
                 findings.append(
