@@ -252,8 +252,8 @@ def _extract(archive: Path, root: Path) -> None:
 def ensure_office(root: Path) -> str:
     """Download, verify and extract the renderer once under an owned cache root.
 
-    The tree includes LibreOffice's license/notices. Linux still needs the OS
-    runtime libraries required by LibreOffice; a missing library is a typed error.
+    The tree includes LibreOffice's license/notices. On Linux, Office runs on its
+    own pinned userland (``office_compat``), so it needs nothing from the host.
     """
     root = root.resolve()
     root.parent.mkdir(parents=True, exist_ok=True)
