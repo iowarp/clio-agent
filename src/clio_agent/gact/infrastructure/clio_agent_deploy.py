@@ -392,6 +392,19 @@ touch "$root/.clio-managed-install"
 """
     + SHELL_FUNCTIONS
     + r"""
+# A CLIO built from a commit that is not a release deploys that commit from source
+# ($7); a release deploys its version from PyPI.
+commit="${7:-}"
+if [ -n "$commit" ]; then
+  # Reuse: this exact commit is already installed here (unless from scratch).
+  head="$(git -C "$root/clio-agent" rev-parse HEAD 2>/dev/null || true)"
+  if [ "${6:-0}" != 1 ] && [ "$head" = "$commit" ] && [ -x "$bin/clio" ]; then
+    size="$(du -sk "$root/clio-agent" 2>/dev/null | cut -f1)"
+    clio_reuse clio_agent "CLIO $version ($commit)" "clio-agent@$commit" "$root/clio-agent" "$(( ${size:-0} * 1024 ))" ""
+    exit 0
+  fi
+  command -v git >/dev/null 2>&1 || { printf 'Deploying this CLIO (built from %s) needs git on the remote host.\n' "$commit"; exit 75; }
+else
 # Reuse: this exact version is already installed here (unless from scratch).
 installed="$("$root/clio-agent/.venv/bin/python" -c 'import importlib.metadata as m; print(m.version("clio-agent"))' 2>/dev/null || true)"
 if [ "${6:-0}" != 1 ] && [ -n "$installed" ] && [ "$installed" = "$version" ] && [ -x "$bin/clio" ]; then
@@ -412,18 +425,24 @@ case "$code" in
     exit 75
     ;;
 esac
+fi
 if ! command -v uv >/dev/null 2>&1; then
   printf '==> Installing uv into %s\n' "$bin"
   curl -LsSf https://astral.sh/uv/install.sh | sh || { printf 'Could not install uv.\n'; exit 75; }
 fi
-export CLIO_VERSION="$version" CLIO_INSTALLER_REF="$5" GACT_VERSION="$5"
+if [ -n "$commit" ]; then
+  installer_args=(--source --ref "$commit")
+else
+  installer_args=()
+  export CLIO_VERSION="$version" CLIO_INSTALLER_REF="$5" GACT_VERSION="$5"
+fi
 """
     + INSTALL_GUARD
     + r"""
 # The person reads only the last line of a failed step, so it names the cause:
 # the installer's own last error line, kept from its output.
 install_log="$(mktemp 2>/dev/null || printf '%s' "$root/.install-output.log")"
-curl -fsSL "$4" | bash 2>&1 | tee "$install_log"
+curl -fsSL "$4" | bash -s -- "${installer_args[@]}" 2>&1 | tee "$install_log"
 code=$?
 if [ "$code" != 0 ]; then
   cause="$(grep -E '(Error|error|ERROR|failed|denied|not found)' "$install_log" | grep -vE '^[[:space:]]*(File |\^|~)' | tail -n 1 | cut -c1-400)"
@@ -437,8 +456,14 @@ install_ok=1
 )
 
 
-def install_command(root: str, version: str, *, fresh: bool = False) -> CommandSpec:
+def install_command(
+    root: str, version: str, *, fresh: bool = False, source_commit: str | None = None
+) -> CommandSpec:
     """Install exactly ``version`` of clio-agent from PyPI under ``root``.
+
+    With ``source_commit`` (this CLIO was built from a commit that is not a
+    release, see controller_source), install that commit from source instead,
+    with that commit's own installer (``--source --ref <commit>``).
 
     An install of this exact version already under ``root`` is reused
     (reported through the shared reuse helper) unless ``fresh``.
@@ -458,9 +483,10 @@ def install_command(root: str, version: str, *, fresh: bool = False) -> CommandS
             root,
             version,
             PYPI_RELEASE_URL.format(version=version),
-            INSTALLER_URL.format(tag=release_tag(version)),
-            release_tag(version),
+            INSTALLER_URL.format(tag=source_commit or release_tag(version)),
+            source_commit or release_tag(version),
             "1" if fresh else "0",
+            source_commit or "",
         ],
         timeout_seconds=900,
     )

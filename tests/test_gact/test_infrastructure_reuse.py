@@ -242,7 +242,7 @@ def test_an_installed_clio_of_this_version_is_reused(tmp_path: Path) -> None:
     assert done.returncode == 0, done.stderr
     [found] = reuse.parse(done.stdout)
     assert found.kind == "clio_agent" and found.identity == "clio-agent==0.9.4.18"
-    assert install_command(str(root), "0.9.4.18", fresh=True).args[-1] == "1"
+    assert install_command(str(root), "0.9.4.18", fresh=True).args[-2] == "1"
 
 
 def test_relay_reports_uvs_own_already_installed_verdict() -> None:

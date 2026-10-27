@@ -15,6 +15,7 @@ from clio_agent.gact.infrastructure.clio_agent_deploy import (
     teardown_command,
 )
 from clio_agent.gact.infrastructure.context_sizing.deployment import sized_model_runtime_plan
+from clio_agent.gact.infrastructure.controller_source import controller_commit
 from clio_agent.gact.infrastructure.gpu_share import share_launch
 from clio_agent.gact.infrastructure.model_instances import (
     ROUTER_SERVICE,
@@ -540,7 +541,11 @@ def _clio_agent_plan(
             ).commands
         )
     if action in {"install", "reinstall"} and not start_existing:
-        commands.append(install_command(root, version, fresh=from_scratch(configuration)))
+        commands.append(
+            install_command(
+                root, version, fresh=from_scratch(configuration), source_commit=controller_commit()
+            )
+        )
     launch = RemoteLaunch(
         root,
         port,

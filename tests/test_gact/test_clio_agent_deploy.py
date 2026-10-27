@@ -80,13 +80,14 @@ def test_install_claims_the_port_then_installs_this_clios_version(tmp_path: Path
     # says so (see build_driver_plan's on_conflict plumbing).
     assert plan.commands[0].args[-5:] == [str(CLIO_AGENT_PORT), VERSION, "0", "", "0"]
     install = plan.commands[1]
-    # The trailing "0": an install of this exact version already there is reused.
-    assert install.args[-5:] == [
+    # "0": an install of this exact version already there is reused; "": no source commit.
+    assert install.args[-6:] == [
         VERSION,
         f"https://pypi.org/pypi/clio-agent/{VERSION}/json",
         f"https://raw.githubusercontent.com/iowarp/clio-agent/{release_tag(VERSION)}/install/install.sh",
         release_tag(VERSION),
         "0",
+        "",
     ]
     # A failed install fails the step: nothing swallows it.
     assert "; true" not in install.args[1] and "set -o pipefail" in install.args[1]
@@ -897,7 +898,12 @@ _FAKE_CURL = textwrap.dedent(
 
 
 def _install(
-    tmp_path: Path, *, pypi: str, installer: str, version: str = "0.9.4.18"
+    tmp_path: Path,
+    *,
+    pypi: str,
+    installer: str,
+    version: str = "0.9.4.18",
+    source_commit: str | None = None,
 ) -> subprocess.CompletedProcess[str]:
     """Run the install step against a stand-in PyPI and release installer."""
 
@@ -911,7 +917,7 @@ def _install(
     # shims after that so this regression can never run the network installer.
     bash_env = tmp_path / "bash-env"
     bash_env.write_text(f"export PATH={shlex.quote(str(tools))}:$PATH\n")
-    spec = install_command(str(tmp_path / "clio"), version)
+    spec = install_command(str(tmp_path / "clio"), version, source_commit=source_commit)
     return subprocess.run(
         [spec.program, *spec.args],
         capture_output=True,
@@ -989,6 +995,25 @@ def test_a_failing_installer_fails_the_install_step(tmp_path: Path) -> None:
     result = _install(tmp_path, pypi="200", installer="echo 'xx disk quota exceeded'\nexit 9\n")
     assert result.returncode == 9
     assert "xx disk quota exceeded" in result.stdout
+
+
+@linux_only
+def test_a_source_controller_installs_its_commit_with_that_commits_installer(
+    tmp_path: Path,
+) -> None:
+    """A CLIO built from an unreleased commit deploys that commit, not the PyPI release."""
+    if shutil.which("git") is None:
+        pytest.skip("needs git on the host")
+    result = _install(
+        tmp_path,
+        pypi="404",  # never asked: a commit is not a PyPI release
+        installer='echo "installer args: $*"\n',
+        version="0.9.5b8",
+        source_commit="c0ffee",
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert "installer args: --source --ref c0ffee" in result.stdout
+    assert "isn't published" not in result.stdout
 
 
 @linux_only
