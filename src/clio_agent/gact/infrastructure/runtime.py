@@ -25,7 +25,7 @@ from clio_agent.gact.infrastructure.deployment_ledger import (
 from clio_agent.gact.infrastructure.drivers import (
     DriverPlan,
     build_driver_plan,
-    clio_agent_version,
+    deployed_clio_version,
     loopback_only,
     service_connection_port,
     service_definitions,
@@ -555,7 +555,9 @@ class InfrastructureRuntime(ExternalConnectionsMixin, ServerAccessMixin, ModelRo
                         break
                 # Nothing was stopped, started or installed: ask the person (claim_outcome).
                 question = claim and conflict_question(
-                    claim, target_version=clio_agent_version(), port=plan.connection_port or 17800
+                    claim,
+                    target_version=deployed_clio_version(),
+                    port=plan.connection_port or 17800,
                 )
                 if question:
                     progress, conflict = question
@@ -612,7 +614,7 @@ class InfrastructureRuntime(ExternalConnectionsMixin, ServerAccessMixin, ModelRo
                     desktop_owned="false" if adopted else "true",
                     version=(claim.installed_version if claim else None) or "unknown"
                     if kept
-                    else clio_agent_version(),
+                    else deployed_clio_version(),
                 )
                 request = request.model_copy(update={"configuration": configuration})
                 if not adopted and plan.remote_launch:

@@ -628,6 +628,24 @@ def test_claim_reports_an_installed_but_stopped_agent(tmp_path: Path) -> None:
 
 
 @linux_only
+def test_claim_names_a_source_installs_commit(tmp_path: Path) -> None:
+    """A source install shares a release's version number; its commit tells them apart."""
+    if shutil.which("git") is None:
+        pytest.skip("needs git on the host")
+    prefix = tmp_path / "clio"
+    _fake_install(prefix)
+    checkout = prefix / "clio-agent"
+    git = ["git", "-C", str(checkout), "-c", "user.name=t", "-c", "user.email=t@t"]
+    subprocess.run([*git, "init", "-q"], check=True)
+    subprocess.run([*git, "commit", "-q", "--allow-empty", "-m", "c"], check=True)
+    head = subprocess.run(
+        [*git, "rev-parse", "HEAD"], capture_output=True, text=True, check=True
+    ).stdout.strip()
+    result = _run_script(claim_command(str(prefix), _free_port(), VERSION))
+    assert parse_claim(result.stdout).installed_version == f"{VERSION}+g{head[:12]}"
+
+
+@linux_only
 def test_claim_asks_about_this_installs_healthy_server_even_at_the_target_version(
     tmp_path: Path,
 ) -> None:

@@ -32,6 +32,17 @@ def controller_commit() -> str | None:
     return None
 
 
+def deployment_version(version: str) -> str:
+    """The version a deployed CLIO is compared by: ``version``, plus ``+g<commit>`` from source.
+
+    A source install shares its version number with a release, so the commit (as a PEP 440
+    local label, the form the remote claim reports too) is what tells the two apart.
+    """
+
+    commit = controller_commit()
+    return f"{version}+g{commit[:12]}" if commit else version
+
+
 def _bundled_commit(manifest: Path) -> str | None:
     try:
         source = json.loads(manifest.read_text(encoding="utf-8")).get("source") or {}

@@ -15,7 +15,10 @@ from clio_agent.gact.infrastructure.clio_agent_deploy import (
     teardown_command,
 )
 from clio_agent.gact.infrastructure.context_sizing.deployment import sized_model_runtime_plan
-from clio_agent.gact.infrastructure.controller_source import controller_commit
+from clio_agent.gact.infrastructure.controller_source import (
+    controller_commit,
+    deployment_version,
+)
 from clio_agent.gact.infrastructure.gpu_share import share_launch
 from clio_agent.gact.infrastructure.model_instances import (
     ROUTER_SERVICE,
@@ -78,6 +81,7 @@ __all__ = [
     "DriverPlan",
     "build_driver_plan",
     "clio_agent_version",
+    "deployed_clio_version",
     "service_connection_port",
     "service_definitions",
 ]
@@ -110,6 +114,19 @@ def clio_agent_version() -> str:
     """The clio-agent version this CLIO runs: the one a remote CLIO installs."""
 
     return importlib.metadata.version("clio-agent")
+
+
+def deployed_clio_version() -> str:
+    """The version a remote CLIO must report to run this CLIO's code (``+g<commit>`` from source)."""
+
+    return deployment_version(clio_agent_version())
+
+
+def _clio_agent_artifact() -> str:
+    commit = controller_commit()
+    if commit:
+        return f"clio-agent at commit {commit[:12]} (source)"
+    return f"clio-agent=={clio_agent_version()} (PyPI)"
 
 
 def service_connection_port(
@@ -202,9 +219,9 @@ def service_definitions(
             ServiceVariant(
                 id="released",
                 label="Published release",
-                version=clio_agent_version(),
+                version=deployed_clio_version(),
                 install_type="bootstrap",
-                artifact=f"clio-agent=={clio_agent_version()} (PyPI)",
+                artifact=_clio_agent_artifact(),
                 compatible=facts.os == "linux" and facts.target_id != "local",
                 reason="Remote CLIO deployment requires a Linux SSH target.",
             )
