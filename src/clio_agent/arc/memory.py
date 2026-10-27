@@ -171,11 +171,9 @@ class ARCMemory(SegmentPlane):
         )
         self._cache = LRUCache(capacity=capacity)
 
-        # Index layer (O(log N) retrieval), keyed by (session_id, timestamp). NO size
-        # cap: an arbitrary ceiling would silently fail large workloads (entries falling
-        # off the end). Memory is bounded by LIFECYCLE instead — ``release_session``
-        # evicts a session's branches on end/delete, and the index is rebuildable from the
-        # durable record (trace / stored blobs / clio-core) on restart.
+        # Index layer (O(log N) retrieval), keyed by (session_id, timestamp). Bounded by
+        # the residency owner: each entry is counted against its session, which
+        # ``release_session`` drops when the session goes idle or the budget is exceeded.
         self._inv_index = BTreeIndex()  # Invocation index
 
         # LSM tree for high-throughput metrics. Flush/compaction thresholds are storage
@@ -434,6 +432,7 @@ class ARCMemory(SegmentPlane):
                 self._cache.put(cache_key, invocation)
                 self._inv_index.insert(index_key, {"trace_id": trace_id})
                 self._disk_writes += 1
+            self._segments.note_invocation(session_id)  # counted by the residency owner
         finally:
             self._exit_inflight(session_id)
 

@@ -182,8 +182,8 @@ def _write_pointer(
 ) -> None:
     """Put the pointer record naming ``generation`` -- ONE store write.
 
-    On a failed put the store discards its in-memory copy (the next read reloads the
-    record clio-core still holds) and raises typed (``ArcPersistError``).
+    Write-through: on a failed put the cache keeps the pointer clio-core still holds
+    and the store raises typed (``ArcPersistError``).
     """
 
     scope = pointer_scope(base)
@@ -201,10 +201,9 @@ def _write_pointer(
             order=1.0,
             logical_time=store._new_lt(),
         )
+        store._commit_scope(session_id, scope, [pointer])  # clio-core first, then the cache
         store._index.drop_scope(session_id, scope)
-        segs[:] = [pointer]
         store._index.add(session_id, scope, pointer)
-        store._persist(session_id, scope)
 
 
 def _erase_neighbours(store: "SegmentStore", session_id: str, base: str, current: int) -> None:

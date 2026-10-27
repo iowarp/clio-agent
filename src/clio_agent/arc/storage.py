@@ -12,6 +12,7 @@ import atexit
 import contextlib
 import logging
 import os
+import re
 import subprocess
 import sys
 import threading
@@ -640,15 +641,25 @@ class ClioCoreStore:
                 yield blob_name, value
 
     def scan_names(self, kind: str, prefix: str = "") -> Iterator[str]:
-        """Read the namespace directory once; address discovery loads no blob bodies."""
-        # This generator guards its listing RPC when iterated, without loading bodies.
+        """Record names under ``prefix``: clio-core matches the names (a prefix asks for
+        that prefix only, never the whole kind); no blob body is read."""
+        yield from self.query_names(kind, (re.escape(prefix) + ".*") if prefix else "")
+
+    def query_names(self, kind: str, name_re: str = "") -> list[str]:
+        """Record names of ``kind`` fully matching ``name_re`` (``""``: all), asked of
+        clio-core by pattern (``BlobQuery``); search companions are skipped."""
         self._live()
+        tag = self.tag(kind)
 
         def _list() -> list[str]:
             try:  # the binding decodes every name; one corrupt name fails the listing
-                return list(self._cte.Tag(self.tag(kind)).GetContainedBlobs())
+                if not name_re:
+                    return list(self._cte.Tag(tag).GetContainedBlobs())
+                pool = self._cte.PoolQuery.Dynamic()
+                rows = self._client.BlobQuery(re.escape(tag), name_re, 0, pool)
+                return [blob for _tag, blob in rows]
             except UnicodeDecodeError as exc:
-                raise BlobNameDecodeError(self.tag(kind), exc) from exc
+                raise BlobNameDecodeError(tag, exc) from exc
 
         blobs = call_with_liveness(
             _list,
@@ -657,11 +668,7 @@ class ClioCoreStore:
             reconnect=self._reconnect,
             on_exhausted=self._gate.note_rpc_stalled,
         )
-        for blob_name in blobs:
-            if blob_name.endswith(_SEARCH_SUFFIX):
-                continue  # search companion, not a record
-            if blob_name.startswith(prefix):
-                yield blob_name
+        return [name for name in blobs if not name.endswith(_SEARCH_SUFFIX)]
 
     @guard_store_op("delete")
     def delete(self, kind: str, name: str) -> None:
@@ -705,8 +712,6 @@ class ClioCoreStore:
         """BM25 search over the plain-text companions; returns ``[(record_name, score)]``
         best-first with the ``.text`` suffix stripped. The indexer also returns
         in-scope blobs that match no query term at score 0; those are not hits."""
-        import re  # noqa: PLC0415
-
         if name_prefix and name_re:
             raise ValueError("search takes name_prefix or name_re, not both")
         stem = f"(?:{name_re})" if name_re else f"{re.escape(name_prefix)}.*"

@@ -148,8 +148,7 @@ RATCHET_BASELINE: dict[str, int] = {
     # MERGE (PR #1298 x #1310): 1030 -> 1032. Both campaigns' call-site lines
     # coexist; neither side's additions were dropped.
     "src/clio_agent/agent.py": 905,  # Cooperative cancellation moved to runtime/cancellation.py.
-    "src/clio_agent/arc/memory.py": 1066,  # 11a: the segment-plane surface moved to arc/memory_segments.py
-    "src/clio_agent/arc/segments.py": 951,  # Typed persistence errors live in segment_errors.py.
+    "src/clio_agent/arc/memory.py": 1065,  # 11a: the segment-plane surface moved to arc/memory_segments.py
     # #900: +4 for the CREATE_BREAKAWAY_FROM_JOB daemon-spawn flag + its rationale.
     # owner ruling 2026-07-14: +3 to route explicit =local through the loud
     # DEGRADED banner (owner module: arc/init_degradation.py).
