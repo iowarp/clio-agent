@@ -150,9 +150,11 @@ function Install-ClioDesktop {
             Say "Verified download: $verified"
             return
         }
-        # NSIS /S installs silently and keeps the installed application's update policy.
-        $setup = Start-Process -FilePath $installer -ArgumentList '/S' -Wait -PassThru -WindowStyle Hidden
-        if ($setup.ExitCode -ne 0) { Die "CLIO Desktop setup failed (exit $($setup.ExitCode))" }
+        # The installer's own pages ask for the model provider and infrastructure, so it runs
+        # with its window rather than silently.
+        Say 'Opening the CLIO Desktop installer...'
+        $setup = Start-Process -FilePath $installer -Wait -PassThru
+        if ($setup.ExitCode -ne 0) { Die "CLIO Desktop setup did not finish (exit $($setup.ExitCode))" }
         Say 'CLIO Desktop installed. Open it from the Start menu.'
     } finally {
         Remove-Item -LiteralPath $scratch -Recurse -Force -ErrorAction SilentlyContinue

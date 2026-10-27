@@ -98,7 +98,8 @@ manifest before anything is installed:
   is verified. Intel Macs get the attach-only app; install the agent with `install.sh`.
 - **Linux:** the bundled `.deb` (with `dpkg`) or `.rpm` (with `rpm`) is installed with
   `apt-get` / `dnf`, through `sudo` when not run as root.
-- **Windows:** the bundled x64 setup runs silently (also under emulation on ARM).
+- **Windows:** the bundled x64 setup opens with its pages for the model provider and
+  infrastructure (it also runs under emulation on ARM).
 
 `--download-only DIR` (`-DownloadOnly DIR` on Windows) stops after the verified download.
 
