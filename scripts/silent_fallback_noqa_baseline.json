@@ -14,7 +14,6 @@
  "config.py": 1,
  "errors.py": 1,
  "gact/a2ui_catalogs/registry.py": 1,
- "gact/agents/always_load_tools.py": 1,
  "gact/agents/builders.py": 2,
  "gact/agents/claude_code_precede.py": 1,
  "gact/agents/clio_react.py": 1,

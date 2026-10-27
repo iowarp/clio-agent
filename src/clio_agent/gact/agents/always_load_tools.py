@@ -20,7 +20,7 @@ def attach_always_load_tools(
     their server adds later reaches it: :mod:`clio_agent.gact.agents.live_tool_refresh`).
     """
 
-    from clio_agent.gact.mcp_readiness import mount_failure_reason, mount_namespace_for_session
+    from clio_agent.gact.mcp_background_prepare import prepare_for_turn
 
     declared_specs = getattr(tool_executor, "_clio_namespace_specs", None) or {}
     namespaces = {
@@ -32,19 +32,13 @@ def attach_always_load_tools(
         str(getattr(tool, "name", "") or "").partition("_")[0]
         for tool in tool_executor.to_dspy_tools()
     }
-    for namespace in sorted(namespaces - listed):
-        try:
-            mount_namespace_for_session(
-                tool_executor, namespace, declared_specs[namespace], connect=False
-            )
-        except Exception as exc:  # noqa: BLE001 - one optional service cannot brick the agent
-            mount_failures[namespace] = mount_failure_reason(exc)
-            logger.warning(
-                "always_load_mcp_mount_failed namespace=%s reason=%s error=%s",
-                namespace,
-                mount_failures[namespace],
-                exc,
-            )
+    cold = {namespace: declared_specs[namespace] for namespace in sorted(namespaces - listed)}
+    # One optional service never holds the turn: a cold one prepares in the background
+    # and joins the agent's tools once listed; a failure is a typed reason.
+    _preparing, failures = prepare_for_turn(tool_executor, cold)
+    for namespace, reason in failures.items():
+        mount_failures[namespace] = reason
+        logger.warning("always_load_mcp_mount_failed namespace=%s reason=%s", namespace, reason)
 
     prefixes = tuple(f"{namespace}_" for namespace in sorted(namespaces))
     if not prefixes:

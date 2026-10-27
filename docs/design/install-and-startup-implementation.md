@@ -188,6 +188,24 @@ The same model is in the design document; it is repeated here so this plan reads
   - preparing and failed states, and reconnect for plugin servers.
 
   It is triggered by R4: opening a conversation loads its agent.
+
+  As built (`claude/b3-mcp-prepare`):
+  - `tools/mcp_prepare.py` provisions a server before it starts (`uv sync` into
+    `<cache>/mcp-project-envs/`, or `clio-kit mcp-server --prepare <name>` when the installed
+    clio-kit offers it, else the typed `mcp_prepare_provision_unsupported_launcher`), and keeps
+    each server's visible state: `preparing` (phase `provision`, `launch` or `connect`), `ready`
+    or `failed` with a typed `mcp_prepare_*` reason.
+  - `gact/mcp_readiness.py` starts a cold server once: the first start connects directly
+    (`mcp_prepare_first_start_direct`) and lists over that connection.
+  - `GET /v1/sessions/{sid}/messages` (newest page) starts the warm-up; a request made while
+    the agent is still starting runs when it is ready. Boot lists stdio servers from the cache
+    only (`mcp_namespace_not_prepared_at_boot`).
+  - A turn waits at most `tools.mcp.turn_prepare_grace_s` (2 s); a server still preparing is
+    offered through `wait_for_tools` and joins the agent's tools at its next step.
+  - `GET /v1/mcp/servers?session_id=` rows carry `status` `preparing`/`failed`, `reason` and a
+    `preparation` block; `POST /v1/sessions/{sid}/mcp/{namespace}/reconnect` restarts one.
+  - Still for clio-kit: `mcp-server --prepare <name>` (build the locked environment and exit 0)
+    and `mcp-server --status <name>`.
 - **B4. Nothing reinstalled or rescanned at boot; maintenance runs in its own lane.**
   - The marketplace check compares the recorded source version, not a full-tree hash
     (`plugins/service.py`; the mismatch itself was fixed on develop in #1854).

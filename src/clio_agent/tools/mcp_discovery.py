@@ -228,6 +228,49 @@ def discover_declared_tools_bounded(
         pool.shutdown(wait=False)
 
 
+#: The boot pass names an uncached stdio namespace this way in the trace: it is not a
+#: degradation, just a server no agent has loaded yet.
+MCP_NAMESPACE_NOT_PREPARED_AT_BOOT = "mcp_namespace_not_prepared_at_boot"
+
+
+def boot_discovery_pass(
+    specs: Mapping[str, MCPServerSpec],
+    on_listed: Callable[[str, dict[str, Any]], None],
+) -> DiscoveryPass:
+    """The default gateway's discovery without starting any stdio server (B3).
+
+    A stdio namespace contributes its cached listing, or nothing yet: its server is
+    prepared when an agent that uses it is loaded (a conversation is opened), and each
+    later live listing reaches ``on_listed`` (:func:`clio_agent.tools.mcp_prepare.
+    observe_listings`). Remote namespaces start no process and are listed as before.
+    """
+
+    from clio_agent.runtime import trace  # noqa: PLC0415
+    from clio_agent.tools import listing_cache, mcp_prepare  # noqa: PLC0415
+
+    stdio = {ns: spec for ns, spec in specs.items() if spec.transport == "stdio" and spec.command}
+    mcp_prepare.observe_listings(
+        "default_gateway", lambda ns, tools: on_listed(ns, tools) if ns in stdio else None
+    )
+    result = discover_declared_tools_bounded(
+        {ns: spec for ns, spec in specs.items() if ns not in stdio}
+    )
+    for namespace, spec in stdio.items():
+        listed = listing_cache.load_listing(namespace, spec.command, tuple(spec.args), spec.env)
+        if not listed:
+            trace.event("TOOLS", "%s namespace=%s", MCP_NAMESPACE_NOT_PREPARED_AT_BOOT, namespace)
+            continue
+        result.tools.update(
+            {
+                f"{namespace}_{tool.name}": tool.model_copy(
+                    update={"name": f"{namespace}_{tool.name}"}
+                )
+                for tool in listed
+            }
+        )
+    return result
+
+
 class NamespaceDiscoveryHealer:
     """Background re-prober for namespaces degraded during a discovery pass (#1232 pt 2).
 
@@ -305,6 +348,12 @@ class NamespaceDiscoveryHealer:
             from clio_agent.runtime.stream_audit import stream_audit  # noqa: PLC0415
 
             stream_audit("mcp_namespace_discovery_degraded", reason=reason, namespace=namespace)
+
+    def merge_listed(self, namespace: str, tools: dict[str, Any]) -> None:
+        """Merge a namespace listed elsewhere (an agent's preparation) into the catalog."""
+
+        if not self._stop.is_set():
+            self._on_healed(namespace, tools)
 
     def pending(self) -> dict[str, str]:
         """Snapshot of currently-degraded namespaces (test/status seam)."""
@@ -446,7 +495,9 @@ async def ensure_namespace_async(namespace: str, spec: MCPServerSpec) -> dict[st
 
 
 __all__ = [
+    "MCP_NAMESPACE_NOT_PREPARED_AT_BOOT",
     "DiscoveryPass",
+    "boot_discovery_pass",
     "NamespaceDiscoveryHealer",
     "discover_declared_tools_bounded",
     "discovery_concurrency",
