@@ -7,7 +7,12 @@ restore_install() {
   local status=$? entry name
   trap - EXIT
   if [ -n "$backup" ]; then
-    if [ "$install_ok" = 1 ]; then
+    if [ "$install_ok" = 1 ] && [ -d "$backup/previous/.git" ]; then
+      # A source checkout the installer cloned holds no user content: the new
+      # install replaces it whole.
+      rm -rf -- "$backup/previous"
+      rmdir -- "$backup" 2>/dev/null || true
+    elif [ "$install_ok" = 1 ]; then
       shopt -s dotglob nullglob
       for entry in "$backup/previous/"*; do
         name="${entry##*/}"

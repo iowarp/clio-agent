@@ -15,6 +15,7 @@ from clio_agent.gact.infrastructure.clio_agent_deploy import (
     teardown_command,
 )
 from clio_agent.gact.infrastructure.context_sizing.deployment import sized_model_runtime_plan
+from clio_agent.gact.infrastructure.controller_source import controller_commit
 from clio_agent.gact.infrastructure.gpu_share import share_launch
 from clio_agent.gact.infrastructure.model_instances import (
     ROUTER_SERVICE,
@@ -472,10 +473,13 @@ def _clio_agent_plan(
         raise ValueError("Choose reconnect, update, or replace for the existing CLIO")
     if on_conflict == "replace":
         root = target.install_root.strip()
-    if on_conflict == "update":
+    # "Start it and connect" for an agent installed but stopped starts that
+    # install as it is, at its own version: no reinstall.
+    start_existing = on_conflict == "connect" and configuration.get("conflict_state") == "stopped"
+    if on_conflict == "update" or start_existing:
         root = configuration.get("conflict_root", "").strip()
         if not root.startswith("/"):
-            raise ValueError("Updating requires the existing agent's absolute installation path")
+            raise ValueError("Using the existing agent requires its absolute installation path")
 
     def launcher(script: str) -> CommandSpec:
         return CommandSpec(
@@ -522,7 +526,12 @@ def _clio_agent_plan(
     replace = on_conflict in {"replace", "update"}
     commands: list[CommandSpec] = [
         claim_command(
-            root, port, version, replace=replace, expected_pid=configuration.get("conflict_pid", "")
+            root,
+            port,
+            version,
+            replace=replace,
+            expected_pid=configuration.get("conflict_pid", ""),
+            answered=on_conflict is not None,
         )
     ]
     if action == "reinstall":
@@ -531,8 +540,12 @@ def _clio_agent_plan(
                 "uninstall", target, resolved_root=resolved_root, configuration=configuration
             ).commands
         )
-    if action in {"install", "reinstall"}:
-        commands.append(install_command(root, version, fresh=from_scratch(configuration)))
+    if action in {"install", "reinstall"} and not start_existing:
+        commands.append(
+            install_command(
+                root, version, fresh=from_scratch(configuration), source_commit=controller_commit()
+            )
+        )
     launch = RemoteLaunch(
         root,
         port,

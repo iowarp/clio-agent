@@ -39,6 +39,10 @@ logger = logging.getLogger(__name__)
 DEFAULT_MARKETPLACE = "clio"
 DEFAULT_AGENT = "clio/standard"
 DEFAULT_MARKETPLACE_URL = "https://github.com/iowarp/clio-agent-marketplace.git"
+# The commit an installed product fetches: the checkout's submodule pin, never the
+# repository's default branch. tests/test_plugins/test_default_marketplace_pin.py keeps
+# it equal to the pin.
+DEFAULT_MARKETPLACE_COMMIT = "d0d92981add80570a30d57b091b48af3f81f026c"
 _SUBMODULE = Path(__file__).resolve().parents[3] / "external" / "clio-agent-marketplace"
 
 
@@ -98,7 +102,7 @@ def plugin_store_root() -> Path:
 
 
 def default_marketplace_source() -> str:
-    """The shipped default marketplace: the checkout's submodule, else the pinned URL."""
+    """The shipped default marketplace: the checkout's submodule, else the URL at its pin."""
 
     from clio_agent import conf  # noqa: PLC0415
 
@@ -236,9 +240,13 @@ class PluginService:
                 snapshot = Path(installed.get("snapshot") or "")
                 if snapshot.is_dir() and "".join(tree_digests(snapshot)) == digest:
                     return None
-            else:
+            elif installed.get("commit") == DEFAULT_MARKETPLACE_COMMIT:
                 return None
-        return self.store.install(source, name=DEFAULT_MARKETPLACE, default=True)
+        if Path(source).is_dir() or source != DEFAULT_MARKETPLACE_URL:
+            return self.store.install(source, name=DEFAULT_MARKETPLACE, default=True)
+        return self.store.install(
+            source, commit=DEFAULT_MARKETPLACE_COMMIT, name=DEFAULT_MARKETPLACE, default=True
+        )
 
     # ----------------------------------------------------------------- agents
     def agents(self) -> list[AgentEntry]:

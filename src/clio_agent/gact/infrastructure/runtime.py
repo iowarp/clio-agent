@@ -14,6 +14,7 @@ import httpx
 from anyio.to_thread import run_sync
 
 from clio_agent.gact.infrastructure import reuse
+from clio_agent.gact.infrastructure.claim_outcome import conflict_question
 from clio_agent.gact.infrastructure.clio_agent_deploy import ClaimResult, parse_claim
 from clio_agent.gact.infrastructure.deployment_ledger import (
     forget_created,
@@ -45,7 +46,6 @@ from clio_agent.gact.infrastructure.models import (
     ServiceRecord,
     ServiceState,
     TargetFacts,
-    VersionConflictDetail,
 )
 from clio_agent.gact.infrastructure.operation_events import TERMINAL_EVENT, OperationEventLog
 from clio_agent.gact.infrastructure.operation_progress import OperationTracker
@@ -553,40 +553,20 @@ class InfrastructureRuntime(ExternalConnectionsMixin, ServerAccessMixin, ModelRo
                         ):
                             resolved_root_update = claim.owner.strip()
                         break
-                    # Nothing was stopped or installed. Surface what was found so the caller
-                    # can ask "Connect" or "Replace" instead of clio deciding either way. An
-                    # unanswered health check is no reason to stop a process: `health` says so.
-                    health = claim.health or "unknown"
-                    progress = (
-                        (
-                            f"CLIO {claim.installed_version or '(unknown version)'} "
-                            f"is already running on this host (pid {claim.pid or 'unknown'})."
-                        )
-                        if health == "healthy"
-                        else (
-                            f"A CLIO-looking process is already on this host's port "
-                            f"(pid {claim.pid or 'unknown'}), but it isn't answering."
-                        )
-                    )
+                # Nothing was stopped, started or installed: ask the person (claim_outcome).
+                question = claim and conflict_question(
+                    claim, target_version=clio_agent_version(), port=plan.connection_port or 17800
+                )
+                if question:
+                    progress, conflict = question
                     tracker.finish(
                         "failed",
                         progress,
                         error="clio_deploy_version_conflict",
-                        conflict=VersionConflictDetail(
-                            installed_version=claim.installed_version or "unknown",
-                            pid=claim.pid or "",
-                            health=health,
-                            target_version=clio_agent_version(),
-                            owner=claim.owner or "",
-                            port=plan.connection_port or 17800,
-                        ),
+                        conflict=conflict,
                         logs=_bounded("\n".join(output)),
                     )
                     return
-                if claim is not None and claim.result == "adopted":
-                    # The healthy server of this exact install and version
-                    # keeps running; installing or starting again is not needed.
-                    break
                 if spec.settle_seconds:
                     await asyncio.sleep(spec.settle_seconds)
 
@@ -624,12 +604,14 @@ class InfrastructureRuntime(ExternalConnectionsMixin, ServerAccessMixin, ModelRo
                 "start",
                 "reinstall",
             }:
-                adopted = claim is not None and claim.result in {"found", "adopted"}
+                adopted = claim is not None and claim.result == "found"
+                # An adopted agent, or a stopped one started as it is, keeps its version.
+                kept = adopted or on_conflict == "connect"
                 configuration = dict(request.configuration)
                 configuration.update(
                     desktop_owned="false" if adopted else "true",
-                    version=(claim.installed_version or "unknown")
-                    if adopted and claim is not None
+                    version=(claim.installed_version if claim else None) or "unknown"
+                    if kept
                     else clio_agent_version(),
                 )
                 request = request.model_copy(update={"configuration": configuration})

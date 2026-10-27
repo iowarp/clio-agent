@@ -89,9 +89,10 @@ root="${root%/}"
 [ -n "$root" ] && [ "$root" != "$HOME" ] || { printf 'Choose a dedicated CLIO installation directory.\n'; exit 75; }
 """
 
-_COMMON = (
-    _ROOT
-    + r"""
+# The helpers every deploy script shares, without resolving the root. A script
+# that starts with LAUNCHER_PRELUDE has already resolved it, and resolving it
+# again after the prelude exported CLIO_AGENT_HOME lands on a different path.
+_HELPERS = r"""
 port="$2"
 host_id="$(hostname -s 2>/dev/null || hostname 2>/dev/null || echo localhost)"
 say() { printf '==> %s\n' "$*"; }
@@ -188,7 +189,8 @@ except Exception:
   esac
 }
 """
-)
+
+_COMMON = _ROOT + _HELPERS
 
 _CLAIM = (
     "# clio-deploy:claim\n"
@@ -196,14 +198,23 @@ _CLAIM = (
     + r"""
 version="$3"
 replace="${4:-0}"
+answered="${6:-0}"
 existing_root=0; [ -d "$root" ] && existing_root=1
 recorded="$(cat "$(pidfile_for "$root")" 2>/dev/null || true)"
 if ! port_busy "$port"; then
   if [ -n "$recorded" ] && alive "$recorded"; then
     fail "This installation already has a running process. Choose a separate installation directory for another port."
   fi
+  installed="$("$root/clio-agent/.venv/bin/python" -c 'import importlib.metadata as m; print(m.version("clio-agent"))' 2>/dev/null || true)"
+  if [ -n "$installed" ] && [ "$answered" != "1" ]; then
+    # An agent is installed here but not running: ask before starting or updating it.
+    say "CLIO $installed is installed in $root but not running"
+    printf 'clio-deploy result=installed existing_root=1 installed=%s state=stopped owner=%s\n' \
+      "$installed" "$root"
+    exit 0
+  fi
   say "Port $port is free"
-  printf 'clio-deploy result=free existing_root=%s\n' "$existing_root"
+  printf 'clio-deploy result=free existing_root=%s installed=%s\n' "$existing_root" "${installed:-none}"
   exit 0
 fi
 pid="$(listener_pid "$port")"
@@ -278,6 +289,9 @@ printf 'clio-deploy result=cleaned\n'
 class ClaimResult:
     """What the claim step found on the API port.
 
+    ``installed`` means nothing is on the port but an agent is installed under
+    ``root`` (``owner``) at ``installed_version``, stopped; the caller asks
+    whether to start it, update it or start a new one.
     ``found`` means a process is on the port but the claim did not touch it
     (a different root or version, an unresponsive server, or ``replace``
     unset): ``installed_version``, ``pid`` and ``owner`` (the process's own
@@ -290,19 +304,25 @@ class ClaimResult:
     reason to stop it on its own.
     """
 
-    result: Literal["free", "adopted", "stopped", "found"]
+    result: Literal["free", "installed", "stopped", "found"]
     existing_root: bool
     installed_version: str | None = None
     pid: str | None = None
     owner: str | None = None
-    health: Literal["healthy", "unresponsive", "unknown"] | None = None
+    health: Literal["healthy", "unresponsive", "unknown", "stopped"] | None = None
 
 
 _RESULT_LINE = re.compile(r"clio-deploy result=(\w+)((?: \w+=\S+)*)")
 
 
 def claim_command(
-    root: str, port: int, version: str, *, replace: bool = False, expected_pid: str = ""
+    root: str,
+    port: int,
+    version: str,
+    *,
+    replace: bool = False,
+    expected_pid: str = "",
+    answered: bool = False,
 ) -> CommandSpec:
     """The adopt-or-stop step that runs before installing.
 
@@ -314,6 +334,9 @@ def claim_command(
             port is stopped (the person chose "Replace it"). When ``False``
             (default), such a CLIO is left running and reported as ``found``
             instead -- claiming the port is never destructive on its own.
+        answered: The person already chose what to do with an agent found here,
+            so an installed but stopped agent under ``root`` is reported as
+            ``free`` (with its version) instead of ``installed``.
     """
 
     return CommandSpec(
@@ -327,6 +350,7 @@ def claim_command(
             version,
             "1" if replace else "0",
             expected_pid,
+            "1" if answered else "0",
         ],
         timeout_seconds=90,
     )
@@ -368,6 +392,19 @@ touch "$root/.clio-managed-install"
 """
     + SHELL_FUNCTIONS
     + r"""
+# A CLIO built from a commit that is not a release deploys that commit from source
+# ($7); a release deploys its version from PyPI.
+commit="${7:-}"
+if [ -n "$commit" ]; then
+  # Reuse: this exact commit is already installed here (unless from scratch).
+  head="$(git -C "$root/clio-agent" rev-parse HEAD 2>/dev/null || true)"
+  if [ "${6:-0}" != 1 ] && [ "$head" = "$commit" ] && [ -x "$bin/clio" ]; then
+    size="$(du -sk "$root/clio-agent" 2>/dev/null | cut -f1)"
+    clio_reuse clio_agent "CLIO $version ($commit)" "clio-agent@$commit" "$root/clio-agent" "$(( ${size:-0} * 1024 ))" ""
+    exit 0
+  fi
+  command -v git >/dev/null 2>&1 || { printf 'Deploying this CLIO (built from %s) needs git on the remote host.\n' "$commit"; exit 75; }
+else
 # Reuse: this exact version is already installed here (unless from scratch).
 installed="$("$root/clio-agent/.venv/bin/python" -c 'import importlib.metadata as m; print(m.version("clio-agent"))' 2>/dev/null || true)"
 if [ "${6:-0}" != 1 ] && [ -n "$installed" ] && [ "$installed" = "$version" ] && [ -x "$bin/clio" ]; then
@@ -388,22 +425,45 @@ case "$code" in
     exit 75
     ;;
 esac
+fi
 if ! command -v uv >/dev/null 2>&1; then
   printf '==> Installing uv into %s\n' "$bin"
   curl -LsSf https://astral.sh/uv/install.sh | sh || { printf 'Could not install uv.\n'; exit 75; }
 fi
-export CLIO_VERSION="$version" CLIO_INSTALLER_REF="$5" GACT_VERSION="$5"
+if [ -n "$commit" ]; then
+  installer_args=(--source --ref "$commit")
+else
+  installer_args=()
+  export CLIO_VERSION="$version" CLIO_INSTALLER_REF="$5" GACT_VERSION="$5"
+fi
 """
     + INSTALL_GUARD
     + r"""
-curl -fsSL "$4" | bash || { code=$?; printf 'Could not install CLIO %s from GitHub release %s (%s).\n' "$version" "$5" "$4"; exit "$code"; }
+# The person reads only the last line of a failed step, so it names the cause:
+# the installer's own last error line, kept from its output.
+install_log="$(mktemp 2>/dev/null || printf '%s' "$root/.install-output.log")"
+curl -fsSL "$4" | bash -s -- "${installer_args[@]}" 2>&1 | tee "$install_log"
+code=$?
+if [ "$code" != 0 ]; then
+  cause="$(grep -E '(Error|error|ERROR|failed|denied|not found)' "$install_log" | grep -vE '^[[:space:]]*(File |\^|~)' | tail -n 1 | cut -c1-400)"
+  rm -f -- "$install_log"
+  printf 'Could not install CLIO %s from GitHub release %s: %s\n' "$version" "$5" "${cause:-the installer stopped without an error line; see Details}"
+  exit "$code"
+fi
+rm -f -- "$install_log"
 install_ok=1
 """
 )
 
 
-def install_command(root: str, version: str, *, fresh: bool = False) -> CommandSpec:
+def install_command(
+    root: str, version: str, *, fresh: bool = False, source_commit: str | None = None
+) -> CommandSpec:
     """Install exactly ``version`` of clio-agent from PyPI under ``root``.
+
+    With ``source_commit`` (this CLIO was built from a commit that is not a
+    release, see controller_source), install that commit from source instead,
+    with that commit's own installer (``--source --ref <commit>``).
 
     An install of this exact version already under ``root`` is reused
     (reported through the shared reuse helper) unless ``fresh``.
@@ -423,9 +483,10 @@ def install_command(root: str, version: str, *, fresh: bool = False) -> CommandS
             root,
             version,
             PYPI_RELEASE_URL.format(version=version),
-            INSTALLER_URL.format(tag=release_tag(version)),
-            release_tag(version),
+            INSTALLER_URL.format(tag=source_commit or release_tag(version)),
+            source_commit or release_tag(version),
             "1" if fresh else "0",
+            source_commit or "",
         ],
         timeout_seconds=900,
     )
@@ -463,15 +524,18 @@ def parse_claim(stdout: str) -> ClaimResult | None:
 
     for line in reversed(stdout.splitlines()):
         match = _RESULT_LINE.search(line)
-        if match and match.group(1) in {"free", "adopted", "stopped", "found"}:
+        if match and match.group(1) in {"free", "installed", "stopped", "found"}:
             fields = dict(item.split("=", 1) for item in match.group(2).split())
             health = fields.get("state")
+            installed = fields.get("installed")
             return ClaimResult(
                 result=match.group(1),  # type: ignore[arg-type]
                 existing_root=fields.get("existing_root") == "1",
-                installed_version=fields.get("installed"),
+                installed_version=None if installed in {None, "none"} else installed,
                 pid=fields.get("pid"),
                 owner=fields.get("owner"),
-                health=health if health in {"healthy", "unresponsive", "unknown"} else None,  # type: ignore[arg-type]
+                health=health  # type: ignore[arg-type]
+                if health in {"healthy", "unresponsive", "unknown", "stopped"}
+                else None,
             )
     return None
