@@ -21,6 +21,7 @@ from typing import TYPE_CHECKING
 from fastapi import HTTPException
 
 from clio_agent.gact.attention.rendered import _project
+from clio_agent.gact.transcript_reads import read_transcript, transcript_may_contain
 from clio_agent.gact.types import (
     ErrorEnvelope,
     ErrorInfo,
@@ -251,9 +252,9 @@ def _recall_search_response(
     hits: list[SessionRecallHit] = []
     for sid in session_ids:
         sess = sessions_by_id.get(sid)
-        if sess is None:
-            continue
-        for message in app.state.messages.get(sid, []):
+        if sess is None or not transcript_may_contain(app, sid, terms):
+            continue  # its stored records hold no term: never assembled, never cached
+        for message in read_transcript(app, sid):
             if exclude_message_id and message.id == exclude_message_id:
                 continue
             for part in message.parts:
