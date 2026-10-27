@@ -114,7 +114,15 @@ The same model is in the design document; it is repeated here so this plan reads
   - `migrate_history` and `_full_replay` (`task_migration.py`, `task_index_build.py:52`);
   - the artifact registry fold (`artifacts/registry_boot.py:151`).
 
-  Boot only checks the marker, and refuses with a typed reason if a migration is owed.
+  Boot only checks the markers (one record read each). A migration still owed (an install
+  that skipped the step, a runtime swapped in without it) runs once at that boot, before
+  `ready`, as the boot step `migration.<name>` with the typed reason `migration_owed_at_boot`
+  and the `store_migrations` health row; boot does not refuse, because the desktop and
+  SSH-deployed agents start unattended and every migration writes its marker last.
+  - Owner module `gact/store_migrations.py` (the registry: a new migration is one function
+    and one `StoreMigration` entry); command `gact/store_migrate_command.py`.
+  - Run by `install.sh` / `install.ps1` after installing or upgrading, and by
+    `document_install` in the desktop's install-time prepare (not its per-start reuse check).
 - **R3. The rail reads small records.**
   - `SessionStore` (`sessions.py:266`) keeps every session's metadata resident and rewrites the whole
     `sessions.json` file on each change. It moves to clio-core records with a recent-first index.

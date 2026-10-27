@@ -54,8 +54,17 @@ def _open_store() -> Any:
     from clio_agent.gact.app import build_app  # noqa: PLC0415
     from clio_agent.gact.runtime.globals import _set_app_arc  # noqa: PLC0415
     from clio_agent.gact.task_history import TaskHistory  # noqa: PLC0415
+    from clio_agent.gact.workspaces import (  # noqa: PLC0415
+        _default_store_path as workspaces_store_path,
+    )
 
+    workspaces_file = workspaces_store_path()
+    seeded_here = not workspaces_file.exists()
     app = build_app()
+    if seeded_here:
+        # Not a server start: a fresh ``ws_default`` is seeded from the server's working
+        # directory at its first start, never from wherever the installer ran.
+        workspaces_file.unlink(missing_ok=True)
     # Not a server start: the restart reconciliation and metrics seed the boot attaches
     # to the ARC do not run here; only the migrations below touch the store.
     app.state.transcript_boot_ready.set()

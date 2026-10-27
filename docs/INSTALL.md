@@ -196,6 +196,14 @@ backups and receipts under `state/migrations`, and rolls back failed cutovers.
 Generated legacy workspace copies remain readable at their original paths.
 Nothing moves or removes the shared `~/.clio` tree owned by other CLIO products.
 
+Store upgrades run at install time, not at start: `install.sh`, `install.ps1` and the
+desktop's install step run `clio-agent migrate`, which converts what an older CLIO
+wrote (legacy transcripts, the task index, the artifact index) once and records a
+marker for each conversion; running it again does nothing. It refuses while a CLIO
+server holds the store (`store_in_use`, exit 3). A server that finds a conversion
+still owed runs it once before it reports ready and says so in `clio doctor`
+(`store_migrations`).
+
 Reinstall replaces executable payloads while retaining sessions and user data.
 Remote bootstrap also protects data when it must invoke an older release's
 installer. Desktop gives fresh managed Agents their own `CLIO_AGENT_HOME`;
