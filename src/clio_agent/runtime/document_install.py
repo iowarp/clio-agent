@@ -12,6 +12,7 @@ from threading import Lock
 from typing import Any
 
 from clio_agent import paths
+from clio_agent.runtime import package_preparation
 from clio_agent.runtime.codex_desktop_setup import prepare_existing_windows_fence
 from clio_agent.runtime.codex_windows_helpers import ensure_bundled_codex_windows_helpers
 from clio_agent.runtime.document_install_receipt import reuse_install_receipt, save_install_receipt
@@ -63,23 +64,26 @@ def install_document_runtime(
     )
     reused = result is not None
     if result is None:
-        with ThreadPoolExecutor(max_workers=2, thread_name_prefix="clio-install") as workers:
-            office_job = workers.submit(prepare_office)
-            github_job = workers.submit(prepare_github)
-            result = prepare_document_runtime(workspace, cache_root=cache_root, progress=report)
-            if result["javascript"]["status"] != "ready":
-                raise DocumentRuntimeError(
-                    f"Node/pnpm package installation failed: {result['javascript']}"
-                )
-            office = office_job.result()
-            github = github_job.result()
-        result["native_tools"]["soffice"] = {"status": "available", "path": office}
-        result["capabilities"]["office_render_recalculate"] = "available"
-        result["native_tools"]["gh"] = {
-            "status": "available",
-            "path": str(github),
-            "authentication": "clio_account",
-        }
+        # The agent may already be running (a first desktop launch does not wait for
+        # this): it reads this record and answers "still preparing" meanwhile.
+        with package_preparation.preparing(cache_root):
+            with ThreadPoolExecutor(max_workers=2, thread_name_prefix="clio-install") as workers:
+                office_job = workers.submit(prepare_office)
+                github_job = workers.submit(prepare_github)
+                result = prepare_document_runtime(workspace, cache_root=cache_root, progress=report)
+                if result["javascript"]["status"] != "ready":
+                    raise DocumentRuntimeError(
+                        f"Node/pnpm package installation failed: {result['javascript']}"
+                    )
+                office = office_job.result()
+                github = github_job.result()
+            result["native_tools"]["soffice"] = {"status": "available", "path": office}
+            result["capabilities"]["office_render_recalculate"] = "available"
+            result["native_tools"]["gh"] = {
+                "status": "available",
+                "path": str(github),
+                "authentication": "clio_account",
+            }
     else:
         from clio_agent.runtime.document_stack.process import scratch_root
         from clio_agent.tools.file_policy import FileAccessPolicy

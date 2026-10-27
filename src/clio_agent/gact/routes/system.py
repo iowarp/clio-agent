@@ -69,6 +69,7 @@ from clio_agent.gact.types import (
     TransportFlags,
 )
 from clio_agent.gact.version_info import build_version_info
+from clio_agent.runtime.package_preparation import probe_managed_packages
 from clio_agent.runtime.status import (
     IntegrationState,
     IntegrationStatus,
@@ -321,6 +322,7 @@ def collect_health_report(app: FastAPI) -> RuntimeReport:
         lm_timeout=0.5,
         include_process_census=False,
     )
+    report.integrations.append(probe_managed_packages())
     return unconfigured_provider_report(
         report, provider_configured=configured or bool(explicit_lm_provider())
     )
