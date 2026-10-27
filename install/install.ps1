@@ -325,10 +325,27 @@ print(max(v for _, v in found) if sys.argv[1] == "stable" else max(found)[1])
     Pop-Location
     $pkgSpec = "clio-agent[argonne,flowcept]==$PackageVersion"
     Say "Installing $pkgSpec from PyPI (Python $py, locked by $tag)"
-    RemoveTree $Venv
+    # The installed environment is set aside, not deleted, until the new one is in
+    # place: an install that fails puts it back.
+    $Previous = ''
+    if (Test-Path -LiteralPath $Venv) {
+        $Previous = "$Venv.previous"
+        RemoveTree $Previous
+        Move-Item -LiteralPath $Venv -Destination $Previous
+    }
     New-Item -ItemType Directory -Force -Path (Join-Path $Prefix 'clio-agent') | Out-Null
-    RunNative uv @('venv', '--python', $py, $Venv)
-    RunNative uv @('pip', 'install', '--quiet', '--python', (Join-Path $Venv 'Scripts\python.exe'), '--constraint', $Constraints, $pkgSpec)
+    & uv venv --python $py $Venv
+    $ok = $LASTEXITCODE -eq 0
+    if ($ok) {
+        & uv pip install --quiet --python (Join-Path $Venv 'Scripts\python.exe') --constraint $Constraints $pkgSpec
+        $ok = $LASTEXITCODE -eq 0
+    }
+    if (-not $ok) {
+        RemoveTree $Venv
+        if ($Previous) { Move-Item -LiteralPath $Previous -Destination $Venv }
+        Die "could not install $pkgSpec$(if ($Previous) { '; the previous installation is unchanged' })"
+    }
+    if ($Previous) { RemoveTree $Previous }
     RemoveTree $LockDir
     $ClioVersion = $PackageVersion
 }
