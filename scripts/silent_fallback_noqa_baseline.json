@@ -63,7 +63,6 @@
  "gact/mcp_readiness.py": 1,
  "gact/messages.py": 1,
  "gact/messaging.py": 1,
- "gact/permission_gate.py": 1,
  "gact/plan_reuse.py": 2,
  "gact/provenance/dispatcher.py": 3,
  "gact/provenance_wiring.py": 2,
