@@ -5,7 +5,6 @@ from __future__ import annotations
 import argparse
 import json
 import os
-import re
 from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
@@ -21,31 +20,8 @@ from clio_agent.runtime.document_runtime import (
     prepare_document_runtime,
     prepare_office_runtime,
 )
-from clio_agent.runtime.document_stack.process import DocumentError
 from clio_agent.runtime.execution_environment import publish_environment
 from clio_agent.runtime.github_cli import ensure_github_cli
-
-
-def office_unavailable(error: BaseException) -> dict[str, str]:
-    """Why Office rendering cannot run here, and what fixes it.
-
-    A host without the desktop libraries the renderer loads (a headless server, an HPC
-    node, a minimal container) can still run everything else. The install goes on, and
-    a render later fails with this same cause.
-    """
-
-    detail = str(error).strip()
-    missing = re.search(r"loading shared libraries: (\S+?):", detail)
-    library = f"the system library {missing.group(1)}" if missing else "what the error names"
-    return {
-        "status": "unavailable",
-        "reason": "office_runtime_unavailable",
-        "detail": detail[-600:],
-        "next_action": (
-            f"Install {library} with this computer's package manager, then run the CLIO "
-            "installer again. Everything except Office rendering works without it."
-        ),
-    }
 
 
 def install_document_runtime(
@@ -68,14 +44,9 @@ def install_document_runtime(
             with progress_lock:
                 progress(message)
 
-    def prepare_office() -> str | dict[str, str]:
+    def prepare_office() -> str:
         report("Preparing and checking the Office renderer...")
-        try:
-            office = prepare_office_runtime()
-        except (DocumentError, DocumentRuntimeError, OSError) as error:
-            unavailable = office_unavailable(error)
-            report(f"Office rendering is unavailable: {unavailable['next_action']}")
-            return unavailable
+        office = prepare_office_runtime()
         report("Office rendering is ready.")
         return office
 
@@ -102,12 +73,8 @@ def install_document_runtime(
                 )
             office = office_job.result()
             github = github_job.result()
-        if isinstance(office, dict):
-            result["native_tools"]["soffice"] = office
-            result["capabilities"]["office_render_recalculate"] = "unavailable"
-        else:
-            result["native_tools"]["soffice"] = {"status": "available", "path": office}
-            result["capabilities"]["office_render_recalculate"] = "available"
+        result["native_tools"]["soffice"] = {"status": "available", "path": office}
+        result["capabilities"]["office_render_recalculate"] = "available"
         result["native_tools"]["gh"] = {
             "status": "available",
             "path": str(github),
@@ -141,10 +108,6 @@ def install_document_runtime(
         and result["native_tools"]["protected_execution"]["status"] == "setup_required"
     ):
         progress(result["native_tools"]["protected_execution"]["next_action"])
-    if result["native_tools"]["soffice"].get("status") != "available":
-        # Not recorded as complete: the next install or launch checks Office again.
-        report("The other managed packages are installed and verified.")
-        return result
     if not reused:
         save_install_receipt(workspace, result, cache_root=cache_root)
     report("All managed runtime packages are installed and verified.")
