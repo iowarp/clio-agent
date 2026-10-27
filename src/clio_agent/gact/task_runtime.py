@@ -408,8 +408,8 @@ async def start(app: Any) -> None:
     register_native_storage(native.roots["storage"], native.work["storage"], app, native=native)
     app.state.native_tools = await stack.enter_async_context(native)
     app.state.builtin_boundary = await stack.enter_async_context(BuiltinBoundary(app, authorize))
-    await boot_timing.timed(app, "native_task_recovery", native.restore())
-    await boot_timing.timed(app, "external_task_recovery", app.state.external_tasks.restore())
+    # Native and external work left open is reattached per conversation by the
+    # obligations lane (conversation_recovery.restore_session), not at startup.
     conversations.start()
     if not history.requires_recovery:
         # Work left open at the last stop is an obligation: only the conversations that

@@ -99,8 +99,7 @@ class Obligations:
         )
 
         await history.io.run(_repair_workflow_references, conversations)
-        await history.io.run(conversations.app.state.questions.restore)
-        await conversations.app.state.question_events.restore()
+        await conversations.app.state.question_events.restore_gates()
         while self._queue and not conversations._closing:
             if history.requires_recovery:
                 logger.warning(

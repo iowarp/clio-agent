@@ -123,13 +123,12 @@ def open_work_sessions(history: TaskHistory) -> list[str]:
     return sorted(oldest, key=lambda sid: (oldest[sid], sid))
 
 
-def _open_assignments(history: TaskHistory, session_id: str) -> list[str]:
-    """Open assignment handles owned by one conversation, from its ``t~`` records."""
+def _open_tasks(history: TaskHistory, session_id: str) -> list[tuple[str, str]]:
+    """``(handle, kind)`` of the open tasks one conversation owns, from its ``t~`` records."""
     return [
-        str(row.get("handle", ""))
+        (str(row.get("handle", "")), str(row.get("kind", "")))
         for _name, row in history.index.open_records("t~")
         if str(row.get("session_id", "")) == session_id
-        and str(row.get("kind", "")) in _ASSIGNMENT_KINDS
     ]
 
 
@@ -201,7 +200,8 @@ async def restore_session(self: Conversations, session_id: str) -> None:
     """Recover one conversation's open work, reading only that conversation's records.
 
     In order: close its stale open records, repair owed displays from committed input,
-    project accepted pending feedback, then recover its interrupted assignments.
+    project accepted pending feedback, finish posting its Questions, reattach its native
+    work and register its external MCP work, then recover its interrupted assignments.
     Admission for the conversation stays held until the caller (the obligations lane)
     releases it.
     """
@@ -222,8 +222,18 @@ async def restore_session(self: Conversations, session_id: str) -> None:
     await history.io.run(records_and_displays)
     if history.requires_recovery:
         return
-    for handle in await history.io.run(_open_assignments, history, session_id):
-        await _restore_assignment(self, handle)
+    await history.io.run(self.app.state.questions.restore, session_id)
+    await self.app.state.question_events.restore(session_id)
+    tasks = await history.io.run(_open_tasks, history, session_id)
+    native = getattr(self.app.state, "native_tools", None)
+    if native is not None and tasks:
+        await native.restore(tuple(handle for handle, _kind in tasks))
+    external = getattr(self.app.state, "external_tasks", None)
+    if external is not None:
+        await external.restore(tuple(handle for handle, kind in tasks if kind == "MCP"))
+    for handle, kind in tasks:
+        if kind in _ASSIGNMENT_KINDS:
+            await _restore_assignment(self, handle)
 
 
 async def _restore_assignment(self: Conversations, handle: str) -> None:
