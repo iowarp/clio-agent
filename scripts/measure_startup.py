@@ -173,10 +173,11 @@ def measure(args: argparse.Namespace) -> dict[str, Any]:
     """Boot, observe, open, idle and stop one server on a copy of the store."""
     store = args.store.resolve()
     work = Path(tempfile.mkdtemp(prefix="clio-startup-", dir=args.work_dir))
-    copy = work / "store"
+    copy = store if args.in_place else work / "store"
     started_copy = time.monotonic()
-    shutil.copytree(store, copy, symlinks=True)
-    _repoint(copy, store)
+    if not args.in_place:
+        shutil.copytree(store, copy, symlinks=True)
+        _repoint(copy, store)
     copy_s = round(time.monotonic() - started_copy, 1)
     env = {**os.environ, **_store_environment(store, copy)}
     port = _free_port()
@@ -303,6 +304,11 @@ def main() -> int:
     parser.add_argument("--stop-timeout", type=float, default=60.0)
     parser.add_argument("--work-dir", type=Path, default=None, help="where the store copy goes")
     parser.add_argument("--keep", action="store_true", help="keep the copy and server log")
+    parser.add_argument(
+        "--in-place",
+        action="store_true",
+        help="run on the store itself, not a copy (it changes: resumed work drains)",
+    )
     parser.add_argument(
         "--wait-obligations",
         action="store_true",

@@ -60,12 +60,18 @@ import create_reference_store as refstore  # noqa: E402
 TERMINAL = {"completed", "failed", "cancelled", "interrupted", "task_state_uncertain"}
 
 
-def prepare(out: Path, capacity: str) -> dict[str, str]:
-    """Create the private store directories, marketplace and environment."""
+def prepare(out: Path, capacity: str, core_port: int = 0) -> dict[str, str]:
+    """Create the private store directories, marketplace and environment.
+
+    ``core_port`` pins the private clio-core's base port (it binds five from there);
+    0 picks a free block.
+    """
     for name in ("home", "runtime", "workspace"):
         (out / name).mkdir(parents=True, exist_ok=True)
     refstore._write_marketplace(out / "marketplace")
     env = refstore._environment(out, capacity)
+    if core_port:
+        env["CLIO_CORE_PORT"] = str(core_port)
     (out / "env.sh").write_text(
         "".join(f"export {key}={shlex.quote(value)}\n" for key, value in env.items()),
         encoding="utf-8",
@@ -144,6 +150,10 @@ def _text(message: dict[str, Any]) -> str:
 class RestartFailed(RuntimeError):
     """The server did not come back to ``ready`` on the store it was killed on."""
 
+    def __init__(self, message: str, boot: dict[str, Any] | None = None, log: str = "") -> None:
+        super().__init__(message)
+        self.boot, self.log = boot or {}, log
+
 
 class Server:
     """One server process at a time on the store; killed with SIGKILL and restarted."""
@@ -192,18 +202,35 @@ class Server:
         log.close()
         api = Api(self.args.port)
         deadline = started + self.args.ready_timeout
+        boot: dict[str, Any] = {}
         while time.monotonic() < deadline:
             if self.process.poll() is not None:
                 raise RestartFailed(
                     f"server exited with {self.process.returncode} before ready "
-                    f"(server-{self.starts:02d}.log)"
+                    f"(server-{self.starts:02d}.log)",
+                    boot,
+                    self._log_tail(),
                 )
             status, body = api.call("GET", "/health", timeout=5)
-            marks = (body or {}).get("boot", {}).get("marks", {}) if status == 200 else {}
-            if "task_runtime_ready" in marks:
-                return {"ready_s": round(time.monotonic() - started, 2), "marks": marks}
+            boot = (body or {}).get("boot", {}) if status == 200 else boot
+            if "task_runtime_ready" in boot.get("marks", {}):
+                return {"ready_s": round(time.monotonic() - started, 2), "marks": boot["marks"]}
             time.sleep(0.25)
-        raise RestartFailed(f"not ready within {self.args.ready_timeout}s")
+        self.process.send_signal(signal.SIGUSR1)  # the server dumps its thread stacks
+        time.sleep(2)
+        raise RestartFailed(
+            f"not ready within {self.args.ready_timeout}s (server-{self.starts:02d}.log)",
+            boot,
+            self._log_tail(),
+        )
+
+    def _log_tail(self, lines: int = 40) -> str:
+        path = self.args.out / f"server-{self.starts:02d}.log"
+        try:
+            rows = path.read_text(encoding="utf-8", errors="replace").splitlines()
+        except OSError:
+            return ""
+        return "\n".join(row for row in rows if "GET /v1/health" not in row)[-20000:]
 
     def kill9(self, *, core: bool) -> dict[str, Any]:
         """SIGKILL the server (and with ``core`` its clio-core daemon) like a crash."""
@@ -724,6 +751,33 @@ def _observe_until(
         last.update(busy, at=time.monotonic())
 
 
+def probe_in_flight(api: Api, ledger: Ledger, roots: list[str]) -> dict[str, int]:
+    """A quick look, just before the kill, at what is running (the observer pass may be old).
+
+    Counts busy conversations and the flow runs of this iteration's conversations that
+    are still running; each read is bounded so the kill is not delayed by a slow server.
+    """
+    seen = {"busy_sessions": 0, "running_flows": 0}
+    status, body = api.call("GET", "/sessions?limit=100000", timeout=3)
+    if status == 200 and isinstance(body, dict):
+        seen["busy_sessions"] = sum(
+            1
+            for row in body.get("sessions", body.get("items", []))
+            if row.get("status") in {"running", "busy", "queued", "stopping"}
+        )
+    with ledger.lock:
+        handles = {
+            handle: task["sid"]
+            for handle, task in ledger.tasks.items()
+            if task["sid"] in roots and task["root"] == task["sid"]
+        }
+    for handle, sid in handles.items():
+        status, run = api.call("GET", f"/sessions/{sid}/tasks/{handle}/flow", timeout=3)
+        if status == 200 and isinstance(run, dict) and run.get("status") not in TERMINAL:
+            seen["running_flows"] += 1
+    return seen
+
+
 def _kill_point(busy: dict[str, Any]) -> list[str]:
     points = []
     if busy.get("running_flows"):
@@ -783,6 +837,7 @@ def iteration(
     observer.start()
     time.sleep(kill_after)
     in_flight = {k: v for k, v in last.items() if k not in {"at", "error"}}
+    in_flight.update(probe_in_flight(api, ledger, list(work.roots)))
     observed_age = round(time.monotonic() - last["at"], 2) if "at" in last else None
     core_kill = args.kill_core or (args.kill_core_every and number % args.kill_core_every == 0)
     killed = server.kill9(core=bool(core_kill))
@@ -804,7 +859,15 @@ def iteration(
     try:
         record["restart"] = server.start()
     except RestartFailed as error:
-        record["findings"] = [{"type": "restart_failed", "phase": "restart", "error": str(error)}]
+        record["findings"] = [
+            {
+                "type": "restart_failed",
+                "phase": "restart",
+                "error": str(error),
+                "boot": error.boot,
+                "log_tail": error.log,
+            }
+        ]
         return record
     findings = confirmed(api, ledger, "restart")
     record["settle"] = settle(api, ledger, args.settle_timeout)
@@ -817,7 +880,7 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
     out = args.out
     if out.exists() and any(out.iterdir()):
         raise SystemExit(f"{out} is not empty; pass a new directory")
-    env = prepare(out, args.capacity)
+    env = prepare(out, args.capacity, args.core_port)
     rng = random.Random(args.seed)
     ledger = Ledger()
     server = Server(args, env)
@@ -885,6 +948,9 @@ def main() -> int:
     parser.add_argument("--iterations", type=int, default=5)
     parser.add_argument("--seed", type=int, default=None, help="random seed (default: random)")
     parser.add_argument("--port", type=int, default=18991)
+    parser.add_argument(
+        "--core-port", type=int, default=0, help="private clio-core base port (0: a free block)"
+    )
     parser.add_argument("--flows", type=int, default=3, help="fan-outs started per iteration")
     parser.add_argument("--chats", type=int, default=2, help="chats started per iteration")
     parser.add_argument("--think", type=float, default=0.5, help="scripted model seconds")

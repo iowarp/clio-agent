@@ -358,6 +358,11 @@ def serve(out: Path, port: int, think_s: float, answer_kb: int, lm_call_kb: int)
     The environment (``env.sh``) must already be set. Stalled work answers this time, so
     the work the store left open runs to completion when it is resumed.
     """
+    import faulthandler  # noqa: PLC0415
+    import signal  # noqa: PLC0415
+
+    # SIGUSR1 dumps every thread's stack into the log: how a harness diagnoses a hang.
+    faulthandler.register(signal.SIGUSR1, all_threads=True)
     os.chdir(out / "workspace")
     sys.path.insert(0, str(REPO))
     from clio_agent.gact import desktop_lifecycle, server_boot  # noqa: PLC0415
