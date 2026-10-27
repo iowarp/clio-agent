@@ -258,6 +258,16 @@ class Server:
                 child.kill()
             except psutil.NoSuchProcess:
                 continue
+        if core and not killed_core and core_pid:
+            # After an earlier kill the daemon outlives its first server and is no longer
+            # a descendant of this one: find it by its pidfile.
+            try:
+                daemon = psutil.Process(core_pid)
+                if daemon.name().startswith("clio_run"):
+                    daemon.kill()
+                    killed_core = True
+            except psutil.NoSuchProcess:
+                pass
         if others:
             self.leftovers.append({"start": self.starts, "processes": others})
         self.process = None
