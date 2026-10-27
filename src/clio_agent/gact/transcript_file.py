@@ -142,7 +142,7 @@ class RegistryTranscriptIndex:
     def session_ids(self) -> list[str]:
         """Every registered session id."""
 
-        return [session.id for session in self._sessions.list()]
+        return self._sessions.ids()
 
     def has_session(self, session_id: str) -> bool:
         """Whether ``session_id`` is a registered session."""

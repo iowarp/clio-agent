@@ -37,7 +37,7 @@ from clio_agent.gact.routes.session_cancellation import cancel_session_state_asy
 from clio_agent.gact.routes.session_creation import register_session_creation_route
 from clio_agent.gact.routes.session_export import register_session_export_routes
 from clio_agent.gact.routes.session_fork import register_session_fork_route
-from clio_agent.gact.routes.session_rows import filter_session_rows, rows_to_wire
+from clio_agent.gact.routes.session_list import register_session_list_route
 from clio_agent.gact.routes.side_sessions import register_side_session_routes
 from clio_agent.gact.runtime.globals import _new_attempt_id
 from clio_agent.gact.runtime.retention import enforce_dict_bound
@@ -46,7 +46,6 @@ from clio_agent.gact.turn_reasoning import forget_session_reasoning
 from clio_agent.gact.types import (
     ErrorEnvelope,
     ErrorInfo,
-    ListSessionsResponse,
     Message,
     ModelRef,
     RetryTurnRequest,
@@ -138,26 +137,7 @@ def register_sessions_routes(app: FastAPI, deps: "GactDeps") -> None:
             v2=lambda: Session(**sess.to_wire()),
         )
 
-    @app.get("/v1/sessions", response_model=ListSessionsResponse)
-    async def list_sessions(
-        request: Request,
-        workspace_id: Optional[str] = None,
-        include_all_workspaces: bool = False,
-        archived: Optional[bool] = None,
-        parent_session_id: Optional[str] = None,
-    ) -> ListSessionsResponse | JSONResponse:
-        """List sessions, filtered by workspace scope, archive bucket (audit E-14),
-        and optionally fork lineage — ``parent_session_id`` non-empty restricts to
-        that parent's direct sub-sessions (#232); omitted/empty is unchanged."""
-
-        effective_workspace_id = workspace_id or (None if include_all_workspaces else "ws_default")
-        rows = app.state.sessions.list(workspace_id=effective_workspace_id)
-        rows = filter_session_rows(rows, archived=archived, parent_session_id=parent_session_id)
-        return project_for_request(
-            request,
-            v3=lambda: JSONResponse(content={"sessions": [session_to_v3(row) for row in rows]}),
-            v2=lambda: ListSessionsResponse(sessions=rows_to_wire(rows)),
-        )
+    register_session_list_route(app)
 
     @app.get("/v1/sessions/{sid}", response_model=Session)
     async def get_session(
