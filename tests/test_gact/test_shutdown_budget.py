@@ -15,7 +15,7 @@ from clio_agent.gact import shutdown_budget
 
 
 def _app(*, server: bool = True) -> SimpleNamespace:
-    return SimpleNamespace(state=SimpleNamespace(server_boot=server))
+    return SimpleNamespace(state=SimpleNamespace(server_boot=True, owns_process=server))
 
 
 @pytest.mark.parametrize(
@@ -74,7 +74,7 @@ def test_a_hung_shutdown_still_ends_the_real_process_with_a_reason() -> None:
         from clio_agent.gact import shutdown_budget
         logging.basicConfig(level=logging.INFO)
         os.environ["CLIO_SHUTDOWN_BUDGET_S"] = "0.5"
-        shutdown_budget.begin(SimpleNamespace(state=SimpleNamespace(server_boot=True)))
+        shutdown_budget.begin(SimpleNamespace(state=SimpleNamespace(owns_process=True)))
         threading.Event().wait()  # a non-daemon wait that never ends
         """
     )
@@ -86,3 +86,19 @@ def test_a_hung_shutdown_still_ends_the_real_process_with_a_reason() -> None:
     assert time.monotonic() - started < 15
     assert "reason=shutdown_budget_exceeded" in result.stderr
     assert "Thread" in result.stderr  # every thread's stack, to find what held the stop
+
+
+def test_a_test_app_running_the_server_boot_is_never_bounded() -> None:
+    """Tests run the server's boot steps in their own process: the watchdog must not
+    arm there, or it ends the test worker 20 seconds after that test's shutdown."""
+
+    app = SimpleNamespace(state=SimpleNamespace(server_boot=True))
+    assert shutdown_budget.begin(app, exit_process=lambda code: None) is None
+
+
+def test_run_server_marks_its_app_as_owning_the_process() -> None:
+    from clio_agent.gact import server_boot
+
+    app = SimpleNamespace(state=SimpleNamespace())
+    server_boot.mark_real_server(app)  # type: ignore[arg-type]
+    assert app.state.server_boot is True and app.state.owns_process is True

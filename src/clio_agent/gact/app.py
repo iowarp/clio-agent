@@ -1742,7 +1742,7 @@ def run_server(
     # 503s until app.state.agent is stamped by the background task.
     app_to_run: FastAPI = build_app()
     app_to_run.state.refresh_provider_catalog_on_startup = True
-    app_to_run.state.server_boot = True  # real server: owns clio-core attach + boot doctor
+    server_boot.mark_real_server(app_to_run)  # owns its process, clio-core and boot doctor
     from clio_agent.gact.providers.boot_selection import explicit_lm_provider  # noqa: PLC0415
 
     # Only a USER-selected provider builds an agent at boot; the committed lm_studio default

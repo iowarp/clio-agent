@@ -68,6 +68,15 @@ async def stop_producers(*tasks: asyncio.Task[Any] | None) -> None:
     await asyncio.gather(*pending, return_exceptions=True)
 
 
+def mark_real_server(app: "FastAPI") -> None:
+    """Mark the app ``run_server`` serves: it attaches clio-core and runs the boot doctor
+    (``server_boot``), and it owns its process (``owns_process``), so only it may be
+    ended by the shutdown budget. Tests that set ``server_boot`` share their process.
+    """
+    app.state.server_boot = True
+    app.state.owns_process = True
+
+
 async def close_request_owners(app: "FastAPI") -> None:
     """Close the owners that only serve requests, once the loop serves none any more.
 

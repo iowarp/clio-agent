@@ -55,12 +55,13 @@ def budget_seconds(env: dict[str, str] | None = None) -> float:
 def begin(app: Any, *, exit_process: Any = os._exit) -> threading.Event | None:
     """Arm the watchdog for a serving process; idempotent. Returns its cancel event.
 
-    Only a real server (``app.state.server_boot``) is bounded: an embedded or test app
-    shares its process with its host, which this must never end.
+    Only the process ``run_server`` owns (``app.state.owns_process``) is bounded: an
+    embedded or test app shares its process with its host, which this must never end,
+    even when it runs the server's boot steps (``server_boot``).
     """
 
     state = app.state
-    if not getattr(state, "server_boot", False):
+    if not getattr(state, "owns_process", False):
         return None
     armed: threading.Event | None = getattr(state, "shutdown_watchdog", None)
     if armed is not None:

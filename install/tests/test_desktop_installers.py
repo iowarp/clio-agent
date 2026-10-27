@@ -187,6 +187,11 @@ $env:CLIO_VERSION = 'v0.9.5-beta.5.1'
 $env:CLIO_REF = ''
 $env:GACT_REF = ''
 function uv {{
+    # The release's locked versions come first (uv export to a constraints file).
+    if ($args[0] -eq 'export') {{
+        Set-Content -LiteralPath $args[[array]::IndexOf($args, '-o') + 1] -Value ''
+        $global:LASTEXITCODE = 0; return
+    }}
     if ($args[0] -eq 'venv') {{ $global:LASTEXITCODE = 0; return }}
     $args | Set-Content -LiteralPath {quote(args_file)}
     exit 77
