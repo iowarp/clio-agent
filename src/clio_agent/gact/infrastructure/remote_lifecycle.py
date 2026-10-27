@@ -21,28 +21,37 @@ async def stop_desktop_launches(
     execute: Callable[[str, CommandSpec], Awaitable[CommandResult]],
     target_locks: dict[str, asyncio.Lock],
 ) -> list[str]:
-    """Stop only this Desktop's nonpersistent launches and retain failed cleanup records."""
+    """Stop only this Desktop's nonpersistent launches and retain failed cleanup records.
 
-    failures: list[str] = []
-    for target_id, launch in list(launches.items()):
-        if launch.keep_running or launch.desktop_id != desktop_id:
-            continue
+    Each host is stopped on its own session at the same time, so quitting takes as long
+    as the slowest host, not the sum of them.
+    """
+
+    async def stop(target_id: str, launch: RemoteLaunch) -> str | None:
         try:
             # Let an already-started operation finish recording its service
             # before stopping it; otherwise its late settle can mark it running.
             async with target_locks.setdefault(target_id, asyncio.Lock()):
                 if launches.get(target_id) is not launch:
-                    continue
+                    return None
                 result = await execute(target_id, stop_owned_command(launch))
                 if result.exit_code != 0:
                     raise RuntimeError(result.stderr or result.stdout)
                 launches.pop(target_id)
                 store.update_service(target_id, "clio_agent", state="stopped")
             logger.info("desktop_remote_stopped target=%s", target_id)
+            return None
         except (OSError, RuntimeError, KeyError) as exc:
-            failures.append(f"{target_id}: {exc}")
             logger.warning("desktop_remote_stop_failed target=%s error=%s", target_id, exc)
-    return failures
+            return f"{target_id}: {exc}"
+
+    owned = [
+        (target_id, launch)
+        for target_id, launch in list(launches.items())
+        if not launch.keep_running and launch.desktop_id == desktop_id
+    ]
+    outcomes = await asyncio.gather(*(stop(target_id, launch) for target_id, launch in owned))
+    return [failure for failure in outcomes if failure is not None]
 
 
 @dataclass(frozen=True)

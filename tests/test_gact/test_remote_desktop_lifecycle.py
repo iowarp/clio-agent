@@ -87,6 +87,34 @@ async def test_exit_waits_for_inflight_launch_and_retains_failed_cleanup() -> No
 
 
 @pytest.mark.asyncio
+async def test_exit_stops_every_host_at_once() -> None:
+    """Quitting waits for the slowest host, not for each host in turn."""
+
+    store = InfrastructureStore(None)
+    runtime = InfrastructureRuntime(store, InfrastructureTransportRegistry(lambda *_: None))
+    targets = [_target(store, f"/root-{n}").id for n in range(3)]
+    runtime._remote_launches = {
+        target_id: RemoteLaunch(f"/owned-{n}", 17800 + n, f"launch-{n}", desktop_id="desktop-a")
+        for n, target_id in enumerate(targets)
+    }
+    started: list[str] = []
+    every_host_asked = asyncio.Event()
+
+    async def execute(target_id: str, spec: CommandSpec) -> CommandResult:
+        started.append(target_id)
+        if len(started) == len(targets):
+            every_host_asked.set()
+        # A serial stop would wait here forever on the first host.
+        await asyncio.wait_for(every_host_asked.wait(), timeout=5)
+        return CommandResult(exit_code=0)
+
+    runtime._execute = execute  # type: ignore[method-assign]
+    assert await runtime.stop_desktop_agents("desktop-a") == []
+    assert sorted(started) == sorted(targets)
+    assert runtime._remote_launches == {}
+
+
+@pytest.mark.asyncio
 async def test_explicit_reconnect_never_acquires_shutdown_ownership(tmp_path: Path) -> None:
     """Connecting to an existing process does not schedule it for stop on exit."""
 
