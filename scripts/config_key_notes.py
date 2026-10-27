@@ -1120,6 +1120,10 @@ KEY_NOTES: dict[str, str] = {
     "search.searxng.safe_search": (
         "SearXNG safe-search level: 0 off, 1 moderate (default), 2 strict."
     ),
+    "sessions.cache_records": (
+        "How many conversation-list rows stay in memory; older rows are read from clio-core "
+        "when the list pages to them."
+    ),
     "spotter.clearance_progress_timeout_s": (
         "No-progress window (seconds) between observable SPOTTER watcher signals before a "
         "protected tool call fails closed; active checks never trip it."

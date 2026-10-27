@@ -279,6 +279,7 @@ These resolve through `clio_agent.conf`: a value under the dotted key in `config
 | `CLIO_SEMANTIC_TRACE_FACTORY` | `trace.semantic_factory` | str | _(unset)_ | `src/clio_agent/gact/provenance/factory.py` |
 | `CLIO_SEMANTIC_TRACE_PATH` | `trace.path` | str | _(unset)_ | `src/clio_agent/gact/provenance/factory.py` |
 | `CLIO_SERVER_CONF` | `arc.server_conf` | str | _(unset)_ | `src/clio_agent/arc/clio_core_liveness.py` |
+| `CLIO_SESSIONS_CACHE_RECORDS` | `sessions.cache_records` | int | `1024` | `src/clio_agent/gact/session_records.py` |
 | `CLIO_SESSIONS_PATH` | `paths.sessions` | str | _(unset)_ | `src/clio_agent/gact/sessions.py` |
 | `CLIO_SHELL_DEFAULT_OUTPUT_BYTES` | `limits.shell_default_output_bytes` | int | `8192` | `src/clio_agent/tools/servers/shell_server.py` |
 | `CLIO_SHELL_DEFAULT_TIMEOUT_S` | `limits.shell_default_timeout_s` | float | `0.0` | `src/clio_agent/tools/servers/shell_server.py` |
