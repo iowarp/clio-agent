@@ -167,3 +167,28 @@ def mark(app: Any, name: str) -> None:
 def snapshot(app: Any) -> dict[str, Any]:
     """The ``boot`` block served by ``GET /v1/health``."""
     return timeline(app).snapshot()
+
+
+def readiness(app: Any) -> tuple[str, list[str]]:
+    """``("ready", [])`` once the startup row is up, else ``("starting", <pending items>)``.
+
+    The startup row is what makes every later request correct: the task runtime
+    (clio-core attached, conversations and tasks indexed), the default marketplace,
+    and the agent when one is configured. Work owed from the last stop is not part of
+    it (the obligations lane resumes that after ready). An agent that failed to build is
+    not pending: that is a failure, reported by the health rows.
+    """
+    state = getattr(app, "state", None)
+    pending: list[str] = []
+    if "task_runtime_ready" not in timeline(app).snapshot()["marks"]:
+        pending.append("task_runtime")
+    marketplace = getattr(state, "plugin_sync_task", None)
+    if marketplace is not None and not marketplace.done():
+        pending.append("marketplace")
+    if (
+        getattr(state, "want_agent", False)
+        and getattr(state, "agent", None) is None
+        and getattr(state, "agent_init_error", None) is None
+    ):
+        pending.append("agent")
+    return ("starting" if pending else "ready"), pending

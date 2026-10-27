@@ -100,6 +100,10 @@ class HealthResponse(BaseModel):
     # When each startup step ran, in seconds since the process started (gact/boot_timing.py):
     # ``steps`` (finished), ``running`` and ``marks`` such as ``serving`` and ``agent_ready``.
     boot: Optional[dict[str, Any]] = None
+    # ``starting`` until the startup row is up (task runtime, marketplace, agent), then
+    # ``ready``; ``starting`` lists what is still coming up (gact/boot_timing.readiness).
+    readiness: Optional[Literal["starting", "ready"]] = None
+    starting: Optional[list[str]] = None
 
 
 class BackendInfo(BaseModel):

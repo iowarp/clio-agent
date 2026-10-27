@@ -360,6 +360,7 @@ def register_system_routes(app: FastAPI, deps: "GactDeps") -> None:
         """
 
         uptime = int(time.time() - app.state.started_at)
+        readiness, still_starting = boot_timing.readiness(app)
 
         try:
             # While the boot collection runs, answer at once (health_boot); else collect.
@@ -423,6 +424,8 @@ def register_system_routes(app: FastAPI, deps: "GactDeps") -> None:
             tool_hooks_installed=getattr(app.state, "tool_hooks_installed", None),
             context_mode=history_mode.resolve().mode,
             boot=boot_timing.snapshot(app),
+            readiness=readiness,
+            starting=still_starting,
         )
         if overall == "unavailable":
             content = response.model_dump(mode="json", exclude_none=True)

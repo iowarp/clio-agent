@@ -81,3 +81,39 @@ def test_health_serves_the_boot_block() -> None:
     assert set(boot) == {"steps", "running", "marks"}
     assert "lifespan_started" in boot["marks"]
     assert "serving" in boot["marks"]
+
+
+def _app(**state: object) -> SimpleNamespace:
+    return SimpleNamespace(state=SimpleNamespace(**state))
+
+
+def test_readiness_lists_what_is_still_coming_up() -> None:
+    class Running:
+        def done(self) -> bool:
+            return False
+
+    app = _app(plugin_sync_task=Running(), want_agent=True, agent=None, agent_init_error=None)
+    assert boot_timing.readiness(app) == ("starting", ["task_runtime", "marketplace", "agent"])
+
+
+def test_ready_once_the_startup_row_is_up() -> None:
+    class Finished:
+        def done(self) -> bool:
+            return True
+
+    app = _app(plugin_sync_task=Finished(), want_agent=True, agent=object())
+    boot_timing.mark(app, "task_runtime_ready")
+    assert boot_timing.readiness(app) == ("ready", [])
+
+
+def test_a_failed_agent_is_not_reported_as_starting() -> None:
+    app = _app(want_agent=True, agent=None, agent_init_error="boom")
+    boot_timing.mark(app, "task_runtime_ready")
+    assert boot_timing.readiness(app) == ("ready", [])
+
+
+def test_health_reports_readiness() -> None:
+    with TestClient(build_app()) as client:
+        body = client.get("/v1/health").json()
+    assert body["readiness"] in {"starting", "ready"}
+    assert isinstance(body["starting"], list)
