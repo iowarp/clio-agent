@@ -118,13 +118,16 @@ jobs:
       # The release path runs the script people get (main), which installs the latest
       # release; the checkout's script installs that release too, but may already call
       # code the release does not have. The source path below runs this checkout.
+      # Published paths (main's one-liner, the latest release) run on schedule and on
+      # request; a pull request tests its own code (the source steps below).
       - name: Fetch the published install script
+        if: github.event_name != 'pull_request'
         shell: bash
         run: |
           curl -fsSL https://raw.githubusercontent.com/iowarp/clio-agent/main/install/install.sh -o "$RUNNER_TEMP/install.sh"
           curl -fsSL https://raw.githubusercontent.com/iowarp/clio-agent/main/install/install.ps1 -o "$RUNNER_TEMP/install.ps1"
       - name: Release install, start, stop, re-run, interrupted re-run, uninstall (POSIX)
-        if: runner.os != 'Windows'
+        if: runner.os != 'Windows' && github.event_name != 'pull_request'
         continue-on-error: true
         shell: bash
         env:
@@ -155,10 +158,18 @@ jobs:
           CLIO_AGENT_HOME: ${{ runner.temp }}/clio-src/home
           CLIO_REF: ${{ github.head_ref || github.ref_name }}
         run: |
-          python scripts/ci/record_step.py --file "$TIMINGS" --name "source: fresh install" -- bash install/install.sh
-          python scripts/ci/record_step.py --file "$TIMINGS" --name "source: re-run over an install" -- bash install/install.sh
+          rec() { python scripts/ci/record_step.py --file "$TIMINGS" "$@"; }
+          rec --name "source: fresh install" -- bash install/install.sh
+          rec --name "source: start" -- "$CLIO_BIN_DIR/clio" start
+          rec --name "source: stop" -- "$CLIO_BIN_DIR/clio" stop
+          rec --name "source: re-run over an install" -- bash install/install.sh
+          rec --name "source: interrupted after 20s" --kill-after 20 -- bash install/install.sh
+          rec --name "source: re-run after interruption" -- bash install/install.sh
+          rec --name "source: start after re-run" -- "$CLIO_BIN_DIR/clio" start
+          rec --name "source: stop after re-run" -- "$CLIO_BIN_DIR/clio" stop
+          rec --name "source: uninstall" -- "$CLIO_BIN_DIR/clio" uninstall --yes
       - name: Release install, start, stop, re-run, interrupted re-run, uninstall (Windows)
-        if: runner.os == 'Windows'
+        if: runner.os == 'Windows' && github.event_name != 'pull_request'
         continue-on-error: true
         shell: pwsh
         env:
@@ -224,6 +235,8 @@ jobs:
 
   desktop:
     name: Desktop package (${{ matrix.os }})
+    # The published installers: meaningful once a release carries the change under test.
+    if: github.event_name != 'pull_request'
     strategy:
       fail-fast: false
       matrix:
