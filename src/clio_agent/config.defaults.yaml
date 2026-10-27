@@ -672,19 +672,24 @@ gact.mailbox.max_pending_messages: 0
 gact.media_cache_bytes: 67108864
 
 # CLIO_RESIDENT_LEDGERS_TTL_S  (float)  <- src/clio_agent/gact/resident_ledgers.py
-# Seconds an idle session's in-memory transcript ledger may sit resident
-# before release (rehydrates on next access); lower to free memory.
-gact.resident_ledgers.idle_ttl_s: 1800.0
+# Seconds a session nobody views and nothing runs in keeps its transcript
+# and context in memory before release (re-read from clio-core on next use);
+# lower to free memory.
+gact.resident_ledgers.idle_ttl_s: 60.0
 
 # CLIO_RESIDENT_LEDGERS_MAX_BYTES  (int)  <- src/clio_agent/gact/resident_ledgers.py
-# Byte cap on the total resident transcript-ledger cache across all
+# Byte cap on the transcripts and context held in memory across all
 # sessions; raise on a host with more RAM to keep more sessions warm.
 gact.resident_ledgers.max_bytes: 536870912
 
 # CLIO_RESIDENT_LEDGERS_MAX  (int)  <- src/clio_agent/gact/resident_ledgers.py
-# Max sessions whose transcript ledgers stay resident in memory at once;
-# raise to keep more sessions warm at the cost of memory.
+# Max sessions whose transcripts and context stay in memory at once; raise
+# to keep more sessions warm at the cost of memory.
 gact.resident_ledgers.max_sessions: 512
+
+# CLIO_RESIDENT_LEDGERS_SWEEP_S  (float)  <- src/clio_agent/gact/resident_ledgers.py
+# Seconds between the idle sweeps that release unused sessions from memory.
+gact.resident_ledgers.sweep_interval_s: 15.0
 
 # CLIO_TASKS_HEALTH_TIMEOUT_S  (float)  <- src/clio_agent/tools/task_client.py
 # Timeout in seconds for task transport discovery/cancellation RPC delivery;

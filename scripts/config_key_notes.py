@@ -528,16 +528,19 @@ KEY_NOTES: dict[str, str] = {
         "reads, least recently used first out; lower to bound memory."
     ),
     "gact.resident_ledgers.idle_ttl_s": (
-        "Seconds an idle session's in-memory transcript ledger may sit resident before release "
-        "(rehydrates on next access); lower to free memory."
+        "Seconds a session nobody views and nothing runs in keeps its transcript and context in "
+        "memory before release (re-read from clio-core on next use); lower to free memory."
     ),
     "gact.resident_ledgers.max_bytes": (
-        "Byte cap on the total resident transcript-ledger cache across all sessions; raise on a "
+        "Byte cap on the transcripts and context held in memory across all sessions; raise on a "
         "host with more RAM to keep more sessions warm."
     ),
     "gact.resident_ledgers.max_sessions": (
-        "Max sessions whose transcript ledgers stay resident in memory at once; raise to keep more "
+        "Max sessions whose transcripts and context stay in memory at once; raise to keep more "
         "sessions warm at the cost of memory."
+    ),
+    "gact.resident_ledgers.sweep_interval_s": (
+        "Seconds between the idle sweeps that release unused sessions from memory."
     ),
     "goal.judge_model": (
         "Legacy goal judge model override on the caller provider; Fleet goals selection takes "

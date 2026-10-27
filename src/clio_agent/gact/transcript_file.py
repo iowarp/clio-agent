@@ -440,7 +440,7 @@ def boot_transcript_store(app: "FastAPI", root: Path) -> None:
 
     from clio_agent.gact.messages import MessageStore  # noqa: PLC0415
     from clio_agent.gact.metrics_counters import MetricsCounters  # noqa: PLC0415
-    from clio_agent.gact.resident_ledgers import build_resident_ledger_set
+    from clio_agent.gact.resident_ledgers import attach_arc_residency, build_resident_ledger_set
     from clio_agent.gact.runtime.retention import init_retention_state
     from clio_agent.gact.transcript_projection import canonical_log_arc
 
@@ -456,6 +456,7 @@ def boot_transcript_store(app: "FastAPI", root: Path) -> None:
     init_retention_state(app)
     app.state.metrics_counters = MetricsCounters()
     app.state.messages = build_resident_ledger_set(app)
+    attach_arc_residency(app, getattr(app.state, "arc", None))
     if canonical_log_arc(app) is not None:
         on_process_arc_bound(app)
 

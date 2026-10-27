@@ -656,6 +656,9 @@ def _set_app_arc(app: "FastAPI", arc: Any) -> None:
                 else {}
             )
         )
+        from clio_agent.gact.resident_ledgers import attach_arc_residency  # noqa: PLC0415
+
+        attach_arc_residency(app, arc)  # the one residency owner counts ARC's scopes
 
 
 def _coerce_error_info(value: Any) -> Optional["ErrorInfo"]:
