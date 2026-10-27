@@ -1,9 +1,13 @@
 name: Install and startup matrix
 
 # Measures every official way to install Clio and how Clio starts on a long-lived store,
-# on Linux, macOS and Windows. Report mode: every step is timed and recorded, a failing
-# step is reported in the job summary and the job carries on. Budgets are set from these
-# numbers and enforced later (docs/design/install-and-startup-implementation.md, A0).
+# on Linux, macOS and Windows. Every step is timed and recorded, a failing step is
+# reported in the job summary and the job carries on; at the end of each job the steps
+# whose numbers are known and stable are held to their budgets (scripts/ci/
+# install_budgets.json, checked by scripts/ci/check_budgets.py), which fails the job with
+# the step and the number. Steps without a budget stay report-only. The crash job kills
+# Clio with SIGKILL during flow-heavy work and fails when anything acknowledged was lost
+# (docs/design/install-and-startup-implementation.md, A0, A4 and R7).
 
 on:
   pull_request:
@@ -19,6 +23,9 @@ on:
       - 'scripts/create_reference_store.py'
       - 'scripts/measure_startup.py'
       - 'scripts/ci/record_step.py'
+      - 'scripts/ci/check_budgets.py'
+      - 'scripts/ci/install_budgets.json'
+      - 'scripts/crash_test.py'
       - 'scripts/ci/ssh_deploy_steps.py'
       - 'scripts/smoke_desktop_package.py'
       - '.github/workflows/install-matrix.yml'
@@ -92,6 +99,9 @@ jobs:
             echo
             if [ -f "$TIMINGS" ]; then python3 scripts/ci/record_step.py --file "$TIMINGS" --summary; else echo "No step ran."; fi
           } >> "$GITHUB_STEP_SUMMARY"
+      - name: Enforce budgets (startup to ready, shutdown)
+        if: always()
+        run: python3 scripts/ci/check_budgets.py --startup results >> "$GITHUB_STEP_SUMMARY"
       - uses: actions/upload-artifact@v4
         if: always()
         with:
@@ -99,6 +109,60 @@ jobs:
           path: |
             results/
             timings.jsonl
+          if-no-files-found: ignore
+
+  crash:
+    name: Crash test (kill -9 during flow-heavy work)
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+      - uses: astral-sh/setup-uv@v5
+      - name: Install dependencies
+        run: uv sync --frozen --extra dev
+      # A real server on a private clio-core with a scripted model; SIGKILL at a random
+      # point each iteration, restart, and compare everything the API acknowledged.
+      # Fails when anything acknowledged was lost; work that does not settle after the
+      # restart is reported (liveness) without failing the job.
+      - name: Kill, restart and compare
+        run: |
+          mkdir -p results
+          uv run --frozen --no-sync python scripts/crash_test.py --out "$RUNNER_TEMP/crash" \
+            --iterations 5 --report results/crash.json --port 18991
+      - name: Report
+        if: always()
+        run: |
+          {
+            echo "## Crash test"
+            if [ -f results/crash.json ]; then
+              python3 - results/crash.json <<'PY'
+          import json, sys
+          r = json.load(open(sys.argv[1]))
+          s = r["summary"]
+          print(f"- seed {r['seed']}; {s['iterations']} iterations in {s['seconds']} s; kill points: {', '.join(s['kill_points'])}")
+          print(f"- acknowledged: {s['acknowledged']}")
+          print(f"- lost: {s['lost']}; liveness: {s['liveness']}; findings: {s['findings_by_type'] or 'none'}")
+          print("\n| Iteration | Killed at (s) | Kill points | Restart to ready (s) | Settled (s) | Findings |\n|---|---|---|---|---|---|")
+          for it in r["iterations"]:
+              kinds = {}
+              for f in it.get("findings", []):
+                  kinds[f["type"]] = kinds.get(f["type"], 0) + 1
+              settle = it.get("settle", {})
+              print(f"| {it['iteration']} | {it['killed_at_s']} | {', '.join(it['kill_points'])} | {it.get('restart', {}).get('ready_s')} | {settle.get('seconds')}{'' if settle.get('settled', True) else ' (not settled)'} | {kinds or 'none'} |")
+          PY
+            else
+              echo "No report was written."
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: crash-results
+          path: |
+            results/
+            ${{ runner.temp }}/crash/server-*.log
           if-no-files-found: ignore
 
   script:
@@ -207,6 +271,10 @@ jobs:
         shell: bash
         run: |
           { echo "## Install script on ${{ matrix.os }}"; if [ -f "$TIMINGS" ]; then python scripts/ci/record_step.py --file "$TIMINGS" --summary; else echo "No step ran."; fi; } >> "$GITHUB_STEP_SUMMARY"
+      - name: Enforce budgets (fresh install, stop)
+        if: always()
+        shell: bash
+        run: python scripts/ci/check_budgets.py --timings "$TIMINGS" >> "$GITHUB_STEP_SUMMARY"
       - uses: actions/upload-artifact@v4
         if: always()
         with:

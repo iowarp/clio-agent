@@ -11,11 +11,18 @@ finally stops the server and times the shutdown.
 Prints one JSON object and, with ``--out``, writes it to a file. Without an explicit
 LM provider in the environment the server starts without an agent, which measures
 everything startup does with the store; set ``CLIO_LM_PROVIDER`` to include the agent.
+``--scripted-model`` instead serves the store with the reference store's scripted model
+(``create_reference_store.py --serve``), so the obligations lane really runs the
+interrupted work it resumes: the backlog measurement (``--wait-obligations``) then
+reports the server's peak memory while it drains, and ``--open-during-drain`` times the
+first page of conversations opened while the drain is still running.
 
 Usage::
 
     uv run python scripts/measure_startup.py --store /path/to/refstore --out startup.json
     uv run python scripts/measure_startup.py --store /path/to/refstore --open 50 --idle 60
+    uv run python scripts/measure_startup.py --store /path/to/backlog --scripted-model \
+        --wait-obligations --open-during-drain 5
 """
 
 from __future__ import annotations
@@ -29,6 +36,7 @@ import socket
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 import urllib.error
 import urllib.request
@@ -36,6 +44,8 @@ from pathlib import Path
 from typing import Any
 
 import psutil
+
+SCRIPTS = Path(__file__).resolve().parent
 
 
 def _free_port() -> int:
@@ -56,6 +66,86 @@ def _get(port: int, path: str, timeout: float = 5.0) -> tuple[int, Any]:
 
 def _rss_mb(pid: int) -> float:
     return round(psutil.Process(pid).memory_info().rss / 2**20, 1)
+
+
+class _PeakRss:
+    """Sample a process's resident memory until stopped; keep the peak per phase."""
+
+    def __init__(self, pid: int, interval: float = 0.2) -> None:
+        self.pid, self.interval = pid, interval
+        self.phase = "boot"
+        self.peaks: dict[str, float] = {}
+        self._stop = threading.Event()
+        self._thread = threading.Thread(target=self._run, daemon=True)
+        self._thread.start()
+
+    def _run(self) -> None:
+        while not self._stop.wait(self.interval):
+            try:
+                rss = _rss_mb(self.pid)
+            except psutil.Error:
+                return
+            self.peaks[self.phase] = max(rss, self.peaks.get(self.phase, 0.0))
+
+    def stop(self) -> dict[str, float]:
+        self._stop.set()
+        self._thread.join(timeout=5)
+        return dict(self.peaks)
+
+
+def _first_pages(port: int, count: int, prefix: str) -> list[dict[str, Any]]:
+    """Open conversations whose obligations are still draining and time their first page.
+
+    The newest matching conversations drain last (oldest first), so they are the ones
+    most likely still waiting when they are opened.
+    """
+    _status, body = _get(port, "/v1/sessions?limit=1000000", timeout=60)
+    rows = body.get("sessions", body.get("items", [])) if isinstance(body, dict) else []
+    chosen = [row for row in rows if str(row.get("title", "")).startswith(prefix)][:count]
+    opened = []
+    for row in chosen:
+        _health, health = _get(port, "/v1/health")
+        steps = (health or {}).get("boot", {}).get("steps", []) if isinstance(health, dict) else []
+        draining = not any(step["name"] == "obligations" for step in steps)
+        started = time.monotonic()
+        status, page = _get(port, f"/v1/sessions/{row['id']}/messages?limit=50", timeout=120)
+        opened.append(
+            {
+                "session": row["id"],
+                "title": row.get("title"),
+                "status": status,
+                "messages": len(page.get("messages", [])) if isinstance(page, dict) else None,
+                "seconds": round(time.monotonic() - started, 2),
+                "obligations_running": draining,
+            }
+        )
+    return opened
+
+
+def _server_argv(args: argparse.Namespace, copy: Path, port: int) -> list[str]:
+    if args.scripted_model:
+        return [
+            sys.executable,
+            "-B",
+            str(SCRIPTS / "create_reference_store.py"),
+            "--serve",
+            "--out",
+            str(copy),
+            "--port",
+            str(port),
+            "--think",
+            str(args.think),
+        ]
+    return [
+        sys.executable,
+        "-c",
+        "from clio_agent.ui.cli import main; main()",
+        "serve",
+        "--host",
+        "127.0.0.1",
+        "--port",
+        str(port),
+    ]
 
 
 def _repoint(copy: Path, store: Path) -> None:
@@ -93,22 +183,14 @@ def measure(args: argparse.Namespace) -> dict[str, Any]:
     log = (work / "server.log").open("w", encoding="utf-8")
     t0 = time.monotonic()
     server = subprocess.Popen(  # noqa: S603 - fixed argv
-        [
-            sys.executable,
-            "-c",
-            "from clio_agent.ui.cli import main; main()",
-            "serve",
-            "--host",
-            "127.0.0.1",
-            "--port",
-            str(port),
-        ],
+        _server_argv(args, copy, port),
         env=env,
         cwd=copy / "workspace",
         stdout=log,
         stderr=subprocess.STDOUT,
     )
     result: dict[str, Any] = {"store": str(store), "copy_seconds": copy_s}
+    peaks = _PeakRss(server.pid)
     try:
         first_health = None
         boot: dict[str, Any] = {}
@@ -126,8 +208,15 @@ def measure(args: argparse.Namespace) -> dict[str, Any]:
             time.sleep(0.25)
         else:
             raise TimeoutError(f"task runtime not ready within {args.timeout}s; see {work}")
+        result["rss_at_ready_mb"] = _rss_mb(server.pid)
         if args.wait_obligations:
             # The obligations lane resumes open work after ready; wait for it to finish.
+            peaks.phase = "obligations"
+            obligations_started = time.monotonic()
+            if args.open_during_drain:
+                result["opened_during_drain"] = _first_pages(
+                    port, args.open_during_drain, args.drain_title
+                )
             while time.monotonic() < deadline:
                 _status, body = _get(port, "/v1/health")
                 steps = (
@@ -140,6 +229,8 @@ def measure(args: argparse.Namespace) -> dict[str, Any]:
             else:
                 raise TimeoutError(f"obligations not finished within {args.timeout}s")
             result["rss_after_obligations_mb"] = _rss_mb(server.pid)
+            result["obligations_wait_s"] = round(time.monotonic() - obligations_started, 1)
+            peaks.phase = "after_obligations"
         status, sessions = _get(port, "/v1/sessions?limit=1000000", timeout=60)
         listed = (
             len(sessions.get("sessions", sessions.get("items", [])))
@@ -162,6 +253,7 @@ def measure(args: argparse.Namespace) -> dict[str, Any]:
             result["rss_after_idle_mb"] = _rss_mb(server.pid)
             result["opened"] = min(args.open, len(rows))
     finally:
+        result["rss_peak_mb"] = peaks.stop()
         stop_started = time.monotonic()
         server.send_signal(signal.SIGTERM)
         try:
@@ -215,6 +307,23 @@ def main() -> int:
         "--wait-obligations",
         action="store_true",
         help="also wait for the background obligations lane to finish and time it",
+    )
+    parser.add_argument(
+        "--scripted-model",
+        action="store_true",
+        help="serve with the reference store's scripted model, so resumed work really runs",
+    )
+    parser.add_argument("--think", type=float, default=0.0, help="scripted model seconds")
+    parser.add_argument(
+        "--open-during-drain",
+        type=int,
+        default=0,
+        help="with --wait-obligations, time the first page of N conversations mid-drain",
+    )
+    parser.add_argument(
+        "--drain-title",
+        default="interrupted",
+        help="title prefix of the conversations --open-during-drain opens",
     )
     args = parser.parse_args()
     args.out = args.out.resolve() if args.out else None  # measuring changes directory

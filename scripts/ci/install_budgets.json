@@ -1,0 +1,39 @@
+{
+  "_doc": "Budgets the install matrix enforces (scripts/ci/check_budgets.py). Each is set from the measured numbers of the report-mode runs with a generous margin; a step without a budget stays report-only. Seconds are wall-clock on GitHub-hosted runners. See docs/design/install-and-startup-implementation.md (A0, A4, R7).",
+  "timings": {
+    "source: fresh install": {
+      "seconds": 360,
+      "ok": true,
+      "measured": "Linux 78-125 s, macOS 43-49 s, Windows 138-182 s (runs 40577489917, 40582098011, 40584785874)",
+      "required": true
+    },
+    "source: stop": {
+      "seconds": 20,
+      "ok": true,
+      "measured": "0.3-3.3 s on every OS; 20 s is the shutdown budget",
+      "required": true
+    },
+    "source: stop after re-run": {
+      "seconds": 20,
+      "measured": "0.3-3.1 s on Linux and macOS; 20 s is the shutdown budget"
+    }
+  },
+  "startup": {
+    "startup-x1.json": {
+      "task_runtime_ready_s": {
+        "max": 45,
+        "measured": "ubuntu-latest: 11.5-13.2 s (runs 40577489917, 40582098011, 40584785874)"
+      },
+      "shutdown_s": {
+        "max": 20,
+        "measured": "1.9-2.3 s; 20 s is the shutdown budget"
+      },
+      "shutdown_forced": {
+        "equals": false
+      },
+      "daemon_left_running": {
+        "equals": false
+      }
+    }
+  }
+}
