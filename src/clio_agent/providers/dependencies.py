@@ -6,13 +6,11 @@ import importlib
 import importlib.metadata
 import importlib.util
 import os
-import shutil
 import subprocess
 import sys
 import threading
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
-from pathlib import Path
 
 from packaging.requirements import Requirement
 
@@ -71,11 +69,9 @@ def _resolve_extra_requirements(
 def _uv_executable(python_executable: str) -> str | None:
     """Find uv beside a bundled runtime or on the backend host's PATH."""
 
-    uv_name = "uv.exe" if os.name == "nt" else "uv"
-    runtime_uv = Path(python_executable).resolve().parent.parent / "bin" / uv_name
-    if runtime_uv.is_file():
-        return str(runtime_uv)
-    return shutil.which(uv_name)
+    from clio_agent.gact.infrastructure.native_service_platform import clio_tool  # noqa: PLC0415
+
+    return clio_tool("uv", python_executable)
 
 
 def _install_command(python_executable: str, requirements: Sequence[str]) -> list[str]:

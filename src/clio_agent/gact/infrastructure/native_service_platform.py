@@ -13,6 +13,7 @@ import errno
 import io
 import json
 import os
+import shutil
 import signal
 import subprocess
 import sys
@@ -39,6 +40,39 @@ def write_json(path: Path, value: dict[str, Any]) -> None:
         writer.flush()
         os.fsync(writer.fileno())
     temporary.replace(path)
+
+
+def clio_tool(name: str, interpreter: str | None = None) -> str | None:
+    """CLIO's own copy of a tool (``uv``, ``uvx``) on this host, the host's only after it.
+
+    CLIO brings its tools, so a host needs none installed. Checked in order: the
+    bundled desktop runtime (``GACT_BUNDLED_RUNTIME_DIR/bin``); beside the
+    interpreter (``interpreter``, else this process's: a desktop runtime's
+    ``python/bin`` -> ``bin``, a deployed install's ``<root>/clio-agent/.venv/bin``
+    -> ``<root>/bin``); the
+    launcher's ``CLIO_BIN_DIR``; then ``PATH`` and ``~/.local/bin``.
+    """
+    executable = f"{name}.exe" if os.name == "nt" else name
+    # Not resolved: a venv's interpreter links into uv's Python store.
+    python = Path(interpreter or sys.executable).absolute()
+    bundled = os.environ.get("GACT_BUNDLED_RUNTIME_DIR", "").strip()
+    candidates = [
+        *([Path(bundled) / "bin" / executable] if bundled else []),
+        *(parent / "bin" / executable for parent in python.parents[0:4]),
+        *(
+            [Path(os.environ["CLIO_BIN_DIR"]) / executable]
+            if os.environ.get("CLIO_BIN_DIR")
+            else []
+        ),
+    ]
+    for candidate in candidates:
+        if candidate.is_file():
+            return str(candidate)
+    found = shutil.which(executable)
+    if found:
+        return found
+    home = Path.home() / ".local" / "bin" / executable
+    return str(home) if home.is_file() else None
 
 
 def python_path(root: Path) -> Path:

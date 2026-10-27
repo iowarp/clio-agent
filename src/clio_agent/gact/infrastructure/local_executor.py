@@ -22,6 +22,7 @@ from typing import IO
 from urllib.parse import urlsplit
 
 from clio_agent.gact.infrastructure.models import CommandResult, CommandSpec
+from clio_agent.gact.infrastructure.native_service_platform import clio_tool
 
 MAX_OPERATION_LOG_CHARS = 16_000
 #: Seconds a stopped command gets after SIGTERM before SIGKILL.
@@ -104,8 +105,11 @@ def local_environment(base: dict[str, str] | None = None) -> dict[str, str]:
 
     env = dict(os.environ if base is None else base)
     interpreter = os.path.dirname(sys.executable)
-    if interpreter:
-        env["PATH"] = os.pathsep.join(item for item in (interpreter, env.get("PATH", "")) if item)
+    # CLIO's own uv too (a desktop runtime's bin/, a deployed root's bin/): a host needs none.
+    uv = clio_tool("uv")
+    tools = os.path.dirname(uv) if uv and os.path.dirname(uv) != interpreter else ""
+    leading = [item for item in (interpreter, tools) if item]
+    env["PATH"] = os.pathsep.join([*leading, env.get("PATH", "")]).rstrip(os.pathsep)
     return env
 
 

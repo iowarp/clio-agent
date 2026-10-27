@@ -298,11 +298,36 @@ def hub_snapshots(root: Path) -> list[dict[str, Any]]:
     return rows
 
 
+def _clio_uv() -> str | None:
+    """CLIO's own uv on this host (``native_service_platform.clio_tool``'s order).
+
+    Standalone: on a remote host this file runs without CLIO's package, so it also
+    knows the deployed install's default root.
+    """
+    try:
+        from clio_agent.gact.infrastructure.native_service_platform import (  # noqa: PLC0415
+            clio_tool,
+        )
+    except ImportError:
+        data = Path(os.environ.get("XDG_DATA_HOME") or Path.home() / ".local/share")
+        for candidate in (
+            Path(os.environ.get("CLIO_BIN_DIR") or data / "clio-agent/app/bin") / "uv",
+            data / "clio-agent/app/bin/uv",
+        ):
+            if candidate.is_file():
+                return str(candidate)
+        found = shutil.which("uv") or str(Path.home() / ".local/bin/uv")
+        return found if Path(found).is_file() else None
+    return clio_tool("uv")
+
+
 def start(root: Path, request: dict[str, Any], script: str) -> dict[str, Any]:
     """Start or reuse one durable acquisition, with a target-owned process and cache."""
-    uv = shutil.which("uv") or str(Path.home() / ".local/bin/uv")
-    if not Path(uv).is_file():
-        raise ValueError("Install uv on this execution host before downloading models")
+    uv = _clio_uv()
+    if uv is None:
+        raise ValueError(
+            "CLIO's uv is missing on this host: reinstall CLIO here (its installer brings uv)"
+        )
     repository, revision = request["repository"], request["revision"]
     if not re.fullmatch(r"[A-Za-z0-9][\w.-]*(?:/[A-Za-z0-9][\w.-]*)?", repository):
         raise ValueError("Invalid model repository")

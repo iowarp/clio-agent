@@ -547,7 +547,7 @@ def worker(root: Path, action: str, generation: str) -> None:
         command = [sys.executable, "-c", "print('clio: the service environment is reused')"]
     elif action == "install" and manifest.get("host_python"):
         # Layer the environment over the host's interpreter (it provides vLLM/torch).
-        uv = shutil.which("uv") or str(Path.home() / ".local/bin/uv")
+        uv = platform_helper().clio_tool("uv") or "uv"
         environment = str(root / "environment")
         command = [
             "sh",
@@ -560,7 +560,7 @@ def worker(root: Path, action: str, generation: str) -> None:
             *(["--refresh"] if env.get("CLIO_FROM_SCRATCH") == "1" else []),
         ]
     elif action == "install":
-        uv = shutil.which("uv") or str(Path.home() / ".local/bin/uv")
+        uv = platform_helper().clio_tool("uv") or "uv"
         command = [
             uv,
             "sync",

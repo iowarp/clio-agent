@@ -55,6 +55,14 @@ def _resolve_command(program: str) -> str | None:
     return next((resolved for name in candidates if (resolved := shutil.which(name))), None)
 
 
+def _clio_uv_runs() -> bool:
+    """Whether CLIO's own uv (or, failing that, the host's) runs on this computer."""
+    from clio_agent.gact.infrastructure.native_service_platform import clio_tool  # noqa: PLC0415
+
+    uv = clio_tool("uv")
+    return uv is not None and _command_available(uv, ["--version"])
+
+
 def _command_available(program: str, args: list[str]) -> bool:
     resolved = _resolve_command(program)
     if resolved is None:
@@ -122,7 +130,7 @@ def _local_facts(target: InfrastructureTarget) -> TargetFacts:
         accelerator=accelerator,
         docker_available=docker_available,
         docker_installed=docker_installed,
-        uv_available=_command_available("uv", ["--version"]),
+        uv_available=_clio_uv_runs(),
         transport_state="connected",
         container_runtimes=runtimes,
         identity=identity,
@@ -239,6 +247,8 @@ async def probe_target(
                 "0x0380*) gpu=intel ;; esac; done; fi; "
                 "di=0; dr=0; uv=0; command -v docker >/dev/null 2>&1 && di=1; "
                 "docker info >/dev/null 2>&1 && dr=1; command -v uv >/dev/null 2>&1 && uv=1; "
+                # A deployed CLIO brings its own uv into its root (default location).
+                '[ -x "${XDG_DATA_HOME:-$HOME/.local/share}/clio-agent/app/bin/uv" ] && uv=1; '
                 'printf \'%s|%s|%s|%s|%s|%s\\n\' "$os" "$arch" "$gpu" "$di" "$dr" "$uv"; '
                 + POSIX_RUNTIME_PROBE
                 + '; agent_data="${CLIO_AGENT_DATA_DIR:-${CLIO_AGENT_HOME:+$CLIO_AGENT_HOME/data}}"; '
