@@ -154,6 +154,18 @@ stop_clio_server() {
   return 1
 }
 real() { (cd "$1" 2>/dev/null && pwd -P) || printf '%s' "$1"; }
+# The clio-agent installed under a root, as "<version>" for a release or
+# "<version>+g<commit>" for a source checkout (which shares a release's number).
+installed_of() {
+  local v c
+  v="$("$1/clio-agent/.venv/bin/python" -c 'import importlib.metadata as m; print(m.version("clio-agent"))' 2>/dev/null || true)"
+  [ -n "$v" ] || return 0
+  if [ -e "$1/clio-agent/.git" ] && command -v git >/dev/null 2>&1; then
+    c="$(git -C "$1/clio-agent" rev-parse HEAD 2>/dev/null | cut -c1-12)"
+    [ -n "$c" ] && v="$v+g$c"
+  fi
+  printf '%s' "$v"
+}
 # The API's health state -- "healthy" (200/503), "unresponsive" (asked and
 # got neither), or "unknown" (no curl/python3/wget on this node to ask with).
 # NEVER used to decide whether to stop anything: only to name what was
@@ -205,7 +217,7 @@ if ! port_busy "$port"; then
   if [ -n "$recorded" ] && alive "$recorded"; then
     fail "This installation already has a running process. Choose a separate installation directory for another port."
   fi
-  installed="$("$root/clio-agent/.venv/bin/python" -c 'import importlib.metadata as m; print(m.version("clio-agent"))' 2>/dev/null || true)"
+  installed="$(installed_of "$root")"
   if [ -n "$installed" ] && [ "$answered" != "1" ]; then
     # An agent is installed here but not running: ask before starting or updating it.
     say "CLIO $installed is installed in $root but not running"
@@ -224,7 +236,7 @@ fi
 owner="$(clio_prefix_of "$pid")" || fail "Port $port is used by another program (pid $pid: $(cmdline_of "$pid" | cut -c1-160))"
 uid="$(stat -c %u "/proc/$pid" 2>/dev/null || true)"
 [ "$uid" = "$(id -u)" ] || fail "Port $port belongs to another user. Leave it running and choose another port."
-installed="$("$owner/clio-agent/.venv/bin/python" -c 'import importlib.metadata as m; print(m.version("clio-agent"))' 2>/dev/null || true)"
+installed="$(installed_of "$owner")"
 health_state="$(check_health_state "http://127.0.0.1:$port/v1/health")"
 if [ "$replace" != "1" ]; then
   if [ "$health_state" = "healthy" ]; then

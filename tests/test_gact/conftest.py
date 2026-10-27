@@ -52,7 +52,10 @@ def question_world(tmp_path: Path) -> Iterator[tuple[Any, TestClient, str]]:
 @pytest.fixture(autouse=True)
 def _released_controller(monkeypatch: pytest.MonkeyPatch) -> None:
     """Deploy plans built here come from a released CLIO, not this test checkout's commit."""
-    monkeypatch.setattr("clio_agent.gact.infrastructure.drivers.controller_commit", lambda: None)
+    for owner in ("drivers", "controller_source"):
+        monkeypatch.setattr(
+            f"clio_agent.gact.infrastructure.{owner}.controller_commit", lambda: None
+        )
 
 
 @pytest.fixture(autouse=True)
