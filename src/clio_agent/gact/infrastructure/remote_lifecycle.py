@@ -7,7 +7,7 @@ import logging
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 
-from clio_agent.gact.infrastructure.clio_agent_deploy import _COMMON, LAUNCHER_PRELUDE
+from clio_agent.gact.infrastructure.clio_agent_deploy import _COMMON, _HELPERS, LAUNCHER_PRELUDE
 from clio_agent.gact.infrastructure.models import CommandResult, CommandSpec
 from clio_agent.gact.infrastructure.store import InfrastructureStore
 
@@ -62,7 +62,7 @@ def start_owned_command(launch: RemoteLaunch) -> CommandSpec:
     script = (
         "# clio-deploy:start\n"
         + LAUNCHER_PRELUDE
-        + _COMMON
+        + _HELPERS
         + r"""
 export CLIO_PORT="$2" CLIO_DESKTOP_LAUNCH="$3"
 # A second process may have taken the port since the initial claim. Never adopt

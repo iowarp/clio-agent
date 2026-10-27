@@ -89,9 +89,10 @@ root="${root%/}"
 [ -n "$root" ] && [ "$root" != "$HOME" ] || { printf 'Choose a dedicated CLIO installation directory.\n'; exit 75; }
 """
 
-_COMMON = (
-    _ROOT
-    + r"""
+# The helpers every deploy script shares, without resolving the root. A script
+# that starts with LAUNCHER_PRELUDE has already resolved it, and resolving it
+# again after the prelude exported CLIO_AGENT_HOME lands on a different path.
+_HELPERS = r"""
 port="$2"
 host_id="$(hostname -s 2>/dev/null || hostname 2>/dev/null || echo localhost)"
 say() { printf '==> %s\n' "$*"; }
@@ -188,7 +189,8 @@ except Exception:
   esac
 }
 """
-)
+
+_COMMON = _ROOT + _HELPERS
 
 _CLAIM = (
     "# clio-deploy:claim\n"
