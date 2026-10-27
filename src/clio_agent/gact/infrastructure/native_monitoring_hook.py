@@ -49,6 +49,17 @@ MONGO_SHA = {
 SUSE_IDS = frozenset({"sles", "sled", "sle_hpc", "opensuse-leap"})
 
 
+def _clio_tool(name: str) -> str | None:
+    """CLIO's own tool on this host (``native_service_platform.clio_tool``)."""
+    try:
+        import clio_native_platform as helper  # noqa: PLC0415 - shipped beside the hook
+    except ImportError:
+        from clio_agent.gact.infrastructure import (  # noqa: PLC0415
+            native_service_platform as helper,
+        )
+    return helper.clio_tool(name)
+
+
 def private(root: Path, manifest: dict[str, Any]) -> dict[str, str]:
     """Read host-private credentials; never return them through lifecycle receipts."""
     path = root / "credentials.json"
@@ -265,7 +276,7 @@ def mongo_platform(release: str) -> str:
 
 def install_cmf(root: Path, manifest: dict[str, Any]) -> None:
     """Install CMF's pinned server lock and rebase its fixed paths into owned data."""
-    uv = shutil.which("uv") or str(Path.home() / ".local/bin/uv")
+    uv = _clio_tool("uv") or "uv"
     source = root / "environment/cmf-source"
     if source.exists():
         if source.is_symlink():

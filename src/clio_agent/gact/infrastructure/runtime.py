@@ -15,6 +15,7 @@ from anyio.to_thread import run_sync
 
 from clio_agent.gact.infrastructure import reuse
 from clio_agent.gact.infrastructure.clio_agent_deploy import ClaimResult, parse_claim
+from clio_agent.gact.infrastructure.clio_python import on_clio_tools
 from clio_agent.gact.infrastructure.deployment_ledger import (
     forget_created,
     held_elsewhere,
@@ -138,6 +139,7 @@ class InfrastructureRuntime(ExternalConnectionsMixin, ServerAccessMixin, ModelRo
             return await self._local_executor(spec)
         if target.kind != "ssh":
             raise ValueError("Connection-only targets do not support lifecycle commands")
+        spec = on_clio_tools(target, spec)  # the target's own CLIO python3/uv first
         if on_output is not None and isinstance(self.transports, InfrastructureTransportRegistry):
             return await self.transports.execute(target_id, spec, on_output)
         return await self.transports.execute(target_id, spec)

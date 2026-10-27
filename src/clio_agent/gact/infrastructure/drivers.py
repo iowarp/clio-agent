@@ -51,6 +51,7 @@ from clio_agent.gact.infrastructure.monitoring_services import (
     monitoring_plan,
     monitoring_port,
 )
+from clio_agent.gact.infrastructure.native_service_platform import clio_tool
 from clio_agent.gact.infrastructure.plan import DriverPlan
 from clio_agent.gact.infrastructure.remote_lifecycle import RemoteLaunch, start_owned_command
 from clio_agent.gact.infrastructure.reuse import Reuse, ReuseCheck, from_scratch
@@ -365,7 +366,7 @@ def _relay_plan(
         return DriverPlan(
             (
                 CommandSpec(
-                    program="uv",
+                    program=clio_tool("uv") or "uv",
                     args=["tool", "uninstall", "clio-relay"],
                     scope="controller",
                     allowed_exit_codes=[0, 1],
@@ -378,7 +379,7 @@ def _relay_plan(
         raise ValueError("relay_artifact_sha256 must contain exactly 64 hexadecimal characters")
     commands = [
         CommandSpec(
-            program="uv",
+            program=clio_tool("uv") or "uv",
             args=[
                 "tool",
                 "install",
