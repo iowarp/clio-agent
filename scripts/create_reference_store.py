@@ -410,6 +410,9 @@ def main() -> int:
     parser.add_argument("--timeout", type=float, default=600.0)
     parser.add_argument("--settle", type=float, default=5.0, help="seconds before stopping")
     parser.add_argument("--capacity", default="2GB", help="clio-core file-tier capacity")
+    parser.add_argument(
+        "--core-port", type=int, default=0, help="clio-core base port (0: a free block)"
+    )
     parser.add_argument("--generator", action="store_true", help=argparse.SUPPRESS)
     parser.add_argument(
         "--serve", action="store_true", help="serve an existing store with the scripted model"
@@ -435,6 +438,8 @@ def main() -> int:
         (out / name).mkdir(parents=True, exist_ok=True)
     _write_marketplace(out / "marketplace")
     env = _environment(out, args.capacity)
+    if args.core_port:
+        env["CLIO_CORE_PORT"] = str(args.core_port)
     (out / "env.sh").write_text(
         "".join(f"export {key}={shlex.quote(value)}\n" for key, value in env.items()),
         encoding="utf-8",
