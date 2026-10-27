@@ -150,6 +150,11 @@ def main() -> None:
         action="store_true",
         help="Request one-time Windows sandbox setup with administrator approval if needed.",
     )
+    parser.add_argument(
+        "--skip-store-migrations",
+        action="store_true",
+        help="Do not run `clio-agent migrate` here (the caller runs it as its own step).",
+    )
     args = parser.parse_args()
     # This standalone installer owns its workspace. Never widen a running agent's policy.
     os.environ["CLIO_ALLOWED_ROOTS"] = str(args.workspace.resolve())
@@ -159,15 +164,35 @@ def main() -> None:
         setup_protected_execution=args.setup_protected_execution,
         reuse_installed=args.reuse_installed,
     )
+    # The install-time prepare (not the per-start reuse check) also upgrades the store,
+    # so the desktop's first start after an install or upgrade only checks the markers.
+    migrations = _run_store_migrations(args)
     summary = {
         "status": result["status"],
         "runtime_id": result["runtime_id"],
         "office": result["native_tools"]["soffice"],
+        "store_migrations": migrations,
     }
     if not args.reuse_installed:
-        # An install or upgrade, not a per-launch check: bound the MCP cache now.
+        # An install or upgrade, not a per-launch check: bound the MCP cache now (B4).
         summary["mcp_cache"] = prune_after_install()
     print(json.dumps(summary), flush=True)
+
+
+def _run_store_migrations(args: argparse.Namespace) -> dict[str, Any]:
+    """``clio-agent migrate`` as this installer's last step, reported typed.
+
+    A refusal or failure does not fail the package install: the server's next boot runs
+    an owed migration once and its ``store_migrations`` health row reports the outcome.
+    """
+    if args.reuse_installed or args.skip_store_migrations:
+        reason = "reuse_installed" if args.reuse_installed else "skipped_by_caller"
+        return {"status": "skipped", "reason": reason}
+    from clio_agent.gact.store_migrate_command import run_migrations  # noqa: PLC0415
+
+    print("Upgrading the CLIO store (clio-agent migrate)...", flush=True)
+    _code, payload = run_migrations(lambda line: print(line, flush=True))
+    return {key: payload[key] for key in ("status", "reason", "seconds") if key in payload}
 
 
 if __name__ == "__main__":

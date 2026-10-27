@@ -92,9 +92,12 @@ def _retryable_mount_error(exc: BaseException) -> bool:
     already waited out its no-progress window, so a restart would only repeat it.
     """
 
+    from clio_agent.tools.mcp_prepare import PrepareError  # noqa: PLC0415
     from clio_agent.tools.mcp_server_progress import NoProgressTimeout  # noqa: PLC0415
 
-    return not isinstance(exc, (FileNotFoundError, PermissionError, ValueError, NoProgressTimeout))
+    return not isinstance(
+        exc, (FileNotFoundError, PermissionError, ValueError, NoProgressTimeout, PrepareError)
+    )
 
 
 def _namespace_title(namespace: str) -> str:
@@ -153,6 +156,82 @@ def _publish_dependency_state(
     )
 
 
+def _listed_namespace_tools(tool_executor: Any, namespace: str) -> dict[str, Any]:
+    """The tools of ``namespace`` the executor already holds (a cached listing counts)."""
+
+    names = getattr(tool_executor, "get_tool_names", None)
+    if not callable(names):
+        return {}
+    prefix = f"{namespace}_"
+    return {name: None for name in names() if name.startswith(prefix)}
+
+
+def _store_live_listing(namespace: str, spec: Any, bare: list[Any]) -> None:
+    """Persist a listing taken over a live connection, so the next start needs none."""
+
+    from clio_agent.tools import listing_cache, mcp_task_routing  # noqa: PLC0415
+    from clio_agent.tools.mcp_connection_era import record_task_capability  # noqa: PLC0415
+
+    if getattr(spec, "transport", "") != "stdio" or not getattr(spec, "command", ""):
+        return
+    # A tool that declares task support is definitive; its absence over a proxied
+    # connection is not (the server's own capabilities are not visible through it).
+    if any(mcp_task_routing._tool_task_support(tool) in ("optional", "required") for tool in bare):
+        record_task_capability(namespace, task_capable=True, source="tool_execution")
+    task_capable, source, era = mcp_task_routing.capability_cache_fields(namespace)
+    listing_cache.store_listing(
+        namespace,
+        spec.command,
+        tuple(spec.args),
+        bare,
+        spec.env,
+        task_capable=task_capable,
+        source=source,
+        era=era,
+    )
+
+
+def _prepare_attempt(
+    tool_executor: Any, namespace: str, spec: Any, attempt: int, max_attempts: int, phase: list[str]
+) -> Mapping[str, Any]:
+    """Provision, then start ``namespace`` once: connect, and list over that connection.
+
+    ``phase[0]`` tracks the phase in progress, for the caller's typed failure.
+    """
+
+    from clio_agent.tools import mcp_prepare  # noqa: PLC0415
+    from clio_agent.tools.mcp_tools_changed import prefixed_namespace_tools  # noqa: PLC0415
+
+    def enter(name: str, **fields: Any) -> None:
+        phase[0] = name
+        mcp_prepare.record(namespace, mcp_prepare.PREPARING, name, attempt=attempt, **fields)
+        _publish_dependency_state(
+            namespace, phase=name, state="running", attempt=attempt, max_attempts=max_attempts
+        )
+
+    enter(mcp_prepare.PHASE_PROVISION)
+    outcome = mcp_prepare.provision(namespace, spec)
+    listed = _listed_namespace_tools(tool_executor, namespace)
+    if listed:
+        enter(mcp_prepare.PHASE_CONNECT, provision=outcome)
+        connector = getattr(tool_executor, "prepare_namespace", None)
+        if not callable(connector):
+            raise RuntimeError("live MCP executor cannot prepare namespace connections")
+        connector(namespace)  # progress-based: waits while the server works
+        return listed
+    enter(mcp_prepare.PHASE_LAUNCH, provision=outcome)
+    lister = getattr(tool_executor, "list_namespace_tools", None)
+    merger = getattr(tool_executor, "merge_namespace_tools", None)
+    if not callable(lister) or not callable(merger):
+        raise RuntimeError("live MCP executor cannot list over a namespace connection")
+    bare = lister(namespace)
+    tools = prefixed_namespace_tools(namespace, bare)
+    merger(namespace, tools)
+    _store_live_listing(namespace, spec, bare)
+    mcp_prepare.notify_listed(namespace, tools)
+    return tools
+
+
 def mount_namespace_for_session(
     tool_executor: Any,
     namespace: str,
@@ -161,12 +240,14 @@ def mount_namespace_for_session(
     retry_delays_s: tuple[float, ...] | None = None,
     connect: bool = True,
 ) -> Mapping[str, Any]:
-    """Mount one declared namespace with bounded readiness semantics.
+    """Prepare one declared namespace with bounded readiness semantics.
 
-    A turn lists (``connect=False``): the model call needs the tools, not the
-    connection. The session warm-up lists and connects, so the server is ready by
-    the time a call needs it. A terminal failure is still raised to the existing
-    typed tool-resolution boundary.
+    ``connect=True`` (the session warm-up, a turn's background preparation): provision
+    the server's environment (:mod:`clio_agent.tools.mcp_prepare`), then start it once,
+    connecting and listing its tools over that one connection. ``connect=False`` only
+    lists (joining any in-flight listing). Every phase is recorded in the namespace's
+    visible preparation state; a terminal failure is recorded ``failed`` with a typed
+    reason and raised to the typed tool-resolution boundary.
 
     Args:
         tool_executor: The live MCP executor receiving the mounted tools.
@@ -183,6 +264,7 @@ def mount_namespace_for_session(
         Exception: The final mount failure, unmodified.
     """
 
+    from clio_agent.tools import mcp_prepare  # noqa: PLC0415
     from clio_agent.tools.mcp_discovery import (  # noqa: PLC0415
         _classify_degrade_reason,
         ensure_namespace,
@@ -192,38 +274,33 @@ def mount_namespace_for_session(
         retry_delays_s = mcp_mount_retry_delays_s()
     max_attempts = len(retry_delays_s) + 1
     for attempt in range(1, max_attempts + 1):
-        phase = "launch"
-        _publish_dependency_state(
-            namespace,
-            phase=phase,
-            state="running",
-            attempt=attempt,
-            max_attempts=max_attempts,
-        )
+        phase = ["launch"]
         try:
-            mounted_tools = ensure_namespace(namespace, spec)
-            merger = getattr(tool_executor, "merge_namespace_tools", None)
-            if not callable(merger):
-                raise RuntimeError("live MCP executor cannot accept mounted tools")
-            merger(namespace, mounted_tools)
-            if not connect:
-                break
-            connector = getattr(tool_executor, "prepare_namespace", None)
-            if not callable(connector):
-                raise RuntimeError("live MCP executor cannot prepare namespace connections")
-            phase = "connect"
-            _publish_dependency_state(
-                namespace,
-                phase=phase,
-                state="running",
-                attempt=attempt,
-                max_attempts=max_attempts,
-            )
-            connector(namespace)  # progress-based: waits while the server works
+            if connect:
+                mounted_tools = _prepare_attempt(
+                    tool_executor, namespace, spec, attempt, max_attempts, phase
+                )
+            else:
+                _publish_dependency_state(
+                    namespace,
+                    phase=phase[0],
+                    state="running",
+                    attempt=attempt,
+                    max_attempts=max_attempts,
+                )
+                mounted_tools = ensure_namespace(namespace, spec)
+                merger = getattr(tool_executor, "merge_namespace_tools", None)
+                if not callable(merger):
+                    raise RuntimeError("live MCP executor cannot accept mounted tools")
+                merger(namespace, mounted_tools)
         except Exception as exc:
+            # A preparation names its failures in the preparation vocabulary; a
+            # listing-only mount keeps the discovery vocabulary it always used.
+            reason = (
+                mcp_prepare.classify(exc, phase[0]) if connect else _classify_degrade_reason(exc)
+            )
             if attempt < max_attempts and _retryable_mount_error(exc):
                 delay = retry_delays_s[attempt - 1]
-                reason = _classify_degrade_reason(exc)
                 retry_in_ms = round(delay * 1_000)
                 # Every retried attempt is a typed loud warning -- never silent.
                 logger.warning(
@@ -231,12 +308,21 @@ def mount_namespace_for_session(
                     "degrade_reason=%s retry_in_ms=%d",
                     MCP_MOUNT_RETRY_REASON,
                     namespace,
-                    phase,
+                    phase[0],
                     attempt,
                     max_attempts,
-                    reason,
+                    _classify_degrade_reason(exc),
                     retry_in_ms,
                 )
+                if connect:
+                    mcp_prepare.record(
+                        namespace,
+                        mcp_prepare.PREPARING,
+                        phase[0],
+                        reason=reason,
+                        detail=getattr(exc, "detail", "") or str(exc),
+                        attempt=attempt,
+                    )
                 _publish_dependency_state(
                     namespace,
                     phase="retry",
@@ -248,21 +334,34 @@ def mount_namespace_for_session(
                 )
                 time.sleep(delay)
                 continue
+            if connect:
+                mcp_prepare.record(
+                    namespace,
+                    mcp_prepare.FAILED,
+                    phase[0],
+                    reason=reason,
+                    detail=getattr(exc, "detail", "") or str(exc),
+                    attempt=attempt,
+                )
             _publish_dependency_state(
                 namespace,
-                phase=phase,
+                phase=phase[0],
                 state="failed",
                 attempt=attempt,
                 max_attempts=max_attempts,
-                reason=_classify_degrade_reason(exc),
+                reason=reason,
             )
             raise
         break
     else:
         raise AssertionError("MCP readiness attempts exhausted without a result")
+    if connect:
+        mcp_prepare.record(
+            namespace, mcp_prepare.READY, phase[0], attempt=attempt, tool_count=len(mounted_tools)
+        )
     _publish_dependency_state(
         namespace,
-        phase="connect" if connect else "launch",
+        phase=phase[0],
         state="ready",
         attempt=attempt,
         max_attempts=max_attempts,
@@ -293,6 +392,30 @@ def mount_namespaces_for_session(
         return {}, {}
     mounted: dict[str, Mapping[str, Any]] = {}
     failures: dict[str, str] = {}
+    if connect:
+        # A preparation joins the one already in flight for the same fleet (a turn's,
+        # another warm-up's) instead of starting the server a second time.
+        from clio_agent.gact import mcp_background_prepare as background  # noqa: PLC0415
+
+        pending = {
+            namespace: background.prepare_in_background(tool_executor, namespace, spec)
+            for namespace, spec in specs.items()
+        }
+        for namespace, prepared in pending.items():
+            exc = prepared.exception()  # waits; a failure is a value here, never raised
+            if exc is None:
+                mounted[namespace] = prepared.result()
+                spotter_mount_outcome.record_success(namespace)
+                continue
+            failures[namespace] = background.failure_reason(namespace, exc)
+            spotter_mount_outcome.record_failure(namespace, failures[namespace])
+            logger.warning(
+                "mcp_prepare_failed namespace=%s reason=%s error=%s",
+                namespace,
+                failures[namespace],
+                exc,
+            )
+        return mounted, failures
     with ThreadPoolExecutor(max_workers=len(specs), thread_name_prefix="clio-mount") as pool:
         futures = {
             namespace: pool.submit(

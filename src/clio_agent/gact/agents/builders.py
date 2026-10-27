@@ -49,6 +49,11 @@ from clio_agent.gact.agents.tool_recording import (
 from clio_agent.gact.agents.tool_recording import (
     recording_tool as _recording_tool,
 )
+from clio_agent.gact.agents.wait_for_tools import (
+    WAIT_FOR_TOOLS,
+    build_wait_for_tools_tool,
+    preparing_namespaces,
+)
 from clio_agent.gact.runtime.context_tokens import _resolve_expert_context_window
 from clio_agent.gact.runtime.globals import (
     _emit_semantic_event,
@@ -115,13 +120,15 @@ def _gateway_and_namespace_tools(
 ) -> tuple[dict[str, Any], dict[str, str]]:
     """Gateway built-ins by name plus EVERY tool of each plugin MCP namespace.
 
-    A plugin's MCP server contributes all of its tools. A namespace whose tools
-    are not listed yet is mounted on demand through the session-readiness
-    boundary (#1237); a failed mount is returned as a typed reason per
-    namespace for this resolve only.
+    A plugin's MCP server contributes all of its tools. A namespace whose tools are
+    not listed yet is prepared in the background (:mod:`clio_agent.gact.
+    mcp_background_prepare`); the turn waits for it only for the short grace period,
+    and one still preparing after that is left out here, without a failure: its tools
+    reach the agent once listed (live tool refresh). A failed preparation is returned
+    as a typed reason per namespace for this resolve only.
     """
 
-    from clio_agent.gact.mcp_readiness import mount_namespaces_for_session  # noqa: PLC0415
+    from clio_agent.gact.mcp_background_prepare import prepare_for_turn  # noqa: PLC0415
 
     available = _listed_tools(tool_executor)
     declared_specs: Mapping[str, Any] = getattr(tool_executor, "_clio_namespace_specs", None) or {}
@@ -137,11 +144,11 @@ def _gateway_and_namespace_tools(
         namespace = name.partition("_")[0]
         if name not in available and namespace in declared_specs:
             needed.setdefault(namespace, declared_specs[namespace])
+    preparing: set[str] = set()
     if needed:
-        mounted, mount_failures = mount_namespaces_for_session(tool_executor, needed, connect=False)
-        failures.update(mount_failures)
-        if any(mounted.values()):
-            available = _listed_tools(tool_executor)
+        preparing, prepare_failures = prepare_for_turn(tool_executor, needed)
+        failures.update(prepare_failures)
+        available = _listed_tools(tool_executor)
     wanted = set(gateway_names)
     prefixes = tuple(f"{namespace}_" for namespace in namespaces)
     picked = {
@@ -150,8 +157,10 @@ def _gateway_and_namespace_tools(
         if name in wanted or (prefixes and name.startswith(prefixes))
     }
     for namespace in namespaces:
-        if namespace not in failures and not any(
-            name.startswith(f"{namespace}_") for name in picked
+        if (
+            namespace not in failures
+            and namespace not in preparing
+            and not any(name.startswith(f"{namespace}_") for name in picked)
         ):
             failures[namespace] = "mcp_server_listed_no_tools"
     return picked, failures
@@ -236,6 +245,10 @@ def _agent_tools(
             whole |= attach_always_load_tools(tool_executor, picked, mount_failures, list(picked))
         if live is not None:
             live.executor, live.namespaces = tool_executor, whole
+        waiting = preparing_namespaces(whole, picked)
+        if waiting:
+            available[WAIT_FOR_TOOLS] = build_wait_for_tools_tool(waiting)
+            toolset_inventory.register_tool_source(sources, WAIT_FOR_TOOLS, "native")
         mounted = toolset_inventory.mounted_namespace_set(tool_executor)
         for name in picked:
             prefix, sep, bare = name.partition("_")
