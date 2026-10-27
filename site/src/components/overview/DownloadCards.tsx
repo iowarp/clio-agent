@@ -92,6 +92,17 @@ function PlatformCard({ platform, icon, release, detected }: CardProps) {
 						<Download aria-hidden="true" />
 						{platform.primary.label}
 					</Button>
+					{platform.alternative && (
+						<div className="flex flex-wrap items-center gap-x-2 gap-y-1 text-sm">
+							<span className="text-muted-foreground">{platform.alternative.text}</span>
+							<a
+								href={platform.alternative.href}
+								className="text-foreground underline decoration-border underline-offset-4 hover:decoration-primary"
+							>
+								{platform.alternative.link}
+							</a>
+						</div>
+					)}
 					{platform.others.length > 0 && (
 						<div className="flex flex-wrap items-center gap-x-4 gap-y-1 text-sm">
 							<span className="text-muted-foreground">Also</span>

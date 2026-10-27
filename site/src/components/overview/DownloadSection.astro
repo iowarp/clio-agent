@@ -3,6 +3,7 @@
 import { ArrowRight } from 'lucide-react';
 import SectionHeading from './SectionHeading.astro';
 import DownloadCards, { type PlatformIcons } from './DownloadCards';
+import InstallMethods from './InstallMethods';
 import { RELEASES_PAGE } from '@/lib/downloads';
 import apple from '@/assets/platform-icons/apple.svg';
 import linux from '@/assets/platform-icons/linux.svg';
@@ -22,8 +23,12 @@ const icons: PlatformIcons = { windows: windows.src, macos: apple.src, linux: li
 	<div class="cards">
 		<DownloadCards client:load icons={icons} />
 	</div>
+	<div class="terminal">
+		<h3>Or install from a terminal</h3>
+		<InstallMethods client:visible />
+	</div>
 	<p class="other">
-		<a href="/docs/install/">Other ways to install <ArrowRight aria-hidden="true" size={16} /></a>
+		<a href="/docs/install/">All ways to install, by system <ArrowRight aria-hidden="true" size={16} /></a>
 		<a href={RELEASES_PAGE}>Stable release notes <ArrowRight aria-hidden="true" size={16} /></a>
 	</p>
 	<p class="beta">
@@ -39,6 +44,17 @@ const icons: PlatformIcons = { windows: windows.src, macos: apple.src, linux: li
 	}
 	.cards {
 		margin-top: 2.5rem;
+	}
+	.terminal {
+		max-width: 52rem;
+		margin-top: 2.5rem;
+	}
+	.terminal h3 {
+		margin: 0 0 0.75rem;
+		font-family: var(--font-display);
+		font-weight: 500;
+		font-size: 1.25rem;
+		color: var(--ink);
 	}
 	.other {
 		display: flex;

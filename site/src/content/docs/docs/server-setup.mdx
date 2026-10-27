@@ -5,77 +5,33 @@ description: Technical installation options for lab administrators and people ru
 
 import { Aside, CardGrid, LinkCard, TabItem, Tabs } from '@astrojs/starlight/components';
 
-This reference is for people installing a CLIO service, using a terminal, or managing a lab deployment. For the usual desktop route, follow [Install and open CLIO](/docs/install/). A service is the part of CLIO that reads files and runs tools; Desktop and the browser connect to it.
+This reference is for people installing a CLIO service, using a terminal, or managing a lab deployment. For the usual routes, follow [Install CLIO](/docs/install/). A service is the part of CLIO that reads files and runs tools; Desktop and the browser connect to it.
 
 ## Desktop app
 
-Download the installer for your system from the [latest release](https://github.com/iowarp/clio-agent/releases/latest). The desktop app updates itself from the same release page.
+The desktop installers on each [release](https://github.com/iowarp/clio-agent/releases/latest) include the CLIO service: their file names contain `-bundled`. The release also carries files without `-bundled`; the desktop app uses those to update itself, and they are not meant to be installed by hand.
 
-Under **Settings → Desktop → App updates**, turn on **Enable beta updates** to
-receive published beta releases for both Desktop and the Agent. Betas may be
-unstable. With the switch off, only stable releases are offered; changing the
-setting never installs an update or downgrades your current version. Existing
-beta installations keep the beta channel unless you explicitly turn it off.
+| Platform | Installer |
+|---|---|
+| Windows x64, and Windows on ARM through emulation | `x64-setup-bundled.exe` or the bundled `.msi` |
+| macOS 14 or newer, Apple Silicon | `aarch64-bundled.dmg` |
+| Linux x86_64 and aarch64 | the bundled `.deb` or `.rpm` |
 
-Desktop beta 1 predates this setting and needs one manual Desktop upgrade to
-receive channel-aware updates. A GitHub **draft** is still being prepared and is
-excluded from both channels; a published **pre-release** is available to beta users.
+There is no desktop app for Intel Macs yet; use the [install script](#install-script).
 
-Each platform comes in one or two variants:
+`install.sh --desktop` and `install.ps1 -Desktop` install the same app from a terminal, after checking it against the release's SHA-256 checksums; see [Desktop app from a terminal](/docs/install/#desktop-app-from-a-terminal). On macOS and Linux the script then runs the app's setup step as you, so the first launch only checks it.
 
-- **Bundled** installers (`-bundled` in the file name) include the CLIO backend. There is nothing else to install.
-- **Attach-only** installers are much smaller than bundled ones (about 10 to 20 MB, except the AppImage at about 100 MB) and connect to a CLIO backend that you install and run separately, for example with the [install script](#install-script) or [uv](#backend-only-with-uv).
-
-| Platform | Bundled | Attach-only |
-|---|---|---|
-| Windows x64 | `.exe` (setup) and `.msi` | `.exe` (setup) and `.msi` |
-| Windows on ARM | none | `.exe` |
-| macOS 14+, Apple Silicon | `.dmg` | `.dmg` |
-| macOS 14+, Intel | none | `.dmg` |
-| Linux x86_64 and aarch64 | `.deb` and `.rpm` | `.deb`, `.rpm`, and `.AppImage` |
+Under **Settings → Desktop → App updates**, turn on **Enable beta updates** to receive published beta releases for both Desktop and the Agent. Betas may be unstable. With the switch off, only stable releases are offered; changing the setting never installs an update or downgrades your current version. A GitHub **draft** is still being prepared and is excluded from both channels.
 
 When you close the window, the app asks "Keep CLIO running?" You can keep it running in the system tray or quit. The app runs as a single instance.
-
-Desktop lets you connect to an existing CLIO service or deploy a separate one. Use the existing-service option when you already run CLIO from a terminal.
-
-### Install Desktop from a terminal
-
-These commands install the Desktop application and verify its release SHA-256 checksum. They require no Python, uv, or Node installation. To select the published beta 5.2 explicitly:
-
-<Tabs syncKey="os">
-<TabItem label="macOS">
-
-```sh
-curl -fsSL https://raw.githubusercontent.com/iowarp/clio-agent/main/install/desktop.sh \
-  | CLIO_VERSION=v0.9.5-beta.5.2 bash
-```
-
-Installs into `~/Applications`, retaining a previous app beside it when upgrading. Apple Silicon receives the bundled backend; Intel receives an attach-only app. Set `CLIO_DESKTOP_DIR` to choose another absolute application directory.
-
-</TabItem>
-<TabItem label="Windows">
-
-```powershell
-$env:CLIO_VERSION = 'v0.9.5-beta.5.2'
-irm https://raw.githubusercontent.com/iowarp/clio-agent/main/install/desktop.ps1 | iex
-```
-
-Runs the bundled x64 setup silently and adds CLIO Desktop to the Start menu. Windows on ARM uses x64 emulation.
-
-</TabItem>
-</Tabs>
-
-Omit `CLIO_VERSION` to select the latest stable release. The macOS script requires an intact signed app and refuses older unsigned packages. Use `--download-only DIR` with the saved shell script, or `-DownloadOnly -DownloadDirectory DIR` with the saved PowerShell script, to verify a download without installing it.
 
 <Aside type="note" title="macOS first launch">
 CLIO currently uses an ad-hoc app signature, not Apple Developer ID notarization. If macOS asks for approval, open **System Settings → Privacy & Security → Open Anyway** after attempting to open the app. The installer does not change Gatekeeper or remove quarantine attributes. An invalid signature or failed checksum is an installation error; do not bypass it.
 </Aside>
 
-On Linux, choose the bundled `.deb` or `.rpm` for a local backend. The AppImage is attach-only and needs a separately installed service.
-
 ## Install script
 
-The script installs the backend, a terminal UI, a web UI bundle, and the `clio` command. It needs `curl` (or PowerShell on Windows), plus either [uv](https://docs.astral.sh/uv/) or Python 3.13 with pip. It does not need git or Go.
+The script installs the CLIO service, a terminal UI, a web UI bundle, and the `clio` command. It needs `curl` (or PowerShell on Windows). It installs `uv` into the launcher folder when `uv` is missing, and `uv` provides Python; it does not need git, Go or administrator rights.
 
 <Tabs syncKey="os">
 <TabItem label="macOS and Linux">
@@ -104,6 +60,43 @@ clio
 
 The first start is slower than later ones. See [Connect a model](/docs/connect-a-model/) for the next step.
 
+### Options
+
+| Option | Installs |
+|---|---|
+| none | the latest stable release, from PyPI, with the versions locked by that release |
+| `--dev` | the newest release, betas included |
+| `--version <version>` | one release, by its PyPI version, for example `0.9.5` |
+| `--source` | the source on `main`, with the versions it pins; needs git |
+| `--dev --source` | the source on `develop` |
+| `--ref <branch, tag or commit>` | the source at that point |
+| `--desktop` | the desktop app instead; `--dev` and `--version` choose its release |
+
+Pass options after `bash -s --`, or on Windows with the scriptblock form:
+
+<Tabs syncKey="os">
+<TabItem label="macOS and Linux">
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/iowarp/clio-agent/main/install/install.sh | bash -s -- --dev
+```
+
+</TabItem>
+<TabItem label="Windows">
+
+```powershell
+& ([scriptblock]::Create((irm https://raw.githubusercontent.com/iowarp/clio-agent/main/install/install.ps1))) -Dev
+```
+
+PowerShell also accepts `-Source`, `-Version`, `-Ref` and `-Desktop`.
+
+</TabItem>
+</Tabs>
+
+Run from inside a clone of the repository (`./install/install.sh --source`), the script installs that checkout in place, on whatever branch it is. The terminal UI is built from source when Go 1.26 or newer is installed; without Go, the installer says so and installs the rest.
+
+Running the script again over an installation upgrades or repairs it and keeps your settings.
+
 ### What it installs and where
 
 | Item | macOS and Linux | Windows |
@@ -113,12 +106,12 @@ The first start is slower than later ones. See [Connect a model](/docs/connect-a
 
 Inside the prefix:
 
-- The `clio-agent` backend from PyPI, in its own virtual environment at `clio-agent/.venv`.
+- The `clio-agent` service, in its own virtual environment at `clio-agent/.venv`.
 - The terminal UI binary for your OS and architecture.
 - The web UI bundle, unpacked to `clio-agent/web`.
 - An uninstall script.
 
-If `uv` is present, the script also installs `clio-kit` (version 2.10.6) as a uv tool. Marketplace plugins use it to launch their tool servers. Without `uv`, the script warns and skips this step. Install `uv`, run `uv tool install clio-kit==2.10.6`, and make sure the folder printed by `uv tool dir --bin` is on your `PATH`.
+If `uv` is present, the script also installs `clio-kit` (version 2.10.6) as a uv tool. Marketplace plugins use it to launch their tool servers.
 
 ### Script environment variables
 
@@ -128,27 +121,8 @@ Set these before running the script.
 |---|---|
 | `CLIO_PREFIX` | Install root. |
 | `CLIO_BIN_DIR` | Where the `clio` command goes. |
-| `CLIO_VERSION` | Install a specific release. Use the PyPI version with no leading `v`, for example `0.9.5b5.post2`. |
-| `CLIO_REF` | A branch or tag. Builds from source instead of downloading a release, and needs git, uv, and Go 1.25 or newer. |
-
-<Tabs syncKey="os">
-<TabItem label="macOS and Linux">
-
-```sh
-curl -fsSL https://raw.githubusercontent.com/iowarp/clio-agent/main/install/install.sh \
-  | CLIO_VERSION=0.9.5b5.post2 bash
-```
-
-</TabItem>
-<TabItem label="Windows">
-
-```powershell
-$env:CLIO_VERSION = '0.9.5b5.post2'
-irm https://raw.githubusercontent.com/iowarp/clio-agent/main/install/install.ps1 | iex
-```
-
-</TabItem>
-</Tabs>
+| `CLIO_VERSION` | Same as `--version`. |
+| `CLIO_REF` | Same as `--source --ref`. |
 
 Use the same `CLIO_PREFIX` and `CLIO_BIN_DIR` when you [uninstall](/docs/uninstall/).
 
@@ -206,11 +180,10 @@ The extra `--with` pins are required: CLIO depends on specific prerelease versio
 ```sh
 git clone --recurse-submodules https://github.com/iowarp/clio-agent
 cd clio-agent
-uv sync --extra optimizers --extra argonne
-uv run clio-agent serve
+./install/install.sh --source
 ```
 
-See [Contributing](/docs/contributing/) for the development workflow.
+This installs your checkout in place, with the `clio` command. See [Contributing](/docs/contributing/) for the development workflow.
 
 ## Next steps
 

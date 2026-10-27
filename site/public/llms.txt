@@ -1,0 +1,15 @@
+# CLIO
+
+> CLIO is an open-source AI workspace for scientific data: data discovery, analysis,
+> expert agents, and provenance in one place. It runs as a desktop app (Windows, macOS,
+> Linux) or as a service with a terminal and browser interface.
+
+## Install
+
+- [Install CLIO (instructions for AI assistants)](https://clio.iowarp.ai/install.md): step-by-step instructions an assistant can follow to install CLIO on the user's computer.
+- [Install CLIO](https://clio.iowarp.ai/docs/install/): every install method, by operating system.
+
+## Docs
+
+- [Documentation](https://clio.iowarp.ai/docs/): using CLIO.
+- [Source code](https://github.com/iowarp/clio-agent)

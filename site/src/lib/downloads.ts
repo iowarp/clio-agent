@@ -139,6 +139,8 @@ export interface PlatformDownloads {
 	summary: string;
 	primary: DownloadChoice;
 	others: readonly DownloadChoice[];
+	/** Shown in place of the other formats when a platform has none. */
+	alternative?: { text: string; link: string; href: string };
 }
 
 /** The three platform cards, in default order. */
@@ -156,6 +158,7 @@ export const PLATFORMS: readonly PlatformDownloads[] = [
 		summary: 'Apple Silicon',
 		primary: { format: 'dmg', label: 'Download for Apple Silicon', arch: 'arm64' },
 		others: [],
+		alternative: { text: 'Intel Mac?', link: 'Install from a terminal', href: '/docs/install/#install-script' },
 	},
 	{
 		os: 'linux',

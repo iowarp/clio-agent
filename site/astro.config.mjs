@@ -52,7 +52,8 @@ export default defineConfig({
 					collapsed: false,
 					items: [
 						{ label: 'Start here', slug: 'docs' },
-						{ label: 'Install and open CLIO', slug: 'docs/install' },
+						{ label: 'Install CLIO', slug: 'docs/install' },
+						{ label: 'Install with your AI assistant', slug: 'docs/install-with-ai' },
 						{ label: 'Choose a model', slug: 'docs/connect-a-model' },
 						{ label: 'Your first analysis', slug: 'docs/examples/check-a-dataset' },
 						{ label: 'Your workspace', slug: 'docs/workspace-panels' },
