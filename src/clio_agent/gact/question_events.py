@@ -126,12 +126,18 @@ class QuestionEvents:
         self._active.add(task)
         task.add_done_callback(self._active.discard)
 
-    async def restore(self) -> None:
-        """Rebuild only active presentation/deadline hints from confirmed Core indexes."""
+    async def restore(self, session_id: str | None = None) -> None:
+        """Rebuild only active presentation/deadline hints from confirmed Core indexes.
+
+        With ``session_id``, only that conversation's open Questions (obligations lane);
+        the execution-gate sweep then runs once on its own (:meth:`restore_gates`).
+        """
 
         def replay() -> None:
             history = self.app.state.task_history
-            for handle in history.task_handles(kind="Question", active_only=True):
+            for handle in history.task_handles(
+                kind="Question", session_id=session_id, active_only=True
+            ):
                 task = history.task_snapshot(handle)
                 if task is not None and task.details is not None:
                     if task.tool in {"hook_defer", "plan_exit"}:
@@ -145,13 +151,22 @@ class QuestionEvents:
                                 "Approval gate requires inspection handle=%s", task.handle
                             )
                     self.changed(task)
-            for session in self.app.state.sessions.list():
-                gate = session.metadata.get("execution_gate")
-                task = history.task_snapshot(gate) if isinstance(gate, str) and gate else None
-                if task is not None and task.kind == "Question" and task.terminal_at is not None:
-                    self.changed(task)
+            if session_id is None:
+                self._replay_gates()
 
         await self.app.state.task_history.io.run(replay)
+
+    async def restore_gates(self) -> None:
+        """Publish execution gates whose Question settled while the owner was down."""
+        await self.app.state.task_history.io.run(self._replay_gates)
+
+    def _replay_gates(self) -> None:
+        history = self.app.state.task_history
+        for session in self.app.state.sessions.list():
+            gate = session.metadata.get("execution_gate")
+            task = history.task_snapshot(gate) if isinstance(gate, str) and gate else None
+            if task is not None and task.kind == "Question" and task.terminal_at is not None:
+                self.changed(task)
 
     async def close(self) -> None:
         """Retire hints while leaving accepted open Questions durable."""

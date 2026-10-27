@@ -54,6 +54,7 @@ async def restore(self: NativeTools, handles: tuple[str, ...] | None = None) -> 
         )
         if submission.backend.owner != "native":
             continue
+        self._custody.add(handle)
         root = next(
             (
                 kind

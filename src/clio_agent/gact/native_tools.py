@@ -95,6 +95,8 @@ class NativeTools:
         self._identities: dict[tuple[NativeRootKind, str], AcceptedNativeCall] = {}
         self._drivers: dict[str, asyncio.Task[None]] = {}
         self._rpc: dict[str, asyncio.Task[Any]] = {}
+        # Work this process submitted or reattached; only it is cancelled at shutdown.
+        self._custody: set[str] = set()
         self._retiring: set[asyncio.Task[None]] = set()
         self._stack = AsyncExitStack()
         self._closing = False
@@ -399,6 +401,7 @@ class NativeTools:
                 if existing is not None:
                     return existing
             content = self.history.record_submission(context)
+            self._custody.add(context.handle)
             stamp = now()
             self.history.record_snapshot(
                 TaskSnapshot(
@@ -712,6 +715,7 @@ class NativeTools:
         self._drivers.pop(handle, None)
         self._rpc.pop(handle, None)
         self._control_holds.discard(handle)
+        self._custody.discard(handle)
 
     def _rejected(self, handle: str, reason: str) -> None:
         with self.history.serialized():

@@ -459,11 +459,14 @@ async def request_shutdown(self: NativeTools) -> None:
     self._closing = True
 
     def reserved() -> set[str]:
+        # Only work this process took custody of. Work it never reattached stays open
+        # in clio-core and is recovered at the next start, as after a crash.
         with self.history.read_view():
             return {
                 handle
-                for handle in self.history.task_handles(active_only=True)
+                for handle in self._custody - set(self._calls) - set(self._rpc)
                 if (task := self.history.task_snapshot(handle)) is not None
+                and task.terminal_at is None
                 and task.kind in {"Shell", "Download", "Indexing"}
                 and task.submission is not None
                 and (
@@ -478,7 +481,7 @@ async def request_shutdown(self: NativeTools) -> None:
                 )
             }
 
-    handles = set(self._calls) | set(self._rpc) | reserved()
+    handles = set(self._calls) | set(self._rpc) | await self.history.io.run(reserved)
 
     async def request(handle: str) -> None:
         try:
