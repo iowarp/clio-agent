@@ -166,6 +166,11 @@ def test_the_launcher_keeps_the_data_home_it_was_installed_for(
     (checkout / "pyproject.toml").write_text('[project]\nname = "clio-agent"\n')
     for name in ("install.sh", "clio", "uninstall.sh"):
         shutil.copy(ROOT / "install" / name, checkout / "install" / name)
+    # A host with go builds the TUI from the checkout; this fixture's build succeeds.
+    tui = checkout / "scripts/build_clio_tui.sh"
+    tui.parent.mkdir()
+    tui.write_text("#!/bin/sh\nexit 0\n")
+    tui.chmod(0o755)
     env = {"TEST_INSTALL_CONTINUE": "1"}
     if agent_home:
         env["CLIO_AGENT_HOME"] = agent_home

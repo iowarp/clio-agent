@@ -7,11 +7,19 @@ import os
 import shlex
 import shutil
 import subprocess
+import sys
 from pathlib import Path
 
 import pytest
 
 ROOT = Path(__file__).resolve().parents[2]
+
+
+# The shared installer shims live in the repo's test package; this suite also runs
+# from install/tests alone (macos-bundle-smoke), where the repo root isn't importable.
+_REPO = str(Path(__file__).resolve().parents[2])
+if _REPO not in sys.path:
+    sys.path.insert(0, _REPO)
 
 
 def _bash_path(path: Path) -> str:

@@ -175,7 +175,7 @@ fi
 # A ref's Python: its .python-version, or 3.13 for releases from before that file.
 python_of() {
   local value
-  value="$(tr -d '[:space:]' < "$1" 2>/dev/null || true)"
+  value="$(tr -d '[:space:]' 2>/dev/null < "$1" || true)"
   printf '%s' "${value:-3.13}"
 }
 
