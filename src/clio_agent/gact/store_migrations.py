@@ -230,6 +230,13 @@ def _boot_report(app: Any) -> dict[str, MigrationResult]:
     return report
 
 
+def _boot_cost(result: MigrationResult) -> str:
+    # At boot the task-index replay already ran in the task_history_restore step.
+    replay = result.details.get("replay_seconds")
+    extra = f" + {replay:.1f}s replay in task_history_restore" if replay else ""
+    return f"{result.name} ({result.seconds:.1f}s{extra})"
+
+
 def health_rows(app: Any) -> list[Any]:
     """The ``store_migrations`` row for ``GET /v1/health`` (none before boot checked)."""
     from clio_agent.runtime.status import IntegrationState, IntegrationStatus  # noqa: PLC0415
@@ -250,7 +257,7 @@ def health_rows(app: Any) -> list[Any]:
         state = IntegrationState.DEGRADED
         summary = (
             "This install skipped `clio-agent migrate`; boot ran "
-            + ", ".join(f"{r.name} ({r.seconds:.1f}s)" for r in ran)
+            + ", ".join(_boot_cost(r) for r in ran)
             + " once."
         )
         next_action = "Nothing to do: the markers are recorded and later boots only check them."

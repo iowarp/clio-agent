@@ -256,3 +256,16 @@ def test_cli_dispatches_migrate(monkeypatch: pytest.MonkeyPatch) -> None:
         handle_local_command(["migrate", "--json"])
 
     assert stopped.value.code == 3 and seen == [["--json"]]
+
+
+def test_boot_row_names_the_replay_the_restore_step_already_paid() -> None:
+    app = _app()
+    app.state.store_migrations_boot = {
+        "task_index_build": store_migrations.MigrationResult(
+            "task_index_build", "done", 2.0, OWED_AT_BOOT, {"replay_seconds": 5.0}
+        )
+    }
+
+    (row,) = health_rows(app)
+
+    assert "task_index_build (2.0s + 5.0s replay in task_history_restore)" in row.summary
