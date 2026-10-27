@@ -555,7 +555,9 @@ def test_dead_unsupervised_worker_is_typed_with_its_log_tail(
 def test_start_runs_the_worker_under_its_supervisor(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    uv = tmp_path / "uv"
+    # The desktop's bundled runtime brings its own uv, ahead of any other.
+    uv = tmp_path / "runtime/bin/uv"
+    uv.parent.mkdir(parents=True)
     uv.write_text("")
     launched: list[list[str]] = []
 
@@ -563,7 +565,7 @@ def test_start_runs_the_worker_under_its_supervisor(
         launched.append(command)
         return SimpleNamespace(pid=os.getpid())
 
-    monkeypatch.setattr(node_models.shutil, "which", lambda name: str(uv))
+    monkeypatch.setenv("GACT_BUNDLED_RUNTIME_DIR", str(tmp_path / "runtime"))
     monkeypatch.setattr(node_models.subprocess, "Popen", popen)
     root = tmp_path / "ops"
     request = {"repository": "org/model", "revision": "main", "destination": str(tmp_path / "m")}
