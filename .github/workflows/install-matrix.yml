@@ -147,7 +147,8 @@ jobs:
       # A real server on a private clio-core with a scripted model; SIGKILL at a random
       # point each iteration, restart, and compare everything the API acknowledged.
       # Fails when anything acknowledged was lost; work that does not settle after the
-      # restart is reported (liveness) without failing the job.
+      # restart (liveness) or resumes as something else (semantic) is reported without
+      # failing the job.
       - name: Kill, restart and compare
         run: |
           mkdir -p results
@@ -165,7 +166,7 @@ jobs:
           s = r["summary"]
           print(f"- seed {r['seed']}; {s['iterations']} iterations in {s['seconds']} s; kill points: {', '.join(s['kill_points'])}")
           print(f"- acknowledged: {s['acknowledged']}")
-          print(f"- lost: {s['lost']}; liveness: {s['liveness']}; findings: {s['findings_by_type'] or 'none'}")
+          print(f"- lost: {s['lost']}; liveness: {s['liveness']}; semantic: {s.get('semantic', 0)}; findings: {s['findings_by_type'] or 'none'}")
           print("\n| Iteration | Killed at (s) | Kill points | Restart to ready (s) | Settled (s) | Findings |\n|---|---|---|---|---|---|")
           for it in r["iterations"]:
               kinds = {}

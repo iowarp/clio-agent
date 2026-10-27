@@ -1215,6 +1215,10 @@ KEY_NOTES: dict[str, str] = {
         "process tree before it fails typed; a server still working is waited for up to "
         "tools.mcp.max_wait_s."
     ),
+    "tools.mcp.provision_max_wait_s": (
+        "Ceiling (seconds) on building one MCP server's environment before it starts (uv sync, "
+        "clio-kit --prepare); a build that stops making progress fails sooner, typed."
+    ),
     "tools.mcp.probe_timeout_retries": (
         "Retries of the era-negotiation probe after a client-side timeout before giving up; raise "
         "for a slow-starting server."
@@ -1225,8 +1229,12 @@ KEY_NOTES: dict[str, str] = {
     ),
     "tools.mcp.session_warmup": (
         "Start a session's MCP servers (its plugins' and any always-load service) in the "
-        "background when the session is created or its agent changes, so the first message "
-        "does not wait for them; set false to start servers only when a turn needs them."
+        "background when the session is created or opened or its agent changes, so the first "
+        "message does not wait for them; set false to start servers only when a turn needs them."
+    ),
+    "tools.mcp.turn_prepare_grace_s": (
+        "Seconds a turn waits for its agent's MCP servers that are still preparing; after it the "
+        "turn goes on and their tools join when ready (the agent can call wait_for_tools)."
     ),
     "tools.mcp.spawn_diet": (
         "Enables the learned direct-interpreter spawn shortcut for clio-kit servers (skips ~90MB "

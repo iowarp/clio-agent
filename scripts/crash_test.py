@@ -447,6 +447,12 @@ LOSS = {
 }
 #: These mean the restarted server did not finish the interrupted work on its own.
 LIVENESS = {"not_settled", "mail_stuck", "unreadable", "transiently_missing"}
+#: These mean resumed work did something other than what was acknowledged: a flow
+#: resumed after the kill ran on the generic continuation text instead of its request.
+SEMANTIC = {"flow_input_replaced"}
+#: The input a resumed turn gets when its trigger is not a person's message
+#: (``Conversations`` admission); a fan-out child carrying it ran on that, not the request.
+RESUME_TEXT = "Continue the retained assignment"
 
 
 def verify(api: Api, ledger: Ledger, phase: str) -> list[dict[str, Any]]:
@@ -571,6 +577,16 @@ def verify(api: Api, ledger: Ledger, phase: str) -> list[dict[str, Any]]:
                     status=current.get("status"),
                     activity=current.get("activity"),
                 )
+        if settled:
+            for current in rows:
+                description = str(current.get("description") or "")
+                if current.get("kind") == "Subagent" and RESUME_TEXT in description:
+                    add(
+                        "flow_input_replaced",
+                        root=root,
+                        task=current["handle"],
+                        description=description[:120],
+                    )
 
     trees: dict[str, dict[str, dict[str, Any]]] = {}
     for handle in sorted({row["handle"] for row in flows.values()}):
@@ -949,6 +965,7 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
         "findings_by_type": by_type,
         "lost": sum(n for kind, n in by_type.items() if kind in LOSS),
         "liveness": sum(n for kind, n in by_type.items() if kind in LIVENESS),
+        "semantic": sum(n for kind, n in by_type.items() if kind in SEMANTIC),
         "max_restart_ready_s": max(
             (r["restart"]["ready_s"] for r in report["iterations"] if "restart" in r),
             default=None,
