@@ -98,8 +98,46 @@ def _input_committed(self: Conversations, staged: StagedInput) -> None:
 
 def _restore_input_projections(self: Conversations) -> None:
     """Repair display receipts from confirmed inputs, without redelivering mail."""
-    from clio_agent.flows.journal import repair_run_reference
+    _repair_workflow_references(self)
+    items = self.history.acknowledged_mail(("a2ui", "question_answer", "human"))
+    self._input_committed(StagedInput(items, ()))
 
+
+_ASSIGNMENT_KINDS = frozenset({"Session", "Subagent"})
+
+
+def open_work_sessions(history: TaskHistory) -> list[str]:
+    """Conversations with open work, oldest first, read from the open records alone.
+
+    Open tasks (``t~``), undelivered mail (``m~``) and owed display repairs (``d~``)
+    each name the conversation they belong to; no conversation tree is loaded.
+    """
+    oldest: dict[str, str] = {}
+    for name, row in history.index.open_records():
+        session_id = str(row.get("session_id", ""))
+        if not session_id or name.startswith("w~"):
+            continue
+        created = str(row.get("created_at", "") or "~")  # undated records sort last
+        if created < oldest.get(session_id, "~~"):
+            oldest[session_id] = created
+    return sorted(oldest, key=lambda sid: (oldest[sid], sid))
+
+
+def _open_tasks(history: TaskHistory, session_id: str) -> list[tuple[str, str]]:
+    """``(handle, kind)`` of the open tasks one conversation owns, from its ``t~`` records."""
+    return [
+        (str(row.get("handle", "")), str(row.get("kind", "")))
+        for _name, row in history.index.open_records("t~")
+        if str(row.get("session_id", "")) == session_id
+    ]
+
+
+def _repair_workflow_references(self: Conversations) -> None:
+    """Repair flow checkpoint owner pointers (``w~`` records), which no conversation owns."""
+    from clio_agent.flows.journal import repair_run_reference
+    from clio_agent.gact.task_index_writes import reconcile_open
+
+    reconcile_open(self.history, prefix="w~")
     for root in self.history.pending_workflow_references():
         try:
             repair_run_reference(self.app, root)
@@ -120,169 +158,214 @@ def _restore_input_projections(self: Conversations) -> None:
                 self._loop.call_soon_threadsafe(
                     self.recovery.defer, "workflow-reference:" + root, repair
                 )
-    items = self.history.acknowledged_mail(("a2ui", "question_answer", "human"))
-    self._input_committed(StagedInput(items, ()))
+
+
+async def on_core_ready(self: Conversations) -> None:
+    """After Core recovery: finish the restore it interrupted, then reopen admission."""
+    if self._restoring:
+        await self.restore()
+    if self.history.requires_recovery:
+        return
+    await self.history.io.run(self.app.state.questions.restore)
+    await self.app.state.question_events.restore()
+    await self.history.io.run(self._restore_input_projections)
+    self.signal_pending()
 
 
 async def restore(self: Conversations) -> None:
-    """Recover interrupted model segments; dormant assignments do not wake at boot."""
+    """Recover every conversation with open work, oldest first; then admission opens.
+
+    The obligations lane (:mod:`clio_agent.gact.obligations`) runs the same
+    per-conversation recovery in the background after startup; this whole pass serves
+    Core recovery and the owner contracts. Dormant assignments do not wake.
+    """
     try:
-        await _restore_assignments(self)
+        await self.history.io.run(_repair_workflow_references, self)
+        if self.history.requires_recovery:
+            return
+        for session_id in await self.history.io.run(open_work_sessions, self.history):
+            await restore_session(self, session_id)
+            if self.history.requires_recovery:
+                return  # The existing readiness callback resumes this same restoration.
     except (OSError, ClioError, RecordingUnconfirmed):
         # Reads can fail before any confirmed writer has armed recovery. Keep
         # admission held and enlist the existing readiness callback for both.
         self.history.requires_recovery = True
         logger.exception("Assignment restoration awaits Core recovery")
+        return
+    self._restoring = False
 
 
-async def _restore_assignments(self: Conversations) -> None:
-    """Replay the conversation owner's retained observations, never operations."""
-    await self.history.io.run(self._restore_input_projections)
-    if self.history.requires_recovery:
-        return  # The existing readiness callback resumes this same restoration.
-    from clio_agent.gact.session_store import restore_pending_mail_messages
+async def restore_session(self: Conversations, session_id: str) -> None:
+    """Recover one conversation's open work, reading only that conversation's records.
 
-    await self.history.io.run(restore_pending_mail_messages, self.app, self.history)
+    In order: close its stale open records, repair owed displays from committed input,
+    project accepted pending feedback, finish posting its Questions, reattach its native
+    work and register its external MCP work, then recover its interrupted assignments.
+    Admission for the conversation stays held until the caller (the obligations lane)
+    releases it.
+    """
+    from clio_agent.gact.session_store import project_accepted_mail_messages
+    from clio_agent.gact.task_index_writes import reconcile_open
 
-    def assignments() -> set[str]:
-        return self.history.task_handles(kind="Session") | self.history.task_handles(
-            kind="Subagent"
+    history = self.history
+
+    def records_and_displays() -> None:
+        reconcile_open(history, session_id=session_id)
+        items = history.acknowledged_mail(("a2ui", "question_answer", "human"), session_id)
+        if items:
+            self._input_committed(StagedInput(items, ()))
+        pending = history.pending_mail(session_id)
+        if pending:
+            project_accepted_mail_messages(self.app, history, session_id, pending)
+
+    await history.io.run(records_and_displays)
+    if history.requires_recovery:
+        return
+    await history.io.run(self.app.state.questions.restore, session_id)
+    await self.app.state.question_events.restore(session_id)
+    tasks = await history.io.run(_open_tasks, history, session_id)
+    native = getattr(self.app.state, "native_tools", None)
+    if native is not None and tasks:
+        await native.restore(tuple(handle for handle, _kind in tasks))
+    external = getattr(self.app.state, "external_tasks", None)
+    if external is not None:
+        await external.restore(tuple(handle for handle, kind in tasks if kind == "MCP"))
+    for handle, kind in tasks:
+        if kind in _ASSIGNMENT_KINDS:
+            await _restore_assignment(self, handle)
+
+
+async def _restore_assignment(self: Conversations, handle: str) -> None:
+    """Replay one assignment owner's retained observations, never operations."""
+    task = await self.history.io.run(self.history.task_snapshot, handle)
+    if task is None or task.kind not in {"Session", "Subagent"}:
+        return
+    if not self.supports_execution(task):
+        return  # Retained unavailable work is not converted into local execution.
+    if task.terminal_at is not None:
+        # Canonical outcomes can outlive a failed notice write. Historical
+        # delivery remains governed by migration; never guess its receipt.
+        if task.settlement in {"confirmed", "never_started"} and task.result is not None:
+            await self.history.io.run(publish_task_notice, self.history, task)
+        return
+    if await self.history.io.run(self.history.latest_assignment, task.owner.session_id) != task:
+        return
+    session = self.sessions.get(task.owner.session_id)
+    try:
+        details = (
+            AssignmentDetails.model_validate(
+                await self.history.io.run(self.history.read_content, task.details)
+            )
+            if task.details is not None
+            else AssignmentDetails()
         )
+    except ValueError:
+        logger.exception("Assignment history unavailable handle=%s", task.handle)
+        unavailable_task: TaskSnapshot = task
 
-    handles = await self.history.io.run(assignments)
-    for handle in handles:
-        task = await self.history.io.run(self.history.task_snapshot, handle)
-        if task is None or task.kind not in {"Session", "Subagent"}:
-            continue
-        if not self.supports_execution(task):
-            continue  # Retained unavailable work is not converted into local execution.
-        if task.terminal_at is not None:
-            # Canonical outcomes can outlive a failed notice write. Historical
-            # delivery remains governed by migration; never guess its receipt.
-            if task.settlement in {"confirmed", "never_started"} and task.result is not None:
-                await self.history.io.run(publish_task_notice, self.history, task)
-            continue
-        if await self.history.io.run(self.history.latest_assignment, task.owner.session_id) != task:
-            continue
-        session = self.sessions.get(task.owner.session_id)
-        try:
-            details = (
-                AssignmentDetails.model_validate(
-                    await self.history.io.run(self.history.read_content, task.details)
+        def unavailable(task: TaskSnapshot = unavailable_task) -> None:
+            with self.history.serialized():
+                current = self.history.task_snapshot(task.handle)
+                if current is None or current.terminal_at is not None:
+                    return
+                message = "Retained assignment details are unavailable; inspect the original Core records before execution."
+                if current.status == "task_state_uncertain" and current.progress.message == message:
+                    return
+                observed = current.model_copy(
+                    update={
+                        "status": "task_state_uncertain",
+                        "activity": "unavailable",
+                        "progress": TaskProgress(message=message),
+                        "attention_episode": current.attention_episode
+                        or "assignment-history:" + current.handle,
+                        "supported_actions": ("observe", "wait", "get_result"),
+                    }
                 )
+                self.history.record_snapshot(observed, observation_id=uuid4().hex)
+                publish_task_notice(
+                    self.history, observed, episode=observed.attention_episode or ""
+                )
+
+        await self.history.io.run(unavailable)
+        return
+    self.arm_deadline(handle, details.execution_deadline)
+    if task.cancellation_requested_at is not None:
+        self.retain_control(
+            handle, asyncio.create_task(conversation_controls._cancel_subtree(self, task))
+        )
+        return
+    if (
+        task.activity == "paused"
+        or session is not None
+        and session.metadata.get("agent_paused")
+        and session.metadata.get("agent_paused_assignment", task.handle) == task.handle
+    ):
+        self._paused[task.owner.session_id] = task.handle
+        return
+    if task.activity not in {"busy", "executing", "stopping", "interrupted"}:
+        return
+
+    def recover(task: TaskSnapshot | None = task) -> None:
+        if task is None:
+            raise ValueError("Recovery assignment is unavailable")
+        with self.history.serialized():
+            details = (
+                AssignmentDetails.model_validate(self.history.read_content(task.details))
                 if task.details is not None
                 else AssignmentDetails()
             )
-        except ValueError:
-            logger.exception("Assignment history unavailable handle=%s", task.handle)
-            unavailable_task: TaskSnapshot = task
+            from clio_agent.gact.context import scope_epoch
 
-            def unavailable(task: TaskSnapshot = unavailable_task) -> None:
-                with self.history.serialized():
-                    current = self.history.task_snapshot(task.handle)
-                    if current is None or current.terminal_at is not None:
-                        return
-                    message = "Retained assignment details are unavailable; inspect the original Core records before execution."
-                    if (
-                        current.status == "task_state_uncertain"
-                        and current.progress.message == message
-                    ):
-                        return
-                    observed = current.model_copy(
-                        update={
-                            "status": "task_state_uncertain",
-                            "activity": "unavailable",
-                            "progress": TaskProgress(message=message),
-                            "attention_episode": current.attention_episode
-                            or "assignment-history:" + current.handle,
-                            "supported_actions": ("observe", "wait", "get_result"),
-                        }
-                    )
-                    self.history.record_snapshot(observed, observation_id=uuid4().hex)
-                    publish_task_notice(
-                        self.history, observed, episode=observed.attention_episode or ""
-                    )
-
-            await self.history.io.run(unavailable)
-            continue
-        self.arm_deadline(handle, details.execution_deadline)
-        if task.cancellation_requested_at is not None:
-            self.retain_control(
-                handle, asyncio.create_task(conversation_controls._cancel_subtree(self, task))
+            committed = self.history.latest_input(task.handle, epoch=details.context_epoch)
+            boundary = committed.boundary if committed is not None else details.context
+            if boundary is not None and scope_epoch(boundary.scope) != details.context_epoch:
+                boundary = None
+            if boundary is not None:
+                self._record_interrupted_calls(task, boundary)
+            detail_ref = self.history.write_content(
+                task.owner.session_id,
+                details.model_copy(update={"context": boundary}).model_dump(mode="json"),
             )
-            continue
-        if (
-            task.activity == "paused"
-            or session is not None
-            and session.metadata.get("agent_paused")
-            and session.metadata.get("agent_paused_assignment", task.handle) == task.handle
-        ):
-            self._paused[task.owner.session_id] = task.handle
-            continue
-        if task.activity not in {"busy", "executing", "stopping", "interrupted"}:
-            continue
-
-        def recover(task: TaskSnapshot | None = task) -> None:
-            if task is None:
-                raise ValueError("Recovery assignment is unavailable")
-            with self.history.serialized():
-                details = (
-                    AssignmentDetails.model_validate(self.history.read_content(task.details))
-                    if task.details is not None
-                    else AssignmentDetails()
-                )
-                from clio_agent.gact.context import scope_epoch
-
-                committed = self.history.latest_input(task.handle, epoch=details.context_epoch)
-                boundary = committed.boundary if committed is not None else details.context
-                if boundary is not None and scope_epoch(boundary.scope) != details.context_epoch:
-                    boundary = None
-                if boundary is not None:
-                    self._record_interrupted_calls(task, boundary)
-                detail_ref = self.history.write_content(
-                    task.owner.session_id,
-                    details.model_copy(update={"context": boundary}).model_dump(mode="json"),
-                )
-                content = self.history.write_content(
-                    task.owner.session_id,
-                    {
-                        "text": "The service restarted during this assignment. Continue from the retained Core context and confirmed input. Earlier operations may have affected the environment. Inspect query_tasks and their results/effects before deliberately retrying or revising work. No accepted operation was replayed.",
-                        "assignment_handle": task.handle,
-                        "assignment": task.description,
-                        "confirmed_input": committed.id if committed is not None else None,
-                        "context": boundary.model_dump(mode="json") if boundary else None,
-                    },
-                )
-                identity = (
-                    "recovery:"
-                    + task.handle
-                    + ":"
-                    + (committed.id if committed is not None else task.updated_at)
-                )
-                if self.history.mail_item(task.owner.session_id, identity) is None:
-                    self.history.record_mail(
-                        MailItem(
-                            id=identity,
-                            recipient_session=task.owner.session_id,
-                            kind="control",
-                            content=content,
-                            handle=task.handle,
-                            created_at=now(),
-                        )
+            content = self.history.write_content(
+                task.owner.session_id,
+                {
+                    "text": "The service restarted during this assignment. Continue from the retained Core context and confirmed input. Earlier operations may have affected the environment. Inspect query_tasks and their results/effects before deliberately retrying or revising work. No accepted operation was replayed.",
+                    "assignment_handle": task.handle,
+                    "assignment": task.description,
+                    "confirmed_input": committed.id if committed is not None else None,
+                    "context": boundary.model_dump(mode="json") if boundary else None,
+                },
+            )
+            identity = (
+                "recovery:"
+                + task.handle
+                + ":"
+                + (committed.id if committed is not None else task.updated_at)
+            )
+            if self.history.mail_item(task.owner.session_id, identity) is None:
+                self.history.record_mail(
+                    MailItem(
+                        id=identity,
+                        recipient_session=task.owner.session_id,
+                        kind="control",
+                        content=content,
+                        handle=task.handle,
+                        created_at=now(),
                     )
-                self.history.record_snapshot(
-                    task.model_copy(
-                        update={
-                            "activity": "recovering",
-                            "details": detail_ref,
-                            "updated_at": now(),
-                        }
-                    ),
-                    observation_id=uuid4().hex,
                 )
+            self.history.record_snapshot(
+                task.model_copy(
+                    update={
+                        "activity": "recovering",
+                        "details": detail_ref,
+                        "updated_at": now(),
+                    }
+                ),
+                observation_id=uuid4().hex,
+            )
 
-        await self.history.io.run(recover)
-    self._restoring = False
+    await self.history.io.run(recover)
 
 
 def _record_interrupted_calls(

@@ -97,6 +97,16 @@ class TurnRunner:
         if pump is None or pump.done():
             self._pumps[sid] = asyncio.create_task(self._pump(sid))
 
+    async def run_pending(self, sid: str) -> None:
+        """Admit ``sid``'s pending input now and wait until its turns settle (app loop only).
+
+        The obligations lane uses it to resume a bounded number of conversations at a time.
+        """
+        self._signal(sid)
+        pump = self._pumps.get(sid)
+        if pump is not None:
+            await asyncio.wait({pump})
+
     async def _pump(self, sid: str) -> None:
         sequence = self._signals.get(sid, 0)
         try:

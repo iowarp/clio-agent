@@ -19,6 +19,7 @@ from clio_agent.gact.part_atom_minter import persist_finalized_message
 from clio_agent.gact.resident_ledgers import build_resident_ledger_set
 from clio_agent.gact.transcript_file import RegistryTranscriptIndex, boot_transcript_store
 from clio_agent.gact.transcript_migration import (
+    IMPORT_DONE,
     LEGACY_SCOPE,
     legacy_transcript,
     migrate_transcripts,
@@ -223,6 +224,33 @@ async def test_legacy_custody_preserves_duplicate_occurrences_without_inventing_
         assert len(arc._segments.list_segments(sid, LEGACY_SCOPE)) == 1
         assert not owner.history.pending_mail(sid)
         assert owner.history.latest_assignment(sid) == original_assignment
+
+    try:
+        await asyncio.to_thread(exercise)
+    finally:
+        await owner.shutdown()
+        await owner.recovery.drain()
+
+
+@pytest.mark.asyncio
+async def test_one_complete_import_pass_ends_the_boot_scan(arc: ARCMemory, tmp_path: Path) -> None:
+    """Conversations created after a complete pass are Core-native: later boots skip the scan."""
+    app, owner, root = await create_environment(arc, tmp_path)
+    sid = root.owner.session_id
+    cache = install(app, tmp_path)
+
+    def exercise() -> None:
+        cache.replace_session(sid, [retained(sid, "legacy-request", 9)])
+        assert owner.history.index.done_marker(IMPORT_DONE) is None
+        migrate_transcripts(app)
+        done = owner.history.index.done_marker(IMPORT_DONE)
+        assert done is not None and done["version"] == 1 and done["sessions"] >= 1
+        assert legacy_transcript(app, sid) is not None
+        later = "sess_created_after_the_pass"
+        cache.replace_session(later, [retained(later, "core-native", 9)])
+        migrate_transcripts(app)
+        assert legacy_transcript(app, later) is None
+        assert arc._segments.list_segments(later, LEGACY_SCOPE) == []
 
     try:
         await asyncio.to_thread(exercise)

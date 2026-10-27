@@ -74,7 +74,10 @@ def mark_agent_ready(app: Any, agent: Any, *, boot: bool = False) -> None:
 
     app.state.agent = agent
     if boot:
+        from clio_agent.gact import boot_timing  # noqa: PLC0415
         from clio_agent.gact.providers import boot_handshake  # noqa: PLC0415
+
+        boot_timing.mark(app, "agent_ready")
 
         boot_handshake.schedule(app, agent)
 

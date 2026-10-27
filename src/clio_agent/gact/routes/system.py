@@ -25,6 +25,7 @@ from fastapi.responses import JSONResponse
 
 from clio_agent.arc import history_mode
 from clio_agent.errors import MCP_TASK_RECORD_STORE_ABSENT
+from clio_agent.gact import boot_timing
 from clio_agent.gact.composer_runtime import resource_capabilities
 from clio_agent.gact.context_references import CONTEXT_REFERENCE_CAPABILITY
 from clio_agent.gact.off_loop import run_off_loop
@@ -359,6 +360,7 @@ def register_system_routes(app: FastAPI, deps: "GactDeps") -> None:
         """
 
         uptime = int(time.time() - app.state.started_at)
+        readiness, still_starting = boot_timing.readiness(app)
 
         try:
             # While the boot collection runs, answer at once (health_boot); else collect.
@@ -421,6 +423,9 @@ def register_system_routes(app: FastAPI, deps: "GactDeps") -> None:
             # install (ungated/unobserved tools) is visible, not silent.
             tool_hooks_installed=getattr(app.state, "tool_hooks_installed", None),
             context_mode=history_mode.resolve().mode,
+            boot=boot_timing.snapshot(app),
+            readiness=readiness,
+            starting=still_starting,
         )
         if overall == "unavailable":
             content = response.model_dump(mode="json", exclude_none=True)
