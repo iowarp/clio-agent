@@ -97,7 +97,7 @@ curl -fsSL $URL | bash                          # latest stable release
 curl -fsSL $URL | bash -s -- --dev              # latest release, betas included
 curl -fsSL $URL | bash -s -- --source           # main, from source
 curl -fsSL $URL | bash -s -- --dev --source     # develop, from source
-curl -fsSL $URL | bash -s -- --desktop          # the desktop app (macOS, Linux)
+curl -fsSL $URL | bash -s -- --desktop          # the desktop app (Apple Silicon macOS, Linux)
 
 # From your own clone: installs that checkout in place, on whatever branch it is
 git clone --recurse-submodules https://github.com/iowarp/clio-agent.git

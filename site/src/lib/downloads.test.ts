@@ -33,40 +33,26 @@ const ASSETS: ReleaseAsset[] = NAMES.map((name) => ({ name, browser_download_url
 
 describe('pickAsset', () => {
 	it.each([
-		['exe', 'x64', 'CLIO.Desktop_0.9.4.24_x64-setup-bundled.exe', 'bundled'],
-		['msi', 'x64', 'CLIO.Desktop_0.9.4.24_x64_en-US-bundled.msi', 'bundled'],
-		['dmg', 'arm64', 'CLIO.Desktop_0.9.4.24_aarch64-bundled.dmg', 'bundled'],
-		['deb', 'x64', 'CLIO.Desktop_0.9.4.24_amd64-bundled.deb', 'bundled'],
-		['deb', 'arm64', 'CLIO.Desktop_0.9.4.24_arm64-bundled.deb', 'bundled'],
-		['rpm', 'x64', 'CLIO.Desktop-0.9.4.24-1.x86_64-bundled.rpm', 'bundled'],
-		['rpm', 'arm64', 'CLIO.Desktop-0.9.4.24-1.aarch64-bundled.rpm', 'bundled'],
-	] as const)('prefers the bundled %s for %s', (format, arch, name, variant) => {
-		expect(pickAsset(ASSETS, format, arch)).toMatchObject({ name, variant });
+		['exe', 'x64', 'CLIO.Desktop_0.9.4.24_x64-setup-bundled.exe'],
+		['msi', 'x64', 'CLIO.Desktop_0.9.4.24_x64_en-US-bundled.msi'],
+		['dmg', 'arm64', 'CLIO.Desktop_0.9.4.24_aarch64-bundled.dmg'],
+		['deb', 'x64', 'CLIO.Desktop_0.9.4.24_amd64-bundled.deb'],
+		['deb', 'arm64', 'CLIO.Desktop_0.9.4.24_arm64-bundled.deb'],
+		['rpm', 'x64', 'CLIO.Desktop-0.9.4.24-1.x86_64-bundled.rpm'],
+		['rpm', 'arm64', 'CLIO.Desktop-0.9.4.24-1.aarch64-bundled.rpm'],
+	] as const)('offers the bundled %s for %s', (format, arch, name) => {
+		expect(pickAsset(ASSETS, format, arch)).toMatchObject({ name });
 	});
 
-	it('gives an Intel Mac the Intel disk image, never the Apple Silicon one', () => {
-		expect(pickAsset(ASSETS, 'dmg', 'x64')).toMatchObject({
-			name: 'CLIO.Desktop_0.9.4.24_x64.dmg',
-			variant: 'lite',
-		});
-	});
-
-	it('falls back to the lite AppImage, which is the only AppImage', () => {
-		expect(pickAsset(ASSETS, 'appimage', 'x64')).toMatchObject({
-			name: 'CLIO.Desktop_0.9.4.24_amd64.AppImage',
-			variant: 'lite',
-		});
-	});
-
-	it('offers Windows on ARM the desktop executable, not the agent or TUI binary', () => {
-		expect(pickAsset(ASSETS, 'exe', 'arm64')).toMatchObject({
-			name: 'clio-desktop-aarch64-pc-windows-msvc.exe',
-			variant: 'lite',
-		});
+	it.each([
+		['dmg', 'x64'],
+		['exe', 'arm64'],
+	] as const)('never offers an attach-only %s for %s', (format, arch) => {
+		expect(pickAsset(ASSETS, format, arch)).toBeNull();
 	});
 
 	it('never returns a signature file', () => {
-		for (const format of ['exe', 'appimage'] as const) {
+		for (const format of ['exe', 'msi'] as const) {
 			for (const arch of ['x64', 'arm64'] as const) {
 				expect(pickAsset(ASSETS, format, arch)?.name.endsWith('.sig')).not.toBe(true);
 			}

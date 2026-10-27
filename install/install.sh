@@ -5,7 +5,7 @@
 #   install.sh --dev           the latest release overall, pre-releases included
 #   install.sh --source        source at `main`, with what main pins (submodules, uv.lock)
 #   install.sh --dev --source  source at `develop`
-#   install.sh --desktop       the desktop app, bundled with its agent (macOS, Linux);
+#   install.sh --desktop       the desktop app, bundled with its agent (Apple Silicon macOS, Linux);
 #                              --dev and --version pick the release as above
 #
 # --source run from inside a clio-agent checkout (`./install/install.sh`) installs that
@@ -138,19 +138,13 @@ install_desktop() {
   version="${tag#v}"
   [[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+(\.[0-9]+|-beta\.[0-9]+(\.[0-9]+)?|(a|rc)[0-9]+)?$ ]] \
     || die "invalid release version: $tag"
-  local mac_bundled=1
   case "$os" in
     Darwin)
       [ "$(sw_vers -productVersion | cut -d. -f1)" -ge 14 ] || die "CLIO Desktop requires macOS 14 or newer"
       # uname can describe the Rosetta shell rather than the physical machine.
-      if [ "$(sysctl -n hw.optional.arm64 2>/dev/null || true)" = 1 ] || [ "$cpu" = arm64 ]; then
-        asset="CLIO.Desktop_${version}_aarch64-bundled.dmg"; manifest="SHA256SUMS.aarch64-apple-darwin.bundled.txt"
-      else
-        # Intel Macs have no bundled build: the app connects to an agent installed by
-        # this script without --desktop.
-        mac_bundled=0
-        asset="CLIO.Desktop_${version}_x64.dmg"; manifest="SHA256SUMS.x86_64-apple-darwin.lite.txt"
-      fi ;;
+      [ "$(sysctl -n hw.optional.arm64 2>/dev/null || true)" = 1 ] || [ "$cpu" = arm64 ] \
+        || die "CLIO Desktop is not available for Intel Macs yet; install CLIO without --desktop instead"
+      asset="CLIO.Desktop_${version}_aarch64-bundled.dmg"; manifest="SHA256SUMS.aarch64-apple-darwin.bundled.txt" ;;
     Linux)
       local triple deb_arch rpm_arch
       case "$cpu" in
@@ -190,9 +184,6 @@ install_desktop() {
     Darwin) install_desktop_mac "$scratch" "$asset" ;;
     Linux) install_desktop_linux "$scratch/$asset" ;;
   esac
-  if [ "$mac_bundled" = 0 ]; then
-    say "Intel Mac: the app connects to an agent. Install one with: install.sh (without --desktop)"
-  fi
 }
 
 install_desktop_linux() {

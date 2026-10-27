@@ -230,3 +230,30 @@ def test_shell_release_parser_accepts_bsd_whitespace(tmp_path: Path) -> None:
     )
     assert result.returncode == 0, result.stderr
     assert result.stdout.strip() == "v0.9.5-beta.2"
+
+
+@pytest.mark.skipif(os.name == "nt", reason="install.sh runs on macOS and Linux")
+def test_intel_mac_desktop_is_refused_before_any_download(tmp_path: Path) -> None:
+    """Intel Macs have only the attach-only app, which is not offered: say so, fetch nothing."""
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    for name, contents in {
+        "uname": 'if [ "$1" = -s ]; then echo Darwin; else echo x86_64; fi',
+        "sysctl": "echo 0",
+        "sw_vers": "echo 14.0",
+        "curl": "echo 'nothing may be downloaded' >&2; exit 99",
+    }.items():
+        path = bin_dir / name
+        path.write_text("#!/bin/bash\nset -eu\n" + contents + "\n")
+        path.chmod(0o755)
+    env = dict(os.environ, PATH=f"{bin_dir}:{os.environ['PATH']}", CLIO_VERSION="0.9.4.24")
+    result = subprocess.run(
+        ["bash", str(ROOT / "install/install.sh"), "--desktop"],
+        env=env,
+        text=True,
+        capture_output=True,
+        timeout=30,
+    )
+    assert result.returncode != 0
+    assert "not available for Intel Macs" in result.stdout + result.stderr
+    assert "nothing may be downloaded" not in result.stderr

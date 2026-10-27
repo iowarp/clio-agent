@@ -72,9 +72,10 @@ to point at your model provider.
 Download the installer for your OS from the
 [latest release](https://github.com/iowarp/clio-agent/releases/latest):
 the `-bundled` `.msi`/`.exe` (Windows), `.dmg` (Apple Silicon macOS), or `.deb`/`.rpm`
-(Linux). Bundled installers ship clio-agent, so there is nothing else to install. Installers
-without `-bundled` in the name, including every Linux `.AppImage` and the Intel macOS
-`.dmg`, are attach-only: they connect to a clio-agent you install and run separately.
+(Linux). Bundled installers ship clio-agent, so there is nothing else to install. The
+release also carries files without `-bundled` in the name: the desktop uses them to
+update itself, and they are not meant to be installed by hand. There is no desktop app
+for Intel Macs yet; use the install script without `--desktop` there.
 
 ### Desktop from a terminal
 
@@ -95,7 +96,7 @@ as for the agent install. The download is verified against the release's checksu
 manifest before anything is installed:
 - **macOS:** the bundled `.dmg` (Apple Silicon) goes into `~/Applications`
   (`CLIO_DESKTOP_DIR` overrides it); the previous app is kept, and the app's signature
-  is verified. Intel Macs get the attach-only app; install the agent with `install.sh`.
+  is verified. Intel Macs are refused, with nothing downloaded.
 - **Linux:** the bundled `.deb` (with `dpkg`) or `.rpm` (with `rpm`) is installed with
   `apt-get` / `dnf`, through `sudo` when not run as root.
 - **Windows:** the bundled x64 setup opens with its pages for the model provider and
