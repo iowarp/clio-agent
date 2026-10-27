@@ -62,7 +62,9 @@ def packages_index(base: str, arch: str, work: Path) -> dict[str, dict[str, str]
     for suite in SUITES:
         for component in COMPONENTS:
             url = f"{base}/dists/{suite}/{component}/binary-{arch}/Packages.xz"
-            text = lzma.decompress(fetch(url, work / suite / component / "Packages.xz").read_bytes())
+            text = lzma.decompress(
+                fetch(url, work / suite / component / "Packages.xz").read_bytes()
+            )
             for stanza in text.decode("utf-8", "replace").split("\n\n"):
                 fields = dict(re.findall(r"^([A-Za-z0-9-]+): (.*)$", stanza, re.MULTILINE))
                 name = fields.get("Package")
@@ -76,7 +78,9 @@ def contents_index(base: str, arch: str, work: Path) -> dict[str, str]:
     owners: dict[str, str] = {}
     triplet = TRIPLET[arch]
     for suite in SUITES:
-        path = fetch(f"{base}/dists/{suite}/Contents-{arch}.gz", work / suite / f"Contents-{arch}.gz")
+        path = fetch(
+            f"{base}/dists/{suite}/Contents-{arch}.gz", work / suite / f"Contents-{arch}.gz"
+        )
         with gzip.open(path, "rt", encoding="utf-8", errors="replace") as lines:
             for line in lines:
                 if f"lib/{triplet}/" not in line:
@@ -142,7 +146,9 @@ def main() -> int:
                 continue
             fields = index[name]
             chosen[name] = fields
-            deb = fetch(f"{base}/{fields['Filename']}", args.work / "debs" / Path(fields["Filename"]).name)
+            deb = fetch(
+                f"{base}/{fields['Filename']}", args.work / "debs" / Path(fields["Filename"]).name
+            )
             if hashlib.sha256(deb.read_bytes()).hexdigest() != fields["SHA256"]:
                 raise SystemExit(f"{name}: SHA-256 mismatch")
             image = args.work / "image"
@@ -160,7 +166,9 @@ def main() -> int:
         missing = sorted(wanted - provided - unresolved)
         queue = []
         for soname in missing:
-            owner = owners.get(f"usr/lib/{triplet}/{soname}") or owners.get(f"lib/{triplet}/{soname}")
+            owner = owners.get(f"usr/lib/{triplet}/{soname}") or owners.get(
+                f"lib/{triplet}/{soname}"
+            )
             if owner is None or owner not in index:
                 unresolved.add(soname)
             elif owner not in chosen:
