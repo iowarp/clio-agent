@@ -100,6 +100,43 @@ def wait_owned(processes: list[psutil.Process], *, timeout: float) -> list[psuti
         time.sleep(0.05)
 
 
+def measure_quit(
+    process: psutil.Process, observed: list[psutil.Process], *, since: float, grace: float = 60
+) -> dict[str, Any]:
+    """Quit the Desktop the way the OS does at logout (SIGTERM) and time it.
+
+    On Windows ``terminate`` is a hard kill, so there this measures a killed Desktop:
+    whether its backend and clio-core still go away on their own. Records how long the
+    Desktop and everything it started took to exit, whether any of it had to be killed,
+    and whether a clio-core daemon started by this run is left.
+    """
+    started = time.perf_counter()
+    process.terminate()
+    alive = wait_owned([process, *observed], timeout=grace)
+    seconds = round(time.perf_counter() - started, 3)
+    left = [_describe(item) for item in alive]
+    cores = []
+    for item in psutil.process_iter(["pid", "cmdline", "create_time"]):
+        command = " ".join(item.info["cmdline"] or [])
+        if (item.info["create_time"] or 0) >= since - 1 and (
+            "clio_run" in command or "chimaera" in command
+        ):
+            cores.append(_describe(item))
+    return {
+        "quit_seconds": None if alive else seconds,
+        "quit_forced": bool(alive),
+        "left_running_after_quit": left,
+        "clio_core_left_running": cores,
+    }
+
+
+def _describe(process: psutil.Process) -> dict[str, Any]:
+    try:
+        return {"pid": process.pid, "name": process.name()}
+    except psutil.Error:
+        return {"pid": process.pid, "name": "?"}
+
+
 def file_sha256(path: Path) -> str:
     """Hash the installed Desktop executable for the qualification receipt."""
     with path.open("rb") as stream:
@@ -130,6 +167,7 @@ def smoke(
     timeout: int = 180,
     boot_log: Path | None = None,
     agent_home: Path | None = None,
+    quit: bool = False,
 ) -> dict[str, Any]:
     """Require a real child backend, authenticated capabilities and surviving Desktop."""
     desktop = desktop.resolve(strict=True)
@@ -231,6 +269,10 @@ def smoke(
                             "inference_performed": False,
                             "updater_install_qualified": False,
                         }
+                        if quit:
+                            result.update(
+                                measure_quit(process, list(observed.values()), since=started)
+                            )
                         return result
                     raise RuntimeError(f"Desktop exited after backend readiness ({status})")
                 time.sleep(0.1)
@@ -268,6 +310,11 @@ def main() -> None:
     parser.add_argument(
         "--agent-home", type=Path, help="Reuse this installation's managed packages"
     )
+    parser.add_argument(
+        "--quit",
+        action="store_true",
+        help="After readiness, quit the Desktop with SIGTERM and record how it shut down",
+    )
     args = parser.parse_args()
     if args.timeout <= 0:
         parser.error("--timeout must be positive")
@@ -278,6 +325,7 @@ def main() -> None:
             timeout=args.timeout,
             boot_log=args.boot_log,
             agent_home=args.agent_home,
+            quit=args.quit,
         )
     except (OSError, RuntimeError, ValueError, subprocess.TimeoutExpired) as error:
         if args.evidence_dir.is_dir():
