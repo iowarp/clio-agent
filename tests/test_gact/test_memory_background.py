@@ -60,7 +60,7 @@ def _idle_conversation(app: Any) -> Any:
     _say(app, session.id, 4, "assistant", "Sure.", tool="remember: email results to x@example.com")
     _say(app, session.id, 5, "user", "Thanks.")
     old = (datetime.now(UTC) - timedelta(hours=2)).strftime("%Y-%m-%dT%H:%M:%SZ")
-    app.state.sessions._sessions[session.id].last_interaction_at = old  # noqa: SLF001
+    app.state.sessions.get(session.id).last_interaction_at = old  # noqa: SLF001
     return app.state.sessions.get(session.id)
 
 
@@ -253,7 +253,7 @@ def test_transcript_cache_tracks_the_current_minimum_user_turns(
     session = app.state.sessions.create(workspace_id="ws_global", title="One-turn memory")
     _say(app, session.id, 1, "user", "Remember my preference for concise notes.")
     old = (datetime.now(UTC) - timedelta(hours=2)).strftime("%Y-%m-%dT%H:%M:%SZ")
-    app.state.sessions._sessions[session.id].last_interaction_at = old  # noqa: SLF001
+    app.state.sessions.get(session.id).last_interaction_at = old  # noqa: SLF001
     original_setting = background.setting
     monkeypatch.setattr(
         background,
@@ -466,7 +466,7 @@ def test_zero_idle_delay_makes_one_completed_user_turn_eligible(
     session = app.state.sessions.create(workspace_id="ws_global", title="Immediate memory")
     _say(app, session.id, 1, "user", "I prefer the concise summary first.")
     old = (datetime.now(UTC) - timedelta(hours=2)).strftime("%Y-%m-%dT%H:%M:%SZ")
-    app.state.sessions._sessions[session.id].last_interaction_at = old  # noqa: SLF001
+    app.state.sessions.get(session.id).last_interaction_at = old  # noqa: SLF001
     original_setting = background.setting
     monkeypatch.setattr(
         background,
@@ -732,7 +732,7 @@ def test_an_idle_conversation_is_read_once_per_change(client: TestClient) -> Non
     session = app.state.sessions.create(workspace_id="ws_global", title="t")
     _say(app, session.id, 1, "user", "Hello.")
     old = (datetime.now(UTC) - timedelta(hours=2)).strftime("%Y-%m-%dT%H:%M:%SZ")
-    app.state.sessions._sessions[session.id].last_interaction_at = old  # noqa: SLF001
+    app.state.sessions.get(session.id).last_interaction_at = old  # noqa: SLF001
     now = datetime.now(UTC)
     background.memory_tick(app, now)
     assert app.state.memory_background["skipped"]["too_few_new_messages"] >= 1
@@ -754,7 +754,7 @@ def test_an_idle_conversation_is_read_once_per_change(client: TestClient) -> Non
         assert app.state.memory_background["skipped"]["too_few_new_messages"] >= 1
         # Not idle: the transcript is not read at all.
         fresh = datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
-        app.state.sessions._sessions[session.id].last_interaction_at = fresh  # noqa: SLF001
+        app.state.sessions.get(session.id).last_interaction_at = fresh  # noqa: SLF001
         assert background.skip_reason(app, app.state.sessions.get(session.id), now) == (
             "not_idle_yet"
         )
