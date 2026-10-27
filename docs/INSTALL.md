@@ -102,6 +102,11 @@ manifest before anything is installed:
 - **Windows:** the bundled x64 setup opens with its pages for the model provider and
   infrastructure (it also runs under emulation on ARM).
 
+After installing, the script runs the app's own setup step as you (from 0.9.5): the agent's
+tool packages and the Office renderer are prepared then, as the Windows installer does,
+so the first launch only checks them. A package installed by double-clicking does this on
+its first launch instead.
+
 `--download-only DIR` (`-DownloadOnly DIR` on Windows) stops after the verified download.
 
 The macOS app is ad-hoc signed, not Apple-notarized. A first-launch approval may still

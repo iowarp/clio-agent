@@ -181,9 +181,38 @@ install_desktop() {
     return 0
   fi
   case "$os" in
-    Darwin) install_desktop_mac "$scratch" "$asset" ;;
-    Linux) install_desktop_linux "$scratch/$asset" ;;
+    Darwin) install_desktop_mac "$scratch" "$asset"
+      prepare_desktop "$tag" "${CLIO_DESKTOP_DIR:-$HOME/Applications}/CLIO Desktop.app/Contents/MacOS/clio-desktop" ;;
+    Linux) install_desktop_linux "$scratch/$asset"
+      prepare_desktop "$tag" /usr/bin/clio-desktop ;;
   esac
+}
+
+# Releases before 0.9.5 have no --prepare-runtime on macOS and Linux; there an unknown
+# flag would open the app instead.
+desktop_prepares() {
+  local version="${1#v}" base
+  base="${version%%-*}"
+  [ "$base" = 0.9.5 ] && [ "$base" != "$version" ] && return 1
+  [ "$(printf '%s\n%s\n' 0.9.5 "$base" | sort -V | head -n 1)" = 0.9.5 ]
+}
+
+# What a first launch would do before the agent starts (its tool packages, Office),
+# done now, as the person who will open the app, as the Windows installer does.
+prepare_desktop() {
+  local tag="$1" desktop="$2"
+  desktop_prepares "$tag" || return 0
+  [ -x "$desktop" ] || { say "warning: $desktop not found; the app prepares itself on first launch"; return 0; }
+  say "Preparing the desktop's agent and its tools"
+  local run=("$desktop" --prepare-runtime)
+  if [ "$(id -u)" = 0 ] && [ -n "${SUDO_USER:-}" ] && [ "$SUDO_USER" != root ]; then
+    run=(sudo -u "$SUDO_USER" -H "$desktop" --prepare-runtime)
+  fi
+  if "${run[@]}"; then
+    say "The desktop is ready to open."
+  else
+    say "warning: the desktop's preparation did not finish (above); the app finishes it on first launch"
+  fi
 }
 
 install_desktop_linux() {

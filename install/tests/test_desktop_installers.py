@@ -106,6 +106,7 @@ function Invoke-WebRequest {{
 }}
 function Start-Process {{ throw 'DownloadOnly must never start setup' }}
 & {quote(ROOT / "install/install.ps1")} -Desktop -Version '{version}' -DownloadOnly {quote(output)}
+exit $LASTEXITCODE
 """,
             encoding="utf-8",
         )
@@ -257,3 +258,70 @@ def test_intel_mac_desktop_is_refused_before_any_download(tmp_path: Path) -> Non
     assert result.returncode != 0
     assert "not available for Intel Macs" in result.stdout + result.stderr
     assert "nothing may be downloaded" not in result.stderr
+
+
+def _prepare_functions() -> str:
+    """install.sh's preparation step and the helpers it uses, without the rest."""
+    script = (ROOT / "install/install.sh").read_text(encoding="utf-8")
+    wanted = ("say", "desktop_prepares", "prepare_desktop")
+    blocks, keep = [], False
+    for line in script.splitlines():
+        if any(line.startswith(f"{name}()") for name in wanted):
+            keep = True
+        if keep:
+            blocks.append(line)
+            if line == "}" or (line.startswith("say()") and line.rstrip().endswith("}")):
+                keep = False
+    return "\n".join(blocks)
+
+
+@pytest.mark.skipif(os.name == "nt", reason="install.sh runs on macOS and Linux")
+@pytest.mark.parametrize(
+    ("tag", "prepares"),
+    [("v0.9.4.24", False), ("v0.9.5-beta.8", False), ("v0.9.5", True), ("v0.9.6-beta.1", True)],
+)
+def test_desktop_is_prepared_after_install_when_its_release_can(
+    tmp_path: Path, tag: str, prepares: bool
+) -> None:
+    """The first launch's setup runs at install, as on Windows; never an unknown flag."""
+    calls = tmp_path / "calls"
+    desktop = tmp_path / "clio-desktop"
+    desktop.write_text(f'#!/bin/bash\necho "$*" >> {shlex.quote(str(calls))}\n')
+    desktop.chmod(0o755)
+    result = subprocess.run(
+        [
+            "bash",
+            "-c",
+            _prepare_functions() + f"\nprepare_desktop {tag} {shlex.quote(str(desktop))}",
+        ],
+        text=True,
+        capture_output=True,
+        timeout=30,
+        env={k: v for k, v in os.environ.items() if k != "SUDO_USER"},
+    )
+    assert result.returncode == 0, result.stderr
+    if prepares:
+        assert calls.read_text() == "--prepare-runtime\n"
+        assert "ready to open" in result.stdout + result.stderr
+    else:
+        assert not calls.exists()
+
+
+@pytest.mark.skipif(os.name == "nt", reason="install.sh runs on macOS and Linux")
+def test_a_failed_preparation_is_reported_and_left_to_first_launch(tmp_path: Path) -> None:
+    desktop = tmp_path / "clio-desktop"
+    desktop.write_text("#!/bin/bash\necho 'no network' >&2\nexit 3\n")
+    desktop.chmod(0o755)
+    result = subprocess.run(
+        [
+            "bash",
+            "-c",
+            _prepare_functions() + f"\nprepare_desktop v0.9.5 {shlex.quote(str(desktop))}",
+        ],
+        text=True,
+        capture_output=True,
+        timeout=30,
+    )
+    assert result.returncode == 0
+    assert "did not finish" in result.stdout + result.stderr
+    assert "first launch" in result.stdout + result.stderr
