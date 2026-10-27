@@ -121,7 +121,7 @@ jobs:
             echo
             if [ -f "$TIMINGS" ]; then python3 scripts/ci/record_step.py --file "$TIMINGS" --summary; else echo "No step ran."; fi
           } >> "$GITHUB_STEP_SUMMARY"
-      - name: Enforce budgets (startup to ready, shutdown)
+      - name: Enforce budgets (agent start to ready < 30 s, shutdown < 20 s)
         if: always()
         run: python3 scripts/ci/check_budgets.py --startup results >> "$GITHUB_STEP_SUMMARY"
       - uses: actions/upload-artifact@v4
@@ -294,10 +294,10 @@ jobs:
         shell: bash
         run: |
           { echo "## Install script on ${{ matrix.os }}"; if [ -f "$TIMINGS" ]; then python scripts/ci/record_step.py --file "$TIMINGS" --summary; else echo "No step ran."; fi; } >> "$GITHUB_STEP_SUMMARY"
-      - name: Enforce budgets (fresh install, stop)
+      - name: Enforce budgets (install < 180 s, stop < 20 s)
         if: always()
         shell: bash
-        run: python scripts/ci/check_budgets.py --timings "$TIMINGS" >> "$GITHUB_STEP_SUMMARY"
+        run: python scripts/ci/check_budgets.py --job script --timings "$TIMINGS" >> "$GITHUB_STEP_SUMMARY"
       - uses: actions/upload-artifact@v4
         if: always()
         with:
@@ -438,6 +438,13 @@ jobs:
             done
             if [ -f "$TIMINGS" ]; then python3 scripts/ci/record_step.py --file "$TIMINGS" --summary; else echo "No step ran."; fi
           } >> "$GITHUB_STEP_SUMMARY"
+      # The desktop budgets: package install < 180 s and launch to ready < 60 s (every
+      # launch receipt; the first launch must have one).
+      - name: Enforce budgets (desktop install < 180 s, launch to ready < 60 s)
+        if: always() && steps.asset.outputs.path
+        shell: bash
+        run: |
+          python3 scripts/ci/check_budgets.py --timings "$TIMINGS" --desktop "$RUNNER_TEMP" >> "$GITHUB_STEP_SUMMARY"
       - uses: actions/upload-artifact@v4
         if: always()
         with:

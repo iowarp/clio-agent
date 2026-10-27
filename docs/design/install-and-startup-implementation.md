@@ -427,9 +427,10 @@ lines, the Python builder about 600, CI about 400. Track R changes are mostly in
 
 ## Still open
 
-- The remaining budgets. Startup to ready and shutdown on the x1 reference store, the source
-  fresh install and `clio stop` are enforced from the A0 numbers (`scripts/ci/install_budgets.json`);
-  the release install, upgrade, the x4 store and the backlog test still report only.
+- The remaining budgets. Enforced (`scripts/ci/install_budgets.json`): agent start to ready < 30 s
+  on the x1 reference store, desktop launch to ready < 60 s (launch receipts), install < 180 s (the
+  install script and the desktop packages), shutdown < 20 s. Still report-only: upgrade, repair and
+  uninstall, the x4 store and 1x/4x flatness, memory after idling, the backlog test, SSH deployment.
 - The macOS signing owner and date.
 - Whether releases keep publishing the TUI.
 

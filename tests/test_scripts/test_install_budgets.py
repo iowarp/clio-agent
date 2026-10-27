@@ -47,11 +47,20 @@ def _row(name: str, seconds: float, outcome: str = "ok") -> dict[str, Any]:
 def test_every_budget_names_its_limit_and_what_was_measured() -> None:
     for name, budget in BUDGETS["timings"].items():
         assert budget["seconds"] > 0, name
-        assert budget["measured"], name
+        assert budget["budget"] and budget["measured"], name
     for filename, limits in BUDGETS["startup"].items():
         assert filename.startswith("startup-"), filename
         for key, limit in limits.items():
             assert "max" in limit or "equals" in limit, key
+    for key, limit in BUDGETS["desktop"].items():
+        assert limit["max"] > 0 and limit["budget"], key
+
+
+def test_the_user_budgets_are_the_limits() -> None:
+    assert BUDGETS["startup"]["startup-x1.json"]["task_runtime_ready_s"]["max"] == 30
+    assert BUDGETS["desktop"]["backend_ready_seconds"]["max"] == 60
+    installs = [row for name, row in BUDGETS["timings"].items() if "install" in name]
+    assert installs and all(row["seconds"] == 180 for row in installs)
 
 
 def test_a_step_within_its_budget_passes_and_an_unbudgeted_step_is_report_only() -> None:
@@ -62,21 +71,24 @@ def test_a_step_within_its_budget_passes_and_an_unbudgeted_step_is_report_only()
     ]
     checked = budgets_check.check_timings(rows, BUDGETS["timings"])
     assert all(row[-1] == "ok" for row in checked)
-    assert not any(row[0] == "source: re-run over an install" for row in checked)
+    assert not any(row[1] == "source: re-run over an install" for row in checked)
 
 
 def test_a_step_over_its_budget_or_failing_fails_with_the_number() -> None:
     limit = BUDGETS["timings"]["source: fresh install"]["seconds"]
     rows = [_row("source: fresh install", limit + 1), _row("source: stop", 1.0, "failed")]
-    verdicts = {row[0]: row[-1] for row in budgets_check.check_timings(rows, BUDGETS["timings"])}
-    assert verdicts["source: fresh install"] == f"FAIL: {limit + 1} s > {limit} s"
-    assert verdicts["source: stop"].startswith("FAIL: failed")
+    verdicts = {row[1]: row[-1] for row in budgets_check.check_timings(rows, BUDGETS["timings"])}
+    assert verdicts["source: fresh install"] == (
+        f"FAIL: budget 'install < 180 s' exceeded: measured {limit + 1} s, limit {limit} s"
+    )
+    assert verdicts["source: stop"].startswith("FAIL: budget 'shutdown < 20 s': the step failed")
 
 
 def test_a_required_step_that_never_reported_fails() -> None:
-    checked = budgets_check.check_timings([], BUDGETS["timings"])
-    missing = {row[0] for row in checked if row[-1] == "FAIL: missing"}
+    checked = budgets_check.check_timings([], BUDGETS["timings"], "script")
+    missing = {row[1] for row in checked if "not measured" in row[-1]}
     assert {"source: fresh install", "source: stop"} <= missing
+    assert budgets_check.check_timings([], BUDGETS["timings"], "desktop") == []
 
 
 def test_startup_budgets_read_the_ready_mark_and_the_shutdown(tmp_path: Path) -> None:
@@ -91,19 +103,38 @@ def test_startup_budgets_read_the_ready_mark_and_the_shutdown(tmp_path: Path) ->
         row[1]: row[-1] for row in budgets_check.check_startup(tmp_path, BUDGETS["startup"])
     }
     assert verdicts["task_runtime_ready_s"] == "ok"
-    assert verdicts["shutdown_s"].startswith("FAIL: 30.0")
+    assert "measured 30.0 s" in verdicts["shutdown_s"]
     assert verdicts["shutdown_forced"] == "ok"
 
 
 def test_a_missing_startup_result_fails(tmp_path: Path) -> None:
     checked = budgets_check.check_startup(tmp_path, BUDGETS["startup"])
-    assert checked == [("startup-x1.json", "-", "not recorded", "-", "FAIL: missing")]
+    assert checked and all("not measured" in row[-1] for row in checked)
+
+
+def test_desktop_launch_receipts_are_held_to_the_launch_budget(tmp_path: Path) -> None:
+    for launch, seconds in (("first", 41.0), ("second", 75.0)):
+        (tmp_path / f"evidence-{launch}").mkdir()
+        receipt = {"backend_ready_seconds": seconds}
+        (tmp_path / f"evidence-{launch}" / "receipt.json").write_text(json.dumps(receipt))
+    verdicts = {
+        row[2]: row[-1] for row in budgets_check.check_desktop(tmp_path, BUDGETS["desktop"])
+    }
+    assert verdicts["first launch"] == "ok"
+    assert verdicts["second launch"].startswith("FAIL: budget 'desktop launch to ready < 60 s'")
+
+
+def test_a_missing_first_launch_receipt_fails(tmp_path: Path) -> None:
+    checked = budgets_check.check_desktop(tmp_path, BUDGETS["desktop"])
+    assert [row[2] for row in checked] == ["first launch"]
+    assert "not measured" in checked[0][-1]
 
 
 def test_the_matrix_enforces_the_budgets_and_runs_the_crash_test() -> None:
     workflow = (REPO_ROOT / ".github" / "workflows" / "install-matrix.yml").read_text("utf-8")
     assert "check_budgets.py --startup results" in workflow
-    assert 'check_budgets.py --timings "$TIMINGS"' in workflow
+    assert 'check_budgets.py --job script --timings "$TIMINGS"' in workflow
+    assert '--desktop "$RUNNER_TEMP"' in workflow
     assert "scripts/crash_test.py" in workflow
 
 
