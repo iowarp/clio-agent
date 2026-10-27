@@ -12,7 +12,6 @@ from bisect import bisect_left
 from typing import TYPE_CHECKING, Any
 
 from clio_agent.arc.task_types import (
-    AssignmentDetails,
     CoordinationGrant,
     CoreReference,
     MailItem,
@@ -100,58 +99,58 @@ def record_workflow(self: TaskHistory, record: WorkflowCheckpoint) -> None:
         self._project(state, "workflow.checkpoint", payload)
 
 
-def _legacy_workflow(self: TreeState, snapshot: TaskSnapshot) -> None:
-    """Decode retained workflow provenance without disabling unrelated canonical history."""
+def _legacy_workflow(
+    self: TreeState, snapshot: TaskSnapshot, annotation: dict[str, Any] | None = None
+) -> None:
+    """Decode retained workflow provenance without disabling unrelated canonical history.
+
+    ``annotation`` is the lane's record of the details' workflow reference and, when
+    needed, the checkpoint identity (:mod:`clio_agent.gact.task_lane_reads`); without
+    one the details and checkpoint are read here.
+    """
+    from clio_agent.gact.task_lane_reads import checkpoint_identity, workflow_annotation
+
     if snapshot.details is None:
         return
     try:
-        raw = self.read_content(snapshot.details)
-        if not isinstance(raw, dict):
-            raise ValueError("Historical assignment details are not an object")
-        workflow = AssignmentDetails.model_validate(raw).workflow
-        if workflow is not None:
-            reference = CoreReference.model_validate(workflow)
-            latest = self._workflow_latest.get(snapshot.handle)
-            if latest is not None and latest.content == reference:
-                # The owner points at a checkpoint recorded canonically (the flow journal
-                # records it before pointing its owner at it): nothing legacy to decode.
-                self._workflow_dirty.discard(snapshot.handle)
-                return
-            content = self.read_content(reference)
-            if (
-                isinstance(content, dict)
-                and all(
-                    isinstance(content.get(key), str) and content[key]
-                    for key in ("id", "invocation_id", "declaration")
-                )
-                and isinstance(content.get("request"), str)
-            ):
-                if (
-                    content.get("root_handle", snapshot.handle) != snapshot.handle
-                    or content.get("root_session", snapshot.owner.session_id)
-                    != snapshot.owner.session_id
-                ):
-                    raise ValueError("Historical workflow checkpoint belongs to another owner")
-                _project_workflow(
-                    self,
-                    WorkflowCheckpoint.model_validate(
-                        {
-                            "root_handle": snapshot.handle,
-                            "session_id": snapshot.owner.session_id,
-                            "invocation_id": content["invocation_id"],
-                            "execution_id": content["id"],
-                            "declaration": content["declaration"],
-                            "request_digest": argument_digest({"request": content["request"]}),
-                            "content": reference,
-                            "source": "legacy_snapshot",
-                        }
-                    ),
-                )
-                latest = self._workflow_latest.get(snapshot.handle)
-                if latest is not None and latest.content == reference:
-                    self._workflow_dirty.discard(snapshot.handle)
-            else:
-                raise ValueError("Historical workflow identity is incomplete")
+        latest = self._workflow_latest.get(snapshot.handle)
+        if annotation is None:
+            known = latest.content if latest is not None else None
+            annotation = workflow_annotation(self.read_content, snapshot, known=known)
+        if annotation.get("reference") is None:
+            return
+        reference = CoreReference.model_validate(annotation["reference"])
+        if latest is not None and latest.content == reference:
+            # The owner points at a checkpoint recorded canonically (the flow journal
+            # records it before pointing its owner at it): nothing legacy to decode.
+            self._workflow_dirty.discard(snapshot.handle)
+            return
+        identity = annotation.get("checkpoint") or checkpoint_identity(self.read_content(reference))
+        if not identity.get("complete"):
+            raise ValueError("Historical workflow identity is incomplete")
+        if (
+            identity.get("root_handle", snapshot.handle) != snapshot.handle
+            or identity.get("root_session", snapshot.owner.session_id) != snapshot.owner.session_id
+        ):
+            raise ValueError("Historical workflow checkpoint belongs to another owner")
+        _project_workflow(
+            self,
+            WorkflowCheckpoint.model_validate(
+                {
+                    "root_handle": snapshot.handle,
+                    "session_id": snapshot.owner.session_id,
+                    "invocation_id": identity["invocation_id"],
+                    "execution_id": identity["id"],
+                    "declaration": identity["declaration"],
+                    "request_digest": identity["request_digest"],
+                    "content": reference,
+                    "source": "legacy_snapshot",
+                }
+            ),
+        )
+        latest = self._workflow_latest.get(snapshot.handle)
+        if latest is not None and latest.content == reference:
+            self._workflow_dirty.discard(snapshot.handle)
     except (ValueError, OSError, ClioError) as error:
         logger.exception(
             "Historical workflow unavailable root=%s error_type=%s",
@@ -270,6 +269,7 @@ _PROJECTION_FIELDS = (
 def _prepare_snapshot(self: TreeState, payload: dict[str, Any]) -> TaskSnapshot:
     """Resolve content before publishing; legacy vocabulary belongs to replay only."""
     record = payload.get("record", payload)
+    lane = payload.get("lane") or {}
     snapshot = (
         TaskSnapshot.read_history(record)
         if self._replaying
@@ -277,12 +277,14 @@ def _prepare_snapshot(self: TreeState, payload: dict[str, Any]) -> TaskSnapshot:
     )
     if snapshot.description_reference is not None:
         previous = self._tasks.get(snapshot.handle) if self._replaying else None
-        description = (
-            previous.description
-            if previous is not None
-            and previous.description_reference == snapshot.description_reference
-            else self.read_content(snapshot.description_reference)
-        )
+        if previous is not None and (
+            previous.description_reference == snapshot.description_reference
+        ):
+            description = previous.description
+        elif "description" in lane:
+            description = lane["description"]  # recorded by the writer: no content read
+        else:
+            description = self.read_content(snapshot.description_reference)
         if not isinstance(description, str):
             raise ValueError("Task assignment content must be text")
         snapshot = snapshot.model_copy(update={"description": description})
@@ -296,9 +298,11 @@ def _project(
     *,
     snapshot: TaskSnapshot | None = None,
 ) -> None:
+    lane: dict[str, Any] = {}
     if "observation_id" in payload and "record" in payload:
         if payload.get("schema_version") != 1:
             raise ValueError("Unsupported task observation version; migration required")
+        lane = payload.get("lane") or {}
         payload = payload["record"]
     if event_type == "task.alias":
         alias = TaskAlias.model_validate(payload)
@@ -315,7 +319,7 @@ def _project(
             and snapshot.details
             and (prior_task is None or prior_task.details != snapshot.details)
         ):
-            _legacy_workflow(self, snapshot)
+            _legacy_workflow(self, snapshot, lane.get("workflow"))
         self._session_tasks.setdefault(snapshot.owner.session_id, set()).add(snapshot.handle)
         self._kind_tasks.setdefault(snapshot.kind, set()).add(snapshot.handle)
         self._human_tasks.setdefault(snapshot.owner.human_id, set()).add(snapshot.handle)

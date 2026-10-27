@@ -31,7 +31,7 @@ from typing import Any
 from clio_agent.arc.init_degradation import ArcStoreUnavailableError
 from clio_agent.errors import ClioError
 from clio_agent.gact import store_migrations
-from clio_agent.gact.store_migrations import MigrationResult, run_migration
+from clio_agent.gact.store_migrations import MigrationResult, is_owed, run_migration
 
 EXIT_OK, EXIT_FAILED, EXIT_IN_USE, EXIT_UNAVAILABLE = 0, 1, 3, 4
 #: Failures a migration reports typed (``migration_failed``); anything else is a bug and
@@ -46,14 +46,35 @@ def _other_store_clients() -> list[int]:
     return [pid for pid in storage._live_client_pids() if pid != os.getpid()]
 
 
-def _open_store() -> Any:
-    """Build the app state the migrations read, attached to clio-core, without booting."""
+def _open_core() -> Any:
+    """Attach clio-core and the task history only: enough to read every marker.
+
+    Building the app imports the whole server (tens of seconds); a re-run with nothing
+    owed (every install, upgrade and desktop install-time prepare) needs only this.
+    """
+    from types import SimpleNamespace  # noqa: PLC0415
+
     from clio_agent import paths  # noqa: PLC0415
     from clio_agent.arc.memory import ARCMemory  # noqa: PLC0415
     from clio_agent.arc.storage import make_arc_store  # noqa: PLC0415
+    from clio_agent.gact.task_history import TaskHistory  # noqa: PLC0415
+    from clio_agent.gact.transcript_file import resolve_transcript_file  # noqa: PLC0415
+
+    data_dir = str(paths.arc_data_dir())
+    arc = ARCMemory(data_dir=data_dir, cache_capacity=1000, store=make_arc_store(data_dir=data_dir))
+    # No restore: a fresh TaskHistory holds no cached trees, the task-event lane must be
+    # copied before any tree loads, and without the task-index marker restore IS the
+    # build's full replay, which the task_index_build migration runs (and times).
+    state = SimpleNamespace(
+        arc=arc, task_history=TaskHistory(arc), transcript_file=resolve_transcript_file()
+    )
+    return SimpleNamespace(state=state)
+
+
+def _attach_app(core: Any) -> Any:
+    """Build the app state the migrations read around the attached store, without booting."""
     from clio_agent.gact.app import build_app  # noqa: PLC0415
     from clio_agent.gact.runtime.globals import _set_app_arc  # noqa: PLC0415
-    from clio_agent.gact.task_history import TaskHistory  # noqa: PLC0415
     from clio_agent.gact.workspaces import (  # noqa: PLC0415
         _default_store_path as workspaces_store_path,
     )
@@ -66,16 +87,10 @@ def _open_store() -> Any:
         # directory at its first start, never from wherever the installer ran.
         workspaces_file.unlink(missing_ok=True)
     # Not a server start: the restart reconciliation and metrics seed the boot attaches
-    # to the ARC do not run here; only the migrations below touch the store.
+    # to the ARC do not run here; only the migrations touch the store.
     app.state.transcript_boot_ready.set()
-    data_dir = str(paths.arc_data_dir())
-    arc = ARCMemory(data_dir=data_dir, cache_capacity=1000, store=make_arc_store(data_dir=data_dir))
-    _set_app_arc(app, arc)
-    history = TaskHistory(arc)
-    app.state.task_history = history
-    # No restore here: a fresh TaskHistory holds no cached trees, the task-event lane
-    # must be copied before any tree loads, and without the task-index marker restore IS
-    # the build's full replay, which the task_index_build migration runs (and times).
+    _set_app_arc(app, core.state.arc)
+    app.state.task_history = core.state.task_history
     app.state.human_principal = "human:" + str(app.state.connected_storage.store.clio_id)
     return app
 
@@ -83,7 +98,6 @@ def _open_store() -> Any:
 def _close_store(app: Any) -> None:
     """Retire the Core writer and release clio-core (stopped if this was its last client)."""
     from clio_agent.arc.storage import release_runtime_client  # noqa: PLC0415
-    from clio_agent.gact import provenance_wiring  # noqa: PLC0415
 
     history = getattr(app.state, "task_history", None)
     if history is not None:
@@ -91,7 +105,10 @@ def _close_store(app: Any) -> None:
     close_trace = getattr(getattr(app.state, "semantic_trace_backend", None), "close", None)
     if callable(close_trace):
         close_trace()
-    provenance_wiring.close_artifact_backend(app)
+    if hasattr(app.state, "artifact_provenance_backend"):  # only a built app has one
+        from clio_agent.gact import provenance_wiring  # noqa: PLC0415
+
+        provenance_wiring.close_artifact_backend(app)
     release_runtime_client()
 
 
@@ -113,7 +130,7 @@ def run_migrations(emit: Callable[[str], None] = print) -> tuple[int, dict[str, 
         return EXIT_IN_USE, {"status": "refused", "reason": "store_in_use", "pids": others}
     emit("migrate step=open_store status=running")
     try:
-        app = _open_store()
+        app = _open_core()
     except ArcStoreUnavailableError as exc:  # typed store_unavailable outcome
         emit(f"migrate step=open_store status=failed reason=store_unavailable error={exc!r}")
         return EXIT_UNAVAILABLE, {
@@ -125,6 +142,15 @@ def run_migrations(emit: Callable[[str], None] = print) -> tuple[int, dict[str, 
     results: list[MigrationResult] = []
     try:
         history = app.state.task_history
+        owed = [
+            item.name
+            for item in store_migrations.MIGRATIONS
+            if history.io.submit(is_owed, app, item).result()
+        ]
+        if owed:
+            emit(f"migrate step=prepare status=running owed={','.join(owed)}")
+            app = _attach_app(app)
+            emit(f"migrate step=prepare status=done seconds={time.monotonic() - started:.3f}")
         for item in store_migrations.MIGRATIONS:
             emit(f"migrate step={item.name} status=checking summary={item.summary!r}")
             try:

@@ -41,6 +41,7 @@ from clio_agent.gact import (
     task_history_queries,
     task_index_build,
     task_index_writes,
+    task_lane_reads,
 )
 from clio_agent.gact.core_io import CoreIO
 from clio_agent.gact.task_history_projection import _encoded
@@ -228,11 +229,9 @@ class TaskHistory:
             if reference is not None:
                 stored["description"] = None
             state = task_index_writes.open_task(self, previous, snapshot)
+            lane = task_lane_reads.observed_lane(self, state, previous, snapshot)
             self._record(
-                "task.observed",
-                snapshot.owner.session_id,
-                observation_id,
-                stored,
+                "task.observed", snapshot.owner.session_id, observation_id, stored, lane=lane
             )
             self._project(state, "task.observed", stored)
             task_index_writes.close_task(self, previous, snapshot)
@@ -447,7 +446,7 @@ class TaskHistory:
                     if recovered != record:
                         raise ValueError("Durable input identity was reused")
                     self.confirm_write(
-                        lambda: task_history_projection._accept_input(state, recovered)
+                        lambda: task_lane_reads.accept_committed(self, state, recovered)
                     )
                     task_index_writes.close_mail(self, record.session_id, record.notification_ids)
                     return recovered
@@ -465,7 +464,7 @@ class TaskHistory:
                     token_count=input_tokens,
                 )
             )
-            self.confirm_write(lambda: task_history_projection._accept_input(state, record))
+            self.confirm_write(lambda: task_lane_reads.accept_committed(self, state, record))
             task_index_writes.close_mail(self, record.session_id, record.notification_ids)
             return record
 
@@ -752,24 +751,15 @@ class TaskHistory:
                 raise
 
     def _record(
-        self, event_type: str, session_id: str, identity: str, payload: dict[str, Any]
+        self,
+        event_type: str,
+        session_id: str,
+        identity: str,
+        payload: dict[str, Any],
+        *,
+        lane: dict[str, Any] | None = None,
     ) -> None:
-        # Import only the existing data envelope; no GACT application or execution owner.
-        from clio_agent.gact.semantic_events import SemanticEvent
-
-        assert_store_write_off_loop("task.observation")
-        self.confirm_write(  # the task-event lane first, then the canonical log
-            lambda: task_event_lane.record(
-                self.arc,
-                SemanticEvent(
-                    event_type=event_type,
-                    session_id=session_id,
-                    trace_id="",
-                    span_id=identity,
-                    payload={"schema_version": 1, "observation_id": identity, "record": payload},
-                ),
-            )
-        )
+        task_event_lane.record_event(self, event_type, session_id, identity, payload, lane=lane)
 
     def confirm_write(self, operation: Callable[[], Any]) -> Any:
         """Confirm an ARC write, holding later durable admission if its outcome is uncertain."""
