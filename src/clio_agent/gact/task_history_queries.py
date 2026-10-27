@@ -501,8 +501,11 @@ def notify(
             )
             logger.warning("Task wake hint failed after Core commit: %s", type(error).__name__)
     changed_recipients = (str(recipient),) if recipient and mail_changed else ()
+    # After a reset only a registered mailbox listener needs the pending recipients; at
+    # startup none is registered yet, so the open records are listed once, by the
+    # obligations lane's hold, not here as well.
     pending_recipients = (
-        self.pending_sessions()
+        (self.pending_sessions() if mail_listeners else ())
         if restored
         else tuple(dict.fromkeys((*changed_recipients, *mail_targets)))
     )
