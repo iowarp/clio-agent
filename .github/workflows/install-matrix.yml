@@ -1,9 +1,13 @@
 name: Install and startup matrix
 
 # Measures every official way to install Clio and how Clio starts on a long-lived store,
-# on Linux, macOS and Windows. Report mode: every step is timed and recorded, a failing
-# step is reported in the job summary and the job carries on. Budgets are set from these
-# numbers and enforced later (docs/design/install-and-startup-implementation.md, A0).
+# on Linux, macOS and Windows. Every step is timed and recorded, a failing step is
+# reported in the job summary and the job carries on; at the end of each job the steps
+# whose numbers are known and stable are held to their budgets (scripts/ci/
+# install_budgets.json, checked by scripts/ci/check_budgets.py), which fails the job with
+# the step and the number. Steps without a budget stay report-only. The crash job kills
+# Clio with SIGKILL during flow-heavy work and fails when anything acknowledged was lost
+# (docs/design/install-and-startup-implementation.md, A0, A4 and R7).
 
 on:
   pull_request:
@@ -19,6 +23,9 @@ on:
       - 'scripts/create_reference_store.py'
       - 'scripts/measure_startup.py'
       - 'scripts/ci/record_step.py'
+      - 'scripts/ci/check_budgets.py'
+      - 'scripts/ci/install_budgets.json'
+      - 'scripts/crash_test.py'
       - 'scripts/ci/ssh_deploy_steps.py'
       - 'scripts/smoke_desktop_package.py'
       - '.github/workflows/install-matrix.yml'
@@ -68,6 +75,24 @@ jobs:
             uv run --frozen --no-sync python scripts/measure_startup.py --store "$store" \
               --open 50 --idle 60 --work-dir "$RUNNER_TEMP" --out "results/startup-x$scale.json" || true
           done
+      # Report-only until its numbers are known: a store with a backlog of interrupted
+      # fan-outs and open children. Time to ready with the backlog, then again on the same
+      # store once the obligations lane drained it; peak memory while it drains; the first
+      # page of conversations opened mid-drain (R7 backlog test).
+      - name: Backlog of interrupted flows and pending mail
+        continue-on-error: true
+        run: |
+          store="$RUNNER_TEMP/stores/backlog"
+          uv run --frozen --no-sync python scripts/ci/record_step.py --file "$TIMINGS" \
+            --name "generate backlog store" -- \
+            uv run --frozen --no-sync python scripts/create_reference_store.py --out "$store" \
+              --flows 10 --chats 5 --chat-turns 3 --children 3 --open 20 --interrupted 60 \
+              --settle 30 --capacity 512MB
+          for run in backlog backlog-drained; do
+            timeout 2400 uv run --frozen --no-sync python scripts/measure_startup.py --store "$store" \
+              --in-place --scripted-model --wait-obligations --open-during-drain 5 \
+              --work-dir "$RUNNER_TEMP" --out "results/startup-$run.json" || true
+          done
       - name: Report
         if: always()
         run: |
@@ -84,6 +109,10 @@ jobs:
           print(f"- first health: {r.get('first_health_s')} s; task runtime ready: {m.get('task_runtime_ready')} s")
           print(f"- memory at ready: {r.get('rss_ready_mb')} MB; after opening {r.get('opened')}: {r.get('rss_after_open_mb')} MB; after idle: {r.get('rss_after_idle_mb')} MB")
           print(f"- shutdown: {r.get('shutdown_s')} s (forced: {r.get('shutdown_forced')}); clio-core left running: {r.get('daemon_left_running')}")
+          if "obligations_wait_s" in r:
+              print(f"- obligations drained in {r['obligations_wait_s']} s; peak memory by phase: {r.get('rss_peak_mb')} MB")
+          for o in r.get("opened_during_drain", []):
+              print(f"- opened mid-drain: {o['title']}: HTTP {o['status']}, {o['messages']} messages in {o['seconds']} s (drain running: {o['obligations_running']})")
           print("\n| Step | Start (s) | Seconds | Outcome |\n|---|---|---|---|")
           for s in r.get("steps", []):
               print(f"| {s['name']} | {s['start_s']} | {s['seconds']} | {s['outcome']} |")
@@ -92,6 +121,9 @@ jobs:
             echo
             if [ -f "$TIMINGS" ]; then python3 scripts/ci/record_step.py --file "$TIMINGS" --summary; else echo "No step ran."; fi
           } >> "$GITHUB_STEP_SUMMARY"
+      - name: Enforce budgets (agent start to ready < 30 s, shutdown < 20 s)
+        if: always()
+        run: python3 scripts/ci/check_budgets.py --startup results >> "$GITHUB_STEP_SUMMARY"
       - uses: actions/upload-artifact@v4
         if: always()
         with:
@@ -99,6 +131,61 @@ jobs:
           path: |
             results/
             timings.jsonl
+          if-no-files-found: ignore
+
+  crash:
+    name: Crash test (kill -9 during flow-heavy work)
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+      - uses: astral-sh/setup-uv@v5
+      - name: Install dependencies
+        run: uv sync --frozen --extra dev
+      # A real server on a private clio-core with a scripted model; SIGKILL at a random
+      # point each iteration, restart, and compare everything the API acknowledged.
+      # Fails when anything acknowledged was lost; work that does not settle after the
+      # restart (liveness) or resumes as something else (semantic) is reported without
+      # failing the job.
+      - name: Kill, restart and compare
+        run: |
+          mkdir -p results
+          uv run --frozen --no-sync python scripts/crash_test.py --out "$RUNNER_TEMP/crash" \
+            --iterations 5 --report results/crash.json --port 18991
+      - name: Report
+        if: always()
+        run: |
+          {
+            echo "## Crash test"
+            if [ -f results/crash.json ]; then
+              python3 - results/crash.json <<'PY'
+          import json, sys
+          r = json.load(open(sys.argv[1]))
+          s = r["summary"]
+          print(f"- seed {r['seed']}; {s['iterations']} iterations in {s['seconds']} s; kill points: {', '.join(s['kill_points'])}")
+          print(f"- acknowledged: {s['acknowledged']}")
+          print(f"- lost: {s['lost']}; liveness: {s['liveness']}; semantic: {s.get('semantic', 0)}; findings: {s['findings_by_type'] or 'none'}")
+          print("\n| Iteration | Killed at (s) | Kill points | Restart to ready (s) | Settled (s) | Findings |\n|---|---|---|---|---|---|")
+          for it in r["iterations"]:
+              kinds = {}
+              for f in it.get("findings", []):
+                  kinds[f["type"]] = kinds.get(f["type"], 0) + 1
+              settle = it.get("settle", {})
+              print(f"| {it['iteration']} | {it['killed_at_s']} | {', '.join(it['kill_points'])} | {it.get('restart', {}).get('ready_s')} | {settle.get('seconds')}{'' if settle.get('settled', True) else ' (not settled)'} | {kinds or 'none'} |")
+          PY
+            else
+              echo "No report was written."
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: crash-results
+          path: |
+            results/
+            ${{ runner.temp }}/crash/server-*.log
           if-no-files-found: ignore
 
   script:
@@ -207,6 +294,10 @@ jobs:
         shell: bash
         run: |
           { echo "## Install script on ${{ matrix.os }}"; if [ -f "$TIMINGS" ]; then python scripts/ci/record_step.py --file "$TIMINGS" --summary; else echo "No step ran."; fi; } >> "$GITHUB_STEP_SUMMARY"
+      - name: Enforce budgets (install < 180 s, stop < 20 s)
+        if: always()
+        shell: bash
+        run: python scripts/ci/check_budgets.py --job script --timings "$TIMINGS" >> "$GITHUB_STEP_SUMMARY"
       - uses: actions/upload-artifact@v4
         if: always()
         with:
@@ -347,6 +438,13 @@ jobs:
             done
             if [ -f "$TIMINGS" ]; then python3 scripts/ci/record_step.py --file "$TIMINGS" --summary; else echo "No step ran."; fi
           } >> "$GITHUB_STEP_SUMMARY"
+      # The desktop budgets: package install < 180 s and launch to ready < 60 s (every
+      # launch receipt; the first launch must have one).
+      - name: Enforce budgets (desktop install < 180 s, launch to ready < 60 s)
+        if: always() && steps.asset.outputs.path
+        shell: bash
+        run: |
+          python3 scripts/ci/check_budgets.py --timings "$TIMINGS" --desktop "$RUNNER_TEMP" >> "$GITHUB_STEP_SUMMARY"
       - uses: actions/upload-artifact@v4
         if: always()
         with:

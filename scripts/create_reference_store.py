@@ -37,7 +37,14 @@ Usage::
     uv run python scripts/create_reference_store.py --out /path/to/refstore4x --scale 4
 
 Then start a server on it with ``source /path/to/refstore/env.sh`` before
-``clio-agent serve``.
+``clio-agent serve``. To serve it with the same scripted model instead -- so the work
+the store left open (interrupted turns, undelivered mail) really runs when the next
+start resumes it -- run, with that environment::
+
+    uv run python scripts/create_reference_store.py --serve --out /path/to/refstore --port 18990
+
+The scripted model then answers stalled children instead of stalling again, after
+``--think`` seconds per call.
 """
 
 from __future__ import annotations
@@ -142,9 +149,10 @@ def _text(kb: int, seed: str) -> str:
 class _Program:
     """The scripted model: sized answers, one ``lm.call`` record per turn."""
 
-    def __init__(self, answer_kb: int, lm_call_kb: int) -> None:
+    def __init__(self, answer_kb: int, lm_call_kb: int, think_s: float = 0.0) -> None:
         self.answer_kb = answer_kb
         self.lm_call_kb = lm_call_kb
+        self.think_s = think_s
         self.stall = True
 
     def __call__(self, question: str = "", **_: Any) -> Any:
@@ -154,7 +162,9 @@ class _Program:
         from clio_agent.gact.runtime.globals import _emit_semantic_event  # noqa: PLC0415
 
         app, session = context.active_app(), context.active_session_id()
-        if "STALL" in question:
+        if self.think_s:
+            time.sleep(self.think_s)
+        if "STALL" in question and self.stall:
             from clio_agent.agent import cancellation_requested  # noqa: PLC0415
             from clio_agent.gact.agents.clio_react import _turn_cancelled  # noqa: PLC0415
 
@@ -342,6 +352,32 @@ def generate(args: argparse.Namespace) -> dict[str, Any]:
     raise AssertionError("unreachable")
 
 
+def serve(out: Path, port: int, think_s: float, answer_kb: int, lm_call_kb: int) -> None:
+    """Serve the store with the scripted model: a real server, as ``run_server`` builds it.
+
+    The environment (``env.sh``) must already be set. Stalled work answers this time, so
+    the work the store left open runs to completion when it is resumed.
+    """
+    import faulthandler  # noqa: PLC0415
+    import signal  # noqa: PLC0415
+
+    # SIGUSR1 dumps every thread's stack into the log: how a harness diagnoses a hang.
+    faulthandler.register(signal.SIGUSR1, all_threads=True)
+    os.chdir(out / "workspace")
+    sys.path.insert(0, str(REPO))
+    from clio_agent.gact import desktop_lifecycle, server_boot  # noqa: PLC0415
+    from clio_agent.gact.app import build_app  # noqa: PLC0415
+    from clio_agent.runtime import trace  # noqa: PLC0415
+
+    program = _Program(answer_kb, lm_call_kb, think_s)
+    program.stall = False
+    _install_scripted_model(program)
+    trace.configure()
+    app = build_app(agent=_Host())
+    server_boot.mark_real_server(app)
+    desktop_lifecycle.serve_foreground(app, host="127.0.0.1", port=port)
+
+
 def _stop_core(out: Path, env: dict[str, str]) -> None:
     """Stop the private clio-core after the generator process ended like a crash.
 
@@ -374,9 +410,21 @@ def main() -> int:
     parser.add_argument("--timeout", type=float, default=600.0)
     parser.add_argument("--settle", type=float, default=5.0, help="seconds before stopping")
     parser.add_argument("--capacity", default="2GB", help="clio-core file-tier capacity")
+    parser.add_argument(
+        "--core-port", type=int, default=0, help="clio-core base port (0: a free block)"
+    )
     parser.add_argument("--generator", action="store_true", help=argparse.SUPPRESS)
+    parser.add_argument(
+        "--serve", action="store_true", help="serve an existing store with the scripted model"
+    )
+    parser.add_argument("--port", type=int, default=18990, help="with --serve")
+    parser.add_argument("--think", type=float, default=0.0, help="with --serve: seconds per call")
     args = parser.parse_args()
     args.out = args.out.resolve()
+
+    if args.serve:
+        serve(args.out, args.port, args.think, args.answer_kb, args.lm_call_kb)
+        return 0
 
     if args.generator:  # the child process: env is already set by the parent
         os.chdir(args.out / "workspace")
@@ -390,6 +438,8 @@ def main() -> int:
         (out / name).mkdir(parents=True, exist_ok=True)
     _write_marketplace(out / "marketplace")
     env = _environment(out, args.capacity)
+    if args.core_port:
+        env["CLIO_CORE_PORT"] = str(args.core_port)
     (out / "env.sh").write_text(
         "".join(f"export {key}={shlex.quote(value)}\n" for key, value in env.items()),
         encoding="utf-8",
