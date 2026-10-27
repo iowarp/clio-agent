@@ -126,6 +126,20 @@ def measure(args: argparse.Namespace) -> dict[str, Any]:
             time.sleep(0.25)
         else:
             raise TimeoutError(f"task runtime not ready within {args.timeout}s; see {work}")
+        if args.wait_obligations:
+            # The obligations lane resumes open work after ready; wait for it to finish.
+            while time.monotonic() < deadline:
+                _status, body = _get(port, "/v1/health")
+                steps = (
+                    (body or {}).get("boot", {}).get("steps", []) if isinstance(body, dict) else []
+                )
+                if any(step["name"] == "obligations" for step in steps):
+                    boot = body["boot"]
+                    break
+                time.sleep(0.5)
+            else:
+                raise TimeoutError(f"obligations not finished within {args.timeout}s")
+            result["rss_after_obligations_mb"] = _rss_mb(server.pid)
         status, sessions = _get(port, "/v1/sessions?limit=1000000", timeout=60)
         listed = (
             len(sessions.get("sessions", sessions.get("items", [])))
@@ -197,6 +211,11 @@ def main() -> int:
     parser.add_argument("--stop-timeout", type=float, default=60.0)
     parser.add_argument("--work-dir", type=Path, default=None, help="where the store copy goes")
     parser.add_argument("--keep", action="store_true", help="keep the copy and server log")
+    parser.add_argument(
+        "--wait-obligations",
+        action="store_true",
+        help="also wait for the background obligations lane to finish and time it",
+    )
     args = parser.parse_args()
     args.out = args.out.resolve() if args.out else None  # measuring changes directory
     result = measure(args)
