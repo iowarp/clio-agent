@@ -454,7 +454,8 @@ class VersionConflictDetail(BaseModel):
     ``on_conflict``). Nothing was stopped or installed. ``health`` is
     ``healthy`` when it answered its own health check (``installed_version``
     is then a real version), or ``unresponsive``/``unknown`` when it did not
-    answer or could not be asked -- never a reason to have stopped it. The
+    answer or could not be asked -- never a reason to have stopped it --, or
+    ``stopped`` when the agent is installed under ``owner`` but not running. The
     caller re-issues the same action with ``configuration.on_conflict`` set
     to ``"connect"`` (adopt it as-is; only meaningful when ``healthy``) or
     ``"replace"`` (stop it and install this desktop's version).
@@ -464,7 +465,7 @@ class VersionConflictDetail(BaseModel):
 
     installed_version: str
     pid: str
-    health: Literal["healthy", "unresponsive", "unknown"] = "unknown"
+    health: Literal["healthy", "unresponsive", "unknown", "stopped"] = "unknown"
     target_version: str = ""
     owner: str = ""
     port: int = 17800

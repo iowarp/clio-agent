@@ -221,11 +221,19 @@ SIZE_AFTER="$(dir_size_mb "$OUT")"
 echo "[build-gact-runtime] size after prune:  ${SIZE_AFTER} MB (was ${SIZE_BEFORE} MB)"
 
 # --- 4. generic runtime manifest ----------------------------------------
+# `source` names the commit this runtime was built from and whether it is a
+# release tag: a CLIO built from any other commit deploys that commit to remote
+# hosts instead of the PyPI release with the same version number
+# (gact/infrastructure/controller_source.py).
+SOURCE_COMMIT="$(git -C "$CHECKOUT" rev-parse HEAD 2>/dev/null || true)"
+SOURCE_RELEASE=false
+case "$(git -C "$CHECKOUT" describe --exact-match --tags HEAD 2>/dev/null || true)" in v*) SOURCE_RELEASE=true ;; esac
 cat >"$OUT/runtime.json" <<EOF
 {
   "schema": 1,
   "exec": ["${PYBIN_REL}", "-I", "-B", "-m", "clio_agent.gact", "--no-agent"],
-  "env": {"PYTHONDONTWRITEBYTECODE": "1"}
+  "env": {"PYTHONDONTWRITEBYTECODE": "1"},
+  "source": {"commit": "${SOURCE_COMMIT}", "release": ${SOURCE_RELEASE}}
 }
 EOF
 echo "[build-gact-runtime] manifest: $(cat "$OUT/runtime.json" | tr -d '\n' | tr -s ' ')"
