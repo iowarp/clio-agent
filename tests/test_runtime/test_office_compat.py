@@ -11,16 +11,40 @@ import zstandard
 from clio_agent.runtime.document_stack import office, office_compat
 
 
-@pytest.mark.parametrize(
-    "glibc,expected", [("2.28", True), ("2.31", True), ("2.34", False), ("2.39", False)]
-)
-def test_compatibility_loader_only_for_older_glibc(
-    glibc: str, expected: bool, monkeypatch: pytest.MonkeyPatch
+@pytest.mark.parametrize("glibc", ["2.28", "2.31", "2.35", "2.39"])
+def test_office_always_runs_on_its_private_userland_on_linux(
+    glibc: str, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    """Whatever the host's glibc or libraries, Office loads none of them (no ABI mixing)."""
     monkeypatch.setattr(office_compat.platform, "system", lambda: "Linux")
     monkeypatch.setattr(office_compat.platform, "machine", lambda: "x86_64")
     monkeypatch.setattr(office_compat.platform, "libc_ver", lambda: ("glibc", glibc))
-    assert office_compat.supported() is expected
+    assert office_compat.supported() is True
+
+
+def test_hosts_without_a_pinned_userland_are_not_supported(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(office_compat.platform, "system", lambda: "Linux")
+    monkeypatch.setattr(office_compat.platform, "machine", lambda: "riscv64")
+    assert office_compat.supported() is False
+    monkeypatch.setattr(office_compat.platform, "system", lambda: "Darwin")
+    monkeypatch.setattr(office_compat.platform, "machine", lambda: "x86_64")
+    assert office_compat.supported() is False
+
+
+def test_the_lock_pins_the_c_runtime_and_the_desktop_libraries(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(office_compat.platform, "machine", lambda: "x86_64")
+    pinned = office_compat.packages()
+    names = {url.rsplit("/", 1)[1].split("_", 1)[0] for url, _ in pinned}
+    # The C runtime and the libraries a bare host lacks (found on a minimal Ubuntu).
+    assert {"libc6", "libstdc++6", "libx11-6", "libxinerama1", "libcairo2", "libcups2"} <= names
+    assert {"libfontconfig1", "libnss3", "libglib2.0-0"} <= names
+    for url, checksum in pinned:
+        assert url.startswith("https://snapshot.ubuntu.com/ubuntu/") and url.endswith(".deb")
+        assert len(checksum) == 64
 
 
 def _tar(members: list[tuple[str, bytes]]) -> bytes:
@@ -51,25 +75,36 @@ def test_compatibility_payload_cannot_escape_root(tmp_path: Path) -> None:
     assert not (tmp_path / "outside").exists()
 
 
-def test_wrapper_published_last_and_remains_relocatable(tmp_path: Path) -> None:
+def test_wrapper_published_last_and_remains_relocatable(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(office_compat.platform, "machine", lambda: "x86_64")
     root = tmp_path / "office with spaces"
     root.mkdir()
+    (root / "compat-0123456789ab").mkdir()  # the previous, C-runtime-only directory
     calls: list[str] = []
-    payload = _tar([(str(office_compat.LOADER).replace("\\", "/"), b"loader")])
+    payload = _tar([("lib/x86_64-linux-gnu/ld-linux-x86-64.so.2", b"loader")])
 
     def download(url: str, target: Path, checksum: str) -> None:
         assert not (root / office_compat.WRAPPER).exists()
-        assert len(checksum) == 64 and url.startswith("https://launchpadlibrarian.net/")
+        assert len(checksum) == 64 and url.startswith("https://snapshot.ubuntu.com/")
         calls.append(url)
         target.write_bytes(payload)
 
     office_compat.prepare(root, download=download, deb_data=lambda stream: stream.read())
     wrapper = root / office_compat.WRAPPER
-    assert len(calls) == len(office_compat.PACKAGES)
-    assert str(root) not in wrapper.read_text()
-    assert "--library-path" in wrapper.read_text()
-    assert "LD_LIBRARY_PATH=" not in wrapper.read_text()
-    assert "$@" in wrapper.read_text()
+    text = wrapper.read_text()
+    assert sorted(calls) == sorted(url for url, _ in office_compat.packages())
+    assert str(root) not in text
+    assert "--library-path" in text and "LD_LIBRARY_PATH=" not in text
+    assert "SAL_USE_VCLPLUGIN=svp" in text and "FONTCONFIG_FILE=" in text
+    assert "$@" in text
+    userland = root / office_compat.runtime_directory()
+    assert (
+        'prefix="relative">../opt/libreoffice26.2/share/fonts'
+        in (userland / "fonts.conf").read_text()
+    )
+    assert not (root / "compat-0123456789ab").exists()
 
 
 def test_old_managed_image_gets_loader_before_version_probe(

@@ -108,6 +108,8 @@ def test_private_renderer_is_probed_before_warm_reuse(
     program.parent.mkdir()
     program.touch()
     seen: list[list[str]] = []
+    # A Windows-layout tree: no private Linux userland applies.
+    monkeypatch.setattr(office.office_compat, "supported", lambda: False)
     monkeypatch.setattr(office, "run", lambda command, **kwargs: seen.append(command) or "26.2.6")
     assert office.ensure_office(tmp_path) == str(program)
     assert seen == [[str(program), "--version"]]
