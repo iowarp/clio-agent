@@ -472,10 +472,13 @@ def _clio_agent_plan(
         raise ValueError("Choose reconnect, update, or replace for the existing CLIO")
     if on_conflict == "replace":
         root = target.install_root.strip()
-    if on_conflict == "update":
+    # "Start it and connect" for an agent installed but stopped starts that
+    # install as it is, at its own version: no reinstall.
+    start_existing = on_conflict == "connect" and configuration.get("conflict_state") == "stopped"
+    if on_conflict == "update" or start_existing:
         root = configuration.get("conflict_root", "").strip()
         if not root.startswith("/"):
-            raise ValueError("Updating requires the existing agent's absolute installation path")
+            raise ValueError("Using the existing agent requires its absolute installation path")
 
     def launcher(script: str) -> CommandSpec:
         return CommandSpec(
@@ -522,7 +525,12 @@ def _clio_agent_plan(
     replace = on_conflict in {"replace", "update"}
     commands: list[CommandSpec] = [
         claim_command(
-            root, port, version, replace=replace, expected_pid=configuration.get("conflict_pid", "")
+            root,
+            port,
+            version,
+            replace=replace,
+            expected_pid=configuration.get("conflict_pid", ""),
+            answered=on_conflict is not None,
         )
     ]
     if action == "reinstall":
@@ -531,7 +539,7 @@ def _clio_agent_plan(
                 "uninstall", target, resolved_root=resolved_root, configuration=configuration
             ).commands
         )
-    if action in {"install", "reinstall"}:
+    if action in {"install", "reinstall"} and not start_existing:
         commands.append(install_command(root, version, fresh=from_scratch(configuration)))
     launch = RemoteLaunch(
         root,

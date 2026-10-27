@@ -246,7 +246,7 @@ def test_update_and_replace_target_the_documented_installation(choice: str, root
     )
     assert plan.remote_launch is not None and plan.remote_launch.root == root
     assert plan.connection_port == 17801
-    assert plan.commands[0].args[-1] == "123"
+    assert plan.commands[0].args[-2:] == ["123", "1"]  # expected pid, answered
 
 
 def test_exit_requires_authentication_even_on_loopback(tmp_path: Path) -> None:

@@ -198,14 +198,23 @@ _CLAIM = (
     + r"""
 version="$3"
 replace="${4:-0}"
+answered="${6:-0}"
 existing_root=0; [ -d "$root" ] && existing_root=1
 recorded="$(cat "$(pidfile_for "$root")" 2>/dev/null || true)"
 if ! port_busy "$port"; then
   if [ -n "$recorded" ] && alive "$recorded"; then
     fail "This installation already has a running process. Choose a separate installation directory for another port."
   fi
+  installed="$("$root/clio-agent/.venv/bin/python" -c 'import importlib.metadata as m; print(m.version("clio-agent"))' 2>/dev/null || true)"
+  if [ -n "$installed" ] && [ "$answered" != "1" ]; then
+    # An agent is installed here but not running: ask before starting or updating it.
+    say "CLIO $installed is installed in $root but not running"
+    printf 'clio-deploy result=installed existing_root=1 installed=%s state=stopped owner=%s\n' \
+      "$installed" "$root"
+    exit 0
+  fi
   say "Port $port is free"
-  printf 'clio-deploy result=free existing_root=%s\n' "$existing_root"
+  printf 'clio-deploy result=free existing_root=%s installed=%s\n' "$existing_root" "${installed:-none}"
   exit 0
 fi
 pid="$(listener_pid "$port")"
@@ -280,6 +289,9 @@ printf 'clio-deploy result=cleaned\n'
 class ClaimResult:
     """What the claim step found on the API port.
 
+    ``installed`` means nothing is on the port but an agent is installed under
+    ``root`` (``owner``) at ``installed_version``, stopped; the caller asks
+    whether to start it, update it or start a new one.
     ``found`` means a process is on the port but the claim did not touch it
     (a different root or version, an unresponsive server, or ``replace``
     unset): ``installed_version``, ``pid`` and ``owner`` (the process's own
@@ -292,19 +304,25 @@ class ClaimResult:
     reason to stop it on its own.
     """
 
-    result: Literal["free", "adopted", "stopped", "found"]
+    result: Literal["free", "installed", "stopped", "found"]
     existing_root: bool
     installed_version: str | None = None
     pid: str | None = None
     owner: str | None = None
-    health: Literal["healthy", "unresponsive", "unknown"] | None = None
+    health: Literal["healthy", "unresponsive", "unknown", "stopped"] | None = None
 
 
 _RESULT_LINE = re.compile(r"clio-deploy result=(\w+)((?: \w+=\S+)*)")
 
 
 def claim_command(
-    root: str, port: int, version: str, *, replace: bool = False, expected_pid: str = ""
+    root: str,
+    port: int,
+    version: str,
+    *,
+    replace: bool = False,
+    expected_pid: str = "",
+    answered: bool = False,
 ) -> CommandSpec:
     """The adopt-or-stop step that runs before installing.
 
@@ -316,6 +334,9 @@ def claim_command(
             port is stopped (the person chose "Replace it"). When ``False``
             (default), such a CLIO is left running and reported as ``found``
             instead -- claiming the port is never destructive on its own.
+        answered: The person already chose what to do with an agent found here,
+            so an installed but stopped agent under ``root`` is reported as
+            ``free`` (with its version) instead of ``installed``.
     """
 
     return CommandSpec(
@@ -329,6 +350,7 @@ def claim_command(
             version,
             "1" if replace else "0",
             expected_pid,
+            "1" if answered else "0",
         ],
         timeout_seconds=90,
     )
@@ -398,7 +420,18 @@ export CLIO_VERSION="$version" CLIO_INSTALLER_REF="$5" GACT_VERSION="$5"
 """
     + INSTALL_GUARD
     + r"""
-curl -fsSL "$4" | bash || { code=$?; printf 'Could not install CLIO %s from GitHub release %s (%s).\n' "$version" "$5" "$4"; exit "$code"; }
+# The person reads only the last line of a failed step, so it names the cause:
+# the installer's own last error line, kept from its output.
+install_log="$(mktemp 2>/dev/null || printf '%s' "$root/.install-output.log")"
+curl -fsSL "$4" | bash 2>&1 | tee "$install_log"
+code=$?
+if [ "$code" != 0 ]; then
+  cause="$(grep -E '(Error|error|ERROR|failed|denied|not found)' "$install_log" | grep -vE '^[[:space:]]*(File |\^|~)' | tail -n 1 | cut -c1-400)"
+  rm -f -- "$install_log"
+  printf 'Could not install CLIO %s from GitHub release %s: %s\n' "$version" "$5" "${cause:-the installer stopped without an error line; see Details}"
+  exit "$code"
+fi
+rm -f -- "$install_log"
 install_ok=1
 """
 )
@@ -465,15 +498,18 @@ def parse_claim(stdout: str) -> ClaimResult | None:
 
     for line in reversed(stdout.splitlines()):
         match = _RESULT_LINE.search(line)
-        if match and match.group(1) in {"free", "adopted", "stopped", "found"}:
+        if match and match.group(1) in {"free", "installed", "stopped", "found"}:
             fields = dict(item.split("=", 1) for item in match.group(2).split())
             health = fields.get("state")
+            installed = fields.get("installed")
             return ClaimResult(
                 result=match.group(1),  # type: ignore[arg-type]
                 existing_root=fields.get("existing_root") == "1",
-                installed_version=fields.get("installed"),
+                installed_version=None if installed in {None, "none"} else installed,
                 pid=fields.get("pid"),
                 owner=fields.get("owner"),
-                health=health if health in {"healthy", "unresponsive", "unknown"} else None,  # type: ignore[arg-type]
+                health=health  # type: ignore[arg-type]
+                if health in {"healthy", "unresponsive", "unknown", "stopped"}
+                else None,
             )
     return None

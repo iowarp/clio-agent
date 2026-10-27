@@ -78,7 +78,7 @@ def test_install_claims_the_port_then_installs_this_clios_version(tmp_path: Path
     assert '"$bin/clio" start' in plan.commands[2].args[1]
     # Trailing "0": claim never replaces a found CLIO unless configuration
     # says so (see build_driver_plan's on_conflict plumbing).
-    assert plan.commands[0].args[-4:] == [str(CLIO_AGENT_PORT), VERSION, "0", ""]
+    assert plan.commands[0].args[-5:] == [str(CLIO_AGENT_PORT), VERSION, "0", "", "0"]
     install = plan.commands[1]
     # The trailing "0": an install of this exact version already there is reused.
     assert install.args[-5:] == [
@@ -144,8 +144,17 @@ def test_parse_claim_reads_the_result_line() -> None:
     assert parse_claim("==> Port 17800 is free\nclio-deploy result=free existing_root=0\n") == (
         ClaimResult(result="free", existing_root=False)
     )
-    assert parse_claim("clio-deploy result=adopted existing_root=1 pid=42") == ClaimResult(
-        result="adopted", existing_root=True, pid="42"
+    assert parse_claim(
+        "clio-deploy result=installed existing_root=1 installed=0.9.4.1 state=stopped owner=/r"
+    ) == ClaimResult(
+        result="installed",
+        existing_root=True,
+        installed_version="0.9.4.1",
+        owner="/r",
+        health="stopped",
+    )
+    assert parse_claim("clio-deploy result=free existing_root=0 installed=none") == ClaimResult(
+        result="free", existing_root=False
     )
     assert parse_claim(
         "clio-deploy result=found existing_root=0 pid=99 installed=0.9.4.1"
@@ -231,13 +240,55 @@ async def _run(
     raise AssertionError("operation did not finish")
 
 
+_STOPPED = "clio-deploy result=installed existing_root=1 installed=0.9.4.1 state=stopped owner=/r\n"
+
+
 @pytest.mark.asyncio
-async def test_adopting_this_installs_server_skips_install_and_start(tmp_path: Path) -> None:
-    transports = _ScriptedTransports("clio-deploy result=adopted existing_root=1 pid=7\n")
+async def test_an_installed_but_stopped_agent_is_asked_about_not_upgraded(tmp_path: Path) -> None:
+    """An agent installed on the host but not running is a choice, never a silent upgrade."""
+
+    transports = _ScriptedTransports(_STOPPED)
     operation = await _run(tmp_path, transports)
-    assert operation.state == "succeeded"
+    assert operation.state == "failed"
+    assert operation.error == "clio_deploy_version_conflict"
+    assert operation.conflict is not None
+    assert operation.conflict.health == "stopped"
+    assert operation.conflict.installed_version == "0.9.4.1"
+    assert operation.conflict.owner == "/r"
     assert "install" not in transports.ran and "start" not in transports.ran
-    assert "teardown" not in transports.ran
+
+
+@pytest.mark.asyncio
+async def test_start_it_and_connect_starts_the_stopped_agent_as_it_is(tmp_path: Path) -> None:
+    """ "Start it and connect" starts the found install at its own version; no reinstall."""
+
+    transports = _ScriptedTransports("clio-deploy result=free existing_root=1 installed=0.9.4.1\n")
+    operation = await _run(
+        tmp_path,
+        transports,
+        configuration={
+            "on_conflict": "connect",
+            "conflict_state": "stopped",
+            "conflict_root": "/r",
+        },
+    )
+    assert operation.state == "succeeded", operation.error
+    assert "install" not in transports.ran
+    assert "start" in transports.ran
+
+
+@pytest.mark.asyncio
+async def test_update_and_connect_reinstalls_the_stopped_agent_then_starts_it(
+    tmp_path: Path,
+) -> None:
+    transports = _ScriptedTransports("clio-deploy result=free existing_root=1 installed=0.9.4.1\n")
+    operation = await _run(
+        tmp_path,
+        transports,
+        configuration={"on_conflict": "update", "conflict_state": "stopped", "conflict_root": "/r"},
+    )
+    assert operation.state == "succeeded", operation.error
+    assert transports.ran.index("install") < transports.ran.index("start")
 
 
 @pytest.mark.asyncio
@@ -553,6 +604,26 @@ def test_claim_on_a_free_port_reports_free(tmp_path: Path) -> None:
     result = _run_script(claim_command(str(tmp_path / "clio"), port, VERSION))
     assert result.returncode == 0, result.stdout
     assert parse_claim(result.stdout) == ClaimResult(result="free", existing_root=False)
+
+
+@linux_only
+def test_claim_reports_an_installed_but_stopped_agent(tmp_path: Path) -> None:
+    prefix = tmp_path / "clio"
+    _fake_install(prefix)
+    port = _free_port()
+    result = _run_script(claim_command(str(prefix), port, VERSION))
+    assert result.returncode == 0, result.stdout
+    assert parse_claim(result.stdout) == ClaimResult(
+        result="installed",
+        existing_root=True,
+        installed_version=VERSION,
+        owner=str(prefix),
+        health="stopped",
+    )
+    answered = _run_script(claim_command(str(prefix), port, VERSION, answered=True))
+    assert parse_claim(answered.stdout) == ClaimResult(
+        result="free", existing_root=True, installed_version=VERSION
+    )
 
 
 @linux_only
@@ -918,6 +989,24 @@ def test_a_failing_installer_fails_the_install_step(tmp_path: Path) -> None:
     result = _install(tmp_path, pypi="200", installer="echo 'xx disk quota exceeded'\nexit 9\n")
     assert result.returncode == 9
     assert "xx disk quota exceeded" in result.stdout
+
+
+@linux_only
+def test_a_failing_installer_names_its_error_on_the_last_line(tmp_path: Path) -> None:
+    """The person sees only a failed step's last line; it carries the installer's error."""
+
+    installer = (
+        "echo '==> Installing'\n"
+        "echo 'Traceback (most recent call last):'\n"
+        "echo '  File \"x.py\", line 1, in <module>'\n"
+        "echo 'ssl.SSLCertVerificationError: certificate verify failed' >&2\n"
+        "exit 3\n"
+    )
+    result = _install(tmp_path, pypi="200", installer=installer)
+    assert result.returncode == 3
+    last = result.stdout.strip().splitlines()[-1]
+    assert last.startswith("Could not install CLIO")
+    assert "certificate verify failed" in last
 
 
 @linux_only
