@@ -4,6 +4,8 @@
 #   install.ps1 --dev            the latest release overall, pre-releases included
 #   install.ps1 --source         source at `main`, with what main pins (submodules, uv.lock)
 #   install.ps1 --dev --source   source at `develop`
+#   install.ps1 -Desktop         the desktop app, bundled with its agent (x64 setup;
+#                                runs under emulation on ARM); -Dev/-Version pick the release
 #
 # -Source/-Dev/-Version/-Ref are the same options. From a URL:
 #   & ([scriptblock]::Create((irm <url>/install.ps1))) --dev
@@ -81,6 +83,8 @@ $OptSource = $false
 $OptDev = $false
 $OptVersion = ''
 $OptRef = ''
+$OptDesktop = $false
+$OptDownloadOnly = ''
 for ($i = 0; $i -lt $args.Count; $i++) {
     switch -Regex ([string]$args[$i]) {
         '^(--source|-Source)$' { $OptSource = $true; continue }
@@ -89,6 +93,8 @@ for ($i = 0; $i -lt $args.Count; $i++) {
         '^--version=' { $OptVersion = ([string]$args[$i]).Substring(10); continue }
         '^(--ref|-Ref)$' { $i++; $OptRef = [string]$args[$i]; continue }
         '^--ref=' { $OptRef = ([string]$args[$i]).Substring(6); continue }
+        '^(--desktop|-Desktop)$' { $OptDesktop = $true; continue }
+        '^(--download-only|-DownloadOnly)$' { $i++; $OptDownloadOnly = [string]$args[$i]; continue }
         default { Write-Host "clio installer: unknown option '$($args[$i])'" -ForegroundColor Red; exit 2 }
     }
 }
@@ -96,6 +102,67 @@ if (-not $OptVersion -and $env:CLIO_VERSION) { $OptVersion = $env:CLIO_VERSION }
 if ($env:CLIO_REF -and -not $OptRef) { $OptSource = $true; $OptRef = $env:CLIO_REF }
 if ($OptSource -and $OptVersion) { Die '--version pins a release; use --ref <tag or commit> with --source' }
 if (-not $OptSource -and $OptRef) { Die '--ref pins source; add --source' }
+
+# ---------- desktop app (-Desktop) ------------------------------------
+# The released desktop setup carries its own agent, so -Desktop needs no Python, uv or
+# git: it picks the release, downloads the bundled x64 setup, verifies it against the
+# release's checksum manifest, and runs it silently. -DownloadOnly DIR stops after the
+# verified download.
+function Install-ClioDesktop {
+    if ($OptSource) { Die '-Desktop installs a released app; -Source builds the agent only' }
+    if (-not [Environment]::Is64BitOperatingSystem) { Die 'CLIO Desktop requires 64-bit Windows.' }
+    [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
+    $repo = 'https://github.com/iowarp/clio-agent'
+    if ($OptVersion) {
+        $tag = Get-ClioReleaseTag $OptVersion
+    } elseif ($OptDev) {
+        # The most recently published release, pre-releases included (drafts are not listed).
+        $tag = (Invoke-RestMethod 'https://api.github.com/repos/iowarp/clio-agent/releases?per_page=30' |
+            Where-Object { $_.tag_name -like 'v*' -and -not $_.draft } | Select-Object -First 1).tag_name
+    } else {
+        $tag = (Invoke-RestMethod 'https://api.github.com/repos/iowarp/clio-agent/releases/latest').tag_name
+    }
+    if (-not $tag) { Die 'Could not find a CLIO release on GitHub.' }
+    $version = $tag -replace '^v', ''
+    $asset = "CLIO.Desktop_${version}_x64-setup-bundled.exe"
+    $checksums = 'SHA256SUMS.x86_64-pc-windows-msvc.bundled.txt'
+    $scratch = [IO.Path]::GetFullPath((Join-Path ([IO.Path]::GetTempPath()) ("clio-desktop-" + [Guid]::NewGuid().ToString('N'))))
+    New-Item -ItemType Directory -Path $scratch | Out-Null
+    try {
+        Say "Downloading CLIO Desktop $tag ($asset)"
+        $installer = Join-Path $scratch $asset
+        Invoke-WebRequest "$repo/releases/download/$tag/$asset" -OutFile $installer -UseBasicParsing
+        $manifest = (Invoke-WebRequest "$repo/releases/download/$tag/$checksums" -UseBasicParsing).Content
+        if ($manifest -is [byte[]]) { $manifest = [Text.Encoding]::UTF8.GetString($manifest) }
+        # GitHub replaces spaces in asset names with dots; older checksum manifests
+        # keep the original name. Accept sha256sum's text and binary markers.
+        $entries = @($manifest -split '\r?\n' | Where-Object {
+            ($_ -replace 'CLIO Desktop', 'CLIO.Desktop') -match ('^([a-fA-F0-9]{64}) [ *]' + [regex]::Escape($asset) + '$')
+        })
+        if ($entries.Count -ne 1) { Die 'Release checksum missing or ambiguous; nothing installed' }
+        if ((Get-FileHash -LiteralPath $installer -Algorithm SHA256).Hash -ne $entries[0].Substring(0, 64)) {
+            Die 'Download checksum mismatch; nothing installed'
+        }
+        if ($OptDownloadOnly) {
+            New-Item -ItemType Directory -Force -Path $OptDownloadOnly | Out-Null
+            $verified = Join-Path $OptDownloadOnly $asset
+            Copy-Item -LiteralPath $installer -Destination $verified
+            Say "Verified download: $verified"
+            return
+        }
+        # NSIS /S installs silently and keeps the installed application's update policy.
+        $setup = Start-Process -FilePath $installer -ArgumentList '/S' -Wait -PassThru -WindowStyle Hidden
+        if ($setup.ExitCode -ne 0) { Die "CLIO Desktop setup failed (exit $($setup.ExitCode))" }
+        Say 'CLIO Desktop installed. Open it from the Start menu.'
+    } finally {
+        Remove-Item -LiteralPath $scratch -Recurse -Force -ErrorAction SilentlyContinue
+    }
+}
+if ($OptDesktop) {
+    Install-ClioDesktop
+    exit 0
+}
+if ($OptDownloadOnly) { Die '-DownloadOnly goes with -Desktop' }
 $GactVersion = if ($env:GACT_VERSION)      { $env:GACT_VERSION }     else { 'latest' }
 $ClioInstallerRef = $env:CLIO_INSTALLER_REF
 $GactRef     = $env:GACT_REF

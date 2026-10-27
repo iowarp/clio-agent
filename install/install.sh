@@ -5,6 +5,8 @@
 #   install.sh --dev           the latest release overall, pre-releases included
 #   install.sh --source        source at `main`, with what main pins (submodules, uv.lock)
 #   install.sh --dev --source  source at `develop`
+#   install.sh --desktop       the desktop app, bundled with its agent (macOS, Linux);
+#                              --dev and --version pick the release as above
 #
 # --source run from inside a clio-agent checkout (`./install/install.sh`) installs that
 # checkout in place, on whatever branch it is; streamed (`curl ... | bash`) it clones.
@@ -47,6 +49,8 @@ OPT_SOURCE=0
 OPT_DEV=0
 OPT_VERSION=""
 OPT_REF=""
+OPT_DESKTOP=0
+OPT_DOWNLOAD_ONLY=""
 while [ $# -gt 0 ]; do
   case "$1" in
     --source|-Source) OPT_SOURCE=1 ;;
@@ -55,6 +59,8 @@ while [ $# -gt 0 ]; do
     --version=*) OPT_VERSION="${1#*=}" ;;
     --ref|-Ref) OPT_REF="${2:?--ref needs a value}"; shift ;;
     --ref=*) OPT_REF="${1#*=}" ;;
+    --desktop|-Desktop) OPT_DESKTOP=1 ;;
+    --download-only|-DownloadOnly) OPT_DOWNLOAD_ONLY="${2:?--download-only needs a directory}"; shift ;;
     -h|--help) usage; exit 0 ;;
     *) echo "clio installer: unknown option '$1' (try --help)" >&2; exit 2 ;;
   esac
@@ -83,6 +89,160 @@ release_tag() {
     die "no GitHub release tag for package version: $version"
   fi
 }
+
+# ---------- desktop app (--desktop) -----------------------------------
+# The released desktop installer carries its own agent, so --desktop needs no Python,
+# uv or git: it picks the release, downloads the bundled installer for this OS and
+# CPU, verifies it against the release's checksum manifest, and installs it.
+# --download-only DIR stops after the verified download.
+REPO_URL=https://github.com/iowarp/clio-agent
+
+desktop_tag() {
+  if [ -n "${OPT_VERSION:-${CLIO_VERSION:-}}" ]; then
+    release_tag "${OPT_VERSION:-$CLIO_VERSION}"
+  elif [ "$OPT_DEV" = 1 ]; then
+    # The newest release, pre-releases included, never a draft (an authenticated
+    # listing includes drafts; tag_name precedes draft in each release object).
+    curl --proto '=https' --tlsv1.2 -fsSL "https://api.github.com/repos/iowarp/clio-agent/releases?per_page=30" \
+      | awk '/"tag_name": *"v/ { tag=$0; sub(/.*"tag_name": *"/, "", tag); sub(/".*/, "", tag) }
+             /"draft": *false/ && tag != "" && !found { print tag; found=1 }
+             /"draft": *true/ { tag="" }'
+  else
+    local resolved
+    resolved="$(curl --proto '=https' --tlsv1.2 -fsSL -o /dev/null -w '%{url_effective}' "$REPO_URL/releases/latest")"
+    printf '%s' "${resolved##*/}"
+  fi
+}
+
+# The asset's SHA-256 from a release manifest. GitHub turns spaces in asset names into
+# dots and older manifests keep the original name; text and binary markers both occur.
+manifest_sha() {
+  awk -v name="$2" '
+    substr($0,65,2) == "  " || substr($0,65,2) == " *" {
+      file=substr($0,67); sub(/^CLIO Desktop/, "CLIO.Desktop", file)
+      if (file == name) print substr($0,1,64)
+    }' "$1"
+}
+
+file_sha() {
+  if have sha256sum; then sha256sum "$1" | awk '{print $1}'; else shasum -a 256 "$1" | awk '{print $1}'; fi
+}
+
+install_desktop() {
+  [ "$OPT_SOURCE" = 0 ] || die "--desktop installs a released app; --source builds the agent only (build the app from gact-tui)"
+  have curl || die "curl is required"
+  local os cpu tag version asset manifest scratch
+  os="$(uname -s)"; cpu="$(uname -m)"
+  tag="$(desktop_tag)"
+  [ -n "$tag" ] || die "could not find a CLIO release on GitHub"
+  version="${tag#v}"
+  [[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+(\.[0-9]+|-beta\.[0-9]+(\.[0-9]+)?|(a|rc)[0-9]+)?$ ]] \
+    || die "invalid release version: $tag"
+  local mac_bundled=1
+  case "$os" in
+    Darwin)
+      [ "$(sw_vers -productVersion | cut -d. -f1)" -ge 14 ] || die "CLIO Desktop requires macOS 14 or newer"
+      # uname can describe the Rosetta shell rather than the physical machine.
+      if [ "$(sysctl -n hw.optional.arm64 2>/dev/null || true)" = 1 ] || [ "$cpu" = arm64 ]; then
+        asset="CLIO.Desktop_${version}_aarch64-bundled.dmg"; manifest="SHA256SUMS.aarch64-apple-darwin.bundled.txt"
+      else
+        # Intel Macs have no bundled build: the app connects to an agent installed by
+        # this script without --desktop.
+        mac_bundled=0
+        asset="CLIO.Desktop_${version}_x64.dmg"; manifest="SHA256SUMS.x86_64-apple-darwin.lite.txt"
+      fi ;;
+    Linux)
+      local triple deb_arch rpm_arch
+      case "$cpu" in
+        x86_64|amd64) triple=x86_64-unknown-linux-gnu; deb_arch=amd64; rpm_arch=x86_64 ;;
+        aarch64|arm64) triple=aarch64-unknown-linux-gnu; deb_arch=arm64; rpm_arch=aarch64 ;;
+        *) die "unsupported processor: $cpu" ;;
+      esac
+      manifest="SHA256SUMS.${triple}.bundled.txt"
+      if have dpkg; then
+        asset="CLIO.Desktop_${version}_${deb_arch}-bundled.deb"
+      elif have rpm; then
+        asset="CLIO.Desktop-${version}-1.${rpm_arch}-bundled.rpm"
+      else
+        die "this Linux has neither dpkg nor rpm; download a desktop package from $REPO_URL/releases/tag/$tag"
+      fi ;;
+    *) die "unsupported OS for --desktop: $os (use install.ps1 -Desktop on Windows)" ;;
+  esac
+  scratch="$(mktemp -d "${TMPDIR:-/tmp}/clio-desktop.XXXXXXXX")"
+  # shellcheck disable=SC2064 # expand now: the trap must remove this run's directory
+  trap "[ -d '$scratch/mount' ] && hdiutil detach '$scratch/mount' -quiet 2>/dev/null; rm -rf '$scratch'" EXIT
+  say "Downloading CLIO Desktop $tag ($asset)"
+  curl --proto '=https' --tlsv1.2 -fL --progress-bar --retry 3 "$REPO_URL/releases/download/$tag/$asset" -o "$scratch/$asset" \
+    || die "could not download $asset from release $tag"
+  curl --proto '=https' --tlsv1.2 -fsSL --retry 3 "$REPO_URL/releases/download/$tag/$manifest" -o "$scratch/checksums" \
+    || die "could not download the release checksums ($manifest)"
+  local expected
+  expected="$(manifest_sha "$scratch/checksums" "$asset")"
+  [[ "$expected" =~ ^[0-9a-fA-F]{64}$ ]] || die "release checksum missing or ambiguous for $asset; nothing installed"
+  [ "$(file_sha "$scratch/$asset")" = "$expected" ] || die "download checksum mismatch; nothing installed"
+  if [ -n "$OPT_DOWNLOAD_ONLY" ]; then
+    mkdir -p "$OPT_DOWNLOAD_ONLY"
+    cp "$scratch/$asset" "$OPT_DOWNLOAD_ONLY/$asset"
+    say "Verified download: $OPT_DOWNLOAD_ONLY/$asset"
+    return 0
+  fi
+  case "$os" in
+    Darwin) install_desktop_mac "$scratch" "$asset" ;;
+    Linux) install_desktop_linux "$scratch/$asset" ;;
+  esac
+  if [ "$mac_bundled" = 0 ]; then
+    say "Intel Mac: the app connects to an agent. Install one with: install.sh (without --desktop)"
+  fi
+}
+
+install_desktop_linux() {
+  local package="$1" sudo=""
+  [ "$(id -u)" = 0 ] || { have sudo || die "installing $package needs root; run as root or install sudo"; sudo=sudo; }
+  case "$package" in
+    *.deb)
+      if have apt-get; then $sudo apt-get install -y "$package" || die "apt-get could not install $package"
+      else $sudo dpkg -i "$package" || die "dpkg could not install $package (missing dependencies: install them, then retry)"; fi ;;
+    *.rpm)
+      if have dnf; then $sudo dnf install -y "$package" || die "dnf could not install $package"
+      else $sudo rpm -U --replacepkgs "$package" || die "rpm could not install $package"; fi ;;
+  esac
+  say "CLIO Desktop installed. Open it from your applications menu, or run clio-desktop."
+}
+
+install_desktop_mac() {
+  local scratch="$1" asset="$2" destination app staging backup=""
+  pgrep -x clio-desktop >/dev/null && die "Quit CLIO Desktop before installing."
+  hdiutil verify "$scratch/$asset" >/dev/null || die "the disk image failed verification"
+  mkdir "$scratch/mount"
+  hdiutil attach "$scratch/$asset" -readonly -nobrowse -mountpoint "$scratch/mount" -quiet
+  app="$scratch/mount/CLIO Desktop.app"
+  [ -d "$app" ] || die "the disk image does not contain CLIO Desktop.app"
+  codesign --verify --deep --strict "$app" || die "the app's signature is invalid or absent; nothing installed"
+  destination="${CLIO_DESKTOP_DIR:-$HOME/Applications}"
+  case "$destination" in /*) ;; *) die "CLIO_DESKTOP_DIR must be absolute" ;; esac
+  mkdir -p "$destination"
+  staging="$(mktemp -d "$destination/.clio-install.XXXXXXXX")"
+  ditto "$app" "$staging/CLIO Desktop.app"
+  codesign --verify --deep --strict "$staging/CLIO Desktop.app" || die "the copied app failed its signature check"
+  if [ -e "$destination/CLIO Desktop.app" ]; then
+    backup="$destination/CLIO Desktop.previous.$(date +%Y%m%d%H%M%S).$$.app"
+    mv "$destination/CLIO Desktop.app" "$backup"
+  fi
+  if ! mv "$staging/CLIO Desktop.app" "$destination/CLIO Desktop.app"; then
+    [ -z "$backup" ] || mv "$backup" "$destination/CLIO Desktop.app"
+    die "could not install the app; the previous app was restored"
+  fi
+  rmdir "$staging"
+  say "Installed: $destination/CLIO Desktop.app"
+  [ -z "$backup" ] || say "Previous app kept: $backup"
+  say "Open CLIO Desktop from Applications. macOS may ask once: Privacy & Security > Open Anyway."
+}
+
+if [ "$OPT_DESKTOP" = 1 ]; then
+  install_desktop
+  exit 0
+fi
+[ -z "$OPT_DOWNLOAD_ONLY" ] || die "--download-only goes with --desktop"
 
 # ---------- defaults ---------------------------------------------------
 if [[ "$(uname -s)" = Darwin* ]]; then

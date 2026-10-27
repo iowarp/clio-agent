@@ -51,16 +51,26 @@ def test_backend_installer_requests_compatible_mac_wheels(
 )
 @pytest.mark.parametrize("integrity", ["valid", "tampered", "missing", "duplicate"])
 @pytest.mark.parametrize("checksum_format", ["canonical", "legacy", "binary"])
+@pytest.mark.parametrize("system", ["Darwin", "Linux"])
 def test_verified_desktop_download(
-    tmp_path: Path, version: str, integrity: str, checksum_format: str
+    tmp_path: Path, version: str, integrity: str, checksum_format: str, system: str
 ) -> None:
-    """A real hash check must precede setup, including beta normalization and bad manifests."""
+    """``install --desktop``: a real hash check precedes setup, with beta normalization
+    and bad manifests, on every OS (Windows runs ``install.ps1 -Desktop``)."""
     windows = os.name == "nt"
+    if windows and system == "Linux":
+        pytest.skip("one Windows variant")
     tag_version = {
         "0.9.5b2": "0.9.5-beta.2",
         "0.9.5b5.post1": "0.9.5-beta.5.1",
     }.get(version, version.removeprefix("v"))
-    suffix = "x64-setup-bundled.exe" if windows else "aarch64-bundled.dmg"
+    suffix = (
+        "x64-setup-bundled.exe"
+        if windows
+        else "aarch64-bundled.dmg"
+        if system == "Darwin"
+        else "amd64-bundled.deb"
+    )
     asset_name = f"CLIO.Desktop_{tag_version}_{suffix}"
     payload = tmp_path / "fixture.bin"
     payload.write_bytes(b"release payload")
@@ -95,7 +105,7 @@ function Invoke-WebRequest {{
     else {{ return @{{Content = (Get-Content -Raw -LiteralPath {quote(manifest)})}} }}
 }}
 function Start-Process {{ throw 'DownloadOnly must never start setup' }}
-& {quote(ROOT / "install/desktop.ps1")} -Version '{version}' -DownloadOnly -DownloadDirectory {quote(output)}
+& {quote(ROOT / "install/install.ps1")} -Desktop -Version '{version}' -DownloadOnly {quote(output)}
 """,
             encoding="utf-8",
         )
@@ -105,7 +115,10 @@ function Start-Process {{ throw 'DownloadOnly must never start setup' }}
         bin_dir = tmp_path / "bin"
         bin_dir.mkdir()
         commands = {
-            "uname": 'if [ "$1" = -s ]; then echo Darwin; else echo arm64; fi',
+            "uname": f'if [ "$1" = -s ]; then echo {system}; else echo '
+            + ("arm64" if system == "Darwin" else "x86_64")
+            + "; fi",
+            "dpkg": "exit 0",
             "sysctl": "echo 1",
             "sw_vers": "echo 14.0",
             "curl": """out=""; url=""
@@ -118,11 +131,12 @@ while [ "$#" -gt 0 ]; do
 done
 printf '%s\\n' "$url" >> "$TEST_URLS"
 case "$url" in
-  *.dmg) cp "$TEST_PAYLOAD" "$out" ;;
+  *.dmg|*.deb) cp "$TEST_PAYLOAD" "$out" ;;
   */SHA256SUMS.*.txt) cp "$TEST_MANIFEST" "$out" ;;
   *) exit 99 ;;
 esac""",
             "hdiutil": "echo 'Download-only must never mount' >&2; exit 99",
+            "apt-get": "echo 'Download-only must never install' >&2; exit 99",
         }
         for name, contents in commands.items():
             path = bin_dir / name
@@ -136,7 +150,13 @@ esac""",
             TEST_PAYLOAD=str(payload),
             TEST_MANIFEST=str(manifest),
         )
-        command = ["bash", str(ROOT / "install/desktop.sh"), "--download-only", str(output)]
+        command = [
+            "bash",
+            str(ROOT / "install/install.sh"),
+            "--desktop",
+            "--download-only",
+            str(output),
+        ]
     result = subprocess.run(command, env=env, text=True, capture_output=True, timeout=30)
     if integrity == "valid":
         assert result.returncode == 0, result.stdout + result.stderr

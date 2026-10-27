@@ -6,8 +6,9 @@
 curl -fsSL https://raw.githubusercontent.com/iowarp/clio-agent/main/install/install.sh | bash
 ```
 
-Installs to `~/.local/share/clio` (override via `CLIO_PREFIX`), drops a
-`clio` launcher into `~/.local/bin` (override via `CLIO_BIN_DIR`).
+Installs to `~/.local/share/clio-agent/app` (macOS: `~/Library/Application
+Support/clio-agent/data/app`; override via `CLIO_PREFIX`), drops a `clio` launcher into
+`~/.local/bin` (override via `CLIO_BIN_DIR`). Add `--desktop` for the desktop app.
 
 ## Windows (PowerShell)
 
@@ -15,7 +16,7 @@ Installs to `~/.local/share/clio` (override via `CLIO_PREFIX`), drops a
 irm https://raw.githubusercontent.com/iowarp/clio-agent/main/install/install.ps1 | iex
 ```
 
-Installs to `$HOME\AppData\Local\clio`, drops `clio.cmd` + `clio.ps1`
+Installs to `$HOME\AppData\Local\clio-agent\data\app`, drops `clio.cmd` + `clio.ps1`
 into `$HOME\AppData\Local\Microsoft\WindowsApps` (already on PATH on
 Windows 10/11).
 
@@ -80,10 +81,11 @@ To opt into CLIO v0.9.5-beta.8, replace the package pin above with
 `install.sh --dev` (or `--version 0.9.5b8`). Beta selection is explicit;
 the examples for the default channel continue to name the current stable release.
 
-## The four ways to install
+## The ways to install
 
 | Command | Installs |
 |---|---|
+| `install.sh --desktop` | the desktop app, bundled with its agent (latest stable; `--dev`/`--version` as below) |
 | `install.sh` | the latest stable release |
 | `install.sh --dev` | the most recently published release, pre-releases included |
 | `install.sh --source` | source at `main`, with what `main` pins (submodules, `uv.lock`) |
@@ -95,6 +97,7 @@ curl -fsSL $URL | bash                          # latest stable release
 curl -fsSL $URL | bash -s -- --dev              # latest release, betas included
 curl -fsSL $URL | bash -s -- --source           # main, from source
 curl -fsSL $URL | bash -s -- --dev --source     # develop, from source
+curl -fsSL $URL | bash -s -- --desktop          # the desktop app (macOS, Linux)
 
 # From your own clone: installs that checkout in place, on whatever branch it is
 git clone --recurse-submodules https://github.com/iowarp/clio-agent.git

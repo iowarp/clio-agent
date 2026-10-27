@@ -281,7 +281,8 @@ jobs:
               --agent-home "$HOME/.local/share/clio-agent-ci" \
               --boot-log "$HOME/.local/share/ai.iowarp.clio.desktop/logs/backend-boot.log"
           }
-          rec --name "desktop: install (apt)" -- sudo apt-get install -y -qq "${{ steps.asset.outputs.path }}"
+          # The terminal path people use: install.sh --desktop (downloads, verifies, installs).
+          rec --name "desktop: install.sh --desktop (deb)" -- bash install/install.sh --desktop --version "${{ steps.asset.outputs.tag }}"
           rec --name "desktop: first launch to ready, then quit" -- bash -c "$(declare -f smoke); smoke first"
           rec --name "desktop: returning launch to ready, then quit" -- bash -c "$(declare -f smoke); smoke second"
           rec --name "desktop: uninstall (apt)" -- sudo apt-get remove -y -qq clio-desktop
@@ -303,12 +304,9 @@ jobs:
         continue-on-error: true
         run: |
           rec() { python3 scripts/ci/record_step.py --file "$TIMINGS" "$@"; }
-          install_app() {
-            mount="$(hdiutil attach -nobrowse -readonly "$1" | awk -F'\t' '/\/Volumes\// {print $NF}')"
-            cp -R "$mount"/*.app /Applications/ && hdiutil detach "$mount" -quiet
-          }
-          rec --name "desktop: install (DMG copy)" -- bash -c "$(declare -f install_app); install_app '${{ steps.asset.outputs.path }}'"
-          app="$(ls -d /Applications/CLIO*.app | head -1)"
+          export CLIO_DESKTOP_DIR=/Applications
+          rec --name "desktop: install.sh --desktop (dmg)" -- bash install/install.sh --desktop --version "${{ steps.asset.outputs.tag }}"
+          app="/Applications/CLIO Desktop.app"
           for run in first second; do
             rec --name "desktop: $run launch to ready, then quit" -- uv run --no-project --python 3.14 --with psutil \
               scripts/smoke_desktop_package.py "$app/Contents/MacOS/clio-desktop" --quit --timeout 900 \

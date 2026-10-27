@@ -106,8 +106,6 @@ jobs:
           bash scripts/upload_release_assets.sh "$GITHUB_REF_NAME" \
             install/install.sh \
             install/install.ps1 \
-            install/desktop.sh \
-            install/desktop.ps1 \
             install/clio \
             install/clio.cmd \
             install/clio.ps1 \

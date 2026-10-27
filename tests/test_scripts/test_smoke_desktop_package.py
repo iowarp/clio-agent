@@ -34,7 +34,12 @@ def test_cli_keeps_warm_deadline_and_accepts_explicit_cold_setup_deadline(
     smoke.main()
 
     launch.assert_called_once_with(
-        desktop, evidence.resolve(), timeout=seconds or 180, boot_log=None, agent_home=None
+        desktop,
+        evidence.resolve(),
+        timeout=seconds or 180,
+        boot_log=None,
+        agent_home=None,
+        quit=False,
     )
     assert json.loads((evidence / "receipt.json").read_text()) == result
 

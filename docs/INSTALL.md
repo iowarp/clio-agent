@@ -78,26 +78,29 @@ without `-bundled` in the name, including every Linux `.AppImage` and the Intel 
 
 ### Desktop from a terminal
 
-macOS 14 or newer, without Python/uv/Node prerequisites:
+The install script installs the desktop app, bundled with its agent, with `--desktop`
+(macOS 14+ and Linux; Windows uses `install.ps1 -Desktop`). No Python, uv or Node is
+needed:
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/iowarp/clio-agent/main/install/desktop.sh \
-  | CLIO_VERSION=v0.9.5-beta.8 bash
+curl -fsSL https://raw.githubusercontent.com/iowarp/clio-agent/main/install/install.sh | bash -s -- --desktop
 ```
-
-Windows (bundled x64 setup, including x64 emulation on ARM):
 
 ```powershell
-$env:CLIO_VERSION = 'v0.9.5-beta.8'
-irm https://raw.githubusercontent.com/iowarp/clio-agent/main/install/desktop.ps1 | iex
+& ([scriptblock]::Create((irm https://raw.githubusercontent.com/iowarp/clio-agent/main/install/install.ps1))) -Desktop
 ```
 
-Both verify the asset against its release checksum before installation. macOS installs
-into `~/Applications` (`CLIO_DESKTOP_DIR` overrides it), keeps the previous app when
-upgrading, and verifies the app's signature. Intel Macs get the attach-only package.
-Save the script and use `--download-only DIR` (macOS) or `-DownloadOnly
--DownloadDirectory DIR` (Windows) to verify without installing. Omitting `CLIO_VERSION`
-selects the latest stable release; older unsigned Mac packages are refused.
+`--dev` picks the newest release including pre-releases, and `--version <v>` pins one,
+as for the agent install. The download is verified against the release's checksum
+manifest before anything is installed:
+- **macOS:** the bundled `.dmg` (Apple Silicon) goes into `~/Applications`
+  (`CLIO_DESKTOP_DIR` overrides it); the previous app is kept, and the app's signature
+  is verified. Intel Macs get the attach-only app; install the agent with `install.sh`.
+- **Linux:** the bundled `.deb` (with `dpkg`) or `.rpm` (with `rpm`) is installed with
+  `apt-get` / `dnf`, through `sudo` when not run as root.
+- **Windows:** the bundled x64 setup runs silently (also under emulation on ARM).
+
+`--download-only DIR` (`-DownloadOnly DIR` on Windows) stops after the verified download.
 
 The macOS app is ad-hoc signed, not Apple-notarized. A first-launch approval may still
 be needed in System Settings → Privacy & Security → Open Anyway. Neither script
