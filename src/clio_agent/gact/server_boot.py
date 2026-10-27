@@ -71,8 +71,15 @@ async def stop_producers(*tasks: asyncio.Task[Any] | None) -> None:
 async def close_request_owners(app: "FastAPI") -> None:
     """Close the owners that only serve requests, once the loop serves none any more.
 
-    Pending MCP browser sign-ins are released before the document store closes.
+    Pending MCP browser sign-ins are released before the document store closes. This
+    is the first shutdown step, so it also arms the shutdown budget (shutdown_budget).
     """
+    from clio_agent.gact import shutdown_budget  # noqa: PLC0415
+
+    shutdown_budget.begin(app)
+    boot_doctor = getattr(app.state, "health_boot_task", None)
+    if boot_doctor is not None:
+        boot_doctor.cancel()  # its probe thread ends on its own 1 s timeouts
     sign_ins = getattr(app.state, "mcp_sign_ins", None)
     if sign_ins is not None:
         await sign_ins.close()
