@@ -161,6 +161,18 @@ def _repair_workflow_references(self: Conversations) -> None:
                 )
 
 
+async def on_core_ready(self: Conversations) -> None:
+    """After Core recovery: finish the restore it interrupted, then reopen admission."""
+    if self._restoring:
+        await self.restore()
+    if self.history.requires_recovery:
+        return
+    await self.history.io.run(self.app.state.questions.restore)
+    await self.app.state.question_events.restore()
+    await self.history.io.run(self._restore_input_projections)
+    self.signal_pending()
+
+
 async def restore(self: Conversations) -> None:
     """Recover every conversation with open work, oldest first; then admission opens.
 
@@ -174,7 +186,6 @@ async def restore(self: Conversations) -> None:
             return
         for session_id in await self.history.io.run(open_work_sessions, self.history):
             await restore_session(self, session_id)
-            self._recovering.discard(session_id)
             if self.history.requires_recovery:
                 return  # The existing readiness callback resumes this same restoration.
     except (OSError, ClioError, RecordingUnconfirmed):
@@ -191,7 +202,7 @@ async def restore_session(self: Conversations, session_id: str) -> None:
 
     In order: close its stale open records, repair owed displays from committed input,
     project accepted pending feedback, then recover its interrupted assignments.
-    Admission for the conversation stays held (``_recovering``) until the caller
+    Admission for the conversation stays held until the caller (the obligations lane)
     releases it.
     """
     from clio_agent.gact.session_store import project_accepted_mail_messages

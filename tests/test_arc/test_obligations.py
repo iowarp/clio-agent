@@ -15,6 +15,7 @@ import pytest
 
 from clio_agent.arc.memory import ARCMemory
 from clio_agent.arc.task_types import TaskOwner, TaskSnapshot
+from clio_agent.gact import obligations
 from clio_agent.gact.conversation_recovery import open_work_sessions
 from clio_agent.gact.native_work import now
 from clio_agent.gact.obligations import Obligations
@@ -60,8 +61,9 @@ async def test_only_conversations_with_open_work_are_held(arc: ARCMemory, tmp_pa
     try:
         lane = Obligations(owner)
         await lane.hold()
-        assert owner._recovering == {first, second}
-        assert idle not in owner._recovering
+        assert lane.held == {first, second}
+        assert idle not in lane.held
+        assert lane.holds(first) and not lane.holds(idle)
         assert owner._restoring is False  # everyone else is admitted at once
         assert owner.obligations is lane
     finally:
@@ -95,18 +97,18 @@ async def test_a_conversation_someone_waits_on_is_recovered_first(
     _app, owner, first, second = await _environment(arc, tmp_path)
     recovered: list[str] = []
 
-    async def restore_session(session_id: str) -> None:
+    async def restore_session(_owner: Any, session_id: str) -> None:
         recovered.append(session_id)
 
-    monkeypatch.setattr(owner, "restore_session", restore_session)
+    monkeypatch.setattr(obligations, "restore_session", restore_session)
     try:
         lane = Obligations(owner)
         await lane.hold()
-        lane.wanted(second)
+        assert lane.holds(second)  # a message for it is waiting
         await asyncio.sleep(0)  # the hint crosses to the owner loop
         await lane.run()
         assert recovered == [second, first]
-        assert owner._recovering == set()
+        assert lane.held == set()
     finally:
         await owner.shutdown()
         await owner.recovery.drain()
@@ -119,23 +121,23 @@ async def test_owed_work_resumes_within_the_concurrency_bound(
     _app, owner, first, second = await _environment(arc, tmp_path)
     running, peak, resumed = 0, 0, []
 
-    async def restore_session(session_id: str) -> None:
+    async def restore_session(_owner: Any, session_id: str) -> None:
         return None
 
     async def run_pending(session_id: str) -> None:
         nonlocal running, peak
         running += 1
         peak = max(peak, running)
-        assert session_id not in owner._recovering  # released before it runs
+        assert session_id not in lane.held  # released before it runs
         await asyncio.sleep(0.05)
         resumed.append(session_id)
         running -= 1
 
-    monkeypatch.setattr(owner, "restore_session", restore_session)
+    monkeypatch.setattr(obligations, "restore_session", restore_session)
     monkeypatch.setattr(owner.history, "pending_mail", lambda session_id: ("owed",))
     monkeypatch.setattr(owner.runner, "run_pending", run_pending)
+    lane = Obligations(owner, concurrency=1)
     try:
-        lane = Obligations(owner, concurrency=1)
         await lane.hold()
         await lane.run()
         assert sorted(resumed) == sorted([first, second])
@@ -155,7 +157,7 @@ async def test_the_real_recovery_runs_per_conversation(arc: ARCMemory, tmp_path:
         await lane.hold()
         await lane.run()
         assert lane.recovered == 2
-        assert owner._recovering == set()
+        assert lane.held == set()
         assert lane.snapshot() == {"recovered": 2, "queued": 0, "running": 0}
     finally:
         await owner.shutdown()

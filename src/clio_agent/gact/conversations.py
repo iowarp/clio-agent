@@ -10,6 +10,7 @@ from collections.abc import AsyncIterator, Awaitable, Callable
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from datetime import datetime, timezone
+from functools import partial
 from typing import Any
 from uuid import uuid4
 
@@ -93,10 +94,7 @@ class Conversations:
         self._pause_tokens: dict[str, str] = {}
         self._deadlines: dict[str, asyncio.TimerHandle] = {}
         self._restoring = True
-        # Conversations whose open work the obligations lane has not recovered and released
-        # yet: only these wait, every other conversation is admitted (gact/obligations.py).
-        self._recovering: set[str] = set()
-        self.obligations: Any = None
+        self.obligations: Any = None  # holds conversations with open work (gact/obligations.py)
         self._closing = False
 
     def _input_committed(self, staged: StagedInput) -> None:
@@ -109,17 +107,7 @@ class Conversations:
         self.runner.bind_loop(self._loop)
         self._unlisten = self.history.listen_mail(self.runner.signal)
 
-        async def ready() -> None:
-            if self._restoring:
-                await self.restore()
-            if self.history.requires_recovery:
-                return
-            await self.history.io.run(self.app.state.questions.restore)
-            await self.app.state.question_events.restore()
-            await self.history.io.run(self._restore_input_projections)
-            self.signal_pending()
-
-        self.recovery.on_ready = ready
+        self.recovery.on_ready = partial(conversation_recovery.on_core_ready, self)
 
     def signal_pending(self) -> None:
         """Recheck indexed Core mail after readiness or policy changes."""
@@ -155,14 +143,11 @@ class Conversations:
 
     _restore_input_projections = conversation_recovery._restore_input_projections
     restore = conversation_recovery.restore
-    restore_session = conversation_recovery.restore_session
     _record_interrupted_calls = conversation_recovery._record_interrupted_calls
 
     def eligible(self, sid: str, item: MailItem) -> bool:
         """One admission/injection policy; producers do not independently spawn turns."""
-        if sid in self._recovering:
-            if self.obligations is not None:
-                self.obligations.wanted(sid)  # someone is waiting: recover it next
+        if self.obligations is not None and self.obligations.holds(sid):
             return False
         if self._restoring or self._model_recording.get(sid):
             return False

@@ -7,8 +7,8 @@ the background, while people already use Clio.
 
 * **Per conversation.** The conversations with open work are read from the open records
   alone (:func:`~clio_agent.gact.conversation_recovery.open_work_sessions`). Only those
-  conversations wait (``Conversations._recovering``); every other conversation is
-  admitted at once.
+  conversations wait (:meth:`Obligations.holds`); every other conversation is admitted
+  at once.
 * **Oldest first, someone waiting first.** Conversations are recovered oldest first. A
   conversation someone sends a message to (:meth:`Obligations.wanted`) is recovered next
   and released at once.
@@ -27,6 +27,8 @@ import asyncio
 import logging
 from collections.abc import Iterable
 from typing import TYPE_CHECKING, Any
+
+from clio_agent.gact.conversation_recovery import open_work_sessions, restore_session
 
 if TYPE_CHECKING:
     from clio_agent.gact.conversations import Conversations
@@ -62,28 +64,29 @@ class Obligations:
         self._wake = asyncio.Event()
         self._slots = asyncio.Semaphore(concurrency or obligation_concurrency())
         self._running: set[asyncio.Task[None]] = set()
+        self.held: set[str] = set()  # not yet recovered and released
         self.recovered = 0
 
     async def hold(self) -> None:
         """Hold exactly the conversations with open work, then open admission for the rest."""
         conversations = self.conversations
         history = conversations.history
-        from clio_agent.gact.conversation_recovery import open_work_sessions  # noqa: PLC0415
-
         order = await history.io.run(open_work_sessions, history)
-        conversations._recovering.update(order)
+        self.held.update(order)
         self._queue = list(order)
         conversations.obligations = self
         conversations._restoring = False
 
-    def wanted(self, session_id: str) -> None:
-        """Someone is waiting on ``session_id``: recover it next and release it at once."""
-        if self._loop.is_closed():
-            return
-        self._loop.call_soon_threadsafe(self._want, session_id)
+    def holds(self, session_id: str) -> bool:
+        """Whether ``session_id`` still waits; if so, someone wants it, so it goes next."""
+        if session_id not in self.held:
+            return False
+        if not self._loop.is_closed():
+            self._loop.call_soon_threadsafe(self._want, session_id)
+        return True
 
     def _want(self, session_id: str) -> None:
-        if session_id in self.conversations._recovering:
+        if session_id in self.held:
             self._wanted.add(session_id)
             self._wake.set()
 
@@ -107,7 +110,7 @@ class Obligations:
                 conversations._restoring = True  # Core recovery reruns the whole restore.
                 return
             session_id = self._next()
-            await conversations.restore_session(session_id)
+            await restore_session(conversations, session_id)
             self.recovered += 1
             await self._release(session_id)
         if self._running:
@@ -130,11 +133,11 @@ class Obligations:
         if session_id in self._wanted or not owed:
             # Someone is waiting, or nothing is owed: no slot needed.
             self._wanted.discard(session_id)
-            conversations._recovering.discard(session_id)
+            self.held.discard(session_id)
             conversations.runner.signal(session_id)
             return
         await self._slots.acquire()
-        conversations._recovering.discard(session_id)
+        self.held.discard(session_id)
         task = asyncio.create_task(conversations.runner.run_pending(session_id))
         self._running.add(task)
         task.add_done_callback(lambda done: self._drained(session_id, done))
