@@ -316,6 +316,38 @@ Two more problems:
 - **Shutdown sometimes takes 1–3 minutes**, against 3–4 s normally. A restart in that window can collide
   with the old process (see #1401).
 
+### Install, launch and quit, measured (A0)
+
+Measured on 2026-10-27, in two places:
+- **The install matrix**, run [40534647191](https://github.com/iowarp/clio-agent/actions/runs/40534647191). It uses the latest published release (v0.9.5-beta.8) and `main`'s one-liner.
+- **This repo's cloud container.** A desktop `.deb` built from the open branches, driven through its own window, deploying through its own SSH dialog to a local sshd.
+
+| Path | Install | First launch, ready | Returning launch | Quit |
+|---|---|---|---|---|
+| Linux `.deb`, release (CI) | 24 s | 70 s | 41 s | not exited 60 s after SIGTERM; launcher, server and clio-core left |
+| Linux `.deb`, branches (container) | 25 s | 39 s usable | 14 s usable | 7.2–7.6 s, nothing left; SIGKILL of the desktop: 9.9 s, nothing left |
+| Windows NSIS, release (CI) | 72 s | 27 s | 21 s | hard kill: 10 s, nothing left |
+| macOS DMG | not published for v0.9.5-beta.8 | | | |
+| SSH, the app's commands, release (CI) | fails at 33 s: Office can't load `libXinerama.so.1`, so the whole install aborts | | | |
+| SSH from the desktop, branches (container) | 60 s fresh, from the desktop's commit; 48 s update in place | start and connect: 8–19 s | | remote stopped 9–10 s after quit |
+| `main`'s one-liner (CI) | fails on all three OSes | | | |
+| Server alone (container) | | ready in 10 s on an empty store | | SIGTERM at ready: 1.4–2.2 s |
+
+The existing-agent choices on an SSH host all work from the desktop:
+- for a stopped agent: start it, update it, or start a new one;
+- for a running agent: reconnect, reconnect and update, or start another.
+
+Failures still open:
+- with several saved targets on one host, each deploy waits about 30 s in "Connecting over SSH";
+- a quit right after a deploy took about 40 s to stop the remote.
+
+**Proposed budgets:**
+- desktop install under 2 min;
+- first launch under 90 s;
+- returning launch under 45 s;
+- quit under 15 s with nothing left (the server's own stop budget is 20 s, #1401);
+- SSH fresh deploy under 3 min.
+
 ## Target architecture
 
 ### 1. One runtime artifact, one builder
