@@ -13,11 +13,21 @@ Two shapes, chosen by the request (backward compatible):
   all pages). A page is read by range from the session table's recent-first
   index; no other session row is read.
 
-Filters apply to both shapes: ``workspace_id`` (default ``ws_default`` unless
-``include_all_workspaces``), ``archived`` (default active only), and
-``parent_session_id``. ``kinds`` (comma separated ``conversation``, ``branch``,
-``agent``, ``lookup``) restricts to those session kinds -- the rail asks for
-``conversation,branch`` so flow children never fill its pages.
+Filters apply to every shape: ``workspace_id`` (default ``ws_default`` unless
+``include_all_workspaces`` or a named set below), ``archived`` (default active only),
+``parent_session_id`` (a parent's direct children, by index), ``ids`` (comma
+separated session ids), ``q`` (a title substring, case-insensitive) and ``kinds``
+(comma separated ``conversation``, ``branch``, ``agent``, ``lookup``; the rail asks
+for ``conversation,branch`` so flow children never fill its pages). Every filter is
+a query on the session table: no request reads rows it does not return.
+
+Two relations answer whole, not paged, because each is bounded by what a person is
+looking at rather than by history:
+
+* ``family_of=<id>``: that conversation's tree -- its root, every descendant, and
+  any ancestor between (all workspaces);
+* ``waiting_on_person=true``: the sessions waiting on a permission or an answer,
+  plus every ancestor of them, so each can be placed under its root (all workspaces).
 """
 
 from __future__ import annotations
@@ -29,8 +39,7 @@ from fastapi.responses import JSONResponse
 
 from clio_agent.gact.off_loop import run_off_loop
 from clio_agent.gact.protocol_v3 import project_for_request, session_to_v3
-from clio_agent.gact.routes.session_rows import filter_session_rows, rows_to_wire
-from clio_agent.gact.session_kind import session_kind
+from clio_agent.gact.routes.session_rows import rows_to_wire
 from clio_agent.gact.session_records import InvalidCursorError, PageQuery
 from clio_agent.gact.types import ErrorEnvelope, ErrorInfo, ListSessionsResponse
 
@@ -74,32 +83,46 @@ def register_session_list_route(app: FastAPI) -> None:
         archived: Optional[bool] = None,
         parent_session_id: Optional[str] = None,
         kinds: Optional[str] = None,
+        ids: Optional[str] = None,
+        q: Optional[str] = None,
+        family_of: Optional[str] = None,
+        waiting_on_person: bool = False,
         limit: Optional[int] = None,
         cursor: Optional[str] = None,
     ) -> ListSessionsResponse | JSONResponse:
-        """List sessions, whole or one page (see the module docstring)."""
+        """List sessions, whole, one page, or one relation (see the module docstring)."""
 
-        effective_workspace_id = workspace_id or (None if include_all_workspaces else "ws_default")
-        kind_filter = _parse_kinds(kinds)
+        named = bool(ids or family_of or waiting_on_person)
+        all_workspaces = include_all_workspaces or named
+        effective_workspace_id = workspace_id or (None if all_workspaces else "ws_default")
+        query = PageQuery(
+            workspace_id=effective_workspace_id,
+            archived=bool(archived),
+            kinds=_parse_kinds(kinds),
+            parent_session_id=parent_session_id or None,
+            ids=frozenset(part for part in (ids or "").split(",") if part) if ids else None,
+            search=(q or "").strip() or None,
+            limit=limit or DEFAULT_PAGE_SIZE,
+            cursor=cursor,
+        )
         store = app.state.sessions
-        if limit is None and cursor is None:
-            rows = await run_off_loop(lambda: store.list(workspace_id=effective_workspace_id))
-            rows = filter_session_rows(rows, archived=archived, parent_session_id=parent_session_id)
-            if kind_filter is not None:
-                rows = [row for row in rows if session_kind(row) in kind_filter]
-            next_cursor: Optional[str] = None
-            total: Optional[int] = None
+        next_cursor: Optional[str] = None
+        total: Optional[int] = None
+        if family_of or waiting_on_person:
+            # Bounded by the open conversation's tree / the work waiting on a person.
+            related = await run_off_loop(lambda: store.related(family_of=family_of or ""))
+            rows = [
+                row
+                for row in related
+                if bool(row.archived) == query.archived
+                and (not workspace_id or row.workspace_id == workspace_id)
+            ]
+            total = len(rows)
+        elif limit is None and cursor is None:
+            rows = await run_off_loop(lambda: store.select(query))
         else:
             if limit is not None and limit <= 0:
                 raise _invalid("limit must be a positive integer", limit=limit)
-            query = PageQuery(
-                workspace_id=effective_workspace_id,
-                archived=bool(archived),
-                kinds=kind_filter,
-                parent_session_id=parent_session_id or None,
-                limit=limit or DEFAULT_PAGE_SIZE,
-                cursor=cursor,
-            )
             try:
                 rows, next_cursor, total = await run_off_loop(lambda: store.page(query))
             except InvalidCursorError as exc:

@@ -122,6 +122,7 @@ def test_registered_migrations_have_unique_names() -> None:
     names = [item.name for item in store_migrations.MIGRATIONS]
     assert len(names) == len(set(names))
     assert {
+        "session_records_import",
         "task_event_lane",
         "transcript_legacy_import",
         "task_index_build",

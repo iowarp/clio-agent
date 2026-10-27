@@ -19,7 +19,7 @@ from __future__ import annotations
 NEVER_INDEXED_SCOPE_PREFIX = "_events"
 SEGMENT_NAME_SEP = "__"
 # Derived task lookup/open-work records are never searched, so they never carry one.
-NEVER_INDEXED_KINDS = frozenset({"task_lookup", "task_open"})
+NEVER_INDEXED_KINDS = frozenset({"task_lookup", "task_open", "session_records"})
 
 
 def may_carry_companion(kind: str, name: str) -> bool:

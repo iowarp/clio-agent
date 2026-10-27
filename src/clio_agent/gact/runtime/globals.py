@@ -640,6 +640,9 @@ def _set_app_arc(app: "FastAPI", arc: Any) -> None:
     app.state.arc = arc
     if arc is not None:
         _PROCESS_ARC = arc
+        sessions = getattr(app.state, "sessions", None)
+        if sessions is not None:  # session records live in this ARC's clio-core store
+            sessions.bind_store(arc._store)
     _wire_arc_op_logger(app)
     # ARC-as-source: wire the highway-derive sink onto the arc so a recorded semantic
     # event fans out to the durable trace / SSE / hooks AFTER ARC persists+folds it.
