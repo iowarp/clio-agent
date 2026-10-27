@@ -143,7 +143,7 @@ def main() -> int:
         args=[
             "-lc",
             'echo "files=$(find "$1" -type f 2>/dev/null | wc -l)'
-            ' processes=$(pgrep -u "$(id -u)" -f "clio_agent|clio_run|chimaera" | wc -l)"',
+            ' processes=$(pgrep -u "$(id -u)" -f "[c]lio_agent|[c]lio_run|[c]himaera" | wc -l)"',
             "x",
             root,
         ],
