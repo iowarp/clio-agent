@@ -28,3 +28,21 @@ def package_files(root: Path) -> Iterator[Path]:
             path = Path(directory) / name
             if path.is_file():
                 yield path
+
+
+def source_stamp(root: Path) -> str:
+    """The version of a local source as its file metadata: names, sizes and mtimes.
+
+    Recorded at install and compared at start, so an unchanged source is recognised
+    from one directory walk without reading or hashing any file (B4). A differing
+    stamp means "maybe changed", never "changed": the caller then compares contents.
+    """
+    import hashlib  # noqa: PLC0415 - only the stamp needs it
+
+    digest = hashlib.sha256()
+    for path in package_files(root):
+        info = path.stat()
+        digest.update(
+            f"{path.relative_to(root).as_posix()}\0{info.st_size}\0{info.st_mtime_ns}\n".encode()
+        )
+    return digest.hexdigest()

@@ -1,7 +1,7 @@
 """Tests for the MCP uv-cache disk bound (iowarp/clio-agent#1001).
 
 Failing-first coverage of the prune contract: age eviction, oldest-first size eviction,
-newest-kept, typed reasons, dry-run mutating nothing, and the boot-only live-peer guard.
+newest-kept, typed reasons, dry-run mutating nothing, and the live-peer guard (install-time and doctor --gc, never server start).
 """
 
 from __future__ import annotations
@@ -95,7 +95,7 @@ def test_size_residual_archive_flagged_not_deleted(cache_dir: Path) -> None:
     # the residual is flagged (never a silent over-budget, never a wheel delete).
     result = mcp_cache.prune_uv_cache(cache_dir, max_bytes=100, max_age_days=999, now=now)
 
-    assert archive.exists(), "the shared wheel archive is never deleted by the boot prune"
+    assert archive.exists(), "the shared wheel archive is never deleted by the prune"
     assert not env.exists()
     assert result.over_budget_residual is True
 
@@ -114,12 +114,12 @@ def test_dry_run_mutates_nothing(cache_dir: Path) -> None:
     assert result.bytes_freed >= 100
 
 
-def test_boot_prune_skips_when_peer_alive(cache_dir: Path) -> None:
+def test_owned_prune_skips_when_peer_alive(cache_dir: Path) -> None:
     now = time.time()
     old = _make_env(cache_dir, "server-old", size_bytes=100, age_days=99, now=now)
 
     peer = mcp_cache and object()  # any truthy peer token
-    result = mcp_cache.boot_prune_mcp_cache(
+    result = mcp_cache.prune_owned_mcp_cache(
         cache_dir=cache_dir,
         others_alive=lambda: [peer],
         now=now,
@@ -129,14 +129,14 @@ def test_boot_prune_skips_when_peer_alive(cache_dir: Path) -> None:
     assert old.exists(), "nothing is deleted while a peer is alive"
 
 
-def test_boot_prune_runs_when_no_peers(cache_dir: Path, monkeypatch) -> None:
+def test_owned_prune_runs_when_no_peers(cache_dir: Path, monkeypatch) -> None:
     now = time.time()
     monkeypatch.setenv("CLIO_MCP_CACHE_MAX_AGE_DAYS", "14")
     monkeypatch.setenv("CLIO_MCP_CACHE_MAX_BYTES", str(10**9))
     old = _make_env(cache_dir, "server-old", size_bytes=100, age_days=30, now=now)
     new = _make_env(cache_dir, "server-new", size_bytes=100, age_days=1, now=now)
 
-    result = mcp_cache.boot_prune_mcp_cache(
+    result = mcp_cache.prune_owned_mcp_cache(
         cache_dir=cache_dir,
         others_alive=lambda: [],
         now=now,

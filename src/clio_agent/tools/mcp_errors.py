@@ -29,9 +29,6 @@ from __future__ import annotations
 
 from typing import cast
 
-from mcp.client._input_required import InputRequiredRoundsExceededError
-from mcp.shared.exceptions import MCPError
-
 from clio_agent.errors import (
     MCPInputRequiredRoundsExceededError,
     MCPMissingRequiredClientCapabilityError,
@@ -47,6 +44,8 @@ __all__ = [
 
 def typed_mcp_protocol_error(error: BaseException) -> MCPProtocolError | None:
     """Map supported MCP JSON-RPC refusal codes without inspecting message text."""
+
+    from mcp.shared.exceptions import MCPError  # noqa: PLC0415 - MCP SDK loads on first use (#702)
 
     if not isinstance(error, MCPError):
         return None
@@ -66,6 +65,10 @@ def typed_mcp_call_error(error: BaseException, *, tool: str = "") -> Exception |
     telemetry or building a wire envelope, so neither the SDK exception class nor
     its message can leak into a CLIO surface.
     """
+
+    from mcp.client._input_required import (  # noqa: PLC0415 - MCP SDK on first use (#702)
+        InputRequiredRoundsExceededError,
+    )
 
     if isinstance(error, InputRequiredRoundsExceededError):
         return MCPInputRequiredRoundsExceededError(getattr(error, "max_rounds", 0), tool=tool)

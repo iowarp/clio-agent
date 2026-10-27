@@ -67,8 +67,6 @@ from dataclasses import dataclass
 from threading import Lock
 from typing import TYPE_CHECKING, Any
 
-from fastmcp.utilities.tasks import TASKS_EXTENSION_ID
-
 from clio_agent.errors import (
     MCP_TASK_CAPABILITY_UNKNOWN,
     MCP_TASK_DIRECT_FACTORY_CONSTRUCTION_FAILED,
@@ -120,6 +118,8 @@ def _extensions_declare_tasks(client: Any) -> bool:
     extension advertisement (#1119) still sees the backend's true
     capabilities here, since the server answers unconditionally.
     """
+
+    from fastmcp.utilities.tasks import TASKS_EXTENSION_ID  # noqa: PLC0415 - first use (#702)
 
     capabilities = getattr(client, "server_capabilities", None)
     extensions = getattr(capabilities, "extensions", None) or {}

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from threading import Barrier
@@ -257,7 +258,7 @@ def test_a_changed_reader_rereads_installed_snapshots_and_keeps_trust(tmp_path: 
     service.store.install(str(_market(tmp_path / "src")), name="demo")
     service.store.trust("demo", reason="test")
     state = service.store.read_state()
-    state["reader"] = store_module.READER_VERSION - 1
+    state["marketplaces"]["demo"]["reader"] = store_module.READER_VERSION - 1
     state["plugins"]["demo/pdf"]["description"] = "read by an older reader"
     service.store._write_state(state)
 
@@ -265,10 +266,91 @@ def test_a_changed_reader_rereads_installed_snapshots_and_keeps_trust(tmp_path: 
 
     assert [row["marketplace"] for row in results] == ["demo"]
     reread = service.store.read_state()
-    assert reread["reader"] == store_module.READER_VERSION
+    assert reread["marketplaces"]["demo"]["reader"] == store_module.READER_VERSION
     assert reread["plugins"]["demo/pdf"]["description"] != "read by an older reader"
     assert service.store.marketplaces()["demo"]["trusted"] is True
     assert service.store.reread_installed() == []
+
+
+def test_a_fresh_install_is_not_reread_at_the_next_start(tmp_path: Path) -> None:
+    """B4: an install records its reader, so the next start re-reads nothing."""
+    service = _service(tmp_path)
+    service.store.install(str(_market(tmp_path / "src")), name="demo")
+    assert service.store.reread_installed() == []
+
+
+def test_a_store_from_before_reader_records_is_reread_once(tmp_path: Path) -> None:
+    service = _service(tmp_path)
+    service.store.install(str(_market(tmp_path / "src")), name="demo")
+    state = service.store.read_state()
+    state.pop("reader", None)
+    del state["marketplaces"]["demo"]["reader"]
+    service.store._write_state(state)
+
+    assert [row["marketplace"] for row in service.store.reread_installed()] == ["demo"]
+    assert service.store.reread_installed() == []
+
+
+def _default_service(
+    tmp_path: Path, source: Path, monkeypatch: pytest.MonkeyPatch
+) -> PluginService:
+    monkeypatch.setenv("CLIO_DEFAULT_MARKETPLACE", str(source))
+    return PluginService(
+        PluginStore(tmp_path / "store"), native_tools=_native(), default_marketplace=True
+    )
+
+
+def _no_hash(*_args: Any, **_kwargs: Any) -> tuple[str, str]:
+    raise AssertionError("an unchanged source must not be hashed")
+
+
+def test_an_unchanged_default_marketplace_is_recognised_without_hashing(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """B4: start compares the recorded source stamp, not a full-tree hash."""
+    from clio_agent.plugins import loader
+
+    source = _market(tmp_path / "src")
+    service = _default_service(tmp_path, source, monkeypatch)
+    assert service.ensure_default_marketplace() is not None
+
+    monkeypatch.setattr(loader, "tree_digests", _no_hash)
+    assert service.ensure_default_marketplace() is None
+
+
+def test_a_touched_default_marketplace_is_compared_once_then_stamped(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from clio_agent.plugins import loader
+
+    source = _market(tmp_path / "src")
+    service = _default_service(tmp_path, source, monkeypatch)
+    service.ensure_default_marketplace()
+    before = service.store.marketplaces()["clio"]["source_stamp"]
+    agents = source / "agents" / "standard.py"
+    os.utime(agents, ns=(agents.stat().st_atime_ns, agents.stat().st_mtime_ns + 10**9))
+
+    assert service.ensure_default_marketplace() is None  # same content: no reinstall
+    after = service.store.marketplaces()["clio"]["source_stamp"]
+    assert after and after != before
+    monkeypatch.setattr(loader, "tree_digests", _no_hash)
+    assert service.ensure_default_marketplace() is None  # the new stamp answers
+
+
+def test_a_changed_default_marketplace_is_reinstalled(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    source = _market(tmp_path / "src")
+    service = _default_service(tmp_path, source, monkeypatch)
+    service.ensure_default_marketplace()
+    snapshot = service.store.marketplaces()["clio"]["snapshot"]
+    agents = source / "agents" / "standard.py"
+    mtime = agents.stat().st_mtime_ns
+    write(agents, AGENTS.format(version="2.0.0"))
+    os.utime(agents, ns=(mtime + 10**9, mtime + 10**9))
+
+    assert service.ensure_default_marketplace() is not None
+    assert service.store.marketplaces()["clio"]["snapshot"] != snapshot
 
 
 def test_create_only_user_agent_preserves_existing_bytes(tmp_path: Path) -> None:

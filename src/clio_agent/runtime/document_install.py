@@ -114,6 +114,24 @@ def install_document_runtime(
     return result
 
 
+def prune_after_install() -> dict[str, Any]:
+    """Bound the MCP spawn cache at the end of an install or upgrade (B4).
+
+    Pruning is maintenance, never server start. A skip or a failure is reported with
+    a typed reason and never fails the install; ``clio-agent doctor --gc`` reclaims
+    the same cache on demand.
+    """
+    from clio_agent.tools.mcp_cache import prune_owned_mcp_cache  # noqa: PLC0415
+
+    try:
+        pruned = prune_owned_mcp_cache()
+    except OSError as error:
+        return {"status": "failed", "reason": "mcp_cache_prune_failed", "error": str(error)}
+    if pruned is None:
+        return {"status": "skipped", "reason": "mcp_cache_prune_skipped_live"}
+    return {"status": "pruned", "freed_bytes": pruned.bytes_freed, "evicted": pruned.count}
+
+
 def main() -> None:
     """Run the shared installer step; an incomplete setup exits unsuccessfully."""
     parser = argparse.ArgumentParser(description=__doc__)
@@ -137,16 +155,15 @@ def main() -> None:
         setup_protected_execution=args.setup_protected_execution,
         reuse_installed=args.reuse_installed,
     )
-    print(
-        json.dumps(
-            {
-                "status": result["status"],
-                "runtime_id": result["runtime_id"],
-                "office": result["native_tools"]["soffice"],
-            }
-        ),
-        flush=True,
-    )
+    summary = {
+        "status": result["status"],
+        "runtime_id": result["runtime_id"],
+        "office": result["native_tools"]["soffice"],
+    }
+    if not args.reuse_installed:
+        # An install or upgrade, not a per-launch check: bound the MCP cache now.
+        summary["mcp_cache"] = prune_after_install()
+    print(json.dumps(summary), flush=True)
 
 
 if __name__ == "__main__":

@@ -30,6 +30,8 @@ for name in (
     'clio_agent.tools.servers.fs_server', 'clio_agent.tools.servers.shell_server',
     'clio_agent.tools.relay_transport',
     'fastmcp.client.client', 'clio_agent.tools.task_receipt',
+    # #702 / B4: the MCP SDK, and globusfs under linked storage, load on first use.
+    'mcp', 'fastmcp', 'mcp_types', 'globusfs', 'aiohttp',
 ):
     assert name not in sys.modules, name
 print(json.dumps({'routes': len(app.routes)}))
