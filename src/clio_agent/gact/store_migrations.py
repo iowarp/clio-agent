@@ -119,6 +119,18 @@ def _run_task_event_lane(app: Any) -> dict[str, Any]:
     return {key: report[key] for key in keys if key in report}
 
 
+def _task_lane_reads_owed(app: Any) -> bool:
+    from clio_agent.gact.task_lane_reads import reads_owed  # noqa: PLC0415
+
+    return reads_owed(app.state.task_history)
+
+
+def _run_task_lane_reads(app: Any) -> dict[str, Any]:
+    from clio_agent.gact.task_lane_reads import migrate_task_lane_reads  # noqa: PLC0415
+
+    return migrate_task_lane_reads(app.state.task_history)
+
+
 def _task_index_owed(app: Any) -> bool:
     return app.state.task_history.index.marker() is None
 
@@ -154,6 +166,13 @@ MIGRATIONS: tuple[StoreMigration, ...] = (
         _run_task_event_lane,
         _task_event_lane_owed,
         boot_reason="task_event_lane_migration_owed",
+    ),
+    StoreMigration(
+        "task_lane_reads",
+        "Annotate each task-event lane so a task tree loads from the lane alone",
+        _run_task_lane_reads,
+        _task_lane_reads_owed,
+        boot_reason="task_lane_reads_migration_owed",
     ),
     StoreMigration(
         "transcript_legacy_import",

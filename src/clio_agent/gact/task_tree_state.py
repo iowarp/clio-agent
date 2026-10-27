@@ -31,6 +31,7 @@ from clio_agent.arc.task_types import (
 )
 from clio_agent.gact import task_history_projection as projection
 from clio_agent.gact.task_event_lane import TASK_EVENTS, session_task_events
+from clio_agent.gact.task_lane_reads import INPUT_COMMITTED, receipt_record
 
 if TYPE_CHECKING:
     from clio_agent.arc.memory import ARCMemory
@@ -151,6 +152,7 @@ def replay(
     """
     state._replaying = True
     deferred: list[tuple[str, dict[str, Any]]] = []
+    receipts: dict[tuple[str, str], dict[str, Any]] = {}
     for session_id, content in events:
         event_type = str(content.get("event_type", ""))
         if event_type not in TASK_EVENTS:
@@ -160,6 +162,10 @@ def replay(
             if "schema_version" in payload:
                 raise ValueError("Task history observation envelope is incomplete")
             continue  # unversioned historical formats are decoded at startup migration
+        if event_type == INPUT_COMMITTED:
+            # A lane receipt: the input reached its context scope (read below, not here).
+            receipts[(session_id, str(payload["record"].get("id")))] = payload
+            continue
         if event_type == "task.subscription":
             record = payload["record"]
             if owner_filed_subscriptions:
@@ -182,10 +188,14 @@ def replay(
         ordering.sort()
     scopes: dict[tuple[str, str], dict[str, RecipientInput]] = {}
     for locator in state._input_locations.values():
-        key = (locator["session_id"], locator["scope"])
-        if key not in scopes:
-            scopes[key] = state.context_inputs(*key)
-        recovered = scopes[key].get(locator["id"])
+        receipt = receipts.get((locator["session_id"], locator["id"]))
+        if receipt is not None:
+            recovered: RecipientInput | None = receipt_record(receipt, locator)
+        else:  # no receipt (an older store, or a stop between commit and receipt)
+            key = (locator["session_id"], locator["scope"])
+            if key not in scopes:
+                scopes[key] = state.context_inputs(*key)
+            recovered = scopes[key].get(locator["id"])
         if recovered is not None:
             projection._accept_input(state, recovered)
     state._replaying = False

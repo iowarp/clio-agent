@@ -79,6 +79,7 @@ async def start(app: Any) -> None:
     from clio_agent.gact.store_migrations import ensure_at_boot
 
     await history.io.run(ensure_at_boot, app, "task_event_lane")
+    await history.io.run(ensure_at_boot, app, "task_lane_reads")  # after the lane copy
     recovery = CoreRecovery(history)
     app.state.task_history, app.state.task_recovery = history, recovery
     app.state.human_principal = "human:" + str(app.state.connected_storage.store.clio_id)
