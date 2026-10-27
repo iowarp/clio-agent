@@ -452,11 +452,23 @@ print(max(v for _, v in found) if sys.argv[1] == "stable" else max(found)[1])
   wheel_arg=""
   [ "$OS" != darwin ] || wheel_arg="--only-binary=rasterio"
   say "Installing $pkg_spec from PyPI (Python $py, locked by $tag)"
-  rm -rf "$VENV"
+  # The installed environment is set aside, not deleted, until the new one is in
+  # place: an install that fails or is interrupted puts it back.
+  previous=""
+  if [ -d "$VENV" ]; then
+    previous="$VENV.previous"
+    rm -rf "$previous"
+    mv "$VENV" "$previous"
+  fi
   mkdir -p "$PREFIX/clio-agent"
-  uv venv --python "$py" "$VENV" >/dev/null
-  uv pip install --quiet --python "$VENV/bin/python" ${wheel_arg:+"$wheel_arg"} \
-    --constraint "$lockdir/constraints.txt" "$pkg_spec"
+  if ! { uv venv --python "$py" "$VENV" >/dev/null \
+      && uv pip install --quiet --python "$VENV/bin/python" ${wheel_arg:+"$wheel_arg"} \
+        --constraint "$lockdir/constraints.txt" "$pkg_spec"; }; then
+    rm -rf "$VENV"
+    [ -z "$previous" ] || mv "$previous" "$VENV"
+    die "could not install $pkg_spec${previous:+; the previous installation is unchanged}"
+  fi
+  [ -z "$previous" ] || rm -rf "$previous"
   CLIO_VERSION="$package_version"
 fi
 

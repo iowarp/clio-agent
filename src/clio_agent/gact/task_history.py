@@ -36,6 +36,7 @@ from clio_agent.arc.task_types import (
 )
 from clio_agent.errors import ClioError
 from clio_agent.gact import (
+    task_event_lane,
     task_history_projection,
     task_history_queries,
     task_index_build,
@@ -757,15 +758,16 @@ class TaskHistory:
         from clio_agent.gact.semantic_events import SemanticEvent
 
         assert_store_write_off_loop("task.observation")
-        self.confirm_write(
-            lambda: self.arc.record_semantic_event(
+        self.confirm_write(  # the task-event lane first, then the canonical log
+            lambda: task_event_lane.record(
+                self.arc,
                 SemanticEvent(
                     event_type=event_type,
                     session_id=session_id,
                     trace_id="",
                     span_id=identity,
                     payload={"schema_version": 1, "observation_id": identity, "record": payload},
-                )
+                ),
             )
         )
 

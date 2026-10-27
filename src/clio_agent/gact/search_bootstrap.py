@@ -117,7 +117,9 @@ async def _finish(runtime: Any, operation_id: str, poll_seconds: float) -> str:
 
 
 def _last_action(runtime: Any) -> str:
-    """The newest lifecycle action on the local SearXNG (status, logs, verify ignored)."""
+    """The person's newest lifecycle action on the local SearXNG (status, logs, verify
+    ignored). CLIO's own actions (first-run install and start, the stop at shutdown) are
+    not the person's decision and never stand for one."""
 
     rows = [
         row
@@ -125,17 +127,68 @@ def _last_action(runtime: Any) -> str:
         if row.service_id == SERVICE_ID
         and row.target_id == LOCAL_TARGET
         and row.action in {"install", "reinstall", "start", *_DECLINED}
+        and getattr(row, "initiator", "person") != "clio"
     ]
     rows.sort(key=lambda row: str(row.created_at))
     return str(rows[-1].action) if rows else ""
 
 
-async def _run(runtime: Any, action: Literal["install", "start"], poll_seconds: float) -> str:
+async def _run(
+    runtime: Any, action: Literal["install", "start", "stop"], poll_seconds: float
+) -> str:
     row = runtime.start_action(
         SERVICE_ID,
         ServiceActionRequest(target_id=LOCAL_TARGET, action=action, variant_id=VARIANT_ID),
+        initiator="clio",
     )
     return await _finish(runtime, row.id, poll_seconds)
+
+
+def _started_by_clio(runtime: Any) -> bool:
+    """Whether the newest install or start of the local SearXNG was CLIO's own.
+
+    In any state: a start the person asked for that is still settling is theirs.
+    """
+    rows = [
+        row
+        for row in runtime.store.operations()
+        if row.service_id == SERVICE_ID
+        and row.target_id == LOCAL_TARGET
+        and row.action in _STARTING
+    ]
+    rows.sort(key=lambda row: str(row.created_at))
+    return bool(rows) and getattr(rows[-1], "initiator", "person") == "clio"
+
+
+async def stop_started(app: Any, *, timeout: float = 10.0, poll_seconds: float = 0.5) -> str:
+    """At shutdown, stop the local SearXNG when CLIO itself started it.
+
+    A SearXNG the person started from Infrastructure keeps running. The stop is CLIO's
+    own action, so the next start of CLIO starts SearXNG again. Returns what happened:
+    ``not_started_by_clio``, ``not_running``, ``stopped``, ``stop_failed`` or
+    ``stop_timed_out``.
+    """
+
+    runtime = getattr(app.state, "infrastructure_runtime", None)
+    store = getattr(app.state, "infrastructure_store", None)
+    if runtime is None or store is None or not _started_by_clio(runtime):
+        return "not_started_by_clio"
+    record = store.service(LOCAL_TARGET, SERVICE_ID)
+    if record is None or record.state != "running":
+        return "not_running"
+    try:
+        state = await asyncio.wait_for(_run(runtime, "stop", poll_seconds), timeout)
+    except TimeoutError:
+        logger.warning(
+            "local SearXNG not stopped reason=stop_timed_out timeout_s=%s; it keeps running",
+            timeout,
+        )
+        return "stop_timed_out"
+    if state != "succeeded":
+        logger.warning("local SearXNG not stopped reason=stop_failed state=%s", state)
+        return "stop_failed"
+    logger.info("local SearXNG stopped with CLIO")
+    return "stopped"
 
 
 async def ensure_local_searxng(

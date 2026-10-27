@@ -321,6 +321,8 @@ def _atom_boot(app: "FastAPI") -> None:
             history = TaskHistory(app.state.arc)
             history.restore()
         app.state.task_history = history
+        # Before any tree loads; normally `clio-agent migrate` copied it (one marker read).
+        ensure_at_boot(app, "task_event_lane")
     # Legacy content is captured before any reconciliation/cache update; normally
     # `clio-agent migrate` already did, and this is one marker read.
     ensure_at_boot(app, "transcript_legacy_import")

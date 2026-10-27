@@ -121,7 +121,12 @@ def test_health_has_no_row_before_boot_checked() -> None:
 def test_registered_migrations_have_unique_names() -> None:
     names = [item.name for item in store_migrations.MIGRATIONS]
     assert len(names) == len(set(names))
-    assert {"transcript_legacy_import", "task_index_build", "artifact_index"} <= set(names)
+    assert {
+        "task_event_lane",
+        "transcript_legacy_import",
+        "task_index_build",
+        "artifact_index",
+    } <= set(names)
     with pytest.raises(KeyError):
         store_migrations.migration("unknown")
 

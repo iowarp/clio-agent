@@ -135,9 +135,17 @@ def _session_mcp_server_row(
 ) -> dict[str, Any]:
     """Shape one declared namespace without exposing credentials."""
 
+    from clio_agent.tools import mcp_prepare  # noqa: PLC0415
+
     tools = [str(name) for name in runtime.get("tools", [])]
     plugin_owned = spec.source.startswith("plugin:")
     status = str(runtime.get("status") or "available") if spec.usable else "unavailable"
+    # A server being prepared (or whose preparation failed) says so, with its phase and
+    # typed reason, until its connection is up.
+    preparation = mcp_prepare.preparation_state(namespace)
+    if spec.usable and status != "ready" and preparation is not None:
+        if preparation["state"] in (mcp_prepare.PREPARING, mcp_prepare.FAILED):
+            status = str(preparation["state"])
     row: dict[str, Any] = {
         "id": f"session_mcp_{session_id}_{namespace}" if session_id else f"draft_mcp_{namespace}",
         "name": namespace,
@@ -150,6 +158,10 @@ def _session_mcp_server_row(
         "session_id": session_id,
         "spec": redact_mcp_spec(asdict(spec)),
     }
+    if preparation is not None:
+        row["preparation"] = preparation
+        if status == mcp_prepare.FAILED:
+            row["reason"] = preparation.get("reason", "")
     if runtime_unavailable:
         # ``available`` alone conflates "declared, fleet never started" with
         # "declared, fleet reaped" with "declared, reader is broken".

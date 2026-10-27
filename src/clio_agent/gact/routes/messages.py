@@ -35,6 +35,7 @@ from typing import TYPE_CHECKING, Any, cast
 from fastapi import BackgroundTasks, FastAPI, HTTPException, Request, Response
 from fastapi.responses import JSONResponse
 
+from clio_agent.gact import session_warmup
 from clio_agent.gact.events import Event
 from clio_agent.gact.message_submission import accept_message_async
 from clio_agent.gact.message_wire import normalize_thought_ownership
@@ -316,6 +317,8 @@ def register_messages_routes(app: FastAPI, deps: "GactDeps") -> None:
         sess = app.state.sessions.get(sid)
         if sess is None:
             raise _session_not_found(sid)
+        if before is None:  # the conversation is opened: load its agent's servers (B3)
+            session_warmup.start_session_warmup(app, sid, trigger="conversation_opened")
         if limit is not None and limit <= 0:
             raise HTTPException(
                 status_code=422,

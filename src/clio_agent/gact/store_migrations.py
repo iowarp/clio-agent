@@ -17,11 +17,11 @@ is back to marker reads.
 
 Adding a migration is one function and one entry in :data:`MIGRATIONS`::
 
-    def migrate_task_event_lane(app) -> dict | None:
+    def migrate_mail_lane(app) -> dict | None:
         ...  # idempotent; may be interrupted and rerun
         return {"sessions": n}  # details printed by the command and the health row
 
-    StoreMigration("task_event_lane", "Move task events to their own lane", migrate_task_event_lane)
+    StoreMigration("mail_lane", "Move mail to its own lane", migrate_mail_lane)
 
 Without ``owed``, the runner keeps the marker for you: the migration is owed while the
 task index has no ``meta.<name>`` record, and the runner writes it after ``run`` returns.
@@ -60,6 +60,8 @@ class StoreMigration:
     run: Callable[[Any], dict[str, Any] | None]
     #: Cheap marker check (one record read). ``None``: the runner's ``meta.<name>`` marker.
     owed: Callable[[Any], bool] | None = None
+    #: Typed reason logged and reported when boot finds it owed and runs it once.
+    boot_reason: str = ""
 
 
 @dataclass
@@ -103,6 +105,20 @@ def _run_transcripts(app: Any) -> dict[str, Any]:
     return {"sessions": marker.get("sessions", 0)}
 
 
+def _task_event_lane_owed(app: Any) -> bool:
+    from clio_agent.gact.task_event_lane import migration_owed  # noqa: PLC0415
+
+    return migration_owed(app.state.task_history)
+
+
+def _run_task_event_lane(app: Any) -> dict[str, Any]:
+    from clio_agent.gact.task_event_lane import migrate_task_event_lane  # noqa: PLC0415
+
+    report = migrate_task_event_lane(app.state.task_history)
+    keys = ("sessions", "sessions_with_task_events", "events")
+    return {key: report[key] for key in keys if key in report}
+
+
 def _task_index_owed(app: Any) -> bool:
     return app.state.task_history.index.marker() is None
 
@@ -132,6 +148,13 @@ def _run_artifact_index(app: Any) -> dict[str, Any]:
 
 #: Every store migration, in run order. Name = marker name; never rename a shipped one.
 MIGRATIONS: tuple[StoreMigration, ...] = (
+    StoreMigration(
+        "task_event_lane",
+        "Copy each conversation's task events into their own lane (task trees read only it)",
+        _run_task_event_lane,
+        _task_event_lane_owed,
+        boot_reason="task_event_lane_migration_owed",
+    ),
     StoreMigration(
         "transcript_legacy_import",
         "Keep each conversation's legacy JSON transcript as evidence in clio-core",
@@ -200,10 +223,11 @@ def ensure_at_boot(app: Any, name: str) -> bool:
     if not is_owed(app, item):
         report.setdefault(name, MigrationResult(name, "already_done"))
         return False
+    reason = item.boot_reason or OWED_AT_BOOT
     logger.warning(
         "store migration owed at boot reason=%s name=%s; running it once now. Installs and "
         "upgrades run `clio-agent migrate` so boot does not have to.",
-        OWED_AT_BOOT,
+        reason,
         name,
     )
     started = time.monotonic()
@@ -217,7 +241,7 @@ def ensure_at_boot(app: Any, name: str) -> bool:
         )
         raise
     if result.status == "done":
-        result.reason = OWED_AT_BOOT
+        result.reason = reason
     report[name] = result
     return True
 
