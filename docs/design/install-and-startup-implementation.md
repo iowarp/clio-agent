@@ -128,11 +128,22 @@ The same model is in the design document; it is repeated here so this plan reads
     `sessions.json` file on each change. It moves to clio-core records with a recent-first index.
   - `GET /v1/sessions` is paged with a cursor.
   - The first page of the rail is part of startup; in gact-tui, more pages load as you scroll.
+  - *Done (first step):* one row per session in `sessions.sqlite3` beside the legacy
+    `sessions.json` (`gact/session_records.py`; the JSON is imported once, marker in the
+    table). A change writes one row; rows load on first use into a bounded cache. The table
+    is not yet clio-core: moving it is a backend swap behind `SessionRecords`.
+  - *API:* `GET /v1/sessions` without `limit`/`cursor` is unchanged (every row). With
+    `limit` (and `cursor` from the previous page) it returns one page newest interaction
+    first, plus `next_cursor` and `total`; `kinds=conversation,branch` is the rail's filter.
 - **R4. Opening reads one page first.**
   - `GET .../messages` (`routes/messages.py:283`) materializes the whole ledger and then pages it.
     Instead it reads the latest page from the message lane by range, and older pages on scroll.
   - The rest of the conversation loads in the background, after its first page.
   - In gact-tui, the conversation view requests the first page, then the rest.
+  - *Done:* `GET .../messages?limit=N` reads the newest page from the lane by range
+    (`gact/transcript_pages.py`), `before=<message id>` the page before it; `next_cursor`
+    names the oldest message of a page when older ones remain. Without `limit` the whole
+    ledger is returned as before.
 - **R5. A task tree reads task events only.** `load_tree` (`task_tree_state.py:149`) reads each
   member's whole `_events` log, including `lm.call` records with full prompts. Task events get their own
   lane, migrated once by R2's upgrade step.

@@ -46,22 +46,16 @@ class SessionDescendant:
 def _session_store_index(app: "FastAPI") -> dict[str, list[str]]:
     """Build the store's parent -> children index ONCE, for a whole walk.
 
-    The session store keeps no parent index, so asking it for one session's
-    children is a full scan. Doing that per parent per depth made the walk
+    Asking the store for one session's children per parent per depth made the walk
     O(depth x frontier x sessions) -- on the interactions poll, which is the very
-    cost this walk exists to bound.
+    cost this walk exists to bound. The store answers from its parent column alone,
+    without reading any session row.
     """
 
     sessions = getattr(app.state, "sessions", None)
     if sessions is None:
         return {}
-    index: dict[str, list[str]] = {}
-    for row in sessions.list(workspace_id=None):
-        parent = str(getattr(row, "parent_session_id", "") or "")
-        row_id = str(getattr(row, "id", "") or "")
-        if parent and row_id:
-            index.setdefault(parent, []).append(row_id)
-    return index
+    return sessions.child_ids_by_parent()
 
 
 def descendant_walk(

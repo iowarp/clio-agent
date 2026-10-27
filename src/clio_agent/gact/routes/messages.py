@@ -44,6 +44,7 @@ from clio_agent.gact.off_loop import run_off_loop
 from clio_agent.gact.protocol_v3 import project_for_request, transcript_entities
 from clio_agent.gact.routes.response_feedback import register_response_feedback_routes
 from clio_agent.gact.routes.session_a2ui_preservation import preserve_a2ui
+from clio_agent.gact.transcript_pages import PageCursorNotFound, read_message_page
 from clio_agent.gact.types import (
     ErrorEnvelope,
     ErrorInfo,
@@ -85,6 +86,19 @@ def register_messages_routes(app: FastAPI, deps: "GactDeps") -> None:
                     error="not_found",
                     message=f"session not found: {sid}",
                     details={"session_id": sid},
+                    recoverable=False,
+                )
+            ).model_dump(exclude_none=True),
+        )
+
+    def _before_not_found(sid: str, before: str) -> HTTPException:
+        return HTTPException(
+            status_code=404,
+            detail=ErrorEnvelope(
+                error=ErrorInfo(
+                    error="not_found",
+                    message=f"message not found: {before}",
+                    details={"session_id": sid, "message_id": before},
                     recoverable=False,
                 )
             ).model_dump(exclude_none=True),
@@ -303,6 +317,8 @@ def register_messages_routes(app: FastAPI, deps: "GactDeps") -> None:
           suppressible via ``?include_system=false``).
         * ``limit`` — return at most this many NEWEST messages (after ``before``
           is applied). Must be ``> 0``; ``<= 0`` raises a 422 validation error.
+          A bounded request reads only its page from the message lane by range
+          (:mod:`clio_agent.gact.transcript_pages`); older messages are not read.
         * ``before`` — cursor: return only messages strictly OLDER (earlier in
           chronological order) than the message whose id equals ``before``. An
           unknown id raises a 404 (mirrors ``get_message``). The live in-flight
@@ -346,7 +362,24 @@ def register_messages_routes(app: FastAPI, deps: "GactDeps") -> None:
         messages = app.state.messages
         index = getattr(app.state, "transcript_index", None)
         has_persisted_ledger = bool(index is not None and index.has_session(sid))
-        if sess.message_count == 0 and not has_persisted_ledger:
+        # A bounded request reads only its page from the message lane by range
+        # (gact.transcript_pages): opening a conversation never materializes it.
+        page = None
+        if limit is not None and (sess.message_count > 0 or has_persisted_ledger):
+            try:
+                page = await run_off_loop(
+                    read_message_page,
+                    app,
+                    sid,
+                    limit=limit,
+                    before=before,
+                    include_system=include_system,
+                )
+            except PageCursorNotFound:
+                raise _before_not_found(sid, before or "") from None
+        if page is not None:
+            chronological_rows = list(page.messages)
+        elif sess.message_count == 0 and not has_persisted_ledger:
             get_if_resident = getattr(messages, "get_if_resident", None)
             if callable(get_if_resident):
                 chronological_rows = list(cast(list[Message] | None, get_if_resident(sid)) or [])
@@ -368,25 +401,15 @@ def register_messages_routes(app: FastAPI, deps: "GactDeps") -> None:
         # a real stored message; return only rows strictly older than it. The
         # live in-flight projection is never a stored message, so it can never be
         # a valid ``before`` target — an unknown id is a 404 like get_message.
-        if before is not None:
+        if before is not None and page is None:
             cursor_index = next(
                 (i for i, m in enumerate(chronological_rows) if m.id == before),
                 -1,
             )
             if cursor_index < 0:
-                raise HTTPException(
-                    status_code=404,
-                    detail=ErrorEnvelope(
-                        error=ErrorInfo(
-                            error="not_found",
-                            message=f"message not found: {before}",
-                            details={"session_id": sid, "message_id": before},
-                            recoverable=False,
-                        )
-                    ).model_dump(exclude_none=True),
-                )
+                raise _before_not_found(sid, before)
             chronological_rows = chronological_rows[:cursor_index]
-        else:
+        elif before is None:
             # The live assistant message is the NEWEST message and only belongs
             # on the newest page (``before`` unset). Paginating into the past
             # never appends it.
@@ -397,7 +420,7 @@ def register_messages_routes(app: FastAPI, deps: "GactDeps") -> None:
                     chronological_rows.append(live_assistant)
 
         # (2) Drop system messages when suppressed.
-        if not include_system:
+        if not include_system and page is None:
             chronological_rows = [m for m in chronological_rows if m.role != "system"]
 
         # (3) Reverse to newest-first.
@@ -406,7 +429,13 @@ def register_messages_routes(app: FastAPI, deps: "GactDeps") -> None:
         # (4) Apply ``limit`` to the newest N, and (5) compute next_cursor: the id
         # of the oldest message in this page WHEN the limit truncated older rows.
         next_cursor: str | None = None
-        if limit is not None and len(rows) > limit:
+        if page is not None:
+            # The live projection may have joined the newest page: the oldest row
+            # it displaced is then the start of the next page.
+            more = page.has_more or len(rows) > limit
+            rows = rows[:limit]
+            next_cursor = rows[-1].id if more and rows else None
+        elif limit is not None and len(rows) > limit:
             rows = rows[:limit]
             if rows:
                 next_cursor = rows[-1].id
