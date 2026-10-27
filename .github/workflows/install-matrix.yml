@@ -90,7 +90,7 @@ jobs:
           PY
             done
             echo
-            [ -f "$TIMINGS" ] && python3 scripts/ci/record_step.py --file "$TIMINGS" --summary
+            if [ -f "$TIMINGS" ]; then python3 scripts/ci/record_step.py --file "$TIMINGS" --summary; else echo "No step ran."; fi
           } >> "$GITHUB_STEP_SUMMARY"
       - uses: actions/upload-artifact@v4
         if: always()
@@ -186,11 +186,27 @@ jobs:
           Rec --kill-after 20 --name "script: interrupted after 20s" -- pwsh -NoProfile -File $release
           Rec --name "script: re-run after interruption" -- pwsh -NoProfile -File $release
           Rec --name "script: uninstall" -- pwsh -NoProfile -File "$env:CLIO_BIN_DIR\clio.ps1" uninstall -Yes
+      - name: From source (Windows)
+        if: runner.os == 'Windows'
+        continue-on-error: true
+        shell: pwsh
+        env:
+          CLIO_PREFIX: ${{ runner.temp }}\clio-src\app
+          CLIO_BIN_DIR: ${{ runner.temp }}\clio-src\bin
+          CLIO_AGENT_HOME: ${{ runner.temp }}\clio-src\home
+          CLIO_REF: ${{ github.head_ref || github.ref_name }}
+        run: |
+          function Rec { python scripts/ci/record_step.py --file $env:TIMINGS @args }
+          Rec --name "source: fresh install" -- pwsh -NoProfile -File install/install.ps1
+          Rec --name "source: start" -- pwsh -NoProfile -File "$env:CLIO_BIN_DIR\clio.ps1" start
+          Rec --name "source: stop" -- pwsh -NoProfile -File "$env:CLIO_BIN_DIR\clio.ps1" stop
+          Rec --name "source: re-run over an install" -- pwsh -NoProfile -File install/install.ps1
+          Rec --name "source: uninstall" -- pwsh -NoProfile -File "$env:CLIO_BIN_DIR\clio.ps1" uninstall -Yes
       - name: Report
         if: always()
         shell: bash
         run: |
-          { echo "## Install script on ${{ matrix.os }}"; [ -f "$TIMINGS" ] && python scripts/ci/record_step.py --file "$TIMINGS" --summary; } >> "$GITHUB_STEP_SUMMARY"
+          { echo "## Install script on ${{ matrix.os }}"; if [ -f "$TIMINGS" ]; then python scripts/ci/record_step.py --file "$TIMINGS" --summary; else echo "No step ran."; fi; } >> "$GITHUB_STEP_SUMMARY"
       - uses: actions/upload-artifact@v4
         if: always()
         with:
@@ -225,7 +241,7 @@ jobs:
       - name: Report
         if: always()
         run: |
-          { echo "## SSH deployment"; [ -f "$TIMINGS" ] && python3 scripts/ci/record_step.py --file "$TIMINGS" --summary; } >> "$GITHUB_STEP_SUMMARY"
+          { echo "## SSH deployment"; if [ -f "$TIMINGS" ]; then python3 scripts/ci/record_step.py --file "$TIMINGS" --summary; else echo "No step ran."; fi; } >> "$GITHUB_STEP_SUMMARY"
       - uses: actions/upload-artifact@v4
         if: always()
         with:
@@ -329,7 +345,7 @@ jobs:
                 f" left running: {r.get('left_running_after_quit')}; clio-core left: {r.get('clio_core_left_running')}")
           PY
             done
-            [ -f "$TIMINGS" ] && python3 scripts/ci/record_step.py --file "$TIMINGS" --summary
+            if [ -f "$TIMINGS" ]; then python3 scripts/ci/record_step.py --file "$TIMINGS" --summary; else echo "No step ran."; fi
           } >> "$GITHUB_STEP_SUMMARY"
       - uses: actions/upload-artifact@v4
         if: always()
