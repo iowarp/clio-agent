@@ -19,6 +19,8 @@ on:
       - 'scripts/create_reference_store.py'
       - 'scripts/measure_startup.py'
       - 'scripts/ci/record_step.py'
+      - 'scripts/ci/ssh_deploy_steps.py'
+      - 'scripts/smoke_desktop_package.py'
       - '.github/workflows/install-matrix.yml'
   schedule:
     - cron: '17 6 * * *'
@@ -195,21 +197,20 @@ jobs:
         run: |
           ssh-keygen -t ed25519 -N '' -f "$RUNNER_TEMP/key" -q
           docker run -d --name target -p 2222:22 ubuntu:24.04 sleep infinity
-          docker exec target bash -c "apt-get update -qq && apt-get install -y -qq openssh-server curl ca-certificates sudo >/dev/null && useradd -m -s /bin/bash clio && mkdir -p /home/clio/.ssh /run/sshd"
+          docker exec target bash -c "apt-get update -qq && apt-get install -y -qq openssh-server curl ca-certificates sudo git iproute2 procps >/dev/null && useradd -m -s /bin/bash clio && mkdir -p /home/clio/.ssh /run/sshd"
           docker cp "$RUNNER_TEMP/key.pub" target:/home/clio/.ssh/authorized_keys
           docker exec target bash -c "chown -R clio /home/clio/.ssh && chmod 600 /home/clio/.ssh/authorized_keys && /usr/sbin/sshd"
-      - name: Install, start and stop over SSH
+      - uses: astral-sh/setup-uv@v5
+      - name: Install dependencies
+        run: uv sync --frozen
+      # The app's own deployment, not a one-liner: the claim, install and start command
+      # specs the desktop sends to its SSH transport, then its status, stop, a second
+      # deploy over that install, and teardown (scripts/ci/ssh_deploy_steps.py).
+      - name: Deploy over SSH with the app's commands
         continue-on-error: true
         run: |
-          remote() { ssh -i "$RUNNER_TEMP/key" -p 2222 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null clio@127.0.0.1 "$@"; }
-          curl -fsSL https://raw.githubusercontent.com/iowarp/clio-agent/main/install/install.sh -o "$RUNNER_TEMP/install.sh"
-          scp -i "$RUNNER_TEMP/key" -P 2222 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null "$RUNNER_TEMP/install.sh" clio@127.0.0.1:install.sh
-          rec() { python3 scripts/ci/record_step.py --file "$TIMINGS" "$@"; }
-          # The desktop's SSH deployment installs uv on the host first, then runs install.sh.
-          rec --name "ssh: install uv" -- bash -c "$(declare -f remote); remote 'curl -LsSf https://astral.sh/uv/install.sh | sh'"
-          rec --name "ssh: fresh install" -- bash -c "$(declare -f remote); remote 'PATH=\$HOME/.local/bin:\$PATH bash install.sh'"
-          rec --name "ssh: start" -- bash -c "$(declare -f remote); remote '~/.local/bin/clio start'"
-          rec --name "ssh: stop" -- bash -c "$(declare -f remote); remote '~/.local/bin/clio stop'"
+          uv run --frozen --no-sync python scripts/ci/ssh_deploy_steps.py --file "$TIMINGS" \
+            --ssh "ssh -i $RUNNER_TEMP/key -p 2222 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR clio@127.0.0.1"
       - name: Report
         if: always()
         run: |
@@ -219,4 +220,113 @@ jobs:
         with:
           name: ssh
           path: timings.jsonl
+          if-no-files-found: ignore
+
+  desktop:
+    name: Desktop package (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            asset: '*_amd64-bundled.deb'
+          - os: windows-latest
+            asset: '*_x64-setup-bundled.exe'
+          - os: macos-15
+            asset: '*aarch64-bundled.dmg'
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 90
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+      # The release people download: the most recently published one, pre-releases
+      # included (the stable line predates the bundled installers).
+      - name: Download the latest published installer
+        id: asset
+        shell: bash
+        run: |
+          tag="$(gh api 'repos/${{ github.repository }}/releases?per_page=20' \
+            -q '[.[] | select(.draft | not) | select(.tag_name | startswith("v"))][0].tag_name')"
+          mkdir -p "$RUNNER_TEMP/asset"
+          if gh release download "$tag" --repo '${{ github.repository }}' -p '${{ matrix.asset }}' -D "$RUNNER_TEMP/asset"; then
+            echo "path=$(ls "$RUNNER_TEMP"/asset/* | head -1)" >> "$GITHUB_OUTPUT"
+          else
+            echo "{\"name\": \"desktop: $tag has no ${{ matrix.asset }}\", \"os\": \"$RUNNER_OS\", \"seconds\": 0, \"exit_code\": 1, \"killed\": false, \"outcome\": \"no installer\"}" >> "$TIMINGS"
+          fi
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+      - name: Install, first launch, quit, second launch, quit, uninstall (Linux)
+        if: runner.os == 'Linux' && steps.asset.outputs.path
+        continue-on-error: true
+        run: |
+          rec() { python3 scripts/ci/record_step.py --file "$TIMINGS" "$@"; }
+          sudo apt-get update -qq && sudo apt-get install -y -qq xvfb >/dev/null
+          smoke() {
+            xvfb-run -a uv run --no-project --python 3.14 --with psutil scripts/smoke_desktop_package.py \
+              /usr/bin/clio-desktop --quit --timeout 900 --evidence-dir "$RUNNER_TEMP/evidence-$1" \
+              --agent-home "$HOME/.local/share/clio-agent-ci" \
+              --boot-log "$HOME/.local/share/ai.iowarp.clio.desktop/logs/backend-boot.log"
+          }
+          rec --name "desktop: install (apt)" -- sudo apt-get install -y -qq "${{ steps.asset.outputs.path }}"
+          rec --name "desktop: first launch to ready, then quit" -- bash -c "$(declare -f smoke); smoke first"
+          rec --name "desktop: returning launch to ready, then quit" -- bash -c "$(declare -f smoke); smoke second"
+          rec --name "desktop: uninstall (apt)" -- sudo apt-get remove -y -qq clio-desktop
+      - name: Install, first launch, quit, second launch, quit, uninstall (Windows)
+        if: runner.os == 'Windows' && steps.asset.outputs.path
+        continue-on-error: true
+        shell: pwsh
+        run: |
+          function Rec { python scripts/ci/record_step.py --file $env:TIMINGS @args }
+          $dir = Join-Path $env:RUNNER_TEMP 'clio-desktop'
+          $log = "$env:LOCALAPPDATA/ai.iowarp.clio.desktop/logs/backend-boot.log"
+          Rec --name "desktop: install (NSIS /S)" -- "${{ steps.asset.outputs.path }}" /S "/D=$dir"
+          foreach ($run in 'first', 'second') {
+            Rec --name "desktop: $run launch to ready, then killed" -- uv run --no-project --python 3.14 --with psutil scripts/smoke_desktop_package.py "$dir/clio-desktop.exe" --quit --timeout 900 --evidence-dir "$env:RUNNER_TEMP/evidence-$run" --boot-log $log --agent-home "$dir/data/clio-agent"
+          }
+          Rec --name "desktop: uninstall (NSIS /S)" -- "$dir/uninstall.exe" /S
+      - name: Install, first launch, quit, second launch, quit, uninstall (macOS)
+        if: runner.os == 'macOS' && steps.asset.outputs.path
+        continue-on-error: true
+        run: |
+          rec() { python3 scripts/ci/record_step.py --file "$TIMINGS" "$@"; }
+          install_app() {
+            mount="$(hdiutil attach -nobrowse -readonly "$1" | awk -F'\t' '/\/Volumes\// {print $NF}')"
+            cp -R "$mount"/*.app /Applications/ && hdiutil detach "$mount" -quiet
+          }
+          rec --name "desktop: install (DMG copy)" -- bash -c "$(declare -f install_app); install_app '${{ steps.asset.outputs.path }}'"
+          app="$(ls -d /Applications/CLIO*.app | head -1)"
+          for run in first second; do
+            rec --name "desktop: $run launch to ready, then quit" -- uv run --no-project --python 3.14 --with psutil \
+              scripts/smoke_desktop_package.py "$app/Contents/MacOS/clio-desktop" --quit --timeout 900 \
+              --evidence-dir "$RUNNER_TEMP/evidence-$run"
+          done
+          rec --name "desktop: uninstall (remove the app)" -- rm -rf "$app"
+      - name: Report
+        if: always()
+        shell: bash
+        run: |
+          {
+            echo "## Desktop ${{ steps.asset.outputs.tag }} on ${{ matrix.os }}"
+            for receipt in "$RUNNER_TEMP"/evidence-*/receipt.json; do
+              [ -f "$receipt" ] || continue
+              python3 - "$receipt" <<'PY'
+          import json, sys
+          r = json.load(open(sys.argv[1]))
+          print(f"- {sys.argv[1].split('evidence-')[1].split('/')[0]}: ready in {r.get('backend_ready_seconds')} s;"
+                f" quit in {r.get('quit_seconds')} s (forced: {r.get('quit_forced')});"
+                f" left running: {r.get('left_running_after_quit')}; clio-core left: {r.get('clio_core_left_running')}")
+          PY
+            done
+            [ -f "$TIMINGS" ] && python3 scripts/ci/record_step.py --file "$TIMINGS" --summary
+          } >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: desktop-${{ matrix.os }}
+          path: |
+            timings.jsonl
+            ${{ runner.temp }}/evidence-*/receipt.json
+            ${{ runner.temp }}/evidence-*/failure.json
+            ${{ runner.temp }}/evidence-*/boot.log
           if-no-files-found: ignore
