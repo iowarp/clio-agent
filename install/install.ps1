@@ -415,12 +415,14 @@ Set-Content -LiteralPath $Launcher -Encoding ascii -Value @(
     "rem CLIO: the installation in $Prefix, through that installation's own launcher.",
     "if not defined CLIO_PREFIX set `"CLIO_PREFIX=$Prefix`"",
     "if not defined CLIO_BIN_DIR set `"CLIO_BIN_DIR=$BinDir`"",
+    $(if ($env:CLIO_AGENT_HOME) { "if not defined CLIO_AGENT_HOME set `"CLIO_AGENT_HOME=$env:CLIO_AGENT_HOME`"" } else { 'rem default data home' }),
     "call `"$(Join-Path $LibExec 'clio.cmd')`" %*"
 )
 Set-Content -LiteralPath (Join-Path $BinDir 'clio.ps1') -Encoding utf8 -Value @(
     "# CLIO: the installation in $Prefix, through that installation's own launcher.",
     "if (-not `$env:CLIO_PREFIX) { `$env:CLIO_PREFIX = '$Prefix' }",
     "if (-not `$env:CLIO_BIN_DIR) { `$env:CLIO_BIN_DIR = '$BinDir' }",
+    $(if ($env:CLIO_AGENT_HOME) { "if (-not `$env:CLIO_AGENT_HOME) { `$env:CLIO_AGENT_HOME = '$env:CLIO_AGENT_HOME' }" } else { '# default data home' }),
     "& '$(Join-Path $LibExec 'clio.ps1')' @args",
     'exit $LASTEXITCODE'
 )

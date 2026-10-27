@@ -395,11 +395,16 @@ else
   curl -fsSL "$RAW/clio" -o "$RELEASE_LAUNCHER"
 fi
 chmod +x "$RELEASE_LAUNCHER"
+# An install made for its own data home (an SSH deployment's <root>/user) keeps it,
+# so starting it by hand uses the same conversations as the deployment does.
+agent_home_line=""
+[ -n "${CLIO_AGENT_HOME:-}" ] && agent_home_line="export CLIO_AGENT_HOME=\"\${CLIO_AGENT_HOME:-$CLIO_AGENT_HOME}\""
 cat > "$LAUNCHER" <<LAUNCH
 #!/usr/bin/env bash
 # CLIO: the installation in $PREFIX, through that installation's own launcher.
 export CLIO_PREFIX="\${CLIO_PREFIX:-$PREFIX}"
 export CLIO_BIN_DIR="\${CLIO_BIN_DIR:-$BIN_DIR}"
+$agent_home_line
 exec "$RELEASE_LAUNCHER" "\$@"
 LAUNCH
 chmod +x "$LAUNCHER"

@@ -3,7 +3,8 @@
 Nothing is downloaded or installed: `curl` serves files from a fixture directory
 (PyPI's release list, a release tag's pyproject/uv.lock/.python-version), `uv` and
 `git` record every call, and the run stops at the final dependency install with exit
-code 77 so a test reads exactly what would have been installed, and how.
+code 77 so a test reads exactly what would have been installed, and how
+(``TEST_INSTALL_CONTINUE=1`` lets it succeed, to read what the installer writes after).
 """
 
 from __future__ import annotations
@@ -55,7 +56,7 @@ case "$1" in
     while [ $# -gt 0 ]; do [ "$1" = -o ] && { echo "dspy==3.4.0" > "$2"; }; shift; done
     exit 0 ;;
   venv) exit 0 ;;
-  pip|sync) exit 77 ;;
+  pip|sync) [ -n "${TEST_INSTALL_CONTINUE:-}" ] && exit 0; exit 77 ;;
 esac
 exit 0
 """

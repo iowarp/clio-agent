@@ -152,3 +152,30 @@ def test_clio_ref_still_means_source(tmp_path: Path) -> None:
     result, calls = run_installer(tmp_path, script=streamed, env={"CLIO_REF": "develop"})
     assert result.returncode == STOP, result.stdout + result.stderr
     assert "--branch develop" in _call(calls, "git clone")
+
+
+@pytest.mark.parametrize("agent_home", ["", "/srv/clio/root/user"])
+def test_the_launcher_keeps_the_data_home_it_was_installed_for(
+    tmp_path: Path, agent_home: str
+) -> None:
+    """An SSH deployment installs with CLIO_AGENT_HOME=<root>/user; starting that install
+    by hand must use the same data, not the default home."""
+    checkout = tmp_path / "my-clone"
+    (checkout / "install").mkdir(parents=True)
+    (checkout / ".git").mkdir()
+    (checkout / "pyproject.toml").write_text('[project]\nname = "clio-agent"\n')
+    for name in ("install.sh", "clio", "uninstall.sh"):
+        shutil.copy(ROOT / "install" / name, checkout / "install" / name)
+    env = {"TEST_INSTALL_CONTINUE": "1"}
+    if agent_home:
+        env["CLIO_AGENT_HOME"] = agent_home
+    result, _calls = run_installer(
+        tmp_path, "--source", script=checkout / "install/install.sh", env=env
+    )
+    wrapper = tmp_path / "bin" / "clio"
+    assert wrapper.is_file(), result.stdout + result.stderr
+    text = wrapper.read_text()
+    if agent_home:
+        assert f'export CLIO_AGENT_HOME="${{CLIO_AGENT_HOME:-{agent_home}}}"' in text
+    else:
+        assert "CLIO_AGENT_HOME" not in text
