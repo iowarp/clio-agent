@@ -126,6 +126,20 @@ def measure(args: argparse.Namespace) -> dict[str, Any]:
             time.sleep(0.25)
         else:
             raise TimeoutError(f"task runtime not ready within {args.timeout}s; see {work}")
+        if args.wait_obligations:
+            # The obligations lane resumes open work after ready; wait for it to finish.
+            while time.monotonic() < deadline:
+                _status, body = _get(port, "/v1/health")
+                steps = (
+                    (body or {}).get("boot", {}).get("steps", []) if isinstance(body, dict) else []
+                )
+                if any(step["name"] == "obligations" for step in steps):
+                    boot = body["boot"]
+                    break
+                time.sleep(0.5)
+            else:
+                raise TimeoutError(f"obligations not finished within {args.timeout}s")
+            result["rss_after_obligations_mb"] = _rss_mb(server.pid)
         status, sessions = _get(port, "/v1/sessions?limit=1000000", timeout=60)
         listed = (
             len(sessions.get("sessions", sessions.get("items", [])))
@@ -171,16 +185,20 @@ def _stop_leftover_daemon(env: dict[str, str], copy: Path) -> bool:
     """Stop a clio-core daemon the server left behind; report whether there was one."""
     for key in ("CLIO_AGENT_HOME", "CLIO_RUNTIME_STATE_DIR", "CLIO_CORE_PORT"):
         os.environ[key] = env[key]
-    os.chdir(copy / "workspace")
-    from clio_agent.arc import runtime_stop, storage  # noqa: PLC0415
-    from clio_agent.arc.clio_core_config import _resolve_config_path  # noqa: PLC0415
+    previous = Path.cwd()
+    os.chdir(copy / "workspace")  # the config resolves the way the server resolved it
+    try:
+        from clio_agent.arc import runtime_stop, storage  # noqa: PLC0415
+        from clio_agent.arc.clio_core_config import _resolve_config_path  # noqa: PLC0415
 
-    if not storage._daemon_pidfile().is_file():
-        return False
-    config = str(_resolve_config_path(os.environ))
-    if not runtime_stop.cleanup_runtime_after_client_crash(config, wait_timeout_seconds=30.0):
-        runtime_stop.kill_daemon_pidfile()
-    return True
+        if not storage._daemon_pidfile().is_file():
+            return False
+        config = str(_resolve_config_path(os.environ))
+        if not runtime_stop.cleanup_runtime_after_client_crash(config, wait_timeout_seconds=30.0):
+            runtime_stop.kill_daemon_pidfile()
+        return True
+    finally:
+        os.chdir(previous)
 
 
 def main() -> int:
@@ -193,7 +211,13 @@ def main() -> int:
     parser.add_argument("--stop-timeout", type=float, default=60.0)
     parser.add_argument("--work-dir", type=Path, default=None, help="where the store copy goes")
     parser.add_argument("--keep", action="store_true", help="keep the copy and server log")
+    parser.add_argument(
+        "--wait-obligations",
+        action="store_true",
+        help="also wait for the background obligations lane to finish and time it",
+    )
     args = parser.parse_args()
+    args.out = args.out.resolve() if args.out else None  # measuring changes directory
     result = measure(args)
     text = json.dumps(result, indent=2)
     if args.out:
