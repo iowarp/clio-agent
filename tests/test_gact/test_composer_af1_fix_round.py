@@ -696,7 +696,9 @@ def test_the_session_store_refuses_an_out_of_vocabulary_status(tmp_path) -> None
     """
 
     import json
+    from dataclasses import asdict, replace
 
+    from clio_agent.gact.session_records import record_columns
     from clio_agent.gact.sessions import SessionStore
 
     path = tmp_path / "sessions.json"
@@ -709,14 +711,14 @@ def test_the_session_store_refuses_an_out_of_vocabulary_status(tmp_path) -> None
     # Every legal status still writes.
     assert store.update(session.id, status="error").status == "error"
 
-    # A store that ALREADY holds a bad row (an older build, a hand-edited file)
+    # A store that ALREADY holds a bad row (an older build, a hand-edited row)
     # must not take the listing down with it.
-    raw = json.loads(path.read_text(encoding="utf-8"))
-    raw[session.id]["status"] = "failed"
-    raw["sess_good"] = dict(raw[session.id], id="sess_good", status="idle")
-    path.write_text(json.dumps(raw), encoding="utf-8")
+    stored = asdict(store.get(session.id))
+    for row in (dict(stored, status="failed"), dict(stored, id="sess_good", status="idle")):
+        columns = replace(record_columns(store.get(session.id)), id=row["id"], status=row["status"])
+        store._records.put(columns, json.dumps(row))
 
-    reloaded = SessionStore(path=path)
+    reloaded = store
     app = build_app(sessions_path=path)
     app.state.sessions = reloaded
     with TestClient(app) as client:

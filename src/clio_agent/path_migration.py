@@ -43,7 +43,6 @@ def plan(
         old = server / ".clio" / "agent"
         for name in (
             "sessions.json",
-            "sessions.sqlite3",
             "messages",
             "prompts",
             "session-prompts",

@@ -1,22 +1,41 @@
-"""Session metadata records: one small row per session, with a recent-first index.
+"""Session metadata records in clio-core: one record per session, a recent-first index.
 
 :class:`~clio_agent.gact.sessions.SessionStore` used to keep every session's
 metadata resident and rewrite the whole ``sessions.json`` on every change, so a
 store after months of flow-heavy use paid O(sessions) per write and held every
-row in memory from boot. This module owns the replacement table:
+row in memory from boot. This module owns the replacement, in the clio-core store
+every other record lives in (ARC kind ``session_records``; no other store):
 
-* **one row per session** in ``sessions.sqlite3`` next to the legacy
-  ``sessions.json`` -- a change to one session writes that one row;
-* **indexed columns** for what the conversation list filters and sorts on
-  (workspace, archive bucket, session kind, parent, recency), so the rail reads a
-  page by range (:meth:`SessionRecords.page`) without decoding any other row;
-* **a one-time import** of a legacy ``sessions.json`` (recorded in the ``meta``
-  table so it never runs twice); the JSON file is left in place untouched.
+* **one record per session** (``row/<id>``: the session's metadata) -- a change to
+  one session writes that one record;
+* **an index of small columns** (workspace, parent, kind, archive bucket, status,
+  title, created and interaction times) kept in :data:`INDEX_BUCKETS` bucket
+  records (``index/<nn>``, a session's bucket fixed by a hash of its id). A change
+  that moves an indexed column also rewrites its one bucket, about 1/64th of the
+  index. The process holds the index in memory (a few hundred bytes per session,
+  loaded with :data:`INDEX_BUCKETS` reads when the store is bound), ordered by
+  recency, so every view is a query on it: a rail page after a keyset cursor
+  (:meth:`SessionRecords.page`), a conversation's tree (:meth:`SessionRecords.family`),
+  the sessions waiting on a person and their ancestors, named rows, a title search.
+  Session records are read only for the rows a view returns.
+* **writes in order, off the server loop.** Every record write goes through one
+  writer thread (the newest body per record wins). A caller off the server loop
+  waits for its write to land; a caller on the server loop does not (a clio-core
+  RPC must never block the loop, ``arc.loop_guard``): its write lands with the
+  writer's next batch, readers in this process see it at once, and a failed batch
+  is retried with a typed audit (:data:`WRITE_FAILED_REASON`).
+* **before clio-core is bound** (unit tests, History mode, the seconds before a
+  server's clio-core attach) the records live in memory. A server announces that
+  a store is coming (:meth:`SessionRecords.expect_store`): until it is bound, a
+  read off the loop waits for it and a read on the loop is a typed retryable
+  :class:`SessionRecordsNotReadyError`.
+
+The legacy ``sessions.json`` is imported once by the ``session_records_import``
+store migration (:mod:`clio_agent.gact.store_migrations`), never by opening.
 
 The rail order is the recency the wire shows (``last_interaction_at``, else
 ``created_at`` -- :func:`clio_agent.gact.protocol.v3.session.session_to_v3`),
-newest first, ties broken by id. Page cursors are opaque and keyset-based: a
-cursor names the last row of the previous page, never an offset.
+newest first, ties broken by id. Page cursors are opaque and keyset-based.
 """
 
 from __future__ import annotations
@@ -24,45 +43,49 @@ from __future__ import annotations
 import base64
 import json
 import logging
-import sqlite3
 import threading
-import weakref
-from collections.abc import Sequence
-from dataclasses import dataclass
+import time
+import zlib
+from collections.abc import Iterable, Iterator, Sequence
+from concurrent.futures import ThreadPoolExecutor
+from dataclasses import astuple, dataclass
 from pathlib import Path
 from typing import Any, Optional
 
+from sortedcontainers import SortedList
+
 from clio_agent import conf
+from clio_agent.arc.batch_put import PutRecord
 from clio_agent.gact.session_kind import session_kind
+from clio_agent.gact.transcript_file import TranscriptNotReadyError
 from clio_agent.runtime.stream_audit import stream_audit
 
 logger = logging.getLogger(__name__)
+
+#: The ARC record kind (``clio_agent.arc.storage.ARC_KINDS``).
+KIND = "session_records"
+#: How many index bucket records the index is split into.
+INDEX_BUCKETS = 64
+_ROW = "row/"
+_BUCKET = "index/"
 
 #: Typed reasons this module reports (no silent fallback).
 LEGACY_IMPORTED_REASON = "session_records_legacy_imported"
 LEGACY_UNREADABLE_REASON = "session_records_legacy_unreadable"
 ROW_UNREADABLE_REASON = "session_record_unreadable"
+WRITE_FAILED_REASON = "session_record_write_failed"
+NOT_BOUND_REASON = "session_records_not_bound"
+#: Seconds an off-loop read waits for the announced clio-core store to be bound.
+_BIND_WAIT_SECONDS = 300.0
+#: Point reads of a view's records issued together.
+_READ_FANOUT = 16
+#: Seconds the writer thread stays alive with nothing to write.
+_IDLE_SECONDS = 5.0
+#: Seconds an off-loop write waits for its batch to land before it is a typed error.
+_WRITE_WAIT_SECONDS = 120.0
 
-_SCHEMA = (
-    """CREATE TABLE IF NOT EXISTS sessions (
-        id TEXT PRIMARY KEY,
-        workspace_id TEXT NOT NULL,
-        parent_session_id TEXT NOT NULL,
-        kind TEXT NOT NULL,
-        archived INTEGER NOT NULL,
-        created_at TEXT NOT NULL,
-        recent_at TEXT NOT NULL,
-        interaction_known INTEGER NOT NULL,
-        body TEXT NOT NULL
-    )""",
-    "CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT NOT NULL)",
-    "CREATE INDEX IF NOT EXISTS sessions_recent ON sessions(recent_at DESC, id DESC)",
-    """CREATE INDEX IF NOT EXISTS sessions_workspace_recent
-        ON sessions(workspace_id, archived, recent_at DESC, id DESC)""",
-    "CREATE INDEX IF NOT EXISTS sessions_created ON sessions(created_at DESC, id DESC)",
-    "CREATE INDEX IF NOT EXISTS sessions_parent ON sessions(parent_session_id)",
-)
-_LEGACY_IMPORT_KEY = "legacy_json_import"
+#: Stored statuses of a session that waits on a person (a permission or an answer).
+WAITING_ON_PERSON: frozenset[str] = frozenset({"waiting_permission", "waiting_user"})
 
 
 class InvalidCursorError(ValueError):
@@ -71,9 +94,16 @@ class InvalidCursorError(ValueError):
     reason = "invalid_cursor"
 
 
+class SessionRecordsNotReadyError(TranscriptNotReadyError):
+    """The session records' clio-core store is still attaching (a retryable 503)."""
+
+    def __init__(self, detail: str) -> None:
+        super().__init__("", NOT_BOUND_REASON, detail)
+
+
 @dataclass(frozen=True)
 class RecordColumns:
-    """The indexed facts of one session row (everything else lives in ``body``)."""
+    """The indexed facts of one session (everything else lives in its record)."""
 
     id: str
     workspace_id: str
@@ -83,18 +113,38 @@ class RecordColumns:
     created_at: str
     recent_at: str
     interaction_known: bool
+    status: str = ""
+    title: str = ""
 
 
 @dataclass(frozen=True)
 class PageQuery:
-    """One rail page request; ``None`` filters are not applied."""
+    """Which sessions a list or page reads; ``None`` filters are not applied."""
 
     workspace_id: Optional[str] = None
     archived: Optional[bool] = False
     kinds: Optional[frozenset[str]] = None
     parent_session_id: Optional[str] = None
+    #: Only these session ids.
+    ids: Optional[frozenset[str]] = None
+    #: Only sessions in these stored statuses (``waiting_user``, ...).
+    statuses: Optional[frozenset[str]] = None
+    #: Case-insensitive substring of the title.
+    search: Optional[str] = None
     limit: int = 50
     cursor: Optional[str] = None
+
+    def matches(self, row: RecordColumns) -> bool:
+        """Whether ``row`` passes every filter of this query."""
+        return (
+            (not self.workspace_id or row.workspace_id == self.workspace_id)
+            and (self.archived is None or row.archived == self.archived)
+            and (self.kinds is None or row.kind in self.kinds)
+            and (self.statuses is None or row.status in self.statuses)
+            and (self.ids is None or row.id in self.ids)
+            and (not self.parent_session_id or row.parent_session_id == self.parent_session_id)
+            and (not self.search or self.search.casefold() in row.title.casefold())
+        )
 
 
 def encode_cursor(recent_at: str, session_id: str) -> str:
@@ -121,250 +171,472 @@ def decode_cursor(cursor: str) -> tuple[str, str]:
     return value[0], value[1]
 
 
+def bucket_of(session_id: str) -> str:
+    """The index bucket record a session's columns live in."""
+    return f"{_BUCKET}{zlib.crc32(session_id.encode()) % INDEX_BUCKETS:02d}"
+
+
+class _MemoryRecords:
+    """The records before a clio-core store is bound (and in unit tests)."""
+
+    def __init__(self) -> None:
+        self.data: dict[str, bytes] = {}
+
+    def put_many(self, kind: str, records: Sequence[PutRecord]) -> None:
+        for record in records:
+            self.data[record.name] = record.data
+
+    def get(self, kind: str, name: str) -> Optional[bytes]:
+        return self.data.get(name)
+
+    def delete(self, kind: str, name: str) -> None:
+        self.data.pop(name, None)
+
+
+class _Writer:
+    """One ordered writer of record changes (the newest body per record wins)."""
+
+    def __init__(self, store: Any, *, inline: bool = False) -> None:
+        self.store = store
+        self._inline = inline  # an in-process store: apply at once, no thread
+        self._cond = threading.Condition()
+        self._pending: dict[str, Optional[bytes]] = {}
+        self._inflight: dict[str, Optional[bytes]] = {}  # taken, not yet confirmed
+        self._submitted = 0
+        self._landed = 0
+        self._thread: Optional[threading.Thread] = None
+
+    def peek(self, name: str) -> tuple[bool, Optional[bytes]]:
+        """A pending (not yet landed) body: ``(True, body)``; a ``None`` body is a delete."""
+        with self._cond:
+            for held in (self._pending, self._inflight):
+                if name in held:
+                    return True, held[name]
+        return False, None
+
+    def submit(self, changes: dict[str, Optional[bytes]]) -> int:
+        with self._cond:
+            self._submitted += 1
+            ticket = self._submitted
+            if self._inline:
+                for name, data in changes.items():
+                    if data is None:
+                        self.store.delete(KIND, name)
+                    else:
+                        self.store.put_many(KIND, [PutRecord(name, data)])
+                self._landed = ticket
+                return ticket
+            self._pending.update(changes)
+            if self._thread is None:
+                self._thread = threading.Thread(
+                    target=self._run, name="clio-session-records", daemon=True
+                )
+                self._thread.start()
+            self._cond.notify_all()
+        return ticket
+
+    def wait(self, ticket: int, timeout: float) -> bool:
+        with self._cond:
+            return self._cond.wait_for(lambda: self._landed >= ticket, timeout)
+
+    def flush(self, timeout: float) -> bool:
+        with self._cond:
+            ticket = self._submitted
+        return self.wait(ticket, timeout)
+
+    def _run(self) -> None:
+        backoff = 0.5
+        while True:
+            with self._cond:
+                if not self._cond.wait_for(lambda: bool(self._pending), _IDLE_SECONDS):
+                    self._thread = None  # idle: the next submit starts a fresh writer
+                    return
+                batch = dict(self._pending)
+                self._inflight = batch
+                self._pending.clear()
+                ticket = self._submitted
+            try:
+                puts = [PutRecord(name, data) for name, data in batch.items() if data is not None]
+                if puts:
+                    self.store.put_many(KIND, puts)
+                for name, data in batch.items():
+                    if data is None:
+                        self.store.delete(KIND, name)
+            except Exception as exc:  # noqa: BLE001 - retried, and reported typed each time
+                stream_audit(
+                    WRITE_FAILED_REASON,
+                    reason=WRITE_FAILED_REASON,
+                    records=len(batch),
+                    error=repr(exc)[:300],
+                )
+                logger.warning(
+                    "session records write failed reason=%s records=%d error=%r; retrying",
+                    WRITE_FAILED_REASON,
+                    len(batch),
+                    exc,
+                )
+                with self._cond:
+                    for name, data in batch.items():
+                        self._pending.setdefault(name, data)  # a newer body wins
+                    self._inflight = {}
+                time.sleep(backoff)
+                backoff = min(backoff * 2, 10.0)
+                continue
+            backoff = 0.5
+            # Evidence of what each change wrote (the stream audit log, when enabled).
+            stream_audit("session_records.write", records=sorted(batch))
+            with self._cond:
+                self._inflight = {}
+                self._landed = max(self._landed, ticket)
+                self._cond.notify_all()
+
+
+def _on_server_loop() -> bool:
+    from clio_agent.arc.loop_guard import on_server_loop  # noqa: PLC0415
+
+    return on_server_loop()
+
+
 class SessionRecords:
-    """The SQLite table of session rows. Callers serialize access (one lock).
+    """Session records plus their in-memory index. Thread-safe."""
 
-    ``path=None`` keeps the table in memory (tests and ephemeral servers).
-    """
+    def __init__(self) -> None:
+        self._lock = threading.RLock()
+        self._memory = _MemoryRecords()
+        self._writer = _Writer(self._memory, inline=True)
+        self._bound = threading.Event()
+        self._expected = False
+        self._columns: dict[str, RecordColumns] = {}
+        self._recent: SortedList = SortedList()  # (recent_at, id)
+        self._created: SortedList = SortedList()  # (created_at, id)
+        self._children: dict[str, set[str]] = {}
+        self._buckets: dict[str, set[str]] = {}
 
-    def __init__(self, path: Optional[Path], *, legacy_json: Optional[Path] = None) -> None:
-        self.path = path
-        if path is not None:
-            path.parent.mkdir(parents=True, exist_ok=True)
-        target = ":memory:" if path is None else str(path)
-        self._db = sqlite3.connect(target, timeout=30, check_same_thread=False)
-        self._db.row_factory = None
-        self._db.execute("PRAGMA journal_mode=WAL")
-        self._db.execute("PRAGMA synchronous=FULL")
-        self._io = threading.Lock()  # the connection is shared across threads
-        # Close the connection with its owner, never leaving it to the collector.
-        self._closer = weakref.finalize(self, self._db.close)
-        with self._io, self._db:
-            for statement in _SCHEMA:
-                self._db.execute(statement)
-        if legacy_json is not None:
-            self._import_legacy(legacy_json)
+    # ---- binding ------------------------------------------------------------
 
-    # ---- legacy import ----------------------------------------------------
+    @property
+    def bound(self) -> bool:
+        """Whether the records live in a clio-core store (not only in memory)."""
+        return self._bound.is_set()
 
-    def _import_legacy(self, legacy_json: Path) -> None:
-        """Import ``sessions.json`` once; the marker makes every later boot skip it."""
+    def expect_store(self) -> None:
+        """Announce that a clio-core store will be bound: reads wait for it."""
+        self._expected = True
 
-        with self._io:
-            done = self._db.execute(
-                "SELECT value FROM meta WHERE key=?", (_LEGACY_IMPORT_KEY,)
-            ).fetchone()
-        if done is not None or not legacy_json.is_file():
+    def bind(self, store: Any) -> None:
+        """Move the records into ``store`` and load its index (off the server loop)."""
+
+        with self._lock:
+            if self._bound.is_set() and self._writer.store is store:
+                return
+            carried = dict(self._memory.data)
+            self._writer = _Writer(store)
+            for number in range(INDEX_BUCKETS):
+                raw = store.get(KIND, f"{_BUCKET}{number:02d}")
+                for values in json.loads(raw).values() if raw else ():
+                    self._index(RecordColumns(*values))
+            if carried:
+                # Records written before the store was bound (normally none).
+                for name, raw in carried.items():
+                    if name.startswith(_BUCKET):
+                        for values in json.loads(raw).values():
+                            self._index(RecordColumns(*values))
+                buckets = {name for name in carried if name.startswith(_BUCKET)}
+                rows = {name: raw for name, raw in carried.items() if name.startswith(_ROW)}
+                self._writer.submit(
+                    {**rows, **{bucket: self._bucket_body(bucket) for bucket in buckets}}
+                )
+                self._memory.data.clear()
+            self._bound.set()
+
+    def _ready(self) -> None:
+        if not self._expected or self._bound.is_set():
             return
+        if _on_server_loop():
+            raise SessionRecordsNotReadyError(
+                "Conversations are stored in clio-core, which is still attaching. Retry shortly."
+            )
+        if not self._bound.wait(_BIND_WAIT_SECONDS):
+            raise SessionRecordsNotReadyError(
+                "Conversations are stored in clio-core, which did not attach in time."
+            )
+
+    def flush(self, timeout: float = _WRITE_WAIT_SECONDS) -> bool:
+        """Wait until every submitted write has landed (shutdown, tests)."""
+        return self._writer.flush(timeout)
+
+    # ---- the index ------------------------------------------------------------
+
+    def _index(self, row: RecordColumns) -> None:
+        self._unindex(row.id)
+        self._columns[row.id] = row
+        self._recent.add((row.recent_at, row.id))
+        self._created.add((row.created_at, row.id))
+        if row.parent_session_id:
+            self._children.setdefault(row.parent_session_id, set()).add(row.id)
+        self._buckets.setdefault(bucket_of(row.id), set()).add(row.id)
+
+    def _unindex(self, session_id: str) -> None:
+        old = self._columns.pop(session_id, None)
+        if old is None:
+            return
+        self._recent.discard((old.recent_at, old.id))
+        self._created.discard((old.created_at, old.id))
+        self._buckets.get(bucket_of(old.id), set()).discard(old.id)
+        siblings = self._children.get(old.parent_session_id)
+        if siblings is not None:
+            siblings.discard(old.id)
+            if not siblings:
+                self._children.pop(old.parent_session_id, None)
+
+    def _bucket_body(self, bucket: str) -> bytes:
+        members = sorted(self._buckets.get(bucket, ()))
+        rows = {sid: list(astuple(self._columns[sid])) for sid in members}
+        return json.dumps(rows, separators=(",", ":")).encode()
+
+    # ---- records ------------------------------------------------------------
+
+    def put(self, columns: RecordColumns, body: str) -> None:
+        """Write one session's record (and its index bucket when a column moved)."""
+
+        self._ready()
+        with self._lock:
+            old = self._columns.get(columns.id)
+            self._index(columns)
+            changes: dict[str, Optional[bytes]] = {_ROW + columns.id: body.encode()}
+            if old != columns:
+                bucket = bucket_of(columns.id)
+                changes[bucket] = self._bucket_body(bucket)
+            ticket = self._writer.submit(changes)
+        self._settle(ticket)
+
+    def delete(self, session_id: str) -> None:
+        """Remove one session's record and its index entry."""
+
+        self._ready()
+        with self._lock:
+            self._unindex(session_id)
+            bucket = bucket_of(session_id)
+            ticket = self._writer.submit(
+                {_ROW + session_id: None, bucket: self._bucket_body(bucket)}
+            )
+        self._settle(ticket)
+
+    def _settle(self, ticket: int) -> None:
+        # In memory the write is done at once. Off the server loop the write is
+        # committed before the caller goes on; on the loop it lands with the writer's
+        # next batch (a clio-core RPC never blocks the loop).
+        if self._writer.store is self._memory or _on_server_loop():
+            return
+        if not self._writer.wait(ticket, _WRITE_WAIT_SECONDS):
+            raise TimeoutError(
+                f"{WRITE_FAILED_REASON}: a session record did not land in clio-core within "
+                f"{_WRITE_WAIT_SECONDS:.0f}s; the write keeps retrying"
+            )
+
+    def body(self, session_id: str) -> Optional[str]:
+        """One session's stored record, or ``None``."""
+
+        self._ready()
+        if session_id not in self._columns:
+            return None
+        name = _ROW + session_id
+        pending, data = self._writer.peek(name)
+        if not pending:
+            data = self._writer.store.get(KIND, name)
+        return None if data is None else data.decode()
+
+    def bodies_for(self, ids: Iterable[str]) -> dict[str, str]:
+        """The records of the named sessions (unknown ids are absent).
+
+        Each record is one point read of clio-core; a page's reads are issued
+        together (:data:`_READ_FANOUT` at a time) instead of one after another.
+        """
+
+        wanted = list(dict.fromkeys(ids))
+        if len(wanted) <= 1 or self._writer.store is self._memory:
+            pairs = [(sid, self.body(sid)) for sid in wanted]
+        else:
+            with ThreadPoolExecutor(min(_READ_FANOUT, len(wanted))) as pool:
+                pairs = list(zip(wanted, pool.map(self.body, wanted), strict=True))
+        return {sid: body for sid, body in pairs if body is not None}
+
+    def ids(self) -> list[str]:
+        """Every session id (no record is read)."""
+        self._ready()
+        with self._lock:
+            return list(self._columns)
+
+    def count(self) -> int:
+        """How many sessions exist."""
+        self._ready()
+        return len(self._columns)
+
+    def child_ids_by_parent(self) -> dict[str, list[str]]:
+        """``{parent_session_id: [child ids]}`` (newest created first) from the index."""
+        self._ready()
+        with self._lock:
+            return {
+                parent: [
+                    sid
+                    for _created, sid in sorted(
+                        ((self._columns[c].created_at, c) for c in children), reverse=True
+                    )
+                ]
+                for parent, children in self._children.items()
+            }
+
+    def most_recent_id(self) -> Optional[str]:
+        """The newest created session's id."""
+        self._ready()
+        with self._lock:
+            return self._created[-1][1] if self._created else None
+
+    def without_interaction_time(self) -> list[str]:
+        """Ids of sessions written before ``last_interaction_at`` existed, still lacking it."""
+        self._ready()
+        with self._lock:
+            return sorted(sid for sid, row in self._columns.items() if not row.interaction_known)
+
+    # ---- queries ------------------------------------------------------------
+
+    def select(self, query: PageQuery) -> list[str]:
+        """Every session id matching ``query``, newest created first (no paging)."""
+
+        self._ready()
+        with self._lock:
+            if query.ids is not None:
+                rows = [self._columns[sid] for sid in query.ids if sid in self._columns]
+                ordered = sorted(((r.created_at, r.id) for r in rows), reverse=True)
+            else:
+                ordered = list(reversed(self._created))
+            return [sid for _created, sid in ordered if query.matches(self._columns[sid])]
+
+    def page(self, query: PageQuery) -> tuple[list[str], Optional[str], int]:
+        """One page of ids newest-interaction first, the next cursor, and the total."""
+
+        self._ready()
+        start = decode_cursor(query.cursor) if query.cursor else None
+        limit = max(1, int(query.limit))
+        with self._lock:
+            ordered: Iterator[tuple[str, str]] = (
+                self._recent.irange(maximum=start, inclusive=(True, False), reverse=True)
+                if start is not None
+                else reversed(self._recent)
+            )
+            found: list[RecordColumns] = []
+            for _recent, sid in ordered:
+                row = self._columns[sid]
+                if query.matches(row):
+                    found.append(row)
+                    if len(found) > limit:
+                        break
+            total = sum(1 for row in self._columns.values() if query.matches(row))
+        more = len(found) > limit
+        found = found[:limit]
+        last = found[-1] if found else None
+        next_cursor = encode_cursor(last.recent_at, last.id) if more and last else None
+        return [row.id for row in found], next_cursor, total
+
+    def ancestors(self, ids: Iterable[str]) -> list[str]:
+        """``ids`` and every ancestor of them (unknown ids dropped)."""
+
+        self._ready()
+        seen: dict[str, None] = {}
+        with self._lock:
+            for start in ids:
+                sid = start
+                while sid and sid in self._columns and sid not in seen:
+                    seen[sid] = None
+                    sid = self._columns[sid].parent_session_id
+        return list(seen)
+
+    def family(self, session_id: str) -> list[str]:
+        """The tree ``session_id`` belongs to: its root first, then every descendant
+        of the root (level by level, oldest first), then any ancestor not reached."""
+
+        chain = self.ancestors([session_id])
+        if not chain:
+            return []
+        with self._lock:
+            tree: dict[str, None] = {chain[-1]: None}
+            frontier = [chain[-1]]
+            while frontier:
+                level = sorted(
+                    (self._columns[child].created_at, child)
+                    for parent in frontier
+                    for child in self._children.get(parent, ())
+                    if child not in tree and child in self._columns
+                )
+                frontier = [child for _created, child in level]
+                tree.update(dict.fromkeys(frontier))
+        return [*tree, *(sid for sid in chain if sid not in tree)]
+
+    def related_ids(self, family_of: str = "") -> list[str]:
+        """``family_of``'s tree (:meth:`family`); without it, the sessions waiting on a
+        person (:data:`WAITING_ON_PERSON`) and every ancestor of them."""
+
+        if family_of:
+            return self.family(family_of)
+        return self.ancestors(self.select(PageQuery(archived=None, statuses=WAITING_ON_PERSON)))
+
+    # ---- legacy import (the session_records_import store migration) -------
+
+    def import_legacy(self, legacy_json: Optional[Path]) -> dict[str, Any]:
+        """Import ``sessions.json``: every session not already present, in one batch.
+
+        Idempotent, so an interrupted run can simply run again (present sessions are
+        kept). An unreadable file is reported typed and raises, so the migration
+        stays owed and a repaired file is imported by the next run. The file itself
+        is never changed.
+        """
+
+        self._ready()
+        if legacy_json is None or not legacy_json.is_file():
+            return {"sessions": 0}
         try:
             raw = json.loads(legacy_json.read_text())
         except (json.JSONDecodeError, OSError) as exc:
-            # The file is kept for out-of-band salvage; nothing is marked done, so a
-            # repaired file is imported on the next start.
             stream_audit(
                 LEGACY_UNREADABLE_REASON,
                 reason=LEGACY_UNREADABLE_REASON,
                 path=str(legacy_json),
                 error=type(exc).__name__,
             )
-            logger.warning("session records: legacy %s unreadable (%s)", legacy_json, exc)
-            return
-        payloads = raw.values() if isinstance(raw, dict) else ()
+            raise ValueError(f"{LEGACY_UNREADABLE_REASON}: {legacy_json}: {exc}") from exc
         from clio_agent.gact.sessions import Session  # noqa: PLC0415 - import cycle
 
-        rows: list[tuple[RecordColumns, str]] = []
-        for payload in payloads:
-            if not isinstance(payload, dict):
-                continue
-            try:
-                session = Session(**payload)
-            except TypeError:
-                continue  # schema drift: the same per-row skip the JSON loader made
-            rows.append((record_columns(session), json.dumps(payload, sort_keys=True)))
-        with self._io, self._db:
-            self._db.executemany(
-                "INSERT OR IGNORE INTO sessions VALUES (?,?,?,?,?,?,?,?,?)",
-                [_row_values(columns, body) for columns, body in rows],
-            )
-            self._db.execute(
-                "INSERT OR REPLACE INTO meta VALUES (?, ?)", (_LEGACY_IMPORT_KEY, str(len(rows)))
-            )
+        changes: dict[str, Optional[bytes]] = {}
+        buckets: set[str] = set()
+        with self._lock:
+            for payload in raw.values() if isinstance(raw, dict) else ():
+                if not isinstance(payload, dict):
+                    continue
+                try:
+                    session = Session(**payload)
+                except TypeError:
+                    continue  # schema drift: the same per-row skip the JSON loader made
+                if session.id in self._columns:
+                    continue
+                self._index(record_columns(session))
+                changes[_ROW + session.id] = json.dumps(payload, sort_keys=True).encode()
+                buckets.add(bucket_of(session.id))
+            changes.update({bucket: self._bucket_body(bucket) for bucket in buckets})
+            ticket = self._writer.submit(changes) if changes else 0
+        if ticket and not self._writer.wait(ticket, _WRITE_WAIT_SECONDS):
+            raise TimeoutError(f"{WRITE_FAILED_REASON}: the legacy import did not land")
+        imported = sum(1 for name in changes if name.startswith(_ROW))
         stream_audit(
             LEGACY_IMPORTED_REASON,
             reason=LEGACY_IMPORTED_REASON,
             path=str(legacy_json),
-            sessions=len(rows),
+            sessions=imported,
         )
-
-    # ---- rows -------------------------------------------------------------
-
-    def put(self, columns: RecordColumns, body: str) -> None:
-        """Write one row (insert or replace) and commit it."""
-
-        with self._io, self._db:
-            self._db.execute(
-                "INSERT OR REPLACE INTO sessions VALUES (?,?,?,?,?,?,?,?,?)",
-                _row_values(columns, body),
-            )
-
-    def delete(self, session_id: str) -> None:
-        """Remove one row."""
-
-        with self._io, self._db:
-            self._db.execute("DELETE FROM sessions WHERE id=?", (session_id,))
-
-    def body(self, session_id: str) -> Optional[str]:
-        """One row's stored body, or ``None``."""
-
-        with self._io:
-            row = self._db.execute("SELECT body FROM sessions WHERE id=?", (session_id,)).fetchone()
-        return None if row is None else str(row[0])
-
-    def bodies(self, *, workspace_id: Optional[str] = None) -> list[tuple[str, str]]:
-        """Every ``(id, body)``, newest created first (the historical list order)."""
-
-        sql = "SELECT id, body FROM sessions"
-        args: tuple[Any, ...] = ()
-        if workspace_id:
-            sql += " WHERE workspace_id=?"
-            args = (workspace_id,)
-        sql += " ORDER BY created_at DESC, id DESC"
-        with self._io:
-            return [(str(i), str(b)) for i, b in self._db.execute(sql, args).fetchall()]
-
-    def bodies_for(self, ids: Sequence[str]) -> dict[str, str]:
-        """The bodies of the named rows (missing ids are absent)."""
-
-        out: dict[str, str] = {}
-        for start in range(0, len(ids), 500):
-            chunk = list(ids[start : start + 500])
-            marks = ",".join("?" * len(chunk))
-            with self._io:
-                rows = self._db.execute(
-                    f"SELECT id, body FROM sessions WHERE id IN ({marks})",  # noqa: S608 - placeholders only
-                    chunk,
-                ).fetchall()
-            out.update((str(i), str(b)) for i, b in rows)
-        return out
-
-    def ids(self) -> list[str]:
-        """Every session id (no body is read)."""
-
-        with self._io:
-            return [str(row[0]) for row in self._db.execute("SELECT id FROM sessions")]
-
-    def count(self) -> int:
-        """How many sessions exist."""
-
-        with self._io:
-            return int(self._db.execute("SELECT COUNT(*) FROM sessions").fetchone()[0])
-
-    def child_ids_by_parent(self) -> dict[str, list[str]]:
-        """``{parent_session_id: [child ids]}`` from the parent column alone."""
-
-        with self._io:
-            rows = self._db.execute(
-                "SELECT parent_session_id, id FROM sessions WHERE parent_session_id != ''"
-                " ORDER BY created_at DESC, id DESC"
-            ).fetchall()
-        index: dict[str, list[str]] = {}
-        for parent, child in rows:
-            index.setdefault(str(parent), []).append(str(child))
-        return index
-
-    def most_recent_id(self) -> Optional[str]:
-        """The newest created session's id."""
-
-        with self._io:
-            row = self._db.execute(
-                "SELECT id FROM sessions ORDER BY created_at DESC, id DESC LIMIT 1"
-            ).fetchone()
-        return None if row is None else str(row[0])
-
-    def without_interaction_time(self) -> list[str]:
-        """Ids of rows written before ``last_interaction_at`` existed and still lacking it."""
-
-        with self._io:
-            return [
-                str(row[0])
-                for row in self._db.execute(
-                    "SELECT id FROM sessions WHERE interaction_known=0 ORDER BY id"
-                )
-            ]
-
-    # ---- the rail page ----------------------------------------------------
-
-    def page(self, query: PageQuery) -> tuple[list[tuple[str, str]], Optional[str], int]:
-        """One page of ``(id, body)`` newest-interaction first, its next cursor, and the total.
-
-        ``total`` counts every row matching the filters (all pages), so a client can
-        say how many conversations exist without loading them.
-        """
-
-        where: list[str] = []
-        args: list[Any] = []
-        if query.workspace_id:
-            where.append("workspace_id=?")
-            args.append(query.workspace_id)
-        if query.archived is not None:
-            where.append("archived=?")
-            args.append(1 if query.archived else 0)
-        if query.kinds:
-            kinds = sorted(query.kinds)
-            where.append(f"kind IN ({','.join('?' * len(kinds))})")
-            args.extend(kinds)
-        if query.parent_session_id:
-            where.append("parent_session_id=?")
-            args.append(query.parent_session_id)
-        filters = (" WHERE " + " AND ".join(where)) if where else ""
-        keyset = list(where)
-        keyset_args = list(args)
-        if query.cursor:
-            recent_at, last_id = decode_cursor(query.cursor)
-            keyset.append("(recent_at < ? OR (recent_at = ? AND id < ?))")
-            keyset_args.extend([recent_at, recent_at, last_id])
-        page_filter = (" WHERE " + " AND ".join(keyset)) if keyset else ""
-        limit = max(1, int(query.limit))
-        with self._io:
-            total = int(
-                self._db.execute(
-                    f"SELECT COUNT(*) FROM sessions{filters}",  # noqa: S608 - placeholders only
-                    args,
-                ).fetchone()[0]
-            )
-            rows = self._db.execute(
-                f"SELECT id, recent_at, body FROM sessions{page_filter}"  # noqa: S608
-                " ORDER BY recent_at DESC, id DESC LIMIT ?",
-                [*keyset_args, limit + 1],
-            ).fetchall()
-        more = len(rows) > limit
-        rows = rows[:limit]
-        next_cursor = encode_cursor(str(rows[-1][1]), str(rows[-1][0])) if more and rows else None
-        return [(str(i), str(b)) for i, _r, b in rows], next_cursor, total
-
-    def close(self) -> None:
-        """Close the connection (idempotent)."""
-
-        with self._io:
-            self._closer()
-
-
-def _row_values(columns: RecordColumns, body: str) -> tuple[Any, ...]:
-    return (
-        columns.id,
-        columns.workspace_id,
-        columns.parent_session_id,
-        columns.kind,
-        1 if columns.archived else 0,
-        columns.created_at,
-        columns.recent_at,
-        1 if columns.interaction_known else 0,
-        body,
-    )
+        return {"sessions": imported}
 
 
 def record_columns(session: Any) -> RecordColumns:
-    """The indexed columns of ``session``'s row (the rail filters and recency)."""
+    """The indexed columns of ``session`` (the views' filters and recency)."""
 
     return RecordColumns(
         id=session.id,
@@ -376,6 +648,8 @@ def record_columns(session: Any) -> RecordColumns:
         # The recency the wire shows (protocol.v3.session.session_to_v3).
         recent_at=session.last_interaction_at or session.created_at,
         interaction_known=bool(session.last_interaction_at),
+        status=str(session.status or ""),
+        title=str(session.title or ""),
     )
 
 
@@ -394,10 +668,15 @@ def cache_capacity() -> int:
 
 
 __all__ = [
+    "INDEX_BUCKETS",
+    "KIND",
     "InvalidCursorError",
     "PageQuery",
     "RecordColumns",
     "SessionRecords",
+    "SessionRecordsNotReadyError",
+    "WAITING_ON_PERSON",
+    "bucket_of",
     "cache_capacity",
     "decode_cursor",
     "encode_cursor",

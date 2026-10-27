@@ -119,6 +119,12 @@ def _run_task_event_lane(app: Any) -> dict[str, Any]:
     return {key: report[key] for key in keys if key in report}
 
 
+def _run_session_records(app: Any) -> dict[str, Any]:
+    # Imports only sessions the records do not hold, so a rerun after an interruption
+    # neither duplicates nor overwrites; the runner's marker ends it for good.
+    return app.state.sessions.import_legacy()
+
+
 def _task_index_owed(app: Any) -> bool:
     return app.state.task_history.index.marker() is None
 
@@ -148,6 +154,12 @@ def _run_artifact_index(app: Any) -> dict[str, Any]:
 
 #: Every store migration, in run order. Name = marker name; never rename a shipped one.
 MIGRATIONS: tuple[StoreMigration, ...] = (
+    StoreMigration(
+        "session_records_import",
+        "Import the legacy sessions.json into one clio-core record per session",
+        _run_session_records,
+        boot_reason="session_records_import_owed",
+    ),
     StoreMigration(
         "task_event_lane",
         "Copy each conversation's task events into their own lane (task trees read only it)",

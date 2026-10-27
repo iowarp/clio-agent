@@ -128,13 +128,19 @@ The same model is in the design document; it is repeated here so this plan reads
     `sessions.json` file on each change. It moves to clio-core records with a recent-first index.
   - `GET /v1/sessions` is paged with a cursor.
   - The first page of the rail is part of startup; in gact-tui, more pages load as you scroll.
-  - *Done (first step):* one row per session in `sessions.sqlite3` beside the legacy
-    `sessions.json` (`gact/session_records.py`; the JSON is imported once, marker in the
-    table). A change writes one row; rows load on first use into a bounded cache. The table
-    is not yet clio-core: moving it is a backend swap behind `SessionRecords`.
+  - *Done:* one clio-core record per session (ARC kind `session_records`, `row/<id>`) plus
+    an index of small columns in 64 bucket records (`index/<nn>`), loaded into memory when
+    the store is bound (`gact/session_records.py`). A change writes its record, and its
+    bucket only when an indexed column moved; writes go through one ordered writer thread
+    (never a clio-core RPC on the server loop). Records load on first use into a bounded
+    cache. The legacy `sessions.json` is imported by the `session_records_import` store
+    migration.
   - *API:* `GET /v1/sessions` without `limit`/`cursor` is unchanged (every row). With
     `limit` (and `cursor` from the previous page) it returns one page newest interaction
     first, plus `next_cursor` and `total`; `kinds=conversation,branch` is the rail's filter.
+    `family_of=<id>` (a conversation's tree), `waiting_on_person=true` (sessions waiting on
+    a permission or answer, plus their ancestors), `ids=` and `q=` (title search) answer
+    the views that used to load every session.
 - **R4. Opening reads one page first.**
   - `GET .../messages` (`routes/messages.py:283`) materializes the whole ledger and then pages it.
     Instead it reads the latest page from the message lane by range, and older pages on scroll.

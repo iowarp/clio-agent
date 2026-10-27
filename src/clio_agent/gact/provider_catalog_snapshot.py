@@ -143,9 +143,9 @@ def commit(app: "FastAPI", payload: dict[str, Any], provider_ids: list[str]) -> 
 def publish(app: "FastAPI", payload: dict[str, Any]) -> None:
     """Tell every session the catalog changed."""
 
-    for session in app.state.sessions.list():
+    for session_id in app.state.sessions.ids():  # the index alone: no record is read
         app.state.bus.publish(
-            Event(type="provider_catalog.refreshed", session_id=session.id, payload=payload)
+            Event(type="provider_catalog.refreshed", session_id=session_id, payload=payload)
         )
 
 
