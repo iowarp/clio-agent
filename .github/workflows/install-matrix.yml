@@ -75,6 +75,24 @@ jobs:
             uv run --frozen --no-sync python scripts/measure_startup.py --store "$store" \
               --open 50 --idle 60 --work-dir "$RUNNER_TEMP" --out "results/startup-x$scale.json" || true
           done
+      # Report-only until its numbers are known: a store with a backlog of interrupted
+      # fan-outs and open children. Time to ready with the backlog, then again on the same
+      # store once the obligations lane drained it; peak memory while it drains; the first
+      # page of conversations opened mid-drain (R7 backlog test).
+      - name: Backlog of interrupted flows and pending mail
+        continue-on-error: true
+        run: |
+          store="$RUNNER_TEMP/stores/backlog"
+          uv run --frozen --no-sync python scripts/ci/record_step.py --file "$TIMINGS" \
+            --name "generate backlog store" -- \
+            uv run --frozen --no-sync python scripts/create_reference_store.py --out "$store" \
+              --flows 10 --chats 5 --chat-turns 3 --children 3 --open 20 --interrupted 60 \
+              --settle 30 --capacity 512MB
+          for run in backlog backlog-drained; do
+            timeout 2400 uv run --frozen --no-sync python scripts/measure_startup.py --store "$store" \
+              --in-place --scripted-model --wait-obligations --open-during-drain 5 \
+              --work-dir "$RUNNER_TEMP" --out "results/startup-$run.json" || true
+          done
       - name: Report
         if: always()
         run: |
@@ -91,6 +109,10 @@ jobs:
           print(f"- first health: {r.get('first_health_s')} s; task runtime ready: {m.get('task_runtime_ready')} s")
           print(f"- memory at ready: {r.get('rss_ready_mb')} MB; after opening {r.get('opened')}: {r.get('rss_after_open_mb')} MB; after idle: {r.get('rss_after_idle_mb')} MB")
           print(f"- shutdown: {r.get('shutdown_s')} s (forced: {r.get('shutdown_forced')}); clio-core left running: {r.get('daemon_left_running')}")
+          if "obligations_wait_s" in r:
+              print(f"- obligations drained in {r['obligations_wait_s']} s; peak memory by phase: {r.get('rss_peak_mb')} MB")
+          for o in r.get("opened_during_drain", []):
+              print(f"- opened mid-drain: {o['title']}: HTTP {o['status']}, {o['messages']} messages in {o['seconds']} s (drain running: {o['obligations_running']})")
           print("\n| Step | Start (s) | Seconds | Outcome |\n|---|---|---|---|")
           for s in r.get("steps", []):
               print(f"| {s['name']} | {s['start_s']} | {s['seconds']} | {s['outcome']} |")

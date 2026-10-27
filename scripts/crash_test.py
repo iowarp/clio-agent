@@ -856,24 +856,44 @@ def iteration(
         "acknowledged": {"requests_this_iteration": work.sent, **ledger.counts()},
         **killed,
     }
+    failed = _restart(server, record, "restart")
+    if failed:
+        return record
+    findings = confirmed(api, ledger, "restart")
+    if rng.random() < args.recovery_kill:
+        # Kill again while the restarted server resumes the interrupted work: the
+        # obligations lane writes too, and must be as durable as a turn.
+        time.sleep(rng.uniform(0.5, 5.0))
+        in_drain = probe_in_flight(api, ledger, list(ledger.sessions))
+        server.kill9(core=False)
+        record["recovery_kill"] = {"in_flight": in_drain}
+        record["kill_points"].append("mid-recovery")
+        if _restart(server, record["recovery_kill"], "recovery restart"):
+            record["findings"] = findings + record["recovery_kill"]["findings"]
+            return record
+        findings += confirmed(api, ledger, "recovery restart")
+    record["settle"] = settle(api, ledger, args.settle_timeout)
+    findings += confirmed(api, ledger, "settled")
+    record["findings"] = findings
+    return record
+
+
+def _restart(server: Server, record: dict[str, Any], phase: str) -> bool:
+    """Restart the server into ``record``; True (with a typed finding) when it failed."""
     try:
         record["restart"] = server.start()
     except RestartFailed as error:
         record["findings"] = [
             {
                 "type": "restart_failed",
-                "phase": "restart",
+                "phase": phase,
                 "error": str(error),
                 "boot": error.boot,
                 "log_tail": error.log,
             }
         ]
-        return record
-    findings = confirmed(api, ledger, "restart")
-    record["settle"] = settle(api, ledger, args.settle_timeout)
-    findings += confirmed(api, ledger, "settled")
-    record["findings"] = findings
-    return record
+        return True
+    return False
 
 
 def run(args: argparse.Namespace) -> dict[str, Any]:
@@ -890,6 +910,7 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
         "flows_per_iteration": args.flows,
         "chats_per_iteration": args.chats,
         "kill_window_s": [args.kill_min, args.kill_max],
+        "recovery_kill_chance": args.recovery_kill,
         "store": str(out),
         "iterations": [],
     }
@@ -936,6 +957,7 @@ def _brief(record: dict[str, Any]) -> dict[str, Any]:
         "kill_points": record["kill_points"],
         "in_flight": record["in_flight_at_kill"],
         "ready_s": record.get("restart", {}).get("ready_s"),
+        "recovery_kill": "recovery_kill" in record,
         "settle": record.get("settle"),
         "findings": kinds,
     }
@@ -961,6 +983,12 @@ def main() -> int:
     )
     parser.add_argument(
         "--kill-core-every", type=int, default=0, help="also SIGKILL clio-core every Nth iteration"
+    )
+    parser.add_argument(
+        "--recovery-kill",
+        type=float,
+        default=0.3,
+        help="chance per iteration of a second SIGKILL while the restart resumes the work",
     )
     parser.add_argument("--ready-timeout", type=float, default=300.0)
     parser.add_argument("--settle-timeout", type=float, default=180.0)
