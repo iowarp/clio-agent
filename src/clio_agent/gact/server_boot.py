@@ -81,11 +81,17 @@ async def close_request_owners(app: "FastAPI") -> None:
     """Close the owners that only serve requests, once the loop serves none any more.
 
     Pending MCP browser sign-ins are released before the document store closes. This
-    is the first shutdown step, so it also arms the shutdown budget (shutdown_budget).
+    is the first shutdown step, so it also arms the shutdown budget (shutdown_budget),
+    and stops the private SearXNG the server's boot started (search_bootstrap).
     """
     from clio_agent.gact import shutdown_budget  # noqa: PLC0415
 
     shutdown_budget.begin(app)
+    if getattr(app.state, "server_boot", False):
+        from clio_agent.gact import search_bootstrap  # noqa: PLC0415
+
+        # The SearXNG this server's boot started stops with it (bounded, typed reasons).
+        await search_bootstrap.stop_started(app)
     boot_doctor = getattr(app.state, "health_boot_task", None)
     if boot_doctor is not None:
         boot_doctor.cancel()  # its probe thread ends on its own 1 s timeouts

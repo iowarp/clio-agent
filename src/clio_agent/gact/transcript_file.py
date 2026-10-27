@@ -142,7 +142,7 @@ class RegistryTranscriptIndex:
     def session_ids(self) -> list[str]:
         """Every registered session id."""
 
-        return [session.id for session in self._sessions.list()]
+        return self._sessions.ids()
 
     def has_session(self, session_id: str) -> bool:
         """Whether ``session_id`` is a registered session."""
@@ -313,16 +313,19 @@ def _atom_boot(app: "FastAPI") -> None:
     from clio_agent.gact.session_store import (  # noqa: PLC0415 - import cycle
         _reconcile_restart_interrupted_sessions,
     )
+    from clio_agent.gact.store_migrations import ensure_at_boot  # noqa: PLC0415
     from clio_agent.gact.task_history import TaskHistory
-    from clio_agent.gact.transcript_migration import migrate_transcripts
 
     if getattr(app.state, "task_history", None) is None:
         with boot_timing.step(app, "task_history_restore"):
             history = TaskHistory(app.state.arc)
             history.restore()
         app.state.task_history = history
-    with boot_timing.step(app, "transcript_migration"):
-        migrate_transcripts(app)  # Capture legacy content before any reconciliation/cache update.
+        # Before any tree loads; normally `clio-agent migrate` copied it (one marker read).
+        ensure_at_boot(app, "task_event_lane")
+    # Legacy content is captured before any reconciliation/cache update; normally
+    # `clio-agent migrate` already did, and this is one marker read.
+    ensure_at_boot(app, "transcript_legacy_import")
     with boot_timing.step(app, "interrupted_sessions"):
         _reconcile_restart_interrupted_sessions(app)
     with boot_timing.step(app, "interaction_times"):

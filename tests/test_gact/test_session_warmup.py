@@ -280,3 +280,67 @@ def test_a_changed_server_set_still_warms_its_new_servers(monkeypatch: pytest.Mo
         report = session_warmup.warm_session_servers(_Agent(executor, pack={"science": {}}))
     assert mounted == ["science"]
     assert report == {"science": "ready", "web": "ready"}
+
+
+def test_opening_a_conversation_starts_its_warmup(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """B3: opening a conversation (its newest page) loads its agent's servers; paging
+    back through older messages does not."""
+    starts = _recorded_starts(monkeypatch)
+    with TestClient(build_app(sessions_path=tmp_path / "s.json")) as c:
+        sid = c.post("/v1/sessions", json={"title": "x"}).json()["id"]
+        assert c.get(f"/v1/sessions/{sid}/messages").status_code == 200
+        c.get(f"/v1/sessions/{sid}/messages", params={"before": "msg_unknown"})
+    assert starts == [(sid, "session_created"), (sid, "conversation_opened")]
+
+
+def test_a_warmup_asked_for_before_the_agent_is_ready_runs_when_it_is(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Opening a conversation right after start is never dropped: it waits for the agent."""
+    app = SimpleNamespace(state=SimpleNamespace(agent=None))
+    warmed: list[tuple[str, str]] = []
+    monkeypatch.setattr(
+        session_warmup,
+        "start_revision_warmup",
+        lambda app, work, *, name, aborted: warmed.append((name, "started")),
+    )
+
+    assert session_warmup.start_session_warmup(app, "s1", trigger="conversation_opened") is None
+    assert warmed == []
+
+    app.state.agent = _Agent(_Executor({}), pack={})
+    session_warmup.start_deferred_warmups(app)
+    session_warmup.start_deferred_warmups(app)  # drained once
+
+    assert warmed == [("clio-warmup-s1", "started")]
+    session_warmup._release("s1")
+
+
+def test_opening_a_conversation_does_not_restart_a_failed_server(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from clio_agent.tools import mcp_prepare
+
+    mounted: list[str] = []
+
+    def mount(executor: Any, namespace: str, spec: Any, *, connect: bool = True) -> dict:
+        mounted.append(namespace)
+        return {}
+
+    monkeypatch.setattr("clio_agent.gact.mcp_readiness.mount_namespace_for_session", mount)
+    mcp_prepare.record(
+        "geo", mcp_prepare.FAILED, "provision", reason="mcp_prepare_provision_failed"
+    )
+    try:
+        agent = _Agent(_Executor(_specs("geo", "ndp")), pack={"geo": {}, "ndp": {}})
+        report = session_warmup.warm_session_servers(agent, retry_failed=False)
+        assert mounted == ["ndp"]
+        assert report == {"geo": "mcp_prepare_provision_failed", "ndp": "ready"}
+
+        session_warmup.warm_session_servers(agent)  # a turn (or reconnect) tries again
+        assert sorted(mounted) == ["geo", "ndp", "ndp"]
+    finally:
+        mcp_prepare.forget("geo")
+        mcp_prepare.forget("ndp")

@@ -57,10 +57,17 @@ class AsyncNamespacePreparationMixin:
         raise NotImplementedError
 
     def merge_namespace_tools(self, namespace: str, tools: Mapping[str, Any]) -> None:
-        """Merge freshly mounted definitions into the live flat tool table."""
+        """Merge freshly mounted definitions into the live flat tool table.
+
+        New names bump :attr:`tools_revision`, so an agent already running picks up a
+        server that finished preparing after its turn began (``live_tool_refresh``).
+        """
 
         del namespace
-        self._mcp_tools.update(tools)
+        added = any(name not in self._mcp_tools for name in tools)
+        self._mcp_tools = {**self._mcp_tools, **tools}
+        if added:
+            self.__dict__["_clio_tools_revision"] = self.tools_revision + 1
 
     @property
     def tools_revision(self) -> int:
@@ -171,6 +178,45 @@ class AsyncNamespacePreparationMixin:
         """Return whether this executor owns a persistent namespace client."""
 
         return namespace in self._namespace_clients
+
+    async def list_namespace_tools(self, namespace: str) -> list[Any]:
+        """List ``namespace``'s bare tools over its persistent connection (connecting it).
+
+        The one start of a cold server serves both the connection and the listing: a
+        first start connects directly (``mcp_task_routing.first_start_direct``) and
+        records the server's capability from that connection, so no heal restarts it.
+        """
+
+        from clio_agent.tools.mcp_task_routing import (  # noqa: PLC0415
+            first_start_direct,
+            record_definitive_capability,
+        )
+
+        if self._closed or self._client is None:
+            raise RuntimeError("AsyncMCPToolExecutor is not running")
+        proxy = self._namespace_servers.get(namespace)
+        if proxy is None:
+            raise ValueError(f"unknown MCP namespace {namespace!r}")
+        lock = self._namespace_locks.setdefault(namespace, asyncio.Lock())
+        async with lock:
+            client = self._namespace_clients.get(namespace)
+            if client is None:
+                with first_start_direct(namespace):
+                    client = await self._connect_namespace(namespace, proxy)
+            listed = list(await client.list_tools())
+            if self._namespace_direct_routes.get(namespace, False):
+                # A direct connection sees the server itself: its capability is definitive.
+                record_definitive_capability(namespace, client, listed)
+        return listed
+
+    async def reset_namespace(self, namespace: str) -> None:
+        """Close ``namespace``'s persistent connection so the next use starts it again."""
+
+        lock = self._namespace_locks.setdefault(namespace, asyncio.Lock())
+        async with lock:
+            await self._evict_namespace_client(namespace)
+            self._connected_namespaces.discard(namespace)
+            self._namespace_heal_attempted.discard(namespace)
 
     async def _namespace_client(self, namespace: str, proxy: Any) -> Any:
         """Return this namespace's client, connecting / healing it under its own lock.
@@ -303,3 +349,22 @@ class SyncNamespacePreparationMixin:
         """Return whether this workspace owns a live namespace client."""
 
         return self._async_executor.is_namespace_prepared(namespace)
+
+    def list_namespace_tools(self, namespace: str) -> list[Any]:
+        """Connect ``namespace`` and list its bare tools over that one connection."""
+
+        if self._closed:
+            raise RuntimeError("SyncMCPToolExecutor is closed")
+        return self._run_while_server_works(
+            self._async_executor.list_namespace_tools(namespace),
+            action=f"namespace {namespace!r} connect and list",
+        )
+
+    def reset_namespace(self, namespace: str) -> None:
+        """Close ``namespace``'s persistent connection (its server process stops)."""
+
+        if self._closed:
+            raise RuntimeError("SyncMCPToolExecutor is closed")
+        asyncio.run_coroutine_threadsafe(
+            self._async_executor.reset_namespace(namespace), self._loop
+        ).result()

@@ -395,3 +395,38 @@ class TestEnsureNamespace:
         result = asyncio.run(mcp_discovery.ensure_namespace_async("pandas", _spec("pandas")))
         assert "pandas_tool" in result
         assert mcp_discovery._ensure_inflight == {}
+
+
+def test_boot_discovery_starts_no_stdio_server(monkeypatch: pytest.MonkeyPatch) -> None:
+    """B3: nothing is prepared at boot. A stdio namespace contributes its cached
+    listing or nothing; its server starts when an agent that uses it is loaded, and
+    that later live listing still reaches the boot catalog through the observer.
+
+    **Sabotage:** list uncached stdio namespaces live -> ``_list_one_namespace`` fails
+    the test.
+    """
+    from clio_agent.tools import listing_cache, mcp_prepare
+
+    def _never(*_a: Any, **_k: Any) -> dict[str, Any]:
+        pytest.fail("boot must not start an MCP server")
+
+    monkeypatch.setattr(mcp_discovery, "_list_one_namespace", _never)
+    monkeypatch.setattr(
+        listing_cache,
+        "load_listing",
+        lambda namespace, *a, **k: [_FakeTool("cached_tool")] if namespace == "warm" else None,
+    )
+    merged: list[tuple[str, list[str]]] = []
+
+    result = mcp_discovery.boot_discovery_pass(
+        {"warm": _spec("warm"), "cold": _spec("cold")},
+        lambda namespace, tools: merged.append((namespace, sorted(tools))),
+    )
+
+    assert set(result.tools) == {"warm_cached_tool"}
+    assert result.degraded == {}, "an unprepared server is not a degradation"
+
+    mcp_prepare.notify_listed("cold", {"cold_x": _FakeTool("cold_x")})
+    mcp_prepare.notify_listed("elsewhere", {"elsewhere_x": _FakeTool("elsewhere_x")})
+    mcp_prepare.observe_listings("default_gateway", lambda *_a: None)
+    assert merged == [("cold", ["cold_x"])]

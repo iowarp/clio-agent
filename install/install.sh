@@ -452,11 +452,23 @@ print(max(v for _, v in found) if sys.argv[1] == "stable" else max(found)[1])
   wheel_arg=""
   [ "$OS" != darwin ] || wheel_arg="--only-binary=rasterio"
   say "Installing $pkg_spec from PyPI (Python $py, locked by $tag)"
-  rm -rf "$VENV"
+  # The installed environment is set aside, not deleted, until the new one is in
+  # place: an install that fails or is interrupted puts it back.
+  previous=""
+  if [ -d "$VENV" ]; then
+    previous="$VENV.previous"
+    rm -rf "$previous"
+    mv "$VENV" "$previous"
+  fi
   mkdir -p "$PREFIX/clio-agent"
-  uv venv --python "$py" "$VENV" >/dev/null
-  uv pip install --quiet --python "$VENV/bin/python" ${wheel_arg:+"$wheel_arg"} \
-    --constraint "$lockdir/constraints.txt" "$pkg_spec"
+  if ! { uv venv --python "$py" "$VENV" >/dev/null \
+      && uv pip install --quiet --python "$VENV/bin/python" ${wheel_arg:+"$wheel_arg"} \
+        --constraint "$lockdir/constraints.txt" "$pkg_spec"; }; then
+    rm -rf "$VENV"
+    [ -z "$previous" ] || mv "$previous" "$VENV"
+    die "could not install $pkg_spec${previous:+; the previous installation is unchanged}"
+  fi
+  [ -z "$previous" ] || rm -rf "$previous"
   CLIO_VERSION="$package_version"
 fi
 
@@ -465,9 +477,27 @@ if [ -x "$VENV/bin/python" ]; then
   CLIO_INSTALLED_VERSION="$("$VENV/bin/python" -c 'from importlib.metadata import version; print(version("clio-agent"))' 2>/dev/null || true)"
 fi
 
+# ---------- upgrade the store: migrations run here, never at boot ------
+# Idempotent; a second run is a no-op. A running CLIO refuses it (store_in_use): its
+# next boot runs the owed migrations once and reports them in the health rows.
+doc_flags=()
+if "$VENV/bin/python" -c 'import importlib.util, sys; sys.exit(0 if importlib.util.find_spec("clio_agent.gact.store_migrate_command") else 3)' 2>/dev/null; then
+  say "Migrating the CLIO store (clio-agent migrate)"
+  migrate_status=0
+  "$VENV/bin/python" -m clio_agent.gact.store_migrate_command || migrate_status=$?
+  case "$migrate_status" in
+    0) ;;
+    3) warn "store in use by a running CLIO: its next start runs the owed migrations once (or run 'clio stop' then 'clio-agent migrate')" ;;
+    *) warn "clio-agent migrate failed (exit $migrate_status, see the lines above): CLIO's next start retries the owed migrations once and reports them in 'clio doctor'" ;;
+  esac
+  doc_flags=(--skip-store-migrations)
+else
+  say "clio-agent $CLIO_INSTALLED_VERSION has no 'clio-agent migrate'; its boot migrates the store"
+fi
+
 if "$VENV/bin/python" -c 'import importlib.util, sys; sys.exit(0 if importlib.util.find_spec("clio_agent.runtime.document_install") else 3)' 2>/dev/null; then
   say 'Installing managed Python/uv and Node/pnpm packages and Office rendering'
-  "$VENV/bin/python" -m clio_agent.runtime.document_install
+  "$VENV/bin/python" -m clio_agent.runtime.document_install ${doc_flags[@]+"${doc_flags[@]}"}
 else
   # Releases before the managed document runtime set it up on their own.
   say "clio-agent $CLIO_INSTALLED_VERSION has no managed document runtime step; skipping it"

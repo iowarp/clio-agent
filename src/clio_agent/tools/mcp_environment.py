@@ -29,7 +29,11 @@ def stdio_environment(
     search = web_mcp_environment(command, args, spec_env) if command else {}
     if command and is_web_search_mcp(command, args) and "WEB_STATE_DIR" not in spec_env:
         search["WEB_STATE_DIR"] = str(web_mcp_state_dir())
-    env = {**os.environ, **_QUIET_SERVER_DEFAULTS, **search, **dict(spec_env)}
+    from clio_agent.tools.mcp_prepare import uv_project_environment  # noqa: PLC0415
+
+    # A ``uv run --project`` server runs from CLIO's environment, never ``<project>/.venv``.
+    project_env = uv_project_environment(command, args, spec_env) if command else {}
+    env = {**os.environ, **_QUIET_SERVER_DEFAULTS, **search, **project_env, **dict(spec_env)}
     launcher = command.replace("\\", "/").rsplit("/", 1)[-1].lower()
     if launcher.removesuffix(".exe").removesuffix(".cmd") == "clio-kit":
         from clio_agent import paths  # noqa: PLC0415 - resolve this instance's private cache

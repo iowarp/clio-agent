@@ -482,6 +482,9 @@ class InfrastructureOperation(OperationProgressFields):
     service_id: str
     target_id: str
     action: str
+    #: Who asked for it: the person, or CLIO itself (first-run SearXNG at boot, its stop
+    #: at shutdown). CLIO's own actions never stand for the person's decision.
+    initiator: Literal["person", "clio"] = "person"
     state: OperationState = "queued"
     progress: str = "Queued"
     logs: str = ""

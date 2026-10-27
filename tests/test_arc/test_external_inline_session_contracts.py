@@ -74,7 +74,7 @@ async def test_concurrent_legacy_callbacks_have_bound_invocations_and_retire_pro
         session = app.state.sessions.get(root.owner.session_id)
         assert session is not None
         session.workspace_id = workspace.id
-        app.state.sessions._flush()
+        app.state.sessions._persist(session)
 
     await asyncio.to_thread(setup_workspace)
     external = ExternalTasks(app)

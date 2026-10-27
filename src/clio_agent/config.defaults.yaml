@@ -1320,6 +1320,12 @@ tools.mcp.no_progress_s: 30.0
 # giving up; raise for a slow-starting server.
 tools.mcp.probe_timeout_retries: 3
 
+# CLIO_MCP_PROVISION_MAX_WAIT_S  (float)  <- src/clio_agent/tools/mcp_prepare.py
+# Ceiling (seconds) on building one MCP server's environment before it
+# starts (uv sync, clio-kit --prepare); a build that stops making progress
+# fails sooner, typed.
+tools.mcp.provision_max_wait_s: 900.0
+
 # CLIO_MCP_RESPONSE_CACHE_ENABLED  (bool)  <- src/clio_agent/tools/mcp_runtime.py
 # Opts execution-path MCP clients into SEP-2549 server-hinted response
 # caching; off by default (enabling it wraps the message handler, visible to
@@ -1328,9 +1334,9 @@ tools.mcp.response_cache_enabled: false
 
 # CLIO_MCP_SESSION_WARMUP  (bool)  <- src/clio_agent/gact/session_warmup.py
 # Start a session's MCP servers (its plugins' and any always-load service)
-# in the background when the session is created or its agent changes, so the
-# first message does not wait for them; set false to start servers only when
-# a turn needs them.
+# in the background when the session is created or opened or its agent
+# changes, so the first message does not wait for them; set false to start
+# servers only when a turn needs them.
 tools.mcp.session_warmup: true
 
 # CLIO_MCP_SPAWN_DIET  (bool)  <- src/clio_agent/tools/spawn_diet.py
@@ -1342,6 +1348,12 @@ tools.mcp.spawn_diet: true
 # Hours a learned spawn-diet shortcut plan stays valid before the launcher
 # chain is relearned; lower to pick up upstream env changes sooner.
 tools.mcp.spawn_diet_ttl_h: 24.0
+
+# CLIO_MCP_TURN_PREPARE_GRACE_S  (float)  <- src/clio_agent/gact/mcp_background_prepare.py
+# Seconds a turn waits for its agent's MCP servers that are still preparing;
+# after it the turn goes on and their tools join when ready (the agent can
+# call wait_for_tools).
+tools.mcp.turn_prepare_grace_s: 2.0
 
 # CLIO_MCP_WORKSPACE_MAX_RESIDENT  (int)  <- src/clio_agent/tools/reaper.py
 # LRU cap on how many per-workspace MCP tool-executor fleets stay resident
