@@ -16,7 +16,8 @@ When it may run (no live peers) it reclaims, each with a typed row in the report
    defensively — an unrecognized layout is SKIPPED with a typed reason, never wrong-deleted);
 3. ``uv cache prune`` on the ambient uv cache, clio-kit's private cache, and the MCP uv
    cache (subprocess; tolerates uv absent / a missing dir);
-4. stale pytest basetemp trees under the configured temp roots older than N days.
+4. stale pytest basetemp trees under the configured temp roots older than N days;
+5. marketplace snapshots nothing refers to any more (:mod:`clio_agent.plugins.snapshot_gc`).
 
 ``--dry-run`` computes the exact plan (paths, reasons, bytes) and mutates NOTHING.
 
@@ -536,7 +537,7 @@ def run_gc(
     """Run (or plan, under ``dry_run``) the deep disk reclamation — the #1001 fallback.
 
     REFUSES with a typed reason when any live clio peer is detected; otherwise prunes the
-    four locations and returns a :class:`GCReport` with a per-location row.
+    five locations and returns a :class:`GCReport` with a per-location row.
 
     Args:
         dry_run: Compute the plan without deleting anything.
@@ -617,6 +618,10 @@ def run_gc(
     # 4. stale pytest basetemp trees.
     report.locations.append(_prune_stale_temp(env, now=now, dry_run=dry_run))
 
+    # 5. superseded marketplace snapshots (nothing in the plugin state or a pinned
+    # session resolution names them).
+    report.locations.append(_collect_marketplace_snapshots(now=now, dry_run=dry_run))
+
     trace.event(
         "DISK-GC",
         "gc_complete dry_run=%s total_freed=%d locations=%d",
@@ -625,6 +630,33 @@ def run_gc(
         len(report.locations),
     )
     return report
+
+
+def _collect_marketplace_snapshots(*, now: float, dry_run: bool) -> GCLocationResult:
+    """The plugin store's superseded snapshots (:mod:`clio_agent.plugins.snapshot_gc`)."""
+    from clio_agent.plugins.service import plugin_store_root  # noqa: PLC0415
+    from clio_agent.plugins.snapshot_gc import collect_superseded_snapshots  # noqa: PLC0415
+
+    root = plugin_store_root()
+    try:
+        collected = collect_superseded_snapshots(root, dry_run=dry_run, now=now)
+    except (OSError, ValueError) as error:
+        return GCLocationResult(
+            location="marketplace snapshots",
+            path=str(root / "snapshots"),
+            reason="marketplace_snapshot_gc_failed",
+            bytes_freed=None,
+            detail=f"nothing removed: {error}",
+        )
+    return GCLocationResult(
+        location="marketplace snapshots",
+        path=str(root / "snapshots"),
+        reason="superseded_collected",
+        bytes_freed=collected.bytes_freed,
+        kept=collected.kept,
+        removed=len(collected.removed),
+        detail="kept every snapshot the plugin state or a pinned resolution names.",
+    )
 
 
 def _ambient_uv_cache_dir() -> Path | None:
