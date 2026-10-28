@@ -329,8 +329,17 @@ def _push_wake(app: "FastAPI", parent_id: str, task: TaskSnapshot, text: str) ->
             ),
             None,
         )
+        # A coalesced wake keeps the turn's answer fact (a busy turn's tool wakes are
+        # usually still unread when the turn completes).
+        answer = text.split(" Its answer is message ", 1)
+        merged = (
+            _WAKE_COALESCED_TEXT
+            + (" The session's turn completed. Its answer is message " + answer[1])
+            if len(answer) == 2
+            else _WAKE_COALESCED_TEXT
+        )
         content = history.write_content(
-            task.owner.session_id, {"text": _WAKE_COALESCED_TEXT if pending is not None else text}
+            task.owner.session_id, {"text": merged if pending is not None else text}
         )
         if pending is None:
             history.record_mail(

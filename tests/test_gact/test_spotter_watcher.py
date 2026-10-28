@@ -383,3 +383,23 @@ def test_turn_completed_wake_without_a_resident_answer_is_the_plain_fact(
     on_turn_finalized(app, parent)
     [item] = app.state.task_history.pending_mail(child)
     assert app.state.task_history.read_content(item.content)["text"] == _WAKE_TURN_FINAL_TEXT
+
+
+def test_a_coalesced_turn_completed_wake_keeps_the_answer_fact(
+    watcher_world: tuple[Any, str, str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from types import SimpleNamespace
+
+    app, parent, child = watcher_world
+    answer = SimpleNamespace(
+        id="msg_asst_7", role="assistant", parts=[SimpleNamespace(type="text", text="Done: 42")]
+    )
+    monkeypatch.setattr(
+        app.state.messages, "get_if_resident", lambda sid: [answer], raising=False
+    )
+    wake_on_parent_activity(app, parent, tool_name="fs_read_file", result={"paths": ["a"]})
+    on_turn_finalized(app, parent)
+    [item] = app.state.task_history.pending_mail(child)
+    text = app.state.task_history.read_content(item.content)["text"]
+    assert text.startswith(_WAKE_COALESCED_TEXT)
+    assert "Its answer is message msg_asst_7: Done: 42" in text
