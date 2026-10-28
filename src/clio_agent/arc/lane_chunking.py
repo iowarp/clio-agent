@@ -172,11 +172,6 @@ def _dense_walk(
     ``scan``. Relies on the dense-prefix invariant: a present chunk never follows an
     absent one, so the first empty result ends the family.
 
-    Note (documented risk, not fixed here): a chunk emptied entirely by
-    :meth:`SegmentStore._persist`'s non-poisoning drop (every segment failed to encode)
-    is indistinguishable from an absent one and truncates the walk — it never causes an
-    erroneous erase, only a short read of an already-degraded scope.
-
     Args:
         store: The session's segment store.
         session_id: Owning session.
@@ -255,9 +250,8 @@ def lane_has_segments(store: "SegmentStore", session_id: str, base: str) -> bool
     walking the whole family just to answer a boolean.
 
     PREMISE this correctness depends on: no code path tombstones an INDIVIDUAL atom of
-    this lane. The only erasers are :func:`drop_lane` (the whole family, chunk 1
-    included) and :meth:`SegmentStore._persist`'s non-poisoning drop (an encode failure,
-    also whole-chunk). If a future writer ever adds a per-atom delete/tombstone (e.g. a
+    this lane. The only eraser is :func:`drop_lane` (the whole family, chunk 1
+    included); a refused write leaves the chunk at its committed record. If a future writer ever adds a per-atom delete/tombstone (e.g. a
     single retracted atom via ``SegmentStore.delete``), chunk 1 could end up with zero
     live segments while a later chunk still holds live ones, and this one-read shortcut
     would silently return ``False`` for a non-empty lane — check the WHOLE family

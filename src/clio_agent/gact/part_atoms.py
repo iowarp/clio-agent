@@ -65,6 +65,7 @@ from typing import Any
 import msgspec
 
 from clio_agent import conf
+from clio_agent.arc.lane_batch import commit_lane_batch
 from clio_agent.arc.lane_chunking import chunk_for_append, lane_segments
 from clio_agent.arc.lane_generations import current_base
 from clio_agent.arc.live import EVENTS_SCOPE
@@ -571,14 +572,17 @@ def _append_segment_raw(
     Returns:
         The appended segment (its store-assigned ``logical_time`` + ``order``).
 
-    ``persist=False`` stages one atom for the same writer's unpublished chunk
-    batch; that caller confirms the chunk before exposing its generation.
-    Its explicit ``order`` continues the maximum reserved once for that chunk.
+    ``persist=False`` only builds the atom for the same writer's unpublished chunk
+    batch (:func:`~clio_agent.arc.lane_batch.commit_lane_batch`), which commits the chunk to clio-core and only
+    then caches it; it never touches the cached chunk. Its explicit ``order``
+    continues the maximum reserved once for that chunk.
     """
     from clio_agent.arc.segments import _coerce_content  # noqa: PLC0415 - avoid import cycle
 
     if order is not None and persist:
         raise ValueError("Explicit atom order requires an unpublished batch")
+    if order is None and not persist:
+        raise ValueError("An unpublished batch names each atom's order")
     with store._lock_for(session_id, scope):
         if isinstance(content, Segment):
             if persist or content.session_id != session_id or content.kind != kind:
@@ -591,7 +595,7 @@ def _append_segment_raw(
             )
         else:
             payload = _coerce_content(content)
-        segs = store._segs(session_id, scope)
+        segs = store._segs(session_id, scope) if persist else []
         if order is None:
             order = max((s.order for s in segs), default=0.0) + 1.0
         seg = Segment(
@@ -605,9 +609,7 @@ def _append_segment_raw(
         )
         if persist:  # clio-core first, then the cache
             store._commit_scope(session_id, scope, [*segs, seg])
-        else:  # an unpublished generation: committed by the batch, before its pointer
-            segs.append(seg)
-        store._index.add(session_id, scope, seg)
+            store._index.add(session_id, scope, seg)
         return seg
 
 
@@ -648,41 +650,28 @@ def append_part_atoms(
     if lane is None and (len(contents) > 1 or any(isinstance(c, Segment) for c in contents)):
         raise ValueError("A multi-atom batch requires an unpublished generation")
     with store._lock_for(session_id, MESSAGE_PART_SCOPE):
-        base = lane if lane is not None else current_base(store, session_id, MESSAGE_PART_SCOPE)
-        scope: str | None = None
-        next_order: float | None = None
-        appended: list[Segment] = []
-        for content in contents:
-            selected = chunk_for_append(store, session_id, base, capacity=_chunk_capacity())
-            if selected != scope:
-                if scope is not None:
-                    store._persist(session_id, scope)
-                if lane is not None:
-                    with store._lock_for(session_id, selected):
-                        next_order = (
-                            max(
-                                (segment.order for segment in store._segs(session_id, selected)),
-                                default=0.0,
-                            )
-                            + 1.0
-                        )
-            scope = selected
-            appended.append(
-                _append_segment_raw(
-                    store,
-                    session_id,
-                    scope,
-                    MESSAGE_PART_KIND,
-                    content,
-                    persist=lane is None,
-                    order=next_order,
-                )
+        if lane is not None:  # an unpublished generation: one write-through put per chunk
+            return commit_lane_batch(
+                store,
+                session_id,
+                lane,
+                contents,
+                capacity=_chunk_capacity(),
+                build=lambda chunk, content, order: _append_segment_raw(
+                    store, session_id, chunk, MESSAGE_PART_KIND, content, persist=False, order=order
+                ),
             )
-            if next_order is not None:
-                next_order += 1.0
-        if scope is not None and lane is not None:
-            store._persist(session_id, scope)
-        return appended
+        base = current_base(store, session_id, MESSAGE_PART_SCOPE)
+        return [
+            _append_segment_raw(
+                store,
+                session_id,
+                chunk_for_append(store, session_id, base, capacity=_chunk_capacity()),
+                MESSAGE_PART_KIND,
+                content,
+            )
+            for content in contents
+        ]
 
 
 def mint_message_part_atoms(

@@ -39,15 +39,15 @@ def test_staged_generation_persists_each_chunk_once(
     store = arc._segments
     contents = _atoms(23)
     monkeypatch.setattr(part_atoms, "_chunk_capacity", lambda: 7)
-    original = store._persist
+    original = store._commit_scope
     writes: list[str] = []
 
-    def persist(sid: str, scope: str) -> None:
+    def commit(sid: str, scope: str, staged: list[Segment]) -> None:
         if scope.startswith(part_atoms.MESSAGE_PART_SCOPE + "/g/"):
             writes.append(scope)
-        original(sid, scope)
+        original(sid, scope, staged)
 
-    monkeypatch.setattr(store, "_persist", persist)
+    monkeypatch.setattr(store, "_commit_scope", commit)
     replace_lane(
         store,
         "bulk-generation",
@@ -99,18 +99,18 @@ def test_failed_staged_chunk_never_replaces_the_current_transcript(
         part_atoms.append_part_atom(store, "bulk-generation", content)
     previous = current_base(store, "bulk-generation", part_atoms.MESSAGE_PART_SCOPE)
     monkeypatch.setattr(part_atoms, "_chunk_capacity", lambda: 7)
-    original = store._persist
+    original = store._put_scope
     staged_writes = 0
 
-    def fail_second_chunk(sid: str, scope: str) -> None:
+    def fail_second_chunk(sid: str, scope: str, segs: list[Segment]) -> int:
         nonlocal staged_writes
         if scope.startswith(part_atoms.MESSAGE_PART_SCOPE + "/g/"):
             staged_writes += 1
             if staged_writes == 2:
                 raise OSError("second staged chunk refused")
-        original(sid, scope)
+        return original(sid, scope, segs)
 
-    monkeypatch.setattr(store, "_persist", fail_second_chunk)
+    monkeypatch.setattr(store, "_put_scope", fail_second_chunk)
     with pytest.raises(LaneReplaceError) as failed:
         replace_lane(
             store,
@@ -309,14 +309,14 @@ def test_staged_order_continues_from_the_maximum_of_an_existing_chunk(arc: Any) 
     contents = _atoms(6)
 
     def write(lane: str) -> None:
-        first = part_atoms._append_segment_raw(
-            store, sid, lane, part_atoms.MESSAGE_PART_KIND, contents[0], persist=False
+        first, second = (
+            part_atoms._append_segment_raw(
+                store, sid, lane, part_atoms.MESSAGE_PART_KIND, content, persist=False, order=o
+            )
+            for content, o in ((contents[0], 10.0), (contents[1], 2.0))
         )
-        part_atoms._append_segment_raw(
-            store, sid, lane, part_atoms.MESSAGE_PART_KIND, contents[1], persist=False
-        )
-        first.order = 10
-        store._persist(sid, lane)
+        with store._lock_for(sid, lane):
+            store._commit_scope(sid, lane, [first, second])
         part_atoms.append_part_atoms(store, sid, contents[2:5], lane=lane)
         part_atoms.append_part_atoms(store, sid, contents[5:], lane=lane)
 
@@ -325,6 +325,54 @@ def test_staged_order_continues_from_the_maximum_of_an_existing_chunk(arc: Any) 
     recorded = list(lane_segments(store, sid, base, include_tombstoned=False))
     assert [segment.order for segment in recorded] == [10, 2, 11, 12, 13, 14]
     assert [segment.content for segment in recorded] == contents
+
+
+def test_unpublished_atom_requires_an_order(arc: Any) -> None:
+    """A staged atom is only built: its batch names the order it continues."""
+    with pytest.raises(ValueError, match="names each atom's order"):
+        part_atoms._append_segment_raw(
+            arc._segments,
+            "bulk-generation",
+            part_atoms.MESSAGE_PART_SCOPE,
+            part_atoms.MESSAGE_PART_KIND,
+            _atoms(1)[0],
+            persist=False,
+        )
+
+
+def test_staged_batch_reaches_the_cache_only_after_its_commit(
+    arc: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Write-through: while a chunk's put is in flight the cache holds no staged atom,
+    and a refused put leaves no staged atom cached."""
+    store, sid = arc._segments, "bulk-generation"
+    seen_in_cache: list[int] = []
+    original = store._put_scope
+
+    def observe_then_refuse(session_id: str, scope: str, segs: list[Segment]) -> int:
+        if scope.startswith(part_atoms.MESSAGE_PART_SCOPE + "/g/"):
+            seen_in_cache.append(len(store._scopes.get((session_id, scope), [])))
+            raise OSError("refused")
+        return original(session_id, scope, segs)
+
+    monkeypatch.setattr(store, "_put_scope", observe_then_refuse)
+    staged_chunks: list[str] = []
+
+    def write(lane: str) -> None:
+        staged_chunks.append(lane)
+        part_atoms.append_part_atoms(store, sid, _atoms(3), lane=lane)
+
+    from clio_agent.arc.lane_generations import LaneReplaceError
+
+    with pytest.raises(LaneReplaceError):
+        replace_lane(store, sid, part_atoms.MESSAGE_PART_SCOPE, write)
+    assert seen_in_cache == [0]
+    assert not [
+        seg
+        for key, segs in store._scopes.items()
+        if key[1].startswith(staged_chunks[0])
+        for seg in segs
+    ]
 
 
 def test_live_atom_cannot_override_the_existing_order_allocator(arc: Any) -> None:

@@ -201,21 +201,6 @@ class ScopeCache:
         if self._residency is not None:
             self._residency.scope_resident(session_id, scope, nbytes)
 
-    def _persist(self, session_id: str, scope: str) -> None:
-        """Put the cached list as it stands (callers that staged into it under the scope
-        lock). On failure the cached copy is discarded -- the next read reloads clio-core's
-        record -- and a typed :class:`ArcPersistError` is raised."""
-        segs = self._scopes[(session_id, scope)]
-        try:
-            nbytes = self._put_scope(session_id, scope, segs)
-        except Exception as exc:  # noqa: BLE001 - re-raised typed after the memory is discarded
-            self._discard_scope(session_id, scope)
-            if isinstance(exc, LoopThreadStoreWrite):
-                raise
-            raise ArcPersistError(session_id, scope, exc) from exc
-        if self._residency is not None:
-            self._residency.scope_resident(session_id, scope, nbytes)
-
     def _discard_scope(self, session_id: str, scope: str) -> None:
         """Drop the in-memory copy; the next read reloads clio-core."""
         self._scopes.pop((session_id, scope), None)
