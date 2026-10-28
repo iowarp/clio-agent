@@ -414,6 +414,8 @@ def wake_on_parent_activity(
 
 #: Bound on the answer excerpt a turn-completed wake carries.
 _WAKE_ANSWER_CHARS = 600
+#: Bound on the request excerpt a turn-completed wake carries.
+_WAKE_REQUEST_CHARS = 3000
 
 
 def _latest_answer_fact(app: "FastAPI", session_id: str) -> str:
@@ -431,20 +433,37 @@ def _latest_answer_fact(app: "FastAPI", session_id: str) -> str:
         if isinstance(messages, dict)
         else None
     ) or []
-    for message in reversed(list(rows)):
+
+    def text_of(message: Any) -> str:
+        return " ".join(
+            " ".join(
+                str(getattr(part, "text", "") or "")
+                for part in getattr(message, "parts", [])
+                if getattr(part, "type", "") == "text"
+            ).split()
+        )
+
+    rows = list(rows)
+    for index in range(len(rows) - 1, -1, -1):
+        message = rows[index]
         if getattr(message, "role", "") != "assistant":
             continue
-        text = " ".join(
-            str(getattr(part, "text", "") or "")
-            for part in getattr(message, "parts", [])
-            if getattr(part, "type", "") == "text"
-        ).strip()
-        if not text:
+        excerpt = text_of(message)
+        if not excerpt:
             return ""
-        excerpt = " ".join(text.split())
         if len(excerpt) > _WAKE_ANSWER_CHARS:
             excerpt = "..." + excerpt[-_WAKE_ANSWER_CHARS:]
-        return f"Its answer is message {message.id}: {excerpt}"
+        fact = f"Its answer is message {message.id}: {excerpt}"
+        # The person's request it answers, so the answer can be judged against it.
+        request = next(
+            (text_of(row) for row in reversed(rows[:index]) if getattr(row, "role", "") == "user"),
+            "",
+        )
+        if request:
+            if len(request) > _WAKE_REQUEST_CHARS:
+                request = request[:_WAKE_REQUEST_CHARS] + "..."
+            fact += f" It answers the request: {request}"
+        return fact
     return ""
 
 

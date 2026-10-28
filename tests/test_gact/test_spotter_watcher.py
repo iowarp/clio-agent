@@ -454,3 +454,29 @@ def test_a_wake_during_a_review_is_queued_not_appended_to_the_wake_being_read(
     assert len(pending) == 2
     assert "first_tool" in texts[0] and "second_tool" not in texts[0]
     assert "second_tool" in texts[1]
+
+
+def test_the_turn_wake_names_the_request_the_answer_answers(
+    watcher_world: tuple[Any, str, str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from types import SimpleNamespace
+
+    app, parent, child = watcher_world
+    rows = [
+        SimpleNamespace(
+            id="u1", role="user", parts=[SimpleNamespace(type="text", text="ROUND 1 old")]
+        ),
+        SimpleNamespace(id="a1", role="assistant", parts=[SimpleNamespace(type="text", text="1")]),
+        SimpleNamespace(
+            id="u2", role="user", parts=[SimpleNamespace(type="text", text="ROUND 5 task")]
+        ),
+        SimpleNamespace(
+            id="a5", role="assistant", parts=[SimpleNamespace(type="text", text="ANSWER: 7")]
+        ),
+    ]
+    monkeypatch.setattr(app.state.messages, "get_if_resident", lambda sid: rows, raising=False)
+    on_turn_finalized(app, parent)
+    history = app.state.task_history
+    text = "\n".join(history.read_content(i.content)["text"] for i in history.pending_mail(child))
+    assert "Its answer is message a5: ANSWER: 7 It answers the request: ROUND 5 task" in text
+    assert "ROUND 1 old" not in text
