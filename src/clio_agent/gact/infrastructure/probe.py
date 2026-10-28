@@ -1,4 +1,9 @@
-"""Host fact inspection for local and Desktop-attached SSH targets."""
+"""Host fact inspection for local and Desktop-attached SSH targets.
+
+Besides the accelerator kind, inspection lists the target's GPUs
+(:mod:`~clio_agent.gact.infrastructure.gpu_inventory`) -- the same vendor
+queries locally and over SSH -- so deployments can be pinned to them.
+"""
 
 from __future__ import annotations
 
@@ -10,6 +15,12 @@ from collections.abc import Awaitable, Callable
 
 from anyio.to_thread import run_sync
 
+from clio_agent.gact.infrastructure.gpu_inventory import (
+    POSIX_GPU_PROBE,
+    POWERSHELL_GPU_PROBE,
+    local_gpus,
+    parse_gpu_lines,
+)
 from clio_agent.gact.infrastructure.models import (
     CommandResult,
     CommandSpec,
@@ -137,6 +148,7 @@ def _local_facts(target: InfrastructureTarget) -> TargetFacts:
         home=home,
         agent_data_root=str(user_data_dir()),
         hostname=platform.node().split(".")[0],
+        gpus=local_gpus(accelerator, _resolve_command),
     )
 
 
@@ -227,7 +239,7 @@ async def probe_target(
                 "Select-Object -ExpandProperty PNPDeviceID) -join ' ';"
                 "if($pci -match 'VEN_1002'){$gpu='amd'}elseif($pci -match 'VEN_8086'){$gpu='intel'}};"
                 "Write-Output ('windows|'+$env:PROCESSOR_ARCHITECTURE+'|'+$gpu+'|'+"
-                "[int][bool]$d+'|'+[int]$ready+'|'+[int][bool]$u)",
+                "[int][bool]$d+'|'+[int]$ready+'|'+[int][bool]$u);" + POWERSHELL_GPU_PROBE,
             ],
             timeout_seconds=20,
         )
@@ -250,6 +262,8 @@ async def probe_target(
                 # A deployed CLIO brings its own uv into its root (default location).
                 '[ -x "${XDG_DATA_HOME:-$HOME/.local/share}/clio-agent/app/bin/uv" ] && uv=1; '
                 'printf \'%s|%s|%s|%s|%s|%s\\n\' "$os" "$arch" "$gpu" "$di" "$dr" "$uv"; '
+                + POSIX_GPU_PROBE
+                + "; "
                 + POSIX_RUNTIME_PROBE
                 + '; agent_data="${CLIO_AGENT_DATA_DIR:-${CLIO_AGENT_HOME:+$CLIO_AGENT_HOME/data}}"; '
                 + 'agent_data="${agent_data:-${CLIO_USER_DIR:+$CLIO_USER_DIR/data}}"; '
@@ -295,4 +309,5 @@ async def probe_target(
             "",
         ),
         hostname=hostname,
+        gpus=parse_gpu_lines(stdout.splitlines()),
     )

@@ -222,6 +222,88 @@ def test_add_a_custom_server_list_check_and_remove(client: TestClient) -> None:
     assert client.get("/v1/providers/servers").json() == {"servers": []}
 
 
+def test_a_managed_deployment_bound_again_moves_its_entry_not_a_duplicate(
+    config_file: Path,
+) -> None:
+    """Live bug: vllm@spotter redeployed on a new port and bound again became ``-2``."""
+    ref = "managed-server:polaris:vllm@spotter"
+    first = store.add_server(address="127.0.0.1:41001", label="vLLM (spotter)", credential_ref=ref)
+    other = store.add_server(address="127.0.0.1:41005", label="vLLM (spotter)")  # not managed
+    store.update_server(first.id, label="Spotter")  # the person renamed it
+
+    again = store.add_server(address="127.0.0.1:41002", label="vLLM (spotter)", credential_ref=ref)
+
+    assert again.id == first.id == "server-vllm-spotter"
+    assert again.address == "http://127.0.0.1:41002/v1" and again.label == "Spotter"
+    assert again.credential_ref == ref
+    entries = store.list_servers()
+    assert [e.id for e in entries] == [first.id, other.id]
+    assert other.id == "server-vllm-spotter-2"  # an unmanaged one with that label still adds
+    # Another deployment's key never moves this entry.
+    third = store.add_server(
+        address="127.0.0.1:41009", label="vLLM (spotter)", credential_ref=ref + "x"
+    )
+    assert third.id == "server-vllm-spotter-3"
+
+
+def test_binding_a_redeployed_named_instance_updates_its_saved_server(client: TestClient) -> None:
+    from clio_agent.gact.infrastructure.models import ServiceRecord  # noqa: PLC0415
+
+    infrastructure = client.app.state.infrastructure_store  # type: ignore[attr-defined]
+
+    def deployed(port: int) -> None:
+        infrastructure.put_service(
+            ServiceRecord(
+                id="polaris:vllm@spotter",
+                service_id="vllm@spotter",
+                target_id="polaris",
+                variant_id="native-cuda",
+                configuration={"model": "/data/models/q", "port": str(port)},
+                state="running",
+                connection_url=f"http://127.0.0.1:{port}",
+            )
+        )
+
+    deployed(41001)
+    bound = client.post(
+        "/v1/providers/servers", json={"preset_id": "vllm", "address": "http://127.0.0.1:41001/v1"}
+    ).json()
+    deployed(41002)  # redeployed: a fresh free port
+    rebound = client.post(
+        "/v1/providers/servers", json={"preset_id": "vllm", "address": "http://127.0.0.1:41002/v1"}
+    ).json()
+
+    assert bound["id"] == rebound["id"] == "server-vllm-spotter"
+    assert rebound["credential_ref"] == "managed-server:polaris:vllm@spotter"
+    assert rebound["address"] == "http://127.0.0.1:41002/v1"
+    listed = client.get("/v1/providers/servers").json()["servers"]
+    assert [entry["id"] for entry in listed] == ["server-vllm-spotter"]
+
+
+def test_a_llama_cpp_instance_is_saved_as_its_own_server_with_its_key(client: TestClient) -> None:
+    from clio_agent.gact.infrastructure.models import ServiceRecord  # noqa: PLC0415
+
+    client.app.state.infrastructure_store.put_service(  # type: ignore[attr-defined]
+        ServiceRecord(
+            id="polaris:llama_cpp@coder",
+            service_id="llama_cpp@coder",
+            target_id="polaris",
+            variant_id="native-linux-cuda",
+            configuration={"model_path": "/data/q.gguf", "port": "41003"},
+            state="running",
+            connection_url="http://127.0.0.1:41003",
+        )
+    )
+    saved = client.post(
+        "/v1/providers/servers",
+        json={"preset_id": "llama_cpp", "address": "http://127.0.0.1:41003/v1"},
+    ).json()
+
+    assert saved["label"] == "llama.cpp server (coder)" and saved["custom"] is True
+    assert saved["credential_ref"] == "managed-server:polaris:llama_cpp@coder"
+    assert store.get_server("llama_cpp") is None  # the engine's own entry is untouched
+
+
 def test_list_with_check_probes_every_saved_address(
     client: TestClient, probes: list[tuple[str, str]]
 ) -> None:

@@ -91,6 +91,25 @@ def test_declared_and_control_keys_are_accepted(
     validate_configuration_keys(service_id, configuration)
 
 
+def test_a_named_instance_reads_its_engines_keys_and_the_context_control() -> None:
+    """vllm@spotter used to skip the check; Fit to GPU's context.* keys were refused."""
+    accepted = {
+        "model": "/models/qwen",
+        "port": "41001",
+        "param.cuda_devices": "1",
+        "context.choice": "fit_to_gpu",
+        "context.strategy": "fit_to_gpu",
+        "context.gpu_share": "0.45",
+    }
+    validate_configuration_keys("vllm", accepted)
+    validate_configuration_keys("vllm@spotter", accepted)
+    validate_configuration_keys("llama_cpp@coder", {"hf_model": "x", "param.split_mode": "row"})
+    with pytest.raises(UnknownConfigurationKeyError, match="param.max_model_len"):
+        validate_configuration_keys("vllm@spotter", {"max_model_len": "8192"})
+    with pytest.raises(UnknownConfigurationKeyError):
+        validate_configuration_keys("web_search", {"context.choice": "max"})  # no context control
+
+
 def test_installed_configuration_echoed_back_is_accepted() -> None:
     """The UI resends the installed configuration, including keys CLIO derived itself."""
     installed = {"model": "/models/qwen", "native_owner": "abc", "compatibility_profile": "p"}

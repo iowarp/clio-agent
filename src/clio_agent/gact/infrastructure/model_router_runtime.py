@@ -3,6 +3,9 @@
 * A named instance or the router launched with no port gets one the target's
   OS reports free, never one another deployment there has recorded.
 * A vLLM launch is refused (typed) when the target's GPU shares would exceed 1.0.
+* A model-server launch pinned to GPUs that are malformed, not on the host (as
+  its last catalog listed them) or -- for vLLM -- not as many as its parallel
+  size is refused (typed ``gpu_device_*``) before it is queued.
 * After an instance starts, stops or is removed, the running router is
   restarted with the new model list -- as ``model_router`` stop and start
   operations of its own, so the activity shows what happened and why. With no
@@ -16,11 +19,13 @@ import logging
 from collections.abc import Awaitable, Callable
 from typing import TYPE_CHECKING, Literal
 
-from clio_agent.gact.infrastructure.gpu_share import check_gpu_share
+from clio_agent.gact.infrastructure.gpu_devices import LAUNCH_ACTIONS, check_gpu_devices
+from clio_agent.gact.infrastructure.gpu_share import check_gpu_share, launch_view
 from clio_agent.gact.infrastructure.model_instances import (
     PORT_FIELD,
     ROUTER_SERVICE,
     allocate_port,
+    engine_of,
     needs_port,
     validate_service_id,
 )
@@ -36,6 +41,7 @@ from clio_agent.gact.infrastructure.model_router import (
 from clio_agent.gact.infrastructure.models import (
     CommandResult,
     CommandSpec,
+    GpuFact,
     InfrastructureOperation,
     ServiceActionRequest,
 )
@@ -46,6 +52,8 @@ if TYPE_CHECKING:
     from clio_agent.gact.infrastructure.models import ServiceRecord
 
 logger = logging.getLogger(__name__)
+#: Engines whose deployments take a GPU pin (``param.cuda_devices`` ...).
+_PINNABLE = frozenset({"vllm", "llama_cpp", "ollama"})
 
 
 class ModelRouterMixin:
@@ -58,9 +66,21 @@ class ModelRouterMixin:
     ]
 
     def _admit(self, service_id: str, request: ServiceActionRequest) -> None:
-        """Refuse, before queueing, an invalid instance id or a launch over the GPU budget."""
+        """Refuse, before queueing, an invalid instance id, GPU pin or a launch over budget."""
 
         validate_service_id(service_id)
+        engine = engine_of(service_id)
+        if engine in _PINNABLE and request.action in LAUNCH_ACTIONS:
+            _variant, launched = launch_view(
+                self.store,
+                request.target_id,
+                service_id,
+                request.action,
+                request.variant_id,
+                request.configuration,
+            )
+            known: dict[str, list[GpuFact]] = getattr(self, "_target_gpus", {})
+            check_gpu_devices(engine, launched, known.get(request.target_id, ()))
         check_gpu_share(
             self.store,
             request.target_id,

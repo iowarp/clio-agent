@@ -13,6 +13,12 @@ value the running server reports is shown back (see
 Only declared parameters reach the launch: an unknown ``param.*`` key, a value
 of the wrong type, or one outside its bounds is a ``ValueError`` naming the
 field, never silently dropped or clamped.
+
+Device pins (``value_format == "device_list"``: ``cuda_devices``,
+``rocm_devices``) are comma lists of distinct non-negative GPU ids, normalised
+to ``1,2``; a malformed one is a :class:`GpuDeviceError` (``gpu_device_invalid``).
+Whether the ids exist on the host and match the engine's parallelism is checked
+against the host's facts in :mod:`~clio_agent.gact.infrastructure.gpu_devices`.
 """
 
 from __future__ import annotations
@@ -26,6 +32,9 @@ from clio_agent.context_sizing.controls import ContextSizingSpec
 
 ParameterKind = Literal["integer", "number", "choice", "text"]
 ParameterDelivery = Literal["flag", "env"]
+#: How a ``text`` value is read: free text, GPU ids (``0,2``) or numbers (``3,1``).
+ParameterFormat = Literal["", "device_list", "number_list"]
+GpuDeviceReason = Literal["gpu_device_invalid", "gpu_device_unknown", "gpu_device_count_mismatch"]
 EngineId = Literal["vllm", "llama_cpp", "ollama"]
 
 #: Configuration keys carrying a server parameter are ``param.<id>``.
@@ -33,6 +42,69 @@ PARAMETER_PREFIX = "param."
 
 #: A choice that turns a model-derived default off: validated and recorded, no flag.
 OFF = "off"
+
+
+class GpuDeviceError(ValueError):
+    """A deployment's GPU pin CLIO cannot launch (``reason`` is the typed code).
+
+    Attributes:
+        reason: ``gpu_device_invalid`` (not distinct non-negative ids),
+            ``gpu_device_unknown`` (an id the host does not list) or
+            ``gpu_device_count_mismatch`` (vLLM's tensor x pipeline parallel
+            size differs from the number of pinned devices).
+        parameter: The parameter id (``cuda_devices``).
+        details: Typed details for the API envelope.
+    """
+
+    def __init__(
+        self,
+        reason: GpuDeviceReason,
+        message: str,
+        *,
+        parameter: str = "",
+        **details: object,
+    ) -> None:
+        self.reason: GpuDeviceReason = reason
+        self.parameter = parameter
+        self._details = {"parameter": parameter, **details}
+        super().__init__(f"{reason}: {message}")
+
+    def details(self) -> dict[str, object]:
+        """The typed error's details for an API envelope."""
+
+        return dict(self._details)
+
+
+def parse_device_ids(
+    raw: str, *, label: str = "GPU devices", parameter: str = ""
+) -> tuple[int, ...]:
+    """The GPU ids of a device pin (``"1, 2"`` -> ``(1, 2)``), in the person's order.
+
+    Raises:
+        GpuDeviceError: ``gpu_device_invalid`` for an empty entry, a value that
+            is not a non-negative whole number, or an id named twice.
+    """
+
+    ids: list[int] = []
+    for part in str(raw).split(","):
+        entry = part.strip()
+        if not entry.isascii() or not entry.isdigit():
+            raise GpuDeviceError(
+                "gpu_device_invalid",
+                f"{label} must be GPU numbers such as 0 or 1,2 (got {raw.strip()!r})",
+                parameter=parameter,
+                value=raw.strip(),
+            )
+        device = int(entry)
+        if device in ids:
+            raise GpuDeviceError(
+                "gpu_device_invalid",
+                f"{label} names GPU {device} twice",
+                parameter=parameter,
+                value=raw.strip(),
+            )
+        ids.append(device)
+    return tuple(ids)
 
 
 class ServerParameter(BaseModel):
@@ -58,6 +130,12 @@ class ServerParameter(BaseModel):
     #: Flags the engine needs alongside this one (vLLM's tool-call parser only
     #: takes effect with ``--enable-auto-tool-choice``).
     companion_flags: list[str] = Field(default_factory=list)
+    #: Environment the engine needs alongside this one (a CUDA pin also sets
+    #: ``CUDA_DEVICE_ORDER=PCI_BUS_ID`` so its ids are ``nvidia-smi``'s).
+    companion_env: dict[str, str] = Field(default_factory=dict)
+    #: How a ``text`` value is read; ``device_list`` values are GPU ids the
+    #: UI offers from ``facts.gpus``.
+    value_format: ParameterFormat = ""
     #: The context parameter's Max / Fit-to-GPU control (see ``context_sizing``);
     #: set per host on the catalog, absent on every other parameter.
     context_sizing: ContextSizingSpec | None = None
@@ -97,6 +175,37 @@ def _int(
 
 
 _GPU = ["cuda", "rocm", "xpu"]
+#: llama.cpp backends that place layers on GPUs (container and native ids).
+_LLAMA_GPU = ["cuda", "vulkan", "rocm", "metal"]
+#: Makes CUDA number devices as ``nvidia-smi`` (and ``facts.gpus``) does.
+_PCI_ORDER = {"CUDA_DEVICE_ORDER": "PCI_BUS_ID"}
+
+
+def _devices(
+    pid: str,
+    label: str,
+    description: str,
+    name: str,
+    variants: list[str],
+    *,
+    companion_env: dict[str, str] | None = None,
+) -> ServerParameter:
+    """A GPU pin: a comma list of device ids delivered as a visible-devices variable."""
+
+    return ServerParameter(
+        id=pid,
+        label=label,
+        description=description,
+        kind="text",
+        delivery="env",
+        name=name,
+        variants=variants,
+        default_behavior="All devices this host exposes",
+        effective_key=pid,
+        companion_env=companion_env or {},
+        value_format="device_list",
+    )
+
 
 ENGINE_PARAMETERS: dict[EngineId, tuple[ServerParameter, ...]] = {
     "vllm": (
@@ -174,19 +283,23 @@ ENGINE_PARAMETERS: dict[EngineId, tuple[ServerParameter, ...]] = {
             default_behavior="All devices this host exposes",
             effective_key="xpu_devices",
         ),
-        ServerParameter(
-            id="cuda_devices",
-            label="NVIDIA GPU devices",
-            description=(
-                "CUDA devices the server may use, such as 1 or 2,3, so instances on one host "
-                "do not share a GPU. Match the count to the tensor parallel size."
-            ),
-            kind="text",
-            delivery="env",
-            name="CUDA_VISIBLE_DEVICES",
-            variants=["cuda"],
-            default_behavior="All devices this host exposes",
-            effective_key="cuda_devices",
+        _devices(
+            "cuda_devices",
+            "NVIDIA GPU devices",
+            "CUDA devices the server may use, such as 1 or 2,3 (nvidia-smi numbering), so "
+            "instances on one host do not share a GPU. The count must equal tensor parallel "
+            "size x pipeline parallel size.",
+            "CUDA_VISIBLE_DEVICES",
+            ["cuda"],
+            companion_env=_PCI_ORDER,
+        ),
+        _devices(
+            "rocm_devices",
+            "AMD GPU devices",
+            "ROCm devices the server may use, such as 1 or 2,3 (rocm-smi numbering). The "
+            "count must equal tensor parallel size x pipeline parallel size.",
+            "HIP_VISIBLE_DEVICES",
+            ["rocm"],
         ),
         ServerParameter(
             id="cpu_omp_threads_bind",
@@ -314,7 +427,66 @@ ENGINE_PARAMETERS: dict[EngineId, tuple[ServerParameter, ...]] = {
             minimum=0,
             maximum=10_000,
             default_behavior="Every layer on the GPU",
-            variants=["cuda", "vulkan", "rocm", "metal"],
+            variants=_LLAMA_GPU,
+        ),
+        _devices(
+            "cuda_devices",
+            "NVIDIA GPU devices",
+            "CUDA devices the server may use, such as 1 or 2,3 (nvidia-smi numbering); "
+            "llama.cpp splits the model over every device listed.",
+            "CUDA_VISIBLE_DEVICES",
+            ["cuda"],
+            companion_env=_PCI_ORDER,
+        ),
+        _devices(
+            "rocm_devices",
+            "AMD GPU devices",
+            "ROCm devices the server may use, such as 1 or 2,3 (rocm-smi numbering); "
+            "llama.cpp splits the model over every device listed.",
+            "HIP_VISIBLE_DEVICES",
+            ["rocm"],
+        ),
+        ServerParameter(
+            id="split_mode",
+            label="Multi-GPU split",
+            description=(
+                "How the model is spread over several GPUs: none (one GPU), layer (whole "
+                "layers per GPU) or row (each layer's rows split across GPUs)."
+            ),
+            kind="choice",
+            delivery="flag",
+            name="--split-mode",
+            options=["none", "layer", "row"],
+            variants=_LLAMA_GPU,
+            default_behavior="layer",
+            effective_key="split_mode",
+        ),
+        ServerParameter(
+            id="tensor_split",
+            label="GPU split proportions",
+            description=(
+                "Share of the model each visible GPU holds, in device order, such as 3,1 "
+                "for three quarters on the first GPU."
+            ),
+            kind="text",
+            delivery="flag",
+            name="--tensor-split",
+            variants=_LLAMA_GPU,
+            default_behavior="Proportional to each GPU's free memory",
+            effective_key="tensor_split",
+            value_format="number_list",
+        ),
+        _int(
+            "main_gpu",
+            "Main GPU",
+            "The GPU (counted among the visible devices, from 0) that holds the whole model "
+            "with split mode none, or the intermediate results with row.",
+            "flag",
+            "--main-gpu",
+            minimum=0,
+            maximum=1024,
+            variants=_LLAMA_GPU,
+            default_behavior="0",
         ),
     ),
     "ollama": (
@@ -338,6 +510,21 @@ ENGINE_PARAMETERS: dict[EngineId, tuple[ServerParameter, ...]] = {
             maximum=10_000_000,
             default_behavior="Fit to GPU: the model's trained context, capped to fit the GPU",
             effective_key="context_length",
+        ),
+        _devices(
+            "cuda_devices",
+            "NVIDIA GPU devices",
+            "CUDA devices Ollama may use, such as 1 or 2,3 (nvidia-smi numbering).",
+            "CUDA_VISIBLE_DEVICES",
+            ["cuda"],
+            companion_env=_PCI_ORDER,
+        ),
+        _devices(
+            "rocm_devices",
+            "AMD GPU devices",
+            "ROCm devices Ollama may use, such as 1 or 2,3 (rocm-smi numbering).",
+            "ROCR_VISIBLE_DEVICES",
+            ["rocm"],
         ),
     ),
 }
@@ -388,6 +575,18 @@ def _validated(parameter: ServerParameter, raw: str) -> str:
         if value not in parameter.options:
             raise ValueError(f"{parameter.label} must be one of {', '.join(parameter.options)}")
         return value
+    elif parameter.value_format == "device_list":
+        ids = parse_device_ids(value, label=parameter.label, parameter=parameter.id)
+        return ",".join(str(device) for device in ids)
+    elif parameter.value_format == "number_list":
+        parts = [part.strip() for part in value.split(",")]
+        try:
+            numbers = [float(part) for part in parts]
+        except ValueError as exc:
+            raise ValueError(f"{parameter.label} must be numbers such as 3,1") from exc
+        if any(n != n or n < 0 or n == float("inf") for n in numbers) or not any(numbers):
+            raise ValueError(f"{parameter.label} must be non-negative numbers, not all zero")
+        return ",".join(parts)
     else:
         if value.startswith("-") or len(value) > 256:
             raise ValueError(f"{parameter.label} is not a valid value")
@@ -442,4 +641,9 @@ def compile_parameters(
             flags.extend([*parameter.companion_flags, parameter.name, chosen])
         else:
             env.append((parameter.name, chosen))
+        env.extend(
+            (name, value)
+            for name, value in parameter.companion_env.items()
+            if all(name != present for present, _ in env)
+        )
     return CompiledParameters(flags=tuple(flags), env=tuple(env), values=values)

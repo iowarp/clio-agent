@@ -21,6 +21,7 @@ from clio_agent.gact.infrastructure.gpu_share import (
     GpuShareExceededError,
     check_gpu_share,
     gpu_share,
+    launch_view,
 )
 from clio_agent.gact.infrastructure.models import (
     InfrastructureTarget,
@@ -196,3 +197,28 @@ def test_instances_pinned_to_disjoint_gpus_do_not_compete(tmp_path: Path) -> Non
         check_gpu_share(
             store, "local", "vllm@spotter", "start", "native-cuda", {"context.gpu_share": "0.9"}
         )
+
+
+def test_rocm_pins_on_disjoint_gpus_do_not_compete(tmp_path: Path) -> None:
+    store = InfrastructureStore(tmp_path / "infra.json")
+    main = _record("vllm", variant="rocm")
+    main.configuration["param.rocm_devices"] = "0"
+    store.put_service(main)
+
+    check_gpu_share(store, "local", "vllm@b", "install", "rocm", {"param.rocm_devices": "1"})
+    with pytest.raises(GpuShareExceededError):
+        check_gpu_share(store, "local", "vllm@b", "install", "rocm", {"param.rocm_devices": "0"})
+
+
+def test_the_launch_view_is_what_the_runtime_will_launch(tmp_path: Path) -> None:
+    store = InfrastructureStore(tmp_path / "infra.json")
+    installed = _record("vllm@a")
+    installed.configuration["param.cuda_devices"] = "1"
+    store.put_service(installed)
+    typed = {"param.cuda_devices": "2", "model": ""}
+
+    assert launch_view(store, "local", "vllm@new", "install", "cuda", typed) == ("cuda", typed)
+    variant, start = launch_view(store, "local", "vllm@a", "start", "", typed)
+    assert variant == "native-cuda" and start["param.cuda_devices"] == "1"  # the installed pin
+    _variant, reinstall = launch_view(store, "local", "vllm@a", "reinstall", "", typed)
+    assert reinstall["param.cuda_devices"] == "2" and reinstall["model"] == "/data/models/q"

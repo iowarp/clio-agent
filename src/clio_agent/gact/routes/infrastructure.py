@@ -27,6 +27,7 @@ from clio_agent.gact.infrastructure.models import (
 )
 from clio_agent.gact.infrastructure.runtime import InfrastructureRuntime
 from clio_agent.gact.infrastructure.served_defaults import ollama_context_default_lookup
+from clio_agent.gact.infrastructure.server_parameters import GpuDeviceError
 from clio_agent.gact.infrastructure.store import InfrastructureStore
 from clio_agent.gact.infrastructure.transport import InfrastructureTransportRegistry
 from clio_agent.gact.infrastructure.transport_admission import (
@@ -191,6 +192,10 @@ def register_infrastructure_routes(app: FastAPI, state_root: Path) -> None:
             raise HTTPException(status_code=404, detail="Infrastructure target not found") from exc
         except InstanceNameError as exc:
             raise typed(422, exc.reason, str(exc), {"service_id": service_id}) from exc
+        except GpuDeviceError as exc:
+            raise typed(
+                422, exc.reason, str(exc), {"service_id": service_id, **exc.details()}
+            ) from exc
         except GpuShareExceededError as exc:
             raise typed(409, exc.reason, str(exc), exc.details()) from exc
         return row.model_dump(mode="json")

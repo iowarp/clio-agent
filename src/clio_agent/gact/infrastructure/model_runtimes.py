@@ -45,7 +45,11 @@ from clio_agent.gact.infrastructure.llama_native_windows import (
     LLAMA_BUILD,
     native_windows_llama_plan,
 )
-from clio_agent.gact.infrastructure.model_instances import engine_of, instance_container_name
+from clio_agent.gact.infrastructure.model_instances import (
+    INSTANCE_ENGINES,
+    engine_of,
+    instance_container_name,
+)
 from clio_agent.gact.infrastructure.model_runtime_installation import (
     container_installation_plan,
     runtime_observation,
@@ -342,6 +346,7 @@ def model_runtime_definition(service_id: str, facts: TargetFacts) -> ManagedServ
         configuration_fields=fields,
         parameters=context_parameters(spec.engine, facts),
         supports_api_key=supports_api_key(service_id),
+        supports_instances=service_id in INSTANCE_ENGINES,
     )
 
 
@@ -476,6 +481,7 @@ def _launch(
         # (--gpus all / --nv), plus the graphics capability on Docker/Podman.
         accelerator = "nvidia"
         env.append(("NVIDIA_DRIVER_CAPABILITIES", "compute,utility,graphics"))
+    pinned = compiled.values.get("cuda_devices", "") if accelerator == "nvidia" else ""
     return ContainerLaunch(
         name=spec.container_name,
         image=variant.image,
@@ -488,6 +494,8 @@ def _launch(
         mounts=tuple(mounts),
         # Docker/Podman take the key by name; Apptainer reads APPTAINERENV_*.
         secret_env=(KEY_VARIABLES[spec.engine],) if keyed and runtime != "apptainer" else (),
+        # Docker/Podman expose only the pinned GPUs (see ContainerLaunch).
+        gpu_devices=tuple(int(device) for device in pinned.split(",")) if pinned else (),
     )
 
 

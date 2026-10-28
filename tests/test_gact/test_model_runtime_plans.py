@@ -391,10 +391,17 @@ def test_catalog_declares_parameters_runtime_choices_and_port() -> None:
         "ctx_size",
         "threads",
         "gpu_layers",
+        "cuda_devices",
+        "rocm_devices",
+        "split_mode",
+        "tensor_split",
+        "main_gpu",
     }
     assert {row.id for row in definitions["ollama"].parameters} == {
         "num_parallel",
         "context_length",
+        "cuda_devices",
+        "rocm_devices",
     }
 
 

@@ -153,6 +153,12 @@ class ContainerLaunch:
         secret_env: Names of variables whose values the launch command's own
             environment carries (see :mod:`~clio_agent.gact.infrastructure.secret_env`):
             Docker/Podman take them by name, never with a value in the arguments.
+        gpu_devices: The NVIDIA GPUs (host ``nvidia-smi`` ids) the server is
+            pinned to; empty for every GPU. Docker passes exactly these
+            (``--gpus "device=1,2"``), Podman their CDI devices
+            (``nvidia.com/gpu=1``) -- inside, they are renumbered from 0, so the
+            host-numbered ``CUDA_VISIBLE_DEVICES`` is not passed. Apptainer's
+            ``--nv`` binds every GPU with host numbering, so it keeps that variable.
     """
 
     name: str
@@ -166,6 +172,23 @@ class ContainerLaunch:
     bind: str = "127.0.0.1"
     mounts: tuple[tuple[str, str], ...] = ()
     secret_env: tuple[str, ...] = ()
+    gpu_devices: tuple[int, ...] = ()
+
+
+#: The host-numbered CUDA pin a Docker/Podman device mapping replaces.
+CUDA_PIN_VARIABLE = "CUDA_VISIBLE_DEVICES"
+
+
+def nvidia_device_args(runtime: RuntimeName, devices: tuple[int, ...]) -> list[str]:
+    """The Docker/Podman arguments exposing NVIDIA GPUs: ``devices`` only, or all of them."""
+
+    if not devices:
+        return ["--gpus", "all"]
+    if runtime == "podman":
+        # Podman's --gpus is CDI underneath; name each device explicitly.
+        return [arg for device in devices for arg in ("--device", f"nvidia.com/gpu={device}")]
+    # Docker reads --gpus as CSV: quote the list so its commas stay one field.
+    return ["--gpus", '"device=' + ",".join(str(device) for device in devices) + '"']
 
 
 def sif_path(images_dir: str, name: str) -> str:
@@ -443,14 +466,18 @@ def run_command(
         args.extend(["--volume", f"{launch.cache_dir}:/cache"])
     for source, destination in launch.mounts:
         args.extend(["--volume", f"{source}:{destination}:ro"])
+    mapped = launch.accelerator == "nvidia" and bool(launch.gpu_devices)
     for key, value in launch.env:
+        if mapped and key == CUDA_PIN_VARIABLE:
+            continue  # the mapped devices are renumbered from 0 inside
         args.extend(["--env", f"{key}={value}"])
     for key in launch.secret_env:
         # By name only: the value comes from this command's environment.
         args.extend(["--env", key])
     if launch.accelerator == "nvidia":
-        args.extend(["--gpus", "all"])
+        args.extend(nvidia_device_args(runtime, launch.gpu_devices))
     elif launch.accelerator == "amd":
+        # Every AMD GPU is bound; HIP/ROCR_VISIBLE_DEVICES (host numbering) pins.
         args.extend(["--device", "/dev/kfd", "--device", "/dev/dri", "--group-add", "video"])
     elif launch.accelerator == "dri":
         args.extend(["--device", "/dev/dri"])

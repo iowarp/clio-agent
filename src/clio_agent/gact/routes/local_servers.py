@@ -193,11 +193,14 @@ def register_local_server_routes(app: FastAPI, presets: "list[LMProviderPreset]"
             preset_for(req.preset_id)
         preset_id, label = own_entry(req.preset_id, req.address, req.label)
         try:
+            # The key is matched through the preset the deployment was bound as
+            # (a llama.cpp instance's own), though it is saved as a custom server.
+            # Binding the same deployment again moves its entry (no ``-2`` copy).
             entry = store.add_server(
                 address=req.address,
                 label=label or (preset_for(preset_id).label if preset_id else ""),
                 preset_id=preset_id,
-                credential_ref=managed_key(preset_id, req.address),
+                credential_ref=managed_key(req.preset_id or preset_id, req.address),
             )
         except store.LocalServerStoreError as exc:
             raise _error(422, "invalid_server", str(exc)) from exc

@@ -1,4 +1,4 @@
-"""Several named vLLM instances on one target, beside the default deployment.
+"""Several named vLLM (and llama.cpp) instances on one target, beside the default deployment.
 
 The engine's own service id (``vllm``) stays its default instance: existing
 records, keys and saved servers keep working. ``vllm@<name>`` is a further
@@ -125,6 +125,46 @@ def test_instances_have_their_own_container_and_catalog_row() -> None:
     assert rows["vllm@small"].variants == rows["vllm"].variants
     assert ROUTER_SERVICE in rows
     assert loopback_only("vllm@small") and loopback_only(ROUTER_SERVICE)
+
+
+def test_catalog_rows_say_which_engine_runs_instances_and_whose_instance_a_row_is() -> None:
+    rows = {
+        row.id: row
+        for row in service_definitions(_facts(), ["vllm@spotter", "llama_cpp@coder"])
+    }
+
+    assert rows["vllm"].supports_instances and rows["llama_cpp"].supports_instances
+    assert not rows["ollama"].supports_instances
+    assert rows["vllm"].instance_of is None and rows["vllm"].instance_name is None
+    assert (rows["vllm@spotter"].instance_of, rows["vllm@spotter"].instance_name) == (
+        "vllm",
+        "spotter",
+    )
+    assert rows["llama_cpp@coder"].instance_of == "llama_cpp"
+    assert rows["llama_cpp@coder"].label == "llama.cpp (coder)"
+    assert not rows["vllm@spotter"].supports_instances
+    order = list(rows)
+    assert order.index("llama_cpp") < order.index("llama_cpp@coder") < order.index("ollama")
+
+
+def test_llama_cpp_instances_get_their_own_container_directory_port_and_key() -> None:
+    assert instance_service_id("llama_cpp", "coder") == "llama_cpp@coder"
+    plan = build_driver_plan(
+        service_id="llama_cpp@coder",
+        action="start",
+        variant_id="cpu",
+        configuration={"hf_model": "Qwen/Qwen2.5-0.5B-Instruct-GGUF:Q4_K_M", "port": "41003"},
+        facts=_facts(),
+        api_key="k-coder",
+    )
+    commands = " ".join(" ".join([spec.program, *spec.args]) for spec in plan.commands)
+
+    assert "--name clio-llama-cpp-coder " in commands and "41003" in commands
+    assert plan.configuration is not None
+    assert plan.configuration["storage.service_directory"].endswith("clio-llama-cpp-coder")
+    assert "k-coder" not in commands
+    assert deployment_key_ref("local", "llama_cpp@coder") == "managed-server:local:llama_cpp@coder"
+    assert needs_port("llama_cpp@coder", "install", {})
 
 
 def test_the_catalog_lists_only_named_instances_recorded_on_the_target() -> None:
