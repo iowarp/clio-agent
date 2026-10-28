@@ -157,11 +157,13 @@ def _task_event_lane_owed(app: Any) -> bool:
 
 
 def _run_task_event_lane(app: Any) -> dict[str, Any]:
-    from clio_agent.gact.task_event_lane import migrate_task_event_lane  # noqa: PLC0415
+    from clio_agent.gact.task_lane_reads import migrate_lanes  # noqa: PLC0415
 
-    report = migrate_task_event_lane(app.state.task_history)
+    # One pass writes each lane already annotated and records task_lane_reads too.
+    report = migrate_lanes(app.state.task_history)
     keys = ("sessions", "sessions_with_task_events", "events")
-    return {key: report[key] for key in keys if key in report}
+    reads = {f"reads_{key}": report["reads"][key] for key in ("annotated", "receipts")}
+    return {**{key: report[key] for key in keys if key in report}, **reads}
 
 
 def _task_lane_reads_owed(app: Any) -> bool:
@@ -258,7 +260,7 @@ MIGRATIONS: tuple[StoreMigration, ...] = (
     ),
     StoreMigration(
         "task_event_lane",
-        "Copy each conversation's task events into their own lane (task trees read only it)",
+        "Copy each conversation's task events into their own lane, annotated for tree reads",
         _run_task_event_lane,
         _task_event_lane_owed,
         boot_reason="task_event_lane_migration_owed",

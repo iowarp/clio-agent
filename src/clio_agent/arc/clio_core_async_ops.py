@@ -259,6 +259,74 @@ def store_put_many(
     return lost
 
 
+#: How long a batch is polled as a whole before each pending reply gets the progress
+#: watch of :func:`await_future` (a healthy daemon answers a window well within it).
+_BATCH_POLL_S = 1.0
+#: GetBlobSize's published "no such blob" code.
+_NOT_FOUND = 1
+
+
+def await_all(futures: Sequence[Any], *, op_name: str) -> None:
+    """Wait for a batch of native futures together.
+
+    Awaiting them one by one sleeps a growing interval, and samples the daemon's
+    progress, for every reply that is not back yet. A batch is polled as a whole
+    instead, once per millisecond, for up to :data:`_BATCH_POLL_S`; whatever is still
+    pending after that is awaited with :func:`await_future`'s progress watch, so a
+    stalled daemon still ends the wait typed.
+    """
+    pending = [future for future in futures if not future.done()]
+    deadline = time.monotonic() + _BATCH_POLL_S
+    while pending and time.monotonic() < deadline:
+        time.sleep(0.001)  # releases the GIL
+        pending = [future for future in pending if not future.done()]
+    for future in pending:
+        await_future(future, op_name=op_name)
+
+
+def store_get_many(
+    store: Any, kind: str, names: Sequence[str]
+) -> tuple[dict[str, bytes | None], list[str]]:
+    """Read several blobs of ``store`` concurrently: every size probe is issued, then
+    every ``AsyncGetBlob`` of a blob that exists, each batch awaited together.
+
+    Returns ``({name: record bytes}, stale)``: ``None`` for an absent blob, and in
+    ``stale`` the names whose body read short of its own frame (size metadata lagging
+    the write), for the caller to read again singly (:meth:`ClioCoreStore.get` re-reads
+    the exact framed length).
+
+    Raises:
+        ClioCoreFutureTimeout: A read stopped progressing (the caller's stall watch
+            decides first).
+        RuntimeError: A size probe failed with a code other than "no such blob".
+    """
+    from clio_agent.arc.blob_frame import BlobFrameError, unframe  # noqa: PLC0415
+
+    tag_id = store._tag_ids.get(kind)
+    local = store._cte.PoolQuery.Local()
+    probes = [(name, store._client.AsyncGetBlobSize(tag_id, name, local)) for name in names]
+    await_all([future for _name, future in probes], op_name="get")
+    reads = []
+    for name, future in probes:
+        code = future.wait(0)
+        if code == _NOT_FOUND:
+            continue
+        if code != 0:
+            raise RuntimeError(f"clio-core GetBlobSize failed for {name}: code {code}")
+        size = int(future.result(0))
+        if size > 0:
+            reads.append((name, store._client.AsyncGetBlob(tag_id, name, size, 0)))
+    await_all([future for _name, future in reads], op_name="get")
+    out: dict[str, bytes | None] = dict.fromkeys(names)
+    stale: list[str] = []
+    for name, future in reads:
+        try:
+            out[name] = unframe(name, future.result())
+        except BlobFrameError:
+            stale.append(name)
+    return out, stale
+
+
 def store_delete(store: Any, kind: str, name: str) -> bool:
     """Delete one blob of ``store`` (a missing one is a no-op), GIL-free."""
     return delete_blob(store._client, store._tag_ids.get(kind), name)

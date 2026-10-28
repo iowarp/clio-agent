@@ -24,13 +24,14 @@ in the same clio-core segment store; tree loads read only that lane.
 from __future__ import annotations
 
 import time
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator, Sequence
 from datetime import UTC, datetime
+from itertools import batched
 from typing import TYPE_CHECKING, Any
 
 import msgspec
 
-from clio_agent.arc import lane_chunking
+from clio_agent.arc import lane_chunking, read_ahead
 from clio_agent.arc.live import EVENTS_SCOPE, build_event_content
 from clio_agent.arc.loop_guard import assert_store_write_off_loop
 from clio_agent.gact.task_index_records import LOOKUP_KIND
@@ -171,11 +172,24 @@ def _forget(store: Any, session_id: str, scopes: list[str]) -> None:
             store._discard_scope(session_id, scope)
 
 
-def _copy_session(arc: ARCMemory, session_id: str) -> int:
-    """Rebuild one session's lane from its ``_events`` log; return the events copied.
+#: Sessions whose records one batch of the one-time passes reads ahead together.
+BATCH_SESSIONS = 64
+#: Record names of every chunk of the ``_events`` log and of the task-event lane.
+_LOG_AND_LANE_RE = r".*__events(~t~log)?(~[1-9][0-9]*)?"
+
+
+#: One session's rebuilt lane: ``[(chunk scope, segments)]`` in chunk order.
+Chunks = list[tuple[str, list["Segment"]]]
+#: What a batch's copy hands on before its lanes are put: ``{session: chunks}``.
+BatchFinish = Callable[[dict[str, Chunks]], dict[str, Chunks]]
+
+
+def _copy_session(arc: ARCMemory, session_id: str) -> Chunks:
+    """Rebuild one session's lane from its ``_events`` log; return its chunks, unwritten.
 
     Any lane already present (a copy interrupted before the marker) is dropped first,
-    so the result is exactly the log's task events whatever ran before.
+    so the result is exactly the log's task events whatever ran before. The caller puts
+    the chunks, in one batch with the rest of its sessions.
     """
     store = arc._segments
     source = lane_chunking.lane_scopes(store, session_id, EVENTS_SCOPE)
@@ -190,49 +204,81 @@ def _copy_session(arc: ARCMemory, session_id: str) -> int:
     rows.sort(key=lambda segment: segment.logical_time)
     lane_chunking.drop_lane(store, session_id, TASK_EVENT_LANE)
     capacity = _capacity(arc)
-    written: list[str] = []
+    chunks: Chunks = []
     for index, start in enumerate(range(0, len(rows), capacity), start=1):
         scope = lane_chunking.chunk_scope(TASK_EVENT_LANE, index)
-        chunk = [
-            msgspec.structs.replace(segment, scope=scope, order=float(position + 1))
-            for position, segment in enumerate(rows[start : start + capacity])
-        ]
         # One put per chunk, as recorded: identities, clock and trace_ref stay those of
         # the original ``_events`` write, so this copy is not a new context op.
-        with store._lock_for(session_id, scope):
-            store._discard_scope(session_id, scope)
-            store._put_scope(session_id, scope, chunk)
-        written.append(scope)
+        chunks.append(
+            (
+                scope,
+                [
+                    msgspec.structs.replace(segment, scope=scope, order=float(position + 1))
+                    for position, segment in enumerate(rows[start : start + capacity])
+                ],
+            )
+        )
     probes = [lane_chunking.chunk_scope(EVENTS_SCOPE, len(source) + 1)]
-    probes.append(lane_chunking.chunk_scope(TASK_EVENT_LANE, len(written) + 1))
-    _forget(store, session_id, [*source, *written, *probes])
-    return len(rows)
+    probes.append(lane_chunking.chunk_scope(TASK_EVENT_LANE, len(chunks) + 1))
+    _forget(store, session_id, [*source, *(scope for scope, _ in chunks), *probes])
+    return chunks
 
 
-def migrate_task_event_lane(history: TaskHistory) -> dict[str, Any]:
-    """Copy every session's task events into the lane once, then write the marker.
+def _read_batch_ahead(arc: ARCMemory, sessions: Sequence[str], names: set[str]) -> None:
+    """Read every log and lane record the batch's copies read, together (listing ``names``)."""
+    store = arc._segments
+    present: list[str] = []
+    absent: list[str] = []
+    for session_id in sessions:
+        for base in (EVENTS_SCOPE, TASK_EVENT_LANE):
+            found, missing = read_ahead.family_names(store, session_id, base, names)
+            present += found
+            absent += missing
+    read_ahead.prefetch(store._store, "segments", present, absent=absent)
 
-    The install/upgrade step's entry point. Idempotent: a rerun (marker absent after
-    an interruption) rebuilds each lane from the ``_events`` log. It holds the task
-    history's writer lock, so no task event is written while it runs, and it keeps
-    one session's log in memory at a time.
+
+def copy_lanes(history: TaskHistory, finish: BatchFinish | None = None) -> dict[str, Any]:
+    """Rebuild every session's lane from its ``_events`` log, then write the lane marker.
+
+    Sessions go in batches of :data:`BATCH_SESSIONS`: their log and lane records are
+    read together (:mod:`clio_agent.arc.read_ahead`, from one listing of the names),
+    ``finish`` (when given) completes each batch's chunks in memory, and the batch's
+    lanes are put together. One batch's records are in memory at a time.
 
     Args:
         history: The task history over the store to migrate.
+        finish: Completes a batch's rebuilt chunks before they are put (the read
+            annotations of :mod:`clio_agent.gact.task_lane_reads`); ``None`` puts the
+            plain copy.
 
     Returns:
-        The marker it wrote: version, completion time, sessions scanned, sessions
-        with task events, events copied and seconds taken.
+        The lane marker it wrote.
     """
     started = time.monotonic()
     arc = history.arc
-    with history.serialized():
-        sessions = arc._segments.sessions_with_scope(EVENTS_SCOPE)
+    store = arc._segments
+    with history.serialized(), read_ahead.reading_ahead(store._store) as buffer:
+        sessions = store.sessions_with_scope(EVENTS_SCOPE)
+        names = read_ahead.listed(store, _LOG_AND_LANE_RE) if buffer is not None else set()
         copied = with_events = 0
-        for session_id in sessions:
-            count = _copy_session(arc, session_id)
-            copied += count
-            with_events += count > 0
+        for batch in batched(sessions, BATCH_SESSIONS):
+            if buffer is not None:
+                _read_batch_ahead(arc, batch, names)
+            lanes: dict[str, Chunks] = {}
+            for session_id in batch:
+                chunks = _copy_session(arc, session_id)
+                count = sum(len(rows) for _scope, rows in chunks)
+                copied += count
+                if count:
+                    with_events += 1
+                    lanes[session_id] = chunks
+            if finish is not None:
+                lanes = finish(lanes)
+            store._put_scopes(
+                [(sid, scope, rows) for sid, chunks in lanes.items() for scope, rows in chunks]
+            )
+            if buffer is not None:
+                buffer.clear()
         report: dict[str, Any] = {
             "version": LANE_VERSION,
             "completed_at": datetime.now(UTC).isoformat(),
@@ -241,13 +287,37 @@ def migrate_task_event_lane(history: TaskHistory) -> dict[str, Any]:
             "events": copied,
             "seconds": round(time.monotonic() - started, 3),
         }
-        # A rebuilt lane holds no read annotations or input receipts: owe them again.
+        # A rebuilt lane holds no read annotations or input receipts: owe them again
+        # (a ``finish`` that wrote them records the reads marker after this one).
         history.index.store.delete(LOOKUP_KIND, "meta." + READS_DONE)
         history.index.put_done_marker(LANE_DONE, report)
     return report
 
 
+def migrate_task_event_lane(history: TaskHistory) -> dict[str, Any]:
+    """Copy every session's task events into the lane once, then write the marker.
+
+    Idempotent: a rerun (marker absent after an interruption) rebuilds each lane from
+    the ``_events`` log. It holds the task history's writer lock, so no task event is
+    written while it runs. The install/upgrade step runs
+    :func:`clio_agent.gact.task_lane_reads.migrate_lanes`, which annotates each batch
+    in the same pass; this is the plain copy (:func:`copy_lanes`).
+
+    Args:
+        history: The task history over the store to migrate.
+
+    Returns:
+        The marker it wrote: version, completion time, sessions scanned, sessions
+        with task events, events copied and seconds taken.
+    """
+    return copy_lanes(history)
+
+
 __all__ = [
+    "BATCH_SESSIONS",
+    "BatchFinish",
+    "Chunks",
+    "copy_lanes",
     "LANE_DONE",
     "LANE_KEY",
     "READS_DONE",

@@ -95,7 +95,7 @@ def test_get_distinguishes_stale_size_from_truncated_data(
     tag = SimpleNamespace(GetBlobSize=lambda name: stale_size, GetBlob=read_blob)
     store = SimpleNamespace(_cte=SimpleNamespace(Tag=lambda name: tag), tag=lambda kind: kind)
     # Exercise the read algorithm independently of every separately covered RPC wrapper.
-    read = cast(Any, inspect.unwrap(ClioCoreStore.get))
+    read = cast(Any, inspect.unwrap(ClioCoreStore._get_one))
     if physically_truncated:
         with pytest.raises(BlobFrameError):
             read(store, "segments", "record")

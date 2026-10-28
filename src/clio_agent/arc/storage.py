@@ -77,6 +77,7 @@ from clio_agent.arc.companion_write import (
 from clio_agent.arc.pid_identity import pid_alive as _pid_alive
 from clio_agent.arc.pid_identity import pidfile_live_pid
 from clio_agent.arc.pid_identity import proc_create_time as _proc_create_time
+from clio_agent.arc.read_ahead import forget_written, held_ahead, read_many
 
 # Per-RPC stall guard (#948 S4): every native op below runs through this so a ZOMBIE
 # daemon (socket alive, RPC hung) degrades typed instead of freezing the caller.
@@ -583,6 +584,7 @@ class ClioCoreStore:
         # base64-wrap: CTE GetBlob UTF-8-decodes, so store ascii-safe bytes; framed with
         # its length and padded to a size class so a growing record adds few blocks.
         payload = stored_body(data)
+        forget_written(self, kind, (name,))
         if kind == "segments":  # #1339: live-lane audit evidence (one row per put)
             stream_audit("store.put", kind=kind, name=name, size=len(payload))
         guarded_store_rpc(self, "put", store_put, self, kind, name, payload)
@@ -611,6 +613,7 @@ class ClioCoreStore:
         blobs: list[tuple[str, bytes]] = []
         companions: list[tuple[str, bytes]] = []
         stale: list[str] = []
+        forget_written(self, kind, [record.name for record in records])
         for record in records:
             payload = stored_body(record.data)
             if kind == "segments":  # #1339: live-lane audit evidence (one row per put)
@@ -637,8 +640,17 @@ class ClioCoreStore:
         """The CTE tag holding ``kind`` records in this store's namespace (pure; no RPC)."""
         return f"{self._namespace}/{kind}" if self._namespace else kind
 
-    @guard_store_op("get")
     def get(self, kind: str, name: str) -> Optional[bytes]:
+        """Read a record: from a pass's read-ahead when it holds it (arc/read_ahead.py)."""
+        held, value = held_ahead(self, kind, name)
+        return value if held else self._get_one(kind, name)
+
+    def get_many(self, kind: str, names: Sequence[str]) -> dict[str, Optional[bytes]]:
+        """Read independent records together, ``None`` for an absent one (read_many)."""
+        return read_many(self, kind, names)
+
+    @guard_store_op("get")
+    def _get_one(self, kind: str, name: str) -> Optional[bytes]:
         """Read a validated record, allowing one stale native size-metadata observation."""
         tag = self._cte.Tag(self.tag(kind))
         size = tag.GetBlobSize(name)  # 0 for a missing blob (does not raise)
@@ -690,6 +702,7 @@ class ClioCoreStore:
     def delete(self, kind: str, name: str) -> None:
         # Tag has no per-blob delete; go through the Client + TagId (async: GIL-free). A
         # missing blob answers a non-zero code (no raise), satisfying the no-op contract.
+        forget_written(self, kind, (name,))
         store_delete(self, kind, name)
         store_delete(self, kind, name + _SEARCH_SUFFIX)  # companion (no-op if absent)
         companion_sizes(self).forget(kind, name + _SEARCH_SUFFIX)
@@ -697,6 +710,7 @@ class ClioCoreStore:
     def clear(self) -> None:
         # Guard each listing/delete RPC; a progressing multi-blob clear is not a stall.
         companion_sizes(self).clear()
+        forget_written(self, "", ())  # every kind: nothing read ahead outlives a clear
         for kind in self._kinds:
             blob_names = guarded_store_rpc(
                 self, "clear", lambda k: list(self._cte.Tag(self.tag(k)).GetContainedBlobs()), kind

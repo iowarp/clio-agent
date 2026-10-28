@@ -31,6 +31,7 @@ from typing import TYPE_CHECKING, Callable, Iterable, Optional, Protocol
 
 import msgspec
 
+from clio_agent.arc.batch_put import PutRecord
 from clio_agent.arc.loop_guard import LoopThreadStoreWrite, assert_store_write_off_loop
 from clio_agent.arc.schema import Segment, decode_segments, encode_segments, segment_text
 from clio_agent.arc.segment_errors import ArcPersistError, SegmentReadError
@@ -164,19 +165,39 @@ class ScopeCache:
         companion); returns the encoded size. Raises if ``encode_segments`` /
         ``store.put`` rejects any segment, or (#1334) if the caller runs an event loop."""
         assert_store_write_off_loop("segments.put", scope=scope)
-        # search_text: the live render flattened to plain text, so semantic discovery
-        # (Thread D) can find this scope by content. A scope the ``search_indexed``
-        # predicate excludes (the reserved ``_events`` family) never writes it.
-        if self._search_indexed is None or self._search_indexed(scope):
-            live_text = "\n".join(segment_text(s) for s in self._live_sorted(segs))
-            search_text = live_text or None
-        else:
-            search_text = None
         data = encode_segments(segs)
         self._store.put(
-            "segments", self._record_name(session_id, scope), data, search_text=search_text
+            "segments",
+            self._record_name(session_id, scope),
+            data,
+            search_text=self._search_text(scope, segs),
         )
         return len(data)
+
+    def _search_text(self, scope: str, segs: list[Segment]) -> Optional[str]:
+        """The live render flattened to plain text, so semantic discovery (Thread D) can
+        find the scope by content; ``None`` for a scope the ``search_indexed`` predicate
+        excludes (the reserved ``_events`` family never writes one)."""
+        if self._search_indexed is None or self._search_indexed(scope):
+            return "\n".join(segment_text(s) for s in self._live_sorted(segs)) or None
+        return None
+
+    def _put_scopes(self, rows: list[tuple[str, str, list[Segment]]]) -> None:
+        """Put several independent scope records in one batch (``ARCStore.put_many``),
+        each exactly as :meth:`_put_scope` would; the caller owns their cached copies.
+
+        Raises:
+            BatchPutError: A record was lost after its bounded retry (the others of the
+                batch were written; a one-time pass reruns from its marker).
+        """
+        records = []
+        for session_id, scope, segs in rows:
+            assert_store_write_off_loop("segments.put", scope=scope)
+            name = self._record_name(session_id, scope)
+            text = self._search_text(scope, segs)
+            records.append(PutRecord(name, encode_segments(segs), search_text=text))
+        if records:
+            self._store.put_many("segments", records)
 
     def _commit_scope(self, session_id: str, scope: str, staged: list[Segment]) -> None:
         """Put ``staged`` to clio-core, THEN make it the cached copy (write-through).
