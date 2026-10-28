@@ -32,6 +32,7 @@ import logging
 from collections.abc import Iterable
 from typing import TYPE_CHECKING, Any
 
+from clio_agent.errors import ClioError
 from clio_agent.gact.conversation_recovery import open_work_sessions, restore_session
 
 if TYPE_CHECKING:
@@ -137,7 +138,7 @@ class Obligations:
             return
         try:
             await asyncio.to_thread(interrupted.settle_quietly, session_id)
-        except Exception as error:  # noqa: BLE001 - one conversation; the lane continues
+        except (ClioError, OSError, RuntimeError, ValueError) as error:  # one conversation
             logger.error(
                 "restart interruption settle failed reason=restart_interruption_settle_failed "
                 "session=%s error=%r",
