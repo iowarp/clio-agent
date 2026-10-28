@@ -180,7 +180,7 @@ def measure(args: argparse.Namespace) -> dict[str, Any]:
         _repoint(copy, store)
     copy_s = round(time.monotonic() - started_copy, 1)
     env = {**os.environ, **_store_environment(store, copy)}
-    port = _free_port()
+    port = args.port or _free_port()
     log = (work / "server.log").open("w", encoding="utf-8")
     t0 = time.monotonic()
     server = subprocess.Popen(  # noqa: S603 - fixed argv
@@ -232,6 +232,19 @@ def measure(args: argparse.Namespace) -> dict[str, Any]:
             result["rss_after_obligations_mb"] = _rss_mb(server.pid)
             result["obligations_wait_s"] = round(time.monotonic() - obligations_started, 1)
             peaks.phase = "after_obligations"
+        if args.idle_samples:
+            # Resident memory every 10 s with nothing to do: the idle release (and any
+            # late riser) shows up here; private memory is what the server owns.
+            peaks.phase = "idle"
+            samples = []
+            for _ in range(args.idle_samples):
+                time.sleep(10)
+                info = psutil.Process(server.pid).memory_full_info()
+                samples.append(
+                    {"rss_mb": round(info.rss / 2**20, 1), "uss_mb": round(info.uss / 2**20, 1)}
+                )
+            result["idle_samples"] = samples
+            result["rss_after_idle_mb"] = samples[-1]["rss_mb"]
         status, sessions = _get(port, "/v1/sessions?limit=1000000", timeout=60)
         listed = (
             len(sessions.get("sessions", sessions.get("items", [])))
@@ -318,6 +331,13 @@ def main() -> int:
         "--scripted-model",
         action="store_true",
         help="serve with the reference store's scripted model, so resumed work really runs",
+    )
+    parser.add_argument("--port", type=int, default=0, help="server port (0: a free one)")
+    parser.add_argument(
+        "--idle-samples",
+        type=int,
+        default=0,
+        help="after ready (and the drain), sample memory every 10 s this many times",
     )
     parser.add_argument("--think", type=float, default=0.0, help="scripted model seconds")
     parser.add_argument(

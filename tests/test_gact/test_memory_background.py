@@ -767,6 +767,24 @@ def test_an_idle_conversation_is_read_once_per_change(client: TestClient) -> Non
         app.state.messages = messages
 
 
+def test_the_idle_check_reads_a_conversation_without_making_it_resident(
+    client: TestClient,
+) -> None:
+    """A tick over idle conversations nobody has open leaves their histories on disk."""
+    app = client.app
+    session = app.state.sessions.create(workspace_id="ws_global", title="t")
+    _say(app, session.id, 1, "user", "Hello.")
+    old = (datetime.now(UTC) - timedelta(hours=2)).strftime("%Y-%m-%dT%H:%M:%SZ")
+    app.state.sessions.get(session.id).last_interaction_at = old  # noqa: SLF001
+    app.state.messages.discard(session.id)
+    assert session.id not in app.state.messages.resident_session_ids
+
+    background.memory_tick(app, datetime.now(UTC))
+
+    assert app.state.memory_background["skipped"]["too_few_new_messages"] >= 1
+    assert session.id not in app.state.messages.resident_session_ids
+
+
 def test_the_curator_is_told_what_already_waits_for_review(client: TestClient) -> None:
     """A change pending in the inbox reaches the next curator brief, so the same import
     or conversation does not put it in front of the user twice."""

@@ -12,6 +12,10 @@ the background, while people already use Clio.
 * **Oldest first, someone waiting first.** Conversations are recovered oldest first. A
   conversation someone sends a message to (:meth:`Obligations.wanted`) is recovered next
   and released at once.
+* **Interrupted turns.** Startup only marks, from the session records, the conversations
+  a stop interrupted mid-turn; the lane closes their transcripts (the interrupted-turn
+  row), each conversation just before its own recovery and the rest after the queue
+  (:mod:`clio_agent.gact.restart_interruptions`).
 * **Bounded.** After recovery a conversation is released to run its pending work through
   the turn runner; at most ``agent_tasks.obligation_concurrency`` released conversations run
   at a time, so a large backlog cannot flood memory or the model provider. Each one loads
@@ -109,12 +113,37 @@ class Obligations:
                 conversations._restoring = True  # Core recovery reruns the whole restore.
                 return
             session_id = self._next()
+            await self._close_interrupted(session_id)
             await restore_session(conversations, session_id)
             self.recovered += 1
             await self._release(session_id)
+        interrupted = getattr(conversations.app.state, "restart_interruptions", None)
+        for session_id in interrupted.pending() if interrupted is not None else ():
+            if conversations._closing:
+                break
+            await self._close_interrupted(session_id)
         if self._running:
             await asyncio.wait(set(self._running))
         conversations.signal_pending()
+
+    async def _close_interrupted(self, session_id: str) -> None:
+        """Close a transcript a restart interrupted (:mod:`~clio_agent.gact.restart_interruptions`).
+
+        Off the loop and off the Core I/O worker the resumed work uses; a failure stays
+        pending (opening or writing the conversation retries) and is logged typed.
+        """
+        interrupted = getattr(self.conversations.app.state, "restart_interruptions", None)
+        if interrupted is None or not interrupted.waiting(session_id):
+            return
+        try:
+            await asyncio.to_thread(interrupted.settle_quietly, session_id)
+        except Exception as error:  # noqa: BLE001 - one conversation; the lane continues
+            logger.error(
+                "restart interruption settle failed reason=restart_interruption_settle_failed "
+                "session=%s error=%r",
+                session_id,
+                error,
+            )
 
     def _next(self) -> str:
         """The next conversation: one someone is waiting on, else the oldest."""

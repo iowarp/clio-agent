@@ -65,6 +65,19 @@ def _parse(stamp: str) -> datetime | None:
     return parsed if parsed.tzinfo else parsed.replace(tzinfo=UTC)
 
 
+def _transcript(app: Any, session_id: str) -> list[Any]:
+    """A conversation's transcript for the pass, without making it resident.
+
+    The pass reads idle conversations nobody has open; the resident set's ``peek``
+    serves a resident ledger as is and reads any other one transiently, so a tick over
+    every idle conversation does not pull their histories (and ARC scopes) into memory.
+    """
+    messages = app.state.messages
+    peek = getattr(messages, "peek", None)
+    rows = peek(session_id) if callable(peek) else messages.get(session_id)
+    return list(rows or [])
+
+
 def _messages_after(messages: list[Any], watermark: str) -> list[Any]:
     if not watermark:
         return list(messages)
@@ -120,7 +133,7 @@ def _checked(session: Any, reason: str) -> dict[str, Any]:
 def _transcript_reason(app: Any, session: Any) -> str:
     """The skip reasons that need the transcript (``""`` when a pass is due)."""
     metadata = session.metadata or {}
-    messages = app.state.messages.get(session.id, [])
+    messages = _transcript(app, session.id)
     failed = metadata.get(LAST_PASS) or {}
     if (
         failed.get("status", "completed") not in {"completed", "no_candidates"}
@@ -383,7 +396,7 @@ def _start_pass(app: Any, session: Any) -> None:
     from clio_agent.gact.memory.runtime import memory_service  # noqa: PLC0415
 
     metadata = session.metadata or {}
-    messages = list(app.state.messages.get(session.id, []))
+    messages = _transcript(app, session.id)
     items = transcript_items(messages, after=str(metadata.get(WATERMARK, "")))
     last = messages[-1].id if messages else ""
     policy = session_policy(app, session)
@@ -419,7 +432,7 @@ def _start_pass(app: Any, session: Any) -> None:
     record_extract(service.store, run_id, report)
     current = app.state.sessions.get(session.id)
     runner = getattr(app.state, "turn_runner", None)
-    latest = list(app.state.messages.get(session.id, []))
+    latest = _transcript(app, session.id)
     if (
         current is None
         or (runner is not None and runner.busy(session.id))
@@ -531,7 +544,7 @@ def _collect(app: Any, session: Any) -> None:
         if service is not None
         else ({"accepted": 0, "pending": 0, "rejected": 0}, [])
     )
-    curator_messages = app.state.messages.get(str(run.get("session") or ""), [])
+    curator_messages = _transcript(app, str(run.get("session") or ""))
     status, run_reason = curator_run_outcome(
         status, counts, failed_memory_tool_count(curator_messages)
     )
