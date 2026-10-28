@@ -16,7 +16,12 @@ from pathlib import Path
 
 import pytest
 
-from clio_agent.arc import clio_core_attach, clio_core_config, clio_core_relocate
+from clio_agent.arc import (
+    clio_core_attach,
+    clio_core_config,
+    clio_core_daemon_version,
+    clio_core_relocate,
+)
 from clio_agent.arc.clio_core_indexer import indexer_block
 from clio_agent.arc.clio_core_relocate import (
     CTE_STORE_LOCATION_IN_USE,
@@ -111,6 +116,11 @@ def test_a_moved_store_is_relocated_and_the_old_path_is_not_touched(tmp_path: Pa
     old, new = _moved_store(tmp_path)
     _seed(old, port=_free_port())  # a decoy store at the old path
     decoy = _tree(old)
+    runtime = tmp_path / "runtime"
+    runtime.mkdir()
+    clio_core_daemon_version.record_daemon_version(
+        runtime, daemon_binary="clio_run", config_path=str(old / "cte.yaml")
+    )
 
     record = ensure_store_location(new)
 
@@ -142,6 +152,8 @@ def test_a_moved_store_is_relocated_and_the_old_path_is_not_touched(tmp_path: Pa
     journal = json.loads((new / "cte-capacity.json").read_text())
     assert journal["config_sha256"] == hashlib.sha256((new / "cte.yaml").read_bytes()).hexdigest()
     assert clio_core_relocate.last_relocation() == record
+    stopped = clio_core_daemon_version.read_daemon_version(runtime)
+    assert stopped is not None and stopped.config_path == str(new / "cte.yaml")
     assert ensure_store_location(new) is None  # done: the next start has nothing to do
 
 

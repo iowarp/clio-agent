@@ -483,6 +483,31 @@ def _relocate_journal(
     return True
 
 
+def _relocate_runtime_record(cte_dir: Path, old: str) -> list[str]:
+    """Point the stopped daemon's runtime record at the relocated config.
+
+    The record (``clio-runtime.version`` beside the daemon pidfile) names the config the
+    last daemon ran with, and connect-or-spawn reads that config for the daemon's port.
+    No daemon is live here (:func:`_users`), so the record is stale; left naming the
+    old ``cte.yaml``, the next start would read it from the old location.
+    """
+    from clio_agent.arc import clio_core_daemon_version  # noqa: PLC0415 - cycle
+    from clio_agent.arc.clio_core_config import runtime_state_dir  # noqa: PLC0415 - cycle
+
+    state = runtime_state_dir()
+    found = clio_core_daemon_version.read_daemon_version(state)  # None: absent or unreadable
+    here = cte_dir.as_posix().rstrip("/")
+    if found is None or not _under(Path(found.config_path).as_posix(), old):
+        return []
+    if _moved(Path(found.config_path).as_posix(), old, here) == found.config_path:
+        return []
+    path = clio_core_daemon_version._record_file(state)
+    record = json.loads(path.read_text(encoding="utf-8"))
+    record["config_path"] = str(cte_dir / "cte.yaml")
+    _atomic_write(path, json.dumps(record).encode("utf-8"))
+    return [str(path)]
+
+
 def _holders(directories: Iterable[Path]) -> list[str]:
     """Processes with a file under one of ``directories`` open.
 
@@ -559,7 +584,7 @@ def ensure_store_location(cte_dir: Path) -> dict[str, Any] | None:
             ),
         )
     try:
-        changed = _relocate(cte_dir, old)
+        changed = _relocate(cte_dir, old) + _relocate_runtime_record(cte_dir, old)
     except WalFormatError as exc:
         raise CteStoreLocationError(
             CTE_STORE_LOCATION_MISMATCH,
