@@ -2,12 +2,10 @@
 
 Tasks, assignment history, mail and input commitments live in the confirmed Core
 hierarchy. This thread-safe store supplies session metadata and trusted startup
-receipts. Each session is one small row in ``state/server/sessions.sqlite3``
-(:mod:`clio_agent.gact.session_records`), imported once from a legacy
-``sessions.json``; ``CLIO_SESSIONS_PATH`` overrides the ``sessions.json`` path the
-table sits beside. Rows load on first use into a bounded cache, so neither boot nor
-memory grows with the number of conversations. Public wire fields are projected from
-the record; private approval and initialization fields never enter public updates.
+receipts. Each session is one clio-core record (:mod:`clio_agent.gact.session_records`),
+imported once from a legacy ``sessions.json`` (``CLIO_SESSIONS_PATH`` overrides its
+path). Records load on first use into a bounded cache. Public wire fields are projected
+from the record; private approval and initialization fields never enter public updates.
 """
 
 from __future__ import annotations
@@ -256,20 +254,21 @@ class Session:
 
 
 class SessionStore:
-    """Thread-safe session registry over one row per session.
+    """Thread-safe session registry over one clio-core record per session.
 
-    ``path=None`` keeps the table in memory (tests); ``path=Path`` names the legacy
-    ``sessions.json`` the ``sessions.sqlite3`` table sits beside. Every mutation
-    writes only the changed session's row, under one lock, before returning.
+    The records (:mod:`clio_agent.gact.session_records`) live in memory until a
+    clio-core store is bound (:meth:`bind_store`; the app binds the process ARC's
+    store, ``store=`` binds at once). ``path`` names the legacy ``sessions.json``
+    the ``session_records_import`` store migration imports. Every mutation writes
+    only the changed session's record.
     """
 
-    def __init__(self, path: Optional[Path] = None) -> None:
+    def __init__(self, path: Optional[Path] = None, *, store: Any = None) -> None:
         self._path = path
         self._lock = threading.RLock()
-        self._records = SessionRecords(
-            None if path is None else path.with_name(path.stem + ".sqlite3"),
-            legacy_json=path,
-        )
+        self._records = SessionRecords()
+        if store is not None:
+            self._records.bind(store)
         # Rows load on first use. The LRU bounds what stays resident; the weak map
         # keeps one object per session while any caller still holds it, so an
         # update is never applied to a stale copy of a row someone is reading.
@@ -315,14 +314,29 @@ class SessionStore:
             self._cache.popitem(last=False)
         return session
 
-    def _resolve(self, sid: str, body: str) -> Optional[Session]:
-        held = self._cache.get(sid) or self._identity.get(sid)
-        if held is not None:
-            return held
-        session = self._decode(sid, body)
-        if session is not None:
-            self._identity[sid] = session
-        return session
+    def _sessions(self, ids: "builtins.list[str]") -> "builtins.list[Session]":
+        missing = [sid for sid in ids if (self._cache.get(sid) or self._identity.get(sid)) is None]
+        bodies = self._records.bodies_for(missing)
+        rows: builtins.list[Session] = []
+        for sid in ids:
+            held = self._cache.get(sid) or self._identity.get(sid)
+            if held is None and sid in bodies and (held := self._decode(sid, bodies[sid])):
+                self._identity[sid] = held
+            if held is not None:
+                rows.append(held)
+        return rows
+
+    def bind_store(self, store: Any) -> None:
+        """Keep the records in ``store`` (clio-core) from now on (off the server loop)."""
+        self._records.bind(store)
+
+    def expect_store(self) -> None:
+        """A clio-core store will be bound: reads wait for it (a server's boot)."""
+        self._records.expect_store()
+
+    def flush(self, timeout: float = 120.0) -> bool:
+        """Wait until every session write has landed in the store."""
+        return self._records.flush(timeout)
 
     def _row(self, sid: str) -> Optional[Session]:
         held = self._cache.get(sid) or self._identity.get(sid)
@@ -333,7 +347,7 @@ class SessionStore:
         return None if session is None else self._remember(session)
 
     def _persist(self, session: Session) -> None:
-        """Write this one session's row; on failure the next read reloads the table."""
+        """Write this one session's record; on failure the next read reloads it."""
         try:
             self._records.put(record_columns(session), json.dumps(asdict(session), sort_keys=True))
         except BaseException:
@@ -565,30 +579,36 @@ class SessionStore:
         *,
         workspace_id: Optional[str] = None,
     ) -> list[Session]:
-        """List every session, newest created first. Optional workspace filter.
-
-        Reads every row of the table: for a page of the conversation list use
-        :meth:`page`, for ids alone :meth:`ids`.
-        """
+        """Every session (reads every record: prefer :meth:`page` / :meth:`ids`)."""
 
         with self._lock:
-            pairs = self._records.bodies(workspace_id=workspace_id)
-            rows = [self._resolve(sid, body) for sid, body in pairs]
-        return [row for row in rows if row is not None]
+            ids = self._records.select(PageQuery(workspace_id=workspace_id, archived=None))
+            return self._sessions(ids)
 
     def page(self, query: PageQuery) -> tuple["builtins.list[Session]", Optional[str], int]:
-        """One page of the conversation list, newest interaction first.
-
-        Returns the rows, the cursor of the next page (``None`` on the last page)
-        and how many rows match the filters in all. Raises
-        :class:`~clio_agent.gact.session_records.InvalidCursorError` for a cursor
-        this server did not issue.
-        """
+        """One page newest interaction first, the next cursor, the total (bad cursor:
+        :class:`~clio_agent.gact.session_records.InvalidCursorError`)."""
 
         with self._lock:
-            pairs, next_cursor, total = self._records.page(query)
-            rows = [self._resolve(sid, body) for sid, body in pairs]
-        return [row for row in rows if row is not None], next_cursor, total
+            ids, next_cursor, total = self._records.page(query)
+            return self._sessions(ids), next_cursor, total
+
+    def select(self, query: PageQuery) -> "builtins.list[Session]":
+        """Every session matching ``query`` (no paging), newest created first."""
+
+        with self._lock:
+            return self._sessions(self._records.select(query))
+
+    def related(self, *, family_of: str = "") -> "builtins.list[Session]":
+        """``family_of``'s conversation tree, else the sessions waiting on a person
+        and their ancestors (:meth:`SessionRecords.related_ids`), by index only."""
+
+        with self._lock:
+            return self._sessions(self._records.related_ids(family_of))
+
+    def import_legacy(self) -> dict[str, Any]:
+        """Import the legacy ``sessions.json`` (the store migration's body; idempotent)."""
+        return self._records.import_legacy(self._path)
 
     def ids(self) -> "builtins.list[str]":
         """Every session id, without reading a row."""

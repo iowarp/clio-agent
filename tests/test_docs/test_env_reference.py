@@ -235,7 +235,7 @@ def test_conf_resolve_wrapper_knobs_are_discovered() -> None:
             "int",
             "536870912",
         ),
-        "CLIO_RESIDENT_LEDGERS_TTL_S": ("gact.resident_ledgers.idle_ttl_s", "float", "1800.0"),
+        "CLIO_RESIDENT_LEDGERS_TTL_S": ("gact.resident_ledgers.idle_ttl_s", "float", "60.0"),
     }
     for name, (key, type_, default) in expected.items():
         assert name in by_env, f"{name} (via conf.resolve wrapper) missing from resolved knobs"

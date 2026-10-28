@@ -241,6 +241,13 @@ def start(app: "FastAPI") -> None:
     """
     if not getattr(app.state, "server_boot", False):
         return
+    from clio_agent.arc import history_mode  # noqa: PLC0415
+
+    if history_mode.resolve().is_history:
+        # No clio-core: the session records stay in memory (History mode is not durable).
+        logger.error("session records reason=session_records_history_mode: not durable")
+    else:
+        app.state.sessions.expect_store()  # reads wait for the clio-core attach below
     from clio_agent.gact import provider_support_boot  # noqa: PLC0415
 
     provider_support_boot.start(app)  # recorded provider support a runtime change removed

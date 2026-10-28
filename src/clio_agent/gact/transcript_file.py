@@ -323,6 +323,9 @@ def _atom_boot(app: "FastAPI") -> None:
         app.state.task_history = history
         # Before any tree loads; normally `clio-agent migrate` copied it (one marker read).
         ensure_at_boot(app, "task_event_lane")
+        ensure_at_boot(app, "task_lane_reads")  # after the lane copy
+    # The session records every later step reads (normally one marker read).
+    ensure_at_boot(app, "session_records_import")
     # Legacy content is captured before any reconciliation/cache update; normally
     # `clio-agent migrate` already did, and this is one marker read.
     ensure_at_boot(app, "transcript_legacy_import")
@@ -443,7 +446,7 @@ def boot_transcript_store(app: "FastAPI", root: Path) -> None:
 
     from clio_agent.gact.messages import MessageStore  # noqa: PLC0415
     from clio_agent.gact.metrics_counters import MetricsCounters  # noqa: PLC0415
-    from clio_agent.gact.resident_ledgers import build_resident_ledger_set
+    from clio_agent.gact.resident_ledgers import attach_arc_residency, build_resident_ledger_set
     from clio_agent.gact.runtime.retention import init_retention_state
     from clio_agent.gact.transcript_projection import canonical_log_arc
 
@@ -459,6 +462,7 @@ def boot_transcript_store(app: "FastAPI", root: Path) -> None:
     init_retention_state(app)
     app.state.metrics_counters = MetricsCounters()
     app.state.messages = build_resident_ledger_set(app)
+    attach_arc_residency(app, getattr(app.state, "arc", None))
     if canonical_log_arc(app) is not None:
         on_process_arc_bound(app)
 

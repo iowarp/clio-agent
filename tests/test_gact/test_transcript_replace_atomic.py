@@ -51,7 +51,6 @@ from clio_agent.arc.memory import ARCMemory
 from clio_agent.gact.app import build_app
 from clio_agent.gact.part_atoms import MESSAGE_PART_SCOPE, mint_message_part_atoms
 from clio_agent.gact.session_store import _delete_session_messages, _replace_session_messages
-from clio_agent.gact.sessions import SessionStore
 from clio_agent.gact.transcript_projection import on_ledger_replaced
 from clio_agent.gact.types import Message, Part, Tokens
 
@@ -468,11 +467,12 @@ def test_off_a_legacy_row_takes_its_last_atom_message_time_never_messages_dir(
     assert stat_calls == []
     _no_messages_dir(tmp_path)
 
-    # Settled once and persisted: the restart reads the row's own value.
-    stored = SessionStore(path=tmp_path / "sessions.json").get("sess_talked")
+    # Settled once and persisted: the restart reads the record's own value.
+    first.state.sessions.flush()
+    second = _app(tmp_path)
+    stored = second.state.sessions.get("sess_talked")
     assert stored is not None
     assert stored.last_interaction_at == "2026-08-22T18:21:00+00:00"
-    second = _app(tmp_path)
     assert second.state.sessions.get("sess_silent").last_interaction_at == (
         "2026-08-01T00:00:00+00:00"
     )

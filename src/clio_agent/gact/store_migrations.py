@@ -89,7 +89,9 @@ class MigrationResult:
 def _transcripts_owed(app: Any) -> bool:
     from clio_agent.gact.transcript_migration import IMPORT_DONE  # noqa: PLC0415
 
-    if getattr(app.state, "message_store", None) is None:
+    if getattr(app.state, "message_store", None) is None and not getattr(
+        app.state, "transcript_file", False
+    ):
         return False  # transcript.file off: there is no legacy JSON to import
     return app.state.task_history.index.done_marker(IMPORT_DONE) is None
 
@@ -119,19 +121,41 @@ def _run_task_event_lane(app: Any) -> dict[str, Any]:
     return {key: report[key] for key in keys if key in report}
 
 
+def _task_lane_reads_owed(app: Any) -> bool:
+    from clio_agent.gact.task_lane_reads import reads_owed  # noqa: PLC0415
+
+    return reads_owed(app.state.task_history)
+
+
+def _run_task_lane_reads(app: Any) -> dict[str, Any]:
+    from clio_agent.gact.task_lane_reads import migrate_task_lane_reads  # noqa: PLC0415
+
+    return migrate_task_lane_reads(app.state.task_history)
+
+
+def _run_session_records(app: Any) -> dict[str, Any]:
+    # Imports only sessions the records do not hold, so a rerun after an interruption
+    # neither duplicates nor overwrites; the runner's marker ends it for good.
+    return app.state.sessions.import_legacy()
+
+
 def _task_index_owed(app: Any) -> bool:
     return app.state.task_history.index.marker() is None
 
 
 def _run_task_index(app: Any) -> dict[str, Any]:
     from clio_agent.gact.task_migration import migrate_history  # noqa: PLC0415
+    from clio_agent.gact.task_publication import settle_published_outcomes  # noqa: PLC0415
 
     history = app.state.task_history
     if not history.index_build_pending:
         history.restore()  # without the marker this is the one full replay the build reads
     migrate_history(app)
     history.complete_index_build()
-    return {"replay_seconds": round(history.replay_seconds, 3)}
+    # The build derives an open record per terminal outcome; settle the published ones
+    # here, so the next start's startup row reads only the work that is really open.
+    settled = settle_published_outcomes(history)
+    return {"replay_seconds": round(history.replay_seconds, 3), **settled}
 
 
 def _artifact_index_owed(app: Any) -> bool:
@@ -149,11 +173,24 @@ def _run_artifact_index(app: Any) -> dict[str, Any]:
 #: Every store migration, in run order. Name = marker name; never rename a shipped one.
 MIGRATIONS: tuple[StoreMigration, ...] = (
     StoreMigration(
+        "session_records_import",
+        "Import the legacy sessions.json into one clio-core record per session",
+        _run_session_records,
+        boot_reason="session_records_import_owed",
+    ),
+    StoreMigration(
         "task_event_lane",
         "Copy each conversation's task events into their own lane (task trees read only it)",
         _run_task_event_lane,
         _task_event_lane_owed,
         boot_reason="task_event_lane_migration_owed",
+    ),
+    StoreMigration(
+        "task_lane_reads",
+        "Annotate each task-event lane so a task tree loads from the lane alone",
+        _run_task_lane_reads,
+        _task_lane_reads_owed,
+        boot_reason="task_lane_reads_migration_owed",
     ),
     StoreMigration(
         "transcript_legacy_import",
