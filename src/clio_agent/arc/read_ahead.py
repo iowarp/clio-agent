@@ -27,7 +27,8 @@ direct: there is nothing to batch.
 from __future__ import annotations
 
 import threading
-from collections.abc import Iterable, Iterator, Sequence
+from bisect import bisect_left
+from collections.abc import Callable, Iterable, Iterator, Sequence
 from contextlib import contextmanager
 from itertools import batched
 from typing import Any
@@ -42,6 +43,8 @@ class ReadAhead:
 
     def __init__(self) -> None:
         self._rows: dict[tuple[str, str], bytes | None] = {}
+        self._listings: dict[str, set[str]] = {}
+        self._sorted: dict[str, list[str]] = {}  # a listing in order, for prefix lookups
         self._lock = threading.Lock()
 
     def lookup(self, kind: str, name: str) -> tuple[bool, bytes | None]:
@@ -63,20 +66,50 @@ class ReadAhead:
             for name, value in rows.items():
                 self._rows[(kind, name)] = value
 
-    def forget(self, kind: str, names: Iterable[str]) -> None:
-        """Drop ``names`` (the store is writing them)."""
+    def forget(self, kind: str, names: Iterable[str], *, deleted: bool = False) -> None:
+        """Drop ``names`` (the store is writing them, or deleting them when ``deleted``);
+        a held listing of ``kind`` gains or loses them."""
         with self._lock:
+            listing = self._listings.get(kind)
             for name in names:
                 self._rows.pop((kind, name), None)
+                if listing is not None and (name in listing) == deleted:
+                    (listing.discard if deleted else listing.add)(name)
+                    self._sorted.pop(kind, None)
+
+    def hold_listing(self, kind: str, names: Iterable[str]) -> None:
+        """Hold every record name of ``kind`` (a whole-kind listing taken in this pass)."""
+        with self._lock:
+            self._listings[kind] = set(names)
+            self._sorted.pop(kind, None)
+
+    def names_with_prefix(self, kind: str, prefix: str) -> list[str] | None:
+        """The held listing's names under ``prefix``; ``None`` when none is held."""
+        with self._lock:
+            listing = self._listings.get(kind)
+            if listing is None:
+                return None
+            ordered = self._sorted.get(kind)
+            if ordered is None:
+                ordered = self._sorted[kind] = sorted(listing)
+            found: list[str] = []
+            for name in ordered[bisect_left(ordered, prefix) :]:
+                if not name.startswith(prefix):
+                    break
+                found.append(name)
+            return found
 
     def clear(self) -> None:
-        """Drop everything (a batch of the pass is done)."""
+        """Drop every record held (a batch of the pass is done); listings stay."""
         with self._lock:
             self._rows.clear()
 
-    def __len__(self) -> int:
+    def reset(self) -> None:
+        """Drop records and listings (the store was cleared)."""
         with self._lock:
-            return len(self._rows)
+            self._rows.clear()
+            self._listings.clear()
+            self._sorted.clear()
 
 
 def held_ahead(store: Any, kind: str, name: str) -> tuple[bool, bytes | None]:
@@ -93,7 +126,59 @@ def forget_written(store: Any, kind: str, names: Iterable[str]) -> None:
     if kind:
         buffer.forget(kind, names)
     else:
-        buffer.clear()
+        buffer.reset()
+
+
+def forget_deleted(store: Any, kind: str, names: Iterable[str]) -> None:
+    """Drop the records ``store`` is about to delete from its buffer and listing."""
+    buffer = buffer_of(store)
+    if buffer is not None:
+        buffer.forget(kind, names, deleted=True)
+
+
+def names_with_prefix(store: Any, kind: str, prefix: str) -> list[str] | None:
+    """Record names under ``prefix`` from a listing held for this pass (``None``: none)."""
+    buffer = buffer_of(store)
+    return buffer.names_with_prefix(kind, prefix) if buffer is not None else None
+
+
+def list_all(store: Any, kind: str) -> set[str]:
+    """Every record name of ``kind``, asked of clio-core once and held for the pass, so
+    a prefix listing (:meth:`ScopeCache.scan_scopes`) is answered without a round trip.
+    Writes made by the pass keep it current."""
+    names = set(store.query_names(kind, ""))
+    buffer = buffer_of(store)
+    if buffer is not None:
+        buffer.hold_listing(kind, names)
+    return names
+
+
+def ahead_by_batch(
+    store: Any,
+    kind: str,
+    items: Iterable[Any],
+    names_of: Callable[[Any], tuple[list[str], list[str]]],
+    *,
+    size: int = 64,
+) -> Iterator[Any]:
+    """Yield ``items``, reading the records each batch of them will read first.
+
+    ``names_of(item)`` is ``(present, absent)`` record names (see :func:`prefetch`).
+    The previous batch's records are dropped as the next is read, so one batch's are
+    held at a time. Without a read-ahead buffer this only yields ``items``.
+    """
+    buffer = buffer_of(store)
+    for part in batched(items, size):
+        if buffer is not None:
+            present: list[str] = []
+            absent: list[str] = []
+            for item in part:
+                found, missing = names_of(item)
+                present += found
+                absent += missing
+            buffer.clear()
+            prefetch(store, kind, present, absent=absent)
+        yield from part
 
 
 def read_many(store: Any, kind: str, names: Sequence[str]) -> dict[str, bytes | None]:
@@ -200,11 +285,15 @@ def prefetch(store: Any, kind: str, names: Iterable[str], *, absent: Iterable[st
 __all__ = [
     "WINDOW",
     "ReadAhead",
+    "ahead_by_batch",
     "buffer_of",
     "family_names",
+    "forget_deleted",
     "forget_written",
     "held_ahead",
+    "list_all",
     "listed",
+    "names_with_prefix",
     "prefetch",
     "read_many",
     "reading_ahead",

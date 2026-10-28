@@ -9,6 +9,8 @@ from collections import defaultdict
 from collections.abc import Iterator
 from typing import Any, cast
 
+from clio_agent.arc import read_ahead
+from clio_agent.arc.live import EVENTS_SCOPE
 from clio_agent.arc.task_types import (
     AssignmentDetails,
     BackendReference,
@@ -66,10 +68,23 @@ def _mapped(identity: str) -> str:
 
 
 def _session_events(history: Any) -> Iterator[tuple[str, dict[str, Any]]]:
-    """Read ownership from Core's segment envelope, rather than event content."""
-    for session_id in history.arc._live._event_session_ids():
-        for segment in history.arc._live.iter_session_event_segments(session_id):
-            yield session_id, segment.content
+    """Read ownership from Core's segment envelope, rather than event content.
+
+    The logs are read ahead a batch of sessions at a time (:mod:`clio_agent.arc.read_ahead`).
+    """
+    store = history.arc._segments
+    with read_ahead.reading_ahead(store._store) as buffer:
+        names = (
+            read_ahead.listed(store, r".*__events(~[1-9][0-9]*)?") if buffer is not None else set()
+        )
+        for session_id in read_ahead.ahead_by_batch(
+            store._store,
+            "segments",
+            history.arc._live._event_session_ids(),
+            lambda sid: read_ahead.family_names(store, sid, EVENTS_SCOPE, names),
+        ):
+            for segment in history.arc._live.iter_session_event_segments(session_id):
+                yield session_id, segment.content
 
 
 def migrate_history(app: Any) -> None:

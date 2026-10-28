@@ -31,6 +31,7 @@ from typing import TYPE_CHECKING, Callable, Iterable, Optional, Protocol
 
 import msgspec
 
+from clio_agent.arc import read_ahead
 from clio_agent.arc.batch_put import PutRecord
 from clio_agent.arc.loop_guard import LoopThreadStoreWrite, assert_store_write_off_loop
 from clio_agent.arc.schema import Segment, decode_segments, encode_segments, segment_text
@@ -265,7 +266,9 @@ class ScopeCache:
         prefix = f"{session_id}{_SCOPE_SEP}"
         name_prefix = prefix + scope_pattern.replace("/", _SLASH_SUB)
         out: set[str] = set()
-        for name in self._store.scan_names("segments", prefix=name_prefix):
+        held = read_ahead.names_with_prefix(self._store, "segments", name_prefix)
+        names = held if held is not None else self._store.scan_names("segments", prefix=name_prefix)
+        for name in names:
             scope = name[len(prefix) :].replace(_SLASH_SUB, "/")
             if scope.startswith(scope_pattern):
                 out.add(scope)

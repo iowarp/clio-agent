@@ -8,6 +8,7 @@ import logging
 from collections.abc import Callable
 from typing import Any
 
+from clio_agent.arc import read_ahead
 from clio_agent.arc.task_types import (
     AssignmentDetails,
     ContextBoundary,
@@ -27,7 +28,16 @@ def migrate_context_epochs(app: Any) -> None:
     from clio_agent.gact.context import scope_epoch
 
     history = app.state.task_history
-    for handle in history.task_handles(kind="Session") | history.task_handles(kind="Subagent"):
+    store = history.arc._segments
+
+    def details(handle: str) -> tuple[list[str], list[str]]:
+        task = history.task_snapshot(handle)
+        if task is None or task.details is None:
+            return [], []
+        return [store._record_name(task.details.session_id, task.details.scope)], []
+
+    handles = history.task_handles(kind="Session") | history.task_handles(kind="Subagent")
+    for handle in read_ahead.ahead_by_batch(store._store, "segments", handles, details, size=256):
         task = history.task_snapshot(handle)
         if task is None or task.details is None:
             continue
@@ -263,7 +273,15 @@ def _migrate_intents(app: Any, sessions: dict[str, Any], anchor: Callable[[str],
 def _migrate_inputs(app: Any, anchor: Callable[[str], str]) -> None:
     """Import acknowledgement only from an actual retained recipient-input segment."""
     history = app.state.task_history
-    for session in app.state.sessions.list():
+    store = history.arc._segments
+
+    def views(session: Any) -> tuple[list[str], list[str]]:
+        # Its context view (index and chunks), from the listing the build holds.
+        head = store._record_name(session.id, "_events/w/")
+        return read_ahead.names_with_prefix(store._store, "segments", head) or [], []
+
+    sessions = app.state.sessions.list()
+    for session in read_ahead.ahead_by_batch(store._store, "segments", sessions, views):
         for scope in history.arc.list_segment_scopes(session.id):
             if scope.startswith("_"):
                 continue

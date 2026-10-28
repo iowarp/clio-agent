@@ -317,13 +317,15 @@ def _atom_boot(app: "FastAPI") -> None:
     from clio_agent.gact.task_history import TaskHistory
 
     if getattr(app.state, "task_history", None) is None:
-        with boot_timing.step(app, "task_history_restore"):
-            history = TaskHistory(app.state.arc)
-            history.restore()
+        history = TaskHistory(app.state.arc)
         app.state.task_history = history
-        # Before any tree loads; normally `clio-agent migrate` copied it (one marker read).
+        # Before any tree loads, and before restore: a store still owing the task index
+        # build replays the lanes these write (normally `clio-agent migrate` copied them;
+        # then each is one marker read).
         ensure_at_boot(app, "task_event_lane")
         ensure_at_boot(app, "task_lane_reads")  # after the lane copy
+        with boot_timing.step(app, "task_history_restore"):
+            history.restore()
     # The session records every later step reads (normally one marker read).
     ensure_at_boot(app, "session_records_import")
     # Legacy content is captured before any reconciliation/cache update; normally

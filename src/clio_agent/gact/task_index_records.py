@@ -30,6 +30,10 @@ import json
 import re
 import threading
 from collections import OrderedDict
+from collections.abc import Iterator
+from concurrent.futures import ThreadPoolExecutor
+from contextlib import contextmanager
+from functools import partial
 from typing import Any
 
 from clio_agent.arc.store_protocol import ARCStore
@@ -40,6 +44,8 @@ INDEX_VERSION = 1
 MARKER = "meta.task_index"
 _SAFE = re.compile(r"[A-Za-z0-9_-]{1,96}")
 _CACHE_LIMIT = 8192
+_CLOSE_BATCH = 256  # closes held by deferred_closes() before they are deleted together
+_CLOSE_FANOUT = 16  # deletes in flight together (each is GIL-free in clio-core)
 
 Row = tuple[str, dict[str, Any]]
 
@@ -166,6 +172,7 @@ class TaskIndex:
         self._open: dict[str, dict[str, Any]] | None = None
         self._open_lock = threading.Lock()
         self.open_listings = 0
+        self._closing: list[str] | None = None  # closes held by deferred_closes()
 
     def clear_caches(self) -> None:
         """Forget cached lookups and the open mirror; clio-core is unchanged."""
@@ -283,6 +290,9 @@ class TaskIndex:
     def put_open(self, row: Row) -> None:
         """Open an obligation; called before the event that opens it."""
         name, value = row
+        with self._open_lock:
+            if self._closing is not None and name in self._closing:
+                self._closing.remove(name)  # reopened before its held close was deleted
         self.store.put(OPEN_KIND, name, _encode(value))
         with self._open_lock:
             if self._open is not None:
@@ -290,10 +300,44 @@ class TaskIndex:
 
     def delete_open(self, name: str) -> None:
         """Close an obligation; called after the event that closes it."""
-        self.store.delete(OPEN_KIND, name)
+        with self._open_lock:
+            closing = self._closing
+            if closing is not None:
+                closing.append(name)  # deleted with its batch (deferred_closes)
+        if closing is None:
+            self.store.delete(OPEN_KIND, name)
+        elif len(closing) >= _CLOSE_BATCH:
+            self._flush_closes()
         with self._open_lock:
             if self._open is not None:
                 self._open.pop(name, None)
+
+    @contextmanager
+    def deferred_closes(self) -> Iterator[None]:
+        """Delete the obligations closed inside this block a batch at a time, concurrently.
+
+        For a one-time pass that closes many (the index build's settlement): each
+        close is a round trip of its own otherwise. A record whose close was held when
+        the process stopped stays open, and the next start's obligation recovery
+        settles it again (the publication it closes is already recorded).
+        """
+        with self._open_lock:
+            self._closing = []
+        try:
+            yield
+        finally:
+            self._flush_closes()
+            with self._open_lock:
+                self._closing = None
+
+    def _flush_closes(self) -> None:
+        with self._open_lock:
+            names = self._closing or []
+            if self._closing is not None:
+                self._closing = []
+        if names:
+            with ThreadPoolExecutor(min(_CLOSE_FANOUT, len(names))) as pool:
+                list(pool.map(partial(self.store.delete, OPEN_KIND), names))
 
     def open_records(self, prefix: str = "") -> list[Row]:
         """Open obligations under a name prefix (the tag is listed once per reset)."""

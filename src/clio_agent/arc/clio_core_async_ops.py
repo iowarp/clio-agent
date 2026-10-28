@@ -332,6 +332,18 @@ def store_delete(store: Any, kind: str, name: str) -> bool:
     return delete_blob(store._client, store._tag_ids.get(kind), name)
 
 
+def store_delete_together(store: Any, kind: str, names: Sequence[str]) -> None:
+    """Delete a few blobs of ``store`` in one round trip (each missing one a no-op).
+
+    Every ``AsyncDelBlob`` is issued, then each awaited; a stalled reply raises
+    :class:`ClioCoreFutureTimeout` itself, typed for the caller's stall watch.
+    """
+    tag_id = store._tag_ids.get(kind)
+    futures = [store._client.AsyncDelBlob(tag_id, name) for name in names]
+    for future in futures:
+        await_future(future, op_name="delete")
+
+
 def store_delete_many(store: Any, kind: str, names: Sequence[str]) -> None:
     """Issue independent deletes together and await every submitted operation."""
     tag_id = store._tag_ids.get(kind)

@@ -20,6 +20,8 @@ import time
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING
 
+from clio_agent.arc import read_ahead
+from clio_agent.arc.live import EVENTS_SCOPE
 from clio_agent.arc.loop_guard import assert_store_write_off_loop
 from clio_agent.gact import task_history_queries
 from clio_agent.gact.task_index_records import (
@@ -65,16 +67,59 @@ def restore(history: TaskHistory) -> None:
     task_history_queries.notify(history, restored=True)
 
 
+#: The full replay read every session's task-event lane (annotated, receipted).
+REPLAY_FROM_LANES = "task_event_lanes"
+#: The full replay read every session's whole ``_events`` log: the lanes were not
+#: (yet) complete, as at a boot whose lane migration is still owed.
+REPLAY_FROM_EVENTS_LOG = "events_log_lanes_owed"
+_EVENTS_LOG_RE = r".*__events(~[1-9][0-9]*)?"
+_LANE_RE = r".*__events~t~log(~[1-9][0-9]*)?"
+
+
 def _full_replay(history: TaskHistory) -> TreeState:
-    """The pre-build projection over every session (the build's only global read)."""
-    live = history.arc._live
+    """The pre-build projection over every session (the build's only global read).
+
+    It reads each session's task-event lane when the lane migrations are done: the
+    lane holds exactly the log's task events, with the content replay would otherwise
+    read (descriptions, workflow checkpoints, committed inputs) recorded beside them.
+    Before that (a boot whose lane migration is still owed) it reads the whole
+    ``_events`` logs. Either way the logs are read ahead a batch of sessions at a time
+    (:mod:`clio_agent.arc.read_ahead`); ``history.replay_source`` records which.
+    """
+    from clio_agent.gact import task_event_lane, task_lane_reads  # noqa: PLC0415
+
+    arc = history.arc
+    store = arc._segments
     candidate = TreeState(history, "", ())
-    events = (
-        (session_id, segment.content)
-        for session_id in live._event_session_ids()
-        for segment in live.iter_session_event_segments(session_id)
-    )
-    replay(candidate, events, owner_filed_subscriptions=False)
+    lanes = not task_event_lane.migration_owed(history) and not task_lane_reads.reads_owed(history)
+    history.replay_source = REPLAY_FROM_LANES if lanes else REPLAY_FROM_EVENTS_LOG
+    base = task_event_lane.TASK_EVENT_LANE if lanes else EVENTS_SCOPE
+    with read_ahead.reading_ahead(store._store) as buffer:
+        sessions = store.sessions_with_scope(base)
+        names = (
+            read_ahead.listed(store, _LANE_RE if lanes else _EVENTS_LOG_RE)
+            if buffer is not None
+            else set()
+        )
+        ahead = read_ahead.ahead_by_batch(
+            store._store,
+            "segments",
+            sessions,
+            lambda session_id: read_ahead.family_names(store, session_id, base, names),
+        )
+        if lanes:
+            events = (
+                event
+                for session_id in ahead
+                for event in task_event_lane.session_task_events(arc, session_id)
+            )
+        else:
+            events = (
+                (session_id, segment.content)
+                for session_id in ahead
+                for segment in arc._live.iter_session_event_segments(session_id)
+            )
+        replay(candidate, events, owner_filed_subscriptions=False)
     return candidate
 
 

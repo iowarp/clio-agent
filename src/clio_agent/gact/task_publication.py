@@ -68,20 +68,21 @@ def settle_published_outcomes(history: TaskHistory) -> dict[str, int]:
     from clio_agent.gact.task_index_writes import trim  # noqa: PLC0415 - import cycle
 
     checked = 0
-    for _name, row in history.index.open_records("t~"):
-        task = history.task_snapshot(str(row.get("handle", "")))
-        if (
-            task is None
-            or task.terminal_at is None
-            or task.kind not in {"Session", "Subagent"}
-            or task.settlement not in {"confirmed", "never_started"}
-            or task.result is None
-        ):
-            continue
-        publish_task_notice(history, task)
-        checked += 1
-        if checked % 64 == 0:
-            trim(history)  # one tree at a time stays resident, not the whole history
+    with history.index.deferred_closes():  # the settled records are deleted in batches
+        for _name, row in history.index.open_records("t~"):
+            task = history.task_snapshot(str(row.get("handle", "")))
+            if (
+                task is None
+                or task.terminal_at is None
+                or task.kind not in {"Session", "Subagent"}
+                or task.settlement not in {"confirmed", "never_started"}
+                or task.result is None
+            ):
+                continue
+            publish_task_notice(history, task)
+            checked += 1
+            if checked % 64 == 0:
+                trim(history)  # one tree at a time stays resident, not the whole history
     trim(history)
     return {"outcomes": checked, "open_tasks": len(history.index.open_records("t~"))}
 

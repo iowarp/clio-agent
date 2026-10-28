@@ -35,6 +35,7 @@ call :func:`ensure_at_boot` from the boot site that first needs its output.
 from __future__ import annotations
 
 import logging
+import re
 import time
 from collections.abc import Callable
 from dataclasses import dataclass, field
@@ -213,20 +214,50 @@ def _mark_task_index_empty(app: Any) -> dict[str, Any]:
 
 
 def _build_task_index(history: Any, convert: Callable[[], None] | None) -> dict[str, Any]:
-    if not history.index_build_pending:
-        history.restore()  # without the marker this is the one full replay the build reads
-    if convert is not None:
-        convert()
-    history.complete_index_build()
-    replay = {"replay_seconds": round(history.replay_seconds, 3)}
-    if convert is None:
-        # No conversation was replayed, so the build derived no terminal outcome to settle.
-        return {**replay, "outcomes": 0, "open_tasks": len(history.index.open_records("t~"))}
-    from clio_agent.gact.task_publication import settle_published_outcomes  # noqa: PLC0415
+    from clio_agent.arc import read_ahead  # noqa: PLC0415
 
-    # The build derives an open record per terminal outcome; settle the published ones
-    # here, so the next start's startup row reads only the work that is really open.
-    return {**replay, **settle_published_outcomes(history)}
+    # One pass over the whole store: its records are read ahead a batch at a time, and
+    # one listing of the segment records answers the per-session scope listings.
+    raw = history.arc._segments._store
+    with read_ahead.reading_ahead(raw) as buffer:
+        if buffer is not None:
+            read_ahead.list_all(raw, "segments")
+        if not history.index_build_pending:
+            history.restore()  # without the marker this is the one full replay the build reads
+        if convert is not None:
+            convert()
+        history.complete_index_build()
+        replay = {
+            "replay_seconds": round(history.replay_seconds, 3),
+            "replay_source": history.replay_source or "boot_restore",
+        }
+        if convert is None:
+            # No conversation was replayed, so the build derived no terminal outcome to
+            # settle.
+            return {**replay, "outcomes": 0, "open_tasks": len(history.index.open_records("t~"))}
+        from clio_agent.gact.task_publication import settle_published_outcomes  # noqa: PLC0415
+
+        # The build derives an open record per terminal outcome; settle the published ones
+        # here, so the next start's startup row reads only the work that is really open.
+        if buffer is not None:
+            _read_settlement_ahead(raw)
+        return {**replay, **settle_published_outcomes(history)}
+
+
+def _read_settlement_ahead(raw: Any) -> None:
+    """Read what settling the outcomes reads, together: the open and lookup records and
+    the task-event lanes the trees load from (a few thousand small records)."""
+    from clio_agent.arc import read_ahead  # noqa: PLC0415
+    from clio_agent.gact.task_index_records import LOOKUP_KIND, OPEN_KIND  # noqa: PLC0415
+
+    buffer = read_ahead.buffer_of(raw)
+    if buffer is not None:
+        buffer.clear()
+    for kind in (OPEN_KIND, LOOKUP_KIND):
+        read_ahead.prefetch(raw, kind, raw.query_names(kind, ""))
+    lanes = read_ahead.names_with_prefix(raw, "segments", "") or []
+    lane = re.compile(r".*__events~t~log(~[1-9][0-9]*)?")
+    read_ahead.prefetch(raw, "segments", [name for name in lanes if lane.fullmatch(name)])
 
 
 def _artifact_index_owed(app: Any) -> bool:

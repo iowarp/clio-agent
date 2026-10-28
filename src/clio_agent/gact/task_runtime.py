@@ -70,16 +70,20 @@ async def start(app: Any) -> None:
     arc = await process_arc_off_loop(app)
     if arc is None:
         raise RuntimeError("Durable tasks require clio-core; History mode cannot accept them")
+    from clio_agent.gact.store_migrations import ensure_at_boot
+
     history = getattr(app.state, "task_history", None)
+    restore = history is None
     if history is None:
         history = TaskHistory(arc)
         app.state.task_history = history  # Startup failure still owns and retires this writer.
-        await boot_timing.timed(app, "task_history_restore", history.io.run(history.restore))
-    # Before any tree loads; normally `clio-agent migrate` copied it (one marker read).
-    from clio_agent.gact.store_migrations import ensure_at_boot
-
+    # Before any tree loads, and before restore: a store still owing the task index build
+    # replays the lanes these write (normally `clio-agent migrate` copied them; then each
+    # is one marker read).
     await history.io.run(ensure_at_boot, app, "task_event_lane")
     await history.io.run(ensure_at_boot, app, "task_lane_reads")  # after the lane copy
+    if restore:
+        await boot_timing.timed(app, "task_history_restore", history.io.run(history.restore))
     recovery = CoreRecovery(history)
     app.state.task_history, app.state.task_recovery = history, recovery
     app.state.human_principal = "human:" + str(app.state.connected_storage.store.clio_id)

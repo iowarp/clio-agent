@@ -38,6 +38,7 @@ from clio_agent.arc.clio_core_async_ops import (
     TagIds,
     store_delete,
     store_delete_many,
+    store_delete_together,
     store_put,
     store_put_many,
 )
@@ -77,7 +78,7 @@ from clio_agent.arc.companion_write import (
 from clio_agent.arc.pid_identity import pid_alive as _pid_alive
 from clio_agent.arc.pid_identity import pidfile_live_pid
 from clio_agent.arc.pid_identity import proc_create_time as _proc_create_time
-from clio_agent.arc.read_ahead import forget_written, held_ahead, read_many
+from clio_agent.arc.read_ahead import forget_deleted, forget_written, held_ahead, read_many
 
 # Per-RPC stall guard (#948 S4): every native op below runs through this so a ZOMBIE
 # daemon (socket alive, RPC hung) degrades typed instead of freezing the caller.
@@ -702,9 +703,8 @@ class ClioCoreStore:
     def delete(self, kind: str, name: str) -> None:
         # Tag has no per-blob delete; go through the Client + TagId (async: GIL-free). A
         # missing blob answers a non-zero code (no raise), satisfying the no-op contract.
-        forget_written(self, kind, (name,))
-        store_delete(self, kind, name)
-        store_delete(self, kind, name + _SEARCH_SUFFIX)  # companion (no-op if absent)
+        forget_deleted(self, kind, (name,))
+        store_delete_together(self, kind, (name, name + _SEARCH_SUFFIX))  # and its companion
         companion_sizes(self).forget(kind, name + _SEARCH_SUFFIX)
 
     def clear(self) -> None:

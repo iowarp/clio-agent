@@ -96,6 +96,7 @@ class TaskHistory:
         self.index_build_pending = False
         self.revision = 0
         self.replay_seconds = 0.0
+        self.replay_source = ""  # what the last full replay read (task_index_build)
         self.requires_recovery = False
         self._listeners: set[Callable[[int], None]] = set()
         self._handle_listeners: dict[str, set[Callable[[int], None]]] = {}
