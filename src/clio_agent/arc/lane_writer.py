@@ -16,6 +16,7 @@ from clio_agent.arc.lane_chunking import chunk_for_append
 from clio_agent.arc.lane_index import INDEX_SCOPE, SessionIndex, encode_index, note_atom
 from clio_agent.arc.loop_guard import LoopThreadStoreWrite, assert_store_write_off_loop
 from clio_agent.arc.schema import Segment, encode_segments
+from clio_agent.arc.scope_locks import ScopeLock
 from clio_agent.arc.search_companion import SearchCompanion, SearchCompanionError
 from clio_agent.arc.segment_index import SegmentIndex
 from clio_agent.arc.segments import ArcPersistError, SegmentStore
@@ -25,6 +26,10 @@ if TYPE_CHECKING:
     from clio_agent.arc.working_set_fold import _Session
 
 __all__ = ["LaneWriter"]
+
+# A content-lane partition's writer lock (chunk choice + persist as one step) is this
+# pseudo-scope of the store's lock registry; it is never a cached scope.
+_WRITER_SCOPE = "\x00writer/"
 
 
 def _chunk_capacity() -> int:
@@ -45,7 +50,6 @@ class LaneWriter:
     _store: ARCStore
     _search: SearchCompanion
     _sessions_lock: threading.Lock
-    _partition_locks: dict[tuple[str, str], threading.Lock]
     _scopes: dict[tuple[str, str], list[Segment]]
     _loaded: set[tuple[str, str]]
     _index: SegmentIndex
@@ -57,7 +61,7 @@ class LaneWriter:
         @staticmethod
         def _record_name(session_id: str, scope: str) -> str: ...
 
-        def _lock_for(self, session_id: str, scope: str) -> threading.RLock: ...
+        def _lock_for(self, session_id: str, scope: str) -> ScopeLock: ...
 
         def _segs(self, session_id: str, scope: str) -> list[Segment]: ...
 
@@ -113,9 +117,7 @@ class LaneWriter:
             ArcPersistError: The lane chunk was not stored (nothing to fold in).
         """
         state = self._session(session_id)
-        with self._sessions_lock:
-            writer = self._partition_locks.setdefault((session_id, partition), threading.Lock())
-        with writer:
+        with self._lock_for(session_id, _WRITER_SCOPE + partition):
             with state.lock:
                 if partition not in state.index.chunks:
                     self._mark_absent(session_id, partition)

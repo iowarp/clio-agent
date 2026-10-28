@@ -475,59 +475,6 @@ class ARCMemory(SegmentPlane):
 
         return invocation
 
-    def get_session_invocations(self, session_id: str, limit: int = 100) -> List[Invocation]:
-        """Get invocations for a session.
-
-        Retrieves invocation traces for analysis and debugging.
-
-        Args:
-            session_id: Session identifier
-            limit: Maximum number of invocations to retrieve
-
-        Returns:
-            List of Invocation objects, most recent first
-
-        Examples:
-            >>> invocations = arc.get_session_invocations("session-1", limit=10)
-            >>> for inv in invocations:
-            ...     print(f"{inv.agent_id}: {inv.duration_ms}ms")
-        """
-        # Snapshot the session's index entries UNDER _lock (BTreeIndex has no lock
-        # of its own and a concurrent release_session/store_invocation mutates it).
-        # Copy to a plain list so the store loads below run with the lock released.
-        with self._lock:
-            index_entries = list(self._inv_index.get_session_range(session_id))
-
-        # Extract trace IDs and load invocations. The B-tree is in-memory, so
-        # after process restart it may be empty even though invocation files
-        # exist on disk. Fall back to scanning persisted invocations.
-        invocations = []
-        if index_entries:
-            for entry in index_entries[-limit:]:  # Get most recent
-                trace_id = entry["trace_id"]
-                inv = self.get_invocation(trace_id)  # self-locks for its counter
-                if inv:
-                    invocations.append(inv)
-        else:
-            # Materialize the whole-kind scan OUTSIDE _lock, then decode + count.
-            rows = list(self._store.scan("invocations"))
-            decoded = 0
-            for _name, encoded in rows:
-                try:
-                    inv = decode_invocation(encoded)
-                    decoded += 1
-                except Exception:  # noqa: BLE001 - corrupt/undecodable invocation row skipped; disk read continues
-                    continue
-                if inv.session_id == session_id:
-                    invocations.append(inv)
-            with self._lock:
-                self._disk_reads += decoded
-            invocations.sort(key=lambda inv: inv.started_at)
-            invocations = invocations[-limit:]
-
-        # Return most recent first
-        return list(reversed(invocations))
-
     def get_tool_cache_stats(self) -> Dict[str, Any]:
         """Get tool cache statistics.
 

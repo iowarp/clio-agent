@@ -92,6 +92,9 @@ __all__ = [
     "ws_content_partition",
 ]
 
+# A session's index-load lock is this pseudo-scope of the store's lock registry.
+_SESSION_LOAD_SCOPE = "\x00session-load"
+
 
 def _default_search_indexed(scope: str) -> bool:
     """The reserved ``_events`` chunk family (log + content lane) is search-excluded so
@@ -203,13 +206,7 @@ class FoldingSegmentStore(LaneWriter, ContextSearch, SegmentStore):
         super().__init__(store, search_indexed=search_indexed)
         self._search = SearchCompanion(store, self._record_name)
         self._sessions: dict[str, _Session] = {}
-        self._session_locks: dict[str, threading.Lock] = {}
         self._sessions_lock = threading.Lock()
-        # One writer per content-lane partition (chunk choice + persist as one step).
-        # Separate from the base per-scope locks so a writer never holds a scope lock
-        # while it takes another (the base ``release`` takes them all under its registry
-        # lock).
-        self._partition_locks: dict[tuple[str, str], threading.Lock] = {}
 
     # ---- scope routing -------------------------------------------------
 
@@ -227,8 +224,8 @@ class FoldingSegmentStore(LaneWriter, ContextSearch, SegmentStore):
             state = self._sessions.get(session_id)
             if state is not None:
                 return state
-            load_lock = self._session_locks.setdefault(session_id, threading.Lock())
-        with load_lock:
+        # One loader per session: a pseudo-scope lock, gone once no loader holds it.
+        with self._lock_for(session_id, _SESSION_LOAD_SCOPE):
             with self._sessions_lock:
                 state = self._sessions.get(session_id)
             if state is not None:

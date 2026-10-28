@@ -9,7 +9,7 @@ ops). It is NEVER held across ``_store`` I/O (clio-core RPCs / LocalFS reads) or
    ``put`` blocks for 50 ms must run concurrently -- their combined wall time is
    well under the serial (lock-held) baseline. Before the fix, ``store_invocation``
    held ``_lock`` across ``store.put`` and the two writers serialized.
-2. Consistency: concurrent ``store_invocation`` / ``get_session_invocations`` /
+2. Consistency: concurrent ``store_invocation`` / ``get_invocation`` /
    ``release_session`` across three sessions leaves cache, index, and disk in
    agreement (write-through: a released session keeps its durable disk copy while
    its hot cache/index footprint is evicted).
@@ -201,7 +201,8 @@ def test_concurrent_store_get_release_keep_index_cache_disk_consistent(tmp_path)
     def readers() -> None:
         try:
             for _ in range(40):
-                arc.get_session_invocations("s0")
+                for trace_id in _index_trace_ids(arc, "s0"):
+                    arc.get_invocation(trace_id)
         except Exception as exc:  # noqa: BLE001 - surface to assert below
             errors.append(exc)
 
@@ -228,8 +229,8 @@ def test_concurrent_store_get_release_keep_index_cache_disk_consistent(tmp_path)
     assert _index_trace_ids(arc, "s0") == s0_expected
     assert _disk_trace_ids(arc, "s0") == s0_expected
     # s0 invocations are all retrievable and unique.
-    got = arc.get_session_invocations("s0", limit=1000)
-    assert {inv.trace_id for inv in got} == s0_expected
+    got = [arc.get_invocation(trace_id) for trace_id in s0_expected]
+    assert {inv.trace_id for inv in got if inv is not None} == s0_expected
 
     # s1: released -> hot index/cache evicted, but write-through disk copy kept.
     assert _index_trace_ids(arc, "s1") == set()
@@ -260,8 +261,6 @@ def test_same_timestamp_invocations_both_retained(tmp_path) -> None:
     arc.store_invocation(a)
     arc.store_invocation(b)
 
-    got = {inv.trace_id for inv in arc.get_session_invocations("sess-dup", limit=100)}
-    assert got == {"dup-a", "dup-b"}
     assert _index_trace_ids(arc, "sess-dup") == {"dup-a", "dup-b"}
 
 

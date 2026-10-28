@@ -102,7 +102,8 @@ def test_every_cached_scope_is_reported_to_the_residency_owner(fold: bool) -> No
     store.render("s", "_events")
     assert "s" in residency.touched
     assert store.release("s") >= 1
-    assert residency.events[-1] == ("released", "s")
+    dropped = {e[2] for e in residency.events if e[0] == "dropped" and e[1] == "s"}
+    assert {e[2] for e in resident} <= dropped
 
 
 def test_a_transient_read_caches_and_reports_nothing() -> None:
@@ -157,3 +158,70 @@ def test_invocation_index_entries_are_counted_against_their_session() -> None:
     first, second = residency.events
     assert first[:3] == second[:3] == ("resident", "s", INVOCATION_INDEX_SCOPE)
     assert second[3] == 2 * first[3]
+
+
+@pytest.mark.parametrize("fold", [False, True])
+def test_release_drops_the_locks_of_the_released_scopes(fold: bool) -> None:
+    store = make_segment_store(_MemoryStore(), working_set_fold=fold)
+    for index in range(20):
+        store.append("s", f"agent/{index}", "thought", {"text": str(index)})
+    store.append("t", "agent/0", "thought", {"text": "kept"})
+    assert any(key[0] == "s" for key in store._scope_locks.keys())
+    store.release("s")
+    assert all(key[0] == "t" for key in store._scope_locks.keys())
+    store.release("t")
+    assert len(store._scope_locks) == 0
+
+
+def test_a_read_of_an_uncached_scope_leaves_no_lock() -> None:
+    backing = _MemoryStore()
+    SegmentStore(backing).append("s", "_events", "semantic_event", {"text": "stored"})
+    store = SegmentStore(backing)
+    with transient_reads():
+        store.render("s", "_events")
+    assert store.has_segments("s", "never-written") is False
+    store.release("s")
+    assert len(store._scope_locks) == 0
+
+
+def test_a_lock_held_across_a_release_stays_one_lock() -> None:
+    """A holder pins the scope's lock: the release waits for it, a second thread still
+    contends on the same lock, and the lock is gone once nobody holds it."""
+    import threading
+
+    store = SegmentStore(_MemoryStore())
+    store.append("s", "scope", "thought", {"text": "a"})
+    lock = store._lock_for("s", "scope")
+    entered, finish = threading.Event(), threading.Event()
+    observed: list[bool] = []
+
+    def hold() -> None:
+        with lock:
+            entered.set()
+            finish.wait(5.0)
+
+    holder = threading.Thread(target=hold)
+    holder.start()
+    assert entered.wait(5.0)
+    releaser = threading.Thread(target=store.release, args=("s",))
+    releaser.start()
+    contender = threading.Thread(
+        target=lambda: observed.append(store._lock_for("s", "scope").acquire(blocking=False))
+    )
+    contender.start()
+    contender.join(5.0)
+    assert observed == [False]  # still the held lock, not a fresh one
+    finish.set()
+    holder.join(5.0)
+    releaser.join(5.0)
+    assert ("s", "scope") not in store._loaded
+    assert len(store._scope_locks) == 0
+
+
+def test_a_reloaded_scope_gets_a_new_view_generation() -> None:
+    store = SegmentStore(_MemoryStore())
+    store.append("s", "scope", "thought", {"text": "a"})
+    before = store.context_view("s", "scope").generation
+    assert store.context_view("s", "scope").generation == before  # stable while cached
+    store.release("s")
+    assert store.context_view("s", "scope").generation != before

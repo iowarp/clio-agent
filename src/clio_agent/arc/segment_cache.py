@@ -31,11 +31,13 @@ from typing import TYPE_CHECKING, Callable, Iterable, Optional, Protocol
 
 import msgspec
 
+from clio_agent.arc.context_view import next_generation
 from clio_agent.arc.loop_guard import LoopThreadStoreWrite, assert_store_write_off_loop
 from clio_agent.arc.schema import Segment, decode_segments, encode_segments, segment_text
 from clio_agent.arc.segment_errors import ArcPersistError, SegmentReadError
 
 if TYPE_CHECKING:
+    from clio_agent.arc.scope_locks import ScopeLock, ScopeLockRegistry
     from clio_agent.arc.segment_index import SegmentIndex
     from clio_agent.arc.storage import ARCStore
 
@@ -102,12 +104,15 @@ class ScopeCache:
     _loaded: set[tuple[str, str]]
     _index: "SegmentIndex"
     _registry_lock: threading.RLock
-    _scope_locks: dict[tuple[str, str], threading.RLock]
+    _scope_locks: "ScopeLockRegistry"
+    _generations: dict[tuple[str, str], int]
     _search_indexed: Optional[Callable[[str], bool]]
     _invocation_counts: dict[str, int]
     _residency: Optional[ScopeResidency] = None
 
     if TYPE_CHECKING:
+
+        def _lock_for(self, session_id: str, scope: str) -> "ScopeLock": ...
 
         def _recover_clock(self, segs: Iterable[Segment]) -> None: ...
 
@@ -145,6 +150,7 @@ class ScopeCache:
             return segs
         self._scopes[key] = segs
         self._loaded.add(key)
+        self._generations[key] = next_generation()  # no reader keeps a pre-load prefix
         self._index.bulk_load(session_id, scope, segs)  # parallel locator
         if residency is not None and raw:
             residency.scope_resident(session_id, scope, len(raw))
@@ -198,13 +204,17 @@ class ScopeCache:
         key = (session_id, scope)
         self._scopes[key] = staged
         self._loaded.add(key)
+        self._generations.setdefault(key, next_generation())
         if self._residency is not None:
             self._residency.scope_resident(session_id, scope, nbytes)
 
     def _discard_scope(self, session_id: str, scope: str) -> None:
-        """Drop the in-memory copy; the next read reloads clio-core."""
-        self._scopes.pop((session_id, scope), None)
-        self._loaded.discard((session_id, scope))
+        """Drop the in-memory copy (under the scope's lock); the next read reloads
+        clio-core. The scope's lock goes with it when its last holder releases it."""
+        key = (session_id, scope)
+        self._scopes.pop(key, None)
+        self._loaded.discard(key)
+        self._generations.pop(key, None)
         self._index.drop_scope(session_id, scope)
         if self._residency is not None:
             self._residency.scope_dropped(session_id, scope)
@@ -250,51 +260,33 @@ class ScopeCache:
     # ---- release -------------------------------------------------------
 
     def release(self, session_id: str) -> int:
-        """Drop a session's in-memory scopes (write-through, nothing lost); returns how
-        many were released.
+        """Drop a session's in-memory scopes (write-through, nothing lost) and their
+        locks; returns how many cached scopes were released.
 
-        Holds the registry lock (freezing the lock set) AND each affected scope lock, so
-        it never races a per-scope op. No deadlock: a per-scope op touches the registry
-        only at its single ``_lock_for`` entry, before taking its scope lock. The keys
-        come from the lock registry, a superset of the loaded keys (every scope is locked
-        before it is loaded), never from iterating ``_scopes`` while a cold-load on
-        another session inserts into it."""
+        Each scope is dropped under its own lock, one at a time, so a release never
+        races a per-scope op and never holds one scope's lock while waiting on another
+        (no lock-order cycle with ops that nest scope locks). The keys come from the
+        lock registry, a superset of the cached keys (every scope is locked before it
+        is cached). Each drop is reported under its lock, so a scope loaded again
+        while the release runs stays counted."""
+        released = 0
+        for key in self._scope_locks.keys(session_id):
+            with self._lock_for(*key):
+                if key in self._loaded:
+                    released += 1
+                    self._discard_scope(*key)
         with self._registry_lock:
-            lock_keys = sorted(k for k in self._scope_locks if k[0] == session_id)
-            held = [self._scope_locks[k] for k in lock_keys]
-            for lk in held:
-                lk.acquire()
-            try:
-                released = 0
-                for k in lock_keys:
-                    if self._scopes.pop(k, None) is not None:
-                        released += 1
-                    self._loaded.discard(k)
-                    self._index.drop_scope(k[0], k[1])
-                self._invocation_counts.pop(session_id, None)
-            finally:
-                for lk in held:
-                    lk.release()
-        if self._residency is not None:
-            self._residency.session_released(session_id)
+            invocations = self._invocation_counts.pop(session_id, None)
+        if invocations is not None and self._residency is not None:
+            self._residency.scope_dropped(session_id, INVOCATION_INDEX_SCOPE)
         logger.info("segments: release session=%s scopes=%d", session_id, released)
         return released
 
     def clear(self) -> None:
         """Drop ALL in-memory scope state (store untouched); same locking as release."""
+        sessions = sorted({key[0] for key in self._scope_locks.keys()})
+        for session_id in sessions:
+            self.release(session_id)
         with self._registry_lock:
-            held = [self._scope_locks[k] for k in sorted(self._scope_locks)]
-            sessions = sorted({k[0] for k in self._scope_locks})
-            for lk in held:
-                lk.acquire()
-            try:
-                self._scopes.clear()
-                self._loaded.clear()
-                self._index.clear()
-                self._invocation_counts.clear()
-            finally:
-                for lk in held:
-                    lk.release()
-        if self._residency is not None:
-            for session_id in sessions:
-                self._residency.session_released(session_id)
+            self._invocation_counts.clear()
+        self._index.clear()

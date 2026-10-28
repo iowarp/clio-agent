@@ -551,15 +551,26 @@ def test_concurrent_insert_head_unique_orders(tmp_path):
 
 
 def test_per_scope_locks_are_distinct(tmp_path):
-    """Each (session, scope) gets its OWN lock; different scopes get different lock
-    objects (so they don't contend), and the same scope returns the same lock."""
+    """Each (session, scope) gets its OWN lock; different scopes get different locks
+    (so they don't contend), and the same scope resolves to the same lock."""
     ss = _fresh_store(tmp_path)
     la = ss._lock_for(SID, "agentA/x")
     la2 = ss._lock_for(SID, "agentA/x")
     lb = ss._lock_for(SID, "agentB/y")
     lc = ss._lock_for("other", "agentA/x")  # different session, same scope addr
-    assert la is la2
-    assert la is not lb and la is not lc and lb is not lc
+    assert la == la2
+    assert la != lb and la != lc and lb != lc
+    with la:
+        assert la2.acquire(blocking=False)  # the same re-entrant lock
+        la2.release()
+        held_elsewhere: list[bool] = []
+        t = threading.Thread(target=lambda: held_elsewhere.append(la2.acquire(blocking=False)))
+        t.start()
+        t.join()
+        assert held_elsewhere == [False]
+        assert lb.acquire(blocking=False) and lc.acquire(blocking=False)
+        lb.release()
+        lc.release()
 
 
 def test_different_scopes_do_not_serialize(tmp_path):
