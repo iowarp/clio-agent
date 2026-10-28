@@ -67,6 +67,7 @@ def _idle_conversation(app: Any) -> Any:
     _say(app, session.id, 5, "user", "Thanks.")
     old = (datetime.now(UTC) - timedelta(hours=2)).strftime("%Y-%m-%dT%H:%M:%SZ")
     app.state.sessions.get(session.id).last_interaction_at = old  # noqa: SLF001
+    app.state.sessions.reindex([session.id])  # the index the tick selects by
     return app.state.sessions.get(session.id)
 
 
@@ -321,6 +322,7 @@ def test_transcript_cache_tracks_the_current_minimum_user_turns(
     _say(app, session.id, 1, "user", "Remember my preference for concise notes.")
     old = (datetime.now(UTC) - timedelta(hours=2)).strftime("%Y-%m-%dT%H:%M:%SZ")
     app.state.sessions.get(session.id).last_interaction_at = old  # noqa: SLF001
+    app.state.sessions.reindex([session.id])  # the index the tick selects by
     original_setting = background.setting
     monkeypatch.setattr(
         background,
@@ -534,6 +536,7 @@ def test_zero_idle_delay_makes_one_completed_user_turn_eligible(
     _say(app, session.id, 1, "user", "I prefer the concise summary first.")
     old = (datetime.now(UTC) - timedelta(hours=2)).strftime("%Y-%m-%dT%H:%M:%SZ")
     app.state.sessions.get(session.id).last_interaction_at = old  # noqa: SLF001
+    app.state.sessions.reindex([session.id])  # the index the tick selects by
     original_setting = background.setting
     monkeypatch.setattr(
         background,
@@ -800,6 +803,7 @@ def test_an_idle_conversation_is_read_once_per_change(client: TestClient) -> Non
     _say(app, session.id, 1, "user", "Hello.")
     old = (datetime.now(UTC) - timedelta(hours=2)).strftime("%Y-%m-%dT%H:%M:%SZ")
     app.state.sessions.get(session.id).last_interaction_at = old  # noqa: SLF001
+    app.state.sessions.reindex([session.id])  # the index the tick selects by
     now = datetime.now(UTC)
     background.memory_tick(app, now)
     assert app.state.memory_background["skipped"]["too_few_new_messages"] >= 1
@@ -822,6 +826,7 @@ def test_an_idle_conversation_is_read_once_per_change(client: TestClient) -> Non
         # Not idle: the transcript is not read at all.
         fresh = datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
         app.state.sessions.get(session.id).last_interaction_at = fresh  # noqa: SLF001
+        app.state.sessions.reindex([session.id])  # the index the tick selects by
         assert background.skip_reason(app, app.state.sessions.get(session.id), now) == (
             "not_idle_yet"
         )
@@ -832,6 +837,42 @@ def test_an_idle_conversation_is_read_once_per_change(client: TestClient) -> Non
         assert reads.count(session.id) == 1
     finally:
         app.state.messages = messages
+
+
+def test_a_tick_reads_only_the_sessions_the_index_names_due(client: TestClient) -> None:
+    """Busy, fresh, non-conversation and settled sessions are not read on a tick."""
+    from clio_agent.gact.session_records import PageQuery
+
+    app = client.app
+    old = (datetime.now(UTC) - timedelta(hours=2)).strftime("%Y-%m-%dT%H:%M:%SZ")
+    sessions = app.state.sessions
+    due = sessions.create(workspace_id="ws_global", title="due").id
+    _say(app, due, 1, "user", "Hello.")
+    busy = sessions.create(workspace_id="ws_global", title="busy").id
+    fresh = sessions.create(workspace_id="ws_global", title="fresh").id
+    for sid in (due, busy):
+        sessions.get(sid).last_interaction_at = old  # noqa: SLF001
+    sessions.update(busy, status="running")
+    sessions.reindex([due, busy, fresh])
+    read: list[str] = []
+    real = sessions.select
+
+    def spy(query: PageQuery) -> list[Any]:
+        rows = real(query)
+        read.extend(row.id for row in rows)
+        return rows
+
+    sessions.select = spy  # type: ignore[method-assign]
+    try:
+        now = datetime.now(UTC)
+        background.memory_tick(app, now)
+        assert due in read and busy not in read and fresh not in read
+        read.clear()
+        background.memory_tick(app, now)  # the verdict settled it: counted, not read
+        assert due not in read
+        assert app.state.memory_background["skipped"]["too_few_new_messages"] >= 1
+    finally:
+        sessions.select = real  # type: ignore[method-assign]
 
 
 def test_the_curator_is_told_what_already_waits_for_review(client: TestClient) -> None:

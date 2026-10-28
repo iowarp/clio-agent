@@ -251,7 +251,7 @@ async def _restore_assignment(self: Conversations, handle: str) -> None:
         return
     if await self.history.io.run(self.history.latest_assignment, task.owner.session_id) != task:
         return
-    session = self.sessions.get(task.owner.session_id)
+    session = await self.history.io.run(self.sessions.get, task.owner.session_id)  # a Core read
     try:
         details = (
             AssignmentDetails.model_validate(

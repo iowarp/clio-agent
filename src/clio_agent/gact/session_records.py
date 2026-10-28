@@ -133,6 +133,10 @@ class RecordColumns:
     memory_runs: bool = False
     #: The session selected its own model (``session.model``).
     model_selected: bool = False
+    #: A background memory pass is in flight (``metadata.memory_pass``).
+    memory_pass_open: bool = False
+    #: The memory skip the record settles until it changes (``memory.tick_index``).
+    memory_settled: str = ""
 
 
 @dataclass(frozen=True)
@@ -154,6 +158,9 @@ class PageQuery:
     gated: Optional[bool] = None
     model_selected: Optional[bool] = None
     memory_runs: Optional[bool] = None
+    memory_pass_open: Optional[bool] = None
+    #: Only sessions whose recency (``recent_at``) is older than this ISO time.
+    recent_before: Optional[str] = None
     limit: int = 50
     cursor: Optional[str] = None
 
@@ -171,6 +178,8 @@ class PageQuery:
             and (self.gated is None or row.gated == self.gated)
             and (self.model_selected is None or row.model_selected == self.model_selected)
             and (self.memory_runs is None or row.memory_runs == self.memory_runs)
+            and (self.memory_pass_open is None or row.memory_pass_open == self.memory_pass_open)
+            and (self.recent_before is None or row.recent_at < self.recent_before)
         )
 
 
@@ -457,6 +466,12 @@ class SessionRecords:
         self._settle(ticket)
         return changed
 
+    def columns(self, query: PageQuery) -> list[RecordColumns]:
+        """The index columns of every session matching ``query`` (no record is read)."""
+
+        with self._lock:
+            return [self._columns[sid] for sid in self.select(query)]
+
     def totals(self) -> dict[str, Any]:
         """Session counts by status and the summed counters, from the index alone."""
 
@@ -703,6 +718,8 @@ class SessionRecords:
 def record_columns(session: Any) -> RecordColumns:
     """The indexed columns of ``session`` (the views' filters and recency)."""
 
+    from clio_agent.gact.memory.tick_index import settled_reason  # noqa: PLC0415 - import cycle
+
     metadata = session.metadata if isinstance(session.metadata, Mapping) else {}
     return RecordColumns(
         id=session.id,
@@ -724,6 +741,8 @@ def record_columns(session: Any) -> RecordColumns:
         gated=bool(metadata.get("execution_gate")),
         memory_runs=bool(metadata.get("memory_pass") or metadata.get("memory_last_pass")),
         model_selected=not _model_ref_is_empty(session.model),
+        memory_pass_open=bool(metadata.get("memory_pass")),
+        memory_settled=settled_reason(session),
     )
 
 

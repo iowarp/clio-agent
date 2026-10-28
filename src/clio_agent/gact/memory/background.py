@@ -101,11 +101,12 @@ def skip_reason(app: Any, session: Any, now: datetime) -> str:
     return _transcript_reason(app, session)
 
 
-def _checked(session: Any, reason: str) -> dict[str, Any]:
-    """The transcript verdict, keyed by what changes when the conversation does."""
+def _checked(session: Any, reason: str, minimum: Any = None) -> dict[str, Any]:
+    """The transcript verdict, keyed by what changes when the conversation does
+    (``minimum``: the user-turn minimum it is judged against; default: the current)."""
     metadata = session.metadata or {}
     last_pass = metadata.get(LAST_PASS) or {}
-    minimum = _minimum_user_messages()
+    minimum = _minimum_user_messages() if minimum is None else minimum
     return {
         "count": session.message_count,
         "at": str(session.last_interaction_at or ""),
@@ -589,11 +590,14 @@ def memory_tick(app: Any, now: datetime | None = None) -> None:
             "roles": list(missing),
         }
         return
-    collected = started = 0
-    skipped: dict[str, int] = {}
-    from clio_agent.gact.session_records import PageQuery  # noqa: PLC0415
+    from clio_agent.gact.memory.tick_index import tick_sessions  # noqa: PLC0415
 
-    for session in app.state.sessions.select(PageQuery(archived=None)):
+    collected = started = 0
+    # Only the sessions the index names as in flight or due are read; the settled
+    # ones are counted from the index.
+    idle = timedelta(minutes=int(setting("memory.idle_minutes", 30)))
+    rows, skipped = tick_sessions(app, now, idle, _minimum_user_messages())
+    for session in rows:
         try:
             if (session.metadata or {}).get(IN_FLIGHT):
                 collected += 1

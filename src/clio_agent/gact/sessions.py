@@ -30,6 +30,7 @@ from clio_agent.gact.message_marks import merge_session_metadata
 from clio_agent.gact.session_records import (
     ROW_UNREADABLE_REASON,
     PageQuery,
+    RecordColumns,
     SessionRecords,
     cache_capacity,
     record_columns,
@@ -605,9 +606,12 @@ class SessionStore:
 
     def ids(self, query: PageQuery | None = None) -> "builtins.list[str]":
         """Every session id (matching ``query``), from the index: no row is read."""
-
         with self._lock:
             return self._records.ids() if query is None else self._records.select(query)
+
+    def columns(self, query: PageQuery) -> "builtins.list[RecordColumns]":
+        """The index columns of the sessions matching ``query``; no row is read."""
+        return self._records.columns(query)
 
     def totals(self) -> dict[str, Any]:
         """Counts by status and summed counters (:meth:`SessionRecords.totals`), no row read."""
