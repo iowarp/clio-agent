@@ -54,12 +54,25 @@ APP_NAME = "alcf_agentics_workflow"
 AUTH_CLIENT_ID = "58fdd3bc-e1c3-4ce5-80ea-8d6b87cfb944"
 GATEWAY_CLIENT_ID = "681c10cc-f684-4540-bcd7-0b4df3bc26ef"
 GATEWAY_SCOPE = f"https://auth.globus.org/scopes/{GATEWAY_CLIENT_ID}/action_all"
-ALLOWED_DOMAINS = ["anl.gov", "alcf.anl.gov"]
 #: ALCF's Globus session policy, as the official helper requests it
 #: (argonne-lcf/inference-endpoints ``inference_auth_token.py``, "adding
 #: policy", 2025-11): a token from a session that does not satisfy it is
-#: refused by the gateway ("Permission denied from internal policies").
+#: refused by the gateway ("Permission denied from internal policies"). The
+#: policy is also what limits sign-in to ALCF-accepted identities.
 ALCF_SESSION_POLICIES = ["83732ff2-9c42-4548-b5ce-17e498c84f6a"]
+
+
+def _session_requirements() -> dict[str, Any]:
+    """The Globus session requirement every ALCF login asks for.
+
+    Exactly one ``session_required_*`` parameter: Globus Auth refuses an
+    authorize request carrying both ``session_required_single_domain`` and
+    ``session_required_policies`` ("At most one session parameter can be
+    specified", BAD_REQUEST). Like the official helper, only the ALCF policy
+    is requested.
+    """
+    return {"session_required_policies": list(ALCF_SESSION_POLICIES)}
+
 
 TOKENS_PATH = os.path.join(
     os.path.expanduser("~"),
@@ -146,9 +159,9 @@ def _domain_error_handler(app: Any, error: Any, *, allow_interactive: bool = Tru
 
     Globus authorises arbitrary identity providers, but ALCF's
     inference gateway only honours ``anl.gov`` / ``alcf.anl.gov``
-    identities. Re-driving login with ``session_required_single_domain``
-    keeps the user from picking, e.g., a personal Google identity that
-    the gateway will then 403.
+    identities. Re-driving login with the ALCF session policy
+    (:func:`_session_requirements`) keeps the user from picking, e.g., a
+    personal Google identity that the gateway will then 403.
 
     When ``allow_interactive`` is ``False`` (passive probes such as
     ``check_auth_status`` / the handshake), we must never pop a browser:
@@ -167,9 +180,7 @@ def _domain_error_handler(app: Any, error: Any, *, allow_interactive: bool = Tru
         )
     globus_sdk = _require_globus()
     logger.warning("Globus auth error %r — re-running login flow", error)
-    auth_params = globus_sdk.gare.GlobusAuthorizationParameters(
-        session_required_single_domain=ALLOWED_DOMAINS
-    )
+    auth_params = globus_sdk.gare.GlobusAuthorizationParameters(**_session_requirements())
     app.login(auth_params=auth_params)
 
 
@@ -207,9 +218,7 @@ def _build_user_app(force: bool = False, *, allow_interactive: bool = True) -> A
     )
 
     if force:
-        auth_params = globus_sdk.gare.GlobusAuthorizationParameters(
-            session_required_single_domain=ALLOWED_DOMAINS
-        )
+        auth_params = globus_sdk.gare.GlobusAuthorizationParameters(**_session_requirements())
         app.login(auth_params=auth_params)
 
     return app
@@ -420,10 +429,7 @@ def begin_authentication(*, force_login: bool = False) -> PendingAuthentication:
         refresh_tokens=True,
         prefill_named_grant=APP_NAME,
     )
-    authorize_kwargs: dict[str, Any] = {
-        "session_required_single_domain": ALLOWED_DOMAINS,
-        "session_required_policies": ALCF_SESSION_POLICIES,
-    }
+    authorize_kwargs: dict[str, Any] = _session_requirements()
     if force_login:
         authorize_kwargs["prompt"] = "login"
     authorization_url = client.oauth2_get_authorize_url(**authorize_kwargs)
