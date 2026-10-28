@@ -165,8 +165,18 @@ def mark(app: Any, name: str) -> None:
 
 
 def snapshot(app: Any) -> dict[str, Any]:
-    """The ``boot`` block served by ``GET /v1/health``."""
-    return timeline(app).snapshot()
+    """The ``boot`` block served by ``GET /v1/health``.
+
+    A store relocated at this start (a moved data folder,
+    :mod:`clio_agent.arc.clio_core_relocate`) is reported as ``store_relocated``.
+    """
+    from clio_agent.arc.clio_core_relocate import last_relocation  # noqa: PLC0415
+
+    block = timeline(app).snapshot()
+    relocated = last_relocation()
+    if relocated is not None:
+        block["store_relocated"] = relocated
+    return block
 
 
 def readiness(app: Any) -> tuple[Literal["starting", "ready"], list[str]]:

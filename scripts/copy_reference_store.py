@@ -38,14 +38,18 @@ import argparse
 import os
 import re
 import shutil
-import struct
 import subprocess
 import sys
 from pathlib import Path
 
-#: The pool WAL: a sequence of records ``u8 u8 | u64 pool major | u32 len, pool name |
-#: u32 len, chimod name | u32 len, params``. The params blob holds u64-length strings,
-#: the compose YAML among them.
+REPO = Path(__file__).resolve().parent.parent
+if str(REPO / "src") not in sys.path:
+    sys.path.insert(0, str(REPO / "src"))
+
+from clio_agent.arc import clio_core_relocate as _relocate  # noqa: E402
+
+# The pool WAL's record layout and its rewrite are the product's
+# (:mod:`clio_agent.arc.clio_core_relocate`, which relocates a moved data folder at start).
 _WAL_GLOB = "home/data/cte/hosts/*/conf/wal/pools.*.bin"
 _MODEL_GLOB = "home/data/cte/hosts/*/conf/models/*"
 _PORT_LINE = re.compile(rb"^(  port: )(\d+)$", re.MULTILINE)
@@ -60,71 +64,11 @@ class CopyRefused(Exception):
 
 
 def _wal_records(data: bytes, name: str) -> list[tuple[bytes, list[bytes]]]:
-    """Split the WAL into ``(fixed header, [pool name, chimod, params])`` records.
-
-    Raises:
-        CopyRefused: The bytes do not parse as this record layout end to end.
-    """
-    records: list[tuple[bytes, list[bytes]]] = []
-    at = 0
-    while at < len(data):
-        if at + 10 > len(data):
-            raise CopyRefused(f"{name}: truncated record header at byte {at}")
-        head = data[at : at + 10]
-        at += 10
-        fields: list[bytes] = []
-        for _ in range(3):
-            if at + 4 > len(data):
-                raise CopyRefused(f"{name}: truncated length field at byte {at}")
-            (size,) = struct.unpack_from("<I", data, at)
-            at += 4
-            if at + size > len(data):
-                raise CopyRefused(f"{name}: field of {size} bytes overruns the file at {at}")
-            fields.append(data[at : at + size])
-            at += size
-        records.append((head, fields))
-    return records
-
-
-def _rewrite_params(params: bytes, src: bytes, dst: bytes, name: str) -> bytes:
-    """Rewrite ``src`` inside the u64-length strings of one params blob, fixing lengths.
-
-    Every occurrence must lie inside a string whose u64 length field precedes it and
-    which decodes as UTF-8 text (the compose YAML); anything else is refused.
-    """
-    out = bytearray()
-    at = 0
-    while True:
-        hit = params.find(src, at)
-        if hit < 0:
-            out += params[at:]
-            return bytes(out)
-        start = _enclosing_string(params, at, hit, len(src))
-        if start is None:
-            raise CopyRefused(
-                f"{name}: the path at params byte {hit} is not inside a length-prefixed "
-                "text string; this WAL format cannot be rewritten"
-            )
-        (size,) = struct.unpack_from("<Q", params, start)
-        text = params[start + 8 : start + 8 + size]
-        rewritten = text.replace(src, dst)
-        out += params[at:start] + struct.pack("<Q", len(rewritten)) + rewritten
-        at = start + 8 + size
-
-
-def _enclosing_string(params: bytes, floor: int, hit: int, width: int) -> int | None:
-    """The offset of the u64 length field of the text string holding ``hit``, if any."""
-    for start in range(hit - 8, floor - 1, -1):
-        (size,) = struct.unpack_from("<Q", params, start)
-        end = start + 8 + size
-        if end < hit + width or end > len(params):
-            continue
-        try:
-            params[start + 8 : end].decode("utf-8")
-        except UnicodeDecodeError:
-            continue
-        return start
-    return None
+    """Split the WAL into records (:func:`clio_core_relocate.wal_records`)."""
+    try:
+        return _relocate.wal_records(data, name)
+    except _relocate.WalFormatError as exc:
+        raise CopyRefused(str(exc)) from exc
 
 
 def rewrite_wal(data: bytes, src: bytes, dst: bytes, name: str = "wal") -> bytes:
@@ -133,19 +77,13 @@ def rewrite_wal(data: bytes, src: bytes, dst: bytes, name: str = "wal") -> bytes
     Raises:
         CopyRefused: The WAL does not parse, or a path sits where it cannot be rewritten.
     """
-    out = bytearray()
-    for head, fields in _wal_records(data, name):
-        out += head
-        for index, field in enumerate(fields):
-            if index == 2:
-                field = _rewrite_params(field, src, dst, name)
-            else:
-                field = field.replace(src, dst)  # pool / chimod names: u32-length strings
-            out += struct.pack("<I", len(field)) + field
-    rewritten = bytes(out)
+    old, new = src.decode("utf-8"), dst.decode("utf-8")
+    try:
+        rewritten = _relocate.rewrite_wal(data, src, lambda text: text.replace(old, new), name)
+    except _relocate.WalFormatError as exc:
+        raise CopyRefused(str(exc)) from exc
     if src in rewritten:
         raise CopyRefused(f"{name}: a path survived the rewrite")
-    _wal_records(rewritten, name)  # still parses end to end
     return rewritten
 
 
@@ -183,7 +121,7 @@ def _is_text(data: bytes) -> bool:
 
 def _mangled(path: bytes) -> bytes:
     """A path as clio-core names a file bdev's model file (``/`` as ``_``)."""
-    return path.replace(b"/", b"_")
+    return _relocate.mangled(path.decode("utf-8")).encode("utf-8")
 
 
 def _files(root: Path) -> list[Path]:

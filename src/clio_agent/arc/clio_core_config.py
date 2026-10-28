@@ -53,6 +53,7 @@ import yaml
 
 from clio_agent.arc import clio_core_durability as _durability
 from clio_agent.arc import clio_core_indexer as _indexer
+from clio_agent.arc import clio_core_relocate as _relocate
 from clio_agent.arc.clio_core_host_migration import (
     migrate_legacy_cte_store,
 )
@@ -338,7 +339,10 @@ def default_cte_config_path() -> str:
     self-managed memory↔disk hierarchy by default — no LocalFS, no manual config.
 
     Written **once** (only when absent): an existing ``cte.yaml`` is never rewritten, so
-    a user's explicit values survive untouched. A stale file still carrying ``0g`` is
+    a user's explicit values survive untouched -- except the paths of a store whose
+    data folder was moved, which point at the old location until
+    :func:`clio_agent.arc.clio_core_relocate.ensure_store_location` relocates them
+    (or refuses, typed, before clio-core starts). A stale file still carrying ``0g`` is
     surfaced by the doctor (:func:`clio_agent.runtime.clio_core_health.probe_clio_core_ram_cap`)
     rather than silently mutated (#890).
     """
@@ -355,6 +359,7 @@ def default_cte_config_path() -> str:
     cte_dir.mkdir(parents=True, exist_ok=True)
     cfg = cte_dir / "cte.yaml"
     if cfg.is_file():
+        _relocate.ensure_store_location(cte_dir)  # a moved data folder: relocated, or refused
         _durability.ensure_seeded_config_durable(cfg)  # a pre-durability seed, upgraded once
         _indexer.ensure_seeded_config_indexed(cfg, cte_dir / "indexer_index.log")  # pre-#905
         _seeded_capacity_fits(cfg, _default_cte_file_capacity(cte_dir))  # a pre-sizing seed

@@ -189,6 +189,28 @@ class ClioCoreAttachError(RuntimeError):
         )
 
 
+def seed_default_config() -> str:
+    """Seed and return the default config; a refused store location is published.
+
+    :func:`~clio_agent.arc.clio_core_config.default_cte_config_path` relocates a moved
+    data folder's store or refuses it (:mod:`clio_agent.arc.clio_core_relocate`) before
+    any daemon is spawned; the refusal becomes ``unavailable`` with its typed reason
+    (``cte_store_location_in_use`` / ``cte_store_location_mismatch``) on the
+    ``clio_core_attach`` row and an :class:`ArcStoreUnavailableError`.
+    """
+    from clio_agent.arc.clio_core_config import default_cte_config_path  # noqa: PLC0415
+    from clio_agent.arc.clio_core_relocate import CteStoreLocationError  # noqa: PLC0415
+    from clio_agent.arc.init_degradation import ArcStoreUnavailableError  # noqa: PLC0415
+
+    try:
+        return default_cte_config_path()
+    except CteStoreLocationError as refused:
+        config = str(refused.config_path)
+        failure = ArcStoreUnavailableError(error=refused, config_path=config)
+        mark_unavailable(failure.reason, str(refused), config, None)
+        raise failure from refused
+
+
 def build_tracked_store(
     cfg: str,
     *,

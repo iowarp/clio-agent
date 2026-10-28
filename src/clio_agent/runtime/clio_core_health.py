@@ -32,6 +32,7 @@ from clio_agent.runtime.cte_cold_tier import (
     probe_cte_cold_tier_disk,
     probe_cte_metadata_log,
 )
+from clio_agent.runtime.cte_store_location import probe_cte_store_location
 from clio_agent.runtime.humanize import format_bytes
 from clio_agent.runtime.status import IntegrationState, IntegrationStatus
 
@@ -769,6 +770,7 @@ def probe_clio_core_health(*, env: Mapping[str, str] | None = None) -> list[Inte
     return [
         *probe_clio_core_attach(),
         *probe_clio_core_config_adoption(),
+        *probe_cte_store_location(env=env),
         *probe_clio_core_ram_cap(env=env),
         *probe_clio_core_liveness(),
         *probe_clio_core_daemon_memory(env=env),

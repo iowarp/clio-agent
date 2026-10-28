@@ -771,7 +771,7 @@ def make_arc_store(
         if not cfg:
             # Per-workspace ``.clio/core`` config if present, else the seeded default.
             ws_cfg = paths.workspace_core_dir() / "cte.yaml"
-            cfg = str(ws_cfg) if ws_cfg.is_file() else default_cte_config_path()
+            cfg = str(ws_cfg) if ws_cfg.is_file() else clio_core_attach.seed_default_config()
         ns = (
             namespace
             if namespace is not None
