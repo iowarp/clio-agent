@@ -97,10 +97,14 @@ done
 details+=("clio_agent=\"$(head_of "$CLIO_SRC")\"" "clio_schemas=\"$(head_of "$SRC/clio-schemas")\""
           "experiments=\"$(head_of "$SRC/experiments")\"")
 if [ "$DRY_RUN" != 1 ]; then
-  lock_pin=$(grep -o '"clio-schemas==[^"]*"' "$CLIO_SRC/pyproject.toml" | tr -d '"')
-  branch_ver=$(grep -m1 '^version' "$SRC/clio-schemas/pyproject.toml" | cut -d'"' -f2)
+  # CLIO pins clio-schemas either by version (clio-schemas==X) or by commit (@ git+...@sha).
+  lock_pin=$(grep -o '"clio-schemas[ =@][^"]*"' "$CLIO_SRC/pyproject.toml" | head -1 | tr -d '"' || true)
+  branch_ver=$(grep -m1 '^version' "$SRC/clio-schemas/pyproject.toml" | cut -d'"' -f2 || true)
   details+=("clio_schemas_lock_pin=\"$lock_pin\"" "clio_schemas_branch_version=\"$branch_ver\"")
-  [ "${lock_pin#clio-schemas==}" = "$branch_ver" ] || log "WARNING: CLIO locks $lock_pin but the clio-schemas branch is $branch_ver"
+  case "$lock_pin" in
+    clio-schemas==*) [ "${lock_pin#clio-schemas==}" = "$branch_ver" ] || log "WARNING: CLIO locks $lock_pin but the clio-schemas branch is $branch_ver" ;;
+    *) log "CLIO pins $lock_pin (the lock is what runs)" ;;
+  esac
   # CLIO's own connector pin must be the revision this kit patches.
   pin=$(grep -o 'CONNECTOR_REVISION = "[0-9a-f]*"' "$CLIO_SRC/src/clio_agent/gact/infrastructure/native_vllm.py" | cut -d'"' -f2)
   [ "$pin" = "$CONNECTOR_REV" ] || log "WARNING: CLIO pins connector $pin, kit builds $CONNECTOR_REV"

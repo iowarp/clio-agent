@@ -29,6 +29,7 @@ SPOTTER_APPROVAL_MODE = "spotter-ai"
 WATCHER_RUN_LABEL = "SPOTTER AI"
 _WAKE_TURN_FINAL_TEXT = "Watched session activity: the session's turn completed. The provenance store may have new entries."
 _WAKE_COALESCED_TEXT = "Watched session activity: multiple tool calls completed. The provenance store may have new entries."
+_WAKE_ANSWER_MARKER = " Its answer is message "
 
 
 def _structural_item_identity(value: Any) -> str:
@@ -316,6 +317,23 @@ def ensure_spotter_watcher(app: "FastAPI", session: "Session") -> TaskSnapshot |
     return task
 
 
+#: Bound on one coalesced wake's text; the oldest events are summarized away first.
+_WAKE_MAX_CHARS = 6000
+
+
+def _append_wake(previous: str, text: str) -> str:
+    """``previous`` then ``text`` as one wake, each event on its own line, bounded."""
+    lines = (previous.split("\n") if previous else []) + [text]
+    dropped = 0
+    if lines and lines[0].startswith("(+"):
+        dropped = int(lines.pop(0)[2:].split(" ", 1)[0])
+    while len(lines) > 1 and len("\n".join(lines)) > _WAKE_MAX_CHARS - 80:
+        lines.pop(0)
+        dropped += 1
+    note = [f"(+{dropped} earlier watched-session events; review_activity lists them)"]
+    return "\n".join((note if dropped else []) + lines)
+
+
 def _push_wake(app: "FastAPI", parent_id: str, task: TaskSnapshot, text: str) -> None:
     """Persist factual input; coalesce only not-yet-committed watcher activity."""
     history = app.state.task_history
@@ -329,18 +347,15 @@ def _push_wake(app: "FastAPI", parent_id: str, task: TaskSnapshot, text: str) ->
             ),
             None,
         )
-        # A coalesced wake keeps the turn's answer fact (a busy turn's tool wakes are
-        # usually still unread when the turn completes).
-        answer = text.split(" Its answer is message ", 1)
-        merged = (
-            _WAKE_COALESCED_TEXT
-            + (" The session's turn completed. Its answer is message " + answer[1])
-            if len(answer) == 2
-            else _WAKE_COALESCED_TEXT
-        )
-        content = history.write_content(
-            task.owner.session_id, {"text": merged if pending is not None else text}
-        )
+        # One unread mail per watched session, but no event is dropped: each new
+        # wake is appended to the pending one, in order, up to a bounded size.
+        if pending is not None:
+            previous = history.read_content(pending.content)
+            previous_text = (
+                str((previous or {}).get("text") or "") if isinstance(previous, dict) else ""
+            )
+            text = _append_wake(previous_text, text)
+        content = history.write_content(task.owner.session_id, {"text": text})
         if pending is None:
             history.record_mail(
                 MailItem(

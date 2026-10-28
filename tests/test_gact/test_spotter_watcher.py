@@ -43,7 +43,9 @@ def test_parent_activity_coalesces_only_uncommitted_core_mail(
     pending = app.state.task_history.pending_mail(child)
     assert len(pending) == 1 and pending[0].revision == 5
     assert pending[0].kind == "spotter" and pending[0].sender_session == parent
-    assert app.state.task_history.read_content(pending[0].content)["text"] == _WAKE_COALESCED_TEXT
+    # One mail, but every event kept, in order.
+    lines = app.state.task_history.read_content(pending[0].content)["text"].split("\n")
+    assert len(lines) == 5 and all("fs_read_file completed" in line for line in lines)
     assert pending[0].id not in app.state.task_history.acknowledged_notifications(child)
     assert app.state.task_history.pending_mail(parent) == ()
 
@@ -394,12 +396,47 @@ def test_a_coalesced_turn_completed_wake_keeps_the_answer_fact(
     answer = SimpleNamespace(
         id="msg_asst_7", role="assistant", parts=[SimpleNamespace(type="text", text="Done: 42")]
     )
-    monkeypatch.setattr(
-        app.state.messages, "get_if_resident", lambda sid: [answer], raising=False
-    )
+    monkeypatch.setattr(app.state.messages, "get_if_resident", lambda sid: [answer], raising=False)
     wake_on_parent_activity(app, parent, tool_name="fs_read_file", result={"paths": ["a"]})
     on_turn_finalized(app, parent)
     [item] = app.state.task_history.pending_mail(child)
     text = app.state.task_history.read_content(item.content)["text"]
-    assert text.startswith(_WAKE_COALESCED_TEXT)
-    assert "Its answer is message msg_asst_7: Done: 42" in text
+    first, last = text.split("\n")
+    assert "fs_read_file completed" in first
+    assert last.startswith(_WAKE_TURN_FINAL_TEXT)
+    assert "Its answer is message msg_asst_7: Done: 42" in last
+
+
+def test_a_later_tool_wake_keeps_a_pending_answer_fact(
+    watcher_world: tuple[Any, str, str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """An unread turn-completed wake keeps its answer when the next turn's tool lands."""
+    from types import SimpleNamespace
+
+    app, parent, child = watcher_world
+    answer = SimpleNamespace(
+        id="msg_asst_8", role="assistant", parts=[SimpleNamespace(type="text", text="Done: 8")]
+    )
+    monkeypatch.setattr(app.state.messages, "get_if_resident", lambda sid: [answer], raising=False)
+    on_turn_finalized(app, parent)
+    wake_on_parent_activity(app, parent, tool_name="fs_read_file", result={"paths": ["a"]})
+    [item] = app.state.task_history.pending_mail(child)
+    assert item.revision == 2
+    text = app.state.task_history.read_content(item.content)["text"]
+    first, last = text.split("\n")
+    assert "Its answer is message msg_asst_8: Done: 8" in first
+    assert "fs_read_file completed" in last
+
+
+def test_a_long_backlog_drops_the_oldest_events_and_says_so() -> None:
+    from clio_agent.gact.spotter_watcher import _WAKE_MAX_CHARS, _append_wake
+
+    text = ""
+    for index in range(400):
+        text = _append_wake(text, f"Watched session activity: tool_{index} completed.")
+    assert len(text) <= _WAKE_MAX_CHARS
+    first, *rest = text.split("\n")
+    assert first.startswith("(+") and "earlier watched-session events" in first
+    # The count adds up across trims: every event is either listed or counted.
+    assert int(first[2:].split(" ", 1)[0]) + len(rest) == 400
+    assert rest[-1] == "Watched session activity: tool_399 completed."

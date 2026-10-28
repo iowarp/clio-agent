@@ -533,7 +533,7 @@ def test_a_danger_alert_from_the_watcher_quarantines_until_the_person_lifts_it(
             json={"parts": [{"type": "text", "text": "continue"}]},
         )
         assert refused.status_code == 409
-        assert refused.json()["detail"]["error"]["error"] == "spotter_quarantined"
+        assert refused.json()["error"]["error"] == "spotter_quarantined"
 
         lifted = client.post(f"/v1/sessions/{parent_sid}/spotter/quarantine/lift")
         assert lifted.status_code == 200
@@ -542,7 +542,7 @@ def test_a_danger_alert_from_the_watcher_quarantines_until_the_person_lifts_it(
 
         again = client.post(f"/v1/sessions/{parent_sid}/spotter/quarantine/lift")
         assert again.status_code == 409
-        assert again.json()["detail"]["error"]["error"] == "spotter_quarantine_not_active"
+        assert again.json()["error"]["error"] == "spotter_quarantine_not_active"
 
 
 @pytest.mark.parametrize("severity", ["warning", "info"])
