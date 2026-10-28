@@ -26,8 +26,8 @@ import logging
 import re
 import threading
 from collections.abc import Iterator
-from contextlib import contextmanager
-from typing import TYPE_CHECKING, Callable, Iterable, Optional, Protocol
+from contextlib import contextmanager, nullcontext
+from typing import TYPE_CHECKING, Callable, ContextManager, Iterable, Optional, Protocol
 
 import msgspec
 
@@ -54,6 +54,7 @@ __all__ = [
     "INVOCATION_INDEX_SCOPE",
     "ScopeCache",
     "ScopeResidency",
+    "ScopeWriteObserver",
     "reads_are_transient",
     "transient_reads",
 ]
@@ -73,6 +74,13 @@ class ScopeResidency(Protocol):
 
     def scope_touched(self, session_id: str) -> None:
         """A cached scope of the session was read (keeps it from going idle)."""
+
+
+class ScopeWriteObserver(Protocol):
+    """Told of every scope record write before it reaches clio-core (an injected index)."""
+
+    def writing(self, session_id: str, scope: str) -> ContextManager[None]:
+        """Enclose the put or delete of ``(session_id, scope)``'s record."""
 
 
 _TRANSIENT = threading.local()
@@ -106,6 +114,7 @@ class ScopeCache:
     _search_indexed: Optional[Callable[[str], bool]]
     _invocation_counts: dict[str, int]
     _residency: Optional[ScopeResidency] = None
+    _write_observer: Optional[ScopeWriteObserver] = None
 
     if TYPE_CHECKING:
 
@@ -121,6 +130,14 @@ class ScopeCache:
     def set_residency(self, residency: Optional[ScopeResidency]) -> None:
         """Inject (or clear) the residency owner every cached scope is reported to."""
         self._residency = residency
+
+    def set_write_observer(self, observer: Optional[ScopeWriteObserver]) -> None:
+        """Inject (or clear) the observer every scope record write passes through."""
+        self._write_observer = observer
+
+    def _writing(self, session_id: str, scope: str) -> ContextManager[None]:
+        observer = self._write_observer
+        return observer.writing(session_id, scope) if observer is not None else nullcontext()
 
     # ---- load ----------------------------------------------------------
 
@@ -173,9 +190,10 @@ class ScopeCache:
         else:
             search_text = None
         data = encode_segments(segs)
-        self._store.put(
-            "segments", self._record_name(session_id, scope), data, search_text=search_text
-        )
+        with self._writing(session_id, scope):
+            self._store.put(
+                "segments", self._record_name(session_id, scope), data, search_text=search_text
+            )
         return len(data)
 
     def _commit_scope(self, session_id: str, scope: str, staged: list[Segment]) -> None:

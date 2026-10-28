@@ -787,7 +787,8 @@ class SegmentStore(ScopeCache, PlainContextRestore):
         with self._lock_for(session_id, scope):
             count = len(self._segs(session_id, scope))
             assert_store_write_off_loop("segments.delete", scope=scope)
-            self._store.delete("segments", self._record_name(session_id, scope))  # store first
+            with self._writing(session_id, scope):  # store first
+                self._store.delete("segments", self._record_name(session_id, scope))
             self._discard_scope(session_id, scope)
             self._generations[(session_id, scope)] = next_generation()  # no reader keeps a prefix
             logger.debug("segments: drop_scope %s/%s dropped=%d", session_id, scope, count)

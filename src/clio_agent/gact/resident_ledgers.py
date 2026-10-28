@@ -339,6 +339,13 @@ class ResidentLedgerSet(MutableMapping[str, list["Message"]]):
             entry.last_access = self._clock()
             return entry.messages
 
+    def peek_resident(self, sid: str) -> Optional[list["Message"]]:
+        """A resident ledger as is (no recency touch, no read), else ``None``."""
+
+        with self._lock:
+            entry = self._resident.get(sid)
+            return entry.messages if entry is not None else None
+
     def peek(self, sid: str) -> Optional[list["Message"]]:
         """Read a session's ledger without making it (or its ARC scopes) resident.
 

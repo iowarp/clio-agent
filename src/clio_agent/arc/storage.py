@@ -123,6 +123,7 @@ ARC_KINDS: tuple[str, ...] = (
     "task_open",  # derived open-work obligations, the one small listing done at boot
     "artifact_index",  # artifact registry records, read by exact name only (point gets)
     "session_records",  # one record per session + recent-first index buckets (gact)
+    "recall_index",  # per-session search digests + dirty markers (gact recall_index)
 )
 
 # Suffix for the optional plain-text companion blob (BM25 discovery, Thread D) a

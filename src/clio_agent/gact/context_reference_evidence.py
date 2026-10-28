@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 from collections.abc import Iterable, Mapping
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
@@ -17,16 +18,25 @@ from urllib.parse import unquote, urlsplit
 
 from clio_agent import conf
 from clio_agent.gact.context_reference_result import reference_result as _reference_result
+from clio_agent.gact.recall_digest import TranscriptDigest
+from clio_agent.gact.recall_index import DigestReadReport, session_digests
 from clio_agent.gact.runtime.retention import ledger_guard
-from clio_agent.gact.summarization_record import as_summarization
-from clio_agent.gact.transcript_reads import read_transcript
+from clio_agent.runtime.stream_audit import stream_audit
 
 if TYPE_CHECKING:
     from fastapi import FastAPI
 
+logger = logging.getLogger(__name__)
+
+#: Typed degradation of a reference search that read fewer sessions than it holds.
+EVIDENCE_BUDGET_REASON = "evidence_session_budget"
+
 __all__ = [
+    "EVIDENCE_BUDGET_REASON",
     "evidence_reference_snapshots",
+    "evidence_session_budget",
     "find_evidence_reference_snapshot",
+    "part_source_candidates",
     "snapshot_payload_children",
     "snapshot_payload_string_chars",
 ]
@@ -36,6 +46,60 @@ def _workspace_sessions(app: "FastAPI", workspace_id: str) -> list[Any]:
     """Return the authoritative sessions whose evidence belongs to one workspace."""
 
     return list(app.state.sessions.list(workspace_id=workspace_id))
+
+
+def evidence_session_budget() -> int:
+    """How many sessions one plan/evidence reference scan reads (the most recent ones).
+
+    Config: ``gact.context_references.evidence_sessions`` /
+    ``CLIO_CONTEXT_REFERENCE_EVIDENCE_SESSIONS``.
+    """
+
+    return conf.resolve(
+        "gact.context_references.evidence_sessions",
+        env="CLIO_CONTEXT_REFERENCE_EVIDENCE_SESSIONS",
+        default=5_000,
+        cast=conf.as_int,
+    )
+
+
+def _session_digests(app: "FastAPI", workspace_id: str) -> list[tuple[Any, TranscriptDigest]]:
+    """The workspace's sessions with their search digests (index first, bounded scan).
+
+    Sessions come in the registry's order; over :func:`evidence_session_budget` the most
+    recently active are read and the cut is a typed degradation of this search. A
+    session read from its transcript instead of the index is one too.
+    """
+
+    from clio_agent.gact.context_reference_search import _degradation  # noqa: PLC0415
+
+    sessions = _workspace_sessions(app, workspace_id)
+    budget = max(1, evidence_session_budget())
+    if len(sessions) > budget:
+        recent = sorted(sessions, key=lambda s: s.last_interaction_at or s.updated_at, reverse=True)
+        kept = {s.id for s in recent[:budget]}
+        _degradation(
+            app,
+            workspace_id,
+            EVIDENCE_BUDGET_REASON,
+            f"read the {budget} most recently active of {len(sessions)} sessions",
+        )
+        sessions = [s for s in sessions if s.id in kept]
+    by_id = {session.id: session for session in sessions}
+    report = DigestReadReport()
+    rows = [(by_id[sid], digest) for sid, digest in session_digests(app, list(by_id), report)]
+    if report.transcript:  # complete, only slower: evidence, not a degradation
+        stream_audit(
+            "evidence_read_from_transcripts",
+            workspace_id=workspace_id,
+            **report.as_dict(),
+        )
+        logger.info(
+            "evidence references read %d session(s) from transcripts reasons=%s",
+            report.transcript,
+            report.reasons,
+        )
+    return rows
 
 
 def _snapshot_revision(payload: Mapping[str, Any]) -> str:
@@ -142,42 +206,36 @@ def _snapshot_result(
 
 
 def _plan_snapshots(
-    app: "FastAPI", workspace_id: str
+    workspace_id: str, digests: list[tuple[Any, TranscriptDigest]]
 ) -> list[tuple[dict[str, Any], dict[str, Any]]]:
     snapshots: list[tuple[dict[str, Any], dict[str, Any]]] = []
-    for session in _workspace_sessions(app, workspace_id):
-        for message in read_transcript(app, session.id):
-            for index, part in enumerate(message.parts):
-                record = as_summarization(part)
-                if part.type != "plan" and record is None:
-                    continue
-                part_id = part.id or str(index)
-                ref_id = f"{session.id}:{message.id}:{part_id}"
-                title = part.title or ("Compacted context" if record is not None else "Plan")
-                payload = {
-                    "session_id": session.id,
-                    "message_id": message.id,
-                    "part_id": part_id,
-                    "title": title,
-                    "detail": record.text if record is not None else (part.summary or part.text),
-                    "type": "summarization" if record is not None else part.type,
-                }
-                snapshots.append(
-                    _snapshot_result(
-                        kind="plan",
-                        ref_id=ref_id,
-                        label=title,
-                        detail=f"Plan from {session.title or session.id}",
-                        media_type="application/vnd.clio.plan+json",
-                        navigation={
-                            "workspace_id": workspace_id,
-                            "session_id": session.id,
-                            "message_id": message.id,
-                            "part_id": part_id,
-                        },
-                        payload=payload,
-                    )
+    for session, digest in digests:
+        for plan in digest.plans:
+            ref_id = f"{session.id}:{plan.message_id}:{plan.part_id}"
+            payload = {
+                "session_id": session.id,
+                "message_id": plan.message_id,
+                "part_id": plan.part_id,
+                "title": plan.title,
+                "detail": plan.detail,
+                "type": plan.type,
+            }
+            snapshots.append(
+                _snapshot_result(
+                    kind="plan",
+                    ref_id=ref_id,
+                    label=plan.title,
+                    detail=f"Plan from {session.title or session.id}",
+                    media_type="application/vnd.clio.plan+json",
+                    navigation={
+                        "workspace_id": workspace_id,
+                        "session_id": session.id,
+                        "message_id": plan.message_id,
+                        "part_id": plan.part_id,
+                    },
+                    payload=payload,
                 )
+            )
     return snapshots
 
 
@@ -326,72 +384,64 @@ def _metadata_source_label(path: str, value: str) -> str:
     return _url_source_label(value)
 
 
+def part_source_candidates(part: Any, index: int) -> list[tuple[str, str, str]]:
+    """The ``(source_id, label, value)`` sources one message part names, in order."""
+
+    candidates: list[tuple[str, str, str]] = []
+    if part.type == "resource_link" and part.uri and not part.uri.startswith("artifact://"):
+        candidates.append((part.id or str(index), part.name or part.uri, part.uri))
+    for path, value in _walk_source_values(part.metadata):
+        candidates.append(
+            (f"{part.id or index}:{path}", _metadata_source_label(path, value), value)
+        )
+    if part.content_blocks:
+        for path, value in _walk_source_values(part.content_blocks):
+            candidates.append(
+                (
+                    f"{part.id or index}:content:{path}",
+                    _metadata_source_label(path, value),
+                    value,
+                )
+            )
+    return candidates
+
+
 def _evidence_source_snapshots(
-    app: "FastAPI", workspace_id: str
+    workspace_id: str, digests: list[tuple[Any, TranscriptDigest]]
 ) -> list[tuple[dict[str, Any], dict[str, Any]]]:
     snapshots: list[tuple[dict[str, Any], dict[str, Any]]] = []
-    seen: set[tuple[str, str]] = set()
-    for session in _workspace_sessions(app, workspace_id):
-        for message in read_transcript(app, session.id):
-            for index, part in enumerate(message.parts):
-                candidates: list[tuple[str, str, str]] = []
-                if (
-                    part.type == "resource_link"
-                    and part.uri
-                    and not part.uri.startswith("artifact://")
-                ):
-                    candidates.append((part.id or str(index), part.name or part.uri, part.uri))
-                for path, value in _walk_source_values(part.metadata):
-                    candidates.append(
-                        (
-                            f"{part.id or index}:{path}",
-                            _metadata_source_label(path, value),
-                            value,
-                        )
-                    )
-                if part.content_blocks:
-                    for path, value in _walk_source_values(part.content_blocks):
-                        candidates.append(
-                            (
-                                f"{part.id or index}:content:{path}",
-                                _metadata_source_label(path, value),
-                                value,
-                            )
-                        )
-                for source_id, label, value in candidates:
-                    dedupe = (session.id, value)
-                    if dedupe in seen:
-                        continue
-                    seen.add(dedupe)
-                    digest = hashlib.sha256(
-                        f"{session.id}:{message.id}:{source_id}:{value}".encode()
-                    ).hexdigest()[:20]
-                    ref_id = f"source:{digest}"
-                    payload = {
+    for session, digest in digests:
+        # A digest keeps the first occurrence of each value in the session, in order.
+        for source in digest.sources:
+            value = source.value
+            digest_id = hashlib.sha256(
+                f"{session.id}:{source.message_id}:{source.source_id}:{value}".encode()
+            ).hexdigest()[:20]
+            payload = {
+                "session_id": session.id,
+                "message_id": source.message_id,
+                "source_id": source.source_id,
+                "label": source.label,
+                "value": value,
+            }
+            snapshots.append(
+                _snapshot_result(
+                    kind="evidence_source",
+                    ref_id=f"source:{digest_id}",
+                    label=source.label,
+                    detail=f"From {session.title or session.id}",
+                    media_type="text/uri-list"
+                    if value.startswith(("http://", "https://"))
+                    else "text/plain",
+                    navigation={
+                        "workspace_id": workspace_id,
                         "session_id": session.id,
-                        "message_id": message.id,
-                        "source_id": source_id,
-                        "label": label,
-                        "value": value,
-                    }
-                    snapshots.append(
-                        _snapshot_result(
-                            kind="evidence_source",
-                            ref_id=ref_id,
-                            label=label,
-                            detail=f"From {session.title or session.id}",
-                            media_type="text/uri-list"
-                            if value.startswith(("http://", "https://"))
-                            else "text/plain",
-                            navigation={
-                                "workspace_id": workspace_id,
-                                "session_id": session.id,
-                                "message_id": message.id,
-                                "uri": value,
-                            },
-                            payload=payload,
-                        )
-                    )
+                        "message_id": source.message_id,
+                        "uri": value,
+                    },
+                    payload=payload,
+                )
+            )
     return snapshots
 
 
@@ -402,14 +452,15 @@ def evidence_reference_snapshots(
 
     selected = set(kinds)
     snapshots: list[tuple[dict[str, Any], dict[str, Any]]] = []
+    digests = _session_digests(app, workspace_id) if selected & {"evidence_source", "plan"} else []
     if "evidence_source" in selected:
-        snapshots.extend(_evidence_source_snapshots(app, workspace_id))
+        snapshots.extend(_evidence_source_snapshots(workspace_id, digests))
     if "context_frame" in selected:
         snapshots.extend(_context_frame_snapshots(app, workspace_id))
     if "diff" in selected:
         snapshots.extend(_diff_snapshots(app, workspace_id))
     if "plan" in selected:
-        snapshots.extend(_plan_snapshots(app, workspace_id))
+        snapshots.extend(_plan_snapshots(workspace_id, digests))
     return snapshots
 
 

@@ -247,6 +247,12 @@ def _mark_artifact_index_empty(app: Any) -> dict[str, Any]:
     return {"records": 0, "fold_conflicts": 0}
 
 
+def _run_recall_index(app: Any) -> dict[str, Any]:
+    from clio_agent.gact.recall_index import build_recall_index  # noqa: PLC0415
+
+    return build_recall_index(app)
+
+
 #: Every store migration, in run order. Name = marker name; never rename a shipped one.
 MIGRATIONS: tuple[StoreMigration, ...] = (
     StoreMigration(
@@ -295,6 +301,12 @@ MIGRATIONS: tuple[StoreMigration, ...] = (
         _artifact_index_owed,
         has_input=_holds_conversation,
         mark_empty=_mark_artifact_index_empty,
+    ),
+    StoreMigration(
+        "recall_index_build",
+        "Store each conversation's search digest (recall and reference search read it)",
+        _run_recall_index,
+        has_input=_holds_conversation,
     ),
 )
 
