@@ -143,9 +143,21 @@ def rebuild_registry_at_boot(app: "FastAPI") -> ArtifactRegistry:
         # so an owed fold at boot is typed (``migration_owed_at_boot``) and reported.
         from clio_agent.gact import store_migrations  # noqa: PLC0415 - import cycle
 
-        if store_migrations.ensure_at_boot(app, "artifact_index"):
-            return cast(ArtifactRegistry, app.state.artifact_registry)
-        return rebuild_registry_at_boot(app)  # migrated meanwhile: open the records
+        store_migrations.ensure_at_boot(app, "artifact_index")
+        folded = getattr(app.state, "artifact_registry", None)
+        if folded is not None:
+            return cast(ArtifactRegistry, folded)  # the migration's fold opened it
+        if artifact_index_owed(app):
+            # The migration left no marker (its failure is on the store_migrations row):
+            # serve this boot from the in-process fold rather than loop on the migration.
+            logger.warning(
+                "artifact index marker still missing after its migration "
+                "reason=artifact_index_marker_missing; serving the in-process fold this boot"
+            )
+            return _fold_registry(app, None)
+        # Marker written without a fold (a new store has nothing to fold, so the
+        # migration records an empty index), or migrated meanwhile: open the records.
+        return rebuild_registry_at_boot(app)
     return _fold_registry(app, None)
 
 
@@ -450,6 +462,18 @@ async def boot_fold_artifact_registry_offloop(
             flush=True,
         )
         return False
+    except Exception as exc:
+        # Any other failure leaves the agent FAILED with its reason (then propagates),
+        # never "starting" forever with no error, as a new home's first start did.
+        from clio_agent.gact.agent_initialization import record_init_failure  # noqa: PLC0415
+
+        logger.error(
+            "artifact registry boot failed reason=artifact_registry_boot_failed: %r",
+            exc,
+            exc_info=exc,
+        )
+        record_init_failure(app, exc, stage="artifact_registry")
+        raise
     return True
 
 
