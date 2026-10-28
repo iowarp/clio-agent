@@ -110,6 +110,7 @@ def _effective_lm_config(app: "FastAPI") -> dict[str, Any]:
 
     for key in (
         "provider_id",
+        "server_id",
         "provider",
         "api_base",
         "model",
@@ -303,7 +304,8 @@ def _active_lm_model_ref(app: "FastAPI") -> dict[str, str]:
     """
 
     cfg = _effective_lm_config(app)
-    provider = str(cfg.get("provider_id") or cfg.get("provider") or "")
+    # A host running on a saved model server is identified by the server, not its preset.
+    provider = str(cfg.get("server_id") or cfg.get("provider_id") or cfg.get("provider") or "")
     model = str(cfg.get("model") or "")
     return {"provider_id": provider, "model_id": model, "variant": ""}
 

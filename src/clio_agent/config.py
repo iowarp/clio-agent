@@ -180,6 +180,28 @@ def _parse_env_line(line: str) -> tuple[str, str] | None:
 # ============================================================================
 
 
+class UnknownLMProviderError(ValueError):
+    """An explicit provider identity names no catalog preset and no saved model server.
+
+    Typed (``error_type``) so a background caller records the reason instead of the
+    message; never answered by falling back to a default provider (LM Studio).
+    """
+
+    error_type = "lm_provider_unknown"
+
+
+def _saved_server(server_id: str) -> Any:
+    """The saved custom model server with this id (``None`` for anything else)."""
+    from clio_agent import paths  # noqa: PLC0415
+    from clio_agent.gact import local_server_store  # noqa: PLC0415
+
+    try:
+        entry = local_server_store.get_server(server_id)
+    except (local_server_store.LocalServerStoreError, paths.HomeDirectoryUnavailable):
+        return None
+    return entry if entry is not None and entry.preset_id and entry.custom else None
+
+
 @dataclass
 class LMProviderConfig:
     """Multi-provider LM configuration.
@@ -202,6 +224,11 @@ class LMProviderConfig:
     # catalog owns the one list of kinds, so it isn't re-typed here too.
     provider: ProviderKind = "lm_studio"
     provider_id: str = ""
+    #: A saved custom model server (``server-<slug>``) this config runs on: the
+    #: provider identity whose address and key it uses. ``provider_id`` is then the
+    #: server's preset (its protocol); this keeps the server itself, so any re-derived
+    #: spec/config reaches the server's address with its key, never the preset's.
+    server_id: str = ""
     api_base: str = ""
     model: str = ""
     api_key: str = ""
@@ -279,6 +306,24 @@ class LMProviderConfig:
         preset = _catalog_provider(identity)
         if preset is None and not self.provider_id:
             preset = _catalog_kind_default(identity)
+        if preset is None and self.provider_id and not self.server_id:
+            # A saved model server (``server-<slug>``, e.g. a CLIO-managed vllm@<name>)
+            # speaks its preset's protocol at its own address with its own key.
+            self.server_id = self.provider_id if _saved_server(self.provider_id) else ""
+        if self.server_id:
+            server = _saved_server(self.server_id)
+            if server is None:
+                raise UnknownLMProviderError(
+                    f"Unknown LM provider {self.server_id!r}: no saved model server has "
+                    "this id; choose another model"
+                )
+            preset = _catalog_provider(server.preset_id)
+            if preset is None:
+                raise UnknownLMProviderError(
+                    f"Saved model server {server.id!r} names unknown preset {server.preset_id!r}"
+                )
+            if not self.api_base:
+                self.api_base = server.address
         if preset is not None:
             self.provider_id = preset.id
             self.provider = cast(Any, preset.provider_kind)
@@ -288,7 +333,9 @@ class LMProviderConfig:
                     preset.id, self.provider_options
                 )
         else:
-            raise ValueError(f"Unknown LM provider {identity!r}; configure a supported provider")
+            raise UnknownLMProviderError(
+                f"Unknown LM provider {identity!r}; configure a supported provider"
+            )
         from clio_agent.providers.capabilities.dialects import claude_code  # noqa: PLC0415
 
         self.thinking_level = claude_code.shipped_default_thinking_level(
@@ -313,8 +360,11 @@ class LMProviderConfig:
             # ``or defaults["api_key"]`` preserves the local-provider
             # placeholder (e.g. "lm-studio") — a provider default, not a
             # credential — so behaviour stays byte-identical.
+            # A saved server's key is its own (its stored key / deployment key),
+            # never the preset's or another provider's env var.
             self.api_key = (
-                _credentials.resolve(self.provider_id or self.provider, "") or defaults["api_key"]
+                _credentials.resolve(self.server_id or self.provider_id or self.provider, "")
+                or defaults["api_key"]
             )
         # Zero means no client output cap (#1323).
         if self.max_tokens < 0:

@@ -141,12 +141,35 @@ def judge_route(role: JudgeRole, caller: Any, adapter: Any = None) -> tuple[Any,
     return model_route(choice.provider_id, choice.model_id)
 
 
+class ModelRouteUnavailable(ValueError):
+    """An explicit route names no provider or model CLIO can reach (typed, fail-fast).
+
+    Raised instead of letting an empty identity resolve to the committed default
+    provider (LM Studio on ``127.0.0.1:1234``, retried per call).
+    """
+
+    error_type = "model_route_unavailable"
+
+
 def model_route(provider_id: str, model_id: str) -> tuple[Any, Any]:
-    """Construct one explicit identity through the canonical endpoint resolver."""
-    from clio_agent.config import LMProviderConfig, create_chat_adapter
+    """Construct one explicit identity through the canonical endpoint resolver.
+
+    A saved custom model server (``server-<slug>``) runs at its own address with its
+    own key: the config keeps it as ``server_id`` and the spec/resolver carry it.
+
+    Raises:
+        ModelRouteUnavailable: ``provider_id`` is empty, or names no catalog
+            provider and no saved model server.
+    """
+    from clio_agent.config import LMProviderConfig, UnknownLMProviderError, create_chat_adapter
     from clio_agent.lm.hooked_lm import create_hooked_lm
 
-    config = LMProviderConfig(provider_id=provider_id, model=model_id)
+    if not provider_id.strip():
+        raise ModelRouteUnavailable(f"model route names no provider (model {model_id!r})")
+    try:
+        config = LMProviderConfig(provider_id=provider_id, model=model_id)
+    except UnknownLMProviderError as exc:
+        raise ModelRouteUnavailable(str(exc)) from exc
     from clio_agent.providers.lm_spec import spec_from_config
     from clio_agent.providers.resolver import resolve_endpoint_and_handshake
 

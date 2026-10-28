@@ -207,7 +207,9 @@ def boot_credential_stays_current(spec: LMSpec) -> bool:
 
     if spec.provider == "argonne":
         return False
-    return not stored_api_key(spec.provider_id or spec.provider)
+    return not stored_api_key(
+        getattr(spec, "server_id", "") or spec.provider_id or spec.provider
+    )
 
 
 class CredentialResolver:

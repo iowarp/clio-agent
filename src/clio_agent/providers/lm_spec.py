@@ -65,6 +65,9 @@ class LMSpec:
     provider: str
     model: str
     provider_id: str = ""
+    #: The saved custom model server this spec runs on (``LMProviderConfig.server_id``);
+    #: its address and key win over the preset ``provider_id``'s defaults.
+    server_id: str = ""
     api_base: str = ""
     credential_ref: str = ""
     provider_options: dict[str, str] = field(default_factory=dict)
@@ -109,6 +112,7 @@ def spec_from_config(cfg: "LMProviderConfig") -> LMSpec:
         provider=cfg.provider,
         model=cfg.model,
         provider_id=cfg.provider_id,
+        server_id=getattr(cfg, "server_id", "") or "",
         api_base=cfg.api_base,
         credential_ref="",
         provider_options=dict(cfg.provider_options),
@@ -195,6 +199,9 @@ def build_spec(agent_def: "AgentDef", default_spec: LMSpec) -> LMSpec:
         provider=provider,
         model=model,
         provider_id=getattr(agent_def, "default_provider", "") or default_spec.provider_id,
+        # A declared provider is its own identity (a saved server id resolves itself);
+        # only an undeclared expert inherits the default profile's saved server.
+        server_id="" if getattr(agent_def, "default_provider", "") else default_spec.server_id,
         api_base=api_base,
         credential_ref=credential_ref,
         provider_options=dict(default_spec.provider_options),
