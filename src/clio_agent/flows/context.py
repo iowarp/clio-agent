@@ -78,6 +78,8 @@ class FlowCall:
         self.evidence = list(evidence or [])
         self.index = -1
         self.together = ""  #: The first invocation of the gather this call ran in.
+        #: That gather's ``limit``: how many of its calls may run at once; 0 for none.
+        self.gather_limit = 0
         #: Set by the workflow flow for an editor's call: the child gets the editor tools.
         self.editor: dict[str, Any] | None = None
         #: Set by the workflow flow for a step's call (run, step): a fork of the step
@@ -95,6 +97,16 @@ class FlowCall:
 
     def __repr__(self) -> str:
         return f"FlowCall({self.kind}:{self.name}, {self.invocation})"
+
+    def group(self) -> dict[str, Any]:
+        """The gather this call ran in, as its journal row records it; empty alone."""
+
+        if not self.together:
+            return {}
+        return {
+            "together": self.together,
+            **({"gather_limit": self.gather_limit} if self.gather_limit else {}),
+        }
 
 
 class FlowContext:
@@ -137,6 +149,7 @@ class FlowContext:
             declaration=self._declaration(),
             request=_plain(task),
             depth=depth,
+            max_concurrency=self.limits["max_concurrency"],
         )
         self._opened = False
         self._open_lock = asyncio.Lock()
@@ -355,6 +368,7 @@ class FlowContext:
         items = [self._as_call(item) for item in calls]
         for index, item in enumerate(items):
             item.index, item.together = index, items[0].invocation
+            item.gather_limit = max(limit or 0, 0)
         gate = asyncio.Semaphore(limit if limit and limit > 0 else max(1, len(items)))
 
         async def bounded(item: FlowCall) -> Any:
@@ -398,7 +412,7 @@ class FlowContext:
 
         items = [self._as_call(item) for item in calls]
         for item in items:
-            item.together = items[0].invocation
+            item.together, item.gather_limit = items[0].invocation, max(limit or 0, 0)
         gate = asyncio.Semaphore(limit if limit and limit > 0 else max(1, len(items)))
 
         async def bounded(position: int, item: FlowCall) -> Any:
