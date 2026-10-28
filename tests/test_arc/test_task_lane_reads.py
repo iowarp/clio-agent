@@ -16,11 +16,17 @@ from clio_agent.arc.task_types import (
     TaskOwner,
     TaskSnapshot,
 )
-from clio_agent.gact.task_event_lane import TASK_EVENT_LANE, migrate_task_event_lane
+from clio_agent.gact import task_index_build
+from clio_agent.gact.task_event_lane import (
+    TASK_EVENT_LANE,
+    migrate_task_event_lane,
+    migration_owed,
+)
 from clio_agent.gact.task_history import TaskHistory
 from clio_agent.gact.task_lane_reads import (
     INPUT_COMMITTED,
     checkpoint_identity,
+    migrate_lanes,
     migrate_task_lane_reads,
     reads_owed,
 )
@@ -172,3 +178,61 @@ def test_checkpoint_identity_keeps_only_named_owner_fields() -> None:
     assert identity["complete"] and "root_handle" not in identity
     assert checkpoint_identity({**body, "root_handle": None})["root_handle"] is None
     assert checkpoint_identity({"id": "e"}) == {"complete": False}
+
+
+def _lane_shape(arc: ARCMemory) -> list[tuple[str, float, str, Any]]:
+    """The lane as stored, a receipt's minted segment id and clock aside."""
+    return [
+        (segment.scope, segment.order, segment.kind, segment.content)
+        for segment in lane_chunking.lane_segments(
+            arc._segments, "owner", TASK_EVENT_LANE, include_tombstoned=True
+        )
+    ]
+
+
+def test_one_pass_writes_the_lane_the_copy_and_the_reads_pass_write(arc: ARCMemory) -> None:
+    """``migrate_lanes`` (the install step) leaves exactly what copy-then-annotate leaves,
+    and records both markers."""
+    history = _built(arc)
+    history.record_snapshot(_assignment(history), observation_id="owner")
+    _commit_input(history)
+    migrate_task_event_lane(history)
+    migrate_task_lane_reads(TaskHistory(arc))
+    two_passes = _lane_shape(arc)
+
+    fused = TaskHistory(arc)
+    report = migrate_lanes(fused)  # rebuilds every lane from the log, annotated
+
+    assert _lane_shape(arc) == two_passes
+    assert report["sessions_with_task_events"] >= 1 and report["events"] > 0
+    assert report["reads"]["annotated"] == 1 and report["reads"]["receipts"] == 1
+    assert report["reads"]["unreadable"] == 0
+    assert not migration_owed(fused) and not reads_owed(fused)
+
+
+def test_index_build_replays_the_complete_lanes_without_reading_content(
+    arc: ARCMemory, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """With the lanes migrated the build's full replay reads them alone, and projects
+    what a replay of the whole ``_events`` log projects."""
+    history = _built(arc)
+    history.record_snapshot(_assignment(history), observation_id="owner")
+    _commit_input(history)
+    migrate_lanes(TaskHistory(arc))
+
+    from_log = TaskHistory(arc)
+    monkeypatch.setattr("clio_agent.gact.task_lane_reads.reads_owed", lambda _history: True)
+    log_state = task_index_build._full_replay(from_log)
+    assert from_log.replay_source == task_index_build.REPLAY_FROM_EVENTS_LOG
+    monkeypatch.undo()
+
+    from_lanes = TaskHistory(arc)
+    _refuse_reads(arc, from_lanes, monkeypatch)
+    lane_state = task_index_build._full_replay(from_lanes)
+    assert from_lanes.replay_source == task_index_build.REPLAY_FROM_LANES
+    assert lane_state._tasks == log_state._tasks
+    assert lane_state._inputs == log_state._inputs
+    assert lane_state._acknowledged == log_state._acknowledged
+    lane_lookup, lane_open = task_index_build.derive_records(lane_state)
+    log_lookup, log_open = task_index_build.derive_records(log_state)
+    assert dict(lane_lookup) == dict(log_lookup) and dict(lane_open) == dict(log_open)

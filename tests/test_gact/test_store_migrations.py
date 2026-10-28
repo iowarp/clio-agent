@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import contextlib
 from types import SimpleNamespace
 from typing import Any
 
@@ -313,7 +314,9 @@ def test_settling_after_the_build_publishes_only_terminal_outcomes(
         rows[:] = [row for row in rows if row[1]["handle"] != current.handle]
 
     history = SimpleNamespace(
-        index=SimpleNamespace(open_records=lambda prefix: list(rows)),
+        index=SimpleNamespace(
+            open_records=lambda prefix: list(rows), deferred_closes=contextlib.nullcontext
+        ),
         task_snapshot=tasks.get,
     )
     monkeypatch.setattr(task_publication, "publish_task_notice", publish)
