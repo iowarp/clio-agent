@@ -166,6 +166,9 @@ def test_an_unconfigured_memory_model_fails_fast(monkeypatch: pytest.MonkeyPatch
     monkeypatch.setattr(context, "active_app", lambda: None)
     monkeypatch.setattr(models, "fleet_settings", lambda: {"judges": {}})
     monkeypatch.setattr(boot_selection, "explicit_lm_provider", lambda: "")
-    with pytest.raises(models.MemoryModelUnconfigured):
+    from clio_agent.errors import ClioError
+
+    with pytest.raises(ClioError) as raised:
         models.memory_model("memory_extract")
+    assert raised.value.error_type == models.MEMORY_MODEL_UNCONFIGURED
     assert built == []

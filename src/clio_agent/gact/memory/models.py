@@ -23,7 +23,7 @@ def unconfigured_roles() -> tuple[MemoryRole, ...]:
     """The pass's roles with neither a fleet model nor a selected LM provider."""
     from clio_agent.gact.providers.boot_selection import explicit_lm_provider  # noqa: PLC0415
 
-    if explicit_lm_provider():
+    if explicit_lm_provider() or _host_agent_config() is not None:
         return ()
     judges = fleet_settings()["judges"]
     return tuple(role for role in ROLES if not judges.get(role))
@@ -35,6 +35,15 @@ class MemoryModelUnconfigured(ValueError):
     error_type = "memory_model_unconfigured"
 
 
+def _host_agent_config() -> Any:
+    """The running host agent's LM config (a saved model server keeps its ``server_id``)."""
+    from clio_agent.gact import context  # noqa: PLC0415
+
+    app = context.active_app()
+    agent = getattr(getattr(app, "state", None), "agent", None)
+    return getattr(agent, "_provider_config", None)
+
+
 def _server_default_config() -> Any:
     """The server's running LM config: its host agent's, else an explicitly selected one.
 
@@ -44,19 +53,10 @@ def _server_default_config() -> Any:
     ``lm_studio`` base default is not a selection: refuse (typed) rather than retry
     LM Studio on ``127.0.0.1:1234`` per call.
     """
-    from clio_agent.gact import context  # noqa: PLC0415
-
-    app = context.active_app()
-    agent = getattr(getattr(app, "state", None), "agent", None)
-    config = getattr(agent, "_provider_config", None)
+    config = _host_agent_config()
     if config is not None:
         return config
-    from clio_agent.gact.providers.boot_selection import explicit_lm_provider  # noqa: PLC0415
-
-    if not explicit_lm_provider():
-        raise MemoryModelUnconfigured(
-            "no memory model: choose one on Settings > Fleet, or select an LM provider"
-        )
+    # ``memory_model`` refuses an unconfigured role first (``unconfigured_roles``).
     from clio_agent.config import load_config_from_env  # noqa: PLC0415
 
     return load_config_from_env()
