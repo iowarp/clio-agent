@@ -13,6 +13,20 @@ from typing import Any, Literal
 from clio_agent.gact.fleet_settings import JudgeModel, fleet_settings, model_route
 
 MemoryRole = Literal["memory_extract", "memory_consolidate"]
+ROLES: tuple[MemoryRole, ...] = ("memory_extract", "memory_consolidate")
+#: Typed reason: a role has no fleet model and no LM provider was selected, so the
+#: server default would be the unselected ``lm_studio`` base default.
+MEMORY_MODEL_UNCONFIGURED = "lm_provider_unconfigured"
+
+
+def unconfigured_roles() -> tuple[MemoryRole, ...]:
+    """The pass's roles with neither a fleet model nor a selected LM provider."""
+    from clio_agent.gact.providers.boot_selection import explicit_lm_provider  # noqa: PLC0415
+
+    if explicit_lm_provider():
+        return ()
+    judges = fleet_settings()["judges"]
+    return tuple(role for role in ROLES if not judges.get(role))
 
 
 def memory_model_identity(role: MemoryRole) -> dict[str, str]:
@@ -29,7 +43,20 @@ def memory_model_identity(role: MemoryRole) -> dict[str, str]:
 
 
 def memory_model(role: MemoryRole) -> tuple[Any, Any, dict[str, str]]:
-    """``(lm, adapter, identity)`` for one background-pass call."""
+    """``(lm, adapter, identity)`` for one background-pass call.
+
+    Raises:
+        ClioError: ``lm_provider_unconfigured`` when the role has no model to run on;
+            the unselected base default is never probed.
+    """
+    if role in unconfigured_roles():
+        from clio_agent.errors import ClioError  # noqa: PLC0415
+
+        raise ClioError(
+            f"No model is configured for {role}: select an LM provider or a fleet model.",
+            error_type=MEMORY_MODEL_UNCONFIGURED,
+            details={"reason": MEMORY_MODEL_UNCONFIGURED, "role": role},
+        )
     identity = memory_model_identity(role)
     if role == "memory_consolidate":
         from clio_agent.gact import context  # noqa: PLC0415
@@ -46,4 +73,10 @@ def memory_model(role: MemoryRole) -> tuple[Any, Any, dict[str, str]]:
     return lm, adapter, identity
 
 
-__all__ = ["MemoryRole", "memory_model", "memory_model_identity"]
+__all__ = [
+    "MEMORY_MODEL_UNCONFIGURED",
+    "MemoryRole",
+    "memory_model",
+    "memory_model_identity",
+    "unconfigured_roles",
+]

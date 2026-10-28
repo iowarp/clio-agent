@@ -22,6 +22,12 @@ from clio_agent.gact.session_store import _append_session_message
 from clio_agent.gact.types import Message
 
 
+@pytest.fixture(autouse=True)
+def _memory_models_configured(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The pass's models count as configured; the unconfigured case is tested below."""
+    monkeypatch.setattr("clio_agent.gact.memory.models.unconfigured_roles", lambda: ())
+
+
 @pytest.fixture()
 def client(tmp_path: Path) -> Iterator[TestClient]:
     with TestClient(build_app(sessions_path=tmp_path / "sessions.json")) as started:
@@ -200,6 +206,67 @@ def test_background_off_runs_no_pass(client: TestClient, monkeypatch: pytest.Mon
     monkeypatch.setenv("CLIO_MEMORY_BACKGROUND", "false")
     background.memory_tick(app, datetime.now(UTC))
     assert not app.state.sessions.get(session.id).metadata.get(background.IN_FLIGHT)
+
+
+def test_no_configured_model_skips_the_pass_with_a_typed_reason(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    app = client.app
+    session = _idle_conversation(app)
+    monkeypatch.setattr(
+        "clio_agent.gact.memory.models.unconfigured_roles",
+        lambda: ("memory_extract", "memory_consolidate"),
+    )
+
+    def extract(*_: Any, **__: Any) -> Any:
+        raise AssertionError("no model is configured: the pass must not run")
+
+    monkeypatch.setattr("clio_agent.gact.memory.extract.extract_candidates", extract)
+    now = datetime.now(UTC)
+    background.memory_tick(app, now)
+    background.memory_tick(app, now + timedelta(minutes=1))
+    metadata = app.state.sessions.get(session.id).metadata
+    assert not metadata.get(background.IN_FLIGHT)
+    assert not metadata.get(background.LAST_PASS)  # skipped, not failed
+    assert app.state.memory_background["skipped_reason"] == "lm_provider_unconfigured"
+    assert app.state.memory_background["roles"] == ["memory_extract", "memory_consolidate"]
+
+
+def test_an_unconfigured_memory_model_is_refused_without_a_probe(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from clio_agent.errors import ClioError
+    from clio_agent.gact.memory import models
+
+    monkeypatch.setattr(models, "unconfigured_roles", lambda: ("memory_extract",))
+
+    def probe(*_: Any) -> Any:
+        raise AssertionError("the unselected default provider must not be probed")
+
+    monkeypatch.setattr(models, "model_route", probe)
+    with pytest.raises(ClioError) as refused:
+        models.memory_model("memory_extract")
+    assert refused.value.error_type == "lm_provider_unconfigured"
+
+
+def test_a_fleet_model_or_a_selected_provider_configures_the_pass(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from clio_agent.gact.memory import models
+
+    monkeypatch.undo()  # the real unconfigured_roles, not the autouse stand-in
+    monkeypatch.setattr("clio_agent.gact.providers.boot_selection.explicit_lm_provider", lambda: "")
+    choice = {"provider_id": "p", "model_id": "m"}
+    monkeypatch.setattr(
+        models,
+        "fleet_settings",
+        lambda: {"judges": {"memory_extract": choice, "memory_consolidate": None}},
+    )
+    assert models.unconfigured_roles() == ("memory_consolidate",)
+    monkeypatch.setattr(
+        "clio_agent.gact.providers.boot_selection.explicit_lm_provider", lambda: "codex"
+    )
+    assert models.unconfigured_roles() == ()
 
 
 def test_no_candidate_last_pass_is_not_reported_as_failed(client: TestClient) -> None:
