@@ -27,7 +27,7 @@ from clio_agent import paths
 # Clean-stop + the shutdown latch live in owner module arc/runtime_stop.py (file-size ratchet,
 # #775/#774), re-exported below. Also imported as a MODULE (not just names) so
 # ``_ensure_runtime_daemon`` reads the latch flag live, not a stale copy frozen at import time.
-from clio_agent.arc import clio_core_attach, runtime_stop
+from clio_agent.arc import clio_core_attach, crashed_clients, runtime_stop
 from clio_agent.arc import clio_core_daemon_version as daemon_version
 
 # Daemon port-resolution + socket-liveness helpers live in the liveness owner
@@ -74,7 +74,7 @@ from clio_agent.arc.companion_write import (
     drop_shrinking,
     remember_written,
 )
-from clio_agent.arc.pid_identity import pid_alive as _pid_alive
+from clio_agent.arc.pid_identity import pid_alive as _pid_alive  # noqa: F401 - census seam
 from clio_agent.arc.pid_identity import pidfile_live_pid
 from clio_agent.arc.pid_identity import proc_create_time as _proc_create_time
 
@@ -270,25 +270,7 @@ def _deregister_client() -> None:
 
 def _live_client_pids() -> "list[int]":
     """Return live client PIDs, pruning stale (dead / PID-reused / garbled) entries."""
-    reg = _client_registry_dir()
-    if not reg.is_dir():
-        return []
-    live: list[int] = []
-    for entry in reg.iterdir():
-        if not entry.name.isdigit():
-            continue
-        pid = int(entry.name)
-        try:
-            raw = entry.read_text(encoding="utf-8").strip()
-            recorded: Optional[float] = float(raw) if raw else None
-        except (OSError, ValueError):
-            recorded = None
-        if _pid_alive(pid, recorded):
-            live.append(pid)
-        else:
-            with contextlib.suppress(OSError):
-                entry.unlink()
-    return live
+    return crashed_clients.client_census()[0]
 
 
 def _kill_daemon_pidfile() -> None:
@@ -346,7 +328,9 @@ def _ensure_runtime_daemon(iowarp_core: object, config_path: str, log_level: str
     with _runtime_spawn_lock():
         if runtime_stop._runtime_shutdown_requested:
             raise RuntimeShutdownInProgress("clio-core runtime is shutting down")
-        _register_client()  # prunes nothing here; release-side prunes. We are now live.
+        # A daemon every client crashed on may be wedged: replaced, never adopted.
+        crashed_clients.replace_daemon_left_by_crashed_clients(config_path, log_level)
+        _register_client()  # We are now live.
         state = runtime_state_dir()
         running = daemon_version.running_daemon_config(state, config_path)
         try:

@@ -67,7 +67,10 @@ def pending_report(app: "FastAPI") -> RuntimeReport | None:
     task = getattr(app.state, "health_boot_task", None)
     if task is None or task.done():
         return None
-    from clio_agent.runtime.clio_core_health import probe_clio_core_attach  # noqa: PLC0415
+    from clio_agent.runtime.clio_core_health import (  # noqa: PLC0415
+        probe_clio_core_attach,
+        probe_clio_core_daemon_replacement,
+    )
 
     return RuntimeReport(
         integrations=[
@@ -80,6 +83,7 @@ def pending_report(app: "FastAPI") -> RuntimeReport | None:
                 required=True,
             ),
             *probe_clio_core_attach(),
+            *probe_clio_core_daemon_replacement(),
             IntegrationStatus(
                 name="lm_provider",
                 state=IntegrationState.SKIPPED,

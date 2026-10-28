@@ -27,6 +27,7 @@ from clio_agent.arc.clio_core_liveness import (
     runtime_socket_status,
 )
 from clio_agent.arc.runtime_crash import read_crash_record, summarize_crash
+from clio_agent.runtime.clio_core_replacement_health import probe_clio_core_daemon_replacement
 from clio_agent.runtime.cte_cold_tier import (
     metadata_log_bytes,
     probe_cte_cold_tier_disk,
@@ -769,6 +770,7 @@ def probe_clio_core_health(*, env: Mapping[str, str] | None = None) -> list[Inte
     return [
         *probe_clio_core_attach(),
         *probe_clio_core_config_adoption(),
+        *probe_clio_core_daemon_replacement(),
         *probe_clio_core_ram_cap(env=env),
         *probe_clio_core_liveness(),
         *probe_clio_core_daemon_memory(env=env),
