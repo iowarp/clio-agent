@@ -24,6 +24,11 @@ from clio_agent.gact.task_publication import task_owner_recipient
 
 Eligibility = Callable[[str, MailItem], bool]
 ATOMIC_INPUT_KINDS = frozenset({"human", "composer", "delegation", "question_answer"})
+#: Mail kinds whose own text is the turn's input when they trigger it (a written request);
+#: any other trigger is admitted with the generic continuation (``Conversations._admit``).
+WRITTEN_INPUT_KINDS = frozenset(
+    {"human", "composer", "goal", "loop", "schedule", "hook", "approval"}
+)
 
 
 class MailText(str):

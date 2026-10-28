@@ -38,7 +38,7 @@ from clio_agent.gact.flow_restart import to_latest_flow_assignment
 from clio_agent.gact.native_work import now
 from clio_agent.gact.owner_loop import on_owner_loop
 from clio_agent.gact.session_input import input_delivery
-from clio_agent.gact.session_mail import SessionMail, StagedInput
+from clio_agent.gact.session_mail import WRITTEN_INPUT_KINDS, SessionMail, StagedInput
 from clio_agent.gact.sessions import SessionStore
 from clio_agent.gact.spawn_context import PrepareChild
 from clio_agent.gact.task_access import AdmissionClosed, TaskAccess, TaskCaller
@@ -288,9 +288,7 @@ class Conversations:
                 value = self.history.read_content(trigger.content)
                 input_text = (
                     value.get("text", "")
-                    if trigger.kind
-                    in {"human", "composer", "goal", "loop", "schedule", "hook", "approval"}
-                    and isinstance(value, dict)
+                    if trigger.kind in WRITTEN_INPUT_KINDS and isinstance(value, dict)
                     else value
                     if trigger.kind in {"human", "composer"} and isinstance(value, str)
                     else "Continue the retained assignment using the queued messages and task outcomes."

@@ -451,8 +451,10 @@ LIVENESS = {"not_settled", "mail_stuck", "unreadable", "transiently_missing"}
 #: resumed after the kill ran on the generic continuation text instead of its request.
 SEMANTIC = {"flow_input_replaced"}
 #: The input a resumed turn gets when its trigger is not a person's message
-#: (``Conversations`` admission); a fan-out child carrying it ran on that, not the request.
-RESUME_TEXT = "Continue the retained assignment"
+#: (``Conversations`` admission: "Continue the retained assignment using the queued
+#: messages and task outcomes."); a fan-out child carrying it ran on that, not the request.
+#: The fan-out flow takes the first word as its child count, so children carry the rest.
+RESUME_TEXT = "retained assignment using the queued messages and task outcomes"
 
 
 def verify(api: Api, ledger: Ledger, phase: str) -> list[dict[str, Any]]:
