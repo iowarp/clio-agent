@@ -85,9 +85,14 @@ def _session_digests(app: "FastAPI", workspace_id: str) -> list[tuple[Any, Trans
             f"read the {budget} most recently active of {len(sessions)} sessions",
         )
         sessions = [s for s in sessions if s.id in kept]
-    by_id = {session.id: session for session in sessions}
     report = DigestReadReport()
-    rows = [(by_id[sid], digest) for sid, digest in session_digests(app, list(by_id), report)]
+    # Only sessions with something to show are kept, in the registry's order.
+    found = {
+        sid: digest
+        for sid, digest in session_digests(app, [s.id for s in sessions], report)
+        if digest.plans or digest.sources
+    }
+    rows = [(session, found[session.id]) for session in sessions if session.id in found]
     if report.transcript:  # complete, only slower: evidence, not a degradation
         stream_audit(
             "evidence_read_from_transcripts",

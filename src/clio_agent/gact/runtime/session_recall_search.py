@@ -8,8 +8,15 @@ agent-callable ``POST .../session-recall/search`` in
 Those pure, ``app.state``-reading helpers therefore live here as a leaf module
 both surfaces import, keeping a single source of truth for query
 normalization, excerpting, and the scope-controlled ranked search. The module
-imports only leaf packages (types, ``workspace_scope``, stdlib) and never loads
-:mod:`clio_agent.gact.app`.
+imports only leaf packages (types, ``workspace_scope``, the recall index, stdlib)
+and never loads :mod:`clio_agent.gact.app`.
+
+The ranked search reads each session's search digest from the recall index
+(:mod:`clio_agent.gact.recall_index`), never whole transcripts unless a digest is
+not current (a typed reason in ``metadata.index``). Work per request is bounded:
+at most :func:`recall_session_budget` sessions (the most recently active, with a
+typed ``metadata.truncated`` block when sessions were left out), and only the best
+``limit`` matches are kept and excerpted while scanning.
 """
 
 from __future__ import annotations
@@ -258,16 +265,18 @@ def _recall_search_response(
     sessions_by_id = {sid: app.state.sessions.get(sid) for sid in session_ids}
     session_ids, truncated = _within_session_budget(session_ids, sessions_by_id)
     report = DigestReadReport()
-    # Bounded: only the best ``limit`` matches are kept while scanning (the same order
-    # a stable sort by (score, created_at) descending gives), and only those excerpted.
-    best: list[tuple[float, str, int, tuple[str, SearchPart, list[str], bool]]] = []
-    seq = 0
+    # Bounded: only the best ``limit`` matches are kept while scanning, and only those
+    # are excerpted. Digests arrive in no particular order, so a tie on (score,
+    # created_at) is broken by transcript position (session order, then part order):
+    # the order a stable sort of every match by (score, created_at) descending gives.
+    best: list[tuple[float, str, tuple[int, int], tuple[str, SearchPart, list[str], bool]]] = []
     scanned = [sid for sid in session_ids if sessions_by_id.get(sid) is not None]
+    position = {sid: index for index, sid in enumerate(scanned)}
     views = session_digests(
         app, scanned, report, may_contain=lambda sid: transcript_may_contain(app, sid, terms)
     )
     for sid, digest in views:
-        for part in digest.parts:
+        for index, part in enumerate(digest.parts):
             if exclude_message_id and part.message_id == exclude_message_id:
                 continue
             lowered = part.text.lower()
@@ -278,8 +287,12 @@ def _recall_search_response(
             if not phrase_match and len(matched) * 2 < len(terms):
                 continue
             score = 1.0 if phrase_match else 0.9 * len(set(matched)) / len(set(terms))
-            seq += 1
-            row = (round(score, 4), part.created_at, -seq, (sid, part, matched, phrase_match))
+            row = (
+                round(score, 4),
+                part.created_at,
+                (-position[sid], -index),
+                (sid, part, matched, phrase_match),
+            )
             if len(best) < limit:
                 heapq.heappush(best, row)
             elif row > best[0]:

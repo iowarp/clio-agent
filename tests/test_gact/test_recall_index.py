@@ -6,6 +6,7 @@ import threading
 from types import SimpleNamespace
 from typing import Any
 
+import msgspec
 import pytest
 
 from clio_agent.arc.live import _MemoryStore
@@ -19,6 +20,7 @@ from clio_agent.gact.recall_digest import (
     encode_digest,
 )
 from clio_agent.gact.recall_index import (
+    BUCKETS,
     DIRTY_REASON,
     FORMAT_REASON,
     KIND,
@@ -27,6 +29,7 @@ from clio_agent.gact.recall_index import (
     UNREADABLE_REASON,
     DigestReadReport,
     RecallIndex,
+    bucket_of,
     build_recall_index,
     is_transcript_scope,
     session_digests,
@@ -54,6 +57,19 @@ def _index(transcripts: dict[str, list[Message]], **kw: Any) -> tuple[RecallInde
     store = _MemoryStore()
     index = RecallIndex(store, lambda sid: list(transcripts.get(sid, [])), inline=True, **kw)
     return index, store
+
+
+def _stored(store: _MemoryStore, sid: str) -> TranscriptDigest | None:
+    raw = store.get(KIND, bucket_of(sid))
+    held = msgspec.msgpack.decode(raw, type=dict[str, bytes]) if raw else {}
+    return decode_digest(held[sid]) if sid in held else None
+
+
+def _put_digest(store: _MemoryStore, sid: str, data: bytes) -> None:
+    raw = store.get(KIND, bucket_of(sid))
+    held = msgspec.msgpack.decode(raw, type=dict[str, bytes]) if raw else {}
+    held[sid] = data
+    store.put_many(KIND, [ri.PutRecord(bucket_of(sid), msgspec.msgpack.encode(held))])
 
 
 # ---- the digest ------------------------------------------------------------------
@@ -144,7 +160,7 @@ def test_a_transcript_write_marks_then_rebuilds_and_clears_the_marker() -> None:
     assert seen == [b"1"]
     assert not index.is_dirty("s1")  # inline: rebuilt as the write ended
     assert store.get(KIND, "w/s1") is None
-    assert index.read(["s1"])["s1"] == digest_messages(transcripts["s1"])
+    assert dict(index.read(["s1"]))["s1"] == digest_messages(transcripts["s1"])
 
 
 def test_a_write_during_the_rebuild_keeps_the_session_dirty() -> None:
@@ -164,7 +180,7 @@ def test_a_write_during_the_rebuild_keeps_the_session_dirty() -> None:
     store.put_many(KIND, [ri.PutRecord("w/s1", b"1")])
     assert index.rebuild("s1") is False
     assert index.is_dirty("s1") and store.get(KIND, "w/s1") == b"1"
-    assert index.read(["s1"]) == {"s1": DIRTY_REASON}
+    assert dict(index.read(["s1"])) == {"s1": DIRTY_REASON}
 
 
 def test_a_rebuild_waits_for_an_inflight_write() -> None:
@@ -172,34 +188,32 @@ def test_a_rebuild_waits_for_an_inflight_write() -> None:
     index._inflight["s1"] = 1
     index._dirty.add("s1")
     assert index.rebuild("s1") is False
-    assert store.get(KIND, "d/s1") is None
+    assert _stored(store, "s1") is None
 
 
 def test_markers_left_by_a_previous_process_read_as_dirty() -> None:
     transcripts = _transcripts()
     store = _MemoryStore()
     store.put_many(KIND, [ri.PutRecord("w/s1", b"1")])
-    store.put_many(KIND, [ri.PutRecord("d/s1", encode_digest(TranscriptDigest()))])
+    _put_digest(store, "s1", encode_digest(TranscriptDigest()))
     index = RecallIndex(store, lambda sid: transcripts[sid], delay_s=3600.0)
-    assert index.read(["s1"]) == {"s1": DIRTY_REASON}
+    assert dict(index.read(["s1"])) == {"s1": DIRTY_REASON}
     assert "s1" in index._due  # scheduled for a rebuild
     assert index.rebuild("s1") is True
-    assert index.read(["s1"])["s1"] == digest_messages(transcripts["s1"])
+    assert dict(index.read(["s1"]))["s1"] == digest_messages(transcripts["s1"])
     assert store.get(KIND, "w/s1") is None
 
 
 def test_missing_unreadable_and_old_format_digests_are_typed() -> None:
     index, store = _index(_transcripts())
-    store.put_many(KIND, [ri.PutRecord("d/bad", b"not a digest")])
+    _put_digest(store, "bad", b"not a digest")
     import zlib
 
-    import msgspec
-
     old = zlib.compress(msgspec.msgpack.encode({"version": 0, "digest": {}}))
-    store.put_many(KIND, [ri.PutRecord("d/old", old)])
+    _put_digest(store, "old", old)
     index._inline = False  # keep the read from rebuilding inline
     index._delay_s = 3600.0
-    got = index.read(["nope", "bad", "old"])
+    got = dict(index.read(["nope", "bad", "old"]))
     assert got == {"nope": MISSING_REASON, "bad": UNREADABLE_REASON, "old": FORMAT_REASON}
 
 
@@ -225,7 +239,7 @@ def test_the_rebuild_thread_builds_after_the_quiet_period() -> None:
         pass
     assert index.flush(10.0)
     assert not index.is_dirty("s1")
-    assert decode_digest(store.get(KIND, "d/s1")) == digest_messages(transcripts["s1"])
+    assert _stored(store, "s1") == digest_messages(transcripts["s1"])
 
 
 def test_segment_store_writes_pass_the_observer() -> None:
@@ -320,7 +334,7 @@ def test_the_migration_builds_every_missing_digest_once() -> None:
     sessions = SimpleNamespace(ids=lambda: ["s1", "s2"])
     app = SimpleNamespace(state=SimpleNamespace(recall_index=index, sessions=sessions))
     assert build_recall_index(app) == {"sessions": 2, "built": 1, "not_clean": 0}
-    assert decode_digest(store.get(KIND, "d/s2")) == digest_messages(transcripts["s2"])
+    assert _stored(store, "s2") == digest_messages(transcripts["s2"])
     assert build_recall_index(app)["built"] == 0  # idempotent
 
 
@@ -328,3 +342,31 @@ def test_the_migration_needs_a_store() -> None:
     app = SimpleNamespace(state=SimpleNamespace(recall_index=None, arc=None))
     with pytest.raises(RuntimeError):
         build_recall_index(app)
+
+
+def test_an_unreadable_bucket_reads_typed_and_a_rebuild_starts_it_over() -> None:
+    transcripts = _transcripts()
+    index, store = _index(transcripts)
+    store.put_many(KIND, [ri.PutRecord(bucket_of("s1"), b"\xc1 not msgpack")])
+    index._inline = False
+    index._delay_s = 3600.0
+    assert dict(index.read(["s1"])) == {"s1": UNREADABLE_REASON}
+    index._inline = True
+    assert index.rebuild("s1")
+    assert _stored(store, "s1") == digest_messages(transcripts["s1"])
+
+
+def test_one_bucket_write_per_bucket_when_many_sessions_rebuild() -> None:
+    transcripts = {f"s{n}": _transcripts()["s1"] for n in range(200)}
+    puts: list[str] = []
+
+    class _Counting(_MemoryStore):
+        def put_many(self, kind: str, records: Any) -> None:
+            puts.extend(record.name for record in records)
+            super().put_many(kind, records)
+
+    store = _Counting()
+    index = RecallIndex(store, lambda sid: transcripts[sid], inline=True)
+    assert all(index.rebuild_many(list(transcripts)).values())
+    assert len(puts) == len(set(puts)) <= BUCKETS
+    assert all(_stored(store, sid) is not None for sid in transcripts)
