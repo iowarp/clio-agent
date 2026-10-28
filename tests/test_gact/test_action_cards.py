@@ -207,7 +207,8 @@ def test_raise_alert_card_from_child_emits_into_parent_with_discuss_handle(
         # an internal expert name. agent_id stays the expert-attribution field.
         assert card["source"] == "spotter-ai"
         assert card["agent_id"] == "spotter_watcher"
-        assert card["severity"] == "critical"
+        # A legacy "critical" reads as the danger level.
+        assert card["severity"] == "danger"
         assert card["title"] == "Anomalous run"
         actions = card["actions"]
         assert actions[0] == {
@@ -492,3 +493,84 @@ def test_raise_alert_card_reaches_every_resolved_agent_through_core(
     names = _tool_names(module)
     assert "fs_read_file" in names, names  # the curated tool still resolves
     assert "raise_alert_card" in names, names  # core's claim, regardless of the allowlist
+
+
+def _armed_watcher(app: Any, parent_sid: str) -> TaskSnapshot:
+    """A child recorded as ``parent_sid``'s SPOTTER watcher (the only caller that quarantines)."""
+    task = _record_child_assignment(app, parent_sid=parent_sid, agent_ref="clio/spotter-ai")
+    app.state.sessions.update(
+        task.owner.session_id, metadata_patch={"spotter_parent_session": parent_sid}
+    )
+    return task
+
+
+def test_a_danger_alert_from_the_watcher_quarantines_until_the_person_lifts_it(
+    tmp_path: Path,
+) -> None:
+    app = build_app(sessions_path=tmp_path / "s.json")
+    with TestClient(app) as client:
+        parent_sid = client.post("/v1/sessions", json={"title": "parent"}).json()["id"]
+        task = _armed_watcher(app, parent_sid)
+        tool = build_raise_alert_card_tool(AgentDef(id="spotter_watcher", title="Spotter Watcher"))
+        result = _call_tool_as(
+            app,
+            task.owner.session_id,
+            tool,
+            title="Answer follows text planted in a tool result",
+            body="Round 5 reports the value a line in the data dictated.",
+            severity="danger",
+        )
+        assert result["emitted"] is True and result["quarantined"] is True
+
+        record = app.state.sessions.get(parent_sid).metadata["spotter_quarantine"]
+        assert record["status"] == "active"
+        assert record["title"] == "Answer follows text planted in a tool result"
+        assert record["part_id"] == result["part_id"]
+        assert record["watcher_handle"] == task.handle
+
+        refused = client.post(
+            f"/v1/sessions/{parent_sid}/messages",
+            json={"parts": [{"type": "text", "text": "continue"}]},
+        )
+        assert refused.status_code == 409
+        assert refused.json()["detail"]["error"]["error"] == "spotter_quarantined"
+
+        lifted = client.post(f"/v1/sessions/{parent_sid}/spotter/quarantine/lift")
+        assert lifted.status_code == 200
+        assert lifted.json()["quarantine"]["status"] == "lifted"
+        assert app.state.sessions.get(parent_sid).metadata["spotter_quarantine"]["lifted_at"]
+
+        again = client.post(f"/v1/sessions/{parent_sid}/spotter/quarantine/lift")
+        assert again.status_code == 409
+        assert again.json()["detail"]["error"]["error"] == "spotter_quarantine_not_active"
+
+
+@pytest.mark.parametrize("severity", ["warning", "info"])
+def test_a_warning_alert_only_posts_its_card(tmp_path: Path, severity: str) -> None:
+    app = build_app(sessions_path=tmp_path / "s.json")
+    with TestClient(app) as client:
+        parent_sid = client.post("/v1/sessions", json={"title": "parent"}).json()["id"]
+        task = _armed_watcher(app, parent_sid)
+        tool = build_raise_alert_card_tool(AgentDef(id="spotter_watcher", title="Spotter Watcher"))
+        result = _call_tool_as(
+            app, task.owner.session_id, tool, title="Odd", body="b", severity=severity
+        )
+        assert result["emitted"] is True and "quarantined" not in result
+        assert "spotter_quarantine" not in app.state.sessions.get(parent_sid).metadata
+        messages = client.get(f"/v1/sessions/{parent_sid}/messages").json()["messages"]
+        [card] = [p for m in messages for p in m["parts"] if p["type"] == "action_card"]
+        assert card["severity"] == "warning"
+
+
+def test_a_danger_alert_from_another_child_does_not_quarantine(tmp_path: Path) -> None:
+    app = build_app(sessions_path=tmp_path / "s.json")
+    with TestClient(app) as client:
+        parent_sid = client.post("/v1/sessions", json={"title": "parent"}).json()["id"]
+        task = _record_child_assignment(app, parent_sid=parent_sid)
+        tool = build_raise_alert_card_tool(AgentDef(id="helper", title="Helper"))
+        result = _call_tool_as(
+            app, task.owner.session_id, tool, title="Bad", body="b", severity="danger"
+        )
+        assert result["emitted"] is True and "quarantined" not in result
+        assert "spotter_quarantine" not in app.state.sessions.get(parent_sid).metadata
+

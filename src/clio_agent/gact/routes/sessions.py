@@ -831,3 +831,31 @@ def register_sessions_routes(app: FastAPI, deps: "GactDeps") -> None:
         """
         await cancel_session_state_async(app, deps, sid)
         return Response(status_code=204)
+
+    # ---- POST /v1/sessions/{sid}/spotter/quarantine/lift --------------
+
+    @app.post("/v1/sessions/{sid}/spotter/quarantine/lift")
+    async def lift_spotter_quarantine(sid: str) -> dict[str, Any]:
+        """The person lifts the quarantine a SPOTTER danger alert put on ``sid``.
+
+        Returns the lifted record. 404 for an unknown session; 409 when no quarantine
+        is active (already lifted, or never raised).
+        """
+        from clio_agent.gact.spotter_quarantine import lift_quarantine  # noqa: PLC0415
+
+        if app.state.sessions.get(sid) is None:
+            raise HTTPException(status_code=404, detail="Session unavailable")
+        lifted = await app.state.task_history.io.run(lift_quarantine, app, sid)
+        if lifted is None:
+            raise HTTPException(
+                status_code=409,
+                detail=ErrorEnvelope(
+                    error=ErrorInfo(
+                        error="spotter_quarantine_not_active",
+                        message="This session is not in quarantine.",
+                        details={"session_id": sid},
+                        recoverable=True,
+                    )
+                ).model_dump(exclude_none=True),
+            )
+        return {"session_id": sid, "quarantine": lifted}

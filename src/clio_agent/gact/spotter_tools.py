@@ -425,8 +425,8 @@ def compact_attention(payload: Mapping[str, Any], messages: list[Any]) -> dict[s
             "lm_call_id": payload.get("lm_call_id", ""),
         },
         "note": (
-            "Attention shows what the answer weighted, not why. Pass `evidence` (plus your "
-            "`uncertainty`) to raise_alert_card's attention_evidence; it is not proof alone."
+            "Attention shows what the answer weighted, not why; it is not proof alone. Say "
+            "what it showed in your alert's body."
         ),
     }
 
@@ -613,8 +613,7 @@ def build_attention_sources_tool(agent_def: Any = None) -> Any:
             "`message_id` (from review_activity.assistant_answers) to explain that whole answer; "
             "omit both for the latest answer. `text`, when "
             "given, must quote the assistant's answer or reasoning exactly, never the user's "
-            "message. Returns `evidence` for raise_alert_card's attention_evidence. Attention "
-            "alone is not proof."
+            "message. Attention alone is not proof."
         ),
         args={
             "text": {

@@ -244,6 +244,24 @@ def _validate_provider_and_payload(
 
     raise_on_reserved_metadata(sid, req.metadata)
     _apply_a2ui_client_metadata_guards(app, sid, req.metadata)
+    from clio_agent.gact.spotter_quarantine import (  # noqa: PLC0415
+        QUARANTINE_MESSAGE,
+        QUARANTINE_REASON,
+        active_quarantine,
+    )
+
+    if active_quarantine(sess) is not None:
+        raise HTTPException(
+            status_code=409,
+            detail=ErrorEnvelope(
+                error=ErrorInfo(
+                    error=QUARANTINE_REASON,
+                    message=QUARANTINE_MESSAGE,
+                    details={"session_id": sid, "recovery_actions": ["lift_spotter_quarantine"]},
+                    recoverable=True,
+                )
+            ).model_dump(exclude_none=True),
+        )
     lm_status = getattr(app.state, "lm_config_status", {}) or {}
     if lm_status.get("state") == "configuring":
         raise HTTPException(

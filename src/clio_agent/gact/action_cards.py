@@ -83,7 +83,7 @@ def action_card_part(
     Args:
         source: Emitter identity, a free string (e.g. ``"spotter-ai"``; future:
             a tool name).
-        severity: An open string; MVP values are ``"info" | "warning" | "critical"``.
+        severity: An open string; alerts use ``"warning"`` and ``"danger"``.
         title: Headline text (e.g. "SPOTTER has detected an issue").
         body: Detail text (markdown allowed, rendered like other part bodies).
         actions: A list of ``{id, label, enabled, behavior}`` action objects. Each
@@ -250,6 +250,21 @@ def _calling_assignment(app: Any, sid: str) -> tuple[TaskSnapshot | None, TaskSn
     return current, parent, ""
 
 
+#: Legacy severities map onto the two alert levels.
+_ALERT_LEVELS = {"warning": "warning", "info": "warning", "danger": "danger", "critical": "danger"}
+
+
+def _alert_level(severity: str) -> str:
+    """``warning`` or ``danger`` (``critical`` reads as danger, anything else as warning)."""
+    return _ALERT_LEVELS.get(str(severity or "").strip().lower(), "warning")
+
+
+def _is_spotter_watcher(caller_session: Any, parent: Any) -> bool:
+    """Whether the caller is the watched session's SPOTTER watcher (only it quarantines)."""
+    metadata = getattr(caller_session, "metadata", None) or {}
+    return metadata.get("spotter_parent_session") == parent.owner.session_id
+
+
 def build_raise_alert_card_tool(agent_def: Any) -> Any:
     """Build the ``raise_alert_card`` dspy.Tool (auto-attached runtime infrastructure).
 
@@ -279,24 +294,19 @@ def build_raise_alert_card_tool(agent_def: Any) -> Any:
         body: str,
         severity: str = "warning",
         stub_actions: Optional[list[Any]] = None,
-        attention_evidence: Optional[dict[str, Any]] = None,
     ) -> dict[str, Any]:
         """Raise a notification/action card into YOUR PARENT session's transcript.
 
         Use this when you (a spawned child agent) discover something your parent
         session's user should see WITHOUT waiting for you to finish and be waited
-        on — e.g. an anomaly, a quarantine, a blocking finding. ``severity`` is
-        ``info`` | ``warning`` | ``critical``. The card always carries a "Discuss"
-        action that focuses your task in the parent's UI. Pass ``stub_actions`` as
+        on — e.g. an anomaly or a blocking finding. ``severity`` is ``warning`` (the
+        card only informs the person) or ``danger``: from SPOTTER's watcher, a danger
+        card also puts the watched session in quarantine (it stops until the person
+        lifts it). The card always carries a "Discuss" action that focuses your task
+        in the parent's UI. Pass ``stub_actions`` as
         ``[{"id", "label", "reason"}, ...]`` for future actions you want the UI to
         show but not yet wire (rendered disabled, with ``reason`` as the tooltip);
         bare strings (``["address", "remove"]``) work too as a shorthand.
-
-        For an attention finding, pass ``attention_evidence`` copied from the
-        inspection: response_id, capture_sha256, steps, resolved profile,
-        profile_revision, and uncertainty. CLIO verifies the receipt against
-        this parent's local capture before enabling "Inspect evidence". Attention
-        alone does not prove an attack or authorize quarantine.
 
         Only callable from a SPAWNED CHILD session (one with a live parent
         AgentTask) — calling this from a top-level/unspawned session returns a
@@ -346,16 +356,6 @@ def build_raise_alert_card_tool(agent_def: Any) -> Any:
         # narrowed non-None here (the None case early-returned above).
         assert app is not None
 
-        if attention_evidence is not None:
-            from clio_agent.gact.attention.finding_evidence import finding_attention_action
-
-            evidence_action, uncertainty = finding_attention_action(
-                app, parent.owner.session_id, task.handle, attention_evidence
-            )
-            actions.insert(0, evidence_action)
-            if uncertainty:
-                body = f"{body}\n\nUncertainty: {uncertainty}"
-
         # Branded emitter identity: the calling session's agent (e.g.
         # "clio/spotter-ai"), so the card header reads as the product. Falls back
         # to the calling agent id for a session without a pinned agent.
@@ -363,9 +363,10 @@ def build_raise_alert_card_tool(agent_def: Any) -> Any:
         agent_ref = str((getattr(caller_session, "metadata", None) or {}).get("agent_ref") or "")
         source = agent_ref.rsplit("/", 1)[-1] or caller_expert_id
 
+        level = _alert_level(severity)
         part = action_card_part(
             source=source,
-            severity=severity,
+            severity=level,
             title=title,
             body=body,
             actions=actions,
@@ -383,11 +384,18 @@ def build_raise_alert_card_tool(agent_def: Any) -> Any:
         )
         if skipped:
             result["skipped_stub_actions"] = skipped
-        if attention_evidence is not None:
-            result["attention_evidence"] = {
-                "available": evidence_action["enabled"],
-                "reason": evidence_action["behavior"].get("reason", ""),
-            }
+        if emitted and level == "danger" and _is_spotter_watcher(caller_session, parent):
+            from clio_agent.gact.spotter_quarantine import quarantine_session  # noqa: PLC0415
+
+            result["quarantined"] = quarantine_session(
+                app,
+                parent.owner.session_id,
+                title=title,
+                detail=body,
+                part_id=part.id,
+                watcher_session_id=sid,
+                watcher_handle=task.handle,
+            )
         return result
 
     return native_tool(
@@ -405,7 +413,10 @@ def build_raise_alert_card_tool(agent_def: Any) -> Any:
             },
             "severity": {
                 "type": "string",
-                "description": "One of info|warning|critical. Defaults to warning.",
+                "description": (
+                    "warning (inform the person) or danger (SPOTTER: also quarantine the "
+                    "watched session). Defaults to warning."
+                ),
             },
             "stub_actions": {
                 "type": "array",
@@ -413,14 +424,6 @@ def build_raise_alert_card_tool(agent_def: Any) -> Any:
                 "description": (
                     "Optional future actions to show disabled: "
                     '[{"id", "label", "reason"}, ...] (bare strings also accepted).'
-                ),
-            },
-            "attention_evidence": {
-                "type": "object",
-                "description": (
-                    "Optional exact attention inspection receipt: response_id, capture_sha256, "
-                    "steps, resolved profile, profile_revision, uncertainty. Copy observed "
-                    "identities; never guess transcript coordinates."
                 ),
             },
         },
