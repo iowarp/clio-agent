@@ -257,7 +257,7 @@ async def collect_workspace_directory(
                     )
                 ]
                 additional_groups = [
-                    _directory(prefix, f"{folder.name} · Additional folder")
+                    _directory(prefix, f"{folder.name} (additional folder)")
                     for prefix, folder in folder_locations(root).items()
                 ]
                 rows = chain(rows, groups, additional_groups)

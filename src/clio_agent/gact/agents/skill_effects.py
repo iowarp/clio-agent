@@ -26,7 +26,7 @@ Two effects shipped in P1.0:
   never performs this effect.
 
 P4.4 (#1082) GENERALIZES this vocabulary with the **autonomy effects** — each a declared
-frontmatter bundle over the SAME primitives the ``/loop``·``/goal``·``/cron`` surfaces use,
+frontmatter bundle over the SAME primitives the ``/loop``, ``/goal`` and ``/cron`` surfaces use,
 so "run skill X daily until Y holds" is ONE declared, injection-safe skill:
 
 * ``loop`` — arm a self-paced cross-turn loop for this skill's work via

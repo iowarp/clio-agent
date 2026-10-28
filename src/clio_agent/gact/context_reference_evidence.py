@@ -209,7 +209,7 @@ def _diff_snapshots(
                     kind="diff",
                     ref_id=ref_id,
                     label=Path(path).name or path,
-                    detail=f"Changed file · {path} · {payload['status']}",
+                    detail=f"Changed file: {path} ({payload['status']})",
                     media_type="text/x-diff",
                     navigation={
                         "workspace_id": workspace_id,
@@ -242,7 +242,10 @@ def _context_frame_snapshots(
                     kind="context_frame",
                     ref_id=frame_id,
                     label=f"Context for {session.title or session.id}",
-                    detail=f"{row.get('status') or 'assembled'} · {item_count} items",
+                    detail=(
+                        f"{row.get('status') or 'assembled'} ({item_count} "
+                        + ("item)" if item_count == 1 else "items)")
+                    ),
                     media_type="application/vnd.clio.context-frame+json",
                     navigation={
                         "workspace_id": workspace_id,

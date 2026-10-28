@@ -105,6 +105,8 @@ jobs:
         run: uv run python scripts/check_no_settle_vocabulary.py
       - name: "guard: no elicitationId residue (baseline 0) (SEP-2577, C1-S4 #1284)"
         run: uv run python scripts/check_no_elicitation_id_vocabulary.py
+      - name: "guard: no middle dot in server copy (baseline 0)"
+        run: uv run python scripts/check_no_middle_dot_copy.py
       - name: "guard: no bare dspy.Tool outside the instrumentation factory/bridge (baseline 0)"
         run: uv run python scripts/check_tool_instrumentation.py
       # Model-capabilities brief Part 8 (P6). BLOCKING: fails if any

@@ -29,6 +29,12 @@ def _link(key: str, target: str, uri: str, label: str) -> dict[str, Any]:
     return {"id": key, "type": "link", "target": target, "uri": uri, "label": label}
 
 
+def _issue_location(issue: Mapping[str, Any]) -> str:
+    """Name where a workbook issue is, for example ``Sheet1, cell B3``."""
+    part, cell = str(issue.get("part") or ""), str(issue.get("cell") or "")
+    return ", ".join(filter(None, (part, f"cell {cell}" if cell else ""))) or "Workbook"
+
+
 def _view(
     summary: str, blocks: list[dict[str, Any]], row: Mapping[str, Any], **header: Any
 ) -> dict[str, Any]:
@@ -172,7 +178,7 @@ def document_inspection(args: Mapping[str, Any], row: Mapping[str, Any]) -> dict
                 "calculation-issues",
                 "Calculation issues",
                 "\n".join(
-                    f"{issue.get('part', '')} · {issue.get('cell', '')}: {str(issue.get('error', '')).replace('_', ' ')}"
+                    _issue_location(issue) + f": {str(issue.get('error', '')).replace('_', ' ')}"
                     for issue in row["issues"]
                 ),
             )
@@ -301,7 +307,7 @@ def surface_inspection(args: Mapping[str, Any], row: Mapping[str, Any]) -> dict[
                 "controls",
                 "Interactive controls",
                 "\n".join(
-                    f"{control.get('component_id', 'Component')} · {control.get('property', 'Control')} → {control.get('path', '')}"
+                    f"{control.get('component_id', 'Component')} ({control.get('property', 'Control')}) → {control.get('path', '')}"
                     if isinstance(control, Mapping)
                     else str(control)
                     for control in row["controls"]
