@@ -108,7 +108,7 @@ class RestartInterruptions:
 
     def pending(self) -> tuple[str, ...]:
         """Conversations still waiting, oldest first."""
-        return tuple(self._locks)
+        return tuple(self._locks.copy())  # closed from other threads meanwhile
 
     def waiting(self, session_id: str) -> bool:
         """Whether ``session_id``'s interrupted transcript is not closed yet."""
