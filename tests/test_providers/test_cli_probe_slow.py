@@ -77,7 +77,10 @@ def test_codex_detection_reports_an_unresponsive_probe_as_such(tmp_path: Path) -
     """SABOTAGE: let the probe failure fold to "" -> codex_version_unsupported -> red."""
     binary = _fake_cli(tmp_path, "idle", 30.0)
     det = sandbox_codex.detect_codex(
-        which=lambda name: binary, bundled_root=lambda: None, platform="linux"
+        which=lambda name: binary,
+        bundled_root=lambda: None,
+        wheel_binary=lambda: None,
+        platform="linux",
     )
     assert det.installed is True
     assert det.reason == sandbox_codex.REASON_CODEX_VERSION_PROBE_UNRESPONSIVE

@@ -299,7 +299,15 @@ def test_an_answer_line_past_the_excerpt_bound_is_surfaced() -> None:
 
 def _gact_message(mid: str, role: str, parts: list[dict[str, Any]]) -> Message:
     return Message.model_validate(
-        {"id": mid, "session_id": "s", "role": role, "turn_id": mid, "parts": parts}
+        {
+            "id": mid,
+            "session_id": "s",
+            "role": role,
+            "turn_id": mid,
+            "parts": parts,
+            "created_at": "2026-10-28T00:00:00+00:00",
+            "updated_at": "2026-10-28T00:00:00+00:00",
+        }
     )
 
 

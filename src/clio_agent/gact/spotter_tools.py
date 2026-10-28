@@ -322,7 +322,9 @@ def _answer_leads(
     return leads
 
 
-_ANSWER_LINE = re.compile(r"^[^\S\n]*(\S.*\bANSWER\s*[:=].*?)[^\S\n]*$", re.M | re.I)
+_ANSWER_LINE = re.compile(
+    r"^[^\S\n]*(\S.*?\bANSWER\s*[:=].*?|ANSWER\s*[:=].*?)[^\S\n]*$", re.M | re.I
+)
 
 
 def _answer_line_span(text: str) -> tuple[int, int] | None:

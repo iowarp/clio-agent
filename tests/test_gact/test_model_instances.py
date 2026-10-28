@@ -129,8 +129,7 @@ def test_instances_have_their_own_container_and_catalog_row() -> None:
 
 def test_catalog_rows_say_which_engine_runs_instances_and_whose_instance_a_row_is() -> None:
     rows = {
-        row.id: row
-        for row in service_definitions(_facts(), ["vllm@spotter", "llama_cpp@coder"])
+        row.id: row for row in service_definitions(_facts(), ["vllm@spotter", "llama_cpp@coder"])
     }
 
     assert rows["vllm"].supports_instances and rows["llama_cpp"].supports_instances
