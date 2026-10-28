@@ -255,9 +255,12 @@ def _wait_agent_ready(log_path, timeout):
             if health.get("tool_hooks_installed") is True:
                 return "health"
             # CLIO builds its agent at boot only for a user-selected provider; before the
-            # kit binds vLLM there is none, so "agent ready" never comes: stop waiting.
+            # scripts bind vLLM there is none, so "agent ready" never comes: stop waiting.
             for row in health.get("integrations") or []:
-                if row.get("name") == "lm_provider" and row.get("reason") == "lm_provider_unconfigured":
+                if (
+                    row.get("name") == "lm_provider"
+                    and row.get("reason") == "lm_provider_unconfigured"
+                ):
                     return "no-boot-agent"
         except KitError:
             pass
@@ -265,9 +268,16 @@ def _wait_agent_ready(log_path, timeout):
     return ""
 
 
-#: Settings the kit reads that must not reach CLIO (or the vLLM processes it spawns).
+#: Settings these scripts read that must not reach CLIO (or the vLLM processes it spawns).
 _SCRIPT_ONLY_ENV = frozenset(
-    ["CLIO_PORT", "VLLM_VARIANT", "VLLM_TP", "VLLM_GPU_UTIL", "VLLM_MAX_NUM_SEQS", "VLLM_MAX_MODEL_LEN"]
+    [
+        "CLIO_PORT",
+        "VLLM_VARIANT",
+        "VLLM_TP",
+        "VLLM_GPU_UTIL",
+        "VLLM_MAX_NUM_SEQS",
+        "VLLM_MAX_MODEL_LEN",
+    ]
 )
 SPOTTER_SERVICE = "vllm@spotter"
 
@@ -301,10 +311,10 @@ def serve_start():
     workspace = os.path.join(ROOT, "workspace-default")
     os.makedirs(workspace, exist_ok=True)
     command = [clio_bin, "serve", "--host", "127.0.0.1", "--port", str(chosen)]
-    # The clio-core runtime daemon CLIO spawns reads CLIO_PORT as ITS listen port: the kit's
+    # The clio-core runtime daemon CLIO spawns reads CLIO_PORT as ITS listen port: these scripts'
     # CLIO_PORT (CLIO's HTTP port, given by --port) would make it collide with CLIO itself.
-    # The kit's own VLLM_* settings are not vLLM variables: keep them out of the vLLMs CLIO spawns.
-    child_env = dict((k, v) for k, v in os.environ.items() if k not in _SCRIPT_ONLY_ENV)
+    # These scripts' VLLM_* settings are not vLLM variables: keep them out of the vLLMs CLIO spawns.
+    child_env = {k: v for k, v in os.environ.items() if k not in _SCRIPT_ONLY_ENV}
     with open(log_path, "ab") as log:
         process = subprocess.Popen(
             command,
@@ -850,11 +860,7 @@ def step_bind():
     }
     servers = call("GET", "/v1/providers/servers", dry={"servers": []}).get("servers", [])
     held = next(
-        (
-            s
-            for s in servers
-            if (s.get("address") or "").rstrip("/") == address
-        ),
+        (s for s in servers if (s.get("address") or "").rstrip("/") == address),
         None,
     )
     if held:  # rerun: recheck the saved server instead of saving it twice
@@ -919,7 +925,9 @@ def step_spotter_vllm():
             and held.get("param.max_model_len") == configuration["param.max_model_len"]
         )
 
-    row, steps = ensure_service(SPOTTER_SERVICE, variant, configuration, "spotter-vllm", 5400, matches)
+    row, steps = ensure_service(
+        SPOTTER_SERVICE, variant, configuration, "spotter-vllm", 5400, matches
+    )
     return receipt(
         "06b-spotter-vllm",
         "ok",
@@ -950,13 +958,18 @@ def step_spotter_bind():
         saved = call("POST", "/v1/providers/servers/%s/check" % held["id"], dry=dry_saved)
     else:
         saved = call(
-            "POST", "/v1/providers/servers", {"address": address, "preset_id": "vllm"}, dry=dry_saved
+            "POST",
+            "/v1/providers/servers",
+            {"address": address, "preset_id": "vllm"},
+            dry=dry_saved,
         )
     write_json(os.path.join(JOB_EVIDENCE, "bind-spotter-server.json"), saved)
     check = saved.get("check") or {}
     models = check.get("models") or []
     if not check.get("reachable") or not models:
-        raise KitError("the SPOTTER vLLM is not reachable or lists no model: %s" % json.dumps(check)[:600])
+        raise KitError(
+            "the SPOTTER vLLM is not reachable or lists no model: %s" % json.dumps(check)[:600]
+        )
     model_id = next((m for m in models if m == spotter.get("model")), models[0])
     fleet = call(
         "GET",
@@ -994,7 +1007,9 @@ def _spotter_model():
         return ""
     bound = prior("08b-spotter-bind", {"spotter_model": "server-vllm-spotter/<dry:model>"})
     if not bound.get("spotter_model"):
-        raise KitError("SPOTTER_MODE=dedicated but no 08b-spotter-bind receipt; run 02_services_up.sh")
+        raise KitError(
+            "SPOTTER_MODE=dedicated but no 08b-spotter-bind receipt; run 02_services_up.sh"
+        )
     return bound["spotter_model"]
 
 
@@ -1111,6 +1126,80 @@ def _safetensors_header(path):
             k: {"shape": v.get("shape"), "dtype": v.get("dtype")} for k, v in header.items()
         },
     }
+
+
+def step_spotter_smoke():
+    """ONE watched turn with a tool call: SPOTTER must finish a real review on its chosen model.
+
+    The gate before OPAL: it catches a SPOTTER that cannot reach its model (context, key,
+    provider resolution) in minutes instead of a whole chain run.
+    """
+    workspace = _workspace("spotter-smoke", os.path.join(ROOT, "workspace-smoke"))
+    session = _session(
+        workspace["id"],
+        "Polaris SPOTTER smoke (%s)" % env("SPOTTER_MODE", "shared"),
+        "clio/appl-core",
+        "spotter-ai",
+    )
+    sid = session["id"]
+    ack = _post(
+        sid,
+        "Run 'ls -la' in this workspace's root with the shell tool and tell me how many "
+        "entries there are.",
+        "spotter-ai",
+    )
+    reply = _settled(sid, ack.get("message_id", ""), int(env("SPOTTER_SMOKE_TURN_S", "900")))
+    deadline = time.time() + int(env("SPOTTER_SMOKE_REVIEW_S", "900"))
+    task, review = {}, {}
+    while time.time() < deadline:
+        tasks = call("GET", "/v1/sessions/%s/agent-tasks" % sid, dry={"tasks": []}).get("tasks", [])
+        task = tasks[0] if tasks else {}
+        if task.get("child_session_id"):
+            rows = call(
+                "GET", "/v1/sessions/%s/messages" % task["child_session_id"], dry={"messages": []}
+            ).get("messages", [])
+            done = [r for r in rows if r.get("role") == "assistant" and r.get("stop_reason")]
+            if done:
+                review = done[-1]
+                break
+        if DRY:
+            break
+        time.sleep(10)
+    parts = review.get("parts") or []
+    calls = [p.get("tool_name") or "" for p in parts if p.get("type") == "tool_call"]
+    errors = [
+        p.get("tool_name") or ""
+        for p in parts
+        if p.get("type") == "tool_result" and p.get("is_error")
+    ]
+    choice = task.get("model_choice") or {}
+    wanted = _spotter_model()
+    problems = []
+    if not review:
+        problems.append("SPOTTER finished no review in time")
+    elif review.get("stop_reason") != "end_turn":
+        problems.append("SPOTTER review stopped with %s" % review.get("stop_reason"))
+    if review and not calls:
+        problems.append("SPOTTER called no tool")
+    if review and "review_activity" not in calls:
+        problems.append("SPOTTER did not call review_activity")
+    if wanted and (choice.get("ran") or {}).get("provider_id") != wanted.split("/", 1)[0]:
+        problems.append("SPOTTER ran on %s, not %s" % (choice.get("ran"), wanted))
+    return receipt(
+        "09b-spotter-smoke",
+        "failed" if problems and not DRY else "ok",
+        session_id=sid,
+        spotter_session_id=task.get("child_session_id"),
+        model_choice=choice,
+        main_stop_reason=(reply or {}).get("stop_reason"),
+        review_stop_reason=review.get("stop_reason"),
+        tool_calls=calls,
+        tool_errors=errors,
+        problems=problems,
+        review_excerpt=" ".join(
+            "".join(p.get("text", "") for p in parts if p.get("type") == "text").split()
+        )[:600],
+    )
 
 
 def step_smoke():
@@ -1496,6 +1585,7 @@ COMMANDS = {
     "spotter-vllm": lambda a: step_spotter_vllm(),
     "spotter-bind": lambda a: step_spotter_bind(),
     "smoke": lambda a: step_smoke(),
+    "spotter-smoke": lambda a: step_spotter_smoke(),
     "opal-setup": lambda a: step_opal_setup(),
     "opal-report": lambda a: step_opal_report(a[0]),
     "stage-opal": lambda a: stage_opal(a[0], a[1]),
