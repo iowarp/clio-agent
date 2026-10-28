@@ -48,8 +48,8 @@ _EXIT_WAIT_S = 10.0
 _replacement: dict[str, Any] = {}
 
 
-def client_census() -> tuple[list[int], list[int]]:
-    """``(live, crashed)`` client PIDs of the registry; crashed entries are pruned.
+def client_census(*, prune: bool = True) -> tuple[list[int], list[int]]:
+    """``(live, crashed)`` client PIDs of the registry; crashed entries pruned if ``prune``.
 
     A crashed entry is a file whose process is gone or whose PID was reused (its
     recorded start time differs); an unreadable record counts as unknown start time.
@@ -74,9 +74,16 @@ def client_census() -> tuple[list[int], list[int]]:
             live.append(pid)
         else:
             crashed.append(pid)
-            with contextlib.suppress(OSError):
-                entry.unlink()
+            if prune:
+                _prune(pid)
     return live, crashed
+
+
+def _prune(pid: int) -> None:
+    from clio_agent.arc import storage  # noqa: PLC0415 - storage imports this module
+
+    with contextlib.suppress(OSError):
+        (storage._client_registry_dir() / str(pid)).unlink()
 
 
 def replace_daemon_left_by_crashed_clients(config_path: str, log_level: str) -> bool:
@@ -99,7 +106,9 @@ def replace_daemon_left_by_crashed_clients(config_path: str, log_level: str) -> 
     from clio_agent.arc.clio_core_config import runtime_state_dir  # noqa: PLC0415
     from clio_agent.arc.clio_core_liveness import ClioCoreRuntimeLostError  # noqa: PLC0415
 
-    live, crashed = client_census()
+    # Crashed entries are pruned only once the daemon is stopped: a start killed during
+    # the stop leaves them, so the next start still knows the daemon is suspect.
+    live, crashed = client_census(prune=False)
     if live or not crashed:
         return False
     running = daemon_version.running_daemon_config(runtime_state_dir(), config_path)
@@ -109,6 +118,7 @@ def replace_daemon_left_by_crashed_clients(config_path: str, log_level: str) -> 
     except ClioCoreRuntimeLostError:
         listening = daemon_pid is not None  # inconclusive probe: trust the pidfile
     if daemon_pid is None and not listening:
+        _prune_all(crashed)
         return False
     started = time.monotonic()
     logger.warning(
@@ -123,6 +133,8 @@ def replace_daemon_left_by_crashed_clients(config_path: str, log_level: str) -> 
         running, log_level, ceiling_s=runtime_stop.stop_no_progress_s()
     )
     exited = _wait_for_exit(daemon_pid)
+    if exited:
+        _prune_all(crashed)
     record = {
         "reason": DAEMON_REPLACED_AFTER_CLIENT_CRASH,
         "daemon_pid": daemon_pid,
@@ -142,6 +154,11 @@ def replace_daemon_left_by_crashed_clients(config_path: str, log_level: str) -> 
         )
     logger.warning("clio-core daemon replaced after client crash: %s", record)
     return True
+
+
+def _prune_all(pids: list[int]) -> None:
+    for pid in pids:
+        _prune(pid)
 
 
 def _wait_for_exit(pid: int | None) -> bool:
