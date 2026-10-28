@@ -98,7 +98,7 @@ class DocumentRenderer:
         target = self.target(token.attrGet("src") or "", image=True)
         caption = escape(token.content or "Recorded image")
         if not target:
-            return f"<span>{caption} · image was not captured</span>"
+            return f"<span>{caption} (image was not captured)</span>"
         return f'<img src="{escape(target)}" alt="{caption}">'
 
     def previews(self) -> str:
@@ -157,9 +157,9 @@ class DocumentRenderer:
                 target = relative_link(item["archive_path"])
                 text = self.snapshot.get("tool_output_text", {}).get(item["source_path"])
                 return (
-                    f"<p>Complete saved output · {item['bytes']:,} bytes</p>"
+                    f"<p>Complete saved output ({item['bytes']:,} bytes)</p>"
                     if self.manifest["mode"] == "transcript"
-                    else f'<p><a href="{escape(target)}">Open complete saved output</a> · {item["bytes"]:,} bytes</p>'
+                    else f'<p><a href="{escape(target)}">Open complete saved output</a> ({item["bytes"]:,} bytes)</p>'
                 ) + (f"<pre>{escape(text)}</pre>" if text is not None else "")
             if "structuredContent" in value and value.get("content") == []:
                 return self.value(value["structuredContent"])
@@ -208,7 +208,7 @@ def document_body(
                     tool = tools.get(part["call_id"], {})
                     name = part.get("tool_title") or part.get("tool_name") or tool.get("tool")
                     content.append(
-                        f'<section class="activity" data-part="tool_call"><h3>{escape(name or "Tool")} · request</h3>'
+                        f'<section class="activity" data-part="tool_call"><h3>{escape(name or "Tool")}: request</h3>'
                         + renderer.value(tool.get("input", part.get("input", {})))
                         + "</section>"
                     )
@@ -231,7 +231,7 @@ def document_body(
                             + "</details>"
                         )
                     content.append(
-                        f'<section class="activity" data-part="tool_result"><h3>{escape(name or "Tool")} · {escape(status)}</h3><div class="output">'
+                        f'<section class="activity" data-part="tool_result"><h3>{escape(name or "Tool")}: {escape(status)}</h3><div class="output">'
                         + rendered_output
                         + "</div></section>"
                     )
@@ -255,15 +255,15 @@ def document_body(
                     content.append(
                         f'<p><a href="{escape(target)}">{escape(label)}</a></p>'
                         if target
-                        else f"<p>{escape(label)} · source file requires Effects or Full</p>"
+                        else f"<p>{escape(label)} (source file not included; export with Effects or Full to include it)</p>"
                     )
                 elif kind == "a2ui":
                     content.append(
-                        '<p class="meta">Saved interactive view · available in the enhanced review.</p>'
+                        '<p class="meta">Saved interactive view. Open the enhanced review to see it.</p>'
                     )
                 else:
                     content.append(
-                        f'<p class="meta">Recorded {escape(kind.replace("_", " "))} · exact record in Evidence.</p>'
+                        f'<p class="meta">Recorded {escape(kind.replace("_", " "))}. The exact record is in Evidence.</p>'
                     )
             parts.append(
                 f'<article class="{escape(message["role"])}" id="{escape(message["id"])}"><h3>'
@@ -287,9 +287,9 @@ def document_body(
             + "</section>"
         )
     body = (
-        '<main><header><p class="eyebrow">CLIO · Session archive</p>'
-        f"<h1>{escape(transcript['session']['title'])}</h1><p>{escape(manifest['mode'].title())} · "
-        f"{len(transcript['messages'])} messages · {len(transcript['tool_records'])} tool records</p>"
+        '<main><header><p class="eyebrow">CLIO session archive</p>'
+        f"<h1>{escape(transcript['session']['title'])}</h1><p>{escape(manifest['mode'].title())} export, "
+        f"{len(transcript['messages'])} messages, {len(transcript['tool_records'])} tool records</p>"
         '<nav><a href="#conversation">Conversation & activity</a><a href="#saved-images">Captured results</a><a href="#included-files">Files</a>'
         '<a href="#evidence">Evidence & skills</a></nav></header>'
         '<section id="conversation">'
@@ -297,7 +297,7 @@ def document_body(
         + "</section>"
         + renderer.previews()
         + '<section id="included-files"><h2>Included files</h2><p>The archive keeps the full transcript, tool inputs and outputs, traces and loaded skill instructions.</p>'
-        '<p><a href="transcript.json">Raw transcript</a> · <a href="manifest.json">Complete file inventory and checksums</a> · <a href="evidence.html">Read tools and skills</a></p><ul class="files">'
+        '<nav><a href="transcript.json">Raw transcript</a><a href="manifest.json">Complete file inventory and checksums</a><a href="evidence.html">Read tools and skills</a></nav><ul class="files">'
         + "".join(
             f'<li><a href="{escape(relative_link(item["archive_path"]))}">{escape(item["archive_path"])}</a></li>'
             for item in manifest["files"]
@@ -317,13 +317,13 @@ def evidence_body(
     """Keep exact records separate from the human conversation."""
     renderer = DocumentRenderer(manifest, snapshot)
     content = [
-        '<main><header><p class="eyebrow">CLIO · Evidence</p><h1>Recorded work</h1><nav><a href="index.html">Back to conversation</a><a href="#skills">Loaded skills</a><a href="transcript.json">Raw transcript</a><a href="manifest.json">File inventory</a></nav></header>'
+        '<main><header><p class="eyebrow">CLIO evidence</p><h1>Recorded work</h1><nav><a href="index.html">Back to conversation</a><a href="#skills">Loaded skills</a><a href="transcript.json">Raw transcript</a><a href="manifest.json">File inventory</a></nav></header>'
     ]
     for row in [transcript, *transcript.get("children", [])]:
-        content.append(f"<h2>{escape(row['session']['title'])} · tool records</h2>")
+        content.append(f"<h2>Tool records for {escape(row['session']['title'])}</h2>")
         for tool in row["tool_records"]:
             content.append(
-                f'<article id="{escape(tool["call_id"])}"><h3>{escape(tool.get("tool") or "Historical tool")} · {escape(tool.get("status", "recorded"))}</h3>'
+                f'<article id="{escape(tool["call_id"])}"><h3>{escape(tool.get("tool") or "Historical tool")}: {escape(tool.get("status", "recorded"))}</h3>'
                 f'<p class="meta">{escape(tool["call_id"])}</p><h3>Input</h3>'
                 + renderer.value(tool.get("input"))
                 + '<h3>Output</h3><div class="output">'

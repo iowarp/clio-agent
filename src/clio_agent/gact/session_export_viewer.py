@@ -38,7 +38,7 @@ def _page(title: str, body: str, *, stylesheet: str = "", scripts: tuple[str, ..
         '<!doctype html><html lang="en"><head><meta charset="utf-8">'
         '<meta name="viewport" content="width=device-width, initial-scale=1">'
         f'<meta http-equiv="Content-Security-Policy" content="{escape(policy)}">'
-        f"<title>{escape(title)} · CLIO archive</title><style>{fallback_stylesheet}</style>"
+        f"<title>{escape(title)} (CLIO archive)</title><style>{fallback_stylesheet}</style>"
         + (f"<style>{stylesheet}</style>" if stylesheet else "")
         + "</head><body>"
         + body

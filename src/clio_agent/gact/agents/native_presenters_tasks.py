@@ -140,10 +140,16 @@ def _task_blocks(
         progress_text = str(progress.get("message") or "")
         done, total = progress.get("completed"), progress.get("total")
         if done is not None:
-            count = str(done) + (f" / {total}" if total is not None else "")
-            progress_text = " · ".join(
-                filter(None, (progress_text, count, str(progress.get("unit") or "")))
+            count = " ".join(
+                filter(
+                    None,
+                    (
+                        str(done) + (f" / {total}" if total is not None else ""),
+                        str(progress.get("unit") or ""),
+                    ),
+                )
             )
+            progress_text = f"{progress_text} ({count})" if progress_text else count
     text = str(error) if error else " — ".join(filter(None, (status, progress_text)))
     if text:
         block = {
