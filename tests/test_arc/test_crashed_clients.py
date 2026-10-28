@@ -113,6 +113,30 @@ def test_a_daemon_every_client_crashed_on_is_stopped_with_a_bounded_stop(
     assert record["exited"] is True
 
 
+def test_crashed_entries_stay_until_the_daemon_is_gone(
+    state: Path, daemon: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A start killed during the stop must leave the next start the same evidence.
+
+    Sabotage: prune the crashed entries in the census -> the daemon that did not exit
+    is adopted by the next start.
+    """
+    dead = _crashed_client()
+    _register(dead, 123.0)
+    monkeypatch.setattr(storage, "_runtime_alive", lambda _port: True)
+    monkeypatch.setattr(
+        runtime_stop,
+        "stop_runtime_daemon",
+        lambda *_a, **_k: StopOutcome(stopped=False, path="stall_kill"),
+    )
+    monkeypatch.setattr(crashed_clients, "_EXIT_WAIT_S", 0.2)
+
+    assert crashed_clients.replace_daemon_left_by_crashed_clients("cfg.yaml", "error") is True
+
+    assert crashed_clients.daemon_replacement()["exited"] is False
+    assert (storage._client_registry_dir() / str(dead)).exists()
+
+
 def test_a_daemon_a_live_client_still_uses_is_left_alone(
     state: Path, daemon: Any, monkeypatch: pytest.MonkeyPatch
 ) -> None:
