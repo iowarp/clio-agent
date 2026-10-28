@@ -59,7 +59,7 @@ def test_release_installers_explicitly_root_intentional_prereleases() -> None:
         "install/install.sh": (
             '--constraint "$lockdir/constraints.txt"',
             "uv export --quiet --frozen --no-hashes --no-emit-project",
-            'uv sync --locked --python "$py" --extra argonne --extra flowcept',
+            'sync_args=(sync --locked --python "$py" --extra argonne --extra flowcept)',
         ),
         "install/install.ps1": (
             "'--constraint', $Constraints",

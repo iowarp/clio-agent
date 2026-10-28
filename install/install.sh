@@ -71,6 +71,8 @@ GREEN='\033[0;32m'; YELLOW='\033[0;33m'; RED='\033[0;31m'; RESET='\033[0m'
 say()  { printf "${GREEN}==>${RESET} %s\n" "$*"; }
 warn() { printf "${YELLOW}!! ${RESET} %s\n" "$*" >&2; }
 die()  { printf "${RED}xx ${RESET} %s\n" "$*" >&2; exit 1; }
+# die_with CODE MESSAGE: die, keeping the failed command's exit status.
+die_with() { local code="$1"; shift; printf "${RED}xx ${RESET} %s\n" "$*" >&2; exit "$code"; }
 
 have() { command -v "$1" >/dev/null 2>&1; }
 
@@ -359,6 +361,138 @@ python_of() {
   printf '%s' "${value:-3.13}"
 }
 
+# ---------- the source clone: upgrade or repair on a re-run -----------
+# The clone mode installs into $PREFIX/clio-agent. Running the installer again upgrades
+# or repairs that clone in place; it never removes anything a person could have changed.
+
+# Whether $1 holds this installer's clone to update (0), or nothing (1: absent, or what
+# an earlier install left that holds no work: a partial clone an interrupted install
+# left, a link to a checkout, a release install's environment, all removed here).
+# Anything else is refused with its cause and the fix.
+source_clone_reusable() {
+  local src="$1" origin entry
+  if [ -L "$src" ]; then
+    say "Replacing the link to the checkout an in-place install used ($(readlink "$src")); the checkout is not touched"
+    rm -f "$src"
+    return 1
+  fi
+  [ -e "$src" ] || return 1
+  if [ ! -e "$src/.git" ]; then
+    for entry in "$src"/* "$src"/.[!.]*; do
+      [ -e "$entry" ] || continue
+      case "${entry##*/}" in
+        .venv|.venv.previous|web) ;;
+        *) die "Source reinstall refused: '$src' exists but is not a git clone (it holds '${entry##*/}'). Move it aside, or choose another CLIO_PREFIX, then run this installer again." ;;
+      esac
+    done
+    say "Replacing the release install's environment in '$src' (your data lives elsewhere)"
+    rm -rf "$src"
+    return 1
+  fi
+  origin="$(git -C "$src" config --get remote.origin.url 2>/dev/null || true)"
+  case "$origin" in
+    https://github.com/iowarp/clio-agent|https://github.com/iowarp/clio-agent.git) ;;
+    git@github.com:iowarp/clio-agent|git@github.com:iowarp/clio-agent.git) ;;
+    "") die "Source reinstall refused: '$src' is a git repository with no 'origin', not a CLIO clone this installer made. Move it aside, or choose another CLIO_PREFIX, then run this installer again." ;;
+    *) die "Source reinstall refused: '$src' is a clone of $origin, not of $CLIO_REPO. Move it aside, or choose another CLIO_PREFIX, then run this installer again." ;;
+  esac
+  # An interrupted clone has no checked-out commit (or no index yet): nothing of yours
+  # is in it, so it is cloned again.
+  if ! git -C "$src" rev-parse -q --verify 'HEAD^{commit}' >/dev/null 2>&1 \
+     || [ ! -f "$(git -C "$src" rev-parse --absolute-git-dir 2>/dev/null)/index" ]; then
+    warn "'$src' is a clone an interrupted install left unfinished; cloning it again"
+    rm -rf "$src"
+    return 1
+  fi
+  return 0
+}
+
+# Bring this installer's clone at $1 to ref $2: fetch it, check it out detached, update
+# the submodules. Local changes to tracked files (submodules included) refuse it.
+update_source_clone() {
+  local src="$1" ref="$2" dirty previous
+  dirty="$(git -C "$src" status --porcelain --untracked-files=no 2>&1)" \
+    || die "could not read the state of the clone '$src': $dirty"
+  if [ -n "$dirty" ]; then
+    die "Source reinstall refused: the clone '$src' has local changes to tracked files:
+$dirty
+Commit them on a branch or stash them (git -C '$src' stash), or move the clone aside, then run this installer again."
+  fi
+  previous="$(git -C "$src" rev-parse --short HEAD)"
+  say "Updating the clio-agent clone in '$src' to $ref (was $previous)"
+  git -C "$src" fetch -q --depth 1 origin "$ref" \
+    || die "could not fetch '$ref' into '$src' (git's message is above): check that the branch, tag or commit exists and that this machine reaches GitHub, then run this installer again"
+  git -C "$src" checkout -q --detach FETCH_HEAD \
+    || die "could not check out '$ref' in '$src' (git's message is above; untracked files in the way are never removed: move them, then run this installer again)"
+  git -C "$src" submodule update --init --recursive --depth 1 \
+    || die "could not update the submodules of '$src' to '$ref' (git's message is above); run this installer again"
+}
+
+# ---------- the TUI build, beside the slow stages ---------------------
+# A source install builds the TUI with go. It runs in the background from the moment the
+# source is in place, alongside the dependency, store, managed-package and clio-kit
+# stages; its output goes to a temporary log, printed (and kept) if it fails. The binary
+# is built beside the installed one and moved into place only when it built.
+GACT_BIN="$PREFIX/gact"
+TUI_PID=""
+TUI_LOG=""
+TUI_OUT="$GACT_BIN.build.$$"
+TUI_STARTED=0
+
+start_tui_build() {
+  if [ -n "$GACT_REF" ]; then
+    say "Cloning gact-tui at $GACT_REF (source-build mode)"
+    rm -rf "$PREFIX/gact-tui"
+    git clone --quiet --branch "$GACT_REF" --depth 1 "$GACT_REPO" "$PREFIX/gact-tui" \
+      || die "could not clone gact-tui at '$GACT_REF' from $GACT_REPO (git's message is above)"
+  elif ! have go; then
+    warn "TUI not built: go (>= 1.26) is not installed. Install go and run this installer again for the terminal UI; the desktop app and 'clio --web --dev' work without it."
+    return 0
+  fi
+  TUI_LOG="$(mktemp "${TMPDIR:-/tmp}/clio-tui-build.XXXXXXXX")"
+  say "Building the CLIO-branded TUI in the background (log: $TUI_LOG)"
+  TUI_STARTED=$SECONDS
+  # At a lower CPU priority: the stages on the install's critical path go first, the
+  # compiler takes what they leave.
+  local niceness="" root="$SRC/external/gact-tui"
+  have nice && niceness="nice -n 10"
+  [ -z "$GACT_REF" ] || root="$PREFIX/gact-tui"
+  # Its own process group (job control on for this one job), so an exit stops all of it.
+  set -m
+  # shellcheck disable=SC2086 # $niceness is a command prefix, split on purpose
+  ( cd "$SRC" && GACT_TUI_ROOT="$root" exec $niceness ./scripts/build_clio_tui.sh "$TUI_OUT" ) >"$TUI_LOG" 2>&1 &
+  TUI_PID=$!
+  set +m
+}
+
+finish_tui_build() {
+  [ -n "$TUI_PID" ] || return 0
+  local status=0
+  say "Waiting for the TUI build"
+  wait "$TUI_PID" || status=$?
+  TUI_PID=""
+  if [ "$status" != 0 ]; then
+    rm -f "$TUI_OUT"
+    printf '%s\n' "---- TUI build output ($TUI_LOG) ----" >&2
+    tail -n 80 "$TUI_LOG" >&2 || true
+    printf '%s\n' "---- end of TUI build output ----" >&2
+    die "the TUI build failed (exit $status; full log: $TUI_LOG); its cause is in the output above. Fix it (often: go >= 1.26 cannot be downloaded, or the gact-tui submodule is incomplete: git -C '$SRC' submodule update --init --recursive) and run this installer again."
+  fi
+  mv -f "$TUI_OUT" "$GACT_BIN" || die "could not move the built TUI into place at $GACT_BIN"
+  rm -f "$TUI_LOG"
+  say "TUI built in $((SECONDS - TUI_STARTED)) s: $GACT_BIN"
+}
+
+# Leaving early (a failed stage, Ctrl-C) stops a TUI build still running.
+on_exit() {
+  if [ -n "$TUI_PID" ]; then
+    kill -TERM -- "-$TUI_PID" 2>/dev/null || kill -TERM "$TUI_PID" 2>/dev/null || true
+    rm -f "$TUI_OUT" "$TUI_LOG"
+  fi
+  [ -z "${lockdir:-}" ] || rm -rf "$lockdir"
+}
+trap on_exit EXIT
+
 # ---------- install clio-agent ----------------------------------------
 VENV="$PREFIX/clio-agent/.venv"
 SRC=""
@@ -377,26 +511,33 @@ if [ "$OPT_SOURCE" = 1 ]; then
     ln -sfn "$SRC" "$PREFIX/clio-agent"
     git -C "$SRC" submodule update --init --recursive
     py="$(python_of "$SRC/.python-version")"
-    say "Installing clio-agent deps (uv sync --python $py --extra argonne --extra flowcept)"
-    ( cd "$SRC" && uv sync --python "$py" --extra argonne --extra flowcept )
+    sync_args=(sync --python "$py" --extra argonne --extra flowcept)
   else
     ref="${OPT_REF:-$([ "$OPT_DEV" = 1 ] && echo develop || echo main)}"
     SRC="$PREFIX/clio-agent"
-    if [[ -e "$SRC" ]]; then
-      die "Source reinstall refused: '$SRC' already exists. Choose a new CLIO_PREFIX or explicitly move the existing installation after migrating its user data."
-    fi
-    say "Cloning clio-agent at $ref"
-    if ! git clone --quiet --recurse-submodules --shallow-submodules --branch "$ref" --depth 1 "$CLIO_REPO" "$SRC" 2>/dev/null; then
-      # A commit is not a branch or tag: fetch it by id.
-      git init -q "$SRC" && git -C "$SRC" remote add origin "$CLIO_REPO" \
-        && git -C "$SRC" fetch -q --depth 1 origin "$ref" && git -C "$SRC" checkout -q FETCH_HEAD \
-        && git -C "$SRC" submodule update --init --recursive --depth 1 \
-        || die "could not fetch clio-agent at '$ref'"
+    if source_clone_reusable "$SRC"; then
+      update_source_clone "$SRC" "$ref"
+    else
+      say "Cloning clio-agent at $ref"
+      if ! git clone --quiet --recurse-submodules --shallow-submodules --branch "$ref" --depth 1 "$CLIO_REPO" "$SRC" 2>/dev/null; then
+        # A commit is not a branch or tag: fetch it by id.
+        rm -rf "$SRC"
+        git init -q "$SRC" && git -C "$SRC" remote add origin "$CLIO_REPO" \
+          && git -C "$SRC" fetch -q --depth 1 origin "$ref" && git -C "$SRC" checkout -q FETCH_HEAD \
+          && git -C "$SRC" submodule update --init --recursive --depth 1 \
+          || die "could not fetch clio-agent at '$ref' from $CLIO_REPO: check that the branch, tag or commit exists and that this machine reaches GitHub, then run this installer again"
+      fi
     fi
     py="$(python_of "$SRC/.python-version")"
-    say "Installing clio-agent deps from uv.lock (uv sync --locked --python $py --extra argonne --extra flowcept)"
-    ( cd "$SRC" && uv sync --locked --python "$py" --extra argonne --extra flowcept )
+    sync_args=(sync --locked --python "$py" --extra argonne --extra flowcept)
   fi
+  # The TUI builds from the source now, beside the slow stages below.
+  start_tui_build
+  say "Installing clio-agent deps (uv ${sync_args[*]})"
+  sync_status=0
+  ( cd "$SRC" && uv "${sync_args[@]}" ) || sync_status=$?
+  [ "$sync_status" = 0 ] \
+    || die_with "$sync_status" "uv could not install clio-agent's dependencies (exit $sync_status; uv's message above names the cause). Fix it and run this installer again."
 else
   if [ -n "$OPT_VERSION" ]; then
     package_version="$OPT_VERSION"
@@ -436,8 +577,7 @@ print(max(v for _, v in found) if sys.argv[1] == "stable" else max(found)[1])
 ' "$which")" || die "could not read the clio-agent releases from GitHub"
   fi
   tag="$(release_tag "$package_version")"
-  lockdir="$(mktemp -d)"
-  trap 'rm -rf "$lockdir"' EXIT
+  lockdir="$(mktemp -d)"  # removed on exit (on_exit)
   for f in pyproject.toml uv.lock .python-version; do
     curl -fsSL "https://raw.githubusercontent.com/iowarp/clio-agent/$tag/$f" -o "$lockdir/$f" 2>/dev/null \
       || { [ "$f" = .python-version ] || die "release $tag has no $f on GitHub"; }
@@ -497,7 +637,10 @@ fi
 
 if "$VENV/bin/python" -c 'import importlib.util, sys; sys.exit(0 if importlib.util.find_spec("clio_agent.runtime.document_install") else 3)' 2>/dev/null; then
   say 'Installing managed Python/uv and Node/pnpm packages and Office rendering'
-  "$VENV/bin/python" -m clio_agent.runtime.document_install ${doc_flags[@]+"${doc_flags[@]}"}
+  docs_status=0
+  "$VENV/bin/python" -m clio_agent.runtime.document_install ${doc_flags[@]+"${doc_flags[@]}"} || docs_status=$?
+  [ "$docs_status" = 0 ] \
+    || die_with "$docs_status" "installing the managed packages and Office rendering failed (exit $docs_status); the cause is in the lines above. Fix it and run this installer again: it resumes from what is already installed."
 else
   # Releases before the managed document runtime set it up on their own.
   say "clio-agent $CLIO_INSTALLED_VERSION has no managed document runtime step; skipping it"
@@ -529,21 +672,8 @@ else
 fi
 
 # ---------- install gact ----------------------------------------------
-GACT_BIN="$PREFIX/gact"
-
-if [ "$OPT_SOURCE" = 1 ] && [ -z "$GACT_REF" ]; then
-  if have go; then
-    say "Building CLIO-branded TUI from clio-agent submodule"
-    ( cd "$SRC" && ./scripts/build_clio_tui.sh "$GACT_BIN" )
-  else
-    warn "TUI not built: go (>= 1.26) is not installed. Install go and run this installer again for the terminal UI; the desktop app and 'clio --web --dev' work without it."
-  fi
-elif [ -n "$GACT_REF" ]; then
-  say "Cloning gact-tui at $GACT_REF (source-build mode)"
-  rm -rf "$PREFIX/gact-tui"
-  git clone --quiet --branch "$GACT_REF" --depth 1 "$GACT_REPO" "$PREFIX/gact-tui"
-  say "Building CLIO-branded TUI"
-  GACT_TUI_ROOT="$PREFIX/gact-tui" "$SRC/scripts/build_clio_tui.sh" "$GACT_BIN"
+if [ "$OPT_SOURCE" = 1 ]; then
+  finish_tui_build  # started with the source, above
 else
   tag="$GACT_VERSION"
   if [ "$tag" = "latest" ]; then

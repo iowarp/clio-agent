@@ -107,14 +107,22 @@ def run_installer(
     script: Path | None = None,
     env: dict[str, str] | None = None,
     system: str = "Linux",
+    real_git: bool = False,
 ) -> tuple[subprocess.CompletedProcess[str], list[str]]:
-    """Run the installer with the shims; return the result and the logged calls."""
+    """Run the installer with the shims; return the result and the logged calls.
+
+    ``real_git`` leaves git unshimmed (the host's git on ``/usr/bin``), for tests that
+    read what the installer does to a real clone; its calls are then not logged.
+    """
     bash = "C:/Program Files/Git/bin/bash.exe" if os.name == "nt" else shutil.which("bash")
     assert bash is not None
     shims = tmp_path / "shims"
     shims.mkdir(exist_ok=True)
     uname = f'#!/usr/bin/env bash\nif [ "$1" = -s ]; then echo {system}; else echo arm64; fi\n'
-    for name, body in (("curl", _CURL), ("uv", _UV), ("git", _GIT), ("uname", uname)):
+    shimmed = [("curl", _CURL), ("uv", _UV), ("uname", uname)]
+    if not real_git:
+        shimmed.append(("git", _GIT))
+    for name, body in shimmed:
         shim = shims / name
         shim.write_text(body, newline="\n")
         shim.chmod(0o755)
