@@ -142,6 +142,19 @@ def _text(message: dict[str, Any]) -> str:
     return "".join(str(part.get("text", "")) for part in message.get("parts", []))
 
 
+def _final(message: dict[str, Any]) -> bool:
+    """Whether the API reported the message as finished (an acknowledgement).
+
+    An assistant message of a turn still running is listed with an empty
+    ``stop_reason`` and only the parts written so far (the turn's injected input
+    first, the answer later). That is a view of work in progress, not a committed
+    message: a kill mid-turn may drop it, and the restarted turn writes its own.
+    A finished message carries its ``stop_reason`` (``incomplete`` included: the
+    durable parts of a turn that died after sealing them).
+    """
+    return message.get("role") != "assistant" or bool(message.get("stop_reason"))
+
+
 # --------------------------------------------------------------------------- #
 # The server under test                                                       #
 # --------------------------------------------------------------------------- #
@@ -344,6 +357,7 @@ def observe_session(api: Api, ledger: Ledger, sid: str, root: str) -> dict[str, 
                 "sid": sid,
                 "role": row.get("role"),
                 "text": _text(row),
+                "final": _final(row),
             }
     if sid != root:
         return {"messages": len(messages)}
@@ -450,6 +464,8 @@ LIVENESS = {"not_settled", "mail_stuck", "unreadable", "transiently_missing"}
 #: These mean resumed work did something other than what was acknowledged: a flow
 #: resumed after the kill ran on the generic continuation text instead of its request.
 SEMANTIC = {"flow_input_replaced"}
+#: Reported for the record only: a message last listed while its turn was still running.
+INFO = {"in_progress_message_dropped"}
 #: The input a resumed turn gets when its trigger is not a person's message
 #: (``Conversations`` admission: "Continue the retained assignment using the queued
 #: messages and task outcomes."); a fan-out child carrying it ran on that, not the request.
@@ -520,6 +536,12 @@ def verify(api: Api, ledger: Ledger, phase: str) -> list[dict[str, Any]]:
                 add(kind, session=sid, message=mid, delivery=row["delivery"], text=row["text"])
         for mid, row in messages.items():
             if row["sid"] != sid:
+                continue
+            if not row.get("final", True):
+                # Last reported in progress, so not acknowledged (see _final): reported
+                # for the record when it is gone, never counted as a loss.
+                if mid not in now:
+                    add("in_progress_message_dropped", session=sid, message=mid, role=row["role"])
                 continue
             current = now.get(mid)
             if current is None:
@@ -968,6 +990,7 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
         "lost": sum(n for kind, n in by_type.items() if kind in LOSS),
         "liveness": sum(n for kind, n in by_type.items() if kind in LIVENESS),
         "semantic": sum(n for kind, n in by_type.items() if kind in SEMANTIC),
+        "in_progress_dropped": sum(n for kind, n in by_type.items() if kind in INFO),
         "max_restart_ready_s": max(
             (r["restart"]["ready_s"] for r in report["iterations"] if "restart" in r),
             default=None,
