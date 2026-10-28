@@ -29,6 +29,8 @@ def _isolated_state(tmp_path, monkeypatch):
     applied-plan markers) and mask real behavior."""
 
     monkeypatch.setattr(spawn_diet, "_cache_path", lambda: tmp_path / "diet.json")
+    # The fake environments below live in tmp_path/mcp-environments: this cache's.
+    monkeypatch.setenv("CLIO_KIT_CACHE_DIR", str(tmp_path))
     monkeypatch.setattr(spawn_diet, "_scans_scheduled", set())
     monkeypatch.setattr(spawn_diet, "_pending_learns", {})
     monkeypatch.setattr(spawn_diet, "_applied_plans", {})
@@ -177,6 +179,28 @@ def test_resolve_rejects_vanished_env(tmp_path) -> None:
     launcher = _launcher(tmp_path)
     _store_plan(launcher, [str(shim), str(entry)])
     shim.unlink()
+    assert spawn_diet.resolve("pandas", launcher, ("mcp-server", "pandas")) is None
+
+
+def test_resolve_rejects_a_plan_into_another_cache(tmp_path, monkeypatch) -> None:
+    """A plan learned before the cache moved names the old location's interpreter."""
+    shim, entry = _fake_env(tmp_path / "old-home")
+    launcher = _launcher(tmp_path)
+    _store_plan(launcher, [str(shim), str(entry)])
+    monkeypatch.setenv("CLIO_KIT_CACHE_DIR", str(tmp_path / "new-home"))
+
+    assert spawn_diet.resolve("pandas", launcher, ("mcp-server", "pandas")) is None
+    assert spawn_diet._load_cache() == {}
+
+
+def test_resolve_rejects_a_plan_into_a_moved_environment(tmp_path) -> None:
+    """An environment copied here still starts the interpreter it was built at."""
+    shim, entry = _fake_env(tmp_path)
+    (shim.parent.parent / "bin").mkdir()
+    (shim.parent.parent / "bin" / "activate").write_text("VIRTUAL_ENV='/old/home/env'\n")
+    launcher = _launcher(tmp_path)
+    _store_plan(launcher, [str(shim), str(entry)])
+
     assert spawn_diet.resolve("pandas", launcher, ("mcp-server", "pandas")) is None
 
 

@@ -16,6 +16,7 @@ from pathlib import Path
 
 import pytest
 
+from clio_agent import path_relocation
 from clio_agent.arc import (
     clio_core_attach,
     clio_core_config,
@@ -96,6 +97,7 @@ def _seed(root: Path, *, port: int, storage: str | None = None) -> Path:
 def _isolated(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     monkeypatch.setenv("CLIO_RUNTIME_STATE_DIR", str(tmp_path / "runtime"))
     monkeypatch.setattr(clio_core_relocate, "_last", None)
+    monkeypatch.setattr(path_relocation, "_records", [])
 
 
 def _tree(root: Path) -> dict[str, bytes]:

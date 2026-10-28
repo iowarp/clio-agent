@@ -58,6 +58,8 @@ from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 from typing import Any
 
+from clio_agent import path_relocation
+
 logger = logging.getLogger(__name__)
 
 CTE_STORE_RELOCATED = "cte_store_relocated"
@@ -610,6 +612,7 @@ def ensure_store_location(cte_dir: Path) -> dict[str, Any] | None:
     global _last
     with _lock:
         _last = record
+    path_relocation.record(record, log=False)  # for /v1/health's boot block
     return record
 
 

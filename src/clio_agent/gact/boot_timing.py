@@ -167,15 +167,15 @@ def mark(app: Any, name: str) -> None:
 def snapshot(app: Any) -> dict[str, Any]:
     """The ``boot`` block served by ``GET /v1/health``.
 
-    A store relocated at this start (a moved data folder,
-    :mod:`clio_agent.arc.clio_core_relocate`) is reported as ``store_relocated``.
+    What this start relocated after its home or data folder moved (each with its typed
+    reason, :mod:`clio_agent.path_relocation`) is listed as ``relocations``.
     """
-    from clio_agent.arc.clio_core_relocate import last_relocation  # noqa: PLC0415
+    from clio_agent.path_relocation import recorded  # noqa: PLC0415
 
     block = timeline(app).snapshot()
-    relocated = last_relocation()
-    if relocated is not None:
-        block["store_relocated"] = relocated
+    relocations = recorded()
+    if relocations:
+        block["relocations"] = relocations
     return block
 
 

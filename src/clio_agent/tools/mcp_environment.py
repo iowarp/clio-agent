@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 from collections.abc import Mapping, Sequence
+from pathlib import Path
 
 __all__ = ["stdio_environment"]
 
@@ -43,6 +44,12 @@ def stdio_environment(
         # workspace hash and exceeds MAX_PATH while copying locked projects.
         if not env.get("CLIO_KIT_CACHE_DIR"):
             env["CLIO_KIT_CACHE_DIR"] = str(paths.user_cache_dir() / "mcp-runtime")
+        from clio_agent.tools.mcp_environment_relocation import (  # noqa: PLC0415
+            remove_stale_environments,
+        )
+
+        # An environment built at another location (a moved cache) is rebuilt, never run.
+        remove_stale_environments(Path(env["CLIO_KIT_CACHE_DIR"]))
     for name in ("PYTHONHOME", "PYTHONPATH"):
         if name not in spec_env:
             env.pop(name, None)
