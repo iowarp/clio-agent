@@ -29,6 +29,7 @@ never change it:
 
 from __future__ import annotations
 
+import asyncio
 from collections.abc import Awaitable, Callable, Mapping
 from typing import TYPE_CHECKING, Any
 
@@ -170,7 +171,8 @@ async def open_side_session(
         The new aside session.
     """
 
-    for previous in side_sessions_of(app, parent.id):
+    # The asides' rows are clio-core reads: off the server loop.
+    for previous in await asyncio.to_thread(side_sessions_of, app, parent.id):
         trace.event(
             "SIDE-SESSION",
             "side_session_retired parent=%s side=%s reason=superseded",
