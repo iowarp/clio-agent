@@ -130,7 +130,7 @@ def test_additional_folder_browses_previews_and_revokes_without_deleting(
     prefix = next(iter(folder_locations(root)))
     listing = client.get(f"/v1/workspaces/{wid}/files", params={"directory": ""}).json()
     assert any(
-        row["path"] == prefix and "Additional folder" in row["display_path"]
+        row["path"] == prefix and row["display_path"].endswith(" (additional folder)")
         for row in listing["entries"]
     )
     children = client.get(f"/v1/workspaces/{wid}/files", params={"directory": prefix}).json()

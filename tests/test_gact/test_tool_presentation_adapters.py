@@ -581,9 +581,9 @@ def test_web_conversion_exposes_saved_outputs_and_progress() -> None:
     assert view["subject"] == "subject"
     assert view["blocks"][0]["uri"] == "https://example.org/paper.pdf"
     blocks = {block["id"]: block for block in view["blocks"]}
-    assert blocks["identity"]["text"] == "application/pdf"
+    assert blocks["identity"]["text"] == "Content type: application/pdf"
     assert "Conversion:" not in json.dumps(blocks)
-    assert blocks["events"]["text"] == "docling · Converting page 3"
+    assert blocks["events"]["text"] == "docling: Converting page 3"
     assert blocks["local_path"]["uri"] == "D:/workspace/paper.md"
     assert blocks["metadata_path"]["uri"] == "D:/workspace/paper.json"
     assert json.dumps(result) == before

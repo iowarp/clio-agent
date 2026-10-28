@@ -171,7 +171,8 @@ def standard_mcp_presentation(result: Any) -> dict[str, Any]:
                     "id": block_id,
                     "type": "media" if item.get("data") else "text",
                     "media_type": str(item.get("mimeType") or ""),
-                    "label": f"{str(item['type']).capitalize()} · {item.get('mimeType', '')}",
+                    "label": str(item["type"]).capitalize()
+                    + (f" ({item['mimeType']})" if item.get("mimeType") else ""),
                     "text": str(
                         item.get("data") or "Media payload unavailable in the retained tool result."
                     ),
@@ -448,8 +449,8 @@ def _directory(args: Mapping[str, Any], result: Any, snapshot: Any) -> dict[str,
     if not isinstance(entries, list):
         return standard_mcp_presentation(result)
     view = _inspection_start({"path": row.get("path") or args.get("path")})
-    view["summary"] = f"{len(entries)} entries" + (
-        " · partial listing" if row.get("truncated") else ""
+    view["summary"] = f"{len(entries)} {'entry' if len(entries) == 1 else 'entries'}" + (
+        " (partial listing)" if row.get("truncated") else ""
     )
     view["blocks"].extend(
         {
@@ -485,7 +486,7 @@ def _search(args: Mapping[str, Any], result: Any, snapshot: Any) -> dict[str, An
     count = len(matches)
     files = row.get("files_scanned", 0)
     view["summary"] = (
-        f"{count} {'match' if count == 1 else 'matches'} · "
+        f"{count} {'match' if count == 1 else 'matches'}, "
         f"{files} {'file' if files == 1 else 'files'} searched"
     )
     view["blocks"].append(
@@ -615,14 +616,14 @@ def _web(args: Mapping[str, Any], result: Any, snapshot: Any) -> dict[str, Any]:
             break
     identity = []
     if row.get("content_type"):
-        identity.append(str(row["content_type"]))
+        identity.append(f"Content type: {row['content_type']}")
     if isinstance(row.get("size_bytes"), int):
-        identity.append(f"{row['size_bytes']:,} bytes")
+        identity.append(f"Size: {row['size_bytes']:,} bytes")
     structure = document.get("structure_summary")
     if isinstance(structure, Mapping) and isinstance(structure.get("pages"), int):
         identity.append(f"Pages: {structure['pages']}")
     if identity:
-        blocks.append({"id": "identity", "type": "text", "text": " · ".join(identity)})
+        blocks.append({"id": "identity", "type": "text", "text": "\n".join(identity)})
     results = row.get("results")
     failures = row.get("unresponsive_engines")
     if isinstance(failures, list) and failures:
@@ -653,7 +654,9 @@ def _web(args: Mapping[str, Any], result: Any, snapshot: Any) -> dict[str, Any]:
     events = row.get("events", [])
     if isinstance(events, list):
         text = "\n".join(
-            f"{event.get('stage', '')} · {event.get('message', '')}"
+            ": ".join(
+                filter(None, (str(event.get("stage") or ""), str(event.get("message") or "")))
+            )
             for event in events
             if isinstance(event, Mapping)
         )

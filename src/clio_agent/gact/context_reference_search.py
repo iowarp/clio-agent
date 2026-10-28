@@ -269,7 +269,10 @@ def _session_results(app: "FastAPI", workspace_id: str) -> list[dict[str, Any]]:
                 kind="session",
                 ref_id=session.id,
                 label=session.title or session.id,
-                detail=f"Session · {session.status} · {session.message_count} messages",
+                detail=(
+                    f"Session: {session.status}, {session.message_count} "
+                    + ("message" if session.message_count == 1 else "messages")
+                ),
                 media_type="application/vnd.clio.session-summary+json",
                 revision=session.updated_at,
                 navigation={
