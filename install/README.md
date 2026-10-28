@@ -114,8 +114,12 @@ $u = 'https://raw.githubusercontent.com/iowarp/clio-agent/main/install/install.p
   The release list is GitHub Releases: the default takes the highest stable version,
   `--dev` the most recently published release.
 - **Source** uses `uv sync --locked` (a clone) or `uv sync` (your checkout, in place).
-  It needs `git`. The terminal UI is built when `go` 1.26+ is installed; without it
-  the installer says so and the rest of CLIO is installed.
+  It needs `git`. The terminal UI is built when `go` 1.26+ is installed, in the
+  background while the other steps run (its log is printed if it fails); without
+  `go` the installer says so and the rest of CLIO is installed. Running a clone
+  install again updates that clone to the requested ref and repairs what an
+  interrupted run left; a clone with local changes to tracked files, another origin,
+  or other files in its place is refused, with the cause and the fix, and left as is.
 - `uv` is installed into the launcher directory when it is missing.
 - `clio` on PATH runs the installed release's own launcher with this installation's
   location, so any release finds its install.
