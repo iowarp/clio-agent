@@ -339,14 +339,17 @@ def _push_wake(app: "FastAPI", parent_id: str, task: TaskSnapshot, text: str) ->
     history = app.state.task_history
     with history.serialized():
         app.state.conversations.require_admission(task)
-        pending = next(
-            (
-                item
-                for item in history.pending_mail(task.owner.session_id)
-                if item.kind == "spotter" and item.sender_session == parent_id
-            ),
-            None,
-        )
+        wakes = [
+            item
+            for item in history.pending_mail(task.owner.session_id)
+            if item.kind == "spotter" and item.sender_session == parent_id
+        ]
+        # A watcher mid-review has already read its oldest pending wake (committed when
+        # that turn ends): appending to it would hide this event. Append to the next
+        # pending wake instead, or queue one, which starts the next review.
+        if wakes and app.state.turn_runner.busy(task.owner.session_id):
+            wakes = wakes[1:]
+        pending = wakes[-1] if wakes else None
         # One unread mail per watched session, but no event is dropped: each new
         # wake is appended to the pending one, in order, up to a bounded size.
         if pending is not None:

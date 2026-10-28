@@ -40,12 +40,15 @@ def test_parent_activity_coalesces_only_uncommitted_core_mail(
         wake_on_parent_activity(
             app, parent, tool_name="fs_read_file", result={"paths": [str(index)]}
         )
+    # The first wake started a review; the rest wait, appended, in one next wake.
     pending = app.state.task_history.pending_mail(child)
-    assert len(pending) == 1 and pending[0].revision == 5
-    assert pending[0].kind == "spotter" and pending[0].sender_session == parent
-    # One mail, but every event kept, in order.
-    lines = app.state.task_history.read_content(pending[0].content)["text"].split("\n")
-    assert len(lines) == 5 and all("fs_read_file completed" in line for line in lines)
+    assert len(pending) == 2 and pending[1].revision == 3
+    assert pending[1].kind == "spotter" and pending[1].sender_session == parent
+    # No event is lost: one in the wake under review, four appended to the next.
+    read = app.state.task_history.read_content
+    assert len(read(pending[0].content)["text"].split("\n")) == 1
+    lines = read(pending[1].content)["text"].split("\n")
+    assert len(lines) == 4 and all("fs_read_file completed" in line for line in lines)
     assert pending[0].id not in app.state.task_history.acknowledged_notifications(child)
     assert app.state.task_history.pending_mail(parent) == ()
 
@@ -440,3 +443,17 @@ def test_a_long_backlog_drops_the_oldest_events_and_says_so() -> None:
     # The count adds up across trims: every event is either listed or counted.
     assert int(first[2:].split(" ", 1)[0]) + len(rest) == 400
     assert rest[-1] == "Watched session activity: tool_399 completed."
+
+
+def test_a_wake_during_a_review_is_queued_not_appended_to_the_wake_being_read(
+    watcher_world: tuple[Any, str, str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    app, parent, child = watcher_world
+    wake_on_parent_activity(app, parent, tool_name="first_tool")
+    monkeypatch.setattr(app.state.turn_runner, "busy", lambda sid: sid == child)
+    wake_on_parent_activity(app, parent, tool_name="second_tool")
+    pending = app.state.task_history.pending_mail(child)
+    texts = [app.state.task_history.read_content(item.content)["text"] for item in pending]
+    assert len(pending) == 2
+    assert "first_tool" in texts[0] and "second_tool" not in texts[0]
+    assert "second_tool" in texts[1]
