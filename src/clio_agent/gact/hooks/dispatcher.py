@@ -613,11 +613,16 @@ def dispatch_session_start(
     cwd: str = "",
     payload: Mapping[str, Any] | None = None,
     cancel_event: threading.Event | None = None,
+    hooks_expected: bool = True,
 ) -> HookOutcome:
-    """Fire ``SessionStart`` observation hooks when a session is created."""
+    """Fire ``SessionStart`` hooks when a session is created; none when not expected.
+
+    ``hooks_expected=False``: creation found no hook that could run and wrote no
+    ``started`` receipt (:func:`session_start_may_run_hooks`), so nothing runs.
+    """
 
     dispatcher = _GLOBAL
-    if dispatcher is None:
+    if dispatcher is None or not hooks_expected:
         return HookOutcome()
     envelope = HookEnvelope(
         hook_event_name=SESSION_START,
@@ -626,6 +631,18 @@ def dispatch_session_start(
         payload=dict(payload or {}),
     )
     return dispatcher.dispatch(SESSION_START, envelope, cancel_event=cancel_event)
+
+
+def session_start_may_run_hooks(session_id: str) -> bool:
+    """Whether an enabled, trusted hook declares ``SessionStart`` (``match`` not evaluated)."""
+
+    from clio_agent.gact.hooks.plugin_hooks import plugin_hook_entries  # noqa: PLC0415
+
+    configured = _GLOBAL.entries if _GLOBAL is not None else []
+    entries = [*configured, *plugin_hook_entries(session_id)]
+    return any(
+        entry.enabled and entry.is_trusted and SESSION_START in entry.on for entry in entries
+    )
 
 
 def dispatch_session_end(

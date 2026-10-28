@@ -56,6 +56,7 @@ from clio_agent.gact.hooks.dispatcher import (
     get_global_dispatcher,
     install_global_dispatcher,
     model_hooks_active,
+    session_start_may_run_hooks,
 )
 from clio_agent.gact.hooks.events import (
     AFTER_MODEL,
@@ -172,6 +173,7 @@ __all__ = [
     "dispatch_semantic_event",
     "dispatch_session_end",
     "dispatch_session_start",
+    "session_start_may_run_hooks",
     "dispatch_stop",
     "dispatch_subagent_start",
     "dispatch_subagent_stop",
