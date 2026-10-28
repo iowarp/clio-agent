@@ -3,12 +3,12 @@
 from __future__ import annotations
 
 import json
-import os
 import time
 from pathlib import Path
 
 import pytest
 
+from clio_agent.plugins import snapshot_gc
 from clio_agent.plugins.snapshot_gc import (
     REMOVED_ABANDONED_STAGING,
     REMOVED_SUPERSEDED,
@@ -16,13 +16,24 @@ from clio_agent.plugins.snapshot_gc import (
 )
 
 OLD = time.time() - 3600
+_REAL_INSTALLED_AT = snapshot_gc._installed_at
+_INSTALLED: dict[Path, float] = {}
+
+
+@pytest.fixture(autouse=True)
+def _install_times(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Install times are the inode change time; the tests name them per copy."""
+    _INSTALLED.clear()
+    monkeypatch.setattr(
+        snapshot_gc, "_installed_at", lambda path: _INSTALLED.get(path, time.time())
+    )
 
 
 def _snapshot(root: Path, market: str, digest: str, *, age: float = OLD) -> Path:
     path = root / "snapshots" / market / digest
     (path / "skills").mkdir(parents=True)
     (path / "skills" / "SKILL.md").write_text("x" * 100)
-    os.utime(path, (age, age))
+    _INSTALLED[path] = age
     return path
 
 
@@ -103,3 +114,17 @@ def test_install_and_doctor_gc_skip_while_a_server_is_alive(
     assert outcome["status"] == "collected" and outcome["removed"] == 2
     row = disk_gc._collect_marketplace_snapshots(now=time.time(), dry_run=True)
     assert row.reason == "superseded_collected" and row.removed == 0 and row.kept == 3
+
+
+def test_a_copy_keeps_its_source_mtime_but_counts_as_fresh(tmp_path: Path) -> None:
+    """``copytree`` keeps the source's mtime; the copy's change time is the install."""
+    import os
+    import shutil
+
+    source = tmp_path / "source"
+    (source / "skills").mkdir(parents=True)
+    os.utime(source, (OLD, OLD))
+    copy = tmp_path / "copy"
+    shutil.copytree(source, copy)
+    assert copy.stat().st_mtime == pytest.approx(OLD)
+    assert time.time() - _REAL_INSTALLED_AT(copy) < 60

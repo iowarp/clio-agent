@@ -117,6 +117,13 @@ def _referenced(store_root: Path) -> set[tuple[str, str]]:
     return out
 
 
+def _installed_at(path: Path) -> float:
+    """When ``path`` was copied in: the copy keeps its source's mtime, so the inode's
+    change time (set by the copy and its rename) counts too."""
+    stat = path.stat()
+    return max(stat.st_mtime, stat.st_ctime)
+
+
 def _size(path: Path) -> int:
     total = 0
     for root, _dirs, files in os.walk(path, followlinks=False):
@@ -155,7 +162,7 @@ def collect_superseded_snapshots(
             for copy in sorted(p for p in market.iterdir() if p.is_dir()):
                 staging = ".partial-" in copy.name
                 if (market.name, copy.name) in referenced or (
-                    now - copy.stat().st_mtime < grace_seconds
+                    now - _installed_at(copy) < grace_seconds
                 ):
                     result.kept += 1
                     continue
