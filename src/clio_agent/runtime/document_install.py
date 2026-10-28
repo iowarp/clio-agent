@@ -136,6 +136,31 @@ def prune_after_install() -> dict[str, Any]:
     return {"status": "pruned", "freed_bytes": pruned.bytes_freed, "evicted": pruned.count}
 
 
+def collect_snapshots_after_install() -> dict[str, Any]:
+    """Remove superseded marketplace snapshots at the end of an install or upgrade.
+
+    Gated like the MCP cache prune: skipped with a typed reason while a peer clio
+    process (a running server, which may read a snapshot) is alive; ``clio-agent doctor
+    --gc`` collects the same snapshots on demand.
+    """
+    from clio_agent.plugins.service import plugin_store_root  # noqa: PLC0415
+    from clio_agent.plugins.snapshot_gc import collect_superseded_snapshots  # noqa: PLC0415
+    from clio_agent.runtime.disk_gc import live_peer_clio_processes  # noqa: PLC0415
+
+    if list(live_peer_clio_processes()):
+        return {"status": "skipped", "reason": "marketplace_snapshots_skipped_live"}
+    try:
+        collected = collect_superseded_snapshots(plugin_store_root())
+    except (OSError, ValueError) as error:
+        return {"status": "failed", "reason": "marketplace_snapshot_gc_failed", "error": str(error)}
+    return {
+        "status": "collected",
+        "freed_bytes": collected.bytes_freed,
+        "removed": len(collected.removed),
+        "kept": collected.kept,
+    }
+
+
 def main() -> None:
     """Run the shared installer step; an incomplete setup exits unsuccessfully."""
     parser = argparse.ArgumentParser(description=__doc__)
@@ -176,6 +201,7 @@ def main() -> None:
     if not args.reuse_installed:
         # An install or upgrade, not a per-launch check: bound the MCP cache now (B4).
         summary["mcp_cache"] = prune_after_install()
+        summary["marketplace_snapshots"] = collect_snapshots_after_install()
     print(json.dumps(summary), flush=True)
 
 
