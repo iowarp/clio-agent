@@ -43,6 +43,8 @@ from clio_agent.gact.types import (
 from clio_agent.gact.workspace_scope import GLOBAL_WORKSPACE_ID, session_scope_label
 
 if TYPE_CHECKING:
+    from collections.abc import Callable
+
     from fastapi import FastAPI
 
 #: Typed reason a recall search read fewer sessions than were eligible.
@@ -74,6 +76,25 @@ def _recall_search_phrase(text: str, query: str) -> tuple[int, int] | None:
     needle, _ = _project(query, source=False)
     found = re.search(re.escape(needle), rendered, re.I) if needle else None
     return (offsets[found.start()], offsets[found.end() - 1] + 1) if found else None
+
+
+def _phrase_matcher(query: str) -> "Callable[[SearchPart], bool]":
+    """Whether a part holds ``query`` as a phrase: :func:`_recall_search_phrase` as a
+    yes/no, with the query compiled once and the part's rendered text read from its
+    digest instead of re-rendered per search."""
+
+    if not query.strip():
+        return lambda _part: False
+    raw = re.compile(r"\s+".join(re.escape(word) for word in query.split()), re.I)
+    needle, _ = _project(query, source=False)
+    rendered = re.compile(re.escape(needle), re.I) if needle else None
+
+    def matches(part: SearchPart) -> bool:
+        if raw.search(part.text):
+            return True
+        return rendered is not None and rendered.search(part.rendered_text) is not None
+
+    return matches
 
 
 def _recall_search_excerpt(
@@ -272,6 +293,7 @@ def _recall_search_response(
     best: list[tuple[float, str, tuple[int, int], tuple[str, SearchPart, list[str], bool]]] = []
     scanned = [sid for sid in session_ids if sessions_by_id.get(sid) is not None]
     position = {sid: index for index, sid in enumerate(scanned)}
+    phrase_in = _phrase_matcher(query)
     views = session_digests(
         app, scanned, report, may_contain=lambda sid: transcript_may_contain(app, sid, terms)
     )
@@ -283,7 +305,7 @@ def _recall_search_response(
             matched = [term for term in terms if term in lowered]
             if not matched:
                 continue
-            phrase_match = _recall_search_phrase(part.text, query) is not None
+            phrase_match = phrase_in(part)
             if not phrase_match and len(matched) * 2 < len(terms):
                 continue
             score = 1.0 if phrase_match else 0.9 * len(set(matched)) / len(set(terms))

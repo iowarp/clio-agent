@@ -44,13 +44,19 @@ __all__ = [
 ]
 
 #: Bumped on any change to what :func:`digest_messages` keeps; older records rebuild.
-DIGEST_VERSION = 1
+DIGEST_VERSION = 2
 #: Part types recall searches (the transcript text a person or model wrote).
 SEARCHABLE_PART_TYPES: frozenset[str] = frozenset({"text", "thinking", "error"})
 
 
 class SearchPart(msgspec.Struct, array_like=True, frozen=True):
-    """One searchable part with its message's identity and times."""
+    """One searchable part with its message's identity and times.
+
+    ``rendered`` is the text as it reads rendered (markup dropped, whitespace
+    collapsed: :func:`~clio_agent.gact.attention.rendered._project`), which a pasted
+    phrase is matched against; ``None`` when it equals ``text``. Computed once here,
+    not per search.
+    """
 
     message_id: str
     part_id: str
@@ -58,6 +64,12 @@ class SearchPart(msgspec.Struct, array_like=True, frozen=True):
     created_at: str
     updated_at: str
     text: str
+    rendered: Optional[str] = None
+
+    @property
+    def rendered_text(self) -> str:
+        """The rendered text (``text`` itself when the two are equal)."""
+        return self.text if self.rendered is None else self.rendered
 
 
 class PlanEntry(msgspec.Struct, array_like=True, frozen=True):
@@ -99,6 +111,7 @@ _DECODER = msgspec.msgpack.Decoder(_Stored)
 def digest_messages(messages: Iterable["Message"]) -> TranscriptDigest:
     """The digest of an assembled transcript (the one projection every reader uses)."""
 
+    from clio_agent.gact.attention.rendered import _project  # noqa: PLC0415
     from clio_agent.gact.context_reference_evidence import (  # noqa: PLC0415 - cycle
         part_source_candidates,
     )
@@ -113,6 +126,7 @@ def digest_messages(messages: Iterable["Message"]) -> TranscriptDigest:
             if part.type in SEARCHABLE_PART_TYPES:
                 text = part.text.strip()
                 if text:
+                    rendered, _offsets = _project(text, source=True)
                     parts.append(
                         SearchPart(
                             message.id,
@@ -121,6 +135,7 @@ def digest_messages(messages: Iterable["Message"]) -> TranscriptDigest:
                             message.created_at,
                             message.updated_at,
                             text,
+                            None if rendered == text else rendered,
                         )
                     )
             record = as_summarization(part)
