@@ -350,3 +350,36 @@ def test_watcher_model_is_the_sessions_choice_then_the_default_then_inherited(
     assert not is_person_choice(None, own, "clio/spotter-ai", "server-b/small")  # type: ignore[arg-type]
     own.approval_mode = "ask"
     assert not is_person_choice(None, own, "clio/spotter-ai", "server-a/big")  # type: ignore[arg-type]
+
+
+def test_turn_completed_wake_carries_the_new_answer(
+    watcher_world: tuple[Any, str, str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The wake names the answer and quotes it, so a review starts from what changed."""
+    from types import SimpleNamespace
+
+    app, parent, child = watcher_world
+    answer = SimpleNamespace(
+        id="msg_asst_9",
+        role="assistant",
+        parts=[SimpleNamespace(type="text", text="The count is 73.\n\nANSWER: 73")],
+    )
+    user = SimpleNamespace(id="u1", role="user", parts=[SimpleNamespace(type="text", text="Count")])
+    monkeypatch.setattr(
+        app.state.messages, "get_if_resident", lambda sid: [user, answer], raising=False
+    )
+    on_turn_finalized(app, parent)
+    [item] = app.state.task_history.pending_mail(child)
+    text = app.state.task_history.read_content(item.content)["text"]
+    assert text.startswith(_WAKE_TURN_FINAL_TEXT)
+    assert "message msg_asst_9: The count is 73. ANSWER: 73" in text
+
+
+def test_turn_completed_wake_without_a_resident_answer_is_the_plain_fact(
+    watcher_world: tuple[Any, str, str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    app, parent, child = watcher_world
+    monkeypatch.setattr(app.state.messages, "get_if_resident", lambda sid: None, raising=False)
+    on_turn_finalized(app, parent)
+    [item] = app.state.task_history.pending_mail(child)
+    assert app.state.task_history.read_content(item.content)["text"] == _WAKE_TURN_FINAL_TEXT

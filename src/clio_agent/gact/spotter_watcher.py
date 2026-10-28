@@ -385,13 +385,54 @@ def wake_on_parent_activity(
         )
 
 
+#: Bound on the answer excerpt a turn-completed wake carries.
+_WAKE_ANSWER_CHARS = 600
+
+
+def _latest_answer_fact(app: "FastAPI", session_id: str) -> str:
+    """The turn's final answer as a wake fact: its message id and a bounded excerpt.
+
+    Read only from the resident transcript (never a store read on this path); empty
+    when the answer is not resident or has no text.
+    """
+    messages = app.state.messages
+    get_if_resident = getattr(messages, "get_if_resident", None)
+    rows = (
+        get_if_resident(session_id)
+        if callable(get_if_resident)
+        else messages.get(session_id)
+        if isinstance(messages, dict)
+        else None
+    ) or []
+    for message in reversed(list(rows)):
+        if getattr(message, "role", "") != "assistant":
+            continue
+        text = " ".join(
+            str(getattr(part, "text", "") or "")
+            for part in getattr(message, "parts", [])
+            if getattr(part, "type", "") == "text"
+        ).strip()
+        if not text:
+            return ""
+        excerpt = " ".join(text.split())
+        if len(excerpt) > _WAKE_ANSWER_CHARS:
+            excerpt = "..." + excerpt[-_WAKE_ANSWER_CHARS:]
+        return f"Its answer is message {message.id}: {excerpt}"
+    return ""
+
+
 def on_turn_finalized(app: "FastAPI", session_id: str) -> None:
     """Publish parent evidence; child settlement remains conversation-owned."""
     session = app.state.sessions.get(session_id)
     if session is None:
         return
     if session.approval_mode == SPOTTER_APPROVAL_MODE:
-        wake_on_parent_activity(app, session_id)
+        tasks = _live_watcher_tasks(app, session_id)
+        if tasks:
+            # The new answer itself, so a review starts from what changed, not memory.
+            fact = _latest_answer_fact(app, session_id)
+            text = f"{_WAKE_TURN_FINAL_TEXT} {fact}" if fact else _WAKE_TURN_FINAL_TEXT
+            _push_wake(app, session_id, tasks[0], text)
     elif session.metadata.get("spotter_parent_session"):
         signal_clearance(app, str(session.metadata["spotter_parent_session"]))
 
