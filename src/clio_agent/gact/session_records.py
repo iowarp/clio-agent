@@ -56,6 +56,7 @@ from sortedcontainers import SortedList
 
 from clio_agent import conf
 from clio_agent.arc.batch_put import PutRecord
+from clio_agent.errors import ClioError
 from clio_agent.gact.session_kind import session_kind
 from clio_agent.gact.transcript_file import TranscriptNotReadyError
 from clio_agent.runtime.stream_audit import stream_audit
@@ -262,7 +263,8 @@ class _Writer:
                 for name, data in batch.items():
                     if data is None:
                         self.store.delete(KIND, name)
-            except Exception as exc:  # noqa: BLE001 - retried, and reported typed each time
+            except (ClioError, OSError, RuntimeError, TimeoutError, ValueError) as exc:
+                # A store write failure: retried, and reported typed each time.
                 stream_audit(
                     WRITE_FAILED_REASON,
                     reason=WRITE_FAILED_REASON,
