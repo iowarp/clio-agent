@@ -278,7 +278,28 @@ class HandshakeReport:
                 row["loaded"] = True
             row["context_source"] = effective.context.decided_by
             rows.append(row)
-        return {"models": rows, "source": source, "error": self.error}
+        return {
+            "models": rows,
+            "source": source,
+            "error": self.error or self._auth_reason(),
+            "auth": self.auth.value,
+        }
+
+    def _auth_reason(self) -> str | None:
+        """Say why an empty catalog is empty when the only evidence is the auth state.
+
+        A signed-out provider (e.g. ALCF with no Globus sign-in) reports
+        ``AuthState.MISSING`` with no ``error`` by design, and the picker used to
+        receive ``{"models": [], "error": null}`` -- an empty list with no reason
+        and nothing to act on (no silent fallback, #775).
+        """
+        if self.models or self.ok:
+            return None
+        if self.auth == AuthState.MISSING:
+            return f"not signed in: no credential is available for {self.provider_id}"
+        if self.auth == AuthState.REJECTED:
+            return f"sign-in rejected: {self.provider_id} refused the stored credential"
+        return None
 
     def to_integration_status(self) -> Any:
         """Render to a ``runtime.status.IntegrationStatus`` row for ``/v1/health``.
