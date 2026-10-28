@@ -120,6 +120,23 @@ def run_locked(
         response.raise_for_status()
         return response.json()
 
+    def quarantined() -> bool:
+        metadata = request("GET", f"/v1/sessions/{session_id}").get("metadata") or {}
+        record = metadata.get("spotter_quarantine")
+        return isinstance(record, dict) and record.get("status") == "active"
+
+    def wait_out_quarantine() -> bool:
+        """Hold the chain while SPOTTER's quarantine stands; True if it paused."""
+        if not quarantined():
+            return False
+        print(
+            "Paused: SPOTTER put the session in quarantine; waiting for it to be lifted", flush=True
+        )
+        while quarantined():
+            time.sleep(3)
+        print("Quarantine lifted; resuming the chain", flush=True)
+        return True
+
     session = request("GET", f"/v1/sessions/{session_id}")
     if session.get("approval_mode") != "spotter-ai":
         raise ValueError("Enable SPOTTER on this qualification session in CLIO first")
@@ -175,6 +192,7 @@ def run_locked(
             )
             save(receipt_path, receipt)
         turn = receipt["turns"][index]
+        wait_out_quarantine()
         if "ack" not in turn:
             # A settled reply can precede the session going idle (post-turn work); posting
             # then is accepted as a steer into the active turn, not a new round.
@@ -191,6 +209,28 @@ def run_locked(
             raise RuntimeError("Acceptance changed delivery or model; inspect the retained receipt")
         deadline = time.monotonic() + timeout
         while "reply" not in turn:
+            if wait_out_quarantine():
+                # The quarantine stopped this round mid-turn: send it again once lifted.
+                messages = request("GET", f"/v1/sessions/{session_id}/messages")["messages"]
+                reply = settled_reply(messages, turn["ack"]["message_id"])
+                if reply and reply.get("stop_reason") == "end_turn" and not reply.get("error_info"):
+                    turn["reply"] = reply
+                    save(receipt_path, receipt)
+                    break
+                while request("GET", f"/v1/sessions/{session_id}").get("status") == "running":
+                    time.sleep(2)
+                key = str(uuid4())
+                turn["request"] = {
+                    **turn["request"],
+                    "client_message_id": key,
+                    "idempotency_key": key,
+                }
+                turn["ack"] = request(
+                    "POST", f"/v1/sessions/{session_id}/messages", json=turn["request"]
+                )
+                save(receipt_path, receipt)
+                deadline = time.monotonic() + timeout
+                continue
             messages = request("GET", f"/v1/sessions/{session_id}/messages")["messages"]
             reply = settled_reply(messages, turn["ack"]["message_id"])
             if reply:
