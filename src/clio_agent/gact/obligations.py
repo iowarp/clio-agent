@@ -12,6 +12,10 @@ the background, while people already use Clio.
 * **Oldest first, someone waiting first.** Conversations are recovered oldest first. A
   conversation someone sends a message to (:meth:`Obligations.wanted`) is recovered next
   and released at once.
+* **Interrupted turns.** Startup only marks, from the session records, the conversations
+  a stop interrupted mid-turn; the lane closes their transcripts (the interrupted-turn
+  row), each conversation just before its own recovery and the rest after the queue
+  (:mod:`clio_agent.gact.restart_interruptions`).
 * **Bounded.** After recovery a conversation is released to run its pending work through
   the turn runner; at most ``agent_tasks.obligation_concurrency`` released conversations run
   at a time, so a large backlog cannot flood memory or the model provider. Each one loads
@@ -28,6 +32,7 @@ import logging
 from collections.abc import Iterable
 from typing import TYPE_CHECKING, Any
 
+from clio_agent.errors import ClioError
 from clio_agent.gact.conversation_recovery import open_work_sessions, restore_session
 
 if TYPE_CHECKING:
@@ -109,12 +114,37 @@ class Obligations:
                 conversations._restoring = True  # Core recovery reruns the whole restore.
                 return
             session_id = self._next()
+            await self._close_interrupted(session_id)
             await restore_session(conversations, session_id)
             self.recovered += 1
             await self._release(session_id)
+        interrupted = getattr(conversations.app.state, "restart_interruptions", None)
+        for session_id in interrupted.pending() if interrupted is not None else ():
+            if conversations._closing:
+                break
+            await self._close_interrupted(session_id)
         if self._running:
             await asyncio.wait(set(self._running))
         conversations.signal_pending()
+
+    async def _close_interrupted(self, session_id: str) -> None:
+        """Close a transcript a restart interrupted (:mod:`~clio_agent.gact.restart_interruptions`).
+
+        Off the loop and off the Core I/O worker the resumed work uses; a failure stays
+        pending (opening or writing the conversation retries) and is logged typed.
+        """
+        interrupted = getattr(self.conversations.app.state, "restart_interruptions", None)
+        if interrupted is None or not interrupted.waiting(session_id):
+            return
+        try:
+            await asyncio.to_thread(interrupted.settle_quietly, session_id)
+        except (ClioError, OSError, RuntimeError, ValueError) as error:  # one conversation
+            logger.error(
+                "restart interruption settle failed reason=restart_interruption_settle_failed "
+                "session=%s error=%r",
+                session_id,
+                error,
+            )
 
     def _next(self) -> str:
         """The next conversation: one someone is waiting on, else the oldest."""
@@ -144,6 +174,12 @@ class Obligations:
     def _drained(self, session_id: str, done: asyncio.Task[None]) -> None:
         self._running.discard(done)
         self._slots.release()
+        # The obligation no longer uses its conversation: release it now unless a view
+        # (or newer work) holds it, instead of waiting for the idle TTL.
+        resident = getattr(self.conversations.app.state, "messages", None)
+        release = getattr(resident, "release", None)
+        if callable(release):
+            release(session_id, "obligation_done")
         if not done.cancelled() and done.exception() is not None:
             logger.error(
                 "obligation drain failed reason=obligation_drain_failed session=%s error=%r",

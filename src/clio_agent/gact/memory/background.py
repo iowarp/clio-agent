@@ -53,8 +53,9 @@ CURATOR_TARGET = "curator"
 class BackgroundPassError(ClioError):
     """The background pass could not start (typed reason)."""
 
-    def __init__(self, reason: str, message: str) -> None:
-        super().__init__(message, error_type=reason, details={"reason": reason})
+    def __init__(self, reason: str, message: str, *, read_to: str = "") -> None:
+        details = {"reason": reason, **({"read_to": read_to} if read_to else {})}
+        super().__init__(message, error_type=reason, details=details)
 
 
 def _parse(stamp: str) -> datetime | None:
@@ -63,6 +64,19 @@ def _parse(stamp: str) -> datetime | None:
     except ValueError:
         return None
     return parsed if parsed.tzinfo else parsed.replace(tzinfo=UTC)
+
+
+def _transcript(app: Any, session_id: str) -> list[Any]:
+    """A conversation's transcript for the pass, without making it resident.
+
+    The pass reads idle conversations nobody has open; the resident set's ``peek``
+    serves a resident ledger as is and reads any other one transiently, so a tick over
+    every idle conversation does not pull their histories (and ARC scopes) into memory.
+    """
+    messages = app.state.messages
+    peek = getattr(messages, "peek", None)
+    rows = peek(session_id) if callable(peek) else messages.get(session_id)
+    return list(rows or [])
 
 
 def _messages_after(messages: list[Any], watermark: str) -> list[Any]:
@@ -120,7 +134,7 @@ def _checked(session: Any, reason: str) -> dict[str, Any]:
 def _transcript_reason(app: Any, session: Any) -> str:
     """The skip reasons that need the transcript (``""`` when a pass is due)."""
     metadata = session.metadata or {}
-    messages = app.state.messages.get(session.id, [])
+    messages = _transcript(app, session.id)
     failed = metadata.get(LAST_PASS) or {}
     if (
         failed.get("status", "completed") not in {"completed", "no_candidates"}
@@ -383,7 +397,7 @@ def _start_pass(app: Any, session: Any) -> None:
     from clio_agent.gact.memory.runtime import memory_service  # noqa: PLC0415
 
     metadata = session.metadata or {}
-    messages = list(app.state.messages.get(session.id, []))
+    messages = _transcript(app, session.id)
     items = transcript_items(messages, after=str(metadata.get(WATERMARK, "")))
     last = messages[-1].id if messages else ""
     policy = session_policy(app, session)
@@ -415,11 +429,11 @@ def _start_pass(app: Any, session: Any) -> None:
                 "completed_at": datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ"),
             },
         )
-        raise
+        raise _start_failed(error, last) from error
     record_extract(service.store, run_id, report)
     current = app.state.sessions.get(session.id)
     runner = getattr(app.state, "turn_runner", None)
-    latest = list(app.state.messages.get(session.id, []))
+    latest = _transcript(app, session.id)
     if (
         current is None
         or (runner is not None and runner.busy(session.id))
@@ -474,7 +488,7 @@ def _start_pass(app: Any, session: Any) -> None:
                 "completed_at": datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ"),
             },
         )
-        raise
+        raise _start_failed(error, last) from error
     app.state.sessions.update(
         session.id,
         metadata_patch={
@@ -531,7 +545,7 @@ def _collect(app: Any, session: Any) -> None:
         if service is not None
         else ({"accepted": 0, "pending": 0, "rejected": 0}, [])
     )
-    curator_messages = app.state.messages.get(str(run.get("session") or ""), [])
+    curator_messages = _transcript(app, str(run.get("session") or ""))
     status, run_reason = curator_run_outcome(
         status, counts, failed_memory_tool_count(curator_messages)
     )
@@ -591,6 +605,7 @@ def memory_tick(app: Any, now: datetime | None = None) -> None:
         return
     collected = started = 0
     skipped: dict[str, int] = {}
+    blocked = ""  # a pass failed to start this tick: start no other (the model is shared)
     for session in list(app.state.sessions.list()):
         try:
             if (session.metadata or {}).get(IN_FLIGHT):
@@ -604,6 +619,8 @@ def memory_tick(app: Any, now: datetime | None = None) -> None:
                     and (session.metadata or {}).get(CHECKED) != checked
                 ):
                     app.state.sessions.update(session.id, metadata_patch={CHECKED: checked})
+            elif blocked:
+                skipped["start_failed_this_tick"] = skipped.get("start_failed_this_tick", 0) + 1
             else:
                 started += 1
                 _start_pass(app, session)
@@ -611,6 +628,9 @@ def memory_tick(app: Any, now: datetime | None = None) -> None:
             if error.error_type == "transcript_not_ready":  # still booting: next tick
                 skipped["transcript_not_ready"] = skipped.get("transcript_not_ready", 0) + 1
                 continue
+            if isinstance(error, BackgroundPassError):
+                blocked = str(error.error_type)
+            read_to = str((error.details or {}).get("read_to") or "")
             app.state.sessions.update(
                 session.id,
                 metadata_patch={
@@ -619,6 +639,7 @@ def memory_tick(app: Any, now: datetime | None = None) -> None:
                         "reason": str(error.error_type),
                         "error": str(error)[:500],
                         "at": now.strftime("%Y-%m-%dT%H:%M:%SZ"),
+                        **({"read_to": read_to} if read_to else {}),
                     }
                 },
             )
@@ -706,6 +727,15 @@ def import_pasted_text(app: Any, text: str, *, scope: str, import_id: str) -> di
         )
         raise
     return {"import_id": import_id, "candidates": len(candidates), "extract": report, **run}
+
+
+def _start_failed(error: Exception, read_to: str) -> BackgroundPassError:
+    """A pass that could not start, typed and naming what it read.
+
+    ``read_to`` makes the next ticks skip the same transcript (``last_pass_failed``)
+    until the conversation has new messages, instead of retrying it every minute.
+    """
+    return BackgroundPassError(_failure_reason(error), str(error)[:500], read_to=read_to)
 
 
 def _failure_reason(error: Exception) -> str:

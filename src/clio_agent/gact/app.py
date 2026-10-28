@@ -184,7 +184,6 @@ from clio_agent.gact.session_store import (  # noqa: E402,F401
     _extend_session_messages,
     _flush_context_files,
     _load_context_files,
-    _reconcile_restart_interrupted_sessions,
     _release_session_arc,
     _replace_session_messages,
 )

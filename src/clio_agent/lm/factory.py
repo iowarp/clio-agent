@@ -101,6 +101,10 @@ def create_lm(config: LMProviderConfig) -> dspy.LM:
         return _record_identity(_codex_direct_lm(config), config)
     if config.provider == "claude_code":
         return _record_identity(_claude_code_lm(config), config)
+    # A blank LM Studio model is discovered first: when nothing serves it, the call
+    # fails here, before the LM stack (litellm, ~100 MB resident once imported) loads
+    # for a model that cannot run -- e.g. the idle background memory pass.
+    _resolve_lm_studio_model_if_needed(config)
     # Defer litellm's eager ~40 MB cl100k_base tiktoken load until first real
     # encode (see lm.lazy_tiktoken). MUST run before the provider import below,
     # which is the first ``import litellm`` in the server. Config-gated so an
@@ -122,7 +126,6 @@ def create_lm(config: LMProviderConfig) -> dspy.LM:
         from clio_agent.lm.lazy_tiktoken import disable_litellm_cost_recount  # noqa: PLC0415
 
         disable_litellm_cost_recount()
-    _resolve_lm_studio_model_if_needed(config)
     model_name = _resolve_model_name(config)
 
     extras = build_request_kwargs(config)

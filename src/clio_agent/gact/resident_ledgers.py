@@ -458,6 +458,21 @@ class ResidentLedgerSet(MutableMapping[str, list["Message"]]):
             )
         return len(victims)
 
+    def release(self, sid: str, reason: str) -> bool:
+        """Release one session now, unless a view or running work still uses it.
+
+        For work that knows it is done with a session (an obligation that finished),
+        instead of waiting for the idle TTL. Traced with ``reason`` like any eviction.
+        """
+
+        if self._is_active(sid):
+            return False
+        with self._lock:
+            held = sid in self._resident or sid in self._arc
+        if held:
+            self._evict(sid, reason)
+        return held
+
     def _over_caps(self) -> bool:
         count = len(self._resident.keys() | self._arc.keys())
         return (
@@ -680,6 +695,9 @@ def build_resident_ledger_set(app: "FastAPI") -> ResidentLedgerSet:
         forget_evicted_session,
     )
     from clio_agent.gact.resident_sweeper import ResidentSweeper  # noqa: PLC0415
+    from clio_agent.gact.restart_interruptions import (  # noqa: PLC0415 - avoid import cycle
+        settle_restart_interruption,
+    )
     from clio_agent.gact.transcript_projection import (  # noqa: PLC0415 - avoid import cycle
         materialize_ledger,
     )
@@ -690,6 +708,8 @@ def build_resident_ledger_set(app: "FastAPI") -> ResidentLedgerSet:
         is_active=lambda sid: _session_is_active(app, sid),
         audit=lambda payload: _record_resident_audit(app, payload),
         materialize=lambda sid: materialize_ledger(app, sid),
+        # Opening a conversation a restart interrupted closes its transcript first.
+        on_rehydrate=lambda sid, rows: settle_restart_interruption(app, sid, rows),
         on_evict=lambda sid: forget_evicted_session(
             app, sid, is_active=lambda: _session_is_active(app, sid)
         ),

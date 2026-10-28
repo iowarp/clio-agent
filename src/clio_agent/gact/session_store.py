@@ -177,12 +177,14 @@ def _append_session_message(
     and the local message store are written here. Explicit, never inferred.
     """
 
+    from clio_agent.gact.restart_interruptions import settle_restart_interruption
     from clio_agent.gact.transcript_projection import canonical_log_arc
     from clio_agent.gact.transcript_recording import project_message, record_message
 
     arc = canonical_log_arc(app)
     if arc is None:
         raise RuntimeError("Transcript recording requires the canonical Core store")
+    settle_restart_interruption(app, session_id)  # never append after a dangling turn
     recording = "recorded" if atoms_minted else record_message(arc, session_id, message)
     if recording == "withdrawn":
         return
@@ -265,79 +267,6 @@ def _interrupted_assistant_row(
     )
 
 
-def _reconcile_restart_interrupted_sessions(app: "FastAPI") -> None:
-    """Settle persisted running sessions whose process-local executor is gone.
-
-    A user message is durable before its assistant turn starts. If the process
-    exits mid-turn, the session registry can therefore retain ``running`` and an
-    older message count even though no :class:`TurnRunner` task can survive the
-    restart. Reconcile only those stale running rows, reading one ledger at a
-    time so ordinary historical sessions remain lazily materialized. The ledger is
-    the durable transcript: the ``messages/`` file, or the atoms with
-    ``transcript.file`` off (:func:`~clio_agent.gact.transcript_file.load_durable_transcript`).
-    """
-
-    from clio_agent.gact.transcript_file import (  # noqa: PLC0415 - lazy: keep leaf
-        has_durable_transcript_store,
-        load_durable_transcript,
-    )
-
-    sessions = getattr(app.state, "sessions", None)
-    if sessions is None or not has_durable_transcript_store(app):
-        return
-    for session in sessions.list():
-        if session.status != "running":
-            continue
-        try:
-            messages = load_durable_transcript(app, session.id) or []
-        except OSError as exc:
-            logger.error(
-                "restart interruption reconciliation failed session=%s error=%r",
-                session.id,
-                exc,
-            )
-            continue
-        durable_messages = list(messages)
-        last_message = durable_messages[-1] if durable_messages else None
-        if last_message is not None and last_message.role == "user":
-            interrupted_message = _interrupted_assistant_row(app, session.id, last_message)
-            durable_messages.append(interrupted_message)
-            try:
-                # #1334 review round (Fable, F2): through the sanctioned replace
-                # seam (the same one undo/rewind uses) so the atom lane is
-                # re-materialized to match -- file and lane agree by
-                # construction and materialize_ledger's divergence repair never
-                # fires on this session's first post-restart read. Reconciliation
-                # runs at boot (no loop) or, with transcript.file off and the ARC
-                # attached later, on the ARC construction worker -- so
-                # on_ledger_replaced's mint runs inline, off any server loop thread.
-                _replace_session_messages(app, session.id, durable_messages)
-            except OSError as exc:
-                logger.error(
-                    "restart interruption boundary write failed session=%s error=%r",
-                    session.id,
-                    exc,
-                )
-                continue
-        sessions.update(
-            session.id,
-            status="error",
-            message_count=len(durable_messages),
-            metadata_patch={
-                "restart_interruption": {
-                    "reason": "server_restart_interrupted",
-                    "previous_status": "running",
-                }
-            },
-        )
-        trace.event(
-            "SESSION",
-            "restart_interrupted session=%s messages=%s",
-            session.id,
-            len(durable_messages),
-        )
-
-
 def _extend_session_messages(
     app: "FastAPI",
     session_id: str,
@@ -363,11 +292,13 @@ def _replace_session_messages(
     """
 
     from clio_agent.gact.part_atoms import MESSAGE_PART_SCOPE
+    from clio_agent.gact.restart_interruptions import settle_restart_interruption
     from clio_agent.gact.transcript_projection import canonical_log_arc, on_ledger_replaced
 
     arc = canonical_log_arc(app)
     if arc is None:
         raise RuntimeError("Transcript mutation requires the canonical Core store")
+    settle_restart_interruption(app, session_id)  # no-op inside the settle's own replace
     with arc._segments._lock_for(session_id, MESSAGE_PART_SCOPE):
         if not atoms_minted:
             on_ledger_replaced(app, session_id, list(messages))

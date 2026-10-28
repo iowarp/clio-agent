@@ -196,6 +196,9 @@ def ensure_accepted_message(app: "FastAPI", session_id: str, message: Message) -
     arc = _arc(app)
     if arc is None:
         raise RuntimeError("Accepted input projection requires Core")
+    from clio_agent.gact.restart_interruptions import settle_restart_interruption
+
+    settle_restart_interruption(app, session_id)  # never splice after a dangling turn
     if arc is not None:
         store = arc._segments
         with store._lock_for(session_id, MESSAGE_PART_SCOPE):

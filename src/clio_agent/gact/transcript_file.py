@@ -307,12 +307,10 @@ def _seed_from_atoms(app: "FastAPI") -> None:
 
 
 def _atom_boot(app: "FastAPI") -> None:
-    """Retain legacy evidence, reconcile interruptions and seed canonical metrics."""
+    """Retain legacy evidence, mark interrupted turns and seed canonical metrics."""
 
     from clio_agent.gact import boot_timing  # noqa: PLC0415
-    from clio_agent.gact.session_store import (  # noqa: PLC0415 - import cycle
-        _reconcile_restart_interrupted_sessions,
-    )
+    from clio_agent.gact.restart_interruptions import mark_restart_interrupted  # noqa: PLC0415
     from clio_agent.gact.store_migrations import ensure_at_boot  # noqa: PLC0415
     from clio_agent.gact.task_history import TaskHistory
 
@@ -330,7 +328,7 @@ def _atom_boot(app: "FastAPI") -> None:
     # `clio-agent migrate` already did, and this is one marker read.
     ensure_at_boot(app, "transcript_legacy_import")
     with boot_timing.step(app, "interrupted_sessions"):
-        _reconcile_restart_interrupted_sessions(app)
+        mark_restart_interrupted(app)  # records only; transcripts close after ready
     with boot_timing.step(app, "interaction_times"):
         _seed_from_atoms(app)
     app.state.transcript_boot_ready.set()
