@@ -785,6 +785,37 @@ def test_the_idle_check_reads_a_conversation_without_making_it_resident(
     assert session.id not in app.state.messages.resident_session_ids
 
 
+def test_a_pass_whose_model_cannot_start_is_recorded_once_and_not_retried(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """An unreachable model fails one start per tick, typed, and the transcript it read
+    is not retried every minute; the tick itself completes."""
+    app = client.app
+    first, second = _idle_conversation(app), _idle_conversation(app)
+    calls: list[str] = []
+
+    def unreachable(items: Any, *, session_id: str, **_: Any) -> Any:
+        calls.append(session_id)
+        raise ConnectionError("model server not running")
+
+    monkeypatch.setattr("clio_agent.gact.memory.extract.extract_candidates", unreachable)
+    now = datetime.now(UTC)
+    background.memory_tick(app, now)
+
+    assert len(calls) == 1  # one failed start per tick: the other waits for the next
+    summary = app.state.memory_background
+    assert summary["skipped"].get("start_failed_this_tick") == 1
+    failed = calls[0]
+    last_pass = app.state.sessions.get(failed).metadata[background.LAST_PASS]
+    assert last_pass["status"] == "failed"
+    assert last_pass["reason"] == "ConnectionError"
+    assert last_pass["read_to"] == app.state.messages.get(failed)[-1].id
+
+    background.memory_tick(app, now)
+    assert calls[1:] == [({first.id, second.id} - {failed}).pop()]  # not the failed one
+    assert background.skip_reason(app, app.state.sessions.get(failed), now) == ("last_pass_failed")
+
+
 def test_the_curator_is_told_what_already_waits_for_review(client: TestClient) -> None:
     """A change pending in the inbox reaches the next curator brief, so the same import
     or conversation does not put it in front of the user twice."""

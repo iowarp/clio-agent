@@ -53,8 +53,9 @@ CURATOR_TARGET = "curator"
 class BackgroundPassError(ClioError):
     """The background pass could not start (typed reason)."""
 
-    def __init__(self, reason: str, message: str) -> None:
-        super().__init__(message, error_type=reason, details={"reason": reason})
+    def __init__(self, reason: str, message: str, *, read_to: str = "") -> None:
+        details = {"reason": reason, **({"read_to": read_to} if read_to else {})}
+        super().__init__(message, error_type=reason, details=details)
 
 
 def _parse(stamp: str) -> datetime | None:
@@ -428,7 +429,7 @@ def _start_pass(app: Any, session: Any) -> None:
                 "completed_at": datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ"),
             },
         )
-        raise
+        raise _start_failed(error, last) from error
     record_extract(service.store, run_id, report)
     current = app.state.sessions.get(session.id)
     runner = getattr(app.state, "turn_runner", None)
@@ -487,7 +488,7 @@ def _start_pass(app: Any, session: Any) -> None:
                 "completed_at": datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ"),
             },
         )
-        raise
+        raise _start_failed(error, last) from error
     app.state.sessions.update(
         session.id,
         metadata_patch={
@@ -584,6 +585,7 @@ def memory_tick(app: Any, now: datetime | None = None) -> None:
         return
     collected = started = 0
     skipped: dict[str, int] = {}
+    blocked = ""  # a pass failed to start this tick: start no other (the model is shared)
     for session in list(app.state.sessions.list()):
         try:
             if (session.metadata or {}).get(IN_FLIGHT):
@@ -597,6 +599,8 @@ def memory_tick(app: Any, now: datetime | None = None) -> None:
                     and (session.metadata or {}).get(CHECKED) != checked
                 ):
                     app.state.sessions.update(session.id, metadata_patch={CHECKED: checked})
+            elif blocked:
+                skipped["start_failed_this_tick"] = skipped.get("start_failed_this_tick", 0) + 1
             else:
                 started += 1
                 _start_pass(app, session)
@@ -604,6 +608,9 @@ def memory_tick(app: Any, now: datetime | None = None) -> None:
             if error.error_type == "transcript_not_ready":  # still booting: next tick
                 skipped["transcript_not_ready"] = skipped.get("transcript_not_ready", 0) + 1
                 continue
+            if isinstance(error, BackgroundPassError):
+                blocked = str(error.error_type)
+            read_to = str((error.details or {}).get("read_to") or "")
             app.state.sessions.update(
                 session.id,
                 metadata_patch={
@@ -612,6 +619,7 @@ def memory_tick(app: Any, now: datetime | None = None) -> None:
                         "reason": str(error.error_type),
                         "error": str(error)[:500],
                         "at": now.strftime("%Y-%m-%dT%H:%M:%SZ"),
+                        **({"read_to": read_to} if read_to else {}),
                     }
                 },
             )
@@ -699,6 +707,15 @@ def import_pasted_text(app: Any, text: str, *, scope: str, import_id: str) -> di
         )
         raise
     return {"import_id": import_id, "candidates": len(candidates), "extract": report, **run}
+
+
+def _start_failed(error: Exception, read_to: str) -> BackgroundPassError:
+    """A pass that could not start, typed and naming what it read.
+
+    ``read_to`` makes the next ticks skip the same transcript (``last_pass_failed``)
+    until the conversation has new messages, instead of retrying it every minute.
+    """
+    return BackgroundPassError(_failure_reason(error), str(error)[:500], read_to=read_to)
 
 
 def _failure_reason(error: Exception) -> str:
