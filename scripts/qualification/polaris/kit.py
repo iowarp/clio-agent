@@ -1323,7 +1323,10 @@ def step_opal_setup():
         raise KitError("OPAL export %s is missing; run 04_stage_opal_data.sh" % export)
     sessions_file = os.path.join(EVIDENCE, "opal", "opal-sessions.json")
     held = read_json(sessions_file, {}) or {}
-    workspace = _workspace("opal-polaris", os.path.join(ROOT, "workspace-opal"))
+    # OPAL_WORKSPACE names a separate workspace (e.g. a clean one for a recorded demo).
+    name = env("OPAL_WORKSPACE", "opal-polaris")
+    folder = "workspace-opal" if name == "opal-polaris" else "workspace-" + name
+    workspace = _workspace(name, os.path.join(ROOT, folder))
     sources = call("GET", "/v1/workspaces/%s/sources" % workspace["id"], dry={"sources": []})
     # CLIO stores the resolved root, so compare resolved paths (Eagle paths hold symlinks).
     real_export = os.path.realpath(export)
