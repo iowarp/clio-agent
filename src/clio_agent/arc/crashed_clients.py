@@ -11,19 +11,22 @@ partly received message per connection until its last chunk arrives. A client ki
 between two chunks of one message never sends the rest, and the daemon worker that
 drains the ring then spins on that half message for good (``RecvBytes`` never reports
 the ring empty while a message is half received, so the worker never returns to its
-own queue). Its TCP port still accepts connections, so the next client "finds a
-daemon", adopts it, and hangs: the native handshake is never answered, and a request
-that does land never completes. Reproduced deterministically by a producer that
-publishes chunk 1 of 2 and exits (``put`` then waits out every stall ceiling; a new
-client's handshake gets no answer). The daemon's busy spin also reads as progress to
-the CPU-based waits, so every bounded wait ran to its ceiling.
+own queue). A client killed between reserving a ring slot and stamping its pid on
+it is worse: while the slot still carries no producer pid (the first lap of the
+ring) the worker waits on it forever and nothing behind it is ever read. Either way
+the TCP port still accepts connections, so the next client "finds a daemon", adopts
+it, and hangs: the native handshake is never answered, and a request that does land
+never completes. Both reproduced deterministically by a stand-in producer that writes
+the ring state and exits (``put`` then waits out every stall ceiling; a new client's
+attach fails after 180 s). The daemon's busy spin also reads as progress to the
+CPU-based waits, so every bounded wait ran to its ceiling.
 
 A daemon no live client uses holds nothing a fresh one lacks: every acknowledged write
 is already committed to the store's file tier (the durability rule ``crash_test.py
 --kill-core`` checks). So connect-or-spawn stops it -- a clean ``clio_run stop``,
 bounded, with the pidfile kill behind it -- and spawns a fresh daemon on the same
-store, typed ``clio_core_daemon_replaced_after_client_crash`` in the log and on the
-``clio_core_attach`` row of ``/v1/health``. A daemon another live client still uses is
+store, typed ``clio_core_daemon_replaced_after_client_crash`` in the log and as the
+``clio_core_daemon_replaced`` row of ``/v1/health``. A daemon another live client still uses is
 left alone (that client owns it).
 """
 
