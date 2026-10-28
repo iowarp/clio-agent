@@ -114,10 +114,7 @@ def sum_sessions(sessions: Iterable[Any]) -> SpendReport:
 def session_tree(app: "FastAPI", root_sid: str) -> list[str]:
     """``root_sid`` and every session spawned beneath it."""
 
-    children: dict[str, list[str]] = {}
-    for session in app.state.sessions.list():
-        if session.parent_session_id:
-            children.setdefault(session.parent_session_id, []).append(session.id)
+    children = app.state.sessions.child_ids_by_parent()  # the index: no row is read
     tree, frontier = [], [root_sid]
     while frontier:
         sid = frontier.pop()
@@ -129,14 +126,17 @@ def session_tree(app: "FastAPI", root_sid: str) -> list[str]:
 def tree_spend(app: "FastAPI", root_sid: str) -> SpendReport:
     """Spend per model over a session and everything it spawned."""
 
-    tree = set(session_tree(app, root_sid))
-    return sum_sessions(s for s in app.state.sessions.list() if s.id in tree)
+    from clio_agent.gact.session_records import PageQuery  # noqa: PLC0415
+
+    tree = frozenset(session_tree(app, root_sid))
+    return sum_sessions(app.state.sessions.select(PageQuery(archived=None, ids=tree)))
 
 
 def workspace_spend(app: "FastAPI") -> SpendReport:
-    """Spend per model over every session this server holds."""
+    """Spend per model over every session this server holds (reads every record)."""
+    from clio_agent.gact.session_records import PageQuery  # noqa: PLC0415
 
-    return sum_sessions(app.state.sessions.list())
+    return sum_sessions(app.state.sessions.select(PageQuery(archived=None)))
 
 
 def spend_by_account(by_model: Mapping[str, Spend]) -> dict[str, Spend]:

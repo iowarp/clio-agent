@@ -350,6 +350,9 @@ from clio_agent.gact.providers.config import (  # noqa: E402,F401
     _provider_runtime_kind,
     _unsupported_model_ref_error,
 )
+from clio_agent.gact.providers.config import (  # noqa: E402
+    clear_session_model_refs as _clear_session_model_refs,
+)
 from clio_agent.gact.providers.lmstudio import (  # noqa: E402,F401
     _lm_studio_api_root,
     _lm_studio_headers,
@@ -490,33 +493,6 @@ from clio_agent.gact.runtime.type_parsing import (  # noqa: E402,F401
     _sanitize_model_name,
 )
 
-# gact/workflow_state/merge.py -- pure workflow_state merge/normalize helpers.
-from clio_agent.gact.workflow_state.merge import (  # noqa: E402,F401
-    _TRAJECTORY_TOOL_ARGS_KEYS,
-    _TRAJECTORY_TOOL_NAME_KEYS,
-    _TRAJECTORY_TOOL_RESULT_KEYS,
-    _UNICODE_PATH_HYPHENS,
-    _merge_inferred_workflow_state,
-    _merge_non_empty_mapping,
-    _merge_workflow_state_mapping,
-    _normalize_pathlike_text,
-    _normalize_workflow_state_scalar,
-    _trajectory_key_index,
-    _value_has_semantic_content,
-)
-
-
-def _clear_session_model_refs(app: "FastAPI") -> None:
-    """Clear stale default/session model refs after a global LM provider swap."""
-
-    if (defaults := getattr(app.state, "session_defaults", None)) is not None:
-        defaults.clear_model_ref()
-    if (sessions := getattr(app.state, "sessions", None)) is not None:
-        for sess in sessions.list():
-            if not _model_ref_is_empty(sess.model):
-                sessions.update(sess.id, model={})
-
-
 # --------------------------------------------------------------------------- #
 # Turn-orchestration engine extracted to gact/turn.py (#714 decomposition).      #
 #                                                                               #
@@ -535,6 +511,21 @@ from clio_agent.gact.turn import (  # noqa: E402,F401
 )
 from clio_agent.gact.turn_runner import (  # noqa: E402
     install_turn_runner,
+)
+
+# gact/workflow_state/merge.py -- pure workflow_state merge/normalize helpers.
+from clio_agent.gact.workflow_state.merge import (  # noqa: E402,F401
+    _TRAJECTORY_TOOL_ARGS_KEYS,
+    _TRAJECTORY_TOOL_NAME_KEYS,
+    _TRAJECTORY_TOOL_RESULT_KEYS,
+    _UNICODE_PATH_HYPHENS,
+    _merge_inferred_workflow_state,
+    _merge_non_empty_mapping,
+    _merge_workflow_state_mapping,
+    _normalize_pathlike_text,
+    _normalize_workflow_state_scalar,
+    _trajectory_key_index,
+    _value_has_semantic_content,
 )
 
 # Alias kept so the thin ``build_app`` closure wrapper (which shadows the

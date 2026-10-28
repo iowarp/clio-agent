@@ -6,8 +6,14 @@ Keep a waiting loop's durable wakeup, but settle interrupted controls explicitly
 
 from __future__ import annotations
 
+import asyncio
 from collections.abc import Mapping
 from typing import Any
+
+from clio_agent.gact.session_records import PageQuery
+
+#: Sessions with an active goal or loop, read from the session index (no row scan).
+_AUTONOMOUS = PageQuery(archived=None, autonomous=True)
 
 
 async def prepare_scheduled_host(app: Any) -> None:
@@ -19,22 +25,34 @@ async def prepare_scheduled_host(app: Any) -> None:
     boot = getattr(app.state, "agent_construction_task", None)
     if boot is not None and not boot.done():
         return  # Admission defers until the existing startup build finishes.
+    from clio_agent.gact.session_host_agent import ensure_host_agent
+
+    # Session rows are clio-core reads: chosen off the server loop.
+    host = await asyncio.to_thread(_scheduled_host, app)
+    if host is not None:
+        await ensure_host_agent(app, *host)
+
+
+def _scheduled_host(app: Any) -> tuple[str, Any] | None:
+    """The first schedule, else active goal, whose session selected a model (off-loop).
+
+    Goal candidates come from the session index (``autonomous``): only their rows
+    are read."""
+    from clio_agent.gact.goal import _get_goal
     from clio_agent.gact.message_contract import PostMessageRequest
-    from clio_agent.gact.session_host_agent import ensure_host_agent, selected_ref
+    from clio_agent.gact.session_host_agent import selected_ref
 
     for schedule in app.state.schedules.list():
         if not schedule.enabled:
             continue
         request = PostMessageRequest(text=schedule.question)
         if selected_ref(app, schedule.session_id, request) is not None:
-            await ensure_host_agent(app, schedule.session_id, request)
-            return
-    for session in app.state.sessions.list():
-        if (session.metadata or {}).get("goal", {}).get("active"):
-            request = PostMessageRequest(text="Recover the active goal")
-            if selected_ref(app, session.id, request) is not None:
-                await ensure_host_agent(app, session.id, request)
-                return
+            return schedule.session_id, request
+    request = PostMessageRequest(text="Recover the active goal")
+    for sid in app.state.sessions.ids(_AUTONOMOUS):
+        if _get_goal(app, sid).get("active") and selected_ref(app, sid, request) is not None:
+            return sid, request
+    return None
 
 
 def admit_loop_wakeup(app: Any, schedule: Any) -> bool:
@@ -152,7 +170,10 @@ def reconcile_autonomous_controls(app: Any) -> None:
     from clio_agent.gact.autonomous_loop import _get_loop, end_loop
     from clio_agent.gact.goal import _get_goal, _put_goal, waiting_on_tasks
 
-    for session in app.state.sessions.list():
+    for sid in app.state.sessions.ids(_AUTONOMOUS):
+        session = app.state.sessions.get(sid)
+        if session is None:
+            continue
         loop = _get_loop(app, session.id)
         goal = _get_goal(app, session.id)
         if not loop.get("active") and not goal.get("active"):

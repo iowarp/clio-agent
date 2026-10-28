@@ -31,11 +31,10 @@ def _workspace_default_session(app: FastAPI, workspace_id: str) -> str:
     store = getattr(app.state, "sessions", None) or getattr(app.state, "session_store", None)
     if store is None:
         return ""
-    try:
-        sessions = store.list(workspace_id=workspace_id)
-    except Exception:  # noqa: BLE001 — a best-effort anchor, never load-bearing
-        return ""
-    return str(getattr(sessions[0], "id", "") or "") if sessions else ""
+    from clio_agent.gact.session_records import PageQuery  # noqa: PLC0415
+
+    ids = store.ids(PageQuery(workspace_id=workspace_id, archived=None))  # index only
+    return ids[0] if ids else ""
 
 
 def register_artifact_alias_routes(app: FastAPI) -> None:

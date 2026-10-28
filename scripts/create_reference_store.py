@@ -284,9 +284,11 @@ _BUSY = {"running", "stopping", "queued"}
 
 def _wait_idle(app: Any, timeout: float) -> None:
     """Wait until no conversation is busy, child conversations included."""
+    from clio_agent.gact.session_records import PageQuery  # noqa: PLC0415
+
     deadline = time.monotonic() + timeout
     while True:
-        busy = [s.id for s in app.state.sessions.list() if str(s.status) in _BUSY]
+        busy = app.state.sessions.ids(PageQuery(archived=None, statuses=frozenset(_BUSY)))
         if not busy:
             return
         if time.monotonic() > deadline:
@@ -331,7 +333,7 @@ def generate(args: argparse.Namespace) -> dict[str, Any]:
             sid = _session(client, "refstore-fanout", f"interrupted {index}")
             _post(client, sid, f"{args.children} STALL interrupted work {index}")
         time.sleep(args.settle)
-        summary["conversations"] = len(app.state.sessions.list())
+        summary["conversations"] = app.state.sessions.count()
         summary["open_records"] = len(app.state.task_history.index.open_records(""))
         summary["seconds"] = round(time.monotonic() - started, 1)
         summary.update(

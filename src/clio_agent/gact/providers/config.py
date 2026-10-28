@@ -296,6 +296,19 @@ def _model_ref_is_empty(value: Any) -> bool:
     return not any(ref.values())
 
 
+def clear_session_model_refs(app: "FastAPI") -> None:
+    """Clear stale default/session model refs after a global LM provider swap.
+
+    Only the sessions the index marks with a selected model are read."""
+    from clio_agent.gact.session_records import PageQuery  # noqa: PLC0415 - import cycle
+
+    if (defaults := getattr(app.state, "session_defaults", None)) is not None:
+        defaults.clear_model_ref()
+    if (sessions := getattr(app.state, "sessions", None)) is not None:
+        for sid in sessions.ids(PageQuery(archived=None, model_selected=True)):
+            sessions.update(sid, model={})
+
+
 def _active_lm_model_ref(app: "FastAPI") -> dict[str, str]:
     """Return the active global LM as a GACT ModelRef-shaped dict.
 

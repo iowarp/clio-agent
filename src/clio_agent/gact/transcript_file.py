@@ -326,6 +326,7 @@ def _atom_boot(app: "FastAPI") -> None:
         ensure_at_boot(app, "task_lane_reads")  # after the lane copy
     # The session records every later step reads (normally one marker read).
     ensure_at_boot(app, "session_records_import")
+    ensure_at_boot(app, "session_record_columns")  # the index the boot reconciliation selects by
     # Legacy content is captured before any reconciliation/cache update; normally
     # `clio-agent migrate` already did, and this is one marker read.
     ensure_at_boot(app, "transcript_legacy_import")

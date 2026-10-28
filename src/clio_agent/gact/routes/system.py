@@ -659,21 +659,16 @@ def register_system_routes(app: FastAPI, deps: "GactDeps") -> None:
 
         uptime = max(0, int(time.time() - app.state.started_at))
 
-        all_sessions = app.state.sessions.list()
-        by_status: dict[str, int] = {}
-        active = 0
-        for s in all_sessions:
-            by_status[s.status] = by_status.get(s.status, 0) + 1
-            if s.status in {"running", "idle"}:
-                active += 1
-
-        # #770 C3: the all-time message total is each session's persisted
-        # message_count; the by-role counts and the iowarp/clio-agent#655 per-tool
-        # + overall "tool_call" latency buckets are this process's running counters
-        # (app.state.metrics_counters), so a poll never re-walks history and boot
-        # never replays it.
+        # The session counts and the all-time message / token / cost totals are summed
+        # from the session index's columns (no session record is read); the by-role
+        # counts and the iowarp/clio-agent#655 per-tool + overall "tool_call" latency
+        # buckets are this process's running counters (app.state.metrics_counters), so
+        # a poll never re-walks history and boot never replays it.
+        totals = app.state.sessions.totals()
+        by_status: dict[str, int] = totals["by_status"]
+        active = by_status.get("running", 0) + by_status.get("idle", 0)
         counters = app.state.metrics_counters
-        message_total = sum(s.message_count for s in all_sessions)
+        message_total = totals["messages"]
         role_counts = counters.role_counts()
         latencies = {
             key: _latency_stat(list(vals)) for key, vals in counters.latency_samples.items()
@@ -683,14 +678,14 @@ def register_system_routes(app: FastAPI, deps: "GactDeps") -> None:
         # session's cumulative counters.
         from clio_agent.gact.types import MetricsCost, MetricsTokens  # noqa: PLC0415
 
-        tokens_input = sum(s.tokens_input for s in all_sessions)
-        tokens_output = sum(s.tokens_output for s in all_sessions)
-        cost_total = sum(s.cost_usd for s in all_sessions)
+        tokens_input = totals["tokens_input"]
+        tokens_output = totals["tokens_output"]
+        cost_total = totals["cost_usd"]
 
         return Metrics(
             uptime_s=uptime,
             sessions=MetricsSessions(
-                total=len(all_sessions),
+                total=totals["total"],
                 active=active,
                 by_status=by_status,
             ),

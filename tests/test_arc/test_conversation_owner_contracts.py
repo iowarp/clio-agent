@@ -48,6 +48,7 @@ from clio_agent.gact.question_surface import answer_question
 from clio_agent.gact.questions import QuestionCommands
 from clio_agent.gact.semantic_events import NoopSemanticTraceBackend, SemanticEventSink
 from clio_agent.gact.session_input import withdraw_message_inputs
+from clio_agent.gact.session_records import PageQuery
 from clio_agent.gact.sessions import SessionStore
 from clio_agent.gact.spawn_context import CreatePreparedChild
 from clio_agent.gact.task_access import TaskCaller
@@ -64,12 +65,12 @@ async def test_spawn_strategy_is_validated_before_child_creation_and_immutable(
 ) -> None:
     app, owner, root = await create_environment(arc, tmp_path)
     caller = TaskCaller(root.owner.session_id, "human")
-    before = len(app.state.sessions.list())
+    before = len(app.state.sessions.select(PageQuery(archived=None)))
     invalid = await owner.spawn(
         caller, "Draft", "writer", "bad", strategy={"variant": "best_of_n", "n": 2}
     )
     assert invalid["accepted"] is False and invalid["reason"] == "invalid_strategy"
-    assert len(app.state.sessions.list()) == before
+    assert len(app.state.sessions.select(PageQuery(archived=None))) == before
     strategy = {"variant": "refine", "n": 2, "rubric": "Clear answer", "judge": "user"}
     accepted = await owner.spawn(
         caller, "Original child assignment", "writer", "good", strategy=strategy
@@ -91,7 +92,7 @@ async def test_spawn_strategy_is_validated_before_child_creation_and_immutable(
             "good",
             strategy={**strategy, "rubric": "Different"},
         )
-    assert len(app.state.sessions.list()) == before + 1
+    assert len(app.state.sessions.select(PageQuery(archived=None))) == before + 1
     await owner.recovery.drain()
 
 

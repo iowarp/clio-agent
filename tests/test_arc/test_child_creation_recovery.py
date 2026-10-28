@@ -12,6 +12,7 @@ from clio_agent.arc.memory import ARCMemory
 from clio_agent.arc.task_types import AssignmentDetails, TaskSnapshot
 from clio_agent.gact.provenance_wiring import install_session_lifecycle_observer
 from clio_agent.gact.semantic_events import semantic_event_from_events_content
+from clio_agent.gact.session_records import PageQuery
 from clio_agent.gact.sessions import SessionStore
 from clio_agent.gact.task_access import TaskCaller
 from tests.test_arc.child_worker_helpers import execute_child
@@ -220,7 +221,7 @@ async def test_unconfirmed_hook_effects_are_not_replayed_by_session_reuse(
         )
         children = [
             child
-            for child in app.state.sessions.list()
+            for child in app.state.sessions.select(PageQuery(archived=None))
             if child.parent_session_id == root.owner.session_id
         ]
         assert len(children) == 1
@@ -250,7 +251,7 @@ async def test_unconfirmed_hook_effects_are_not_replayed_by_session_reuse(
             len(
                 [
                     child
-                    for child in app.state.sessions.list()
+                    for child in app.state.sessions.select(PageQuery(archived=None))
                     if child.parent_session_id == root.owner.session_id
                 ]
             )

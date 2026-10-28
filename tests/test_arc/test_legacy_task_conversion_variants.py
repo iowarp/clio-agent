@@ -18,6 +18,7 @@ from clio_agent.arc.task_types import (
     TaskSnapshot,
 )
 from clio_agent.gact.semantic_events import SemanticEvent
+from clio_agent.gact.session_records import PageQuery
 from clio_agent.gact.sessions import SessionStore
 from clio_agent.gact.storage.models import TransferOperation
 from clio_agent.gact.storage.store import SourceStore
@@ -55,7 +56,9 @@ def twice(app: Any) -> None:
     migrate_history(app)
     before = len(list(history.arc._live.iter_event_contents()))
     snapshots = {handle: history.task_snapshot(handle) for handle in history.task_handles()}
-    session_ids = tuple(session.id for session in app.state.sessions.list())
+    session_ids = tuple(
+        session.id for session in app.state.sessions.select(PageQuery(archived=None))
+    )
     pending = {sid: history.pending_mail(sid) for sid in session_ids}
     migrate_history(app)
     assert len(list(history.arc._live.iter_event_contents())) == before

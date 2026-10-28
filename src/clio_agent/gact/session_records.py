@@ -46,7 +46,7 @@ import logging
 import threading
 import time
 import zlib
-from collections.abc import Iterable, Iterator, Sequence
+from collections.abc import Iterable, Iterator, Mapping, Sequence
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import astuple, dataclass
 from pathlib import Path
@@ -57,6 +57,7 @@ from sortedcontainers import SortedList
 from clio_agent import conf
 from clio_agent.arc.batch_put import PutRecord
 from clio_agent.errors import ClioError
+from clio_agent.gact.providers.config import _model_ref_is_empty
 from clio_agent.gact.session_kind import session_kind
 from clio_agent.gact.transcript_file import TranscriptNotReadyError
 from clio_agent.runtime.stream_audit import stream_audit
@@ -116,6 +117,22 @@ class RecordColumns:
     interaction_known: bool
     status: str = ""
     title: str = ""
+    # Counters the activity metrics sum, and the flags the controls and the memory
+    # pass select by (the ``session_record_columns`` store migration fills them for
+    # rows indexed before they existed).
+    message_count: int = 0
+    tokens_input: int = 0
+    tokens_output: int = 0
+    cost_usd: float = 0.0
+    #: An active goal or loop (``metadata.goal`` / ``metadata.loop``).
+    autonomous: bool = False
+    #: An execution gate is open (``metadata.execution_gate``).
+    gated: bool = False
+    #: A background memory pass is in flight or has ended (``metadata.memory_pass`` /
+    #: ``metadata.memory_last_pass``).
+    memory_runs: bool = False
+    #: The session selected its own model (``session.model``).
+    model_selected: bool = False
 
 
 @dataclass(frozen=True)
@@ -132,6 +149,11 @@ class PageQuery:
     statuses: Optional[frozenset[str]] = None
     #: Case-insensitive substring of the title.
     search: Optional[str] = None
+    #: Only sessions with an active goal or loop / an open execution gate.
+    autonomous: Optional[bool] = None
+    gated: Optional[bool] = None
+    model_selected: Optional[bool] = None
+    memory_runs: Optional[bool] = None
     limit: int = 50
     cursor: Optional[str] = None
 
@@ -145,6 +167,10 @@ class PageQuery:
             and (self.ids is None or row.id in self.ids)
             and (not self.parent_session_id or row.parent_session_id == self.parent_session_id)
             and (not self.search or self.search.casefold() in row.title.casefold())
+            and (self.autonomous is None or row.autonomous == self.autonomous)
+            and (self.gated is None or row.gated == self.gated)
+            and (self.model_selected is None or row.model_selected == self.model_selected)
+            and (self.memory_runs is None or row.memory_runs == self.memory_runs)
         )
 
 
@@ -412,6 +438,43 @@ class SessionRecords:
             ticket = self._writer.submit(changes)
         self._settle(ticket)
 
+    def reindex(self, rows: Iterable[RecordColumns]) -> int:
+        """Rewrite the index columns of stored sessions (records untouched); returns
+        how many changed. Each changed bucket is written once."""
+
+        self._ready()
+        changed = 0
+        with self._lock:
+            buckets: set[str] = set()
+            for columns in rows:
+                if columns.id in self._columns and self._columns[columns.id] != columns:
+                    self._index(columns)
+                    buckets.add(bucket_of(columns.id))
+                    changed += 1
+            if not buckets:
+                return 0
+            ticket = self._writer.submit({b: self._bucket_body(b) for b in sorted(buckets)})
+        self._settle(ticket)
+        return changed
+
+    def totals(self) -> dict[str, Any]:
+        """Session counts by status and the summed counters, from the index alone."""
+
+        self._ready()
+        with self._lock:
+            rows = list(self._columns.values())
+        by_status: dict[str, int] = {}
+        for row in rows:
+            by_status[row.status] = by_status.get(row.status, 0) + 1
+        return {
+            "total": len(rows),
+            "by_status": by_status,
+            "messages": sum(row.message_count for row in rows),
+            "tokens_input": sum(row.tokens_input for row in rows),
+            "tokens_output": sum(row.tokens_output for row in rows),
+            "cost_usd": sum(row.cost_usd for row in rows),
+        }
+
     def delete(self, session_id: str) -> None:
         """Remove one session's record and its index entry."""
 
@@ -640,6 +703,7 @@ class SessionRecords:
 def record_columns(session: Any) -> RecordColumns:
     """The indexed columns of ``session`` (the views' filters and recency)."""
 
+    metadata = session.metadata if isinstance(session.metadata, Mapping) else {}
     return RecordColumns(
         id=session.id,
         workspace_id=session.workspace_id,
@@ -652,7 +716,20 @@ def record_columns(session: Any) -> RecordColumns:
         interaction_known=bool(session.last_interaction_at),
         status=str(session.status or ""),
         title=str(session.title or ""),
+        message_count=int(session.message_count or 0),
+        tokens_input=int(session.tokens_input or 0),
+        tokens_output=int(session.tokens_output or 0),
+        cost_usd=float(session.cost_usd or 0.0),
+        autonomous=_flag(metadata, "goal", "active") or _flag(metadata, "loop", "active"),
+        gated=bool(metadata.get("execution_gate")),
+        memory_runs=bool(metadata.get("memory_pass") or metadata.get("memory_last_pass")),
+        model_selected=not _model_ref_is_empty(session.model),
     )
+
+
+def _flag(metadata: Mapping[str, Any], key: str, field: str) -> bool:
+    value = metadata.get(key)
+    return bool(isinstance(value, Mapping) and value.get(field))
 
 
 def cache_capacity() -> int:

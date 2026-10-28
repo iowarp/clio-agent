@@ -578,17 +578,6 @@ class SessionStore:
                 return "SessionStart process settlement is unconfirmed; no replay or successor was launched."
         return None
 
-    def list(
-        self,
-        *,
-        workspace_id: Optional[str] = None,
-    ) -> list[Session]:
-        """Every session (reads every record: prefer :meth:`page` / :meth:`ids`)."""
-
-        with self._lock:
-            ids = self._records.select(PageQuery(workspace_id=workspace_id, archived=None))
-            return self._sessions(ids)
-
     def page(self, query: PageQuery) -> tuple["builtins.list[Session]", Optional[str], int]:
         """One page newest interaction first, the next cursor, the total (bad cursor:
         :class:`~clio_agent.gact.session_records.InvalidCursorError`)."""
@@ -614,11 +603,20 @@ class SessionStore:
         """Import the legacy ``sessions.json`` (the store migration's body; idempotent)."""
         return self._records.import_legacy(self._path)
 
-    def ids(self) -> "builtins.list[str]":
-        """Every session id, without reading a row."""
+    def ids(self, query: PageQuery | None = None) -> "builtins.list[str]":
+        """Every session id (matching ``query``), from the index: no row is read."""
 
         with self._lock:
-            return self._records.ids()
+            return self._records.ids() if query is None else self._records.select(query)
+
+    def totals(self) -> dict[str, Any]:
+        """Counts by status and summed counters (:meth:`SessionRecords.totals`), no row read."""
+        return self._records.totals()
+
+    def reindex(self, ids: "builtins.list[str]") -> int:
+        """Recompute the index columns of the named sessions from their rows."""
+        with self._lock:
+            return self._records.reindex(record_columns(row) for row in self._sessions(ids))
 
     def child_ids_by_parent(self) -> dict[str, "builtins.list[str]"]:
         """``{parent id: [child ids]}`` from the parent column, without reading rows."""

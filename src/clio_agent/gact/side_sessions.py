@@ -135,9 +135,15 @@ def _selection(raw: Any) -> dict[str, str]:
 def side_sessions_of(app: "FastAPI", parent_session_id: str) -> list["Session"]:
     """Every live aside of ``parent_session_id``."""
 
+    from clio_agent.gact.session_records import PageQuery  # noqa: PLC0415
+
+    # The parent's lookup children, from the index: only those rows are read.
+    query = PageQuery(
+        archived=None, parent_session_id=parent_session_id, kinds=frozenset({"lookup"})
+    )
     return [
         session
-        for session in app.state.sessions.list()
+        for session in app.state.sessions.select(query)
         if session.parent_session_id == parent_session_id and is_read_only_side_session(session)
     ]
 

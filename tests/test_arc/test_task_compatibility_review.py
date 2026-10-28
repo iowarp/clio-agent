@@ -16,6 +16,7 @@ from clio_agent.gact import context
 from clio_agent.gact.agents import clio_react_record
 from clio_agent.gact.assignment_evidence import select_assignment_evidence
 from clio_agent.gact.builtin_boundary import BuiltinBoundary
+from clio_agent.gact.session_records import PageQuery
 from clio_agent.gact.task_access import TaskCaller
 from clio_agent.gact.task_declarations import build_spawn_runtime_tools
 from clio_agent.gact.task_operations import TaskOperations
@@ -55,7 +56,7 @@ async def test_first_assignment_pins_evidence_before_an_interrupted_acceptance(
             raise RuntimeError("Lost reply after the first confirmed assignment observation")
 
     monkeypatch.setattr(history, "record_snapshot", interrupt)
-    before = len(app.state.sessions.list())
+    before = len(app.state.sessions.select(PageQuery(archived=None)))
     arguments: dict[str, Any] = {
         "launch_context": {"input_task_refs": [pin.model_dump(mode="json") for pin in pins]}
     }
@@ -63,7 +64,7 @@ async def test_first_assignment_pins_evidence_before_an_interrupted_acceptance(
         await owner.spawn(caller, "Resilient assignment", "critic", "resilient", **arguments)
     accepted = await owner.spawn(caller, "Resilient assignment", "critic", "resilient", **arguments)
     assert accepted["accepted"] is True and accepted["handle"] == recorded[0]
-    assert len(app.state.sessions.list()) == before + 1
+    assert len(app.state.sessions.select(PageQuery(archived=None))) == before + 1
     pending = await asyncio.to_thread(history.pending_mail, accepted["session_id"])
     assert [item.id for item in pending] == ["assignment:" + accepted["handle"]]
     await owner.recovery.drain()

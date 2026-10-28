@@ -263,7 +263,9 @@ def _migrate_intents(app: Any, sessions: dict[str, Any], anchor: Callable[[str],
 def _migrate_inputs(app: Any, anchor: Callable[[str], str]) -> None:
     """Import acknowledgement only from an actual retained recipient-input segment."""
     history = app.state.task_history
-    for session in app.state.sessions.list():
+    from clio_agent.gact.session_records import PageQuery  # noqa: PLC0415
+
+    for session in app.state.sessions.select(PageQuery(archived=None)):  # a migration
         for scope in history.arc.list_segment_scopes(session.id):
             if scope.startswith("_"):
                 continue

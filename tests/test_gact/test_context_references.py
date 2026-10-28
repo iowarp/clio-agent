@@ -82,10 +82,10 @@ class _Sessions:
     def get(self, session_id: str) -> SimpleNamespace | None:
         return self._rows.get(session_id)
 
-    def list(self, *, workspace_id: str | None = None) -> list[SimpleNamespace]:
+    def select(self, query: Any) -> list[SimpleNamespace]:
         rows = list(self._rows.values())
-        if workspace_id:
-            rows = [row for row in rows if row.workspace_id == workspace_id]
+        if query.workspace_id:
+            rows = [row for row in rows if row.workspace_id == query.workspace_id]
         return rows
 
 

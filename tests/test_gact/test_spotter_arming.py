@@ -34,6 +34,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from clio_agent.gact.app import build_app
+from clio_agent.gact.session_records import PageQuery
 from clio_agent.gact.spotter_arming import (
     REFUSAL_WATCHER_ENTRYPOINT_MISSING,
     REFUSAL_WATCHER_PROJECT_MISSING,
@@ -205,7 +206,7 @@ def test_create_into_spotter_ai_is_refused_when_declared_mcp_env_is_unset(
     assert error["message"]
 
     # Nothing was armed, and the refused create left NO session behind.
-    assert app.state.sessions.list() == []
+    assert app.state.sessions.select(PageQuery(archived=None)) == []
     assert _live_watcher_tasks(app, "") == []
     # The refusal reaches the trace/log with its typed reason.
     assert any(
@@ -233,7 +234,7 @@ def test_create_into_spotter_ai_is_refused_when_project_dir_is_missing(
     assert error["error"] == REFUSAL_WATCHER_PROJECT_MISSING == "spotter_watcher_project_missing"
     assert error["details"]["path"] == str(tmp_path / "not-installed")
     assert error["details"]["mcp_server"] == "spotter"
-    assert app.state.sessions.list() == []
+    assert app.state.sessions.select(PageQuery(archived=None)) == []
 
 
 # --------------------------------------------------------------------------- #
@@ -272,7 +273,7 @@ def test_create_into_spotter_ai_is_refused_when_the_project_venv_is_absent(
     assert "spotter-mcp" in details["detail"]
 
     # Fail-closed AT ARMING: the refused create left no session behind.
-    assert app.state.sessions.list() == []
+    assert app.state.sessions.select(PageQuery(archived=None)) == []
     assert any(
         "spotter_watcher_arm_refused" in record.getMessage()
         and REFUSAL_WATCHER_ENTRYPOINT_MISSING in record.getMessage()
@@ -301,7 +302,7 @@ def test_create_into_spotter_ai_is_refused_when_the_venv_is_unsynced(
     details = resp.json()["error"]["details"]
     assert details["reason"] == REFUSAL_WATCHER_ENTRYPOINT_MISSING
     assert details["venv_state"] == "unsynced"
-    assert app.state.sessions.list() == []
+    assert app.state.sessions.select(PageQuery(archived=None)) == []
 
 
 def test_create_into_spotter_ai_is_refused_when_the_entrypoint_is_absent(
@@ -322,7 +323,7 @@ def test_create_into_spotter_ai_is_refused_when_the_entrypoint_is_absent(
     assert details["reason"] == REFUSAL_WATCHER_ENTRYPOINT_MISSING
     assert details["venv_state"] == "entrypoint_absent"
     assert details["entrypoint"] == "spotter-mcp"
-    assert app.state.sessions.list() == []
+    assert app.state.sessions.select(PageQuery(archived=None)) == []
 
 
 def test_create_into_spotter_ai_arms_when_the_entrypoint_is_installed(
@@ -433,7 +434,7 @@ def test_arming_without_an_installed_watcher_agent_is_refused(tmp_path: Path) ->
         assert response.status_code == 422, response.text
         assert response.json()["error"]["error"] == REFUSAL_WATCHER_UNMOUNTABLE
         assert "not installed" in response.json()["error"]["message"]
-        assert app.state.sessions.list() == []
+        assert app.state.sessions.select(PageQuery(archived=None)) == []
 
 
 # --------------------------------------------------------------------------- #

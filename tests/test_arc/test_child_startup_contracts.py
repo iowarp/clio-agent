@@ -16,6 +16,7 @@ from clio_agent.gact.provenance_wiring import install_session_lifecycle_observer
 from clio_agent.gact.questions import QuestionCommands
 from clio_agent.gact.runtime.globals import _emit_semantic_event
 from clio_agent.gact.semantic_events import semantic_event_from_events_content
+from clio_agent.gact.session_records import PageQuery
 from clio_agent.gact.sessions import SessionStore
 from clio_agent.gact.task_access import TaskCaller
 from clio_agent.gact.task_operations import TaskOperations
@@ -44,7 +45,11 @@ async def test_simultaneous_first_submissions_share_one_child_mail_and_startup(
             owner.spawn(caller, "Same original assignment", "worker", "simultaneous"),
         )
         assert first == second and first["accepted"] is True
-        children = [row for row in app.state.sessions.list() if row.parent_session_id]
+        children = [
+            row
+            for row in app.state.sessions.select(PageQuery(archived=None))
+            if row.parent_session_id
+        ]
         assert [row.id for row in children] == [first["session_id"]]
         assert (
             len((await asyncio.to_thread(owner.history.pending_mail, first["session_id"]))) == 1
@@ -320,7 +325,7 @@ async def test_trusted_inline_initialization_rejects_loop_thread_before_any_row_
     store = SessionStore(path=tmp_path / "sessions.json")
     with pytest.raises(RuntimeError, match="off the event loop"):
         store.create(workspace_id="workspace", creation_id="trusted", creation_digest="a" * 64)
-    assert store.list() == [] and not (tmp_path / "sessions.json").exists()
+    assert store.ids() == [] and not (tmp_path / "sessions.json").exists()
 
 
 @pytest.mark.asyncio
@@ -350,7 +355,11 @@ async def test_partial_child_reuse_preserves_human_approval_mode_and_original_me
                 approval_profile="read-only-side",
                 session_metadata=metadata,
             )
-        child = next(row for row in app.state.sessions.list() if row.parent_session_id)
+        child = next(
+            row
+            for row in app.state.sessions.select(PageQuery(archived=None))
+            if row.parent_session_id
+        )
         assert child.approval_profile == "read-only-side" and child.approval_mode == "ask"
         await asyncio.to_thread(app.state.sessions.update, child.id, approval_mode="ai-review")
         await asyncio.to_thread(owner.history.restore)

@@ -148,7 +148,7 @@ RATCHET_BASELINE: dict[str, int] = {
     # MERGE (PR #1298 x #1310): 1030 -> 1032. Both campaigns' call-site lines
     # coexist; neither side's additions were dropped.
     "src/clio_agent/agent.py": 905,  # Cooperative cancellation moved to runtime/cancellation.py.
-    "src/clio_agent/arc/memory.py": 1065,  # 11a: the segment-plane surface moved to arc/memory_segments.py
+    "src/clio_agent/arc/memory.py": 1012,  # 11a: the segment-plane surface moved to arc/memory_segments.py
     # #900: +4 for the CREATE_BREAKAWAY_FROM_JOB daemon-spawn flag + its rationale.
     # owner ruling 2026-07-14: +3 to route explicit =local through the loud
     # DEGRADED banner (owner module: arc/init_degradation.py).
@@ -167,12 +167,6 @@ RATCHET_BASELINE: dict[str, int] = {
     # module arc/clio_core_daemon_version.py; the PID-identity helpers moved to
     # arc/pid_identity.py (re-exported here under their old names).
     # #737 S2 fold owner module. Crossed the 800 new-file cap restoring the FROZEN
-    # arc.op reproducibility contract (§2 / GOAL.md DoD #4): the five working-set write
-    # overrides now emit a per-op arc.op via _emit_op so arc.replay rebuilds the live
-    # plane byte-identically (the S2 slice had dropped these, breaking replay). Footprint
-    # minimized to concise docstrings; the per-op payload passing is irreducible. Ratchet
-    # down with the #714/#767 decomposition.
-    "src/clio_agent/arc/working_set_fold.py": 802,  # 11a: view/index/companion/search in owner modules
     # #948 S4: +14 for the children-must-be-react hierarchy rule (a predict/CoT
     # parent would silently strand its children now that the settle loop routing
     # for it is deleted; typed validation error instead).
@@ -445,7 +439,7 @@ RATCHET_BASELINE: dict[str, int] = {
     # Ratchet down 2469 -> 2467 (naming reversal): removed the now-unneeded
     # codex->chatgpt boot migration call (the provider id never changed).
     # Ratchet down 2435 -> 2419: the transcript-store boot moved to gact/transcript_file.py.
-    "src/clio_agent/gact/app.py": 1824,
+    "src/clio_agent/gact/app.py": 1815,
     # #971 GAP A (S5 live gate): the artifact mint funnel was at the 800 cap; +24
     # adds the designation-by-RESULT channel (ndp_stage_resource writes an
     # intermediate whose path rides only ``local_path`` in the result — the arg

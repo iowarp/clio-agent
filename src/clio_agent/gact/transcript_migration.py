@@ -34,7 +34,7 @@ def migrate_transcripts(app: Any) -> None:
     if history.index.done_marker(IMPORT_DONE) is not None:
         return
     store = history.arc._segments
-    sessions = {row.id for row in app.state.sessions.list()} | set(cache.session_ids())
+    sessions = set(app.state.sessions.ids()) | set(cache.session_ids())
     for sid in sorted(sessions):
         with history.serialized(writing=True), store._lock_for(sid, LEGACY_SCOPE):
             if store.list_segments(sid, LEGACY_SCOPE, include_tombstoned=False):

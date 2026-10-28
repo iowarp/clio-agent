@@ -136,11 +136,11 @@ def _active_session_for_workspace(app: "FastAPI", workspace_id: str) -> str:
     sessions = getattr(app.state, "sessions", None)
     if sessions is None:
         return ""
-    try:
-        rows = sessions.list(workspace_id=workspace_id)
-    except TypeError:
-        rows = [s for s in sessions.list() if getattr(s, "workspace_id", "") == workspace_id]
-    return str(getattr(rows[0], "id", "") or "") if rows else ""
+    from clio_agent.gact.session_records import PageQuery  # noqa: PLC0415
+
+    # The newest created session of the workspace, from the index: no row is read.
+    ids = sessions.ids(PageQuery(workspace_id=workspace_id, archived=None))
+    return ids[0] if ids else ""
 
 
 def _emit_boundary(

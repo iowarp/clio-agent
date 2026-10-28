@@ -182,6 +182,16 @@ def _run_session_records(app: Any) -> dict[str, Any]:
     return app.state.sessions.import_legacy()
 
 
+def _run_session_record_columns(app: Any) -> dict[str, Any]:
+    # Rows indexed before a column existed carry its default: recompute every row's
+    # columns from its record once (a batch of rows at a time), here and never at a
+    # request. Idempotent; the runner's marker ends it for good.
+    sessions = app.state.sessions
+    ids = sessions.ids()
+    changed = sum(sessions.reindex(ids[at : at + 64]) for at in range(0, len(ids), 64))
+    return {"sessions": len(ids), "reindexed": changed}
+
+
 def _session_records_input(app: Any) -> bool:
     return _legacy_sessions_file() is not None
 
@@ -255,6 +265,13 @@ MIGRATIONS: tuple[StoreMigration, ...] = (
         _run_session_records,
         boot_reason="session_records_import_owed",
         has_input=_session_records_input,
+    ),
+    StoreMigration(
+        "session_record_columns",
+        "Fill the session index's counter and control columns from each session record",
+        _run_session_record_columns,
+        boot_reason="session_record_columns_owed",
+        has_input=_holds_conversation,
     ),
     StoreMigration(
         "task_event_lane",

@@ -263,7 +263,9 @@ def _artifact_results(app: "FastAPI", workspace_id: str) -> list[dict[str, Any]]
 
 def _session_results(app: "FastAPI", workspace_id: str) -> list[dict[str, Any]]:
     results: list[dict[str, Any]] = []
-    for session in app.state.sessions.list(workspace_id=workspace_id):
+    from clio_agent.gact.session_records import PageQuery  # noqa: PLC0415
+
+    for session in app.state.sessions.select(PageQuery(workspace_id=workspace_id, archived=None)):
         results.append(
             _reference_result(
                 kind="session",

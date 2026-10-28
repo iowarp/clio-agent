@@ -591,7 +591,9 @@ def memory_tick(app: Any, now: datetime | None = None) -> None:
         return
     collected = started = 0
     skipped: dict[str, int] = {}
-    for session in list(app.state.sessions.list()):
+    from clio_agent.gact.session_records import PageQuery  # noqa: PLC0415
+
+    for session in app.state.sessions.select(PageQuery(archived=None)):
         try:
             if (session.metadata or {}).get(IN_FLIGHT):
                 collected += 1

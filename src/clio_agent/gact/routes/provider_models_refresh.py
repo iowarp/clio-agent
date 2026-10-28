@@ -87,11 +87,11 @@ def register_provider_models_refresh_routes(app: FastAPI, deps: "GactDeps") -> N
         # connected client; otherwise Settings can show the new provider truth
         # while an already-open model picker keeps presenting the old one.
         app.state.provider_catalog = None
-        for session in app.state.sessions.list():
+        for sid in app.state.sessions.ids():  # ids from the index: no row is read
             app.state.bus.publish(
                 Event(
                     type="provider_catalog.refreshed",
-                    session_id=session.id,
+                    session_id=sid,
                     payload={"results": results},
                 )
             )

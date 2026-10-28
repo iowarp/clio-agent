@@ -73,8 +73,11 @@ def emit_workspace_event(
 ) -> None:
     """Publish one lifecycle event to every session that belongs to the workspace."""
 
-    for session in app.state.sessions.list(workspace_id=workspace_id):
-        app.state.bus.publish(Event(type=event_type, session_id=session.id, payload=payload))
+    from clio_agent.gact.session_records import PageQuery  # noqa: PLC0415
+
+    query = PageQuery(workspace_id=workspace_id, archived=None)
+    for sid in app.state.sessions.ids(query):  # ids from the index: no row is read
+        app.state.bus.publish(Event(type=event_type, session_id=sid, payload=payload))
 
 
 def _persist(app: Any, record: ResourceRecord, state: ResourceProcessingRecord) -> bool:

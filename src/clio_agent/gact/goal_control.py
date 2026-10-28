@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import asyncio
 
+from clio_agent.gact.session_records import PageQuery
+
 
 def build_goal_wait_tool() -> Any:
     """Declare goal dependencies without leaving a dormant assignment's worker parked."""
@@ -67,10 +69,11 @@ async def maintain_goal_controls(app: Any) -> None:
     from clio_agent.gact.autonomy_guard import expire_goal_budget
 
     def maintain() -> None:
-        for session in app.state.sessions.list():
-            goal = _get_goal(app, session.id)
+        # Only sessions the index marks with an active goal or loop are read.
+        for sid in app.state.sessions.ids(PageQuery(archived=None, autonomous=True)):
+            goal = _get_goal(app, sid)
             if goal.get("active"):
-                expire_goal_budget(app, session.id, goal)
+                expire_goal_budget(app, sid, goal)
 
     await asyncio.to_thread(maintain)
     # The first scheduler tick can run before boot has built the conversation runtime;

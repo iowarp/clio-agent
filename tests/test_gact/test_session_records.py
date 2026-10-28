@@ -220,7 +220,7 @@ def test_legacy_json_is_imported_once_by_the_store_migration(tmp_path: Path) -> 
     item = store_migrations.migration("session_records_import")
     first = store_migrations.run_migration(app, item)
     assert (first.status, first.details) == ("done", {"sessions": 1})
-    assert [row.id for row in store.list()] == ["sess_old"]
+    assert store.ids() == ["sess_old"]
     assert [row.id for row in store.sessions_without_interaction_time()] == ["sess_old"]
     assert store_migrations.run_migration(app, item).status == "already_done"
     # A rerun after an interruption keeps what is there and adds nothing twice.

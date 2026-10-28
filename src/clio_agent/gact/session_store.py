@@ -277,6 +277,7 @@ def _reconcile_restart_interrupted_sessions(app: "FastAPI") -> None:
     ``transcript.file`` off (:func:`~clio_agent.gact.transcript_file.load_durable_transcript`).
     """
 
+    from clio_agent.gact.session_records import PageQuery  # noqa: PLC0415 - lazy: keep leaf
     from clio_agent.gact.transcript_file import (  # noqa: PLC0415 - lazy: keep leaf
         has_durable_transcript_store,
         load_durable_transcript,
@@ -285,7 +286,8 @@ def _reconcile_restart_interrupted_sessions(app: "FastAPI") -> None:
     sessions = getattr(app.state, "sessions", None)
     if sessions is None or not has_durable_transcript_store(app):
         return
-    for session in sessions.list():
+    # The index names the running rows: only those are read.
+    for session in sessions.select(PageQuery(archived=None, statuses=frozenset({"running"}))):
         if session.status != "running":
             continue
         try:

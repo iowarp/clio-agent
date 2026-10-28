@@ -11,6 +11,7 @@ import pytest
 
 from clio_agent.arc.memory import ARCMemory
 from clio_agent.gact import context
+from clio_agent.gact.session_records import PageQuery
 from clio_agent.gact.task_declarations import build_spawn_runtime_tools
 from tests.test_arc.test_conversation_owner_contracts import create_environment
 
@@ -76,10 +77,10 @@ async def test_single_and_batch_spawn_share_child_preparation_and_preserve_names
         snapshots = await asyncio.to_thread(owner.history.session_handles, root.owner.session_id)
         assert root.handle in snapshots
         assert all(row["task_id"] == row["handle"] for row in batch["spawned"] if "handle" in row)
-        before = len(app.state.sessions.list())
+        before = len(app.state.sessions.select(PageQuery(archived=None)))
         with pytest.raises(ValueError, match="relay placement"):
             await tools["spawn_agent_task"].func(agent="writer", task="Remote", placement="relay")
-        assert len(app.state.sessions.list()) == before
+        assert len(app.state.sessions.select(PageQuery(archived=None))) == before
     finally:
         context.reset(sid_token)
         context.reset(token)

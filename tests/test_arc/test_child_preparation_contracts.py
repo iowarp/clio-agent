@@ -14,6 +14,7 @@ import pytest
 from clio_agent.arc.memory import ARCMemory
 from clio_agent.arc.task_types import QuestionDefinition
 from clio_agent.gact.questions import QuestionCommands
+from clio_agent.gact.session_records import PageQuery
 from clio_agent.gact.spawn_context import prepare_child_session
 from clio_agent.gact.task_access import TaskCaller
 from clio_agent.gact.task_operations import TaskOperations
@@ -66,7 +67,11 @@ async def test_held_target_discovery_preserves_shared_controls_and_rechecks_admi
         assert (
             await asyncio.wait_for(asyncio.to_thread(commands.cancel, question.handle), 2)
         ).status == "cancelled"
-        assert not [row for row in app.state.sessions.list() if row.parent_session_id]
+        assert not [
+            row
+            for row in app.state.sessions.select(PageQuery(archived=None))
+            if row.parent_session_id
+        ]
         if mutation == "cancel":
             acknowledgement = await asyncio.wait_for(owner.cancel(caller, root.handle), 2)
             assert acknowledgement["cancellation_requested"] is True
@@ -96,7 +101,11 @@ async def test_held_target_discovery_preserves_shared_controls_and_rechecks_admi
                 match="active owning assignment|admission is closed|configuration changed",
             ):
                 await asyncio.wait_for(submission, 5)
-            assert not [row for row in app.state.sessions.list() if row.parent_session_id]
+            assert not [
+                row
+                for row in app.state.sessions.select(PageQuery(archived=None))
+                if row.parent_session_id
+            ]
             assert not await asyncio.to_thread(owner.history.task_handles, kind="Subagent")
     finally:
         release.set()
@@ -135,7 +144,11 @@ async def test_identical_preparations_accept_one_child_without_executing_discove
         release.set()
         first, second = await asyncio.wait_for(asyncio.gather(*submissions), 5)
         assert first == second
-        children = [row for row in app.state.sessions.list() if row.parent_session_id]
+        children = [
+            row
+            for row in app.state.sessions.select(PageQuery(archived=None))
+            if row.parent_session_id
+        ]
         assert [row.id for row in children] == [first["session_id"]]
         assert len(await owner.history.io.run(owner.history.pending_mail, first["session_id"])) == 1
         assert children[0].creation_hook_state == "pending"

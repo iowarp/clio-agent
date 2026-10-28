@@ -15,6 +15,7 @@ from fastapi.testclient import TestClient
 from clio_agent.gact import context, session_warmup, workspace_warmup
 from clio_agent.gact.app import build_app
 from clio_agent.gact.session_defaults import UpdateSessionDefaultsRequest
+from clio_agent.gact.session_records import PageQuery
 from clio_agent.plugins.servers import server_set_declarations
 from clio_agent.tools.execution import get_active_tool_server_set, get_active_tool_workspace_root
 from clio_agent.tools.workspace_root import canonical_workspace_root
@@ -136,12 +137,12 @@ def test_draft_prepares_default_fleet_and_first_session_reuses_it(
         app.state.agent = agent
         app.state.session_defaults.update(UpdateSessionDefaultsRequest(agent_ref="clio/science"))
         workspace = app.state.workspaces.create(name="draft", root_path=str(tmp_path))
-        before = app.state.sessions.list()
+        before = app.state.sessions.select(PageQuery(archived=None))
         response = client.post(f"/v1/workspaces/{workspace.id}/warmup")
         assert response.status_code == 202
         assert response.json() == {"status": "warming"}
         assert completed.wait(5), "draft preparation must finish before checking its fleet"
-        assert app.state.sessions.list() == before
+        assert app.state.sessions.select(PageQuery(archived=None)) == before
         assert {namespace for _, namespace in mounted} == {"web", "science"}
         [(bound_root, server_set, bound_session)] = agent.bound
         assert (bound_root, bound_session) == (canonical_workspace_root(tmp_path), "")
