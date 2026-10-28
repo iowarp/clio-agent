@@ -31,7 +31,12 @@ from typing import Any
 from clio_agent.arc.init_degradation import ArcStoreUnavailableError
 from clio_agent.errors import ClioError
 from clio_agent.gact import store_migrations
-from clio_agent.gact.store_migrations import MigrationResult, is_owed, run_migration
+from clio_agent.gact.store_migrations import (
+    MigrationResult,
+    is_owed,
+    owes_app_build,
+    run_migration,
+)
 
 EXIT_OK, EXIT_FAILED, EXIT_IN_USE, EXIT_UNAVAILABLE = 0, 1, 3, 4
 #: Failures a migration reports typed (``migration_failed``); anything else is a bug and
@@ -97,7 +102,7 @@ def _attach_app(core: Any) -> Any:
 
 def _close_store(app: Any) -> None:
     """Retire the Core writer and release clio-core (stopped if this was its last client)."""
-    from clio_agent.arc.storage import release_runtime_client  # noqa: PLC0415
+    from clio_agent.arc.storage import ClioCoreStore, release_runtime_client  # noqa: PLC0415
 
     history = getattr(app.state, "task_history", None)
     if history is not None:
@@ -110,6 +115,7 @@ def _close_store(app: Any) -> None:
 
         provenance_wiring.close_artifact_backend(app)
     release_runtime_client()
+    ClioCoreStore.drop_native_handles()  # released: nothing native outlives the command
 
 
 def run_migrations(emit: Callable[[str], None] = print) -> tuple[int, dict[str, Any]]:
@@ -143,12 +149,17 @@ def run_migrations(emit: Callable[[str], None] = print) -> tuple[int, dict[str, 
     try:
         history = app.state.task_history
         owed = [
-            item.name
+            item
             for item in store_migrations.MIGRATIONS
             if history.io.submit(is_owed, app, item).result()
         ]
-        if owed:
-            emit(f"migrate step=prepare status=running owed={','.join(owed)}")
+        # Only a migration with something to convert that reads the app builds it: a new
+        # store (no conversation yet) is recorded done from the store alone.
+        convert = [
+            item.name for item in owed if history.io.submit(owes_app_build, app, item).result()
+        ]
+        if convert:
+            emit(f"migrate step=prepare status=running owed={','.join(convert)}")
             app = _attach_app(app)
             emit(f"migrate step=prepare status=done seconds={time.monotonic() - started:.3f}")
         for item in store_migrations.MIGRATIONS:
@@ -201,5 +212,21 @@ def main(arguments: Sequence[str] = ()) -> int:
     return code
 
 
+def exit_released(code: int) -> None:
+    """Exit once the store is released: run the exit handlers, skip the teardown.
+
+    Every resource is already closed and released (:func:`_close_store`) and the exit
+    handlers run here. What ``sys.exit`` would add is the interpreter's module teardown,
+    a garbage collection over everything imported, measured at 6-9 s once the app was
+    built (the installers run this command on every install).
+    """
+    import atexit  # noqa: PLC0415
+
+    atexit._run_exitfuncs()
+    sys.stdout.flush()
+    sys.stderr.flush()
+    os._exit(code)
+
+
 if __name__ == "__main__":
-    sys.exit(main(sys.argv[1:]))
+    exit_released(main(sys.argv[1:]))

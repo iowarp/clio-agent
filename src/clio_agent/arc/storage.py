@@ -16,6 +16,7 @@ import re
 import subprocess
 import sys
 import threading
+import weakref
 from collections.abc import Iterator, Sequence
 from itertools import batched
 from pathlib import Path
@@ -397,6 +398,7 @@ class ClioCoreStore:
     _namespace = ""  # the default (bare-tag) namespace; set per instance in __init__
     _kinds: tuple[str, ...] = ARC_KINDS  # the kinds clear() and prewarm cover
     _attach_verified = False  # the post-attach probe ran (once per process attach)
+    _instances: "weakref.WeakSet[ClioCoreStore]" = weakref.WeakSet()
 
     _initialized = False  # process-global init guard (the runtime inits exactly once)
     _attached_runtime_identity: tuple[int, float] | None = None
@@ -416,6 +418,7 @@ class ClioCoreStore:
 
         self._cte = cte
         self._client = cte.get_cte_client()
+        type(self)._instances.add(self)
         # Records of one namespace live under ``<namespace>/<kind>`` tags; the default
         # (empty) namespace keeps the bare ``<kind>`` tags every deployment already has.
         self._namespace = namespace
@@ -459,6 +462,18 @@ class ClioCoreStore:
 
     # Process-owned, idempotent release_runtime_client runs after application
     # drain, with atexit as its backstop. Namespace instances never release it.
+
+    @classmethod
+    def drop_native_handles(cls) -> None:
+        """Let go of every store's native client and tag ids (a one-shot command's exit).
+
+        The binding reports each native object still alive at interpreter exit as a
+        leak (``nanobind: leaked ...``); a process that has released the runtime has no
+        further use for them. Any later call on a store fails instead of reaching clio-core.
+        """
+        for store in list(cls._instances):
+            store._tag_ids.clear()
+            store._client = None
 
     @classmethod
     def _ensure_runtime(cls, config_path: str, log_level: str, settle_s: float) -> str:
