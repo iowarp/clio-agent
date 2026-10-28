@@ -577,8 +577,8 @@ def memory_tick(app: Any, now: datetime | None = None) -> None:
     if missing := unconfigured_roles():
         # No model to run on: the pass does not run (no probe of an unselected default).
         previous = getattr(app.state, "memory_background", None) or {}
-        if previous.get("skipped_reason") != MEMORY_MODEL_UNCONFIGURED:
-            logger.info(
+        if previous.get("skipped_reason") != MEMORY_MODEL_UNCONFIGURED:  # once, not per tick
+            logger.warning(
                 "memory pass skipped reason=%s roles=%s",
                 MEMORY_MODEL_UNCONFIGURED,
                 ",".join(missing),
