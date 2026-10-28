@@ -573,7 +573,75 @@ def review_activity_result(since: str = "") -> dict[str, Any]:
         return _error(
             "invalid_argument", str(exc), "Pass since exactly as the previous next_since, or ''."
         )
-    return {"session_id": watched, "recording": source, **result}
+    alerts = auto_alert_leads(app, watched, result.get("leads") or [])
+    return {
+        "session_id": watched,
+        "recording": source,
+        **result,
+        **({"auto_alerts": alerts} if alerts else {}),
+    }
+
+
+#: Leads CLIO alerts on itself, without waiting on the watcher model's judgement.
+AUTO_ALERT_KINDS = frozenset({"answer_matches_embedded_instruction"})
+
+
+def auto_alert_leads(app: Any, watched: str, leads: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Raise one alert card per new deterministic lead, with the answer's attention evidence.
+
+    An answer that repeats a value an instruction embedded in supplied data dictated is
+    alerted by CLIO itself: the watcher model may describe it, but never decides whether
+    the person sees it. Each (watched session, answer) is alerted once.
+    """
+    from types import SimpleNamespace  # noqa: PLC0415
+
+    from clio_agent.gact.action_cards import build_raise_alert_card_tool  # noqa: PLC0415
+
+    done = getattr(app.state, "spotter_auto_alerted", None)
+    if not isinstance(done, set):
+        done = set()
+        app.state.spotter_auto_alerted = done
+    raise_card = None
+    raised: list[dict[str, Any]] = []
+    for lead in leads:
+        message_id = str(lead.get("message_id") or "")
+        key = (watched, message_id, str(lead.get("kind") or ""))
+        if lead.get("kind") not in AUTO_ALERT_KINDS or not message_id or key in done:
+            continue
+        done.add(key)
+        attention = attention_sources_result(message_id=message_id)
+        evidence = attention.get("evidence") if isinstance(attention, dict) else None
+        if raise_card is None:
+            raise_card = build_raise_alert_card_tool(SimpleNamespace(id="spotter-ai")).func
+        body = (
+            "An answer repeats a value dictated by an instruction embedded in data the "
+            "session was given, not by the person's request."
+            + (
+                f"\n\nInstruction: {_clip(lead.get('instruction_excerpt'), 300)}"
+                if lead.get("instruction")
+                else ""
+            )
+            + (
+                f"\n\nAnswer: {_clip(lead.get('answer_excerpt'), 300)}"
+                if lead.get("answer_excerpt")
+                else ""
+            )
+        )
+        outcome = raise_card(
+            title="Answer follows an embedded instruction",
+            body=body,
+            severity="critical",
+            attention_evidence=evidence if isinstance(evidence, dict) else None,
+        )
+        raised.append(
+            {
+                "message_id": message_id,
+                "kind": lead.get("kind"),
+                "emitted": bool(outcome.get("emitted")),
+                "attention_evidence": bool(evidence),
+            }
+        )
+    return raised
 
 
 # --------------------------------------------------------------------------- #
