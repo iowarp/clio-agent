@@ -458,6 +458,21 @@ class ResidentLedgerSet(MutableMapping[str, list["Message"]]):
             )
         return len(victims)
 
+    def release(self, sid: str, reason: str) -> bool:
+        """Release one session now, unless a view or running work still uses it.
+
+        For work that knows it is done with a session (an obligation that finished),
+        instead of waiting for the idle TTL. Traced with ``reason`` like any eviction.
+        """
+
+        if self._is_active(sid):
+            return False
+        with self._lock:
+            held = sid in self._resident or sid in self._arc
+        if held:
+            self._evict(sid, reason)
+        return held
+
     def _over_caps(self) -> bool:
         count = len(self._resident.keys() | self._arc.keys())
         return (

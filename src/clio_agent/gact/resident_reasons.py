@@ -47,6 +47,16 @@ _RESIDENT_LEDGER_REASON_DEFINITIONS: dict[str, dict[str, Any]] = {
             "them, and they are re-read on the next access."
         ),
     },
+    "obligation_done": {
+        "category": "resident_ledger",
+        "policy": "release_when_work_done",
+        "recovery_actions": [],
+        "description": (
+            "An obligation (work resumed after a restart) finished and nobody views the "
+            "conversation; its transcript and ARC scopes were released at once rather "
+            "than after the idle TTL. clio-core holds them; re-read on the next access."
+        ),
+    },
     "eviction_skipped_all_active": {
         "category": "resident_ledger",
         "policy": "active_pin",

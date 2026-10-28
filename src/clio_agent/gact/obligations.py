@@ -173,6 +173,12 @@ class Obligations:
     def _drained(self, session_id: str, done: asyncio.Task[None]) -> None:
         self._running.discard(done)
         self._slots.release()
+        # The obligation no longer uses its conversation: release it now unless a view
+        # (or newer work) holds it, instead of waiting for the idle TTL.
+        resident = getattr(self.conversations.app.state, "messages", None)
+        release = getattr(resident, "release", None)
+        if callable(release):
+            release(session_id, "obligation_done")
         if not done.cancelled() and done.exception() is not None:
             logger.error(
                 "obligation drain failed reason=obligation_drain_failed session=%s error=%r",

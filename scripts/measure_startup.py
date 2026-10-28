@@ -68,6 +68,24 @@ def _rss_mb(pid: int) -> float:
     return round(psutil.Process(pid).memory_info().rss / 2**20, 1)
 
 
+def _breakdown_mb(pid: int) -> dict[str, float]:
+    """Private (anonymous) vs file-backed vs shared memory of ``pid`` (Linux), in MiB.
+
+    ``RssShmem`` is clio-core's shared segment as mapped into the server: shared with the
+    daemon, not memory the server owns; ``RssAnon`` is what the server's own heap holds.
+    """
+    try:
+        lines = Path(f"/proc/{pid}/status").read_text().splitlines()
+    except OSError:
+        return {}
+    keys = ("RssAnon", "RssFile", "RssShmem")
+    return {
+        line.split(":")[0]: round(int(line.split()[1]) / 1024, 1)
+        for line in lines
+        if line.split(":")[0] in keys
+    }
+
+
 class _PeakRss:
     """Sample a process's resident memory until stopped; keep the peak per phase."""
 
@@ -210,6 +228,7 @@ def measure(args: argparse.Namespace) -> dict[str, Any]:
         else:
             raise TimeoutError(f"task runtime not ready within {args.timeout}s; see {work}")
         result["rss_at_ready_mb"] = _rss_mb(server.pid)
+        result["breakdown_at_ready_mb"] = _breakdown_mb(server.pid)
         if args.wait_obligations:
             # The obligations lane resumes open work after ready; wait for it to finish.
             peaks.phase = "obligations"
@@ -230,6 +249,7 @@ def measure(args: argparse.Namespace) -> dict[str, Any]:
             else:
                 raise TimeoutError(f"obligations not finished within {args.timeout}s")
             result["rss_after_obligations_mb"] = _rss_mb(server.pid)
+            result["breakdown_after_obligations_mb"] = _breakdown_mb(server.pid)
             result["obligations_wait_s"] = round(time.monotonic() - obligations_started, 1)
             peaks.phase = "after_obligations"
         if args.idle_samples:
@@ -241,7 +261,11 @@ def measure(args: argparse.Namespace) -> dict[str, Any]:
                 time.sleep(10)
                 info = psutil.Process(server.pid).memory_full_info()
                 samples.append(
-                    {"rss_mb": round(info.rss / 2**20, 1), "uss_mb": round(info.uss / 2**20, 1)}
+                    {
+                        "rss_mb": round(info.rss / 2**20, 1),
+                        "uss_mb": round(info.uss / 2**20, 1),
+                        **_breakdown_mb(server.pid),
+                    }
                 )
             result["idle_samples"] = samples
             result["rss_after_idle_mb"] = samples[-1]["rss_mb"]
