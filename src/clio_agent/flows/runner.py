@@ -130,10 +130,20 @@ def run_agent_flow(module: Any, kwargs: dict[str, Any]) -> Any:
             message = str(kwargs.get("question") or "") if written else ""
             return _after_the_run(flow_id, predecessor, session_id, message)
     else:
+        # The agent's own flow: each written request starts its own run; any other wake
+        # (a child's result, the restart's recovery notice) continues its assignment's run.
+        from clio_agent.flows.assignment_run import assignment_run  # noqa: PLC0415
+
+        history = getattr(getattr(app, "state", None), "task_history", None)
+        own = assignment_run(history, flow_id, root_handle, session_id, turn.input_notification_id)
+        if own is not None and own.ended:
+            return _after_the_run(flow_id, own.ended, session_id, "")
         marker = (
             turn.input_notification_id
             or hashlib.sha256(str(kwargs.get("question") or "").encode("utf-8")).hexdigest()[:24]
         )
+        if own is not None:
+            marker, task = own.invocation.removeprefix(f"flow:{flow_id}:"), own.request
     ctx = FlowContext(
         app=app,
         session_id=session_id,

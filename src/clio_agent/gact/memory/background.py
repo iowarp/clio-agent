@@ -569,6 +569,26 @@ def memory_tick(app: Any, now: datetime | None = None) -> None:
             "off": True,  # "Generate memory from sessions" is off: no pass runs
         }
         return
+    from clio_agent.gact.memory.models import (  # noqa: PLC0415
+        MEMORY_MODEL_UNCONFIGURED,
+        unconfigured_roles,
+    )
+
+    if missing := unconfigured_roles():
+        # No model to run on: the pass does not run (no probe of an unselected default).
+        previous = getattr(app.state, "memory_background", None) or {}
+        if previous.get("skipped_reason") != MEMORY_MODEL_UNCONFIGURED:  # once, not per tick
+            logger.warning(
+                "memory pass skipped reason=%s roles=%s",
+                MEMORY_MODEL_UNCONFIGURED,
+                ",".join(missing),
+            )
+        app.state.memory_background = {
+            "last_tick": now.strftime("%Y-%m-%dT%H:%M:%SZ"),
+            "skipped_reason": MEMORY_MODEL_UNCONFIGURED,
+            "roles": list(missing),
+        }
+        return
     collected = started = 0
     skipped: dict[str, int] = {}
     for session in list(app.state.sessions.list()):

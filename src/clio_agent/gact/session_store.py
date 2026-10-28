@@ -54,14 +54,36 @@ logger = logging.getLogger(__name__)
 def project_committed_feedback(
     history: "TaskHistory", session_id: str, messages: list["Message"]
 ) -> None:
-    """Derive delivery display from Core input commits, without rewriting accepted bodies."""
+    """Derive delivery display from Core's pending inputs, without rewriting accepted bodies.
+
+    ``pending_steer`` stays true only while the message is still a pending input in the
+    recipient index -- the truth ``GET .../pending-steers`` reads. A promoted queued
+    message keeps its queue item's identity in the mailbox while the message carries
+    ``client_message_id``, so the message id is matched against the input's message,
+    never assumed to be the mail item id.
+    """
     pending = [message for message in messages if message.metadata.get("pending_steer") is True]
     if not pending:
         return
-    acknowledged = history.acknowledged_notifications(session_id)
+    still = pending_input_message_ids(history, session_id)
     for message in pending:
-        if message.id in acknowledged:
+        if message.id not in still:
             message.metadata = {**message.metadata, "pending_steer": False}
+
+
+def pending_input_message_ids(history: "TaskHistory", session_id: str) -> set[str]:
+    """Message ids of accepted person inputs not yet given to the model (nor withdrawn)."""
+    ids: set[str] = set()
+    for item in history.pending_mail(session_id):
+        if item.kind not in {"human", "composer"} or item.delivery == "queued":
+            continue
+        if item.kind == "human":
+            ids.add(item.id)  # A direct message's mail item carries the message's id.
+            continue
+        content = history.read_content(item.content)
+        if isinstance(content, dict) and content.get("message_id"):
+            ids.add(str(content["message_id"]))
+    return ids
 
 
 def restore_pending_mail_messages(app: "FastAPI", history: "TaskHistory") -> None:
