@@ -303,7 +303,16 @@ async def _restore_assignment(self: Conversations, handle: str) -> None:
     ):
         self._paused[task.owner.session_id] = task.handle
         return
-    if task.activity not in {"busy", "executing", "stopping", "interrupted"}:
+    if task.activity not in {"busy", "executing", "stopping", "interrupted", "recovering"}:
+        return
+    startup_error = await self.history.io.run(
+        self.sessions.startup_retirement_error, task.owner.session_id
+    )
+    if startup_error:
+        # Admission never runs this session again: settle with the typed outcome now.
+        await self.history.io.run(_startup_unconfirmed, self, task.handle, startup_error)
+        return
+    if task.activity == "recovering":
         return
 
     def recover(task: TaskSnapshot | None = task) -> None:
@@ -366,6 +375,36 @@ async def _restore_assignment(self: Conversations, handle: str) -> None:
             )
 
     await self.history.io.run(recover)
+
+
+def _startup_unconfirmed(self: Conversations, handle: str, message: str) -> None:
+    """Settle an assignment whose SessionStart settlement is unconfirmed after a restart.
+
+    The restart interrupted the session's startup after its ``started`` receipt: its
+    hook processes and effects are unknown, so the session is never admitted again and
+    hooks are never replayed (``SessionStore.startup_retirement_error``). The work is
+    still an obligation of this start: it ends as ``task_state_uncertain`` with that
+    reason, exactly as a turn that hit the same gate does (``_finish_segment``), and
+    the notice reaches its owner, so a waiting parent receives a typed outcome.
+    """
+    with self.history.serialized():
+        current = self.history.task_snapshot(handle)
+        if current is None or current.terminal_at is not None:
+            return
+        if current.status == "task_state_uncertain" and current.progress.message == message:
+            return
+        observed = current.model_copy(
+            update={
+                "status": "task_state_uncertain",
+                "activity": "yielded",
+                "settlement": "unknown",
+                "progress": current.progress.model_copy(update={"message": message}),
+                "attention_episode": current.attention_episode or uuid4().hex,
+                "updated_at": now(),
+            }
+        )
+        self.history.record_snapshot(observed, observation_id=uuid4().hex)
+        publish_task_notice(self.history, observed, episode=observed.attention_episode or "")
 
 
 def _record_interrupted_calls(

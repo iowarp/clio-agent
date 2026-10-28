@@ -171,6 +171,8 @@ async def test_unconfirmed_hook_effects_are_not_replayed_by_session_reuse(
         original_persist(session)
 
     monkeypatch.setattr("clio_agent.gact.hooks.dispatch_session_start", hook)
+    # A configured hook (the fake above) runs, so creation records its "started" receipt.
+    monkeypatch.setattr("clio_agent.gact.hooks.session_start_may_run_hooks", lambda _sid: True)
     monkeypatch.setattr(app.state.sessions, "_persist", persist)
     try:
         accepted = await owner.spawn(caller, "Original assignment", "worker", "hook-fault")

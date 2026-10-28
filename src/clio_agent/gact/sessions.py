@@ -487,7 +487,7 @@ class SessionStore:
         self, sess: Session, *, cancel_event: threading.Event | None = None
     ) -> Session:
         sid, trusted = sess.id, bool(sess.creation_digest)
-        from clio_agent.gact.hooks import dispatch_session_start  # noqa: PLC0415
+        from clio_agent.gact import hooks  # noqa: PLC0415
         from clio_agent.gact.hooks.wire import HookCancelled  # noqa: PLC0415
 
         if cancel_event is not None and cancel_event.is_set():
@@ -515,24 +515,28 @@ class SessionStore:
         # completion receipt is uncertain and must never be replayed by reuse.
         if cancel_event is not None and cancel_event.is_set():
             raise HookCancelled("session-start")
+        # No hook can run: no 'started' receipt, so a crash here leaves 'pending' (re-run).
+        receipted = not trusted or hooks.session_start_may_run_hooks(sid)
         if trusted:
             with self._lock:
                 if sess.creation_hook_state != "pending":
                     raise RuntimeError(
                         f"SessionStart effects are unconfirmed for {sid}; inspect before retrying"
                     )
-                sess.creation_hook_state = "started"
                 try:
-                    self._persist(sess)
+                    if receipted:
+                        sess.creation_hook_state = "started"
+                        self._persist(sess)
                 except BaseException:
                     # This process knows the hook was never called. A restart
                     # seeing a persisted 'started' receipt remains uncertain.
                     sess.creation_hook_state = "pending"
                     raise
         try:
-            dispatch_session_start(
+            hooks.dispatch_session_start(
                 session_id=sid,
                 cancel_event=cancel_event,
+                hooks_expected=receipted,
                 payload={
                     "workspace_id": sess.workspace_id,
                     "parent_session_id": sess.parent_session_id,
