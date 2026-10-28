@@ -123,3 +123,47 @@ def test_a_release_install_environment_is_replaced(tmp_path: Path) -> None:
     result = _install(tmp_path)
     assert result.returncode == STOP, result.stdout + result.stderr
     assert (clone / "README.md").read_text() == "one\n"
+
+
+def _origin_with_submodule(tmp_path: Path) -> Path:
+    """The stand-in repository with a submodule at ``external/sub``."""
+    sub = tmp_path / "sub"
+    sub.mkdir()
+    _git("init", "-q", "-b", "main", cwd=sub)
+    _git("config", "user.email", "t@example.com", cwd=sub)
+    _git("config", "user.name", "t", cwd=sub)
+    (sub / "tool.txt").write_text("tool\n")
+    _git("add", ".", cwd=sub)
+    _git("commit", "-q", "-m", "tool", cwd=sub)
+    origin = _origin(tmp_path)
+    _git(
+        "-c", "protocol.file.allow=always",
+        "submodule", "add", "-q", f"file://{sub}", "external/sub",
+        cwd=origin,
+    )  # fmt: skip
+    _git("commit", "-q", "-m", "submodule", cwd=origin)
+    return origin
+
+
+def test_a_submodule_left_at_another_commit_is_repaired(tmp_path: Path) -> None:
+    """An interrupted clone can leave a submodule at another commit, nothing changed in it."""
+    _origin_with_submodule(tmp_path)
+    clone = tmp_path / "prefix" / "clio-agent"
+    assert _install(tmp_path).returncode == STOP
+    recorded = _git("rev-parse", "HEAD", cwd=clone / "external/sub")
+    _git("-c", "user.email=t@example.com", "-c", "user.name=t",
+         "commit", "-q", "--allow-empty", "-m", "elsewhere", cwd=clone / "external/sub")  # fmt: skip
+    result = _install(tmp_path)
+    assert result.returncode == STOP, result.stdout + result.stderr
+    assert _git("rev-parse", "HEAD", cwd=clone / "external/sub") == recorded
+
+
+def test_changes_inside_a_submodule_refuse_the_rerun(tmp_path: Path) -> None:
+    _origin_with_submodule(tmp_path)
+    clone = tmp_path / "prefix" / "clio-agent"
+    assert _install(tmp_path).returncode == STOP
+    (clone / "external/sub/tool.txt").write_text("my work\n")
+    result = _install(tmp_path)
+    assert result.returncode == 1
+    assert "external/sub" in result.stderr
+    assert (clone / "external/sub/tool.txt").read_text() == "my work\n"

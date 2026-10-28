@@ -407,11 +407,25 @@ source_clone_reusable() {
   return 0
 }
 
+# The clone's changes to tracked files, submodules included, one per line ("XY path").
+# A submodule merely at another commit, nothing changed inside it, is what an
+# interrupted clone or submodule update leaves, and the update below resets it: it is
+# not a change. (Its commits, if any were made there, stay in that submodule.)
+clone_changes() {
+  git -C "$1" status --porcelain=v2 --untracked-files=no | awk '
+    $1 == "1" && $2 == ".M" && $3 ~ /^SC\.[.U]$/ { next }
+    $1 == "1" || $1 == "2" || $1 == "u" {
+      skip = ($1 == "1") ? 8 : (($1 == "2") ? 9 : 10); path = $0
+      for (i = 0; i < skip; i++) sub(/^[^ ]+ /, "", path)
+      print $2 " " path
+    }'
+}
+
 # Bring this installer's clone at $1 to ref $2: fetch it, check it out detached, update
 # the submodules. Local changes to tracked files (submodules included) refuse it.
 update_source_clone() {
   local src="$1" ref="$2" dirty previous
-  dirty="$(git -C "$src" status --porcelain --untracked-files=no 2>&1)" \
+  dirty="$(clone_changes "$src" 2>&1)" \
     || die "could not read the state of the clone '$src': $dirty"
   if [ -n "$dirty" ]; then
     die "Source reinstall refused: the clone '$src' has local changes to tracked files:
