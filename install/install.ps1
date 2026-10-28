@@ -29,7 +29,22 @@ $ErrorActionPreference = 'Stop'
 
 function Say  ($m) { Write-Host "==> $m" -ForegroundColor Green }
 function Warn ($m) { Write-Host "!! $m"  -ForegroundColor Yellow }
-function Die  ($m) { Write-Host "xx $m"  -ForegroundColor Red; exit 1 }
+# A TUI build still running in the background (Start-TuiBuild) stops when the install
+# fails: its process tree, its half-built binary and its logs.
+$TuiProc = $null
+$TuiOut = $null
+$TuiLog = $null
+$TuiErr = $null
+function Stop-TuiBuild {
+    if ($script:TuiProc) {
+        if (-not $script:TuiProc.HasExited) { & taskkill /T /F /PID $script:TuiProc.Id *> $null }
+        Remove-Item -LiteralPath $script:TuiOut, $script:TuiLog, $script:TuiErr -Force -ErrorAction SilentlyContinue
+    }
+    $script:TuiProc = $null
+}
+function Die  ($m) { Stop-TuiBuild; Write-Host "xx $m"  -ForegroundColor Red; exit 1 }
+# DieWith CODE MESSAGE: Die, keeping the failed command's exit status.
+function DieWith ([int]$code, $m) { Stop-TuiBuild; Write-Host "xx $m" -ForegroundColor Red; exit $code }
 function Have ($cmd) { return $null -ne (Get-Command $cmd -ErrorAction SilentlyContinue) }
 function RunNative($cmd, [string[]]$cmdArgs) {
     & $cmd @cmdArgs
@@ -220,6 +235,146 @@ function PythonOf([string]$Path) {
     return '3.13'
 }
 
+# ---------- the source clone: upgrade or repair on a re-run -----------
+# The clone mode installs into $Prefix\clio-agent. Running the installer again upgrades
+# or repairs that clone in place; it never removes anything a person could have changed.
+# Mirrors install.sh (source_clone_reusable / update_source_clone).
+$ClioRepoUrls = @(
+    'https://github.com/iowarp/clio-agent', 'https://github.com/iowarp/clio-agent.git',
+    'git@github.com:iowarp/clio-agent', 'git@github.com:iowarp/clio-agent.git'
+)
+
+# Whether $Path holds this installer's clone to update ($true), or nothing ($false:
+# absent, or what an earlier install left that holds no work: a partial clone an
+# interrupted install left, a link to a checkout, a release install's environment, all
+# removed here). Anything else is refused with its cause and the fix.
+function Test-SourceCloneReusable([string]$Path) {
+    $item = Get-Item -LiteralPath $Path -Force -ErrorAction SilentlyContinue
+    if (-not $item) { return $false }
+    if ($item.LinkType) {
+        Say "Replacing the link to the checkout an in-place install used ($($item.Target)); the checkout is not touched"
+        [System.IO.Directory]::Delete($Path, $false)  # the junction only, never its target
+        return $false
+    }
+    if (-not (Test-Path -LiteralPath (Join-Path $Path '.git'))) {
+        $others = @(Get-ChildItem -LiteralPath $Path -Force | Where-Object { $_.Name -notin @('.venv', '.venv.previous', 'web') })
+        if ($others.Count -gt 0) {
+            Die "Source reinstall refused: '$Path' exists but is not a git clone (it holds '$($others[0].Name)'). Move it aside, or choose another CLIO_PREFIX, then run this installer again."
+        }
+        Say "Replacing the release install's environment in '$Path' (your data lives elsewhere)"
+        RemoveTree $Path
+        return $false
+    }
+    $origin = "$(& git -C $Path config --get remote.origin.url 2>$null)".Trim()
+    if (-not $origin) {
+        Die "Source reinstall refused: '$Path' is a git repository with no 'origin', not a CLIO clone this installer made. Move it aside, or choose another CLIO_PREFIX, then run this installer again."
+    }
+    if ($origin -notin $ClioRepoUrls) {
+        Die "Source reinstall refused: '$Path' is a clone of $origin, not of $ClioRepo. Move it aside, or choose another CLIO_PREFIX, then run this installer again."
+    }
+    # An interrupted clone has no checked-out commit (or no index yet): nothing of yours
+    # is in it, so it is cloned again.
+    & git -C $Path rev-parse -q --verify 'HEAD^{commit}' *> $null
+    $hasCommit = $LASTEXITCODE -eq 0
+    $gitDir = "$(& git -C $Path rev-parse --absolute-git-dir 2>$null)".Trim()
+    if (-not $hasCommit -or -not $gitDir -or -not (Test-Path -LiteralPath (Join-Path $gitDir 'index'))) {
+        Warn "'$Path' is a clone an interrupted install left unfinished; cloning it again"
+        RemoveTree $Path
+        return $false
+    }
+    return $true
+}
+
+# Bring this installer's clone at $Path to $Ref: fetch it, check it out detached, update
+# the submodules. Local changes to tracked files (submodules included) refuse it.
+function Update-SourceClone([string]$Path, [string]$Ref) {
+    $status = @(& git -C $Path status --porcelain=v2 --untracked-files=no)
+    if ($LASTEXITCODE -ne 0) { Die "could not read the state of the clone '$Path' (git's message is above)" }
+    # A submodule merely at another commit, nothing changed inside it, is what an
+    # interrupted clone or submodule update leaves, and the update below resets it: it is
+    # not a change. (Its commits, if any were made there, stay in that submodule.)
+    $dirty = @($status | Where-Object {
+        $f = "$_" -split ' '
+        ($f[0] -in @('1', '2', 'u')) -and -not ($f[0] -eq '1' -and $f[1] -eq '.M' -and $f[2] -cmatch '^SC\.[.U]$')
+    })
+    if ($dirty.Count -gt 0) {
+        Die ("Source reinstall refused: the clone '$Path' has local changes to tracked files:`n" + ($dirty -join "`n") + "`nCommit them on a branch or stash them (git -C '$Path' stash), or move the clone aside, then run this installer again.")
+    }
+    $previous = "$(& git -C $Path rev-parse --short HEAD)".Trim()
+    Say "Updating the clio-agent clone in '$Path' to $Ref (was $previous)"
+    & git -C $Path fetch -q --depth 1 origin $Ref
+    if ($LASTEXITCODE -ne 0) { Die "could not fetch '$Ref' into '$Path' (git's message is above): check that the branch, tag or commit exists and that this machine reaches GitHub, then run this installer again" }
+    & git -C $Path checkout -q --detach FETCH_HEAD
+    if ($LASTEXITCODE -ne 0) { Die "could not check out '$Ref' in '$Path' (git's message is above; untracked files in the way are never removed: move them, then run this installer again)" }
+    & git -C $Path submodule update --init --recursive --depth 1
+    if ($LASTEXITCODE -ne 0) { Die "could not update the submodules of '$Path' to '$Ref' (git's message is above); run this installer again" }
+}
+
+# ---------- the TUI build, beside the slow stages ---------------------
+# A source install builds the TUI with go (through bash). It runs in the background from
+# the moment the source is in place, alongside the dependency, store, managed-package
+# and clio-kit stages, at a lower CPU priority; its output goes to temporary logs,
+# printed (and kept) if it fails. The binary is built beside the installed one and moved
+# into place only when it built. Mirrors install.sh (start_tui_build / finish_tui_build).
+$GactExe = Join-Path $Prefix 'gact.exe'
+$TuiOut = Join-Path $Prefix "gact.build-$PID.exe"
+$TuiStarted = $null
+
+function Start-TuiBuild {
+    if ($GactRef) {
+        Say "Cloning gact-tui at $GactRef (source-build mode)"
+        $gactSrc = Join-Path $Prefix 'gact-tui'
+        RemoveTree $gactSrc
+        & git clone --quiet --branch $GactRef --depth 1 $GactRepo $gactSrc
+        if ($LASTEXITCODE -ne 0) { Die "could not clone gact-tui at '$GactRef' from $GactRepo (git's message is above)" }
+        $env:GACT_TUI_ROOT = $gactSrc
+    } elseif (-not ((Have go) -and (Have bash))) {
+        Warn "TUI not built: go (>= 1.26) and bash are needed for it. Install them and run this installer again for the terminal UI; the desktop app works without it."
+        return
+    }
+    $bash = (Get-Command bash -CommandType Application | Select-Object -First 1).Source
+    $stem = Join-Path ([IO.Path]::GetTempPath()) ("clio-tui-build-" + [Guid]::NewGuid().ToString('N'))
+    $script:TuiLog = "$stem.log"
+    $script:TuiErr = "$stem.err.log"
+    Say "Building the CLIO-branded TUI in the background (log: $($script:TuiLog))"
+    try {
+        $script:TuiProc = Start-Process -FilePath $bash -ArgumentList "./scripts/build_clio_tui.sh `"$TuiOut`"" `
+            -WorkingDirectory $Src -NoNewWindow -PassThru `
+            -RedirectStandardOutput $script:TuiLog -RedirectStandardError $script:TuiErr
+    } finally {
+        if ($GactRef) { Remove-Item Env:\GACT_TUI_ROOT -ErrorAction SilentlyContinue }
+    }
+    $null = $script:TuiProc.Handle  # keeps the handle, so ExitCode is readable after it exits
+    $script:TuiStarted = Get-Date
+    # The stages on the install's critical path go first; the compiler takes what they
+    # leave. Only a speed preference: a process that already exited has no priority to set.
+    try { $script:TuiProc.PriorityClass = 'BelowNormal' } catch { Warn "TUI build runs at normal priority: $($_.Exception.Message)" }
+}
+
+function Complete-TuiBuild {
+    if (-not $script:TuiProc) { return }
+    Say 'Waiting for the TUI build'
+    $proc = $script:TuiProc
+    $proc.WaitForExit()
+    $code = $proc.ExitCode
+    $script:TuiProc = $null
+    if ($code -ne 0) {
+        Remove-Item -LiteralPath $TuiOut -Force -ErrorAction SilentlyContinue
+        Write-Host "---- TUI build output ($($script:TuiLog), $($script:TuiErr)) ----" -ForegroundColor Yellow
+        Get-Content -LiteralPath $script:TuiLog, $script:TuiErr -Tail 80 -ErrorAction SilentlyContinue | ForEach-Object { Write-Host $_ }
+        Write-Host '---- end of TUI build output ----' -ForegroundColor Yellow
+        Die "the TUI build failed (exit $code; full logs: $($script:TuiLog), $($script:TuiErr)); its cause is in the output above. Fix it (often: go >= 1.26 cannot be downloaded, or the gact-tui submodule is incomplete: git -C '$Src' submodule update --init --recursive) and run this installer again."
+    }
+    try {
+        Move-Item -LiteralPath $TuiOut -Destination $GactExe -Force
+    } catch {
+        Remove-Item -LiteralPath $TuiOut -Force -ErrorAction SilentlyContinue
+        Die "could not move the built TUI into place at ${GactExe}: $($_.Exception.Message). Close a running CLIO terminal UI, then run this installer again."
+    }
+    Remove-Item -LiteralPath $script:TuiLog, $script:TuiErr -Force -ErrorAction SilentlyContinue
+    Say "TUI built in $([int]((Get-Date) - $script:TuiStarted).TotalSeconds) s: $GactExe"
+}
+
 # ---------- install clio-agent ----------------------------------------
 $Venv = Join-Path $Prefix 'clio-agent\.venv'
 $Src = $null
@@ -242,32 +397,37 @@ if ($OptSource) {
         New-Item -ItemType Junction -Path $AppDir -Target $Src | Out-Null
         RunNative git @('-C', $Src, 'submodule', 'update', '--init', '--recursive')
         $py = PythonOf (Join-Path $Src '.python-version')
-        Say "Installing clio-agent deps (uv sync --python $py --extra argonne --extra flowcept)"
-        Push-Location $Src
-        RunNative uv @('sync', '--python', $py, '--extra', 'argonne', '--extra', 'flowcept')
-        Pop-Location
+        $syncArgs = @('sync', '--python', $py, '--extra', 'argonne', '--extra', 'flowcept')
     } else {
         $ref = if ($OptRef) { $OptRef } elseif ($OptDev) { 'develop' } else { 'main' }
         $Src = $AppDir
-        if (Test-Path -LiteralPath $Src) {
-            Die 'Source reinstall refused: the installation already exists. Choose a new CLIO_PREFIX or explicitly move the existing installation after migrating its user data.'
-        }
-        Say "Cloning clio-agent at $ref"
-        & git clone --quiet --recurse-submodules --shallow-submodules --branch $ref --depth 1 $ClioRepo $Src 2>$null
-        if ($LASTEXITCODE -ne 0) {
-            # A commit is not a branch or tag: fetch it by id.
-            RemoveTree $Src
-            RunNative git @('init', '-q', $Src)
-            RunNative git @('-C', $Src, 'remote', 'add', 'origin', $ClioRepo)
-            RunNative git @('-C', $Src, 'fetch', '-q', '--depth', '1', 'origin', $ref)
-            RunNative git @('-C', $Src, 'checkout', '-q', 'FETCH_HEAD')
-            RunNative git @('-C', $Src, 'submodule', 'update', '--init', '--recursive', '--depth', '1')
+        if (Test-SourceCloneReusable $Src) {
+            Update-SourceClone $Src $ref
+        } else {
+            Say "Cloning clio-agent at $ref"
+            & git clone --quiet --recurse-submodules --shallow-submodules --branch $ref --depth 1 $ClioRepo $Src 2>$null
+            if ($LASTEXITCODE -ne 0) {
+                # A commit is not a branch or tag: fetch it by id.
+                RemoveTree $Src
+                RunNative git @('init', '-q', $Src)
+                RunNative git @('-C', $Src, 'remote', 'add', 'origin', $ClioRepo)
+                RunNative git @('-C', $Src, 'fetch', '-q', '--depth', '1', 'origin', $ref)
+                RunNative git @('-C', $Src, 'checkout', '-q', 'FETCH_HEAD')
+                RunNative git @('-C', $Src, 'submodule', 'update', '--init', '--recursive', '--depth', '1')
+            }
         }
         $py = PythonOf (Join-Path $Src '.python-version')
-        Say "Installing clio-agent deps from uv.lock (uv sync --locked --python $py --extra argonne --extra flowcept)"
-        Push-Location $Src
-        RunNative uv @('sync', '--locked', '--python', $py, '--extra', 'argonne', '--extra', 'flowcept')
-        Pop-Location
+        $syncArgs = @('sync', '--locked', '--python', $py, '--extra', 'argonne', '--extra', 'flowcept')
+    }
+    # The TUI builds from the source now, beside the slow stages below.
+    Start-TuiBuild
+    Say "Installing clio-agent deps (uv $($syncArgs -join ' '))"
+    Push-Location $Src
+    & uv @syncArgs
+    $syncStatus = $LASTEXITCODE
+    Pop-Location
+    if ($syncStatus -ne 0) {
+        DieWith $syncStatus "uv could not install clio-agent's dependencies (exit $syncStatus; uv's message above names the cause). Fix it and run this installer again."
     }
 } else {
     if ($OptVersion) {
@@ -382,7 +542,12 @@ if ($LASTEXITCODE -eq 0) {
 & $VenvPython -c 'import importlib.util, sys; sys.exit(0 if importlib.util.find_spec("clio_agent.runtime.document_install") else 3)'
 if ($LASTEXITCODE -eq 0) {
     Say 'Installing managed Python/uv and Node/pnpm packages and Office rendering'
-    RunNative $VenvPython (@('-m', 'clio_agent.runtime.document_install') + $DocFlags)
+    $docArgs = @('-m', 'clio_agent.runtime.document_install') + $DocFlags
+    & $VenvPython @docArgs
+    $docsStatus = $LASTEXITCODE
+    if ($docsStatus -ne 0) {
+        DieWith $docsStatus "installing the managed packages and Office rendering failed (exit $docsStatus); the cause is in the lines above. Fix it and run this installer again: it resumes from what is already installed."
+    }
 } else {
     # Releases before the managed document runtime set it up on their own.
     Say "clio-agent $InstalledClioVersion has no managed document runtime step; skipping it"
@@ -418,28 +583,8 @@ if (Have uv) {
 }
 
 # ---------- install gact ----------------------------------------------
-$GactExe = Join-Path $Prefix 'gact.exe'
-
-if ($OptSource -and -not $GactRef) {
-    if ((Have go) -and (Have bash)) {
-        Say "Building CLIO-branded TUI from clio-agent submodule"
-        Push-Location $Src
-        RunNative bash @('./scripts/build_clio_tui.sh', $GactExe)
-        Pop-Location
-    } else {
-        Warn "TUI not built: go (>= 1.26) and bash are needed for it. Install them and run this installer again for the terminal UI; the desktop app works without it."
-    }
-} elseif ($GactRef) {
-    Say "Cloning gact-tui at $GactRef (source-build mode)"
-    $gactSrc = Join-Path $Prefix 'gact-tui'
-    RemoveTree $gactSrc
-    RunNative git @('clone', '--quiet', '--branch', $GactRef, '--depth', '1', $GactRepo, $gactSrc)
-    Say "Building CLIO-branded TUI"
-    Push-Location $Src
-    $env:GACT_TUI_ROOT = $gactSrc
-    RunNative bash @('./scripts/build_clio_tui.sh', $GactExe)
-    Remove-Item Env:\GACT_TUI_ROOT -ErrorAction SilentlyContinue
-    Pop-Location
+if ($OptSource) {
+    Complete-TuiBuild  # started with the source, above
 } else {
     $tag = $GactVersion
     if ($tag -eq 'latest') {

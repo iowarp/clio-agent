@@ -59,12 +59,12 @@ def test_release_installers_explicitly_root_intentional_prereleases() -> None:
         "install/install.sh": (
             '--constraint "$lockdir/constraints.txt"',
             "uv export --quiet --frozen --no-hashes --no-emit-project",
-            'uv sync --locked --python "$py" --extra argonne --extra flowcept',
+            'sync_args=(sync --locked --python "$py" --extra argonne --extra flowcept)',
         ),
         "install/install.ps1": (
             "'--constraint', $Constraints",
             "'export', '--quiet', '--frozen', '--no-hashes', '--no-emit-project'",
-            "RunNative uv @('sync', '--locked', '--python', $py, '--extra', 'argonne', '--extra', 'flowcept')",
+            "$syncArgs = @('sync', '--locked', '--python', $py, '--extra', 'argonne', '--extra', 'flowcept')",
         ),
         "install/clio": ('"dspy==3.4.0" "fastmcp==4.1.0" "fastmcp-slim==4.1.0"',),
     }

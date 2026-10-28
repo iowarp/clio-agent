@@ -25,6 +25,9 @@ Adding a migration is one function and one entry in :data:`MIGRATIONS`::
 
 Without ``owed``, the runner keeps the marker for you: the migration is owed while the
 task index has no ``meta.<name>`` record, and the runner writes it after ``run`` returns.
+``has_input`` says, from the store alone, whether there is anything to convert; a store
+without it (a new one) is recorded done through ``mark_empty`` (its own marker) without
+running ``run``, so ``clio-agent migrate`` on a fresh store never builds the app.
 Entries run in tuple order; put a migration after the ones whose output it reads, and
 call :func:`ensure_at_boot` from the boot site that first needs its output.
 """
@@ -62,6 +65,17 @@ class StoreMigration:
     owed: Callable[[Any], bool] | None = None
     #: Typed reason logged and reported when boot finds it owed and runs it once.
     boot_reason: str = ""
+    #: Whether this store holds anything for ``run`` to convert, read from the store
+    #: alone (``state.task_history``, no built app). When it holds nothing (a brand-new
+    #: store), the runner records the migration done through ``mark_empty`` instead of
+    #: running it. ``None``: there is always something to read, so ``run`` runs.
+    has_input: Callable[[Any], bool] | None = None
+    #: Writes this migration's own marker on a store with no input (store alone);
+    #: ``None`` when the runner's ``meta.<name>`` marker is the whole record.
+    mark_empty: Callable[[Any], dict[str, Any] | None] | None = None
+    #: Whether ``run`` reads the built app (session registry, connected storage, trace
+    #: backend) rather than only the store's task history.
+    needs_app: bool = True
 
 
 @dataclass
@@ -81,6 +95,35 @@ class MigrationResult:
         if self.details:
             row["details"] = self.details
         return row
+
+
+# ---- what a store holds ------------------------------------------------------------
+#
+# A conversation leaves at least one of these behind: its session record (or, before
+# session records, an entry in the legacy ``sessions.json``) and its ``_events`` log.
+# Task, transcript, operation and artifact history all belong to a conversation, so a
+# store holding none of the three has nothing for those migrations to convert.
+
+
+def _legacy_sessions_file() -> Any:
+    """The legacy ``sessions.json`` the session registry would import, when it exists."""
+    from clio_agent.gact.sessions import _default_store_path  # noqa: PLC0415
+
+    path = _default_store_path()
+    return path if path.is_file() else None
+
+
+def _holds_conversation(app: Any) -> bool:
+    from clio_agent.arc.live import EVENTS_SCOPE  # noqa: PLC0415
+    from clio_agent.gact.session_records import KIND  # noqa: PLC0415
+
+    arc = app.state.task_history.arc
+    if arc._segments.sessions_with_scope(EVENTS_SCOPE):
+        return True
+    scan = getattr(getattr(arc, "_store", None), "scan_names", None)
+    if callable(scan) and next(iter(scan(KIND)), None) is not None:
+        return True
+    return _legacy_sessions_file() is not None
 
 
 # ---- the migrations ---------------------------------------------------------------
@@ -139,23 +182,49 @@ def _run_session_records(app: Any) -> dict[str, Any]:
     return app.state.sessions.import_legacy()
 
 
+def _session_records_input(app: Any) -> bool:
+    return _legacy_sessions_file() is not None
+
+
+def _mark_transcripts_empty(app: Any) -> dict[str, Any]:
+    from clio_agent.gact.transcript_migration import IMPORT_DONE  # noqa: PLC0415
+
+    history = app.state.task_history
+    marker = {"version": 1, "completed_at": datetime.now(UTC).isoformat(), "sessions": 0}
+    history.confirm_write(partial(history.index.put_done_marker, IMPORT_DONE, marker))
+    return {"sessions": 0}
+
+
 def _task_index_owed(app: Any) -> bool:
     return app.state.task_history.index.marker() is None
 
 
 def _run_task_index(app: Any) -> dict[str, Any]:
     from clio_agent.gact.task_migration import migrate_history  # noqa: PLC0415
-    from clio_agent.gact.task_publication import settle_published_outcomes  # noqa: PLC0415
 
-    history = app.state.task_history
+    return _build_task_index(app.state.task_history, partial(migrate_history, app))
+
+
+def _mark_task_index_empty(app: Any) -> dict[str, Any]:
+    # Nothing to convert: the build's replay, records and marker, from the store alone.
+    return _build_task_index(app.state.task_history, None)
+
+
+def _build_task_index(history: Any, convert: Callable[[], None] | None) -> dict[str, Any]:
     if not history.index_build_pending:
         history.restore()  # without the marker this is the one full replay the build reads
-    migrate_history(app)
+    if convert is not None:
+        convert()
     history.complete_index_build()
+    replay = {"replay_seconds": round(history.replay_seconds, 3)}
+    if convert is None:
+        # No conversation was replayed, so the build derived no terminal outcome to settle.
+        return {**replay, "outcomes": 0, "open_tasks": len(history.index.open_records("t~"))}
+    from clio_agent.gact.task_publication import settle_published_outcomes  # noqa: PLC0415
+
     # The build derives an open record per terminal outcome; settle the published ones
     # here, so the next start's startup row reads only the work that is really open.
-    settled = settle_published_outcomes(history)
-    return {"replay_seconds": round(history.replay_seconds, 3), **settled}
+    return {**replay, **settle_published_outcomes(history)}
 
 
 def _artifact_index_owed(app: Any) -> bool:
@@ -170,6 +239,14 @@ def _run_artifact_index(app: Any) -> dict[str, Any]:
     return migrate_artifact_index(app)
 
 
+def _mark_artifact_index_empty(app: Any) -> dict[str, Any]:
+    from clio_agent.gact.artifacts import registry_migration, registry_store  # noqa: PLC0415
+    from clio_agent.gact.artifacts.registry import ArtifactRegistry  # noqa: PLC0415
+
+    registry_migration.migrate(registry_store.index_store(app), ArtifactRegistry())
+    return {"records": 0, "fold_conflicts": 0}
+
+
 #: Every store migration, in run order. Name = marker name; never rename a shipped one.
 MIGRATIONS: tuple[StoreMigration, ...] = (
     StoreMigration(
@@ -177,6 +254,7 @@ MIGRATIONS: tuple[StoreMigration, ...] = (
         "Import the legacy sessions.json into one clio-core record per session",
         _run_session_records,
         boot_reason="session_records_import_owed",
+        has_input=_session_records_input,
     ),
     StoreMigration(
         "task_event_lane",
@@ -184,6 +262,7 @@ MIGRATIONS: tuple[StoreMigration, ...] = (
         _run_task_event_lane,
         _task_event_lane_owed,
         boot_reason="task_event_lane_migration_owed",
+        needs_app=False,  # reads the store alone; on a new store it copies nothing
     ),
     StoreMigration(
         "task_lane_reads",
@@ -191,24 +270,31 @@ MIGRATIONS: tuple[StoreMigration, ...] = (
         _run_task_lane_reads,
         _task_lane_reads_owed,
         boot_reason="task_lane_reads_migration_owed",
+        needs_app=False,
     ),
     StoreMigration(
         "transcript_legacy_import",
         "Keep each conversation's legacy JSON transcript as evidence in clio-core",
         _run_transcripts,
         _transcripts_owed,
+        has_input=_holds_conversation,
+        mark_empty=_mark_transcripts_empty,
     ),
     StoreMigration(
         "task_index_build",
         "Convert retained task formats and build the task lookup and open-work records",
         _run_task_index,
         _task_index_owed,
+        has_input=_holds_conversation,
+        mark_empty=_mark_task_index_empty,
     ),
     StoreMigration(
         "artifact_index",
         "Fold the artifact history once into the clio-core artifact records",
         _run_artifact_index,
         _artifact_index_owed,
+        has_input=_holds_conversation,
+        mark_empty=_mark_artifact_index_empty,
     ),
 )
 
@@ -224,6 +310,17 @@ def migration(name: str) -> StoreMigration:
 # ---- running ----------------------------------------------------------------------
 
 
+def owes_app_build(app: Any, item: StoreMigration) -> bool:
+    """Whether running owed ``item`` on this store needs the built app (store-alone read).
+
+    False for a migration that reads only the task history, and for one whose input
+    this store does not hold: a new store is marked done without building the app.
+    """
+    if not item.needs_app:
+        return False
+    return item.has_input is None or item.has_input(app)
+
+
 def is_owed(app: Any, item: StoreMigration) -> bool:
     """Whether ``item`` has not recorded its marker in this store."""
     if item.owed is not None:
@@ -236,7 +333,12 @@ def run_migration(app: Any, item: StoreMigration) -> MigrationResult:
     if not is_owed(app, item):
         return MigrationResult(item.name, "already_done")
     started = time.monotonic()
-    details = item.run(app) or {}
+    if item.has_input is not None and not item.has_input(app):
+        # Nothing to convert (a new store): record it done, from the store alone.
+        mark = item.mark_empty(app) if item.mark_empty is not None else None
+        details = {"input": "none", **(mark or {})}
+    else:
+        details = item.run(app) or {}
     if item.owed is None:
         history = app.state.task_history
         value = {"completed_at": datetime.now(UTC).isoformat(), **details}
@@ -350,5 +452,6 @@ __all__ = [
     "health_rows",
     "is_owed",
     "migration",
+    "owes_app_build",
     "run_migration",
 ]

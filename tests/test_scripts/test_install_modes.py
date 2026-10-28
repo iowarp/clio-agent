@@ -169,7 +169,7 @@ def test_the_launcher_keeps_the_data_home_it_was_installed_for(
     # A host with go builds the TUI from the checkout; this fixture's build succeeds.
     tui = checkout / "scripts/build_clio_tui.sh"
     tui.parent.mkdir()
-    tui.write_text("#!/bin/sh\nexit 0\n")
+    tui.write_text('#!/bin/sh\ntouch "$1"\n')  # the build writes the binary it is given
     tui.chmod(0o755)
     env = {"TEST_INSTALL_CONTINUE": "1"}
     if agent_home:
