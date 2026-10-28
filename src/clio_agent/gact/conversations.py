@@ -110,10 +110,9 @@ class Conversations:
         self.recovery.on_ready = partial(conversation_recovery.on_core_ready, self)
 
     def signal_pending(self) -> None:
-        """Recheck indexed Core mail after readiness or policy changes."""
+        """Recheck indexed Core mail after readiness or policy changes (read off the loop)."""
         if self._loop is not None and not self._closing:
-            for sid in self.history.pending_sessions():
-                self.runner.signal(sid)
+            conversation_recovery.signal_pending_sessions(self, self._loop)
 
     def arm_deadline(self, handle: str, deadline: str | None) -> None:
         """Apply an already recorded explicit execution budget on the owner loop."""
