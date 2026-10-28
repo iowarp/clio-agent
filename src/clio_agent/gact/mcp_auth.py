@@ -11,15 +11,16 @@ import secrets
 import time
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
-from typing import Any
+from typing import TYPE_CHECKING, Any
 from urllib.parse import parse_qs, urlsplit
-
-from mcp.shared.auth import AuthorizationCodeResult, OAuthClientInformationFull
 
 from clio_agent.gact.mcp_user_configuration import get_user_mcp_server
 from clio_agent.tools.mcp_config import MCPAuthConfig, spec_from_declaration, transport_for
 from clio_agent.tools.mcp_oauth_storage import DurableFileTokenStorage
 from clio_agent.tools.mcp_runtime import make_mcp_client
+
+if TYPE_CHECKING:
+    from mcp.shared.auth import AuthorizationCodeResult
 
 SIGN_IN_SECONDS = 300
 MAX_PENDING = 8
@@ -214,6 +215,8 @@ class McpSignIns:
         if not query.get("code") or not flow.callback or flow.callback.done():
             raise ValueError("This sign-in return is missing a code or was already used")
         flow.state = "connecting"
+        from mcp.shared.auth import AuthorizationCodeResult  # noqa: PLC0415 - first use (#702)
+
         flow.callback.set_result(
             AuthorizationCodeResult(
                 code=query["code"][0],
@@ -266,6 +269,8 @@ class McpSignIns:
             flow.expected_state, flow.authorization_url = state[0], url
             flow.state = "authorizing"
             flow.ready.set()
+
+        from mcp.shared.auth import OAuthClientInformationFull  # noqa: PLC0415 - first use (#702)
 
         async def callback() -> AuthorizationCodeResult:
             assert flow.callback is not None

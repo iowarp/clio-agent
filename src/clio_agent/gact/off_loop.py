@@ -21,13 +21,24 @@ from __future__ import annotations
 import asyncio
 import concurrent.futures
 import contextvars
+import functools
 import logging
 from collections.abc import Coroutine
 from typing import Any, Callable, Optional, TypeVar, cast
 
-from fastmcp.utilities.async_utils import call_sync_fn_in_threadpool
+from anyio.to_thread import run_sync as _run_sync_in_threadpool
 
 from clio_agent.runtime.stream_audit import stream_audit
+
+
+async def call_sync_fn_in_threadpool(fn: Callable[..., Any], *args: Any, **kwargs: Any) -> Any:
+    """Run ``fn`` on anyio's worker threads with contextvars propagated.
+
+    The same call FastMCP's helper makes, without importing the MCP SDK at server
+    start (#702): this module loads with the app, the MCP SDK only when MCP is used.
+    """
+    return await _run_sync_in_threadpool(functools.partial(fn, *args, **kwargs))
+
 
 logger = logging.getLogger(__name__)
 

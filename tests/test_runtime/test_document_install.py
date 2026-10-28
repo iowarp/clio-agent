@@ -201,3 +201,23 @@ def test_installer_explicit_setup_is_forwarded_and_failed_setup_has_no_receipt(
         )
         assert result["native_tools"]["codex_windows_helpers"]["status"] == "not_required"
     assert (tmp_path / "locked/installed.json").exists() is not failed
+
+
+def test_install_bounds_the_mcp_cache_with_a_typed_outcome(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """B4: the MCP cache is pruned at install or upgrade, never at server start."""
+    from clio_agent.tools import mcp_cache
+
+    monkeypatch.setattr(mcp_cache, "prune_owned_mcp_cache", lambda: None)
+    assert installer.prune_after_install() == {
+        "status": "skipped",
+        "reason": "mcp_cache_prune_skipped_live",
+    }
+
+    def broken() -> None:
+        raise PermissionError("cache is read-only")
+
+    monkeypatch.setattr(mcp_cache, "prune_owned_mcp_cache", broken)
+    outcome = installer.prune_after_install()
+    assert outcome["status"] == "failed" and outcome["reason"] == "mcp_cache_prune_failed"

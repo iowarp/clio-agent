@@ -686,11 +686,11 @@ async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
 
     app.state.sandbox = install_sandbox()
 
-    # Reap proven CLIO orphans before the MCP-cache liveness check (order matters,
-    # off-loop). The direct Codex provider owns one durable credential file,
+    # Reap proven CLIO orphans off-loop; cache pruning is install/doctor --gc work (B4).
+    # The direct Codex provider owns one durable credential file,
     # not a spawned CLI's scratch home, so there is nothing here for it to reap.
-    app.state.mcp_cache_prune_task = asyncio.create_task(
-        boot_timing.timed(app, "orphans_and_mcp_cache", server_boot.prune_orphans_and_cache(app))
+    app.state.orphan_reap_task = asyncio.create_task(
+        boot_timing.timed(app, "orphans", server_boot.reap_orphans(app))
     )
     # Install or refresh the shipped default marketplace off the loop; a turn that
     # resolves before it finishes waits on the same lock (PluginService.ready).

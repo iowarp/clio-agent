@@ -23,7 +23,6 @@ from fsspec.implementations.local import LocalFileSystem
 from clio_agent.gact.storage.adapters import safe_child, staged_file
 from clio_agent.gact.storage.drive import _EXPORTS
 from clio_agent.gact.storage.globus import GlobusSource
-from clio_agent.gact.storage.globus_download import download_source
 from clio_agent.gact.storage.models import FileEntry, Manifest, SourceRecord
 from clio_agent.gact.storage.sftp import SftpSource
 from clio_agent.gact.storage.transfers import snapshot_revision
@@ -322,6 +321,9 @@ def linked_adapter(
     else:
         with service.adapter(record) as adapter:
             if isinstance(adapter, GlobusSource):
+                # globusfs (and aiohttp under it) loads when a Globus folder is opened (#702).
+                from clio_agent.gact.storage.globus_download import download_source  # noqa: PLC0415
+
                 with download_source(adapter, service.auth) as filesystem:
                     yield filesystem
             elif isinstance(adapter, SftpSource):

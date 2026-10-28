@@ -11,6 +11,7 @@ from clio_agent.runtime.document_runtime import (
     prepare_document_runtime,
     run_document_helper,
 )
+from clio_agent.runtime.package_preparation import preparing_result
 from clio_agent.tools.execution import get_active_tool_workspace_root
 from clio_agent.tools.file_policy import FileAccessPolicy
 
@@ -61,6 +62,8 @@ def build_prepare_document_runtime_tool(*, execution: bool = False) -> Any:
         uv --with dependencies; do not install them into the locked managed environment.
         """
         imports = required_imports or []
+        if not execution and (busy := preparing_result()) is not None:
+            return busy  # typed: a first launch is still installing the packages
         runtime = (
             inspect_execution_runtime(_workspace())
             if execution
@@ -159,6 +162,8 @@ def build_prepare_document_tool() -> Any:
         source = FileAccessPolicy.from_env().validate_read(str(candidate), field="path")
         if not source.is_relative_to(root):
             raise ValueError("Document must be inside the active workspace")
+        if (busy := preparing_result()) is not None:
+            return busy  # typed: a first launch is still installing the packages
         runtime = prepare_document_runtime(root)
         args = [
             action,

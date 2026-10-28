@@ -233,12 +233,8 @@ class PluginService:
         source = default_marketplace_source()
         installed = self.store.marketplaces().get(DEFAULT_MARKETPLACE)
         if installed and installed.get("source") == source:
-            from clio_agent.plugins.loader import tree_digests  # noqa: PLC0415
-
             if Path(source).is_dir():
-                digest = "".join(tree_digests(Path(source)))
-                snapshot = Path(installed.get("snapshot") or "")
-                if snapshot.is_dir() and "".join(tree_digests(snapshot)) == digest:
+                if self._local_source_unchanged(Path(source), installed):
                     return None
             elif installed.get("commit") == DEFAULT_MARKETPLACE_COMMIT:
                 return None
@@ -247,6 +243,29 @@ class PluginService:
         return self.store.install(
             source, commit=DEFAULT_MARKETPLACE_COMMIT, name=DEFAULT_MARKETPLACE, default=True
         )
+
+    def _local_source_unchanged(self, source: Path, installed: Mapping[str, Any]) -> bool:
+        """Whether the installed snapshot still holds ``source``'s content.
+
+        The recorded source stamp answers without reading a file. A store from before
+        stamps, or a source whose files were touched, is compared by content once and
+        its stamp recorded, so the full-tree hash runs only when the stamp moved.
+        """
+        from clio_agent.plugins.loader import tree_digests  # noqa: PLC0415
+        from clio_agent.plugins.package_files import source_stamp  # noqa: PLC0415
+
+        snapshot = Path(installed.get("snapshot") or "")
+        if not snapshot.is_dir():
+            logger.info("default marketplace reinstall reason=snapshot_missing path=%s", snapshot)
+            return False
+        stamp = source_stamp(source)
+        if installed.get("source_stamp") == stamp:
+            return True
+        if tree_digests(snapshot) != tree_digests(source):
+            logger.info("default marketplace reinstall reason=source_changed source=%s", source)
+            return False
+        self.store.record_source_stamp(DEFAULT_MARKETPLACE, stamp)
+        return True
 
     # ----------------------------------------------------------------- agents
     def agents(self) -> list[AgentEntry]:

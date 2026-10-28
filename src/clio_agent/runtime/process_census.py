@@ -640,8 +640,8 @@ def _boot_reap_and_probe(
 async def boot_reap_off_loop() -> list[IntegrationStatus]:
     """Run :func:`reap_orphaned_processes` off the event loop (server-boot hook, #1232 pt 4).
 
-    Called BEFORE ``tools.mcp_cache.boot_prune_off_loop`` in the lifespan
-    (``gact/app.py``): ``live_peer_clio_processes`` (the prune's liveness
+    Called in the lifespan (``gact/app.py``) so the install-time and ``doctor --gc``
+    MCP-cache prunes see no stale peers: ``live_peer_clio_processes`` (the prune's liveness
     gate, ``runtime/disk_gc.py``) matches any RUNNING process with a clio
     marker — a still-running-but-orphaned ``clio_run.exe`` from a prior hard
     kill counts as a "live peer" to it regardless of parentage, which is

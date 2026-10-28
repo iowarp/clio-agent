@@ -12,6 +12,7 @@ from threading import Lock
 from typing import Any
 
 from clio_agent import paths
+from clio_agent.runtime import package_preparation
 from clio_agent.runtime.codex_desktop_setup import prepare_existing_windows_fence
 from clio_agent.runtime.codex_windows_helpers import ensure_bundled_codex_windows_helpers
 from clio_agent.runtime.document_install_receipt import reuse_install_receipt, save_install_receipt
@@ -63,23 +64,26 @@ def install_document_runtime(
     )
     reused = result is not None
     if result is None:
-        with ThreadPoolExecutor(max_workers=2, thread_name_prefix="clio-install") as workers:
-            office_job = workers.submit(prepare_office)
-            github_job = workers.submit(prepare_github)
-            result = prepare_document_runtime(workspace, cache_root=cache_root, progress=report)
-            if result["javascript"]["status"] != "ready":
-                raise DocumentRuntimeError(
-                    f"Node/pnpm package installation failed: {result['javascript']}"
-                )
-            office = office_job.result()
-            github = github_job.result()
-        result["native_tools"]["soffice"] = {"status": "available", "path": office}
-        result["capabilities"]["office_render_recalculate"] = "available"
-        result["native_tools"]["gh"] = {
-            "status": "available",
-            "path": str(github),
-            "authentication": "clio_account",
-        }
+        # The agent may already be running (a first desktop launch does not wait for
+        # this): it reads this record and answers "still preparing" meanwhile.
+        with package_preparation.preparing(cache_root):
+            with ThreadPoolExecutor(max_workers=2, thread_name_prefix="clio-install") as workers:
+                office_job = workers.submit(prepare_office)
+                github_job = workers.submit(prepare_github)
+                result = prepare_document_runtime(workspace, cache_root=cache_root, progress=report)
+                if result["javascript"]["status"] != "ready":
+                    raise DocumentRuntimeError(
+                        f"Node/pnpm package installation failed: {result['javascript']}"
+                    )
+                office = office_job.result()
+                github = github_job.result()
+            result["native_tools"]["soffice"] = {"status": "available", "path": office}
+            result["capabilities"]["office_render_recalculate"] = "available"
+            result["native_tools"]["gh"] = {
+                "status": "available",
+                "path": str(github),
+                "authentication": "clio_account",
+            }
     else:
         from clio_agent.runtime.document_stack.process import scratch_root
         from clio_agent.tools.file_policy import FileAccessPolicy
@@ -114,6 +118,24 @@ def install_document_runtime(
     return result
 
 
+def prune_after_install() -> dict[str, Any]:
+    """Bound the MCP spawn cache at the end of an install or upgrade (B4).
+
+    Pruning is maintenance, never server start. A skip or a failure is reported with
+    a typed reason and never fails the install; ``clio-agent doctor --gc`` reclaims
+    the same cache on demand.
+    """
+    from clio_agent.tools.mcp_cache import prune_owned_mcp_cache  # noqa: PLC0415
+
+    try:
+        pruned = prune_owned_mcp_cache()
+    except OSError as error:
+        return {"status": "failed", "reason": "mcp_cache_prune_failed", "error": str(error)}
+    if pruned is None:
+        return {"status": "skipped", "reason": "mcp_cache_prune_skipped_live"}
+    return {"status": "pruned", "freed_bytes": pruned.bytes_freed, "evicted": pruned.count}
+
+
 def main() -> None:
     """Run the shared installer step; an incomplete setup exits unsuccessfully."""
     parser = argparse.ArgumentParser(description=__doc__)
@@ -145,17 +167,16 @@ def main() -> None:
     # The install-time prepare (not the per-start reuse check) also upgrades the store,
     # so the desktop's first start after an install or upgrade only checks the markers.
     migrations = _run_store_migrations(args)
-    print(
-        json.dumps(
-            {
-                "status": result["status"],
-                "runtime_id": result["runtime_id"],
-                "office": result["native_tools"]["soffice"],
-                "store_migrations": migrations,
-            }
-        ),
-        flush=True,
-    )
+    summary = {
+        "status": result["status"],
+        "runtime_id": result["runtime_id"],
+        "office": result["native_tools"]["soffice"],
+        "store_migrations": migrations,
+    }
+    if not args.reuse_installed:
+        # An install or upgrade, not a per-launch check: bound the MCP cache now (B4).
+        summary["mcp_cache"] = prune_after_install()
+    print(json.dumps(summary), flush=True)
 
 
 def _run_store_migrations(args: argparse.Namespace) -> dict[str, Any]:

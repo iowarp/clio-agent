@@ -35,13 +35,16 @@ if TYPE_CHECKING:
     from fastapi import FastAPI
 
 
-async def prune_orphans_and_cache(app: FastAPI) -> None:
-    """Reap proven orphans before inspecting the liveness of cached MCP children."""
+async def reap_orphans(app: FastAPI) -> None:
+    """Reap proven orphans of an earlier server and publish the census to health.
+
+    The MCP spawn-cache prune that used to follow is maintenance, not startup (B4): it
+    runs at the end of install or upgrade and in ``clio-agent doctor --gc``
+    (:func:`clio_agent.tools.mcp_cache.prune_owned_mcp_cache`).
+    """
     from clio_agent.gact.routes.system import _prime_orphan_scan_cache  # noqa: PLC0415
-    from clio_agent.tools.mcp_cache import boot_prune_off_loop  # noqa: PLC0415
 
     await _prime_orphan_scan_cache(app)
-    await boot_prune_off_loop()
 
 
 def start_provider_catalog(app: FastAPI) -> asyncio.Task | None:

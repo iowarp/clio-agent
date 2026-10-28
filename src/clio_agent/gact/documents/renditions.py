@@ -168,7 +168,10 @@ def _convert_to_pdf(source: Path, output_dir: Path) -> tuple[Path, str]:
                 raise RenditionError("pandoc completed without producing a PDF")
             return output, "pandoc+typst" if typst is not None else "pandoc"
     from clio_agent.runtime.document_runtime import prepare_office_runtime
+    from clio_agent.runtime.package_preparation import preparing_result
 
+    if (busy := preparing_result()) is not None:
+        raise RenditionUnavailableError(busy["message"])  # typed reason in the record
     try:
         soffice = prepare_office_runtime()
     except DocumentError as exc:

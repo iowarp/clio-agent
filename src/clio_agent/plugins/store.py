@@ -48,7 +48,7 @@ from clio_agent.plugins.marketplace import (
     load_agent_specs,
     read_marketplace,
 )
-from clio_agent.plugins.package_files import ignored_package_names
+from clio_agent.plugins.package_files import ignored_package_names, source_stamp
 from clio_agent.plugins.records import Diagnostic, PluginRecord
 from clio_agent.plugins.sources import SourceError, fetch
 from clio_agent.sdk.agent import AgentSpec
@@ -270,6 +270,8 @@ class PluginStore:
             )
         if market in (BUILTIN_MARKETPLACE, USER_MARKETPLACE):
             raise StoreError("marketplace_name_reserved", f"{market!r} is reserved")
+        # Stamped before the copy: a change racing the copy shows as a mismatch next start.
+        stamp = source_stamp(fetched.path) if fetched.local else ""
         snapshot = self._snapshot(market, fetched.path)
         with self.lock:
             state = self.read_state()
@@ -295,6 +297,7 @@ class PluginStore:
                 "commit_reason": fetched.commit_reason,
                 "pinned": bool(commit),
                 "snapshot": str(snapshot),
+                "source_stamp": stamp,
                 "format": probe.format,
                 "description": probe.description,
                 "default": default or bool(previous.get("default")),
@@ -417,6 +420,8 @@ class PluginStore:
             state["plugins"][f"{market}/{record.id}"] = record.to_dict()
         agents = self._agents(state, market, snapshot, entry, approve, diagnostics)
         entry["diagnostics"] = [row.to_dict() for row in diagnostics]
+        # Read by this reader: the next start does not re-read it (B4, nothing rescanned).
+        entry["reader"] = READER_VERSION
         entry["federated"] = [
             {"name": pin.name, "url": pin.url, "commit": pin.commit} for pin in contents.federated
         ]
@@ -517,10 +522,18 @@ class PluginStore:
 
         with self.lock:
             state = self.read_state()
-            if state.get("reader") == READER_VERSION or not state["marketplaces"]:
+            # A marketplace records the reader that last read it. A store written before
+            # that record existed has the store-wide stamp, which covers every entry.
+            current = state.get("reader") == READER_VERSION
+            stale = {
+                market: entry
+                for market, entry in state["marketplaces"].items()
+                if entry.get("reader", READER_VERSION if current else None) != READER_VERSION
+            }
+            if not stale:
                 return []
             results: list[dict[str, Any]] = []
-            for market, entry in state["marketplaces"].items():
+            for market, entry in stale.items():
                 snapshot = Path(str(entry.get("snapshot") or ""))
                 if not snapshot.is_dir():
                     entry["diagnostics"] = [
@@ -529,6 +542,7 @@ class PluginStore:
                             "error", "snapshot_missing", f"{snapshot} is not on disk", market
                         ).to_dict(),
                     ]
+                    entry["reader"] = READER_VERSION  # reported once, not on every start
                     continue
                 try:
                     results.append(self._apply(state, market, snapshot, entry))
@@ -537,6 +551,16 @@ class PluginStore:
             state["reader"] = READER_VERSION
             self._write_state(state)
             return results
+
+    def record_source_stamp(self, market: str, stamp: str) -> None:
+        """Record that ``market``'s local source, at ``stamp``, matches its snapshot."""
+        with self.lock:
+            state = self.read_state()
+            entry = state["marketplaces"].get(market)
+            if entry is None or entry.get("source_stamp") == stamp:
+                return
+            entry["source_stamp"] = stamp
+            self._write_state(state)
 
     def update(self, market: str) -> dict[str, Any]:
         entry = self.marketplaces().get(market)
