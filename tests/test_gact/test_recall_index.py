@@ -370,3 +370,13 @@ def test_one_bucket_write_per_bucket_when_many_sessions_rebuild() -> None:
     assert all(index.rebuild_many(list(transcripts)).values())
     assert len(puts) == len(set(puts)) <= BUCKETS
     assert all(_stored(store, sid) is not None for sid in transcripts)
+
+
+def test_the_one_time_build_is_a_registered_store_migration() -> None:
+    from clio_agent.gact import store_migrations
+
+    item = store_migrations.migration("recall_index_build")
+    assert item.has_input is store_migrations._holds_conversation
+    names = [m.name for m in store_migrations.MIGRATIONS]
+    # It reads transcripts, so it runs after the legacy transcript import.
+    assert names.index("recall_index_build") > names.index("transcript_legacy_import")
