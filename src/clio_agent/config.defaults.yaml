@@ -540,6 +540,9 @@ compaction.keep.last_turns: 0
 # typed; raise to browse more of a large workspace at a glance.
 gact.context_references.browse_limit_per_kind: 20
 
+# CLIO_CONTEXT_REFERENCE_EVIDENCE_SESSIONS  (int)  <- src/clio_agent/gact/context_reference_evidence.py
+gact.context_references.evidence_sessions: 5000
+
 # CLIO_CONTEXT_REFERENCE_MAX_HASHABLE_BYTES  (int)  <- src/clio_agent/gact/context_references.py
 # Byte ceiling on a workspace file that may be attached as a context
 # reference; admission digests the whole file, so a larger one is refused
@@ -671,6 +674,9 @@ gact.mailbox.max_pending_messages: 0
 # context reads, least recently used first out; lower to bound memory.
 gact.media_cache_bytes: 67108864
 
+# CLIO_RECALL_INDEX_REBUILD_DELAY_S  (float)  <- src/clio_agent/gact/recall_index.py
+gact.recall_index.rebuild_delay_s: 2.0
+
 # CLIO_RESIDENT_LEDGERS_TTL_S  (float)  <- src/clio_agent/gact/resident_ledgers.py
 # Seconds a session nobody views and nothing runs in keeps its transcript
 # and context in memory before release (re-read from clio-core on next use);
@@ -690,6 +696,9 @@ gact.resident_ledgers.max_sessions: 512
 # CLIO_RESIDENT_LEDGERS_SWEEP_S  (float)  <- src/clio_agent/gact/resident_ledgers.py
 # Seconds between the idle sweeps that release unused sessions from memory.
 gact.resident_ledgers.sweep_interval_s: 15.0
+
+# CLIO_SESSION_RECALL_MAX_SESSIONS  (int)  <- src/clio_agent/gact/runtime/session_recall_search.py
+gact.session_recall.max_sessions: 5000
 
 # CLIO_TASKS_HEALTH_TIMEOUT_S  (float)  <- src/clio_agent/tools/task_client.py
 # Timeout in seconds for task transport discovery/cancellation RPC delivery;

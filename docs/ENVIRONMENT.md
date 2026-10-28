@@ -92,6 +92,7 @@ These resolve through `clio_agent.conf`: a value under the dotted key in `config
 | `CLIO_COMPACTION_KEEP_LAST_TURNS` | `compaction.keep.last_turns` | int | `0` | `src/clio_agent/gact/compaction_policy.py` |
 | `CLIO_COMPACTION_PROMPT_FILE` | `compaction.prompt_file` | str | _(unset)_ | `src/clio_agent/compaction_prompt.py` |
 | `CLIO_CONTEXT_REFERENCE_BROWSE_LIMIT` | `gact.context_references.browse_limit_per_kind` | int | `20` | `src/clio_agent/gact/context_reference_search.py` |
+| `CLIO_CONTEXT_REFERENCE_EVIDENCE_SESSIONS` | `gact.context_references.evidence_sessions` | int | `5000` | `src/clio_agent/gact/context_reference_evidence.py` |
 | `CLIO_CONTEXT_REFERENCE_MAX_HASHABLE_BYTES` | `gact.context_references.max_hashable_bytes` | int | `67108864` | `src/clio_agent/gact/context_references.py` |
 | `CLIO_CONTEXT_REFERENCE_SEARCH_LIMIT` | `gact.context_references.search_limit` | int | `100` | `src/clio_agent/gact/context_reference_search.py` |
 | `CLIO_CONTEXT_REFERENCE_SNAPSHOT_CHILDREN` | `gact.context_references.snapshot_children` | int | `50` | `src/clio_agent/gact/context_reference_evidence.py` |
@@ -228,6 +229,7 @@ These resolve through `clio_agent.conf`: a value under the dotted key in `config
 | `CLIO_PROVIDER_NATIVE_IMAGE_URL_ALLOWLIST` | `providers.native_image_url_allowlist` | str | _(unset)_ | `src/clio_agent/providers/claude_code_multimodal.py` |
 | `CLIO_REACT_EXTRACT_AFTER_STEPS` | `agents.react_extract.after_steps` | int | `3` | `src/clio_agent/gact/agents/clio_react_extract.py` |
 | `CLIO_REACT_EXTRACT_ENABLED` | `agents.react_extract.enabled` | bool | `true` | `src/clio_agent/gact/agents/clio_react_extract.py` |
+| `CLIO_RECALL_INDEX_REBUILD_DELAY_S` | `gact.recall_index.rebuild_delay_s` | float | `2.0` | `src/clio_agent/gact/recall_index.py` |
 | `CLIO_RELEASE_MANIFEST_URL` | `system.release_manifest_url` | str | `https://github.com/iowarp/clio-agent/releases/latest/download/latest-lite.json` | `src/clio_agent/gact/routes/latest_release.py` |
 | `CLIO_RESIDENT_LEDGERS_MAX` | `gact.resident_ledgers.max_sessions` | int | `512` | `src/clio_agent/gact/resident_ledgers.py` |
 | `CLIO_RESIDENT_LEDGERS_MAX_BYTES` | `gact.resident_ledgers.max_bytes` | int | `536870912` | `src/clio_agent/gact/resident_ledgers.py` |
@@ -281,6 +283,7 @@ These resolve through `clio_agent.conf`: a value under the dotted key in `config
 | `CLIO_SERVER_CONF` | `arc.server_conf` | str | _(unset)_ | `src/clio_agent/arc/clio_core_liveness.py` |
 | `CLIO_SESSIONS_CACHE_RECORDS` | `sessions.cache_records` | int | `1024` | `src/clio_agent/gact/session_records.py` |
 | `CLIO_SESSIONS_PATH` | `paths.sessions` | str | _(unset)_ | `src/clio_agent/gact/sessions.py` |
+| `CLIO_SESSION_RECALL_MAX_SESSIONS` | `gact.session_recall.max_sessions` | int | `5000` | `src/clio_agent/gact/runtime/session_recall_search.py` |
 | `CLIO_SHELL_DEFAULT_OUTPUT_BYTES` | `limits.shell_default_output_bytes` | int | `8192` | `src/clio_agent/tools/servers/shell_server.py` |
 | `CLIO_SHELL_DEFAULT_TIMEOUT_S` | `limits.shell_default_timeout_s` | float | `0.0` | `src/clio_agent/tools/servers/shell_server.py` |
 | `CLIO_SHELL_MAX_COMMAND_CHARS` | `limits.shell_max_command_chars` | int | `16000` | `src/clio_agent/tools/servers/shell_server.py` |

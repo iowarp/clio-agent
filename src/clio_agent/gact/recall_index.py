@@ -99,7 +99,7 @@ _WINDOW = 64
 _MARK_STRIPES = 64
 #: Seconds the rebuild thread stays alive with nothing to do.
 _IDLE_SECONDS = 5.0
-_STORE_ERRORS = (ClioError, OSError, RuntimeError, TimeoutError, ValueError)
+_STORE_ERRORS = (ClioError, OSError, RuntimeError, TimeoutError, ValueError, msgspec.MsgspecError)
 
 
 def rebuild_delay_s() -> float:
@@ -239,6 +239,16 @@ class RecallIndex:
             self._cond.notify_all()
 
     def _run(self) -> None:
+        try:
+            self._loop()
+        finally:
+            # An unexpected error ends this thread loudly (``threading.excepthook``);
+            # the next schedule starts a fresh one, and the sessions stay dirty.
+            with self._cond:
+                if self._thread is threading.current_thread():
+                    self._thread = None
+
+    def _loop(self) -> None:
         while True:
             with self._cond:
                 if not self._cond.wait_for(lambda: bool(self._due), _IDLE_SECONDS):
@@ -324,6 +334,13 @@ class RecallIndex:
         for sid in sessions:
             self.schedule(sid)
 
+    def _ensure_due(self, session_id: str) -> None:
+        """Schedule a dirty session's rebuild unless one is already due or running."""
+        with self._lock:
+            pending = session_id in self._due or bool(self._inflight.get(session_id))
+        if not pending and not self._inline:
+            self.schedule(session_id)
+
     def is_dirty(self, session_id: str) -> bool:
         """Whether ``session_id``'s transcript was written since its digest was built."""
         with self._lock:
@@ -338,6 +355,7 @@ class RecallIndex:
         for sid in session_ids:
             if self.is_dirty(sid):
                 out[sid] = DIRTY_REASON
+                self._ensure_due(sid)
             else:
                 wanted.append(sid)
         if not wanted:
