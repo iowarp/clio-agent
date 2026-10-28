@@ -169,6 +169,7 @@ class RecallIndex:
         self._epoch: dict[str, int] = {}
         self._inflight: dict[str, int] = {}
         self._due: dict[str, float] = {}
+        self._building = 0  # rebuilds the thread took off ``_due`` and has not finished
         # Striped: a marker put and a marker delete of one session never interleave.
         self._mark_locks = tuple(threading.Lock() for _ in range(_MARK_STRIPES))
         self._markers_loaded = False
@@ -250,8 +251,13 @@ class RecallIndex:
                     continue
                 for sid in ready:
                     del self._due[sid]
+                self._building += len(ready)
             for sid in ready:
-                self.rebuild(sid)
+                try:
+                    self.rebuild(sid)
+                finally:
+                    with self._cond:
+                        self._building -= 1
 
     def rebuild(self, session_id: str) -> bool:
         """Store ``session_id``'s digest from its transcript; whether it is clean now."""
@@ -280,6 +286,7 @@ class RecallIndex:
                 if clean:
                     self._dirty.discard(session_id)
                     self._epoch.pop(session_id, None)
+                    self._due.pop(session_id, None)  # built: no later rebuild owed
             if marked:
                 try:
                     self._store.delete(KIND, _DIRTY + session_id)
@@ -296,7 +303,7 @@ class RecallIndex:
         deadline = time.monotonic() + timeout
         while time.monotonic() < deadline:
             with self._lock:
-                if not self._due and not self._inflight:
+                if not self._due and not self._inflight and not self._building:
                     return True
             time.sleep(0.05)
         return False
