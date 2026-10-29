@@ -6,7 +6,7 @@ the sessions::
     .venv/bin/python -I scripts/qualification/polaris/collect_attention_replay.py \\
         --job 7795352 --session chain_A=sess_x --session chain_B=sess_y --session broad=sess_z
 
-Writes ``$ROOT/exports/attention-replay-<job>/``:
+Writes ``$ROOT/exports/attention-replay-<job>[-<name>]/``:
 
 - ``sessions/<sid>.export.json``      the session export (``GET /v1/sessions/<sid>/export``)
 - ``journal/<sid>.semantic.jsonl``    each session's model-call journal
@@ -85,12 +85,13 @@ def _decode_attention_tasks(settings_path: Path) -> list[dict[str, Any]]:
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--job", required=True)
+    parser.add_argument("--name", default="", help="one bundle per run in the same job (B, broad)")
     parser.add_argument(
         "--session", action="append", default=[], help="label=sid (chain_A, chain_B, broad)"
     )
     args = parser.parse_args()
     sessions = dict(item.split("=", 1) for item in args.session)
-    out = ROOT / "exports" / f"attention-replay-{args.job}"
+    out = ROOT / "exports" / "-".join(filter(None, ("attention-replay", args.job, args.name)))
     for sub in ("sessions", "journal", "flowcept", "captures", "tokenizer"):
         (out / sub).mkdir(parents=True, exist_ok=True)
 
@@ -103,16 +104,18 @@ def main() -> None:
         else:
             target.write_text(json.dumps(_get(f"/v1/sessions/{sid}/export")))
 
-    # 2. Model-call journals.
+    # 2. Model-call journals (CLIO's semantic_traces, or provenance.agentic.jsonl.path).
+    provenance = _provenance_config()
+    jsonl_path = ((provenance.get("agentic") or {}).get("jsonl") or {}).get("path")
+    roots = [ROOT / "state"] + ([Path(jsonl_path).parent] if jsonl_path else [])
     journals: dict[str, str] = {}
     for sid in sessions.values():
-        hits = sorted((ROOT / "state").rglob(f"{sid}.semantic.jsonl"))
+        hits = sorted(hit for root in roots for hit in root.rglob(f"{sid}.semantic.jsonl"))
         if hits:
             shutil.copy2(hits[0], out / "journal" / hits[0].name)
             journals[sid] = str(hits[0])
 
     # 3. All decode_attention descriptors.
-    provenance = _provenance_config()
     settings_path = Path(provenance["agentic"]["flowcept"]["settings_path"])
     tasks = _decode_attention_tasks(settings_path)
     (out / "flowcept" / "decode_attention.json").write_text(json.dumps(tasks, indent=1))
@@ -178,7 +181,9 @@ def main() -> None:
                 row["result"] = "ok"
         checks.append(row)
 
-    connector = ROOT / "build" / "connector" / "CONNECTOR_SOURCE.txt"
+    connector = ROOT / "build" / "connector"
+    connector_src = ROOT / "src" / "vllm-attn-connector"
+    wheels = sorted(connector.glob("*.whl"))
     clio = ROOT / "src" / "clio-agent"
     metadata = {
         "job_id": args.job,
@@ -187,7 +192,24 @@ def main() -> None:
             "clio-agent": _commit(clio),
             "gact-tui": _commit(clio / "external" / "gact-tui"),
             "clio-agent-marketplace": _commit(clio / "external" / "clio-agent-marketplace"),
-            "connector_source": connector.read_text().strip() if connector.is_file() else "",
+            "connector": {
+                "repo": subprocess.run(
+                    ["git", "-C", str(connector_src), "remote", "get-url", "origin"],
+                    capture_output=True,
+                    text=True,
+                    check=False,
+                ).stdout.strip(),
+                "commit": _commit(connector_src),
+                # Stage-up applies a one-line pyproject build fix before building the wheel.
+                "local_changes": subprocess.run(
+                    ["git", "-C", str(connector_src), "status", "--short", "--untracked-files=no"],
+                    capture_output=True,
+                    text=True,
+                    check=False,
+                ).stdout.split(),
+                "wheel": wheels[0].name if wheels else "",
+                "wheel_sha256": _sha256(wheels[0]) if wheels else "",
+            },
         },
         "model": {
             "snapshot": str(snapshot),
