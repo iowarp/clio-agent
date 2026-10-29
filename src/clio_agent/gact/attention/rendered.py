@@ -2,12 +2,14 @@
 
 A browser selection is the *rendered* text: emphasis markers, list bullets,
 heading hashes, table pipes, code backticks and link targets are gone, and
-whitespace is reflowed. The attention request needs a span of the *source*
-text (what the model generated). Both sides are projected the same way --
-markup characters dropped, whitespace runs collapsed to one space -- and the
-projection keeps, per character, its source offset, so a match converts back to
-an exact source span. This is a format transform with one fixed rule set, not a
-fuzzy search: a selection that does not project onto the source is not found.
+whitespace is not kept: a selection across paragraphs joins them with nothing
+("MATCHES" + "Explanation"), and painted token spans can split a word with a
+space ("MAT CHES"). The attention request needs a span of the *source* text
+(what the model generated). Both sides are projected the same way -- markup
+characters and whitespace dropped -- and the projection keeps, per character,
+its source offset, so a match converts back to an exact source span. This is a
+format transform with one fixed rule set, not a fuzzy search: a selection that
+does not project onto the source is not found.
 """
 
 from __future__ import annotations
@@ -25,7 +27,7 @@ _LINK_TARGET = re.compile(r"\]\([^)\s]*(?:\s+\"[^\"]*\")?\)")
 
 
 def _project(text: str, *, source: bool) -> tuple[str, list[int]]:
-    """``text`` with markup dropped and whitespace collapsed, plus source offsets."""
+    """``text`` with markup and whitespace dropped, plus source offsets."""
     keep = [True] * len(text)
     if source:
         for pattern in (_LIST_MARKER, _LINK_TARGET):
@@ -38,17 +40,9 @@ def _project(text: str, *, source: bool) -> tuple[str, list[int]]:
                     keep[i] = False
     out: list[str] = []
     index: list[int] = []
-    pending_space = False
     for i, ch in enumerate(text):
-        if not keep[i] or ch in _MARKUP or ch == "[" or ch == "]":
+        if not keep[i] or ch in _MARKUP or ch in "[]" or ch.isspace():
             continue
-        if ch.isspace():
-            pending_space = bool(out)
-            continue
-        if pending_space:
-            out.append(" ")
-            index.append(i)
-            pending_space = False
         out.append(ch)
         index.append(i)
     return "".join(out), index
