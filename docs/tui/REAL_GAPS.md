@@ -1,11 +1,15 @@
-# Real-readiness gap log
+# Historical TUI readiness gap log
+
+> The legacy TUI is frozen and unsupported as of 0.9.5.1. Do not install or run
+> it for current CLIO. This reference is retained for a future upgrade; use
+> Desktop or Web today. See [TUI status](README.md).
 
 Honest list of what's wire-shape-only vs end-to-end-working when CLIO
 runs against a real configured LM provider, including direct cloud
 providers and local OpenAI-compatible providers such as LM Studio.
 Drives what to fix before declaring v0.2 ready.
 
-Updated as gaps land or close.
+This pre-freeze log does not establish current TUI readiness.
 
 ## Hard blockers - must fix before "ready"
 

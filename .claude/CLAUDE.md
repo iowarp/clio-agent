@@ -2,6 +2,11 @@
 
 Essential rules and guidelines for AI agents implementing CLIO Agent.
 
+Current CLIO uses **Desktop or Web**, with `clio start` / `clio-agent serve` for
+headless services. The legacy TUI is **frozen and unsupported as of 0.9.5.1**.
+Do not install, build, run, recommend or use it to verify current CLIO. Its
+[source and integration notes](../docs/tui/README.md) remain for a future upgrade.
+
 ---
 
 ## ⚑ SUPERSEDING PRINCIPLES (read first — these override anything below)
@@ -307,15 +312,16 @@ async def test_fs_read():
 3. Implement with type hints + docstrings, in the owner module (no accretion)
 4. Write tests (using `Client(server)` for MCP, mocks for LM calls)
 5. Test + lint: `uv run pytest tests/ -m "not integration"` then `ruff check src/`
-6. Verify baseline still works: `uv run src/clio_agent/ui/cli.py`
+6. Verify the GACT service with the real startup checks in `scripts/acceptance/`.
 7. Commit with clear message: `<type>: <description>`
 
 ### Running CLIO
 
-- **Dev (from source):** `uv run src/clio_agent/ui/cli.py`
+- **Dev service (from source):** `uv run clio-agent serve`.
 - **Deployed:** the `install/` system installs a `clio` launcher CLI
-  (`clio start|stop|restart|status|logs|doctor`) alongside the gact
-  TUI. See `install/README.md`.
+  (`clio start|stop|restart|status|logs|doctor`). Bare `clio` and `clio web` open
+  Web; install Desktop with `--desktop` / `-Desktop`. Source mode installs the
+  backend only. The TUI is frozen and unsupported. See `install/README.md`.
 
 ---
 

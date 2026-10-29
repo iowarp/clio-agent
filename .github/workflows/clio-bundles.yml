@@ -10,7 +10,7 @@ on:
         description: >-
           Frozen-at-tag escape hatch: an already-released tag (e.g. v0.9.4.1)
           to regenerate the Tauri update manifest / release-completeness
-          check for, without re-running the desktop/web/tui/installers
+          check for, without re-running the desktop/web/installers
           builds. Checked out explicitly rather than relying on whichever
           ref this workflow run was launched from.
         required: true
