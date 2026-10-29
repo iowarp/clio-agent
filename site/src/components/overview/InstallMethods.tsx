@@ -16,8 +16,8 @@ const METHODS = [
 	},
 	{
 		id: 'terminal',
-		label: 'Terminal and servers',
-		note: 'The clio command, for servers, HPC and computers without a desktop. Then run clio.',
+		label: 'Web and servers',
+		note: 'Install the service and Web for servers or HPC. Run clio web, or clio start for a headless service. The legacy TUI is frozen and unsupported.',
 		unix: `curl -fsSL ${SCRIPT_SH} | bash`,
 		windows: `irm ${SCRIPT_PS1} | iex`,
 	},

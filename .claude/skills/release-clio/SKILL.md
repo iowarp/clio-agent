@@ -6,19 +6,25 @@ description: Release dependencies from main and clean completed work, record ver
 # Releasing clio-agent
 
 clio-agent ships across **PyPI** (the `clio-agent` package), **GitHub Release assets**
-(installer scripts + `clio-tui-{os}-{arch}` binaries + desktop bundles + web zip), and
-**ghcr.io** container images (`clio-{api,web,tui}`). A release is driven by **pushing a
+(installer scripts + desktop bundles + web zip), and
+**ghcr.io** container images (`clio-{api,web}`). A release is driven by **pushing a
 `v*` git tag** to `iowarp/clio-agent` — three workflows fire on the tag:
 
 - `release.yml` → builds sdist+wheel, publishes to **PyPI** (OIDC trusted publishing).
 - `clio-bundles.yml` → creates the GH release as a **DRAFT**, builds + uploads the
-  **release assets** to it (installers, `clio-tui-*`, desktop `.msi/.dmg/.deb/.AppImage/.rpm`,
+  **release assets** to it (installers, desktop `.msi/.dmg/.deb/.AppImage/.rpm`,
   `clio-web-*.zip`, then the `latest*.json` updater manifests), and **publishes** it as
   latest only in `release-check`, after `check_release_completeness.py` passes.
-- `docker.yml` → builds + pushes **ghcr.io/iowarp/clio-{api,web,tui}** images.
+- `docker.yml` → builds + pushes **ghcr.io/iowarp/clio-{api,web}** images.
 
-Two git submodules ship pinned: `external/gact-tui` (the TUI/web/desktop frontend) and
-`external/clio-agent-marketplace` (blueprints). Both must point at a released tag.
+The legacy TUI is **frozen and unsupported as of 0.9.5.1**. Do not build, install,
+run or publish it as a current CLIO path. New releases exclude its binaries and
+Docker image; `clio attach` refuses to launch it. Retain the
+[source and status notes](../../../docs/tui/README.md) for a future upgrade.
+Historical artifacts do not qualify it for a current release.
+
+Two git submodules ship pinned: `external/gact-tui` (Web/Desktop infrastructure)
+and `external/clio-agent-marketplace` (plugins). Both must point at a released tag.
 
 ## Preconditions
 - Use a clean owned release checkout. Preserve private runtime churn and unrelated changes separately; never discard them to obtain a clean status.
@@ -66,7 +72,8 @@ For each dependency:
    preparation branch. Keep independent Desktop package versions independent.
 3. Verify the complete published release through that repository's configured
    channels. For gact-tui, require public GitHub release metadata, curated notes,
-   every expected binary/checksum and successful release CI. For marketplace,
+   every asset required by its current release policy and successful release CI;
+   the frozen TUI is not a new-release gate. For marketplace,
    require its main-based published tag/release and policy qualification. For
    schemas, require the main-based tag, release CI and actual PyPI wheel/sdist.
 4. Clean proven merged branches and completed owned worktrees while integration
@@ -118,7 +125,7 @@ Never stage a dependency preparation branch as the release pin.
 
 ### 3b. Roll the CHANGELOG (GACT-contract surface only)
 `CHANGELOG.md` tracks changes to clio-agent's **GACT-contract surface**
-(the TUI/HTTP surface) — not every internal change. Before tagging:
+(the Desktop/Web/HTTP surface) — not every internal change. Before tagging:
 - Rename the `## Unreleased` heading to `## [X.Y.Z] — YYYY-MM-DD` (today's
   date), keeping the Added/Changed/Fixed/Removed sections it accumulated.
 - Add a fresh empty `## Unreleased` block above it for the next cycle.
@@ -246,13 +253,13 @@ backstop never overwrites a non-bare body).
 ```sh
 gh run watch $(gh run list --workflow=release.yml --limit 1 --json databaseId -q '.[0].databaseId') --exit-status
 curl -s https://pypi.org/pypi/clio-agent/json | python3 -c "import sys,json;d=json.load(sys.stdin);print('X.Y.Z' in d['releases'])"
-gh release view vX.Y.Z --json assets -q '.assets[].name' | grep clio-tui   # installer needs clio-tui-{os}-{arch}
+gh release view vX.Y.Z --json assets -q '.assets[].name' | python3 scripts/check_release_completeness.py
 gh run list --workflow=docker.yml --limit 1                                 # ghcr images
 ```
 The `clio-bundles.yml` **`release-check`** job must be green. In order it: generates
 and uploads the `latest.json` / `latest-lite.json` updater manifests to the draft,
 asserts every expected asset is present (bundled msi/nsis/dmg/deb/rpm, lite set,
-updater payloads + sigs + manifests, tui set, web zip, installer scripts + launchers;
+updater payloads + sigs + manifests, web zip, installer scripts + launchers;
 #841 F-15), backstops the notes, then **publishes** the draft
 (`scripts/github_release.py publish`: draft → public, marked latest) and verifies
 `releases/latest/download/latest-lite.json` now serves this version. Publish is also
@@ -282,14 +289,13 @@ gh release view vX.Y.Z --json assets -q '.assets[].name' | python3 scripts/check
 - **Published versions are immutable.** Once any GitHub asset, PyPI package or container is published, never move its tag or overwrite the publication. Correct source or sequencing errors with a new version integrated into main. Rerun an affected workflow only against its unchanged, correctly integrated source.
 - **`git fetch` before integrating.** `develop`/`main` advance via others' PRs; a stale local branch → non-fast-forward push rejection. Reconcile (`git merge origin/<branch>`) — content is usually identical, it's just merge-commit topology.
 - **Submodule gitlink must be committed.** `git submodule status` showing a leading `+` means the checked-out commit isn't recorded in the parent — commit the gitlink before tagging or the release ships the old submodule.
-- **ghcr `403 Forbidden` on push** — check WHO OWNS the package first: `gh api "orgs/iowarp/packages?package_type=container"` (needs `read:packages`; use `MSYS_NO_PATHCONV=1` and no leading slash on Git Bash). The v0.6.1–v0.7.4 saga: the packages EXISTED but were linked to **gact-tui** (created by its pre-move docker pipeline), so clio-agent's GITHUB_TOKEN had no role — org creation settings were irrelevant and every tag push 403'd on a blob HEAD. Fix: link this repo with Write (package Settings → Manage Actions access), or delete the stale packages (restorable 30 days) and let the next tag push recreate them fresh (auto-linked, and public under current org defaults — verify with an anonymous `https://ghcr.io/v2/iowarp/clio-tui/tags/list` pull). For true first creation the old advice stands: org Settings→Packages allow creation, or a one-time `write:packages` PAT bootstrap.
+- **ghcr `403 Forbidden` on push** — check WHO OWNS the package first: `gh api "orgs/iowarp/packages?package_type=container"` (needs `read:packages`; use `MSYS_NO_PATHCONV=1` and no leading slash on Git Bash). The v0.6.1–v0.7.4 saga: the packages EXISTED but were linked to **gact-tui** (created by its pre-move docker pipeline), so clio-agent's GITHUB_TOKEN had no role — org creation settings were irrelevant and every tag push 403'd on a blob HEAD. Fix: link this repo with Write (package Settings → Manage Actions access), or delete the stale packages (restorable 30 days) and let the next tag push recreate them fresh (auto-linked, and public under current org defaults — verify with an anonymous `https://ghcr.io/v2/iowarp/clio-api/tags/list` pull). For true first creation the old advice stands: org Settings→Packages allow creation, or a one-time `write:packages` PAT bootstrap.
 - **Never create the release yourself before the tag push** (`gh release create`,
   web UI). The `release` job reuses an existing release for the tag, but a second
   draft on the same tag makes `github_release.py ensure` fail loud (uploads would
   split across drafts). Delete the stray draft and re-run.
 - **Desktop sub-version** (`external/gact-tui/apps/desktop/package.json`/`tauri.conf.json`) is versioned independently by the gact-tui team — don't edit inside the submodule; just pin the gact-tui release tag.
 - **Cross-platform CI gotchas (the 0.5.5–0.5.8 install-pathway saga — verify bundles actually upload, don't assume):**
-  - `build_clio_tui.sh`: absolutize `$OUT` BEFORE the `cd` into gact-tui, and treat Windows drive-letters (`C:/…`) + backslashes as absolute — a relative `-o` lands the binary in the wrong dir → no `clio-tui-*` assets.
   - `tauri build` rejects **multiple `--config`** — deep-merge the bundled + branding configs (`jq -s '.[0] * .[1]'`) and pass one. Two `--config` flags fail every bundled-desktop job.
   - Use **`shasum -a 256`**, NOT `sha256sum`, in any step that runs on macOS runners (no `sha256sum` on macOS) — it silently fails the mac `.dmg` AFTER it built.
   - POSIX-only APIs crash Windows at import: `faulthandler.register(signal.SIGUSR1)` raises `AttributeError` on Windows (no SIGUSR1) — guard with `hasattr(signal, "SIGUSR1")`. This blocked the entire Windows server.
@@ -297,14 +303,16 @@ gh release view vX.Y.Z --json assets -q '.assets[].name' | python3 scripts/check
   - **Intel-mac (`macos-13`) runners are being deprecated** by GitHub → those desktop jobs queue forever; Apple-Silicon (`macos-14`) covers modern Macs.
 
 ## Install pathways — verify ALL are real every release (none aspirational)
-CLIO ships **1 engine + 3 frontends** across **4 mechanisms / 6 experiences** (see
-`docs/INSTALL.md`). A release must keep every one working — verify after the tag:
-- **a) script → CLI/TUI**: `install.sh`/`install.ps1` install clio-agent (PyPI) + `clio-tui-{os}-{arch}` + the `clio` launcher. Confirm `clio-tui-*` assets are on the GH release (clio-bundles.yml).
-- **b) docker TUI (no-install)**: `docker run -it ghcr.io/iowarp/clio-tui:<ver>`. Confirm docker.yml pushed it.
-- **c) `clio --web`**: launcher `web`/`--web` → gact serves the SPA same-origin via `CLIO_WEB_DIR`; `install.sh` unpacks `clio-web-<ver>.zip` into `$PREFIX/clio-agent/web`. Confirm the web zip asset exists; offline-test the mount (build_app with `CLIO_WEB_DIR` set: GET `/` = index.html, SPA fallback works, `/v1/*` not shadowed).
-- **d) docker compose (scaled web)**: `docker compose up clio-web` / `--profile api`. Confirm `ghcr.io/iowarp/clio-{web,api}` pushed.
-- **e) desktop**: `.msi/.dmg/.deb/.AppImage/.rpm` on the release (clio-bundles.yml desktop job).
-- **f) git clone**: `uv sync` / `uv run`.
+CLIO ships **one engine with Desktop and Web**, plus a headless service (see
+`docs/INSTALL.md`). Verify each supported path after the tag:
+- **Service installer:** `install.sh`/`install.ps1` install clio-agent, the Web bundle and the `clio` launcher. Verify `clio start`, `clio status` and `clio stop`; bare `clio` opens Web. No TUI binary, Docker image or Go build is required.
+- **Local Web:** `clio web` serves the SPA same-origin via `CLIO_WEB_DIR`; the installer unpacks the release's `clio-web-<ver>.zip`. Confirm the Web zip exists; offline-test the mount (GET `/` = index.html, SPA fallback works, `/v1/*` remains the API).
+- **Containers:** `docker compose up clio-web` or the API profile. Verify the published `ghcr.io/iowarp/clio-{web,api}` images.
+- **Desktop:** verify the published bundled and lite installers and updater assets, including the installed app and complete managed-package setup.
+- **Source service:** `--source` / `-Source` installs the backend only; `uv sync` and `uv run clio-agent serve` support contributor development. Build Web/Desktop through the contributor guide when needed.
+
+Confirm the new release contains no `clio-tui-*` assets and no new TUI container
+publication. Keep its frozen status visible in user and AI-assistant guidance.
 
 Anything not green → fix before announcing, or mark it explicitly in `docs/INSTALL.md` as
 not-yet-available (never leave a pathway claimed-but-broken). The multi-spawn port/state

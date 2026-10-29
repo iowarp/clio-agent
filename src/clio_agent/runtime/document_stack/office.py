@@ -9,6 +9,7 @@ import logging
 import platform
 import shutil
 import ssl
+import subprocess
 import sysconfig
 import tarfile
 import tempfile
@@ -238,23 +239,57 @@ def _extract(archive: Path, root: Path) -> None:
 
 def _verify_office(executable_path: Path, *, cwd: Path) -> None:
     """Probe without joining another Office instance or touching the user's profile."""
-    temporary = tempfile.TemporaryDirectory(prefix="lo-version-")
-    try:
-        profile = Path(temporary.name).resolve() / "profile"
-        run(
-            [
-                str(executable_path),
-                f"-env:UserInstallation={profile.as_uri()}",
-                "--headless",
-                "--nologo",
-                "--norestore",
-                "--version",
-            ],
-            cwd=cwd,
-            timeout=30,
-        )
-    finally:
-        _cleanup_profile(temporary)
+    # A real Windows first launch can exhaust the native probe deadline while
+    # the same binary verifies promptly after its timed-out process tree retires.
+    # Recover once with a new profile; keep the deadline and fail closed when
+    # neither attempt verifies. Other failures and platforms are not retried.
+    attempts = 2 if platform.system() == "Windows" else 1
+    for attempt in range(attempts):
+        temporary = tempfile.TemporaryDirectory(prefix="lo-version-")
+        try:
+            profile = Path(temporary.name).resolve() / "profile"
+            run(
+                [
+                    str(executable_path),
+                    f"-env:UserInstallation={profile.as_uri()}",
+                    "--headless",
+                    "--nologo",
+                    "--norestore",
+                    "--version",
+                ],
+                cwd=cwd,
+                timeout=30,
+            )
+            return
+        except DocumentError as error:
+            if attempt + 1 == attempts or not isinstance(
+                error.__cause__, subprocess.TimeoutExpired
+            ):
+                raise
+            logger.warning(
+                "reason=office_probe_timeout_retry: %s; retrying once with a fresh private profile",
+                error,
+            )
+        finally:
+            _cleanup_profile(temporary)
+
+
+def _publish_image(image: Path, root: Path) -> None:
+    """Allow briefly retained Windows handles to close before publishing the image."""
+    for attempt in range(20):
+        if root.exists():
+            raise DocumentError(f"Incomplete renderer cache at {root}; remove it before retrying")
+        try:
+            image.rename(root)
+            return
+        except OSError as error:
+            if (
+                platform.system() != "Windows"
+                or getattr(error, "winerror", None) not in {5, 32}
+                or attempt == 19
+            ):
+                raise
+            time.sleep(0.1)
 
 
 def ensure_office(root: Path) -> str:
@@ -304,11 +339,7 @@ def ensure_office(root: Path) -> str:
                 if candidate is None:
                     raise DocumentError("LibreOffice image contains no supported executable")
                 _verify_office(candidate, cwd=image)
-                if root.exists():
-                    raise DocumentError(
-                        f"Incomplete renderer cache at {root}; remove it before retrying"
-                    )
-                image.rename(root)
+                _publish_image(image, root)
             except (OSError, ValueError, tarfile.TarError) as exc:
                 raise DocumentError(f"LibreOffice extraction failed: {exc}") from exc
         candidate = executable(root)

@@ -1,0 +1,100 @@
+{
+  "source_head": "16e0de15c62f95a9be329b90602631dbd4b05561",
+  "history_ui_validation": {
+    "visible_links": [
+      {
+        "href": "/workspaces/ws_default/sessions/sess_b8a333ee278f",
+        "text": "interrupted 9New"
+      },
+      {
+        "href": "/workspaces/ws_default/sessions/sess_c1837a9eb4d5",
+        "text": "interrupted 8New"
+      },
+      {
+        "href": "/workspaces/ws_default/sessions/sess_6327781f46fd",
+        "text": "interrupted 7New"
+      },
+      {
+        "href": "/workspaces/ws_default/sessions/sess_1acd9fea7c63",
+        "text": "interrupted 6New"
+      },
+      {
+        "href": "/workspaces/ws_default/sessions/sess_04bd2e6a70c7",
+        "text": "interrupted 5New"
+      },
+      {
+        "href": "/workspaces/ws_default/sessions/sess_a51acceae451",
+        "text": "interrupted 4New"
+      },
+      {
+        "href": "/workspaces/ws_default/sessions/sess_2dc788f8ad72",
+        "text": "interrupted 3New"
+      },
+      {
+        "href": "/workspaces/ws_default/sessions/sess_23101a8633aa",
+        "text": "interrupted 2New"
+      }
+    ],
+    "opened": {
+      "height": 1080,
+      "path": "/workspaces/ws_default/sessions/sess_b8a333ee278f",
+      "text": "Toggle Sidebar\ndefault\n›\ninterrupted 9\nrefstore-fanout\nActivity\nFailed\nLive\nCLIO\nLocal\nCLIO\nSearch\nCtrl K\nWorkspaces\ndefault\ninterrupted 9\n5m ago\ninterrupted 8\nNew\ninterrupted 7\nNew\ninterrupted 6\nNew\ninterrupted 5\nNew\ninterrupted 4\nNew\ninterrupted 3\nNew\ninterrupted 2\nNew\nShow all 280 sessions\nExplore\nRuns\nReady\nInfrastructure\nSettings\nYou\n10:31 PM\n\n4 STALL interrupted work 9\n\nCopy message\nrefstore-fanout\nResponse interrupted\nThe agent service restarted before this response completed. Your request was preserved and can be retried.\nInterrupted\nRetry response\nRate response\nBranch from here\nRewind to here\nCopy message\n10:57 PM\nChoose model\nExecute\nAsk first\nSend\nNo active work\nv0.9.5.1\nTokens: 0\nCost: —\nFiles",
+      "width": 1872
+    }
+  },
+  "started_at": "2026-10-29T04:02:41.654Z",
+  "package_validation": {
+    "valid": true,
+    "detail": "Managed packages checked reason=managed_packages_unchanged 1.676s",
+    "observed_s": 37.9
+  },
+  "backend_validation": {
+    "readiness": "ready",
+    "rail_rows": 30,
+    "rail_total": 926,
+    "expected_sessions": 926,
+    "valid": true
+  },
+  "excluded_from_timing_matrix": true,
+  "screenshot_sha256": "e69a75203e8d639bdd6062ac827b6606b2a33612a4d70a3f1e5991dc88f016c2",
+  "quit": {
+    "seconds_until_all_gone": 15,
+    "exited_after_s": {
+      "clio-core:39072": 9,
+      "other:24052": 9,
+      "server:30796": 10.1,
+      "other:53932": 10.1,
+      "desktop:29028": 13.9,
+      "other:46436": 13.9,
+      "launcher:18304": 13.9,
+      "other:20272": 13.9,
+      "other:380": 15,
+      "other:33104": 15,
+      "other:45632": 15,
+      "other:21540": 15,
+      "other:24872": 15,
+      "other:47844": 15
+    },
+    "left_running": []
+  },
+  "cleanup": {
+    "driver_survivors": [],
+    "driver_created": "2026-10-29T04:02:40.3875353Z",
+    "survivors": [],
+    "driver_pid": 49408,
+    "exit_code": 0,
+    "forced_application_processes": []
+  },
+  "method": "Separate run using the real Maximize or restore title-bar button, visible conversation links and an actual link click; no model configured",
+  "quit_log": [
+    "INFO:     127.0.0.1:58482 - \"POST /v1/infrastructure/desktop-exit HTTP/1.1\" 200 OK",
+    "INFO:     127.0.0.1:58483 - \"POST /v1/desktop/shutdown HTTP/1.1\" 202 Accepted",
+    "INFO:     Shutting down",
+    "ERROR:    Cancel 1 running task(s), timeout graceful shutdown exceeded",
+    "INFO:     Waiting for application shutdown.",
+    "asyncio.exceptions.CancelledError: Task cancelled, timeout graceful shutdown exceeded",
+    "sidecar-progress: backend exited; starting crash cleanup",
+    "sidecar-progress: crash cleanup completed",
+    "sidecar-progress: crash cleanup helper exited"
+  ]
+}

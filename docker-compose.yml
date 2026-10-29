@@ -4,12 +4,7 @@
 #   docker compose up clio-web         # web UI  → http://localhost:8080
 #   docker compose --profile api up    # headless backend (API/SSE) → :8100  (scale-out)
 #
-# The interactive TUI is not a service (a containerised TUI needs a real tty);
-# run it directly instead:
-#   docker run -it --rm \
-#     -e CLIO_LM_API_BASE=http://host.docker.internal:1234/v1 \
-#     ghcr.io/iowarp/clio-tui:latest
-#
+# The legacy TUI is frozen and unsupported; use Web or the API.
 # Point CLIO at your LM: override CLIO_LM_* (defaults assume LM Studio on the host).
 services:
   # Path (b)/(c): self-contained web UI + bundled backend — the quick-start.

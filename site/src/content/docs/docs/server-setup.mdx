@@ -7,6 +7,8 @@ import { Aside, CardGrid, LinkCard, TabItem, Tabs } from '@astrojs/starlight/com
 
 This reference is for people installing a CLIO service, using a terminal, or managing a lab deployment. For the usual routes, follow [Install CLIO](/docs/install/). A service is the part of CLIO that reads files and runs tools; Desktop and the browser connect to it.
 
+**The legacy TUI is frozen and unsupported as of 0.9.5.1.** Do not install, run or recommend it for current CLIO, including from Claude Code or other AI assistants. New releases do not publish TUI binaries or Docker images. The source is retained for a future upgrade. Use Desktop or Web instead.
+
 ## Desktop app
 
 The desktop installers on each [release](https://github.com/iowarp/clio-agent/releases/latest) include the CLIO service: their file names contain `-bundled`. The release also carries files without `-bundled`; the desktop app uses those to update itself, and they are not meant to be installed by hand.
@@ -31,7 +33,7 @@ CLIO currently uses an ad-hoc app signature, not Apple Developer ID notarization
 
 ## Install script
 
-The script installs the CLIO service, a terminal UI, a web UI bundle, and the `clio` command. It needs `curl` (or PowerShell on Windows). It installs `uv` into the launcher folder when `uv` is missing, and `uv` provides Python; it does not need git, Go or administrator rights.
+The script installs the CLIO service, a Web UI bundle, and the `clio` command. It needs `curl` (or PowerShell on Windows). It installs `uv` into the launcher folder when `uv` is missing, and `uv` provides Python; it does not need git, Go or administrator rights.
 
 <Tabs syncKey="os">
 <TabItem label="macOS and Linux">
@@ -66,7 +68,7 @@ The first start is slower than later ones. See [Connect a model](/docs/connect-a
 |---|---|
 | none | the latest stable release, from PyPI, with the versions locked by that release |
 | `--dev` | the newest release, betas included |
-| `--version <version>` | one release, by its PyPI version, for example `0.9.5` |
+| `--version <version>` | one release, by its PyPI version, for example `0.9.5.1` |
 | `--source` | the source on `main`, with the versions it pins; needs git |
 | `--dev --source` | the source on `develop` |
 | `--ref <branch, tag or commit>` | the source at that point |
@@ -93,7 +95,7 @@ PowerShell also accepts `-Source`, `-Version`, `-Ref` and `-Desktop`.
 </TabItem>
 </Tabs>
 
-Run from inside a clone of the repository (`./install/install.sh --source`), the script installs that checkout in place, on whatever branch it is. The terminal UI is built from source when Go 1.26 or newer is installed; without Go, the installer says so and installs the rest.
+Run from inside a clone of the repository (`./install/install.sh --source`), the script installs that checkout in place, on whatever branch it is. Source installs provide the service without building a frontend. Follow the [contributor guide](/docs/contributing/) to build Web or Desktop; the frozen TUI is not built.
 
 Running the script again over an installation upgrades or repairs it and keeps your settings.
 
@@ -107,11 +109,10 @@ Running the script again over an installation upgrades or repairs it and keeps y
 Inside the prefix:
 
 - The `clio-agent` service, in its own virtual environment at `clio-agent/.venv`.
-- The terminal UI binary for your OS and architecture.
 - The web UI bundle, unpacked to `clio-agent/web`.
 - An uninstall script.
 
-If `uv` is present, the script also installs `clio-kit` (version 2.10.6) as a uv tool. Marketplace plugins use it to launch their tool servers.
+If `uv` is present, the script also installs `clio-kit` (version 2.11.1) as a uv tool. Marketplace plugins use it to launch their tool servers.
 
 ### Script environment variables
 
@@ -128,19 +129,13 @@ Use the same `CLIO_PREFIX` and `CLIO_BIN_DIR` when you [uninstall](/docs/uninsta
 
 ## Docker
 
-Three images are published to the GitHub Container Registry on each release, tagged with the version and `latest`.
+Two images are published to the GitHub Container Registry on each release, tagged with the version and `latest`.
 
 | Image | What it is | Run it |
 |---|---|---|
 | `ghcr.io/iowarp/clio-web` | Backend plus the web UI | `docker run --rm -p 8080:80 ghcr.io/iowarp/clio-web:latest`, then open http://localhost:8080 |
 | `ghcr.io/iowarp/clio-api` | Headless backend on port 8100, for scripts and other clients | `docker run --rm -p 8100:8100 ghcr.io/iowarp/clio-api:latest` |
-| `ghcr.io/iowarp/clio-tui` | The terminal UI with a bundled backend; needs a terminal (`-it`) | See below |
-
-```sh
-docker run -it --rm \
-  -e CLIO_LM_API_BASE=http://host.docker.internal:1234/v1 \
-  ghcr.io/iowarp/clio-tui:latest
-```
+The historical TUI image is frozen and unsupported; it is not published for 0.9.5.1.
 
 ### Docker Compose
 
@@ -169,11 +164,11 @@ If you open the web UI by a name other than `localhost`, such as a LAN address o
 If you only want the backend, for example to serve the API or to attach a desktop app, install it as a persistent uv tool:
 
 ```sh
-uv tool install --python 3.13 --with dspy==3.4.0 --with fastmcp==4.0.0b5 --with fastmcp-slim==4.0.0b5 --with fastmcp-tasks==4.0.0b5 clio-agent==0.9.4.24
+uv tool install --python 3.14 --with dspy==3.4.0 --with fastmcp==4.1.2 --with fastmcp-tasks==4.1.2 --with mcp==2.2.0 clio-agent==0.9.5.1
 clio-agent serve
 ```
 
-The extra `--with` pins are required: CLIO depends on specific prerelease versions of two libraries, and uv needs them named explicitly. Use `uv tool upgrade clio-agent` to upgrade later. This path does not include the terminal UI or the `clio` command.
+The extra `--with` pins select the verified SDK roots used by CLIO's installers. Use `uv tool upgrade clio-agent` to upgrade later. This path installs the backend without the Web bundle or the `clio` launcher.
 
 ## From source
 

@@ -1,16 +1,16 @@
 # CLIO launcher + server lifecycle manager (Windows / PowerShell).
 #
 # `clio` with no arguments boots the clio-agent server (if not already
-# up) and attaches the gact TUI. The subcommands mirror `gact agent *`:
-# they let you manage the backing server without hunting PIDs.
+# up) and opens Web. The legacy TUI is frozen and unsupported. The subcommands
+# manage the backing server without hunting PIDs.
 #
-#   clio                 ensure server is up, then attach the TUI
+#   clio                 ensure server is up, then open Web
 #   clio web | --web     ensure server is up, then open the web UI in a browser
-#   clio start           start the server (no TUI)
+#   clio start           start the headless server
 #   clio stop            stop the server
 #   clio restart         stop then start
 #   clio status | ps     PID / port / health
-#   clio logs [N]        tail the server + gact stderr logs
+#   clio logs [N]        tail server logs
 #   clio doctor          check prerequisites and install layout
 #   clio sandbox status  show the OS write-fence (sandbox) status row
 #   clio sandbox setup   provision the OS write fence (one UAC prompt; idempotent re-run no-ops)
@@ -58,11 +58,6 @@ $ServerLog = Join-Path $ClioState 'clio-server.log'
 $ServerErr = Join-Path $ClioState 'clio-server.err.log'
 $GactLog   = Join-Path $ClioState 'gact-stderr.log'
 $ServerBin = Join-Path $Prefix 'clio-agent\.venv\Scripts\clio-agent.exe'
-$GactBin   = Join-Path $Prefix 'gact.exe'
-# The Go TUI white-labels purely from GACT_BRAND_NAME at runtime (no brand root /
-# brand.json read anymore; web+desktop read that at build time via
-# brand.config.local.json). Override by setting GACT_BRAND_NAME yourself.
-$ClioBrandName = if ($env:GACT_BRAND_NAME) { $env:GACT_BRAND_NAME } else { 'CLIO' }
 $WebDir    = Join-Path $Prefix 'clio-agent\web'
 
 function Say  ($m) { Write-Host "==> $m" -ForegroundColor Green }
@@ -213,7 +208,7 @@ function Invoke-Doctor {
     Write-Host "CLIO doctor"
     Write-Host "  prefix:       $Prefix"
     if (Test-Path $ServerBin) { Write-Host "  server bin:   ok" } else { Write-Host "  server bin:   MISSING"; $bad = 1 }
-    if (Test-Path $GactBin)   { Write-Host "  gact bin:     ok" } else { Write-Host "  gact bin:     MISSING"; $bad = 1 }
+    Write-Host "  frontend:     Web / Desktop (legacy TUI frozen and unsupported)"
     if (Test-Health) { Write-Host "  port ${Port}:    server healthy" } else { Write-Host "  port ${Port}:    free / no server" }
     $launcher = Join-Path $BinDir 'clio.cmd'
     if (Test-Path $launcher) { Write-Host "  launcher:     $launcher" } else { Write-Host "  launcher:     not in $BinDir" }
@@ -230,11 +225,7 @@ function Invoke-Report {
     Write-Host "powershell: $($PSVersionTable.PSVersion)"
     Write-Host "prefix:     $Prefix"
     Write-Host "port:       $Port"
-    if (Test-Path $GactBin) {
-        Write-Host "gact:       $((& $GactBin version) -join ' ')"
-    } else {
-        Write-Host "gact:       (binary missing)"
-    }
+    Write-Host "frontend:   Web / Desktop; legacy TUI frozen and unsupported"
     $pyproj = Join-Path $Prefix 'clio-agent\pyproject.toml'
     if (Test-Path $pyproj) {
         $verLine = (Get-Content $pyproj | Where-Object { $_ -match '^version\s*=' } | Select-Object -First 1)
@@ -256,7 +247,7 @@ function Write-Completion ($shell) {
 @'
 Register-ArgumentCompleter -CommandName clio -ScriptBlock {
     param($wordToComplete, $commandAst, $cursorPosition)
-    @('web','start','stop','restart','status','ps','logs','sandbox','doctor','report','completion','uninstall','attach','help') |
+    @('web','start','stop','restart','status','ps','logs','sandbox','doctor','report','completion','uninstall','help') |
         Where-Object { $_ -like "$wordToComplete*" } |
         ForEach-Object { [System.Management.Automation.CompletionResult]::new($_, $_, 'ParameterValue', $_) }
 }
@@ -290,27 +281,16 @@ if ($Command -eq "" -and $Rest.Count -gt 0 -and ($Rest[0] -eq "--web" -or $Rest[
     $Command = "web"
     if ($Rest.Count -gt 1) { $Rest = $Rest[1..($Rest.Count - 1)] } else { $Rest = @() }
 }
+if ($Command -eq "" -and $Rest.Count -gt 0 -and $Rest[0] -in @("--tui", "-tui")) {
+    $Command = "tui"
+}
 
 switch ($Command) {
-    { $_ -eq "" -or $_ -eq "attach" } {
-        if (-not (Start-Server)) { exit 1 }
-        $env:GACT_BACKEND = "http://127.0.0.1:$Port"
-        $env:GACT_BRAND_NAME = $ClioBrandName
-        # Run gact attached to this console (stdout stays on the
-        # terminal so the TUI renders) but capture its stderr to a log
-        # so Go panics survive for bug reports instead of scrolling away.
-        $spArgs = @{
-            FilePath              = $GactBin
-            NoNewWindow           = $true
-            Wait                  = $true
-            RedirectStandardError = $GactLog
-            PassThru              = $true
-        }
-        if ($Rest.Count -gt 0) { $spArgs['ArgumentList'] = $Rest }
-        $proc = Start-Process @spArgs
-        exit $proc.ExitCode
+    { $_ -in @("attach", "tui", "--tui") } {
+        Err "The TUI is frozen and unsupported in CLIO 0.9.5.1. Use CLIO Desktop or clio web."
+        exit 2
     }
-    { $_ -eq "web" -or $_ -eq "--web" } {
+    { $_ -eq "" -or $_ -eq "web" -or $_ -eq "--web" } {
         if (-not (Test-Path (Join-Path $WebDir 'index.html')) -and -not $env:CLIO_WEB_DIR) {
             Err "web bundle not found at $WebDir"
             Err "reinstall CLIO with the web bundle, or set CLIO_WEB_DIR to a built web dist"

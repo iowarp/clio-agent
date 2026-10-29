@@ -147,6 +147,82 @@ def test_renderer_probe_uses_and_cleans_an_exclusive_profile_on_failure(
     assert all(not profile.parent.exists() for profile in profiles)
 
 
+@pytest.mark.parametrize("system,expected_attempts", [("Windows", 2), ("Linux", 1), ("Darwin", 1)])
+def test_renderer_probe_timeout_has_one_windows_recovery(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, system: str, expected_attempts: int
+) -> None:
+    """Only a native Windows timeout can retry, after the first profile is retired."""
+    from urllib.parse import unquote, urlparse
+
+    profiles: list[Path] = []
+
+    def probe(command: list[str], **kwargs: Any) -> str:
+        path = unquote(urlparse(command[1].split("=", 1)[1]).path)
+        if path.startswith("/") and len(path) > 2 and path[2] == ":":
+            path = path[1:]
+        profile = Path(path)
+        assert profile.parent.is_dir()
+        assert all(not previous.parent.exists() for previous in profiles)
+        assert kwargs["timeout"] == 30
+        profiles.append(profile)
+        if len(profiles) == 1:
+            raise DocumentError("soffice.com exceeded 30 seconds") from subprocess.TimeoutExpired(
+                command, 30
+            )
+        return "LibreOffice 26.2.6"
+
+    monkeypatch.setattr(office.platform, "system", lambda: system)
+    monkeypatch.setattr(office, "run", probe)
+    if system == "Windows":
+        office._verify_office(tmp_path / "soffice.com", cwd=tmp_path)
+    else:
+        with pytest.raises(DocumentError, match="exceeded 30 seconds"):
+            office._verify_office(tmp_path / "soffice.com", cwd=tmp_path)
+    assert len(profiles) == expected_attempts
+    assert len(set(profiles)) == expected_attempts
+    assert all(not profile.parent.exists() for profile in profiles)
+
+
+def test_renderer_probe_persistent_windows_timeout_still_fails(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    """A second timeout never becomes a successful installation or an endless retry."""
+    calls: list[list[str]] = []
+
+    def timeout(command: list[str], **kwargs: Any) -> str:
+        assert kwargs["timeout"] == 30
+        calls.append(command)
+        raise DocumentError("soffice.com exceeded 30 seconds") from subprocess.TimeoutExpired(
+            command, 30
+        )
+
+    monkeypatch.setattr(office.platform, "system", lambda: "Windows")
+    monkeypatch.setattr(office, "run", timeout)
+    with pytest.raises(DocumentError, match="exceeded 30 seconds") as caught:
+        office._verify_office(tmp_path / "soffice.com", cwd=tmp_path)
+    assert isinstance(caught.value.__cause__, subprocess.TimeoutExpired)
+    assert len(calls) == 2
+    assert calls[0][1] != calls[1][1]
+    assert caplog.text.count("reason=office_probe_timeout_retry") == 1
+
+
+def test_renderer_probe_windows_non_timeout_failure_is_not_retried(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Recovery must not hide an executable failure or treat it as a cold-start timeout."""
+    calls: list[list[str]] = []
+
+    def fail(command: list[str], **kwargs: Any) -> str:
+        calls.append(command)
+        raise DocumentError("soffice.com exited 1: invalid installation")
+
+    monkeypatch.setattr(office.platform, "system", lambda: "Windows")
+    monkeypatch.setattr(office, "run", fail)
+    with pytest.raises(DocumentError, match="invalid installation"):
+        office._verify_office(tmp_path / "soffice.com", cwd=tmp_path)
+    assert len(calls) == 1
+
+
 def test_debian_archive_parser_reads_real_data_member() -> None:
     payload = b"real tar payload"
     header = (
@@ -193,6 +269,70 @@ def test_profile_cleanup_retries_transient_windows_handles(
     monkeypatch.setattr(process.time, "sleep", lambda duration: None)
     process._cleanup_profile(profile)  # type: ignore[arg-type]
     assert profile.attempts == 3
+
+
+@pytest.mark.parametrize("winerror", [5, 32])
+def test_publish_image_retries_only_transient_windows_handles(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, winerror: int
+) -> None:
+    """A verified image can be renamed once a briefly retained native handle closes."""
+    image, root = tmp_path / "image", tmp_path / "installed"
+    image.mkdir()
+    (image / "verified").write_text("preserved")
+    original = Path.rename
+    calls = 0
+
+    def rename(path: Path, target: Path) -> Path:
+        nonlocal calls
+        calls += 1
+        if calls < 3:
+            error = OSError("handle still open")
+            error.winerror = winerror
+            raise error
+        return original(path, target)
+
+    monkeypatch.setattr(office.platform, "system", lambda: "Windows")
+    monkeypatch.setattr(Path, "rename", rename)
+    monkeypatch.setattr(office.time, "sleep", lambda _: None)
+    office._publish_image(image, root)
+    assert calls == 3
+    assert (root / "verified").read_text() == "preserved"
+
+
+@pytest.mark.parametrize(
+    "system,winerror,attempts", [("Windows", 5, 20), ("Windows", 87, 1), ("Linux", 5, 1)]
+)
+def test_publish_image_persistent_or_unrelated_error_still_fails(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, system: str, winerror: int, attempts: int
+) -> None:
+    """No permission bypass, unbounded retry or cross-platform masking is allowed."""
+    calls = 0
+
+    def rename(path: Path, target: Path) -> Path:
+        nonlocal calls
+        calls += 1
+        error = OSError("cannot move verified image")
+        error.winerror = winerror
+        raise error
+
+    monkeypatch.setattr(office.platform, "system", lambda: system)
+    monkeypatch.setattr(Path, "rename", rename)
+    monkeypatch.setattr(office.time, "sleep", lambda _: None)
+    with pytest.raises(OSError, match="cannot move"):
+        office._publish_image(tmp_path / "image", tmp_path / "installed")
+    assert calls == attempts
+
+
+def test_publish_image_never_overwrites_an_existing_cache(tmp_path: Path) -> None:
+    """A competing/incomplete cache needs an explicit repair, never replacement."""
+    image, root = tmp_path / "image", tmp_path / "installed"
+    image.mkdir()
+    root.mkdir()
+    (root / "keep").write_text("existing")
+    with pytest.raises(DocumentError, match="Incomplete renderer cache"):
+        office._publish_image(image, root)
+    assert (root / "keep").read_text() == "existing"
+    assert image.exists()
 
 
 def test_conversion_profile_uses_allowed_temp_instead_of_nested_artifact_path(

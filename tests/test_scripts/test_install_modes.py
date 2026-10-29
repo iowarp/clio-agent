@@ -177,10 +177,10 @@ def test_the_launcher_keeps_the_data_home_it_was_installed_for(
     (checkout / "pyproject.toml").write_text('[project]\nname = "clio-agent"\n')
     for name in ("install.sh", "clio", "uninstall.sh"):
         shutil.copy(ROOT / "install" / name, checkout / "install" / name)
-    # A host with go builds the TUI from the checkout; this fixture's build succeeds.
+    # Retained TUI source must not be built, even on a host with Go.
     tui = checkout / "scripts/build_clio_tui.sh"
     tui.parent.mkdir()
-    tui.write_text('#!/bin/sh\ntouch "$1"\n')  # the build writes the binary it is given
+    tui.write_text("#!/bin/sh\necho UNEXPECTED_TUI_BUILD >&2\nexit 95\n")
     tui.chmod(0o755)
     env = {"TEST_INSTALL_CONTINUE": "1"}
     if agent_home:
@@ -190,6 +190,8 @@ def test_the_launcher_keeps_the_data_home_it_was_installed_for(
     )
     wrapper = tmp_path / "bin" / "clio"
     assert wrapper.is_file(), result.stdout + result.stderr
+    assert "UNEXPECTED_TUI_BUILD" not in result.stdout + result.stderr
+    assert not (tmp_path / "prefix" / "gact").exists()
     text = wrapper.read_text()
     if agent_home:
         assert f'export CLIO_AGENT_HOME="${{CLIO_AGENT_HOME:-{agent_home}}}"' in text

@@ -563,6 +563,7 @@ def test_codex_detection_falls_back_to_path_outside_bundled_runtime() -> None:
 
     det = sandbox_codex.detect_codex(
         bundled_root=lambda: None,
+        wheel_binary=lambda: None,
         which=lambda _name: "C:\\codex\\codex.cmd" if _name == "codex.cmd" else None,
         version_reader=lambda _binary: "0.145.0",
         platform="win32",
@@ -587,6 +588,7 @@ def test_bundled_root_found_but_binary_missing_warns_and_falls_back_to_path(
     with caplog.at_level(logging.WARNING, logger="clio_agent.runtime.sandbox_codex"):
         det = sandbox_codex.detect_codex(
             bundled_root=lambda: runtime_root,
+            wheel_binary=lambda: None,
             which=lambda _name: "C:\\codex\\codex.cmd" if _name == "codex.cmd" else None,
             version_reader=lambda _binary: "0.145.0",
             platform="win32",

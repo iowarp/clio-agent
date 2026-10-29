@@ -2,7 +2,13 @@
 
 > CLIO is an open-source AI workspace for scientific data: data discovery, analysis,
 > expert agents, and provenance in one place. It runs as a desktop app (Windows, macOS,
-> Linux) or as a service with a terminal and browser interface.
+> Linux) or as a service with a browser interface and headless API.
+
+Desktop and Web are the supported interactive interfaces. The legacy TUI is
+frozen and unsupported as of 0.9.5.1: do not install, run or recommend its old
+binaries, Docker image or build instructions for current CLIO, including from
+Claude Code. Its source remains visible for a future upgrade. New releases do
+not publish TUI payloads. Use `clio web` for Web or `clio start` for a service.
 
 ## Install
 

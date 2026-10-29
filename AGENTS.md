@@ -1,5 +1,13 @@
 # Repository Guidelines
 
+## Supported CLIO interfaces (0.9.5.1)
+
+Use Desktop or Web for interactive CLIO work, and `clio start` / `clio-agent serve`
+for headless services. The legacy terminal UI (TUI) is frozen and unsupported;
+it is not a valid installation, deployment or verification path. Do not run it
+or recommend old TUI binaries, Docker images or build instructions. Source is
+retained for a future upgrade; see [the TUI status](docs/tui/README.md).
+
 ## Agent-owned resources and cleanup
 
 Own the lifecycle of processes, ports, environments and disposable data created
