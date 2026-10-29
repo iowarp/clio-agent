@@ -24,6 +24,8 @@ TUI/HTTP surface aren't tracked here.
   when the retry cannot verify the renderer.
 - Retry briefly when Windows retains handles on the verified Office staging
   image; fail explicitly if it still cannot be moved into the cache.
+- Overlap Windows sandbox detection and the orphan census while retaining fence
+  selection before agent startup and the protected-execution preparation barrier.
 
 ## [0.9.5] - 2026-10-28
 
