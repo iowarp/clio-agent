@@ -176,3 +176,12 @@ Captures are not in git. The bundle is one zip on Eagle, holding this run only:
 - Commits: clio-agent 8e4f58d1fd, gact-tui 658f60c345, marketplace 85a1215269, connector 95ab2acd6f (wheel sha256 bb8d1d033dc0..., local changes: M pyproject.toml).
 - Model: `ibm-granite/granite-4.2-8b` at `a7042144125ce5ae64f89610e8289647fc000b9a`.
 - Descriptor check: 6 of 6 descriptors resolve to a copied capture with matching bytes and sha256.
+
+## Attention replay bundle: Polaris job 7795948, B
+
+- Path: `/lus/eagle/projects/GenesisHackathonOct26/jcernuda/clio-polaris-2026-10/exports/attention-replay-7795948-B/` (906,902,947 bytes); zip `/lus/eagle/projects/GenesisHackathonOct26/jcernuda/clio-polaris-2026-10/exports/attention-replay-7795948-B.zip` (327,218,470 bytes). Not in git.
+- Sessions: `chain_B` = `sess_4bada8ecad38`, `chain_B_spotter1` = `sess_a10d38d9e602ac91b3b6b5f2d4fd6ae6`
+- 9 Flowcept decode_attention documents (all of the job's), 6 captures copied byte-exact for these sessions.
+- Commits: clio-agent a1c5e48756, gact-tui 658f60c345, marketplace 85a1215269, connector 95ab2acd6f (wheel sha256 bb8d1d033dc0..., local changes: M pyproject.toml).
+- Model: `ibm-granite/granite-4.2-8b` at `a7042144125ce5ae64f89610e8289647fc000b9a`.
+- Descriptor check: 6 of 6 descriptors resolve to a copied capture with matching bytes and sha256.
