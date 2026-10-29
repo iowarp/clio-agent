@@ -35,7 +35,8 @@ def service_at(path: Path) -> PluginService:
         "    flow = Flow('react', setting='kept')\n"
     )
     store = PluginStore(path / "store")
-    store.install(str(market), trust=True)
+    store.install(str(market))
+    store.trust("lab")
     return PluginService(store)
 
 
@@ -43,7 +44,8 @@ def restore(raw: bytes, root: Path, service: PluginService) -> PluginService:
     """Install an unpacked backup under a different marketplace name."""
     with zipfile.ZipFile(io.BytesIO(raw)) as archive:
         archive.extractall(root)
-    service.store.install(str(root), name="restored", trust=True)
+    service.store.install(str(root), name="restored")
+    service.store.trust("restored")
     return service
 
 
