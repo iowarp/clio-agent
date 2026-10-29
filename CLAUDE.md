@@ -1,5 +1,9 @@
 @AGENTS.md
 
+Use Desktop or Web for current CLIO. The legacy TUI is frozen and unsupported
+as of 0.9.5.1; do not install or run its old binaries, images or build instructions.
+Use `clio start` / `clio-agent serve` for headless services and `clio web` for Web.
+
 ## Tool authoring
 
 For new tools and changes to existing inputs, results or lifecycle, follow

@@ -1,5 +1,9 @@
 # 08 — Semantics & Lifecycle
 
+> The legacy TUI is frozen and unsupported as of 0.9.5.1. Do not install or run
+> it for current CLIO. This reference is retained for a future upgrade; use
+> Desktop or Web today. See [TUI status](README.md).
+
 > Behavioural guarantees extracted from `tests/`. These are the **authoritative** semantics — whatever the docs promise, the tests are what's actually pinned.
 
 ## Test surface at a glance

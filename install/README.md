@@ -1,4 +1,9 @@
-# One-line install
+# CLIO installer reference
+
+For Desktop downloads and guided setup, start at **[clio.iowarp.ai](https://clio.iowarp.ai/)**.
+
+**The legacy TUI is frozen and unsupported as of 0.9.5.1.** Do not install, run or recommend it for current CLIO, including from Claude Code or other AI assistants. New releases do not publish TUI binaries or Docker images. The source is retained for a future upgrade. Use Desktop or Web instead.
+
 
 ## Linux / macOS
 
@@ -24,9 +29,7 @@ Windows 10/11).
 
 - `clio-agent` (server, Python) — latest from **PyPI**, installed into a
   managed virtualenv at `$CLIO_PREFIX/clio-agent/.venv`
-- `gact` (CLIO-branded TUI binary, Go) — matching `clio-agent`
-  **GitHub Release** asset for your OS/arch (`clio-tui-linux-amd64`,
-  `clio-tui-darwin-arm64`, `clio-tui-windows-amd64.exe`, …)
+- Web frontend — the matching release bundle, unpacked to `$CLIO_PREFIX/clio-agent/web`
 - `clio-kit` MCP launcher — provisioned via `uv tool install clio-kit==2.11.1`
   using the backend's selected Python (idempotent) when `uv` is present. Scientific
   servers use the released Kit's locked component environments. Marketplace packs
@@ -39,7 +42,7 @@ Windows 10/11).
   `uv tool dir --bin` is on PATH. `clio doctor` flags a missing launcher.
 
 - `clio` launcher — a small CLI that boots the server on `:17800` if
-  not already running, attaches the TUI, and manages the server
+  not already running, opens Web, and manages the server
   process (`clio start|stop|restart|status|logs|doctor|report`)
 - `uninstall` script — dropped into the install prefix
 
@@ -50,7 +53,7 @@ Windows 10/11).
 
 That's it — no `git`, no `go`.
 
-CLIO 0.9.5 selects standard Python 3.14 with the GIL enabled for source, release
+CLIO 0.9.5.1 selects standard Python 3.14 with the GIL enabled for source, release
 and bundled installations.
 
 ### Persistent backend-only install with uv
@@ -63,12 +66,12 @@ If you only need the long-running `clio-agent` backend, install it as a persiste
 tool rather than using the ephemeral `uvx` / `uv tool run` environment:
 
 ```sh
-uv tool install --python 3.14 --with dspy==3.4.0 --with fastmcp==4.1.2 --with fastmcp-tasks==4.1.2 --with mcp==2.2.0 clio-agent==0.9.5
+uv tool install --python 3.14 --with dspy==3.4.0 --with fastmcp==4.1.2 --with fastmcp-tasks==4.1.2 --with mcp==2.2.0 clio-agent==0.9.5.1
 clio-agent serve
 ```
 
 Use `uv tool upgrade clio-agent` for later upgrades. The full
-one-line installer remains the supported path when you also want the CLIO-branded TUI.
+one-line installer also provides the Web bundle and the `clio` service launcher.
 
 Beta selection is explicit: use a published beta's package version and its SDK
 roots, or select its public tag with the complete installer's `--version` option.
@@ -106,9 +109,7 @@ $u = 'https://raw.githubusercontent.com/iowarp/clio-agent/main/install/install.p
   The release list is GitHub Releases: the default takes the highest stable version,
   `--dev` the most recently published release.
 - **Source** uses `uv sync --locked` (a clone) or `uv sync` (your checkout, in place).
-  It needs `git`. The terminal UI is built when `go` 1.26+ is installed, in the
-  background while the other steps run (its log is printed if it fails); without
-  `go` the installer says so and the rest of CLIO is installed. Running a clone
+  It needs `git` and installs the service without building a frontend. Running a clone
   install again updates that clone to the requested ref and repairs what an
   interrupted run left; a clone with local changes to tracked files, another origin,
   or other files in its place is refused, with the cause and the fix, and left as is.
@@ -119,30 +120,27 @@ $u = 'https://raw.githubusercontent.com/iowarp/clio-agent/main/install/install.p
 **Pins** (deployments and CI): `--version <pypi version>` for a release,
 `--ref <branch, tag or commit>` for source. The older spellings still work:
 `CLIO_VERSION=<v>` is `--version <v>`, `CLIO_REF=<ref>` is `--source --ref <ref>`.
-For this release, `CLIO_VERSION=0.9.5 bash install/install.sh` selects the stable
-0.9.5 frontend and backend.
-`GACT_REF` builds the TUI from another gact-tui ref (source only); `GACT_VERSION`
-remains a legacy escape hatch for an alternate TUI release asset, and
-`CLIO_INSTALLER_REF` for a different launcher-script ref.
+For this release, `CLIO_VERSION=0.9.5.1 bash install/install.sh` selects the stable
+0.9.5.1 frontend and backend.
+`GACT_REF` and `GACT_VERSION` no longer select a frontend: the TUI is frozen.
+`CLIO_INSTALLER_REF` selects a different launcher-script ref.
 
 If a repository is private and an HTTPS clone returns 404, use SSH:
 `CLIO_GIT_PROTOCOL=ssh bash install/install.sh --source`.
 
 ## Using `clio`
 
-`clio` with no arguments is the original one-command UX: it ensures the
-server is up, then attaches the TUI. The subcommands mirror
-`gact agent *` so you can manage the backing server without hunting
-PIDs:
+`clio` with no arguments ensures the server is up, then opens Web.
+Use the lifecycle subcommands to manage a headless service:
 
 | Command | What it does |
 |---|---|
-| `clio` | ensure the server is up, then attach the TUI |
-| `clio start` | start the server (no TUI) |
+| `clio` | ensure the server is up, then open Web |
+| `clio start` | start the headless service |
 | `clio stop` | stop the server (kills the whole process tree) |
 | `clio restart` | stop, then start — clears stale/zombie launches |
 | `clio status` / `clio ps` | PID, port, health |
-| `clio logs [N]` | tail the server + gact stderr logs (default 40 lines) |
+| `clio logs [N]` | tail service logs (default 40 lines) |
 | `clio doctor` | check prerequisites and install layout |
 | `clio sandbox status` | show the OS write-fence (sandbox) status row |
 | `clio sandbox setup` | provision the OS write fence (one UAC prompt on Windows; idempotent) |
@@ -152,10 +150,8 @@ PIDs:
 | `clio help` | full help text |
 
 The server runs detached. Its stdout/stderr land in
-`$CLIO_PREFIX/clio-server.log` and `clio-server.err.log`; the TUI's
-stderr (Go panics included) lands in `$CLIO_PREFIX/gact-stderr.log`.
-`clio report` bundles all three plus version/environment info — that's
-the thing to attach when filing an issue.
+`$CLIO_PREFIX/clio-server.log` and `clio-server.err.log`. `clio report`
+includes diagnostics for filing an issue.
 
 ### OS write fence (sandbox)
 
@@ -224,7 +220,7 @@ overrides as the installer.
    (logs to `$CLIO_PREFIX/clio-server.log`) and records its PID in
    `$CLIO_PREFIX/clio-server.pid`.
 2. Sets `GACT_BACKEND=http://127.0.0.1:17800` and runs `gact`.
-3. The TUI pops the LM-provider config modal on first connect — pick a
+3. Web asks for a model provider on first connect — pick a
    preset (OpenAI / Anthropic / OpenRouter / LM Studio / Ollama /
    ALCF Sophia / Metis), paste an API key if needed, save.
 

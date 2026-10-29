@@ -10,7 +10,7 @@ on:
         description: >-
           Frozen-at-tag escape hatch: an already-released tag (e.g. v0.9.4.1)
           to regenerate the Tauri update manifest / release-completeness
-          check for, without re-running the desktop/web/tui/installers
+          check for, without re-running the desktop/web/installers
           builds. Checked out explicitly rather than relying on whichever
           ref this workflow run was launched from.
         required: true
@@ -111,47 +111,6 @@ jobs:
             install/clio.ps1 \
             install/uninstall.sh \
             install/uninstall.ps1
-
-  tui:
-    name: tui · ${{ matrix.goos }}-${{ matrix.goarch }}
-    if: github.event_name == 'push'
-    needs: release
-    runs-on: ubuntu-latest
-    permissions:
-      contents: write
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - { goos: linux, goarch: amd64, ext: "" }
-          - { goos: linux, goarch: arm64, ext: "" }
-          - { goos: darwin, goarch: amd64, ext: "" }
-          - { goos: darwin, goarch: arm64, ext: "" }
-          - { goos: windows, goarch: amd64, ext: ".exe" }
-          - { goos: windows, goarch: arm64, ext: ".exe" }
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          submodules: recursive
-      - uses: actions/setup-go@v5
-        with:
-          go-version: "1.26.x"
-      - name: Build CLIO TUI
-        env:
-          GOOS: ${{ matrix.goos }}
-          GOARCH: ${{ matrix.goarch }}
-          CGO_ENABLED: "0"
-        run: |
-          set -euo pipefail
-          out="clio-tui-${GOOS}-${GOARCH}${{ matrix.ext }}"
-          ./scripts/build_clio_tui.sh "$out"
-          sha256sum "$out" > "$out.sha256"
-      - name: Upload to draft release
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          out="clio-tui-${{ matrix.goos }}-${{ matrix.goarch }}${{ matrix.ext }}"
-          bash scripts/upload_release_assets.sh "$GITHUB_REF_NAME" "$out" "$out.sha256"
 
   web:
     name: web bundle
@@ -715,7 +674,7 @@ jobs:
 
   release-check:
     name: release completeness
-    needs: [release, desktop, web, tui, installers, macos-startup]
+    needs: [release, desktop, web, installers, macos-startup]
     # Run even when a matrix leg failed: a silently-dropped bundle (the v0.5.17
     # aarch64 bundled .dmg, #841 F-15) is exactly the case this must catch. Also
     # runs standalone on workflow_dispatch (needs: jobs above are then skipped,
@@ -775,7 +734,7 @@ jobs:
           set -euo pipefail
           gh release view "$TAG" --json body -q '.body' > /tmp/beta-notes.md
           if ! grep -q 'macOS Desktop qualification is deferred for this beta' /tmp/beta-notes.md; then
-            printf '\n## Platform availability\n\nmacOS Desktop qualification is deferred for this beta under explicit release approval. Missing macOS Desktop installers and updater entries will be added after their builds and packaged startup checks pass. Windows/Linux Desktop, web, CLI/TUI and Python packages remain available.\n' >> /tmp/beta-notes.md
+            printf '\n## Platform availability\n\nmacOS Desktop qualification is deferred for this beta under explicit release approval. Missing macOS Desktop installers and updater entries will be added after their builds and packaged startup checks pass. Windows/Linux Desktop, Web and Python packages remain available.\n' >> /tmp/beta-notes.md
             gh release edit "$TAG" --notes-file /tmp/beta-notes.md
           fi
       - name: Backstop release notes from CHANGELOG

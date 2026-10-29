@@ -1,4 +1,4 @@
-# Install and startup acceptance matrix (0.9.5)
+# Install and startup acceptance matrix (0.9.5 and 0.9.5.1)
 
 The acceptance bar for the 0.9.5 install and startup work (#1875, iowarp/gact-tui#691):
 three entry points, each measured cold and repeat, against upper limits. This page
@@ -64,10 +64,10 @@ Details:
 
 ## Result on Windows (2026-10-28)
 
-The authorized repair candidate now passes all six limits, and fresh bundled setup
-succeeds. The final matrix is in **Authorized Windows repairs and remeasurement**
-below. The initial develop baseline and unsuccessful candidates remain recorded.
-These repairs are on PR branches, not yet merged into develop.
+The initial develop baseline, authorized repairs and unsuccessful candidates remain
+recorded below. The latest **0.9.5.1 maintenance release cohort** completes setup and
+passes the agent and Desktop limits. Its cold source installation exceeds the
+original 180-second limit under the user's accepted approximately 200-second exception.
 
 **Initial baseline code:** source install and agent: clio-agent `c6cb5535`, with its pinned gact-tui
 `fa393da0`; bundled desktop: gact-tui `59a0c97c` and the same clio-agent production
@@ -387,6 +387,122 @@ retain the actual 932 × 1076 viewport. The cold AppLog API probe was too early;
 the fallback resolved the actual current private log. Repeat resolved it through
 the running app. [Bounded measurements and artifact identities](evidence/windows-stable-095-2026-10-28/matrix.json)
 retain both timings, backend checks, cleanup results and screenshot hashes.
+
+### Official v0.9.5 bundle verification (2026-10-28)
+
+The completed GitHub-built Windows bundle was also tested in a fresh private
+profile before publishing the GitHub release. The 532,200,590-byte NSIS asset
+`CLIO.Desktop_0.9.5_x64-setup-bundled.exe` has SHA-256
+`fe78087714ad1c5ad1b0484df85560771f3177c70c4b7319a749da1979bcb810`.
+Silent installation took 142.027 s and exited 0. The workspace was usable at
+50.0 s, but full managed-package verification failed at 82.4 s: the private
+LibreOffice `--version` probe exceeded its 30-second deadline. This is a failed
+setup qualification; the earlier local-build matrix does not override it.
+
+The same unchanged native verifier subsequently passed in about 2.5 s directly,
+through the desktop launcher, and with concurrent version probes in a new
+profile. The cold-start failure is intermittent. It is recorded on [#1887](https://github.com/iowarp/clio-agent/issues/1887).
+GitHub publication was cancelled while the release was still a draft. PyPI and
+container artifacts for 0.9.5 had already published, so the tag and those artifacts
+remain unchanged; the bounded Windows recovery is prepared as 0.9.5.1.
+
+### 0.9.5.1 maintenance release cohort (2026-10-28)
+
+**Code:** clio-agent `16e0de15c62f95a9be329b90602631dbd4b05561`, gact-tui
+`e025d306a3724511c75f2e4a1fd37fc30a254386`. Source and bundled runtime use the same
+CLIO production source. Later documentation changes do not change that source.
+The legacy TUI is frozen and unsupported; these installers do not build or download
+it, and new releases exclude its binaries and Docker image.
+
+**Machine:** Windows 11 Home, Ryzen 5 3600 (6 cores / 12 threads), 31.95 GiB RAM,
+953.87 GiB NVMe SSD, D: NTFS. This is the same desktop machine as above.
+
+| | Cold | Repeat | Limit | Pass |
+|---|---|---|---|---|
+| Install | 190.4 s | 24.5 s | 180 s | cold no (accepted exception) / repeat yes |
+| Agent | 26.6 s | 20.4 s | 30 s | yes |
+| Desktop | 42.2 s | 28.2 s | 60 s | yes |
+| *Desktop package install (`/S`)* | *181.3 s, exit 0* | *not measured* | | *setup succeeded* |
+
+The user explicitly accepted approximately 200 seconds for cold Windows source
+installation and deferred installer acceleration to future work. The original
+180-second limit remains unchanged. This is five timings within their limits and
+one accepted exception, with both source installations and fresh bundled setup
+successful. [Recorded results and provenance](evidence/windows-stable-0951-2026-10-28/matrix.json).
+
+- **Cold and repeat:** `install.ps1 -Dev -Source -Ref
+  codex/release-0951-office-startup-recovery`, timed with `Measure-Command`, used
+  a new `D:\cw\fp12` profile with empty HOME, USERPROFILE, LOCALAPPDATA, APPDATA,
+  CLIO_BIN_DIR and uv/Go/npm caches; CODEX_HOME matched HOME/.codex. Repeat reused
+  it. Both completed migrations and all managed-package checks, with exit 0.
+  Host Git and CPython 3.14.6 were available; the installer provisioned uv and its
+  environment. Codex 0.162.1 and matching native helpers came from CLIO's runtime.
+  Desktop used bundled Python 3.14.10. OS file caches and Defender reputation
+  caches were not reset after the earlier attempts.
+- **Store and agent:** the store was generated on Windows at `D:\cw\r7` in
+  428.1 s: 926 conversations and 94 open records. No model provider was configured.
+  The installed agent ran `migrate` before timing; private Core ports isolated it
+  from other workspaces. Both runs reported readiness `ready`, returned 30 of 926
+  conversations in 20/27 ms and opened the newest message page in 9/35 ms. The
+  server stopped gracefully in 7.049/5.597 s, with no forced cleanup or surviving
+  owned descendants.
+- **Windows protection cost:** cold source setup spent about 3.01 s preparing and
+  checking protected execution. Agent boot separately recorded fence selection
+  at 0.239/0.951 s and protected-execution preparation at 1.361/0.116 s. The
+  protected-execution barrier still precedes Core/tool construction. Independent
+  Windows fence detection and the orphan census now overlap; the census itself
+  still took 16.581/11.496 s. These are overlapping phases, not additive timings.
+- **Desktop:** a fresh `D:\cw\d0952` target and `D:\cw\sp2` profile replaced only
+  the previous owned acceptance installation. Both launches used the same store
+  and verified readiness plus 30 of 926 conversations. Full managed-package
+  checks succeeded: 95.091 s cold, observed at 99.7 s after launch; 2.211 s repeat,
+  observed at 39.1 s. Composer timing alone was not treated as completed setup.
+  All observed application processes retired 11.9/11.3 s after Quit, without
+  harness-forced cleanup. Logs report backend exit followed by completed crash
+  cleanup; graceful backend settlement was not established by those logs.
+- **Screenshots and load:** the seven original timed captures are retained beside
+  the JSON, including [cold workspace](evidence/windows-stable-0951-2026-10-28/stable-desktop-cold-02-workspace.png)
+  and [repeat workspace](evidence/windows-stable-0951-2026-10-28/stable-desktop-repeat-04-before-quit.png).
+  Their actual 464 × 536 viewport has a collapsed sidebar and clipped starter
+  cards; the composer and model chooser are visible. Every timed phase followed
+  three quiet five-second samples; no independent build/test/render overlapped
+  its timer. A separate video render delayed the Desktop preflight until it ended.
+  Defender remained enabled with no exclusions. Source-install mean machine CPU
+  was 47.8%/54.0%, and NSIS mean CPU was 47.5%; these include the installation's own
+  work. Defender counter samples establish scanning activity, not exact elapsed
+  seconds attributable to scanning.
+
+A separate untimed run maximized the real window to 1872 × 1080, confirmed eight
+visible conversation links and opened the existing `interrupted 9` reference
+conversation. Its preserved request and expected interrupted response rendered
+without a model provider. [Screenshot](evidence/windows-stable-0951-2026-10-28/wide-history-opened-reference.png)
+and [UI verification](evidence/windows-stable-0951-2026-10-28/ui-followup.json)
+are retained separately from the timing matrix. That run's Quit logged an exceeded
+graceful-shutdown deadline before completed crash cleanup; all observed processes
+were gone after 15.0 s without harness-forced cleanup. This remains a #1887 follow-up.
+
+The unsigned local bundled NSIS is version `0.9.5+1` internally, public version
+`0.9.5.1`, SHA-256
+`8f85c97f68d09a8895a1d45cf630b2fb63c934880107f120b7eaacce824f7130`.
+Its relocated runtime passed real Core/store/API startup before packaging.
+One verified compiler helper required forced retirement after the build; the
+application receipts above contain no harness-forced termination.
+
+The Office repairs were also tested against real Windows processes: suspending
+the first version probe exercised the unchanged 30-second timeout and successful
+fresh-profile retry (33.48 s verification; pytest 34.58 s), with no harness-forced
+cleanup. A real Windows file handle held without delete sharing exercised bounded
+cache-publication recovery in 0.711 s, without changing permissions. Persistent
+verification/access failures still fail setup.
+
+An earlier maintenance cohort (`cb3a81f6`) measured install 201.0/26.0 s, agent
+35.3/24.8 s and Desktop 39.8/34.3 s. Its cold agent **failed** the 30-second limit;
+those results remain in the evidence rather than being relabelled as the final
+cohort. A separate earlier install deferred migrations because the default Core
+port belonged to another workspace; it is excluded from completed-install
+acceptance. An earlier Linux CI install also exceeded 180 s (246.8 s, including
+229.18 s Office preparation); current product source passed all 53 checks,
+including the unchanged Linux install budget. Findings remain tracked in #1887.
 
 ## The reference store
 

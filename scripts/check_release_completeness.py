@@ -2,7 +2,7 @@
 """Assert a clio-agent GH release carries every expected bundle.
 
 The ``clio-bundles.yml`` desktop matrix fans out lite + bundled installers
-across six targets, plus a web zip and the ``clio-tui-*`` binaries. Because
+across six targets, plus a Web zip. The legacy TUI is frozen and not shipped. Because
 ``fail-fast: false`` lets one matrix leg fail while the rest upload, a release
 can ship *silently incomplete* -- exactly what happened to ``v0.5.17``, which
 was missing its ``aarch64`` **bundled** ``.dmg`` (iowarp/clio-agent#841, F-15).
@@ -21,7 +21,7 @@ This check is also the PUBLISH GATE: the release stays a draft (never
 "latest") until it passes, and only then does ``github_release.py publish``
 flip it public. Anything a user or an installed client fetches through
 ``releases/latest`` -- the updater manifests, the installer scripts and
-launchers, the TUI binaries -- therefore belongs in :data:`EXPECTED_ASSETS`.
+launchers and the Web bundle -- therefore belongs in :data:`EXPECTED_ASSETS`.
 
 Run in CI (``release-check`` job) and locally::
 
@@ -82,13 +82,7 @@ EXPECTED_ASSETS: list[tuple[str, str]] = [
     ("lite AppImage sig (aarch64 Linux)", r"_aarch64\.AppImage\.sig$"),
     ("Tauri update manifest (bundled)", r"^latest\.json$"),
     ("Tauri update manifest (lite)", r"^latest-lite\.json$"),
-    # CLIO TUI binaries (one per OS/arch; installer scripts fetch these).
-    ("tui darwin-amd64", r"^clio-tui-darwin-amd64$"),
-    ("tui darwin-arm64", r"^clio-tui-darwin-arm64$"),
-    ("tui linux-amd64", r"^clio-tui-linux-amd64$"),
-    ("tui linux-arm64", r"^clio-tui-linux-arm64$"),
-    ("tui windows-amd64", r"^clio-tui-windows-amd64\.exe$"),
-    ("tui windows-arm64", r"^clio-tui-windows-arm64\.exe$"),
+    # The TUI is frozen; releases ship Desktop and Web.
     # Web SPA bundle (version-stamped zip).
     ("web bundle zip", r"^clio-web-.*\.zip$"),
     # Installer scripts + the `clio` launcher (installers job). install.sh /

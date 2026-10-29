@@ -12,7 +12,7 @@ CLIO is open source under the BSD 3-Clause license and is developed by the Gnosi
 | Repository | What it holds |
 |---|---|
 | [iowarp/clio-agent](https://github.com/iowarp/clio-agent) | The Python backend, the install scripts, Docker files, and this website (in `site/`) |
-| [iowarp/gact-tui](https://github.com/iowarp/gact-tui) | The workspace interfaces: terminal UI, web app, and desktop app |
+| [iowarp/gact-tui](https://github.com/iowarp/gact-tui) | The Web and Desktop workspace interfaces, plus frozen legacy TUI source |
 | [iowarp/clio-agent-marketplace](https://github.com/iowarp/clio-agent-marketplace) | The default marketplace of agents and plugins |
 
 The backend repository includes the other two as git submodules, pinned to released tags. Do not change a submodule pin in a feature pull request. Pins are updated as part of a release.
@@ -68,7 +68,7 @@ Run only one backend at a time against the same user configuration folder. See [
 
 ## The interfaces
 
-The terminal UI, web app, and desktop app live in [gact-tui](https://github.com/iowarp/gact-tui). Its repository has the build and test steps for each, so follow them there.
+Web and Desktop live in [gact-tui](https://github.com/iowarp/gact-tui). Follow its build and test steps for those interfaces. The retained legacy TUI is frozen and unsupported; it is not a current CLIO installation or verification path.
 
 ## Improve this website
 

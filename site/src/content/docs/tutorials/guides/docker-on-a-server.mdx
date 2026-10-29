@@ -53,7 +53,7 @@ The CLIO web image runs the backend and the web interface in one container. This
 
 CLIO has no account system. Anyone who can reach the port can use the workspace, so limit who can reach it.
 
-The repository also publishes `ghcr.io/iowarp/clio-api`, the headless API on port 8100 for other clients, and `ghcr.io/iowarp/clio-tui`, the terminal interface.
+The repository also publishes `ghcr.io/iowarp/clio-api`, the headless API on port 8100 for other clients. The legacy TUI image is frozen and unsupported; new releases do not publish it. Use Web or Desktop for interactive work.
 
 :::note[Captures needed]
 - The terminal showing `docker compose up clio-web` with the container running.

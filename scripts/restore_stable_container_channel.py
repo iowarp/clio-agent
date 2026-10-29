@@ -14,7 +14,7 @@ from urllib.error import HTTPError, URLError
 from urllib.parse import urlencode
 from urllib.request import Request, urlopen
 
-IMAGES = ("clio-api", "clio-web", "clio-tui")
+IMAGES = ("clio-api", "clio-web")
 MANIFEST_TYPES = (
     "application/vnd.oci.image.manifest.v1+json,"
     "application/vnd.docker.distribution.manifest.v2+json,"
@@ -142,7 +142,7 @@ def restore_latest(
 
 
 def main() -> None:
-    """Run an explicit GitHub-token-backed repair of the three stable channels."""
+    """Run an explicit GitHub-token-backed repair of the supported stable channels."""
 
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--version", required=True)

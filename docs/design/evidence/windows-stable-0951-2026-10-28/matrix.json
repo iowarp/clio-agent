@@ -1,0 +1,2093 @@
+{
+  "version": "0.9.5.1",
+  "measured_product_head": "16e0de15c62f95a9be329b90602631dbd4b05561",
+  "product_head_ci": {
+    "headRefOid": "16e0de15c62f95a9be329b90602631dbd4b05561",
+    "statusCheckRollup": [
+      {
+        "__typename": "CheckRun",
+        "completedAt": "2026-10-29T03:23:31Z",
+        "conclusion": "SUCCESS",
+        "detailsUrl": "https://github.com/iowarp/clio-agent/actions/runs/40811842347/job/123243724240",
+        "name": "native service lifecycle (ubuntu-latest)",
+        "startedAt": "2026-10-29T03:23:17Z",
+        "status": "COMPLETED",
+        "workflowName": "CI"
+      },
+      {
+        "__typename": "CheckRun",
+        "completedAt": "2026-10-29T03:26:41Z",
+        "conclusion": "SUCCESS",
+        "detailsUrl": "https://github.com/iowarp/clio-agent/actions/runs/40811842350/job/123243724084",
+        "name": "build \u00b7 clio-api",
+        "startedAt": "2026-10-29T03:23:17Z",
+        "status": "COMPLETED",
+        "workflowName": "Docker"
+      },
+      {
+        "__typename": "CheckRun",
+        "completedAt": "2026-10-29T03:25:19Z",
+        "conclusion": "SUCCESS",
+        "detailsUrl": "https://github.com/iowarp/clio-agent/actions/runs/40811842630/job/123243724761",
+        "name": "document runtime (glibc 2.28)",
+        "startedAt": "2026-10-29T03:23:17Z",
+        "status": "COMPLETED",
+        "workflowName": "Document runtime"
+      },
+      {
+        "__typename": "CheckRun",
+        "completedAt": "2026-10-29T03:33:34Z",
+        "conclusion": "SUCCESS",
+        "detailsUrl": "https://github.com/iowarp/clio-agent/actions/runs/40811842450/job/123243724753",
+        "name": "Startup on a long-lived store",
+        "startedAt": "2026-10-29T03:23:17Z",
+        "status": "COMPLETED",
+        "workflowName": "Install and startup matrix"
+      },
+      {
+        "__typename": "CheckRun",
+        "completedAt": "2026-10-29T03:39:34Z",
+        "conclusion": "SUCCESS",
+        "detailsUrl": "https://github.com/iowarp/clio-agent/actions/runs/40811842428/job/123243724334",
+        "name": "installed-startup (ubuntu-22.04, x86_64-unknown-linux-gnu, deb)",
+        "startedAt": "2026-10-29T03:23:18Z",
+        "status": "COMPLETED",
+        "workflowName": "Linux and Windows packaged startup"
+      },
+      {
+        "__typename": "CheckRun",
+        "completedAt": "2026-10-29T03:32:38Z",
+        "conclusion": "SUCCESS",
+        "detailsUrl": "https://github.com/iowarp/clio-agent/actions/runs/40811842386/job/123243724192",
+        "name": "build",
+        "startedAt": "2026-10-29T03:23:17Z",
+        "status": "COMPLETED",
+        "workflowName": "Pages"
+      },
+      {
+        "__typename": "CheckRun",
+        "completedAt": "2026-10-29T03:23:33Z",
+        "conclusion": "SUCCESS",
+        "detailsUrl": "https://github.com/iowarp/clio-agent/actions/runs/40811842419/job/123243724183",
+        "name": "installer-tests (ubuntu-latest)",
+        "startedAt": "2026-10-29T03:23:17Z",
+        "status": "COMPLETED",
+        "workflowName": "macOS packaged startup"
+      },
+      {
+        "__typename": "CheckRun",
+        "completedAt": "2026-10-29T03:23:48Z",
+        "conclusion": "SUCCESS",
+        "detailsUrl": "https://github.com/iowarp/clio-agent/actions/runs/40811842408/job/123243724139",
+        "name": "clio-schemas-export-check",
+        "startedAt": "2026-10-29T03:23:17Z",
+        "status": "COMPLETED",
+        "workflowName": "schema-check"
+      },
+      {
+        "__typename": "CheckRun",
+        "completedAt": "2026-10-29T03:23:55Z",
+        "conclusion": "SUCCESS",
+        "detailsUrl": "https://github.com/iowarp/clio-agent/actions/runs/40811842347/job/123243724248",
+        "name": "native service lifecycle (windows-latest)",
+        "startedAt": "2026-10-29T03:23:17Z",
+        "status": "COMPLETED",
+        "workflowName": "CI"
+      },
+      {
+        "__typename": "CheckRun",
+        "completedAt": "2026-10-29T03:26:38Z",
+        "conclusion": "SUCCESS",
+        "detailsUrl": "https://github.com/iowarp/clio-agent/actions/runs/40811842350/job/123243723932",
+        "name": "build \u00b7 clio-web",
+        "startedAt": "2026-10-29T03:23:17Z",
+        "status": "COMPLETED",
+        "workflowName": "Docker"
+      },
+      {
+        "__typename": "CheckRun",
+        "completedAt": "2026-10-29T03:41:04Z",
+        "conclusion": "SUCCESS",
+        "detailsUrl": "https://github.com/iowarp/clio-agent/actions/runs/40811842428/job/123243724679",
+        "name": "installed-startup (windows-latest, x86_64-pc-windows-msvc, nsis)",
+        "startedAt": "2026-10-29T03:23:18Z",
+        "status": "COMPLETED",
+        "workflowName": "Linux and Windows packaged startup"
+      },
+      {
+        "__typename": "CheckRun",
+        "completedAt": "2026-10-29T03:24:13Z",
+        "conclusion": "SUCCESS",
+        "detailsUrl": "https://github.com/iowarp/clio-agent/actions/runs/40811842419/job/123243724280",
+        "name": "installer-tests (windows-latest)",
+        "startedAt": "2026-10-29T03:23:17Z",
+        "status": "COMPLETED",
+        "workflowName": "macOS packaged startup"
+      },
+      {
+        "__typename": "CheckRun",
+        "completedAt": "2026-10-29T03:23:34Z",
+        "conclusion": "SUCCESS",
+        "detailsUrl": "https://github.com/iowarp/clio-agent/actions/runs/40811842419/job/123243724236",
+        "name": "installer-tests (macos-14)",
+        "startedAt": "2026-10-29T03:23:18Z",
+        "status": "COMPLETED",
+        "workflowName": "macOS packaged startup"
+      },
+      {
+        "__typename": "CheckRun",
+        "completedAt": "2026-10-29T03:23:14Z",
+        "conclusion": "SKIPPED",
+        "detailsUrl": "https://github.com/iowarp/clio-agent/actions/runs/40811842350/job/123243724990",
+        "name": "restore-stable-latest",
+        "startedAt": "2026-10-29T03:23:14Z",
+        "status": "COMPLETED",
+        "workflowName": "Docker"
+      },
+      {
+        "__typename": "CheckRun",
+        "completedAt": "2026-10-29T03:32:39Z",
+        "conclusion": "SKIPPED",
+        "detailsUrl": "https://github.com/iowarp/clio-agent/actions/runs/40811842386/job/123246604705",
+        "name": "deploy",
+        "startedAt": "2026-10-29T03:32:39Z",
+        "status": "COMPLETED",
+        "workflowName": "Pages"
+      },
+      {
+        "__typename": "CheckRun",
+        "completedAt": "2026-10-29T03:23:32Z",
+        "conclusion": "SUCCESS",
+        "detailsUrl": "https://github.com/iowarp/clio-agent/actions/runs/40811842347/job/123243724204",
+        "name": "filesystem-contract",
+        "startedAt": "2026-10-29T03:23:17Z",
+        "status": "COMPLETED",
+        "workflowName": "CI"
+      },
+      {
+        "__typename": "CheckRun",
+        "completedAt": "2026-10-29T03:24:56Z",
+        "conclusion": "SUCCESS",
+        "detailsUrl": "https://github.com/iowarp/clio-agent/actions/runs/40811842630/job/123243724988",
+        "name": "document-smoke (ubuntu-latest)",
+        "startedAt": "2026-10-29T03:23:17Z",
+        "status": "COMPLETED",
+        "workflowName": "Document runtime"
+      },
+      {
+        "__typename": "CheckRun",
+        "completedAt": "2026-10-29T03:25:45Z",
+        "conclusion": "SUCCESS",
+        "detailsUrl": "https://github.com/iowarp/clio-agent/actions/runs/40811842450/job/123243724544",
+        "name": "Crash test (kill -9 during flow-heavy work)",
+        "startedAt": "2026-10-29T03:23:17Z",
+        "status": "COMPLETED",
+        "workflowName": "Install and startup matrix"
+      },
+      {
+        "__typename": "CheckRun",
+        "completedAt": "2026-10-29T03:35:29Z",
+        "conclusion": "SUCCESS",
+        "detailsUrl": "https://github.com/iowarp/clio-agent/actions/runs/40811842419/job/123243724024",
+        "name": "build",
+        "startedAt": "2026-10-29T03:23:17Z",
+        "status": "COMPLETED",
+        "workflowName": "macOS packaged startup"
+      },
+      {
+        "__typename": "CheckRun",
+        "completedAt": "2026-10-29T03:25:11Z",
+        "conclusion": "SUCCESS",
+        "detailsUrl": "https://github.com/iowarp/clio-agent/actions/runs/40811842630/job/123243725003",
+        "name": "document-smoke (windows-latest)",
+        "startedAt": "2026-10-29T03:23:18Z",
+        "status": "COMPLETED",
+        "workflowName": "Document runtime"
+      },
+      {
+        "__typename": "CheckRun",
+        "completedAt": "2026-10-29T03:25:00Z",
+        "conclusion": "SUCCESS",
+        "detailsUrl": "https://github.com/iowarp/clio-agent/actions/runs/40811842630/job/123243725061",
+        "name": "document-smoke (macos-latest)",
+        "startedAt": "2026-10-29T03:23:18Z",
+        "status": "COMPLETED",
+        "workflowName": "Document runtime"
+      },
+      {
+        "__typename": "CheckRun",
+        "completedAt": "2026-10-29T03:28:01Z",
+        "conclusion": "SUCCESS",
+        "detailsUrl": "https://github.com/iowarp/clio-agent/actions/runs/40811842347/job/123243724247",
+        "name": "lint (3.12)",
+        "startedAt": "2026-10-29T03:23:17Z",
+        "status": "COMPLETED",
+        "workflowName": "CI"
+      },
+      {
+        "__typename": "CheckRun",
+        "completedAt": "2026-10-29T03:25:06Z",
+        "conclusion": "SUCCESS",
+        "detailsUrl": "https://github.com/iowarp/clio-agent/actions/runs/40811842450/job/123243724756",
+        "name": "Install script (ubuntu-latest)",
+        "startedAt": "2026-10-29T03:23:17Z",
+        "status": "COMPLETED",
+        "workflowName": "Install and startup matrix"
+      },
+      {
+        "__typename": "CheckRun",
+        "completedAt": "2026-10-29T03:37:09Z",
+        "conclusion": "SUCCESS",
+        "detailsUrl": "https://github.com/iowarp/clio-agent/actions/runs/40811842419/job/123247458344",
+        "name": "startup (macos-14)",
+        "startedAt": "2026-10-29T03:35:32Z",
+        "status": "COMPLETED",
+        "workflowName": "macOS packaged startup"
+      },
+      {
+        "__typename": "CheckRun",
+        "completedAt": "2026-10-29T03:24:19Z",
+        "conclusion": "SUCCESS",
+        "detailsUrl": "https://github.com/iowarp/clio-agent/actions/runs/40811842347/job/123243724189",
+        "name": "lint (3.13)",
+        "startedAt": "2026-10-29T03:23:17Z",
+        "status": "COMPLETED",
+        "workflowName": "CI"
+      },
+      {
+        "__typename": "CheckRun",
+        "completedAt": "2026-10-29T03:28:51Z",
+        "conclusion": "SUCCESS",
+        "detailsUrl": "https://github.com/iowarp/clio-agent/actions/runs/40811842450/job/123243724784",
+        "name": "Install script (macos-15)",
+        "startedAt": "2026-10-29T03:23:19Z",
+        "status": "COMPLETED",
+        "workflowName": "Install and startup matrix"
+      },
+      {
+        "__typename": "CheckRun",
+        "completedAt": "2026-10-29T03:36:46Z",
+        "conclusion": "SUCCESS",
+        "detailsUrl": "https://github.com/iowarp/clio-agent/actions/runs/40811842419/job/123247458315",
+        "name": "startup (macos-15)",
+        "startedAt": "2026-10-29T03:35:32Z",
+        "status": "COMPLETED",
+        "workflowName": "macOS packaged startup"
+      },
+      {
+        "__typename": "CheckRun",
+        "completedAt": "2026-10-29T03:25:01Z",
+        "conclusion": "SUCCESS",
+        "detailsUrl": "https://github.com/iowarp/clio-agent/actions/runs/40811842347/job/123243724284",
+        "name": "lint (3.14)",
+        "startedAt": "2026-10-29T03:23:17Z",
+        "status": "COMPLETED",
+        "workflowName": "CI"
+      },
+      {
+        "__typename": "CheckRun",
+        "completedAt": "2026-10-29T03:25:02Z",
+        "conclusion": "SUCCESS",
+        "detailsUrl": "https://github.com/iowarp/clio-agent/actions/runs/40811842450/job/123243724764",
+        "name": "Install script (windows-latest)",
+        "startedAt": "2026-10-29T03:23:17Z",
+        "status": "COMPLETED",
+        "workflowName": "Install and startup matrix"
+      },
+      {
+        "__typename": "CheckRun",
+        "completedAt": "2026-10-29T03:37:17Z",
+        "conclusion": "SUCCESS",
+        "detailsUrl": "https://github.com/iowarp/clio-agent/actions/runs/40811842419/job/123247458392",
+        "name": "startup (macos-26)",
+        "startedAt": "2026-10-29T03:35:32Z",
+        "status": "COMPLETED",
+        "workflowName": "macOS packaged startup"
+      },
+      {
+        "__typename": "CheckRun",
+        "completedAt": "2026-10-29T03:44:27Z",
+        "conclusion": "SUCCESS",
+        "detailsUrl": "https://github.com/iowarp/clio-agent/actions/runs/40811842347/job/123243724480",
+        "name": "check (3.12, shard 0)",
+        "startedAt": "2026-10-29T03:23:17Z",
+        "status": "COMPLETED",
+        "workflowName": "CI"
+      },
+      {
+        "__typename": "CheckRun",
+        "completedAt": "2026-10-29T03:25:26Z",
+        "conclusion": "SUCCESS",
+        "detailsUrl": "https://github.com/iowarp/clio-agent/actions/runs/40811842450/job/123243724864",
+        "name": "SSH deployment (Linux container)",
+        "startedAt": "2026-10-29T03:23:17Z",
+        "status": "COMPLETED",
+        "workflowName": "Install and startup matrix"
+      },
+      {
+        "__typename": "CheckRun",
+        "completedAt": "2026-10-29T03:45:23Z",
+        "conclusion": "SUCCESS",
+        "detailsUrl": "https://github.com/iowarp/clio-agent/actions/runs/40811842347/job/123243724430",
+        "name": "check (3.12, shard 1)",
+        "startedAt": "2026-10-29T03:23:17Z",
+        "status": "COMPLETED",
+        "workflowName": "CI"
+      },
+      {
+        "__typename": "CheckRun",
+        "completedAt": "2026-10-29T03:44:27Z",
+        "conclusion": "SUCCESS",
+        "detailsUrl": "https://github.com/iowarp/clio-agent/actions/runs/40811842347/job/123243724502",
+        "name": "check (3.12, shard 2)",
+        "startedAt": "2026-10-29T03:23:17Z",
+        "status": "COMPLETED",
+        "workflowName": "CI"
+      },
+      {
+        "__typename": "CheckRun",
+        "completedAt": "2026-10-29T03:38:37Z",
+        "conclusion": "SUCCESS",
+        "detailsUrl": "https://github.com/iowarp/clio-agent/actions/runs/40811842347/job/123243724535",
+        "name": "check (3.12, shard 3)",
+        "startedAt": "2026-10-29T03:23:17Z",
+        "status": "COMPLETED",
+        "workflowName": "CI"
+      },
+      {
+        "__typename": "CheckRun",
+        "completedAt": "2026-10-29T03:44:21Z",
+        "conclusion": "SUCCESS",
+        "detailsUrl": "https://github.com/iowarp/clio-agent/actions/runs/40811842347/job/123243724520",
+        "name": "check (3.12, shard 4)",
+        "startedAt": "2026-10-29T03:23:17Z",
+        "status": "COMPLETED",
+        "workflowName": "CI"
+      },
+      {
+        "__typename": "CheckRun",
+        "completedAt": "2026-10-29T03:44:21Z",
+        "conclusion": "SUCCESS",
+        "detailsUrl": "https://github.com/iowarp/clio-agent/actions/runs/40811842347/job/123243724479",
+        "name": "check (3.12, shard 5)",
+        "startedAt": "2026-10-29T03:23:18Z",
+        "status": "COMPLETED",
+        "workflowName": "CI"
+      },
+      {
+        "__typename": "CheckRun",
+        "completedAt": "2026-10-29T03:32:08Z",
+        "conclusion": "SUCCESS",
+        "detailsUrl": "https://github.com/iowarp/clio-agent/actions/runs/40811842347/job/123243724469",
+        "name": "check (3.13, shard 0)",
+        "startedAt": "2026-10-29T03:23:17Z",
+        "status": "COMPLETED",
+        "workflowName": "CI"
+      },
+      {
+        "__typename": "CheckRun",
+        "completedAt": "2026-10-29T03:36:10Z",
+        "conclusion": "SUCCESS",
+        "detailsUrl": "https://github.com/iowarp/clio-agent/actions/runs/40811842347/job/123243724564",
+        "name": "check (3.13, shard 1)",
+        "startedAt": "2026-10-29T03:23:17Z",
+        "status": "COMPLETED",
+        "workflowName": "CI"
+      },
+      {
+        "__typename": "CheckRun",
+        "completedAt": "2026-10-29T03:40:46Z",
+        "conclusion": "SUCCESS",
+        "detailsUrl": "https://github.com/iowarp/clio-agent/actions/runs/40811842347/job/123243724462",
+        "name": "check (3.13, shard 2)",
+        "startedAt": "2026-10-29T03:23:17Z",
+        "status": "COMPLETED",
+        "workflowName": "CI"
+      },
+      {
+        "__typename": "CheckRun",
+        "completedAt": "2026-10-29T03:40:50Z",
+        "conclusion": "SUCCESS",
+        "detailsUrl": "https://github.com/iowarp/clio-agent/actions/runs/40811842347/job/123243724534",
+        "name": "check (3.13, shard 3)",
+        "startedAt": "2026-10-29T03:23:18Z",
+        "status": "COMPLETED",
+        "workflowName": "CI"
+      },
+      {
+        "__typename": "CheckRun",
+        "completedAt": "2026-10-29T03:35:56Z",
+        "conclusion": "SUCCESS",
+        "detailsUrl": "https://github.com/iowarp/clio-agent/actions/runs/40811842347/job/123243724672",
+        "name": "check (3.13, shard 4)",
+        "startedAt": "2026-10-29T03:23:17Z",
+        "status": "COMPLETED",
+        "workflowName": "CI"
+      },
+      {
+        "__typename": "CheckRun",
+        "completedAt": "2026-10-29T03:34:38Z",
+        "conclusion": "SUCCESS",
+        "detailsUrl": "https://github.com/iowarp/clio-agent/actions/runs/40811842347/job/123243724466",
+        "name": "check (3.13, shard 5)",
+        "startedAt": "2026-10-29T03:23:17Z",
+        "status": "COMPLETED",
+        "workflowName": "CI"
+      },
+      {
+        "__typename": "CheckRun",
+        "completedAt": "2026-10-29T03:35:13Z",
+        "conclusion": "SUCCESS",
+        "detailsUrl": "https://github.com/iowarp/clio-agent/actions/runs/40811842347/job/123243724673",
+        "name": "check (3.14, shard 0)",
+        "startedAt": "2026-10-29T03:23:18Z",
+        "status": "COMPLETED",
+        "workflowName": "CI"
+      },
+      {
+        "__typename": "CheckRun",
+        "completedAt": "2026-10-29T03:30:39Z",
+        "conclusion": "SUCCESS",
+        "detailsUrl": "https://github.com/iowarp/clio-agent/actions/runs/40811842347/job/123243724221",
+        "name": "check (3.14, shard 1)",
+        "startedAt": "2026-10-29T03:23:17Z",
+        "status": "COMPLETED",
+        "workflowName": "CI"
+      },
+      {
+        "__typename": "CheckRun",
+        "completedAt": "2026-10-29T03:34:58Z",
+        "conclusion": "SUCCESS",
+        "detailsUrl": "https://github.com/iowarp/clio-agent/actions/runs/40811842347/job/123243724499",
+        "name": "check (3.14, shard 2)",
+        "startedAt": "2026-10-29T03:23:17Z",
+        "status": "COMPLETED",
+        "workflowName": "CI"
+      },
+      {
+        "__typename": "CheckRun",
+        "completedAt": "2026-10-29T03:29:57Z",
+        "conclusion": "SUCCESS",
+        "detailsUrl": "https://github.com/iowarp/clio-agent/actions/runs/40811842347/job/123243724600",
+        "name": "check (3.14, shard 3)",
+        "startedAt": "2026-10-29T03:23:17Z",
+        "status": "COMPLETED",
+        "workflowName": "CI"
+      },
+      {
+        "__typename": "CheckRun",
+        "completedAt": "2026-10-29T03:35:08Z",
+        "conclusion": "SUCCESS",
+        "detailsUrl": "https://github.com/iowarp/clio-agent/actions/runs/40811842347/job/123243724243",
+        "name": "check (3.14, shard 4)",
+        "startedAt": "2026-10-29T03:23:17Z",
+        "status": "COMPLETED",
+        "workflowName": "CI"
+      },
+      {
+        "__typename": "CheckRun",
+        "completedAt": "2026-10-29T03:30:37Z",
+        "conclusion": "SUCCESS",
+        "detailsUrl": "https://github.com/iowarp/clio-agent/actions/runs/40811842347/job/123243724543",
+        "name": "check (3.14, shard 5)",
+        "startedAt": "2026-10-29T03:23:17Z",
+        "status": "COMPLETED",
+        "workflowName": "CI"
+      },
+      {
+        "__typename": "CheckRun",
+        "completedAt": "2026-10-29T03:23:14Z",
+        "conclusion": "SKIPPED",
+        "detailsUrl": "https://github.com/iowarp/clio-agent/actions/runs/40811842450/job/123243725609",
+        "name": "Desktop package (${{ matrix.os }})",
+        "startedAt": "2026-10-29T03:23:14Z",
+        "status": "COMPLETED",
+        "workflowName": "Install and startup matrix"
+      },
+      {
+        "__typename": "CheckRun",
+        "completedAt": "2026-10-29T03:23:42Z",
+        "conclusion": "SUCCESS",
+        "detailsUrl": "https://github.com/iowarp/clio-agent/actions/runs/40811842347/job/123243724260",
+        "name": "bundle-lock-resolve",
+        "startedAt": "2026-10-29T03:23:18Z",
+        "status": "COMPLETED",
+        "workflowName": "CI"
+      },
+      {
+        "__typename": "CheckRun",
+        "completedAt": "2026-10-29T03:23:54Z",
+        "conclusion": "SUCCESS",
+        "detailsUrl": "https://github.com/iowarp/clio-agent/actions/runs/40811842347/job/123243724210",
+        "name": "flowcept-integration",
+        "startedAt": "2026-10-29T03:23:17Z",
+        "status": "COMPLETED",
+        "workflowName": "CI"
+      },
+      {
+        "__typename": "CheckRun",
+        "completedAt": "2026-10-29T03:27:16Z",
+        "conclusion": "SUCCESS",
+        "detailsUrl": "https://github.com/iowarp/clio-agent/actions/runs/40811842347/job/123243724034",
+        "name": "flake-hunt",
+        "startedAt": "2026-10-29T03:23:17Z",
+        "status": "COMPLETED",
+        "workflowName": "CI"
+      },
+      {
+        "__typename": "CheckRun",
+        "completedAt": "2026-10-29T03:46:01Z",
+        "conclusion": "SUCCESS",
+        "detailsUrl": "https://github.com/iowarp/clio-agent/actions/runs/40811842347/job/123250422443",
+        "name": "coverage (3.12)",
+        "startedAt": "2026-10-29T03:45:26Z",
+        "status": "COMPLETED",
+        "workflowName": "CI"
+      },
+      {
+        "__typename": "CheckRun",
+        "completedAt": "2026-10-29T03:46:01Z",
+        "conclusion": "SUCCESS",
+        "detailsUrl": "https://github.com/iowarp/clio-agent/actions/runs/40811842347/job/123250422505",
+        "name": "coverage (3.13)",
+        "startedAt": "2026-10-29T03:45:26Z",
+        "status": "COMPLETED",
+        "workflowName": "CI"
+      },
+      {
+        "__typename": "CheckRun",
+        "completedAt": "2026-10-29T03:45:58Z",
+        "conclusion": "SUCCESS",
+        "detailsUrl": "https://github.com/iowarp/clio-agent/actions/runs/40811842347/job/123250422424",
+        "name": "coverage (3.14)",
+        "startedAt": "2026-10-29T03:45:26Z",
+        "status": "COMPLETED",
+        "workflowName": "CI"
+      }
+    ]
+  },
+  "runtime_build_owner": {
+    "pid": 50216,
+    "created": "2026-10-29T03:24:14.5042296Z",
+    "output": "D:\\Libraries\\Documents\\projects\\gact-release-095\\desktop\\src-tauri\\gact-runtime",
+    "profile": "D:/cw/rel0951b/build-profile",
+    "cache": "D:/cw/rel095/uv-cache",
+    "source": "D:/Libraries/Documents/projects/clio-release-095",
+    "cwd": "D:\\Libraries\\Documents\\projects\\clio-release-095",
+    "source_head": "16e0de15c62f95a9be329b90602631dbd4b05561",
+    "gact_head": "e025d306a3724511c75f2e4a1fd37fc30a254386",
+    "purpose": "Build and prove portable stable Windows runtime from the qualified candidate"
+  },
+  "desktop_build_owner": {
+    "pid": 28188,
+    "created": "2026-10-29T03:43:33.4085009Z",
+    "source_head": "16e0de15c62f95a9be329b90602631dbd4b05561",
+    "gact_head": "e025d306a3724511c75f2e4a1fd37fc30a254386",
+    "cargo_target": "D:/Libraries/Documents/projects/gact-windows-startup-acceptance/.acceptance-runtime/cargo-target",
+    "profile": "D:/cw/rel0951b/build-profile",
+    "purpose": "Build local stable 0.9.5 NSIS candidate with committed CLIO brand and qualified portable runtime"
+  },
+  "runtime_build_retirement": {
+    "survivors": []
+  },
+  "desktop_build_retirement": {
+    "survivors": [],
+    "finished_at": "2026-10-29T03:48:59.9607052Z",
+    "forced_compiler_helpers": [
+      {
+        "pid": 50040,
+        "created": 1793245672.2312796,
+        "exe": "C:\\Program Files (x86)\\Microsoft Visual Studio\\2022\\BuildTools\\VC\\Tools\\MSVC\\14.44.35207\\bin\\Hostx64\\x64\\vctip.exe",
+        "cmd": [
+          "C:\\Program Files (x86)\\Microsoft Visual Studio\\2022\\BuildTools\\VC\\Tools\\MSVC\\14.44.35207\\bin\\HostX64\\x64\\VCTIP.EXE"
+        ]
+      }
+    ]
+  },
+  "desktop_installer": {
+    "version": "0.9.5.1",
+    "sha256": "8f85c97f68d09a8895a1d45cf630b2fb63c934880107f120b7eaacce824f7130",
+    "bytes": 532316628,
+    "path": "D:\\Libraries\\Documents\\projects\\gact-windows-startup-acceptance\\.acceptance-runtime\\cargo-target\\release\\bundle\\nsis\\CLIO Desktop_0.9.5+1_x64-setup.exe",
+    "tauri_version": "0.9.5+1",
+    "source_head": "16e0de15c62f95a9be329b90602631dbd4b05561"
+  },
+  "runtime_identity": {
+    "clio": "0.9.5.1",
+    "kit": "2.11.1",
+    "schemas": "0.6.0",
+    "marketplace": "458d7da9d6530c463bcf932edcc77423eb453030",
+    "codex": "0.162.1"
+  },
+  "machine": {
+    "os": "Windows 11 Home",
+    "cpu": "Ryzen 5 3600",
+    "cores": 6,
+    "threads": 12,
+    "ram_gib": 31.95,
+    "disk": "953.87 GiB NVMe, D: NTFS"
+  },
+  "cold_definition": "New source installer profile, empty tool caches; first installed-agent and desktop launch on the Windows-generated store after migration. OS file caches and Defender reputation caches were not reset.",
+  "limits_seconds": {
+    "install": 180,
+    "agent": 30,
+    "desktop": 60
+  },
+  "accepted_exception": "User accepted approximately 200 seconds for cold Windows source installation. The 180-second original limit is unchanged.",
+  "office_native_timeout_recovery": {
+    "elapsed_s": 33.47854580001149,
+    "exit_code": 0,
+    "injected": {
+      "pid": 45820,
+      "created": 1793239971.6640532,
+      "exe": "D:\\cw\\r5\\home\\cache\\document-office\\26.2.6\\program\\soffice.com",
+      "cmd": [
+        "D:\\cw\\r5\\home\\cache\\document-office\\26.2.6\\program\\soffice.com",
+        "-env:UserInstallation=file:///D:/Libraries/Documents/projects/clio-release-095/.pytest-runtime/run-41316-390f05a5a3b2/tmp/lo-version-9mrqcva5/profile",
+        "--headless",
+        "--nologo",
+        "--norestore",
+        "--version"
+      ],
+      "suspended_s": 1.000369600005797
+    },
+    "forced_by_test": [],
+    "output": "reason=office_probe_timeout_retry: soffice.com exceeded 30 seconds; retrying once with a fresh private profile\nREAL_OFFICE_VERIFIED\n"
+  },
+  "office_native_cache_publish_recovery": {
+    "passed": true,
+    "seconds": 0.7107377000065753,
+    "real_windows_handle": true,
+    "root": "D:\\Libraries\\Documents\\projects\\clio-release-095\\.pytest-runtime\\run-7196-75dbd7fefd1d\\tmp\\pytest-of-clio-test-7196-75dbd7fefd1d\\pytest-0\\test_real_windows_handle_close0\\installed",
+    "no_permission_change": true
+  },
+  "store": {
+    "scale": 1,
+    "conversations": 926,
+    "open_records": 94,
+    "seconds": 428.1,
+    "flows": 150,
+    "children_per_flow": 4,
+    "chats": 100,
+    "chat_turns": 6,
+    "open_children": 20,
+    "interrupted_flows": 10,
+    "answer_kb": 4,
+    "lm_call_kb": 24,
+    "environment": {
+      "CLIO_AGENT_HOME": "D:\\cw\\r7\\home",
+      "CLIO_RUNTIME_STATE_DIR": "D:\\cw\\r7\\runtime",
+      "CLIO_DEFAULT_MARKETPLACE": "D:\\cw\\r7\\marketplace",
+      "CLIO_CORE_PORT": "29222",
+      "CLIO_ARC_CTE_FILE_CAPACITY": "2GB"
+    }
+  },
+  "reference_generation_retirement": {
+    "exit_code": 0,
+    "survivors": []
+  },
+  "final": {
+    "install": {
+      "cold": {
+        "ref": "codex/release-0951-office-startup-recovery",
+        "finished_at": "2026-10-29T03:37:43.8930735Z",
+        "seconds": 190.4105304,
+        "exit_code": 0,
+        "label": "quiet-install-cold",
+        "profile": "D:\\cw\\fp12",
+        "candidate": "16e0de15c62f95a9be329b90602631dbd4b05561"
+      },
+      "repeat": {
+        "exit_code": 0,
+        "profile": "D:\\cw\\fp12",
+        "seconds": 24.5351756,
+        "candidate": "16e0de15c62f95a9be329b90602631dbd4b05561",
+        "finished_at": "2026-10-29T03:38:10.3341605Z",
+        "label": "quiet-install-repeat",
+        "ref": "codex/release-0951-office-startup-recovery"
+      }
+    },
+    "agent": {
+      "cold": {
+        "readiness_seen": [
+          [
+            22.781,
+            "starting",
+            [
+              "task_runtime"
+            ]
+          ],
+          [
+            26.598,
+            "ready",
+            []
+          ]
+        ],
+        "first_answer_s": 22.78,
+        "ready_s": 26.598,
+        "rail_page_s": 0.02,
+        "rail_rows": 30,
+        "rail_total": 926,
+        "open_first_page_s": 0.009,
+        "functional_s": 26.627,
+        "outcome": "functional",
+        "stopped_gracefully": true,
+        "stop_s": 7.049
+      },
+      "repeat": {
+        "readiness_seen": [
+          [
+            18.078,
+            "starting",
+            [
+              "task_runtime"
+            ]
+          ],
+          [
+            20.334,
+            "ready",
+            []
+          ]
+        ],
+        "first_answer_s": 18.078,
+        "ready_s": 20.334,
+        "rail_page_s": 0.027,
+        "rail_rows": 30,
+        "rail_total": 926,
+        "open_first_page_s": 0.035,
+        "functional_s": 20.396,
+        "outcome": "functional",
+        "stopped_gracefully": true,
+        "stop_s": 5.597
+      }
+    },
+    "agent_retirement": {
+      "cold": {
+        "command_seconds": 34.348,
+        "exit_code": 0,
+        "forced": [],
+        "survivors": [],
+        "service_cleanup": [
+          {
+            "root": "D:\\cw\\r7\\home\\data\\services\\DESKTOP\\searxng",
+            "generation": "61967340-469e-4dee-bcf6-e520148d61c8",
+            "pid": 1504,
+            "phase": "stopped",
+            "running": false
+          }
+        ],
+        "finished_at": "2026-10-29T03:42:59.586677+00:00"
+      },
+      "repeat": {
+        "command_seconds": 26.922,
+        "exit_code": 0,
+        "forced": [],
+        "survivors": [],
+        "service_cleanup": [],
+        "finished_at": "2026-10-29T03:43:27.613283+00:00"
+      }
+    },
+    "agent_boot_timing": {
+      "cold": [
+        "WARNING | \u2691 BOOT mark=lifespan_started at=6.065",
+        "WARNING | \u2691 BOOT step=sandbox seconds=0.239 start=6.079 thread=MainThread outcome=ok",
+        "WARNING | \u2691 BOOT mark=serving at=22.571",
+        "WARNING | \u2691 BOOT step=orphans seconds=16.581 start=6.080 thread=MainThread outcome=ok",
+        "WARNING | \u2691 BOOT step=marketplace seconds=0.089 start=22.572 thread=MainThread outcome=ok",
+        "WARNING | \u2691 BOOT step=protected_execution seconds=1.361 start=22.660 thread=MainThread outcome=ok",
+        "WARNING | \u2691 BOOT step=task_history_restore seconds=0.009 start=26.075 thread=asyncio_2 outcome=ok",
+        "WARNING | \u2691 BOOT step=interrupted_sessions seconds=0.066 start=26.091 thread=asyncio_2 outcome=ok",
+        "WARNING | \u2691 BOOT step=interaction_times seconds=0.000 start=26.157 thread=asyncio_2 outcome=ok",
+        "WARNING | \u2691 BOOT step=clio_core_and_store seconds=2.269 start=24.021 thread=MainThread outcome=ok",
+        "WARNING | \u2691 BOOT step=obligations_held seconds=0.174 start=26.396 thread=MainThread outcome=ok",
+        "WARNING | \u2691 BOOT mark=task_runtime_ready at=26.570",
+        "WARNING | \u2691 BOOT step=first_doctor_pass seconds=0.512 start=26.297 thread=MainThread outcome=CancelledError",
+        "WARNING | \u2691 BOOT step=obligations seconds=0.238 start=26.571 thread=MainThread outcome=CancelledError"
+      ],
+      "repeat": [
+        "WARNING | \u2691 BOOT mark=lifespan_started at=6.212",
+        "WARNING | \u2691 BOOT step=sandbox seconds=0.951 start=6.215 thread=MainThread outcome=ok",
+        "WARNING | \u2691 BOOT mark=serving at=17.693",
+        "WARNING | \u2691 BOOT step=orphans seconds=11.496 start=6.215 thread=MainThread outcome=ok",
+        "WARNING | \u2691 BOOT step=marketplace seconds=0.018 start=17.693 thread=MainThread outcome=ok",
+        "WARNING | \u2691 BOOT step=protected_execution seconds=0.116 start=17.711 thread=MainThread outcome=ok",
+        "WARNING | \u2691 BOOT step=task_history_restore seconds=0.011 start=19.867 thread=asyncio_2 outcome=ok",
+        "WARNING | \u2691 BOOT step=interrupted_sessions seconds=0.001 start=19.888 thread=asyncio_2 outcome=ok",
+        "WARNING | \u2691 BOOT step=interaction_times seconds=0.000 start=19.889 thread=asyncio_2 outcome=ok",
+        "WARNING | \u2691 BOOT step=clio_core_and_store seconds=2.062 start=17.827 thread=MainThread outcome=ok",
+        "WARNING | \u2691 BOOT step=obligations_held seconds=0.120 start=19.960 thread=MainThread outcome=ok",
+        "WARNING | \u2691 BOOT mark=task_runtime_ready at=20.080",
+        "WARNING | \u2691 BOOT step=first_doctor_pass seconds=0.639 start=19.890 thread=MainThread outcome=CancelledError",
+        "WARNING | \u2691 BOOT step=obligations seconds=0.450 start=20.080 thread=MainThread outcome=CancelledError"
+      ]
+    },
+    "desktop_package_install": {
+      "codex_home": "D:\\cw\\sp2\\home\\.codex",
+      "seconds": 181.3182697,
+      "fresh_profile": true,
+      "exit_code": 0,
+      "finished_at": "2026-10-29T03:52:49.5043195Z"
+    },
+    "desktop": {
+      "cold": {
+        "started_at": "2026-10-29T03:56:32.852Z",
+        "app": "D:\\cw\\d0952\\clio-desktop.exe",
+        "home": "D:\\cw\\sp2\\home",
+        "backend_validation": {
+          "readiness": "ready",
+          "rail_rows": 30,
+          "rail_total": 926,
+          "expected_sessions": 926,
+          "valid": true
+        },
+        "package_validation": {
+          "valid": true,
+          "detail": "Managed packages checked reason=managed_packages_installed 95.091s",
+          "observed_s": 99.7
+        },
+        "rail_after_settle": {
+          "loading_agents": true,
+          "session_links": 0
+        },
+        "quit": {
+          "seconds_until_all_gone": 11.9,
+          "exited_after_s": {
+            "server:31624": 6.8,
+            "other:18792": 6.8,
+            "clio-core:32760": 6.8,
+            "other:41760": 6.8,
+            "desktop:40048": 11.9,
+            "other:48176": 11.9,
+            "other:49216": 11.9,
+            "other:29828": 11.9,
+            "other:9128": 11.9,
+            "other:50040": 11.9,
+            "other:43168": 11.9,
+            "other:21332": 11.9,
+            "launcher:31552": 11.9,
+            "other:44756": 11.9
+          },
+          "left_running": []
+        },
+        "boot_log_path": "D:\\cw\\sp2\\home\\AppData\\Local\\ai.iowarp.clio.desktop\\logs\\backend-boot.log",
+        "boot_log_current": true,
+        "quit_log": [
+          "INFO:     127.0.0.1:52820 - \"POST /v1/infrastructure/desktop-exit HTTP/1.1\" 200 OK",
+          "INFO:     127.0.0.1:52821 - \"POST /v1/desktop/shutdown HTTP/1.1\" 202 Accepted",
+          "INFO:     Shutting down",
+          "INFO:     Waiting for application shutdown.",
+          "sidecar-progress: backend exited; starting crash cleanup",
+          "sidecar-progress: crash cleanup completed",
+          "sidecar-progress: crash cleanup helper exited"
+        ],
+        "workspace_usable_seconds": 42.2,
+        "cleanup": {
+          "driver_survivors": [],
+          "exit_code": 0,
+          "forced_application_processes": [],
+          "driver_created": "2026-10-29T03:56:30.8625884Z",
+          "survivors": [],
+          "driver_pid": 53204
+        }
+      },
+      "repeat": {
+        "started_at": "2026-10-29T03:58:30.883Z",
+        "app": "D:\\cw\\d0952\\clio-desktop.exe",
+        "home": "D:\\cw\\sp2\\home",
+        "backend_validation": {
+          "readiness": "ready",
+          "rail_rows": 30,
+          "rail_total": 926,
+          "expected_sessions": 926,
+          "valid": true
+        },
+        "package_validation": {
+          "valid": true,
+          "detail": "Managed packages checked reason=managed_packages_unchanged 2.211s",
+          "observed_s": 39.1
+        },
+        "rail_after_settle": {
+          "loading_agents": true,
+          "session_links": 0
+        },
+        "quit": {
+          "seconds_until_all_gone": 11.3,
+          "exited_after_s": {
+            "other:33928": 6.2,
+            "clio-core:28344": 6.2,
+            "other:16800": 6.2,
+            "server:38944": 7.4,
+            "desktop:32856": 11.3,
+            "other:34940": 11.3,
+            "other:48028": 11.3,
+            "other:5512": 11.3,
+            "other:53944": 11.3,
+            "other:31176": 11.3,
+            "other:44128": 11.3,
+            "other:44272": 11.3,
+            "launcher:36044": 11.3,
+            "other:34536": 11.3
+          },
+          "left_running": []
+        },
+        "boot_log_path": "D:\\cw\\sp2\\home\\AppData\\Local\\ai.iowarp.clio.desktop\\logs\\backend-boot.log",
+        "boot_log_current": true,
+        "quit_log": [
+          "INFO:     127.0.0.1:61619 - \"POST /v1/infrastructure/desktop-exit HTTP/1.1\" 200 OK",
+          "INFO:     127.0.0.1:61621 - \"POST /v1/desktop/shutdown HTTP/1.1\" 202 Accepted",
+          "INFO:     Shutting down",
+          "INFO:     Waiting for application shutdown.",
+          "sidecar-progress: backend exited; starting crash cleanup",
+          "sidecar-progress: crash cleanup completed",
+          "sidecar-progress: crash cleanup helper exited"
+        ],
+        "workspace_usable_seconds": 28.2,
+        "cleanup": {
+          "driver_survivors": [],
+          "forced_application_processes": [],
+          "driver_pid": 44544,
+          "driver_created": "2026-10-29T03:58:29.3183273Z",
+          "exit_code": 0,
+          "survivors": []
+        }
+      }
+    }
+  },
+  "install_telemetry": {
+    "cold": {
+      "exit_code": 0,
+      "mean_machine_cpu_percent": 47.829,
+      "peak_machine_cpu_percent": 99.8,
+      "encoder_samples": 0,
+      "defender_observed_samples": 148,
+      "survivors": []
+    },
+    "repeat": {
+      "exit_code": 0,
+      "mean_machine_cpu_percent": 54.032,
+      "peak_machine_cpu_percent": 68.0,
+      "encoder_samples": 0,
+      "defender_observed_samples": 19,
+      "survivors": []
+    }
+  },
+  "quiet_preflight": {
+    "install": {
+      "samples": [
+        {
+          "epoch": 1793244856.3196566,
+          "cpu_percent": 8.7,
+          "defender_aggregate_cpu_percent": null,
+          "encoders": [],
+          "consecutive_quiet_samples": 0
+        },
+        {
+          "epoch": 1793244862.6427524,
+          "cpu_percent": 15.0,
+          "defender_aggregate_cpu_percent": 0.9884398717302592,
+          "encoders": [],
+          "consecutive_quiet_samples": 1
+        },
+        {
+          "epoch": 1793244867.66198,
+          "cpu_percent": 11.4,
+          "defender_aggregate_cpu_percent": 5.292149035875928,
+          "encoders": [],
+          "consecutive_quiet_samples": 2
+        },
+        {
+          "epoch": 1793244872.67535,
+          "cpu_percent": 12.1,
+          "defender_aggregate_cpu_percent": 0.3116666011971505,
+          "encoders": [],
+          "consecutive_quiet_samples": 3
+        }
+      ],
+      "ready": true
+    },
+    "agent": {
+      "samples": [
+        {
+          "epoch": 1793245106.119005,
+          "cpu_percent": 21.3,
+          "defender_aggregate_cpu_percent": null,
+          "encoders": [],
+          "consecutive_quiet_samples": 0
+        },
+        {
+          "epoch": 1793245113.170049,
+          "cpu_percent": 26.3,
+          "defender_aggregate_cpu_percent": 7.0911485008802595,
+          "encoders": [],
+          "consecutive_quiet_samples": 0
+        },
+        {
+          "epoch": 1793245118.1882863,
+          "cpu_percent": 17.3,
+          "defender_aggregate_cpu_percent": 0.3113643078802735,
+          "encoders": [],
+          "consecutive_quiet_samples": 1
+        },
+        {
+          "epoch": 1793245123.2091799,
+          "cpu_percent": 17.6,
+          "defender_aggregate_cpu_percent": 0.6223991714007124,
+          "encoders": [],
+          "consecutive_quiet_samples": 2
+        },
+        {
+          "epoch": 1793245128.2319994,
+          "cpu_percent": 35.2,
+          "defender_aggregate_cpu_percent": 15.865093240535824,
+          "encoders": [],
+          "consecutive_quiet_samples": 0
+        },
+        {
+          "epoch": 1793245133.2750325,
+          "cpu_percent": 37.3,
+          "defender_aggregate_cpu_percent": 1.2393335216211563,
+          "encoders": [],
+          "consecutive_quiet_samples": 0
+        },
+        {
+          "epoch": 1793245138.3069143,
+          "cpu_percent": 32.1,
+          "defender_aggregate_cpu_percent": 4.3472801685950815,
+          "encoders": [],
+          "consecutive_quiet_samples": 0
+        },
+        {
+          "epoch": 1793245143.3261364,
+          "cpu_percent": 27.8,
+          "defender_aggregate_cpu_percent": 0.9339096737087526,
+          "encoders": [],
+          "consecutive_quiet_samples": 0
+        },
+        {
+          "epoch": 1793245148.3447173,
+          "cpu_percent": 34.8,
+          "defender_aggregate_cpu_percent": 8.094917806419112,
+          "encoders": [],
+          "consecutive_quiet_samples": 0
+        },
+        {
+          "epoch": 1793245153.3749542,
+          "cpu_percent": 34.4,
+          "defender_aggregate_cpu_percent": 4.348701696621388,
+          "encoders": [],
+          "consecutive_quiet_samples": 0
+        },
+        {
+          "epoch": 1793245158.3927279,
+          "cpu_percent": 21.2,
+          "defender_aggregate_cpu_percent": 1.8683584981289616,
+          "encoders": [],
+          "consecutive_quiet_samples": 0
+        },
+        {
+          "epoch": 1793245163.4121811,
+          "cpu_percent": 27.4,
+          "defender_aggregate_cpu_percent": 2.1790221712105,
+          "encoders": [],
+          "consecutive_quiet_samples": 0
+        },
+        {
+          "epoch": 1793245168.4299207,
+          "cpu_percent": 24.8,
+          "defender_aggregate_cpu_percent": 11.210227157989017,
+          "encoders": [],
+          "consecutive_quiet_samples": 0
+        },
+        {
+          "epoch": 1793245173.447309,
+          "cpu_percent": 22.6,
+          "defender_aggregate_cpu_percent": 4.048420932985093,
+          "encoders": [],
+          "consecutive_quiet_samples": 0
+        },
+        {
+          "epoch": 1793245178.4647274,
+          "cpu_percent": 19.5,
+          "defender_aggregate_cpu_percent": 1.245660521204084,
+          "encoders": [],
+          "consecutive_quiet_samples": 1
+        },
+        {
+          "epoch": 1793245183.4819157,
+          "cpu_percent": 25.7,
+          "defender_aggregate_cpu_percent": 8.408594094559712,
+          "encoders": [],
+          "consecutive_quiet_samples": 0
+        },
+        {
+          "epoch": 1793245188.503547,
+          "cpu_percent": 33.8,
+          "defender_aggregate_cpu_percent": 8.09000064950332,
+          "encoders": [],
+          "consecutive_quiet_samples": 0
+        },
+        {
+          "epoch": 1793245193.5211735,
+          "cpu_percent": 33.2,
+          "defender_aggregate_cpu_percent": 4.048228759744802,
+          "encoders": [],
+          "consecutive_quiet_samples": 0
+        },
+        {
+          "epoch": 1793245198.5716655,
+          "cpu_percent": 20.2,
+          "defender_aggregate_cpu_percent": 1.2375031858824257,
+          "encoders": [],
+          "consecutive_quiet_samples": 0
+        },
+        {
+          "epoch": 1793245203.589531,
+          "cpu_percent": 29.0,
+          "defender_aggregate_cpu_percent": 6.2277477349746295,
+          "encoders": [],
+          "consecutive_quiet_samples": 0
+        },
+        {
+          "epoch": 1793245208.6087892,
+          "cpu_percent": 23.8,
+          "defender_aggregate_cpu_percent": 2.8017087923193174,
+          "encoders": [],
+          "consecutive_quiet_samples": 0
+        },
+        {
+          "epoch": 1793245213.6271427,
+          "cpu_percent": 31.8,
+          "defender_aggregate_cpu_percent": 5.915784972800912,
+          "encoders": [],
+          "consecutive_quiet_samples": 0
+        },
+        {
+          "epoch": 1793245218.6453688,
+          "cpu_percent": 36.7,
+          "defender_aggregate_cpu_percent": 4.981840050482788,
+          "encoders": [],
+          "consecutive_quiet_samples": 0
+        },
+        {
+          "epoch": 1793245223.6624823,
+          "cpu_percent": 40.8,
+          "defender_aggregate_cpu_percent": 20.554647823993758,
+          "encoders": [],
+          "consecutive_quiet_samples": 0
+        },
+        {
+          "epoch": 1793245228.682081,
+          "cpu_percent": 24.2,
+          "defender_aggregate_cpu_percent": 1.8676791748423782,
+          "encoders": [],
+          "consecutive_quiet_samples": 0
+        },
+        {
+          "epoch": 1793245233.6989143,
+          "cpu_percent": 27.2,
+          "defender_aggregate_cpu_percent": 1.245805794129908,
+          "encoders": [],
+          "consecutive_quiet_samples": 0
+        },
+        {
+          "epoch": 1793245238.7154496,
+          "cpu_percent": 31.3,
+          "defender_aggregate_cpu_percent": 2.491759610365995,
+          "encoders": [],
+          "consecutive_quiet_samples": 0
+        },
+        {
+          "epoch": 1793245243.7324216,
+          "cpu_percent": 29.9,
+          "defender_aggregate_cpu_percent": 1.8686570063755108,
+          "encoders": [],
+          "consecutive_quiet_samples": 0
+        },
+        {
+          "epoch": 1793245248.749054,
+          "cpu_percent": 24.0,
+          "defender_aggregate_cpu_percent": 0.9343917796639852,
+          "encoders": [],
+          "consecutive_quiet_samples": 0
+        },
+        {
+          "epoch": 1793245253.766656,
+          "cpu_percent": 31.7,
+          "defender_aggregate_cpu_percent": 0.9342112090519957,
+          "encoders": [],
+          "consecutive_quiet_samples": 0
+        },
+        {
+          "epoch": 1793245258.7841418,
+          "cpu_percent": 24.9,
+          "defender_aggregate_cpu_percent": 0.9342328276722759,
+          "encoders": [],
+          "consecutive_quiet_samples": 0
+        },
+        {
+          "epoch": 1793245263.8004007,
+          "cpu_percent": 21.7,
+          "defender_aggregate_cpu_percent": 0.31148710902215165,
+          "encoders": [],
+          "consecutive_quiet_samples": 0
+        },
+        {
+          "epoch": 1793245268.8171756,
+          "cpu_percent": 28.6,
+          "defender_aggregate_cpu_percent": 5.917646423116491,
+          "encoders": [],
+          "consecutive_quiet_samples": 0
+        },
+        {
+          "epoch": 1793245273.8395727,
+          "cpu_percent": 51.7,
+          "defender_aggregate_cpu_percent": 22.399662765493847,
+          "encoders": [],
+          "consecutive_quiet_samples": 0
+        },
+        {
+          "epoch": 1793245278.9127536,
+          "cpu_percent": 28.0,
+          "defender_aggregate_cpu_percent": 9.855749449572556,
+          "encoders": [],
+          "consecutive_quiet_samples": 0
+        },
+        {
+          "epoch": 1793245283.928464,
+          "cpu_percent": 22.8,
+          "defender_aggregate_cpu_percent": 1.8691270704659804,
+          "encoders": [],
+          "consecutive_quiet_samples": 0
+        },
+        {
+          "epoch": 1793245288.9426427,
+          "cpu_percent": 15.7,
+          "defender_aggregate_cpu_percent": 3.116163338007388,
+          "encoders": [],
+          "consecutive_quiet_samples": 1
+        },
+        {
+          "epoch": 1793245293.9575644,
+          "cpu_percent": 32.5,
+          "defender_aggregate_cpu_percent": 75.39998134458389,
+          "encoders": [],
+          "consecutive_quiet_samples": 0
+        },
+        {
+          "epoch": 1793245298.9737842,
+          "cpu_percent": 12.4,
+          "defender_aggregate_cpu_percent": 4.360853518214339,
+          "encoders": [],
+          "consecutive_quiet_samples": 1
+        },
+        {
+          "epoch": 1793245303.9890199,
+          "cpu_percent": 10.0,
+          "defender_aggregate_cpu_percent": 0.6231013276985208,
+          "encoders": [],
+          "consecutive_quiet_samples": 2
+        },
+        {
+          "epoch": 1793245309.01132,
+          "cpu_percent": 75.2,
+          "defender_aggregate_cpu_percent": 172.97850743700917,
+          "encoders": [],
+          "consecutive_quiet_samples": 0
+        },
+        {
+          "epoch": 1793245314.0924041,
+          "cpu_percent": 46.6,
+          "defender_aggregate_cpu_percent": 82.72102939566605,
+          "encoders": [],
+          "consecutive_quiet_samples": 0
+        },
+        {
+          "epoch": 1793245319.1072881,
+          "cpu_percent": 19.8,
+          "defender_aggregate_cpu_percent": 4.050442646335343,
+          "encoders": [],
+          "consecutive_quiet_samples": 1
+        },
+        {
+          "epoch": 1793245324.128042,
+          "cpu_percent": 15.5,
+          "defender_aggregate_cpu_percent": 4.668123682484013,
+          "encoders": [],
+          "consecutive_quiet_samples": 2
+        },
+        {
+          "epoch": 1793245329.142724,
+          "cpu_percent": 20.5,
+          "defender_aggregate_cpu_percent": 14.02132762068703,
+          "encoders": [],
+          "consecutive_quiet_samples": 0
+        },
+        {
+          "epoch": 1793245334.1644995,
+          "cpu_percent": 13.7,
+          "defender_aggregate_cpu_percent": 0.933434801068972,
+          "encoders": [],
+          "consecutive_quiet_samples": 1
+        },
+        {
+          "epoch": 1793245339.179828,
+          "cpu_percent": 13.5,
+          "defender_aggregate_cpu_percent": 1.8692694154140568,
+          "encoders": [],
+          "consecutive_quiet_samples": 2
+        },
+        {
+          "epoch": 1793245344.1944954,
+          "cpu_percent": 8.4,
+          "defender_aggregate_cpu_percent": 0.0,
+          "encoders": [],
+          "consecutive_quiet_samples": 3
+        }
+      ],
+      "ready": true
+    },
+    "desktop": {
+      "samples": [
+        {
+          "epoch": 1793245975.1733365,
+          "cpu_percent": 25.1,
+          "defender_aggregate_cpu_percent": null,
+          "encoders": [],
+          "consecutive_quiet_samples": 0
+        },
+        {
+          "epoch": 1793245982.205564,
+          "cpu_percent": 21.6,
+          "defender_aggregate_cpu_percent": 0.4443826643566941,
+          "encoders": [],
+          "consecutive_quiet_samples": 0
+        },
+        {
+          "epoch": 1793245987.2257779,
+          "cpu_percent": 24.2,
+          "defender_aggregate_cpu_percent": 7.781043044450871,
+          "encoders": [],
+          "consecutive_quiet_samples": 0
+        },
+        {
+          "epoch": 1793245992.2488985,
+          "cpu_percent": 18.4,
+          "defender_aggregate_cpu_percent": 1.5553080559384997,
+          "encoders": [],
+          "consecutive_quiet_samples": 1
+        },
+        {
+          "epoch": 1793245997.2720304,
+          "cpu_percent": 19.3,
+          "defender_aggregate_cpu_percent": 0.62212183453416,
+          "encoders": [],
+          "consecutive_quiet_samples": 2
+        },
+        {
+          "epoch": 1793246002.2922235,
+          "cpu_percent": 21.4,
+          "defender_aggregate_cpu_percent": 6.536103163075455,
+          "encoders": [],
+          "consecutive_quiet_samples": 0
+        },
+        {
+          "epoch": 1793246007.3081179,
+          "cpu_percent": 24.2,
+          "defender_aggregate_cpu_percent": 14.952467860109232,
+          "encoders": [],
+          "consecutive_quiet_samples": 0
+        },
+        {
+          "epoch": 1793246012.3317041,
+          "cpu_percent": 56.1,
+          "defender_aggregate_cpu_percent": 57.85209692741227,
+          "encoders": [],
+          "consecutive_quiet_samples": 0
+        },
+        {
+          "epoch": 1793246017.3583965,
+          "cpu_percent": 63.1,
+          "defender_aggregate_cpu_percent": 322.9633671411678,
+          "encoders": [],
+          "consecutive_quiet_samples": 0
+        },
+        {
+          "epoch": 1793246022.376061,
+          "cpu_percent": 29.6,
+          "defender_aggregate_cpu_percent": 77.22716519027009,
+          "encoders": [],
+          "consecutive_quiet_samples": 0
+        },
+        {
+          "epoch": 1793246027.3953307,
+          "cpu_percent": 28.9,
+          "defender_aggregate_cpu_percent": 88.7205761372974,
+          "encoders": [],
+          "consecutive_quiet_samples": 0
+        },
+        {
+          "epoch": 1793246032.4169562,
+          "cpu_percent": 27.0,
+          "defender_aggregate_cpu_percent": 89.92357122400749,
+          "encoders": [],
+          "consecutive_quiet_samples": 0
+        },
+        {
+          "epoch": 1793246037.4351118,
+          "cpu_percent": 33.9,
+          "defender_aggregate_cpu_percent": 52.93279493644665,
+          "encoders": [],
+          "consecutive_quiet_samples": 0
+        },
+        {
+          "epoch": 1793246042.4552968,
+          "cpu_percent": 32.7,
+          "defender_aggregate_cpu_percent": 30.501864013143503,
+          "encoders": [],
+          "consecutive_quiet_samples": 0
+        },
+        {
+          "epoch": 1793246047.4951165,
+          "cpu_percent": 54.5,
+          "defender_aggregate_cpu_percent": 45.884577815606534,
+          "encoders": [
+            {
+              "pid": 47632,
+              "create_time": 1793246042.6009936,
+              "name": "ffmpeg.exe"
+            }
+          ],
+          "consecutive_quiet_samples": 0
+        },
+        {
+          "epoch": 1793246052.516486,
+          "cpu_percent": 61.5,
+          "defender_aggregate_cpu_percent": 2.4893607424096027,
+          "encoders": [
+            {
+              "pid": 47632,
+              "create_time": 1793246042.6009936,
+              "name": "ffmpeg.exe"
+            }
+          ],
+          "consecutive_quiet_samples": 0
+        },
+        {
+          "epoch": 1793246057.579966,
+          "cpu_percent": 81.3,
+          "defender_aggregate_cpu_percent": 8.331720248472356,
+          "encoders": [
+            {
+              "pid": 47632,
+              "create_time": 1793246042.6009936,
+              "name": "ffmpeg.exe"
+            }
+          ],
+          "consecutive_quiet_samples": 0
+        },
+        {
+          "epoch": 1793246062.6072361,
+          "cpu_percent": 78.8,
+          "defender_aggregate_cpu_percent": 0.9324145961241681,
+          "encoders": [
+            {
+              "pid": 47632,
+              "create_time": 1793246042.6009936,
+              "name": "ffmpeg.exe"
+            }
+          ],
+          "consecutive_quiet_samples": 0
+        },
+        {
+          "epoch": 1793246067.67359,
+          "cpu_percent": 81.0,
+          "defender_aggregate_cpu_percent": 0.3084072021665305,
+          "encoders": [
+            {
+              "pid": 47632,
+              "create_time": 1793246042.6009936,
+              "name": "ffmpeg.exe"
+            }
+          ],
+          "consecutive_quiet_samples": 0
+        },
+        {
+          "epoch": 1793246072.696576,
+          "cpu_percent": 81.2,
+          "defender_aggregate_cpu_percent": 1.555349692383177,
+          "encoders": [
+            {
+              "pid": 47632,
+              "create_time": 1793246042.6009936,
+              "name": "ffmpeg.exe"
+            }
+          ],
+          "consecutive_quiet_samples": 0
+        },
+        {
+          "epoch": 1793246077.7301955,
+          "cpu_percent": 84.3,
+          "defender_aggregate_cpu_percent": 16.76229234487766,
+          "encoders": [
+            {
+              "pid": 47632,
+              "create_time": 1793246042.6009936,
+              "name": "ffmpeg.exe"
+            }
+          ],
+          "consecutive_quiet_samples": 0
+        },
+        {
+          "epoch": 1793246082.7633893,
+          "cpu_percent": 71.2,
+          "defender_aggregate_cpu_percent": 0.6208781357550385,
+          "encoders": [
+            {
+              "pid": 47632,
+              "create_time": 1793246042.6009936,
+              "name": "ffmpeg.exe"
+            }
+          ],
+          "consecutive_quiet_samples": 0
+        },
+        {
+          "epoch": 1793246087.8072996,
+          "cpu_percent": 81.7,
+          "defender_aggregate_cpu_percent": 0.30977950001448784,
+          "encoders": [
+            {
+              "pid": 47632,
+              "create_time": 1793246042.6009936,
+              "name": "ffmpeg.exe"
+            }
+          ],
+          "consecutive_quiet_samples": 0
+        },
+        {
+          "epoch": 1793246092.8313403,
+          "cpu_percent": 82.8,
+          "defender_aggregate_cpu_percent": 2.4880371694590933,
+          "encoders": [
+            {
+              "pid": 47632,
+              "create_time": 1793246042.6009936,
+              "name": "ffmpeg.exe"
+            }
+          ],
+          "consecutive_quiet_samples": 0
+        },
+        {
+          "epoch": 1793246097.8746846,
+          "cpu_percent": 83.6,
+          "defender_aggregate_cpu_percent": 0.6196285320521097,
+          "encoders": [
+            {
+              "pid": 47632,
+              "create_time": 1793246042.6009936,
+              "name": "ffmpeg.exe"
+            }
+          ],
+          "consecutive_quiet_samples": 0
+        },
+        {
+          "epoch": 1793246102.907387,
+          "cpu_percent": 86.1,
+          "defender_aggregate_cpu_percent": 0.9314081351542332,
+          "encoders": [
+            {
+              "pid": 47632,
+              "create_time": 1793246042.6009936,
+              "name": "ffmpeg.exe"
+            }
+          ],
+          "consecutive_quiet_samples": 0
+        },
+        {
+          "epoch": 1793246107.946576,
+          "cpu_percent": 85.6,
+          "defender_aggregate_cpu_percent": 7.131603772937701,
+          "encoders": [
+            {
+              "pid": 47632,
+              "create_time": 1793246042.6009936,
+              "name": "ffmpeg.exe"
+            }
+          ],
+          "consecutive_quiet_samples": 0
+        },
+        {
+          "epoch": 1793246112.9702947,
+          "cpu_percent": 84.8,
+          "defender_aggregate_cpu_percent": 0.622049173454154,
+          "encoders": [
+            {
+              "pid": 47632,
+              "create_time": 1793246042.6009936,
+              "name": "ffmpeg.exe"
+            }
+          ],
+          "consecutive_quiet_samples": 0
+        },
+        {
+          "epoch": 1793246118.0193624,
+          "cpu_percent": 83.8,
+          "defender_aggregate_cpu_percent": 3.7135568349638115,
+          "encoders": [
+            {
+              "pid": 47632,
+              "create_time": 1793246042.6009936,
+              "name": "ffmpeg.exe"
+            }
+          ],
+          "consecutive_quiet_samples": 0
+        },
+        {
+          "epoch": 1793246123.0613844,
+          "cpu_percent": 81.8,
+          "defender_aggregate_cpu_percent": 7.747387869162393,
+          "encoders": [
+            {
+              "pid": 47632,
+              "create_time": 1793246042.6009936,
+              "name": "ffmpeg.exe"
+            }
+          ],
+          "consecutive_quiet_samples": 0
+        },
+        {
+          "epoch": 1793246128.0989337,
+          "cpu_percent": 81.7,
+          "defender_aggregate_cpu_percent": 3.4118773082301574,
+          "encoders": [
+            {
+              "pid": 47632,
+              "create_time": 1793246042.6009936,
+              "name": "ffmpeg.exe"
+            }
+          ],
+          "consecutive_quiet_samples": 0
+        },
+        {
+          "epoch": 1793246133.1286287,
+          "cpu_percent": 84.5,
+          "defender_aggregate_cpu_percent": 0.31065501773553084,
+          "encoders": [
+            {
+              "pid": 47632,
+              "create_time": 1793246042.6009936,
+              "name": "ffmpeg.exe"
+            }
+          ],
+          "consecutive_quiet_samples": 0
+        },
+        {
+          "epoch": 1793246138.1560755,
+          "cpu_percent": 80.0,
+          "defender_aggregate_cpu_percent": 0.6215878869274574,
+          "encoders": [
+            {
+              "pid": 47632,
+              "create_time": 1793246042.6009936,
+              "name": "ffmpeg.exe"
+            }
+          ],
+          "consecutive_quiet_samples": 0
+        },
+        {
+          "epoch": 1793246143.186072,
+          "cpu_percent": 82.8,
+          "defender_aggregate_cpu_percent": 0.9319091724144305,
+          "encoders": [
+            {
+              "pid": 47632,
+              "create_time": 1793246042.6009936,
+              "name": "ffmpeg.exe"
+            }
+          ],
+          "consecutive_quiet_samples": 0
+        },
+        {
+          "epoch": 1793246148.211047,
+          "cpu_percent": 83.7,
+          "defender_aggregate_cpu_percent": 0.6218936631677556,
+          "encoders": [
+            {
+              "pid": 47632,
+              "create_time": 1793246042.6009936,
+              "name": "ffmpeg.exe"
+            }
+          ],
+          "consecutive_quiet_samples": 0
+        },
+        {
+          "epoch": 1793246153.2484279,
+          "cpu_percent": 79.7,
+          "defender_aggregate_cpu_percent": 4.652715430535916,
+          "encoders": [
+            {
+              "pid": 47632,
+              "create_time": 1793246042.6009936,
+              "name": "ffmpeg.exe"
+            }
+          ],
+          "consecutive_quiet_samples": 0
+        },
+        {
+          "epoch": 1793246158.2885668,
+          "cpu_percent": 80.1,
+          "defender_aggregate_cpu_percent": 5.27019199498578,
+          "encoders": [
+            {
+              "pid": 47632,
+              "create_time": 1793246042.6009936,
+              "name": "ffmpeg.exe"
+            }
+          ],
+          "consecutive_quiet_samples": 0
+        },
+        {
+          "epoch": 1793246163.343002,
+          "cpu_percent": 79.5,
+          "defender_aggregate_cpu_percent": 1.854806626352522,
+          "encoders": [
+            {
+              "pid": 47632,
+              "create_time": 1793246042.6009936,
+              "name": "ffmpeg.exe"
+            }
+          ],
+          "consecutive_quiet_samples": 0
+        },
+        {
+          "epoch": 1793246168.4060903,
+          "cpu_percent": 83.9,
+          "defender_aggregate_cpu_percent": 10.492608093253898,
+          "encoders": [
+            {
+              "pid": 46396,
+              "create_time": 1793246166.2338653,
+              "name": "ffmpeg.exe"
+            }
+          ],
+          "consecutive_quiet_samples": 0
+        },
+        {
+          "epoch": 1793246173.706033,
+          "cpu_percent": 89.3,
+          "defender_aggregate_cpu_percent": 47.17032101069337,
+          "encoders": [],
+          "consecutive_quiet_samples": 0
+        },
+        {
+          "epoch": 1793246178.7294946,
+          "cpu_percent": 10.5,
+          "defender_aggregate_cpu_percent": 1.2441619986782109,
+          "encoders": [],
+          "consecutive_quiet_samples": 1
+        },
+        {
+          "epoch": 1793246183.7432106,
+          "cpu_percent": 11.4,
+          "defender_aggregate_cpu_percent": 8.10277250293154,
+          "encoders": [],
+          "consecutive_quiet_samples": 2
+        },
+        {
+          "epoch": 1793246188.757764,
+          "cpu_percent": 12.9,
+          "defender_aggregate_cpu_percent": 0.3115930432060535,
+          "encoders": [],
+          "consecutive_quiet_samples": 3
+        }
+      ],
+      "ready": true
+    }
+  },
+  "earlier_maintenance_cohort": {
+    "source_head": "cb3a81f699ca1870bea3a5de28ec93d67c936cf5",
+    "status": "Cold agent failed 30-second limit; retained, not selected as final qualification.",
+    "store": {
+      "scale": 1,
+      "conversations": 927,
+      "open_records": 93,
+      "seconds": 516.7,
+      "flows": 150,
+      "children_per_flow": 4,
+      "chats": 100,
+      "chat_turns": 6,
+      "open_children": 20,
+      "interrupted_flows": 10,
+      "answer_kb": 4,
+      "lm_call_kb": 24,
+      "environment": {
+        "CLIO_AGENT_HOME": "D:\\cw\\r6\\home",
+        "CLIO_RUNTIME_STATE_DIR": "D:\\cw\\r6\\runtime",
+        "CLIO_DEFAULT_MARKETPLACE": "D:\\cw\\r6\\marketplace",
+        "CLIO_CORE_PORT": "29212",
+        "CLIO_ARC_CTE_FILE_CAPACITY": "2GB"
+      }
+    },
+    "install": {
+      "cold": {
+        "profile": "D:\\cw\\fp11",
+        "exit_code": 0,
+        "label": "quiet-install-cold",
+        "finished_at": "2026-10-29T02:56:24.5131634Z",
+        "ref": "codex/release-0951-office-startup-recovery",
+        "seconds": 200.9663275,
+        "candidate": "cb3a81f699ca1870bea3a5de28ec93d67c936cf5"
+      },
+      "repeat": {
+        "finished_at": "2026-10-29T02:56:51.9011750Z",
+        "candidate": "cb3a81f699ca1870bea3a5de28ec93d67c936cf5",
+        "exit_code": 0,
+        "ref": "codex/release-0951-office-startup-recovery",
+        "label": "quiet-install-repeat",
+        "profile": "D:\\cw\\fp11",
+        "seconds": 26.0181852
+      }
+    },
+    "agent": {
+      "cold": {
+        "readiness_seen": [
+          [
+            26.888,
+            "starting",
+            [
+              "task_runtime"
+            ]
+          ],
+          [
+            35.299,
+            "ready",
+            []
+          ]
+        ],
+        "first_answer_s": 26.888,
+        "ready_s": 35.299,
+        "rail_page_s": 0.01,
+        "rail_rows": 30,
+        "rail_total": 927,
+        "open_first_page_s": 0.013,
+        "functional_s": 35.321,
+        "outcome": "functional",
+        "stopped_gracefully": true,
+        "stop_s": 8.754
+      },
+      "repeat": {
+        "readiness_seen": [
+          [
+            13.98,
+            "starting",
+            [
+              "task_runtime",
+              "marketplace"
+            ]
+          ],
+          [
+            24.711,
+            "ready",
+            []
+          ]
+        ],
+        "first_answer_s": 13.98,
+        "ready_s": 24.711,
+        "rail_page_s": 0.02,
+        "rail_rows": 30,
+        "rail_total": 927,
+        "open_first_page_s": 0.035,
+        "functional_s": 24.766,
+        "outcome": "functional",
+        "stopped_gracefully": true,
+        "stop_s": 5.991
+      }
+    },
+    "agent_retirement": {
+      "cold": {
+        "command_seconds": 45.155,
+        "exit_code": 0,
+        "forced": [],
+        "survivors": [],
+        "service_cleanup": [
+          {
+            "root": "D:\\cw\\r6\\home\\data\\services\\DESKTOP\\searxng",
+            "generation": "a8e54526-aea5-44de-91f9-6a72793947e1",
+            "pid": 40952,
+            "phase": "stopped",
+            "running": false
+          }
+        ],
+        "finished_at": "2026-10-29T02:59:05.698820+00:00"
+      },
+      "repeat": {
+        "command_seconds": 31.376,
+        "exit_code": 0,
+        "forced": [],
+        "survivors": [],
+        "service_cleanup": [],
+        "finished_at": "2026-10-29T02:59:37.752935+00:00"
+      }
+    },
+    "agent_boot_timing": {
+      "cold": [
+        "WARNING | \u2691 BOOT mark=lifespan_started at=7.410",
+        "WARNING | \u2691 BOOT mark=serving at=19.056",
+        "WARNING | \u2691 BOOT step=marketplace seconds=4.560 start=19.089 thread=MainThread outcome=ok",
+        "WARNING | \u2691 BOOT step=orphans seconds=13.275 start=19.056 thread=MainThread outcome=ok",
+        "WARNING | \u2691 BOOT step=task_history_restore seconds=0.011 start=34.567 thread=asyncio_0 outcome=ok",
+        "WARNING | \u2691 BOOT step=interrupted_sessions seconds=0.068 start=34.586 thread=asyncio_0 outcome=ok",
+        "WARNING | \u2691 BOOT step=interaction_times seconds=0.000 start=34.654 thread=asyncio_0 outcome=ok",
+        "WARNING | \u2691 BOOT step=clio_core_and_store seconds=2.351 start=32.374 thread=MainThread outcome=ok",
+        "WARNING | \u2691 BOOT step=obligations_held seconds=0.197 start=35.023 thread=MainThread outcome=ok",
+        "WARNING | \u2691 BOOT mark=task_runtime_ready at=35.220",
+        "WARNING | \u2691 BOOT step=first_doctor_pass seconds=0.777 start=34.734 thread=MainThread outcome=CancelledError",
+        "WARNING | \u2691 BOOT step=obligations seconds=0.293 start=35.220 thread=MainThread outcome=CancelledError"
+      ],
+      "repeat": [
+        "WARNING | \u2691 BOOT mark=lifespan_started at=6.795",
+        "WARNING | \u2691 BOOT mark=serving at=9.212",
+        "WARNING | \u2691 BOOT step=marketplace seconds=5.240 start=9.217 thread=MainThread outcome=ok",
+        "WARNING | \u2691 BOOT step=orphans seconds=12.942 start=9.213 thread=MainThread outcome=ok",
+        "WARNING | \u2691 BOOT step=task_history_restore seconds=0.017 start=24.303 thread=asyncio_1 outcome=ok",
+        "WARNING | \u2691 BOOT step=interrupted_sessions seconds=0.001 start=24.332 thread=asyncio_1 outcome=ok",
+        "WARNING | \u2691 BOOT step=interaction_times seconds=0.000 start=24.333 thread=asyncio_1 outcome=ok",
+        "WARNING | \u2691 BOOT step=clio_core_and_store seconds=4.868 start=19.465 thread=MainThread outcome=ok",
+        "WARNING | \u2691 BOOT step=obligations_held seconds=0.150 start=24.449 thread=MainThread outcome=ok",
+        "WARNING | \u2691 BOOT mark=task_runtime_ready at=24.599",
+        "WARNING | \u2691 BOOT step=first_doctor_pass seconds=0.663 start=24.334 thread=MainThread outcome=CancelledError",
+        "WARNING | \u2691 BOOT step=obligations seconds=0.400 start=24.599 thread=MainThread outcome=CancelledError"
+      ]
+    },
+    "desktop_package_install": {
+      "seconds": 160.7855402,
+      "exit_code": 0,
+      "finished_at": "2026-10-29T03:07:27.0221941Z",
+      "fresh_profile": true,
+      "codex_home": "D:\\cw\\sp1\\home\\.codex"
+    },
+    "desktop": {
+      "cold": {
+        "started_at": "2026-10-29T03:12:47.976Z",
+        "app": "D:\\cw\\d0951\\clio-desktop.exe",
+        "home": "D:\\cw\\sp1\\home",
+        "backend_validation": {
+          "readiness": "ready",
+          "rail_rows": 30,
+          "rail_total": 927,
+          "expected_sessions": 927,
+          "valid": true
+        },
+        "package_validation": {
+          "valid": true,
+          "detail": "Managed packages checked reason=managed_packages_installed 89.011s",
+          "observed_s": 92.8
+        },
+        "rail_after_settle": {
+          "loading_agents": true,
+          "session_links": 0
+        },
+        "quit": {
+          "seconds_until_all_gone": 13,
+          "exited_after_s": {
+            "server:42348": 7,
+            "other:49588": 7,
+            "clio-core:21592": 7,
+            "other:51724": 7,
+            "desktop:53916": 13,
+            "other:34560": 13,
+            "other:7656": 13,
+            "other:45444": 13,
+            "other:30696": 13,
+            "other:28520": 13,
+            "other:42128": 13,
+            "other:3300": 13,
+            "launcher:48676": 13,
+            "other:2948": 13
+          },
+          "left_running": []
+        },
+        "boot_log_path": "D:\\cw\\sp1\\home\\AppData\\Local\\ai.iowarp.clio.desktop\\logs\\backend-boot.log",
+        "boot_log_current": true,
+        "quit_log": [
+          "INFO:     127.0.0.1:63011 - \"POST /v1/infrastructure/desktop-exit HTTP/1.1\" 200 OK",
+          "INFO:     127.0.0.1:63012 - \"POST /v1/desktop/shutdown HTTP/1.1\" 202 Accepted",
+          "INFO:     Shutting down",
+          "INFO:     Waiting for application shutdown.",
+          "sidecar-progress: backend exited; starting crash cleanup",
+          "sidecar-progress: crash cleanup completed",
+          "sidecar-progress: crash cleanup helper exited"
+        ],
+        "workspace_usable_seconds": 39.8,
+        "cleanup": {
+          "driver_created": "2026-10-29T03:12:45.9742749Z",
+          "driver_survivors": [],
+          "survivors": [],
+          "driver_pid": 33120,
+          "forced_application_processes": [],
+          "exit_code": 0
+        }
+      },
+      "repeat": {
+        "started_at": "2026-10-29T03:14:38.571Z",
+        "app": "D:\\cw\\d0951\\clio-desktop.exe",
+        "home": "D:\\cw\\sp1\\home",
+        "backend_validation": {
+          "readiness": "ready",
+          "rail_rows": 30,
+          "rail_total": 927,
+          "expected_sessions": 927,
+          "valid": true
+        },
+        "package_validation": {
+          "valid": true,
+          "detail": "Managed packages checked reason=managed_packages_unchanged 1.675s",
+          "observed_s": 46.2
+        },
+        "rail_after_settle": {
+          "loading_agents": true,
+          "session_links": 8
+        },
+        "quit": {
+          "seconds_until_all_gone": 13.6,
+          "exited_after_s": {
+            "server:54008": 6.3,
+            "other:18420": 6.3,
+            "clio-core:52344": 6.3,
+            "other:46844": 6.3,
+            "desktop:24756": 12.3,
+            "other:34320": 12.3,
+            "other:30424": 12.3,
+            "other:53972": 12.3,
+            "other:19704": 12.3,
+            "launcher:43200": 12.3,
+            "other:41796": 12.3,
+            "other:30208": 13.6,
+            "other:49740": 13.6,
+            "other:9180": 13.6
+          },
+          "left_running": []
+        },
+        "boot_log_path": "D:\\cw\\sp1\\home\\AppData\\Local\\ai.iowarp.clio.desktop\\logs\\backend-boot.log",
+        "boot_log_current": true,
+        "quit_log": [
+          "INFO:     127.0.0.1:49165 - \"POST /v1/infrastructure/desktop-exit HTTP/1.1\" 200 OK",
+          "INFO:     127.0.0.1:49166 - \"POST /v1/desktop/shutdown HTTP/1.1\" 202 Accepted",
+          "INFO:     Shutting down",
+          "INFO:     Waiting for application shutdown.",
+          "sidecar-progress: backend exited; starting crash cleanup",
+          "sidecar-progress: crash cleanup completed",
+          "sidecar-progress: crash cleanup helper exited"
+        ],
+        "workspace_usable_seconds": 34.3,
+        "cleanup": {
+          "driver_created": "2026-10-29T03:14:36.5237956Z",
+          "driver_survivors": [],
+          "survivors": [],
+          "driver_pid": 47140,
+          "forced_application_processes": [],
+          "exit_code": 0
+        }
+      }
+    }
+  }
+}

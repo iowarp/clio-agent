@@ -20,10 +20,10 @@ import pytest
 import yaml
 
 ROOT = Path(__file__).resolve().parents[2]
-EXPECTED_VERSION = "0.9.5"
+EXPECTED_VERSION = "0.9.5.1"
 #: The release the install docs name: the latest stable one. A beta changes the
 #: package version only; users opt into it explicitly.
-DOCUMENTED_VERSION = "0.9.5"
+DOCUMENTED_VERSION = "0.9.5.1"
 EXPECTED_DSPY = "dspy==3.4.0"
 EXPECTED_FASTMCP = "fastmcp==4.1.2"
 EXPECTED_FASTMCP_SLIM = "fastmcp-slim==4.1.2"
@@ -191,9 +191,9 @@ def test_release_builds_follow_the_current_gact_workspace_layout() -> None:
     assert 'gact_build_time="${GACT_TUI_BUILD_TIME:-}"' in tui_builder
     assert "ARG GACT_TUI_REVISION" in tui_image
     assert "ARG GACT_TUI_BUILD_TIME" in tui_image
-    assert "Resolve GACT source identity" in docker_workflow
-    assert "GACT_TUI_REVISION=${{ steps.gact_source.outputs.revision }}" in docker_workflow
-    assert "GACT_TUI_BUILD_TIME=${{ steps.gact_source.outputs.build_time }}" in docker_workflow
+    assert "Resolve GACT source identity" not in docker_workflow
+    assert "docker/Dockerfile.clio-tui" not in docker_workflow
+    assert "  tui:" not in bundles
     assert 'go version -m "$OUT"' in tui_builder
     assert '"$target_goos" == "$(go env GOHOSTOS)"' in tui_builder
     assert '"$target_goarch" == "$(go env GOHOSTARCH)"' in tui_builder
@@ -437,7 +437,7 @@ def test_release_is_a_draft_until_release_check_publishes_it() -> None:
         for name, job in jobs.items()
         if any("upload_release_assets.sh" in str(step.get("run", "")) for step in job["steps"])
     ]
-    assert sorted(uploaders) == ["desktop", "installers", "tui", "web"]
+    assert sorted(uploaders) == ["desktop", "installers", "web"]
     for name in uploaders:
         assert jobs[name]["needs"] == "release", name
 

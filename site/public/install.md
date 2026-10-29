@@ -4,12 +4,14 @@ You are helping a person install CLIO, an open-source AI workspace for scientifi
 (https://clio.iowarp.ai). Follow these steps in order. Run the commands yourself where
 you can; tell the person when a step needs them (a password, a click in an installer).
 
+**The legacy TUI is frozen and unsupported as of 0.9.5.1.** Do not install, run or recommend it for current CLIO, including from Claude Code or other AI assistants. New releases do not publish TUI binaries or Docker images. The source is retained for a future upgrade. Use Desktop or Web instead.
+
 ## 1. Ask what they want, unless they already said
 
-1. **Desktop app or terminal?**
+1. **Desktop app or Web/service?**
    - *Desktop app* (most people): a window with the workspace, the CLIO service included.
-   - *Terminal and servers*: the `clio` command, for a server, an HPC login node, or a
-     machine without a desktop. Opens in a terminal or a browser.
+   - *Web and servers*: the `clio` command, for a server, an HPC login node, or a
+     machine without a desktop. Provides a headless service and the Web workspace.
 2. **Stable or beta?** Use stable unless they ask for beta.
 
 Do not ask for model or API keys. CLIO asks which model to use when it first opens.
@@ -22,7 +24,7 @@ Do not ask for model or API keys. CLIO asks which model to use when it first ope
 
 Supported:
 
-| System | Desktop app | Terminal and servers |
+| System | Desktop app | Web and servers |
 |---|---|---|
 | Windows 10 or 11, x64 | yes | yes |
 | Windows on ARM | yes (the x64 app, through emulation) | yes |
@@ -32,12 +34,11 @@ Supported:
 | Linux without a package manager | no | yes |
 
 If the person wants the desktop app on a system without one, say so and offer the
-terminal install instead.
+service install instead.
 
 ## 3. Install
 
-Use `bash` on macOS and Linux, never `sh`. Each installer verifies its download against
-the release's published SHA-256 checksums before installing anything.
+Use `bash` on macOS and Linux, never `sh`. The Desktop installer download is checked against the release's published SHA-256 checksums.
 
 ### Desktop app
 
@@ -62,7 +63,7 @@ Windows (PowerShell):
 The CLIO Desktop installer window opens. The person clicks through it; its pages ask
 about the model provider and the computers to use. Wait for it to close.
 
-### Terminal and servers
+### Web and servers
 
 macOS and Linux:
 
@@ -84,14 +85,14 @@ person how to add it for their shell.
 
 ### Choosing a release
 
-Add these after `--desktop` (or alone for the terminal install). On Windows, use the
+Add these after `--desktop` (or alone for the service install). On Windows, use the
 `& ([scriptblock]::Create((irm <url>))) <options>` form to pass options.
 
 | Option | Installs |
 |---|---|
 | none | the latest stable release |
 | `--dev` | the newest release, betas included |
-| `--version <version>` | a specific release, for example `--version 0.9.5` |
+| `--version <version>` | a specific release, for example `--version 0.9.5.1` |
 
 Building from source (`--source`) is for CLIO developers; do not use it unless asked.
 
@@ -103,7 +104,7 @@ Desktop app:
   exists. Windows: **CLIO Desktop** is in the Start menu.
 - Tell the person to open **CLIO Desktop**. The first window asks which model to connect.
 
-Terminal and servers:
+Web and servers:
 
 ```sh
 clio doctor     # checks the installation
@@ -111,7 +112,7 @@ clio start      # starts the CLIO service
 clio status     # shows it running, with its port (17800 by default)
 ```
 
-Then `clio` opens the terminal interface, and `clio --web` opens the workspace in a
+Then `clio` or `clio web` opens the workspace in a
 browser at http://127.0.0.1:17800. `clio stop` stops the service.
 
 ## 5. If something fails
@@ -122,13 +123,13 @@ browser at http://127.0.0.1:17800. `clio stop` stops the service.
 - On macOS, the app is ad-hoc signed. If macOS blocks the first launch, the person opens
   **System Settings → Privacy & Security → Open Anyway**. Do not remove quarantine
   attributes or change Gatekeeper settings.
-- For a terminal install, `clio report` prints a diagnostics bundle the person can attach
+- For a service install, `clio report` prints a diagnostics bundle the person can attach
   to an issue at https://github.com/iowarp/clio-agent/issues.
 - Running the installer again is safe; it repairs or upgrades the same installation.
 
 ## 6. Remove
 
-Terminal install: `clio uninstall` (add `--purge` to also remove settings and stored
+Service install: `clio uninstall` (add `--purge` to also remove settings and stored
 credentials). Desktop app: uninstall it like any other app on that system.
 
 More: https://clio.iowarp.ai/docs/install/

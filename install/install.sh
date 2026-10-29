@@ -20,9 +20,7 @@
 # Honours environment overrides:
 #   CLIO_PREFIX        install root         (default: <agent data>/app)
 #   CLIO_BIN_DIR       launcher location    (default: $HOME/.local/bin)
-#   GACT_VERSION       legacy override for TUI release tag (default: match CLIO)
 #   CLIO_INSTALLER_REF pin launcher scripts (default: the installed release's tag)
-#   GACT_REF           gact-tui branch for the TUI (source mode only)
 #   CLIO_KIT_PACKAGE   local candidate wheel/base spec (default: released 2.11.1)
 #   CLIO_GIT_PROTOCOL  https | ssh          (default: https; source mode only)
 #
@@ -291,20 +289,16 @@ if [ -n "${CLIO_REF:-}" ] && [ -z "$OPT_REF" ]; then
 fi
 [ "$OPT_SOURCE" = 1 ] && [ -n "$OPT_VERSION" ] && die "--version pins a release; use --ref <tag or commit> with --source"
 [ "$OPT_SOURCE" = 0 ] && [ -n "$OPT_REF" ] && die "--ref pins source; add --source"
-GACT_VERSION="${GACT_VERSION:-latest}"
 CLIO_INSTALLER_REF="${CLIO_INSTALLER_REF:-}"
-GACT_REF="${GACT_REF:-}"
 CLIO_KIT_PACKAGE="${CLIO_KIT_PACKAGE:-}"
 CLIO_GIT_PROTOCOL="${CLIO_GIT_PROTOCOL:-https}"
 
 case "$CLIO_GIT_PROTOCOL" in
   https)
     CLIO_REPO="https://github.com/iowarp/clio-agent.git"
-    GACT_REPO="https://github.com/iowarp/gact-tui.git"
     ;;
   ssh)
     CLIO_REPO="git@github.com:iowarp/clio-agent.git"
-    GACT_REPO="git@github.com:iowarp/gact-tui.git"
     ;;
   *)
     die "CLIO_GIT_PROTOCOL must be 'https' or 'ssh' (got: $CLIO_GIT_PROTOCOL)"
@@ -336,11 +330,6 @@ if ! have uv; then
 fi
 if [ "$OPT_SOURCE" = 1 ]; then
   have git || die "git is required for --source"
-fi
-if [ -n "$GACT_REF" ]; then
-  have git || die "git required when GACT_REF is set (source-build mode)"
-  have go  || die "go (>= 1.26) required to build gact from source"
-  [ "$OPT_SOURCE" = 1 ] || die "GACT_REF builds the TUI from source and needs --source"
 fi
 
 # The checkout this script runs from, when it runs from one (not when streamed).
@@ -442,69 +431,9 @@ Commit them on a branch or stash them (git -C '$src' stash), or move the clone a
     || die "could not update the submodules of '$src' to '$ref' (git's message is above); run this installer again"
 }
 
-# ---------- the TUI build, beside the slow stages ---------------------
-# A source install builds the TUI with go. It runs in the background from the moment the
-# source is in place, alongside the dependency, store, managed-package and clio-kit
-# stages; its output goes to a temporary log, printed (and kept) if it fails. The binary
-# is built beside the installed one and moved into place only when it built.
-GACT_BIN="$PREFIX/gact"
-TUI_PID=""
-TUI_LOG=""
-TUI_OUT="$GACT_BIN.build.$$"
-TUI_STARTED=0
-
-start_tui_build() {
-  if [ -n "$GACT_REF" ]; then
-    say "Cloning gact-tui at $GACT_REF (source-build mode)"
-    rm -rf "$PREFIX/gact-tui"
-    git clone --quiet --branch "$GACT_REF" --depth 1 "$GACT_REPO" "$PREFIX/gact-tui" \
-      || die "could not clone gact-tui at '$GACT_REF' from $GACT_REPO (git's message is above)"
-  elif ! have go; then
-    warn "TUI not built: go (>= 1.26) is not installed. Install go and run this installer again for the terminal UI; the desktop app and 'clio --web --dev' work without it."
-    return 0
-  fi
-  TUI_LOG="$(mktemp "${TMPDIR:-/tmp}/clio-tui-build.XXXXXXXX")"
-  say "Building the CLIO-branded TUI in the background (log: $TUI_LOG)"
-  TUI_STARTED=$SECONDS
-  # At a lower CPU priority: the stages on the install's critical path go first, the
-  # compiler takes what they leave.
-  local niceness="" root="$SRC/external/gact-tui"
-  have nice && niceness="nice -n 10"
-  [ -z "$GACT_REF" ] || root="$PREFIX/gact-tui"
-  # Its own process group (job control on for this one job), so an exit stops all of it.
-  set -m
-  # shellcheck disable=SC2086 # $niceness is a command prefix, split on purpose
-  ( cd "$SRC" && GACT_TUI_ROOT="$root" exec $niceness ./scripts/build_clio_tui.sh "$TUI_OUT" ) >"$TUI_LOG" 2>&1 &
-  TUI_PID=$!
-  set +m
-}
-
-finish_tui_build() {
-  [ -n "$TUI_PID" ] || return 0
-  local status=0
-  say "Waiting for the TUI build"
-  wait "$TUI_PID" || status=$?
-  TUI_PID=""
-  if [ "$status" != 0 ]; then
-    rm -f "$TUI_OUT"
-    printf '%s\n' "---- TUI build output ($TUI_LOG) ----" >&2
-    tail -n 80 "$TUI_LOG" >&2 || true
-    printf '%s\n' "---- end of TUI build output ----" >&2
-    die "the TUI build failed (exit $status; full log: $TUI_LOG); its cause is in the output above. Fix it (often: go >= 1.26 cannot be downloaded, or the gact-tui submodule is incomplete: git -C '$SRC' submodule update --init --recursive) and run this installer again."
-  fi
-  mv -f "$TUI_OUT" "$GACT_BIN" || die "could not move the built TUI into place at $GACT_BIN"
-  rm -f "$TUI_LOG"
-  say "TUI built in $((SECONDS - TUI_STARTED)) s: $GACT_BIN"
-}
-
-# Leaving early (a failed stage, Ctrl-C) stops a TUI build still running.
-on_exit() {
-  if [ -n "$TUI_PID" ]; then
-    kill -TERM -- "-$TUI_PID" 2>/dev/null || kill -TERM "$TUI_PID" 2>/dev/null || true
-    rm -f "$TUI_OUT" "$TUI_LOG"
-  fi
-  [ -z "${lockdir:-}" ] || rm -rf "$lockdir"
-}
+# Release installs carry Web; source installs provide the service without a frontend build.
+# The legacy TUI is frozen and unsupported. Do not build or download it here.
+on_exit() { [ -z "${lockdir:-}" ] || rm -rf "$lockdir"; }
 trap on_exit EXIT
 
 # ---------- install clio-agent ----------------------------------------
@@ -545,8 +474,6 @@ if [ "$OPT_SOURCE" = 1 ]; then
     py="$(python_of "$SRC/.python-version")"
     sync_args=(sync --locked --python "$py" --extra argonne --extra flowcept)
   fi
-  # The TUI builds from the source now, beside the slow stages below.
-  start_tui_build
   say "Installing clio-agent deps (uv ${sync_args[*]})"
   sync_status=0
   ( cd "$SRC" && uv "${sync_args[@]}" ) || sync_status=$?
@@ -685,28 +612,9 @@ else
   warn "uv not found — skipping clio-kit MCP runtime provisioning; install uv and rerun this installer"
 fi
 
-# ---------- install gact ----------------------------------------------
-if [ "$OPT_SOURCE" = 1 ]; then
-  finish_tui_build  # started with the source, above
-else
-  tag="$GACT_VERSION"
-  if [ "$tag" = "latest" ]; then
-    if [ -n "${CLIO_INSTALLED_VERSION:-$CLIO_VERSION}" ]; then
-      tag="$(release_tag "${CLIO_INSTALLED_VERSION:-$CLIO_VERSION}")"
-    else
-      say "Resolving latest clio-agent release"
-      tag="$(curl -fsSL https://api.github.com/repos/iowarp/clio-agent/releases/latest \
-            | sed -nE 's/.*"tag_name":[[:space:]]*"([^"]+)".*/\1/p' \
-            | head -n1 || true)"
-      [ -n "$tag" ] || die "couldn't resolve clio-agent latest release tag"
-    fi
-  fi
-  asset="clio-tui-${OS}-${ARCH}"
-  url="https://github.com/iowarp/clio-agent/releases/download/${tag}/${asset}"
-  say "Downloading $asset from clio-agent $tag"
-  curl -fsSL "$url" -o "$GACT_BIN" || die "failed to download $url"
-  chmod +x "$GACT_BIN"
-
+# ---------- install the released Web frontend -------------------------
+if [ "$OPT_SOURCE" = 0 ]; then
+  tag="$(release_tag "${CLIO_INSTALLED_VERSION:-$CLIO_VERSION}")"
   # Web UI bundle (powers `clio --web`): optional, best-effort. The release
   # ships clio-web-<version>.zip containing a clio-web-<version>/ dist dir; we
   # unpack it into $PREFIX/clio-agent/web, which the launcher serves same-origin.
@@ -774,17 +682,16 @@ chmod +x "$PREFIX/uninstall.sh"
 # ---------- finishing notes -------------------------------------------
 say "Done."
 clio_src="$(if [ "$OPT_SOURCE" = 1 ]; then echo "source: $SRC ($(git -C "$SRC" rev-parse --short HEAD 2>/dev/null))"; else echo "PyPI: $CLIO_VERSION"; fi)"
-gact_src="$(if [ -n "$GACT_REF" ]; then echo "source: $GACT_REF"; elif [ "$OPT_SOURCE" = 1 ]; then echo "built from the checkout's submodule"; else echo "release: $tag"; fi)"
 cat <<EOF
 
 Installed to:        $PREFIX
 Launcher:            $LAUNCHER
 clio-agent:          $clio_src
-gact:                $gact_src
+Frontend:            Web (release installs); Desktop is available with --desktop
 
 Next steps:
   1. Make sure $BIN_DIR is on your PATH.
-  2. Run:   clio
+  2. Run:   clio (Web), or clio start (headless service)
   3. Manage the server: clio status | clio restart | clio logs
   4. Tab-completion:    clio completion bash >> ~/.bashrc   (or zsh)
   5. Uninstall:         clio uninstall   (add --purge to drop config)
