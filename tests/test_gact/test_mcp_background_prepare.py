@@ -107,3 +107,31 @@ def test_missing_definitions_return_a_settled_failure(monkeypatch: pytest.Monkey
         "geo": mcp_prepare.LAUNCHER_MISSING
     }
     assert background.prepare_for_turn(object(), {}) == {}
+
+
+def test_stop_interrupts_the_wait_without_cancelling_shared_startup(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from clio_agent.errors import CancellationError
+    from clio_agent.runtime.cancellation import cancellation_checker
+
+    entered = threading.Event()
+    release = threading.Event()
+
+    def mount(executor: Any, namespace: str, spec: Any) -> dict[str, Any]:
+        entered.set()
+        assert release.wait(_BACKSTOP_S)
+        return {"geo_x": object()}
+
+    monkeypatch.setattr("clio_agent.gact.mcp_readiness.mount_namespace_for_session", mount)
+    executor = object()
+    spec = object()
+    warmup = background.prepare_in_background(executor, "geo", spec)
+    try:
+        assert entered.wait(_BACKSTOP_S)
+        with cancellation_checker(lambda: True), pytest.raises(CancellationError):
+            background.prepare_for_turn(executor, {"geo": spec})
+        assert not warmup.done() and not warmup.cancelled()
+    finally:
+        release.set()
+        assert set(warmup.result(_BACKSTOP_S)) == {"geo_x"}

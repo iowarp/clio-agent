@@ -243,7 +243,8 @@ async def _forward_turn_leased(state: "TurnState") -> Any:
     try:
 
         def build_module() -> Any:
-            return build_agent_module(state.app.state.agent, dynamic_agent, build_resolution)
+            with _cancellation_checker(cancel_cb):
+                return build_agent_module(state.app.state.agent, dynamic_agent, build_resolution)
 
         module = await _run_turn_setup_off_loop(state, build_module)
         built = list(getattr(module, "tools", None) or ())

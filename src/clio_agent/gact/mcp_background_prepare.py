@@ -121,7 +121,19 @@ def prepare_for_turn(tool_executor: Any, specs: Mapping[str, Any]) -> dict[str, 
 
     if not specs:
         return {}
+    from clio_agent.errors import CancellationError  # noqa: PLC0415
+    from clio_agent.runtime.cancellation import cancellation_requested  # noqa: PLC0415
+
     futures = {ns: prepare_in_background(tool_executor, ns, spec) for ns, spec in specs.items()}
+    pending = set(futures.values())
+    while pending:
+        if cancellation_requested():
+            # The conversation warm-up can be shared with another turn. Stop this
+            # waiter, not the shared connection it is still preparing.
+            raise CancellationError("Stopped while preparing MCP tools")
+        _done, pending = concurrent.futures.wait(
+            pending, timeout=0.1, return_when=concurrent.futures.FIRST_COMPLETED
+        )
     failures: dict[str, str] = {}
     for namespace, future in futures.items():
         # exception() joins the same connection/listing as the conversation warm-up.
