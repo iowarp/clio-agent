@@ -1,8 +1,8 @@
 # CLIO launcher + server lifecycle manager (Windows / PowerShell).
 #
 # `clio` with no arguments boots the clio-agent server (if not already
-# up) and opens Web. The legacy TUI is frozen and unsupported:
-# they let you manage the backing server without hunting PIDs.
+# up) and opens Web. The legacy TUI is frozen and unsupported. The subcommands
+# manage the backing server without hunting PIDs.
 #
 #   clio                 ensure server is up, then open Web
 #   clio web | --web     ensure server is up, then open the web UI in a browser

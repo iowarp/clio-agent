@@ -95,7 +95,7 @@ PowerShell also accepts `-Source`, `-Version`, `-Ref` and `-Desktop`.
 </TabItem>
 </Tabs>
 
-Run from inside a clone of the repository (`./install/install.sh --source`), the script installs that checkout in place, on whatever branch it is. The terminal UI is built from source when Go 1.26 or newer is installed; without Go, the installer says so and installs the rest.
+Run from inside a clone of the repository (`./install/install.sh --source`), the script installs that checkout in place, on whatever branch it is. Source installs provide the service without building a frontend. Follow the [contributor guide](/docs/contributing/) to build Web or Desktop; the frozen TUI is not built.
 
 Running the script again over an installation upgrades or repairs it and keeps your settings.
 
@@ -168,7 +168,7 @@ uv tool install --python 3.14 --with dspy==3.4.0 --with fastmcp==4.1.2 --with fa
 clio-agent serve
 ```
 
-The extra `--with` pins are required: CLIO depends on specific prerelease versions of two libraries, and uv needs them named explicitly. Use `uv tool upgrade clio-agent` to upgrade later. This path does not include the terminal UI or the `clio` command.
+The extra `--with` pins select the verified SDK roots used by CLIO's installers. Use `uv tool upgrade clio-agent` to upgrade later. This path installs the backend without the Web bundle or the `clio` launcher.
 
 ## From source
 

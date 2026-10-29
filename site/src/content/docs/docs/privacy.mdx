@@ -17,7 +17,7 @@ installation, uploads go to that server even when the interface is in your local
 
 - The CLIO backend listens on `127.0.0.1` (port 17800 when started by the `clio` command), so other computers cannot reach it by default.
 - Sessions, messages, memory, and artifacts are stored in your [user configuration folder](/docs/configuration/) and in each workspace's `.clio` folder.
-- The desktop app, web page, and terminal UI all talk to that local backend.
+- Desktop and Web talk to that local backend. The legacy TUI is frozen and unsupported.
 
 CLIO does not include a product-usage telemetry or analytics service. Configured
 providers and tools still receive requests, and the installation can retain
