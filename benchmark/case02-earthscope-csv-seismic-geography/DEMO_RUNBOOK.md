@@ -68,6 +68,10 @@ cd /home/jcernuda/clio-agent && CLIO_RUN_LIVE=1 ES_REGION="San Diego area" uv ru
   fabrication — keep / generalize the `*_selection` denylist / or trade for pure agent-reliability.
 
 ## Second case: wildfire — WORKING (second demoable case)
+> Removed 2026-10: the `wildfire-smoke-impact-review` agent left the marketplace and
+> `tests/test_real_cases/test_wildfire_case.py` was deleted with it. This section is kept
+> as a record of the earlier demo.
+
 The `wildfire-smoke-impact-review` pack runs on the same composable core and now **passes its
 acceptance test** (`tests/test_real_cases/test_wildfire_case.py` → pass): it selects a live fire
 (WFIGS), resolves the fire perimeter into a region, fuses smoke + air-quality, computes the

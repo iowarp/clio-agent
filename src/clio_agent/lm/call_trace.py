@@ -29,7 +29,14 @@ class LMCallTrace(BaseCallback):
         self._open: dict[str, tuple[Any, dict[str, Any]]] = {}
 
     def on_lm_start(self, call_id: str, instance: Any, inputs: dict[str, Any]) -> None:
-        """Remember the call's LM and inputs until it ends."""
+        """Remember the call's LM and inputs until it ends.
+
+        The LM's history goes to the turn ledger, not DSPy's process-wide histories
+        (:func:`clio_agent.runtime.turn_lm_ledger.route_history`).
+        """
+        from clio_agent.runtime.turn_lm_ledger import route_history  # noqa: PLC0415
+
+        route_history(instance)
         with self._lock:
             self._open[call_id] = (instance, inputs)
 
@@ -41,7 +48,13 @@ class LMCallTrace(BaseCallback):
             instance, inputs = self._open.pop(call_id, (None, {}))
         try:
             _emit(
-                call_record(str(getattr(instance, "model", "") or ""), inputs, outputs, exception)
+                call_record(
+                    str(getattr(instance, "model", "") or ""),
+                    inputs,
+                    outputs,
+                    exception,
+                    response=_adapter_response(outputs),
+                )
             )
         except Exception as exc:  # noqa: BLE001 - recording must never fail a call
             from clio_agent.runtime import trace  # noqa: PLC0415
@@ -54,15 +67,28 @@ LM_CALL_TRACE = LMCallTrace()
 
 
 def call_record(
-    model: str, inputs: dict[str, Any], outputs: Any, exception: BaseException | None
+    model: str,
+    inputs: dict[str, Any],
+    outputs: Any,
+    exception: BaseException | None,
+    *,
+    response: Any = None,
 ) -> dict[str, Any]:
-    """The ``lm.call`` payload for one call (typed Request/Response or adapter I/O)."""
+    """The ``lm.call`` payload for one call (typed Request/Response or adapter I/O).
+
+    ``response`` is the provider ``Response`` behind an adapter call's list outputs
+    (:func:`_adapter_response`): the list carries only text, so its finish reason and
+    usage -- how the model ended and how much it generated -- come from the Response.
+    """
     request = inputs.get("prompt") or inputs.get("kwargs", {}).get("request")
     if hasattr(request, "messages") and hasattr(request, "model"):
         messages: Any = _request_messages(request)
     else:
         messages = inputs.get("messages") or request
     content, reasoning, finish, usage = _outputs(outputs)
+    if response is not None and getattr(response, "message", None) is not None:
+        finish = str(response.finish_reason or "")
+        usage = _usage(getattr(response, "usage", None))
     record: dict[str, Any] = {
         "model": model,
         "messages": messages,
@@ -91,6 +117,19 @@ def call_record(
     if exception is not None:
         record["error"] = f"{type(exception).__name__}: {exception}"
     return record
+
+
+def _adapter_response(outputs: Any) -> Any:
+    """The ``Response`` behind an adapter call's list ``outputs``, else ``None``.
+
+    The call's history entry holds that very list object next to the raw Response;
+    the turn ledger hands it over to this call's end handler
+    (:func:`clio_agent.runtime.turn_lm_ledger.take_adapter_entry`).
+    """
+    from clio_agent.runtime.turn_lm_ledger import take_adapter_entry  # noqa: PLC0415
+
+    entry = take_adapter_entry(outputs)
+    return entry.get("response") if entry is not None else None
 
 
 def _response_id(outputs: Any) -> str:

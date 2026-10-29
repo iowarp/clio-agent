@@ -1,10 +1,13 @@
 """EarthScope GNSS region — real case acceptance test.
 
 The real EarthScope case test (supersedes the EarthScope-specific
-``scripts/run_demo_benchmark.py`` lane): a live CLIO session through the
-``earthscope-gnss-region`` blueprint must resolve the geography, acquire real
-EarthScope/NDP GNSS station CSV evidence, analyze it, render a PNG, and
-synthesize — judged on the *structured* trace, not on the model's prose.
+``scripts/run_demo_benchmark.py`` lane): a live CLIO session pinned to the
+``clio/earthscope`` marketplace agent must resolve the geography,
+acquire real EarthScope/NDP GNSS station CSV evidence, analyze it, render a PNG,
+and synthesize — judged on the *structured* trace, not on the model's prose.
+The agent is one EarthScope GNSS scientist that loads the ``earthscope`` and
+``geodesy`` procedures on demand, so the pathway is read from its own tool calls (and any
+regional child turns it fans out to, which the harness folds into the run).
 
 Provider/model are injected, not in the test. As a blast-radius guardrail the
 matrix is restricted to one provider (Metis) and at most 2 models; normal
@@ -19,6 +22,11 @@ The matchers below guard the data pathway with structured checks (on-region
 station from the filter result, real non-empty PNG, full acquisition pipeline).
 Judging whether the synthesis is *honest* about the evidence is the agent's
 trace-review job; what review finds gets frozen as new matchers here.
+
+Since the 2026-10 marketplace restructure (EarthScope 0.6.0) the agent no longer
+carries the ``plot`` and ``pandas`` plugins, so the matchers that read
+``pandas_profile_csv`` / ``plot_plot_timeseries`` need re-deriving from a fresh live
+grind before the positive cells can pass again.
 """
 
 from __future__ import annotations
@@ -30,6 +38,7 @@ from pathlib import Path
 import pytest
 from agent_test import matcher
 
+AGENT_REF = "clio/earthscope"
 CASE_DIR = "benchmark/case02-earthscope-csv-seismic-geography"
 PROMPT = Path(CASE_DIR, "prompt.txt").read_text().strip()
 
@@ -146,7 +155,7 @@ def test_earthscope_gnss_region(agent, gact_server, cell, tmp_path):
     run = agent.run(
         {
             "task": prompt,
-            "blueprint_id": "earthscope-gnss-region",
+            "agent_ref": AGENT_REF,
             "case_dir": CASE_DIR,
             "run_label": cell.label,
             # Isolated, auto-cleaned workspace root: the agent writes the staged CSV
@@ -166,7 +175,7 @@ def test_earthscope_gnss_region(agent, gact_server, cell, tmp_path):
 
     # Runtime/harness invariants.
     assert run.error is None, run.error
-    assert run.extra["blueprint_activated"], run.extra.get("active_agent_blueprint_id")
+    assert run.extra["agent_activated"], run.extra.get("active_agent_ref")
 
     if cell.expect == "negative":
         # No EarthScope GNSS coverage in the requested region: the agent must
@@ -182,13 +191,12 @@ def test_earthscope_gnss_region(agent, gact_server, cell, tmp_path):
         )
         return
 
-    # Route: geospatial -> data -> analysis -> visualization, with the main
-    # itself authoring the final answer (no separate "synthesis" child exists in
-    # this pack -- earthscope-gnss-region/experts/main.md: "there is no separate
-    # final-responder child"). A positive cell must reach visualization: the
-    # PNG matchers below require its output.
-    assert run.routed_to("data"), run.steps
-    assert run.routed_to("visualization"), run.steps
+    # Acquisition and visualization ran as the agent's own tool calls: it staged
+    # station data (acquire-earthscope-gnss) and exported the static time-series
+    # plot (visualize-earthscope-gnss; no A2UI client capabilities are advertised
+    # here, so the interactive chart is refused and the PNG export is the plot).
+    assert run.called("ndp_stage_resource"), run.tool_names
+    assert run.called("plot_plot_timeseries"), run.tool_names
 
     # Data pathway: the full real pipeline ran (not just "some tool fired").
     assert ran_acquisition_to_plot_pipeline(run), run.tool_names

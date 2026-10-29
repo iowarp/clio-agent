@@ -1,0 +1,21 @@
+{
+  "scale": 1,
+  "conversations": 929,
+  "open_records": 99,
+  "seconds": 349.7,
+  "flows": 150,
+  "children_per_flow": 4,
+  "chats": 100,
+  "chat_turns": 6,
+  "open_children": 20,
+  "interrupted_flows": 10,
+  "answer_kb": 4,
+  "lm_call_kb": 24,
+  "environment": {
+    "CLIO_AGENT_HOME": "D:\\cw\\r4\\home",
+    "CLIO_RUNTIME_STATE_DIR": "D:\\cw\\r4\\runtime",
+    "CLIO_DEFAULT_MARKETPLACE": "D:\\cw\\r4\\marketplace",
+    "CLIO_CORE_PORT": "29121",
+    "CLIO_ARC_CTE_FILE_CAPACITY": "2GB"
+  }
+}

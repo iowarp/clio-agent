@@ -1,0 +1,14 @@
+{
+  "$schema": "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json",
+  "name": "orchestration",
+  "version": "1.0.0",
+  "description": "Flows the model can start as owned work: run_workflow and run_flow, plus the council and arena flows.",
+  "author": {"name": "IoWarp Team"},
+  "license": "BSD-3-Clause",
+  "keywords": ["orchestration", "flows", "workflows"],
+  "extensions": {
+    "ai.iowarp.clio": {
+      "requires": ["delegation"]
+    }
+  }
+}

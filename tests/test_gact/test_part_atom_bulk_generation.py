@@ -39,15 +39,17 @@ def test_staged_generation_persists_each_chunk_once(
     store = arc._segments
     contents = _atoms(23)
     monkeypatch.setattr(part_atoms, "_chunk_capacity", lambda: 7)
-    original = store._persist
+    original = store._store.put
     writes: list[str] = []
+    prefix = store._record_name("bulk-generation", part_atoms.MESSAGE_PART_SCOPE + "/g/")
 
-    def persist(sid: str, scope: str) -> None:
-        if scope.startswith(part_atoms.MESSAGE_PART_SCOPE + "/g/"):
-            writes.append(scope)
-        original(sid, scope)
+    def persist(kind: str, name: str, payload: bytes, **kwargs: Any) -> None:
+        if kind == "segments" and name.startswith(prefix):
+            writes.append(name)
+        original(kind, name, payload, **kwargs)
 
-    monkeypatch.setattr(store, "_persist", persist)
+    # Both a staged chunk and a confirmed live append cross this durable boundary.
+    monkeypatch.setattr(store._store, "put", persist)
     replace_lane(
         store,
         "bulk-generation",

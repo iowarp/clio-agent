@@ -35,6 +35,7 @@ from typing import TYPE_CHECKING, Any, cast
 from fastapi import BackgroundTasks, FastAPI, HTTPException, Request, Response
 from fastapi.responses import JSONResponse
 
+from clio_agent.gact import session_warmup
 from clio_agent.gact.events import Event
 from clio_agent.gact.message_submission import accept_message_async
 from clio_agent.gact.message_wire import normalize_thought_ownership
@@ -43,6 +44,7 @@ from clio_agent.gact.off_loop import run_off_loop
 from clio_agent.gact.protocol_v3 import project_for_request, transcript_entities
 from clio_agent.gact.routes.response_feedback import register_response_feedback_routes
 from clio_agent.gact.routes.session_a2ui_preservation import preserve_a2ui
+from clio_agent.gact.transcript_pages import PageCursorNotFound, read_message_page
 from clio_agent.gact.types import (
     ErrorEnvelope,
     ErrorInfo,
@@ -84,6 +86,19 @@ def register_messages_routes(app: FastAPI, deps: "GactDeps") -> None:
                     error="not_found",
                     message=f"session not found: {sid}",
                     details={"session_id": sid},
+                    recoverable=False,
+                )
+            ).model_dump(exclude_none=True),
+        )
+
+    def _before_not_found(sid: str, before: str) -> HTTPException:
+        return HTTPException(
+            status_code=404,
+            detail=ErrorEnvelope(
+                error=ErrorInfo(
+                    error="not_found",
+                    message=f"message not found: {before}",
+                    details={"session_id": sid, "message_id": before},
                     recoverable=False,
                 )
             ).model_dump(exclude_none=True),
@@ -174,33 +189,21 @@ def register_messages_routes(app: FastAPI, deps: "GactDeps") -> None:
 
     @app.get("/v1/sessions/{sid}/tools/{call_id}/presentation/{block_id}")
     async def get_tool_presentation_content(
-        sid: str, call_id: str, block_id: str, cursor: int = 0
+        sid: str,
+        call_id: str,
+        block_id: str,
+        cursor: int = 0,
+        result_sha256: str | None = None,
     ) -> dict[str, Any]:
         """Page persisted presentation content within the owning session only."""
 
-        from clio_agent.gact.tool_result_presentation import (
-            presentation_page,
-            recorded_presentation,
-        )
+        from clio_agent.gact.tool_presentation_content import tool_presentation_content
 
         if app.state.sessions.get(sid) is None:
             raise _session_not_found(sid)
-        parts = [part for message in app.state.messages.get(sid, []) for part in message.parts]
-        parts.extend(getattr(app.state, "live_assistant_parts", {}).get(sid, []))
-        for part in reversed(parts):
-            if part.call_id != call_id:
-                continue
-            args = next(
-                (p.input for p in parts if p.call_id == call_id and p.type == "tool_call"), None
-            )
-            presentation = recorded_presentation(part.model_dump(), args) or {}
-            for block in presentation.get("blocks", []):
-                if block["id"] == block_id:
-                    try:
-                        return presentation_page(block, cursor)
-                    except ValueError as exc:
-                        raise HTTPException(status_code=400, detail=str(exc)) from exc
-        raise HTTPException(status_code=404, detail="Presentation content not found in session")
+        return await run_off_loop(
+            tool_presentation_content, app, sid, call_id, block_id, cursor, result_sha256
+        )
 
     @app.get("/v1/sessions/{sid}/messages/search")
     async def search_messages(sid: str, q: str = "") -> dict[str, Any]:
@@ -314,6 +317,8 @@ def register_messages_routes(app: FastAPI, deps: "GactDeps") -> None:
           suppressible via ``?include_system=false``).
         * ``limit`` — return at most this many NEWEST messages (after ``before``
           is applied). Must be ``> 0``; ``<= 0`` raises a 422 validation error.
+          A bounded request reads only its page from the message lane by range
+          (:mod:`clio_agent.gact.transcript_pages`); older messages are not read.
         * ``before`` — cursor: return only messages strictly OLDER (earlier in
           chronological order) than the message whose id equals ``before``. An
           unknown id raises a 404 (mirrors ``get_message``). The live in-flight
@@ -328,6 +333,8 @@ def register_messages_routes(app: FastAPI, deps: "GactDeps") -> None:
         sess = app.state.sessions.get(sid)
         if sess is None:
             raise _session_not_found(sid)
+        if before is None:  # the conversation is opened: load its agent's servers (B3)
+            session_warmup.start_session_warmup(app, sid, trigger="conversation_opened")
         if limit is not None and limit <= 0:
             raise HTTPException(
                 status_code=422,
@@ -341,6 +348,7 @@ def register_messages_routes(app: FastAPI, deps: "GactDeps") -> None:
                 ).model_dump(exclude_none=True),
             )
 
+        projection_cursor = str(app.state.bus.latest_event_id(sid))
         # TUI (and SPEC §6.4) expect newest-first with an optional
         # cursor for older pages. We store chronologically so reverse
         # at read time. Apply filters against the chronological list
@@ -354,7 +362,24 @@ def register_messages_routes(app: FastAPI, deps: "GactDeps") -> None:
         messages = app.state.messages
         index = getattr(app.state, "transcript_index", None)
         has_persisted_ledger = bool(index is not None and index.has_session(sid))
-        if sess.message_count == 0 and not has_persisted_ledger:
+        # A bounded request reads only its page from the message lane by range
+        # (gact.transcript_pages): opening a conversation never materializes it.
+        page = None
+        if limit is not None and (sess.message_count > 0 or has_persisted_ledger):
+            try:
+                page = await run_off_loop(
+                    read_message_page,
+                    app,
+                    sid,
+                    limit=limit,
+                    before=before,
+                    include_system=include_system,
+                )
+            except PageCursorNotFound:
+                raise _before_not_found(sid, before or "") from None
+        if page is not None:
+            chronological_rows = list(page.messages)
+        elif sess.message_count == 0 and not has_persisted_ledger:
             get_if_resident = getattr(messages, "get_if_resident", None)
             if callable(get_if_resident):
                 chronological_rows = list(cast(list[Message] | None, get_if_resident(sid)) or [])
@@ -376,25 +401,15 @@ def register_messages_routes(app: FastAPI, deps: "GactDeps") -> None:
         # a real stored message; return only rows strictly older than it. The
         # live in-flight projection is never a stored message, so it can never be
         # a valid ``before`` target — an unknown id is a 404 like get_message.
-        if before is not None:
+        if before is not None and page is None:
             cursor_index = next(
                 (i for i, m in enumerate(chronological_rows) if m.id == before),
                 -1,
             )
             if cursor_index < 0:
-                raise HTTPException(
-                    status_code=404,
-                    detail=ErrorEnvelope(
-                        error=ErrorInfo(
-                            error="not_found",
-                            message=f"message not found: {before}",
-                            details={"session_id": sid, "message_id": before},
-                            recoverable=False,
-                        )
-                    ).model_dump(exclude_none=True),
-                )
+                raise _before_not_found(sid, before)
             chronological_rows = chronological_rows[:cursor_index]
-        else:
+        elif before is None:
             # The live assistant message is the NEWEST message and only belongs
             # on the newest page (``before`` unset). Paginating into the past
             # never appends it.
@@ -405,7 +420,7 @@ def register_messages_routes(app: FastAPI, deps: "GactDeps") -> None:
                     chronological_rows.append(live_assistant)
 
         # (2) Drop system messages when suppressed.
-        if not include_system:
+        if not include_system and page is None:
             chronological_rows = [m for m in chronological_rows if m.role != "system"]
 
         # (3) Reverse to newest-first.
@@ -414,7 +429,14 @@ def register_messages_routes(app: FastAPI, deps: "GactDeps") -> None:
         # (4) Apply ``limit`` to the newest N, and (5) compute next_cursor: the id
         # of the oldest message in this page WHEN the limit truncated older rows.
         next_cursor: str | None = None
-        if limit is not None and len(rows) > limit:
+        if page is not None:
+            assert limit is not None  # Only a bounded request creates a transcript page.
+            # The live projection may have joined the newest page: the oldest row
+            # it displaced is then the start of the next page.
+            more = page.has_more or len(rows) > limit
+            rows = rows[:limit]
+            next_cursor = rows[-1].id if more and rows else None
+        elif limit is not None and len(rows) > limit:
             rows = rows[:limit]
             if rows:
                 next_cursor = rows[-1].id
@@ -469,14 +491,19 @@ def register_messages_routes(app: FastAPI, deps: "GactDeps") -> None:
                 catalogs=session_catalog_resolver(app, sid),
                 active_message_ids=active_ids,
             )
-            snapshot["cursor"] = str(app.state.bus.latest_event_id(sid))
+            from clio_agent.gact.tool_execution_projection import join_task_executions
+
+            snapshot["tools"] = join_task_executions(app, sid, snapshot["tools"])
+            # Replay from before materialization so a concurrent task change is not lost.
+            snapshot["cursor"] = projection_cursor
             # The paging cursor is a MESSAGE id and a different fact from the
             # event cursor above; dropping it left a v3 client with no way to
             # page into the past that a v2 client had.
             snapshot["next_cursor"] = next_cursor
             return JSONResponse(content=snapshot)
 
-        return project_for_request(
+        return await run_off_loop(
+            project_for_request,
             request,
             v3=project_v3,
             v2=lambda: {

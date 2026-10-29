@@ -13,11 +13,11 @@ import pytest
 from clio_agent.arc.memory import ARCMemory
 from clio_agent.arc.task_types import AssignmentDetails, TaskSnapshot
 from clio_agent.gact import context
-from clio_agent.gact.agents import blueprint_commission, clio_react_record
+from clio_agent.gact.agents import clio_react_record
 from clio_agent.gact.assignment_evidence import select_assignment_evidence
 from clio_agent.gact.builtin_boundary import BuiltinBoundary
+from clio_agent.gact.spawn_tools import build_spawn_runtime_tools
 from clio_agent.gact.task_access import TaskCaller
-from clio_agent.gact.task_declarations import build_spawn_runtime_tools
 from clio_agent.gact.task_operations import TaskOperations
 from tests.test_arc.test_assignment_evidence_contracts import evidence_children
 from tests.test_arc.test_conversation_owner_contracts import create_environment
@@ -206,22 +206,15 @@ async def test_expired_pattern_wait_retains_its_search_recovery_metadata(
 
 
 @pytest.mark.asyncio
-async def test_public_fastmcp_fanout_accepts_blueprint_only_and_keeps_failed_positions(
+async def test_public_fastmcp_fanout_keeps_failed_positions(
     arc: ARCMemory,
     tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     app, owner, root = await create_environment(arc, tmp_path)
     app.state.mcp_app_loop = asyncio.get_running_loop()
     app.state.workspaces = SimpleNamespace(
         get=lambda _wid: SimpleNamespace(root_path=str(tmp_path))
     )
-
-    def resolve(_app: Any, _sid: str, agent: str, blueprint: str | None) -> tuple[Any, ...]:
-        assert agent == "" and blueprint == "writer-blueprint"
-        return "writer", {"blueprint_id": blueprint}, None, None
-
-    monkeypatch.setattr(blueprint_commission, "resolve_commission_target", resolve)
     tool = next(
         tool
         for tool in build_spawn_runtime_tools(None, SimpleNamespace(fanout={}))
@@ -234,19 +227,26 @@ async def test_public_fastmcp_fanout_accepts_blueprint_only_and_keeps_failed_pos
                 tool,
                 {
                     "spawns": [
-                        {"blueprint_id": "writer-blueprint", "task": "Write original"},
+                        {"agent": "writer", "task": "Write original"},
                         {
-                            "blueprint_id": "writer-blueprint",
+                            "agent": "writer",
                             "task": "Invalid evidence",
                             "input_task_ids": ["missing"],
                         },
+                        {"agent": "", "task": "No target agent"},
                     ]
                 },
                 contextvars.copy_context(),
             )
-        assert result["spawned"] == result["outcomes"] and len(result["spawned"]) == 2
+        assert result["spawned"] == result["outcomes"] and len(result["spawned"]) == 3
         assert result["spawned"][0]["accepted"] is True
+        child = app.state.sessions.get(result["spawned"][0]["session_id"])
+        assert child is not None and child.agent["id"] == "writer"
         assert result["spawned"][1]["index"] == 1 and "error" in result["spawned"][1]
+        # No target agent: a copy of the caller.
+        assert result["spawned"][2]["accepted"] is True
+        copy = app.state.sessions.get(result["spawned"][2]["session_id"])
+        assert copy is not None and copy.metadata["spawn_target"] == "self"
     finally:
         context.reset(sid)
         context.reset(token)

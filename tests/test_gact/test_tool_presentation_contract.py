@@ -33,7 +33,12 @@ def test_every_native_registration_declares_presentation() -> None:
     root = Path(__file__).parents[2] / "src" / "clio_agent"
     missing = []
     for path in root.rglob("*.py"):
-        for node in ast.walk(ast.parse(path.read_text(encoding="utf-8"))):
+        text = path.read_text(encoding="utf-8")
+        # Plugins *claim* a built-in with the SDK's ``native_tool("name")``; only the
+        # instrumentation factory constructs tools.
+        if "tool_instrumentation import" not in text:
+            continue
+        for node in ast.walk(ast.parse(text)):
             if (
                 isinstance(node, ast.Call)
                 and isinstance(node.func, ast.Name)
@@ -44,8 +49,8 @@ def test_every_native_registration_declares_presentation() -> None:
     assert missing == []
     assert {
         "fs_read_file",
-        "fs_propose_edit",
-        "fs_apply_edit_write",
+        "fs_write_file",
+        "fs_edit_file",
         "shell_bash",
     } <= MCP_PRESENTATION_ADAPTERS.keys()
     for namespace in ("fs", "shell"):
@@ -76,7 +81,7 @@ def test_historical_header_projection_preserves_original_blocks() -> None:
         ],
     }
     before = json.dumps(original)
-    view = project_presentation(original, "session", "call", tool_name="fs_apply_edit_write")
+    view = project_presentation(original, "session", "call", tool_name="fs_write_file")
     assert view is not None and view["action"] == "Write"
     assert view["subject"] == "file-link"
     assert view["blocks"] == original["blocks"]

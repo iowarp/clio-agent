@@ -8,7 +8,7 @@ import math
 from dataclasses import dataclass
 from typing import Any, Literal
 
-from pydantic import BaseModel, ConfigDict, StrictBool, StrictFloat, StrictInt
+from pydantic import BaseModel, ConfigDict, StrictBool, StrictFloat, StrictInt, StrictStr
 
 from clio_agent import conf
 from clio_agent.arc import history_mode
@@ -24,7 +24,7 @@ from clio_agent.user_config_document import (
     write_document,
 )
 
-SettingValue = StrictBool | StrictInt | StrictFloat
+SettingValue = StrictBool | StrictInt | StrictFloat | StrictStr
 Source = Literal["workspace", "user", "environment", "default"]
 
 
@@ -45,13 +45,15 @@ class SettingDefinition:
     title: str
     description: str
     group: str
-    default: bool | float
+    default: bool | float | str
     effect: str
     minimum: float | None = None
     maximum: float | None = None
     integer: bool = False
     unit: str | None = None
     unlimited_value: int | None = None
+    choices: tuple[tuple[str, str], ...] = ()  # (value, label) for a choice setting
+    presets: tuple[tuple[int, str], ...] = ()  # (value, label) for common numeric choices
 
 
 _DEFINITIONS = (
@@ -75,6 +77,42 @@ _DEFINITIONS = (
         "Subagents",
         float(DEFAULT_MAX_SPAWN_DEPTH),
         "Applies to new subagents immediately. Existing descendants remain visible.",
+        minimum=0,
+        integer=True,
+        unlimited_value=0,
+    ),
+    SettingDefinition(
+        "agent_tasks.max_forks_per_task",
+        "CLIO_MAX_FORKS_PER_TASK",
+        "Forks per task",
+        "Most copies an agent may make of itself to try another direction, per task. Inside a workflow a fork counts as an added step instead.",
+        "Subagents",
+        0.0,
+        "Applies to forks made from now on.",
+        minimum=0,
+        integer=True,
+        unlimited_value=0,
+    ),
+    SettingDefinition(
+        "workflows.max_added_steps",
+        "CLIO_WORKFLOW_MAX_ADDED_STEPS",
+        "Steps editors may add",
+        "Most steps a workflow's editors may add to one run. A workflow may ask for fewer.",
+        "Workflows",
+        0.0,
+        "Applies to steps proposed from now on.",
+        minimum=0,
+        integer=True,
+        unlimited_value=0,
+    ),
+    SettingDefinition(
+        "workflows.max_edit_rounds",
+        "CLIO_WORKFLOW_MAX_EDIT_ROUNDS",
+        "Editing rounds",
+        "Most rounds of edits in one workflow run. A workflow may ask for fewer.",
+        "Workflows",
+        0.0,
+        "Applies to edits proposed from now on.",
         minimum=0,
         integer=True,
         unlimited_value=0,
@@ -153,6 +191,99 @@ _DEFINITIONS = (
         True,
         "Restart the connected CLIO service for this change to take effect.",
     ),
+    SettingDefinition(
+        "memory.enabled",
+        "CLIO_MEMORY_ENABLED",
+        "Use memory",
+        "Use saved facts and preferences in later conversations. Turning this off keeps "
+        "existing memories.",
+        "Memory",
+        True,
+        "Applies to sessions that start after the change.",
+    ),
+    SettingDefinition(
+        "memory.background",
+        "CLIO_MEMORY_BACKGROUND",
+        "Create memories from conversations",
+        "Uses background model calls, which count toward model usage. Models are set in Fleet.",
+        "Memory",
+        True,
+        "Applies on the next background scheduler pass.",
+    ),
+    SettingDefinition(
+        "memory.session_search",
+        "CLIO_MEMORY_SESSION_SEARCH",
+        "Use conversation history",
+        "Recall earlier messages, separate from saved memories. Retrieved text can add model "
+        "usage; no background jobs.",
+        "Memory",
+        True,
+        "Applies to upcoming session-recall requests.",
+    ),
+    SettingDefinition(
+        "memory.sensitive",
+        "CLIO_MEMORY_SENSITIVE",
+        "Include sensitive topics",
+        "Let background memory keep facts about health, finances, beliefs and similar matters.",
+        "Memory",
+        False,
+        "Applies at the next idle check.",
+    ),
+    SettingDefinition(
+        "memory.auto_accept",
+        "CLIO_MEMORY_AUTO_ACCEPT",
+        "Apply background changes without review",
+        "Choose which new and updated memories save automatically. Retirement needs review.",
+        "Memory",
+        "user_stated",
+        "Applies to proposals made after the change.",
+        choices=(
+            ("user_stated", "Facts I state directly"),
+            ("all", "All new and updated memories"),
+            ("none", "Review every change"),
+        ),
+    ),
+    SettingDefinition(
+        "memory.idle_minutes",
+        "CLIO_MEMORY_IDLE_MINUTES",
+        "Create memories",
+        "Runs after a completed turn or idle delay, at the next background check.",
+        "Memory",
+        30.0,
+        "Applies on the next scheduler pass, normally checked once a minute.",
+        minimum=0,
+        integer=True,
+        unit="minutes",
+        unlimited_value=0,
+        presets=(
+            (0, "After each completed turn"),
+            (5, "5 minutes"),
+            (15, "15 minutes"),
+            (30, "30 minutes"),
+            (60, "1 hour"),
+        ),
+    ),
+    SettingDefinition(
+        "memory.expiry_days",
+        "CLIO_MEMORY_EXPIRY_DAYS",
+        "Review unused memories after",
+        "Profile and preferences are always kept. Other retirement proposals need review.",
+        "Memory",
+        60.0,
+        "Applies at the next background pass.",
+        minimum=0,
+        integer=True,
+        unit="days",
+        unlimited_value=0,
+        presets=(
+            (0, "Never"),
+            (30, "30 days"),
+            (60, "60 days"),
+            (90, "90 days"),
+            (180, "180 days"),
+            (365, "1 year"),
+        ),
+    ),
 )
 _BY_KEY = {definition.key: definition for definition in _DEFINITIONS}
 
@@ -166,7 +297,7 @@ class RuntimeSetting(BaseModel):
     group: str
     value: SettingValue
     default_value: SettingValue
-    kind: Literal["boolean", "number", "integer"]
+    kind: Literal["boolean", "number", "integer", "choice"]
     minimum: float | None
     maximum: float | None
     unit: str | None
@@ -176,6 +307,8 @@ class RuntimeSetting(BaseModel):
     editable: bool
     reason: str | None
     unlimited_value: int | None = None
+    choices: list[dict[str, str]] = []
+    presets: list[dict[str, str | int]] = []
 
 
 class RuntimeSettings(BaseModel):
@@ -194,7 +327,11 @@ class UpdateRuntimeSettings(BaseModel):
     changes: dict[str, SettingValue | None]
 
 
-def _validate(definition: SettingDefinition, value: Any) -> bool | int | float:
+def _validate(definition: SettingDefinition, value: Any) -> bool | int | float | str:
+    if definition.choices:
+        if value not in {choice for choice, _label in definition.choices}:
+            raise RuntimeSettingsError(f"{definition.title} must be one of the listed choices.")
+        return str(value)
     if isinstance(definition.default, bool):
         if not isinstance(value, bool):
             raise RuntimeSettingsError(f"{definition.title} must be on or off.")
@@ -226,7 +363,13 @@ def _snapshot(document: dict[str, Any]) -> RuntimeSettings:
     store = conf.store()
     rows = []
     for definition in _DEFINITIONS:
-        cast = conf.as_bool if isinstance(definition.default, bool) else conf.as_float
+        cast = (
+            conf.as_str
+            if definition.choices
+            else conf.as_bool
+            if isinstance(definition.default, bool)
+            else conf.as_float
+        )
         value = _validate(
             definition,
             store.resolve(
@@ -252,7 +395,9 @@ def _snapshot(document: dict[str, Any]) -> RuntimeSettings:
                 group=definition.group,
                 value=value,
                 default_value=definition.default,
-                kind="boolean"
+                kind="choice"
+                if definition.choices
+                else "boolean"
                 if isinstance(definition.default, bool)
                 else "integer"
                 if definition.integer
@@ -266,6 +411,8 @@ def _snapshot(document: dict[str, Any]) -> RuntimeSettings:
                 editable=reason is None,
                 reason=reason,
                 unlimited_value=definition.unlimited_value,
+                choices=[{"value": v, "label": label} for v, label in definition.choices],
+                presets=[{"value": v, "label": label} for v, label in definition.presets],
             )
         )
     # Both the full file and effective sources participate: an external edit to
@@ -285,7 +432,9 @@ def get_runtime_settings() -> RuntimeSettings:
         return _snapshot(document)
 
 
-def _set_owned_key(document: dict[str, Any], key: str, value: bool | int | float | None) -> None:
+def _set_owned_key(
+    document: dict[str, Any], key: str, value: bool | int | float | str | None
+) -> None:
     parts = key.split(".")
     node = document
     parents: list[tuple[dict[str, Any], str]] = []

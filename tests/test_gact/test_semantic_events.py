@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import json
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
@@ -30,24 +30,6 @@ class _Pred:
 class _Agent:
     def forward(self, question: str, session_id: str):
         return _Pred()
-
-
-@dataclass
-class _DiffPred(_Pred):
-    file_diffs: list = field(default_factory=list)
-
-
-class _DiffAgent:
-    def forward(self, question: str, session_id: str):
-        return _DiffPred(
-            file_diffs=[
-                {
-                    "path": "result.txt",
-                    "unified_diff": "--- a/result.txt\n+++ b/result.txt\n@@\n-old\n+new\n",
-                    "new_content": "new\n",
-                }
-            ]
-        )
 
 
 def test_semantic_events_stream_and_trace_file(tmp_path: Path, monkeypatch) -> None:
@@ -377,26 +359,32 @@ def test_tool_observer_omits_title_when_tool_uncurated(tmp_path: Path) -> None:
 
 
 def test_artifact_and_builtin_command_semantic_events(tmp_path: Path, monkeypatch) -> None:
+    from ._writing_agent import WritingAgent, workspace_session
     from .conftest import complete_turn
 
     set_config("trace.backend", "none")  # file-layer (file > env); #985 config-first
-    app = build_app(sessions_path=tmp_path / "s.json", agent=_DiffAgent())
+    root = tmp_path / "ws"
+    root.mkdir()
+    (root / "result.txt").write_text("old\n", encoding="utf-8")
+    monkeypatch.setenv("CLIO_ALLOWED_ROOTS", str(tmp_path))
+    agent = WritingAgent()
+    agent.calls = [("fs_write_file", {"filepath": str(root / "result.txt"), "content": "new\n"})]
+    app = build_app(sessions_path=tmp_path / "s.json", agent=agent)
     with TestClient(app) as client:
-        sid = client.post("/v1/sessions", json={"title": "t"}).json()["id"]
+        sid = workspace_session(client, root, approval_mode="auto-edits")
         complete_turn(client, sid, "write a result")
         client.post(f"/v1/sessions/{sid}/commands/cache-stats")
 
         history = app.state.bus._history.get(sid, [])
-        # WS1: the artifact reaches the UI as a real ``file_diff`` PART (not a redundant
-        # semantic.event), carrying the proposed content unredacted so the UI renders the
-        # diff; the ``artifact.proposed`` semantic mirror is routed to trace/ARC only.
+        # WS1: the agent's write reaches the UI as a real ``file_diff`` PART (not a
+        # redundant semantic.event), carrying the diff unredacted so the UI renders it.
         diff_parts = [
             e.payload["part"]
             for e in history
             if e.type == "message.part.added"
             and e.payload.get("part", {}).get("type") == "file_diff"
         ]
-        assert any(p.get("path") == "result.txt" for p in diff_parts)
+        assert any(p.get("path") == str(root / "result.txt") for p in diff_parts)
         assert "[redacted]" not in str(diff_parts)
         # WS1: the built-in command result reaches the UI as a real assistant
         # ``message.created`` (so the TUI shows it); the ``command.invocation.completed``

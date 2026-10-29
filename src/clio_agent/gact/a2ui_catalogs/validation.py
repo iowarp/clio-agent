@@ -98,7 +98,9 @@ _FORBIDDEN_KEYS = frozenset(
     }
 )
 #: Property names whose string literals are URLs (checked case-insensitively).
-A2UI_URL_KEYS = frozenset({"url", "uri", "datauri"})
+A2UI_URL_KEYS = frozenset(
+    {"url", "uri", "datauri", "meshuri", "materialuri", "rasteruri", "geojsonuri"}
+)
 
 
 def _most_specific_error(errors: list[ValidationError]) -> ValidationError:
@@ -124,13 +126,12 @@ def _most_specific_error(errors: list[ValidationError]) -> ValidationError:
     return candidates[0] if len(candidates) == 1 else best_match(candidates)
 
 
-def validate_components(entry: "CatalogEntry", components: Any, *, max_components: int) -> None:
+def validate_components(entry: "CatalogEntry", components: Any) -> None:
     """Validate a full ``updateComponents`` list against one catalog's schemas.
 
     Args:
         entry: The surface's resolved catalog entry.
         components: The raw ``components`` array from the message.
-        max_components: Bound on the list length (caller resolves config).
 
     Raises:
         A2UIValidationError: If the list shape is invalid, a component names
@@ -140,8 +141,8 @@ def validate_components(entry: "CatalogEntry", components: Any, *, max_component
             failure text.
     """
 
-    if not isinstance(components, list) or not 1 <= len(components) <= max_components:
-        raise A2UIValidationError("A2UI components must be a non-empty bounded list")
+    if not isinstance(components, list) or not components:
+        raise A2UIValidationError("A2UI components must be a non-empty list")
     for component in components:
         if not isinstance(component, Mapping):
             raise A2UIValidationError("A2UI component must be an object")
@@ -217,8 +218,9 @@ def validate_event_context(
 
 
 #: Schemes a URL-keyed A2UI literal may carry. ``artifact:``/``resource:`` are
-#: CLIO references the viewer resolves through the service (A2 remote media).
-A2UI_URL_SCHEMES = frozenset({"https", "artifact", "resource"})
+#: CLIO references the viewer resolves through the service (A2 remote media);
+#: ``study:`` names a live study source a view reads (Addendum B).
+A2UI_URL_SCHEMES = frozenset({"https", "artifact", "resource", "study"})
 
 
 def is_allowed_a2ui_url(value: str) -> bool:
@@ -233,7 +235,7 @@ def _validate_url(value: str) -> None:
     if not is_allowed_a2ui_url(value):
         raise A2UIValidationError(
             "A2UI URLs must use an allowed non-executable scheme (https:, artifact:, "
-            f"resource:, or a bare artifact_/res_ id); got {value[:120]!r}"
+            f"resource:, study:, or a bare artifact_/res_ id); got {value[:120]!r}"
         )
 
 

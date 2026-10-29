@@ -32,6 +32,8 @@ class AlignedCapture:
     encoded: Encoded
     sections: list[agg.Section]
     sections_source: str
+    #: The tokenizer identity the prompt was re-rendered with (HF id or local path).
+    tokenizer: str = ""
 
 
 def _ranges_from_declaration(declaration: dict[str, Any]) -> list[DeclaredRange]:
@@ -117,4 +119,6 @@ def load_capture(
         sections_source = "derived"
     sections = agg.sections_with_gaps(ranges, summary.prompt_tokens)
 
-    return AlignedCapture(call, summary, renderer, encoded, sections, sections_source)
+    return AlignedCapture(
+        call, summary, renderer, encoded, sections, sections_source, tokenizer=identity
+    )

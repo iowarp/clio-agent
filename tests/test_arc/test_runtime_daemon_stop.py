@@ -20,6 +20,10 @@ from pathlib import Path
 import pytest
 
 from clio_agent.arc import runtime_stop, storage
+from clio_agent.arc.clio_core_liveness import (
+    SOCKET_PROBE_UNAVAILABLE_REASON,
+    runtime_socket_status,
+)
 
 
 @pytest.fixture()
@@ -441,13 +445,14 @@ def test_a_suspended_daemon_whose_port_stops_answering_is_killed_not_a_clean_sto
         proc.suspend()
         held: list[socket.socket] = []
         # Fill the accept backlog the suspended process never drains, until a probe fails.
-        while runtime_stop._runtime_alive(port):
+        # A timed-out probe is inconclusive, never proof of absence.
+        while runtime_socket_status(port)[0]:
             assert len(held) < 64, "the accept backlog never filled"
             try:
                 held.append(socket.create_connection(("127.0.0.1", port), timeout=0.5))
             except OSError:
                 break  # full: the probe in the loop condition confirms it
-        assert not runtime_stop._runtime_alive(port)
+        assert runtime_socket_status(port) == (False, SOCKET_PROBE_UNAVAILABLE_REASON)
 
         pidfile = tmp_path / "daemon.pid"
         pidfile.write_text(f"{daemon.pid} {proc.create_time()!r}", encoding="utf-8")

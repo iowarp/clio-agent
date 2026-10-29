@@ -89,10 +89,9 @@ REFUSAL_SIDE_SESSION_READ_ONLY = "side_session_read_only"
 def refuse_side_session_write(session: Any, action: str) -> None:
     """Raise a typed 422 when ``session`` is a read-only side session.
 
-    For the user-driven write routes a session exposes (applying the edits its
-    agent proposed): an aside's proposals are answers to read, never changes to
-    make, so applying them from the aside is refused. The same proposal can be
-    made, and applied, in the parent conversation.
+    For the user-driven write routes a session exposes (undoing a file change its
+    agent made): an aside is read-only, so a write route on it is refused. Files
+    are changed, and undone, in the parent conversation.
     """
 
     if not is_read_only_side_session(session):

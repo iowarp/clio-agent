@@ -1,0 +1,15 @@
+migrate step=open_store status=running
+migrate step=open_store status=done seconds=3.572
+migrate step=session_records_import status=checking summary='Import the legacy sessions.json into one clio-core record per session'
+migrate step=session_records_import status=already_done seconds=0.000
+migrate step=task_event_lane status=checking summary="Copy each conversation's task events into their own lane (task trees read only it)"
+migrate step=task_event_lane status=already_done seconds=0.000
+migrate step=task_lane_reads status=checking summary='Annotate each task-event lane so a task tree loads from the lane alone'
+migrate step=task_lane_reads status=already_done seconds=0.000
+migrate step=transcript_legacy_import status=checking summary="Keep each conversation's legacy JSON transcript as evidence in clio-core"
+migrate step=transcript_legacy_import status=already_done seconds=0.000
+migrate step=task_index_build status=checking summary='Convert retained task formats and build the task lookup and open-work records'
+migrate step=task_index_build status=already_done seconds=0.000
+migrate step=artifact_index status=checking summary='Fold the artifact history once into the clio-core artifact records'
+migrate step=artifact_index status=already_done seconds=0.000
+migrate status=done ran=0 seconds=13.727

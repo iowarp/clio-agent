@@ -302,14 +302,25 @@ def compact_session_context(
         raise CompactionError(
             503, "context_store_unavailable", "no clio-core context to compact", {"session_id": sid}
         )
+    from clio_agent.gact.agents.prompt_basis import settle_basis  # noqa: PLC0415
+
     open_turn = _open_turn_id(app, sid)
     scopes = _scopes(app, sid, scope)
+    skipped = ""
     if not any(app.state.arc.render_working_set(sid, s) for s in scopes):
-        return _skip(sid, SKIP_NO_LIVE_CONTEXT)
-    plans = [p for p in (_plan(app, sid, s, open_turn) for s in scopes) if p is not None]
-    if not plans:
-        return _skip(sid, SKIP_NOTHING_NEW)
+        skipped = SKIP_NO_LIVE_CONTEXT
+    plans = [] if skipped else [p for p in (_plan(app, sid, s, open_turn) for s in scopes) if p]
+    if not skipped and not plans:
+        skipped = SKIP_NOTHING_NEW
+    if skipped:
+        # Asked to compact with nothing to fold: no cached history is worth keeping,
+        # so plugin changes held as a note join the prompt now.
+        if trigger == "manual":
+            settle_basis(app, sid)
+        return _skip(sid, skipped)
     done = [_compact_scope(app, sid, plan, trigger, focus, open_turn) for plan in plans]
+    # The cache restarts here anyway: plugin changes held as a note join the prompt.
+    settle_basis(app, sid)
     return {"session_id": sid, "compacted": True, "compactions": done}
 
 

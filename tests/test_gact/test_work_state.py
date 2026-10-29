@@ -41,10 +41,10 @@ def test_work_records_keep_identity_and_private_fields_off_projection() -> None:
     assert metadata["goal"]["active"] is True
 
 
-def test_durable_work_route_retains_stopped_goals_and_loops(tmp_path: Path) -> None:
+def test_durable_work_route_retains_stopped_goals_and_loops(tmp_path: Path, arc: Any) -> None:
     app = FastAPI()
     path = tmp_path / "sessions.json"
-    app.state.sessions = SessionStore(path=path)
+    app.state.sessions = SessionStore(path=path, store=arc._store)
     sid = app.state.sessions.create(workspace_id="ws", title="Work").id
     first = arm_goal(app, sid, condition="First goal")
     assert clear_goal(app, sid)
@@ -57,7 +57,7 @@ def test_durable_work_route_retains_stopped_goals_and_loops(tmp_path: Path) -> N
         "stop_reason": "loop_user_stopped",
     }
     _put_loop(app, sid, loop)
-    app.state.sessions = SessionStore(path=path)
+    app.state.sessions = SessionStore(path=path, store=arc._store)
     register_schedules_routes(app, cast(Any, None))
     with TestClient(app) as client:
         before = app.state.sessions.get(sid).metadata.copy()

@@ -1,0 +1,71 @@
+{
+ "steps": [
+  {
+   "id": "inspect",
+   "label": "Inspect target",
+   "state": "succeeded",
+   "started_at": "2026-10-26T13:47:32.828756+00:00",
+   "finished_at": "2026-10-26T13:47:33.009714+00:00",
+   "elapsed_seconds": 0.2,
+   "progress": null,
+   "message": "Running start"
+  },
+  {
+   "id": "command-0",
+   "label": "Start the service",
+   "state": "succeeded",
+   "started_at": "2026-10-26T13:47:33.016100+00:00",
+   "finished_at": "2026-10-26T13:47:33.180617+00:00",
+   "elapsed_seconds": 0.2,
+   "progress": null,
+   "message": ""
+  },
+  {
+   "id": "readiness",
+   "label": "Wait for Flowcept to answer",
+   "state": "succeeded",
+   "started_at": "2026-10-26T13:47:33.185424+00:00",
+   "finished_at": "2026-10-26T13:47:40.954786+00:00",
+   "elapsed_seconds": 7.8,
+   "progress": null,
+   "message": "Waiting for Flowcept (4s)"
+  },
+  {
+   "id": "after-ready",
+   "label": "Prepare the model",
+   "state": "succeeded",
+   "started_at": "2026-10-26T13:47:40.954859+00:00",
+   "finished_at": "2026-10-26T13:47:41.968575+00:00",
+   "elapsed_seconds": 1.0,
+   "progress": null,
+   "message": "Preparing the model"
+  },
+  {
+   "id": "finish",
+   "label": "Record the deployment",
+   "state": "succeeded",
+   "started_at": "2026-10-26T13:47:41.968615+00:00",
+   "finished_at": "2026-10-26T13:47:41.978998+00:00",
+   "elapsed_seconds": 0.0,
+   "progress": null,
+   "message": "Recording the deployment"
+  }
+ ],
+ "current_step": null,
+ "started_at": "2026-10-26T13:47:32.828736+00:00",
+ "finished_at": "2026-10-26T13:47:41.979041+00:00",
+ "elapsed_seconds": 9.2,
+ "reused": [],
+ "from_scratch": false,
+ "log_cursor": 13,
+ "id": "2a808cac-e9f8-467b-b7ad-9ed81e11c235",
+ "service_id": "flowcept",
+ "target_id": "local",
+ "action": "start",
+ "state": "succeeded",
+ "progress": "Completed",
+ "error": null,
+ "conflict": null,
+ "created_at": "2026-10-26T13:47:32.825920+00:00",
+ "updated_at": "2026-10-26T13:47:41.979073+00:00"
+}

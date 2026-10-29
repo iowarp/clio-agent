@@ -13,6 +13,22 @@ from clio_agent.runtime import document_runtime as runtime
 from clio_agent.tools.file_policy import FileAccessPolicy
 
 
+def test_execution_host_inspection_leaves_workspace_untouched(tmp_path: Path) -> None:
+    """Real inspection and a standard-library import check create no managed environment."""
+    before = {path: path.read_bytes() if path.is_file() else None for path in tmp_path.rglob("*")}
+    result = runtime.inspect_execution_runtime(tmp_path)
+    assert result["inventory_scope"] == "execution_host"
+    assert result["installs_dependencies"] is False
+    assert result["python_argv"][-1] == "-B"
+    assert runtime.inspect_python_imports(Path(result["python"]), ["csv", "json"]) == {
+        "csv": {"status": "ready"},
+        "json": {"status": "ready"},
+    }
+    assert {
+        path: path.read_bytes() if path.is_file() else None for path in tmp_path.rglob("*")
+    } == before
+
+
 def test_python_upgrade_and_platform_change_use_distinct_caches(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -252,7 +268,10 @@ def test_failed_helper_exit_retains_manifest_result(
         sandbox,
         "wrap_confined",
         lambda command, args, **kwargs: SimpleNamespace(
-            command="confined-python", args=args, env_overlay={"TEMP": "backend-cache"}
+            command="confined-python",
+            args=args,
+            env_overlay={"TEMP": "backend-cache"},
+            release=lambda: None,
         ),
     )
     result = runtime.run_document_helper(

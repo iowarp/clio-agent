@@ -1,7 +1,15 @@
 """EarthScope interactive multi-turn semantics — demo-confidence suite (#682/#687).
 
+Every scene drives the ``clio/earthscope`` marketplace agent: one
+EarthScope GNSS scientist that loads the ``earthscope`` and ``geodesy`` plugins'
+procedures on demand (resolve-region, station-catalogs, acquire-earthscope-gnss,
+gnss-time-series, ...) and keeps its own typed
+``workflow_state`` across turns. The agent is pinned at session creation by its
+ref; the default ``clio`` marketplace (the pinned submodule) provides it, so no
+install step is needed.
+
 A live scientist drives the session conversationally, so this suite stresses how the
-blueprint MANAGES CONTEXT across turns: reuse vs restart, anaphora ("the first city",
+agent MANAGES CONTEXT across turns: reuse vs restart, anaphora ("the first city",
 "the 2nd one", "that image"), context-switch-and-return, coordinates<->name, negation,
 provenance-without-rerun, and underspecified follow-ups.
 
@@ -16,6 +24,13 @@ assertions are the *demo contract*: the robust, trace-observable signals —
 Incremental-reuse *efficiency* (5->7 == stage only 2 more) is reported from the trace
 rather than hard-asserted here — it's the thing we're measuring.
 
+The conversational scenes advertise no A2UI client capabilities, so the agent's
+interactive views (station map/picker, live chart) are refused, and the plot checks
+read the static ``plot_plot_timeseries`` PNG export. Since the 2026-10 marketplace
+restructure (EarthScope 0.6.0) the agent no longer carries the ``plot`` and ``pandas``
+plugins, so those checks need re-deriving from a fresh live grind before these
+scenes can pass again.
+
 Bar: gemma4/ALCF must pass; qwopus is best-effort. Run, e.g.::
 
     CLIO_RUN_LIVE=1 CLIO_GACT_FIXTURE_PORT=18996 \
@@ -24,22 +39,20 @@ Bar: gemma4/ALCF must pass; qwopus is best-effort. Run, e.g.::
         -o addopts="" -p no:cacheprovider -q
 
 A2UI live gate (S7, docs/design/a2ui-compat-campaign-2026-09.md /
-iowarp/clio-agent-marketplace#69 deliverable 5): three scenes below drive the
-``earthscope-single-agent`` marketplace pack (a DIFFERENT, single-expert
-blueprint from ``earthscope-gnss-region`` above — the one that ships the
-``earthscope-stations`` A2UI catalog) through a real GNSS-station-selection
-round trip on "Show me the GNSS stations around Los Angeles": idle (the turn
-ends with the surface ready, the harness posts the selection, the NEXT turn's
-tool calls stage exactly those two stations), queued (the same post while a
-follow-up turn is still running — one record, delivered by steer, consumed
-once at the drain), and waiting-user (the agent asks with ``surface_id``
-bound — the post resumes that exact question). Assertions read the live
-surface's own data model / ``a2ui_action`` records and the tool-call parts
-via ``ClioAgent._extract_messages`` — never prose. Per the live-test rule
-(subscription providers only; local qwopus/LM Studio kills the box on a
-multi-session grind) and the headless pre-allow doctrine (the ``gact_server``
-fixture already ``PUT``s a wildcard-allow policy before the first turn), run
-against ``claude_code`` or ``codex``, e.g.::
+iowarp/clio-agent-marketplace#69 deliverable 5): three scenes below advertise
+the ``earthscope-stations`` A2UI catalog (shipped by ``earthscope``) and
+drive a real GNSS-station-selection round trip on "Show me the GNSS stations
+around Los Angeles": idle (the turn ends with the surface ready, the harness
+posts the selection, the NEXT turn's tool calls stage exactly those two
+stations), queued (the same post while a follow-up turn is still running — one
+record, delivered by steer, consumed once at the drain), and waiting-user (the
+agent asks with ``surface_id`` bound — the post resumes that exact question).
+Assertions read the live surface's own data model / ``a2ui_action`` records and
+the tool-call parts via ``ClioAgent._extract_messages`` — never prose. Per the
+live-test rule (subscription providers only; local qwopus/LM Studio kills the
+box on a multi-session grind) and the headless pre-allow doctrine (the
+``gact_server`` fixture already ``PUT``s a wildcard-allow policy before the
+first turn), run against ``claude_code`` or ``codex``, e.g.::
 
     CLIO_RUN_LIVE=1 CLIO_GACT_FIXTURE_PORT=18997 \
       uv run pytest tests/test_real_cases/test_earthscope_interactive.py \
@@ -47,13 +60,9 @@ against ``claude_code`` or ``codex``, e.g.::
         -o addopts="" -p no:cacheprovider -q
 
 and likewise with ``-k a2ui_queued_selection`` / ``-k a2ui_waiting_user_selection``
-(and ``--provider codex --model gpt-5.5`` for the second required cell).
-Each scene installs the pack fresh via ``marketplace_source`` (the SAME
-mechanism ``ClioAgent.invoke`` already uses for a workspace-scoped
-``/v1/agent-blueprints/install``, real CTE, real gact server — no fixture
-stand-in), so no server-side pre-provisioning is required beyond the
-``clio-kit`` tool servers the sibling ``earthscope-gnss-region`` scenes above
-already depend on.
+(and ``--provider codex --model gpt-5.5`` for the second required cell). Real
+CTE, real gact server, the ``clio-kit`` ndp/geo/pandas/plot tool servers the
+agent's plugins declare — no fixture stand-in.
 """
 
 from __future__ import annotations
@@ -68,15 +77,11 @@ from typing import Any
 import httpx
 import pytest
 
-from tests._marketplace import MARKETPLACE_ROOT
-
-BLUEPRINT = "earthscope-gnss-region"
+AGENT_REF = "clio/earthscope"
 CASE_DIR = "benchmark/case02-earthscope-csv-seismic-geography"
 
-# --- S7 A2UI live gate: a different, single-expert pack (owns the catalog) ----
+# --- S7 A2UI live gate: the earthscope plugin's station catalog ----------------
 
-A2UI_BLUEPRINT = "earthscope-single-agent"
-A2UI_PACK_ROOT = MARKETPLACE_ROOT / "earthscope-single-agent"
 A2UI_CATALOG_ID = "https://iowarp.ai/a2ui/catalogs/earthscope-stations/v1"
 A2UI_HEADERS = {"X-GACT-Version": "0.3", "X-A2UI-Version": "0.9.1"}
 # Advertised on EVERY posted message (first prompt and any follow-up): without
@@ -332,7 +337,7 @@ def test_earthscope_interactive(agent, gact_server, scene, tmp_path):
     run = agent.run(
         {
             "turns": list(scene.turns),
-            "blueprint_id": BLUEPRINT,
+            "agent_ref": AGENT_REF,
             "case_dir": CASE_DIR,
             "run_label": scene.label,
             "workdir": str(tmp_path),
@@ -342,7 +347,7 @@ def test_earthscope_interactive(agent, gact_server, scene, tmp_path):
     )
 
     assert run.error is None, run.error
-    assert run.extra["blueprint_activated"], run.extra.get("active_agent_blueprint_id")
+    assert run.extra["agent_activated"], run.extra.get("active_agent_ref")
     turn_runs = run.extra.get("turn_runs") or []
     assert len(turn_runs) == len(scene.turns), (
         f"expected {len(scene.turns)} turn sub-runs, got {len(turn_runs)}"
@@ -480,16 +485,15 @@ def _a2ui_fresh_tool_calls(
     return [{"name": tc.name, "args": tc.args, "output": tc.output} for tc in tool_calls]
 
 
-def _a2ui_install_and_start(
+def _a2ui_start(
     agent: Any, gact_server: Any, tmp_path: Path, label: str, prompt: str
 ) -> tuple[Any, str]:
-    """Run turn 1 (installs the pack, activates it, sends ``prompt``)."""
+    """Run turn 1 (pins the EarthScope agent to a new session, sends ``prompt``)."""
 
     run = agent.run(
         {
             "task": prompt,
-            "blueprint_id": A2UI_BLUEPRINT,
-            "marketplace_source": str(A2UI_PACK_ROOT),
+            "agent_ref": AGENT_REF,
             "workdir": str(tmp_path),
             "trace_path": str(gact_server.trace_dir / f"{label}.run.jsonl"),
             "timeout_s": 0,
@@ -502,7 +506,7 @@ def _a2ui_install_and_start(
         }
     )
     assert run.error is None, run.error
-    assert run.extra["blueprint_activated"], run.extra.get("active_agent_blueprint_id")
+    assert run.extra["agent_activated"], run.extra.get("active_agent_ref")
     return run, str(run.extra["session_id"])
 
 
@@ -512,9 +516,7 @@ def test_earthscope_a2ui_idle_selection(agent: Any, gact_server: Any, tmp_path: 
     """Idle: the turn ends with the surface ready; the posted selection starts
     a fresh turn whose tool calls stage exactly those two stations."""
 
-    _run, session_id = _a2ui_install_and_start(
-        agent, gact_server, tmp_path, "a2ui_idle_selection", A2UI_PROMPT
-    )
+    _run, session_id = _a2ui_start(agent, gact_server, tmp_path, "a2ui_idle_selection", A2UI_PROMPT)
 
     with httpx.Client(base_url=gact_server.url, timeout=200.0) as http:
         surface = _a2ui_surface(http, session_id)
@@ -548,7 +550,7 @@ def test_earthscope_a2ui_queued_selection(agent: Any, gact_server: Any, tmp_path
     running — one durable record, delivered by steer, consumed once at the
     running turn's next drain point."""
 
-    _run, session_id = _a2ui_install_and_start(
+    _run, session_id = _a2ui_start(
         agent, gact_server, tmp_path, "a2ui_queued_selection", A2UI_PROMPT
     )
 
@@ -616,7 +618,7 @@ def test_earthscope_a2ui_waiting_user_selection(
     analyse, ``surface_id``-bound; the posted selection resumes that exact
     question and the resumed turn's tool calls stage those two stations."""
 
-    _run, session_id = _a2ui_install_and_start(
+    _run, session_id = _a2ui_start(
         agent, gact_server, tmp_path, "a2ui_waiting_user_selection", A2UI_ASK_FIRST_PROMPT
     )
 

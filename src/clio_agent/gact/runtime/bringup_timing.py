@@ -3,8 +3,8 @@
 "Slow to set up new agents" was an owner PERCEPTION with zero measurement
 behind it. Turn-level latency was already closed by #891 (lm_streaming 89.9%
 / ttft 6.9% / everything-else 3.1%, after the pooled-SDK-client fix); session
-FIRST-TURN bring-up — workspace executor build, cold fleet mount, blueprint
-resolution — had no timing instrumentation anywhere. This module is that
+FIRST-TURN bring-up — workspace executor build, cold fleet mount, agent
+(plugin) resolution — had no timing instrumentation anywhere. This module is that
 measurement. It is deliberately just a recorder: it does not move or change
 any bring-up LOGIC, and it does not itself decide anything (RULE 1 of
 ``.claude/CLAUDE.md`` — no deterministic decision-making baked in here).
@@ -69,21 +69,21 @@ small, LRU-capped, thread-safe registry on ``app.state.bringup_timers``,
 ephemeral first-turn state, never a persisted projection). A plain
 ``threading.Lock`` guards it because bring-up spans an HTTP handler
 (session.create), the turn's own background task (turn.accept_gap /
-enrichment / workspace.lease / blueprint.resolve), and — were fleet.mount
+enrichment / workspace.lease / agent.resolve), and — were fleet.mount
 wired (see below) — an executor thread; a lock is simpler and more
 obviously correct than merging per-thread partial timers.
 
 PHASE LAYOUT is flat where the real code is genuinely sequential
 (``session.create`` -> ``turn.accept_gap`` -> ``enrichment``), but
-``blueprint.resolve`` NESTS inside ``workspace.lease`` (depth 1) rather than
+``agent.resolve`` NESTS inside ``workspace.lease`` (depth 1) rather than
 sitting flat beside it: ``forward_turn`` holds the workspace lease
 (``_tool_session_context``) for its ENTIRE body, which structurally CONTAINS
-blueprint resolution — an early review pass tried instrumenting these as two
+agent resolution — an early review pass tried instrumenting these as two
 independent depth-0 phases and produced a self-contradictory summary
 (is_fully_attributed() held only via the D3 clamp while the raw phase list
 summed to 221% of total_ms — the exact double-count the #891 contract exists
 to prevent). Nesting is the CORRECT fix, not a workaround: only the depth-0
-sum (``workspace.lease``) feeds ``attributed_ms``, and ``blueprint.resolve``
+sum (``workspace.lease``) feeds ``attributed_ms``, and ``agent.resolve``
 still appears in ``BringupSummary.phases`` for diagnosis.
 
 ``fleet.mount`` (the ``SyncMCPToolExecutor`` first-build cost,
@@ -216,7 +216,7 @@ class BringupTimer:
 
     Not thread-safe by design: bring-up for one session is one sequential
     call chain (session.create -> turn.accept -> enrichment ->
-    workspace.lease -> blueprint.resolve -> fleet.mount); a caller that fans
+    workspace.lease -> agent.resolve -> fleet.mount); a caller that fans
     out concurrently should use one timer per concurrent branch and merge
     externally rather than share a single instance across threads.
     """
@@ -446,7 +446,7 @@ class BringupTimerRegistry:
     state (RULE 4: not a new persisted store; gone once a session's bring-up
     settles or the LRU cap evicts it). A plain :class:`threading.Lock` guards
     it: session.create runs on the event loop, turn.accept_gap/enrichment/
-    workspace.lease/blueprint.resolve run on the turn's background task, and
+    workspace.lease/agent.resolve run on the turn's background task, and
     a future fleet.mount wiring would fire from an executor thread — a lock
     is simpler and more obviously correct than merging per-thread partials.
     """

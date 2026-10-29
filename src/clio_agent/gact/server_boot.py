@@ -35,13 +35,16 @@ if TYPE_CHECKING:
     from fastapi import FastAPI
 
 
-async def prune_orphans_and_cache(app: FastAPI) -> None:
-    """Reap proven orphans before inspecting the liveness of cached MCP children."""
+async def reap_orphans(app: FastAPI) -> None:
+    """Reap proven orphans of an earlier server and publish the census to health.
+
+    The MCP spawn-cache prune that used to follow is maintenance, not startup (B4): it
+    runs at the end of install or upgrade and in ``clio-agent doctor --gc``
+    (:func:`clio_agent.tools.mcp_cache.prune_owned_mcp_cache`).
+    """
     from clio_agent.gact.routes.system import _prime_orphan_scan_cache  # noqa: PLC0415
-    from clio_agent.tools.mcp_cache import boot_prune_off_loop  # noqa: PLC0415
 
     await _prime_orphan_scan_cache(app)
-    await boot_prune_off_loop()
 
 
 def start_provider_catalog(app: FastAPI) -> asyncio.Task | None:
@@ -66,6 +69,39 @@ async def stop_producers(*tasks: asyncio.Task[Any] | None) -> None:
     for task in pending:
         task.cancel()
     await asyncio.gather(*pending, return_exceptions=True)
+
+
+def mark_real_server(app: "FastAPI") -> None:
+    """Mark the app ``run_server`` serves: it attaches clio-core and runs the boot doctor
+    (``server_boot``), and it owns its process (``owns_process``), so only it may be
+    ended by the shutdown budget. Tests that set ``server_boot`` share their process.
+    """
+    app.state.server_boot = True
+    app.state.owns_process = True
+
+
+async def close_request_owners(app: "FastAPI") -> None:
+    """Close the owners that only serve requests, once the loop serves none any more.
+
+    Pending MCP browser sign-ins are released before the document store closes. This
+    is the first shutdown step, so it also arms the shutdown budget (shutdown_budget),
+    and stops the private SearXNG the server's boot started (search_bootstrap).
+    """
+    from clio_agent.gact import shutdown_budget  # noqa: PLC0415
+
+    shutdown_budget.begin(app)
+    if getattr(app.state, "server_boot", False):
+        from clio_agent.gact import search_bootstrap  # noqa: PLC0415
+
+        # The SearXNG this server's boot started stops with it (bounded, typed reasons).
+        await search_bootstrap.stop_started(app)
+    boot_doctor = getattr(app.state, "health_boot_task", None)
+    if boot_doctor is not None:
+        boot_doctor.cancel()  # its probe thread ends on its own 1 s timeouts
+    sign_ins = getattr(app.state, "mcp_sign_ins", None)
+    if sign_ins is not None:
+        await sign_ins.close()
+    await asyncio.to_thread(app.state.document_store.close)
 
 
 _PROCESS_ARC_LOCK = threading.Lock()
@@ -152,7 +188,9 @@ def _record_context_mode(app: "FastAPI", mode: Any) -> None:
 
 
 async def _construct(app: "FastAPI") -> Any:
-    return await asyncio.to_thread(process_arc, app)
+    from clio_agent.gact import boot_timing  # noqa: PLC0415
+
+    return await boot_timing.timed(app, "clio_core_and_store", asyncio.to_thread(process_arc, app))
 
 
 async def process_arc_off_loop(app: "FastAPI") -> Any:
@@ -203,6 +241,13 @@ def start(app: "FastAPI") -> None:
     """
     if not getattr(app.state, "server_boot", False):
         return
+    from clio_agent.arc import history_mode  # noqa: PLC0415
+
+    if history_mode.resolve().is_history:
+        # No clio-core: the session records stay in memory (History mode is not durable).
+        logger.error("session records reason=session_records_history_mode: not durable")
+    else:
+        app.state.sessions.expect_store()  # reads wait for the clio-core attach below
     from clio_agent.gact import provider_support_boot  # noqa: PLC0415
 
     provider_support_boot.start(app)  # recorded provider support a runtime change removed

@@ -17,7 +17,7 @@ These tests lock the assembly seam (``gact/agents/tool_instrumentation.py``):
   part that IS call evidence, so the row is skipped (no double-emission);
 * MCP-bridged tools (constructed by the execution-boundary bridge) notify
   exactly ONCE — the seam never double-wraps a marked callable, including
-  through the blueprint recording re-wrap;
+  through the agent recording re-wrap;
 * the CI guard (``scripts/check_tool_instrumentation.py``) fails on a
   synthetic bare ``dspy.Tool`` fixture and passes the sanctioned files.
 """
@@ -430,7 +430,7 @@ def test_handoff_representation_notifies_but_appends_no_tool_parts(tmp_path: Pat
     """A declared "handoff" tool notifies the observer (semantic events +
     ledger — the telemetry record) but appends NO live tool_call/tool_result
     parts: its ONE wire representation is the expert_handoff part its own
-    runtime emits (spawn_agent_task / spawn_agents_parallel / run_workflow)."""
+    runtime emits (spawn_agent_task / spawn_agents_parallel)."""
 
     app, client, sid = _observing_app(tmp_path)
     try:
@@ -536,21 +536,22 @@ def test_chip_representation_notifies_and_still_appends_tool_parts(tmp_path: Pat
 
 
 # --------------------------------------------------------------------------- #
-# 3b. Sabotage: EVERY executed call — every auto-attached tool (enumerated    #
-#     from auto_tools.build_auto_react_tools) plus a plain native tool — gets #
-#     tool_call evidence, success or error, on the REAL observed-call path.   #
+# 3b. Sabotage: EVERY executed call — every built-in tool ``core`` claims for  #
+#     every agent, the claimable producer/data built-ins, and a plain native  #
+#     tool — gets tool_call evidence, success or error, on the REAL           #
+#     observed-call path.                                                     #
 # --------------------------------------------------------------------------- #
 
 
-def test_every_auto_tool_and_a_plain_tool_lands_a_tool_call_part(
+def test_every_core_tool_and_a_plain_tool_lands_a_tool_call_part(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Drive the real react-runtime observed-call path for every tool
-    auto-attached to a dynamic react expert (``auto_tools.build_auto_react_tools``:
-    create_artifact, plan_exit, write_todos, the cron triad, loop_wakeup,
-    goal_status, raise_alert_card, refresh_provider_models, and the retained-memory
-    triad) plus a plain
-    curated native "row" tool, and assert each
+    """Drive the real react-runtime observed-call path for every built-in tool
+    the ``core`` plugin claims for every agent (create_artifact, plan_exit,
+    write_todos, the cron triad, loop_wakeup, goal_status, raise_alert_card,
+    refresh_provider_models, the task and agent controls, the workspace-resource
+    reads, ...), the claimable A2UI-producer and connected-data built-ins,
+    ``draft_alternatives``, plus a plain curated native "row" tool, and assert each
     EXECUTED call lands at least one ``tool_call`` part on the live transcript
     — whether the call itself succeeds or raises (the tool_call part is
     appended at the "started" phase, before the underlying function even
@@ -563,28 +564,17 @@ def test_every_auto_tool_and_a_plain_tool_lands_a_tool_call_part(
     on ``create_artifact`` — its "chip" declaration hit that short-circuit and
     the call executed with zero wire evidence, exactly the invisible-call bug
     this module closes. It passes post-fix because only "handoff" still
-    short-circuits, and no auto-attached tool declares "handoff"."""
+    short-circuits, and no built-in tool declares "handoff"."""
 
     from clio_schemas.a2ui.v0_9_1.capabilities import A2UIClientCapabilities
 
     from clio_agent.gact.a2ui_capabilities import remember_client_capabilities
     from clio_agent.gact.a2ui_catalogs.builtin import workspace_catalog_id
-    from clio_agent.gact.agents.auto_tools import build_auto_react_tools
 
     # This wire-evidence test executes non-read tools without a human responder.
     # Authorize them through the real session policy, not a mocked permission gate.
     app, client, sid = _observing_app(tmp_path, approval_mode="bypass")
     try:
-        agent_def = SimpleNamespace(id="tester")
-        auto_tools = {
-            t.name: t
-            for t in _instrument_in_app(
-                app,
-                build_auto_react_tools(
-                    agent_def, a2ui_producers=True, supports_vision=True, ndp_tools=True
-                ),
-            )
-        }
         # The A2UI producer triad (S4) needs a real client-capabilities
         # advertisement to select a catalog at all; advertise the builtin
         # workspace catalog so create_a2ui_surface below actually creates
@@ -657,9 +647,7 @@ def test_every_auto_tool_and_a_plain_tool_lands_a_tool_call_part(
             "capture_a2ui_surface": {"surface_id": "test-surface", "expected_revision": 1},
             "publish_dashboard_report": {"definition_path": "missing-dashboard.json"},
             "get_weather_forecast": {"location": ""},
-            # #1211 review R6/S2: auto-attached ONLY for a tier-1 MAIN session
-            # (this harness's agent_def has no parent_id, so it qualifies).
-            # Its discovery is stubbed below: a stored sign-in (e.g. Argonne)
+            # #1211 review R6: claimed by ``core``. Its discovery is stubbed below: a stored sign-in (e.g. Argonne)
             # makes a provider "configured" and the real probe reach the network.
             "refresh_provider_models": {},
             "connected_data_status": {},
@@ -705,8 +693,8 @@ def test_every_auto_tool_and_a_plain_tool_lands_a_tool_call_part(
                 "content": "test",
                 "revision": "missing",
             },
-            # Bounded workspace-resource reads, auto-attached to every react
-            # expert. Called against a missing resource id on purpose: each
+            # Bounded workspace-resource reads, claimed by ``core`` for every
+            # agent. Called against a missing resource id on purpose: each
             # returns a typed not-found row rather than raising, and the
             # tool_call part must land either way.
             "workspace_resource_list": {},
@@ -721,14 +709,41 @@ def test_every_auto_tool_and_a_plain_tool_lands_a_tool_call_part(
             # Reads back compacted context; called with neither query nor ids on
             # purpose: a typed refusal, and the tool_call part must land anyway.
             "recall_context": {},
-            # Phase 9 (tier-1 MAIN only): outside an agent loop it refuses typed
+            # Phase 9: outside an agent loop it refuses typed
             # (draft_alternatives_refused); the tool_call part lands either way.
             "draft_alternatives": {"n": 2, "rubric": "short"},
         }
-        assert set(calls) == set(auto_tools), (
-            "auto_tools.build_auto_react_tools grew/shrank — update this sabotage test's "
-            "per-tool call table so every auto-attached tool stays covered"
+        from clio_agent.gact.agents.native_tool_registry import (
+            AGENT_RUNTIME_TOOLS,
+            build_native_tools,
         )
+        from clio_agent.gact.agents.variant_drafts import build_draft_alternatives_tool
+        from clio_agent.plugins.service import PluginService
+
+        resolution = PluginService().resolve("clio/standard", pin=False)
+        core_claims = {
+            row["name"]
+            for row in resolution.tools
+            if row["plugin"] == "core" and row["kind"] == "native"
+        } - AGENT_RUNTIME_TOOLS
+        assert core_claims <= set(calls), (
+            "core claims a built-in tool this sabotage test does not call — add it to "
+            f"the per-tool call table so every core tool stays covered: "
+            f"{sorted(core_claims - set(calls))}"
+        )
+        built, gateway, withheld = build_native_tools(
+            SimpleNamespace(id="tester", metadata={}),
+            sorted(set(calls) - AGENT_RUNTIME_TOOLS),
+            {},
+            supports_vision=True,
+            describe_all=True,
+        )
+        assert gateway == [] and withheld == {}
+        auto_tools = {
+            t.name: t
+            for t in _instrument_in_app(app, [*built.values(), build_draft_alternatives_tool()])
+        }
+        assert set(calls) == set(auto_tools)
 
         exercised: list[str] = []
         monkeypatch.setattr(
@@ -894,10 +909,8 @@ def test_mcp_bridge_annotations_title_rides_to_declared_title_when_tool_title_ab
 
 
 def test_external_mcp_tool_row_annotations_title_fallback() -> None:
-    """The external-MCP builder seam (``builders._enabled_external_mcp_dspy_tools``
-    resolves via ``mcp_tool_title(tool_row)``): a persisted row carrying only an
-    annotations-dict title (the shape ``_normalize_mcp_tool_annotations``
-    produces in blueprints.py) still curates a title through
+    """A persisted external-MCP tool row resolved via ``mcp_tool_title(tool_row)``
+    and carrying only an annotations-dict title still curates a title through
     ``boundary_observed_tool``."""
 
     from clio_agent.gact.agents.tool_instrumentation import boundary_observed_tool, mcp_tool_title
@@ -924,8 +937,8 @@ def test_external_mcp_tool_row_annotations_title_fallback() -> None:
 
 
 def test_boundary_observed_tool_curates_a_title_when_given() -> None:
-    """The agent-blueprint external-MCP bridge (``builders``) can hand
-    ``boundary_observed_tool`` a curated/upstream title; it registers exactly
+    """An external-MCP bridge can hand ``boundary_observed_tool`` a
+    curated/upstream title; it registers exactly
     like a native curated title and is sanitized the same way."""
 
     from clio_agent.gact.agents.tool_instrumentation import boundary_observed_tool
@@ -948,17 +961,17 @@ def test_boundary_observed_tool_curates_a_title_when_given() -> None:
 
 
 def test_recording_rewrap_propagates_the_observed_marker() -> None:
-    """The blueprint recording wrapper re-constructs the tool around a new
+    """The agent recording wrapper re-constructs the tool around a new
     callable; the observed marker must survive (rebuilt_tool) or a bridged
     tool would notify twice after the seam. The curated title marker must
     survive the same re-wrap (#1188 MCP half)."""
 
-    from clio_agent.gact.agents.builders import _recording_blueprint_tool
+    from clio_agent.gact.agents.tool_recording import recording_tool
     from clio_agent.tools.execution import _make_dspy_tool
 
     mcp_tool = SimpleNamespace(description="d", title="List files", inputSchema={"properties": {}})
     bridged = _make_dspy_tool("fs_list", mcp_tool, lambda name, kwargs: "listed")
-    recorded = _recording_blueprint_tool(bridged)
+    recorded = recording_tool(bridged)
     assert getattr(recorded.func, TOOL_OBSERVED_ATTR, False) is True
 
     recorded_func = recorded.func
@@ -982,13 +995,24 @@ def test_recording_rewrap_propagates_the_observed_marker() -> None:
 
 
 @pytest.mark.usefixtures("builtin_tool_context")
-def test_auto_react_tools_carry_their_declared_presentation() -> None:
-    """The auto-attached set declares through the factory: create_artifact is
+def test_core_tools_carry_their_declared_presentation() -> None:
+    """The tools ``core`` claims declare through the factory: create_artifact is
     the chip; the rest are curated rows."""
 
-    from clio_agent.gact.agents.auto_tools import build_auto_react_tools
+    from clio_agent.gact.agents.native_tool_registry import build_native_tools
 
-    instrument_tools(build_auto_react_tools(SimpleNamespace(id="tester")))
+    names = [
+        "create_artifact",
+        "plan_exit",
+        "write_todos",
+        "cron_create",
+        "cron_list",
+        "cron_delete",
+        "loop_wakeup",
+        "goal_status",
+    ]
+    built, _gateway, _withheld = build_native_tools(SimpleNamespace(id="tester"), names, {})
+    instrument_tools(list(built.values()))
     assert declared_tool_representation("create_artifact") == "chip"
     assert declared_tool_title("create_artifact") == "Create Artifact"
     for name, title in [
@@ -1007,17 +1031,15 @@ def test_auto_react_tools_carry_their_declared_presentation() -> None:
 @pytest.mark.usefixtures("builtin_tool_context")
 def test_shared_task_tools_declare_rows_without_legacy_default_controls() -> None:
     """Actual declarations expose every mixed control with a readable operation row."""
-    from clio_agent.gact.task_declarations import (
-        TASK_COMPATIBILITY_ALIASES,
-        build_spawn_runtime_tools,
-        build_task_tools,
-    )
+    from clio_agent.gact.spawn_tools import build_spawn_runtime_tools
+    from clio_agent.gact.task_declarations import TASK_COMPATIBILITY_ALIASES, build_task_tools
 
     tools = build_spawn_runtime_tools(None, SimpleNamespace(fanout={})) + build_task_tools()
     instrument_tools(tools)
     expected = {
         "spawn_agent_task": "Spawn agent task",
         "spawn_agents_parallel": "Spawn agents parallel",
+        "fork": "Fork",
         "query_tasks": "Query tasks",
         "observe_tasks": "Observe tasks",
         "wait_tasks": "Wait tasks",
@@ -1036,24 +1058,17 @@ def test_shared_task_tools_declare_rows_without_legacy_default_controls() -> Non
 
 
 @pytest.mark.usefixtures("builtin_tool_context")
-def test_declared_workflow_keeps_a_tool_row_around_its_child_operations() -> None:
-    """A compound workflow owns one visible operation boundary around its stages."""
-    from clio_agent.gact.task_declarations import build_spawn_runtime_tools
+def test_orchestration_flow_tools_keep_a_tool_row_around_their_child_operations() -> None:
+    """A started flow or plan owns one visible operation boundary around its calls."""
+    from clio_agent.gact.agents.native_tool_registry import build_native_tools
 
-    agent = SimpleNamespace(
-        id="main",
-        fanout={},
-        metadata={
-            "workflow": {"steps": [{"id": "inspect", "child": "child_a", "task": "Inspect"}]}
-        },
+    built, _gateway, _withheld = build_native_tools(
+        SimpleNamespace(id="tester"), ["run_flow", "run_workflow"], {}
     )
-    tools = build_spawn_runtime_tools(None, agent)
-    instrument_tools(tools)
-    assert {tool.name for tool in tools} == {
-        "spawn_agent_task",
-        "spawn_agents_parallel",
-        "run_workflow",
-    }
+    instrument_tools(list(built.values()))
+    assert set(built) == {"run_flow", "run_workflow"}
+    assert declared_tool_representation("run_flow") == "row"
+    assert declared_tool_title("run_flow") == "Run flow"
     assert declared_tool_representation("run_workflow") == "row"
     assert declared_tool_title("run_workflow") == "Run workflow"
 
@@ -1112,17 +1127,27 @@ def test_title_sanitization_strips_controls_and_clamps() -> None:
 @pytest.mark.usefixtures("builtin_tool_context")
 def test_no_registered_native_title_contains_a_paren() -> None:
     """Sweep real native, shared-task, Question and skill declarations."""
-    from clio_agent.gact.agents.auto_tools import build_auto_react_tools
-    from clio_agent.gact.agents.skill_runtime import SkillRuntime, build_load_skill_tool
-    from clio_agent.gact.task_declarations import (
-        build_ask_user_tool,
-        build_spawn_runtime_tools,
-        build_task_tools,
+    from clio_agent.gact.agents.native_tool_registry import (
+        AGENT_RUNTIME_TOOLS,
+        build_native_tools,
     )
+    from clio_agent.gact.agents.skill_runtime import SkillRuntime, build_load_skill_tool
+    from clio_agent.gact.spawn_tools import build_spawn_runtime_tools
+    from clio_agent.gact.task_declarations import build_ask_user_tool, build_task_tools
     from clio_agent.gact.types import AgentDef
+    from clio_agent.plugins.service import PluginService
 
     agent = AgentDef(id="tester", title="Test agent")
-    tools = build_auto_react_tools(agent)
+    resolution = PluginService().resolve("clio/standard", pin=False)
+    core_claims = sorted(
+        row["name"]
+        for row in resolution.tools
+        if row["plugin"] == "core" and row["kind"] == "native"
+    )
+    built, _gateway, _withheld = build_native_tools(
+        agent, [name for name in core_claims if name not in AGENT_RUNTIME_TOOLS], {}
+    )
+    tools = list(built.values())
     tools.append(build_load_skill_tool(agent, SkillRuntime()))
     tools.append(build_ask_user_tool(agent))
     tools += build_spawn_runtime_tools(None, agent) + build_task_tools()
@@ -1162,3 +1187,16 @@ def test_guard_fails_on_a_synthetic_bare_dspy_tool(tmp_path: Path) -> None:
 def test_guard_passes_the_real_tree() -> None:
     repo_root = Path(__file__).resolve().parents[2]
     assert check_tool_instrumentation(repo_root / "src" / "clio_agent", rel_to=repo_root) == []
+
+
+def test_mcp_tool_without_a_declared_title_is_named_by_its_own_words() -> None:
+    """colab-mcp declares no title for open_colab_browser_connection: show words, not an id."""
+    from types import SimpleNamespace
+
+    from clio_agent.gact.agents.tool_instrumentation import TITLE_ATTR, stamp_mcp_tool_title
+
+    def call() -> None:
+        return None
+
+    stamp_mcp_tool_title(call, SimpleNamespace(name="open_colab_browser_connection"))
+    assert getattr(call, TITLE_ATTR) == "Open colab browser connection"

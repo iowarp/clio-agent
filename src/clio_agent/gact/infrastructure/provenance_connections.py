@@ -67,6 +67,7 @@ class ProvenanceConnectionInput(BaseModel):
 
 
 #: Configuration paths into a managed deployment; True = a running service's settings.
+QUERY_DEFAULT = "provenance.agentic.query_default"
 _HOST_PATH_KEYS = {
     "provenance.agentic.flowcept.settings_path": True,
     "provenance.attention.files_dir": False,
@@ -214,6 +215,9 @@ def desired_configuration(row: ExternalServiceConnection) -> dict[str, Any]:
                 ]
             )
         ),
+        # Using Flowcept means reading it too: SPOTTER and provenance queries go to
+        # the store that holds the captured tasks (and attention records).
+        "provenance.agentic.query_default": "flowcept",
         "provenance.agentic.flowcept.settings_path": row.configuration["settings_path"],
         "provenance.agentic.flowcept.persistence_owner": "collector",
         "provenance.agentic.flowcept.privacy": "full" if capture else "metadata",
@@ -275,6 +279,8 @@ def connection_selected(row: ExternalServiceConnection) -> bool:
         saved = resolver.file_value(key)
         if key == "provenance.agentic.providers":
             return "flowcept" in conf.as_csv(saved)
+        if key == QUERY_DEFAULT:
+            return True  # where queries go may be changed afterwards; it is not identity
         if key in _HOST_PATH_KEYS:  # compare this host's copies (28a, F056)
             saved = this_host_counterpart(str(saved or ""), live_service=_HOST_PATH_KEYS[key])
         return saved == value
@@ -301,5 +307,7 @@ def disconnect_connection(row: ExternalServiceConnection) -> dict[str, Any]:
             ),
             "provenance.attention.enabled": False,
         }
+        if str(resolver.file_value(QUERY_DEFAULT) or "").strip().lower() == "flowcept":
+            changes[QUERY_DEFAULT] = "native"  # never leave queries pointing at a removed store
     _save_configuration(changes)
     return {"connection_id": row.id, "restart_required": True}

@@ -2,8 +2,12 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
-from typing import Literal
+import inspect
+import typing
+import weakref
+from collections.abc import Awaitable, Callable
+from dataclasses import dataclass, field
+from typing import Any, Literal, TypeVar
 from uuid import uuid4
 
 from fastmcp import FastMCP
@@ -12,6 +16,7 @@ from fastmcp_tasks import TasksExtension
 from clio_agent import conf
 
 NativeRootKind = Literal["shell", "storage"]
+ToolBody = TypeVar("ToolBody", bound=Callable[..., Awaitable[Any]])
 
 
 @dataclass(frozen=True)
@@ -30,6 +35,46 @@ class NativeRoot:
     server: FastMCP
     extension: TasksExtension
     settings: NativeRootSettings
+    bodies: list[Callable[..., Awaitable[Any]]] = field(default_factory=list)
+
+    def tool(self, **options: Any) -> Callable[[ToolBody], ToolBody]:
+        """Register a native tool body that library caches cannot keep alive.
+
+        FastMCP, Docket and uncalled_for memoize per tool function, uncalled_for without
+        a bound. A native tool body closes over its application, so registering the body
+        itself kept every application the process built reachable after it shut down
+        (a test worker held hundreds and was OOM-killed). The server gets a forwarder
+        that reaches the body through a weak reference; this root, which the
+        application owns, holds the body.
+        """
+
+        def register(body: ToolBody) -> ToolBody:
+            self.bodies.append(body)
+            self.server.tool(**options)(_weak_forwarder(body))
+            return body
+
+        return register
+
+
+def _weak_forwarder(body: Callable[..., Awaitable[Any]]) -> Callable[..., Awaitable[Any]]:
+    """An async function with ``body``'s name and signature that holds it only weakly."""
+    target = weakref.ref(body)
+
+    async def forward(*args: Any, **kwargs: Any) -> Any:
+        live = target()
+        if live is None:
+            raise RuntimeError(f"Native tool {body_name} outlived the application that owned it")
+        return await live(*args, **kwargs)
+
+    body_name = body.__name__
+    forward.__name__ = body_name
+    forward.__qualname__ = body.__qualname__
+    forward.__module__ = body.__module__
+    forward.__doc__ = body.__doc__
+    # Resolved here: the forwarder's globals cannot resolve the body's string annotations.
+    forward.__annotations__ = typing.get_type_hints(body)
+    forward.__signature__ = inspect.signature(body, eval_str=True)  # type: ignore[attr-defined]
+    return forward
 
 
 def resolve_native_root(kind: NativeRootKind) -> NativeRootSettings:

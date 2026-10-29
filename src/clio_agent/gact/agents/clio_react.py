@@ -36,7 +36,6 @@ Ordinary agent Questions remain inputs to the current conversation.
 
 from __future__ import annotations
 
-import asyncio
 import contextlib
 import contextvars
 import dataclasses
@@ -76,12 +75,11 @@ from clio_agent.gact.agents.clio_react_recovery import recover_stream
 from clio_agent.gact.agents.clio_react_stream_call import call_lm as _call_lm
 from clio_agent.gact.agents.clio_react_submit import active_react_scope_safe, record_submit_audit
 from clio_agent.gact.agents.clio_react_submit import submit_tool as _submit_tool
-from clio_agent.gact.agents.github_shell_guidance import github_shell_guidance
-from clio_agent.gact.agents.task_guidance import task_guidance
 from clio_agent.gact.injection_parts import emit_injection
 from clio_agent.lm.engines.text_tools import INVALID_TOOL_CALL
 from clio_agent.lm.request_builder import sendable_lm_kwargs
 from clio_agent.lm.request_config import config_from_lm_kwargs
+from clio_agent.runtime.fresh_loop import run_in_new_loop
 from clio_agent.tools import injections
 
 __all__ = ["ClioReAct"]
@@ -167,6 +165,9 @@ class ClioReAct(dspy.Module):
         # read it and set a per-rollout copy; unset, the context's LM is used.
         self.lm: Any = None
         self._clio_expert_id: str = ""
+        # Tools that run but stay out of the request's tool list (a plugin change
+        # held as a note: :mod:`clio_agent.gact.agents.prompt_basis`).
+        self._clio_unlisted: frozenset[str] = frozenset()
         user_tools = [t if isinstance(t, dspy.Tool) else dspy.Tool(t) for t in tools]
         self.tools: dict[str, dspy.Tool] = {}
         for tool in user_tools:
@@ -211,18 +212,10 @@ def _function_tool(tool: dspy.Tool) -> FunctionTool:
 
 
 def _system(signature: Any, inputs: dict[str, Any], tools: Iterable[str] = ()) -> str:
-    """Compose the expert's prompt with guidance for its actual declared capabilities."""
+    """The agent's composed prompt (capability guidance comes from its plugins' fragments)."""
+    del tools
     expert = str(inputs.get(_SYSTEM_INPUT) or "").strip()
-    tool_names = tuple(tools)
-    return "\n\n".join(
-        part
-        for part in (
-            expert or signature.instructions.strip(),
-            github_shell_guidance(tool_names),
-            task_guidance(tool_names),
-        )
-        if part
-    )
+    return expert or signature.instructions.strip()
 
 
 def _head(signature: Any, inputs: dict[str, Any]) -> Message:
@@ -314,6 +307,9 @@ class _CallOutcome:
     value: Any
     is_error: bool
     escalate: BaseException | None = None
+    #: ``call:<session>/<call_id>``: the observer's record of this call, which the
+    #: model sees with the result and can cite (the science log's sources).
+    call_ref: str = ""
 
 
 class _Loop:
@@ -329,7 +325,7 @@ class _Loop:
             raise NoLanguageModelError()
         self.system = _system(agent.signature, self.inputs, agent.tools)
         self.head = _head(agent.signature, self.inputs)
-        self.tools = tuple(_function_tool(t) for t in agent.tools.values())
+        self.tools = self._listed_tools()
         self.config = _with_cache_key(config_from_lm_kwargs(sendable_lm_kwargs(self.lm)), self.lm)
         self.tool_media = str(getattr(self.lm, "_clio_tool_result_media", "native"))
         self.arc, self.session, self.scope = record.arc_scope()
@@ -353,6 +349,7 @@ class _Loop:
 
     def run(self) -> dspy.Prediction:
         from clio_agent.gact import context as _ctx  # noqa: PLC0415
+        from clio_agent.gact.runtime.globals import _TurnCancelled  # noqa: PLC0415
 
         expert_span = uuid.uuid4().hex[:16]
         self.recorder.started(expert_span, self.inputs)
@@ -388,6 +385,9 @@ class _Loop:
                 if done is not None:
                     return done
             return self._stop("max_iters")
+        except _TurnCancelled as exc:
+            self.recorder.cancelled(exc)
+            raise
         except ClioError as exc:
             self.recorder.failed(exc, self.step, self.span)
             raise
@@ -396,6 +396,20 @@ class _Loop:
             _ctx.reset(parent_token)
             if continue_token is not None:
                 _CONTINUING.reset(continue_token)
+
+    def _listed_tools(self) -> tuple[FunctionTool, ...]:
+        unlisted: frozenset[str] = getattr(self.agent, "_clio_unlisted", frozenset())
+        return tuple(_function_tool(t) for t in self.agent.tools.values() if t.name not in unlisted)
+
+    def _refresh_tools(self) -> None:
+        """Offer the tools a connected MCP server added or removed (``tools/list_changed``).
+
+        :mod:`clio_agent.gact.agents.live_tool_refresh` owns the refresh; a call this
+        step that unlocked tools makes them callable at the next step.
+        """
+        refresh = getattr(self.agent, "_clio_tool_refresh", None)
+        if refresh is not None and refresh(self.agent.tools):
+            self.tools = self._listed_tools()
 
     def _tool_use_note(self) -> list[tuple[str, str]]:
         """Tell an agent with tools, once, that one step may call several at once."""
@@ -419,6 +433,7 @@ class _Loop:
 
         _raise_if_cancelled()
         self._arrivals()
+        self._refresh_tools()
         maybe_autocompact(self.autocompact)
         attempt = 0
 
@@ -468,7 +483,8 @@ class _Loop:
         finally:
             _ctx.reset(thought_token)
         results = {c.id: (o.value, o.is_error) for c, o in zip(calls, outcomes, strict=True)}
-        self._record(text, thinking, calls, results, origin)
+        refs = {c.id: o.call_ref for c, o in zip(calls, outcomes, strict=True) if o.call_ref}
+        self._record(text, thinking, calls, results, origin, refs)
         for outcome in outcomes:
             if outcome.escalate is not None:
                 raise outcome.escalate
@@ -513,8 +529,18 @@ class _Loop:
         tool = self.agent.tools.get(call.name)
         if tool is None:
             return _CallOutcome(f"Unknown tool: {call.name}", True)
-        with injections.collect() as told:
-            outcome = self._run_tool(call, tool)
+        from clio_agent.gact.artifacts.observer_bridge import MODEL_CALL_SLOT  # noqa: PLC0415
+        from clio_agent.gact.science_log.lineage import call_reference  # noqa: PLC0415
+
+        slot: dict[str, str] = {}
+        slot_token = MODEL_CALL_SLOT.set(slot)
+        try:
+            with injections.collect() as told:
+                outcome = self._run_tool(call, tool)
+        finally:
+            MODEL_CALL_SLOT.reset(slot_token)
+        if slot.get("call_id"):
+            outcome.call_ref = call_reference(self.recorder.session, slot["call_id"])
         # What the harness told the agent about this call is shown to the user too.
         for source, text in told:
             emit_injection(source, text, call_id=call.id, agent_id=self.recorder.expert_id)
@@ -528,7 +554,7 @@ class _Loop:
         try:
             if inspect.iscoroutinefunction(getattr(tool, "func", None)):
                 # The worker thread has no running loop; the task copies this context.
-                return _CallOutcome(asyncio.run(tool.acall(**call.input)), False)
+                return _CallOutcome(run_in_new_loop(tool.acall(**call.input)), False)
             return _CallOutcome(tool(**call.input), False)
         except Exception as err:  # noqa: BLE001 - a tool error is the model's observation
             refusal = err if isinstance(err, MCPProtocolError) else typed_mcp_protocol_error(err)
@@ -580,6 +606,7 @@ class _Loop:
         calls: list[ToolCallPart],
         results: dict[str, tuple[Any, bool]],
         origin: tuple[str, bool] = ("", True),
+        refs: dict[str, str] | None = None,
     ) -> None:
         self.recorder.step_done(
             self.step,
@@ -590,6 +617,7 @@ class _Loop:
             results=results,
             thinking_source=origin[0],
             thinking_complete=origin[1],
+            refs=refs,
         )
 
     def _stop(self, reason: str) -> dspy.Prediction:

@@ -1,8 +1,32 @@
 ---
-import { ArrowRight, ChartNoAxesCombined, Download, GitCompareArrows } from 'lucide-react';
+import { ArrowRight, Box, ChartNoAxesCombined, Download, FlaskConical, GitCompareArrows, GitFork } from 'lucide-react';
 import SectionHeading from './overview/SectionHeading.astro';
 
 const guides = [
+	{
+		icon: FlaskConical,
+		title: 'Study a question',
+		status: 'Development preview',
+		body: 'Ask a question that needs experiments. The agent tests competing answers in parallel branches and keeps every claim linked to its evidence in the Science log.',
+		href: '/docs/science-log/',
+		link: 'Science log guide',
+	},
+	{
+		icon: GitFork,
+		title: 'Hand work to subagents',
+		status: 'Development preview',
+		body: 'The agent delegates to copies of itself or to read-only explore, planner and review roles, and forks its own work to try another direction.',
+		href: '/docs/subagents/',
+		link: 'Subagents guide',
+	},
+	{
+		icon: Box,
+		title: 'Browse many cases',
+		status: 'Development preview',
+		body: 'One 3D or raster viewer follows the case selected in a table or chart, and a link opens another view on the case it names.',
+		href: '/docs/widgets/linked-data/',
+		link: 'Linked data guide',
+	},
 	{
 		icon: GitCompareArrows,
 		title: 'Compare alternative answers',
@@ -31,7 +55,7 @@ const guides = [
 ---
 
 <section class="workflow-guides not-content" aria-labelledby="more-workflows">
-	<SectionHeading id="more-workflows" label="Explore the workflows" title="Compare, assemble," emphasis="and share." />
+	<SectionHeading id="more-workflows" label="Explore the workflows" title="Study, delegate, compare," emphasis="and share." />
 	<ul>
 		{guides.map(({ icon: Icon, title, status, body, href, link }) => (
 			<li>

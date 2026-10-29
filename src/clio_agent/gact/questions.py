@@ -167,10 +167,15 @@ class QuestionCommands:
         if len({option.value for option in definition.options}) != len(definition.options):
             raise ValueError("Question option values must be unique")
 
-    def restore(self) -> None:
-        """Finish posting confirmed Question headers after an interrupted owner write."""
+    def restore(self, session_id: str | None = None) -> None:
+        """Finish posting confirmed Question headers after an interrupted owner write.
+
+        With ``session_id``, only that conversation's open Questions (obligations lane).
+        """
         with self.history.serialized():
-            for handle in self.history.task_handles(kind="Question", active_only=True):
+            for handle in self.history.task_handles(
+                kind="Question", session_id=session_id, active_only=True
+            ):
                 current = self.history.task_snapshot(handle)
                 if current is not None and not current.raw_status and current.details is not None:
                     try:

@@ -12,16 +12,16 @@ human's latest preference: Claude Opus only; no new Astra review.
 
 | Capability | Current implementation | Verified evidence and limit |
 | --- | --- | --- |
-| Discover a permitted session | `memory_search_sessions` searches retained transcript excerpts and returns source/session identifiers and an authorized agent target. | Existing contracts cover search provenance, scopes, trusted grants, denial despite model intent and rollback. Supplied-marker discovery in earlier peer scenarios is not paraphrase recall. |
-| Read recent session activity | `memory_read_session_summary` returns counts, message IDs and excerpts from the last five messages, each bounded to 360 characters. | Four summary/frame contracts include no invented summary, original source IDs, native/HTTP summary equality and a production-storage application reload. No model-generated whole-session summary is supplied. |
-| Inspect context assembly | `memory_read_context_frame` returns up to 50 source/inclusion records with provenance. | A contract checks explicit partial coverage and no fabricated source text. `app.state.context_frames` still starts empty; durable context-frame recovery is not qualified. |
+| Discover a permitted session | `session_search` searches retained transcript excerpts and returns source/session identifiers and an authorized agent target. | Existing contracts cover search provenance, scopes, trusted grants, denial despite model intent and rollback. Supplied-marker discovery in earlier peer scenarios is not paraphrase recall. |
+| Read recent session activity | `session_read_summary` returns counts, message IDs and excerpts from the last five messages, each bounded to 360 characters. | Four summary/frame contracts include no invented summary, original source IDs, native/HTTP summary equality and a production-storage application reload. No model-generated whole-session summary is supplied. |
+| Inspect context assembly | `session_read_context_frame` returns up to 50 source/inclusion records with provenance. | A contract checks explicit partial coverage and no fabricated source text. `app.state.context_frames` still starts empty; durable context-frame recovery is not qualified. |
 | Read a full transcript programmatically | Authenticated product HTTP routes provide paginated session messages and exact message reads. | Their existence is not proof that the native agent tool catalog exposes an equivalent paginated, authorized transcript reader. The three memory tools do not provide that reader. |
 | Coordinate sessions/workflows | Shared task handles, mail, grants, observe/wait and subscriptions have separate Tasks evidence. | R338 uses two actual declared workflows. Messaging/handle discovery does not establish semantic retrieval of another workflow's old decisions. |
 | Read another compute node's history | No distributed history reader is established by this audit. | The attachment illustrates host Codex/Claude tooling and filesystem inspection. It is not CLIO cross-node acceptance and grants no authority to inspect unrelated histories. |
 | Maintained long-term knowledge | The design proposes source-linked facts/decisions, corrections and forgetting over ARC/Core. | The human design explicitly remains a proposal. No accepted live old-decision/paraphrase/correction/forgetting matrix was found. |
 
 The old October 12 design finding is partly stale: native search and the
-agent-callable HTTP search now call the same `agent_memory_search` function.
+agent-callable HTTP search now call the same `agent_session_search` function.
 It authorizes session candidates through Core relationships before search,
 counting and ranking; an intent string grants nothing. Full response parity is
 not established: native results add `agent_target`, while the HTTP result uses

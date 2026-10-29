@@ -3,17 +3,26 @@ from __future__ import annotations
 import json
 import logging
 from pathlib import Path
-from typing import Any
 
 import pytest
 from fastapi.testclient import TestClient
 
 from clio_agent.gact.app import build_app
-from tests._harness import runner_module_builder
 
 # #948 S4b: default sessions run the blueprint react ``main``; route it to each
 # test's ``build_app(agent=...)`` host fake.
 pytestmark = pytest.mark.usefixtures("host_agent_executor")
+
+CALLER_AGENT = """
+from clio_agent.sdk import Agent
+
+
+class Caller(Agent):
+    id = "caller"
+    version = "1.0.0"
+    role = "an agent that calls commands"
+    plugins = Agent.plugins + ["workspace", "summaries"]
+"""
 
 
 def _write_agent_invocable_command(command_dir: Path, name: str, description: str) -> None:
@@ -27,7 +36,6 @@ def _write_agent_invocable_command(command_dir: Path, name: str, description: st
                 f"name: {name}",
                 f"title: {name.title()}",
                 f"description: {description}",
-                "agent: main",
                 "agent-invocable: true",
                 "---",
                 f"Run {name}.",
@@ -56,8 +64,6 @@ def test_builtin_prompts_are_listed_and_resolvable(client: TestClient) -> None:
     assert "clio.chat" in prompts
     assert "default" in prompts["clio.chat"]["profiles"]
     assert "heavy" in prompts["clio.chat"]["profiles"]
-    assert prompts["clio.runtime.prompt_user_agent"]["title"] == "Agent without tools"
-    assert prompts["clio.runtime.tool_user_agent"]["title"] == "Agent with tools"
     assert "small_model" in prompts["clio.main.planner"]["profiles"]
 
     resolved = client.get("/v1/prompts/clio.chat").json()["prompt"]
@@ -241,216 +247,40 @@ def test_workspace_prompt_override_uses_workspace_root(tmp_path: Path) -> None:
     assert prompt["scope"] == "workspace"
 
 
-def test_active_expert_pack_prompts_feed_agent_catalog_and_render_context(
-    tmp_path: Path,
-) -> None:
-    pack = tmp_path / "session-pack"
-    (pack / "experts").mkdir(parents=True)
-    (pack / "prompts").mkdir()
-    pack.joinpath("clio-pack.yaml").write_text(
-        """id: science-pack
-version: 0.1.0
-title: Science Pack
-""",
-        encoding="utf-8",
-    )
-    pack.joinpath("prompts", "science.root.md").write_text(
-        """---
-id: science.root
-profile: heavy
-provider: openai
-model: gpt-5.1
----
-Use the science pack root prompt.
-""",
-        encoding="utf-8",
-    )
-    pack.joinpath("experts", "science.md").write_text(
-        """---
-id: science
-title: Science Root
-parent_id: main
-tier: 2
-prompt_id: science.root
-prompt_profile: heavy
----
-Inline prompt should be composed.
-""",
-        encoding="utf-8",
-    )
-
-    app = build_app(sessions_path=tmp_path / "sessions.json")
-    with TestClient(app) as c:
-        sid = c.post("/v1/sessions", json={"title": "science"}).json()["id"]
-        activated = c.post(
-            f"/v1/sessions/{sid}/expert-pack",
-            json={"path": str(pack)},
-        )
-        assert activated.status_code == 200, activated.text
-        agent = c.get("/v1/agents/science", params={"session_id": sid}).json()
-        rendered = c.post(
-            "/v1/prompts/clio.main.planner/render",
-            json={"session_id": sid},
-        ).json()["prompt"]
-
-    assert agent["system_prompt"] == "\n\n".join(
-        (
-            "Use the science pack root prompt.",
-            "Agent-specific instructions from this definition:",
-            "Inline prompt should be composed.",
-        )
-    )
-    assert agent["default_provider"] == "openai"
-    assert agent["default_model"] == "gpt-5.1"
-    assert agent["metadata"]["prompt_resolution"]["scope"] == "session_pack"
-    assert "- science: Science Root" in rendered["text"]
-    assert "science-pack" in rendered["text"]
-
-
-def test_user_agent_runtime_uses_resolved_prompt_profile(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    from .conftest import complete_turn
-
-    seen: dict[str, Any] = {}
-
-    def fake_prompt_agent(
-        base_agent: Any,
-        agent_def: Any,
-        question: str,
-        session_id: str,
-    ) -> Any:
-        del base_agent
-        seen.update(
-            {
-                "system_prompt": agent_def.system_prompt,
-                "provider": agent_def.default_provider,
-                "model": agent_def.default_model,
-                "metadata": agent_def.metadata,
-                "question": question,
-                "session_id": session_id,
-            }
-        )
-        return type(
-            "Pred",
-            (),
-            {
-                "answer": "PROMPT_PROFILE_OK",
-                "selected_expert": agent_def.id,
-                "routing_rationale": "selected registered prompt-backed agent",
-            },
-        )()
-
-    monkeypatch.setattr(
-        "clio_agent.gact.app._build_prompt_user_agent_module",
-        runner_module_builder(fake_prompt_agent),
-    )
-
-    app = build_app(sessions_path=tmp_path / "sessions.json", agent=object())
-    with TestClient(app) as c:
-        saved = c.put(
-            "/v1/prompts/clio.reviewer",
-            json={
-                "profile": "light",
-                "title": "Reviewer light",
-                "text": "Use the external reviewer prompt.",
-                "provider": "openai",
-                "model": "gpt-5-mini",
-            },
-        )
-        assert saved.status_code == 200, saved.text
-        created = c.post(
-            "/v1/agents",
-            json={
-                "id": "reviewer",
-                "title": "Reviewer",
-                "system_prompt": "This inline prompt should be composed.",
-                "metadata": {
-                    "prompt_id": "clio.reviewer",
-                    "prompt_profile": "light",
-                },
-            },
-        )
-        assert created.status_code == 201, created.text
-        catalog_agent = c.get("/v1/agents/reviewer").json()
-        listed_agents = {row["id"]: row for row in c.get("/v1/agents").json()["agents"]}
-        sid = c.post(
-            "/v1/sessions",
-            json={"title": "prompt-backed agent", "agent": {"id": "reviewer"}},
-        ).json()["id"]
-        assistant = complete_turn(c, sid, "review this")
-
-    assert catalog_agent["system_prompt"] == "\n\n".join(
-        (
-            "Use the external reviewer prompt.",
-            "Agent-specific instructions from this definition:",
-            "This inline prompt should be composed.",
-        )
-    )
-    assert catalog_agent["default_provider"] == "openai"
-    assert catalog_agent["default_model"] == "gpt-5-mini"
-    assert catalog_agent["metadata"]["prompt_resolution"]["status"] == "resolved"
-    assert listed_agents["reviewer"]["metadata"]["prompt_resolution"]["id"] == "clio.reviewer"
-    assert seen["question"] == "review this"
-    assert seen["system_prompt"] == "\n\n".join(
-        (
-            "Use the external reviewer prompt.",
-            "Agent-specific instructions from this definition:",
-            "This inline prompt should be composed.",
-        )
-    )
-    assert seen["provider"] == "openai"
-    assert seen["model"] == "gpt-5-mini"
-    resolution = seen["metadata"]["prompt_resolution"]
-    assert resolution["id"] == "clio.reviewer"
-    assert resolution["profile"] == "light"
-    assert resolution["scope"] == "global"
-    assert resolution["status"] == "resolved"
-    assert assistant["metadata"]["prompt_resolution"]["id"] == "clio.reviewer"
-    assert assistant["metadata"]["prompt_resolution"]["profile"] == "light"
-    # Text answer only — the routing decision is a routing.decision semantic
-    # event (a0e1d9a9), never a message part.
-    assert [part["type"] for part in assistant["parts"]] == ["text"]
-    assert assistant["parts"][0]["text"] == "PROMPT_PROFILE_OK"
-
-
 def test_planner_render_context_uses_agent_scoped_commands(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """The render context's ``commands.agent_invocable`` must be the AGENT-scoped
-    subset (what ``planner_command_rows`` returns for that agent+session), not the
-    un-scoped base command list.
+    """The render context's ``commands.agent_invocable`` is the session agent's
+    scoped subset: the agent-invocable commands its plugins ship, never every
+    agent-invocable command file on disk (#770 C1)."""
 
-    Regression for #770 C1: ``_prompt_render_context_for_request`` passed the
-    module-level ``_resolve_runtime_dynamic_agent`` (arity ``(app, agent_id, ...)``)
-    where ``planner_command_rows`` calls ``resolver(agent_id, session_id=...)`` ->
-    ``TypeError`` swallowed by a bare ``except``, so the scoped enrichment silently
-    reverted to the base list.
-    """
+    from tests._plugin_fixtures import custom_marketplace
 
     monkeypatch.chdir(tmp_path)
-    command_dir = tmp_path / ".clio" / "commands"
-    # Two agent-invocable commands on disk; the active agent only allows one.
-    _write_agent_invocable_command(command_dir, "summarize", "Summarize a dataset")
-    _write_agent_invocable_command(command_dir, "other", "Some other command")
+    # A workspace command file no plugin ships: not invocable by the agent.
+    _write_agent_invocable_command(tmp_path / ".clio" / "commands", "other", "Some other command")
+    plugin_commands = tmp_path / "plugin-commands"
+    _write_agent_invocable_command(plugin_commands, "summarize", "Summarize a dataset")
+    custom_marketplace(
+        tmp_path,
+        monkeypatch,
+        plugins={
+            "summaries": {
+                "files": {
+                    "ai.iowarp.clio/commands/summarize.md": (
+                        plugin_commands / "summarize.md"
+                    ).read_text(encoding="utf-8")
+                }
+            }
+        },
+        agents={"caller.py": CALLER_AGENT},
+    )
 
     app = build_app(sessions_path=tmp_path / "sessions.json")
     with TestClient(app) as c:
-        created = c.post(
-            "/v1/agents",
-            json={
-                "id": "caller",
-                "title": "Caller",
-                "system_prompt": "Call allowed commands.",
-                "metadata": {"commands": ["/summarize"]},
-            },
-        )
-        assert created.status_code in (200, 201), created.text
         sid = c.post(
-            "/v1/sessions",
-            json={"title": "t", "agent": {"id": "caller"}},
+            "/v1/sessions", json={"title": "t", "metadata": {"agent_ref": "clio/caller"}}
         ).json()["id"]
 
         rendered = c.post(
@@ -459,58 +289,8 @@ def test_planner_render_context_uses_agent_scoped_commands(
         ).json()["prompt"]
 
     text = rendered["text"]
-    # The agent-scoped subset keeps /summarize (allowed) and drops /other (not
-    # allowed for this agent). Under the bug the base list leaked /other through.
     assert "/summarize" in text
     assert "/other" not in text
-
-
-def test_planner_render_context_records_reason_on_enrichment_failure(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-    caplog: pytest.LogCaptureFixture,
-) -> None:
-    """A failure in the agent-invocable command enrichment must emit a structured
-    reason (no silent ``except: pass``) and fall back to the base command list."""
-
-    monkeypatch.chdir(tmp_path)
-    _write_agent_invocable_command(
-        tmp_path / ".clio" / "commands", "summarize", "Summarize a dataset"
-    )
-
-    def _boom(*_args: Any, **_kwargs: Any) -> list[dict[str, Any]]:
-        raise RuntimeError("planner enrichment exploded")
-
-    monkeypatch.setattr("clio_agent.gact.app._planner_command_rows", _boom)
-
-    app = build_app(sessions_path=tmp_path / "sessions.json")
-    with TestClient(app) as c:
-        sid = c.post(
-            "/v1/sessions",
-            json={"title": "t", "agent": {"id": "main"}},
-        ).json()["id"]
-
-        with caplog.at_level(logging.WARNING, logger="clio_agent"):
-            resp = c.post(
-                "/v1/prompts/clio.main.planner/render",
-                json={"session_id": sid},
-            )
-
-    assert resp.status_code == 200, resp.text
-    # The failure is observable in the trace, not swallowed.
-    reasons = [
-        rec.getMessage()
-        for rec in caplog.records
-        if "PROMPT-CTX" in rec.getMessage() and "enrichment failed" in rec.getMessage()
-    ]
-    assert reasons, "expected a structured PROMPT-CTX enrichment-failure reason"
-    # Match by content, not position: caplog.records ordering is not guaranteed to be
-    # stable across runs (logger propagation / concurrent handlers can interleave), so
-    # a positional ``reasons[0]`` was order-dependent and flaked (#902). Assert the
-    # cause appears in *some* captured PROMPT-CTX reason instead.
-    assert any("planner enrichment exploded" in reason for reason in reasons)
-    # Enrichment failed -> render still succeeds on the base command list.
-    assert "/summarize" in resp.json()["prompt"]["text"]
 
 
 def test_provider_summary_serializes_dict_lm_config(

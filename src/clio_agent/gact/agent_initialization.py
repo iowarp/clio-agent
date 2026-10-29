@@ -74,7 +74,10 @@ def mark_agent_ready(app: Any, agent: Any, *, boot: bool = False) -> None:
 
     app.state.agent = agent
     if boot:
+        from clio_agent.gact import boot_timing  # noqa: PLC0415
         from clio_agent.gact.providers import boot_handshake  # noqa: PLC0415
+
+        boot_timing.mark(app, "agent_ready")
 
         boot_handshake.schedule(app, agent)
 
@@ -82,6 +85,9 @@ def mark_agent_ready(app: Any, agent: Any, *, boot: bool = False) -> None:
         owner = getattr(app.state, "conversations", None)
         if owner is not None:
             owner.signal_pending()
+        from clio_agent.gact.session_warmup import start_deferred_warmups  # noqa: PLC0415
+
+        start_deferred_warmups(app)  # conversations opened while the agent was starting
 
     loop = getattr(app.state, "mcp_app_loop", None)
     if loop is not None and loop.is_running():

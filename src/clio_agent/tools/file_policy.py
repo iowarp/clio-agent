@@ -85,6 +85,17 @@ def _active_workspace_root() -> Path | None:
         return None
 
 
+def _narrowed_write_roots() -> tuple[Path, ...]:
+    """The calling session's narrowed write territory (an isolated node), else ``()``."""
+    from clio_agent.tools.write_scope import (  # noqa: PLC0415
+        active_tool_write_root,
+        narrowed_write_roots,
+    )
+
+    node = active_tool_write_root()
+    return narrowed_write_roots(node, _active_workspace_root()) if node is not None else ()
+
+
 def _granted_roots_for(workspace: Path | None) -> tuple[Path, ...]:
     """Root grants recorded for the active workspace (B5 #979.3), for the advisory twin.
 
@@ -173,6 +184,9 @@ class FileAccessPolicy:
     allowed_roots: tuple[Path, ...]
     max_file_size_bytes: int = DEFAULT_MAX_FILE_SIZE_BYTES
     allow_symlinks: bool = False
+    #: When set (an isolated workflow node), writes are confined to these roots;
+    #: reads still use ``allowed_roots``.
+    write_roots: tuple[Path, ...] = ()
 
     @classmethod
     def from_env(cls) -> "FileAccessPolicy":
@@ -201,6 +215,7 @@ class FileAccessPolicy:
             allowed_roots=_with_active_workspace([_resolve_root(root) for root in roots]),
             max_file_size_bytes=max_size,
             allow_symlinks=allow_symlinks,
+            write_roots=_narrowed_write_roots(),
         )
 
     @classmethod
@@ -233,12 +248,14 @@ class FileAccessPolicy:
             allowed_roots=_with_active_workspace([_resolve_root(root) for root in roots]),
             max_file_size_bytes=max_size,
             allow_symlinks=allow_symlinks,
+            write_roots=_narrowed_write_roots(),
         )
 
     def to_dict(self) -> dict[str, Any]:
         """Return a JSON-serializable policy snapshot."""
         return {
             "allowed_roots": [str(root) for root in self.allowed_roots],
+            **({"write_roots": [str(r) for r in self.write_roots]} if self.write_roots else {}),
             "max_file_size_bytes": self.max_file_size_bytes,
             "allow_symlinks": self.allow_symlinks,
             "read_mode": "existing regular files under allowed roots",
@@ -315,9 +332,14 @@ class FileAccessPolicy:
         Callers must still check credential exclusions and symlink policy. Shell
         children also require the OS fence before any command can execute.
         """
+        from clio_agent.plugins.service import plugin_store_root  # noqa: PLC0415
         from clio_agent.runtime.storage_access import materialized_read_roots  # noqa: PLC0415
 
         resolved = path.resolve(strict=False)
+        # Installed plugin content (its commands and skills name its own files) is
+        # readable, never writable: snapshots are content-addressed copies.
+        if resolved.is_relative_to((plugin_store_root() / "snapshots").resolve()):
+            return True
         return any(
             resolved.is_relative_to(approved)
             for root in self.allowed_roots
@@ -348,7 +370,7 @@ class FileAccessPolicy:
         except FileNotFoundError as exc:
             if create_parent:
                 resolved_parent = parent.resolve(strict=False)
-                self._ensure_allowed(resolved_parent, field=field)
+                self._ensure_writable(resolved_parent, field=field)
                 parent.mkdir(parents=True, exist_ok=True)
                 resolved_parent = parent.resolve(strict=True)
                 return resolved_parent / raw_path.name
@@ -359,7 +381,7 @@ class FileAccessPolicy:
                 path=str(raw_path),
                 next_action="Create the output directory inside an allowed root.",
             ) from exc
-        self._ensure_allowed(resolved_parent, field=field)
+        self._ensure_writable(resolved_parent, field=field)
         return resolved_parent / raw_path.name
 
     def _check_connected_storage(self, path: Path, *, field: str, write: bool = False) -> None:
@@ -386,6 +408,22 @@ class FileAccessPolicy:
             path=str(path),
             next_action="Move the file under an allowed root or set CLIO_ALLOWED_ROOTS.",
             details={"allowed_roots": [str(root) for root in self.allowed_roots]},
+        )
+
+    def _ensure_writable(self, path: Path, *, field: str) -> None:
+        if not self.write_roots:
+            self._ensure_allowed(path, field=field)
+            return
+        if any(_is_relative_to(path, root) for root in self.write_roots):
+            return
+        raise self._error(
+            code="outside_allowed_roots",
+            message=f"Path is outside this node's folder: {path}",
+            field=field,
+            path=str(path),
+            next_action=f"Write inside your node folder {self.write_roots[0]}; "
+            "you may read the whole workspace.",
+            details={"write_roots": [str(root) for root in self.write_roots]},
         )
 
     def _error(
@@ -489,7 +527,10 @@ def _coerce_path(filepath: str, *, field: str) -> Path:
         # process's own cwd. The managed backend process outlives its boot-time
         # cwd and can serve multiple workspaces, so Path.cwd() is only a
         # last-resort fallback for the app-less CLI grounding path.
-        workspace_root = _active_workspace_root()
+        from clio_agent.tools.write_scope import active_tool_write_root  # noqa: PLC0415
+
+        # An isolated node's relative paths land in its own folder.
+        workspace_root = active_tool_write_root() or _active_workspace_root()
         if workspace_root is not None:
             base = workspace_root
         else:

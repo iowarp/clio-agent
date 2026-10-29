@@ -1,0 +1,6 @@
+{
+  "label": "desktop-neutral-diagnostic",
+  "valid_acceptance_measurement": false,
+  "reason": "Local build omitted native managed CLIO backend generation; built connect mode. Rebuilding with gen-brand-backend.mjs and full tauri build.",
+  "retirement": "Requested actual quit_clio, then force-stopped verified owned Node harness; wrapper retired native drivers; no surviving application identities."
+}

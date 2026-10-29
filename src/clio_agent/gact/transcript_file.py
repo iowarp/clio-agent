@@ -142,7 +142,7 @@ class RegistryTranscriptIndex:
     def session_ids(self) -> list[str]:
         """Every registered session id."""
 
-        return [session.id for session in self._sessions.list()]
+        return self._sessions.ids()
 
     def has_session(self, session_id: str) -> bool:
         """Whether ``session_id`` is a registered session."""
@@ -277,44 +277,6 @@ def _reload_resident(app: "FastAPI", session_id: str, failure: BaseException) ->
         discard(session_id)  # non-materializing: the next read assembles the atoms
     else:
         messages.pop(session_id, None)
-    counters = getattr(app.state, "metrics_counters", None)
-    if counters is None:
-        return
-    try:
-        durable = materialize_from_atoms(app, session_id) or []
-    except (ClioError, OSError, RuntimeError) as reseed_error:
-        # The write's own typed error is what the caller must see; the metrics
-        # re-seed failing too is named on it and logged, never dropped.
-        failure.add_note(f"metrics for session {session_id} not re-seeded: {reseed_error!r}")
-        logger.error(
-            "transcript metrics not re-seeded reason=transcript_metrics_reseed_failed "
-            "session=%s error=%r",
-            session_id,
-            reseed_error,
-        )
-        return
-    counters.set_session(session_id, durable)
-
-
-def seeded_metrics_counters(app: "FastAPI") -> Any:
-    """The metrics aggregate once its boot seed ran, else a typed retryable error."""
-
-    ready = getattr(app.state, "transcript_boot_ready", None)
-    if ready is not None and not ready.is_set():
-        failure = getattr(app.state, "transcript_boot_error", "")
-        if failure:
-            raise TranscriptNotReadyError(
-                "",
-                BOOT_FAILED_REASON,
-                "Message metrics could not be loaded from clio-core at startup "
-                f"({failure}); restart the server once clio-core is healthy.",
-            )
-        raise TranscriptNotReadyError(
-            "",
-            STORE_NOT_ATTACHED_REASON,
-            "Message metrics are loaded from clio-core, which is still attaching. Retry shortly.",
-        )
-    return app.state.metrics_counters
 
 
 def _last_interaction(rows: list["Message"], created_at: str) -> str:
@@ -327,36 +289,48 @@ def _last_interaction(rows: list["Message"], created_at: str) -> str:
 
 
 def _seed_from_atoms(app: "FastAPI") -> None:
-    """Seed metrics and missing interaction times from one Core read per session."""
+    """Backfill ``last_interaction_at`` once for rows that predate it.
 
-    counters = app.state.metrics_counters
+    Only those rows are read from clio-core, and the answer is persisted, so the next
+    start reads none. Nothing else is replayed: the all-time message total is each
+    session's persisted ``message_count``, and the rest of the metrics count this
+    server's own messages (:mod:`clio_agent.gact.metrics_counters`).
+    """
+
     sessions = app.state.sessions
     unknown = {row.id: row.created_at for row in sessions.sessions_without_interaction_time()}
     times: dict[str, str] = {}
-    for session_id in app.state.transcript_index.session_ids():
+    for session_id, created_at in unknown.items():
         rows = materialize_from_atoms(app, session_id) or []
-        counters.set_session(session_id, rows)
-        if session_id in unknown:
-            times[session_id] = _last_interaction(rows, unknown[session_id])
+        times[session_id] = _last_interaction(rows, created_at)
     sessions.settle_interaction_times(times)
 
 
 def _atom_boot(app: "FastAPI") -> None:
-    """Retain legacy evidence, reconcile interruptions and seed canonical metrics."""
+    """Retain legacy evidence, mark interrupted turns and seed canonical metrics."""
 
-    from clio_agent.gact.session_store import (  # noqa: PLC0415 - import cycle
-        _reconcile_restart_interrupted_sessions,
-    )
+    from clio_agent.gact import boot_timing  # noqa: PLC0415
+    from clio_agent.gact.restart_interruptions import mark_restart_interrupted  # noqa: PLC0415
+    from clio_agent.gact.store_migrations import ensure_at_boot  # noqa: PLC0415
     from clio_agent.gact.task_history import TaskHistory
-    from clio_agent.gact.transcript_migration import migrate_transcripts
 
     if getattr(app.state, "task_history", None) is None:
-        history = TaskHistory(app.state.arc)
-        history.restore()
+        with boot_timing.step(app, "task_history_restore"):
+            history = TaskHistory(app.state.arc)
+            history.restore()
         app.state.task_history = history
-    migrate_transcripts(app)  # Capture legacy content before any reconciliation/cache update.
-    _reconcile_restart_interrupted_sessions(app)
-    _seed_from_atoms(app)
+        # Before any tree loads; normally `clio-agent migrate` copied it (one marker read).
+        ensure_at_boot(app, "task_event_lane")
+        ensure_at_boot(app, "task_lane_reads")  # after the lane copy
+    # The session records every later step reads (normally one marker read).
+    ensure_at_boot(app, "session_records_import")
+    # Legacy content is captured before any reconciliation/cache update; normally
+    # `clio-agent migrate` already did, and this is one marker read.
+    ensure_at_boot(app, "transcript_legacy_import")
+    with boot_timing.step(app, "interrupted_sessions"):
+        mark_restart_interrupted(app)  # records only; transcripts close after ready
+    with boot_timing.step(app, "interaction_times"):
+        _seed_from_atoms(app)
     app.state.transcript_boot_ready.set()
 
 
@@ -470,7 +444,7 @@ def boot_transcript_store(app: "FastAPI", root: Path) -> None:
 
     from clio_agent.gact.messages import MessageStore  # noqa: PLC0415
     from clio_agent.gact.metrics_counters import MetricsCounters  # noqa: PLC0415
-    from clio_agent.gact.resident_ledgers import build_resident_ledger_set
+    from clio_agent.gact.resident_ledgers import attach_arc_residency, build_resident_ledger_set
     from clio_agent.gact.runtime.retention import init_retention_state
     from clio_agent.gact.transcript_projection import canonical_log_arc
 
@@ -486,6 +460,7 @@ def boot_transcript_store(app: "FastAPI", root: Path) -> None:
     init_retention_state(app)
     app.state.metrics_counters = MetricsCounters()
     app.state.messages = build_resident_ledger_set(app)
+    attach_arc_residency(app, getattr(app.state, "arc", None))
     if canonical_log_arc(app) is not None:
         on_process_arc_bound(app)
 
@@ -510,5 +485,4 @@ __all__ = [
     "on_process_arc_bound",
     "reload_resident_on_failure",
     "resolve_transcript_file",
-    "seeded_metrics_counters",
 ]

@@ -324,12 +324,18 @@ class ServiceObservation(BaseModel):
 
     @property
     def service_state(self) -> ServiceState:
-        """Project process state for older clients without claiming readiness."""
+        """Project process state for older clients without claiming readiness.
+
+        An observation that found no installation is ``not_installed`` whatever
+        phase the supervisor last wrote: an install that failed and was stopped
+        leaves ``phase="stopped"`` with ``installed=False``, and calling that
+        "stopped" (or "unknown") offers a Start that can never work.
+        """
         if self.running:
             return "running"
-        if self.phase == "not_installed":
-            return "not_installed"
-        return "stopped" if self.installed else "unknown"
+        if self.installed:
+            return "stopped"
+        return "unknown" if self.phase == "installing" else "not_installed"
 
 
 class ManagedServiceDefinition(BaseModel):
@@ -369,6 +375,19 @@ class ManagedServiceCatalog(BaseModel):
     services: list[ManagedServiceDefinition]
 
 
+class AutoStartSkip(BaseModel):
+    """Why CLIO's boot did not start a managed service it would otherwise start.
+
+    Recorded on the service record instead of queueing an operation that cannot
+    succeed, so the inventory says why nothing happened (no silent skip). Any
+    later lifecycle operation replaces the record and clears it.
+    """
+
+    reason: Literal["not_installed"]
+    detail: str
+    recorded_at: str = Field(default_factory=utc_now)
+
+
 class ServiceRecord(BaseModel):
     """Durable desired and last-observed state for a managed service."""
 
@@ -394,6 +413,8 @@ class ServiceRecord(BaseModel):
     resolved_root: str = ""
     updated_at: str = Field(default_factory=utc_now)
     observation: ServiceObservation | None = None
+    #: Set when boot declined to auto-start this service, with the reason.
+    auto_start_skipped: AutoStartSkip | None = None
 
 
 class ServiceActionRequest(BaseModel):
@@ -433,7 +454,8 @@ class VersionConflictDetail(BaseModel):
     ``on_conflict``). Nothing was stopped or installed. ``health`` is
     ``healthy`` when it answered its own health check (``installed_version``
     is then a real version), or ``unresponsive``/``unknown`` when it did not
-    answer or could not be asked -- never a reason to have stopped it. The
+    answer or could not be asked -- never a reason to have stopped it --, or
+    ``stopped`` when the agent is installed under ``owner`` but not running. The
     caller re-issues the same action with ``configuration.on_conflict`` set
     to ``"connect"`` (adopt it as-is; only meaningful when ``healthy``) or
     ``"replace"`` (stop it and install this desktop's version).
@@ -443,7 +465,7 @@ class VersionConflictDetail(BaseModel):
 
     installed_version: str
     pid: str
-    health: Literal["healthy", "unresponsive", "unknown"] = "unknown"
+    health: Literal["healthy", "unresponsive", "unknown", "stopped"] = "unknown"
     target_version: str = ""
     owner: str = ""
     port: int = 17800
@@ -460,6 +482,9 @@ class InfrastructureOperation(OperationProgressFields):
     service_id: str
     target_id: str
     action: str
+    #: Who asked for it: the person, or CLIO itself (first-run SearXNG at boot, its stop
+    #: at shutdown). CLIO's own actions never stand for the person's decision.
+    initiator: Literal["person", "clio"] = "person"
     state: OperationState = "queued"
     progress: str = "Queued"
     logs: str = ""

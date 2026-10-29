@@ -30,19 +30,22 @@ async def test_spawn_retry_reuses_the_child_address_without_replaying_creation_h
 ) -> None:
     app, owner, root = await create_environment(arc, tmp_path)
     caller = TaskCaller(root.owner.session_id, "human")
-    original_snapshot, original_flush = owner.history.record_snapshot, app.state.sessions._flush
+    original_snapshot, original_persist = owner.history.record_snapshot, app.state.sessions._persist
     fired = False
     hooks: list[str] = []
 
     def hook(*, session_id: str, **_kwargs: Any) -> None:
         hooks.append(session_id)
 
-    def flush() -> None:
+    def persist(session: Any) -> None:
         nonlocal fired
         if fault == "session_flush" and not fired:
             fired = True
-            raise OSError("session projection flush unavailable")
-        original_flush()
+            # Lose the reply after the real record was committed. Staged writes
+            # do not publish a session when the put itself never happened.
+            original_persist(session)
+            raise OSError("session projection flush reply lost after confirmation")
+        original_persist(session)
 
     def record(snapshot: TaskSnapshot, **kwargs: Any) -> None:
         nonlocal fired
@@ -56,7 +59,7 @@ async def test_spawn_retry_reuses_the_child_address_without_replaying_creation_h
             raise OSError("task header reply lost after confirmation")
 
     monkeypatch.setattr("clio_agent.gact.hooks.dispatch_session_start", hook)
-    monkeypatch.setattr(app.state.sessions, "_flush", flush)
+    monkeypatch.setattr(app.state.sessions, "_persist", persist)
     monkeypatch.setattr(owner.history, "record_snapshot", record)
     try:
         with pytest.raises(OSError, match="unavailable|reply lost"):
@@ -76,7 +79,7 @@ async def test_spawn_retry_reuses_the_child_address_without_replaying_creation_h
         def recover() -> None:
             owner.history.restore()
             if reconstruct:
-                app.state.sessions = SessionStore(path=tmp_path / "sessions.json")
+                app.state.sessions = SessionStore(path=tmp_path / "sessions.json", store=arc._store)
                 owner.sessions = app.state.sessions
                 install_session_lifecycle_observer(app)
 
@@ -150,7 +153,7 @@ async def test_unconfirmed_hook_effects_are_not_replayed_by_session_reuse(
     app, owner, root = await create_environment(arc, tmp_path)
     caller = TaskCaller(root.owner.session_id, "human")
     effect = tmp_path / "hook-effect.txt"
-    original_flush = app.state.sessions._flush
+    original_persist = app.state.sessions._persist
     fired = False
 
     def hook(**_kwargs: Any) -> None:
@@ -158,22 +161,22 @@ async def test_unconfirmed_hook_effects_are_not_replayed_by_session_reuse(
         if fault == "hook_effect":
             raise OSError("Hook audit unavailable after the visible effect")
 
-    def flush() -> None:
+    def persist(session: Any) -> None:
         nonlocal fired
         if (
             fault == "hook_receipt"
             and not fired
-            and any(
-                child.parent_session_id and child.creation_hook_state == "completed"
-                for child in app.state.sessions._sessions.values()
-            )
+            and session.parent_session_id
+            and session.creation_hook_state == "completed"
         ):
             fired = True
             raise OSError("Hook completion receipt unavailable")
-        original_flush()
+        original_persist(session)
 
     monkeypatch.setattr("clio_agent.gact.hooks.dispatch_session_start", hook)
-    monkeypatch.setattr(app.state.sessions, "_flush", flush)
+    # A configured hook (the fake above) runs, so creation records its "started" receipt.
+    monkeypatch.setattr("clio_agent.gact.hooks.session_start_may_run_hooks", lambda _sid: True)
+    monkeypatch.setattr(app.state.sessions, "_persist", persist)
     try:
         accepted = await owner.spawn(caller, "Original assignment", "worker", "hook-fault")
         assert accepted["accepted"] is True and not effect.exists()
@@ -229,7 +232,7 @@ async def test_unconfirmed_hook_effects_are_not_replayed_by_session_reuse(
         def recover() -> None:
             owner.history.restore()
             if reconstruct:
-                app.state.sessions = SessionStore(path=tmp_path / "sessions.json")
+                app.state.sessions = SessionStore(path=tmp_path / "sessions.json", store=arc._store)
                 owner.sessions = app.state.sessions
                 install_session_lifecycle_observer(app)
 

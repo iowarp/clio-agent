@@ -278,7 +278,7 @@ async def test_pre_hook_provenance_recovery_reuses_the_confirmed_creation_event(
         assert fired and not hooks
         if reconstruct:
             await asyncio.to_thread(arc.release_session, child_id)
-            app.state.sessions = SessionStore(path=tmp_path / "sessions.json")
+            app.state.sessions = SessionStore(path=tmp_path / "sessions.json", store=arc._store)
             owner.sessions = app.state.sessions
             install_session_lifecycle_observer(app)
         await asyncio.to_thread(app.state.sessions.initialize, child_id)

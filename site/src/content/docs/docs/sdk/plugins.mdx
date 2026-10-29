@@ -1,0 +1,293 @@
+---
+title: Plugin reference
+description: Every file a CLIO plugin may contain, the fields each accepts, and the rules CLIO checks when it loads and resolves a plugin.
+---
+
+import { Aside, FileTree } from '@astrojs/starlight/components';
+
+A plugin is a folder in the [Agent Plugins 1.0.0](https://agent-plugins.org/specification) format. The portable parts, `plugin.json`, `skills/` and `mcp.json`, are readable by any client that supports the format. Everything specific to CLIO is under `ai.iowarp.clio/`.
+
+<Aside type="caution" title="Development build">
+The SDK is in the development build. It is not in the published v0.9.5-beta.8 release. See [Features and versions](/docs/versions/).
+</Aside>
+
+<FileTree>
+- pdf/
+  - plugin.json manifest
+  - mcp.json tool servers
+  - skills/
+    - work-with-pdfs/
+      - SKILL.md
+  - ai.iowarp.clio/
+    - plugin.py identity and requirements
+    - tools/ Python tools
+    - hooks/ hook functions
+    - subagents/ defined subagents
+    - flows/ flows
+    - commands/ slash commands
+    - prompt/ fragments and prompt files
+    - a2ui/ interactive catalogs
+</FileTree>
+
+Every folder is optional. Python under `ai.iowarp.clio/` is imported only once its marketplace is trusted. The folder is imported as a private package, so a plugin's modules can import each other with relative imports (`from ..audit import Audit`).
+
+## plugin.json
+
+```json
+{
+  "$schema": "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json",
+  "name": "spectroscopy",
+  "version": "0.1.0",
+  "description": "Find peaks in spectra, review them, and report.",
+  "author": {"name": "Spectroscopy Lab"},
+  "license": "BSD-3-Clause",
+  "keywords": ["spectroscopy"],
+  "extensions": {"ai.iowarp.clio": {"requires": ["workspace"]}}
+}
+```
+
+The manifest accepts only the format's ten fields: `$schema`, `name`, `version`, `description`, `author`, `homepage`, `repository`, `license`, `keywords` and `extensions`. Another field is ignored with a warning. `$schema` must be the URL above. `name` is the plugin's id: 1 to 64 characters of lowercase letters, digits, `-` and `.`, starting and ending with a letter or digit.
+
+`extensions["ai.iowarp.clio"]` holds CLIO's fields. Any other field there fails the load.
+
+| Field | Meaning |
+|---|---|
+| `kind` | `plugin`, the default, or `pack`. |
+| `requires` | Plugins this one cannot work without, as [plugin references](/docs/sdk/agents/#plugin-references): `["shell"]`, `["pdf@^1"]`. |
+| `members` | A pack's members. Required for a pack. |
+| `model` | Model requirements: `tool_calling`, `vision`, `context_tokens`, `output_tokens`. |
+| `prefers` | Model preferences: `model`, `provider`, `effort`. They guide the choice and never block. |
+| `connections` | Saved MCP connections the plugin uses, mapping a tool namespace to a connection name on the CLIO host: `{"home": "home-assistant"}`. See [Extensions preview](/docs/extensions/). |
+| `catalogs` | Ids of built-in interactive catalogs the plugin brings. |
+| `workflow_state` | The typed `workflow_state` vocabulary the plugin's agents and subagents return. At most one resolved plugin may declare one. |
+
+## plugin.py
+
+`ai.iowarp.clio/plugin.py` declares one `Plugin` or `Pack`, as a class or an instance. It holds identity and requirements only. When both files state the id, version, kind, `requires` or `members`, they must agree (`plugin_declaration_conflict`).
+
+```python
+from clio_agent.sdk import Pack, Plugin, Requires
+
+
+class Spectroscopy(Plugin):
+    id = "spectroscopy"
+    version = "0.1.0"
+    requires = ["workspace"]
+    model = Requires(context_tokens=64_000)
+
+
+# In another plugin: a pack, whose only content is its members.
+documents = Pack("documents", ["pdf", "docx", "xlsx", "pptx", "latex", "opendocument"])
+```
+
+## Packs and requirements
+
+A **pack** is a plugin whose only content is membership: `kind: "pack"` and a non-empty `members` list. A pack with skills, servers, tools, hooks, subagents or flows is refused (`pack_invalid`). Membership is removable: a person can remove one member and keep the rest.
+
+A **requirement** is not removable on its own. Removing a plugin from a conversation also removes every plugin that requires it, and the app shows which ones leave before anything changes. `core` can never be removed.
+
+**Model requirements** add up. A conversation's model must meet the requirements of its agent and of every resolved plugin, so removing a plugin can relax them. When the chosen model falls short, sending is refused with the unmet requirements, the plugins that need them, and the models that meet them.
+
+## Tools
+
+`ai.iowarp.clio/tools/*.py` contributes Python tools:
+
+```python
+from clio_agent.sdk import tool
+
+
+@tool(read_only=True)
+def find_peaks(path: str, min_height: float = 0.0) -> dict:
+    """Find the local maxima in a two-column CSV spectrum (x, intensity)."""
+```
+
+`@tool` works bare or with options: `name` (defaults to the function's name), `description` (defaults to the docstring) and `read_only`. The arguments' names, types and defaults become the tool's parameters. The function may be ordinary or `async`. A flow calls a tool by name with a mapping of its arguments, and reads the value it returned as `result.value`.
+
+A plugin can also claim one of CLIO's built-in tools by name, which is how CLIO's own plugins bring them:
+
+```python
+from clio_agent.sdk import native_tool
+
+shell_bash = native_tool("shell_bash")
+```
+
+Claiming a name CLIO does not have is an error (`native_tool_unknown`). Tool names are shared by every plugin in a conversation: two plugins that bring the same name cannot be used together (`tool_collision`). To use a built-in tool in your plugin, require the plugin that already brings it (`"requires": ["shell"]`) instead of claiming it again. [What's available](/docs/sdk/available/) lists which plugin brings each tool.
+
+## Tool servers
+
+`mcp.json` declares MCP servers. It holds exactly `$schema` (`https://agent-plugins.org/schemas/1.0.0/mcp.schema.json`) and `mcpServers`:
+
+```json
+{
+  "$schema": "https://agent-plugins.org/schemas/1.0.0/mcp.schema.json",
+  "mcpServers": {
+    "spectra": {
+      "type": "stdio",
+      "command": "uvx",
+      "args": ["spectra-mcp", "--cache", "${PLUGIN_DATA}/cache"]
+    }
+  }
+}
+```
+
+| Type | Fields |
+|---|---|
+| `stdio` | `command`: a bare program name, or a `./` path inside the plugin. `args`, `env`, and `cwd`: a `./` path, `${PLUGIN_ROOT}` or `${PLUGIN_DATA}`. |
+| `streamable-http`, `sse` | `url`: `https`, or `http` only on `localhost`, `127.0.0.1` or `::1`. `headers`. |
+
+`${PLUGIN_ROOT}` is the installed plugin's folder and `${PLUGIN_DATA}` a folder that persists for the plugin across updates. Both are expanded in `args`, `env` and `cwd` and set in the server's environment; `env` may not set them. Servers start the first time one of their tools is used, in the conversation's workspace. A server's tools are named after the server, for example `web_fetch` from a server named `web`. An invalid entry is skipped with `mcp_server_invalid`. Two plugins declaring the same server name cannot be used together (`mcp_server_collision`).
+
+## Skills
+
+`skills/<name>/SKILL.md` is a skill in the Agent Skills format:
+
+```markdown
+---
+name: peak-fitting
+description: How to choose a peak-height threshold and judge whether a peak is noise.
+---
+
+# Peak fitting
+...
+```
+
+`name` must equal the folder's name: lowercase letters, digits and single hyphens, up to 64 characters. `description` is 1 to 1024 characters. A skill that breaks these rules is skipped with a `skill_invalid` warning. Only the names and descriptions of a conversation's skills are in the prompt; the agent loads a skill's text when it needs it. Files next to `SKILL.md`, such as references and scripts, travel with it. Two plugins providing the same skill name cannot be used together (`skill_collision`).
+
+## Prompt fragments
+
+A Markdown file under `ai.iowarp.clio/prompt/` with a `section` in its frontmatter is a fragment of the agent's prompt:
+
+```markdown
+---
+id: shell.prefer-gh
+section: capabilities
+when: {tools: [shell_bash]}
+---
+For GitHub work, use the GitHub CLI (`gh`) through the shell.
+```
+
+| Field | Rule |
+|---|---|
+| `id` | Starts with `<plugin id>.`. Lets a person's agent drop or replace the fragment. |
+| `section` | `capabilities` or `domain`. `guidelines` and `rendering` belong to `core`. |
+| `when` | Optional. `tools`: the fragment applies when a resolved tool has that name or starts with `<entry>_`. `plugins`: it applies when every listed plugin is resolved. |
+
+The prompt has five sections, always in this order: the agent's identity (`You are {name}, {role}.`), guidelines, rendering, capabilities and domain. Within a section, fragments follow the plugins' resolution order, then file order. Templating is limited to `{{agent.id}}`, `{{agent.name}}`, `{{agent.role}}` and `{{env.NAME}}`.
+
+Write fragments that stand alone and carry only what the model cannot infer from tool descriptions and skills. Describe what a capability does; never claim it is the only way to do something, since a competing plugin may sit beside yours. A fragment above about 150 tokens produces a `fragment_budget` warning.
+
+A Markdown file under `prompt/` without a `section` is a plain prompt file, used by a subagent's `PromptFile`.
+
+## Hooks
+
+`ai.iowarp.clio/hooks/*.py` declares hooks with `@hook`:
+
+```python
+from clio_agent.sdk import hook
+
+
+@hook("tool_call", tools=r"fs_write_file|fs_edit_file")
+def protect_raw_data(ev):
+    path = "/" + str((ev.tool_input or {}).get("filepath", "")).replace("\\", "/")
+    if "/data/raw/" in path:
+        return {"decision": "deny", "reason": "data/raw/ holds the instrument's original files."}
+    return None
+```
+
+`@hook(event, *, id="", before=None, after=None, tools="", fail_closed=False)`:
+
+- `event` is one of the events below.
+- `tools` is a regular expression that must match a tool's whole name, for the tool events.
+- `id` defaults to the function's name. The full id is `<plugin>.<id>`.
+- `before` and `after` order this hook relative to other hook ids. A name without a dot means a hook of the same plugin.
+- `fail_closed=True` makes a crash or a timeout in this hook refuse the action, on events that can refuse.
+
+| SDK event | Runs | Can refuse |
+|---|---|---|
+| `tool_call` | Before a tool runs | Yes |
+| `tool_result` | After a tool returns | No |
+| `tool_batch` | After a round of tool calls | No |
+| `prompt_submit` | When the person sends a message | Yes |
+| `stop` | When the agent finishes | Limited |
+| `answer` | When the turn's answer is settled | No |
+| `session_start`, `session_end` | At the start and end of a conversation | No |
+| `subagent_start`, `subagent_stop` | At the start and end of a child conversation | No |
+| `pre_compact` | Before the conversation is compacted | No |
+| `before_model` | Before each request to the model | Yes |
+| `after_model` | After each model response | No |
+
+The function receives a `HookEvent` with `event`, `session_id`, `turn_id`, `cwd`, `tool_name`, `tool_input`, `prompt`, `payload` and `answer`. It returns:
+
+- `None` to allow;
+- a mapping with `decision` (`allow` or `deny`), `reason` and `additional_context`, which reaches the agent;
+- for `answer`, a mapping with `note` (a line under the answer), `check` (`{"passed": bool, "text": str}`) or `answer` (a revised answer, shown as a revision with `reason`; the original stays one click away).
+
+Raising `PermissionError` denies with its message. Any other exception is reported as a hook failure, which refuses the action only with `fail_closed`. A hook has 30 seconds.
+
+A conversation's hooks run child to parent: the plugins an agent subclass or a person adds run before those its parent carried. `before` and `after` then adjust the order, and a cycle stops resolution (`hook_cycle`). Plugin hooks run before the hooks in your `hooks.json` files; see [Hooks and automation](/docs/hooks/).
+
+## Subagents
+
+`ai.iowarp.clio/subagents/*.py` defines specialists:
+
+```python
+from clio_agent.sdk import PromptFile, Subagent
+
+peak_reviewer = Subagent(
+    "peak-reviewer",
+    prompt=PromptFile("prompt/peak_reviewer.md"),
+    description="Checks found peaks against the raw spectra and says which ones are noise.",
+    plugins=["workspace"],
+    tools=["fs_read_file", "find_peaks"],
+)
+```
+
+| Field | Meaning |
+|---|---|
+| `id` | The subagent's id, which flows, workflows and the delegating agent use. |
+| `prompt` | A `PromptFile` relative to `ai.iowarp.clio/`, or the prompt as text. A missing file is `prompt_file_missing`. |
+| `description` | When to use it. The delegating agent reads this. |
+| `plugins` | The plugins it carries, besides `core` and the plugin that defines it. |
+| `tools` | Optional. The only tools it may call, besides `core`'s. Each must come from its plugins (`subagent_tool_unavailable`). |
+| `prefers` | A `Prefers` for its model. |
+| `flow` | Its flow. The default is `react`. |
+| `max_iters` | The most steps of its loop; 0 uses CLIO's default. |
+| `structured_outputs` | Typed outputs, such as `{"workflow_state": True}` for a subagent that returns the plugin's `workflow_state`. |
+| `internal` | `True` for a subagent only the plugin's own code starts; no agent is offered it. |
+
+A subagent arrives and leaves with its plugin. It runs as its own conversation, composed like the main prompt with its prompt in the identity section, and its plugins cannot be changed while it runs. For a general helper started with only a task, use the `delegation` plugin's `spawn_agent_task` instead of defining a subagent.
+
+## Commands and catalogs
+
+`ai.iowarp.clio/commands/*.md` become slash commands in conversations whose agent resolves the plugin. `ai.iowarp.clio/a2ui/<id>/catalog.json` declares an interactive catalog: the components the conversation can render. The catalogs a conversation resolves decide what it can display and feed the rendering section of its prompt. See [Interactive views and controls](/docs/widgets/).
+
+## Flows
+
+`ai.iowarp.clio/flows/*.py` holds `Flow` classes. See [Write a flow](/docs/sdk/flows/).
+
+## Trust and executable parts
+
+A plugin's executable parts are `mcp.json`, `.mcp.json`, `hooks/hooks.json`, every `.py` file under `ai.iowarp.clio/`, and the scripts an imported hook runs. Its text parts are everything else. A marketplace you add loads only text until you trust it, and an update that changes an executable part waits for the trust step again, while the version you trusted earlier stays in use. Text-only updates need no trust step. See [Trust and executable parts](/docs/marketplaces/#trust-and-executable-parts).
+
+## Plugins from Claude Code
+
+CLIO installs Claude Code plugin marketplaces as they are. A plugin's `dependencies` become requirements, or a pack when it has no content of its own. `.mcp.json`, `skills/`, `hooks/hooks.json`, `agents/*.md` and `commands/*.md` become tool servers, skills, hooks, subagents and commands, and Claude Code's tool names map to CLIO's (`Read` to `fs_read_file`, `Bash` to `shell_bash`, and so on). See [Claude Code marketplaces](/docs/marketplaces/#claude-code-marketplaces).
+
+## Checks
+
+`clio-agent plugin check <folder>` loads a plugin, a marketplace or a Claude Code layout exactly as an install does, resolves each plugin, and runs every agent's full resolution. Errors fail it with exit status 1; warnings do not.
+
+| Code | Meaning |
+|---|---|
+| `prompt_file_missing` | A subagent's `PromptFile` does not exist. |
+| `plugin_declaration_conflict` | `plugin.py` and `plugin.json` disagree. |
+| `pack_invalid` | A pack with content of its own, or without members. |
+| `native_tool_unknown` | A claimed built-in tool does not exist. |
+| `tool_collision`, `skill_collision`, `mcp_server_collision` | Two plugins bring the same name. |
+| `subagent_tool_unavailable` | A subagent's `tools` names a tool its plugins do not bring. |
+| `hook_cycle` | `before` and `after` form a cycle. |
+| `flow_missing` | An agent selects a flow no resolved plugin provides. |
+| `plugin_not_installed`, `plugin_version_mismatch`, `plugin_ambiguous` | A plugin reference does not resolve to exactly one installed version. |
+| `plugin_untrusted` | An agent resolves an untrusted plugin with executable parts. |
+| `skill_invalid`, `mcp_server_invalid` | Warnings: an entry was skipped. |
+| `fragment_budget` | Warning: a fragment is above about 150 tokens. |

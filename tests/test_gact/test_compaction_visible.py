@@ -41,6 +41,7 @@ SABOTAGE (run manually, each turns the named test red):
 from __future__ import annotations
 
 import json
+import re
 import sys
 import threading
 from collections.abc import Iterator
@@ -66,7 +67,7 @@ from tests._harness import install_scripted_module
 from tests._scripted_engine import Reply, ScriptedEngine, calls, scripted_lm, summarize
 from tests.turn_signals import post_turn_and_wait
 
-SCOPE = "main"
+SCOPE = "standard"  # the session agent: its react scope and primary agent id
 WINDOW = 1000
 SUMMARY = "SUMMARY: searched q0 and q1; hits HITS-q0, HITS-q1."
 
@@ -157,8 +158,19 @@ def _compaction_events(events: list[Any]) -> list[Any]:
     return [e for e in events if e.event_type.startswith("compaction.")]
 
 
+# A recorded tool result ends with its ``[call:<session>/<call_id>]`` reference (the
+# science log cites it); these tests compare the tool's own output.
+_CALL_REF = re.compile(r"\[call:[^\]]+\]$")
+
+
 def _texts(messages: tuple[LMMessage, ...] | list[LMMessage]) -> list[tuple[str, list[Any]]]:
-    return summarize(list(messages))
+    return [
+        (
+            role,
+            [(*p[:2], _CALL_REF.sub("", p[2]), *p[3:]) if p[0] == "result" else p for p in parts],
+        )
+        for role, parts in summarize(list(messages))
+    ]
 
 
 def _transcript(client: TestClient, sid: str) -> list[dict[str, Any]]:
@@ -690,8 +702,8 @@ def test_a_record_whose_turn_settled_before_the_fold_is_still_shown_live(
 
 def test_the_sdk_reads_the_record_and_the_notice_as_typed_parts() -> None:
     """The client SDK's ``Part`` declares the injection and notice fields (no extras)."""
+    from clio_agent.client.types import Part as SdkPart
     from clio_agent.gact.summarization_record import failure_notice_part, summarization_part
-    from clio_agent.sdk.types import Part as SdkPart
 
     record = summarization_part(
         "S", trigger="auto", compaction_id="cmp_1", derived_from=["a"], compacted_message_ids=[]

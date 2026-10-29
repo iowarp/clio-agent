@@ -87,6 +87,34 @@ async def test_exit_waits_for_inflight_launch_and_retains_failed_cleanup() -> No
 
 
 @pytest.mark.asyncio
+async def test_exit_stops_every_host_at_once() -> None:
+    """Quitting waits for the slowest host, not for each host in turn."""
+
+    store = InfrastructureStore(None)
+    runtime = InfrastructureRuntime(store, InfrastructureTransportRegistry(lambda *_: None))
+    targets = [_target(store, f"/root-{n}").id for n in range(3)]
+    runtime._remote_launches = {
+        target_id: RemoteLaunch(f"/owned-{n}", 17800 + n, f"launch-{n}", desktop_id="desktop-a")
+        for n, target_id in enumerate(targets)
+    }
+    started: list[str] = []
+    every_host_asked = asyncio.Event()
+
+    async def execute(target_id: str, spec: CommandSpec) -> CommandResult:
+        started.append(target_id)
+        if len(started) == len(targets):
+            every_host_asked.set()
+        # A serial stop would wait here forever on the first host.
+        await asyncio.wait_for(every_host_asked.wait(), timeout=5)
+        return CommandResult(exit_code=0)
+
+    runtime._execute = execute  # type: ignore[method-assign]
+    assert await runtime.stop_desktop_agents("desktop-a") == []
+    assert sorted(started) == sorted(targets)
+    assert runtime._remote_launches == {}
+
+
+@pytest.mark.asyncio
 async def test_explicit_reconnect_never_acquires_shutdown_ownership(tmp_path: Path) -> None:
     """Connecting to an existing process does not schedule it for stop on exit."""
 
@@ -178,6 +206,38 @@ def test_owned_launch_uses_the_shipped_launcher_and_stops_on_exit(tmp_path: Path
 
 
 @linux_only
+def test_owned_launch_finds_its_server_in_the_default_root(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """With no install root chosen (the Desktop default), start resolves the root once.
+
+    The prelude exports CLIO_AGENT_HOME; resolving the root again after it used to land
+    on ``<root>/user/data/app``, so the pidfile was never found and every default SSH
+    deployment failed with "Cannot verify the new CLIO process owner".
+    """
+
+    for name in ("CLIO_AGENT_HOME", "CLIO_AGENT_DATA_DIR", "CLIO_USER_DIR", "XDG_DATA_HOME"):
+        monkeypatch.delenv(name, raising=False)
+    monkeypatch.setenv("HOME", str(tmp_path))
+    prefix = tmp_path / ".local" / "share" / "clio-agent" / "app"
+    _fake_install(prefix)
+    binary = prefix / "bin" / "clio"
+    binary.parent.mkdir()
+    binary.write_bytes((Path(__file__).parents[2] / "install" / "clio").read_bytes())
+    binary.chmod(0o755)
+    launch = RemoteLaunch("", _free_port(), "desktop-default-root")
+    try:
+        result = _run_script(start_owned_command(launch))
+        assert result.returncode == 0, result.stdout + result.stderr
+        assert "Started Desktop-owned CLIO (pid" in result.stdout
+        assert str(prefix) in result.stdout
+    finally:
+        result = _run_script(stop_owned_command(launch))
+        assert result.returncode == 0, result.stdout + result.stderr
+    assert "Stopped Desktop-owned CLIO" in result.stdout
+
+
+@linux_only
 def test_replace_rechecks_the_pid_after_the_user_answers(tmp_path: Path) -> None:
     """An answer about the old process must not stop a replacement process."""
 
@@ -214,7 +274,7 @@ def test_update_and_replace_target_the_documented_installation(choice: str, root
     )
     assert plan.remote_launch is not None and plan.remote_launch.root == root
     assert plan.connection_port == 17801
-    assert plan.commands[0].args[-1] == "123"
+    assert plan.commands[0].args[-2:] == ["123", "1"]  # expected pid, answered
 
 
 def test_exit_requires_authentication_even_on_loopback(tmp_path: Path) -> None:

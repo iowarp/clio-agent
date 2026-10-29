@@ -87,9 +87,13 @@ def structured_tool_result_error(result: Any) -> str | None:
         return decoded.strip()
 
     result_map = result if isinstance(result, Mapping) else {}
+    # Read the legacy camelCase attribute only when the SDK v2 name is absent: on a
+    # current result the old name is a deprecated alias that warns on access.
+    structured = getattr(result, "structured_content", None)
+    if not hasattr(result, "structured_content"):
+        structured = getattr(result, "structuredContent", None)
     candidates = (
-        getattr(result, "structured_content", None),
-        getattr(result, "structuredContent", None),
+        structured,
         result_map.get("structuredContent"),
         result_map.get("structured_content"),
         getattr(result, "data", None),
@@ -101,11 +105,12 @@ def structured_tool_result_error(result: Any) -> str | None:
                 return nested_error
     if content_error := _content_block_error(result):
         return content_error
-    explicitly_failed = getattr(
-        result,
-        "is_error",
-        getattr(result, "isError", result_map.get("isError", result_map.get("is_error"))),
-    )
+    if hasattr(result, "is_error"):
+        explicitly_failed = result.is_error
+    else:
+        explicitly_failed = getattr(
+            result, "isError", result_map.get("isError", result_map.get("is_error"))
+        )
     return "tool_result_is_error" if explicitly_failed is True else None
 
 

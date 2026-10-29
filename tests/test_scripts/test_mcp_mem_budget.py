@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import subprocess
 import sys
 import threading
 from argparse import Namespace
@@ -157,7 +158,14 @@ RunMeasurement = _mod.RunMeasurement
 
 
 def _argv(tmp_path: Path, *extra: str) -> list[str]:
-    return ["mcp_mem_attribution.py", "--pack", str(tmp_path), "--workspace", str(tmp_path), *extra]
+    return [
+        "mcp_mem_attribution.py",
+        "--agent",
+        "clio/clio-data",
+        "--workspace",
+        str(tmp_path),
+        *extra,
+    ]
 
 
 def test_median_absorbs_one_noisy_run_that_a_single_run_gate_would_fail() -> None:
@@ -252,6 +260,107 @@ def test_a_run_that_cannot_measure_fails_the_gate(
     assert _mod.main() == 2
 
 
+def _private_sample_args(root: Path) -> Namespace:
+    """Use the real release load when exercising isolated sample dispatch."""
+    return Namespace(
+        private_core_root=root,
+        agent="clio/clio-data",
+        workspace=root / "workspace",
+        data="sensor_readings.csv",
+        sessions=3,
+        port=8195,
+        model="haiku",
+        provider="claude_code",
+        settle_s=180,
+        marketplace=None,
+        children_agent=None,
+        xdg=None,
+    )
+
+
+def test_each_private_sample_gets_a_fresh_core_process_and_store(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Reusing one Core across runs must not contaminate the next fresh-data check."""
+    roots: list[Path] = []
+
+    def run(command: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
+        assert Path(command[2]).name == "run_with_private_cte.py"
+        assert "--assert-budget" not in command
+        assert "--private-core-root" not in command
+        assert command[command.index("--runs") + 1] == "1"
+        root = Path(command[command.index("--runtime-root") + 1])
+        assert root.is_relative_to(tmp_path.resolve())
+        roots.append(root)
+        output = Path(command[command.index("--measurement-out") + 1])
+        output.write_text('{"peak_gb": 2.4, "final_gb": 0.9}', encoding="utf-8")
+        return subprocess.CompletedProcess(command, 0)
+
+    monkeypatch.setattr(_mod.subprocess, "run", run)
+    for _ in range(3):
+        assert _mod._run_with_fresh_core(_private_sample_args(tmp_path)) == RunMeasurement(2.4, 0.9)
+    assert len(set(roots)) == 3
+    assert all(not root.exists() for root in roots)
+
+
+@pytest.mark.parametrize("returncode", [0, 7])
+def test_missing_private_measurement_cannot_pass(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, returncode: int
+) -> None:
+    """A failed child or a successful child with no data is never a zero-memory pass."""
+    monkeypatch.setattr(
+        _mod.subprocess,
+        "run",
+        lambda command, **kwargs: subprocess.CompletedProcess(command, returncode),
+    )
+    assert _mod._run_with_fresh_core(_private_sample_args(tmp_path)) == (returncode or 2)
+
+
+def test_sample_output_cannot_bypass_three_run_budget_guard(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Internal sample output never claims an asserted one-run budget verdict."""
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        _argv(
+            tmp_path,
+            "--runs",
+            "3",
+            "--settle-s",
+            "180",
+            "--assert-budget",
+            "--measurement-out",
+            str(tmp_path / "sample.json"),
+        ),
+    )
+    monkeypatch.setattr(_mod, "_run_once", MagicMock(side_effect=AssertionError("must not boot")))
+    assert _mod.main() == 2
+
+
+def test_private_service_cleanup_uses_its_controller_generation(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Detached services retire through their actual owner, after FINAL is measured."""
+    from clio_agent.gact.infrastructure import node_service
+
+    service = tmp_path / "services" / "DESKTOP" / "searxng"
+    service.mkdir(parents=True)
+    (service / "owner.json").write_text('{"owner":"private-run"}', encoding="utf-8")
+    (service / "receipt.json").write_text('{"operation_id":"generation-1"}', encoding="utf-8")
+    control = MagicMock(return_value={"phase": "stopped", "running": False})
+    monkeypatch.setattr(node_service, "control", control)
+    _mod._stop_private_services({"CLIO_AGENT_DATA_DIR": str(tmp_path)})
+    control.assert_called_once_with(
+        {
+            "action": "stop",
+            "root": str(service.resolve()),
+            "owner": "private-run",
+            "require_operation_id": "generation-1",
+        }
+    )
+
+
 def test_all_blueprints_are_prepared_before_any_turn(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
@@ -324,7 +433,8 @@ def test_setup_http_failure_aborts_before_any_acceptance_turn(
         if idx == 1:
             response = created if failed_phase == "create" else activated
             response.raise_for_status.side_effect = _mod.requests.HTTPError("setup failed")
-        session.post.side_effect = [created, activated]
+        session.post.return_value = created
+        session.patch.return_value = activated
         sessions.append(session)
         return session
 
@@ -333,17 +443,17 @@ def test_setup_http_failure_aborts_before_any_acceptance_turn(
     monkeypatch.setattr(_mod, "drive_session", drive)
     out: dict[int, str] = {}
     sids: dict[int, str] = {}
-    assert not _mod.drive_load("http://gate", [(tmp_path, "prompt")] * 3, out, sids)
+    assert not _mod.drive_load("http://gate", [("clio/clio-data", "prompt")] * 3, out, sids)
     drive.assert_not_called()
     assert sids == {0: "session-0"}
     assert "setup failed" in out[1]
     assert len(sessions) == 2
-    sessions[0].post.assert_any_call(
-        "http://gate/v1/sessions/session-0/agent-blueprint",
-        json={"path": str(tmp_path)},
+    sessions[0].patch.assert_any_call(
+        "http://gate/v1/sessions/session-0/agent",
+        json={"ref": "clio/clio-data"},
         timeout=120,
     )
-    assert sessions[1].post.call_count == (1 if failed_phase == "create" else 2)
+    assert sessions[1].patch.call_count == (0 if failed_phase == "create" else 1)
 
 
 def test_invalid_created_session_id_cannot_start_a_turn(

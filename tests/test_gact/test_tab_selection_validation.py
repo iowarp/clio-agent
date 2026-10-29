@@ -25,7 +25,6 @@ def test_invalid_static_tab_selection_names_the_allowed_children(active: str) ->
                     "tabs": [{"title": "Overview", "child": "overview_panel"}],
                 }
             ],
-            max_components=10,
         )
 
 
@@ -41,7 +40,6 @@ def test_static_child_and_declared_dynamic_selection_remain_valid(active: object
                 "tabs": [{"title": "Overview", "child": "overview_panel"}],
             }
         ],
-        max_components=10,
     )
 
 

@@ -1,6 +1,6 @@
 """A BestOfN / Refine run as clio-core records it (Phase 9).
 
-Every run -- a blueprint or spawn-strategy variant, or ``draft_alternatives`` -- is one
+Every run -- a spawn-strategy variant or ``draft_alternatives`` -- is one
 :class:`VariantRun`: its tries (scope, final text, score, tokens), the judge's scores or
 the user's pick and comment, the advice each Refine try was given, and what was
 selected. Each state change appends one full snapshot (kind ``variant_record``) to the

@@ -10,8 +10,11 @@ bound (the 2026-07-20 audit measured this cache peaking at ~14 GB). Bounded RAM 
 release-gating (#930); bounded DISK is the same class (#1001) — a desktop agent must not
 demand tens of GB of cache from a user's machine.
 
-This module gives that ONE clio-owned cache a **steady-state disk bound**, enforced
-at server boot only. Two config-first knobs bound it:
+This module gives that ONE clio-owned cache a **steady-state disk bound**, enforced at
+the end of every install or upgrade (:mod:`clio_agent.runtime.document_install`, which
+``install.sh`` / ``install.ps1`` and the desktop's install-time preparation run) and by
+``clio-agent doctor --gc``. Server start never walks the cache (B4: maintenance runs in
+its own lane, startup does only the startup row). Two config-first knobs bound it:
 
 * ``tools.mcp_cache.max_bytes`` (env ``CLIO_MCP_CACHE_MAX_BYTES``, default 2 GiB) — the
   total-size ceiling.
@@ -27,11 +30,11 @@ rejected) with the bytes freed — mirroring the ``stream_fallback`` reason-cata
 in :mod:`clio_agent.gact.streaming` and the eviction catalog in
 :mod:`clio_agent.gact.runtime.retention`. No silent degradation, ever.
 
-**Boot-only, never mid-session.** A prune is safe exactly when the booting process owns
-the cache — i.e. no OTHER clio process is alive that might be spawning into it
-(astral-sh/uv#11694 is the whole reason the cache is isolated). :func:`boot_prune_mcp_cache`
-consults an injected liveness prober and, if any peer is alive, SKIPS with a typed reason
-rather than racing a concurrent spawn.
+**Never mid-session.** A prune is safe exactly when the pruning process owns the cache —
+i.e. no OTHER clio process is alive that might be spawning into it (astral-sh/uv#11694 is
+the whole reason the cache is isolated). :func:`prune_owned_mcp_cache` consults an
+injected liveness prober and, if any peer is alive, SKIPS with a typed reason rather than
+racing a concurrent spawn.
 """
 
 from __future__ import annotations
@@ -55,7 +58,7 @@ __all__ = [
     "mcp_cache_max_bytes",
     "mcp_cache_max_age_days",
     "prune_uv_cache",
-    "boot_prune_mcp_cache",
+    "prune_owned_mcp_cache",
 ]
 
 # Default bounds. Config-first (``tools.mcp_cache.*`` file namespace + ``CLIO_MCP_CACHE_*``
@@ -91,7 +94,7 @@ _PRUNE_REASONS: dict[str, dict[str, Any]] = {
         "policy": "age_over_max_age_days",
         "description": (
             "An MCP uv-cache environment was older than the configured max age; it was "
-            "evicted at boot. The next spawn that needs it rebuilds it lazily."
+            "evicted by an install-time or 'doctor --gc' prune. The next spawn that needs it rebuilds it lazily."
         ),
     },
     "mcp_cache_pruned_size": {
@@ -104,11 +107,11 @@ _PRUNE_REASONS: dict[str, dict[str, Any]] = {
     },
     "mcp_cache_prune_skipped_live": {
         "category": "mcp_cache_retention",
-        "policy": "boot_only_never_mid_session",
+        "policy": "never_under_a_live_agent",
         "description": (
             "An MCP uv-cache prune was requested but another clio process is alive and "
             "may be spawning into the cache; skipped to avoid racing a concurrent spawn "
-            "(astral-sh/uv#11694). The prune runs at the next boot with no peers alive."
+            "(astral-sh/uv#11694). The next install, upgrade or 'clio doctor --gc' with no peers alive prunes it."
         ),
     },
     "mcp_cache_prune_over_budget": {
@@ -392,18 +395,19 @@ def prune_uv_cache(
     return result
 
 
-def boot_prune_mcp_cache(
+def prune_owned_mcp_cache(
     *,
     cache_dir: str | os.PathLike[str] | None = None,
     others_alive: Callable[[], Iterable[Any]] | None = None,
     now: float | None = None,
 ) -> PruneResult | None:
-    """Prune the MCP uv cache at server boot, IFF this process owns it (#1001).
+    """Prune the MCP uv cache IFF no peer clio process can be spawning into it (#1001).
 
-    Boot is the one safe window: the cache is only unsafe to prune while a peer clio
-    process might be spawning into it (astral-sh/uv#11694). This consults ``others_alive``
-    and, if any peer is reported, SKIPS with a typed reason (never prunes mid-session).
-    With no peers, it resolves the configured bounds and prunes.
+    Runs at the end of an install or upgrade. The cache is only unsafe to prune while a
+    peer clio process might be spawning into it (astral-sh/uv#11694). This consults
+    ``others_alive`` and, if any peer is reported, SKIPS with a typed reason (never
+    prunes under a live agent). With no peers, it resolves the configured bounds and
+    prunes.
 
     Args:
         cache_dir: The MCP uv cache dir; defaults to the canonical
@@ -430,7 +434,7 @@ def boot_prune_mcp_cache(
     if peers:
         trace.event(
             "MCP-CACHE",
-            "mcp_cache_prune_skipped_live peers=%d (%s) — boot prune deferred",
+            "mcp_cache_prune_skipped_live peers=%d (%s) — prune deferred to doctor --gc",
             len(peers),
             ", ".join(str(p) for p in peers[:8]),
         )
@@ -446,7 +450,7 @@ def boot_prune_mcp_cache(
     if result.existed:
         trace.event(
             "MCP-CACHE",
-            "boot prune done dir=%s freed=%d evicted=%d before=%d after=%d",
+            "prune done dir=%s freed=%d evicted=%d before=%d after=%d",
             result.cache_dir,
             result.bytes_freed,
             result.count,
@@ -454,23 +458,3 @@ def boot_prune_mcp_cache(
             result.total_bytes_after,
         )
     return result
-
-
-async def boot_prune_off_loop() -> None:
-    """Run :func:`boot_prune_mcp_cache` off the event loop (server-boot hook, #1001).
-
-    A large-cache directory walk must never block uvicorn's port binding, so this runs the
-    (synchronous) prune in the default executor. Best-effort: a failure is logged and
-    swallowed so it can never break server boot. Typed prune reasons are emitted by
-    :func:`boot_prune_mcp_cache` itself.
-    """
-    import asyncio  # noqa: PLC0415
-    import logging  # noqa: PLC0415
-
-    loop = asyncio.get_running_loop()
-    try:
-        await loop.run_in_executor(None, boot_prune_mcp_cache)
-    except Exception:  # noqa: BLE001 - best-effort boot prune; a failure must never break server boot
-        logging.getLogger(__name__).exception(
-            "mcp-uv-cache boot prune failed (#1001); continuing boot"
-        )

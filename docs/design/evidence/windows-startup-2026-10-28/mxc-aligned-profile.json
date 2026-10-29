@@ -1,0 +1,15 @@
+{
+  "seconds": 1.014,
+  "exit_code": 0,
+  "witnesses": {
+    "workspace_write": true,
+    "source_read": true,
+    "outside_write_denied": true,
+    "source_write_denied": true,
+    "private_read_denied": true,
+    "descendant_read_denied": true,
+    "direct_network_denied": true
+  },
+  "stderr": "",
+  "stdout": ""
+}

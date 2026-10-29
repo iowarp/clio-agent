@@ -137,16 +137,17 @@ update_check() {
     local age=$(( $(date +%s) - $(stat -c %Y "$UPDATE_STAMP" 2>/dev/null || echo 0) ))
     [[ "$age" -lt 86400 ]] && return 0
   fi
-  local installed latest first
+  local installed latest behind
   installed="$("$CLIO_VENV/bin/python" -c 'import importlib.metadata as m; print(m.version("clio-agent"))' 2>/dev/null)" || return 0
   latest="$(curl -sS -m 4 https://pypi.org/pypi/clio-agent/json 2>/dev/null \
     | "$CLIO_VENV/bin/python" -c 'import sys,json; print(json.load(sys.stdin)["info"]["version"])' 2>/dev/null)" || return 0
   [[ -z "$installed" || -z "$latest" ]] && return 0
   touch "$UPDATE_STAMP" 2>/dev/null || true
-  if [[ "$installed" != "$latest" ]]; then
-    # "behind" when installed sorts before latest under version ordering.
-    first="$(printf '%s\n%s\n' "$installed" "$latest" | sort -V | head -1)"
-    [[ "$first" = "$installed" ]] && warn "clio-agent update available: $installed -> $latest  (run: clio update)"
+  # Python version ordering (a beta sorts before its final release; `sort -V`
+  # does not know that). An install newer than the latest stable is not behind.
+  behind="$("$CLIO_VENV/bin/python" -c 'import sys; from packaging.version import Version as V; print(int(V(sys.argv[1]) < V(sys.argv[2])))' "$installed" "$latest" 2>/dev/null)" || return 0
+  if [[ "$behind" = 1 ]]; then
+    warn "clio-agent update available: $installed -> $latest  (run: clio update)"
   fi
 }
 
@@ -479,8 +480,8 @@ main() {
       if health; then say "stopping the running server first"; stop_server; fi
       if [[ -n "$uv_bin" ]]; then
         "$uv_bin" pip install --python "$CLIO_VENV/bin/python" ${wheel_arg:+"$wheel_arg"} -U clio-agent \
-          "dspy==3.4.0" "fastmcp==4.1.0" "fastmcp-slim==4.1.0" \
-          "fastmcp-tasks==4.1.0" \
+          "dspy==3.4.0" "fastmcp==4.1.2" "fastmcp-slim==4.1.2" \
+          "fastmcp-tasks==4.1.2" \
           || { err "update failed"; return 1; }
       else
         "$CLIO_VENV/bin/python" -m pip install ${wheel_arg:+"$wheel_arg"} -U clio-agent || { err "update failed (no uv; pip fallback also failed)"; return 1; }

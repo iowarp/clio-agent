@@ -1,4 +1,11 @@
-"""iowarp/clio-agent#19: dynamic agent registry."""
+"""iowarp/clio-agent#19: user-defined agents.
+
+A user agent is a parent agent plus a delta (``extends``, ``add``, ``remove``),
+saved to the user's own marketplace (``user/<id>``) from the + menu, never a
+flattened ``AgentDef`` row. ``POST /v1/agents/user`` saves (or replaces) one,
+``DELETE /v1/agents/user/{id}`` removes it, and ``GET /v1/agents`` lists it
+next to the installed agents.
+"""
 
 from __future__ import annotations
 
@@ -8,7 +15,6 @@ from pathlib import Path
 import pytest
 from fastapi.testclient import TestClient
 
-from clio_agent.gact.agent_blueprints import DEFAULT_AGENT_BLUEPRINT_ID
 from clio_agent.gact.app import build_app
 
 
@@ -18,201 +24,166 @@ def client(tmp_path: Path) -> Iterator[TestClient]:
         yield client
 
 
+def _plugins(client: TestClient, ref: str) -> list[str]:
+    resp = client.get("/v1/agents/resolve", params={"ref": ref})
+    assert resp.status_code == 200, resp.text
+    return [row["id"] for row in resp.json()["plugins"]]
+
+
 def test_capability_advertised(client: TestClient) -> None:
-    body = client.get("/v1/capabilities").json()
-    assert body["capabilities"]["agent_write"] is True
+    capabilities = client.get("/v1/capabilities").json()["capabilities"]
+    # No GACT agent-write routes: user agents are saved through the plugin routes.
+    assert capabilities["agent_write"] is False
+    assert capabilities["x_clio_agent_plugins"] is True
 
 
-def test_post_agent_then_list(client: TestClient) -> None:
+def test_post_user_agent_then_list(client: TestClient) -> None:
     new = client.post(
-        "/v1/agents",
+        "/v1/agents/user",
         json={
-            "id": "code_reviewer",
-            "title": "Code Reviewer",
+            "id": "code-reviewer",
+            "name": "Code Reviewer",
             "description": "Reviews diffs for style + correctness",
-            "system_prompt": "Review the diff and report correctness issues.",
-            "default_provider": "lm_studio",
-            "default_model": "qwopus3.5-9b-v3",
-            "parameters": {"temperature": 0.1, "max_tokens": 2048},
-            "tier": 2,
-            "specialization": "code_editing",
-            "keywords": ["review", "lint"],
-            "tools": ["fs_read_file"],
-            "skills": ["code-review"],
-            "commands": ["/review"],
-            "capability_refs": [
-                {
-                    "kind": "command",
-                    "id": "/review",
-                    "title": "Review current change",
-                    "source": "user",
-                    "status": "available",
-                }
-            ],
+            "extends": "clio/standard",
+            "add": ["orchestration"],
+            "remove": ["visuals"],
         },
     )
-    assert new.status_code == 201
+    assert new.status_code == 201, new.text
     body = new.json()
-    assert body["id"] == "code_reviewer"
-    assert body["source"] == "user"
-    assert body["tier"] == 2
-    assert body["system_prompt"] == "Review the diff and report correctness issues."
-    assert body["default_provider"] == "lm_studio"
-    assert body["default_model"] == "qwopus3.5-9b-v3"
-    assert body["parameters"] == {"temperature": 0.1, "max_tokens": 2048}
-    assert body["skills"] == ["code-review"]
-    assert body["commands"] == ["/review"]
-    assert (
-        body["capability_refs"][0]["kind"],
-        body["capability_refs"][0]["id"],
-        body["capability_refs"][0]["status"],
-    ) == ("tool", "fs_read_file", "available")
-    assert any(
-        ref["kind"] == "command" and ref["id"] == "/review" for ref in body["capability_refs"]
-    )
+    assert body["ref"] == "user/code-reviewer"
+    assert body["id"] == "code-reviewer"
+    assert body["kind"] == "user"
+    assert body["marketplace"] == "user"
+    assert body["name"] == "Code Reviewer"
+    assert body["description"] == "Reviews diffs for style + correctness"
+    assert body["extends"] == "clio/standard@^1"
+    assert body["delta"] == {"add": ["orchestration"], "remove": ["visuals"]}
 
-    # GET /v1/agents now includes it (and the built-ins).
     rows = client.get("/v1/agents").json()["agents"]
-    ids = {a["id"] for a in rows}
-    assert "code_reviewer" in ids
-    assert "main" in ids  # built-in still listed
-    listed = next(a for a in rows if a["id"] == "code_reviewer")
-    assert listed["system_prompt"] == "Review the diff and report correctness issues."
-    assert listed["default_model"] == "qwopus3.5-9b-v3"
-    assert listed["skills"] == ["code-review"]
-    assert listed["commands"] == ["/review"]
+    refs = {a["ref"] for a in rows}
+    assert "user/code-reviewer" in refs
+    assert "clio/standard" in refs  # the shipped agent is still listed
+    listed = next(a for a in rows if a["ref"] == "user/code-reviewer")
+    assert listed["delta"] == {"add": ["orchestration"], "remove": ["visuals"]}
+
+    plugins = _plugins(client, "user/code-reviewer")
+    assert "orchestration" in plugins
+    assert "visuals" not in plugins
+    assert "visuals" in _plugins(client, "clio/standard"), "the parent is not changed"
 
 
-def test_put_agent_replaces_existing(client: TestClient) -> None:
-    client.post(
-        "/v1/agents",
-        json={
-            "id": "code_reviewer",
-            "title": "Code Reviewer",
-        },
-    )
-    resp = client.put(
-        "/v1/agents/code_reviewer",
-        json={
-            "id": "ignored-by-server",
-            "title": "Strict Code Reviewer",
-            "description": "now stricter",
-            "tier": 2,
-        },
-    )
-    assert resp.status_code == 200
-    body = resp.json()
-    # URL id wins over body id (server enforces).
-    assert body["id"] == "code_reviewer"
-    assert body["title"] == "Strict Code Reviewer"
-
-
-def test_post_agent_refuses_builtin_id(client: TestClient) -> None:
+def test_saving_again_replaces_the_user_agent(client: TestClient) -> None:
+    first = client.post("/v1/agents/user", json={"id": "reviewer", "extends": "clio/standard"})
+    assert first.status_code == 201, first.text
     resp = client.post(
-        "/v1/agents",
+        "/v1/agents/user",
         json={
-            "id": "data",
-            "title": "Steal the built-in id",
+            "id": "reviewer",
+            "extends": "clio/standard",
+            "name": "Strict Code Reviewer",
+            "remove": ["shell"],
         },
     )
-    assert resp.status_code == 409
+    assert resp.status_code == 201, resp.text
     body = resp.json()
-    assert body["error"]["error"] == "permission_error"
-    assert "built-in" in body["error"]["message"]
+    assert body["name"] == "Strict Code Reviewer"
+    assert body["delta"] == {"add": [], "remove": ["shell"]}
+
+    rows = [a for a in client.get("/v1/agents").json()["agents"] if a["ref"] == "user/reviewer"]
+    assert len(rows) == 1
+    assert rows[0]["name"] == "Strict Code Reviewer"
+    assert "shell" not in _plugins(client, "user/reviewer")
 
 
-def test_put_agent_refuses_builtin(client: TestClient) -> None:
-    resp = client.put("/v1/agents/data", json={"id": "data"})
-    assert resp.status_code == 409
+def test_post_user_agent_refuses_an_invalid_id(client: TestClient) -> None:
+    resp = client.post(
+        "/v1/agents/user", json={"id": "Not A Valid Id!", "extends": "clio/standard"}
+    )
+    assert resp.status_code == 422
+    assert resp.json()["error"]["error"] == "user_agent_id_invalid"
+
+
+def test_post_user_agent_refuses_an_unresolvable_delta(client: TestClient) -> None:
+    resp = client.post(
+        "/v1/agents/user",
+        json={"id": "ghostly", "extends": "clio/standard", "add": ["ghost"]},
+    )
+    assert resp.status_code == 422, resp.text
+    assert resp.json()["error"]["error"] == "agent_resolution_failed"
+    refs = {a["ref"] for a in client.get("/v1/agents").json()["agents"]}
+    assert "user/ghostly" not in refs, "a refused user agent must not be saved"
 
 
 def test_delete_user_agent_works(client: TestClient) -> None:
-    client.post(
-        "/v1/agents",
-        json={
-            "id": "to_drop",
-            "title": "Drop me",
-        },
-    )
-    resp = client.delete("/v1/agents/to_drop")
-    assert resp.status_code == 204
+    client.post("/v1/agents/user", json={"id": "to-drop", "extends": "clio/standard"})
+    resp = client.delete("/v1/agents/user/to-drop")
+    assert resp.status_code == 200
+    assert resp.json() == {"deleted": "user/to-drop"}
     rows = client.get("/v1/agents").json()["agents"]
-    assert all(a["id"] != "to_drop" for a in rows)
+    assert all(a["ref"] != "user/to-drop" for a in rows)
 
 
-def test_delete_unknown_agent_404s(client: TestClient) -> None:
-    resp = client.delete("/v1/agents/never_existed")
+def test_delete_unknown_user_agent_404s(client: TestClient) -> None:
+    resp = client.delete("/v1/agents/user/never-existed")
     assert resp.status_code == 404
+    assert resp.json()["error"]["error"] == "user_agent_not_found"
 
 
-def test_delete_builtin_refused(client: TestClient) -> None:
-    resp = client.delete("/v1/agents/data")
-    assert resp.status_code == 409
+def test_delete_cannot_remove_a_shipped_agent(client: TestClient) -> None:
+    """Only user agents are deletable; a shipped agent's id is not a user agent."""
+
+    resp = client.delete("/v1/agents/user/standard")
+    assert resp.status_code == 404
+    refs = {a["ref"] for a in client.get("/v1/agents").json()["agents"]}
+    assert "clio/standard" in refs
 
 
 def test_persistence_round_trip(tmp_path: Path) -> None:
-    """First app instance creates an agent; a second instance at
-    the same path sees it."""
+    """First app instance saves a user agent; a second instance sees it."""
 
-    c1 = TestClient(build_app(sessions_path=tmp_path / "s.json"))
-    c1.post(
-        "/v1/agents",
-        json={
-            "id": "persisted",
-            "title": "x",
-            "system_prompt": "Persist this prompt.",
-            "default_provider": "openai",
-            "default_model": "gpt-4o-mini",
-            "parameters": {"temperature": 0},
-            "skills": ["persisted-skill"],
-            "commands": ["/persisted"],
-        },
+    with TestClient(build_app(sessions_path=tmp_path / "s.json")) as c1:
+        saved = c1.post(
+            "/v1/agents/user",
+            json={
+                "id": "persisted",
+                "name": "Persisted",
+                "description": "Persist this agent.",
+                "extends": "clio/standard",
+                "remove": ["delegation"],
+            },
+        )
+        assert saved.status_code == 201, saved.text
+    with TestClient(build_app(sessions_path=tmp_path / "s.json")) as c2:
+        rows = c2.get("/v1/agents").json()["agents"]
+        restored = next(a for a in rows if a["ref"] == "user/persisted")
+        assert restored["name"] == "Persisted"
+        assert restored["description"] == "Persist this agent."
+        assert restored["extends"] == "clio/standard@^1"
+        assert restored["delta"] == {"add": [], "remove": ["delegation"]}
+        assert "delegation" not in _plugins(c2, "user/persisted")
+
+
+def test_session_runs_a_user_agent_by_ref(client: TestClient) -> None:
+    client.post(
+        "/v1/agents/user",
+        json={"id": "lean", "extends": "clio/standard", "remove": ["visuals"]},
     )
-    c2 = TestClient(build_app(sessions_path=tmp_path / "s.json"))
-    rows = c2.get("/v1/agents").json()["agents"]
-    restored = next(a for a in rows if a["id"] == "persisted")
-    assert restored["system_prompt"] == "Persist this prompt."
-    assert restored["default_provider"] == "openai"
-    assert restored["default_model"] == "gpt-4o-mini"
-    assert restored["parameters"] == {"temperature": 0}
-    assert restored["skills"] == ["persisted-skill"]
-    assert restored["commands"] == ["/persisted"]
-
-
-def test_bare_session_builtin_main_has_no_installed_default_registry_prompt(
-    client: TestClient,
-) -> None:
-    """A session with NO explicit activation never surfaces the installed
-    default-registry snapshot's rows or prompts (owner ruling 2026-08-05,
-    commit aa906022 + catalog._builtin_agents()'s matching fix): the ONLY
-    builtin is the code-shipped react main."""
-
-    rows = client.get("/v1/agents").json()["agents"]
-    assert [row["id"] for row in rows] == ["main"]
-    main = rows[0]
-    assert main["source"] == "builtin"
-    assert "CLIO's agent planner" not in main["system_prompt"]
-
-
-def test_activated_default_registry_agents_surface_prompts(client: TestClient) -> None:
-    sid = client.post("/v1/sessions", json={"title": "activated"}).json()["id"]
-    activated = client.post(
-        f"/v1/sessions/{sid}/agent-blueprint",
-        json={"blueprint_id": DEFAULT_AGENT_BLUEPRINT_ID},
+    created = client.post(
+        "/v1/sessions", json={"title": "lean", "metadata": {"agent_ref": "user/lean"}}
     )
-    assert activated.status_code == 200, activated.text
+    assert created.status_code in (200, 201), created.text
+    sid = created.json()["id"]
+    assert created.json()["metadata"]["agent_ref"] == "user/lean"
 
-    rows = client.get("/v1/agents", params={"session_id": sid}).json()["agents"]
-    main = next(a for a in rows if a["id"] == "main")
-    data = next(a for a in rows if a["id"] == "data")
-
-    assert "CLIO's agent planner" in main["system_prompt"]
-    assert "CLIO Data Expert" in data["system_prompt"]
+    agent = client.get(f"/v1/sessions/{sid}/agent").json()["resolution"]
+    assert agent["agent"]["kind"] == "user"
+    assert "visuals" not in [row["id"] for row in agent["plugins"]]
 
 
 def test_skill_files_do_not_materialize_agents(monkeypatch, tmp_path: Path) -> None:
     """Sabotage twin (#918): a SKILL.md on disk must not appear as an agent,
-    and using its id as an agent id is a typed 400, not a silent not-found."""
+    and using its id as a session's agent is a typed refusal, not a silent run."""
 
     skill_dir = tmp_path / ".claude" / "skills" / "tui-test"
     skill_dir.mkdir(parents=True)
@@ -221,17 +192,18 @@ def test_skill_files_do_not_materialize_agents(monkeypatch, tmp_path: Path) -> N
         encoding="utf-8",
     )
     monkeypatch.chdir(tmp_path)
-    local = TestClient(build_app(sessions_path=tmp_path / "s.json"))
+    with TestClient(build_app(sessions_path=tmp_path / "s.json")) as local:
+        listed = local.get("/v1/agents").json()["agents"]
+        assert all("tui-test" not in (a["id"], a["ref"]) for a in listed)
 
-    listed = {a["id"] for a in local.get("/v1/agents").json()["agents"]}
-    assert "tui-test" not in listed
-
-    resp = local.get("/v1/commands", params={"planner": "true", "agent_id": "tui-test"})
-    assert resp.status_code == 400
-    body = resp.json()
-    assert body["error"]["error"] == "skill_not_delegatable"
-    assert "skills:" in body["error"]["message"]
-    assert body["error"]["details"]["skill_id"] == "tui-test"
+        resp = local.post(
+            "/v1/sessions", json={"title": "skill", "metadata": {"agent_ref": "tui-test"}}
+        )
+        assert resp.status_code == 422, resp.text
+        error = resp.json()["error"]
+        assert error["error"] == "agent_unavailable"
+        assert error["details"]["agent_ref"] == "tui-test"
+        assert error["details"]["reason"] == "agent_not_installed"
 
 
 def test_skill_frontmatter_parses_via_catalog(monkeypatch, tmp_path: Path) -> None:

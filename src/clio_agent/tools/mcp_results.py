@@ -362,7 +362,26 @@ def call_tool_result_to_observer(result: Any) -> dict[str, Any]:
             "resultType": classification.result_type,
             "originalResultType": classification.original_result_type,
         }
+    if (event := _ui_event(result)) is not None:
+        observer["uiEvent"] = event
     return observer
+
+
+#: The one result ``_meta`` key kept for the UI: a plugin view's event (a board
+#: tile, a reading), recorded on the tool_result part and never shown to the model.
+UI_EVENT_META_KEY = "ai.iowarp.clio/ui_event"
+MAX_UI_EVENT_BYTES = 32_768
+
+
+def _ui_event(result: Any) -> dict[str, Any] | None:
+    meta = getattr(result, "meta", None)
+    if meta is None and isinstance(result, Mapping):
+        meta = result.get("_meta") or result.get("meta")
+    event = meta.get(UI_EVENT_META_KEY) if isinstance(meta, Mapping) else None
+    if not isinstance(event, Mapping):
+        return None
+    encoded = json.dumps(event, default=str)
+    return json.loads(encoded) if len(encoded) <= MAX_UI_EVENT_BYTES else None
 
 
 __all__ = [

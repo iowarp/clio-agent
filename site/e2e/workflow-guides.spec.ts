@@ -12,9 +12,9 @@ for (const theme of ['light', 'dark']) {
 			await page.addInitScript((value) => localStorage.setItem('starlight-theme', value), theme);
 			await page.setViewportSize({ width, height: width === 390 ? 844 : 1000 });
 			await page.goto('/');
-			const workflows = page.getByRole('region', { name: 'Compare, assemble, and share.' });
+			const workflows = page.getByRole('region', { name: 'Study, delegate, compare, and share.' });
 			await workflows.scrollIntoViewIfNeeded();
-			await expect(workflows.getByText('Development preview', { exact: true })).toHaveCount(2);
+			await expect(workflows.getByText('Development preview', { exact: true })).toHaveCount(5);
 			expect(await page.evaluate(() => document.documentElement.scrollWidth - innerWidth)).toBeLessThanOrEqual(1);
 			await workflows.screenshot({ path: test.info().outputPath(`workflows-${width}-${theme}.png`) });
 			for (const guide of guides) {
@@ -77,7 +77,8 @@ test('the docs group data, results and technical reference around reader tasks',
 	const groups = await sidebar.locator('summary').allTextContents();
 	expect(groups.map((label) => label.trim())).toEqual([
 		'Get started', 'Bring your data', 'Work with CLIO', 'Tasks and coordination', 'Review and share results',
-		'Find and revisit work', 'Worked examples', 'Customize CLIO', 'Help and privacy', 'Technical reference',
+		'Find and revisit work', 'Worked examples', 'Customize CLIO', 'Build with the SDK', 'Help and privacy',
+		'Technical reference',
 	]);
 	const results = sidebar.locator('details').filter({ has: page.locator('summary', { hasText: 'Review and share results' }) });
 	await expect(results.getByRole('link', { name: 'Compare alternative answers', exact: true })).toBeVisible();

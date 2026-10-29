@@ -280,7 +280,7 @@ def test_restart_keeps_unknown_partial_output_without_fabricating_a_completion(
 
     from clio_agent.gact import transcript_projection as projection
     from clio_agent.gact.part_atom_minter import open_turn_minter, transcript_sink
-    from clio_agent.gact.session_store import _reconcile_restart_interrupted_sessions
+    from clio_agent.gact.restart_interruptions import mark_restart_interrupted
     from clio_agent.gact.transcript import EventBusTranscriptPublisher, TurnTranscript
 
     app, arc = _build(tmp_path)
@@ -323,7 +323,8 @@ def test_restart_keeps_unknown_partial_output_without_fabricating_a_completion(
             projection.logger, "error", lambda *args, **kwargs: errors_logged.append(args)
         )
 
-        _reconcile_restart_interrupted_sessions(app)
+        mark_restart_interrupted(app)
+        assert app.state.restart_interruptions.settle(sid)
 
         materialized = projection.materialize_ledger(app, sid)
         assert materialized is not None

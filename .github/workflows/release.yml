@@ -69,9 +69,9 @@ jobs:
           test -n "$wheel"
           uv tool install --python 3.14 --no-cache \
             --with dspy==3.4.0 \
-            --with fastmcp==4.1.0 \
-            --with fastmcp-slim==4.1.0 \
-            --with fastmcp-tasks==4.1.0 \
+            --with fastmcp==4.1.2 \
+            --with fastmcp-slim==4.1.2 \
+            --with fastmcp-tasks==4.1.2 \
             "$wheel"
           version="$PKG_VERSION"
           "$UV_TOOL_BIN_DIR/clio-agent" --version | grep -Fx "clio-agent $version" >/dev/null
@@ -169,9 +169,9 @@ jobs:
           for attempt in $(seq 1 12); do
             if uv tool install --python 3.14 --no-cache \
               --with dspy==3.4.0 \
-              --with fastmcp==4.1.0 \
-              --with fastmcp-slim==4.1.0 \
-              --with fastmcp-tasks==4.1.0 \
+              --with fastmcp==4.1.2 \
+              --with fastmcp-slim==4.1.2 \
+              --with fastmcp-tasks==4.1.2 \
               "clio-agent==$version"; then
               "$UV_TOOL_BIN_DIR/clio-agent" --version | grep -Fx "clio-agent $version" >/dev/null
               "$UV_TOOL_DIR/clio-agent/bin/python" -c \

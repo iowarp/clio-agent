@@ -155,10 +155,17 @@ async def test_terminal_publication_recovers_after_persistence_without_replaying
     )
     original = history._record
 
-    def fail_after_terminal(event: str, sid: str, identity: str, payload: dict[str, Any]) -> None:
+    def fail_after_terminal(
+        event: str,
+        sid: str,
+        identity: str,
+        payload: dict[str, Any],
+        *,
+        lane: dict[str, Any] | None = None,
+    ) -> None:
         if event == "session.mail.accepted" and identity == fail_notice:
             raise OSError("Core unavailable after terminal persistence")
-        original(event, sid, identity, payload)
+        original(event, sid, identity, payload, lane=lane)
 
     monkeypatch.setattr(history, "_record", fail_after_terminal)
     try:

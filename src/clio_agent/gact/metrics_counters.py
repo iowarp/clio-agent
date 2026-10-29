@@ -1,128 +1,68 @@
-"""Running aggregate for ``GET /v1/metrics`` (#770 Wave-C C3).
+"""This server's message rollups for ``GET /v1/metrics`` (#770 Wave-C C3).
 
-The metrics endpoint used to re-walk *every message of every session* (and every
-tool call within them) on every poll to rebuild the message-count / by-role /
-tool-latency rollups. The TUI polls it regularly, so that walk was O(total
-messages + total tool calls) per request.
-
-This module maintains those message-derived aggregates **incrementally** at the
-single message write seam (:mod:`clio_agent.gact.session_store`), so a poll reads
-a running counter in O(number of latency buckets) instead of re-walking history.
-The values are byte-identical to the old full walk: ``_latency_stat`` sorts its
-samples, so sample *order* is irrelevant, and the same multiset of durations is
-accumulated.
-
-Per-session contributions are retained so a whole-ledger replace (compaction) or
-a session delete can subtract that session's samples back out exactly, keeping
-the global aggregate correct without re-walking the survivors.
+A poll reads running counters instead of re-walking history. The counters cover the
+messages this process recorded since it started -- by role, and the recent tool-call
+durations (a bounded window per key) behind the latency percentiles -- like
+``uptime_s``. Nothing is replayed at startup: the all-time message total comes from
+each session's persisted ``message_count``, and clio-core holds the messages
+themselves.
 """
 
 from __future__ import annotations
 
-from collections import Counter
+from collections import Counter, deque
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
     from clio_agent.gact.types import Message
 
-
-@dataclass
-class _SessionAggregate:
-    """One session's contribution to the global metrics counters."""
-
-    count: int = 0
-    command_count: int = 0
-    by_role: Counter[str] = field(default_factory=Counter)
-    latency_samples: dict[str, list[float]] = field(default_factory=dict)
+#: Tool-call durations kept per latency key: the percentiles describe recent calls.
+LATENCY_WINDOW = 1000
 
 
 @dataclass
 class MetricsCounters:
-    """Running, seam-maintained aggregate for the metrics message rollups.
+    """Message rollups for this process, kept by the session_store write seams."""
 
-    Not persisted: rebuilt from the loaded message store at boot
-    (:meth:`rebuild`) and kept live by the session_store write seams.
-    """
-
-    message_total: int = 0
     by_role: Counter[str] = field(default_factory=Counter)
-    latency_samples: dict[str, list[float]] = field(default_factory=dict)
-    _per_session: dict[str, _SessionAggregate] = field(default_factory=dict)
-
-    # ---- rebuild / seam hooks ------------------------------------------- #
-
-    def rebuild(self, messages: dict[str, list["Message"]]) -> None:
-        """Recompute the whole aggregate from a full message map (boot only)."""
-
-        self.message_total = 0
-        self.by_role = Counter()
-        self.latency_samples = {}
-        self._per_session = {}
-        for session_id, rows in messages.items():
-            self.set_session(session_id, rows)
+    latency_samples: dict[str, deque[float]] = field(default_factory=dict)
 
     def add_message(self, session_id: str, message: "Message") -> None:
-        """Fold one appended message into the aggregate."""
+        """Fold one newly recorded message into this server's rollups."""
 
-        agg = self._per_session.setdefault(session_id, _SessionAggregate())
-        role = getattr(message, "role", "") or ""
-        samples = _message_samples(message)
-        agg.count += 1
-        agg.command_count += int(message.metadata.get("synthetic") == "command_result")
-        agg.by_role[role] += 1
-        self.message_total += 1
-        self.by_role[role] += 1
-        for key, vals in samples.items():
-            agg.latency_samples.setdefault(key, []).extend(vals)
-            self.latency_samples.setdefault(key, []).extend(vals)
+        del session_id
+        self.by_role[getattr(message, "role", "") or ""] += 1
+        for key, vals in _message_samples(message).items():
+            self.latency_samples.setdefault(key, deque(maxlen=LATENCY_WINDOW)).extend(vals)
 
     def add_messages(self, session_id: str, messages: list["Message"]) -> None:
-        """Fold several appended messages into the aggregate."""
+        """Fold several newly recorded messages into this server's rollups."""
 
         for message in messages:
             self.add_message(session_id, message)
-
-    def set_session(self, session_id: str, messages: list["Message"]) -> None:
-        """Replace a session's contribution (whole-ledger replace / initial set)."""
-
-        self.remove_session(session_id)
-        for message in messages:
-            self.add_message(session_id, message)
-
-    def remove_session(self, session_id: str) -> None:
-        """Subtract a session's contribution back out (delete / pre-replace)."""
-
-        agg = self._per_session.pop(session_id, None)
-        if agg is None:
-            return
-        self.message_total -= agg.count
-        self.by_role.subtract(agg.by_role)
-        for role in [r for r, n in list(self.by_role.items()) if n <= 0]:
-            del self.by_role[role]
-        for key, vals in agg.latency_samples.items():
-            merged = self.latency_samples.get(key)
-            if not merged:
-                continue
-            remaining = Counter(merged)
-            remaining.subtract(Counter(vals))
-            rebuilt = [v for v, n in remaining.items() for _ in range(max(0, n))]
-            if rebuilt:
-                self.latency_samples[key] = rebuilt
-            else:
-                self.latency_samples.pop(key, None)
-
-    # ---- read side ------------------------------------------------------ #
-
-    def session_count(self, session_id: str) -> int:
-        """Read its conversation count; command confirmations remain in global metrics."""
-        aggregate = self._per_session.get(session_id)
-        return aggregate.count - aggregate.command_count if aggregate is not None else 0
 
     def role_counts(self) -> dict[str, int]:
-        """Non-zero per-role message counts (wire ``messages.by_role``)."""
+        """Non-zero per-role counts of the messages this server recorded."""
 
         return {role: n for role, n in self.by_role.items() if n > 0}
+
+
+def conversation_count(messages: list["Message"]) -> int:
+    """A session's ``message_count``: its messages less command confirmations."""
+
+    return sum(1 for message in messages if not _is_command_result(message))
+
+
+def counts_toward_conversation(message: "Message") -> bool:
+    """Whether a newly recorded message adds one to its session's ``message_count``."""
+
+    return not _is_command_result(message)
+
+
+def _is_command_result(message: "Message") -> bool:
+    metadata: Any = getattr(message, "metadata", None) or {}
+    return isinstance(metadata, dict) and metadata.get("synthetic") == "command_result"
 
 
 def _message_samples(message: "Message") -> dict[str, list[float]]:

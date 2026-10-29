@@ -1,0 +1,9 @@
+{
+  "seconds": 28.3485495,
+  "label": "repair5-quiet-install-repeat",
+  "exit_code": 0,
+  "ref": "codex/windows-startup-acceptance",
+  "candidate": "d9a476623f6c2d3ec3878c97e9ec0d166f71ac64",
+  "finished_at": "2026-10-28T09:52:20.7380733Z",
+  "profile": "D:\\cw\\fp6"
+}

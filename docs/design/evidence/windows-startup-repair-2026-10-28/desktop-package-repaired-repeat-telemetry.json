@@ -1,0 +1,188 @@
+{
+  "exit_code": 0,
+  "samples": [
+    {
+      "epoch": 1793186268.7696455,
+      "cpu_percent": 29.7,
+      "encoders": []
+    },
+    {
+      "epoch": 1793186269.787921,
+      "cpu_percent": 18.1,
+      "encoders": []
+    },
+    {
+      "epoch": 1793186270.8292272,
+      "cpu_percent": 22.7,
+      "encoders": []
+    },
+    {
+      "epoch": 1793186271.8655732,
+      "cpu_percent": 18.1,
+      "encoders": []
+    },
+    {
+      "epoch": 1793186272.9006925,
+      "cpu_percent": 19.6,
+      "encoders": []
+    },
+    {
+      "epoch": 1793186273.9332578,
+      "cpu_percent": 26.7,
+      "encoders": []
+    },
+    {
+      "epoch": 1793186275.0209682,
+      "cpu_percent": 39.7,
+      "encoders": []
+    },
+    {
+      "epoch": 1793186276.2113397,
+      "cpu_percent": 39.7,
+      "encoders": []
+    },
+    {
+      "epoch": 1793186277.393535,
+      "cpu_percent": 30.6,
+      "encoders": []
+    },
+    {
+      "epoch": 1793186278.4713411,
+      "cpu_percent": 17.7,
+      "encoders": []
+    },
+    {
+      "epoch": 1793186279.557696,
+      "cpu_percent": 23.7,
+      "encoders": []
+    },
+    {
+      "epoch": 1793186280.6306996,
+      "cpu_percent": 21.9,
+      "encoders": []
+    },
+    {
+      "epoch": 1793186281.7325919,
+      "cpu_percent": 19.0,
+      "encoders": []
+    },
+    {
+      "epoch": 1793186282.8378565,
+      "cpu_percent": 14.7,
+      "encoders": []
+    },
+    {
+      "epoch": 1793186283.9461713,
+      "cpu_percent": 11.7,
+      "encoders": []
+    },
+    {
+      "epoch": 1793186285.051527,
+      "cpu_percent": 12.0,
+      "encoders": []
+    },
+    {
+      "epoch": 1793186286.1556525,
+      "cpu_percent": 17.1,
+      "encoders": []
+    }
+  ],
+  "owned": [
+    {
+      "pid": 45728,
+      "created": 1793186267.4214027,
+      "exe": "C:\\Users\\jaime\\.cache\\codex-runtimes\\codex-primary-runtime\\dependencies\\native\\powershell\\pwsh.exe"
+    },
+    {
+      "pid": 34732,
+      "created": 1793186267.8660777,
+      "exe": "D:\\Libraries\\Documents\\projects\\gact-windows-startup-acceptance\\.acceptance-runtime\\cargo-target\\release\\bundle\\nsis\\CLIO Desktop_0.7.3_x64-setup.exe"
+    },
+    {
+      "pid": 3908,
+      "created": 1793186273.4670217,
+      "exe": "D:\\CLIO-Desktop-095-Repair\\clio-desktop.exe"
+    },
+    {
+      "pid": 43288,
+      "created": 1793186273.5133028,
+      "exe": "D:\\CLIO-Desktop-095-Repair\\data\\bundled-runtime\\gact-runtime\\python\\python.exe"
+    },
+    {
+      "pid": 52664,
+      "created": 1793186273.5207253,
+      "exe": "C:\\Windows\\System32\\conhost.exe"
+    },
+    {
+      "pid": 48748,
+      "created": 1793186274.13773,
+      "exe": "D:\\CLIO-Desktop-095-Repair\\data\\clio-agent\\cache\\document-runtime\\68fd91e579837b59bebd\\python\\Scripts\\python.exe"
+    },
+    {
+      "pid": 38860,
+      "created": 1793186274.1938028,
+      "exe": "D:\\CLIO-Desktop-095-Repair\\data\\clio-agent\\cache\\document-office\\26.2.6\\program\\soffice.com"
+    },
+    {
+      "pid": 22556,
+      "created": 1793186274.2033641,
+      "exe": "C:\\Windows\\System32\\conhost.exe"
+    },
+    {
+      "pid": 37452,
+      "created": 1793186274.2249727,
+      "exe": "D:\\CLIO-Desktop-095-Repair\\data\\clio-agent\\cache\\document-office\\26.2.6\\program\\soffice.bin"
+    },
+    {
+      "pid": 45328,
+      "created": 1793186274.1520183,
+      "exe": "C:\\Windows\\System32\\conhost.exe"
+    },
+    {
+      "pid": 44716,
+      "created": 1793186274.1682606,
+      "exe": "D:\\CLIO-Desktop-095-Repair\\data\\bundled-runtime\\gact-runtime\\python\\python.exe"
+    },
+    {
+      "pid": 20948,
+      "created": 1793186275.7309763,
+      "exe": "D:\\CLIO-Desktop-095-Repair\\data\\clio-agent\\cache\\document-office\\26.2.6\\program\\soffice.com"
+    },
+    {
+      "pid": 41736,
+      "created": 1793186275.7362986,
+      "exe": "C:\\Windows\\System32\\conhost.exe"
+    },
+    {
+      "pid": 29220,
+      "created": 1793186275.7565472,
+      "exe": "D:\\CLIO-Desktop-095-Repair\\data\\clio-agent\\cache\\document-office\\26.2.6\\program\\soffice.bin"
+    },
+    {
+      "pid": 21340,
+      "created": 1793186278.377577,
+      "exe": "D:\\CLIO-Desktop-095-Repair\\data\\clio-agent\\cache\\document-runtime\\68fd91e579837b59bebd\\python\\Lib\\site-packages\\nodejs_wheel\\node.exe"
+    },
+    {
+      "pid": 37112,
+      "created": 1793186278.3835907,
+      "exe": "C:\\Windows\\System32\\conhost.exe"
+    },
+    {
+      "pid": 43076,
+      "created": 1793186279.8992248,
+      "exe": "D:\\CLIO-Desktop-095-Repair\\data\\bundled-runtime\\gact-runtime\\python\\Lib\\site-packages\\iowarp_core\\bin\\clio_run.exe"
+    },
+    {
+      "pid": 42556,
+      "created": 1793186279.9056797,
+      "exe": "C:\\Windows\\System32\\conhost.exe"
+    },
+    {
+      "pid": 30988,
+      "created": 1793186281.454904,
+      "exe": "D:\\CLIO-Desktop-095-Repair\\data\\bundled-runtime\\gact-runtime\\python\\Lib\\site-packages\\iowarp_core\\bin\\clio_run.exe"
+    }
+  ],
+  "survivors": []
+}

@@ -1,80 +1,237 @@
 ---
-title: Install and open CLIO
-description: Get the desktop app running, or connect to the CLIO service provided by your lab.
+title: Install CLIO
+description: Install CLIO on Windows, macOS or Linux, as the desktop app, from a terminal, on a remote computer, or with your AI assistant.
 ---
 
-import { Aside, Steps, CardGrid, LinkCard } from '@astrojs/starlight/components';
+import { Aside, CardGrid, LinkCard, Steps, TabItem, Tabs } from '@astrojs/starlight/components';
 
-For a first investigation, use the desktop app. If your lab already provides
-CLIO, ask for its connection address and the model you should use; you may only
-need to connect to that existing service.
+Most people want the **desktop app**: one installer with the CLIO service included.
+Use the **install script** on a server, an HPC login node, or a computer without a
+desktop. If your lab already runs CLIO, you only need its address; see
+[connect to a lab service](#connect-to-a-lab-service).
 
-<span id="desktop-app" />
+## Choose how to install
 
-## Install the desktop app
+| Method | Windows | macOS | Linux | Use it for |
+|---|---|---|---|---|
+| [Desktop app download](#desktop-app) | x64 (ARM through emulation) | Apple Silicon, macOS 14+ | x86_64 and aarch64, `.deb` or `.rpm` | Your own computer |
+| [Desktop app from a terminal](#desktop-app-from-a-terminal) | yes | Apple Silicon | `apt` or `dnf` systems | The same app, installed by one command |
+| [Install script](#install-script) | yes | Apple Silicon and Intel | any | Servers, HPC, terminals, browsers |
+| [A remote computer, from the desktop app](#a-remote-computer-from-the-desktop-app) | the app runs here | the app runs here | the app runs here | Running CLIO where the data is |
+| [Docker](/docs/server-setup/#docker) | yes | yes | yes | Containers and shared servers |
+| [Your AI assistant](/docs/install-with-ai/) | yes | yes | yes | Letting an assistant do the steps |
+
+There is no desktop app for Intel Macs yet; use the [install script](#install-script) there.
+
+## Desktop app
+
+<Tabs syncKey="os">
+<TabItem label="Windows">
 
 <Steps>
 
-1. Open the [CLIO releases](https://github.com/iowarp/clio-agent/releases) and
-   choose a **published** release. A draft release is still being prepared.
-   The published beta checked for this guide is
-   [beta 5.2](https://github.com/iowarp/clio-agent/releases/tag/v0.9.5-beta.5.2).
+1. On the [download section](/#download), choose **Windows** and **Download installer**.
+   The installer includes the CLIO service.
 
-2. Download the installer for your operating system. For an installation that
-   includes the CLIO service, choose a filename containing **bundled**.
+2. Run it. Its pages ask about your model provider and the computers CLIO may use;
+   you can change both later in the app.
 
-   | Your computer | Usual bundled installer |
-   | --- | --- |
-   | Windows x64 | `x64-setup-bundled.exe` or the bundled `.msi` |
-   | macOS with Apple Silicon | `aarch64-bundled.dmg` |
-   | Linux | The bundled `.deb` or `.rpm` matching your system and architecture |
-
-3. Run the installer, then open **CLIO** from your applications menu.
-   Allow the first startup to finish; preparation can take longer than later launches.
-
-4. Choose the service where your work will run. For a bundled local installation,
-   use the service for **This computer**. To use a lab service, connect to the
-   address your administrator supplied.
+3. Open **CLIO Desktop** from the Start menu.
 
 </Steps>
 
-An **attach-only** installer provides the interface and needs an existing CLIO
-service. This is useful for a lab deployment; it is not a complete local install.
-Some platforms, including Intel Macs, offer this option without a bundled installer.
+Windows on ARM runs the same x64 installer through emulation.
 
-<Aside type="note" title="macOS first launch">
-The current app uses an ad-hoc signature. If macOS asks for approval after you
-open the downloaded app, use **System Settings → Privacy & Security → Open Anyway**.
-A failed checksum or an invalid signature is an installation problem; do not
-bypass those failures.
+</TabItem>
+<TabItem label="macOS">
+
+<Steps>
+
+1. On the [download section](/#download), choose **Download for Apple Silicon**. The
+   disk image includes the CLIO service. macOS 14 or newer is required.
+
+2. Open the disk image and drag **CLIO Desktop** into **Applications**.
+
+3. Open **CLIO Desktop**. The app is ad-hoc signed, so macOS may ask once: open
+   **System Settings → Privacy & Security** and choose **Open Anyway**.
+
+</Steps>
+
+</TabItem>
+<TabItem label="Linux">
+
+<Steps>
+
+1. On the [download section](/#download), choose **Download .deb** (Debian, Ubuntu) or
+   **.rpm** (Fedora, RHEL and similar). The package includes the CLIO service.
+
+2. Install it with your package manager:
+
+   ```sh
+   sudo apt install ./CLIO.Desktop_*-bundled.deb
+   ```
+
+   or, for the `.rpm`:
+
+   ```sh
+   sudo dnf install ./CLIO.Desktop-*-bundled.rpm
+   ```
+
+3. Open **CLIO Desktop** from your applications menu, or run `clio-desktop`.
+
+</Steps>
+
+</TabItem>
+</Tabs>
+
+The first launch prepares CLIO's tools and takes longer than later launches. Then CLIO
+asks which model to use: see [Choose a model](/docs/connect-a-model/).
+
+### Desktop app from a terminal
+
+The install script installs the same desktop app. It checks the download against the
+release's published checksums first, and needs no Python, uv or Node.
+
+<Tabs syncKey="os">
+<TabItem label="Windows">
+
+```powershell
+& ([scriptblock]::Create((irm https://raw.githubusercontent.com/iowarp/clio-agent/main/install/install.ps1))) -Desktop
+```
+
+The installer window opens, with its pages for your model provider and computers.
+
+</TabItem>
+<TabItem label="macOS">
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/iowarp/clio-agent/main/install/install.sh | bash -s -- --desktop
+```
+
+Installs **CLIO Desktop** into `~/Applications`, keeping a previous version beside it.
+Set `CLIO_DESKTOP_DIR` to another absolute folder, such as `/Applications`.
+
+</TabItem>
+<TabItem label="Linux">
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/iowarp/clio-agent/main/install/install.sh | bash -s -- --desktop
+```
+
+Installs the `.deb` with `apt` or the `.rpm` with `dnf`, asking for your password
+through `sudo`.
+
+</TabItem>
+</Tabs>
+
+On macOS and Linux the script then prepares the app's tools as you, the way the Windows
+installer does, so the first launch is quick. Add `--download-only DIR`
+(`-DownloadOnly DIR` on Windows) to keep the verified installer without installing it.
+
+## Install script
+
+The script installs the CLIO service and the `clio` command into your home folder. It
+needs only `curl`, or PowerShell on Windows: it brings its own `uv` and Python, and never
+needs `sudo`.
+
+<Tabs syncKey="os">
+<TabItem label="Windows">
+
+```powershell
+irm https://raw.githubusercontent.com/iowarp/clio-agent/main/install/install.ps1 | iex
+```
+
+</TabItem>
+<TabItem label="macOS">
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/iowarp/clio-agent/main/install/install.sh | bash
+```
+
+</TabItem>
+<TabItem label="Linux">
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/iowarp/clio-agent/main/install/install.sh | bash
+```
+
+Run it with `bash`, not `sh`.
+
+</TabItem>
+</Tabs>
+
+Then:
+
+| Command | What it does |
+|---|---|
+| `clio` | starts the service if needed and opens the terminal interface |
+| `clio --web` | opens the workspace in your browser at `http://127.0.0.1:17800` |
+| `clio start`, `clio stop`, `clio status` | manage the service |
+| `clio doctor` | checks the installation |
+
+Running the script again upgrades or repairs the same installation. Install folders,
+environment variables and the full command list are in
+[Server and terminal setup](/docs/server-setup/#install-script).
+
+### Choose a release
+
+Both the install script and its `--desktop` form take these options. On Windows, pass
+them with the `& ([scriptblock]::Create((irm <url>))) <options>` form shown above.
+
+| Option | Installs |
+|---|---|
+| none | the latest stable release |
+| `--dev` | the newest release, betas included |
+| `--version <version>` | one release, for example `--version 0.9.5` |
+| `--source` | the source code on `main`, built on your computer |
+| `--dev --source` | the source code on `develop` |
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/iowarp/clio-agent/main/install/install.sh | bash -s -- --dev
+```
+
+Source installs need `git`, and are meant for people working on CLIO; see
+[Contributing](/docs/contributing/).
+
+## A remote computer, from the desktop app
+
+To run CLIO on a computer you reach over SSH, such as a lab server or an HPC login node,
+let the desktop app install it there.
+
+<Steps>
+
+1. On the start page of the desktop app, choose **Deploy CLIO**.
+
+2. Choose **Remote host**, then a saved SSH host or **Add SSH host**.
+
+3. Choose **Deploy and connect**. The app connects over SSH, installs the same CLIO
+   version as the app, starts it, and connects through a private tunnel. If CLIO is
+   already installed there, the app asks whether to connect to it, update it, or start
+   a new one.
+
+</Steps>
+
+## Connect to a lab service
+
+If your lab already runs CLIO, install the desktop app, then connect to the address your
+administrator gave you; or open that address in a browser. You need nothing else.
+
+## After installing
+
+Installing CLIO does not install an AI model or provide a model account.
+[Choose a model](/docs/connect-a-model/) using an account, a local model, or a model
+your lab provides. Then follow [Your first analysis](/docs/examples/check-a-dataset/).
+
+<Aside type="caution" title="Coming from a release before 0.9.5">
+This release replaces agent blueprints with plugins and does not carry over data from earlier releases: saved sessions, blueprint agents, settings, and installed marketplaces. Before installing it, uninstall the earlier release with `clio uninstall --purge` and delete the folders listed under [What stays behind](/docs/uninstall/#what-stays-behind), including each workspace's `.clio` folder. Then install as on a new machine. Export any conversation you want to keep first; see [Exports](/docs/exports/).
 </Aside>
 
-## Choose the AI model
-
-Installing CLIO does not install an AI model or supply a provider account.
-[Choose a model](/docs/connect-a-model/) using the account, local model, or lab
-endpoint you already have. Model calls use that provider's resources and limits.
-
-Then follow [Your first analysis](/docs/examples/check-a-dataset/).
-
-## Update an existing installation
-
-Open **Settings → Desktop → App updates**. **Enable beta updates** allows
-published beta releases for Desktop and the Agent. Changing the switch does not
-itself install an update or downgrade the app. Older Desktop builds may need a
-manual upgrade before this setting is available.
-
-Some guides show controls implemented for the next release.
-[Features and versions](/docs/versions/) identifies those differences.
-
-## Other installation routes
-
-Use [Server and terminal setup](/docs/server-setup/) for Docker, the install
-script, a terminal-only service, or a source build. These instructions are for
-people managing the computing environment; they are optional for a bundled
-desktop installation.
+The desktop app updates itself. Under **Settings → Desktop → App updates**, **Enable beta
+updates** also offers published beta releases. To remove CLIO, see
+[Remove CLIO](/docs/uninstall/).
 
 <CardGrid>
-  <LinkCard title="Choose a model" href="/docs/connect-a-model/" description="Connect an account, a local model or a model provided by your lab." />
-  <LinkCard title="When something goes wrong" href="/docs/troubleshooting/" description="Find the problem from the message in the app before trying terminal diagnostics." />
+  <LinkCard title="Install with your AI assistant" href="/docs/install-with-ai/" description="Give your assistant one link and it installs CLIO for you." />
+  <LinkCard title="Server and terminal setup" href="/docs/server-setup/" description="Install folders, environment variables, Docker, and a service without the terminal interface." />
+  <LinkCard title="When something goes wrong" href="/docs/troubleshooting/" description="Find the problem from the message in the app." />
 </CardGrid>

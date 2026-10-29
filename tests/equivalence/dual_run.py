@@ -232,6 +232,8 @@ _SSE_XRUN_EXTRA = frozenset(
         "call_id",
         "message_id",
         "session_id",
+        # the session that owns a permission/question request (#1854) — a session id.
+        "owner_session_id",
         "turn_id",
         # span/trace ids — minted per run; the error path (caveat b) carries extra
         # semantic-event span ids the happy path does not (an empirical finding).

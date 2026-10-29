@@ -12,7 +12,7 @@
 
 ---
 
-> ⚠️ **Beta.** CLIO is under active development — interfaces, blueprints, and on-disk
+> ⚠️ **Beta.** CLIO is under active development — interfaces, plugins, and on-disk
 > formats may change between releases. Pin a version for reproducibility.
 
 ## What is CLIO Agent?
@@ -50,24 +50,16 @@ clio
 
 `clio` boots the server (if it isn't already up) and attaches the TUI. On first connect, pick an LM provider in the modal and you're chatting.
 
-Prerequisites for the default release install: [`uv`](https://astral.sh/uv)
-or Python 3.13 with `pip`. `git` and Go are only needed when you opt into
-source-build mode with `CLIO_REF` or `GACT_REF`.
+The installer provisions CLIO's Python and uv runtimes. `git` and Go are used
+when you select source-build mode with `CLIO_REF` or `GACT_REF`.
 
-This checkout selects standard Python 3.14 for source builds and the next managed
-runtime release. Commands pinned to older published releases below retain Python
-3.13, which those releases support.
-
-CLIO pins its intentional DSPy 3.3 prerelease and the tested stable LiteLLM release.
-Registry-backed `uv tool install` needs that exact DSPy dependency declared as an
-explicit root and prerelease resolution enabled: use
-`uv tool install --python 3.13 --prerelease allow --with dspy==3.4.0 clio-agent==0.9.4.24` for a
-persistent backend-only install. This keeps unrelated dependencies on stable releases.
+CLIO 0.9.5 uses standard Python 3.14 with the GIL enabled and verified DSPy,
+FastMCP, Tasks and LiteLLM versions. For a persistent backend-only install, use
+`uv tool install --python 3.14 --with dspy==3.4.0 --with fastmcp==4.1.2 --with fastmcp-tasks==4.1.2 --with mcp==2.2.0 clio-agent==0.9.5`.
 Reserve `uvx` / `uv tool run` for disposable checks. See
 [install/README.md](install/README.md) for the full contract.
 
-To opt into the current beta, use the same persistent install with an explicit
-`clio-agent==0.9.5b8` pin and the exact DSPy/FastMCP roots documented in
+Beta releases require an explicit version selection; see
 [the beta installation guide](docs/INSTALL.md#beta-releases).
 
 ### More ways to get CLIO
@@ -120,7 +112,7 @@ starting points:
 - **[Setup & install](docs/SETUP.md)** — release install, source build, smoke test
 - **[Architecture](docs/CLIO_AGENT_ARCHITECTURE.md)** — the three-tier design, ARC memory, and tool gateway
 - **[Contributing](docs/CONTRIBUTOR_QUICKSTART.md)** — dev environment, quality checks, and where code goes
-- **[Adding tools](docs/MCP_TOOL_INTEGRATION.md)** / **[experts](docs/DSPY_BLUEPRINT_EXPERT_RUNTIME.md)** — extend the agent
+- **[Adding tools](docs/MCP_TOOL_INTEGRATION.md)** / **[plugins, agents and flows](docs/PLUGINS_AND_FLOWS.md)** — extend the agent
 - **[Providers](docs/providers/)** — configure an LM backend
 - **[Roadmap](docs/design/roadmap.md)** — what's next
 

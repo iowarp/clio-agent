@@ -164,7 +164,7 @@ def _gate_content_write(
       the current on-disk file of an already-registered artifact of the same
       ``(workspace, name)`` (re-versioning your own artifact); otherwise typed
       ``would_overwrite`` (the model can pick another name — bounded repair).
-    * (c) POLICY + MODE: consult the same resolver the diffs/apply path and the live
+    * (c) POLICY + MODE: consult the same resolver the diffs/revert path and the live
       tool gate use (``_policy_detail_for_tool``, passing the session ``mode``) and
       land a resolved permission audit row — so allow/deny/ask policies AND the
       built-in plan_acl rules apply to this native tool exactly as to bridge tools.
@@ -210,7 +210,7 @@ def _gate_content_write(
                 "can re-version; choose another name",
             )
 
-    # (c) Policy + mode consult + audit row (the same resolver the diffs/apply write and the live
+    # (c) Policy + mode consult + audit row (the same resolver the diffs/revert write and the live
     # tool gate use). Passing ``mode`` folds the built-in plan_acl rules in, so plan/architect deny
     # a content write here through the SAME path — no separate mode predicate. ``path`` carries the
     # resolved target so path-pattern rows (the @70 plan-file carve-out; user path grants) can match

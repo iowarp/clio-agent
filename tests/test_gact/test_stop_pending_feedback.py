@@ -232,7 +232,7 @@ def test_stop_delivers_sent_feedback_in_order_and_keeps_future_queue_paused(
         # A separate turn per message is not the queue's delivery boundary.
         delivered_text = "\n".join(agent.model_inputs[1])
         assert delivered_text.index(feedback[0]) < delivered_text.index(feedback[1])
-        proofs = app.state.task_history.context_inputs(sid, "main")
+        proofs = app.state.task_history.context_inputs(sid, "standard")
         [batch] = [proof for proof in proofs.values() if set(ids) <= set(proof.notification_ids)]
         assert [identity for identity in batch.notification_ids if identity in ids] == ids
         rows = client.get(f"/v1/sessions/{sid}/messages").json()["messages"]
@@ -356,26 +356,26 @@ def test_stop_delivers_sent_feedback_in_order_and_keeps_future_queue_paused(
             )
 
 
-def test_queue_pause_survives_completed_feedback_and_store_reload(tmp_path: Path) -> None:
+def test_queue_pause_survives_completed_feedback_and_store_reload(tmp_path: Path, arc: Any) -> None:
     """Session status alone cannot represent a paused queue after feedback finishes."""
     path = tmp_path / "sessions.json"
-    sessions = SessionStore(path=path)
+    sessions = SessionStore(path=path, store=arc._store)
     session = sessions.create(workspace_id="ws_default", title="Paused future work")
     sessions.update(session.id, status="idle", metadata_patch={"composer_queue_paused": True})
-    app = SimpleNamespace(state=SimpleNamespace(sessions=SessionStore(path=path)))
+    app = SimpleNamespace(state=SimpleNamespace(sessions=SessionStore(path=path, store=arc._store)))
     assert session_autostart_suspended(app, session.id)
     app.state.sessions.update(session.id, metadata_patch={"composer_queue_paused": False})
-    app.state.sessions = SessionStore(path=path)
+    app.state.sessions = SessionStore(path=path, store=arc._store)
     assert not session_autostart_suspended(app, session.id)
 
 
-def test_startup_migrates_legacy_cancelled_queue_pause_once(tmp_path: Path) -> None:
+def test_startup_migrates_legacy_cancelled_queue_pause_once(tmp_path: Path, arc: Any) -> None:
     """Legacy Stop is imported at startup; ordinary reads do not migrate state."""
     path = tmp_path / "sessions.json"
-    sessions = SessionStore(path=path)
+    sessions = SessionStore(path=path, store=arc._store)
     session = sessions.create(workspace_id="ws_default", title="Legacy cancelled")
     sessions.update(session.id, status="cancelled")
-    app = build_app(sessions_path=path)
+    app = build_app(sessions_path=path, arc=arc)
     with TestClient(app):
         assert session_autostart_suspended(app, session.id)
         first = app.state.sessions.get(session.id)

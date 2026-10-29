@@ -79,7 +79,7 @@ def test_data_table_signature_shows_columns_required_only_with_rows() -> None:
 
     assert signature == (
         "rows[] + columns | dataUri [selectionField] [dataQuery]; "
-        "action?, selection?, see schema for conditional field requirements"
+        "action?, pageSize?, selection?, see schema for conditional field requirements"
     )
 
 

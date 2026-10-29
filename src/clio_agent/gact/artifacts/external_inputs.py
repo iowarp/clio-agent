@@ -15,7 +15,7 @@ logger = logging.getLogger(__name__)
 # Only arguments whose exact tool contract consumes file bytes belong here.
 _EXTERNAL_FILE_INPUT_ARGS: dict[str, frozenset[str]] = {
     "fs_read_file": frozenset({"filepath"}),
-    "fs_propose_edit": frozenset({"filepath"}),
+    "fs_edit_file": frozenset({"filepath"}),
     "pandas_load_data": frozenset({"file_path"}),
     "pandas_statistical_summary": frozenset({"file_path"}),
     "pandas_correlation_analysis": frozenset({"file_path"}),
@@ -45,7 +45,7 @@ _EXTERNAL_FILE_INPUT_ARGS: dict[str, frozenset[str]] = {
 
 _NON_CONSUMING_PATH_TOOLS = frozenset(
     {
-        "fs_apply_edit_write",
+        "fs_write_file",
         "fs_list_directory",
         "ndp_list_organizations",
         "ndp_search_datasets",
@@ -56,7 +56,6 @@ _NON_CONSUMING_PATH_TOOLS = frozenset(
 _NON_WRITING_FILE_CONSUMERS = frozenset(
     {
         "fs_read_file",
-        "fs_propose_edit",
         "pandas_load_data",
         "pandas_statistical_summary",
         "pandas_correlation_analysis",
@@ -95,17 +94,6 @@ def external_file_input_args(tool_name: str) -> frozenset[str]:
     return _EXTERNAL_FILE_INPUT_ARGS.get(tool_name, frozenset())
 
 
-def external_file_arg_was_consumed(tool_name: str, candidate: Path) -> bool:
-    """Resolve conditional file consumption without reading or hashing bytes."""
-
-    if tool_name != "fs_propose_edit":
-        return True
-    try:
-        return candidate.is_file()
-    except (OSError, ValueError):
-        return False
-
-
 def declared_consumed_file_paths(tool_name: str, args: Mapping[str, Any]) -> set[str]:
     """Return normalized absolute paths declared as consumed by a tool."""
 
@@ -117,9 +105,7 @@ def declared_consumed_file_paths(tool_name: str, args: Mapping[str, Any]) -> set
             if not isinstance(raw, str) or not raw.strip():
                 continue
             candidate = Path(raw)
-            if not candidate.is_absolute() or not external_file_arg_was_consumed(
-                tool_name, candidate
-            ):
+            if not candidate.is_absolute():
                 continue
             try:
                 paths.add(str(candidate.expanduser().resolve(strict=False)))

@@ -1,0 +1,515 @@
+[build-gact-runtime] uv: C:\Users\jaime\AppData\Roaming\Python\Python313\Scripts\uv.exe (uv 0.11.28 (ebf0f43d7 2026-07-07 x86_64-pc-windows-msvc))
+[build-gact-runtime] installing standalone CPython 3.14
+Downloading cpython-3.14.6-windows-x86_64-none (download) (21.5MiB)
+ Downloaded cpython-3.14.6-windows-x86_64-none (download)
+Installed Python 3.14.6 in 5.14s
+ + cpython-3.14.6-windows-x86_64-none
+warning: `D:\cw\build-profile\home\.local\bin` is not on your PATH. To use installed Python executables, run `$env:PATH = "D:\cw\build-profile\home\.local\bin;$env:PATH"` or `uv python update-shell`.
+warning: Failed to install executable for cpython-3.14.6-windows-x86_64-none
+  Caused by: Executable already exists at `D:\cw\build-profile\home\.local\bin\python3.14.exe` but is not managed by uv; use `--force` to replace it
+[build-gact-runtime] exporting D:\Libraries\Documents\projects\clio-windows-startup-acceptance\uv.lock (extras: argonne,desktop,flowcept) as an install constraint
+    # via clio-agent
+zipp==3.23.0
+    # via importlib-metadata
+zstandard==0.25.0
+    # via clio-agent
+[build-gact-runtime] installing: D:\Libraries\Documents\projects\clio-windows-startup-acceptance[argonne,desktop,flowcept] (locked)
+Using Python 3.14.6 environment at: D:\cw\repair2-bundle\gact-runtime\python
+Resolved 219 packages in 1.50s
+   Building clio-agent @ file:///D:/Libraries/Documents/projects/clio-windows-startup-acceptance
+      Built clio-agent @ file:///D:/Libraries/Documents/projects/clio-windows-startup-acceptance
+Prepared 1 package in 18.88s
+Installed 219 packages in 10.66s
+ + affine==3.0.1
+ + aiofile==3.9.0
+ + aiohappyeyeballs==2.6.1
+ + aiohttp==3.14.3
+ + aiosignal==1.4.0
+ + annotated-doc==0.0.5
+ + annotated-types==0.7.0
+ + antlr4-python3-runtime==4.9.3
+ + anyio==4.11.0
+ + arrow==1.4.0
+ + attrs==25.4.0
+ + authlib==1.7.2
+ + babel==2.18.0
+ + bcrypt==5.0.0
+ + beartype==0.22.5
+ + boto3==1.43.101
+ + botocore==1.43.101
+ + burner-redis==0.1.7
+ + cachetools==6.2.1
+ + caio==0.9.25
+ + certifi==2025.10.5
+ + cffi==2.0.0
+ + chardet==5.2.0
+ + charset-normalizer==3.4.4
+ + click==8.3.3
+ + click-plugins==1.1.1.2
+ + cligj==0.7.2
+ + clio-agent==0.9.5b8 (from file:///D:/Libraries/Documents/projects/clio-windows-startup-acceptance)
+ + clio-kit==2.11.0
+ + clio-schemas==0.6.0b16 (from git+https://github.com/iowarp/clio-schemas@ac1be7bc4b814228bbe3222cd80fb95251ec7024)
+ + cloudpickle==3.1.2
+ + colorama==0.4.6
+ + contourpy==1.3.3
+ + courlan==1.4.0
+ + cronsim==2.7
+ + cryptography==46.0.3
+ + cssselect==1.3.0
+ + cycler==0.12.1
+ + cyclopts==4.5.1
+ + dateparser==1.4.3
+ + ddgs==9.16.0
+ + defusedxml==0.7.1
+ + diskcache==5.6.3
+ + distro==1.9.0
+ + dnspython==2.8.0
+ + docstring-parser==0.17.0
+ + docutils==0.22.2
+ + donfig==0.8.1.post1
+ + dspy==3.4.0
+ + email-validator==2.3.0
+ + et-xmlfile==2.0.0
+ + exceptiongroup==1.3.0
+ + fastapi==0.141.1
+ + fastmcp==4.1.0
+ + fastmcp-slim==4.1.0
+ + fastmcp-tasks==4.1.0
+ + fastuuid==0.14.0
+ + filelock==3.20.0
+ + flowcept==1.0.3
+ + fonttools==4.61.1
+ + fqdn==1.5.1
+ + frozenlist==1.8.0
+ + fsspec==2025.9.0
+ + gdrive-fsspec==0.4.1
+ + gepa==0.1.4
+ + globus-sdk==4.6.0
+ + globusfs==0.2.1
+ + google-api-core==2.30.3
+ + google-api-python-client==2.201.0
+ + google-auth==2.59.1
+ + google-auth-httplib2==0.4.4
+ + google-auth-oauthlib==1.5.0
+ + google-crc32c==1.9.0
+ + googleapis-common-protos==1.75.5
+ + griffelib==2.0.2
+ + h11==0.16.0
+ + h5py==3.15.1
+ + htmldate==1.10.0
+ + httpcore==1.0.9
+ + httpcore2==2.9.1
+ + httplib2==0.32.0
+ + httpx==0.28.1
+ + httpx2==2.9.1
+ + huggingface-hub==0.35.3
+ + idna==3.18
+ + importlib-metadata==8.7.0
+ + invoke==3.0.3
+ + iowarp-core==2.3.2
+ + isoduration==20.11.0
+ + jaraco-classes==3.4.0
+ + jaraco-context==6.0.1
+ + jaraco-functools==4.3.0
+ + jinja2==3.1.6
+ + jiter==0.11.1
+ + jmespath==1.1.0
+ + joserfc==1.7.4
+ + json-repair==0.57.1
+ + jsonpointer==3.1.1
+ + jsonref==1.1.0
+ + jsonschema==4.25.1
+ + jsonschema-path==0.3.4
+ + jsonschema-specifications==2025.9.1
+ + justext==3.0.2
+ + keyring==25.6.0
+ + kiwisolver==1.4.9
+ + litellm==1.102.1
+ + lru-dict==1.4.1
+ + lxml==6.1.1
+ + lxml-html-clean==0.4.5
+ + markdown-it-py==4.0.0
+ + markupsafe==3.0.3
+ + matplotlib==3.10.8
+ + mcp==2.0.0
+ + mcp-types==2.0.0
+ + mdurl==0.1.2
+ + more-itertools==10.8.0
+ + msgpack==1.2.1
+ + msgspec==0.22.0
+ + multidict==6.7.0
+ + numcodecs==0.17.0
+ + numpy==2.3.4
+ + oauthlib==4.0.0
+ + odfpy==1.4.1
+ + omegaconf==2.3.1
+ + openai==2.45.0
+ + openai-codex-cli-bin==0.162.1
+ + openapi-pydantic==0.5.1
+ + openpyxl==3.1.5
+ + opentelemetry-api==1.39.1
+ + orjson==3.13.0
+ + packaging==26.3
+ + pandas==2.3.3
+ + paramiko==5.0.0
+ + pathable==0.4.4
+ + pillow==12.1.1
+ + platformdirs==4.5.0
+ + primp==2.0.1
+ + prometheus-client==0.26.0
+ + prompt-toolkit==3.0.52
+ + propcache==0.4.1
+ + proto-plus==1.29.0
+ + protobuf==7.36.2
+ + psutil==7.2.2
+ + py-key-value-aio==0.4.4
+ + pyarrow==22.0.0
+ + pyasn1==0.6.4
+ + pyasn1-modules==0.4.2
+ + pycparser==2.23
+ + pydantic==2.12.3
+ + pydantic-core==2.41.4
+ + pydantic-settings==2.15.0
+ + pydata-google-auth==1.9.1
+ + pydocket==0.26.2
+ + pygments==2.19.2
+ + pyjwt==2.10.1
+ + pymongo==4.17.0
+ + pynacl==1.6.2
+ + pyparsing==3.3.2
+ + pypdf==6.16.0
+ + pyperclip==1.11.0
+ + python-dateutil==2.9.0.post0
+ + python-docx==1.2.0
+ + python-dotenv==1.1.1
+ + python-json-logger==4.1.0
+ + python-multipart==0.0.32
+ + python-pptx==1.0.2
+ + pytz==2026.3.post1
+ + pywin32==311
+ + pywin32-ctypes==0.2.3
+ + pyyaml==6.0.3
+ + rasterio==1.4.4
+ + readability-lxml==0.9
+ + redis==7.4.1
+ + referencing==0.36.2
+ + regex==2025.9.18
+ + requests==2.32.5
+ + requests-oauthlib==2.0.0
+ + rfc3339-validator==0.1.4
+ + rfc3987==1.3.8
+ + rich==14.2.0
+ + rich-rst==1.3.2
+ + rpds-py==0.27.1
+ + s3transfer==0.19.2
+ + setuptools==84.0.0
+ + shellingham==1.5.4
+ + six==1.17.0
+ + sniffio==1.3.1
+ + sortedcontainers==2.4.0
+ + sse-starlette==3.0.2
+ + starlette==1.3.1
+ + tenacity==9.1.2
+ + tiktoken==0.12.0
+ + tld==0.13.2
+ + tokenizers==0.22.1
+ + tomli-w==1.2.0
+ + tqdm==4.67.1
+ + trafilatura==2.1.0
+ + truststore==0.10.4
+ + typer==0.27.0
+ + typing-extensions==4.15.0
+ + typing-inspection==0.4.2
+ + tzdata==2026.3
+ + tzlocal==5.4.4
+ + uncalled-for==0.4.0
+ + uri-template==1.3.0
+ + uritemplate==4.2.0
+ + urllib3==2.5.0
+ + uv==0.12.23
+ + uvicorn==0.54.0
+ + watchfiles==1.1.1
+ + wcwidth==0.2.14
+ + webcolors==25.10.0
+ + websockets==15.0.1
+ + xarray==2026.9.0
+ + xlsxwriter==3.2.9
+ + yarl==1.22.0
+ + zarr==3.4.0
+ + zipp==3.23.0
+ + zstandard==0.25.0
+[build-gact-runtime] installing bundled CLIO Web Search adapter
+Using Python 3.14.6 environment at: D:\cw\repair2-bundle\gact-runtime\python
+Resolved 111 packages in 90ms
+   Building web-mcp @ file:///D:/cw/build-profile/home/.cache/clio-kit/components/11081f0d62a8af24ec64062917e35c2023e34b4184cb5806a228a5a011c4d08b/web
+      Built web-mcp @ file:///D:/cw/build-profile/home/.cache/clio-kit/components/11081f0d62a8af24ec64062917e35c2023e34b4184cb5806a228a5a011c4d08b/web
+Prepared 1 package in 1.31s
+Installed 1 package in 66ms
+ + web-mcp==2.1.2 (from file:///D:/cw/build-profile/home/.cache/clio-kit/components/11081f0d62a8af24ec64062917e35c2023e34b4184cb5806a228a5a011c4d08b/web)
+[build-gact-runtime] size before prune: 1626 MB
+[build-gact-runtime] preparing locked document wheels
+Prepared locked document wheel: defusedxml 0.7.1
+Prepared locked document wheel: cffi 2.1.1
+Prepared locked document wheel: charset-normalizer 3.5.2
+Prepared locked document wheel: et-xmlfile 2.0.0
+Prepared locked document wheel: filelock 3.32.7
+Prepared locked document wheel: lxml 6.1.3
+Prepared locked document wheel: cryptography 50.0.2
+Prepared locked document wheel: openpyxl 3.1.5
+Building wheel from source distribution...
+D:\cw\uv-cache\builds-v0\.tmpWFWWLS\Lib\site-packages\setuptools\dist.py:765: SetuptoolsDeprecationWarning: License classifiers are deprecated.
+!!
+
+        ********************************************************************************
+        Please consider removing the following classifiers in favor of a SPDX license expression:
+
+        License :: OSI Approved :: Apache Software License
+        License :: OSI Approved :: GNU General Public License (GPL)
+        License :: OSI Approved :: GNU Library or Lesser General Public License (LGPL)
+
+        See https://packaging.python.org/en/latest/guides/writing-pyproject-toml/#license for details.
+        ********************************************************************************
+
+!!
+  self._finalize_license_expression()
+running egg_info
+writing odfpy.egg-info\PKG-INFO
+writing dependency_links to odfpy.egg-info\dependency_links.txt
+writing requirements to odfpy.egg-info\requires.txt
+writing top-level names to odfpy.egg-info\top_level.txt
+reading manifest file 'odfpy.egg-info\SOURCES.txt'
+reading manifest template 'MANIFEST.in'
+Prepared locked document wheel: numpy 2.5.3
+warning: no files found matching '*.txt' under directory 'examples'
+writing manifest file 'odfpy.egg-info\SOURCES.txt'
+Prepared locked document wheel: pdfplumber 0.11.10
+Prepared locked document wheel: pdfminer-six 20260107
+D:\cw\uv-cache\builds-v0\.tmpWFWWLS\Lib\site-packages\setuptools\dist.py:765: SetuptoolsDeprecationWarning: License classifiers are deprecated.
+!!
+
+        ********************************************************************************
+        Please consider removing the following classifiers in favor of a SPDX license expression:
+
+        License :: OSI Approved :: Apache Software License
+        License :: OSI Approved :: GNU General Public License (GPL)
+        License :: OSI Approved :: GNU Library or Lesser General Public License (LGPL)
+
+        See https://packaging.python.org/en/latest/guides/writing-pyproject-toml/#license for details.
+        ********************************************************************************
+
+!!
+  self._finalize_license_expression()
+Prepared locked document wheel: psutil 7.2.2
+running bdist_wheel
+D:\cw\uv-cache\builds-v0\.tmpWFWWLS\Lib\site-packages\setuptools\_distutils\cmd.py:119: SetuptoolsDeprecationWarning: bdist_wheel.universal is deprecated
+!!
+
+        ********************************************************************************
+        With Python 2.7 end-of-life, support for building universal wheels
+        (i.e., wheels that support both Python 2 and Python 3)
+        is being obviated.
+        Please discontinue using this option, or if you still need it,
+        file an issue with pypa/setuptools describing your use case.
+
+        This deprecation is overdue, please update your project and remove deprecated
+        calls to avoid build errors in the future.
+        ********************************************************************************
+
+!!
+  self.finalize_options()
+running build
+running build_py
+creating build\lib\odf
+copying odf\anim.py -> build\lib\odf
+copying odf\attrconverters.py -> build\lib\odf
+copying odf\chart.py -> build\lib\odf
+copying odf\config.py -> build\lib\odf
+copying odf\dc.py -> build\lib\odf
+copying odf\dr3d.py -> build\lib\odf
+copying odf\draw.py -> build\lib\odf
+copying odf\easyliststyle.py -> build\lib\odf
+copying odf\element.py -> build\lib\odf
+copying odf\elementtypes.py -> build\lib\odf
+copying odf\form.py -> build\lib\odf
+copying odf\grammar.py -> build\lib\odf
+copying odf\load.py -> build\lib\odf
+copying odf\manifest.py -> build\lib\odf
+copying odf\math.py -> build\lib\odf
+copying odf\meta.py -> build\lib\odf
+copying odf\namespaces.py -> build\lib\odf
+copying odf\number.py -> build\lib\odf
+copying odf\odf2moinmoin.py -> build\lib\odf
+copying odf\odf2xhtml.py -> build\lib\odf
+copying odf\odfmanifest.py -> build\lib\odf
+copying odf\office.py -> build\lib\odf
+copying odf\opendocument.py -> build\lib\odf
+copying odf\presentation.py -> build\lib\odf
+copying odf\script.py -> build\lib\odf
+copying odf\style.py -> build\lib\odf
+copying odf\svg.py -> build\lib\odf
+copying odf\table.py -> build\lib\odf
+copying odf\teletype.py -> build\lib\odf
+copying odf\text.py -> build\lib\odf
+copying odf\thumbnail.py -> build\lib\odf
+copying odf\userfield.py -> build\lib\odf
+copying odf\xforms.py -> build\lib\odf
+copying odf\__init__.py -> build\lib\odf
+running build_scripts
+creating build\scripts-3.14
+copying and adjusting csv2ods\csv2ods -> build\scripts-3.14
+copying and adjusting mailodf\mailodf -> build\scripts-3.14
+copying and adjusting odf2xhtml\odf2xhtml -> build\scripts-3.14
+copying and adjusting odf2mht\odf2mht -> build\scripts-3.14
+copying and adjusting odf2xml\odf2xml -> build\scripts-3.14
+copying and adjusting odfimgimport\odfimgimport -> build\scripts-3.14
+copying and adjusting odflint\odflint -> build\scripts-3.14
+copying and adjusting odfmeta\odfmeta -> build\scripts-3.14
+copying and adjusting odfoutline\odfoutline -> build\scripts-3.14
+copying and adjusting odfuserfield\odfuserfield -> build\scripts-3.14
+copying and adjusting xml2odf\xml2odf -> build\scripts-3.14
+Prepared locked document wheel: pycparser 3.0
+installing to build\bdist.win-amd64\wheel
+running install
+running install_lib
+creating build\bdist.win-amd64\wheel
+creating build\bdist.win-amd64\wheel\odf
+copying build\lib\odf\anim.py -> build\bdist.win-amd64\wheel\.\odf
+copying build\lib\odf\attrconverters.py -> build\bdist.win-amd64\wheel\.\odf
+copying build\lib\odf\chart.py -> build\bdist.win-amd64\wheel\.\odf
+copying build\lib\odf\config.py -> build\bdist.win-amd64\wheel\.\odf
+copying build\lib\odf\dc.py -> build\bdist.win-amd64\wheel\.\odf
+copying build\lib\odf\dr3d.py -> build\bdist.win-amd64\wheel\.\odf
+copying build\lib\odf\draw.py -> build\bdist.win-amd64\wheel\.\odf
+copying build\lib\odf\easyliststyle.py -> build\bdist.win-amd64\wheel\.\odf
+copying build\lib\odf\element.py -> build\bdist.win-amd64\wheel\.\odf
+copying build\lib\odf\elementtypes.py -> build\bdist.win-amd64\wheel\.\odf
+copying build\lib\odf\form.py -> build\bdist.win-amd64\wheel\.\odf
+copying build\lib\odf\grammar.py -> build\bdist.win-amd64\wheel\.\odf
+copying build\lib\odf\load.py -> build\bdist.win-amd64\wheel\.\odf
+copying build\lib\odf\manifest.py -> build\bdist.win-amd64\wheel\.\odf
+copying build\lib\odf\math.py -> build\bdist.win-amd64\wheel\.\odf
+copying build\lib\odf\meta.py -> build\bdist.win-amd64\wheel\.\odf
+copying build\lib\odf\namespaces.py -> build\bdist.win-amd64\wheel\.\odf
+copying build\lib\odf\number.py -> build\bdist.win-amd64\wheel\.\odf
+copying build\lib\odf\odf2moinmoin.py -> build\bdist.win-amd64\wheel\.\odf
+copying build\lib\odf\odf2xhtml.py -> build\bdist.win-amd64\wheel\.\odf
+copying build\lib\odf\odfmanifest.py -> build\bdist.win-amd64\wheel\.\odf
+copying build\lib\odf\office.py -> build\bdist.win-amd64\wheel\.\odf
+copying build\lib\odf\opendocument.py -> build\bdist.win-amd64\wheel\.\odf
+copying build\lib\odf\presentation.py -> build\bdist.win-amd64\wheel\.\odf
+copying build\lib\odf\script.py -> build\bdist.win-amd64\wheel\.\odf
+copying build\lib\odf\style.py -> build\bdist.win-amd64\wheel\.\odf
+copying build\lib\odf\svg.py -> build\bdist.win-amd64\wheel\.\odf
+copying build\lib\odf\table.py -> build\bdist.win-amd64\wheel\.\odf
+copying build\lib\odf\teletype.py -> build\bdist.win-amd64\wheel\.\odf
+copying build\lib\odf\text.py -> build\bdist.win-amd64\wheel\.\odf
+copying build\lib\odf\thumbnail.py -> build\bdist.win-amd64\wheel\.\odf
+copying build\lib\odf\userfield.py -> build\bdist.win-amd64\wheel\.\odf
+copying build\lib\odf\xforms.py -> build\bdist.win-amd64\wheel\.\odf
+copying build\lib\odf\__init__.py -> build\bdist.win-amd64\wheel\.\odf
+running install_egg_info
+running egg_info
+writing odfpy.egg-info\PKG-INFO
+writing dependency_links to odfpy.egg-info\dependency_links.txt
+writing requirements to odfpy.egg-info\requires.txt
+writing top-level names to odfpy.egg-info\top_level.txt
+reading manifest file 'odfpy.egg-info\SOURCES.txt'
+reading manifest template 'MANIFEST.in'
+warning: no files found matching '*.txt' under directory 'examples'
+writing manifest file 'odfpy.egg-info\SOURCES.txt'
+Copying odfpy.egg-info to build\bdist.win-amd64\wheel\.\odfpy-1.4.1-py3.14.egg-info
+running install_scripts
+creating build\bdist.win-amd64\wheel\odfpy-1.4.1.data\scripts
+copying build\scripts-3.14\csv2ods -> build\bdist.win-amd64\wheel\odfpy-1.4.1.data\scripts
+copying build\scripts-3.14\mailodf -> build\bdist.win-amd64\wheel\odfpy-1.4.1.data\scripts
+copying build\scripts-3.14\odf2mht -> build\bdist.win-amd64\wheel\odfpy-1.4.1.data\scripts
+copying build\scripts-3.14\odf2xhtml -> build\bdist.win-amd64\wheel\odfpy-1.4.1.data\scripts
+copying build\scripts-3.14\odf2xml -> build\bdist.win-amd64\wheel\odfpy-1.4.1.data\scripts
+copying build\scripts-3.14\odfimgimport -> build\bdist.win-amd64\wheel\odfpy-1.4.1.data\scripts
+copying build\scripts-3.14\odflint -> build\bdist.win-amd64\wheel\odfpy-1.4.1.data\scripts
+copying build\scripts-3.14\odfmeta -> build\bdist.win-amd64\wheel\odfpy-1.4.1.data\scripts
+copying build\scripts-3.14\odfoutline -> build\bdist.win-amd64\wheel\odfpy-1.4.1.data\scripts
+copying build\scripts-3.14\odfuserfield -> build\bdist.win-amd64\wheel\odfpy-1.4.1.data\scripts
+copying build\scripts-3.14\xml2odf -> build\bdist.win-amd64\wheel\odfpy-1.4.1.data\scripts
+creating build\bdist.win-amd64\wheel\odfpy-1.4.1.dist-info\WHEEL
+creating 'D:\\cw\\build-temp\\clio-wheel-build-i57ppdmt\\wheels\\.tmp-iu6kn346\\odfpy-1.4.1-py2.py3-none-any.whl' and adding 'build\\bdist.win-amd64\\wheel' to it
+adding 'odf/__init__.py'
+adding 'odf/anim.py'
+adding 'odf/attrconverters.py'
+adding 'odf/chart.py'
+adding 'odf/config.py'
+adding 'odf/dc.py'
+adding 'odf/dr3d.py'
+adding 'odf/draw.py'
+adding 'odf/easyliststyle.py'
+adding 'odf/element.py'
+adding 'odf/elementtypes.py'
+adding 'odf/form.py'
+adding 'odf/grammar.py'
+adding 'odf/load.py'
+adding 'odf/manifest.py'
+adding 'odf/math.py'
+adding 'odf/meta.py'
+adding 'odf/namespaces.py'
+adding 'odf/number.py'
+adding 'odf/odf2moinmoin.py'
+adding 'odf/odf2xhtml.py'
+adding 'odf/odfmanifest.py'
+adding 'odf/office.py'
+adding 'odf/opendocument.py'
+adding 'odf/presentation.py'
+adding 'odf/script.py'
+adding 'odf/style.py'
+adding 'odf/svg.py'
+adding 'odf/table.py'
+adding 'odf/teletype.py'
+adding 'odf/text.py'
+adding 'odf/thumbnail.py'
+adding 'odf/userfield.py'
+adding 'odf/xforms.py'
+adding 'odfpy-1.4.1.data/scripts/csv2ods'
+adding 'odfpy-1.4.1.data/scripts/mailodf'
+adding 'odfpy-1.4.1.data/scripts/odf2mht'
+adding 'odfpy-1.4.1.data/scripts/odf2xhtml'
+adding 'odfpy-1.4.1.data/scripts/odf2xml'
+adding 'odfpy-1.4.1.data/scripts/odfimgimport'
+adding 'odfpy-1.4.1.data/scripts/odflint'
+adding 'odfpy-1.4.1.data/scripts/odfmeta'
+adding 'odfpy-1.4.1.data/scripts/odfoutline'
+adding 'odfpy-1.4.1.data/scripts/odfuserfield'
+adding 'odfpy-1.4.1.data/scripts/xml2odf'
+adding 'odfpy-1.4.1.dist-info/METADATA'
+adding 'odfpy-1.4.1.dist-info/WHEEL'
+adding 'odfpy-1.4.1.dist-info/top_level.txt'
+adding 'odfpy-1.4.1.dist-info/RECORD'
+removing build\bdist.win-amd64\wheel
+Successfully built D:\cw\build-temp\clio-wheel-build-i57ppdmt\wheels\odfpy-1.4.1-py2.py3-none-any.whl
+Prepared locked document wheel: odfpy 1.4.1
+Prepared locked document wheel: pypdf 6.19.0
+Prepared locked document wheel: pymupdf 1.28.2
+Prepared locked document wheel: python-docx 1.2.0
+Prepared locked document wheel: pypdfium2 5.14.0
+Prepared locked document wheel: pillow 12.3.0
+Prepared locked document wheel: truststore 0.10.4
+Prepared locked document wheel: python-pptx 1.0.2
+Prepared locked document wheel: typing-extensions 4.16.0
+Prepared locked document wheel: reportlab 4.5.1
+Prepared locked document wheel: zstandard 0.25.0
+Prepared locked document wheel: nodejs-wheel-binaries 24.19.0
+Prepared locked document wheel: xlsxwriter 3.2.9
+[build-gact-runtime] preparing matching Windows execution helpers
+{'status': 'available', 'version': '0.162.1', 'target': 'x86_64-pc-windows-msvc'}
+[build-gact-runtime] compiling portable startup bytecode
+prepared 2922 startup bytecode files
+[build-gact-runtime] prepared 2927 bytecode files
+[build-gact-runtime] size after prune:  1610.8 MB (was 1626 MB)
+[build-gact-runtime] manifest: {"exec":["python/python.exe","-I","-B","-m","clio_agent.gact","--no-agent"],"schema":1}
+[build-gact-runtime] sanity (relocated): D:\cw\build-temp\gact-runtime-relocated-vmwaxyfv.uzs\python\python.exe -m clio_agent.gact --help
+[build-gact-runtime] sanity (relocated ARC): initialize clio-core store (user dir D:\cw\repair2-bundle\gact-runtime-arc-smoke, free 107.24 GB)
+D:\cw\build-temp\gact-runtime-relocated-vmwaxyfv.uzs\python\Lib\site-packages\clio_agent\paths.py:114: FutureWarning: CLIO_USER_DIR is deprecated; migrate to CLIO_AGENT_HOME
+  root = resolve_root(role, home=base_home, env=source, platform=_platform())
+arc-smoke: ClioCoreStore
+[build-gact-runtime] sanity (relocated boot): /v1/capabilities on :39292
+[build-gact-runtime] relocated cold boot ready in 24.67s
+[build-gact-runtime] OK - portable runtime ready at D:\cw\repair2-bundle\gact-runtime (1610.8 MB)

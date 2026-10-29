@@ -1,0 +1,85 @@
+{
+  "command_seconds": 8.65,
+  "exit_code": 0,
+  "owned": [
+    {
+      "pid": 2596,
+      "created": 1793183856.3489249,
+      "exe": "D:\\cw\\fp7\\local\\clio-agent\\data\\app\\clio-agent\\.venv\\Scripts\\clio-agent.exe",
+      "cmd": [
+        "D:\\cw\\fp7\\local\\clio-agent\\data\\app\\clio-agent\\.venv\\Scripts\\clio-agent.exe",
+        "migrate"
+      ]
+    },
+    {
+      "pid": 37268,
+      "created": 1793183856.3659427,
+      "exe": "D:\\cw\\fp7\\local\\clio-agent\\data\\app\\clio-agent\\.venv\\Scripts\\python.exe",
+      "cmd": [
+        "D:\\cw\\fp7\\local\\clio-agent\\data\\app\\clio-agent\\.venv\\Scripts\\python.exe",
+        "D:\\cw\\fp7\\local\\clio-agent\\data\\app\\clio-agent\\.venv\\Scripts\\clio-agent.exe",
+        "migrate"
+      ]
+    },
+    {
+      "pid": 52780,
+      "created": 1793183856.377505,
+      "exe": "C:\\Python314\\python.exe",
+      "cmd": [
+        "D:\\cw\\fp7\\local\\clio-agent\\data\\app\\clio-agent\\.venv\\Scripts\\python.exe",
+        "D:\\cw\\fp7\\local\\clio-agent\\data\\app\\clio-agent\\.venv\\Scripts\\clio-agent.exe",
+        "migrate"
+      ]
+    },
+    {
+      "pid": 21344,
+      "created": 1793183858.0796008,
+      "exe": "D:\\cw\\fp7\\local\\clio-agent\\data\\app\\clio-agent\\.venv\\Lib\\site-packages\\iowarp_core\\bin\\clio_run.exe",
+      "cmd": [
+        "D:\\cw\\fp7\\local\\clio-agent\\data\\app\\clio-agent\\.venv\\Lib\\site-packages\\iowarp_core\\bin\\clio_run.exe",
+        "start"
+      ]
+    },
+    {
+      "pid": 31592,
+      "created": 1793183858.3841653,
+      "exe": "D:\\cw\\fp7\\local\\clio-agent\\data\\app\\clio-agent\\.venv\\Scripts\\python.exe",
+      "cmd": [
+        "D:\\cw\\fp7\\local\\clio-agent\\data\\app\\clio-agent\\.venv\\Scripts\\python.exe",
+        "-c",
+        "\nimport importlib, socket\nsocket.socket().close()\nimport iowarp_core  # noqa: F401 - library preload; must precede the extension\ncte = importlib.import_module('clio_cte_core_ext')\ninit = getattr(cte, \"clio_init\", None) or cte.chimaera_init\nmode = (getattr(cte, \"RuntimeMode\", None) or cte.ChimaeraMode).kClient\ninit(mode, False)\nprint(\"CLIO_NATIVE_PREFLIGHT_RETURNED\", flush=True)\nimport os\nos._exit(0)\n"
+      ]
+    },
+    {
+      "pid": 48480,
+      "created": 1793183858.396522,
+      "exe": "C:\\Python314\\python.exe",
+      "cmd": [
+        "D:\\cw\\fp7\\local\\clio-agent\\data\\app\\clio-agent\\.venv\\Scripts\\python.exe",
+        "-c",
+        "\nimport importlib, socket\nsocket.socket().close()\nimport iowarp_core  # noqa: F401 - library preload; must precede the extension\ncte = importlib.import_module('clio_cte_core_ext')\ninit = getattr(cte, \"clio_init\", None) or cte.chimaera_init\nmode = (getattr(cte, \"RuntimeMode\", None) or cte.ChimaeraMode).kClient\ninit(mode, False)\nprint(\"CLIO_NATIVE_PREFLIGHT_RETURNED\", flush=True)\nimport os\nos._exit(0)\n"
+      ]
+    },
+    {
+      "pid": 36740,
+      "created": 1793183858.0859537,
+      "exe": "C:\\Windows\\System32\\conhost.exe",
+      "cmd": [
+        "\\??\\C:\\WINDOWS\\system32\\conhost.exe",
+        "0x4"
+      ]
+    },
+    {
+      "pid": 36884,
+      "created": 1793183859.6775498,
+      "exe": "D:\\cw\\fp7\\local\\clio-agent\\data\\app\\clio-agent\\.venv\\Lib\\site-packages\\iowarp_core\\bin\\clio_run.exe",
+      "cmd": [
+        "D:\\cw\\fp7\\local\\clio-agent\\data\\app\\clio-agent\\.venv\\Lib\\site-packages\\iowarp_core\\bin\\clio_run.exe",
+        "stop"
+      ]
+    }
+  ],
+  "forced": [],
+  "survivors": [],
+  "finished_at": "2026-10-28T10:37:44.968968+00:00"
+}

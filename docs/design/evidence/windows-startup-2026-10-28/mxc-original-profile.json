@@ -1,0 +1,7 @@
+{
+  "seconds": 0.314,
+  "exit_code": 1,
+  "witnesses": null,
+  "stderr": "Error: default_permissions requires a `[permissions]` table\n",
+  "stdout": ""
+}

@@ -1,79 +1,63 @@
-# 03 - Experts
+# 03 - Agents and subagents (formerly experts)
 
-> CLIO routes scientific work to registry-loaded Agent Blueprint experts. This
-> doc describes the current expert model and how the TUI should render their
-> lifecycle.
+> The blueprint "expert" model is gone. CLIO runs agents composed from
+> plugins; what used to be an expert is now a defined subagent of a plugin or a
+> general subagent. The full reference is
+> [`docs/PLUGINS_AND_FLOWS.md`](../PLUGINS_AND_FLOWS.md); this page only lists
+> what the TUI can observe.
 
-## What Is An Expert?
+## What runs a session
 
-An expert is an Agent Blueprint node loaded from the registry/marketplace store
-and compiled at runtime into a DSPy module. CLIO core supplies the runtime
-substrate: registry bootstrap, tool adapters, MCP descriptors, workspace policy,
-semantic events, permissions, memory, and provenance.
+Every session runs one agent resolved from plugins and pinned at session
+start: a flow (`react` by default), an identity and a set of plugins. The
+plugins bring the tools, MCP servers, skills, defined subagents, flows and
+prompt fragments. Agents are Python classes in a marketplace's `agents/*.py`;
+the default marketplace (`external/clio-agent-marketplace`, installed as
+`clio`) ships `clio/standard` (the default agent) and domain agents such as
+`clio/clio-data` (HDF5, ADIOS2 and Parquet files) and `clio/factorio`, whose
+defined subagents (for example `abaqus_engineer`) replace the old blueprint
+experts. Users save their own agents as a
+parent plus a delta (`user/<id>`).
 
-Expert definitions are not privileged Python classes in `clio_agent.experts`.
-The production native `DataExpert`, `AnalysisExpert`, `VisualizationExpert`,
-`NDPExpert`, and `SACFormatExpert` paths have been removed from the runtime.
+CLIO core ships no privileged native domain classes; the native `DataExpert`,
+`AnalysisExpert`, `VisualizationExpert`, `NDPExpert` and `SACFormatExpert` paths
+are removed.
 
-## Current Default Registry
+## Subagents
 
-The default baseline comes from the pinned marketplace registry:
+- **Defined subagents** ship in the plugin they belong to, with their own
+  prompt, plugin set and optional tool allowlist. A child session pins its own
+  resolution.
+- **General subagents** are installed agents started with only a task prompt,
+  through the `delegation` plugin's `spawn_agent_task` / `spawn_agents_parallel`.
+- **Flows** (`run_flow`, `run_plan`, `council`, `arena`) start children as
+  ordinary tasks too.
 
-| Field | Value |
-|---|---|
-| Registry | `git@github.com:JaimeCernuda/clio-agent-marketplace.git` |
-| Ref | `main` |
-| Commit | `908e013d68a80b1e13d5e7d633309d1f6813d970` |
-| Submodule | `external/clio-agent-marketplace` |
-| Default blueprint | `data-semantics` |
+Every child is a task with a durable handle; the model waits, observes or
+cancels it with the shared task controls (`wait_tasks`, `observe_tasks`,
+`cancel_tasks`).
 
-At runtime the default blueprint installs into the normal blueprint store and
-surfaces as registry rows such as `main`, `data`, `analysis`, and
-`visualization`, each with `agent_blueprint` and `pack.definition_path`
-metadata.
+## What the TUI can show
 
-## Blueprint Contract
-
-Blueprint experts declare:
-
-- `module.kind`: `predict`, `chain_of_thought`, or `react`.
-- `signature`: ordered input/output fields. Empty declarations default to
-  `system_prompt`, `question`, and `answer`.
-- `structured_outputs`: normalized `evidence`, `artifacts`, `errors`,
-  `delegation`, and `expert_handoffs` fields.
-- `tools`: allowed tool names. Tool lists scope access; they do not select the
-  module kind.
-- `children`: declared child experts available for synchronous delegation.
-
-The compiler maps module kinds to DSPy as follows:
-
-| `module.kind` | Runtime module |
-|---|---|
-| `predict` | `dspy.Predict(signature)` |
-| `chain_of_thought` | `dspy.ChainOfThought(signature)` |
-| `react` | `dspy.ReAct(signature, tools=allowed_tools + child_expert_tools)` |
-
-## What The TUI Should Show
-
-- Active expert id and title.
-- Blueprint id, version, scope, install commit, and definition path.
-- Module kind and structured-output availability.
+- The session's agent ref, its resolved plugins with their provenance, and the
+  composed prompt with each fragment attributed (`GET /v1/sessions/{sid}/agent`).
 - Tool calls with tool name, args summary, result/error, duration, and
   cached/fresh state.
-- Child delegation lifecycle: started, completed, failed, parent resumed.
+- Child task lifecycle (accepted, running, settled) by handle, and a flow run's
+  live plan (`GET /v1/sessions/{sid}/tasks/{handle}/flow`).
 - Provider/model provenance.
 - Structured `error_info` and stream fallback metadata when present.
 
-## Error Paths
+## Error paths
 
 | Error | Meaning | TUI rendering |
 |---|---|---|
-| `routing_error` | Planner could not select or validate a safe action | Show retry/reconfigure/exit actions when present |
-| `agent_error` | Blueprint/user-agent execution failed | Failed assistant message with runtime/provenance details |
+| `agent_unavailable` | The session's agent does not resolve (missing, untrusted or colliding plugin) | Failed assistant message with every resolution error and the recovery actions |
+| `agent_error` | Agent execution failed | Failed assistant message with runtime/provenance details |
 | `tool_error` | MCP/tool call failed | Inline under the tool row |
 | `provider_error` | LM unavailable, timed out, or auth failed | Offer retry and provider reconfiguration |
 | `config_error` | Provider/configuration invalid | Route user to Settings or doctor output |
 
 DSPy remains an implementation detail. The TUI should surface CLIO concepts:
-agent ids, blueprint provenance, module kind, tools, structured outputs,
-semantic events, and durable evidence.
+agent refs, plugin provenance, flows, tools, task handles, semantic events and
+durable evidence.

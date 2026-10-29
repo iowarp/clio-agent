@@ -3,10 +3,10 @@ import { Badge } from '@/components/reui/badge';
 import { Frame, FramePanel } from '@/components/reui/frame';
 import { Button } from '@/components/ui/button';
 import {
+	DOWNLOAD_NOTE,
 	PLATFORMS,
 	RELEASES_PAGE,
 	pickAsset,
-	variantNote,
 	type DownloadChoice,
 	type OS,
 	type PlatformDownloads,
@@ -92,25 +92,35 @@ function PlatformCard({ platform, icon, release, detected }: CardProps) {
 						<Download aria-hidden="true" />
 						{platform.primary.label}
 					</Button>
-					<div className="flex flex-wrap items-center gap-x-4 gap-y-1 text-sm">
-						<span className="text-muted-foreground">Also</span>
-						{platform.others.map((choice) => {
-							const asset = resolve(release, choice);
-							return (
-								<a
-									key={choice.label}
-									href={asset?.url ?? RELEASES_PAGE}
-									title={asset ? variantNote(asset.variant) : undefined}
-									className="text-foreground underline decoration-border underline-offset-4 hover:decoration-primary"
-								>
-									{choice.label}
-								</a>
-							);
-						})}
-					</div>
-					<p className="m-0 min-h-10 text-xs text-muted-foreground">
-						{primary ? variantNote(primary.variant) : ''}
-					</p>
+					{platform.alternative && (
+						<div className="flex flex-wrap items-center gap-x-2 gap-y-1 text-sm">
+							<span className="text-muted-foreground">{platform.alternative.text}</span>
+							<a
+								href={platform.alternative.href}
+								className="text-foreground underline decoration-border underline-offset-4 hover:decoration-primary"
+							>
+								{platform.alternative.link}
+							</a>
+						</div>
+					)}
+					{platform.others.length > 0 && (
+						<div className="flex flex-wrap items-center gap-x-4 gap-y-1 text-sm">
+							<span className="text-muted-foreground">Also</span>
+							{platform.others.map((choice) => {
+								const asset = resolve(release, choice);
+								return (
+									<a
+										key={choice.label}
+										href={asset?.url ?? RELEASES_PAGE}
+										className="text-foreground underline decoration-border underline-offset-4 hover:decoration-primary"
+									>
+										{choice.label}
+									</a>
+								);
+							})}
+						</div>
+					)}
+					<p className="m-0 min-h-10 text-xs text-muted-foreground">{primary ? DOWNLOAD_NOTE : ''}</p>
 				</div>
 			</FramePanel>
 		</Frame>

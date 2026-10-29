@@ -11,6 +11,7 @@ from typing import TYPE_CHECKING, Any, cast
 
 import pytest
 import pytest_asyncio
+from fastapi.testclient import TestClient
 
 from clio_agent.arc.memory import ARCMemory
 from clio_agent.arc.task_types import MailItem
@@ -422,7 +423,7 @@ def test_restart_preserves_only_durable_waiting_work(
     app = _app(tmp_path, arc)
     from clio_agent.gact.sessions import SessionStore
 
-    app.state.sessions = SessionStore(path=tmp_path / "sessions.json")
+    app.state.sessions = SessionStore(path=tmp_path / "sessions.json", store=arc._store)
     sid = _session(app)
     arm_goal(app, sid, condition="Finish the sweep")
     start_loop(app, sid, prompt="One checkpoint", interval_s=60)
@@ -432,7 +433,7 @@ def test_restart_preserves_only_durable_waiting_work(
 
     reloaded = SimpleNamespace(
         state=SimpleNamespace(
-            sessions=SessionStore(path=tmp_path / "sessions.json"),
+            sessions=SessionStore(path=tmp_path / "sessions.json", store=arc._store),
             schedules=ScheduleStore(path=tmp_path / "schedules.json"),
             deferred_schedules=set(),
             task_history=TaskHistory(arc),
@@ -471,14 +472,16 @@ def test_normal_backend_boot_persists_schedule_without_explicit_path(
 
     monkeypatch.setenv("CLIO_SESSIONS_PATH", str(tmp_path / "sessions.json"))
     app = build_app()
-    sid = app.state.sessions.create(workspace_id="ws_default", title="Waiting loop").id
-    start_loop(app, sid, prompt="One checkpoint", interval_s=60)
-    pending = _get_loop(app, sid)["pending_schedule_id"]
-    assert (tmp_path / "schedules.json").is_file()
+    with TestClient(app):
+        sid = app.state.sessions.create(workspace_id="ws_default", title="Waiting loop").id
+        start_loop(app, sid, prompt="One checkpoint", interval_s=60)
+        pending = _get_loop(app, sid)["pending_schedule_id"]
+        assert (tmp_path / "schedules.json").is_file()
     restarted = build_app()
-    reconcile_autonomous_controls(restarted)
-    assert restarted.state.schedules.get(pending) is not None
-    assert _get_loop(restarted, sid)["active"] is True
+    with TestClient(restarted):
+        reconcile_autonomous_controls(restarted)
+        assert restarted.state.schedules.get(pending) is not None
+        assert _get_loop(restarted, sid)["active"] is True
 
 
 def test_composer_limits_and_user_stop_are_deterministic(tmp_path: Path, arc: ARCMemory) -> None:

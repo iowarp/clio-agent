@@ -6,6 +6,7 @@ from pathlib import Path
 import pytest
 
 from clio_agent.tools.tool_presentation import (
+    PREVIOUS_CONTENT_KEY,
     capture_tool_presentation,
     enrich_tool_observer_result,
     present_mcp_result,
@@ -17,8 +18,8 @@ from clio_agent.tools.tool_presentation import (
     "name,action",
     [
         ("fs_read_file", "Read"),
-        ("fs_apply_edit_write", "Write"),
-        ("fs_propose_edit", "Propose edit"),
+        ("fs_write_file", "Write"),
+        ("fs_edit_file", "Edit"),
     ],
 )
 def test_declared_file_header_excludes_payload(name: str, action: str) -> None:
@@ -38,7 +39,7 @@ def test_declared_file_header_excludes_payload(name: str, action: str) -> None:
     assert "private payload" not in str(subject)
     assert "presentation" not in original
     running = starting_presentation(
-        name, {"filepath": "D:/workspace/evidence.txt", "new_content": "payload"}
+        name, {"filepath": "D:/workspace/evidence.txt", "content": "payload"}
     )
     assert running is not None and running["action"] == action
     assert running["subject"] == "file-link"
@@ -214,8 +215,8 @@ def test_file_write_diff_is_added_only_to_observer_result(tmp_path) -> None:
     target.write_text("FIRST", encoding="utf-8")
     os.environ["CLIO_ALLOWED_ROOTS"] = str(tmp_path)
     try:
-        args = {"filepath": str(target), "new_content": "SECOND"}
-        snapshot = capture_tool_presentation("fs_apply_edit_write", args)
+        args = {"filepath": str(target), "content": "SECOND"}
+        snapshot = capture_tool_presentation("fs_write_file", args)
     finally:
         os.environ.pop("CLIO_ALLOWED_ROOTS", None)
 
@@ -224,9 +225,12 @@ def test_file_write_diff_is_added_only_to_observer_result(tmp_path) -> None:
         "structuredContent": {"path": str(target), "written_path": str(target), "ok": True},
     }
     target.write_text("SECOND", encoding="utf-8")
-    enriched = enrich_tool_observer_result(original, args, snapshot)
+    enriched = enrich_tool_observer_result(original, args, snapshot, name="fs_write_file")
 
     assert original["structuredContent"].get("unified_diff") is None
+    # The pre-write copy rides the observer copy only, for the GACT recorder to take.
+    assert enriched[PREVIOUS_CONTENT_KEY].content == "FIRST"
+    assert PREVIOUS_CONTENT_KEY not in original
     assert enriched["structuredContent"] == original["structuredContent"]
     assert enriched["presentation"]["blocks"][1]["text"].endswith(
         "-FIRST\n\\ No newline at end of file\n+SECOND\n\\ No newline at end of file\n"
@@ -238,15 +242,15 @@ def test_file_diff_exposes_trailing_newline_change(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, before: str, after: str
 ) -> None:
     target = tmp_path / "newline.txt"
-    target.write_text(before, encoding="utf-8")
+    target.write_text(before, encoding="utf-8", newline="")
     monkeypatch.setenv("CLIO_ALLOWED_ROOTS", str(tmp_path))
-    args = {"filepath": str(target), "new_content": after}
-    snapshot = capture_tool_presentation("fs_apply_edit_write", args)
-    target.write_text(after, encoding="utf-8")
+    args = {"filepath": str(target), "content": after}
+    snapshot = capture_tool_presentation("fs_write_file", args)
+    target.write_text(after, encoding="utf-8", newline="")
     original = {"content": [], "structuredContent": {"path": str(target), "ok": True}}
-    diff = enrich_tool_observer_result(original, args, snapshot)["presentation"]["blocks"][1][
-        "text"
-    ]
+    diff = enrich_tool_observer_result(original, args, snapshot, name="fs_write_file")[
+        "presentation"
+    ]["blocks"][1]["text"]
     assert "-same\n" in diff and "+same\n" in diff
     assert diff.count("\\ No newline at end of file") == 1
     assert "presentation" not in original
@@ -256,20 +260,26 @@ def test_non_file_tool_has_no_presentation_snapshot() -> None:
     assert capture_tool_presentation("shell_bash", {"command": "echo hi"}) is None
 
 
+@pytest.mark.parametrize("newline", ["\n", "\r\n"])
 def test_diff_preview_uses_one_context_line_not_a_ten_line_quota(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, newline: str
 ) -> None:
     target = tmp_path / "context.txt"
-    before = "\n".join(f"line {index}" for index in range(20)) + "\n"
-    target.write_text(before, encoding="utf-8")
+    before = newline.join(f"line {index}" for index in range(20)) + newline
+    target.write_text(before, encoding="utf-8", newline="")
     monkeypatch.setenv("CLIO_ALLOWED_ROOTS", str(tmp_path))
     args = {"filepath": str(target)}
-    snapshot = capture_tool_presentation("fs_apply_edit_write", args)
-    target.write_text(before.replace("line 10\n", "edited\n"), encoding="utf-8")
+    snapshot = capture_tool_presentation("fs_edit_file", args)
+    target.write_text(
+        before.replace(f"line 10{newline}", f"edited{newline}"), encoding="utf-8", newline=""
+    )
     view = enrich_tool_observer_result(
-        {"structuredContent": {"path": str(target), "ok": True}}, args, snapshot
+        {"structuredContent": {"path": str(target), "ok": True}},
+        args,
+        snapshot,
+        name="fs_edit_file",
     )["presentation"]
     diff = view["blocks"][1]["text"]
     assert len(diff.splitlines()) == 7
-    assert " line 9\n-line 10\n+edited\n line 11\n" in diff
+    assert f" line 9{newline}-line 10{newline}+edited{newline} line 11{newline}" in diff
     assert view["summary"] == ""

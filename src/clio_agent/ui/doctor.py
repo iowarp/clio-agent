@@ -25,7 +25,6 @@ def run_doctor(json_output: bool = False) -> int:
     hosts at ``/v1/health`` directly, via
     :func:`clio_agent.runtime.status.collect_runtime_status`.
     """
-    from clio_agent.gact.a2ui_catalogs.doctor import probe_a2ui_declarations  # noqa: PLC0415
     from clio_agent.gact.routes.provider_probe_env import (  # noqa: PLC0415
         runtime_provider_probe_env,
     )
@@ -33,7 +32,6 @@ def run_doctor(json_output: bool = False) -> int:
 
     # The provider the agent would be built from (config.yaml -> env -> default).
     report = collect_runtime_status(env=runtime_provider_probe_env(None))
-    report.integrations.append(probe_a2ui_declarations())
     if json_output:
         print(json.dumps(report.to_dict(), indent=2))
     else:

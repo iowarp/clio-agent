@@ -5,6 +5,69 @@ must be able to understand what the agent did, what it learned or changed, and
 what is happening now. Technical details remain the audit trail, not the only
 way to understand a result.
 
+## Adding or changing a tool
+
+Design the presentation alongside the callable contract, before implementing a
+new tool or changing its arguments, result shape or lifecycle. Answer these
+questions with concrete example data:
+
+| User question                              | Where the answer belongs                                                      |
+| ------------------------------------------ | ----------------------------------------------------------------------------- |
+| What is the agent doing, to what?          | One compact action row with a named target or useful query/filter and counts. |
+| What did it ask, send or select?           | The actual assignment, message or consequential selection on expansion.       |
+| What came back or changed?                 | Rendered content, named matches, a truthful diff, files or returned reports.  |
+| Did this operation succeed?                | Its recorded semantic outcome, separate from submission or child completion.  |
+| What are the exact arguments and response? | Technical details, preserving the recorded evidence.                          |
+
+Keep the row short. Do not add mandatory Input/Output boxes, repeated status
+sentences, Work paragraphs, link-opening instructions, decorative dots or em
+dashes. Names and scope values should themselves navigate to the correct
+recorded entity. Keep routine transport options and opaque IDs in details.
+
+Use these ownership points:
+
+1. Declare the result at the producer. Built-in registrations use `presentation=`
+   on `gact/agents/tool_instrumentation.py::native_tool`, with an existing native
+   presenter or an observer callback. This is distinct from the SDK's
+   `native_tool("name")`, which only claims a built-in. MCP integrations use
+   `tools/tool_presentation.py::PresentationAdapter` and its registration seam.
+   Python/plugin tools must follow the runtime instrumentation path that exposes
+   them; do not invent an unsupported presentation argument on `sdk.tool`.
+2. Preserve exact inputs, model observations and lifecycle evidence. Presenters
+   must not rerun work, change the model's result or mark acceptance as success.
+   Use stable block IDs, typed links and existing retained-content paging.
+3. Coordinate the consumer declaration and shared reader in GACT. Follow its
+   [authoring steps](../external/gact-tui/docs/tool-result-presentation.md#adding-or-changing-a-tool).
+   New integrations should produce meaningful standard content even before a
+   specialized adapter exists. Do not require a frontend viewer for every tool.
+4. Add a showcase of actual request/result shapes: a small success, a large
+   result and applicable empty, partial, denied, failed, interrupted and running
+   states. Keep synthetic data in tests/review fixtures, never production tools.
+   Include long names and wrapped content, not just short happy-path strings.
+5. Assert meaningful content, identity, outcomes and unchanged observations in
+   the producer tests. Review the production chat/Evidence components at desktop
+   and phone widths. Exercise disclosure, navigation, paging and keyboard access.
+   Registration coverage alone is insufficient. A screenshot of the final
+   answer does not establish the correctness of intermediate tool results.
+
+For example, a delegation row is `Delegate to [Independent audit]` with its
+status mark. Expansion shows the named assignment, its agent/model when recorded
+and the actual assignment text. A wait names the tasks and returned/running
+counts; it stays closed until content or a collection error exists. Returned
+reports use named tabs. Pending and uncertain task snapshots are not reports.
+Search shows the query in its row and linked matches/excerpts on expansion.
+Memory changes show before/after content and a linked scope value.
+
+Application failures remain failures even if transport succeeded. An interrupted
+wait is not a failed child. Keep success marks quiet; do not apply the Work
+rail's task-kind coloring to every transcript tool. Large results need bounded,
+readable previews and a working path to complete retained content. A missing
+historical result must be disclosed, never replaced with today's state.
+
+Record synthetic presentation review separately from a fresh native run. Live
+acceptance must inspect the request, intermediate tool outcomes and recovery,
+not merely whether the agent eventually produced plausible prose.
+
 ## Three levels of understanding
 
 The compact row answers **what action, on what, with what outcome**. Use a short
@@ -59,8 +122,9 @@ Tool arguments and raw results are separate technical evidence.
 
 Native tools must supply `presentation=` to `native_tool`: a registered native
 contract or a callback `(arguments, result, structured_content) -> presentation`.
-The inventory regression rejects missing declarations. Handoffs retain their
-dedicated child lifecycle representation. New internal tools cannot opt out by
+The inventory regression rejects missing declarations. Handoffs retain named
+child identities and lifecycle evidence; the UI presents each assignment once.
+New internal tools cannot opt out by
 omitting presentation metadata.
 
 MCP adapters are registered in `tools/tool_presentation.py`. An adapter owns its
@@ -110,15 +174,17 @@ task output, indexed todos, and Web Search conversion outputs. Live acceptance
 must separately inspect read/edit/skill/shell/web/task/artifact/plan results.
 Passing a test suite is not a claim that browser or CI qualification passed.
 
-## Refinement audit (2026-09-08)
+## Lifecycle and coverage expectations
 
 Native declarations also support an optional `presentation_start(arguments)`
 callback. The instrumentation seam preserves it across wrappers and isolates its
 inputs; failure produces a technical diagnostic without invoking or retrying the
 tool. Wait uses this to identify children while its single call stays open.
-Completed Wait reports each child's identity, status and observed duration, never
-its answer. Observe owns incremental event excerpts; explicit task collection
-owns the readable report. Model-facing wait and observation results are unchanged.
+Wait identifies its selection while running. When its recorded receipt includes
+collected results, present their actual reports in named tabs; do not replace
+them with a status recap. Observe owns progress snapshots and task selection;
+explicit result reads expose the retained answer. Presentation never changes
+the model-facing wait or observation result.
 
 File reads declare Markdown, plain text, or code at the adapter boundary. Valid
 Markdown frontmatter is presented as readable scalar metadata followed by the
@@ -127,25 +193,25 @@ technical evidence. Clients do not infer formats from filenames or result keys.
 
 The completion gate is this entire inventory, not three illustrative tools:
 
-| Family / tools | Meaningful observer result | Required live evidence |
-| --- | --- | --- |
-| `fs_read_file` | One filename link; size; rendered document or source | Text, Markdown, code, long expansion |
-| `fs_propose_edit`, `fs_apply_edit_write` | Truthful diff, one context line; no padding | Proposed and applied changes |
-| `load_skill`, `spawn_skill_task` | Loaded procedure, or dedicated child lifecycle | Real installed skill, not metadata alone |
-| `spawn_agent_task`, `spawn_agents_parallel`, `run_workflow` | Dedicated indexed child lifecycle | Start, failure, successful return |
-| `wait_agent_tasks` | Requested children; terminal statuses and durations | Single open wait; no repeated answers |
-| `observe_agent_tasks` | Incremental progress events and child links | Snapshot and patterned observation |
-| `get_agent_task_output` | Child link and readable Markdown report | Large report in bounded/full views |
-| `write_todos` | Actual items with accessible status icons | Three-item preview, all statuses, expansion |
-| `create_artifact` | Artifact links or explicit rejection reasons | Open the registered artifact |
-| `workspace_resource_list/inspect/read/search/structure/wait` | Resource identity, custody sizes, processing, evidence | Real uploaded resource and derivatives |
-| `goal_status` | Condition and progress, or explicitly no active goal | Read-only status |
-| `cron_create/list/delete`, `loop_wakeup` | Actual schedule, timezone, next fire, removal state | Disposable session-owned schedule lifecycle |
-| `message_agent` | Recipient link, sent message, delivery posture | Message to a real qualification child |
-| `refresh_provider_models` | Provider/source/default and actual changes/errors | Read-back of authoritative result |
-| `plan_exit`, `ask_user`, `raise_alert_card`, `create_a2ui_surface` | Existing dedicated review/interaction surface | Real rendered surface and controls |
-| MCP standard text/resource/media | Bounded standard content; JSON in technical details | Text/resource/media preview |
-| `web_search/fetch/fetch_events` | Sources, conversion progress, saved outputs, degradation | Ready service and real asynchronous PDF conversion |
+| Family / tools                                                          | Meaningful observer result                                                  | Required live evidence                                                          |
+| ----------------------------------------------------------------------- | --------------------------------------------------------------------------- | ------------------------------------------------------------------------------- |
+| `fs_read_file`                                                          | One filename link; size; rendered document or source                        | Text, Markdown, code, long expansion                                            |
+| `fs_write_file`, `fs_edit_file`                                         | Truthful diff, one context line; no padding                                 | Created, overwritten and edited files                                           |
+| `load_skill`                                                            | Loaded procedure or exact supporting reference                              | Real installed skill, not metadata alone                                        |
+| `spawn_agent_task`, `spawn_agents_parallel`, `run_flow`, `run_workflow` | Named assignment/flow, actual request, truthful lifecycle                   | Start, refusal, failure, successful return                                      |
+| `wait_tasks`                                                            | Named selection, returned/running counts; tabs containing collected reports | Pending stays closed; interruption, collection error and large returned content |
+| `observe_tasks`                                                         | Named tasks and recorded progress snapshots                                 | Snapshot and exact task navigation                                              |
+| `get_task_result`                                                       | Named child and readable retained report                                    | Large report, pinned paging and missing evidence                                |
+| `write_todos`                                                           | Actual items with accessible status icons                                   | Three-item preview, all statuses, expansion                                     |
+| `create_artifact`                                                       | Artifact links or explicit rejection reasons                                | Open the registered artifact                                                    |
+| `workspace_resource_list/inspect/read/search/structure/wait`            | Resource identity, custody sizes, processing, evidence                      | Real uploaded resource and derivatives                                          |
+| `goal_status`                                                           | Condition and progress, or explicitly no active goal                        | Read-only status                                                                |
+| `cron_create/list/delete`, `loop_wakeup`                                | Actual schedule, timezone, next fire, removal state                         | Disposable session-owned schedule lifecycle                                     |
+| `send_agent_message`                                                    | Named recipient link and actual sent message                                | Message to a real qualification child                                           |
+| `refresh_provider_models`                                               | Provider/source/default and actual changes/errors                           | Read-back of authoritative result                                               |
+| `plan_exit`, `ask_user`, `raise_alert_card`, `create_a2ui_surface`      | Existing dedicated review/interaction surface                               | Real rendered surface and controls                                              |
+| MCP standard text/resource/media                                        | Bounded standard content; JSON in technical details                         | Text/resource/media preview                                                     |
+| `web_search/fetch/fetch_events`                                         | Sources, conversion progress, saved outputs, degradation                    | Ready service and real asynchronous PDF conversion                              |
 
 Registration tests are a coverage floor. Each row additionally needs meaningful
 result assertions and live inspection; an unavailable path stays unqualified.

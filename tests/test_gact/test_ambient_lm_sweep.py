@@ -273,28 +273,6 @@ def test_current_lm_model_id_bound_vs_ambient(
 
 
 # --------------------------------------------------------------------------- #
-# swept call site: usage rollup
-# --------------------------------------------------------------------------- #
-
-
-def test_all_known_lms_ambient_records(boot_default: _LM, session_ctx: Any) -> None:
-    from clio_agent.gact.usage import _all_known_lms
-
-    lms = _all_known_lms(session_ctx)
-    assert boot_default in lms  # baseline: the global LM is still gathered
-    sites = [e["message"] for e in ambient_lm_fallbacks(session_ctx).get("sess-1", [])]
-    assert "usage._all_known_lms" in sites
-
-
-def test_usage_from_dspy_history_ambient_records(boot_default: _LM, session_ctx: Any) -> None:
-    from clio_agent.gact.usage import _usage_from_dspy_history
-
-    _usage_from_dspy_history()  # empty history -> {}, but the ambient read is flagged
-    sites = [e["message"] for e in ambient_lm_fallbacks(session_ctx).get("sess-1", [])]
-    assert "usage._usage_from_dspy_history" in sites
-
-
-# --------------------------------------------------------------------------- #
 # backward-compat
 # --------------------------------------------------------------------------- #
 

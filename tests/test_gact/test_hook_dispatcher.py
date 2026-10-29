@@ -308,7 +308,9 @@ def test_timeout_kills_child_process_not_just_the_hook(tmp_path: Path) -> None:
         event=PRE_TOOL_USE,
         body=body,
         fail_closed=True,
-        timeout_ms=500,
+        # Long enough for the hook's interpreter to start and fork its child on a
+        # loaded host (two Python start-ups), far below the hook's 30 s sleep.
+        timeout_ms=3000,
         hook_id="forker",
     )
     start = time.monotonic()
@@ -1037,6 +1039,18 @@ def test_post_tool_use_deny_feeds_reason(tmp_path: Path) -> None:
         install_global_dispatcher(None)
 
 
+def test_post_tool_use_additional_context_reaches_the_model(tmp_path: Path) -> None:
+    """Context a PostToolUse hook adds about a call is appended to its result."""
+
+    body = "import json\nprint(json.dumps({'additionalContext': 'CHECK PASS'}))\n"
+    install_global_dispatcher(make_command_dispatcher(tmp_path, event=POST_TOOL_USE, body=body))
+    try:
+        out = run_post_tool("echo", {"text": "hi"}, "REAL:hi", False, False)
+        assert out == "REAL:hi\n\n[clio: hook] CHECK PASS"
+    finally:
+        install_global_dispatcher(None)
+
+
 def test_session_start_and_end_fire_exactly_once(tmp_path: Path) -> None:
     """SessionStart fires once when a session is created; SessionEnd once when it is
     deleted (and never again on a repeat delete)."""
@@ -1059,18 +1073,12 @@ def test_session_start_and_end_fire_exactly_once(tmp_path: Path) -> None:
         install_global_dispatcher(None)
 
 
-def test_subagent_start_and_stop_fire_exactly_once(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_subagent_start_and_stop_fire_exactly_once(tmp_path: Path) -> None:
     """The conversation owner publishes each child's hooks once after worker retirement."""
     import asyncio
 
     from tests.test_gact.task_records import record_assignment_fixture
 
-    monkeypatch.setattr(
-        "clio_agent.gact.agents.resolution._runtime_declared_child_ids",
-        lambda app, pid, session_id="": {"main"},
-    )
     disp = _RecordingDispatcher()
     install_global_dispatcher(disp)
     try:
@@ -1080,16 +1088,24 @@ def test_subagent_start_and_stop_fire_exactly_once(
             record_assignment_fixture(app, parent)
             owner = app.state.conversations
             receipt = asyncio.run_coroutine_threadsafe(
-                owner.spawn(owner.caller(parent), "analyze", "main", "hook-child"),
+                owner.spawn(owner.caller(parent), "analyze", "clio/standard", "hook-child"),
                 owner._loop,
             ).result(timeout=10)
             handle = receipt["handle"]
             released = threading.Event()
             child = app.state.task_history.task_snapshot(handle)
             assert child is not None
+            # Spawn acceptance can precede worker admission. Register against the
+            # worker's reservation, rather than observing the initial idle gap.
+            assert disp.wait_for_task(SUBAGENT_START, handle)
             app.state.turn_runner.run_when_released(child.owner.session_id, released.set)
             assert disp.wait_for_task(SUBAGENT_STOP, handle)
             assert released.wait(5), "the child worker did not release its reservation"
+            # The pump can briefly reserve the session again to check queued
+            # input. Await its settlement before asserting the idle state.
+            asyncio.run_coroutine_threadsafe(
+                owner.runner.run_pending(child.owner.session_id), owner._loop
+            ).result(timeout=10)
             assert disp.count_for_task(SUBAGENT_START, handle) == 1
             assert disp.count_for_task(SUBAGENT_STOP, handle) == 1
             child = app.state.task_history.task_snapshot(handle)
@@ -1156,14 +1172,15 @@ def test_pre_compact_fires_once(tmp_path: Path) -> None:
         with TestClient(app) as c:
             sid = c.post("/v1/sessions", json={"title": "t"}).json()["id"]
             complete_turn(c, sid, "hello")
-            # The fake agent bypasses the loop that records each turn on the ARC
-            # plane, and compaction summarizes that plane (the agent's own context),
-            # so record the turn's user message and answer as the loop would.
+            # The fake agent bypasses the loop that records each step on the ARC
+            # plane; the turn committed the user message on the agent's scope, and
+            # compaction summarizes that plane (the agent's own context), so record
+            # the turn's answer on the same scope as the loop would.
             ledger = app.state.messages[sid]
             turn_id = next(m.turn_id or m.id for m in ledger if m.role == "user")
-            app.state.arc.append_segment(sid, "main", "user", {"text": "hello"}, turn_id=turn_id)
+            (scope,) = [s for s in app.state.arc.list_segment_scopes(sid) if not s.startswith("_")]
             app.state.arc.append_segment(
-                sid, "main", "thought", {"text": _Pred.answer}, turn_id=turn_id
+                sid, scope, "thought", {"text": _Pred.answer}, turn_id=turn_id
             )
             before = disp.count(PRE_COMPACT)
             resp = c.post(f"/v1/sessions/{sid}/compact", json={})

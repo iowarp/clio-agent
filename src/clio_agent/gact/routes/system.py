@@ -25,6 +25,7 @@ from fastapi.responses import JSONResponse
 
 from clio_agent.arc import history_mode
 from clio_agent.errors import MCP_TASK_RECORD_STORE_ABSENT
+from clio_agent.gact import boot_timing, store_migrations
 from clio_agent.gact.composer_runtime import resource_capabilities
 from clio_agent.gact.context_references import CONTEXT_REFERENCE_CAPABILITY
 from clio_agent.gact.off_loop import run_off_loop
@@ -51,7 +52,6 @@ from clio_agent.gact.runtime.constants import (
 )
 from clio_agent.gact.runtime.context_tokens import _resolve_expert_context_window
 from clio_agent.gact.summarization_record import row_summarization
-from clio_agent.gact.transcript_file import seeded_metrics_counters
 from clio_agent.gact.types import (
     AuthInfo,
     BackendInfo,
@@ -69,6 +69,7 @@ from clio_agent.gact.types import (
     TransportFlags,
 )
 from clio_agent.gact.version_info import build_version_info
+from clio_agent.runtime.package_preparation import probe_managed_packages
 from clio_agent.runtime.status import (
     IntegrationState,
     IntegrationStatus,
@@ -267,7 +268,6 @@ def _estimate_message_context_tokens(message: Message) -> int:
         chars += len(str(getattr(part, "thinking", "") or ""))
         chars += len(part.path or "")
         chars += len(part.unified_diff or "")
-        chars += len(part.new_content or "")
     return max(1, chars // 4) if chars else 0
 
 
@@ -307,12 +307,10 @@ def _context_pressure_state(
 
 
 def collect_health_report(app: FastAPI) -> RuntimeReport:
-    """One full doctor collection for ``/v1/health`` (blocking; run on a worker thread).
-
-    Never triggers an LM handshake (folded from cache by the route) and skips the
-    full-box process census (served from its boot cache). An unselected LM provider
-    is reported ``unconfigured`` rather than probed at its committed default.
-    """
+    """One full doctor collection for ``/v1/health`` (blocking; runs on a worker thread).
+    Never triggers an LM handshake (folded from cache by the route), skips the process
+    census (boot cache), reports an unselected LM provider ``unconfigured`` (not probed
+    at its default) and adds the ``managed_packages`` row (B4)."""
 
     effective_lm = _effective_lm_config(app)
     configured = bool(effective_lm.get("provider") and effective_lm.get("model"))
@@ -322,6 +320,7 @@ def collect_health_report(app: FastAPI) -> RuntimeReport:
         lm_timeout=0.5,
         include_process_census=False,
     )
+    report.integrations.append(probe_managed_packages())
     return unconfigured_provider_report(
         report, provider_configured=configured or bool(explicit_lm_provider())
     )
@@ -361,6 +360,7 @@ def register_system_routes(app: FastAPI, deps: "GactDeps") -> None:
         """
 
         uptime = int(time.time() - app.state.started_at)
+        readiness, still_starting = boot_timing.readiness(app)
 
         try:
             # While the boot collection runs, answer at once (health_boot); else collect.
@@ -408,7 +408,9 @@ def register_system_routes(app: FastAPI, deps: "GactDeps") -> None:
         # synchronous collect above deliberately skipped, so the polled endpoint
         # stays fast even on a cold psutil box (the cheap reaper + child_processes
         # rows were already collected inline).
-        integrations = integrations + _folded_orphan_scan_rows(app)
+        integrations = (
+            integrations + _folded_orphan_scan_rows(app) + store_migrations.health_rows(app)
+        )
         report = RuntimeReport(integrations=integrations)
 
         overall = _health_overall(report)
@@ -423,6 +425,9 @@ def register_system_routes(app: FastAPI, deps: "GactDeps") -> None:
             # install (ungated/unobserved tools) is visible, not silent.
             tool_hooks_installed=getattr(app.state, "tool_hooks_installed", None),
             context_mode=history_mode.resolve().mode,
+            boot=boot_timing.snapshot(app),
+            readiness=readiness,
+            starting=still_starting,
         )
         if overall == "unavailable":
             content = response.model_dump(mode="json", exclude_none=True)
@@ -458,12 +463,12 @@ def register_system_routes(app: FastAPI, deps: "GactDeps") -> None:
                 search_messages=True,  # BBB27 — GET /sessions/{sid}/messages/search
                 cost_tracking=True,  # BBB24 — Message.tokens + Session.cost_usd rollup
                 files=True,  # BBB22 — /v1/sessions/{sid}/context/files CRUD
-                diffs=True,  # BBB21 — file_diff parts + /diffs/apply,reject
+                diffs=True,  # BBB21 — file_diff parts + /diffs (list) + /diffs/revert (undo)
                 permissions=True,  # BBB23 — /v1/permissions + permission.* events
                 # BBB25 — child agents. #948 S4 retired the nanoagent subsessions +
                 # subagent.* events; the capability is now provided by the spawn
                 # substrate: children run as real agent-task sessions
-                # (session_type=agent_task) surfaced via blueprint.delegation.* events.
+                # (session_type=agent_task) surfaced via delegation.* events.
                 subagents=True,
                 session_export=True,  # #16 — /v1/sessions/{sid}/export + import
                 # #760: no /summarize or /attachments routes exist — advertising
@@ -479,11 +484,14 @@ def register_system_routes(app: FastAPI, deps: "GactDeps") -> None:
                 session_tasks=True,  # #18 — per-session todo CRUD
                 plan_mode=True,  # session.mode=plan blocks destructive tools
                 edit_modes=True,  # session.edit_mode toggles diff/whole/patch
-                agent_write=True,  # #19 — POST/PUT/DELETE /v1/agents
+                # The GACT agent-write routes (POST/PUT/DELETE /v1/agents/{id}) and
+                # agent extraction are gone with blueprints: user agents are a parent
+                # plus a delta, advertised by x_clio_agent_plugins (/v1/agents/user).
+                agent_write=False,
                 hooks=True,  # #20 — pre/post_tool + pre/post_message hooks
                 scheduled_sessions=True,  # #21 — cron schedules
                 session_sharing=True,  # #22 — share tokens
-                skills_extraction=True,  # #23 — POST /v1/agents/extract
+                skills_extraction=False,
                 # v0.2 additions — advertised when the scaffold
                 # actually emits them. Turned on piecewise as the
                 # follow-on items land.
@@ -499,8 +507,8 @@ def register_system_routes(app: FastAPI, deps: "GactDeps") -> None:
                 x_clio_stream_fallback_reasons=_stream_fallback_reason_capabilities(),
                 x_clio_direct_delete_permissions=True,
                 x_clio_prompt_registry=True,
-                x_clio_expert_packs=True,
-                x_clio_agent_blueprints=True,
+                x_clio_agent_plugins=True,
+                x_clio_extension_library=True,
                 x_clio_user_questions=True,
                 x_clio_interactions=True,
                 x_clio_retry_attempts=True,
@@ -577,7 +585,7 @@ def register_system_routes(app: FastAPI, deps: "GactDeps") -> None:
                 current="bearer" if bearer_enabled else "trust_socket",
             ),
         )
-        # Catalog discovery may initialize installed blueprint snapshots. Keep all
+        # Catalog discovery may initialize installed plugin snapshots. Keep all
         # filesystem work off the request loop so health/SSE remain responsive.
         return await run_off_loop(
             project_for_request,
@@ -659,17 +667,17 @@ def register_system_routes(app: FastAPI, deps: "GactDeps") -> None:
             if s.status in {"running", "idle"}:
                 active += 1
 
-        # #770 C3: the message-derived rollups (total, by-role, and the
-        # iowarp/clio-agent#655 per-tool + overall "tool_call" latency buckets)
-        # are maintained incrementally at the session_store write seam
-        # (app.state.metrics_counters), so this handler reads a running counter
-        # instead of re-walking every message of every session on each poll. The
-        # reported values are byte-identical to the old full walk: _latency_stat
-        # sorts its samples, so accumulation order does not matter.
-        counters = seeded_metrics_counters(app)
-        message_total = counters.message_total
+        # #770 C3: the all-time message total is each session's persisted
+        # message_count; the by-role counts and the iowarp/clio-agent#655 per-tool
+        # + overall "tool_call" latency buckets are this process's running counters
+        # (app.state.metrics_counters), so a poll never re-walks history and boot
+        # never replays it.
+        counters = app.state.metrics_counters
+        message_total = sum(s.message_count for s in all_sessions)
         role_counts = counters.role_counts()
-        latencies = {key: _latency_stat(vals) for key, vals in counters.latency_samples.items()}
+        latencies = {
+            key: _latency_stat(list(vals)) for key, vals in counters.latency_samples.items()
+        }
 
         # tokens + cost rollup across every
         # session's cumulative counters.

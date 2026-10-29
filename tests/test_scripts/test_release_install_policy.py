@@ -20,15 +20,15 @@ import pytest
 import yaml
 
 ROOT = Path(__file__).resolve().parents[2]
-EXPECTED_VERSION = "0.9.5b8"
+EXPECTED_VERSION = "0.9.5"
 #: The release the install docs name: the latest stable one. A beta changes the
 #: package version only; users opt into it explicitly.
-DOCUMENTED_VERSION = "0.9.4.24"
+DOCUMENTED_VERSION = "0.9.5"
 EXPECTED_DSPY = "dspy==3.4.0"
-EXPECTED_FASTMCP = "fastmcp==4.1.0"
-EXPECTED_FASTMCP_SLIM = "fastmcp-slim==4.1.0"
-EXPECTED_FASTMCP_TASKS = "fastmcp-tasks==4.1.0"
-EXPECTED_LITELLM = "litellm==1.102.1"
+EXPECTED_FASTMCP = "fastmcp==4.1.2"
+EXPECTED_FASTMCP_SLIM = "fastmcp-slim==4.1.2"
+EXPECTED_FASTMCP_TASKS = "fastmcp-tasks==4.1.2"
+EXPECTED_LITELLM = "litellm==1.102.2"
 
 
 def _text(relative_path: str) -> str:
@@ -54,15 +54,19 @@ def test_release_installers_explicitly_root_intentional_prereleases() -> None:
     """Every official uv path admits exact betas without a global prerelease policy."""
 
     expected_commands = {
+        # A release is constrained by its own tag's uv.lock, whose exact pins root
+        # the betas; source installs sync that lock.
         "install/install.sh": (
-            "uv sync --python 3.14 --extra argonne",
-            '"dspy==3.4.0" "fastmcp==4.1.0" "fastmcp-slim==4.1.0"',
+            '--constraint "$lockdir/constraints.txt"',
+            "uv export --quiet --frozen --no-hashes --no-emit-project",
+            'sync_args=(sync --locked --python "$py" --extra argonne --extra flowcept)',
         ),
         "install/install.ps1": (
-            "RunNative uv @('sync', '--python', '3.14')",
-            "'fastmcp-slim==4.1.0', 'fastmcp-tasks==4.1.0'",
+            "--constraint $Constraints",
+            "'export', '--quiet', '--frozen', '--no-hashes', '--no-emit-project'",
+            "$syncArgs = @('sync', '--locked', '--python', $py, '--extra', 'argonne', '--extra', 'flowcept')",
         ),
-        "install/clio": ('"dspy==3.4.0" "fastmcp==4.1.0" "fastmcp-slim==4.1.0"',),
+        "install/clio": ('"dspy==3.4.0" "fastmcp==4.1.2" "fastmcp-slim==4.1.2"',),
     }
     # The bundled-runtime builders root nothing themselves: they install
     # clio-agent[BUNDLE_EXTRAS] against the lock export, whose exact prerelease
@@ -272,32 +276,26 @@ def test_release_workflow_smokes_the_published_registry_tool() -> None:
 
     assert publish < registry_job < registry_install
     assert "needs: pypi" in workflow[registry_job:registry_install]
-    assert "--with fastmcp==4.1.0" in workflow[registry_install:]
-    assert "--with fastmcp-slim==4.1.0" in workflow[registry_install:]
-    assert "--with fastmcp-tasks==4.1.0" in workflow[registry_install:]
+    assert "--with fastmcp==4.1.2" in workflow[registry_install:]
+    assert "--with fastmcp-slim==4.1.2" in workflow[registry_install:]
+    assert "--with fastmcp-tasks==4.1.2" in workflow[registry_install:]
     assert "assert dspy.__version__ == '3.4.0'" in workflow
     assert "assert hasattr(dspy, 'lm15')" in workflow
 
 
 def test_documented_persistent_uv_tool_install_has_the_same_policy() -> None:
-    """Historical released-version examples retain that release's exact dependency roots."""
+    """Stable installation examples use the current release's exact SDK roots."""
 
     command = (
-        f"uv tool install --python 3.13 --with {EXPECTED_DSPY} --with fastmcp==4.0.0b5 "
-        f"--with fastmcp-slim==4.0.0b5 "
-        f"--with fastmcp-tasks==4.0.0b5 clio-agent=={DOCUMENTED_VERSION}"
+        f"uv tool install --python 3.14 --with {EXPECTED_DSPY} --with {EXPECTED_FASTMCP} "
+        f"--with {EXPECTED_FASTMCP_TASKS} --with mcp==2.2.0 clio-agent=={DOCUMENTED_VERSION}"
     )
     for relative_path in ("docs/INSTALL.md", "install/README.md"):
         contents = _text(relative_path)
         assert command in contents
         assert "uvx" in contents or "uv tool run" in contents
 
-    # The release README retains the broader, still-valid command
-    # published to PyPI. Official installers and current install docs use the narrower
-    # exact-root policy above.
-    assert (
-        f"uv tool install --python 3.13 --prerelease allow --with dspy==3.4.0 clio-agent=={DOCUMENTED_VERSION}"
-    ) in _text("README.md")
+    assert command in _text("README.md")
 
 
 def test_package_init_and_lock_share_the_release_version() -> None:

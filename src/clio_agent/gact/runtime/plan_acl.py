@@ -273,9 +273,10 @@ def plan_mode_deny_message(mode: str, tool_name: str = "") -> str:
     tool_ref = f" ({tool_name})" if tool_name else ""
     if mode == READ_ONLY_POLICY_MODE:
         return (
-            "This is a read-only side conversation: it may only use tools that declare no side "
-            f"effects. This tool{tool_ref} does not declare itself read-only, so it is blocked. "
-            "Answer from the conversation and read-only tools."
+            "This session is read-only (a side conversation or a read-only role): it may only "
+            "use tools that declare no side effects. "
+            f"This tool{tool_ref} does not declare itself read-only, so it is blocked. "
+            "Answer from what you have read and from read-only tools."
         )
     if mode == "plan":
         plan_glob = f"{plans_dir()}{os.sep}*.md"

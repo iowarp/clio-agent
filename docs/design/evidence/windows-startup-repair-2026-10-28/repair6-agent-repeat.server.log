@@ -1,0 +1,42 @@
+INFO:     Started server process [21352]
+INFO:     Waiting for application startup.
+WARNING | ⚑ BOOT mark=lifespan_started at=5.736
+WARNING | ⚑ BOOT mark=serving at=7.654
+INFO:     Application startup complete.
+INFO:     Uvicorn running on http://127.0.0.1:19111 (Press CTRL+C to quit)
+INFO:     127.0.0.1:52867 - "GET /v1/health HTTP/1.1" 200 OK
+INFO:     127.0.0.1:52871 - "GET /v1/health HTTP/1.1" 200 OK
+WARNING | ⚑ BOOT step=marketplace seconds=3.818 start=7.658 thread=MainThread outcome=ok
+INFO:     127.0.0.1:52873 - "GET /v1/health HTTP/1.1" 200 OK
+INFO:     127.0.0.1:52875 - "GET /v1/health HTTP/1.1" 200 OK
+INFO:     127.0.0.1:52876 - "GET /v1/health HTTP/1.1" 200 OK
+INFO:     127.0.0.1:52879 - "GET /v1/health HTTP/1.1" 200 OK
+INFO:     127.0.0.1:52880 - "GET /v1/health HTTP/1.1" 200 OK
+INFO:     127.0.0.1:52882 - "GET /v1/health HTTP/1.1" 200 OK
+INFO:     127.0.0.1:52883 - "GET /v1/health HTTP/1.1" 200 OK
+INFO:     127.0.0.1:52884 - "GET /v1/health HTTP/1.1" 200 OK
+WARNING | ⚑ BOOT step=orphans seconds=7.629 start=7.654 thread=MainThread outcome=ok
+INFO:     127.0.0.1:52886 - "GET /v1/health HTTP/1.1" 200 OK
+INFO:     127.0.0.1:52888 - "GET /v1/health HTTP/1.1" 200 OK
+INFO:     127.0.0.1:52895 - "GET /v1/health HTTP/1.1" 200 OK
+INFO:     127.0.0.1:52896 - "GET /v1/health HTTP/1.1" 200 OK
+INFO:     127.0.0.1:52897 - "GET /v1/health HTTP/1.1" 200 OK
+WARNING | ⚑ BOOT step=task_history_restore seconds=0.015 start=17.253 thread=asyncio_1 outcome=ok
+INFO:     127.0.0.1:52900 - "GET /v1/health HTTP/1.1" 200 OK
+WARNING | memory pass skipped reason=lm_provider_unconfigured roles=memory_extract,memory_consolidate
+WARNING | ⚑ BOOT step=interrupted_sessions seconds=0.001 start=17.282 thread=asyncio_1 outcome=ok
+WARNING | ⚑ BOOT step=interaction_times seconds=0.000 start=17.283 thread=asyncio_1 outcome=ok
+WARNING | local SearXNG not started reason=not_installed: The last installation did not finish (install exited with code 15; inspect its logs).
+WARNING | ⚑ BOOT step=clio_core_and_store seconds=3.249 start=14.043 thread=MainThread outcome=ok
+WARNING | ⚑ BOOT step=obligations_held seconds=0.127 start=17.372 thread=MainThread outcome=ok
+WARNING | ⚑ BOOT mark=task_runtime_ready at=17.500
+INFO:     127.0.0.1:52904 - "GET /v1/health HTTP/1.1" 200 OK
+INFO:     127.0.0.1:52905 - "GET /v1/sessions?limit=30 HTTP/1.1" 200 OK
+WARNING | ⚑ TOOLS session_warmup_deferred_agent_starting session=sess_99d794986b10da718ec4263f86f1823e trigger=conversation_opened
+INFO:     127.0.0.1:52906 - "GET /v1/sessions/sess_99d794986b10da718ec4263f86f1823e/messages?limit=50 HTTP/1.1" 200 OK
+INFO:     Shutting down
+INFO:     Waiting for application shutdown.
+WARNING | ⚑ BOOT step=first_doctor_pass seconds=0.394 start=17.293 thread=MainThread outcome=CancelledError
+WARNING | ⚑ BOOT step=obligations seconds=0.187 start=17.500 thread=MainThread outcome=CancelledError
+INFO:     Application shutdown complete.
+INFO:     Finished server process [21352]

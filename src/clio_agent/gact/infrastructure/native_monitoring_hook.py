@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+import platform
 import secrets
 import shutil
 import socket
@@ -15,26 +16,19 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import Any, Iterator
 
-VALKEY_URL = "https://github.com/valkey-io/valkey/archive/refs/tags/8.1.3.tar.gz"
-VALKEY_SHA = "8f862b3b0a72fd40587793964539589f6f83d01361ca1598b370cfaa301e0ec0"
-POSTGRES_URL = "https://ftp.postgresql.org/pub/source/v17.6/postgresql-17.6.tar.bz2"
-POSTGRES_SHA = "e0630a3600aea27511715563259ec2111cd5f4353a4b040e0be827f94cd7a8b0"
-BUILD_TOOLS = (
-    (
-        "m4",
-        "https://ftp.gnu.org/gnu/m4/m4-1.4.20.tar.xz",
-        "e236ea3a1ccf5f6c270b1c4bb60726f371fa49459a8eaaebc90b216b328daf2b",
-    ),
-    (
-        "bison",
-        "https://ftp.gnu.org/gnu/bison/bison-3.8.2.tar.xz",
-        "9bba0214ccf7f1079c5d59210045227bcf619519840ebfa80cd3849cff5a5bf2",
-    ),
-    (
-        "flex",
-        "https://github.com/westes/flex/releases/download/v2.6.4/flex-2.6.4.tar.gz",
-        "e87aae032bf07c26f85ac0ed3250998c37621d95f8bd748b31f15b33c45ee995",
-    ),
+# Native installs fetch upstream prebuilt binaries only; nothing is compiled on the host.
+# A host these builds do not run on (glibc < 2.34, missing system libraries) is refused
+# with the reason, and the container variant is the supported path there.
+VALKEY_URL = "https://download.valkey.io/releases/valkey-8.1.3-jammy-x86_64.tar.gz"
+VALKEY_SHA = "afbbf9e71f171472679280f9e06a8039cf3f1ac7ab6dff76ef3094852c7a342f"
+# theseus-rs/postgresql-binaries: upstream PostgreSQL 17.6 built for x86_64 glibc Linux.
+POSTGRES_URL = (
+    "https://github.com/theseus-rs/postgresql-binaries/releases/download/17.6.0/"
+    "postgresql-17.6.0-x86_64-unknown-linux-gnu.tar.gz"
+)
+POSTGRES_SHA = "19dbf09f0fc33255ff7596fc3ceb7696647286dd15fdf60f3f65c583aae6ad5d"
+NO_NATIVE_BUILD = (
+    "CLIO does not compile services; use the container variant or site databases on this host."
 )
 MONGO_SHA = {
     "ubuntu2004": "df64db0da70f23dcfcdf7e859600b45669f993082d19dc7f08586b66fea9f684",
@@ -42,7 +36,22 @@ MONGO_SHA = {
     "ubuntu2404": "9e6a8332ef0eddb52f7869d4363212b3ca379955fd70d80840d1b7fa6f5cb54b",
     "debian12": "c13e85583fc393e0b9f47911797f4e0f724cd6a563cd719ee3360aa592a96f16",
     "rhel8": "94a5f1bb0ec0bcf2d372e787b6bb39ed8662cc073f31271dc57a0c1c3f803dd2",
+    # SLES 15 / openSUSE Leap 15, e.g. HPE Cray OS on ALCF Polaris.
+    "suse15": "c18266c2566ab88bad100f1f42e8a2150e3669b70f46e032b0b0f77f9f3edd94",
 }
+#: os-release IDs of SUSE 15 systems that run MongoDB's ``suse15`` build.
+SUSE_IDS = frozenset({"sles", "sled", "sle_hpc", "opensuse-leap"})
+
+
+def _clio_tool(name: str) -> str | None:
+    """CLIO's own tool on this host (``native_service_platform.clio_tool``)."""
+    try:
+        import clio_native_platform as helper  # noqa: PLC0415 - shipped beside the hook
+    except ImportError:
+        from clio_agent.gact.infrastructure import (  # noqa: PLC0415
+            native_service_platform as helper,
+        )
+    return helper.clio_tool(name)
 
 
 def private(root: Path, manifest: dict[str, Any]) -> dict[str, str]:
@@ -151,72 +160,72 @@ def unpack(root: Path, name: str, url: str, checksum: str) -> Path:
 
 
 def install(root: Path, manifest: dict[str, Any]) -> None:
-    """Build private native databases or validate a site settings file; install real CMF."""
+    """Install prebuilt private databases or validate a site settings file; install real CMF."""
     credentials = private(root, manifest)
     binaries = root / "environment/databases"
     binaries.mkdir(exist_ok=True)
     if manifest["database_mode"] == "managed":
-        if not shutil.which("cc") or not shutil.which("make"):
+        if platform.machine() not in {"x86_64", "AMD64"}:
             raise RuntimeError(
-                "Managed native databases require a C compiler and make; site databases need neither"
+                f"No prebuilt native databases for {platform.machine()}. {NO_NATIVE_BUILD}"
             )
-        jobs = str(min(os.cpu_count() or 2, 2))
         if manifest["service"] == "flowcept":
             source = unpack(root, "valkey", VALKEY_URL, VALKEY_SHA)
-            subprocess.run(
-                ["make", "-j" + jobs, "MALLOC=libc", "BUILD_TLS=no"], cwd=source, check=True
-            )
-            shutil.copy2(source / "src/valkey-server", binaries / "valkey-server")
-            platform = mongo_platform(Path("/etc/os-release").read_text())
+            shutil.copy2(source / "bin/valkey-server", binaries / "valkey-server")
+            check_runs(binaries / "valkey-server", "Valkey's prebuilt Linux build")
+            distribution = mongo_platform(Path("/etc/os-release").read_text())
             source = unpack(
                 root,
                 "mongodb",
-                f"https://fastdl.mongodb.org/linux/mongodb-linux-x86_64-{platform}-8.0.14.tgz",
-                MONGO_SHA[platform],
+                f"https://fastdl.mongodb.org/linux/mongodb-linux-x86_64-{distribution}-8.0.14.tgz",
+                MONGO_SHA[distribution],
             )
             shutil.copy2(source / "bin/mongod", binaries / "mongod")
-            subprocess.run([str(binaries / "mongod"), "--version"], check=True)
-            flowcept_settings(root, credentials)
+            check_mongod(binaries / "mongod", distribution)
         else:
-            environment = build_tools(root)
             source = unpack(root, "postgres", POSTGRES_URL, POSTGRES_SHA)
-            subprocess.run(
-                [
-                    str(source / "configure"),
-                    "--prefix=" + str(binaries / "postgres"),
-                    "--without-icu",
-                    "--without-readline",
-                    "--without-zlib",
-                ],
-                cwd=source,
-                env=environment,
-                check=True,
-            )
-            subprocess.run(["make", "-j" + jobs], cwd=source, env=environment, check=True)
-            subprocess.run(["make", "install"], cwd=source, env=environment, check=True)
+            target = binaries / "postgres"
+            if target.exists():
+                if target.is_symlink():
+                    raise ValueError("Native PostgreSQL directory cannot be a symlink")
+                shutil.rmtree(target)
+            shutil.copytree(source, target, symlinks=True)
+            check_runs(target / "bin/postgres", "PostgreSQL's prebuilt Linux build")
     if manifest["service"] == "flowcept":
         flowcept_settings(root, credentials)
     else:
         install_cmf(root, manifest)
 
 
-def build_tools(root: Path) -> dict[str, str]:
-    """Bootstrap missing PostgreSQL parser tools into this owned environment."""
-    prefix = root / "environment/build-tools"
-    environment = {**os.environ, "PATH": str(prefix / "bin") + os.pathsep + os.environ["PATH"]}
-    for name, url, checksum in BUILD_TOOLS:
-        if shutil.which(name, path=environment["PATH"]):
-            continue
-        source = unpack(root, name + "-build", url, checksum)
-        subprocess.run(
-            [str(source / "configure"), "--prefix=" + str(prefix), "--disable-nls"],
-            cwd=source,
-            env=environment,
-            check=True,
+def check_runs(binary: Path, label: str, hints: dict[str, str] | None = None) -> None:
+    """Run a fetched binary once; name what the host lacks when it cannot start.
+
+    ``hints`` maps a loader-error fragment (a missing library) to how to provide it.
+    """
+    try:
+        result = subprocess.run(
+            [str(binary), "--version"], capture_output=True, text=True, check=False, timeout=60
         )
-        subprocess.run(["make", "-j2"], cwd=source, env=environment, check=True)
-        subprocess.run(["make", "install"], cwd=source, env=environment, check=True)
-    return environment
+    except OSError as error:
+        detail = str(error)
+    else:
+        if result.returncode == 0:
+            return
+        detail = (result.stderr or result.stdout).strip()[:400]
+    hint = "".join(" " + text for fragment, text in (hints or {}).items() if fragment in detail)
+    raise RuntimeError(f"{label} does not run on this host: {detail}.{hint} {NO_NATIVE_BUILD}")
+
+
+def check_mongod(mongod: Path, distribution: str) -> None:
+    """Run the fetched ``mongod`` once, naming SUSE's OpenSSL 1.1 package when it is missing."""
+    hints = (
+        {
+            "libssl.so.1.1": "On SUSE 15 the OpenSSL 1.1 library comes from the libopenssl1_1 package."
+        }
+        if distribution == "suse15"
+        else {}
+    )
+    check_runs(mongod, f"MongoDB's verified {distribution} build", hints)
 
 
 def mongo_platform(release: str) -> str:
@@ -232,17 +241,18 @@ def mongo_platform(release: str) -> str:
     }.get((system, version))
     if system in {"rhel", "rocky", "almalinux", "centos"} and version.split(".")[0] == "8":
         selected = "rhel8"
+    if system in SUSE_IDS and version.split(".")[0] == "15":
+        selected = "suse15"
     if selected is None:
         raise RuntimeError(
-            "No verified managed MongoDB binary for this Linux distribution; "
-            "choose site databases and provide Redis/MongoDB connection settings."
+            "No verified prebuilt MongoDB binary for this Linux distribution. " + NO_NATIVE_BUILD
         )
     return selected
 
 
 def install_cmf(root: Path, manifest: dict[str, Any]) -> None:
     """Install CMF's pinned server lock and rebase its fixed paths into owned data."""
-    uv = shutil.which("uv") or str(Path.home() / ".local/bin/uv")
+    uv = _clio_tool("uv") or "uv"
     source = root / "environment/cmf-source"
     if source.exists():
         if source.is_symlink():

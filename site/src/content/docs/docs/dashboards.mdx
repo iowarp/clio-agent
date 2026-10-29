@@ -11,6 +11,7 @@ import { captureImage } from "../../../lib/captures";
 import dashboard from "../../../assets/captures/current-dashboard.png";
 import exportMenu from "../../../assets/captures/docs-dashboard-export-menu.png";
 import exportedPng from "../../../assets/captures/docs-dashboard-export.png";
+import caseBrowser from "../../../assets/captures/docs-case-browser.png";
 
 A dashboard brings a finding, its figures, and the underlying records into one
 report beside your conversation. Use it when a colleague needs to explore an
@@ -60,6 +61,20 @@ Related views only share a selection when their data and controls are connected.
 Tell CLIO which records should move together. **Versions** retains earlier
 reports; **Lineage** shows the inputs and recorded steps behind the saved result.
 
+## A dashboard over many cases
+
+The agent lays a dashboard out for what you will read in it. Asked for a way to
+browse a 48-case topology-optimization sweep and look at each design, it built a
+parameter grid and a table of cases that both select a case, and gave the one 3D
+view of the selected design most of the page. See
+[Linked data](/docs/widgets/linked-data/#one-viewer-that-follows-the-selection) for
+how a viewer follows the selection.
+
+<Capture client:visible image={await captureImage(caseBrowser)}
+  alt="Dashboard titled Topology optimization sweep: case browser, with a heatmap of surface area by volume fraction and filter radius, a table of cases, and a large 3D view of the selected design"
+  caption="The agent's case browser for a 48-case sweep, asked for in plain words. The heatmap and the table select a case, and the 3D view shows its design; here case 12."
+  sizes="(min-width: 50rem) 46rem, 100vw" />
+
 ## Find the export buttons
 
 The **down-arrow download icon** is at the upper right of the dashboard viewer,
@@ -102,6 +117,12 @@ Fernhill updates the saved charts and tables, including when you are offline.
 
 [Open the saved example HTML](/examples/bike-dashboard.html) ·
 [Download the source counts](/datasets/bike-stations.csv).
+
+Files the report shows, such as the meshes behind a 3D view, are embedded in the
+HTML, so a 48-case sweep of 3D designs makes a file of a few hundred megabytes. An
+export larger than `artifacts.dashboard_export_max_bytes` (2 GiB by default) is
+refused with a message naming its size; raise the limit in
+[Configuration](/docs/configuration/) if you need a larger file.
 
 The saved report cannot call a live agent. External services and uncaptured media
 do not become available merely because you export it. If the recipient also

@@ -1,0 +1,57 @@
+2026-10-28T09:51:53.5080244Z ==> Updating the clio-agent clone in 'D:\cw\fp6\local\clio-agent\data\app\clio-agent' to codex/windows-startup-acceptance (was d9a4766)
+2026-10-28T09:51:55.1994838Z ==> Preparing managed tools beside the agent dependencies (log: D:\cw\fp6\t\clio-office-7d4ed9dd03bd488aa59dc2b7af0fb8de.log)
+2026-10-28T09:51:55.2465539Z ==> Building the CLIO-branded TUI in the background (log: D:\cw\fp6\t\clio-tui-build-d4ad97a507914a81a45e04eaad6cbe50.log)
+2026-10-28T09:51:55.2635505Z ==> Installing clio-agent deps (uv sync --locked --python 3.14 --extra argonne --extra flowcept)
+2026-10-28T09:51:55.2968705Z warning: `VIRTUAL_ENV=D:\cw\.venv` does not match the project environment path `.venv` and will be ignored; use `--active` to target the active environment instead
+2026-10-28T09:51:55.7206579Z Resolved 241 packages in 3ms
+2026-10-28T09:51:55.8011424Z Checked 206 packages in 38ms
+2026-10-28T09:51:55.8192366Z ==> Compiling installed bytecode beside final setup (log: D:\cw\fp6\t\clio-bytecode-e2abcc03fdf04d96bf2728adc4835629.log)
+2026-10-28T09:51:56.4683909Z ==> Migrating the CLIO store (clio-agent migrate)
+2026-10-28T09:51:58.0493877Z migrate step=open_store status=running
+2026-10-28T09:52:01.7858149Z migrate step=open_store status=done seconds=3.738
+2026-10-28T09:52:02.2985264Z migrate step=session_records_import status=checking summary='Import the legacy sessions.json into one clio-core record per session'
+2026-10-28T09:52:02.3023268Z migrate step=session_records_import status=already_done seconds=0.000
+2026-10-28T09:52:02.3026764Z migrate step=task_event_lane status=checking summary="Copy each conversation's task events into their own lane (task trees read only it)"
+2026-10-28T09:52:02.3056297Z migrate step=task_event_lane status=already_done seconds=0.000
+2026-10-28T09:52:02.3059810Z migrate step=task_lane_reads status=checking summary='Annotate each task-event lane so a task tree loads from the lane alone'
+2026-10-28T09:52:02.3204172Z migrate step=task_lane_reads status=already_done seconds=0.000
+2026-10-28T09:52:02.3207533Z migrate step=transcript_legacy_import status=checking summary="Keep each conversation's legacy JSON transcript as evidence in clio-core"
+2026-10-28T09:52:02.3235038Z migrate step=transcript_legacy_import status=already_done seconds=0.000
+2026-10-28T09:52:02.3236902Z migrate step=task_index_build status=checking summary='Convert retained task formats and build the task lookup and open-work records'
+2026-10-28T09:52:02.3265481Z migrate step=task_index_build status=already_done seconds=0.000
+2026-10-28T09:52:02.3268054Z migrate step=artifact_index status=checking summary='Fold the artifact history once into the clio-core artifact records'
+2026-10-28T09:52:02.3300620Z migrate step=artifact_index status=already_done seconds=0.000
+2026-10-28T09:52:11.5948834Z migrate status=done ran=0 seconds=13.546
+2026-10-28T09:52:11.6502290Z ==> Managed-tool preparation completed in 9 s; the managed-package step will verify it again
+2026-10-28T09:52:11.8625411Z ==> Installing managed Python/uv and Node/pnpm packages and Office rendering
+2026-10-28T09:52:12.7939538Z Preparing and checking the Office renderer...
+2026-10-28T09:52:12.7942055Z Preparing and checking the GitHub command-line tool...
+2026-10-28T09:52:12.8413425Z GitHub command-line tool is ready.
+2026-10-28T09:52:12.9572198Z Preparing and checking Python document packages...
+2026-10-28T09:52:16.1040547Z Office rendering is ready.
+2026-10-28T09:52:18.2337833Z Python document packages are ready. Preparing Node.js packages...
+2026-10-28T09:52:18.8627498Z Node.js document packages are ready.
+2026-10-28T09:52:18.8634799Z Preparing and checking protected execution...
+2026-10-28T09:52:18.9186349Z Protected execution: MXC verified (cached check).
+2026-10-28T09:52:19.7477714Z All managed runtime packages are installed and verified.
+2026-10-28T09:52:20.1517225Z {"status": "ready", "runtime_id": "68fd91e579837b59bebd", "office": {"status": "available", "path": "D:\\cw\\fp6\\local\\clio-agent\\cache\\document-office\\26.2.6\\program\\soffice.com"}, "store_migrations": {"status": "skipped", "reason": "skipped_by_caller"}, "mcp_cache": {"status": "pruned", "freed_bytes": 0, "evicted": 0}}
+2026-10-28T09:52:20.2985110Z ==> Provisioning released clio-kit launcher (clio-kit==2.10.6; legacy runtime semantics)
+2026-10-28T09:52:20.6356969Z `clio-kit==2.10.6` is already installed
+2026-10-28T09:52:20.6469133Z ==> Waiting for the TUI build
+2026-10-28T09:52:20.6602078Z ==> TUI built in 7 s: D:\cw\fp6\local\clio-agent\data\app\gact.exe
+2026-10-28T09:52:20.6661412Z ==> Installing launcher: D:\cw\fp6\bin\clio.cmd
+2026-10-28T09:52:20.6977104Z ==> Installing uninstaller: D:\cw\fp6\local\clio-agent\data\app\uninstall.ps1
+2026-10-28T09:52:20.7018684Z ==> Installed bytecode prepared in 21.9 s
+2026-10-28T09:52:20.7044254Z ==> Done.
+2026-10-28T09:52:20.7045612Z 
+2026-10-28T09:52:20.7047430Z Installed to:   D:\cw\fp6\local\clio-agent\data\app
+2026-10-28T09:52:20.7048992Z Launcher:       D:\cw\fp6\bin\clio.cmd
+2026-10-28T09:52:20.7050553Z clio-agent:     source: D:\cw\fp6\local\clio-agent\data\app\clio-agent
+2026-10-28T09:52:20.7053132Z gact:           built from the checkout's submodule
+2026-10-28T09:52:20.7055656Z 
+2026-10-28T09:52:20.7057327Z Next steps:
+2026-10-28T09:52:20.7058738Z   1. Make sure D:\cw\fp6\bin is on your PATH (it usually is on Win 10/11).
+2026-10-28T09:52:20.7060116Z   2. Run:   clio
+2026-10-28T09:52:20.7061342Z   3. Manage the server: clio status | clio restart | clio logs
+2026-10-28T09:52:20.7062873Z   4. Tab-completion:    clio completion powershell >> $PROFILE
+2026-10-28T09:52:20.7064484Z   5. Uninstall:         clio uninstall   (add -Purge to drop config)

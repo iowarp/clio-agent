@@ -47,12 +47,12 @@ def test_listing_survives_a_row_it_cannot_normalize(monkeypatch: pytest.MonkeyPa
     This is the blast-radius half of the fix: coercion handles the modes we
     know about, per-row tolerance bounds the damage from the ones we do not.
     """
-    from clio_agent.gact.routes import sessions as sessions_route
+    from clio_agent.gact.routes import session_rows
 
     good = _record("sess_good", "edit")
     bad = _record("sess_bad", "chat")
 
-    rows = sessions_route.rows_to_wire([good, bad])
+    rows = session_rows.rows_to_wire([good, bad])
     ids = [r.id for r in rows]
     assert "sess_good" in ids
     assert "sess_bad" in ids, "a normalizable row must still be served"

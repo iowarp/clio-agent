@@ -6,6 +6,30 @@ TUI/HTTP surface aren't tracked here.
 
 ## Unreleased
 
+## [0.9.5] - 2026-10-28
+
+### Added
+
+- Assemble plugins, agent classes and flows with the Agent SDK and retain shared
+  task results, permissions and recovery state across workflow steps.
+- Fork conversations or workflow steps, and delegate with the caller's tools,
+  plugins and model or the configured explore, planner and review roles.
+- Link study questions, experiments, observations and conclusions to recorded
+  calls; show live measurements in study views and export their data.
+
+### Changed
+
+- Read conversation history and older messages in bounded pages.
+- Pin published GACT 0.11.3, Marketplace 0.7.0, Schemas 0.6.0 and Kit 2.11.1.
+- Install with Python 3.14 and the verified MCP, HTTP and LiteLLM dependency set.
+
+### Fixed
+
+- Complete Windows bundled protected execution, supervise managed setup and
+  retain ownership through desktop shutdown.
+- Reduce source installation preparation and verify cold and repeat installation,
+  agent startup and usable desktop workspaces on Linux and Windows.
+
 ## [0.9.5-beta.8] - 2026-10-21
 
 ### Added

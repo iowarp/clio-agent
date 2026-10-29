@@ -1,8 +1,8 @@
 """Start a session's MCP servers in the background, before its first message.
 
 Owner, 2026-09-30: the first message must not pay for starting the session's
-servers. When a session is created or an Agent Blueprint is activated, CLIO starts
-the servers the session will use -- the activated blueprint's declared servers and
+servers. When a session is created or opened (and again as each turn starts), CLIO starts
+the servers the session will use -- the session agent's plugin servers and
 any always-load service -- concurrently, off the request path: each is listed and
 connected. Nothing waits on the warm-up. A turn that arrives first builds its model
 request from the listings (joining an in-flight listing), and a tool call waits only
@@ -25,17 +25,23 @@ from contextlib import AbstractContextManager, ExitStack
 from typing import Any, cast
 
 from clio_agent.gact.warmup_revision import start_revision_warmup
+from clio_agent.runtime import trace
 
 logger = logging.getLogger(__name__)
 
 READY = "ready"
 # The namespaces a warm-up started on an executor (a fleet): while all are still up,
-# a later warm-up has nothing to do and skips the blueprint re-read.
+# a later warm-up has nothing to do and skips the server re-read.
 _WARMED_ATTR = "_clio_warmed_namespaces"
 
 # Sessions whose warm-up is running: one at a time per session.
 _inflight: set[str] = set()
 _inflight_lock = threading.Lock()
+# Warm-ups asked for before the app's agent was ready: ``{id(app): {sid: trigger}}``.
+_deferred: dict[int, dict[str, str]] = {}
+
+#: A warm-up waits for the agent, which is still being built.
+WARMUP_DEFERRED = "session_warmup_deferred_agent_starting"
 
 
 def session_warmup_enabled() -> bool:
@@ -59,12 +65,19 @@ def start_session_warmup(
     Args:
         app: The GACT app (its ``state.agent`` owns the workspace fleets).
         sid: The session whose servers to start.
-        trigger: What asked for it (``session_created`` / ``blueprint_activated``),
-            for the log.
+        trigger: What asked for it (``session_created`` / ``conversation_opened`` /
+            ``agent_changed`` / ``turn_started``), for the log.
     """
 
+    if not session_warmup_enabled():
+        return None
     agent = getattr(getattr(app, "state", None), "agent", None)
-    if not session_warmup_enabled() or not callable(getattr(agent, "_active_tool_executor", None)):
+    if not callable(getattr(agent, "_active_tool_executor", None)):
+        # The agent is still being built (just after start): the request is kept and
+        # runs when it is ready (:func:`start_deferred_warmups`), never dropped.
+        with _inflight_lock:
+            _deferred.setdefault(id(app), {})[sid] = trigger
+        trace.event("TOOLS", "%s session=%s trigger=%s", WARMUP_DEFERRED, sid, trigger)
         return None
     with _inflight_lock:
         if sid in _inflight:
@@ -76,6 +89,15 @@ def start_session_warmup(
         name=f"clio-warmup-{sid}",
         aborted=lambda: _release(sid),
     )
+
+
+def start_deferred_warmups(app: Any) -> None:
+    """Start the warm-ups asked for while ``app``'s agent was being built."""
+
+    with _inflight_lock:
+        pending = _deferred.pop(id(app), {})
+    for sid, trigger in pending.items():
+        start_session_warmup(app, sid, trigger=trigger)
 
 
 def _release(sid: str) -> None:
@@ -99,7 +121,11 @@ def _warm(app: Any, sid: str, trigger: str) -> None:
     started = time.monotonic()
     try:
         with _gact_app_context(app), _tool_session_context(sid):
-            report = warm_session_servers(app.state.agent)
+            # Opening a conversation does not restart a server that failed: that is
+            # what reconnect (or the conversation's next turn) is for.
+            report = warm_session_servers(
+                app.state.agent, retry_failed=trigger != "conversation_opened"
+            )
     except Exception:  # noqa: BLE001 - a warm-up never fails a session; the turn retries
         logger.exception("session_warmup_failed session=%s trigger=%s", sid, trigger)
         return
@@ -112,10 +138,12 @@ def _warm(app: Any, sid: str, trigger: str) -> None:
     )
 
 
-def warm_session_servers(agent: Any) -> dict[str, str]:
-    """List and connect the bound workspace/blueprint's servers concurrently.
+def warm_session_servers(agent: Any, *, retry_failed: bool = True) -> dict[str, str]:
+    """Prepare the bound workspace's plugin servers concurrently.
 
-    Runs inside a session or draft tool context (workspace root, blueprint).
+    Runs inside a session or draft tool context (workspace root, server set). Each cold
+    server is provisioned and started once (:mod:`clio_agent.gact.mcp_background_prepare`).
+    ``retry_failed=False`` leaves a server whose last preparation failed as it is.
 
     Returns:
         ``{namespace: "ready" | <typed failure reason>}``.
@@ -123,25 +151,24 @@ def warm_session_servers(agent: Any) -> dict[str, str]:
 
     from clio_agent.gact import mcp_readiness  # noqa: PLC0415
     from clio_agent.tools.execution import (  # noqa: PLC0415
-        get_active_tool_blueprint_id,
-        get_active_tool_workspace_root,
+        get_active_tool_server_set,
     )
 
     executor = agent._active_tool_executor()
     specs = getattr(executor, "_clio_namespace_specs", None) or {}
     prepared = getattr(executor, "is_namespace_prepared", None)
     warmed = getattr(executor, _WARMED_ATTR, None)
-    blueprint_id = get_active_tool_blueprint_id()
+    server_set = get_active_tool_server_set()
     if (
         warmed is not None
-        and getattr(executor, "_clio_warmed_blueprint_id", "") == blueprint_id
+        and getattr(executor, "_clio_warmed_server_set", "") == server_set
         and callable(prepared)
         and all(prepared(ns) for ns in warmed)
     ):
-        return {}  # its servers are all up: no blueprint re-read beside the turn
-    declared = agent._discover_pack_servers(
-        blueprint_id, cwd=get_active_tool_workspace_root() or None
-    )
+        return {}  # its servers are all up: no re-read beside the turn
+    declared = {
+        name for servers in agent._discover_plugin_servers(server_set).values() for name in servers
+    }
     namespaces = sorted(
         ns
         for ns, spec in specs.items()
@@ -150,10 +177,22 @@ def warm_session_servers(agent: Any) -> dict[str, str]:
     if not namespaces:
         return {}
 
-    cold = {ns: specs[ns] for ns in namespaces if not (callable(prepared) and prepared(ns))}
+    from clio_agent.tools import mcp_prepare  # noqa: PLC0415
+
+    def _failed(ns: str) -> bool:
+        return (mcp_prepare.preparation_state(ns) or {}).get("state") == mcp_prepare.FAILED
+
+    cold = {
+        ns: specs[ns]
+        for ns in namespaces
+        if not (callable(prepared) and prepared(ns)) and (retry_failed or not _failed(ns))
+    }
     _mounted, failures = mcp_readiness.mount_namespaces_for_session(executor, cold, connect=True)
     setattr(executor, _WARMED_ATTR, frozenset(namespaces))
-    executor._clio_warmed_blueprint_id = blueprint_id
+    executor._clio_warmed_server_set = server_set
+    for ns in namespaces:
+        if ns not in cold and ns not in failures and _failed(ns):
+            failures[ns] = str((mcp_prepare.preparation_state(ns) or {}).get("reason") or "")
     return {ns: failures.get(ns, READY) for ns in namespaces}
 
 

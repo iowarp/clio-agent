@@ -28,6 +28,24 @@ precedence, from three scopes:
 user+project discovery. A malformed entry is dropped with a diagnostic naming its
 `id`; the rest of the file still loads.
 
+### Plugin hooks
+
+A session's resolved plugins contribute hooks too: SDK `@hook` functions in a
+plugin's `ai.iowarp.clio/hooks/*.py`, which run in process, and the commands of
+an imported Claude Code plugin's `hooks/hooks.json`, which use the subprocess
+contract below. They come from the session's pinned resolution, ordered child to
+parent and by `before`/`after`, and the dispatcher runs them ahead of the
+`hooks.json` entries above. Their scope label is `plugin:<plugin id>` and their
+trust comes from the plugin's marketplace trust step rather than a content
+fingerprint. See [PLUGINS_AND_FLOWS.md](PLUGINS_AND_FLOWS.md#hooks).
+
+The agent writes files itself with `fs_write_file` and `fs_edit_file`, so a
+`PreToolUse` hook sees every write before it happens. A Claude Code plugin's
+matcher `Write|Edit` maps to those two tools, and its script reads the input it
+was written for: `tool_name` `Write` or `Edit` and `tool_input` with `file_path`,
+`content`, `old_string`, `new_string` and `replace_all`. A deny blocks the write
+and its reason reaches the agent.
+
 ### Config knobs (file → env → default)
 
 | config key                 | env                             | meaning                                                        |
@@ -80,7 +98,9 @@ annotation reads as the most-restrictive shape).
 | `PostToolUse`      | —            | after a result; `deny` is feedback, `updatedToolOutput` rewrites view |
 | `PostToolBatch`    | —            | after a turn's tool round resolves (observation)                      |
 | `UserPromptSubmit` | ✔            | prompt boundary; `deny` vetoes the turn, `defer` suspends it          |
+| `UserPromptExpansion` | ✔         | a typed slash command expanded, before its turn; the matcher runs against `payload.command_name` (`plugin:command`); `deny` stops the command, added context reaches the model with it |
 | `Stop`             | — (bounded)  | completion gate; `deny` re-drives one more turn, bounded by `loopLimit` + a global cap |
+| `Answer`           | —            | the settled answer, before persist (`payload.answer`); `note`, `check` `{passed,text}` and `updatedAnswer` + `reason` land as `answer_hook` notices / a visible revision (`gact/hooks/answer.py`) |
 | `SessionStart` / `SessionEnd`         | — | session lifecycle observation                          |
 | `SubagentStart` / `SubagentStop`      | — | child-turn lifecycle observation                       |
 | `PreCompact`       | —            | before a transcript is compacted (observation)                        |

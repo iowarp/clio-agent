@@ -1,0 +1,1116 @@
+{
+  "exit_code": 0,
+  "samples": [
+    {
+      "epoch": 1793185850.074933,
+      "cpu_percent": 34.4,
+      "encoders": []
+    },
+    {
+      "epoch": 1793185851.095939,
+      "cpu_percent": 19.8,
+      "encoders": []
+    },
+    {
+      "epoch": 1793185852.124458,
+      "cpu_percent": 22.9,
+      "encoders": []
+    },
+    {
+      "epoch": 1793185853.1588652,
+      "cpu_percent": 23.1,
+      "encoders": []
+    },
+    {
+      "epoch": 1793185854.1892543,
+      "cpu_percent": 22.5,
+      "encoders": []
+    },
+    {
+      "epoch": 1793185855.515597,
+      "cpu_percent": 79.3,
+      "encoders": []
+    },
+    {
+      "epoch": 1793185857.060644,
+      "cpu_percent": 97.6,
+      "encoders": []
+    },
+    {
+      "epoch": 1793185858.276219,
+      "cpu_percent": 100.0,
+      "encoders": []
+    },
+    {
+      "epoch": 1793185859.5666146,
+      "cpu_percent": 97.7,
+      "encoders": []
+    },
+    {
+      "epoch": 1793185861.0638757,
+      "cpu_percent": 99.9,
+      "encoders": []
+    },
+    {
+      "epoch": 1793185862.428059,
+      "cpu_percent": 95.7,
+      "encoders": []
+    },
+    {
+      "epoch": 1793185863.5998144,
+      "cpu_percent": 98.0,
+      "encoders": []
+    },
+    {
+      "epoch": 1793185865.4334202,
+      "cpu_percent": 100.0,
+      "encoders": []
+    },
+    {
+      "epoch": 1793185866.8100774,
+      "cpu_percent": 100.0,
+      "encoders": []
+    },
+    {
+      "epoch": 1793185868.2503872,
+      "cpu_percent": 97.9,
+      "encoders": []
+    },
+    {
+      "epoch": 1793185869.570942,
+      "cpu_percent": 100.0,
+      "encoders": []
+    },
+    {
+      "epoch": 1793185870.7021239,
+      "cpu_percent": 98.0,
+      "encoders": []
+    },
+    {
+      "epoch": 1793185871.9162052,
+      "cpu_percent": 100.0,
+      "encoders": []
+    },
+    {
+      "epoch": 1793185873.3098917,
+      "cpu_percent": 100.0,
+      "encoders": []
+    },
+    {
+      "epoch": 1793185875.2686157,
+      "cpu_percent": 100.0,
+      "encoders": []
+    },
+    {
+      "epoch": 1793185876.8035667,
+      "cpu_percent": 92.2,
+      "encoders": []
+    },
+    {
+      "epoch": 1793185878.2732093,
+      "cpu_percent": 100.0,
+      "encoders": []
+    },
+    {
+      "epoch": 1793185879.7443867,
+      "cpu_percent": 100.0,
+      "encoders": []
+    },
+    {
+      "epoch": 1793185881.284124,
+      "cpu_percent": 100.0,
+      "encoders": []
+    },
+    {
+      "epoch": 1793185882.8505566,
+      "cpu_percent": 100.0,
+      "encoders": []
+    },
+    {
+      "epoch": 1793185884.0173314,
+      "cpu_percent": 93.4,
+      "encoders": [
+        {
+          "create_time": 1793185883.2450192,
+          "name": "ffmpeg.exe",
+          "pid": 31364
+        }
+      ]
+    },
+    {
+      "epoch": 1793185885.1968691,
+      "cpu_percent": 98.0,
+      "encoders": [
+        {
+          "create_time": 1793185883.2450192,
+          "name": "ffmpeg.exe",
+          "pid": 31364
+        }
+      ]
+    },
+    {
+      "epoch": 1793185886.3291545,
+      "cpu_percent": 93.7,
+      "encoders": [
+        {
+          "create_time": 1793185883.2450192,
+          "name": "ffmpeg.exe",
+          "pid": 31364
+        }
+      ]
+    },
+    {
+      "epoch": 1793185887.4696412,
+      "cpu_percent": 96.4,
+      "encoders": [
+        {
+          "create_time": 1793185883.2450192,
+          "name": "ffmpeg.exe",
+          "pid": 31364
+        }
+      ]
+    },
+    {
+      "epoch": 1793185888.6491077,
+      "cpu_percent": 97.8,
+      "encoders": [
+        {
+          "create_time": 1793185883.2450192,
+          "name": "ffmpeg.exe",
+          "pid": 31364
+        }
+      ]
+    },
+    {
+      "epoch": 1793185889.7811198,
+      "cpu_percent": 93.1,
+      "encoders": [
+        {
+          "create_time": 1793185883.2450192,
+          "name": "ffmpeg.exe",
+          "pid": 31364
+        }
+      ]
+    },
+    {
+      "epoch": 1793185890.9910355,
+      "cpu_percent": 96.5,
+      "encoders": [
+        {
+          "create_time": 1793185883.2450192,
+          "name": "ffmpeg.exe",
+          "pid": 31364
+        }
+      ]
+    },
+    {
+      "epoch": 1793185892.196914,
+      "cpu_percent": 99.8,
+      "encoders": [
+        {
+          "create_time": 1793185883.2450192,
+          "name": "ffmpeg.exe",
+          "pid": 31364
+        }
+      ]
+    },
+    {
+      "epoch": 1793185893.3579473,
+      "cpu_percent": 99.4,
+      "encoders": [
+        {
+          "create_time": 1793185883.2450192,
+          "name": "ffmpeg.exe",
+          "pid": 31364
+        }
+      ]
+    },
+    {
+      "epoch": 1793185894.945264,
+      "cpu_percent": 100.0,
+      "encoders": [
+        {
+          "create_time": 1793185883.2450192,
+          "name": "ffmpeg.exe",
+          "pid": 31364
+        }
+      ]
+    },
+    {
+      "epoch": 1793185896.2333772,
+      "cpu_percent": 100.0,
+      "encoders": [
+        {
+          "create_time": 1793185883.2450192,
+          "name": "ffmpeg.exe",
+          "pid": 31364
+        }
+      ]
+    },
+    {
+      "epoch": 1793185897.5361671,
+      "cpu_percent": 99.9,
+      "encoders": [
+        {
+          "create_time": 1793185883.2450192,
+          "name": "ffmpeg.exe",
+          "pid": 31364
+        }
+      ]
+    },
+    {
+      "epoch": 1793185898.8094609,
+      "cpu_percent": 100.0,
+      "encoders": [
+        {
+          "create_time": 1793185883.2450192,
+          "name": "ffmpeg.exe",
+          "pid": 31364
+        }
+      ]
+    },
+    {
+      "epoch": 1793185900.5661826,
+      "cpu_percent": 100.0,
+      "encoders": [
+        {
+          "create_time": 1793185883.2450192,
+          "name": "ffmpeg.exe",
+          "pid": 31364
+        }
+      ]
+    },
+    {
+      "epoch": 1793185902.1461976,
+      "cpu_percent": 100.0,
+      "encoders": [
+        {
+          "create_time": 1793185883.2450192,
+          "name": "ffmpeg.exe",
+          "pid": 31364
+        }
+      ]
+    },
+    {
+      "epoch": 1793185904.0386226,
+      "cpu_percent": 100.0,
+      "encoders": [
+        {
+          "create_time": 1793185883.2450192,
+          "name": "ffmpeg.exe",
+          "pid": 31364
+        }
+      ]
+    },
+    {
+      "epoch": 1793185905.237077,
+      "cpu_percent": 97.8,
+      "encoders": [
+        {
+          "create_time": 1793185883.2450192,
+          "name": "ffmpeg.exe",
+          "pid": 31364
+        }
+      ]
+    },
+    {
+      "epoch": 1793185906.9272954,
+      "cpu_percent": 97.9,
+      "encoders": [
+        {
+          "create_time": 1793185905.845507,
+          "name": "ffmpeg.exe",
+          "pid": 48972
+        }
+      ]
+    },
+    {
+      "epoch": 1793185908.5104067,
+      "cpu_percent": 100.0,
+      "encoders": [
+        {
+          "create_time": 1793185905.845507,
+          "name": "ffmpeg.exe",
+          "pid": 48972
+        }
+      ]
+    },
+    {
+      "epoch": 1793185909.726203,
+      "cpu_percent": 100.0,
+      "encoders": [
+        {
+          "create_time": 1793185905.845507,
+          "name": "ffmpeg.exe",
+          "pid": 48972
+        }
+      ]
+    },
+    {
+      "epoch": 1793185910.967747,
+      "cpu_percent": 99.9,
+      "encoders": [
+        {
+          "create_time": 1793185905.845507,
+          "name": "ffmpeg.exe",
+          "pid": 48972
+        }
+      ]
+    },
+    {
+      "epoch": 1793185912.23244,
+      "cpu_percent": 99.3,
+      "encoders": [
+        {
+          "create_time": 1793185905.845507,
+          "name": "ffmpeg.exe",
+          "pid": 48972
+        }
+      ]
+    },
+    {
+      "epoch": 1793185913.5026968,
+      "cpu_percent": 99.8,
+      "encoders": [
+        {
+          "create_time": 1793185905.845507,
+          "name": "ffmpeg.exe",
+          "pid": 48972
+        }
+      ]
+    },
+    {
+      "epoch": 1793185914.8308802,
+      "cpu_percent": 98.7,
+      "encoders": [
+        {
+          "create_time": 1793185914.0421176,
+          "name": "ffmpeg.exe",
+          "pid": 10192
+        }
+      ]
+    },
+    {
+      "epoch": 1793185916.1081867,
+      "cpu_percent": 99.8,
+      "encoders": [
+        {
+          "create_time": 1793185914.0421176,
+          "name": "ffmpeg.exe",
+          "pid": 10192
+        }
+      ]
+    },
+    {
+      "epoch": 1793185917.6475666,
+      "cpu_percent": 100.0,
+      "encoders": [
+        {
+          "create_time": 1793185914.0421176,
+          "name": "ffmpeg.exe",
+          "pid": 10192
+        }
+      ]
+    },
+    {
+      "epoch": 1793185919.1119823,
+      "cpu_percent": 100.0,
+      "encoders": [
+        {
+          "create_time": 1793185914.0421176,
+          "name": "ffmpeg.exe",
+          "pid": 10192
+        }
+      ]
+    },
+    {
+      "epoch": 1793185920.8478353,
+      "cpu_percent": 100.0,
+      "encoders": [
+        {
+          "create_time": 1793185914.0421176,
+          "name": "ffmpeg.exe",
+          "pid": 10192
+        }
+      ]
+    },
+    {
+      "epoch": 1793185922.3709722,
+      "cpu_percent": 100.0,
+      "encoders": [
+        {
+          "create_time": 1793185914.0421176,
+          "name": "ffmpeg.exe",
+          "pid": 10192
+        }
+      ]
+    },
+    {
+      "epoch": 1793185923.7473078,
+      "cpu_percent": 100.0,
+      "encoders": []
+    },
+    {
+      "epoch": 1793185925.0395975,
+      "cpu_percent": 100.0,
+      "encoders": []
+    },
+    {
+      "epoch": 1793185926.341805,
+      "cpu_percent": 98.3,
+      "encoders": []
+    },
+    {
+      "epoch": 1793185927.6191943,
+      "cpu_percent": 99.9,
+      "encoders": []
+    },
+    {
+      "epoch": 1793185928.9278789,
+      "cpu_percent": 100.0,
+      "encoders": []
+    },
+    {
+      "epoch": 1793185930.405254,
+      "cpu_percent": 92.8,
+      "encoders": []
+    },
+    {
+      "epoch": 1793185931.5998027,
+      "cpu_percent": 70.8,
+      "encoders": []
+    },
+    {
+      "epoch": 1793185932.7650127,
+      "cpu_percent": 72.0,
+      "encoders": []
+    },
+    {
+      "epoch": 1793185933.9301486,
+      "cpu_percent": 61.3,
+      "encoders": []
+    },
+    {
+      "epoch": 1793185935.305967,
+      "cpu_percent": 89.9,
+      "encoders": [
+        {
+          "create_time": 1793185934.6213572,
+          "name": "ffmpeg.exe",
+          "pid": 29456
+        }
+      ]
+    },
+    {
+      "epoch": 1793185936.7568235,
+      "cpu_percent": 98.2,
+      "encoders": [
+        {
+          "create_time": 1793185934.6213572,
+          "name": "ffmpeg.exe",
+          "pid": 29456
+        }
+      ]
+    },
+    {
+      "epoch": 1793185938.2083778,
+      "cpu_percent": 99.0,
+      "encoders": [
+        {
+          "create_time": 1793185934.6213572,
+          "name": "ffmpeg.exe",
+          "pid": 29456
+        }
+      ]
+    },
+    {
+      "epoch": 1793185939.658904,
+      "cpu_percent": 98.4,
+      "encoders": [
+        {
+          "create_time": 1793185934.6213572,
+          "name": "ffmpeg.exe",
+          "pid": 29456
+        }
+      ]
+    },
+    {
+      "epoch": 1793185940.819309,
+      "cpu_percent": 64.6,
+      "encoders": []
+    },
+    {
+      "epoch": 1793185941.9929898,
+      "cpu_percent": 63.3,
+      "encoders": []
+    },
+    {
+      "epoch": 1793185943.1811392,
+      "cpu_percent": 69.0,
+      "encoders": []
+    },
+    {
+      "epoch": 1793185944.3609219,
+      "cpu_percent": 66.6,
+      "encoders": []
+    },
+    {
+      "epoch": 1793185945.4731529,
+      "cpu_percent": 64.5,
+      "encoders": []
+    },
+    {
+      "epoch": 1793185946.6416316,
+      "cpu_percent": 56.7,
+      "encoders": []
+    },
+    {
+      "epoch": 1793185947.7535033,
+      "cpu_percent": 46.6,
+      "encoders": []
+    },
+    {
+      "epoch": 1793185948.8832865,
+      "cpu_percent": 40.5,
+      "encoders": []
+    },
+    {
+      "epoch": 1793185949.993537,
+      "cpu_percent": 21.7,
+      "encoders": []
+    },
+    {
+      "epoch": 1793185951.1174862,
+      "cpu_percent": 21.8,
+      "encoders": []
+    },
+    {
+      "epoch": 1793185952.2368588,
+      "cpu_percent": 34.2,
+      "encoders": []
+    },
+    {
+      "epoch": 1793185953.372462,
+      "cpu_percent": 32.0,
+      "encoders": []
+    },
+    {
+      "epoch": 1793185954.4901915,
+      "cpu_percent": 22.6,
+      "encoders": []
+    },
+    {
+      "epoch": 1793185955.608454,
+      "cpu_percent": 26.0,
+      "encoders": []
+    },
+    {
+      "epoch": 1793185956.7233593,
+      "cpu_percent": 23.2,
+      "encoders": []
+    },
+    {
+      "epoch": 1793185957.8529484,
+      "cpu_percent": 25.1,
+      "encoders": []
+    },
+    {
+      "epoch": 1793185959.017403,
+      "cpu_percent": 34.0,
+      "encoders": []
+    },
+    {
+      "epoch": 1793185960.127994,
+      "cpu_percent": 46.4,
+      "encoders": []
+    },
+    {
+      "epoch": 1793185961.2439902,
+      "cpu_percent": 21.2,
+      "encoders": []
+    },
+    {
+      "epoch": 1793185962.3600307,
+      "cpu_percent": 21.2,
+      "encoders": []
+    },
+    {
+      "epoch": 1793185963.4778304,
+      "cpu_percent": 21.3,
+      "encoders": []
+    },
+    {
+      "epoch": 1793185964.588505,
+      "cpu_percent": 19.2,
+      "encoders": []
+    },
+    {
+      "epoch": 1793185965.6994438,
+      "cpu_percent": 22.4,
+      "encoders": []
+    },
+    {
+      "epoch": 1793185966.8157418,
+      "cpu_percent": 23.6,
+      "encoders": []
+    },
+    {
+      "epoch": 1793185967.9237952,
+      "cpu_percent": 19.4,
+      "encoders": []
+    },
+    {
+      "epoch": 1793185969.0511992,
+      "cpu_percent": 19.1,
+      "encoders": []
+    },
+    {
+      "epoch": 1793185970.1610706,
+      "cpu_percent": 23.6,
+      "encoders": []
+    },
+    {
+      "epoch": 1793185971.2751112,
+      "cpu_percent": 23.3,
+      "encoders": []
+    },
+    {
+      "epoch": 1793185972.382962,
+      "cpu_percent": 22.9,
+      "encoders": []
+    },
+    {
+      "epoch": 1793185973.5106006,
+      "cpu_percent": 31.2,
+      "encoders": []
+    },
+    {
+      "epoch": 1793185974.61931,
+      "cpu_percent": 42.6,
+      "encoders": []
+    },
+    {
+      "epoch": 1793185975.828949,
+      "cpu_percent": 70.2,
+      "encoders": []
+    },
+    {
+      "epoch": 1793185976.938453,
+      "cpu_percent": 88.8,
+      "encoders": []
+    },
+    {
+      "epoch": 1793185978.048346,
+      "cpu_percent": 57.5,
+      "encoders": []
+    },
+    {
+      "epoch": 1793185979.7785397,
+      "cpu_percent": 93.6,
+      "encoders": []
+    },
+    {
+      "epoch": 1793185981.2341435,
+      "cpu_percent": 76.8,
+      "encoders": []
+    },
+    {
+      "epoch": 1793185982.3567557,
+      "cpu_percent": 41.5,
+      "encoders": []
+    },
+    {
+      "epoch": 1793185983.453796,
+      "cpu_percent": 30.3,
+      "encoders": []
+    },
+    {
+      "epoch": 1793185984.564061,
+      "cpu_percent": 51.9,
+      "encoders": []
+    },
+    {
+      "epoch": 1793185985.6656995,
+      "cpu_percent": 49.4,
+      "encoders": []
+    },
+    {
+      "epoch": 1793185986.7671173,
+      "cpu_percent": 53.5,
+      "encoders": []
+    },
+    {
+      "epoch": 1793185987.8678062,
+      "cpu_percent": 35.7,
+      "encoders": []
+    },
+    {
+      "epoch": 1793185988.9598045,
+      "cpu_percent": 40.4,
+      "encoders": []
+    },
+    {
+      "epoch": 1793185990.0674112,
+      "cpu_percent": 50.2,
+      "encoders": []
+    },
+    {
+      "epoch": 1793185991.1601322,
+      "cpu_percent": 43.3,
+      "encoders": []
+    },
+    {
+      "epoch": 1793185992.2594028,
+      "cpu_percent": 42.1,
+      "encoders": []
+    },
+    {
+      "epoch": 1793185993.3428748,
+      "cpu_percent": 25.0,
+      "encoders": []
+    },
+    {
+      "epoch": 1793185994.431935,
+      "cpu_percent": 18.3,
+      "encoders": []
+    },
+    {
+      "epoch": 1793185995.524644,
+      "cpu_percent": 22.5,
+      "encoders": []
+    },
+    {
+      "epoch": 1793185996.6210697,
+      "cpu_percent": 46.3,
+      "encoders": []
+    },
+    {
+      "epoch": 1793185997.7224698,
+      "cpu_percent": 42.8,
+      "encoders": []
+    },
+    {
+      "epoch": 1793185998.8141294,
+      "cpu_percent": 24.5,
+      "encoders": []
+    },
+    {
+      "epoch": 1793185999.9328196,
+      "cpu_percent": 28.0,
+      "encoders": []
+    },
+    {
+      "epoch": 1793186001.0111516,
+      "cpu_percent": 26.8,
+      "encoders": []
+    },
+    {
+      "epoch": 1793186002.097697,
+      "cpu_percent": 20.3,
+      "encoders": []
+    },
+    {
+      "epoch": 1793186003.1976023,
+      "cpu_percent": 25.0,
+      "encoders": []
+    },
+    {
+      "epoch": 1793186004.277052,
+      "cpu_percent": 33.0,
+      "encoders": []
+    },
+    {
+      "epoch": 1793186005.3687987,
+      "cpu_percent": 30.5,
+      "encoders": []
+    },
+    {
+      "epoch": 1793186006.4511225,
+      "cpu_percent": 31.5,
+      "encoders": []
+    },
+    {
+      "epoch": 1793186007.5976758,
+      "cpu_percent": 40.0,
+      "encoders": []
+    },
+    {
+      "epoch": 1793186008.7528875,
+      "cpu_percent": 28.8,
+      "encoders": []
+    },
+    {
+      "epoch": 1793186009.89752,
+      "cpu_percent": 35.4,
+      "encoders": []
+    },
+    {
+      "epoch": 1793186011.0488138,
+      "cpu_percent": 45.5,
+      "encoders": []
+    },
+    {
+      "epoch": 1793186012.191384,
+      "cpu_percent": 37.1,
+      "encoders": []
+    },
+    {
+      "epoch": 1793186013.3367975,
+      "cpu_percent": 33.4,
+      "encoders": []
+    },
+    {
+      "epoch": 1793186014.485288,
+      "cpu_percent": 29.0,
+      "encoders": []
+    },
+    {
+      "epoch": 1793186015.5805461,
+      "cpu_percent": 37.7,
+      "encoders": []
+    },
+    {
+      "epoch": 1793186016.6729596,
+      "cpu_percent": 34.4,
+      "encoders": []
+    },
+    {
+      "epoch": 1793186017.775639,
+      "cpu_percent": 45.0,
+      "encoders": []
+    },
+    {
+      "epoch": 1793186018.9027717,
+      "cpu_percent": 33.5,
+      "encoders": []
+    },
+    {
+      "epoch": 1793186020.0312254,
+      "cpu_percent": 38.1,
+      "encoders": []
+    },
+    {
+      "epoch": 1793186021.1602447,
+      "cpu_percent": 23.3,
+      "encoders": []
+    },
+    {
+      "epoch": 1793186022.289529,
+      "cpu_percent": 35.1,
+      "encoders": []
+    },
+    {
+      "epoch": 1793186023.415129,
+      "cpu_percent": 19.2,
+      "encoders": []
+    },
+    {
+      "epoch": 1793186024.5391548,
+      "cpu_percent": 21.3,
+      "encoders": []
+    }
+  ],
+  "owned": [
+    {
+      "pid": 2180,
+      "created": 1793185848.7395556,
+      "exe": "C:\\Users\\jaime\\.cache\\codex-runtimes\\codex-primary-runtime\\dependencies\\native\\powershell\\pwsh.exe"
+    },
+    {
+      "pid": 45060,
+      "created": 1793185849.424022,
+      "exe": "D:\\Libraries\\Documents\\projects\\gact-windows-startup-acceptance\\.acceptance-runtime\\cargo-target\\release\\bundle\\nsis\\CLIO Desktop_0.7.3_x64-setup.exe"
+    },
+    {
+      "pid": 34080,
+      "created": 1793185854.0996306,
+      "exe": "D:\\CLIO-Desktop-095-Repair\\clio-desktop.exe"
+    },
+    {
+      "pid": 44536,
+      "created": 1793185906.8043623,
+      "exe": "D:\\CLIO-Desktop-095-Repair\\data\\bundled-runtime\\gact-runtime\\python\\python.exe"
+    },
+    {
+      "pid": 43840,
+      "created": 1793185907.1315691,
+      "exe": "C:\\Windows\\System32\\conhost.exe"
+    },
+    {
+      "pid": 20668,
+      "created": 1793185914.5032048,
+      "exe": "D:\\CLIO-Desktop-095-Repair\\data\\bundled-runtime\\gact-runtime\\bin\\uv.exe"
+    },
+    {
+      "pid": 24932,
+      "created": 1793185914.5441027,
+      "exe": "C:\\Windows\\System32\\conhost.exe"
+    },
+    {
+      "pid": 18060,
+      "created": 1793185914.7493691,
+      "exe": "D:\\CLIO-Desktop-095-Repair\\data\\bundled-runtime\\gact-runtime\\python\\python.exe"
+    },
+    {
+      "pid": 47984,
+      "created": 1793185915.6091936,
+      "exe": "D:\\CLIO-Desktop-095-Repair\\data\\bundled-runtime\\gact-runtime\\bin\\uv.exe"
+    },
+    {
+      "pid": 13992,
+      "created": 1793185915.6226301,
+      "exe": "C:\\Windows\\System32\\conhost.exe"
+    },
+    {
+      "pid": 26972,
+      "created": 1793185915.9401312,
+      "exe": "D:\\CLIO-Desktop-095-Repair\\data\\clio-agent\\cache\\document-runtime\\68fd91e579837b59bebd\\python\\Scripts\\python.exe"
+    },
+    {
+      "pid": 34828,
+      "created": 1793185915.9731338,
+      "exe": "D:\\CLIO-Desktop-095-Repair\\data\\bundled-runtime\\gact-runtime\\python\\python.exe"
+    },
+    {
+      "pid": 41128,
+      "created": 1793185934.342104,
+      "exe": "D:\\CLIO-Desktop-095-Repair\\data\\clio-agent\\cache\\document-runtime\\68fd91e579837b59bebd\\python\\Scripts\\python.exe"
+    },
+    {
+      "pid": 51948,
+      "created": 1793185934.374628,
+      "exe": "C:\\Windows\\System32\\conhost.exe"
+    },
+    {
+      "pid": 47636,
+      "created": 1793185934.4185777,
+      "exe": "D:\\CLIO-Desktop-095-Repair\\data\\bundled-runtime\\gact-runtime\\python\\python.exe"
+    },
+    {
+      "pid": 37520,
+      "created": 1793185944.1900752,
+      "exe": "D:\\CLIO-Desktop-095-Repair\\data\\clio-agent\\cache\\document-runtime\\68fd91e579837b59bebd\\python\\Lib\\site-packages\\nodejs_wheel\\node.exe"
+    },
+    {
+      "pid": 46760,
+      "created": 1793185944.2074392,
+      "exe": "C:\\Windows\\System32\\conhost.exe"
+    },
+    {
+      "pid": 7124,
+      "created": 1793185944.2904184,
+      "exe": "C:\\Program Files\\Pandoc\\pandoc.exe"
+    },
+    {
+      "pid": 28844,
+      "created": 1793185944.317454,
+      "exe": "C:\\Windows\\System32\\conhost.exe"
+    },
+    {
+      "pid": 10048,
+      "created": 1793185944.933885,
+      "exe": "D:\\CLIO-Desktop-095-Repair\\data\\clio-agent\\cache\\document-runtime\\68fd91e579837b59bebd\\python\\Lib\\site-packages\\nodejs_wheel\\node.exe"
+    },
+    {
+      "pid": 52676,
+      "created": 1793185944.942888,
+      "exe": "C:\\Windows\\System32\\conhost.exe"
+    },
+    {
+      "pid": 23504,
+      "created": 1793185976.6174417,
+      "exe": "D:\\CLIO-Desktop-095-Repair\\data\\clio-agent\\cache\\document-runtime\\68fd91e579837b59bebd\\python\\Lib\\site-packages\\nodejs_wheel\\node.exe"
+    },
+    {
+      "pid": 34196,
+      "created": 1793185976.6265316,
+      "exe": "C:\\Windows\\System32\\conhost.exe"
+    },
+    {
+      "pid": 35208,
+      "created": 1793185977.669671,
+      "exe": "D:\\CLIO-Desktop-095-Repair\\data\\clio-agent\\cache\\document-runtime\\68fd91e579837b59bebd\\python\\Lib\\site-packages\\nodejs_wheel\\node.exe"
+    },
+    {
+      "pid": 34612,
+      "created": 1793185977.6786942,
+      "exe": "C:\\Windows\\System32\\conhost.exe"
+    },
+    {
+      "pid": 38892,
+      "created": 1793185977.7602968,
+      "exe": "D:\\CLIO-Desktop-095-Repair\\data\\clio-agent\\cache\\document-runtime\\68fd91e579837b59bebd\\javascript-tools\\node_modules\\@pnpm\\exe.win32-x64\\pnpm.exe"
+    },
+    {
+      "pid": 24940,
+      "created": 1793185981.1342463,
+      "exe": "D:\\CLIO-Desktop-095-Repair\\data\\clio-agent\\cache\\document-runtime\\68fd91e579837b59bebd\\python\\Lib\\site-packages\\nodejs_wheel\\node.exe"
+    },
+    {
+      "pid": 5600,
+      "created": 1793185981.1431906,
+      "exe": "C:\\Windows\\System32\\conhost.exe"
+    },
+    {
+      "pid": 34584,
+      "created": 1793185983.2902665,
+      "exe": "D:\\CLIO-Desktop-095-Repair\\data\\clio-agent\\cache\\document-runtime\\68fd91e579837b59bebd\\python\\Lib\\site-packages\\nodejs_wheel\\node.exe"
+    },
+    {
+      "pid": 27468,
+      "created": 1793185983.297668,
+      "exe": "C:\\Windows\\System32\\conhost.exe"
+    },
+    {
+      "pid": 30440,
+      "created": 1793186005.6901548,
+      "exe": "D:\\CLIO-Desktop-095-Repair\\data\\clio-agent\\cache\\document-office\\office-extract-kpgmjqo6\\image\\program\\soffice.com"
+    },
+    {
+      "pid": 40864,
+      "created": 1793186005.7021227,
+      "exe": "C:\\Windows\\System32\\conhost.exe"
+    },
+    {
+      "pid": 32400,
+      "created": 1793186005.7443,
+      "exe": "D:\\CLIO-Desktop-095-Repair\\data\\clio-agent\\cache\\document-office\\office-extract-kpgmjqo6\\image\\program\\soffice.bin"
+    },
+    {
+      "pid": 34524,
+      "created": 1793186015.208301,
+      "exe": "D:\\CLIO-Desktop-095-Repair\\data\\bundled-runtime\\gact-runtime\\python\\Lib\\site-packages\\codex_cli_bin\\bin\\codex.exe"
+    },
+    {
+      "pid": 9924,
+      "created": 1793186015.2165415,
+      "exe": "C:\\Windows\\System32\\conhost.exe"
+    },
+    {
+      "pid": 40804,
+      "created": 1793186015.345595,
+      "exe": "D:\\CLIO-Desktop-095-Repair\\data\\bundled-runtime\\gact-runtime\\python\\Lib\\site-packages\\codex_cli_bin\\bin\\codex.exe"
+    },
+    {
+      "pid": 46456,
+      "created": 1793186017.2219088,
+      "exe": "D:\\CLIO-Desktop-095-Repair\\data\\bundled-runtime\\gact-runtime\\python\\Lib\\site-packages\\iowarp_core\\bin\\clio_run.exe"
+    },
+    {
+      "pid": 47196,
+      "created": 1793186017.5516276,
+      "exe": "D:\\CLIO-Desktop-095-Repair\\data\\bundled-runtime\\gact-runtime\\python\\python.exe"
+    },
+    {
+      "pid": 18704,
+      "created": 1793186017.2344217,
+      "exe": "C:\\Windows\\System32\\conhost.exe"
+    },
+    {
+      "pid": 24648,
+      "created": 1793186019.390072,
+      "exe": "D:\\CLIO-Desktop-095-Repair\\data\\bundled-runtime\\gact-runtime\\python\\Lib\\site-packages\\iowarp_core\\bin\\clio_run.exe"
+    }
+  ],
+  "survivors": []
+}

@@ -36,8 +36,8 @@ and ask that session to check whether its conclusions apply to this dataset.
 Use the exact session returned by the search, and report the reply here.
 ```
 
-This is an example request. Discovery and messaging require the tools declared
-by the blueprint and the permitted session scope.
+This is an example request. Discovery and messaging require the corresponding
+tools among the conversation's plugins and the permitted session scope.
 
 You can also ask without knowing the session's name:
 
@@ -105,8 +105,8 @@ or grant access to another session.
 - **Observe transcript, summary or artifacts** reads original typed transcript
   rows, recorded summaries/outcomes with coverage, or linked deliverables. Follow
   returned cursors; a recorded summary is not a new whole-session summary.
-- The old `memory_search_sessions`, `memory_read_session_summary` and
-  `memory_read_context_frame` names remain explicitly selectable compatibility
+- The old `session_search`, `session_read_summary` and
+  `session_read_context_frame` names remain explicitly selectable compatibility
   interfaces, not default tools. The old summary still means recent activity;
   the context-frame reader still inspects assembly provenance rather than all
   referenced contents. Their presence does not establish long-term memory.

@@ -12,16 +12,17 @@ import time
 from collections.abc import Mapping
 from typing import TYPE_CHECKING, Any
 
-from clio_agent.gact.agents.resolution import _runtime_active_agent_blueprint_id
 from clio_agent.gact.artifacts.cas_gc import finalize_cas_budget_check
 from clio_agent.gact.artifacts.grounding import ground_answer_artifacts
 from clio_agent.gact.artifacts.minting import clear_turn_artifacts
-from clio_agent.gact.artifacts.wire import append_turn_resource_links, proposed_diff_payload
+from clio_agent.gact.artifacts.wire import append_turn_resource_links
 from clio_agent.gact.delegation import _produced_turn_workflow_state
-from clio_agent.gact.diff_ledger import index_turn_file_diffs
 from clio_agent.gact.direct_response import promote_tool_free_response
 from clio_agent.gact.enrichment import _finalize_context_frame
 from clio_agent.gact.events import Event, EventBus, _publish_transcript_event
+from clio_agent.gact.file_changes import stamp_turn_file_changes
+from clio_agent.gact.hooks.answer import apply_answer_hooks
+from clio_agent.gact.memory.turn_use import attach_turn_memory
 from clio_agent.gact.part_atom_minter import (
     close_turn_minter,
     failed_finalize_identity,
@@ -47,7 +48,7 @@ from clio_agent.gact.tool_result_reconcile import reconcile_tool_result_text
 from clio_agent.gact.transcript_projection import final_message_embed
 from clio_agent.gact.turn_settle_status import publish_turn_settled_status
 from clio_agent.gact.turn_stream import assemble_stream_metadata, settle_turn_transcript
-from clio_agent.gact.turn_usage import context_usage_metadata_patch
+from clio_agent.gact.turn_usage import context_usage_metadata_patch, model_usage_after_turn
 from clio_agent.gact.types import (
     ErrorInfo,
     Message,
@@ -67,12 +68,25 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
-def _row_value(row: Any, key: str, default: Any = None) -> Any:
-    """Read a proposal field from either its mapping or object representation."""
-
-    if isinstance(row, Mapping):
-        return row.get(key, default)
-    return getattr(row, key, default)
+def _emit_unsettled_agent_invocation(state: "TurnState") -> None:
+    """Record the terminal for an invocation that failed before returning a prediction."""
+    if not state.invocation_agent_id or state.pred is not None or state.error_info is None:
+        return
+    cancelled = state.error_info.error == "cancelled"
+    suffix = "cancelled" if cancelled else "failed"
+    status = "cancelled" if cancelled else "failed"
+    _emit_semantic_event(
+        state.app,
+        state.sid,
+        f"agent.invocation.{suffix}",
+        turn_id=state.turn_id,
+        trace_id=state.trace_id,
+        status=status,
+        summary=f"{state.invocation_agent_id} invocation {suffix}.",
+        actor={"agent_id": state.invocation_agent_id},
+        subject={"message_id": state.user_msg.id},
+        payload={"error": state.error_info.error},
+    )
 
 
 def finalize_turn(
@@ -93,7 +107,7 @@ def finalize_turn(
     # Final user-facing text only: correct any fabricated local artifact path the
     # answer presents as produced, by grounding it against the session's REGISTERED
     # artifacts (the designation truth: ids + content hashes, include_children reach),
-    # scoped to the pack schema's declared deliverable extensions. Applied once on
+    # scoped to the plugin schema's declared deliverable extensions. Applied once on
     # the assembled answer, never on child rows (S7 #973 — re-sourced from registry).
     if state.answer_text and state.expert_handoffs:
         state.answer_text = ground_answer_artifacts(
@@ -121,7 +135,6 @@ def finalize_turn(
         state.error_info is None
         and not state.answer_text
         and not state.thinking_text
-        and not state.proposed_diffs
         and not state.nanoagents
         and not has_operation_output
         and getattr(pred, "assignment_disposition", None) != "yield"
@@ -210,53 +223,18 @@ def finalize_turn(
         and not stream_fallback
     ):
         stream_fallback = _stream_fallback_payload("sync_execution_path")
-    answer_channel.finish(
+    landed_answer = answer_channel.finish(
         fallback_text=str(state.answer_text or ""),
         fallback_metadata=(
             {"stream_fallback": stream_fallback} if stream_fallback and batch_turn_text else {}
         ),
     )
-    for row in state.proposed_diffs:
-        path = _row_value(row, "path", "") or ""
-        udiff = _row_value(row, "unified_diff", "") or ""
-        new_content = _row_value(row, "new_content", "") or ""
-        edit_mode = _row_value(row, "edit_mode", "") or ""
-        lines_added = int(_row_value(row, "lines_added", 0) or 0)
-        lines_removed = int(_row_value(row, "lines_removed", 0) or 0)
-        if not path:
-            continue
-        # In "whole" mode the unified_diff may be empty by design;
-        # the new_content carries the full replacement. Accept either
-        # so the Part lands instead of being dropped.
-        if not udiff and not new_content:
-            continue
-        diff_part = Part(
-            id=_new_part_id(),
-            type="file_diff",
-            agent_id=responder_agent_id,
-            path=path,
-            unified_diff=udiff,
-            new_content=new_content,
-            status="pending",
-            edit_mode=edit_mode,
-            lines_added=lines_added,
-            lines_removed=lines_removed,
-        )
-        state.transcript.append_part(diff_part, stream_source="batch")
-        _emit_semantic_event(
-            state.app,
-            state.sid,
-            "artifact.proposed",
-            turn_id=state.turn_id,
-            trace_id=state.trace_id,
-            summary=f"Agent proposed a file diff for {path}.",
-            actor={"agent_id": state.selected_agent or state.invocation_agent_id},
-            subject={"path": path, "part_id": diff_part.id, "artifact_type": "file_diff"},
-            payload=proposed_diff_payload(
-                path, udiff, new_content, edit_mode, lines_added, lines_removed
-            ),
-        )
-
+    apply_answer_hooks(
+        state,
+        answer_text=landed_answer or "",
+        answer_part_id=answer_channel.part_id or "",
+        agent_id=responder_agent_id,
+    )
     append_turn_resource_links(
         state.app, state.sid, state.turn_id, state.transcript, agent_id=responder_agent_id
     )
@@ -323,8 +301,7 @@ def finalize_turn(
         state.assistant_metadata["workflow_state"] = produced_wf
     if state.context_file_provenance["files"]:
         state.assistant_metadata["context_files"] = state.context_file_provenance
-    if state.memory_search_metadata:
-        state.assistant_metadata["memory_search"] = state.memory_search_metadata
+    attach_turn_memory(state)  # memory read this turn; usage counters off the turn's path
     if state.agent_runtime:
         state.assistant_metadata["agent_runtime"] = state.agent_runtime
     if state.prompt_resolution:
@@ -363,8 +340,8 @@ def finalize_turn(
         error_info=state.error_info,
     )
 
-    # Index file_diff parts so /diffs/apply + /diffs/reject find them (guarded owner).
-    index_turn_file_diffs(state.app, state.sid, assistant_parts, message_id=assistant_msg.id)
+    # Name the message holding this turn's file_diff parts on the change ledger rows.
+    stamp_turn_file_changes(state.app, state.sid, assistant_parts, message_id=assistant_msg.id)
 
     completed_payload: dict[str, Any] = {
         "turn_id": state.turn_id,
@@ -461,6 +438,7 @@ def publish_finalized_turn(
             current_session.cost_usd + (state.turn_cost if state.turn_cost_known else 0.0),
             current_session.cost_known or state.turn_cost_known,
         )
+        state.publication_model_usage = model_usage_after_turn(state, current_session)
     publication_step(
         steps,
         "session_projection",
@@ -468,6 +446,7 @@ def publish_finalized_turn(
             state.sid,
             message_count=len(state.app.state.messages.get(state.sid, [])),
             usage_totals=state.publication_usage,
+            usage_by_model=state.publication_model_usage,
             metadata_patch=metadata_patch,
         ),
         retry=True,
@@ -476,6 +455,12 @@ def publish_finalized_turn(
         **completed_payload,
         **final_message_embed(state.app, state.sid, assistant_msg),
     }
+    publication_step(
+        steps,
+        "agent_invocation_terminal",
+        lambda: _emit_unsettled_agent_invocation(state),
+        retry=True,
+    )
     publication_step(
         steps,
         "semantic",
@@ -544,7 +529,6 @@ def publish_finalized_turn(
         )
     from clio_agent.gact.conversation_assignments import ConversationOutcome
     from clio_agent.gact.hooks.stop_loop import dispatch_stop_at_finalize
-    from clio_agent.gact.messaging import _prediction_summary
 
     publication_step(
         steps,
@@ -557,11 +541,11 @@ def publish_finalized_turn(
             cwd=str(getattr(state.sess, "workspace_root", "") or ""),
             assistant_msg_id=assistant_msg.id,
             assistant_payload=assistant_msg.model_dump(exclude_none=True),
-            blueprint_id=_runtime_active_agent_blueprint_id(state.app, state.sid),
+            agent_ref=str(state.dynamic_agent_used.metadata.get("agent_ref") or "")
+            if state.dynamic_agent_used is not None
+            else "",
             completion=ConversationOutcome(
-                outputs=_prediction_summary(state.pred)
-                if state.pred is not None
-                else {"answer": state.answer_text},
+                outputs=turn_outputs(state),
                 context=getattr(state.pred, "clio_context_boundary", None),
                 error=state.error_info.model_dump(mode="json")
                 if state.error_info is not None
@@ -766,3 +750,36 @@ def publish_failed_finalize(
     publish_turn_settled_status(app, sid, "error")
     if app.state.cancel_events.get(sid) is turn_cancel_event:
         app.state.cancel_events.pop(sid, None)
+
+
+def turn_outputs(state: Any) -> dict[str, Any]:
+    """The assignment result a turn records: its prediction summary and typed state.
+
+    The typed ``workflow_state`` the turn produced rides on the result, so a flow
+    merging its children's results (``ctx.gather``) reads it from the task.
+    """
+
+    from clio_agent.gact.messaging import _prediction_summary  # noqa: PLC0415
+
+    outputs = (
+        _prediction_summary(state.pred) if state.pred is not None else {"answer": state.answer_text}
+    )
+    from clio_agent.gact.assignment_response import response_parts
+
+    transcript = getattr(state, "transcript", None)
+    if transcript is not None:
+        responder = state.selected_agent or state.invocation_agent_id or "main"
+        outputs["response_parts"] = response_parts(
+            transcript.snapshot(),
+            {responder, state.active_agent_id or state.invocation_agent_id or "main"},
+        )
+    if state.tools_called:
+        # The turn's merged tool calls (the prediction's trace plus every call the
+        # tool observer saw): a plan reads an editor's proposals from them.
+        from clio_agent.tools.mcp_runtime import wire_value  # noqa: PLC0415
+
+        outputs["tools_called"] = wire_value(list(state.tools_called), mode="gact_runtime")
+    workflow_state = state.assistant_metadata.get("workflow_state")
+    if isinstance(workflow_state, Mapping) and workflow_state:
+        outputs["workflow_state"] = dict(workflow_state)
+    return outputs

@@ -159,13 +159,14 @@ def _version_bytes(
     sha = version.sha256
     if root is not None and sha:
         blob = CASStore(root).blob_path(sha)
-        if blob.is_file():
-            try:
-                data = blob.read_bytes()
-            except OSError:
-                data = None
-            if data is not None and len(data) <= max_bytes:
-                return data
+        try:
+            # Size first: a blob over the bound is never read into memory.
+            fits = blob.is_file() and blob.stat().st_size <= max_bytes
+            data = blob.read_bytes() if fits else None
+        except OSError:
+            data = None
+        if data is not None:
+            return data
     if version.path:
         p = Path(version.path)
         try:

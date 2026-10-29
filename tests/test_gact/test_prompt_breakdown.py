@@ -151,27 +151,21 @@ def test_skill_file_lists_identify_each_loaded_reference() -> None:
     assert skill.items[0].label == "science / references/catalog.md, references/streams.md"
 
 
-def test_usage_keeps_provider_total_when_section_estimates_differ(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
+def test_usage_keeps_provider_total_when_section_estimates_differ() -> None:
     from clio_agent.gact import usage
+    from tests._turn_ledger import turn_with_calls
 
-    lm = SimpleNamespace(
-        model="test",
-        history=[
-            {
-                "timestamp": "now",
-                "model": "test",
-                "usage": {"prompt_tokens": 9000},
-                "request": Request(
-                    model="test",
-                    messages=(Message(role="user", parts=(TextPart(text="Short prompt"),)),),
-                ),
-            }
-        ],
-    )
-    monkeypatch.setattr(usage, "_all_known_lms", lambda app: [lm])
-    result = usage._last_prompt_usage_from_history_slice({id(lm): 0}, SimpleNamespace())
+    call = {
+        "timestamp": "now",
+        "model": "test",
+        "usage": {"prompt_tokens": 9000},
+        "request": Request(
+            model="test",
+            messages=(Message(role="user", parts=(TextPart(text="Short prompt"),)),),
+        ),
+    }
+    with turn_with_calls([call]):
+        result = usage._last_prompt_usage_from_turn_calls(0)
     assert result["used_tokens"] == 9000 and result["source"] == "provider"
     assert result["prompt_breakdown"]["tokens_estimated"] < 9000
 

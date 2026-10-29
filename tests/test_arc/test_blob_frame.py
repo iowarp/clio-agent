@@ -14,14 +14,24 @@ from __future__ import annotations
 
 import base64
 import inspect
+import os
 import uuid
+from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, cast
 
 import pytest
 
 from clio_agent.arc.batch_put import PutRecord
-from clio_agent.arc.blob_frame import BlobDecodeError, BlobFrameError, frame, unframe
+from clio_agent.arc.blob_frame import (
+    BlobDecodeError,
+    BlobFrameError,
+    frame,
+    size_class,
+    stored_body,
+    unframe,
+)
+from clio_agent.arc.clio_core_config import effective_ram_cap
 from clio_agent.arc.lane_index import (
     INDEX_SCOPE,
     ChunkEntry,
@@ -128,3 +138,54 @@ def test_a_shrunk_session_index_decodes_after_a_restart() -> None:
     raw = reader.get("segments", name)
     assert raw is not None
     assert decode_index("s1", raw) == shrunk
+
+
+_PAGE = 4096
+
+
+def test_size_classes_are_pages_at_most_a_quarter_above_the_page_rounded_size() -> None:
+    previous = 0
+    for length in [*range(1, 70_000, 37), *range(70_000, 6_000_000, 9_973)]:
+        size = size_class(length)
+        page_rounded = -(-length // _PAGE) * _PAGE
+        assert size % _PAGE == 0 and size >= length
+        assert size <= page_rounded * 1.25
+        assert size >= previous  # monotone: a record that grows never drops a class
+        previous = size
+    # few classes: a 1 MB record crosses about 25 of them, not one per append
+    assert len({size_class(n) for n in range(1, 1_000_001, 101)}) <= 26
+
+
+def test_a_stored_body_is_its_frame_padded_to_its_class() -> None:
+    data = b"\x00\x01payload:with:colons" * 50
+    body = stored_body(data)
+    assert len(body) == size_class(len(frame(data)))
+    assert body.startswith(frame(data))
+    assert set(body[len(frame(data)) :]) <= {ord(".")}
+    assert unframe("r", body) == data
+    assert unframe("r", body.decode("ascii")) == data
+
+
+def _metadata_log_bytes() -> int:
+    """Bytes of the attached daemon's ``metadata.log*`` files (the test daemon's own)."""
+    config = effective_ram_cap(env=os.environ).config_path
+    assert config is not None
+    root = Path(config).parent
+    return sum(path.stat().st_size for path in root.rglob("metadata.log*"))
+
+
+def test_a_regrown_record_writes_little_metadata_log() -> None:
+    """A lane chunk is re-put after every append. Each put that grows a clio-core blob
+    adds a block and each put logs the blob's whole block list, so unpadded bodies wrote
+    ~3.6 MB of metadata log for these 300 appends (80 bytes per block per put); size
+    classes keep it to a few hundred KB.
+
+    Sabotage: ``ClioCoreStore.put`` storing ``frame(data)`` (no size class) turns this red.
+    """
+    store = _store(f"frame-{uuid.uuid4().hex[:10]}")
+    before = _metadata_log_bytes()
+    for appended in range(1, 301):
+        store.put("segments", "chunk", b"e" * (appended * 1000))
+    grown = _metadata_log_bytes() - before
+    assert store.get("segments", "chunk") == b"e" * 300_000
+    assert grown < 1_200_000, f"metadata log grew {grown} bytes for 300 re-puts"

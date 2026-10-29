@@ -141,9 +141,16 @@ def register_artifact_alias_routes(app: FastAPI) -> None:
         # and the emitted event carries the identical key.
         at = _iso_from_epoch(time.time())
         event_id = _event_id()
+        emit_sid = _workspace_default_session(app, wid)
         try:
             moved = registry.move_alias(
-                wid, name, alias=alias, to_version=target.version, at=at, event_id=event_id
+                wid,
+                name,
+                alias=alias,
+                to_version=target.version,
+                at=at,
+                event_id=event_id,
+                session_id=emit_sid,
             )
         except InvalidAliasError as exc:
             raise _artifact_error(
@@ -175,7 +182,7 @@ def register_artifact_alias_routes(app: FastAPI) -> None:
 
         emit_alias_moved(
             app,
-            _workspace_default_session(app, wid),
+            emit_sid,
             workspace_id=wid,
             name=name,
             alias=alias,

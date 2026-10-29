@@ -179,7 +179,7 @@ def test_live_turn_plan_path_matches_workspace_file_boundary(tmp_path: Path) -> 
         assert (
             resolve(
                 "tool",
-                "fs_apply_edit_write",
+                "fs_write_file",
                 policies=[],
                 session_id=sess.id,
                 path=plan_file,
@@ -244,7 +244,7 @@ def test_recorded_plan_path_is_within_plan_acl_carveout(tmp_path: Path) -> None:
     # No persisted user policies — ALLOW must come purely from the built-in plan-file carve-out.
     action = resolve(
         "tool",
-        "fs_apply_edit_write",
+        "fs_write_file",
         policies=[],
         session_id=sess.id,
         path=plan_file,

@@ -6,8 +6,8 @@ were zero emit sites before #968). At turn finalize one ``resource_link`` part i
 emitted per artifact generated that turn — this is what finally gives a plot PNG
 (or any deliverable) a wire reference instead of a path string the client must
 guess. ``ui_payload`` artifacts (mcpui/a2ui) ride the SAME part with a ``ui://``
-URI and the mcp-app HTML mime — record + delivery only; rendering is a later
-campaign.
+URI. MIME follows the published format: HTML MCP Apps retain the mcp-app
+profile while JSON remains data; rendering is a later campaign.
 
 Pure projection: no app state, no I/O. It reads an :class:`ArtifactVersion` and
 the logical ``(workspace_id, name)`` identity and returns a
@@ -34,38 +34,6 @@ if TYPE_CHECKING:
     from clio_agent.gact.artifacts.proposals import ProposalOutcome
 
 logger = logging.getLogger(__name__)
-
-#: The ``artifact.proposed`` semantic-event type (the proposal stage of a
-#: file-diff artifact). Trace-visible but deliberately OFF the SSE UI wire — its
-#: payload is byte-parity-pinned by :func:`proposed_diff_payload` so a later
-#: widening of the ``artifact.*`` family never drifts the proposal shape.
-PROPOSED_ARTIFACT_EVENT = "artifact.proposed"
-
-
-def proposed_diff_payload(
-    path: str,
-    unified_diff: str,
-    new_content: str,
-    edit_mode: str,
-    lines_added: int,
-    lines_removed: int,
-) -> dict[str, Any]:
-    """The ``artifact.proposed`` emit payload — the file_diff proposal fields (§7.3a).
-
-    The single source of the proposal-event payload shape, called from
-    ``turn_finalize`` so the emitted keys are exactly this set and a test can pin
-    the real projection (not a source-text grep). Adding or removing a key here is
-    a wire-shape change — the byte-parity lock reddens.
-    """
-    return {
-        "path": path,
-        "unified_diff": unified_diff,
-        "new_content": new_content,
-        "edit_mode": edit_mode,
-        "lines_added": lines_added,
-        "lines_removed": lines_removed,
-    }
-
 
 #: The sentinel ``server_id`` an artifact ``resource_link`` carries so a client
 #: distinguishes an artifact reference from an MCP-server resource reference
@@ -108,7 +76,6 @@ _MIME_BY_KIND: dict[ArtifactKind, str] = {
     ArtifactKind.SCRIPT: "text/plain",
     ArtifactKind.CONFIG: "text/plain",
     ArtifactKind.MODEL: "application/octet-stream",
-    ArtifactKind.UI_PAYLOAD: UI_PAYLOAD_MIME,
     ArtifactKind.OTHER: "application/octet-stream",
 }
 
@@ -155,7 +122,17 @@ def workspace_file_fetch_url(workspace_id: str, source: Path, root: Path) -> str
 def mime_for(version: ArtifactVersion, name: str) -> str:
     """Prefer a published filename's type, then the source for friendly labels."""
     if version.kind == ArtifactKind.UI_PAYLOAD:
-        return UI_PAYLOAD_MIME
+        # ``ui_payload`` is the storage/delivery designation used by both HTML
+        # MCP Apps and declarative UI payloads such as A2UI JSON. Preserve the
+        # MCP App profile for authored HTML, but do not tell clients to render
+        # JSON as an HTML app merely because the artifact has this kind.
+        for candidate in (name, version.path):
+            suffix = Path(candidate).suffix.lower()
+            if suffix in {".html", ".htm"}:
+                return UI_PAYLOAD_MIME
+            if suffix in _MIME_BY_SUFFIX:
+                return _MIME_BY_SUFFIX[suffix]
+        return "application/octet-stream"
     from clio_agent.gact.documents.profiles import document_format, supported_extensions
 
     for candidate in (name, version.path):
@@ -305,6 +282,11 @@ def append_turn_child_resource_links(
         if part.type == "resource_link"
     }
     published = child_response_owners(app, sessions)
+    # Point lookups: versions produced in these sessions + the published ids.
+    registry = get_registry(app)
+    hits = registry.versions_produced_in(sessions)
+    hits += [hit for aid in published if (hit := registry.get_by_artifact_id(aid)) is not None]
+    unique = {version.artifact_id: (record, version) for record, version in hits}
     entries: list[dict[str, Any]] = [
         {
             "workspace_id": record.workspace_id,
@@ -313,13 +295,8 @@ def append_turn_child_resource_links(
             "purpose": "deliverable" if version.artifact_id in published else None,
             "response_session_id": published.get(version.artifact_id),
         }
-        for record in get_registry(app).all_records()
-        for version in record.versions
-        if (
-            str(version.producer.get("session_id") or "") in sessions
-            or version.artifact_id in published
-        )
-        and version.artifact_id not in already
+        for record, version in unique.values()
+        if version.artifact_id not in already
     ]
     entries.sort(key=lambda entry: entry["version"].created_at or "")
     for entry in response_deliverables(entries):
@@ -390,7 +367,6 @@ def declare_create_artifact_structured_content(
 
 __all__ = [
     "ARTIFACT_SERVER_ID",
-    "PROPOSED_ARTIFACT_EVENT",
     "UI_PAYLOAD_MIME",
     "append_turn_child_resource_links",
     "append_turn_resource_links",
@@ -399,7 +375,6 @@ __all__ = [
     "declare_create_artifact_structured_content",
     "fetch_url_for",
     "mime_for",
-    "proposed_diff_payload",
     "resource_link_metadata",
     "resource_link_part",
     "ui_payload_uri",

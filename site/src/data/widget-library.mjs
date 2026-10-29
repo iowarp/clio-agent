@@ -83,8 +83,9 @@ export const widgetFieldHelp = {
     url: 'Registered artifact or workspace file containing the video. The viewer resolves the bytes through the connected service.',
   },
   'clio.mesh-viewport.v1': {
-    meshUri: 'Reference to a registered mesh artifact, such as artifact://artifact_specimen. The viewer loads the model from that artifact.',
-    materialUri: 'Registered MTL companion file for an OBJ model.',
+    meshUri: 'Reference to a registered mesh artifact, such as artifact://artifact_specimen, or a binding such as /selection/case/values/0 so one viewer follows the case selected in a table or chart. The viewer loads the model from that artifact.',
+    materialUri: 'Registered MTL companion file for an OBJ model. It can be bound like meshUri.',
+    height: 'Height of the view in pixels, from 160 to 2000. Give a 3D view room when it is the result being read.',
     format: 'The mesh file format. Set it when the file bytes do not identify the format unambiguously.',
     field: 'Name of the scalar result field to color by, as stored in the CLIO FEA mesh.',
     showField: 'Show or hide scalar coloring while keeping the geometry visible.',
@@ -96,6 +97,10 @@ export const widgetFieldHelp = {
     thresholdMax: 'Upper bound of the visible field interval. It can read a value from a control.',
     title: 'A short, descriptive title for the view.',
     upAxis: 'The axis treated as vertical when framing and orbiting the model.',
+  },
+  'clio.raster-viewport.v1': {
+    rasterUri: 'Reference to a registered raster artifact, or a binding to a selection so one viewer follows the selected row.',
+    height: 'Height of the view in pixels, from 160 to 2000.',
   },
   'clio.slider.v1': {
     label: 'Describe the quantity the person is changing.',

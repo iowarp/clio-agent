@@ -1,0 +1,13 @@
+{
+  "$schema": "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json",
+  "name": "v2ex-avenues",
+  "version": "0.1.0",
+  "description": "Live-verification agent exposing the full synthetic v2 exerciser tool matrix for leg C2.",
+  "author": {
+    "name": "IoWarp Team"
+  },
+  "license": "BSD-3-Clause",
+  "keywords": [
+    "live-verification"
+  ]
+}

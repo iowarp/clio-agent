@@ -43,6 +43,12 @@ POST_TOOL_BATCH = "PostToolBatch"
 #: The turn's user prompt boundary. Deny-capable — validate/reject the prompt.
 USER_PROMPT_SUBMIT = "UserPromptSubmit"
 
+#: A slash command the person typed expanded into its prompt, before its turn starts.
+#: Deny-capable — a deny stops the command. A hook may add context the model reads
+#: with the command (Claude Code's event of the same name; a plugin's write guard
+#: arms here, for one).
+USER_PROMPT_EXPANSION = "UserPromptExpansion"
+
 #: End-of-turn boundary (the old ``post_message``). P2.5 makes it a BOUNDED
 #: completion gate: a Stop hook ``deny`` means "not done — re-drive one more turn"
 #: (tests still failing? todos still open?). Re-entry is bounded by a per-hook
@@ -54,6 +60,13 @@ USER_PROMPT_SUBMIT = "UserPromptSubmit"
 #: turn-finalize boundary, not a fail-closed pre-effect gate, so a Stop-hook infra
 #: failure must NOT fail-closed into a re-drive (it settles done, typed-recorded).
 STOP = "Stop"
+
+#: The turn's final answer settled, before the turn is persisted and published.
+#: NOT a gate: the answer may already have streamed. A hook may OBSERVE it, attach
+#: a ``note`` or a ``check`` (shown under the answer, attributed to the hook), or
+#: return a replacement (``updatedAnswer``) that lands as a visible revision; the
+#: original stays in the transcript, marked superseded (never a silent swap).
+ANSWER = "Answer"
 
 #: A session was created. Observation / inject-context.
 SESSION_START = "SessionStart"
@@ -96,7 +109,9 @@ KNOWN_EVENTS: frozenset[str] = frozenset(
         POST_TOOL_USE,
         POST_TOOL_BATCH,
         USER_PROMPT_SUBMIT,
+        USER_PROMPT_EXPANSION,
         STOP,
+        ANSWER,
         SESSION_START,
         SESSION_END,
         SUBAGENT_START,
@@ -125,7 +140,9 @@ MODEL_EVENTS: frozenset[str] = frozenset({BEFORE_MODEL, AFTER_MODEL})
 #: than silently letting an un-vetted request through. ``AfterModel`` is
 #: deliberately EXCLUDED — its call already ran, so its outcome can only rewrite the
 #: observed response, never un-run the request (mirrors ``PostToolUse``).
-DENY_CAPABLE_EVENTS: frozenset[str] = frozenset({PRE_TOOL_USE, USER_PROMPT_SUBMIT, BEFORE_MODEL})
+DENY_CAPABLE_EVENTS: frozenset[str] = frozenset(
+    {PRE_TOOL_USE, USER_PROMPT_SUBMIT, USER_PROMPT_EXPANSION, BEFORE_MODEL}
+)
 
 
 def is_deny_capable(event: str) -> bool:

@@ -1,0 +1,8 @@
+    main()
+  File "/work/home/data/services/vm/flowcept/native_monitoring_hook.py", line 530, in main
+    install(root, manifest)
+  File "/work/home/data/services/vm/flowcept/native_monitoring_hook.py", line 182, in install
+    subprocess.run([str(binaries / "mongod"), "--version"], check=True)
+  File "/work/home/data/services/vm/flowcept/cache/python/cpython-3.12.15-linux-x86_64-gnu/lib/python3.12/subprocess.py", line 571, in run
+    raise CalledProcessError(retcode, process.args,
+subprocess.CalledProcessError: Command '['/work/home/data/services/vm/flowcept/environment/databases/mongod', '--version']' returned non-zero exit status 127.

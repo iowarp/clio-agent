@@ -20,6 +20,7 @@ from clio_agent.gact.storage import transfers
 from clio_agent.gact.storage.adapters import LocalSource, SourceAdapter
 from clio_agent.gact.storage.models import FileEntry, SourceRecord
 from clio_agent.platform_paths import win_extended_path
+from tests.test_gact.test_source_connect_runtime import _collect
 from tests.test_gact.test_source_connect_runtime import bound as storage_runtime_fixture
 
 bound = storage_runtime_fixture
@@ -101,16 +102,6 @@ def _operation(client: TestClient, prefix: str, identifier: str) -> dict[str, An
     return next(row for row in rows if row["id"] == identifier)
 
 
-def _wait_terminal(client: TestClient, prefix: str, identifier: str) -> dict[str, Any]:
-    deadline = time.monotonic() + 5
-    while time.monotonic() < deadline:
-        row = _operation(client, prefix, identifier)
-        if row["state"] in {"completed", "failed", "cancelled", "interrupted"}:
-            return row
-        time.sleep(0.01)
-    pytest.fail("the transfer never settled")
-
-
 def _wait_cancel_request(client: TestClient, prefix: str, identifier: str) -> dict[str, Any]:
     """Observe deferred intent confirmation while the actual worker is still held."""
     deadline = time.monotonic() + 5
@@ -167,7 +158,11 @@ def test_download_ack_progress_and_result_do_not_block_control_plane(
         assert cleanup.wait(timeout=5), str(_operation(client, prefix, identifier))
         assert _operation(client, prefix, identifier)["state"] == "running"
         assert client.get("/v1/health").status_code == 200
-    finished = _wait_terminal(client, prefix, identifier)
+    # Join the native owner and confirm its stored result before checking the
+    # HTTP projection, as the abandoned-attachment case below does already.
+    outcome, _reply = _collect(app, response.json()["acceptance"], session_id=sid, kind="Download")
+    assert outcome["status"] == "completed", outcome
+    finished = _operation(client, prefix, identifier)
     assert finished["state"] == "completed", finished
     assert finished["bytes_done"] == finished["bytes_total"] == len(payload)
     record = app.state.connected_storage.store.get("source", source_id, SourceRecord)
@@ -201,7 +196,9 @@ def test_cancel_is_requested_then_settled_without_publishing_partial_data(
         assert pending["state"] == "cancellation_requested"
         assert pending["cancel_requested"] is True
         assert client.get("/v1/health").status_code == 200
-    settled = _wait_terminal(client, prefix, identifier)
+    outcome, _reply = _collect(app, response.json()["acceptance"], session_id=sid, kind="Download")
+    assert outcome["status"] == "cancelled", outcome
+    settled = _operation(client, prefix, identifier)
     assert settled["state"] == "cancelled", settled
     assert settled["bytes_done"] == 1024 * 1024
     source_id = prefix.rsplit("/", 1)[-1]
@@ -222,7 +219,7 @@ def test_native_download_settles_abandoned_attachment_cleanup(bound: Any, monkey
     from clio_agent.gact.storage import download_tool
     from clio_agent.gact.storage.drafts import SourceDraft, SourceDrafts
     from clio_agent.gact.storage.models import TransferOperation
-    from tests.test_gact.test_source_connect_runtime import _body, _collect, _connect
+    from tests.test_gact.test_source_connect_runtime import _body, _connect
 
     service, app, upstream = bound
     first = _connect(app, "local", str(upstream), "Draft source", configuration={})

@@ -1,0 +1,13 @@
+{
+  "$schema": "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json",
+  "name": "v2-stress",
+  "version": "0.1.0",
+  "description": "Live-verification stress agent: the web MCP server and the synthetic v2 exerciser in one turn.",
+  "author": {
+    "name": "IoWarp Team"
+  },
+  "license": "BSD-3-Clause",
+  "keywords": [
+    "live-verification"
+  ]
+}

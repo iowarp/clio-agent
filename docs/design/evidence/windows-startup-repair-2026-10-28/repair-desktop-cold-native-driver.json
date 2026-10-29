@@ -1,0 +1,12 @@
+[
+  {
+    "ProcessId": 4060,
+    "CreationDate": "2026-10-28T06:14:29.846284-05:00",
+    "ExecutablePath": "C:\\WINDOWS\\system32\\conhost.exe"
+  },
+  {
+    "ProcessId": 39428,
+    "CreationDate": "2026-10-28T06:14:29.865445-05:00",
+    "ExecutablePath": "D:\\Libraries\\Documents\\projects\\clio-windows-startup-acceptance\\.acceptance-runtime\\drivers\\msedgedriver.exe"
+  }
+]

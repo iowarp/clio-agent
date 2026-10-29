@@ -2,23 +2,16 @@
 
 from __future__ import annotations
 
-from collections.abc import Awaitable, Callable
-
 from fastapi import FastAPI, HTTPException, Request, Response
 from fastapi.responses import JSONResponse
 
-from clio_agent.gact.conversation_origin import FORK_ORIGIN_KEY
-from clio_agent.gact.message_marks import saved_message_marks
 from clio_agent.gact.protocol_v3 import project_for_request, session_to_v3
 from clio_agent.gact.routes._body import json_body
-from clio_agent.gact.runtime.permission_policies import inherit_child_session_policies
 from clio_agent.gact.session_kind import session_kind
 from clio_agent.gact.types import ErrorEnvelope, ErrorInfo, Session
 
 
-def register_session_fork_route(
-    app: FastAPI, *, copy_context: Callable[[str, str, str], Awaitable[int]]
-) -> None:
+def register_session_fork_route(app: FastAPI) -> None:
     """Register branching for user conversations and existing user branches only."""
 
     @app.post("/v1/sessions/{sid}/fork")
@@ -82,48 +75,11 @@ def register_session_fork_route(
                     )
                 ).model_dump(exclude_none=True),
             )
-        title = body.get("title") or f"{sess.title} (fork)"
-        # Copy conversation configuration, without task ownership or pending work.
-        metadata = {
-            key: value
-            for key, value in sess.metadata.items()
-            if key.startswith("active_agent_blueprint_")
-            or key in {"effort", "effort_source", "thinking_level", "branch", "git_branch"}
-        }
-        metadata["session_kind"] = "branch"
-        agent = {key: value for key, value in sess.agent.items() if key != "mode"}
-        new_sess = app.state.sessions.create(
-            workspace_id=sess.workspace_id,
-            title=title,
-            parent_session_id=sid,
-            model=dict(sess.model),
-            agent=agent,
-            metadata=metadata,
-            mode=sess.mode,
-            edit_mode=sess.edit_mode,
-            routing_mode=sess.routing_mode,
-            approval_mode=sess.approval_mode,
-            approval_profile=sess.approval_profile,
-        )
-        inherit_child_session_policies(app, sid, new_sess.id)
-        copied = await copy_context(sid, new_sess.id, target)
-        copied_messages = app.state.messages.get(new_sess.id, [])
-        app.state.sessions.update(
-            new_sess.id,
-            message_count=copied,
-            metadata_patch={
-                FORK_ORIGIN_KEY: {
-                    "session_id": sid,
-                    "message_id": copied_messages[-1].id if copied_messages else "",
-                    "message_count": copied,
-                    "title": sess.title,
-                    "created_at": new_sess.created_at,
-                },
-                "message_marks": saved_message_marks(
-                    sess.metadata,
-                    {message.id for message in app.state.messages.get(new_sess.id, [])},
-                ),
-            },
+        from clio_agent.gact.conversation_copy import create_branch  # noqa: PLC0415
+        from clio_agent.gact.off_loop import run_off_loop  # noqa: PLC0415
+
+        new_sess = await run_off_loop(
+            create_branch, app, sess, title=str(body.get("title") or ""), at=target
         )
         return project_for_request(
             request,

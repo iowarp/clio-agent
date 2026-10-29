@@ -1,0 +1,1170 @@
+=== backend boot log ===
+Startup checkpoint: existing backend check 0.000s
+Startup checkpoint: bundled runtime ready 0.001s
+Checking managed packages before start reason=launch_stamp_windows_fence_first
+Verified installation unchanged; reusing Office, Python, Node.js and GitHub packages.
+Preparing and checking protected execution...
+Protected execution: MXC verified (cached check).
+All managed runtime packages are installed and verified.
+{"status": "ready", "runtime_id": "68fd91e579837b59bebd", "office": {"status": "available", "path": "D:\\cw\\r2\\home\\cache\\document-office\\26.2.6\\program\\soffice.com"}, "store_migrations": {"status": "skipped", "reason": "reuse_installed"}}
+Startup checkpoint: managed package step done 2.312s
+managed backend workspace="\\\\?\\D:\\CLIO-Desktop-095\\data\\workspace"
+managed backend user_dir="\\\\?\\D:\\CLIO-Desktop-095\\data\\clio-agent"
+spawning launcher "D:\\CLIO-Desktop-095\\clio-agent.exe" on 127.0.0.1:52737
+sidecar-launcher: resolved backend argv=[\\?\D:\CLIO-Desktop-095\data\bundled-runtime\gact-runtime\python\python.exe -I -B -m clio_agent.gact --no-agent] dir="\\\\?\\D:\\CLIO-Desktop-095\\data\\bundled-runtime\\gact-runtime"
+sidecar-progress: launcher is waiting for backend readiness
+sidecar-progress: backend startup is active
+sidecar-progress: launcher is waiting for backend readiness
+INFO:     Started server process [35320]
+INFO:     Waiting for application startup.
+WARNING | ⚑ BOOT mark=lifespan_started at=5.344
+sidecar-progress: backend startup is active
+WARNING | ⚑ BOOT mark=serving at=8.980
+INFO:     Application startup complete.
+sidecar-progress: launcher is waiting for backend readiness
+INFO:     Uvicorn running on http://127.0.0.1:52737 (Press CTRL+C to quit)
+sidecar-progress: backend startup is active
+WARNING | ⚑ BOOT step=marketplace seconds=3.663 start=8.989 thread=MainThread outcome=ok
+INFO:     127.0.0.1:57020 - "GET /v1/capabilities HTTP/1.1" 200 OK
+sidecar answered /v1/capabilities — backend ready
+Startup checkpoint: backend ready 15.538s
+INFO:     127.0.0.1:57021 - "GET /v1/infrastructure/service-connections HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:57022 - "GET /v1/provider-catalog HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:57031 - "GET /v1/system/sandbox HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:57029 - "GET /v1/providers/lm HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:57034 - "GET /v1/infrastructure/targets HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:57037 - "GET /v1/infrastructure/catalog?target_id=local HTTP/1.1" 503 Service Unavailable
+sidecar-progress: launcher is waiting for backend readiness
+INFO:     127.0.0.1:57039 - "GET /v1/health HTTP/1.1" 200 OK
+sidecar-progress: backend startup is active
+INFO:     127.0.0.1:57044 - "GET /v1/provider-catalog HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:57051 - "GET /v1/system/sandbox HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:57059 - "GET /v1/providers/lm HTTP/1.1" 503 Service Unavailable
+WARNING | ⚑ BOOT step=orphans seconds=9.131 start=8.980 thread=MainThread outcome=ok
+INFO:     127.0.0.1:57060 - "GET /v1/health HTTP/1.1" 200 OK
+INFO:     127.0.0.1:57063 - "GET /v1/infrastructure/targets HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:57060 - "GET /v1/health HTTP/1.1" 200 OK
+INFO:     127.0.0.1:57045 - "GET /v1/capabilities HTTP/1.1" 200 OK
+INFO:     127.0.0.1:57024 - "GET /v1/capabilities HTTP/1.1" 200 OK
+INFO:     127.0.0.1:57032 - "GET /v1/capabilities HTTP/1.1" 200 OK
+INFO:     127.0.0.1:57078 - "GET /v1/sessions?include_all_workspaces=true&limit=20&kinds=conversation%2Cbranch HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:57081 - "GET /v1/workspaces HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:57086 - "GET /v1/capabilities HTTP/1.1" 200 OK
+INFO:     127.0.0.1:57091 - "GET /v1/sessions?include_all_workspaces=true&limit=20&kinds=conversation%2Cbranch HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:57094 - "GET /v1/workspaces HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:57095 - "GET /v1/capabilities HTTP/1.1" 200 OK
+INFO:     127.0.0.1:57096 - "GET /v1/sessions?include_all_workspaces=true&limit=20&kinds=conversation%2Cbranch HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:57100 - "GET /v1/workspaces HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:57101 - "GET /v1/capabilities HTTP/1.1" 200 OK
+INFO:     127.0.0.1:57102 - "GET /v1/workspaces HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:57109 - "GET /v1/sessions?include_all_workspaces=true&limit=20&kinds=conversation%2Cbranch HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:57110 - "GET /v1/capabilities HTTP/1.1" 200 OK
+INFO:     127.0.0.1:57111 - "GET /v1/workspaces HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:57117 - "GET /v1/sessions?include_all_workspaces=true&limit=20&kinds=conversation%2Cbranch HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:57118 - "GET /v1/capabilities HTTP/1.1" 200 OK
+INFO:     127.0.0.1:57119 - "GET /v1/sessions?include_all_workspaces=true&limit=20&kinds=conversation%2Cbranch HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:57120 - "GET /v1/workspaces HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:57122 - "GET /v1/capabilities HTTP/1.1" 200 OK
+INFO:     127.0.0.1:57126 - "GET /v1/sessions?include_all_workspaces=true&limit=20&kinds=conversation%2Cbranch HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:57125 - "GET /v1/workspaces HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:57127 - "GET /v1/capabilities HTTP/1.1" 200 OK
+INFO:     127.0.0.1:57133 - "GET /v1/workspaces HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:57134 - "GET /v1/sessions?include_all_workspaces=true&limit=20&kinds=conversation%2Cbranch HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:57135 - "GET /v1/capabilities HTTP/1.1" 200 OK
+INFO:     127.0.0.1:57137 - "GET /v1/workspaces HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:57138 - "GET /v1/sessions?include_all_workspaces=true&limit=20&kinds=conversation%2Cbranch HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:57141 - "GET /v1/capabilities HTTP/1.1" 200 OK
+INFO:     127.0.0.1:57142 - "GET /v1/sessions?include_all_workspaces=true&limit=20&kinds=conversation%2Cbranch HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:57147 - "GET /v1/workspaces HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:57148 - "GET /v1/capabilities HTTP/1.1" 200 OK
+INFO:     127.0.0.1:57151 - "GET /v1/sessions?include_all_workspaces=true&limit=20&kinds=conversation%2Cbranch HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:57150 - "GET /v1/workspaces HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:57152 - "GET /v1/capabilities HTTP/1.1" 200 OK
+INFO:     127.0.0.1:57158 - "GET /v1/workspaces HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:57156 - "GET /v1/sessions?include_all_workspaces=true&limit=20&kinds=conversation%2Cbranch HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:57163 - "GET /v1/capabilities HTTP/1.1" 200 OK
+INFO:     127.0.0.1:57167 - "GET /v1/workspaces HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:57168 - "GET /v1/sessions?include_all_workspaces=true&limit=20&kinds=conversation%2Cbranch HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:57169 - "GET /v1/capabilities HTTP/1.1" 200 OK
+INFO:     127.0.0.1:57175 - "GET /v1/workspaces HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:57173 - "GET /v1/sessions?include_all_workspaces=true&limit=20&kinds=conversation%2Cbranch HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:57176 - "GET /v1/capabilities HTTP/1.1" 200 OK
+INFO:     127.0.0.1:57177 - "GET /v1/workspaces HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:57183 - "GET /v1/sessions?include_all_workspaces=true&limit=20&kinds=conversation%2Cbranch HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:57184 - "GET /v1/capabilities HTTP/1.1" 200 OK
+INFO:     127.0.0.1:57185 - "GET /v1/sessions?include_all_workspaces=true&limit=20&kinds=conversation%2Cbranch HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:57188 - "GET /v1/workspaces HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:57191 - "GET /v1/capabilities HTTP/1.1" 200 OK
+INFO:     127.0.0.1:57195 - "GET /v1/workspaces HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:57198 - "GET /v1/sessions?include_all_workspaces=true&limit=20&kinds=conversation%2Cbranch HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:57199 - "GET /v1/capabilities HTTP/1.1" 200 OK
+INFO:     127.0.0.1:57203 - "GET /v1/workspaces HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:57204 - "GET /v1/sessions?include_all_workspaces=true&limit=20&kinds=conversation%2Cbranch HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:57210 - "GET /v1/capabilities HTTP/1.1" 200 OK
+INFO:     127.0.0.1:57212 - "GET /v1/sessions?include_all_workspaces=true&limit=20&kinds=conversation%2Cbranch HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:57211 - "GET /v1/workspaces HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:57213 - "GET /v1/capabilities HTTP/1.1" 200 OK
+INFO:     127.0.0.1:57214 - "GET /v1/workspaces HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:57219 - "GET /v1/sessions?include_all_workspaces=true&limit=20&kinds=conversation%2Cbranch HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:57225 - "GET /v1/capabilities HTTP/1.1" 200 OK
+INFO:     127.0.0.1:57226 - "GET /v1/workspaces HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:57230 - "GET /v1/sessions?include_all_workspaces=true&limit=20&kinds=conversation%2Cbranch HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:57236 - "GET /v1/capabilities HTTP/1.1" 200 OK
+INFO:     127.0.0.1:57241 - "GET /v1/sessions?include_all_workspaces=true&limit=20&kinds=conversation%2Cbranch HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:57240 - "GET /v1/workspaces HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:57243 - "GET /v1/capabilities HTTP/1.1" 200 OK
+INFO:     127.0.0.1:57246 - "GET /v1/sessions?include_all_workspaces=true&limit=20&kinds=conversation%2Cbranch HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:57247 - "GET /v1/workspaces HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:57249 - "GET /v1/capabilities HTTP/1.1" 200 OK
+INFO:     127.0.0.1:57250 - "GET /v1/sessions?include_all_workspaces=true&limit=20&kinds=conversation%2Cbranch HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:57255 - "GET /v1/workspaces HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:57256 - "GET /v1/capabilities HTTP/1.1" 200 OK
+sidecar-progress: backend is ready
+INFO:     127.0.0.1:57259 - "GET /v1/capabilities HTTP/1.1" 200 OK
+INFO:     127.0.0.1:57261 - "GET /v1/sessions?include_all_workspaces=true&limit=20&kinds=conversation%2Cbranch HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:57260 - "GET /v1/workspaces HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:57262 - "GET /v1/capabilities HTTP/1.1" 200 OK
+INFO:     127.0.0.1:57265 - "GET /v1/workspaces HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:57266 - "GET /v1/sessions?include_all_workspaces=true&limit=20&kinds=conversation%2Cbranch HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:57267 - "GET /v1/capabilities HTTP/1.1" 200 OK
+INFO:     127.0.0.1:57273 - "GET /v1/workspaces HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:57274 - "GET /v1/sessions?include_all_workspaces=true&limit=20&kinds=conversation%2Cbranch HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:57281 - "GET /v1/capabilities HTTP/1.1" 200 OK
+INFO:     127.0.0.1:57283 - "GET /v1/workspaces HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:57282 - "GET /v1/sessions?include_all_workspaces=true&limit=20&kinds=conversation%2Cbranch HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:57285 - "GET /v1/capabilities HTTP/1.1" 200 OK
+INFO:     127.0.0.1:57293 - "GET /v1/workspaces HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:57294 - "GET /v1/sessions?include_all_workspaces=true&limit=20&kinds=conversation%2Cbranch HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:57295 - "GET /v1/capabilities HTTP/1.1" 200 OK
+INFO:     127.0.0.1:57299 - "GET /v1/workspaces HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:57300 - "GET /v1/sessions?include_all_workspaces=true&limit=20&kinds=conversation%2Cbranch HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:57302 - "GET /v1/capabilities HTTP/1.1" 200 OK
+INFO:     127.0.0.1:57303 - "GET /v1/workspaces HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:57304 - "GET /v1/sessions?include_all_workspaces=true&limit=20&kinds=conversation%2Cbranch HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:57305 - "GET /v1/capabilities HTTP/1.1" 200 OK
+INFO:     127.0.0.1:57306 - "GET /v1/workspaces HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:57307 - "GET /v1/sessions?include_all_workspaces=true&limit=20&kinds=conversation%2Cbranch HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:57312 - "GET /v1/capabilities HTTP/1.1" 200 OK
+INFO:     127.0.0.1:57315 - "GET /v1/workspaces HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:57313 - "GET /v1/sessions?include_all_workspaces=true&limit=20&kinds=conversation%2Cbranch HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:57321 - "GET /v1/capabilities HTTP/1.1" 200 OK
+INFO:     127.0.0.1:57323 - "GET /v1/workspaces HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:57324 - "GET /v1/sessions?include_all_workspaces=true&limit=20&kinds=conversation%2Cbranch HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:57326 - "GET /v1/capabilities HTTP/1.1" 200 OK
+INFO:     127.0.0.1:57334 - "GET /v1/sessions?include_all_workspaces=true&limit=20&kinds=conversation%2Cbranch HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:57331 - "GET /v1/workspaces HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:57335 - "GET /v1/capabilities HTTP/1.1" 200 OK
+INFO:     127.0.0.1:57336 - "GET /v1/workspaces HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:57337 - "GET /v1/sessions?include_all_workspaces=true&limit=20&kinds=conversation%2Cbranch HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:57338 - "GET /v1/capabilities HTTP/1.1" 200 OK
+INFO:     127.0.0.1:57343 - "GET /v1/sessions?include_all_workspaces=true&limit=20&kinds=conversation%2Cbranch HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:57341 - "GET /v1/workspaces HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:57344 - "GET /v1/capabilities HTTP/1.1" 200 OK
+INFO:     127.0.0.1:57349 - "GET /v1/workspaces HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:57345 - "GET /v1/sessions?include_all_workspaces=true&limit=20&kinds=conversation%2Cbranch HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:57350 - "GET /v1/capabilities HTTP/1.1" 200 OK
+INFO:     127.0.0.1:57353 - "GET /v1/workspaces HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:57356 - "GET /v1/sessions?include_all_workspaces=true&limit=20&kinds=conversation%2Cbranch HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:57360 - "GET /v1/capabilities HTTP/1.1" 200 OK
+INFO:     127.0.0.1:57361 - "GET /v1/workspaces HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:57364 - "GET /v1/sessions?include_all_workspaces=true&limit=20&kinds=conversation%2Cbranch HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:57060 - "GET /v1/health HTTP/1.1" 200 OK
+INFO:     127.0.0.1:57372 - "GET /v1/capabilities HTTP/1.1" 200 OK
+INFO:     127.0.0.1:57377 - "GET /v1/sessions?include_all_workspaces=true&limit=20&kinds=conversation%2Cbranch HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:57376 - "GET /v1/workspaces HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:57379 - "GET /v1/capabilities HTTP/1.1" 200 OK
+INFO:     127.0.0.1:57385 - "GET /v1/workspaces HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:57382 - "GET /v1/sessions?include_all_workspaces=true&limit=20&kinds=conversation%2Cbranch HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:57390 - "GET /v1/capabilities HTTP/1.1" 200 OK
+INFO:     127.0.0.1:57391 - "GET /v1/sessions?include_all_workspaces=true&limit=20&kinds=conversation%2Cbranch HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:57392 - "GET /v1/workspaces HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:57393 - "GET /v1/capabilities HTTP/1.1" 200 OK
+INFO:     127.0.0.1:57399 - "GET /v1/sessions?include_all_workspaces=true&limit=20&kinds=conversation%2Cbranch HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:57405 - "GET /v1/workspaces HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:57406 - "GET /v1/capabilities HTTP/1.1" 200 OK
+INFO:     127.0.0.1:57407 - "GET /v1/workspaces HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:57413 - "GET /v1/sessions?include_all_workspaces=true&limit=20&kinds=conversation%2Cbranch HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:57414 - "GET /v1/capabilities HTTP/1.1" 200 OK
+INFO:     127.0.0.1:57417 - "GET /v1/sessions?include_all_workspaces=true&limit=20&kinds=conversation%2Cbranch HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:57421 - "GET /v1/workspaces HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:57430 - "GET /v1/capabilities HTTP/1.1" 200 OK
+INFO:     127.0.0.1:57432 - "GET /v1/workspaces HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:57435 - "GET /v1/sessions?include_all_workspaces=true&limit=20&kinds=conversation%2Cbranch HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:57438 - "GET /v1/capabilities HTTP/1.1" 200 OK
+INFO:     127.0.0.1:57440 - "GET /v1/sessions?include_all_workspaces=true&limit=20&kinds=conversation%2Cbranch HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:57439 - "GET /v1/workspaces HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:57441 - "GET /v1/capabilities HTTP/1.1" 200 OK
+WARNING | local SearXNG not started reason=not_installed: The last installation did not finish (install exited with code 15; inspect its logs).
+INFO:     127.0.0.1:57442 - "GET /v1/workspaces HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:57443 - "GET /v1/sessions?include_all_workspaces=true&limit=20&kinds=conversation%2Cbranch HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:57446 - "GET /v1/capabilities HTTP/1.1" 200 OK
+INFO:     127.0.0.1:57447 - "GET /v1/workspaces HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:57449 - "GET /v1/sessions?include_all_workspaces=true&limit=20&kinds=conversation%2Cbranch HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:57451 - "GET /v1/capabilities HTTP/1.1" 200 OK
+INFO:     127.0.0.1:57454 - "GET /v1/sessions?include_all_workspaces=true&limit=20&kinds=conversation%2Cbranch HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:57453 - "GET /v1/workspaces HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:57455 - "GET /v1/capabilities HTTP/1.1" 200 OK
+INFO:     127.0.0.1:57458 - "GET /v1/workspaces HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:57466 - "GET /v1/sessions?include_all_workspaces=true&limit=20&kinds=conversation%2Cbranch HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:57467 - "GET /v1/capabilities HTTP/1.1" 200 OK
+INFO:     127.0.0.1:57473 - "GET /v1/workspaces HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:57475 - "GET /v1/sessions?include_all_workspaces=true&limit=20&kinds=conversation%2Cbranch HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:57481 - "GET /v1/capabilities HTTP/1.1" 200 OK
+INFO:     127.0.0.1:57482 - "GET /v1/workspaces HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:57484 - "GET /v1/sessions?include_all_workspaces=true&limit=20&kinds=conversation%2Cbranch HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:57485 - "GET /v1/capabilities HTTP/1.1" 200 OK
+INFO:     127.0.0.1:57487 - "GET /v1/sessions?include_all_workspaces=true&limit=20&kinds=conversation%2Cbranch HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:57486 - "GET /v1/workspaces HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:57499 - "GET /v1/capabilities HTTP/1.1" 200 OK
+INFO:     127.0.0.1:57501 - "GET /v1/workspaces HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:57505 - "GET /v1/sessions?include_all_workspaces=true&limit=20&kinds=conversation%2Cbranch HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:57509 - "GET /v1/capabilities HTTP/1.1" 200 OK
+INFO:     127.0.0.1:57510 - "GET /v1/workspaces HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:57511 - "GET /v1/sessions?include_all_workspaces=true&limit=20&kinds=conversation%2Cbranch HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:57518 - "GET /v1/capabilities HTTP/1.1" 200 OK
+INFO:     127.0.0.1:57519 - "GET /v1/workspaces HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:57520 - "GET /v1/sessions?include_all_workspaces=true&limit=20&kinds=conversation%2Cbranch HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:57521 - "GET /v1/capabilities HTTP/1.1" 200 OK
+INFO:     127.0.0.1:57522 - "GET /v1/workspaces HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:57525 - "GET /v1/sessions?include_all_workspaces=true&limit=20&kinds=conversation%2Cbranch HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:57527 - "GET /v1/capabilities HTTP/1.1" 200 OK
+INFO:     127.0.0.1:57533 - "GET /v1/sessions?include_all_workspaces=true&limit=20&kinds=conversation%2Cbranch HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:57532 - "GET /v1/workspaces HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:57537 - "GET /v1/capabilities HTTP/1.1" 200 OK
+INFO:     127.0.0.1:57540 - "GET /v1/workspaces HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:57542 - "GET /v1/sessions?include_all_workspaces=true&limit=20&kinds=conversation%2Cbranch HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:57544 - "GET /v1/capabilities HTTP/1.1" 200 OK
+INFO:     127.0.0.1:57545 - "GET /v1/workspaces HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:57550 - "GET /v1/sessions?include_all_workspaces=true&limit=20&kinds=conversation%2Cbranch HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:57555 - "GET /v1/capabilities HTTP/1.1" 200 OK
+INFO:     127.0.0.1:57557 - "GET /v1/workspaces HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:57558 - "GET /v1/sessions?include_all_workspaces=true&limit=20&kinds=conversation%2Cbranch HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:57559 - "GET /v1/capabilities HTTP/1.1" 200 OK
+INFO:     127.0.0.1:57564 - "GET /v1/sessions?include_all_workspaces=true&limit=20&kinds=conversation%2Cbranch HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:57560 - "GET /v1/workspaces HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:57565 - "GET /v1/capabilities HTTP/1.1" 200 OK
+INFO:     127.0.0.1:57567 - "GET /v1/workspaces HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:57570 - "GET /v1/sessions?include_all_workspaces=true&limit=20&kinds=conversation%2Cbranch HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:57571 - "GET /v1/capabilities HTTP/1.1" 200 OK
+INFO:     127.0.0.1:57580 - "GET /v1/workspaces HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:57581 - "GET /v1/sessions?include_all_workspaces=true&limit=20&kinds=conversation%2Cbranch HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:57582 - "GET /v1/capabilities HTTP/1.1" 200 OK
+INFO:     127.0.0.1:57584 - "GET /v1/workspaces HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:57587 - "GET /v1/sessions?include_all_workspaces=true&limit=20&kinds=conversation%2Cbranch HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:57590 - "GET /v1/capabilities HTTP/1.1" 200 OK
+INFO:     127.0.0.1:57592 - "GET /v1/sessions?include_all_workspaces=true&limit=20&kinds=conversation%2Cbranch HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:57591 - "GET /v1/workspaces HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:57594 - "GET /v1/capabilities HTTP/1.1" 200 OK
+INFO:     127.0.0.1:57595 - "GET /v1/workspaces HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:57596 - "GET /v1/sessions?include_all_workspaces=true&limit=20&kinds=conversation%2Cbranch HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:57602 - "GET /v1/capabilities HTTP/1.1" 200 OK
+INFO:     127.0.0.1:57609 - "GET /v1/sessions?include_all_workspaces=true&limit=20&kinds=conversation%2Cbranch HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:57603 - "GET /v1/workspaces HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:57611 - "GET /v1/capabilities HTTP/1.1" 200 OK
+INFO:     127.0.0.1:57614 - "GET /v1/workspaces HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:57617 - "GET /v1/sessions?include_all_workspaces=true&limit=20&kinds=conversation%2Cbranch HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:57622 - "GET /v1/capabilities HTTP/1.1" 200 OK
+INFO:     127.0.0.1:57625 - "GET /v1/sessions?include_all_workspaces=true&limit=20&kinds=conversation%2Cbranch HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:57629 - "GET /v1/workspaces HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:57631 - "GET /v1/capabilities HTTP/1.1" 200 OK
+INFO:     127.0.0.1:57633 - "GET /v1/workspaces HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:57634 - "GET /v1/sessions?include_all_workspaces=true&limit=20&kinds=conversation%2Cbranch HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:57639 - "GET /v1/capabilities HTTP/1.1" 200 OK
+INFO:     127.0.0.1:57645 - "GET /v1/sessions?include_all_workspaces=true&limit=20&kinds=conversation%2Cbranch HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:57644 - "GET /v1/workspaces HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:57651 - "GET /v1/capabilities HTTP/1.1" 200 OK
+INFO:     127.0.0.1:57653 - "GET /v1/workspaces HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:57658 - "GET /v1/sessions?include_all_workspaces=true&limit=20&kinds=conversation%2Cbranch HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:57659 - "GET /v1/capabilities HTTP/1.1" 200 OK
+INFO:     127.0.0.1:57660 - "GET /v1/workspaces HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:57668 - "GET /v1/sessions?include_all_workspaces=true&limit=20&kinds=conversation%2Cbranch HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:57669 - "GET /v1/capabilities HTTP/1.1" 200 OK
+INFO:     127.0.0.1:57676 - "GET /v1/sessions?include_all_workspaces=true&limit=20&kinds=conversation%2Cbranch HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:57675 - "GET /v1/workspaces HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:57677 - "GET /v1/capabilities HTTP/1.1" 200 OK
+INFO:     127.0.0.1:57682 - "GET /v1/workspaces HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:57685 - "GET /v1/sessions?include_all_workspaces=true&limit=20&kinds=conversation%2Cbranch HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:57686 - "GET /v1/capabilities HTTP/1.1" 200 OK
+INFO:     127.0.0.1:57689 - "GET /v1/workspaces HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:57691 - "GET /v1/sessions?include_all_workspaces=true&limit=20&kinds=conversation%2Cbranch HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:57692 - "GET /v1/capabilities HTTP/1.1" 200 OK
+INFO:     127.0.0.1:57694 - "GET /v1/sessions?include_all_workspaces=true&limit=20&kinds=conversation%2Cbranch HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:57695 - "GET /v1/workspaces HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:57702 - "GET /v1/capabilities HTTP/1.1" 200 OK
+INFO:     127.0.0.1:57709 - "GET /v1/sessions?include_all_workspaces=true&limit=20&kinds=conversation%2Cbranch HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:57710 - "GET /v1/workspaces HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:57712 - "GET /v1/capabilities HTTP/1.1" 200 OK
+INFO:     127.0.0.1:57716 - "GET /v1/workspaces HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:57718 - "GET /v1/sessions?include_all_workspaces=true&limit=20&kinds=conversation%2Cbranch HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:57719 - "GET /v1/capabilities HTTP/1.1" 200 OK
+INFO:     127.0.0.1:57721 - "GET /v1/sessions?include_all_workspaces=true&limit=20&kinds=conversation%2Cbranch HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:57722 - "GET /v1/workspaces HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:57723 - "GET /v1/capabilities HTTP/1.1" 200 OK
+INFO:     127.0.0.1:57726 - "GET /v1/sessions?include_all_workspaces=true&limit=20&kinds=conversation%2Cbranch HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:57724 - "GET /v1/workspaces HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:57727 - "GET /v1/capabilities HTTP/1.1" 200 OK
+INFO:     127.0.0.1:57730 - "GET /v1/workspaces HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:57728 - "GET /v1/sessions?include_all_workspaces=true&limit=20&kinds=conversation%2Cbranch HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:57734 - "GET /v1/capabilities HTTP/1.1" 200 OK
+INFO:     127.0.0.1:57743 - "GET /v1/workspaces HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:57744 - "GET /v1/sessions?include_all_workspaces=true&limit=20&kinds=conversation%2Cbranch HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:57747 - "GET /v1/capabilities HTTP/1.1" 200 OK
+INFO:     127.0.0.1:57755 - "GET /v1/workspaces HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:57756 - "GET /v1/sessions?include_all_workspaces=true&limit=20&kinds=conversation%2Cbranch HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:57757 - "GET /v1/capabilities HTTP/1.1" 200 OK
+INFO:     127.0.0.1:57762 - "GET /v1/sessions?include_all_workspaces=true&limit=20&kinds=conversation%2Cbranch HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:57761 - "GET /v1/workspaces HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:57764 - "GET /v1/capabilities HTTP/1.1" 200 OK
+INFO:     127.0.0.1:57767 - "GET /v1/sessions?include_all_workspaces=true&limit=20&kinds=conversation%2Cbranch HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:57765 - "GET /v1/workspaces HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:57770 - "GET /v1/capabilities HTTP/1.1" 200 OK
+INFO:     127.0.0.1:57772 - "GET /v1/workspaces HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:57774 - "GET /v1/sessions?include_all_workspaces=true&limit=20&kinds=conversation%2Cbranch HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:57778 - "GET /v1/capabilities HTTP/1.1" 200 OK
+INFO:     127.0.0.1:57780 - "GET /v1/sessions?include_all_workspaces=true&limit=20&kinds=conversation%2Cbranch HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:57779 - "GET /v1/workspaces HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:57781 - "GET /v1/capabilities HTTP/1.1" 200 OK
+INFO:     127.0.0.1:57782 - "GET /v1/workspaces HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:57783 - "GET /v1/sessions?include_all_workspaces=true&limit=20&kinds=conversation%2Cbranch HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:57786 - "GET /v1/capabilities HTTP/1.1" 200 OK
+INFO:     127.0.0.1:57789 - "GET /v1/workspaces HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:57794 - "GET /v1/sessions?include_all_workspaces=true&limit=20&kinds=conversation%2Cbranch HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:57796 - "GET /v1/capabilities HTTP/1.1" 200 OK
+INFO:     127.0.0.1:57797 - "GET /v1/workspaces HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:57798 - "GET /v1/sessions?include_all_workspaces=true&limit=20&kinds=conversation%2Cbranch HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:57809 - "GET /v1/capabilities HTTP/1.1" 200 OK
+INFO:     127.0.0.1:57811 - "GET /v1/workspaces HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:57812 - "GET /v1/sessions?include_all_workspaces=true&limit=20&kinds=conversation%2Cbranch HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:57819 - "GET /v1/capabilities HTTP/1.1" 200 OK
+INFO:     127.0.0.1:57825 - "GET /v1/workspaces HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:57823 - "GET /v1/sessions?include_all_workspaces=true&limit=20&kinds=conversation%2Cbranch HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:57832 - "GET /v1/capabilities HTTP/1.1" 200 OK
+INFO:     127.0.0.1:57060 - "GET /v1/health HTTP/1.1" 200 OK
+INFO:     127.0.0.1:57834 - "GET /v1/sessions?include_all_workspaces=true&limit=20&kinds=conversation%2Cbranch HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:57836 - "GET /v1/workspaces HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:57837 - "GET /v1/capabilities HTTP/1.1" 200 OK
+INFO:     127.0.0.1:57840 - "GET /v1/workspaces HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:57843 - "GET /v1/sessions?include_all_workspaces=true&limit=20&kinds=conversation%2Cbranch HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:57844 - "GET /v1/capabilities HTTP/1.1" 200 OK
+INFO:     127.0.0.1:57847 - "GET /v1/sessions?include_all_workspaces=true&limit=20&kinds=conversation%2Cbranch HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:57848 - "GET /v1/workspaces HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:57851 - "GET /v1/capabilities HTTP/1.1" 200 OK
+INFO:     127.0.0.1:57855 - "GET /v1/workspaces HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:57856 - "GET /v1/sessions?include_all_workspaces=true&limit=20&kinds=conversation%2Cbranch HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:57858 - "GET /v1/capabilities HTTP/1.1" 200 OK
+INFO:     127.0.0.1:57863 - "GET /v1/sessions?include_all_workspaces=true&limit=20&kinds=conversation%2Cbranch HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:57859 - "GET /v1/workspaces HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:57864 - "GET /v1/capabilities HTTP/1.1" 200 OK
+INFO:     127.0.0.1:57872 - "GET /v1/sessions?include_all_workspaces=true&limit=20&kinds=conversation%2Cbranch HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:57871 - "GET /v1/workspaces HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:57875 - "GET /v1/capabilities HTTP/1.1" 200 OK
+INFO:     127.0.0.1:57876 - "GET /v1/workspaces HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:57880 - "GET /v1/sessions?include_all_workspaces=true&limit=20&kinds=conversation%2Cbranch HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:57882 - "GET /v1/capabilities HTTP/1.1" 200 OK
+INFO:     127.0.0.1:57887 - "GET /v1/sessions?include_all_workspaces=true&limit=20&kinds=conversation%2Cbranch HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:57889 - "GET /v1/workspaces HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:57891 - "GET /v1/capabilities HTTP/1.1" 200 OK
+INFO:     127.0.0.1:57893 - "GET /v1/workspaces HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:57894 - "GET /v1/sessions?include_all_workspaces=true&limit=20&kinds=conversation%2Cbranch HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:57899 - "GET /v1/capabilities HTTP/1.1" 200 OK
+INFO:     127.0.0.1:57901 - "GET /v1/workspaces HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:57906 - "GET /v1/sessions?include_all_workspaces=true&limit=20&kinds=conversation%2Cbranch HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:57907 - "GET /v1/capabilities HTTP/1.1" 200 OK
+INFO:     127.0.0.1:57911 - "GET /v1/sessions?include_all_workspaces=true&limit=20&kinds=conversation%2Cbranch HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:57909 - "GET /v1/workspaces HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:57912 - "GET /v1/capabilities HTTP/1.1" 200 OK
+INFO:     127.0.0.1:57915 - "GET /v1/sessions?include_all_workspaces=true&limit=20&kinds=conversation%2Cbranch HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:57916 - "GET /v1/workspaces HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:57918 - "GET /v1/capabilities HTTP/1.1" 200 OK
+INFO:     127.0.0.1:57920 - "GET /v1/workspaces HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:57921 - "GET /v1/sessions?include_all_workspaces=true&limit=20&kinds=conversation%2Cbranch HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:57922 - "GET /v1/capabilities HTTP/1.1" 200 OK
+INFO:     127.0.0.1:57924 - "GET /v1/workspaces HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:57923 - "GET /v1/sessions?include_all_workspaces=true&limit=20&kinds=conversation%2Cbranch HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:57927 - "GET /v1/capabilities HTTP/1.1" 200 OK
+INFO:     127.0.0.1:57931 - "GET /v1/workspaces HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:57933 - "GET /v1/sessions?include_all_workspaces=true&limit=20&kinds=conversation%2Cbranch HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:57934 - "GET /v1/capabilities HTTP/1.1" 200 OK
+INFO:     127.0.0.1:57941 - "GET /v1/sessions?include_all_workspaces=true&limit=20&kinds=conversation%2Cbranch HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:57939 - "GET /v1/workspaces HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:57948 - "GET /v1/capabilities HTTP/1.1" 200 OK
+INFO:     127.0.0.1:57949 - "GET /v1/workspaces HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:57953 - "GET /v1/sessions?include_all_workspaces=true&limit=20&kinds=conversation%2Cbranch HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:57957 - "GET /v1/capabilities HTTP/1.1" 200 OK
+INFO:     127.0.0.1:57960 - "GET /v1/sessions?include_all_workspaces=true&limit=20&kinds=conversation%2Cbranch HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:57961 - "GET /v1/workspaces HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:57962 - "GET /v1/capabilities HTTP/1.1" 200 OK
+INFO:     127.0.0.1:57964 - "GET /v1/workspaces HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:57968 - "GET /v1/sessions?include_all_workspaces=true&limit=20&kinds=conversation%2Cbranch HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:57972 - "GET /v1/capabilities HTTP/1.1" 200 OK
+INFO:     127.0.0.1:57980 - "GET /v1/sessions?include_all_workspaces=true&limit=20&kinds=conversation%2Cbranch HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:57977 - "GET /v1/workspaces HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:57983 - "GET /v1/capabilities HTTP/1.1" 200 OK
+INFO:     127.0.0.1:57992 - "GET /v1/workspaces HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:57990 - "GET /v1/sessions?include_all_workspaces=true&limit=20&kinds=conversation%2Cbranch HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:57998 - "GET /v1/capabilities HTTP/1.1" 200 OK
+INFO:     127.0.0.1:57999 - "GET /v1/sessions?include_all_workspaces=true&limit=20&kinds=conversation%2Cbranch HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:58003 - "GET /v1/workspaces HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:58004 - "GET /v1/capabilities HTTP/1.1" 200 OK
+INFO:     127.0.0.1:58005 - "GET /v1/workspaces HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:58008 - "GET /v1/sessions?include_all_workspaces=true&limit=20&kinds=conversation%2Cbranch HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:58011 - "GET /v1/capabilities HTTP/1.1" 200 OK
+INFO:     127.0.0.1:58012 - "GET /v1/workspaces HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:58013 - "GET /v1/sessions?include_all_workspaces=true&limit=20&kinds=conversation%2Cbranch HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:58016 - "GET /v1/capabilities HTTP/1.1" 200 OK
+INFO:     127.0.0.1:58017 - "GET /v1/workspaces HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:58023 - "GET /v1/sessions?include_all_workspaces=true&limit=20&kinds=conversation%2Cbranch HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:58026 - "GET /v1/capabilities HTTP/1.1" 200 OK
+INFO:     127.0.0.1:58032 - "GET /v1/sessions?include_all_workspaces=true&limit=20&kinds=conversation%2Cbranch HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:58029 - "GET /v1/workspaces HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:58034 - "GET /v1/capabilities HTTP/1.1" 200 OK
+INFO:     127.0.0.1:58041 - "GET /v1/sessions?include_all_workspaces=true&limit=20&kinds=conversation%2Cbranch HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:58038 - "GET /v1/workspaces HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:58042 - "GET /v1/capabilities HTTP/1.1" 200 OK
+INFO:     127.0.0.1:58044 - "GET /v1/sessions?include_all_workspaces=true&limit=20&kinds=conversation%2Cbranch HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:58049 - "GET /v1/workspaces HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:58050 - "GET /v1/capabilities HTTP/1.1" 200 OK
+INFO:     127.0.0.1:58054 - "GET /v1/sessions?include_all_workspaces=true&limit=20&kinds=conversation%2Cbranch HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:58051 - "GET /v1/workspaces HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:58064 - "GET /v1/capabilities HTTP/1.1" 200 OK
+INFO:     127.0.0.1:58068 - "GET /v1/workspaces HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:58069 - "GET /v1/sessions?include_all_workspaces=true&limit=20&kinds=conversation%2Cbranch HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:58078 - "GET /v1/capabilities HTTP/1.1" 200 OK
+INFO:     127.0.0.1:58081 - "GET /v1/workspaces HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:58080 - "GET /v1/sessions?include_all_workspaces=true&limit=20&kinds=conversation%2Cbranch HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:58087 - "GET /v1/capabilities HTTP/1.1" 200 OK
+INFO:     127.0.0.1:58089 - "GET /v1/workspaces HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:58093 - "GET /v1/sessions?include_all_workspaces=true&limit=20&kinds=conversation%2Cbranch HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:58100 - "GET /v1/capabilities HTTP/1.1" 200 OK
+INFO:     127.0.0.1:58104 - "GET /v1/workspaces HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:58105 - "GET /v1/sessions?include_all_workspaces=true&limit=20&kinds=conversation%2Cbranch HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:58108 - "GET /v1/capabilities HTTP/1.1" 200 OK
+INFO:     127.0.0.1:58116 - "GET /v1/sessions?include_all_workspaces=true&limit=20&kinds=conversation%2Cbranch HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:58114 - "GET /v1/workspaces HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:58123 - "GET /v1/capabilities HTTP/1.1" 200 OK
+INFO:     127.0.0.1:58133 - "GET /v1/sessions?include_all_workspaces=true&limit=20&kinds=conversation%2Cbranch HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:58132 - "GET /v1/workspaces HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:58140 - "GET /v1/capabilities HTTP/1.1" 200 OK
+INFO:     127.0.0.1:58142 - "GET /v1/sessions?include_all_workspaces=true&limit=20&kinds=conversation%2Cbranch HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:58145 - "GET /v1/workspaces HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:58149 - "GET /v1/capabilities HTTP/1.1" 200 OK
+INFO:     127.0.0.1:58150 - "GET /v1/workspaces HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:58156 - "GET /v1/sessions?include_all_workspaces=true&limit=20&kinds=conversation%2Cbranch HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:58157 - "GET /v1/capabilities HTTP/1.1" 200 OK
+INFO:     127.0.0.1:58164 - "GET /v1/sessions?include_all_workspaces=true&limit=20&kinds=conversation%2Cbranch HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:58163 - "GET /v1/workspaces HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:58172 - "GET /v1/capabilities HTTP/1.1" 200 OK
+INFO:     127.0.0.1:58186 - "GET /v1/workspaces HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:58182 - "GET /v1/sessions?include_all_workspaces=true&limit=20&kinds=conversation%2Cbranch HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:58190 - "GET /v1/capabilities HTTP/1.1" 200 OK
+INFO:     127.0.0.1:58194 - "GET /v1/sessions?include_all_workspaces=true&limit=20&kinds=conversation%2Cbranch HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:58191 - "GET /v1/workspaces HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:58198 - "GET /v1/capabilities HTTP/1.1" 200 OK
+INFO:     127.0.0.1:58200 - "GET /v1/workspaces HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:58201 - "GET /v1/sessions?include_all_workspaces=true&limit=20&kinds=conversation%2Cbranch HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:58202 - "GET /v1/capabilities HTTP/1.1" 200 OK
+INFO:     127.0.0.1:58208 - "GET /v1/sessions?include_all_workspaces=true&limit=20&kinds=conversation%2Cbranch HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:58207 - "GET /v1/workspaces HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:58213 - "GET /v1/capabilities HTTP/1.1" 200 OK
+INFO:     127.0.0.1:58222 - "GET /v1/sessions?include_all_workspaces=true&limit=20&kinds=conversation%2Cbranch HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:58224 - "GET /v1/workspaces HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:58231 - "GET /v1/capabilities HTTP/1.1" 200 OK
+INFO:     127.0.0.1:58232 - "GET /v1/workspaces HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:58239 - "GET /v1/sessions?include_all_workspaces=true&limit=20&kinds=conversation%2Cbranch HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:58244 - "GET /v1/capabilities HTTP/1.1" 200 OK
+INFO:     127.0.0.1:58264 - "GET /v1/sessions?include_all_workspaces=true&limit=20&kinds=conversation%2Cbranch HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:58259 - "GET /v1/workspaces HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:58287 - "GET /v1/capabilities HTTP/1.1" 200 OK
+INFO:     127.0.0.1:58303 - "GET /v1/sessions?include_all_workspaces=true&limit=20&kinds=conversation%2Cbranch HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:58297 - "GET /v1/workspaces HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:58318 - "GET /v1/capabilities HTTP/1.1" 200 OK
+INFO:     127.0.0.1:58324 - "GET /v1/workspaces HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:58328 - "GET /v1/sessions?include_all_workspaces=true&limit=20&kinds=conversation%2Cbranch HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:58347 - "GET /v1/capabilities HTTP/1.1" 200 OK
+INFO:     127.0.0.1:58360 - "GET /v1/sessions?include_all_workspaces=true&limit=20&kinds=conversation%2Cbranch HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:58365 - "GET /v1/workspaces HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:58379 - "GET /v1/capabilities HTTP/1.1" 200 OK
+INFO:     127.0.0.1:58392 - "GET /v1/sessions?include_all_workspaces=true&limit=20&kinds=conversation%2Cbranch HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:58388 - "GET /v1/workspaces HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:58408 - "GET /v1/capabilities HTTP/1.1" 200 OK
+INFO:     127.0.0.1:58409 - "GET /v1/workspaces HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:58410 - "GET /v1/sessions?include_all_workspaces=true&limit=20&kinds=conversation%2Cbranch HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:58411 - "GET /v1/capabilities HTTP/1.1" 200 OK
+INFO:     127.0.0.1:58415 - "GET /v1/workspaces HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:58416 - "GET /v1/sessions?include_all_workspaces=true&limit=20&kinds=conversation%2Cbranch HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:58419 - "GET /v1/capabilities HTTP/1.1" 200 OK
+INFO:     127.0.0.1:58426 - "GET /v1/workspaces HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:58427 - "GET /v1/sessions?include_all_workspaces=true&limit=20&kinds=conversation%2Cbranch HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:58430 - "GET /v1/capabilities HTTP/1.1" 200 OK
+INFO:     127.0.0.1:58436 - "GET /v1/workspaces HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:58438 - "GET /v1/sessions?include_all_workspaces=true&limit=20&kinds=conversation%2Cbranch HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:58446 - "GET /v1/capabilities HTTP/1.1" 200 OK
+INFO:     127.0.0.1:58457 - "GET /v1/workspaces HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:58459 - "GET /v1/sessions?include_all_workspaces=true&limit=20&kinds=conversation%2Cbranch HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:58460 - "GET /v1/capabilities HTTP/1.1" 200 OK
+INFO:     127.0.0.1:58473 - "GET /v1/sessions?include_all_workspaces=true&limit=20&kinds=conversation%2Cbranch HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:58475 - "GET /v1/workspaces HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:58482 - "GET /v1/capabilities HTTP/1.1" 200 OK
+INFO:     127.0.0.1:58484 - "GET /v1/workspaces HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:58486 - "GET /v1/sessions?include_all_workspaces=true&limit=20&kinds=conversation%2Cbranch HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:57060 - "GET /v1/health HTTP/1.1" 200 OK
+INFO:     127.0.0.1:58491 - "GET /v1/capabilities HTTP/1.1" 200 OK
+INFO:     127.0.0.1:58496 - "GET /v1/workspaces HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:58497 - "GET /v1/sessions?include_all_workspaces=true&limit=20&kinds=conversation%2Cbranch HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:58502 - "GET /v1/capabilities HTTP/1.1" 200 OK
+INFO:     127.0.0.1:58503 - "GET /v1/workspaces HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:58506 - "GET /v1/sessions?include_all_workspaces=true&limit=20&kinds=conversation%2Cbranch HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:58507 - "GET /v1/capabilities HTTP/1.1" 200 OK
+INFO:     127.0.0.1:58508 - "GET /v1/workspaces HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:58509 - "GET /v1/sessions?include_all_workspaces=true&limit=20&kinds=conversation%2Cbranch HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:58518 - "GET /v1/capabilities HTTP/1.1" 200 OK
+INFO:     127.0.0.1:58539 - "GET /v1/workspaces HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:58535 - "GET /v1/sessions?include_all_workspaces=true&limit=20&kinds=conversation%2Cbranch HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:58547 - "GET /v1/capabilities HTTP/1.1" 200 OK
+INFO:     127.0.0.1:58550 - "GET /v1/workspaces HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:58555 - "GET /v1/sessions?include_all_workspaces=true&limit=20&kinds=conversation%2Cbranch HTTP/1.1" 503 Service Unavailable
+sidecar-progress: backend startup is active
+INFO:     127.0.0.1:58575 - "GET /v1/capabilities HTTP/1.1" 200 OK
+INFO:     127.0.0.1:58579 - "GET /v1/capabilities HTTP/1.1" 200 OK
+INFO:     127.0.0.1:58600 - "GET /v1/sessions?include_all_workspaces=true&limit=20&kinds=conversation%2Cbranch HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:58594 - "GET /v1/workspaces HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:58625 - "GET /v1/capabilities HTTP/1.1" 200 OK
+INFO:     127.0.0.1:58647 - "GET /v1/workspaces HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:58648 - "GET /v1/sessions?include_all_workspaces=true&limit=20&kinds=conversation%2Cbranch HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:58651 - "GET /v1/capabilities HTTP/1.1" 200 OK
+INFO:     127.0.0.1:58654 - "GET /v1/workspaces HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:58661 - "GET /v1/sessions?include_all_workspaces=true&limit=20&kinds=conversation%2Cbranch HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:58662 - "GET /v1/capabilities HTTP/1.1" 200 OK
+INFO:     127.0.0.1:58700 - "GET /v1/workspaces HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:58707 - "GET /v1/sessions?include_all_workspaces=true&limit=20&kinds=conversation%2Cbranch HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:58726 - "GET /v1/capabilities HTTP/1.1" 200 OK
+INFO:     127.0.0.1:58743 - "GET /v1/workspaces HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:58747 - "GET /v1/sessions?include_all_workspaces=true&limit=20&kinds=conversation%2Cbranch HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:58750 - "GET /v1/capabilities HTTP/1.1" 200 OK
+INFO:     127.0.0.1:58751 - "GET /v1/workspaces HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:58752 - "GET /v1/sessions?include_all_workspaces=true&limit=20&kinds=conversation%2Cbranch HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:58780 - "GET /v1/capabilities HTTP/1.1" 200 OK
+INFO:     127.0.0.1:58791 - "GET /v1/workspaces HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:58792 - "GET /v1/sessions?include_all_workspaces=true&limit=20&kinds=conversation%2Cbranch HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:58803 - "GET /v1/capabilities HTTP/1.1" 200 OK
+INFO:     127.0.0.1:58804 - "GET /v1/workspaces HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:58805 - "GET /v1/sessions?include_all_workspaces=true&limit=20&kinds=conversation%2Cbranch HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:58813 - "GET /v1/capabilities HTTP/1.1" 200 OK
+INFO:     127.0.0.1:58822 - "GET /v1/workspaces HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:58820 - "GET /v1/sessions?include_all_workspaces=true&limit=20&kinds=conversation%2Cbranch HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:58825 - "GET /v1/capabilities HTTP/1.1" 200 OK
+INFO:     127.0.0.1:58830 - "GET /v1/workspaces HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:58832 - "GET /v1/sessions?include_all_workspaces=true&limit=20&kinds=conversation%2Cbranch HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:58856 - "GET /v1/capabilities HTTP/1.1" 200 OK
+INFO:     127.0.0.1:58864 - "GET /v1/workspaces HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:58865 - "GET /v1/sessions?include_all_workspaces=true&limit=20&kinds=conversation%2Cbranch HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:58868 - "GET /v1/capabilities HTTP/1.1" 200 OK
+INFO:     127.0.0.1:58869 - "GET /v1/workspaces HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:58877 - "GET /v1/sessions?include_all_workspaces=true&limit=20&kinds=conversation%2Cbranch HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:58907 - "GET /v1/capabilities HTTP/1.1" 200 OK
+INFO:     127.0.0.1:58925 - "GET /v1/sessions?include_all_workspaces=true&limit=20&kinds=conversation%2Cbranch HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:58924 - "GET /v1/workspaces HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:58941 - "GET /v1/capabilities HTTP/1.1" 200 OK
+INFO:     127.0.0.1:58947 - "GET /v1/workspaces HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:58949 - "GET /v1/sessions?include_all_workspaces=true&limit=20&kinds=conversation%2Cbranch HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:58955 - "GET /v1/capabilities HTTP/1.1" 200 OK
+INFO:     127.0.0.1:58960 - "GET /v1/sessions?include_all_workspaces=true&limit=20&kinds=conversation%2Cbranch HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:58956 - "GET /v1/workspaces HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:58969 - "GET /v1/capabilities HTTP/1.1" 200 OK
+INFO:     127.0.0.1:58981 - "GET /v1/sessions?include_all_workspaces=true&limit=20&kinds=conversation%2Cbranch HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:58978 - "GET /v1/workspaces HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:59051 - "GET /v1/capabilities HTTP/1.1" 200 OK
+INFO:     127.0.0.1:59080 - "GET /v1/workspaces HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:59088 - "GET /v1/sessions?include_all_workspaces=true&limit=20&kinds=conversation%2Cbranch HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:59106 - "GET /v1/capabilities HTTP/1.1" 200 OK
+INFO:     127.0.0.1:59127 - "GET /v1/workspaces HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:59134 - "GET /v1/sessions?include_all_workspaces=true&limit=20&kinds=conversation%2Cbranch HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:59161 - "GET /v1/capabilities HTTP/1.1" 200 OK
+INFO:     127.0.0.1:59186 - "GET /v1/workspaces HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:59188 - "GET /v1/sessions?include_all_workspaces=true&limit=20&kinds=conversation%2Cbranch HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:59212 - "GET /v1/capabilities HTTP/1.1" 200 OK
+INFO:     127.0.0.1:59222 - "GET /v1/workspaces HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:59223 - "GET /v1/sessions?include_all_workspaces=true&limit=20&kinds=conversation%2Cbranch HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:59231 - "GET /v1/capabilities HTTP/1.1" 200 OK
+INFO:     127.0.0.1:59237 - "GET /v1/workspaces HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:59236 - "GET /v1/sessions?include_all_workspaces=true&limit=20&kinds=conversation%2Cbranch HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:59238 - "GET /v1/capabilities HTTP/1.1" 200 OK
+INFO:     127.0.0.1:59241 - "GET /v1/workspaces HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:59240 - "GET /v1/sessions?include_all_workspaces=true&limit=20&kinds=conversation%2Cbranch HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:59247 - "GET /v1/capabilities HTTP/1.1" 200 OK
+INFO:     127.0.0.1:59255 - "GET /v1/sessions?include_all_workspaces=true&limit=20&kinds=conversation%2Cbranch HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:59256 - "GET /v1/workspaces HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:59260 - "GET /v1/capabilities HTTP/1.1" 200 OK
+INFO:     127.0.0.1:59261 - "GET /v1/workspaces HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:59262 - "GET /v1/sessions?include_all_workspaces=true&limit=20&kinds=conversation%2Cbranch HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:59263 - "GET /v1/capabilities HTTP/1.1" 200 OK
+INFO:     127.0.0.1:59266 - "GET /v1/workspaces HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:59267 - "GET /v1/sessions?include_all_workspaces=true&limit=20&kinds=conversation%2Cbranch HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:59273 - "GET /v1/capabilities HTTP/1.1" 200 OK
+INFO:     127.0.0.1:59274 - "GET /v1/workspaces HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:59275 - "GET /v1/sessions?include_all_workspaces=true&limit=20&kinds=conversation%2Cbranch HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:59276 - "GET /v1/capabilities HTTP/1.1" 200 OK
+INFO:     127.0.0.1:59284 - "GET /v1/workspaces HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:59285 - "GET /v1/sessions?include_all_workspaces=true&limit=20&kinds=conversation%2Cbranch HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:59290 - "GET /v1/capabilities HTTP/1.1" 200 OK
+INFO:     127.0.0.1:59292 - "GET /v1/sessions?include_all_workspaces=true&limit=20&kinds=conversation%2Cbranch HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:59291 - "GET /v1/workspaces HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:59295 - "GET /v1/capabilities HTTP/1.1" 200 OK
+INFO:     127.0.0.1:59297 - "GET /v1/sessions?include_all_workspaces=true&limit=20&kinds=conversation%2Cbranch HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:59296 - "GET /v1/workspaces HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:59300 - "GET /v1/capabilities HTTP/1.1" 200 OK
+INFO:     127.0.0.1:59302 - "GET /v1/workspaces HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:59303 - "GET /v1/sessions?include_all_workspaces=true&limit=20&kinds=conversation%2Cbranch HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:59305 - "GET /v1/capabilities HTTP/1.1" 200 OK
+INFO:     127.0.0.1:59311 - "GET /v1/workspaces HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:59314 - "GET /v1/sessions?include_all_workspaces=true&limit=20&kinds=conversation%2Cbranch HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:59322 - "GET /v1/capabilities HTTP/1.1" 200 OK
+INFO:     127.0.0.1:59324 - "GET /v1/sessions?include_all_workspaces=true&limit=20&kinds=conversation%2Cbranch HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:59323 - "GET /v1/workspaces HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:59327 - "GET /v1/capabilities HTTP/1.1" 200 OK
+INFO:     127.0.0.1:59328 - "GET /v1/workspaces HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:59329 - "GET /v1/sessions?include_all_workspaces=true&limit=20&kinds=conversation%2Cbranch HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:59332 - "GET /v1/capabilities HTTP/1.1" 200 OK
+INFO:     127.0.0.1:59333 - "GET /v1/workspaces HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:59334 - "GET /v1/sessions?include_all_workspaces=true&limit=20&kinds=conversation%2Cbranch HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:59338 - "GET /v1/capabilities HTTP/1.1" 200 OK
+INFO:     127.0.0.1:59341 - "GET /v1/sessions?include_all_workspaces=true&limit=20&kinds=conversation%2Cbranch HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:59340 - "GET /v1/workspaces HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:59348 - "GET /v1/capabilities HTTP/1.1" 200 OK
+INFO:     127.0.0.1:59357 - "GET /v1/workspaces HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:59358 - "GET /v1/sessions?include_all_workspaces=true&limit=20&kinds=conversation%2Cbranch HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:59363 - "GET /v1/capabilities HTTP/1.1" 200 OK
+INFO:     127.0.0.1:59364 - "GET /v1/workspaces HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:59365 - "GET /v1/sessions?include_all_workspaces=true&limit=20&kinds=conversation%2Cbranch HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:59366 - "GET /v1/capabilities HTTP/1.1" 200 OK
+INFO:     127.0.0.1:59371 - "GET /v1/workspaces HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:59372 - "GET /v1/sessions?include_all_workspaces=true&limit=20&kinds=conversation%2Cbranch HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:59379 - "GET /v1/capabilities HTTP/1.1" 200 OK
+INFO:     127.0.0.1:59385 - "GET /v1/workspaces HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:59386 - "GET /v1/sessions?include_all_workspaces=true&limit=20&kinds=conversation%2Cbranch HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:59394 - "GET /v1/capabilities HTTP/1.1" 200 OK
+INFO:     127.0.0.1:59395 - "GET /v1/workspaces HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:59396 - "GET /v1/sessions?include_all_workspaces=true&limit=20&kinds=conversation%2Cbranch HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:59398 - "GET /v1/capabilities HTTP/1.1" 200 OK
+INFO:     127.0.0.1:59403 - "GET /v1/workspaces HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:59404 - "GET /v1/sessions?include_all_workspaces=true&limit=20&kinds=conversation%2Cbranch HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:59406 - "GET /v1/capabilities HTTP/1.1" 200 OK
+INFO:     127.0.0.1:59408 - "GET /v1/workspaces HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:59407 - "GET /v1/sessions?include_all_workspaces=true&limit=20&kinds=conversation%2Cbranch HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:59414 - "GET /v1/capabilities HTTP/1.1" 200 OK
+INFO:     127.0.0.1:59416 - "GET /v1/sessions?include_all_workspaces=true&limit=20&kinds=conversation%2Cbranch HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:59415 - "GET /v1/workspaces HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:59424 - "GET /v1/capabilities HTTP/1.1" 200 OK
+INFO:     127.0.0.1:57060 - "GET /v1/health HTTP/1.1" 200 OK
+INFO:     127.0.0.1:59427 - "GET /v1/workspaces HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:59426 - "GET /v1/sessions?include_all_workspaces=true&limit=20&kinds=conversation%2Cbranch HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:59428 - "GET /v1/capabilities HTTP/1.1" 200 OK
+INFO:     127.0.0.1:59432 - "GET /v1/workspaces HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:59433 - "GET /v1/sessions?include_all_workspaces=true&limit=20&kinds=conversation%2Cbranch HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:59439 - "GET /v1/capabilities HTTP/1.1" 200 OK
+INFO:     127.0.0.1:59445 - "GET /v1/workspaces HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:59446 - "GET /v1/sessions?include_all_workspaces=true&limit=20&kinds=conversation%2Cbranch HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:59456 - "GET /v1/capabilities HTTP/1.1" 200 OK
+INFO:     127.0.0.1:59463 - "GET /v1/sessions?include_all_workspaces=true&limit=20&kinds=conversation%2Cbranch HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:59462 - "GET /v1/workspaces HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:59468 - "GET /v1/capabilities HTTP/1.1" 200 OK
+INFO:     127.0.0.1:59470 - "GET /v1/sessions?include_all_workspaces=true&limit=20&kinds=conversation%2Cbranch HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:59469 - "GET /v1/workspaces HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:59471 - "GET /v1/capabilities HTTP/1.1" 200 OK
+INFO:     127.0.0.1:59475 - "GET /v1/workspaces HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:59476 - "GET /v1/sessions?include_all_workspaces=true&limit=20&kinds=conversation%2Cbranch HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:59483 - "GET /v1/capabilities HTTP/1.1" 200 OK
+INFO:     127.0.0.1:59484 - "GET /v1/workspaces HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:59485 - "GET /v1/sessions?include_all_workspaces=true&limit=20&kinds=conversation%2Cbranch HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:59487 - "GET /v1/capabilities HTTP/1.1" 200 OK
+INFO:     127.0.0.1:59493 - "GET /v1/workspaces HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:59494 - "GET /v1/sessions?include_all_workspaces=true&limit=20&kinds=conversation%2Cbranch HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:59501 - "GET /v1/capabilities HTTP/1.1" 200 OK
+INFO:     127.0.0.1:59504 - "GET /v1/workspaces HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:59505 - "GET /v1/sessions?include_all_workspaces=true&limit=20&kinds=conversation%2Cbranch HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:59506 - "GET /v1/capabilities HTTP/1.1" 200 OK
+INFO:     127.0.0.1:59507 - "GET /v1/workspaces HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:59508 - "GET /v1/sessions?include_all_workspaces=true&limit=20&kinds=conversation%2Cbranch HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:59511 - "GET /v1/capabilities HTTP/1.1" 200 OK
+INFO:     127.0.0.1:59512 - "GET /v1/workspaces HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:59513 - "GET /v1/sessions?include_all_workspaces=true&limit=20&kinds=conversation%2Cbranch HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:59517 - "GET /v1/capabilities HTTP/1.1" 200 OK
+INFO:     127.0.0.1:59524 - "GET /v1/sessions?include_all_workspaces=true&limit=20&kinds=conversation%2Cbranch HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:59523 - "GET /v1/workspaces HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:59533 - "GET /v1/capabilities HTTP/1.1" 200 OK
+INFO:     127.0.0.1:59540 - "GET /v1/sessions?include_all_workspaces=true&limit=20&kinds=conversation%2Cbranch HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:59539 - "GET /v1/workspaces HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:59547 - "GET /v1/capabilities HTTP/1.1" 200 OK
+INFO:     127.0.0.1:59553 - "GET /v1/sessions?include_all_workspaces=true&limit=20&kinds=conversation%2Cbranch HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:59552 - "GET /v1/workspaces HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:59560 - "GET /v1/capabilities HTTP/1.1" 200 OK
+INFO:     127.0.0.1:59564 - "GET /v1/workspaces HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:59565 - "GET /v1/sessions?include_all_workspaces=true&limit=20&kinds=conversation%2Cbranch HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:59571 - "GET /v1/capabilities HTTP/1.1" 200 OK
+INFO:     127.0.0.1:59572 - "GET /v1/sessions?include_all_workspaces=true&limit=20&kinds=conversation%2Cbranch HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:59573 - "GET /v1/workspaces HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:59574 - "GET /v1/capabilities HTTP/1.1" 200 OK
+INFO:     127.0.0.1:59579 - "GET /v1/sessions?include_all_workspaces=true&limit=20&kinds=conversation%2Cbranch HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:59578 - "GET /v1/workspaces HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:59584 - "GET /v1/capabilities HTTP/1.1" 200 OK
+INFO:     127.0.0.1:59585 - "GET /v1/workspaces HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:59586 - "GET /v1/sessions?include_all_workspaces=true&limit=20&kinds=conversation%2Cbranch HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:59587 - "GET /v1/capabilities HTTP/1.1" 200 OK
+INFO:     127.0.0.1:59592 - "GET /v1/workspaces HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:59593 - "GET /v1/sessions?include_all_workspaces=true&limit=20&kinds=conversation%2Cbranch HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:59600 - "GET /v1/capabilities HTTP/1.1" 200 OK
+INFO:     127.0.0.1:59607 - "GET /v1/workspaces HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:59608 - "GET /v1/sessions?include_all_workspaces=true&limit=20&kinds=conversation%2Cbranch HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:59610 - "GET /v1/capabilities HTTP/1.1" 200 OK
+INFO:     127.0.0.1:59611 - "GET /v1/workspaces HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:59612 - "GET /v1/sessions?include_all_workspaces=true&limit=20&kinds=conversation%2Cbranch HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:59613 - "GET /v1/capabilities HTTP/1.1" 200 OK
+INFO:     127.0.0.1:59621 - "GET /v1/sessions?include_all_workspaces=true&limit=20&kinds=conversation%2Cbranch HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:59620 - "GET /v1/workspaces HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:59625 - "GET /v1/capabilities HTTP/1.1" 200 OK
+INFO:     127.0.0.1:59626 - "GET /v1/workspaces HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:59627 - "GET /v1/sessions?include_all_workspaces=true&limit=20&kinds=conversation%2Cbranch HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:59630 - "GET /v1/capabilities HTTP/1.1" 200 OK
+INFO:     127.0.0.1:59635 - "GET /v1/workspaces HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:59636 - "GET /v1/sessions?include_all_workspaces=true&limit=20&kinds=conversation%2Cbranch HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:59637 - "GET /v1/capabilities HTTP/1.1" 200 OK
+INFO:     127.0.0.1:59639 - "GET /v1/sessions?include_all_workspaces=true&limit=20&kinds=conversation%2Cbranch HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:59638 - "GET /v1/workspaces HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:59644 - "GET /v1/capabilities HTTP/1.1" 200 OK
+INFO:     127.0.0.1:59649 - "GET /v1/workspaces HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:59650 - "GET /v1/sessions?include_all_workspaces=true&limit=20&kinds=conversation%2Cbranch HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:59656 - "GET /v1/capabilities HTTP/1.1" 200 OK
+INFO:     127.0.0.1:59658 - "GET /v1/sessions?include_all_workspaces=true&limit=20&kinds=conversation%2Cbranch HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:59657 - "GET /v1/workspaces HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:59659 - "GET /v1/capabilities HTTP/1.1" 200 OK
+INFO:     127.0.0.1:59661 - "GET /v1/sessions?include_all_workspaces=true&limit=20&kinds=conversation%2Cbranch HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:59660 - "GET /v1/workspaces HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:59669 - "GET /v1/capabilities HTTP/1.1" 200 OK
+INFO:     127.0.0.1:59674 - "GET /v1/workspaces HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:59676 - "GET /v1/sessions?include_all_workspaces=true&limit=20&kinds=conversation%2Cbranch HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:59682 - "GET /v1/capabilities HTTP/1.1" 200 OK
+INFO:     127.0.0.1:59683 - "GET /v1/workspaces HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:59684 - "GET /v1/sessions?include_all_workspaces=true&limit=20&kinds=conversation%2Cbranch HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:59685 - "GET /v1/capabilities HTTP/1.1" 200 OK
+INFO:     127.0.0.1:59688 - "GET /v1/sessions?include_all_workspaces=true&limit=20&kinds=conversation%2Cbranch HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:59689 - "GET /v1/workspaces HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:59694 - "GET /v1/capabilities HTTP/1.1" 200 OK
+INFO:     127.0.0.1:59696 - "GET /v1/sessions?include_all_workspaces=true&limit=20&kinds=conversation%2Cbranch HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:59695 - "GET /v1/workspaces HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:59697 - "GET /v1/capabilities HTTP/1.1" 200 OK
+INFO:     127.0.0.1:59699 - "GET /v1/sessions?include_all_workspaces=true&limit=20&kinds=conversation%2Cbranch HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:59700 - "GET /v1/workspaces HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:59705 - "GET /v1/capabilities HTTP/1.1" 200 OK
+INFO:     127.0.0.1:59706 - "GET /v1/workspaces HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:59707 - "GET /v1/sessions?include_all_workspaces=true&limit=20&kinds=conversation%2Cbranch HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:59708 - "GET /v1/capabilities HTTP/1.1" 200 OK
+INFO:     127.0.0.1:59710 - "GET /v1/workspaces HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:59711 - "GET /v1/sessions?include_all_workspaces=true&limit=20&kinds=conversation%2Cbranch HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:59712 - "GET /v1/capabilities HTTP/1.1" 200 OK
+INFO:     127.0.0.1:59715 - "GET /v1/sessions?include_all_workspaces=true&limit=20&kinds=conversation%2Cbranch HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:59716 - "GET /v1/workspaces HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:59726 - "GET /v1/capabilities HTTP/1.1" 200 OK
+INFO:     127.0.0.1:59734 - "GET /v1/sessions?include_all_workspaces=true&limit=20&kinds=conversation%2Cbranch HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:59735 - "GET /v1/workspaces HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:59743 - "GET /v1/capabilities HTTP/1.1" 200 OK
+INFO:     127.0.0.1:59745 - "GET /v1/sessions?include_all_workspaces=true&limit=20&kinds=conversation%2Cbranch HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:59744 - "GET /v1/workspaces HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:59756 - "GET /v1/capabilities HTTP/1.1" 200 OK
+INFO:     127.0.0.1:59762 - "GET /v1/workspaces HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:59763 - "GET /v1/sessions?include_all_workspaces=true&limit=20&kinds=conversation%2Cbranch HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:59768 - "GET /v1/capabilities HTTP/1.1" 200 OK
+INFO:     127.0.0.1:59774 - "GET /v1/sessions?include_all_workspaces=true&limit=20&kinds=conversation%2Cbranch HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:59773 - "GET /v1/workspaces HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:59785 - "GET /v1/capabilities HTTP/1.1" 200 OK
+INFO:     127.0.0.1:59791 - "GET /v1/workspaces HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:59790 - "GET /v1/sessions?include_all_workspaces=true&limit=20&kinds=conversation%2Cbranch HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:59799 - "GET /v1/capabilities HTTP/1.1" 200 OK
+INFO:     127.0.0.1:59805 - "GET /v1/sessions?include_all_workspaces=true&limit=20&kinds=conversation%2Cbranch HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:59804 - "GET /v1/workspaces HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:59806 - "GET /v1/capabilities HTTP/1.1" 200 OK
+INFO:     127.0.0.1:59812 - "GET /v1/sessions?include_all_workspaces=true&limit=20&kinds=conversation%2Cbranch HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:59811 - "GET /v1/workspaces HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:59819 - "GET /v1/capabilities HTTP/1.1" 200 OK
+INFO:     127.0.0.1:59827 - "GET /v1/sessions?include_all_workspaces=true&limit=20&kinds=conversation%2Cbranch HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:59826 - "GET /v1/workspaces HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:59835 - "GET /v1/capabilities HTTP/1.1" 200 OK
+INFO:     127.0.0.1:59837 - "GET /v1/sessions?include_all_workspaces=true&limit=20&kinds=conversation%2Cbranch HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:59836 - "GET /v1/workspaces HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:59838 - "GET /v1/capabilities HTTP/1.1" 200 OK
+INFO:     127.0.0.1:59842 - "GET /v1/sessions?include_all_workspaces=true&limit=20&kinds=conversation%2Cbranch HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:59841 - "GET /v1/workspaces HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:59847 - "GET /v1/capabilities HTTP/1.1" 200 OK
+INFO:     127.0.0.1:59848 - "GET /v1/sessions?include_all_workspaces=true&limit=20&kinds=conversation%2Cbranch HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:59849 - "GET /v1/workspaces HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:59850 - "GET /v1/capabilities HTTP/1.1" 200 OK
+INFO:     127.0.0.1:59853 - "GET /v1/workspaces HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:59854 - "GET /v1/sessions?include_all_workspaces=true&limit=20&kinds=conversation%2Cbranch HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:59861 - "GET /v1/capabilities HTTP/1.1" 200 OK
+INFO:     127.0.0.1:59869 - "GET /v1/workspaces HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:59870 - "GET /v1/sessions?include_all_workspaces=true&limit=20&kinds=conversation%2Cbranch HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:59882 - "GET /v1/capabilities HTTP/1.1" 200 OK
+INFO:     127.0.0.1:59888 - "GET /v1/workspaces HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:59889 - "GET /v1/sessions?include_all_workspaces=true&limit=20&kinds=conversation%2Cbranch HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:59905 - "GET /v1/capabilities HTTP/1.1" 200 OK
+INFO:     127.0.0.1:59909 - "GET /v1/workspaces HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:59910 - "GET /v1/sessions?include_all_workspaces=true&limit=20&kinds=conversation%2Cbranch HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:59916 - "GET /v1/capabilities HTTP/1.1" 200 OK
+INFO:     127.0.0.1:59921 - "GET /v1/workspaces HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:59922 - "GET /v1/sessions?include_all_workspaces=true&limit=20&kinds=conversation%2Cbranch HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:59935 - "GET /v1/capabilities HTTP/1.1" 200 OK
+INFO:     127.0.0.1:59938 - "GET /v1/sessions?include_all_workspaces=true&limit=20&kinds=conversation%2Cbranch HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:59937 - "GET /v1/workspaces HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:59946 - "GET /v1/capabilities HTTP/1.1" 200 OK
+INFO:     127.0.0.1:59954 - "GET /v1/sessions?include_all_workspaces=true&limit=20&kinds=conversation%2Cbranch HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:59953 - "GET /v1/workspaces HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:59966 - "GET /v1/capabilities HTTP/1.1" 200 OK
+INFO:     127.0.0.1:57060 - "GET /v1/health HTTP/1.1" 200 OK
+INFO:     127.0.0.1:59967 - "GET /v1/workspaces HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:59968 - "GET /v1/sessions?include_all_workspaces=true&limit=20&kinds=conversation%2Cbranch HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:59974 - "GET /v1/capabilities HTTP/1.1" 200 OK
+INFO:     127.0.0.1:59979 - "GET /v1/workspaces HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:59980 - "GET /v1/sessions?include_all_workspaces=true&limit=20&kinds=conversation%2Cbranch HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:59982 - "GET /v1/capabilities HTTP/1.1" 200 OK
+INFO:     127.0.0.1:59988 - "GET /v1/sessions?include_all_workspaces=true&limit=20&kinds=conversation%2Cbranch HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:59986 - "GET /v1/workspaces HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:59989 - "GET /v1/capabilities HTTP/1.1" 200 OK
+INFO:     127.0.0.1:59990 - "GET /v1/workspaces HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:59991 - "GET /v1/sessions?include_all_workspaces=true&limit=20&kinds=conversation%2Cbranch HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:59992 - "GET /v1/capabilities HTTP/1.1" 200 OK
+INFO:     127.0.0.1:59999 - "GET /v1/sessions?include_all_workspaces=true&limit=20&kinds=conversation%2Cbranch HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:59998 - "GET /v1/workspaces HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:60007 - "GET /v1/capabilities HTTP/1.1" 200 OK
+INFO:     127.0.0.1:60012 - "GET /v1/workspaces HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:60013 - "GET /v1/sessions?include_all_workspaces=true&limit=20&kinds=conversation%2Cbranch HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:60014 - "GET /v1/capabilities HTTP/1.1" 200 OK
+INFO:     127.0.0.1:60016 - "GET /v1/sessions?include_all_workspaces=true&limit=20&kinds=conversation%2Cbranch HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:60015 - "GET /v1/workspaces HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:60026 - "GET /v1/capabilities HTTP/1.1" 200 OK
+INFO:     127.0.0.1:60033 - "GET /v1/workspaces HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:60034 - "GET /v1/sessions?include_all_workspaces=true&limit=20&kinds=conversation%2Cbranch HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:60047 - "GET /v1/capabilities HTTP/1.1" 200 OK
+INFO:     127.0.0.1:60048 - "GET /v1/sessions?include_all_workspaces=true&limit=20&kinds=conversation%2Cbranch HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:60049 - "GET /v1/workspaces HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:60050 - "GET /v1/capabilities HTTP/1.1" 200 OK
+INFO:     127.0.0.1:60055 - "GET /v1/sessions?include_all_workspaces=true&limit=20&kinds=conversation%2Cbranch HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:60054 - "GET /v1/workspaces HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:60064 - "GET /v1/capabilities HTTP/1.1" 200 OK
+INFO:     127.0.0.1:60065 - "GET /v1/workspaces HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:60066 - "GET /v1/sessions?include_all_workspaces=true&limit=20&kinds=conversation%2Cbranch HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:60067 - "GET /v1/capabilities HTTP/1.1" 200 OK
+INFO:     127.0.0.1:60068 - "GET /v1/sessions?include_all_workspaces=true&limit=20&kinds=conversation%2Cbranch HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:60070 - "GET /v1/workspaces HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:60077 - "GET /v1/capabilities HTTP/1.1" 200 OK
+INFO:     127.0.0.1:60082 - "GET /v1/workspaces HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:60084 - "GET /v1/sessions?include_all_workspaces=true&limit=20&kinds=conversation%2Cbranch HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:60089 - "GET /v1/capabilities HTTP/1.1" 200 OK
+INFO:     127.0.0.1:60090 - "GET /v1/workspaces HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:60091 - "GET /v1/sessions?include_all_workspaces=true&limit=20&kinds=conversation%2Cbranch HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:60094 - "GET /v1/capabilities HTTP/1.1" 200 OK
+INFO:     127.0.0.1:60096 - "GET /v1/workspaces HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:60095 - "GET /v1/sessions?include_all_workspaces=true&limit=20&kinds=conversation%2Cbranch HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:60100 - "GET /v1/capabilities HTTP/1.1" 200 OK
+INFO:     127.0.0.1:60106 - "GET /v1/workspaces HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:60107 - "GET /v1/sessions?include_all_workspaces=true&limit=20&kinds=conversation%2Cbranch HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:60112 - "GET /v1/capabilities HTTP/1.1" 200 OK
+INFO:     127.0.0.1:60113 - "GET /v1/workspaces HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:60114 - "GET /v1/sessions?include_all_workspaces=true&limit=20&kinds=conversation%2Cbranch HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:60118 - "GET /v1/capabilities HTTP/1.1" 200 OK
+INFO:     127.0.0.1:60119 - "GET /v1/workspaces HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:60120 - "GET /v1/sessions?include_all_workspaces=true&limit=20&kinds=conversation%2Cbranch HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:60123 - "GET /v1/capabilities HTTP/1.1" 200 OK
+INFO:     127.0.0.1:60125 - "GET /v1/sessions?include_all_workspaces=true&limit=20&kinds=conversation%2Cbranch HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:60124 - "GET /v1/workspaces HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:60132 - "GET /v1/capabilities HTTP/1.1" 200 OK
+INFO:     127.0.0.1:60133 - "GET /v1/workspaces HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:60134 - "GET /v1/sessions?include_all_workspaces=true&limit=20&kinds=conversation%2Cbranch HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:60135 - "GET /v1/capabilities HTTP/1.1" 200 OK
+INFO:     127.0.0.1:60137 - "GET /v1/sessions?include_all_workspaces=true&limit=20&kinds=conversation%2Cbranch HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:60136 - "GET /v1/workspaces HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:60143 - "GET /v1/capabilities HTTP/1.1" 200 OK
+INFO:     127.0.0.1:60144 - "GET /v1/workspaces HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:60145 - "GET /v1/sessions?include_all_workspaces=true&limit=20&kinds=conversation%2Cbranch HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:60154 - "GET /v1/capabilities HTTP/1.1" 200 OK
+INFO:     127.0.0.1:60162 - "GET /v1/sessions?include_all_workspaces=true&limit=20&kinds=conversation%2Cbranch HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:60161 - "GET /v1/workspaces HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:60171 - "GET /v1/capabilities HTTP/1.1" 200 OK
+INFO:     127.0.0.1:60177 - "GET /v1/workspaces HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:60179 - "GET /v1/sessions?include_all_workspaces=true&limit=20&kinds=conversation%2Cbranch HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:60185 - "GET /v1/capabilities HTTP/1.1" 200 OK
+INFO:     127.0.0.1:60192 - "GET /v1/sessions?include_all_workspaces=true&limit=20&kinds=conversation%2Cbranch HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:60191 - "GET /v1/workspaces HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:60198 - "GET /v1/capabilities HTTP/1.1" 200 OK
+INFO:     127.0.0.1:60204 - "GET /v1/workspaces HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:60205 - "GET /v1/sessions?include_all_workspaces=true&limit=20&kinds=conversation%2Cbranch HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:60206 - "GET /v1/capabilities HTTP/1.1" 200 OK
+INFO:     127.0.0.1:60209 - "GET /v1/workspaces HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:60210 - "GET /v1/sessions?include_all_workspaces=true&limit=20&kinds=conversation%2Cbranch HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:60220 - "GET /v1/capabilities HTTP/1.1" 200 OK
+INFO:     127.0.0.1:60226 - "GET /v1/workspaces HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:60228 - "GET /v1/sessions?include_all_workspaces=true&limit=20&kinds=conversation%2Cbranch HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:60234 - "GET /v1/capabilities HTTP/1.1" 200 OK
+INFO:     127.0.0.1:60242 - "GET /v1/sessions?include_all_workspaces=true&limit=20&kinds=conversation%2Cbranch HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:60240 - "GET /v1/workspaces HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:60244 - "GET /v1/capabilities HTTP/1.1" 200 OK
+INFO:     127.0.0.1:60246 - "GET /v1/workspaces HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:60247 - "GET /v1/sessions?include_all_workspaces=true&limit=20&kinds=conversation%2Cbranch HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:60248 - "GET /v1/capabilities HTTP/1.1" 200 OK
+INFO:     127.0.0.1:60251 - "GET /v1/sessions?include_all_workspaces=true&limit=20&kinds=conversation%2Cbranch HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:60250 - "GET /v1/workspaces HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:60258 - "GET /v1/capabilities HTTP/1.1" 200 OK
+INFO:     127.0.0.1:60265 - "GET /v1/workspaces HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:60266 - "GET /v1/sessions?include_all_workspaces=true&limit=20&kinds=conversation%2Cbranch HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:60270 - "GET /v1/capabilities HTTP/1.1" 200 OK
+INFO:     127.0.0.1:60271 - "GET /v1/workspaces HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:60272 - "GET /v1/sessions?include_all_workspaces=true&limit=20&kinds=conversation%2Cbranch HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:60274 - "GET /v1/capabilities HTTP/1.1" 200 OK
+INFO:     127.0.0.1:60276 - "GET /v1/workspaces HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:60277 - "GET /v1/sessions?include_all_workspaces=true&limit=20&kinds=conversation%2Cbranch HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:60279 - "GET /v1/capabilities HTTP/1.1" 200 OK
+INFO:     127.0.0.1:60280 - "GET /v1/workspaces HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:60281 - "GET /v1/sessions?include_all_workspaces=true&limit=20&kinds=conversation%2Cbranch HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:60283 - "GET /v1/capabilities HTTP/1.1" 200 OK
+INFO:     127.0.0.1:60284 - "GET /v1/workspaces HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:60285 - "GET /v1/sessions?include_all_workspaces=true&limit=20&kinds=conversation%2Cbranch HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:60292 - "GET /v1/capabilities HTTP/1.1" 200 OK
+INFO:     127.0.0.1:60296 - "GET /v1/workspaces HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:60297 - "GET /v1/sessions?include_all_workspaces=true&limit=20&kinds=conversation%2Cbranch HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:60301 - "GET /v1/capabilities HTTP/1.1" 200 OK
+INFO:     127.0.0.1:60302 - "GET /v1/workspaces HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:60303 - "GET /v1/sessions?include_all_workspaces=true&limit=20&kinds=conversation%2Cbranch HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:60305 - "GET /v1/capabilities HTTP/1.1" 200 OK
+INFO:     127.0.0.1:60306 - "GET /v1/workspaces HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:60307 - "GET /v1/sessions?include_all_workspaces=true&limit=20&kinds=conversation%2Cbranch HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:60317 - "GET /v1/capabilities HTTP/1.1" 200 OK
+INFO:     127.0.0.1:60324 - "GET /v1/workspaces HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:60325 - "GET /v1/sessions?include_all_workspaces=true&limit=20&kinds=conversation%2Cbranch HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:60327 - "GET /v1/capabilities HTTP/1.1" 200 OK
+INFO:     127.0.0.1:60333 - "GET /v1/workspaces HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:60334 - "GET /v1/sessions?include_all_workspaces=true&limit=20&kinds=conversation%2Cbranch HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:60340 - "GET /v1/capabilities HTTP/1.1" 200 OK
+INFO:     127.0.0.1:60347 - "GET /v1/sessions?include_all_workspaces=true&limit=20&kinds=conversation%2Cbranch HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:60346 - "GET /v1/workspaces HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:60348 - "GET /v1/capabilities HTTP/1.1" 200 OK
+INFO:     127.0.0.1:60350 - "GET /v1/workspaces HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:60349 - "GET /v1/sessions?include_all_workspaces=true&limit=20&kinds=conversation%2Cbranch HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:60357 - "GET /v1/capabilities HTTP/1.1" 200 OK
+INFO:     127.0.0.1:60363 - "GET /v1/sessions?include_all_workspaces=true&limit=20&kinds=conversation%2Cbranch HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:60364 - "GET /v1/workspaces HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:60372 - "GET /v1/capabilities HTTP/1.1" 200 OK
+INFO:     127.0.0.1:60378 - "GET /v1/workspaces HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:60379 - "GET /v1/sessions?include_all_workspaces=true&limit=20&kinds=conversation%2Cbranch HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:60387 - "GET /v1/capabilities HTTP/1.1" 200 OK
+INFO:     127.0.0.1:60388 - "GET /v1/workspaces HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:60389 - "GET /v1/sessions?include_all_workspaces=true&limit=20&kinds=conversation%2Cbranch HTTP/1.1" 503 Service Unavailable
+WARNING | ⚑ BOOT step=task_history_restore seconds=0.023 start=25.503 thread=asyncio_1 outcome=ok
+INFO:     127.0.0.1:60391 - "GET /v1/capabilities HTTP/1.1" 200 OK
+WARNING | memory pass skipped reason=lm_provider_unconfigured roles=memory_extract,memory_consolidate
+INFO:     127.0.0.1:60394 - "GET /v1/workspaces HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:60395 - "GET /v1/sessions?include_all_workspaces=true&limit=20&kinds=conversation%2Cbranch HTTP/1.1" 503 Service Unavailable
+WARNING | ⚑ BOOT step=interrupted_sessions seconds=0.001 start=25.551 thread=asyncio_1 outcome=ok
+WARNING | ⚑ BOOT step=interaction_times seconds=0.000 start=25.552 thread=asyncio_1 outcome=ok
+WARNING | ⚑ BOOT step=clio_core_and_store seconds=7.090 start=18.463 thread=MainThread outcome=ok
+INFO:     127.0.0.1:60398 - "GET /v1/capabilities HTTP/1.1" 200 OK
+INFO:     127.0.0.1:60400 - "GET /v1/workspaces HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:60401 - "GET /v1/sessions?include_all_workspaces=true&limit=20&kinds=conversation%2Cbranch HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:60405 - "GET /v1/capabilities HTTP/1.1" 200 OK
+INFO:     127.0.0.1:57060 - "GET /v1/health HTTP/1.1" 200 OK
+INFO:     127.0.0.1:60411 - "GET /v1/workspaces HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:60410 - "GET /v1/sessions?include_all_workspaces=true&limit=20&kinds=conversation%2Cbranch HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:60412 - "GET /v1/capabilities HTTP/1.1" 200 OK
+INFO:     127.0.0.1:60414 - "GET /v1/workspaces HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:60415 - "GET /v1/sessions?include_all_workspaces=true&limit=20&kinds=conversation%2Cbranch HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:60418 - "GET /v1/capabilities HTTP/1.1" 200 OK
+INFO:     127.0.0.1:60421 - "GET /v1/workspaces HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:60423 - "GET /v1/sessions?include_all_workspaces=true&limit=20&kinds=conversation%2Cbranch HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:60428 - "GET /v1/capabilities HTTP/1.1" 200 OK
+INFO:     127.0.0.1:60431 - "GET /v1/workspaces HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:60432 - "GET /v1/sessions?include_all_workspaces=true&limit=20&kinds=conversation%2Cbranch HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:60433 - "GET /v1/capabilities HTTP/1.1" 200 OK
+INFO:     127.0.0.1:60434 - "GET /v1/workspaces HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:60435 - "GET /v1/sessions?include_all_workspaces=true&limit=20&kinds=conversation%2Cbranch HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:60439 - "GET /v1/capabilities HTTP/1.1" 200 OK
+INFO:     127.0.0.1:60442 - "GET /v1/workspaces HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:60443 - "GET /v1/sessions?include_all_workspaces=true&limit=20&kinds=conversation%2Cbranch HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:60447 - "GET /v1/capabilities HTTP/1.1" 200 OK
+INFO:     127.0.0.1:60450 - "GET /v1/workspaces HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:60451 - "GET /v1/sessions?include_all_workspaces=true&limit=20&kinds=conversation%2Cbranch HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:60454 - "GET /v1/capabilities HTTP/1.1" 200 OK
+INFO:     127.0.0.1:60458 - "GET /v1/workspaces HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:60459 - "GET /v1/sessions?include_all_workspaces=true&limit=20&kinds=conversation%2Cbranch HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:60462 - "GET /v1/capabilities HTTP/1.1" 200 OK
+INFO:     127.0.0.1:60464 - "GET /v1/sessions?include_all_workspaces=true&limit=20&kinds=conversation%2Cbranch HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:60463 - "GET /v1/workspaces HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:60465 - "GET /v1/capabilities HTTP/1.1" 200 OK
+INFO:     127.0.0.1:60469 - "GET /v1/sessions?include_all_workspaces=true&limit=20&kinds=conversation%2Cbranch HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:60471 - "GET /v1/workspaces HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:60474 - "GET /v1/capabilities HTTP/1.1" 200 OK
+INFO:     127.0.0.1:60477 - "GET /v1/workspaces HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:60478 - "GET /v1/sessions?include_all_workspaces=true&limit=20&kinds=conversation%2Cbranch HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:60481 - "GET /v1/capabilities HTTP/1.1" 200 OK
+INFO:     127.0.0.1:60482 - "GET /v1/workspaces HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:60483 - "GET /v1/sessions?include_all_workspaces=true&limit=20&kinds=conversation%2Cbranch HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:60486 - "GET /v1/capabilities HTTP/1.1" 200 OK
+INFO:     127.0.0.1:60489 - "GET /v1/sessions?include_all_workspaces=true&limit=20&kinds=conversation%2Cbranch HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:60490 - "GET /v1/workspaces HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:60494 - "GET /v1/capabilities HTTP/1.1" 200 OK
+INFO:     127.0.0.1:60497 - "GET /v1/workspaces HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:60496 - "GET /v1/sessions?include_all_workspaces=true&limit=20&kinds=conversation%2Cbranch HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:60500 - "GET /v1/capabilities HTTP/1.1" 200 OK
+INFO:     127.0.0.1:60501 - "GET /v1/sessions?include_all_workspaces=true&limit=20&kinds=conversation%2Cbranch HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:60502 - "GET /v1/workspaces HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:60506 - "GET /v1/capabilities HTTP/1.1" 200 OK
+INFO:     127.0.0.1:60509 - "GET /v1/workspaces HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:60510 - "GET /v1/sessions?include_all_workspaces=true&limit=20&kinds=conversation%2Cbranch HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:60513 - "GET /v1/capabilities HTTP/1.1" 200 OK
+INFO:     127.0.0.1:60516 - "GET /v1/workspaces HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:60517 - "GET /v1/sessions?include_all_workspaces=true&limit=20&kinds=conversation%2Cbranch HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:60521 - "GET /v1/capabilities HTTP/1.1" 200 OK
+INFO:     127.0.0.1:60525 - "GET /v1/sessions?include_all_workspaces=true&limit=20&kinds=conversation%2Cbranch HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:60524 - "GET /v1/workspaces HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:60528 - "GET /v1/capabilities HTTP/1.1" 200 OK
+INFO:     127.0.0.1:60529 - "GET /v1/workspaces HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:60530 - "GET /v1/sessions?include_all_workspaces=true&limit=20&kinds=conversation%2Cbranch HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:60531 - "GET /v1/capabilities HTTP/1.1" 200 OK
+INFO:     127.0.0.1:60534 - "GET /v1/workspaces HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:60535 - "GET /v1/sessions?include_all_workspaces=true&limit=20&kinds=conversation%2Cbranch HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:60538 - "GET /v1/capabilities HTTP/1.1" 200 OK
+INFO:     127.0.0.1:60540 - "GET /v1/sessions?include_all_workspaces=true&limit=20&kinds=conversation%2Cbranch HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:60539 - "GET /v1/workspaces HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:60541 - "GET /v1/capabilities HTTP/1.1" 200 OK
+INFO:     127.0.0.1:60544 - "GET /v1/workspaces HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:60545 - "GET /v1/sessions?include_all_workspaces=true&limit=20&kinds=conversation%2Cbranch HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:60549 - "GET /v1/capabilities HTTP/1.1" 200 OK
+INFO:     127.0.0.1:60555 - "GET /v1/sessions?include_all_workspaces=true&limit=20&kinds=conversation%2Cbranch HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:60553 - "GET /v1/workspaces HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:60561 - "GET /v1/capabilities HTTP/1.1" 200 OK
+INFO:     127.0.0.1:60562 - "GET /v1/workspaces HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:60563 - "GET /v1/sessions?include_all_workspaces=true&limit=20&kinds=conversation%2Cbranch HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:60565 - "GET /v1/capabilities HTTP/1.1" 200 OK
+INFO:     127.0.0.1:60569 - "GET /v1/workspaces HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:60570 - "GET /v1/sessions?include_all_workspaces=true&limit=20&kinds=conversation%2Cbranch HTTP/1.1" 503 Service Unavailable
+WARNING | ⚑ BOOT step=obligations_held seconds=0.422 start=25.693 thread=MainThread outcome=ok
+WARNING | ⚑ BOOT mark=task_runtime_ready at=26.116
+INFO:     127.0.0.1:60572 - "GET /v1/capabilities HTTP/1.1" 200 OK
+INFO:     127.0.0.1:60575 - "GET /v1/workspaces HTTP/1.1" 200 OK
+INFO:     127.0.0.1:60576 - "GET /v1/sessions?include_all_workspaces=true&limit=20&kinds=conversation%2Cbranch HTTP/1.1" 200 OK
+INFO:     127.0.0.1:60590 - "GET /v1/providers/lm HTTP/1.1" 200 OK
+INFO:     127.0.0.1:60592 - "GET /v1/system/sandbox HTTP/1.1" 200 OK
+INFO:     127.0.0.1:60594 - "GET /v1/health HTTP/1.1" 200 OK
+INFO:     127.0.0.1:60593 - "GET /v1/sessions?workspace_id=ws_default&limit=30&kinds=conversation%2Cbranch HTTP/1.1" 200 OK
+WARNING | ⚑ BOOT step=first_doctor_pass seconds=1.317 start=25.556 thread=MainThread outcome=ok
+INFO:     127.0.0.1:60599 - "GET /v1/session-defaults HTTP/1.1" 200 OK
+INFO:     127.0.0.1:60596 - "GET /v1/infrastructure/targets HTTP/1.1" 200 OK
+INFO:     127.0.0.1:60597 - "GET /v1/sessions?waiting_on_person=true HTTP/1.1" 200 OK
+INFO:     127.0.0.1:60598 - "GET /v1/capabilities HTTP/1.1" 200 OK
+WARNING | ⚑ SPOTTER spotter_unavailable reason=spotter_watcher_agent_not_installed session= workspace=ws_default
+INFO:     127.0.0.1:60620 - "POST /v1/workspaces/ws_default/warmup HTTP/1.1" 202 Accepted
+INFO:     127.0.0.1:60600 - "GET /v1/capabilities HTTP/1.1" 200 OK
+INFO:     127.0.0.1:60601 - "GET /v1/spotter/availability?workspace_id=ws_default HTTP/1.1" 200 OK
+INFO:     127.0.0.1:60605 - "GET /v1/capabilities HTTP/1.1" 200 OK
+INFO:     127.0.0.1:60595 - "GET /v1/mcp/servers?workspace_id=ws_default HTTP/1.1" 200 OK
+INFO:     127.0.0.1:60623 - "GET /v1/health HTTP/1.1" 200 OK
+INFO:     127.0.0.1:60622 - "GET /v1/infrastructure/catalog?target_id=local HTTP/1.1" 200 OK
+WARNING | ⚑ RESIDENT-LEDGER obligation_done session=sess_11f2efb86ce5 bytes=47231
+WARNING | ⚑ RESIDENT-LEDGER arc_released session=sess_11f2efb86ce5 segments=3 inflight_pending=0
+WARNING | ⚑ RESIDENT-LEDGER model_clients_released session=sess_11f2efb86ce5
+WARNING | ⚑ RESIDENT-LEDGER task_tree_released session=sess_11f2efb86ce5 dropped=True
+WARNING | ⚑ RESIDENT-LEDGER obligation_done session=sess_5d5c54a9d37e bytes=36077
+WARNING | ⚑ RESIDENT-LEDGER model_clients_released session=sess_5d5c54a9d37e
+WARNING | ⚑ RESIDENT-LEDGER arc_released session=sess_5d5c54a9d37e segments=3 inflight_pending=0
+WARNING | ⚑ RESIDENT-LEDGER task_tree_released session=sess_5d5c54a9d37e dropped=True
+WARNING | ⚑ RESIDENT-LEDGER obligation_done session=sess_664c9bd276eb bytes=32359
+WARNING | ⚑ RESIDENT-LEDGER model_clients_released session=sess_664c9bd276eb
+WARNING | ⚑ RESIDENT-LEDGER arc_released session=sess_664c9bd276eb segments=3 inflight_pending=0
+WARNING | ⚑ RESIDENT-LEDGER task_tree_released session=sess_664c9bd276eb dropped=True
+WARNING | ⚑ RESIDENT-LEDGER obligation_done session=sess_6c6d1b35a55d bytes=28953
+WARNING | ⚑ RESIDENT-LEDGER model_clients_released session=sess_6c6d1b35a55d
+WARNING | ⚑ RESIDENT-LEDGER arc_released session=sess_6c6d1b35a55d segments=3 inflight_pending=0
+WARNING | ⚑ RESIDENT-LEDGER task_tree_released session=sess_6c6d1b35a55d dropped=True
+WARNING | ⚑ RESIDENT-LEDGER obligation_done session=sess_263da4f0c806 bytes=25545
+WARNING | ⚑ RESIDENT-LEDGER model_clients_released session=sess_263da4f0c806
+WARNING | ⚑ RESIDENT-LEDGER arc_released session=sess_263da4f0c806 segments=3 inflight_pending=0
+WARNING | ⚑ RESIDENT-LEDGER task_tree_released session=sess_263da4f0c806 dropped=True
+WARNING | ⚑ RESIDENT-LEDGER obligation_done session=sess_749ff93afbfb bytes=18109
+WARNING | ⚑ RESIDENT-LEDGER model_clients_released session=sess_749ff93afbfb
+WARNING | ⚑ RESIDENT-LEDGER arc_released session=sess_749ff93afbfb segments=3 inflight_pending=0
+WARNING | ⚑ RESIDENT-LEDGER task_tree_released session=sess_749ff93afbfb dropped=True
+WARNING | ⚑ RESIDENT-LEDGER obligation_done session=sess_bb077393693b bytes=18109
+WARNING | ⚑ RESIDENT-LEDGER model_clients_released session=sess_bb077393693b
+WARNING | ⚑ RESIDENT-LEDGER arc_released session=sess_bb077393693b segments=3 inflight_pending=0
+WARNING | ⚑ RESIDENT-LEDGER task_tree_released session=sess_bb077393693b dropped=True
+WARNING | ⚑ RESIDENT-LEDGER obligation_done session=sess_dfa3670a75e2 bytes=18109
+WARNING | ⚑ RESIDENT-LEDGER model_clients_released session=sess_dfa3670a75e2
+WARNING | ⚑ RESIDENT-LEDGER arc_released session=sess_dfa3670a75e2 segments=3 inflight_pending=0
+WARNING | ⚑ RESIDENT-LEDGER task_tree_released session=sess_dfa3670a75e2 dropped=True
+WARNING | ⚑ RESIDENT-LEDGER obligation_done session=sess_f51b6c6909e9 bytes=18109
+WARNING | ⚑ RESIDENT-LEDGER model_clients_released session=sess_f51b6c6909e9
+WARNING | ⚑ RESIDENT-LEDGER arc_released session=sess_f51b6c6909e9 segments=3 inflight_pending=0
+WARNING | ⚑ RESIDENT-LEDGER task_tree_released session=sess_f51b6c6909e9 dropped=True
+WARNING | ⚑ RESIDENT-LEDGER obligation_done session=sess_79015b5bc504c431b9fde260db3f1933 bytes=16850
+WARNING | ⚑ RESIDENT-LEDGER model_clients_released session=sess_79015b5bc504c431b9fde260db3f1933
+WARNING | ⚑ RESIDENT-LEDGER arc_released session=sess_79015b5bc504c431b9fde260db3f1933 segments=3 inflight_pending=0
+WARNING | ⚑ RESIDENT-LEDGER task_tree_released session=sess_79015b5bc504c431b9fde260db3f1933 dropped=True
+WARNING | ⚑ RESIDENT-LEDGER obligation_done session=sess_95a5f85535a2 bytes=13788
+WARNING | ⚑ RESIDENT-LEDGER model_clients_released session=sess_95a5f85535a2
+WARNING | ⚑ RESIDENT-LEDGER arc_released session=sess_95a5f85535a2 segments=3 inflight_pending=0
+WARNING | ⚑ RESIDENT-LEDGER task_tree_released session=sess_95a5f85535a2 dropped=True
+WARNING | ⚑ RESIDENT-LEDGER obligation_done session=sess_acefaa6d28896a0bfe166904fa233cb4 bytes=13798
+WARNING | ⚑ RESIDENT-LEDGER model_clients_released session=sess_acefaa6d28896a0bfe166904fa233cb4
+WARNING | ⚑ RESIDENT-LEDGER arc_released session=sess_acefaa6d28896a0bfe166904fa233cb4 segments=3 inflight_pending=0
+WARNING | ⚑ RESIDENT-LEDGER task_tree_released session=sess_acefaa6d28896a0bfe166904fa233cb4 dropped=True
+WARNING | ⚑ RESIDENT-LEDGER obligation_done session=sess_a56dca55a6258a9ffaeb54ba67fc7ae9 bytes=12925
+WARNING | ⚑ RESIDENT-LEDGER model_clients_released session=sess_a56dca55a6258a9ffaeb54ba67fc7ae9
+WARNING | ⚑ RESIDENT-LEDGER arc_released session=sess_a56dca55a6258a9ffaeb54ba67fc7ae9 segments=2 inflight_pending=0
+WARNING | ⚑ RESIDENT-LEDGER task_tree_released session=sess_a56dca55a6258a9ffaeb54ba67fc7ae9 dropped=True
+WARNING | ⚑ RESIDENT-LEDGER obligation_done session=sess_64d8d2b805a3e363210bc6b20f0dde85 bytes=12925
+WARNING | ⚑ RESIDENT-LEDGER model_clients_released session=sess_64d8d2b805a3e363210bc6b20f0dde85
+WARNING | ⚑ RESIDENT-LEDGER arc_released session=sess_64d8d2b805a3e363210bc6b20f0dde85 segments=2 inflight_pending=0
+WARNING | ⚑ RESIDENT-LEDGER task_tree_released session=sess_64d8d2b805a3e363210bc6b20f0dde85 dropped=True
+WARNING | ⚑ RESIDENT-LEDGER obligation_done session=sess_afd476f1d494b7ba182a955eca82b0b2 bytes=13798
+WARNING | ⚑ RESIDENT-LEDGER model_clients_released session=sess_afd476f1d494b7ba182a955eca82b0b2
+WARNING | ⚑ RESIDENT-LEDGER arc_released session=sess_afd476f1d494b7ba182a955eca82b0b2 segments=3 inflight_pending=0
+WARNING | ⚑ RESIDENT-LEDGER task_tree_released session=sess_afd476f1d494b7ba182a955eca82b0b2 dropped=True
+WARNING | ⚑ RESIDENT-LEDGER obligation_done session=sess_0b3c7cbab934a8cb3c50d6f99173146b bytes=6611
+WARNING | ⚑ RESIDENT-LEDGER model_clients_released session=sess_0b3c7cbab934a8cb3c50d6f99173146b
+WARNING | ⚑ RESIDENT-LEDGER arc_released session=sess_0b3c7cbab934a8cb3c50d6f99173146b segments=2 inflight_pending=0
+WARNING | ⚑ RESIDENT-LEDGER task_tree_released session=sess_0b3c7cbab934a8cb3c50d6f99173146b dropped=True
+WARNING | ⚑ RESIDENT-LEDGER obligation_done session=sess_21d2acfed8e0102dead0b4a2532c9071 bytes=5684
+WARNING | ⚑ RESIDENT-LEDGER model_clients_released session=sess_21d2acfed8e0102dead0b4a2532c9071
+WARNING | ⚑ RESIDENT-LEDGER arc_released session=sess_21d2acfed8e0102dead0b4a2532c9071 segments=3 inflight_pending=0
+WARNING | ⚑ RESIDENT-LEDGER obligation_done session=sess_1629585a5b0c0d53dfaa9c18797820c9 bytes=13675
+WARNING | ⚑ RESIDENT-LEDGER task_tree_released session=sess_21d2acfed8e0102dead0b4a2532c9071 dropped=True
+WARNING | ⚑ RESIDENT-LEDGER model_clients_released session=sess_1629585a5b0c0d53dfaa9c18797820c9
+WARNING | ⚑ RESIDENT-LEDGER arc_released session=sess_1629585a5b0c0d53dfaa9c18797820c9 segments=2 inflight_pending=0
+WARNING | ⚑ RESIDENT-LEDGER task_tree_released session=sess_1629585a5b0c0d53dfaa9c18797820c9 dropped=False
+WARNING | ⚑ RESIDENT-LEDGER obligation_done session=sess_2629c56ba8d19df4af369acad92036e1 bytes=13675
+WARNING | ⚑ RESIDENT-LEDGER model_clients_released session=sess_2629c56ba8d19df4af369acad92036e1
+WARNING | ⚑ RESIDENT-LEDGER arc_released session=sess_2629c56ba8d19df4af369acad92036e1 segments=2 inflight_pending=0
+WARNING | ⚑ RESIDENT-LEDGER obligation_done session=sess_32fe3897583b5152717c9b9b8304e61c bytes=13675
+WARNING | ⚑ RESIDENT-LEDGER model_clients_released session=sess_32fe3897583b5152717c9b9b8304e61c
+WARNING | ⚑ RESIDENT-LEDGER arc_released session=sess_32fe3897583b5152717c9b9b8304e61c segments=2 inflight_pending=0
+WARNING | ⚑ RESIDENT-LEDGER task_tree_released session=sess_2629c56ba8d19df4af369acad92036e1 dropped=True
+WARNING | ⚑ RESIDENT-LEDGER task_tree_released session=sess_32fe3897583b5152717c9b9b8304e61c dropped=False
+WARNING | ⚑ RESIDENT-LEDGER obligation_done session=sess_4acce4bfc49fee1e64e4aa972314ccdb bytes=13675
+WARNING | ⚑ RESIDENT-LEDGER model_clients_released session=sess_4acce4bfc49fee1e64e4aa972314ccdb
+WARNING | ⚑ RESIDENT-LEDGER arc_released session=sess_4acce4bfc49fee1e64e4aa972314ccdb segments=2 inflight_pending=0
+WARNING | ⚑ RESIDENT-LEDGER task_tree_released session=sess_4acce4bfc49fee1e64e4aa972314ccdb dropped=False
+WARNING | ⚑ RESIDENT-LEDGER obligation_done session=sess_88dcb23ccfe9fef6b94a1c3d36606a84 bytes=13675
+WARNING | ⚑ RESIDENT-LEDGER model_clients_released session=sess_88dcb23ccfe9fef6b94a1c3d36606a84
+WARNING | ⚑ RESIDENT-LEDGER obligation_done session=sess_bd52053faf19de2dd35322e9633bcf89 bytes=13675
+WARNING | ⚑ RESIDENT-LEDGER arc_released session=sess_88dcb23ccfe9fef6b94a1c3d36606a84 segments=2 inflight_pending=0
+WARNING | ⚑ BOOT step=obligations seconds=4.262 start=26.116 thread=MainThread outcome=ok
+WARNING | ⚑ RESIDENT-LEDGER arc_release_skipped_active session=sess_bd52053faf19de2dd35322e9633bcf89
+WARNING | ⚑ RESIDENT-LEDGER model_clients_release_skipped_active session=sess_bd52053faf19de2dd35322e9633bcf89
+WARNING | ⚑ RESIDENT-LEDGER task_tree_released session=sess_88dcb23ccfe9fef6b94a1c3d36606a84 dropped=True
+INFO:     127.0.0.1:60591 - "GET /v1/provider-catalog HTTP/1.1" 200 OK
+INFO:     127.0.0.1:61675 - "GET /v1/sessions?waiting_on_person=true HTTP/1.1" 200 OK
+INFO:     127.0.0.1:61678 - "GET /v1/health HTTP/1.1" 200 OK
+INFO:     127.0.0.1:61685 - "GET /v1/sessions?limit=30 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:61687 - "POST /v1/infrastructure/desktop-exit HTTP/1.1" 200 OK
+INFO:     127.0.0.1:61688 - "POST /v1/desktop/shutdown HTTP/1.1" 202 Accepted
+INFO:     Shutting down
+INFO:     Waiting for application shutdown.
+sidecar-progress: backend exited; starting crash cleanup
+sidecar-progress: crash cleanup completed
+sidecar-progress: crash cleanup helper exited

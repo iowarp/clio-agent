@@ -13,9 +13,12 @@ from typing import Any
 from urllib.error import HTTPError
 from urllib.request import ProxyHandler, Request, build_opener
 
+#: STATUS_DLL_NOT_FOUND (0xC0000135) as Python reports a Windows process's exit status.
+WINDOWS_DLL_NOT_FOUND = (0xC0000135, 0xC0000135 - (1 << 32))
+
 
 def install(root: Path, manifest: dict[str, Any]) -> None:
-    """Install verified binaries or compile the pinned source against the host's libc."""
+    """Install verified upstream prebuilt binaries; nothing is compiled on the host."""
     from native_archive import download, extract  # type: ignore[import-not-found]  # noqa: PLC0415
 
     spec = manifest["native_model"]
@@ -36,49 +39,7 @@ def install(root: Path, manifest: dict[str, Any]) -> None:
         unpacked = extract(
             archive, staging / str(index), compression=artifact.get("compression", "")
         )
-        if spec.get("source"):
-            backend = spec["backend"]
-            build = staging / "build"
-            cmake = shutil.which("cmake")
-            if not cmake or not (shutil.which("c++") or shutil.which("clang++")):
-                raise RuntimeError("Native Linux llama.cpp requires a C++ compiler on this host")
-            flags = [
-                cmake,
-                "-S",
-                str(unpacked),
-                "-B",
-                str(build),
-                "-G",
-                "Ninja",
-                "-DCMAKE_BUILD_TYPE=Release",
-                "-DLLAMA_BUILD_TESTS=OFF",
-                "-DLLAMA_BUILD_EXAMPLES=OFF",
-                "-DLLAMA_BUILD_SERVER=ON",
-                "-DLLAMA_CURL=OFF",
-                "-DCMAKE_BUILD_WITH_INSTALL_RPATH=ON",
-                "-DCMAKE_INSTALL_RPATH=$ORIGIN",
-                f"-DCMAKE_INSTALL_PREFIX={installed}",
-            ]
-            if backend != "cpu":
-                flags.append(
-                    f"-DGGML_{ {'cuda': 'CUDA', 'rocm': 'HIP', 'vulkan': 'VULKAN'}[backend] }=ON"
-                )
-            subprocess.run(flags, check=True)
-            subprocess.run(
-                [
-                    cmake,
-                    "--build",
-                    str(build),
-                    "--target",
-                    "llama-server",
-                    "--parallel",
-                    str(min(os.cpu_count() or 2, 2)),
-                ],
-                check=True,
-            )
-            shutil.copytree(build / "bin", installed, dirs_exist_ok=True, symlinks=True)
-        else:
-            shutil.copytree(unpacked, installed, dirs_exist_ok=True, symlinks=True)
+        shutil.copytree(unpacked, installed, dirs_exist_ok=True, symlinks=True)
     matches = [path for path in installed.rglob(spec["executable"]) if path.is_file()]
     if len(matches) != 1:
         raise RuntimeError(f"Native runtime did not install one {spec['executable']}")
@@ -87,7 +48,21 @@ def install(root: Path, manifest: dict[str, Any]) -> None:
     if spec["engine"] == "ollama":
         # --version must never connect to a separately installed user daemon.
         env["OLLAMA_HOST"] = "127.0.0.1:1"
-    subprocess.run([str(executable), "--version"], env=env, check=True, timeout=60)
+    try:
+        version = subprocess.run(
+            [str(executable), "--version"],
+            env=env,
+            capture_output=True,
+            text=True,
+            check=True,
+            timeout=60,
+        )
+    except (OSError, subprocess.CalledProcessError) as error:
+        raise RuntimeError(
+            f"The prebuilt {spec['engine']} {spec['backend']} build does not run on this host: "
+            f"{refusal_detail(error)}. CLIO does not compile it; use the container variant."
+        ) from error
+    print((version.stdout + version.stderr).strip(), flush=True)
     if spec["engine"] == "llama_cpp" and spec["backend"] != "cpu":
         devices = subprocess.run(
             [str(executable), "--list-devices"],
@@ -108,6 +83,18 @@ def install(root: Path, manifest: dict[str, Any]) -> None:
     )
 
 
+def refusal_detail(error: OSError | subprocess.CalledProcessError) -> str:
+    """Say why a fetched binary could not start, including Windows' silent DLL failure."""
+    if getattr(error, "returncode", None) in WINDOWS_DLL_NOT_FOUND:
+        # Windows reports a missing DLL only through this status, with no output.
+        return (
+            "a required DLL is missing; install the Microsoft Visual C++ 2015-2022 "
+            "Redistributable (x64)"
+        )
+    output = getattr(error, "stderr", None) or getattr(error, "stdout", None) or str(error)
+    return output.strip()[:400]
+
+
 def binary_environment(root: Path, executable: Path) -> dict[str, str]:
     """Load this runtime's accompanying libraries before host libraries."""
     env = os.environ.copy()
@@ -118,6 +105,8 @@ def binary_environment(root: Path, executable: Path) -> dict[str, str]:
                 str(executable.parent),
                 str(root / "environment/runtime/lib"),
                 str(root / "environment/runtime/lib64"),
+                # NVIDIA's CUDA runtime wheels (Linux CUDA build), unpacked beside it.
+                *sorted(str(path) for path in (root / "environment/runtime").glob("nvidia/*/lib")),
                 env.get("LD_LIBRARY_PATH", ""),
             ]
         )

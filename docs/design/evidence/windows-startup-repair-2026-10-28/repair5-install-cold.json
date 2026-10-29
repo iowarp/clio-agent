@@ -1,0 +1,9 @@
+{
+  "candidate": "d9a476623f6c2d3ec3878c97e9ec0d166f71ac64",
+  "exit_code": 0,
+  "seconds": 194.2768385,
+  "profile": "D:\\cw\\fp5",
+  "finished_at": "2026-10-28T09:44:59.7878483Z",
+  "label": "repair5-install-cold",
+  "ref": "codex/windows-startup-acceptance"
+}

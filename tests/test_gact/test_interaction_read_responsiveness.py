@@ -11,8 +11,10 @@ import httpx
 import pytest
 from fastapi import FastAPI
 
-from clio_agent.gact import blueprint_catalog as catalog_service
-from clio_agent.gact.routes import blueprint_catalog, catalog, interactions
+from clio_agent.gact.routes import catalog, interactions
+from clio_agent.gact.routes.plugins import register_plugin_routes
+from clio_agent.plugins.loader import load_plugin
+from tests._plugin_fixtures import FIXTURE
 
 
 @pytest.mark.asyncio
@@ -54,27 +56,25 @@ async def test_interaction_hydration_does_not_block_other_requests(
 
 
 @pytest.mark.asyncio
-async def test_catalog_discovery_does_not_block_other_requests(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """A cold on-disk catalog must not pause unrelated stream delivery."""
+async def test_plugin_catalog_discovery_does_not_block_other_requests() -> None:
+    """A cold plugin store must not pause unrelated stream delivery."""
     app = FastAPI()
     entered = threading.Event()
     release = threading.Event()
+    record = load_plugin(FIXTURE / "plugins" / "workspace", marketplace="clio", trusted=True)
 
-    def discover(*args: Any, **kwargs: Any) -> list[Any]:
+    def ready() -> None:
         entered.set()
-        assert release.wait(5), "test did not release catalog discovery"
-        return [
-            SimpleNamespace(
-                to_wire=lambda: {"id": "test-blueprint", "identity": "global::test::test-blueprint"}
-            )
-        ]
+        assert release.wait(5), "test did not release plugin discovery"
 
-    monkeypatch.setattr(blueprint_catalog, "discover_agent_blueprints", discover)
-    monkeypatch.setattr(catalog_service, "discover_agent_blueprints", discover)
-    monkeypatch.setattr(blueprint_catalog, "_runtime_workspace_catalog_cwd", lambda *a, **k: None)
-    blueprint_catalog.register_blueprint_catalog_route(app)
+    app.state.plugin_service = SimpleNamespace(
+        ready=ready,
+        ready_error=None,
+        store=SimpleNamespace(
+            pending=lambda: [], records=lambda: [record], trusted=lambda _record: True
+        ),
+    )
+    register_plugin_routes(app, None)  # type: ignore[arg-type]
 
     @app.get("/probe")
     async def probe() -> dict[str, bool]:
@@ -83,7 +83,7 @@ async def test_catalog_discovery_does_not_block_other_requests(
     async with httpx.AsyncClient(
         transport=httpx.ASGITransport(app=app), base_url="http://testserver"
     ) as client:
-        pending = asyncio.create_task(client.get("/v1/agent-blueprints"))
+        pending = asyncio.create_task(client.get("/v1/plugins"))
         try:
             assert await asyncio.to_thread(entered.wait, 2)
             response = await asyncio.wait_for(client.get("/probe"), 1)
@@ -93,13 +93,10 @@ async def test_catalog_discovery_does_not_block_other_requests(
             release.set()
             completed = await pending
         assert completed.status_code == 200
-        assert completed.json()["agent_blueprints"] == [
-            {
-                "id": "test-blueprint",
-                "identity": "global::test::test-blueprint",
-                "materialized": True,
-            }
-        ]
+        [row] = completed.json()["plugins"]
+        assert row["id"] == "workspace" and row["ref"] == "clio/workspace"
+        assert row["trusted"] is True and row["pending_trust"] is False
+        assert "fs_read_file" in row["tools"]
 
 
 @pytest.mark.asyncio
@@ -120,7 +117,7 @@ async def test_command_discovery_does_not_block_other_requests(
     monkeypatch.setattr(catalog, "all_command_rows", discover)
     monkeypatch.setattr(catalog, "planner_command_rows", discover)
     monkeypatch.setattr(catalog, "command_context_for_request", lambda *a, **k: (None, []))
-    catalog.register_catalog_routes(app, SimpleNamespace(resolve_runtime_dynamic_agent=None))
+    catalog.register_catalog_routes(app, SimpleNamespace(resolve_session_agent=None))
 
     @app.get("/probe")
     async def probe() -> dict[str, bool]:

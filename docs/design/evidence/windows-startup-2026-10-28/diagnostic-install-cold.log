@@ -1,0 +1,342 @@
+==> Installing uv into D:\cw\ip\bin
+downloading uv 0.13.6 (x86_64-pc-windows-msvc)
+installing to D:\cw\ip\bin
+  uv.exe
+  uvx.exe
+  uvw.exe
+everything's installed!
+==> Cloning clio-agent at develop
+==> Building the CLIO-branded TUI in the background (log: D:\cw\ip\t\clio-tui-build-32132d2aa6734d62a3ad728e3ad76ce4.log)
+==> Installing clio-agent deps (uv sync --locked --python 3.14 --extra argonne --extra flowcept)
+Using CPython 3.14.6 interpreter at: C:\Python314\python.exe
+Creating virtual environment at: .venv
+Resolved 241 packages in 4ms
+   Building clio-agent @ file:///D:/cw/ip/local/clio-agent/data/app/clio-agent
+   Updating https://github.com/iowarp/clio-schemas (ac1be7bc4b814228bbe3222cd80fb95251ec7024)
+Downloading numpy (12.3MiB)
+Downloading google-api-python-client (16.0MiB)
+Downloading pygments (1.2MiB)
+Downloading openai (1.6MiB)
+Downloading xarray (1.4MiB)
+Downloading uv (17.3MiB)
+Downloading iowarp-core (20.0MiB)
+Downloading litellm (26.1MiB)
+Downloading burner-redis (1.1MiB)
+Downloading pywin32 (9.2MiB)
+Downloading tokenizers (2.6MiB)
+Downloading botocore (15.2MiB)
+Downloading pyarrow (27.4MiB)
+Downloading pydantic-core (1.9MiB)
+Downloading rasterio (25.2MiB)
+Downloading pandas (10.6MiB)
+Downloading pillow (6.8MiB)
+Downloading cryptography (3.4MiB)
+Downloading h5py (2.7MiB)
+Downloading fonttools (2.2MiB)
+Downloading matplotlib (7.9MiB)
+Downloading lxml (3.9MiB)
+Downloading openai-codex-cli-bin (144.7MiB)
+Downloading numcodecs (1.5MiB)
+Downloading beartype (1.3MiB)
+   Building odfpy==1.4.1
+ Downloaded burner-redis
+ Downloaded pygments
+ Downloaded beartype
+ Downloaded xarray
+ Downloaded numcodecs
+   Building antlr4-python3-runtime==4.9.3
+ Downloaded openai
+ Downloaded pydantic-core
+    Updated https://github.com/iowarp/clio-schemas (ac1be7bc4b814228bbe3222cd80fb95251ec7024)
+   Building clio-schemas @ git+https://github.com/iowarp/clio-schemas@ac1be7bc4b814228bbe3222cd80fb95251ec7024
+ Downloaded fonttools
+ Downloaded tokenizers
+ Downloaded h5py
+ Downloaded cryptography
+      Built clio-agent @ file:///D:/cw/ip/local/clio-agent/data/app/clio-agent
+ Downloaded lxml
+      Built clio-schemas @ git+https://github.com/iowarp/clio-schemas@ac1be7bc4b814228bbe3222cd80fb95251ec7024
+      Built antlr4-python3-runtime==4.9.3
+ Downloaded pillow
+      Built odfpy==1.4.1
+ Downloaded matplotlib
+ Downloaded pywin32
+ Downloaded pandas
+ Downloaded numpy
+ Downloaded botocore
+ Downloaded google-api-python-client
+ Downloaded uv
+ Downloaded iowarp-core
+ Downloaded rasterio
+ Downloaded litellm
+ Downloaded pyarrow
+ Downloaded openai-codex-cli-bin
+Prepared 206 packages in 3m 58s
+Installed 206 packages in 8.53s
+ + affine==3.0.1
+ + aiofile==3.9.0
+ + aiohappyeyeballs==2.6.1
+ + aiohttp==3.14.3
+ + aiosignal==1.4.0
+ + annotated-doc==0.0.5
+ + annotated-types==0.7.0
+ + antlr4-python3-runtime==4.9.3
+ + anyio==4.11.0
+ + arrow==1.4.0
+ + attrs==25.4.0
+ + authlib==1.7.2
+ + bcrypt==5.0.0
+ + beartype==0.22.5
+ + boto3==1.43.101
+ + botocore==1.43.101
+ + burner-redis==0.1.7
+ + cachetools==6.2.1
+ + caio==0.9.25
+ + certifi==2025.10.5
+ + cffi==2.0.0
+ + charset-normalizer==3.4.4
+ + click==8.3.3
+ + click-plugins==1.1.1.2
+ + cligj==0.7.2
+ + clio-agent==0.9.5b8 (from file:///D:/cw/ip/local/clio-agent/data/app/clio-agent)
+ + clio-kit==2.11.0
+ + clio-schemas==0.6.0b16 (from git+https://github.com/iowarp/clio-schemas@ac1be7bc4b814228bbe3222cd80fb95251ec7024)
+ + cloudpickle==3.1.2
+ + colorama==0.4.6
+ + contourpy==1.3.3
+ + cronsim==2.7
+ + cryptography==46.0.3
+ + cycler==0.12.1
+ + cyclopts==4.5.1
+ + defusedxml==0.7.1
+ + diskcache==5.6.3
+ + distro==1.9.0
+ + dnspython==2.8.0
+ + docstring-parser==0.17.0
+ + docutils==0.22.2
+ + donfig==0.8.1.post1
+ + dspy==3.4.0
+ + email-validator==2.3.0
+ + et-xmlfile==2.0.0
+ + exceptiongroup==1.3.0
+ + fastapi==0.141.1
+ + fastmcp==4.1.0
+ + fastmcp-slim==4.1.0
+ + fastmcp-tasks==4.1.0
+ + fastuuid==0.14.0
+ + filelock==3.20.0
+ + flowcept==1.0.3
+ + fonttools==4.61.1
+ + fqdn==1.5.1
+ + frozenlist==1.8.0
+ + fsspec==2025.9.0
+ + gdrive-fsspec==0.4.1
+ + gepa==0.1.4
+ + globus-sdk==4.6.0
+ + globusfs==0.2.1
+ + google-api-core==2.30.3
+ + google-api-python-client==2.201.0
+ + google-auth==2.59.1
+ + google-auth-httplib2==0.4.4
+ + google-auth-oauthlib==1.5.0
+ + google-crc32c==1.9.0
+ + googleapis-common-protos==1.75.5
+ + griffelib==2.0.2
+ + h11==0.16.0
+ + h5py==3.15.1
+ + httpcore==1.0.9
+ + httpcore2==2.9.1
+ + httplib2==0.32.0
+ + httpx==0.28.1
+ + httpx2==2.9.1
+ + huggingface-hub==0.35.3
+ + idna==3.18
+ + importlib-metadata==8.7.0
+ + invoke==3.0.3
+ + iowarp-core==2.3.2
+ + isoduration==20.11.0
+ + jaraco-classes==3.4.0
+ + jaraco-context==6.0.1
+ + jaraco-functools==4.3.0
+ + jinja2==3.1.6
+ + jiter==0.11.1
+ + jmespath==1.1.0
+ + joserfc==1.7.4
+ + json-repair==0.57.1
+ + jsonpointer==3.1.1
+ + jsonref==1.1.0
+ + jsonschema==4.25.1
+ + jsonschema-path==0.3.4
+ + jsonschema-specifications==2025.9.1
+ + keyring==25.6.0
+ + kiwisolver==1.4.9
+ + litellm==1.102.1
+ + lru-dict==1.4.1
+ + lxml==6.1.1
+ + markdown-it-py==4.0.0
+ + markupsafe==3.0.3
+ + matplotlib==3.10.8
+ + mcp==2.0.0
+ + mcp-types==2.0.0
+ + mdurl==0.1.2
+ + more-itertools==10.8.0
+ + msgpack==1.2.1
+ + msgspec==0.22.0
+ + multidict==6.7.0
+ + numcodecs==0.17.0
+ + numpy==2.3.4
+ + oauthlib==4.0.0
+ + odfpy==1.4.1
+ + omegaconf==2.3.1
+ + openai==2.45.0
+ + openai-codex-cli-bin==0.162.1
+ + openapi-pydantic==0.5.1
+ + openpyxl==3.1.5
+ + opentelemetry-api==1.39.1
+ + orjson==3.13.0
+ + packaging==26.3
+ + pandas==2.3.3
+ + paramiko==5.0.0
+ + pathable==0.4.4
+ + pillow==12.1.1
+ + platformdirs==4.5.0
+ + prometheus-client==0.26.0
+ + prompt-toolkit==3.0.52
+ + propcache==0.4.1
+ + proto-plus==1.29.0
+ + protobuf==7.36.2
+ + psutil==7.2.2
+ + py-key-value-aio==0.4.4
+ + pyarrow==22.0.0
+ + pyasn1==0.6.4
+ + pyasn1-modules==0.4.2
+ + pycparser==2.23
+ + pydantic==2.12.3
+ + pydantic-core==2.41.4
+ + pydantic-settings==2.15.0
+ + pydata-google-auth==1.9.1
+ + pydocket==0.26.2
+ + pygments==2.19.2
+ + pyjwt==2.10.1
+ + pymongo==4.17.0
+ + pynacl==1.6.2
+ + pyparsing==3.3.2
+ + pypdf==6.16.0
+ + pyperclip==1.11.0
+ + python-dateutil==2.9.0.post0
+ + python-docx==1.2.0
+ + python-dotenv==1.1.1
+ + python-json-logger==4.1.0
+ + python-multipart==0.0.32
+ + python-pptx==1.0.2
+ + pytz==2026.3.post1
+ + pywin32==311
+ + pywin32-ctypes==0.2.3
+ + pyyaml==6.0.3
+ + rasterio==1.4.4
+ + redis==7.4.1
+ + referencing==0.36.2
+ + regex==2025.9.18
+ + requests==2.32.5
+ + requests-oauthlib==2.0.0
+ + rfc3339-validator==0.1.4
+ + rfc3987==1.3.8
+ + rich==14.2.0
+ + rich-rst==1.3.2
+ + rpds-py==0.27.1
+ + s3transfer==0.19.2
+ + setuptools==84.0.0
+ + shellingham==1.5.4
+ + six==1.17.0
+ + sniffio==1.3.1
+ + sortedcontainers==2.4.0
+ + sse-starlette==3.0.2
+ + starlette==1.3.1
+ + tenacity==9.1.2
+ + tiktoken==0.12.0
+ + tokenizers==0.22.1
+ + tomli-w==1.2.0
+ + tqdm==4.67.1
+ + truststore==0.10.4
+ + typer==0.27.0
+ + typing-extensions==4.15.0
+ + typing-inspection==0.4.2
+ + tzdata==2026.3
+ + tzlocal==5.4.4
+ + uncalled-for==0.4.0
+ + uri-template==1.3.0
+ + uritemplate==4.2.0
+ + urllib3==2.5.0
+ + uv==0.12.23
+ + uvicorn==0.54.0
+ + watchfiles==1.1.1
+ + wcwidth==0.2.14
+ + webcolors==25.10.0
+ + websockets==15.0.1
+ + xarray==2026.9.0
+ + xlsxwriter==3.2.9
+ + yarl==1.22.0
+ + zarr==3.4.0
+ + zipp==3.23.0
+ + zstandard==0.25.0
+==> Migrating the CLIO store (clio-agent migrate)
+migrate step=open_store status=running
+migrate step=open_store status=done seconds=3.762
+migrate step=session_records_import status=checking summary='Import the legacy sessions.json into one clio-core record per session'
+migrate step=session_records_import status=done seconds=0.014 input=none
+migrate step=task_event_lane status=checking summary="Copy each conversation's task events into their own lane (task trees read only it)"
+migrate step=task_event_lane status=done seconds=0.045 sessions=0 sessions_with_task_events=0 events=0
+migrate step=task_lane_reads status=checking summary='Annotate each task-event lane so a task tree loads from the lane alone'
+migrate step=task_lane_reads status=done seconds=0.006 version=1 completed_at=2026-10-28T06:06:20.997640+00:00 sessions=0 annotated=0 receipts=0 unreadable=0 sessions_rewritten=0 seconds=0.001
+migrate step=transcript_legacy_import status=checking summary="Keep each conversation's legacy JSON transcript as evidence in clio-core"
+migrate step=transcript_legacy_import status=done seconds=0.006 input=none sessions=0
+migrate step=task_index_build status=checking summary='Convert retained task formats and build the task lookup and open-work records'
+migrate step=task_index_build status=done seconds=0.079 input=none replay_seconds=0.032 outcomes=0 open_tasks=0
+migrate step=artifact_index status=checking summary='Fold the artifact history once into the clio-core artifact records'
+migrate step=artifact_index status=done seconds=0.061 input=none records=0 fold_conflicts=0
+migrate status=done ran=6 seconds=16.929
+==> Installing managed Python/uv and Node/pnpm packages and Office rendering
+Preparing and checking the Office renderer...
+Preparing and checking the GitHub command-line tool...
+Preparing and checking Python document packages...
+GitHub command-line tool is ready.
+Python document packages are ready. Preparing Node.js packages...
+Installing the pinned pnpm package manager...
+Installing Word, PowerPoint and image packages for Node.js...
+Node.js document packages are ready.
+Office rendering is ready.
+Preparing and checking protected execution...
+Checking native Windows protected execution (MXC; no administrator setup)...
+Native MXC unavailable (codex_mxc_unverified); checking legacy protected execution...
+Preparing protected access to CLIO's runtime packages...
+Preparing access to uv tool bin...
+Preparing access to uv tools...
+Preparing access to uv python...
+Preparing access to tool packages...
+Preparing access to temporary workspaces...
+Verifying protected execution...
+Traceback (most recent call last):
+  File "<frozen runpy>", line 203, in _run_module_as_main
+  File "<frozen runpy>", line 88, in _run_code
+  File "D:\cw\ip\local\clio-agent\data\app\clio-agent\src\clio_agent\runtime\document_install.py", line 199, in <module>
+    main()
+    ~~~~^^
+  File "D:\cw\ip\local\clio-agent\data\app\clio-agent\src\clio_agent\runtime\document_install.py", line 161, in main
+    result = install_document_runtime(
+        args.workspace,
+    ...<2 lines>...
+        reuse_installed=args.reuse_installed,
+    )
+  File "D:\cw\ip\local\clio-agent\data\app\clio-agent\src\clio_agent\runtime\document_install.py", line 102, in install_document_runtime
+    result["native_tools"]["protected_execution"] = prepare_existing_windows_fence(
+                                                    ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~^
+        progress=report, allow_elevation=setup_protected_execution
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    )
+    ^
+  File "D:\cw\ip\local\clio-agent\data\app\clio-agent\src\clio_agent\runtime\codex_desktop_setup.py", line 37, in prepare_existing_windows_fence
+    raise DocumentRuntimeError(
+        f"Protected execution verification failed: {detail} {result.next_action}"
+    )
+clio_agent.runtime.document_runtime.DocumentRuntimeError: Protected execution verification failed: The Codex Windows sandbox accounts are provisioned, but codex could NOT enforce a confined write (codex_enforcement_unverified). clio runs with the advisory file policy (honest degrade � no OS write fence in force on this host). Re-run `clio sandbox setup` to re-verify enforcement.
+xx installing the managed packages and Office rendering failed (exit 1); the cause is in the lines above. Fix it and run this installer again: it resumes from what is already installed.

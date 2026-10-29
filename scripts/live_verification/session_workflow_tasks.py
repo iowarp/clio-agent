@@ -1,4 +1,4 @@
-"""Actual-model coordination between distinct blueprints, with disposable run state.
+"""Actual-model coordination between distinct agents, with disposable run state.
 
 Run only on the qualified isolated Linux Core candidate. Register the exact
 --root, --report and service port in the operational ledger before launching.
@@ -25,7 +25,6 @@ from typing import Any
 import _common as common
 import _lifecycle_evidence as evidence
 import psutil
-import yaml
 from _lifecycle_auth import frozen_claude_auth
 from _session_workflow_receipts import failure_receipts, model_receipt, provider_failure_receipt
 from agent_async_tasks import frozen_codex_auth
@@ -56,21 +55,23 @@ def stop_identity(identity: tuple[int, float]) -> bool:
         return True
 
 
-def blueprint(call: Any, workspace: Path, wid: str, role: str) -> str:
-    """Install an independent real blueprint; keep the existing iteration budget."""
-    pack = workspace / f"workflow-{role}"
-    pack.joinpath("experts").mkdir(parents=True)
-    template = CORE / "scripts/live_verification/agents/task-subagent-testing"
-    manifest_text = (template / "AGENT.md").read_text()
-    metadata = yaml.safe_load(manifest_text.split("---", 2)[1])
-    metadata.update(id=f"session-task-workflow-{role}", experts=["experts/main.md"])
-    (pack / "AGENT.md").write_text("---\n" + yaml.safe_dump(metadata) + "---\n")
-    expert_text = (template / "experts/main.md").read_text()
-    expert = yaml.safe_load(expert_text.split("---", 2)[1])
-    expert.pop("children", None)
-    expert["tools"] = ["fs_read_file", "shell_bash"]
-    (pack / "experts/main.md").write_text(
-        "---\n" + yaml.safe_dump(expert) + "---\n"
+def testing_agent(call: Any, workspace: Path, wid: str, role: str) -> str:
+    """Install an independent testing agent for ``role``; return its agent ref.
+
+    Each role is its own marketplace and agent id, from the ``task-testing``
+    template (``core``, ``workspace``, ``shell``; no delegation).
+    """
+    pack = common.materialize_testing_marketplace(
+        CORE / "scripts/live_verification/agents/task-testing",
+        workspace,
+        {},
+        name=f"workflow-{role}",
+        agent_id=f"session-task-workflow-{role}",
+    )
+    prompt = common.testing_prompt(pack)
+    header = prompt.read_text().split("---", 2)[1]
+    prompt.write_text(
+        "---" + header + "---\n"
         "Perform only the supplied human qualification mission yourself. Do not delegate.\n"
         "Execute requested tools, inspect their actual observations, and report honestly.\n"
         "Use only each tool's declared arguments. If input validation rejects a call before "
@@ -82,7 +83,7 @@ def blueprint(call: Any, workspace: Path, wid: str, role: str) -> str:
         "reply_to=message_id and correlation_id. Never reply to ACK messages.\n"
         "Use complete fenced tool_calls syntax when the provider uses that protocol.\n"
     )
-    return common.install_blueprint(call, pack, wid)["id"]
+    return common.install_testing_agent(call, pack)
 
 
 def model_calls(call: Any, root: Path, sid: str, text: str, names: list[str]) -> list[Any]:
@@ -160,13 +161,13 @@ def notice(call: Any, sid: str, handle: str) -> Any:
     )
 
 
-def cycle(call: Any, root: Path, wid: str, blueprints: list[str], number: int) -> Any:
+def cycle(call: Any, root: Path, wid: str, agents: list[str], number: int) -> Any:
     """Qualify mixed runs, mail, failed outcomes and Stop using actual model bridges."""
     a = common.create_session(call, wid, f"Observer workflow {number}")
     b = common.create_session(call, wid, f"Producer workflow {number}")
-    for sid, pack in zip((a, b), blueprints, strict=True):
-        common.activate_blueprint(call, sid, pack)
-    assert blueprints[0] != blueprints[1]
+    for sid, pack in zip((a, b), agents, strict=True):
+        common.use_agent(call, sid, pack)
+    assert agents[0] != agents[1]
     run, shell, paths = start_held(call, root, b, f"workflow-{number}-busy")
     marker = "PEER_BUSY_" + secrets.token_hex(8)
     records = model_calls(
@@ -318,7 +319,7 @@ def cycle(call: Any, root: Path, wid: str, blueprints: list[str], number: int) -
         "pass": True,
         "cycle": number,
         "sessions": [a, b],
-        "blueprints": blueprints,
+        "agents": agents,
         "model_receipts": receipts,
         "handles": [run, shell, failed_run, failed_shell, stopped_run, continuing_shell],
         "invocations": [r["payload"]["call_id"] for r in records] + [sent["payload"]["call_id"]],
@@ -394,6 +395,8 @@ def main() -> int:
             PYTHONDONTWRITEBYTECODE="1",
             CLIO_AGENT_HOME=str(root / "clio-home"),
             CLIO_ALLOWED_ROOTS=str(workspace),
+            # Plugin stdio servers name a bare ``python``: make it this interpreter.
+            PATH=str(Path(sys.executable).parent) + os.pathsep + os.environ.get("PATH", ""),
         )
         if args.provider == "codex":
             report["auth"] = frozen_codex_auth(root / "private-codex")
@@ -437,30 +440,25 @@ def main() -> int:
         wid = common.create_workspace(call, "Distinct task workflow qualification", workspace)
         common.allow_all(call)
         if args.suite == "workflows":
-            packs = [blueprint(call, workspace, wid, role) for role in ("observer", "producer")]
+            packs = [testing_agent(call, workspace, wid, role) for role in ("observer", "producer")]
         elif args.suite == "mcp":
-            from _mcp_model_tasks import blueprint as mcp_blueprint
+            from _mcp_model_tasks import testing_agent as mcp_testing_agent
 
-            packs = [mcp_blueprint(call, workspace, wid)]
+            packs = [mcp_testing_agent(call, workspace, wid)]
         else:
-            pack = common.materialize_testing_pack(
+            # The coordinator already carries the shell plugin (subagent-human needs it).
+            pack = common.materialize_testing_marketplace(
                 CORE / "scripts/live_verification/agents/task-subagent-testing", workspace, {}
             )
-            if args.suite == "subagent-human":
-                main_expert = pack / "experts/main.md"
-                _, frontmatter, body = main_expert.read_text().split("---", 2)
-                metadata = yaml.safe_load(frontmatter)
-                metadata["tools"].append("shell_bash")
-                main_expert.write_text("---\n" + yaml.safe_dump(metadata) + "---\n" + body)
             if args.provider == "claude_code":
-                for expert in (pack / "experts").glob("*.md"):
+                for expert in common.testing_prompts(pack):
                     with expert.open("a") as prompt:
                         prompt.write(
                             "\nInvoke CLIO tools through the complete fenced tool_calls protocol "
                             "in the system instructions. Include the opening ```tool_calls fence, "
                             "JSON call list and closing ``` fence; bare JSON invokes no tool.\n"
                         )
-            packs = [common.install_blueprint(call, pack, wid)["id"]]
+            packs = [common.install_testing_agent(call, pack)]
         call("PUT", "/v1/providers/lm", selection)
         evidence.require(
             lambda: call("GET", "/v1/providers/lm").get("state") == "ready", "real provider ready"

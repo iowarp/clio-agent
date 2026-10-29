@@ -13,6 +13,7 @@ from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Any, Literal
 
 from clio_agent.gact.events import Event
+from clio_agent.gact.permission_evidence import emit_permission_resolution, permission_identity
 from clio_agent.gact.runtime.retention import enforce_dict_bound
 from clio_agent.gact.session_kind import session_kind
 
@@ -89,6 +90,7 @@ def record_resolved_permission(
     row = {
         "id": pid,
         "session_id": session_id,
+        **permission_identity(app, session_id),
         "tool_call": {
             "tool_name": tool_name,
             "input": dict(args),
@@ -103,6 +105,7 @@ def record_resolved_permission(
     if hasattr(app.state, "permissions"):
         app.state.permissions[pid] = row
         enforce_dict_bound(app, app.state.permissions, "permissions", session_id=session_id)
+    emit_permission_resolution(app, row)
     if hasattr(app.state, "bus"):
         publish_permission_event(
             app,

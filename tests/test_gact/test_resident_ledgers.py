@@ -19,7 +19,6 @@ from clio_agent.gact.resident_ledgers import (
     ResidentLedgerSet,
     _estimate_bytes,
     resident_ledger_reason_payload,
-    seed_metrics_counters,
 )
 from clio_agent.gact.types import Message, Part
 
@@ -223,6 +222,32 @@ def test_active_session_survives_idle_ttl() -> None:
     assert "s0" in rl.resident_session_ids
 
 
+def test_release_drops_a_finished_sessions_copies_now_unless_active() -> None:
+    """Work done with a session releases it at once; a viewed session stays."""
+    store = _FakeStore({"s0": [_msg("m", "s0")], "s1": [_msg("m", "s1")]})
+    audit: list[dict] = []
+    evicted: list[str] = []
+    rl = ResidentLedgerSet(
+        store,
+        config=ResidentLedgerConfig(max_bytes=10**12, max_sessions=10**6, idle_ttl_s=10**9),
+        is_active=lambda sid: sid == "s0",
+        audit=audit.append,
+        on_evict=evicted.append,
+    )
+    rl.get("s0", [])
+    rl.get("s1", [])
+    rl.scope_resident("s1", "scope", 64)
+
+    assert rl.release("s1", "obligation_done")
+    assert not rl.release("s0", "obligation_done")  # viewed: kept
+    assert not rl.release("s9", "obligation_done")  # nothing held
+
+    assert rl.resident_session_ids == ["s0"]
+    assert rl.arc_bytes == 0
+    assert evicted == ["s1"]
+    assert [a["reason"] for a in audit if a["session_id"] == "s1"][-1] == "obligation_done"
+
+
 def test_all_active_over_cap_skips_eviction_with_typed_reason() -> None:
     store = _FakeStore({f"s{i}": [_msg(f"m{i}", f"s{i}")] for i in range(3)})
     audit: list[dict] = []
@@ -239,29 +264,13 @@ def test_all_active_over_cap_skips_eviction_with_typed_reason() -> None:
 
 
 # --------------------------------------------------------------------------- #
-# Reason catalog + metrics seed
+# Reason catalog
 # --------------------------------------------------------------------------- #
 
 
 def test_unknown_reason_is_rejected() -> None:
     with pytest.raises(ValueError):
         resident_ledger_reason_payload("not_a_reason", session_id="s")
-
-
-def test_seed_metrics_folds_every_session_without_residency() -> None:
-    from clio_agent.gact.metrics_counters import MetricsCounters
-
-    store = _FakeStore(
-        {
-            "a": [_msg("m1", "a", role="user"), _msg("m2", "a", role="assistant")],
-            "b": [_msg("m3", "b", role="user")],
-        }
-    )
-    counters = MetricsCounters()
-    seed_metrics_counters(store, counters)
-    assert counters.message_total == 3
-    assert counters.by_role["user"] == 2
-    assert counters.by_role["assistant"] == 1
 
 
 # --------------------------------------------------------------------------- #

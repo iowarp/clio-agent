@@ -543,7 +543,7 @@ def test_chat_answer_streamed_reasoning_batch_wraps_in_arrival_order(
 
 
 class _RollupAgent:
-    """Parent forward spawns ONE child (self-declared as ``main``), blocks for
+    """Parent forward spawns ONE child (the installed ``clio/standard`` agent), blocks for
     its completion (the ``_NestingAgent`` pattern, test_turn_spawn_s3.py — a real
     ``threading.Event.wait`` on the child's dedicated pool thread never stalls
     the loop thread the parent forward runs on), then answers. The CHILD's own
@@ -581,11 +581,12 @@ class _RollupAgent:
                 )
             return _Pred(answer="child made two plots", selected_expert="")
 
-        from clio_agent.gact.task_declarations import build_spawn_runtime_tools, build_task_tools
+        from clio_agent.gact.spawn_tools import build_spawn_runtime_tools
+        from clio_agent.gact.task_declarations import build_task_tools
 
         spawn = build_spawn_runtime_tools(self, type("Definition", (), {"fanout": {}})())[0]
         receipt = asyncio.run(
-            app.state.builtin_boundary.bind(spawn).acall(agent="main", task="make plots")
+            app.state.builtin_boundary.bind(spawn).acall(agent="clio/standard", task="make plots")
         )
         wait = next(tool for tool in build_task_tools() if tool.name == "wait_tasks")
         result = asyncio.run(
@@ -595,18 +596,12 @@ class _RollupAgent:
         return _Pred(answer="parent turn done", selected_expert="")
 
 
-def test_full_turn_rolls_up_child_mints_onto_the_parent_message(
-    tmp_path: Path, monkeypatch: Any
-) -> None:
+def test_full_turn_rolls_up_child_mints_onto_the_parent_message(tmp_path: Path) -> None:
     """End-to-end: a parent turn that spawns + waits on a child mid-turn ends
     with the child's TWO artifacts visible as ``resource_link`` parts on the
     settled PARENT message — an adjacent run at the end, not just on the
     child's own transcript."""
 
-    monkeypatch.setattr(
-        "clio_agent.gact.agents.resolution._runtime_declared_child_ids",
-        lambda app, pid, session_id="", **_bindings: {"main"},
-    )
     agent = _RollupAgent()
     app = _build(tmp_path, "rollup", agent)
     agent.app = app

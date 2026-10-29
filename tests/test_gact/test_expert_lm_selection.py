@@ -18,8 +18,10 @@ active default profile) and delegates to the pure resolver, returning a
 
 from __future__ import annotations
 
+import json
 import threading
 from concurrent.futures import ThreadPoolExecutor
+from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
 
@@ -27,11 +29,11 @@ import pytest
 
 import clio_agent.config as config_mod
 from clio_agent.config import PROVIDER_DEFAULTS, LMProviderConfig
-from clio_agent.gact.agents.builders import (
-    _build_prompt_user_agent_module,
-    _dynamic_agent_lm_config,
-)
+from clio_agent.gact.agents.builders import _dynamic_agent_lm_config, build_agent_module
 from clio_agent.gact.types import AgentDef
+from clio_agent.plugins.resolve import Resolution
+from clio_agent.plugins.service import PluginService
+from clio_agent.plugins.store import PluginStore
 from clio_agent.providers import resolver as resolver_mod
 from clio_agent.providers.capabilities import invalidation
 from clio_agent.providers.capabilities.records import (
@@ -46,6 +48,7 @@ from clio_agent.providers.handshake.model import (
     DiscoveredModel,
     HandshakeReport,
 )
+from tests.test_plugins.helpers import write
 
 _NOW = "2026-01-01T00:00:00+00:00"
 
@@ -130,6 +133,30 @@ def _patch_handshake(monkeypatch: pytest.MonkeyPatch, report: HandshakeReport) -
     monkeypatch.setattr(resolver_mod, "run_handshake_sync", _fake)
 
 
+def _core_only_resolution(root: Path) -> Resolution:
+    """A real resolution of an agent carrying only ``core`` (its react flow, no tools)."""
+
+    market = root / "market"
+    write(market / "ai.iowarp.clio" / "marketplace.json", json.dumps({"name": "demo"}))
+    write(
+        market / "agents" / "bare.py",
+        """
+        from clio_agent.sdk import Agent
+
+
+        class Bare(Agent):
+            id = "bare"
+            version = "1.0.0"
+            role = "a tool-less test agent"
+        """,
+    )
+    service = PluginService(PluginStore(root / "store"), default_marketplace=False)
+    service.store.install(str(market), name="demo", default=True)
+    resolution = service.resolve("demo/bare", pin=False)
+    assert any(row["id"] == "react" for row in resolution.flows)
+    return resolution
+
+
 def _no_active_app(monkeypatch: pytest.MonkeyPatch) -> None:
     """Force ``_default_profile_spec`` down the base-agent fallback path.
 
@@ -148,7 +175,7 @@ def _no_active_app(monkeypatch: pytest.MonkeyPatch) -> None:
 def test_cross_provider_expert_authenticates_and_folds_own_window(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """A blueprint expert on a different provider + named credential gets its own key + window."""
+    """An agent on a different provider + named credential gets its own key + window."""
     _no_active_app(monkeypatch)
     # Base/default profile is a LOCAL provider; the expert declares a cloud one.
     base_config = LMProviderConfig(provider="lm_studio", model="qwen-base")
@@ -331,7 +358,9 @@ def test_undeclared_cloud_expert_prefers_boot_over_divergent_native_var(
 
 
 @pytest.mark.concurrency
-def test_n_experts_n_providers_no_lm_cross_talk(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_n_experts_n_providers_no_lm_cross_talk(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
     """N experts on N providers run ``forward()`` concurrently; each dspy.LM is its own.
 
     Every expert's real ``dspy.LM`` must carry its own ``model``/``api_base``/
@@ -377,30 +406,29 @@ def test_n_experts_n_providers_no_lm_cross_talk(monkeypatch: pytest.MonkeyPatch)
 
     monkeypatch.setattr(config_mod, "create_lm", _recording_create_lm)
 
-    # Neutralize the actual model call so forward() never hits a network/LM.
-    class _FakePredict:
-        def __init__(self, *_a: Any, **_k: Any) -> None:
-            pass
-
-        def __call__(self, *_a: Any, **_k: Any) -> Any:
-            return SimpleNamespace(answer="ok", expert_handoffs=[])
-
+    # Neutralize the agent's flow so forward() never hits a network/LM: the LM is
+    # built (and bound) by forward() before the flow runs.
     monkeypatch.setattr(
-        "clio_agent.gact.agents.clio_react.ClioReAct.forward",
-        lambda self, **kwargs: _FakePredict()(**kwargs),
+        "clio_agent.flows.runner.run_agent_flow",
+        lambda module, kwargs: SimpleNamespace(answer="ok", expert_handoffs=[]),
     )
 
     base_agent = SimpleNamespace(_provider_config=LMProviderConfig(provider="lm_studio"))
+    resolution = _core_only_resolution(tmp_path)
     modules = {
-        name: _build_prompt_user_agent_module(
+        name: build_agent_module(
             base_agent,
             AgentDef(
                 id=f"expert-{name}",
                 title=f"Expert {name}",
+                source="plugin",
+                module={"kind": "predict"},
                 default_provider=provider,
                 default_model=model,
                 credential_ref=cred_ref,
+                metadata={"agent_ref": f"clio/expert-{name}", "flow": {"id": "react"}},
             ),
+            resolution,
         )
         for name, (provider, model, cred_ref) in specs.items()
     }

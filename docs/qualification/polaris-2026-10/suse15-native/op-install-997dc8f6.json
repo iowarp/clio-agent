@@ -1,0 +1,88 @@
+{
+ "steps": [
+  {
+   "id": "inspect",
+   "label": "Inspect target",
+   "state": "succeeded",
+   "started_at": "2026-10-26T13:46:04.766305+00:00",
+   "finished_at": "2026-10-26T13:46:04.785484+00:00",
+   "elapsed_seconds": 0.0,
+   "progress": null,
+   "message": "Running install"
+  },
+  {
+   "id": "command-0",
+   "label": "Prepare the service directory",
+   "state": "succeeded",
+   "started_at": "2026-10-26T13:46:04.788407+00:00",
+   "finished_at": "2026-10-26T13:46:04.938754+00:00",
+   "elapsed_seconds": 0.2,
+   "progress": null,
+   "message": ""
+  },
+  {
+   "id": "command-1",
+   "label": "Install the service",
+   "state": "succeeded",
+   "started_at": "2026-10-26T13:46:04.943183+00:00",
+   "finished_at": "2026-10-26T13:46:05.108260+00:00",
+   "elapsed_seconds": 0.2,
+   "progress": null,
+   "message": ""
+  },
+  {
+   "id": "readiness",
+   "label": "Flowcept installation",
+   "state": "succeeded",
+   "started_at": "2026-10-26T13:46:05.113603+00:00",
+   "finished_at": "2026-10-26T13:47:23.930737+00:00",
+   "elapsed_seconds": 78.8,
+   "progress": {
+    "determinate": false,
+    "unit": "packages",
+    "current": null,
+    "total": null,
+    "fraction": null,
+    "detail": "Resolved 45 packages in 2ms"
+   },
+   "message": "Waiting for Flowcept installation (76s)"
+  },
+  {
+   "id": "after-ready",
+   "label": "Prepare the model",
+   "state": "succeeded",
+   "started_at": "2026-10-26T13:47:23.930797+00:00",
+   "finished_at": "2026-10-26T13:47:24.111146+00:00",
+   "elapsed_seconds": 0.2,
+   "progress": null,
+   "message": "Preparing the model"
+  },
+  {
+   "id": "finish",
+   "label": "Record the deployment",
+   "state": "succeeded",
+   "started_at": "2026-10-26T13:47:24.111176+00:00",
+   "finished_at": "2026-10-26T13:47:24.115738+00:00",
+   "elapsed_seconds": 0.0,
+   "progress": null,
+   "message": "Recording the deployment"
+  }
+ ],
+ "current_step": null,
+ "started_at": "2026-10-26T13:46:04.766289+00:00",
+ "finished_at": "2026-10-26T13:47:24.115788+00:00",
+ "elapsed_seconds": 79.3,
+ "reused": [],
+ "from_scratch": false,
+ "log_cursor": 564,
+ "id": "997dc8f6-288c-4eb9-b402-df3ea240d43d",
+ "service_id": "flowcept",
+ "target_id": "local",
+ "action": "install",
+ "state": "succeeded",
+ "progress": "Completed",
+ "error": null,
+ "conflict": null,
+ "created_at": "2026-10-26T13:46:04.763459+00:00",
+ "updated_at": "2026-10-26T13:47:24.115812+00:00"
+}

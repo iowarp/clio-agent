@@ -26,8 +26,8 @@ old precision claim was synthetic. This is the exact ambiguity the old
 ``artifact_paths`` field restriction guarded against, now grounded in the producing
 provenance rather than a declared path list.
 
-The pack schema's ``artifact_extensions`` still scopes WHICH fabricated-path
-*types* to check (a pack that declares no deliverable types grounds nothing —
+The plugin schema's ``artifact_extensions`` still scopes WHICH fabricated-path
+*types* to check (a plugin that declares no deliverable types grounds nothing —
 same no-op default as before). It is a cheap type vocabulary, never a path scan:
 the registry remains the sole source of truth for which artifacts exist and where
 their verified bytes live. This keeps the honest neutralize behaviour (a

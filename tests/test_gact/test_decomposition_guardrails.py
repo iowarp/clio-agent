@@ -194,7 +194,26 @@ from clio_agent.gact.app import build_app
 # Shared Tasks and compatibility routes contributed two pairs above the common
 # 403-route base. Develop independently adds Endpoint edit PATCH and uncaptured
 # metadata browse POST in routes/storage_ndp_endpoints.py; retain both additions.
-EXPECTED_ROUTE_METHOD_PAIRS = 408  # Plus develop's shared SSH profile inventory route.
+# 408 -> 382 (plugins, Agent SDK and flows; docs/design/sdk/removal-manifest.md): the
+# agent-blueprint, expert-pack, user-agent CRUD and blueprint update/source routes are
+# deleted, replaced by routes/plugins.py (plugins, marketplaces, agents, user agents,
+# the session's pinned agent) and the task flow run view. 382 -> 383: a plugin's review
+# (GET /v1/plugins/{name}/review), read before running its flows. 383 -> 385: GET
+# /v1/mcp/configuration (+1, landed without a bump), GET /v1/fleet and PATCH
+# /v1/fleet/accounts/{account} (+2, the model fleet), and the agent writing files itself:
+# POST /diffs/apply and /diffs/reject are deleted and POST /diffs/revert (Undo) added (-1).
+# 385 -> 405: long-term memory (routes/memory_documents.py, memory_transfer.py,
+# memory_switches.py) adds 20; transcript recall moved to /v1/session-recall/* with no
+# change in count.
+# 405 -> 407: SPOTTER per-item attention view + its CSV export, POST
+# /v1/sessions/{sid}/messages/{mid}/attention/items[/export], owned by gact/attention/routes.py.
+# 407 -> 420: #1854 added 13 without a bump -- plugins local/upload/export/inspect,
+# extensions MCP registry, model search page, MCP sign-in start/status/complete/cancel and
+# authorization delete, memory creation runs and memory documents POST.
+# 420 -> 421: GET /v1/sessions/{sid}/science-log. 421 -> 422: POST
+# /v1/studies/{study}/table-query, the live study sources views read (Addendum B).
+# 422 -> 423: POST /v1/sessions/{sid}/mcp/{namespace}/reconnect, conversation MCP preparation.
+EXPECTED_ROUTE_METHOD_PAIRS = 423
 
 # app.py is build_app + lifecycle + re-export shims only. The ceiling is
 # the current size (~2892 lines) plus ~300 lines of headroom so ordinary

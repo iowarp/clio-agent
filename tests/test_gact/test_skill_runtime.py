@@ -1,10 +1,11 @@
 """Progressive-disclosure skill runtime (#916 S3 / #919).
 
-Tier 1: a react expert that declares ``skills:`` gets a metadata block (names +
-descriptions) in its system prompt and the auto-attached ``load_skill`` tool —
-the BODY stays out of the prompt until the model loads it (the sabotage twin).
-Tool-less predict/CoT experts get the bodies compiled in (their only tier).
-The default-registry root expert auto-declares workspace skills.
+Tier 1: an agent whose resolved plugins ship ``skills/`` gets a metadata block
+(names + descriptions) in its system prompt and the ``load_skill`` tool — the BODY
+stays out of the prompt until the model loads it (the sabotage twin). Tool-less
+agents get the bodies compiled in (their only tier). Skills come only from the
+resolved plugins (plus the session's A2UI catalog skills for a surface producer);
+nothing is auto-declared from the workspace or a built-in folder.
 """
 
 from __future__ import annotations
@@ -17,7 +18,8 @@ from typing import Any
 
 import pytest
 
-from clio_agent.gact.agents.builders import _build_blueprint_dspy_module
+from clio_agent.gact.agents.builders import build_agent_module
+from clio_agent.gact.agents.resolution import resolution_agent_def, session_agent_def
 from clio_agent.gact.agents.skill_runtime import (
     build_load_skill_tool,
     build_spawn_skill_task_tool,
@@ -28,17 +30,30 @@ from clio_agent.gact.agents.skill_runtime import (
 from clio_agent.gact.app import build_app
 from clio_agent.gact.skills import SkillCatalog
 from clio_agent.gact.types import AgentDef
+from clio_agent.plugins.service import PluginService
+from tests._plugin_fixtures import FIXTURE, custom_marketplace
 
-from .a2ui_catalog_binding import bind_builtin_catalogs
+from .a2ui_catalog_binding import MINIMAL_PLUGIN, bind_builtin_catalogs, bind_session_plugins
 
 pytestmark = pytest.mark.usefixtures("clio_core_plane")
 
 BODY = "STEP ONE: inspect. STEP TWO: judge. SECRET_PROCEDURE_MARKER."
 
 
+@pytest.fixture(autouse=True)
+def _drop_declared_structured_content() -> Any:
+    """``load_skill`` called directly (outside the instrumented wrapper) declares its
+    wire payload in this context; pop it so it never leaks into a later test."""
+
+    from clio_agent.gact.agents.tool_instrumentation import pop_declared_structured_content
+
+    yield
+    pop_declared_structured_content()
+
+
 @pytest.fixture
 def pack(tmp_path: Path) -> Path:
-    """A pack root shipping one skill + an expert-visible layout."""
+    """A plugin root shipping one skill with a bundled reference file."""
 
     skill_dir = tmp_path / "pack" / "skills" / "quality-rubric"
     skill_dir.mkdir(parents=True)
@@ -54,12 +69,12 @@ def pack(tmp_path: Path) -> Path:
 def _agent(pack: Path, **overrides: Any) -> AgentDef:
     fields: dict[str, Any] = {
         "id": "analyst",
-        "source": "expert_pack",
+        "source": "plugin",
         "title": "Analyst",
         "system_prompt": "Analyze things.",
         "skills": ["quality-rubric"],
         "module": {"kind": "react"},
-        "metadata": {"pack_definition_path": str(pack / "AGENT.md")},
+        "metadata": {"skill_folders": [("quality", str(pack / "skills"))]},
     }
     fields.update(overrides)
     return AgentDef(**fields)
@@ -245,7 +260,7 @@ def test_load_skill_declares_typed_structured_content_for_body(pack: Path, monke
     assert next(iter(shape)) == "message"
     assert shape["message"] == "loaded skill 'quality-rubric' (1 line)"
     assert shape["skill_id"] == "quality-rubric"
-    assert shape["scope"] == "pack"
+    assert shape["scope"] == "plugin"
     assert shape["lines"] == 1
     assert shape["skill_description"] == "Judge data quality"
     assert Path(shape["skill_directory"]).samefile(pack / "skills/quality-rubric")
@@ -317,121 +332,23 @@ def test_predict_expert_gets_bodies_block(pack: Path) -> None:
     assert "quality-rubric" in rt.bodies_block
 
 
-# ---- default-expert workspace auto-declaration ------------------------------------
+# ---- skills come only from resolved plugins --------------------------------------
+
+ANALYST_AGENT = """
+from clio_agent.sdk import Agent
 
 
-def test_default_root_auto_declares_workspace_skills_on_real_runtime_rows(
-    tmp_path: Path,
-) -> None:
-    """THE real-object proof: the rows served by the EXECUTING seam
-    (``load_agent_blueprints``, what ``_runtime_active_agent_blueprint_rows``
-    loads — the conftest fixture installs the default-registry blueprint) must
-    trip the auto-declaration for their root expert and ONLY the root."""
-
-    from clio_agent.gact.agent_blueprints import (
-        DEFAULT_AGENT_BLUEPRINT_ID,
-        load_agent_blueprints,
-    )
-
-    ws = tmp_path / "ws"
-    d = ws / ".claude" / "skills" / "user-skill"
-    d.mkdir(parents=True)
-    (d / "SKILL.md").write_text(
-        "---\nname: user-skill\ndescription: U\n---\n\nUser procedure.\n", encoding="utf-8"
-    )
-    catalog = SkillCatalog(home=tmp_path / "no-home", cwd=ws)
-    rows = load_agent_blueprints(blueprint_id=DEFAULT_AGENT_BLUEPRINT_ID)
-    assert rows, "conftest default-registry blueprint fixture must load"
-    roots = [r for r in rows if not r.parent_id]
-    assert roots, "fixture blueprint must have a root expert"
-    for root in roots:
-        assert "user-skill" in effective_declared_skills(root, catalog)
-    for child in [r for r in rows if r.parent_id]:
-        assert "user-skill" not in effective_declared_skills(child, catalog)
-    # A root tagged with the EXECUTING seam's own agent_blueprint_id matches:
-    listing_root = AgentDef(
-        id="main",
-        source="expert_pack",
-        title="Main",
-        metadata={"agent_blueprint_id": DEFAULT_AGENT_BLUEPRINT_ID},
-    )
-    # Workspace skills lead the surface; clio's shipped built-in skills are
-    # auto-declared after them onto the default-registry root
-    # (P1.5 #1067), alphabetically by id. #1211 review R6/D1: ``update-models`` is a
-    # DELIBERATE inclusion, not an oversight -- there is no per-skill auto-declare
-    # opt-out today, its declaration cost is the same ~100-token metadata-only block
-    # every built-in pays (RULE 6), and letting it auto-declare (rather than inventing
-    # new opt-out machinery) is what lets plain chat invoke `/update-models` without an
-    # edited blueprint, matching the existing ``planning`` precedent exactly.
-    assert effective_declared_skills(listing_root, catalog) == [
-        "user-skill",
-        "connect-data",
-        "create-dashboard",
-        "create-diagram",
-        "planning",
-        "present-interactive-analysis",
-        "review-visual-presentation",
-        "update-models",
-        "work-with-ndp",
-        "work-with-pdfs",
-        "work-with-presentations",
-        "work-with-spreadsheets",
-        "work-with-word",
-    ]
-    # DELETED SEAM regression pin: the retired "listing seam" stamp
-    # (metadata["source_blueprint"] == "default_registry") -- the tag
-    # catalog._builtin_agents() used to attach when it implicitly loaded the
-    # installed-but-unactivated default registry snapshot -- must NEVER
-    # auto-declare on its own; only the executing seam's agent_blueprint_id does.
-    stale_listing_tag_root = AgentDef(
-        id="main",
-        source="expert_pack",
-        title="Main",
-        metadata={"source_blueprint": "default_registry"},
-    )
-    assert effective_declared_skills(stale_listing_tag_root, catalog) == []
-    # A non-default blueprint root does NOT auto-declare:
-    other_root = AgentDef(
-        id="root",
-        source="expert_pack",
-        title="R",
-        metadata={"agent_blueprint_id": "some-other-pack"},
-    )
-    assert effective_declared_skills(other_root, catalog) == []
+class Analyst(Agent):
+    id = "analyst"
+    version = "1.0.0"
+    name = "Analyst"
+    role = "a data analyst"
+    plugins = Agent.plugins + ["quality"]
+"""
 
 
-def test_builtin_main_loads_pdf_workflow_and_vision_tool(tmp_path: Path) -> None:
-    """A bare session can load the shipped PDF procedure and inspect page images."""
-
-    from clio_agent.gact.agents.declared_native_tools import resolve_declared_native_tools
-    from clio_agent.gact.agents.skill_runtime import SkillRuntime, skills_prompt_block
-    from clio_agent.gact.catalog import _builtin_main_agent
-
-    agent = _builtin_main_agent()
-    assert agent.skills == []
-    assert "view_image" in agent.tools
-
-    catalog = SkillCatalog(home=tmp_path / "home", cwd=tmp_path / "workspace")
-    declared = effective_declared_skills(agent, catalog)
-    runtime = SkillRuntime(resolutions=catalog.resolve_declared(declared))
-    resolution = runtime.resolved["work-with-pdfs"]
-    assert resolution.skill is not None and resolution.skill.scope == "builtin"
-    assert "Call load_skill" in skills_prompt_block(runtime)
-    loaded = build_load_skill_tool(agent, runtime).func(skill_id="work-with-pdfs")
-    assert "Engineering drawings and diagrams" in loaded
-    assert "scripts/prepare_pdf.py" in loaded
-    assert (Path(resolution.skill.dir) / "scripts" / "prepare_pdf.py").is_file()
-
-    requested_text, available_text, _ = resolve_declared_native_tools(
-        agent, {}, supports_vision=False
-    )
-    requested_image, available_image, _ = resolve_declared_native_tools(
-        agent, {}, supports_vision=True
-    )
-    assert "view_image" not in requested_text
-    assert "view_image" not in available_text
-    assert "view_image" in requested_image
-    assert "view_image" in available_image
+#: The skills every agent carries: core's planning and the fleet plugin's update-models.
+CORE_SKILLS = ("planning", "update-models")
 
 
 def _write_inventory_skill(root: Path, skill_id: str, description: str, body: str) -> Path:
@@ -445,71 +362,114 @@ def _write_inventory_skill(root: Path, skill_id: str, description: str, body: st
     return path
 
 
-def test_builtin_main_discovers_new_skills_without_a_name_allowlist(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """An unfamiliar installed skill is discoverable, metadata-only, then loadable."""
-    from clio_agent.gact.agents.skill_runtime import SkillRuntime, skills_prompt_block
-    from clio_agent.gact.catalog import _builtin_main_agent
+def _quality_marketplace(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+    """A default marketplace whose ``quality`` plugin ships two skills, one with a script."""
 
-    builtins = tmp_path / "builtins"
-    _write_inventory_skill(builtins, "new-format", "Author the new format", "NEW FORMAT BODY")
-    monkeypatch.setattr("clio_agent.gact.skills._BUILTIN_SKILLS_ROOT", builtins)
-    agent = _builtin_main_agent()
-    catalog = SkillCatalog(home=tmp_path / "home", cwd=tmp_path / "workspace")
-    declared = effective_declared_skills(agent, catalog)
-    assert declared == ["new-format"]
-    runtime = SkillRuntime(resolutions=catalog.resolve_declared(declared))
-    prompt = skills_prompt_block(runtime)
-    assert "new-format: Author the new format" in prompt
-    assert "NEW FORMAT BODY" not in prompt
-    assert "NEW FORMAT BODY" in build_load_skill_tool(agent, runtime).func(skill_id="new-format")
-
-    # Removing an installation changes a fresh inventory; no mandatory guide lingers.
-    monkeypatch.setattr("clio_agent.gact.skills._BUILTIN_SKILLS_ROOT", tmp_path / "absent")
-    fresh = SkillCatalog(home=tmp_path / "home", cwd=tmp_path / "workspace")
-    assert effective_declared_skills(agent, fresh) == []
-
-
-def test_builtin_main_discovery_respects_workspace_precedence_and_expert_ownership(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """Workspace overrides win, while unrelated global skills and child scopes stay private."""
-    from clio_agent.gact.agents.skill_runtime import SkillRuntime
-    from clio_agent.gact.catalog import _builtin_main_agent
-
-    builtins, workspace, home = tmp_path / "builtins", tmp_path / "workspace", tmp_path / "home"
-    _write_inventory_skill(builtins, "next-guide", "Shipped guide", "SHIPPED BODY")
-    _write_inventory_skill(builtins, "shared-procedure", "Shipped procedure", "SHIPPED PROCEDURE")
-    _write_inventory_skill(
-        workspace / ".agents" / "skills", "shared-procedure", "Local procedure", "LOCAL BODY"
+    skill = "---\nname: {id}\ndescription: {description}\n---\n\n{body}\n"
+    return custom_marketplace(
+        tmp_path,
+        monkeypatch,
+        plugins={
+            "quality": {
+                "files": {
+                    "skills/quality-rubric/SKILL.md": skill.format(
+                        id="quality-rubric", description="Judge data quality", body=BODY
+                    ),
+                    "skills/quality-rubric/scripts/check.py": "print('checked')\n",
+                    "skills/new-format/SKILL.md": skill.format(
+                        id="new-format",
+                        description="Author the new format",
+                        body="NEW FORMAT BODY",
+                    ),
+                }
+            }
+        },
+        agents={"analyst.py": ANALYST_AGENT},
     )
-    _write_inventory_skill(home / ".codex" / "skills", "private-global", "Private", "PRIVATE BODY")
-    monkeypatch.setattr("clio_agent.gact.skills._BUILTIN_SKILLS_ROOT", builtins)
+
+
+def test_resolved_plugin_skills_are_the_agents_skills_metadata_first(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Every skill a resolved plugin ships is discoverable, metadata-only, then loadable."""
+
+    _quality_marketplace(tmp_path, monkeypatch)
+    agent = resolution_agent_def(PluginService().resolve("clio/analyst", pin=False))
+    # The analyst's plugins are core (planning, update-models) and quality.
+    assert sorted(agent.skills) == sorted([*CORE_SKILLS, "new-format", "quality-rubric"])
+    runtime = skill_runtime_for_agent(None, agent)
+    rubric = runtime.resolved["quality-rubric"].skill
+    assert rubric is not None and rubric.scope == "plugin" and rubric.source == "quality"
+    assert "- new-format: Author the new format" in runtime.prompt_block
+    assert "Call load_skill" in runtime.prompt_block
+    assert "NEW FORMAT BODY" not in runtime.prompt_block
+    assert BODY not in runtime.prompt_block
+    tool = build_load_skill_tool(agent, runtime)
+    assert "NEW FORMAT BODY" in tool.func(skill_id="new-format")
+    loaded = tool.func(skill_id="quality-rubric")
+    assert "SECRET_PROCEDURE_MARKER" in loaded
+    assert "scripts/check.py" in loaded
+    assert (Path(rubric.dir) / "scripts" / "check.py").is_file()
+
+
+def test_workspace_and_global_skills_are_never_auto_declared(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A plugin agent declares only its plugins' skills; user skill folders stay private."""
+
+    _quality_marketplace(tmp_path, monkeypatch)
+    workspace, home = tmp_path / "workspace", tmp_path / "home"
+    _write_inventory_skill(workspace / ".claude" / "skills", "user-skill", "U", "USER BODY")
+    _write_inventory_skill(home / ".codex" / "skills", "private-global", "P", "PRIVATE BODY")
     catalog = SkillCatalog(home=home, cwd=workspace)
-    agent = _builtin_main_agent()
-    declared = effective_declared_skills(agent, catalog)
-    assert declared == ["shared-procedure", "next-guide"]
-    runtime = SkillRuntime(resolutions=catalog.resolve_declared(declared))
-    assert "LOCAL BODY" in build_load_skill_tool(agent, runtime).func(skill_id="shared-procedure")
-    resolved_skill = runtime.resolved["shared-procedure"].skill
-    assert resolved_skill is not None
-    assert resolved_skill.scope == "workspace"
-
-    child = agent.model_copy(update={"id": "child", "parent_id": "main"})
-    custom_root = AgentDef(id="custom", title="Custom", metadata={"definition_kind": "blueprint"})
+    root = resolution_agent_def(PluginService().resolve("clio/analyst", pin=False))
+    assert sorted(effective_declared_skills(root, catalog)) == sorted(
+        [*CORE_SKILLS, "new-format", "quality-rubric"]
+    )
+    standard = resolution_agent_def(PluginService().resolve("clio/standard", pin=False))
+    assert sorted(effective_declared_skills(standard, catalog)) == sorted(CORE_SKILLS)
+    child = root.model_copy(update={"id": "child", "parent_id": "analyst", "skills": []})
     assert effective_declared_skills(child, catalog) == []
-    assert effective_declared_skills(custom_root, catalog) == []
 
 
+def test_plugin_skill_shadows_a_workspace_skill_of_the_same_id(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Precedence: the agent's resolved plugin wins over the user's workspace copy."""
+
+    _quality_marketplace(tmp_path, monkeypatch)
+    workspace = tmp_path / "workspace"
+    _write_inventory_skill(
+        workspace / ".agents" / "skills", "quality-rubric", "Local procedure", "LOCAL BODY"
+    )
+    agent = resolution_agent_def(PluginService().resolve("clio/analyst", pin=False))
+    catalog = SkillCatalog(
+        home=tmp_path / "home",
+        cwd=workspace,
+        plugin_skills=agent.metadata["skill_folders"],
+    )
+    resolution = catalog.resolve("quality-rubric")
+    assert resolution.status == "resolved"
+    assert resolution.skill is not None and resolution.skill.scope == "plugin"
+    from clio_agent.gact.agents.skill_runtime import SkillRuntime
+
+    runtime = SkillRuntime(resolutions=catalog.resolve_declared(["quality-rubric"]))
+    loaded = build_load_skill_tool(agent, runtime).func(skill_id="quality-rubric")
+    assert "SECRET_PROCEDURE_MARKER" in loaded
+    assert "LOCAL BODY" not in loaded
+
+
+@pytest.mark.marketplace
 def test_interactive_analysis_skill_is_when_why_guidance_with_no_prop_lore() -> None:
     """The presentation skill points to catalog skills without duplicating prop lore."""
 
-    from clio_agent.gact.agents import skill_runtime
+    from tests._marketplace import MARKETPLACE_ROOT
 
     skill_path = (
-        Path(skill_runtime.__file__).resolve().parents[1]
-        / "builtin_skills"
+        MARKETPLACE_ROOT
+        / "plugins"
+        / "visuals"
+        / "skills"
         / "present-interactive-analysis"
         / "SKILL.md"
     )
@@ -546,7 +506,7 @@ def test_flat_skill_has_no_bundled_files(scratch_flat: None, tmp_path: Path) -> 
         "---\nname: flat\ndescription: F\n---\n\nFLAT BODY.\n", encoding="utf-8"
     )
     (root / "sibling-secret.txt").write_text("SIBLING", encoding="utf-8")
-    agent = AgentDef(id="a", source="expert_pack", title="A", skills=["flat"], metadata={})
+    agent = AgentDef(id="a", source="plugin", title="A", skills=["flat"], metadata={})
     catalog = SkillCatalog(home=tmp_path / "no-home", cwd=tmp_path / "ws")
     from clio_agent.gact.agents.skill_runtime import SkillRuntime
 
@@ -597,76 +557,63 @@ def test_appless_rebuild_serves_cached_surface(pack: Path, tmp_path: Path) -> No
 # ---- builder integration ------------------------------------------------------------
 
 
-def test_react_builder_wires_block_and_tool(pack: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def _patch_agent_lm(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr("clio_agent.config.create_lm", lambda config: object(), raising=True)
+    monkeypatch.setattr(
+        "clio_agent.config.create_chat_adapter", lambda config: object(), raising=True
+    )
+    monkeypatch.setattr(
+        "clio_agent.gact.agents.builders._dynamic_agent_lm_config",
+        lambda base_agent, agent_def: SimpleNamespace(
+            materialize=lambda cred=None: SimpleNamespace(
+                provider="openai", model="m", temperature=0.0
+            )
+        ),
+        raising=True,
+    )
+
+
+def test_react_builder_wires_block_and_tool(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     """End-to-end through the REAL builder: system prompt carries the metadata
     block (not the body) and the tools include load_skill."""
 
-    monkeypatch.setattr("clio_agent.config.create_lm", lambda config: object(), raising=True)
-    monkeypatch.setattr(
-        "clio_agent.config.create_chat_adapter", lambda config: object(), raising=True
+    _quality_marketplace(tmp_path, monkeypatch)
+    _patch_agent_lm(monkeypatch)
+    resolution = PluginService().resolve("clio/analyst", pin=False)
+    assert "load_skill" in {row["name"] for row in resolution.tools}
+    module = build_agent_module(
+        SimpleNamespace(tool_executor=None), resolution_agent_def(resolution), resolution
     )
-    monkeypatch.setattr(
-        "clio_agent.gact.agents.builders._dynamic_agent_lm_config",
-        lambda base_agent, agent_def: SimpleNamespace(
-            materialize=lambda cred=None: SimpleNamespace(
-                provider="openai", model="m", temperature=0.0
-            )
-        ),
-        raising=True,
-    )
-    module = _build_blueprint_dspy_module(SimpleNamespace(tool_executor=None), _agent(pack))
+    assert module.system_prompt.startswith(resolution.prompt_text.strip())
     assert "quality-rubric" in module.system_prompt
     assert "SECRET_PROCEDURE_MARKER" not in module.system_prompt
     assert any(getattr(t, "name", "") == "load_skill" for t in module.tools)
 
 
-def test_tool_user_agent_builder_wires_block_and_tool(
-    pack: Path, monkeypatch: pytest.MonkeyPatch
+def test_builder_attaches_no_load_skill_to_an_agent_without_skills(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """The third module class (tool-declaring user agents) gets the same react
-    tier-1 + load_skill contract — no silent skill drop."""
+    """An agent whose plugins ship no skills gets no skill block and no load_skill."""
 
-    from clio_agent.gact.agents.builders import _build_tool_user_agent_module
-
-    monkeypatch.setattr("clio_agent.config.create_lm", lambda config: object(), raising=True)
-    monkeypatch.setattr(
-        "clio_agent.config.create_chat_adapter", lambda config: object(), raising=True
+    _quality_marketplace(tmp_path, monkeypatch)
+    _patch_agent_lm(monkeypatch)
+    resolution = PluginService().resolve("clio/analyst", pin=False)
+    agent = resolution_agent_def(resolution).model_copy(
+        update={"skills": [], "metadata": {"skill_folders": []}}
     )
-    monkeypatch.setattr(
-        "clio_agent.gact.agents.builders._dynamic_agent_lm_config",
-        lambda base_agent, agent_def: SimpleNamespace(
-            materialize=lambda cred=None: SimpleNamespace(
-                provider="openai", model="m", temperature=0.0
-            )
-        ),
-        raising=True,
-    )
-    module = _build_tool_user_agent_module(
-        SimpleNamespace(tool_executor=None),
-        _agent(pack, source="user", module={}),
-    )
-    assert "quality-rubric" in module.system_prompt
-    assert "SECRET_PROCEDURE_MARKER" not in module.system_prompt
-    assert any(getattr(t, "name", "") == "load_skill" for t in module.tools)
+    module = build_agent_module(SimpleNamespace(tool_executor=None), agent, resolution)
+    assert "## Skills available to you" not in module.system_prompt
+    assert not any(getattr(t, "name", "") == "load_skill" for t in module.tools)
 
 
-def test_predict_builder_wires_bodies(pack: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr("clio_agent.config.create_lm", lambda config: object(), raising=True)
-    monkeypatch.setattr(
-        "clio_agent.config.create_chat_adapter", lambda config: object(), raising=True
-    )
-    monkeypatch.setattr(
-        "clio_agent.gact.agents.builders._dynamic_agent_lm_config",
-        lambda base_agent, agent_def: SimpleNamespace(
-            materialize=lambda cred=None: SimpleNamespace(
-                provider="openai", model="m", temperature=0.0
-            )
-        ),
-        raising=True,
-    )
-    module = _build_blueprint_dspy_module(
-        SimpleNamespace(tool_executor=None), _agent(pack, module={"kind": "predict"})
-    )
+def test_predict_builder_wires_bodies(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    _quality_marketplace(tmp_path, monkeypatch)
+    _patch_agent_lm(monkeypatch)
+    resolution = PluginService().resolve("clio/analyst", pin=False)
+    agent = resolution_agent_def(resolution).model_copy(update={"module": {"kind": "predict"}})
+    module = build_agent_module(SimpleNamespace(tool_executor=None), agent, resolution)
     assert "SECRET_PROCEDURE_MARKER" in module.system_prompt
     assert module.tools == []
 
@@ -821,14 +768,13 @@ def test_load_skill_files_propagates_an_unresolvable_entry(pack: Path) -> None:
 # ---- S4: catalogs disclosed as skill directories ----------------------------------
 
 
-def test_root_agent_with_no_blueprint_declares_the_builtin_main_catalog_skill(
-    tmp_path: Path,
-) -> None:
-    """v15 S8: a bare session runs the builtin main, which declares clio-workspace."""
+def test_default_session_agent_declares_the_core_catalog_skill(tmp_path: Path) -> None:
+    """A bare session runs clio/standard, whose core plugin declares clio-workspace."""
 
     app = build_app(sessions_path=tmp_path / "sessions.json")
     session = app.state.sessions.create(workspace_id="ws_default", title="root")
-    root = AgentDef(id="root", title="Root", module={"kind": "react"})
+    root = session_agent_def(app, session.id)
+    assert "create_a2ui_surface" in root.tools
 
     rt = skill_runtime_for_agent(app, root, session_id=session.id)
 
@@ -836,45 +782,64 @@ def test_root_agent_with_no_blueprint_declares_the_builtin_main_catalog_skill(
     assert catalog_skills == ["a2ui-catalog-clio-workspace"]
 
 
-def test_builtin_main_with_a2ui_catalog_sees_presentation_skill(tmp_path: Path) -> None:
-    """A bare chat can discover when to offer editable views, not only their schema."""
+def test_session_agent_sees_plugin_skills_and_catalog_skills_together(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A chat can discover when to offer editable views (a plugin skill), not only
+    their schema (the generated catalog skill)."""
 
-    from clio_agent.gact.catalog import _builtin_main_agent
-
+    visuals = FIXTURE / "plugins" / "visuals" / "ai.iowarp.clio" / "tools" / "builtin.py"
+    custom_marketplace(
+        tmp_path,
+        monkeypatch,
+        plugins={
+            "visuals": {
+                "files": {
+                    "ai.iowarp.clio/tools/builtin.py": visuals.read_text(encoding="utf-8"),
+                    "skills/present-interactive-analysis/SKILL.md": (
+                        "---\nname: present-interactive-analysis\n"
+                        "description: Offer editable message drafts and A2UI figures\n---\n\n"
+                        "PRESENTATION BODY\n"
+                    ),
+                }
+            }
+        },
+    )
     app = build_app(sessions_path=tmp_path / "sessions.json")
     session = app.state.sessions.create(workspace_id="ws_default", title="draft")
-    runtime = skill_runtime_for_agent(app, _builtin_main_agent(), session_id=session.id)
+    runtime = skill_runtime_for_agent(
+        app, session_agent_def(app, session.id), session_id=session.id
+    )
 
-    assert "present-interactive-analysis" in runtime.resolved
+    # Plugin skills follow resolution order: core, then the agent's plugins, then
+    # the plugins they require (fleet, which core requires, resolves after visuals).
+    assert list(runtime.resolved) == [
+        "planning",
+        "present-interactive-analysis",
+        "update-models",
+        "a2ui-catalog-clio-workspace",
+    ]
+    assert runtime.resolved["present-interactive-analysis"].skill.scope == "plugin"
     assert "editable message drafts" in runtime.prompt_block
-    assert "generated images and SVG figures" in runtime.prompt_block
-    assert "A2UI catalog's Image component" in runtime.prompt_block
-    assert "a2ui-catalog-clio-workspace" in runtime.resolved
+    assert "PRESENTATION BODY" not in runtime.prompt_block
 
 
 def test_root_agent_declares_one_catalog_skill_line_per_declared_catalog_in_order(
     tmp_path: Path,
 ) -> None:
-    """Catalog metadata stays ordered alongside the shared presentation procedures."""
+    """Catalog skills follow the session's declared catalog order."""
 
     from clio_agent.gact.a2ui_catalogs.builtin import load_builtin_catalogs
 
     app = build_app(sessions_path=tmp_path / "sessions.json")
     session = app.state.sessions.create(workspace_id="ws_default", title="root")
     bind_builtin_catalogs(app, session.id)  # declares [clio-workspace, basic]
-    root = AgentDef(id="root", title="Root", module={"kind": "react"})
+    root = session_agent_def(app, session.id)
 
     rt = skill_runtime_for_agent(app, root, session_id=session.id)
 
     basic, workspace = load_builtin_catalogs()
-    assert list(rt.resolved) == [
-        "a2ui-catalog-clio-workspace",
-        "a2ui-catalog-basic",
-        "present-interactive-analysis",
-        "review-visual-presentation",
-        "create-diagram",
-        "create-dashboard",
-    ]
+    assert list(rt.resolved) == [*CORE_SKILLS, "a2ui-catalog-clio-workspace", "a2ui-catalog-basic"]
     lines = rt.prompt_block.splitlines()
     assert lines[0] == "## Skills available to you"
     assert [line for line in lines[2:] if line.startswith("- a2ui-catalog-")] == [
@@ -914,7 +879,7 @@ def test_catalog_skill_body_generator_runs_once_across_twenty_turns(
     app = build_app(sessions_path=tmp_path / "sessions.json")
     session = app.state.sessions.create(workspace_id="ws_default", title="root")
     bind_builtin_catalogs(app, session.id)
-    root = AgentDef(id="root", title="Root", module={"kind": "react"})
+    root = session_agent_def(app, session.id)
 
     for _ in range(20):
         skill_runtime_for_agent(app, root, session_id=session.id)
@@ -924,33 +889,20 @@ def test_catalog_skill_body_generator_runs_once_across_twenty_turns(
     assert len(render_calls) == len(set(render_calls)) == 2
 
 
-_FIXTURE_A2UI_PACK = Path(__file__).resolve().parents[1] / "fixtures" / "a2ui_packs" / "minimal"
-
-
-def test_pack_blueprint_keeps_its_catalog_and_shared_presentation_procedures(
-    tmp_path: Path,
-) -> None:
-    """Pack catalog scope stays private while its producer gains shared design guidance."""
+def test_plugin_shipped_catalog_is_disclosed_as_a_skill_after_core(tmp_path: Path) -> None:
+    """A catalog a plugin ships becomes a catalog skill, after core's clio-workspace."""
 
     app = build_app(sessions_path=tmp_path / "sessions.json")
     session = app.state.sessions.create(workspace_id="ws_default", title="root")
-    app.state.sessions.update(
-        session.id,
-        metadata_patch={
-            "active_agent_blueprint_id": "a2ui-minimal-pack",
-            "active_agent_blueprint_path": str(_FIXTURE_A2UI_PACK),
-        },
-    )
-    root = AgentDef(id="root", title="Root", module={"kind": "react"})
+    bind_session_plugins(app, session.id, MINIMAL_PLUGIN)
+    root = session_agent_def(app, session.id)
 
     rt = skill_runtime_for_agent(app, root, session_id=session.id)
 
     assert list(rt.resolved) == [
+        *CORE_SKILLS,
+        "a2ui-catalog-clio-workspace",
         "a2ui-catalog-minimal",
-        "present-interactive-analysis",
-        "review-visual-presentation",
-        "create-diagram",
-        "create-dashboard",
     ]
 
 
@@ -1042,7 +994,7 @@ def test_catalog_skill_body_carries_instructions_index_and_load_skill_call(
 
     app = build_app(sessions_path=tmp_path / "sessions.json")
     session = app.state.sessions.create(workspace_id="ws_default", title="root")
-    root = AgentDef(id="root", title="Root", module={"kind": "react"})
+    root = session_agent_def(app, session.id)
     rt = skill_runtime_for_agent(app, root, session_id=session.id)
     tool = build_load_skill_tool(root, rt)
 
@@ -1064,7 +1016,7 @@ def test_catalog_skill_component_file_matches_the_validated_catalog(tmp_path: Pa
     app = build_app(sessions_path=tmp_path / "sessions.json")
     session = app.state.sessions.create(workspace_id="ws_default", title="root")
     bind_builtin_catalogs(app, session.id)
-    root = AgentDef(id="root", title="Root", module={"kind": "react"})
+    root = session_agent_def(app, session.id)
     rt = skill_runtime_for_agent(app, root, session_id=session.id)
     tool = build_load_skill_tool(root, rt)
 
@@ -1083,7 +1035,8 @@ def test_mermaid_component_lookup_returns_its_authoring_guide_in_the_same_call(
     app = build_app(sessions_path=tmp_path / "sessions.json")
     session = app.state.sessions.create(workspace_id="ws_default", title="diagram")
     bind_builtin_catalogs(app, session.id)
-    root = AgentDef(id="root", title="Root", module={"kind": "react"})
+    # The session's agent carries the clio-workspace catalog through the core plugin.
+    root = session_agent_def(app, session.id)
     runtime = skill_runtime_for_agent(app, root, session_id=session.id)
     tool = build_load_skill_tool(root, runtime)
     loaded = tool.func(
@@ -1112,7 +1065,7 @@ def test_catalog_skill_basic_exposes_both_sidecar_and_catalog_file_roots(
     app = build_app(sessions_path=tmp_path / "sessions.json")
     session = app.state.sessions.create(workspace_id="ws_default", title="root")
     bind_builtin_catalogs(app, session.id)
-    root = AgentDef(id="root", title="Root", module={"kind": "react"})
+    root = session_agent_def(app, session.id)
     rt = skill_runtime_for_agent(app, root, session_id=session.id)
     tool = build_load_skill_tool(root, rt)
 
@@ -1136,7 +1089,7 @@ def test_catalog_skill_fragment_inlines_local_defs_and_names_standard_refs(
 
     app = build_app(sessions_path=tmp_path / "sessions.json")
     session = app.state.sessions.create(workspace_id="ws_default", title="root")
-    root = AgentDef(id="root", title="Root", module={"kind": "react"})
+    root = session_agent_def(app, session.id)
     rt = skill_runtime_for_agent(app, root, session_id=session.id)
     tool = build_load_skill_tool(root, rt)
 
@@ -1159,7 +1112,7 @@ def test_catalog_skill_map_fragment_inlines_map_point_and_data_query(tmp_path: P
 
     app = build_app(sessions_path=tmp_path / "sessions.json")
     session = app.state.sessions.create(workspace_id="ws_default", title="root")
-    root = AgentDef(id="root", title="Root", module={"kind": "react"})
+    root = session_agent_def(app, session.id)
     rt = skill_runtime_for_agent(app, root, session_id=session.id)
     tool = build_load_skill_tool(root, rt)
 
@@ -1193,7 +1146,7 @@ def test_catalog_skill_fragment_inlines_defs_at_every_nesting_depth(tmp_path: Pa
 
     app = build_app(sessions_path=tmp_path / "sessions.json")
     session = app.state.sessions.create(workspace_id="ws_default", title="root")
-    root = AgentDef(id="root", title="Root", module={"kind": "react"})
+    root = session_agent_def(app, session.id)
     rt = skill_runtime_for_agent(app, root, session_id=session.id)
     tool = build_load_skill_tool(root, rt)
 
@@ -1220,7 +1173,7 @@ def test_catalog_skill_fragment_leaves_a_genuinely_recursive_def_as_a_noted_ref(
 
     app = build_app(sessions_path=tmp_path / "sessions.json")
     session = app.state.sessions.create(workspace_id="ws_default", title="root")
-    root = AgentDef(id="root", title="Root", module={"kind": "react"})
+    root = session_agent_def(app, session.id)
     rt = skill_runtime_for_agent(app, root, session_id=session.id)
     tool = build_load_skill_tool(root, rt)
 
@@ -1248,7 +1201,7 @@ def test_load_skill_files_batches_two_real_catalog_components(tmp_path: Path) ->
 
     app = build_app(sessions_path=tmp_path / "sessions.json")
     session = app.state.sessions.create(workspace_id="ws_default", title="root")
-    root = AgentDef(id="root", title="Root", module={"kind": "react"})
+    root = session_agent_def(app, session.id)
     rt = skill_runtime_for_agent(app, root, session_id=session.id)
     tool = build_load_skill_tool(root, rt)
 
@@ -1334,7 +1287,7 @@ def test_load_skill_files_all_real_catalog_components_stays_proportional(
 
     app = build_app(sessions_path=tmp_path / "sessions.json")
     session = app.state.sessions.create(workspace_id="ws_default", title="root")
-    root = AgentDef(id="root", title="Root", module={"kind": "react"})
+    root = session_agent_def(app, session.id)
     rt = skill_runtime_for_agent(app, root, session_id=session.id)
     tool = build_load_skill_tool(root, rt)
 

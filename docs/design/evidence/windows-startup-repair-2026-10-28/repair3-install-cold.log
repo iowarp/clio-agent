@@ -1,0 +1,338 @@
+2026-10-28T09:23:54.3449227Z ==> Installing uv into D:\cw\fp3\bin
+2026-10-28T09:23:55.2233445Z downloading uv 0.13.6 (x86_64-pc-windows-msvc)
+2026-10-28T09:23:57.2411441Z installing to D:\cw\fp3\bin
+2026-10-28T09:23:57.2600779Z   uv.exe
+2026-10-28T09:23:57.2640251Z   uvx.exe
+2026-10-28T09:23:57.2674251Z   uvw.exe
+2026-10-28T09:23:57.2768633Z everything's installed!
+2026-10-28T09:23:57.2909725Z ==> Cloning clio-agent at codex/windows-startup-acceptance
+2026-10-28T09:24:24.0079235Z ==> Preparing managed tools beside the agent dependencies (log: D:\cw\fp3\t\clio-office-43a676f86d2f4572840349225cce1d08.log)
+2026-10-28T09:24:24.0435476Z ==> Building the CLIO-branded TUI in the background (log: D:\cw\fp3\t\clio-tui-build-1f63588737904424b498842a01a00980.log)
+2026-10-28T09:24:24.0574835Z ==> Installing clio-agent deps (uv sync --locked --python 3.14 --extra argonne --extra flowcept --compile-bytecode)
+2026-10-28T09:24:24.6599262Z Using CPython 3.14.6 interpreter at: C:\Python314\python.exe
+2026-10-28T09:24:24.6603230Z Creating virtual environment at: .venv
+2026-10-28T09:24:24.7026033Z Resolved 241 packages in 3ms
+2026-10-28T09:24:24.8742597Z    Building clio-agent @ file:///D:/cw/fp3/local/clio-agent/data/app/clio-agent
+2026-10-28T09:24:24.8746023Z    Updating https://github.com/iowarp/clio-schemas (ac1be7bc4b814228bbe3222cd80fb95251ec7024)
+2026-10-28T09:24:25.2534104Z Downloading pywin32 (9.2MiB)
+2026-10-28T09:24:25.2968149Z Downloading pygments (1.2MiB)
+2026-10-28T09:24:25.2970901Z Downloading xarray (1.4MiB)
+2026-10-28T09:24:25.3059286Z Downloading google-api-python-client (16.0MiB)
+2026-10-28T09:24:25.3063224Z Downloading numpy (12.3MiB)
+2026-10-28T09:24:25.3064954Z Downloading matplotlib (7.9MiB)
+2026-10-28T09:24:25.3066907Z Downloading tokenizers (2.6MiB)
+2026-10-28T09:24:25.3068674Z Downloading iowarp-core (20.0MiB)
+2026-10-28T09:24:25.3071081Z Downloading burner-redis (1.1MiB)
+2026-10-28T09:24:25.3072307Z Downloading botocore (15.2MiB)
+2026-10-28T09:24:25.3073788Z Downloading openai (1.6MiB)
+2026-10-28T09:24:25.3075307Z Downloading pydantic-core (1.9MiB)
+2026-10-28T09:24:25.3076489Z Downloading cryptography (3.4MiB)
+2026-10-28T09:24:25.3078496Z Downloading pyarrow (27.4MiB)
+2026-10-28T09:24:25.3081656Z Downloading uv (17.3MiB)
+2026-10-28T09:24:25.3085330Z Downloading fonttools (2.2MiB)
+2026-10-28T09:24:25.3088784Z Downloading pillow (6.8MiB)
+2026-10-28T09:24:25.3166894Z Downloading numcodecs (1.5MiB)
+2026-10-28T09:24:25.3169760Z Downloading lxml (3.9MiB)
+2026-10-28T09:24:25.3258356Z Downloading rasterio (25.2MiB)
+2026-10-28T09:24:25.3261404Z Downloading openai-codex-cli-bin (144.7MiB)
+2026-10-28T09:24:25.3262677Z Downloading h5py (2.7MiB)
+2026-10-28T09:24:25.3263868Z Downloading litellm (26.1MiB)
+2026-10-28T09:24:25.3264882Z Downloading pandas (10.6MiB)
+2026-10-28T09:24:25.3266113Z Downloading beartype (1.3MiB)
+2026-10-28T09:24:34.4471282Z    Building odfpy==1.4.1
+2026-10-28T09:24:37.3534267Z  Downloaded burner-redis
+2026-10-28T09:24:38.3661892Z  Downloaded pygments
+2026-10-28T09:24:39.0601033Z  Downloaded beartype
+2026-10-28T09:24:40.3841831Z  Downloaded xarray
+2026-10-28T09:24:40.5547432Z  Downloaded numcodecs
+2026-10-28T09:24:41.0539924Z    Building antlr4-python3-runtime==4.9.3
+2026-10-28T09:24:42.2451307Z  Downloaded openai
+2026-10-28T09:24:44.6634762Z     Updated https://github.com/iowarp/clio-schemas (ac1be7bc4b814228bbe3222cd80fb95251ec7024)
+2026-10-28T09:24:44.6678961Z  Downloaded pydantic-core
+2026-10-28T09:24:44.6790564Z    Building clio-schemas @ git+https://github.com/iowarp/clio-schemas@ac1be7bc4b814228bbe3222cd80fb95251ec7024
+2026-10-28T09:24:45.2979551Z  Downloaded fonttools
+2026-10-28T09:24:47.6157973Z  Downloaded tokenizers
+2026-10-28T09:24:47.8661912Z       Built clio-agent @ file:///D:/cw/fp3/local/clio-agent/data/app/clio-agent
+2026-10-28T09:24:48.2934445Z  Downloaded h5py
+2026-10-28T09:24:50.7605447Z       Built clio-schemas @ git+https://github.com/iowarp/clio-schemas@ac1be7bc4b814228bbe3222cd80fb95251ec7024
+2026-10-28T09:24:51.4751118Z  Downloaded cryptography
+2026-10-28T09:24:54.4309976Z       Built antlr4-python3-runtime==4.9.3
+2026-10-28T09:24:55.1943082Z       Built odfpy==1.4.1
+2026-10-28T09:24:55.7156676Z  Downloaded lxml
+2026-10-28T09:25:08.8161247Z  Downloaded pillow
+2026-10-28T09:25:12.6797884Z  Downloaded matplotlib
+2026-10-28T09:25:15.4295783Z  Downloaded pywin32
+2026-10-28T09:25:19.0920409Z  Downloaded pandas
+2026-10-28T09:25:22.5715313Z  Downloaded numpy
+2026-10-28T09:25:26.6209645Z  Downloaded botocore
+2026-10-28T09:25:27.3607291Z  Downloaded google-api-python-client
+2026-10-28T09:25:28.5207383Z  Downloaded uv
+2026-10-28T09:25:30.5627253Z  Downloaded iowarp-core
+2026-10-28T09:25:33.2115247Z  Downloaded rasterio
+2026-10-28T09:25:33.8269242Z  Downloaded litellm
+2026-10-28T09:25:34.5923265Z  Downloaded pyarrow
+2026-10-28T09:25:42.8965186Z  Downloaded openai-codex-cli-bin
+2026-10-28T09:25:42.8993651Z Prepared 206 packages in 1m 18s
+2026-10-28T09:26:03.9973404Z Installed 206 packages in 21.09s
+2026-10-28T09:26:34.3993673Z Bytecode compiled 14427 files in 30.40s
+2026-10-28T09:26:34.3996766Z  + affine==3.0.1
+2026-10-28T09:26:34.3997218Z  + aiofile==3.9.0
+2026-10-28T09:26:34.3997539Z  + aiohappyeyeballs==2.6.1
+2026-10-28T09:26:34.3997844Z  + aiohttp==3.14.3
+2026-10-28T09:26:34.3998157Z  + aiosignal==1.4.0
+2026-10-28T09:26:34.3998457Z  + annotated-doc==0.0.5
+2026-10-28T09:26:34.3998756Z  + annotated-types==0.7.0
+2026-10-28T09:26:34.3999059Z  + antlr4-python3-runtime==4.9.3
+2026-10-28T09:26:34.3999575Z  + anyio==4.11.0
+2026-10-28T09:26:34.3999913Z  + arrow==1.4.0
+2026-10-28T09:26:34.4000646Z  + attrs==25.4.0
+2026-10-28T09:26:34.4000989Z  + authlib==1.7.2
+2026-10-28T09:26:34.4001272Z  + bcrypt==5.0.0
+2026-10-28T09:26:34.4001541Z  + beartype==0.22.5
+2026-10-28T09:26:34.4001819Z  + boto3==1.43.101
+2026-10-28T09:26:34.4002128Z  + botocore==1.43.101
+2026-10-28T09:26:34.4002604Z  + burner-redis==0.1.7
+2026-10-28T09:26:34.4002893Z  + cachetools==6.2.1
+2026-10-28T09:26:34.4003173Z  + caio==0.9.25
+2026-10-28T09:26:34.4003642Z  + certifi==2025.10.5
+2026-10-28T09:26:34.4004115Z  + cffi==2.0.0
+2026-10-28T09:26:34.4004612Z  + charset-normalizer==3.4.4
+2026-10-28T09:26:34.4004928Z  + click==8.3.3
+2026-10-28T09:26:34.4005300Z  + click-plugins==1.1.1.2
+2026-10-28T09:26:34.4005690Z  + cligj==0.7.2
+2026-10-28T09:26:34.4006018Z  + clio-agent==0.9.5b8 (from file:///D:/cw/fp3/local/clio-agent/data/app/clio-agent)
+2026-10-28T09:26:34.4006308Z  + clio-kit==2.11.0
+2026-10-28T09:26:34.4006594Z  + clio-schemas==0.6.0b16 (from git+https://github.com/iowarp/clio-schemas@ac1be7bc4b814228bbe3222cd80fb95251ec7024)
+2026-10-28T09:26:34.4006861Z  + cloudpickle==3.1.2
+2026-10-28T09:26:34.4007173Z  + colorama==0.4.6
+2026-10-28T09:26:34.4007468Z  + contourpy==1.3.3
+2026-10-28T09:26:34.4007758Z  + cronsim==2.7
+2026-10-28T09:26:34.4008228Z  + cryptography==46.0.3
+2026-10-28T09:26:34.4008567Z  + cycler==0.12.1
+2026-10-28T09:26:34.4009399Z  + cyclopts==4.5.1
+2026-10-28T09:26:34.4010489Z  + defusedxml==0.7.1
+2026-10-28T09:26:34.4010808Z  + diskcache==5.6.3
+2026-10-28T09:26:34.4011154Z  + distro==1.9.0
+2026-10-28T09:26:34.4011429Z  + dnspython==2.8.0
+2026-10-28T09:26:34.4011714Z  + docstring-parser==0.17.0
+2026-10-28T09:26:34.4011997Z  + docutils==0.22.2
+2026-10-28T09:26:34.4012459Z  + donfig==0.8.1.post1
+2026-10-28T09:26:34.4012862Z  + dspy==3.4.0
+2026-10-28T09:26:34.4013157Z  + email-validator==2.3.0
+2026-10-28T09:26:34.4013467Z  + et-xmlfile==2.0.0
+2026-10-28T09:26:34.4013809Z  + exceptiongroup==1.3.0
+2026-10-28T09:26:34.4014174Z  + fastapi==0.141.1
+2026-10-28T09:26:34.4014530Z  + fastmcp==4.1.0
+2026-10-28T09:26:34.4014948Z  + fastmcp-slim==4.1.0
+2026-10-28T09:26:34.4015258Z  + fastmcp-tasks==4.1.0
+2026-10-28T09:26:34.4015530Z  + fastuuid==0.14.0
+2026-10-28T09:26:34.4015792Z  + filelock==3.20.0
+2026-10-28T09:26:34.4016416Z  + flowcept==1.0.3
+2026-10-28T09:26:34.4016862Z  + fonttools==4.61.1
+2026-10-28T09:26:34.4017149Z  + fqdn==1.5.1
+2026-10-28T09:26:34.4017410Z  + frozenlist==1.8.0
+2026-10-28T09:26:34.4017673Z  + fsspec==2025.9.0
+2026-10-28T09:26:34.4017972Z  + gdrive-fsspec==0.4.1
+2026-10-28T09:26:34.4018292Z  + gepa==0.1.4
+2026-10-28T09:26:34.4018659Z  + globus-sdk==4.6.0
+2026-10-28T09:26:34.4018968Z  + globusfs==0.2.1
+2026-10-28T09:26:34.4019433Z  + google-api-core==2.30.3
+2026-10-28T09:26:34.4019825Z  + google-api-python-client==2.201.0
+2026-10-28T09:26:34.4020452Z  + google-auth==2.59.1
+2026-10-28T09:26:34.4020899Z  + google-auth-httplib2==0.4.4
+2026-10-28T09:26:34.4021213Z  + google-auth-oauthlib==1.5.0
+2026-10-28T09:26:34.4021560Z  + google-crc32c==1.9.0
+2026-10-28T09:26:34.4022095Z  + googleapis-common-protos==1.75.5
+2026-10-28T09:26:34.4022540Z  + griffelib==2.0.2
+2026-10-28T09:26:34.4022879Z  + h11==0.16.0
+2026-10-28T09:26:34.4023245Z  + h5py==3.15.1
+2026-10-28T09:26:34.4023717Z  + httpcore==1.0.9
+2026-10-28T09:26:34.4024063Z  + httpcore2==2.9.1
+2026-10-28T09:26:34.4024369Z  + httplib2==0.32.0
+2026-10-28T09:26:34.4024702Z  + httpx==0.28.1
+2026-10-28T09:26:34.4024988Z  + httpx2==2.9.1
+2026-10-28T09:26:34.4025277Z  + huggingface-hub==0.35.3
+2026-10-28T09:26:34.4026635Z  + idna==3.18
+2026-10-28T09:26:34.4027069Z  + importlib-metadata==8.7.0
+2026-10-28T09:26:34.4027365Z  + invoke==3.0.3
+2026-10-28T09:26:34.4027678Z  + iowarp-core==2.3.2
+2026-10-28T09:26:34.4027985Z  + isoduration==20.11.0
+2026-10-28T09:26:34.4028490Z  + jaraco-classes==3.4.0
+2026-10-28T09:26:34.4028808Z  + jaraco-context==6.0.1
+2026-10-28T09:26:34.4029069Z  + jaraco-functools==4.3.0
+2026-10-28T09:26:34.4029377Z  + jinja2==3.1.6
+2026-10-28T09:26:34.4029648Z  + jiter==0.11.1
+2026-10-28T09:26:34.4029904Z  + jmespath==1.1.0
+2026-10-28T09:26:34.4030164Z  + joserfc==1.7.4
+2026-10-28T09:26:34.4030427Z  + json-repair==0.57.1
+2026-10-28T09:26:34.4030724Z  + jsonpointer==3.1.1
+2026-10-28T09:26:34.4031012Z  + jsonref==1.1.0
+2026-10-28T09:26:34.4031298Z  + jsonschema==4.25.1
+2026-10-28T09:26:34.4031584Z  + jsonschema-path==0.3.4
+2026-10-28T09:26:34.4031868Z  + jsonschema-specifications==2025.9.1
+2026-10-28T09:26:34.4032153Z  + keyring==25.6.0
+2026-10-28T09:26:34.4032434Z  + kiwisolver==1.4.9
+2026-10-28T09:26:34.4032707Z  + litellm==1.102.1
+2026-10-28T09:26:34.4032984Z  + lru-dict==1.4.1
+2026-10-28T09:26:34.4033269Z  + lxml==6.1.1
+2026-10-28T09:26:34.4033547Z  + markdown-it-py==4.0.0
+2026-10-28T09:26:34.4033858Z  + markupsafe==3.0.3
+2026-10-28T09:26:34.4034149Z  + matplotlib==3.10.8
+2026-10-28T09:26:34.4034437Z  + mcp==2.0.0
+2026-10-28T09:26:34.4034709Z  + mcp-types==2.0.0
+2026-10-28T09:26:34.4034957Z  + mdurl==0.1.2
+2026-10-28T09:26:34.4035357Z  + more-itertools==10.8.0
+2026-10-28T09:26:34.4035773Z  + msgpack==1.2.1
+2026-10-28T09:26:34.4036051Z  + msgspec==0.22.0
+2026-10-28T09:26:34.4036328Z  + multidict==6.7.0
+2026-10-28T09:26:34.4036644Z  + numcodecs==0.17.0
+2026-10-28T09:26:34.4036945Z  + numpy==2.3.4
+2026-10-28T09:26:34.4037240Z  + oauthlib==4.0.0
+2026-10-28T09:26:34.4037531Z  + odfpy==1.4.1
+2026-10-28T09:26:34.4037809Z  + omegaconf==2.3.1
+2026-10-28T09:26:34.4038079Z  + openai==2.45.0
+2026-10-28T09:26:34.4038370Z  + openai-codex-cli-bin==0.162.1
+2026-10-28T09:26:34.4038694Z  + openapi-pydantic==0.5.1
+2026-10-28T09:26:34.4038992Z  + openpyxl==3.1.5
+2026-10-28T09:26:34.4039280Z  + opentelemetry-api==1.39.1
+2026-10-28T09:26:34.4039560Z  + orjson==3.13.0
+2026-10-28T09:26:34.4039839Z  + packaging==26.3
+2026-10-28T09:26:34.4040121Z  + pandas==2.3.3
+2026-10-28T09:26:34.4040428Z  + paramiko==5.0.0
+2026-10-28T09:26:34.4040737Z  + pathable==0.4.4
+2026-10-28T09:26:34.4041002Z  + pillow==12.1.1
+2026-10-28T09:26:34.4041312Z  + platformdirs==4.5.0
+2026-10-28T09:26:34.4041809Z  + prometheus-client==0.26.0
+2026-10-28T09:26:34.4042236Z  + prompt-toolkit==3.0.52
+2026-10-28T09:26:34.4042542Z  + propcache==0.4.1
+2026-10-28T09:26:34.4042854Z  + proto-plus==1.29.0
+2026-10-28T09:26:34.4043143Z  + protobuf==7.36.2
+2026-10-28T09:26:34.4043593Z  + psutil==7.2.2
+2026-10-28T09:26:34.4044059Z  + py-key-value-aio==0.4.4
+2026-10-28T09:26:34.4044378Z  + pyarrow==22.0.0
+2026-10-28T09:26:34.4044665Z  + pyasn1==0.6.4
+2026-10-28T09:26:34.4044935Z  + pyasn1-modules==0.4.2
+2026-10-28T09:26:34.4045232Z  + pycparser==2.23
+2026-10-28T09:26:34.4045523Z  + pydantic==2.12.3
+2026-10-28T09:26:34.4045812Z  + pydantic-core==2.41.4
+2026-10-28T09:26:34.4046072Z  + pydantic-settings==2.15.0
+2026-10-28T09:26:34.4046345Z  + pydata-google-auth==1.9.1
+2026-10-28T09:26:34.4046708Z  + pydocket==0.26.2
+2026-10-28T09:26:34.4047133Z  + pygments==2.19.2
+2026-10-28T09:26:34.4047435Z  + pyjwt==2.10.1
+2026-10-28T09:26:34.4047688Z  + pymongo==4.17.0
+2026-10-28T09:26:34.4047967Z  + pynacl==1.6.2
+2026-10-28T09:26:34.4048259Z  + pyparsing==3.3.2
+2026-10-28T09:26:34.4048493Z  + pypdf==6.16.0
+2026-10-28T09:26:34.4048695Z  + pyperclip==1.11.0
+2026-10-28T09:26:34.4048885Z  + python-dateutil==2.9.0.post0
+2026-10-28T09:26:34.4049074Z  + python-docx==1.2.0
+2026-10-28T09:26:34.4049267Z  + python-dotenv==1.1.1
+2026-10-28T09:26:34.4049460Z  + python-json-logger==4.1.0
+2026-10-28T09:26:34.4049670Z  + python-multipart==0.0.32
+2026-10-28T09:26:34.4049929Z  + python-pptx==1.0.2
+2026-10-28T09:26:34.4050620Z  + pytz==2026.3.post1
+2026-10-28T09:26:34.4050936Z  + pywin32==311
+2026-10-28T09:26:34.4051225Z  + pywin32-ctypes==0.2.3
+2026-10-28T09:26:34.4052056Z  + pyyaml==6.0.3
+2026-10-28T09:26:34.4052517Z  + rasterio==1.4.4
+2026-10-28T09:26:34.4052827Z  + redis==7.4.1
+2026-10-28T09:26:34.4053252Z  + referencing==0.36.2
+2026-10-28T09:26:34.4053671Z  + regex==2025.9.18
+2026-10-28T09:26:34.4053953Z  + requests==2.32.5
+2026-10-28T09:26:34.4054295Z  + requests-oauthlib==2.0.0
+2026-10-28T09:26:34.4054649Z  + rfc3339-validator==0.1.4
+2026-10-28T09:26:34.4054941Z  + rfc3987==1.3.8
+2026-10-28T09:26:34.4055226Z  + rich==14.2.0
+2026-10-28T09:26:34.4055560Z  + rich-rst==1.3.2
+2026-10-28T09:26:34.4055901Z  + rpds-py==0.27.1
+2026-10-28T09:26:34.4056113Z  + s3transfer==0.19.2
+2026-10-28T09:26:34.4056306Z  + setuptools==84.0.0
+2026-10-28T09:26:34.4056492Z  + shellingham==1.5.4
+2026-10-28T09:26:34.4056727Z  + six==1.17.0
+2026-10-28T09:26:34.4057013Z  + sniffio==1.3.1
+2026-10-28T09:26:34.4057261Z  + sortedcontainers==2.4.0
+2026-10-28T09:26:34.4057490Z  + sse-starlette==3.0.2
+2026-10-28T09:26:34.4057811Z  + starlette==1.3.1
+2026-10-28T09:26:34.4058065Z  + tenacity==9.1.2
+2026-10-28T09:26:34.4058352Z  + tiktoken==0.12.0
+2026-10-28T09:26:34.4058656Z  + tokenizers==0.22.1
+2026-10-28T09:26:34.4058865Z  + tomli-w==1.2.0
+2026-10-28T09:26:34.4059160Z  + tqdm==4.67.1
+2026-10-28T09:26:34.4059477Z  + truststore==0.10.4
+2026-10-28T09:26:34.4059769Z  + typer==0.27.0
+2026-10-28T09:26:34.4060076Z  + typing-extensions==4.15.0
+2026-10-28T09:26:34.4060367Z  + typing-inspection==0.4.2
+2026-10-28T09:26:34.4060742Z  + tzdata==2026.3
+2026-10-28T09:26:34.4061184Z  + tzlocal==5.4.4
+2026-10-28T09:26:34.4061487Z  + uncalled-for==0.4.0
+2026-10-28T09:26:34.4061777Z  + uri-template==1.3.0
+2026-10-28T09:26:34.4062102Z  + uritemplate==4.2.0
+2026-10-28T09:26:34.4062411Z  + urllib3==2.5.0
+2026-10-28T09:26:34.4062695Z  + uv==0.12.23
+2026-10-28T09:26:34.4062943Z  + uvicorn==0.54.0
+2026-10-28T09:26:34.4063242Z  + watchfiles==1.1.1
+2026-10-28T09:26:34.4063532Z  + wcwidth==0.2.14
+2026-10-28T09:26:34.4063798Z  + webcolors==25.10.0
+2026-10-28T09:26:34.4064041Z  + websockets==15.0.1
+2026-10-28T09:26:34.4064293Z  + xarray==2026.9.0
+2026-10-28T09:26:34.4064573Z  + xlsxwriter==3.2.9
+2026-10-28T09:26:34.4064861Z  + yarl==1.22.0
+2026-10-28T09:26:34.4065128Z  + zarr==3.4.0
+2026-10-28T09:26:34.4065384Z  + zipp==3.23.0
+2026-10-28T09:26:34.4065653Z  + zstandard==0.25.0
+2026-10-28T09:26:35.4380709Z ==> Migrating the CLIO store (clio-agent migrate)
+2026-10-28T09:26:37.6805256Z migrate step=open_store status=running
+2026-10-28T09:26:41.7571487Z migrate step=open_store status=done seconds=4.078
+2026-10-28T09:26:43.8354130Z migrate step=session_records_import status=checking summary='Import the legacy sessions.json into one clio-core record per session'
+2026-10-28T09:26:43.8927770Z migrate step=session_records_import status=done seconds=0.052 input=none
+2026-10-28T09:26:43.8928709Z migrate step=task_event_lane status=checking summary="Copy each conversation's task events into their own lane (task trees read only it)"
+2026-10-28T09:26:43.9568111Z migrate step=task_event_lane status=done seconds=0.045 sessions=0 sessions_with_task_events=0 events=0
+2026-10-28T09:26:43.9569480Z migrate step=task_lane_reads status=checking summary='Annotate each task-event lane so a task tree loads from the lane alone'
+2026-10-28T09:26:43.9748464Z migrate step=task_lane_reads status=done seconds=0.010 version=1 completed_at=2026-10-28T09:26:43.965770+00:00 sessions=0 annotated=0 receipts=0 unreadable=0 sessions_rewritten=0 seconds=0.003
+2026-10-28T09:26:43.9749928Z migrate step=transcript_legacy_import status=checking summary="Keep each conversation's legacy JSON transcript as evidence in clio-core"
+2026-10-28T09:26:44.0227637Z migrate step=transcript_legacy_import status=done seconds=0.041 input=none sessions=0
+2026-10-28T09:26:44.0228739Z migrate step=task_index_build status=checking summary='Convert retained task formats and build the task lookup and open-work records'
+2026-10-28T09:26:44.0969542Z migrate step=task_index_build status=done seconds=0.046 input=none replay_seconds=0.015 outcomes=0 open_tasks=0
+2026-10-28T09:26:44.0973286Z migrate step=artifact_index status=checking summary='Fold the artifact history once into the clio-core artifact records'
+2026-10-28T09:26:44.1427179Z migrate step=artifact_index status=done seconds=0.028 input=none records=0 fold_conflicts=0
+2026-10-28T09:26:53.5968012Z migrate status=done ran=6 seconds=15.918
+2026-10-28T09:26:53.6398543Z ==> Managed-tool preparation completed in 137.4 s; the managed-package step will verify it again
+2026-10-28T09:26:53.8314295Z ==> Installing managed Python/uv and Node/pnpm packages and Office rendering
+2026-10-28T09:26:54.5870844Z Preparing and checking the Office renderer...
+2026-10-28T09:26:54.5872029Z Preparing and checking the GitHub command-line tool...
+2026-10-28T09:26:54.7281995Z Preparing and checking Python document packages...
+2026-10-28T09:26:55.8226588Z GitHub command-line tool is ready.
+2026-10-28T09:26:57.5541291Z Office rendering is ready.
+2026-10-28T09:26:59.6319047Z Python document packages are ready. Preparing Node.js packages...
+2026-10-28T09:27:00.2866629Z Node.js document packages are ready.
+2026-10-28T09:27:00.2882814Z Preparing and checking protected execution...
+2026-10-28T09:27:00.9778038Z Checking native Windows protected execution (MXC; no administrator setup)...
+2026-10-28T09:27:03.0594464Z All managed runtime packages are installed and verified.
+2026-10-28T09:27:03.5037826Z {"status": "ready", "runtime_id": "68fd91e579837b59bebd", "office": {"status": "available", "path": "D:\\cw\\fp3\\local\\clio-agent\\cache\\document-office\\26.2.6\\program\\soffice.com"}, "store_migrations": {"status": "skipped", "reason": "skipped_by_caller"}, "mcp_cache": {"status": "pruned", "freed_bytes": 0, "evicted": 0}}
+2026-10-28T09:27:03.6594768Z ==> Provisioning released clio-kit launcher (clio-kit==2.10.6; legacy runtime semantics)
+2026-10-28T09:27:04.5753497Z Resolved 2 packages in 661ms
+2026-10-28T09:27:04.8244111Z Downloading clio-kit (12.4MiB)
+2026-10-28T09:27:07.0042727Z  Downloaded clio-kit
+2026-10-28T09:27:07.0058735Z Prepared 2 packages in 2.41s
+2026-10-28T09:27:08.1039433Z Installed 2 packages in 1.09s
+2026-10-28T09:27:08.1040688Z  + click==8.5.0
+2026-10-28T09:27:08.1041165Z  + clio-kit==2.10.6
+2026-10-28T09:27:08.1164602Z Installed 1 executable: clio-kit
+2026-10-28T09:27:08.1345389Z ==> Waiting for the TUI build
+2026-10-28T09:27:08.1414352Z ==> TUI built in 106 s: D:\cw\fp3\local\clio-agent\data\app\gact.exe
+2026-10-28T09:27:08.1463633Z ==> Installing launcher: D:\cw\fp3\bin\clio.cmd
+2026-10-28T09:27:08.1819218Z ==> Installing uninstaller: D:\cw\fp3\local\clio-agent\data\app\uninstall.ps1
+2026-10-28T09:27:08.1995122Z ==> Done.
+2026-10-28T09:27:08.1995982Z 
+2026-10-28T09:27:08.1997938Z Installed to:   D:\cw\fp3\local\clio-agent\data\app
+2026-10-28T09:27:08.2000244Z Launcher:       D:\cw\fp3\bin\clio.cmd
+2026-10-28T09:27:08.2002295Z clio-agent:     source: D:\cw\fp3\local\clio-agent\data\app\clio-agent
+2026-10-28T09:27:08.2003918Z gact:           built from the checkout's submodule
+2026-10-28T09:27:08.2004721Z 
+2026-10-28T09:27:08.2005870Z Next steps:
+2026-10-28T09:27:08.2006828Z   1. Make sure D:\cw\fp3\bin is on your PATH (it usually is on Win 10/11).
+2026-10-28T09:27:08.2007894Z   2. Run:   clio
+2026-10-28T09:27:08.2008819Z   3. Manage the server: clio status | clio restart | clio logs
+2026-10-28T09:27:08.2010290Z   4. Tab-completion:    clio completion powershell >> $PROFILE
+2026-10-28T09:27:08.2011659Z   5. Uninstall:         clio uninstall   (add -Purge to drop config)

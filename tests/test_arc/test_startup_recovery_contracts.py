@@ -106,6 +106,8 @@ async def test_failed_startup_never_admits_a_successor_without_physical_proof(
         raise RuntimeError("startup cleanup receipt lost")
 
     monkeypatch.setattr("clio_agent.gact.hooks.dispatch_session_start", failed_start)
+    # A configured hook (the fake above) runs, so creation records its "started" receipt.
+    monkeypatch.setattr("clio_agent.gact.hooks.session_start_may_run_hooks", lambda _sid: True)
     try:
         with pytest.raises(RuntimeError, match="cleanup receipt lost"):
             await asyncio.to_thread(owner.sessions.initialize, sid)
@@ -140,7 +142,7 @@ async def test_failed_startup_never_admits_a_successor_without_physical_proof(
             )
         if reconstruct:
             owner.sessions = app.state.sessions = await asyncio.to_thread(
-                SessionStore, path=tmp_path / "sessions.json"
+                SessionStore, path=tmp_path / "sessions.json", store=arc._store
             )
             await owner.history.io.close()
             owner.history = app.state.task_history = await asyncio.to_thread(TaskHistory, arc)
@@ -204,6 +206,52 @@ async def test_unknown_startup_settlement_prevents_a_restart_successor(
         assert not owner.runner.busy(sid)
         assert session.creation_hook_state == "started"
         assert not owner.history.acknowledged_notifications(caller.session_id)
+    finally:
+        await owner.shutdown()
+        await owner.recovery.drain()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("activity", ["busy", "recovering"])
+async def test_restart_settles_an_interrupted_startup_so_its_parent_receives_an_outcome(
+    arc: ARCMemory, tmp_path: Path, activity: str
+) -> None:
+    """A restart after a kill inside SessionStart: the child is settled, never stranded.
+
+    Its admission stays closed and no hook is replayed, but the work is an obligation
+    of this start: the assignment ends ``task_state_uncertain`` with the startup reason,
+    and a parent waiting on it (a flow's gather) receives that typed outcome.
+    """
+    from clio_agent.gact.conversation_recovery import _restore_assignment
+
+    app, owner, root = await create_environment(arc, tmp_path)
+    caller = TaskCaller(root.owner.session_id, "human")
+    accepted = await owner.spawn(caller, "Killed during startup", "worker", "killed-startup")
+    sid, handle = accepted["session_id"], accepted["handle"]
+    session = app.state.sessions.get(sid)
+    assert session is not None and session.creation_digest
+    session.creation_lifecycle_confirmed = True
+    session.creation_hook_state = "started"  # the receipt a kill left behind
+    task = await asyncio.to_thread(owner.history.task_snapshot, handle)
+    assert task is not None
+    interrupted = task.model_copy(update={"activity": activity, "updated_at": now()})
+    await asyncio.to_thread(owner.history.record_snapshot, interrupted, observation_id="kill")
+    operations = app.state.task_operations = TaskOperations(owner.history, forbid_cancel)
+    try:
+        await _restore_assignment(owner, handle)
+        current = await asyncio.to_thread(owner.history.task_snapshot, handle)
+        assert current is not None and current.status == "task_state_uncertain"
+        assert current.terminal_at is None and current.settlement == "unknown"
+        assert "SessionStart process settlement is unconfirmed" in current.progress.message
+        assert current.attention_episode is not None
+        pending = await asyncio.to_thread(owner.history.pending_mail, sid)
+        assert not [item for item in pending if item.id.startswith("recovery:")]
+        waited = await asyncio.wait_for(operations.wait(caller, handle), 10)
+        assert {"handle": handle, "status": "task_state_uncertain"} in waited["outcomes"]
+        assert await owner._admit(sid) is None  # still never admitted: no hook replay
+        assert session.creation_hook_state == "started"
+        await _restore_assignment(owner, handle)  # idempotent across restarts
+        assert await asyncio.to_thread(owner.history.task_snapshot, handle) == current
     finally:
         await owner.shutdown()
         await owner.recovery.drain()

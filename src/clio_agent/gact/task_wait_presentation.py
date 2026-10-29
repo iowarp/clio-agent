@@ -9,6 +9,50 @@ from typing import Any
 _UNSUCCESSFUL = {"failed", "error", "cancelled", "interrupted", "denied"}
 
 
+def is_wait_task_tool(name: str) -> bool:
+    """Whether ``name`` is the native wait whose result is a task snapshot."""
+    return name == "wait_tasks"
+
+
+def mark_wait_interrupted(presentation: dict[str, Any], source: str = "") -> None:
+    """Mark a returned wait snapshot interrupted without turning it into an error."""
+    reason = {
+        "mail_received": "Interrupted by mail; pending tasks continue running.",
+        "stopped": "Interrupted by a stop request; pending tasks continue running.",
+        "session_cancelled": "Interrupted by session cancellation; pending tasks may continue.",
+    }.get(source, "Interrupted; pending tasks may continue running.")
+    presentation["diagnostic"] = reason
+    # Row-level child failures remain in their own error blocks and counts; the
+    # wait call itself returned an interrupted snapshot, not a failed invocation.
+    presentation["status"] = "interrupted"
+
+
+def completed_after_cancel_error(name: str, completion_error: str | None) -> str | None:
+    """A tool that finished after Stop failed, except a wait: its snapshot is still true."""
+    if completion_error is None and not is_wait_task_tool(name):
+        return "tool call completed after session cancellation"
+    return completion_error
+
+
+def completion_status(
+    name: str, ok: bool, completed_after_cancel: bool, result: Any, presentation: Any
+) -> str:
+    """``interrupted``, ``completed`` or ``failed``; marks a wait that unwound after Stop.
+
+    The read-only wait reports what it saw. Its interruption is not an execution failure.
+    """
+    if completed_after_cancel and ok and is_wait_task_tool(name):
+        interruption = (
+            result.get("interrupted", "session_cancelled")
+            if isinstance(result, Mapping)
+            else "session_cancelled"
+        )
+        mark_wait_interrupted(presentation, interruption if isinstance(interruption, str) else "")
+    if ok and is_wait_task_tool(name) and presentation.get("status") == "interrupted":
+        return "interrupted"
+    return "completed" if ok else "failed"
+
+
 def wait_start_presentation(args: Mapping[str, Any]) -> dict[str, Any]:
     """Describe an active wait using authorized task kinds, before a result exists."""
     from clio_agent.gact.context import active_app, active_session_id
@@ -92,6 +136,10 @@ def wait_presentation(args: Mapping[str, Any], result: Mapping[str, Any]) -> dic
         policy = "Immediate status check; this call did not wait."
     if result.get("timed_out") and not poll:
         policy += " The deadline expired; pending tasks continue running."
+    elif result.get("interrupted") == "mail_received":
+        policy += " New input is available to this agent; pending tasks continue running."
+    elif result.get("interrupted") == "stopped":
+        policy += " This wait stopped; pending tasks continue running."
     elif pending:
         policy += " Pending tasks continue running."
     blocks: list[dict[str, Any]] = [
@@ -171,6 +219,8 @@ def wait_presentation(args: Mapping[str, Any], result: Mapping[str, Any]) -> dic
     collected = sum(not uncollected(row) for row in rows)
     attention = sum(row.get("status") == "task_state_uncertain" for row in rows)
     counts = [f"{collected} {'result' if collected == 1 else 'results'} collected"]
+    if result.get("interrupted") == "mail_received":
+        counts.insert(0, "New input received")
     if pending:
         counts.insert(0, f"{len(pending)} pending")
     if failed:
@@ -179,7 +229,7 @@ def wait_presentation(args: Mapping[str, Any], result: Mapping[str, Any]) -> dic
         counts.append(f"{attention} {'task needs' if attention == 1 else 'tasks need'} attention")
     if errors:
         counts.append(f"{len(errors)} {'error' if len(errors) == 1 else 'errors'}")
-    presentation = {
+    presentation: dict[str, Any] = {
         "action": action,
         "subject": "wait-targets",
         "summary": ", ".join(counts),
@@ -187,4 +237,7 @@ def wait_presentation(args: Mapping[str, Any], result: Mapping[str, Any]) -> dic
     }
     if failed or errors or attention:
         presentation["status"] = "degraded"
+    interruption = result.get("interrupted")
+    if isinstance(interruption, str) and interruption:
+        mark_wait_interrupted(presentation, interruption)
     return presentation

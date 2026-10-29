@@ -44,7 +44,7 @@ pytestmark = pytest.mark.usefixtures("host_agent_executor")
 
 # The catalog write-tagged fs tool (a non-read call that reaches the prompt boundary) and a
 # genuinely-unclassifiable non-read call (writes live behind the OS fence, not a catalog tag).
-_FS_WRITE = "fs_apply_edit_write"
+_FS_WRITE = "fs_write_file"
 _UNCLASSIFIED = "shell.exec"
 _ALL_MODES = ("ask", "auto-edits", "bypass", "ai-review", "spotter-ai")
 
@@ -85,22 +85,24 @@ def test_approval_mode_create_and_update_round_trip(tmp_path: Path) -> None:
     assert kept is not None and kept.approval_mode == "auto-edits"
 
 
-def test_approval_mode_persist_and_reload(tmp_path: Path) -> None:
+def test_approval_mode_persist_and_reload(tmp_path: Path, arc: Any) -> None:
     path = tmp_path / "s.json"
-    store = SessionStore(path=path)
+    store = SessionStore(path=path, store=arc._store)
     sess = store.create(workspace_id="ws_default", approval_mode="ai-review")
-    # Fresh store off the same file must reload the persisted value.
-    reloaded = SessionStore(path=path).get(sess.id)
+    # A fresh registry over the same Core store must reload the persisted value.
+    reloaded = SessionStore(path=path, store=arc._store).get(sess.id)
     assert reloaded is not None and reloaded.approval_mode == "ai-review"
 
 
-def test_approval_mode_defaults_for_legacy_row(tmp_path: Path) -> None:
+def test_approval_mode_defaults_for_legacy_row(tmp_path: Path, arc: Any) -> None:
     """A persisted row written before this field existed loads with the ``ask`` default."""
     path = tmp_path / "s.json"
     path.write_text(
         '{"sess_legacy": {"id": "sess_legacy", "workspace_id": "ws_default", "title": "old"}}'
     )
-    reloaded = SessionStore(path=path).get("sess_legacy")
+    store = SessionStore(path=path, store=arc._store)
+    store.import_legacy()
+    reloaded = store.get("sess_legacy")
     assert reloaded is not None and reloaded.approval_mode == "ask"
 
 

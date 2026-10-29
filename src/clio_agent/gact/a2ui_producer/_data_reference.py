@@ -337,61 +337,13 @@ def _validate_tabular_fields(
             "a2ui_data_reference_unreadable",
             detail=f"component {component_id!r} dataset could not be read: {exc.message}",
         )
-    available = list(schema.names)
-
-    # dataQuery.filter and dataQuery.aggregate's own groupBy/metric columns
-    # are read from the SOURCE table -- both run BEFORE any output renaming
-    # in the engine's filter -> aggregate -> downsample -> sort pipeline.
-    source_checks: list[tuple[str, str]] = [
-        ("dataQuery.filter[].column", column)
-        for column in _data_query_column_refs(data_query, "filter")
-    ]
-    if isinstance(data_query, dict) and isinstance(data_query.get("aggregate"), dict):
-        aggregate_payload = data_query["aggregate"]
-        for column in aggregate_payload.get("groupBy") or []:
-            if isinstance(column, str) and column:
-                source_checks.append(("dataQuery.aggregate.groupBy", column))
-        for metric in aggregate_payload.get("metrics") or []:
-            if (
-                isinstance(metric, dict)
-                and isinstance(metric.get("column"), str)
-                and metric["column"]
-            ):
-                source_checks.append(("dataQuery.aggregate.metrics[].column", metric["column"]))
-    missing_source = _missing_column_labels(source_checks, available)
-    if missing_source:
-        return refusal(
-            "a2ui_field_not_in_dataset",
-            detail=(
-                f"component {component_id!r} dataQuery names a source column absent from "
-                f"{record.name!r}: {', '.join(missing_source)}; available columns: {available}"
-            ),
-        )
-
-    # *Field properties, dataQuery.sort and dataQuery.columns all name OUTPUT
-    # columns: the source schema unchanged, or the aggregate's own output
-    # names when dataQuery.aggregate is set.
-    output_columns, is_aggregated = _data_query_output_columns(data_query, available)
-    output_checks: list[tuple[str, str]] = list(wanted_fields.items())
-    output_checks += [
-        ("dataQuery.sort[].column", column)
-        for column in _data_query_column_refs(data_query, "sort")
-    ]
-    if isinstance(data_query, dict):
-        for column in data_query.get("columns") or []:
-            if isinstance(column, str) and column:
-                output_checks.append(("dataQuery.columns[]", column))
-    missing_output = _missing_column_labels(output_checks, output_columns)
-    if missing_output:
-        scope = "the dataQuery.aggregate output" if is_aggregated else repr(record.name)
-        return refusal(
-            "a2ui_field_not_in_dataset",
-            detail=(
-                f"component {component_id!r} names a column absent from {scope}: "
-                f"{', '.join(missing_output)}; available columns: {output_columns}"
-            ),
-        )
-    return None
+    return _check_dataset_columns(
+        list(schema.names),
+        record.name,
+        component_id=component_id,
+        wanted_fields=wanted_fields,
+        data_query=data_query,
+    )
 
 
 #: A per-chunk memory bound for streaming text reads (never a cap on how much
@@ -536,8 +488,128 @@ def _validate_geojson_shape(
     return None
 
 
+def _check_dataset_columns(
+    available: list[str],
+    dataset: str,
+    *,
+    component_id: str,
+    wanted_fields: dict[str, str],
+    data_query: Any,
+) -> dict[str, Any] | None:
+    """The ``*Field`` and ``dataQuery`` names checked against a dataset's columns."""
+
+    # dataQuery.filter and dataQuery.aggregate's own groupBy/metric columns
+    # are read from the SOURCE table -- both run BEFORE any output renaming
+    # in the engine's filter -> aggregate -> downsample -> sort pipeline.
+    source_checks: list[tuple[str, str]] = [
+        ("dataQuery.filter[].column", column)
+        for column in _data_query_column_refs(data_query, "filter")
+    ]
+    if isinstance(data_query, dict) and isinstance(data_query.get("aggregate"), dict):
+        aggregate_payload = data_query["aggregate"]
+        for column in aggregate_payload.get("groupBy") or []:
+            if isinstance(column, str) and column:
+                source_checks.append(("dataQuery.aggregate.groupBy", column))
+        for metric in aggregate_payload.get("metrics") or []:
+            if (
+                isinstance(metric, dict)
+                and isinstance(metric.get("column"), str)
+                and metric["column"]
+            ):
+                source_checks.append(("dataQuery.aggregate.metrics[].column", metric["column"]))
+    missing_source = _missing_column_labels(source_checks, available)
+    if missing_source:
+        return refusal(
+            "a2ui_field_not_in_dataset",
+            detail=(
+                f"component {component_id!r} dataQuery names a source column absent from "
+                f"{dataset!r}: {', '.join(missing_source)}; available columns: {available}"
+            ),
+        )
+
+    # *Field properties, dataQuery.sort and dataQuery.columns all name OUTPUT
+    # columns: the source schema unchanged, or the aggregate's own output
+    # names when dataQuery.aggregate is set.
+    output_columns, is_aggregated = _data_query_output_columns(data_query, available)
+    output_checks: list[tuple[str, str]] = list(wanted_fields.items())
+    output_checks += [
+        ("dataQuery.sort[].column", column)
+        for column in _data_query_column_refs(data_query, "sort")
+    ]
+    if isinstance(data_query, dict):
+        for column in data_query.get("columns") or []:
+            if isinstance(column, str) and column:
+                output_checks.append(("dataQuery.columns[]", column))
+    missing_output = _missing_column_labels(output_checks, output_columns)
+    if missing_output:
+        scope = "the dataQuery.aggregate output" if is_aggregated else repr(dataset)
+        return refusal(
+            "a2ui_field_not_in_dataset",
+            detail=(
+                f"component {component_id!r} names a column absent from {scope}: "
+                f"{', '.join(missing_output)}; available columns: {output_columns}"
+            ),
+        )
+    return None
+
+
+def _validate_study_source(
+    app: "FastAPI",
+    component: dict[str, Any],
+    name: str,
+    data_uri: str,
+    notes: list[dict[str, str]] | None,
+) -> dict[str, Any] | None:
+    """A ``study://`` source (Addendum B): the study exists, it feeds a chart, table or
+    map, and the component's field names are columns the source has now.
+
+    A source with no rows yet has no columns to check against; its names are accepted
+    and ``notes`` gains a ``study_source_empty`` row for the tool result, because the
+    columns appear with the first entries.
+    """
+
+    from clio_agent.gact.science_log.entries import EntryRejected  # noqa: PLC0415
+    from clio_agent.gact.science_log.sources import parse_study_uri, source_rows  # noqa: PLC0415
+
+    component_id = str(component.get("id") or "")
+    if name not in _TABULAR_COMPONENTS:
+        return refusal(
+            "a2ui_data_reference_unsupported_format",
+            detail=f"component {component_id!r}: a study source feeds a chart, table or map",
+        )
+    try:
+        study, source, view = parse_study_uri(data_uri)
+        rows = source_rows(app, study, source, view)
+    except EntryRejected as exc:
+        return refusal(
+            "a2ui_data_reference_not_found",
+            detail=f"component {component_id!r} dataUri {data_uri!r}: {exc}",
+        )
+    if not rows:
+        if notes is not None:
+            notes.append(
+                {"component": component_id, "dataUri": data_uri, "reason": "study_source_empty"}
+            )
+        return None
+    field_props = _TABULAR_FIELD_PROPERTIES.get(name, ())
+    wanted_fields = {
+        prop: component[prop]
+        for prop in field_props
+        if isinstance(component.get(prop), str) and component[prop]
+    }
+    return _check_dataset_columns(
+        list(dict.fromkeys(key for row in rows for key in row)),
+        data_uri,
+        component_id=component_id,
+        wanted_fields=wanted_fields,
+        data_query=component.get("dataQuery"),
+    )
+
+
 def validate_component_data_references(
-    app: "FastAPI", components: list[dict[str, Any]]
+    app: "FastAPI",
+    components: list[dict[str, Any]],
+    notes: list[dict[str, str]] | None = None,
 ) -> dict[str, Any] | None:
     """Validate every ``dataUri``-carrying component's referenced dataset.
 
@@ -545,6 +617,8 @@ def validate_component_data_references(
         app: The GACT app (the artifact registry lives on ``app.state``).
         components: The producer call's components, after the export boundary
             has already turned workspace paths into ``artifact://`` refs.
+        notes: When given, gains one row per study source accepted without a
+            column check because it has no rows yet (``study_source_empty``).
 
     Returns:
         ``None`` when every ``dataUri`` reference (if any) resolves and, for
@@ -564,6 +638,11 @@ def validate_component_data_references(
             or (component.get("rasterUri") if name == _RASTER_COMPONENT else None)
         )
         if not isinstance(name, str) or not isinstance(data_uri, str) or not data_uri:
+            continue
+        if data_uri.startswith("study://"):
+            outcome = _validate_study_source(app, component, name, data_uri, notes)
+            if outcome is not None:
+                return outcome
             continue
         artifact_id = _artifact_id_from_data_uri(data_uri)
         if artifact_id is None:

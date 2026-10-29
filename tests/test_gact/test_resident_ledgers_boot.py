@@ -93,13 +93,30 @@ def test_boot_settles_restart_interrupted_session_without_resident_body(
     app2 = build_app(sessions_path=sessions_path)
     restored = app2.state.sessions.get(sid)
 
+    # Startup marks from the record alone: terminal at once, transcript still pending,
+    # and nothing read or made resident.
     assert restored is not None
     assert restored.status == "error"
-    assert restored.message_count == 2
+    assert restored.message_count == 0
     assert restored.metadata["restart_interruption"] == {
         "reason": "server_restart_interrupted",
         "previous_status": "running",
+        "transcript": "pending",
     }
+    assert app2.state.messages.resident_count == 0
+    assert app2.state.restart_interruptions.pending() == (sid,)
+
+    # Opening the conversation closes its interrupted turn before anyone reads it.
+    opened = app2.state.messages[sid]
+    assert [message.role for message in opened] == ["user", "assistant"]
+    settled = app2.state.sessions.get(sid)
+    assert settled is not None
+    assert settled.message_count == 2
+    assert settled.metadata["restart_interruption"] == {
+        "reason": "server_restart_interrupted",
+        "previous_status": "running",
+    }
+    assert app2.state.restart_interruptions.pending() == ()
     app2.state.messages.clear()
     assert app2.state.messages.resident_count == 0
     recovered_messages = app2.state.message_store.load_session(sid)
@@ -109,6 +126,56 @@ def test_boot_settles_restart_interrupted_session_without_resident_body(
     assert recovered_messages[-1].turn_id == "durable-user-message"
     assert recovered_messages[-1].error_info is not None
     assert recovered_messages[-1].error_info.error == "server_restart_interrupted"
+
+
+def test_restart_interrupted_transcript_closes_before_a_new_write(tmp_path: Path) -> None:
+    """A write to a still-pending conversation lands after the interrupted-turn row."""
+
+    from clio_agent.gact.app import _append_session_message
+
+    sessions_path = tmp_path / "sessions.json"
+    app1 = build_app(sessions_path=sessions_path)
+    with TestClient(app1) as c1:
+        sid = c1.post("/v1/sessions", json={"title": "interrupted"}).json()["id"]
+        _replace_session_messages(
+            app1, sid, [_message("first-user", sid, role="user", text="question")]
+        )
+        app1.state.sessions.update(sid, status="running", message_count=0)
+
+    app2 = build_app(sessions_path=sessions_path)
+    assert app2.state.restart_interruptions.waiting(sid)
+    _append_session_message(app2, sid, _message("next-user", sid, role="user", text="again"))
+
+    rows = app2.state.messages[sid]
+    assert [(row.role, row.stop_reason) for row in rows] == [
+        ("user", ""),
+        ("assistant", "error"),
+        ("user", ""),
+    ]
+    assert not app2.state.restart_interruptions.waiting(sid)
+
+
+def test_restart_interruption_pending_mark_survives_another_restart(tmp_path: Path) -> None:
+    """A stop before the transcript closed resumes it on the next start."""
+
+    sessions_path = tmp_path / "sessions.json"
+    app1 = build_app(sessions_path=sessions_path)
+    with TestClient(app1) as c1:
+        sid = c1.post("/v1/sessions", json={"title": "interrupted"}).json()["id"]
+        _replace_session_messages(app1, sid, [_message("u1", sid, role="user", text="q")])
+        app1.state.sessions.update(sid, status="running", message_count=0)
+
+    app2 = build_app(sessions_path=sessions_path)  # marks, then stops without settling
+    assert app2.state.restart_interruptions.waiting(sid)
+    app2.state.sessions.flush()
+
+    app3 = build_app(sessions_path=sessions_path)
+    assert app3.state.restart_interruptions.pending() == (sid,)
+    assert app3.state.restart_interruptions.settle_quietly(sid)
+    assert app3.state.messages.resident_count == 0  # the lane leaves nothing resident
+    restored = app3.state.sessions.get(sid)
+    assert restored is not None and restored.message_count == 2
+    assert "transcript" not in restored.metadata["restart_interruption"]
 
 
 def test_first_get_messages_rehydrates_byte_identical(tmp_path: Path) -> None:
@@ -186,11 +253,12 @@ def test_metrics_correct_across_restart(tmp_path: Path) -> None:
     app2 = build_app(sessions_path=sessions_path)
     with TestClient(app2) as c2:
         after = c2.get("/v1/metrics").json()["messages"]
-        # Seeded from disk at boot, without pinning bodies resident.
+        # Nothing is replayed at boot and no bodies are pinned resident.
         assert app2.state.messages.resident_count == 0
 
+    # The total is each session's persisted count; by_role counts this server's own.
     assert after["total"] == before["total"] == 2
-    assert after["by_role"] == before["by_role"] == {"user": 1, "assistant": 1}
+    assert after["by_role"] == {}
 
 
 # --------------------------------------------------------------------------- #

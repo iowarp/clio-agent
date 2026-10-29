@@ -10,6 +10,7 @@ from clio_agent.gact.protocol.v3 import CONNECTION_ID, GACT_V3, Projection
 from clio_agent.gact.protocol.v3.composer import COMPOSER_PROJECTORS
 from clio_agent.gact.protocol.v3.message import (
     UNPROJECTED_PART_TYPES,
+    _message_presentation_metadata,
     message_to_v3,
     part_to_v3_block,
     subagent_from_part,
@@ -172,6 +173,10 @@ def _message_completed(event: Event, payload: dict[str, Any], session: Any) -> _
         "cost_usd": payload.get("cost_usd"),
         **({"error_info": payload["error_info"]} if payload.get("error_info") else {}),
     }
+    # What the turn learned at its end (e.g. the memory it used), same public subset as
+    # the message itself, so a live view need not reload to show it.
+    if public := _message_presentation_metadata(_mapping(payload.get("metadata"))):
+        projected["metadata"] = public
     return _Projection("message.completed", projected, message_id)
 
 
@@ -235,6 +240,8 @@ def _tool_completed(event: Event, payload: dict[str, Any], session: Any) -> _Pro
 
     del session
     entity_id = str(payload.get("call_id") or "")
+    if isinstance(payload.get("execution"), Mapping):
+        return _Projection("tool.upserted", dict(payload["execution"]), entity_id)
     ok = bool(payload.get("ok"))
     projected = {
         "id": entity_id,
@@ -337,7 +344,7 @@ def _subagent_upsert(event: Event, payload: dict[str, Any], session: Any) -> _Pr
     if not summary and isinstance(result, Mapping):
         answer_excerpt = str(result.get("answer_excerpt") or "")
         summary = answer_excerpt
-    projected = {
+    projected: dict[str, Any] = {
         "id": entity_id,
         "session_id": str(payload.get("parent_session_id") or event.session_id),
         **(
@@ -358,6 +365,11 @@ def _subagent_upsert(event: Event, payload: dict[str, Any], session: Any) -> _Pr
         **({"summary": str(summary)} if summary else {}),
         **({"result": answer_excerpt} if answer_excerpt else {}),
     }
+    from clio_agent.gact.context import active_app
+    from clio_agent.gact.fleet.child_model import recorded_choice
+
+    if choice := recorded_choice(active_app(), str(payload.get("child_session_id") or "")):
+        projected["model_choice"] = choice
     return _Projection("subagent.upserted", projected, entity_id)
 
 

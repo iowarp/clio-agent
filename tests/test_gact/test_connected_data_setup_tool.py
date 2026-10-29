@@ -8,7 +8,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from clio_agent.gact.agents.auto_tools import build_auto_react_tools
+from clio_agent.gact.agents.native_tool_registry import build_native_tools
 from clio_agent.gact.skills import SkillCatalog, read_skill_body
 from clio_agent.gact.storage import setup_tool
 from clio_agent.gact.storage.linked import link_folder
@@ -16,6 +16,7 @@ from clio_agent.gact.storage.models import CreateSource
 from clio_agent.gact.storage.service import StorageService
 from clio_agent.gact.tool_result_presentation import ToolPresentation
 from clio_agent.gact.types import AgentDef
+from tests._marketplace import MARKETPLACE_ROOT
 
 
 def test_tool_only_returns_approved_owner_workspace_sources(
@@ -78,21 +79,29 @@ def test_missing_session_fails_without_guessing_a_workspace(
         setup_tool.connected_data_status()
 
 
-def test_setup_skill_and_credential_free_root_tool_are_available() -> None:
-    skill = SkillCatalog().resolve("connect-data")
-    assert skill.skill is not None
+def test_claimed_status_tool_is_credential_free() -> None:
+    """The status tool takes no arguments, so it can carry no credential."""
+    agent = AgentDef(id="main", title="Main", source="plugin", tools=["connected_data_status"])
+    native, gateway, withheld = build_native_tools(agent, ["connected_data_status"], {})
+    assert native["connected_data_status"].args == {}
+    assert gateway == [] and withheld == {}
+    # Nothing is attached implicitly: an agent whose plugins do not claim it lacks it.
+    assert "connected_data_status" not in build_native_tools(agent, ["fs_read_file"], {})[0]
+
+
+@pytest.mark.marketplace
+def test_connected_data_plugin_ships_the_setup_skill_with_its_status_tool() -> None:
+    """The connected-data plugin pairs the setup procedure with the tool it names."""
+    plugin = MARKETPLACE_ROOT / "plugins" / "connected-data"
+    skill = SkillCatalog(
+        home=plugin / "no-home",
+        cwd=plugin / "no-cwd",
+        plugin_skills=[("connected-data", str(plugin / "skills"))],
+    ).resolve("connect-data")
+    assert skill.skill is not None and skill.skill.scope == "plugin"
     assert "connected_data_status" in read_skill_body(skill.skill)
-    root = AgentDef(id="main", title="Main", source="expert_pack")
-    tool = next(
-        tool
-        for tool in build_auto_react_tools(root, a2ui_producers=False)
-        if tool.name == "connected_data_status"
-    )
-    assert tool.args == {}
-    root.parent_id = "parent"
-    assert "connected_data_status" not in {
-        tool.name for tool in build_auto_react_tools(root, a2ui_producers=False)
-    }
+    claims = (plugin / "ai.iowarp.clio" / "tools" / "builtin.py").read_text(encoding="utf-8")
+    assert 'native_tool("connected_data_status")' in claims
 
 
 def test_linked_listing_is_session_scoped_and_omits_private_locators(

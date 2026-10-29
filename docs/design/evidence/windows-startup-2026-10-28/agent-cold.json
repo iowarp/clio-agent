@@ -1,0 +1,27 @@
+{
+ "readiness_seen": [
+  [
+   23.831,
+   "starting",
+   [
+    "task_runtime",
+    "marketplace"
+   ]
+  ],
+  [
+   35.231,
+   "ready",
+   []
+  ]
+ ],
+ "first_answer_s": 23.831,
+ "ready_s": 35.231,
+ "rail_page_s": 0.017,
+ "rail_rows": 30,
+ "rail_total": 908,
+ "open_first_page_s": 0.038,
+ "functional_s": 35.287,
+ "outcome": "functional",
+ "stopped_gracefully": true,
+ "stop_s": 10.995
+}

@@ -23,7 +23,7 @@
       {
         "name": "dataUri",
         "required": false,
-        "description": "A workspace file path or artifact:// reference; CLIO registers a path as an artifact before validation.",
+        "description": "A workspace file path or artifact:// reference; CLIO registers a path as an artifact before validation. Or a live study source, study://<study>/measurements, study://<study>/entries or study://<study>/records/<view>, which updates as the study records entries.",
         "type": "string"
       },
       {
@@ -124,8 +124,14 @@
       {
         "name": "dataUri",
         "required": false,
-        "description": "A workspace file path or artifact:// reference; CLIO registers a path as an artifact before validation.",
+        "description": "A workspace file path or artifact:// reference; CLIO registers a path as an artifact before validation. Or a live study source, study://<study>/measurements, study://<study>/entries or study://<study>/records/<view>, which updates as the study records entries.",
         "type": "string"
+      },
+      {
+        "name": "pageSize",
+        "required": false,
+        "description": "Rows per page at first (default 10); the reader can change it.",
+        "type": "10 | 25 | 50 | 100 | 500"
       },
       {
         "name": "rows",
@@ -166,7 +172,7 @@
         "name": "camera",
         "required": false,
         "description": "Camera literal or data-model binding. longitude/latitude/zoom are required; bearing and pitch default to zero. Bound cameras are shared and updated by human navigation. Use update_a2ui_data_model on the declared path to pan, zoom or rotate, then capture the resulting view.",
-        "type": "object"
+        "type": "value"
       },
       {
         "name": "categoryField",
@@ -183,7 +189,7 @@
       {
         "name": "dataUri",
         "required": false,
-        "description": "A workspace file path or artifact:// reference; CLIO registers a path as an artifact before validation. Requires latitudeField/longitudeField/labelField; a referenced dataset is bounded by dataQuery/limit, not the inline point cap.",
+        "description": "A workspace file path or artifact:// reference; CLIO registers a path as an artifact before validation. Or a live study source, study://<study>/measurements, study://<study>/entries or study://<study>/records/<view>, which updates as the study records entries. Requires latitudeField/longitudeField/labelField; a referenced dataset is bounded by dataQuery/limit, not the inline point cap.",
         "type": "string"
       },
       {
@@ -306,10 +312,16 @@
         "type": "string"
       },
       {
+        "name": "height",
+        "required": false,
+        "description": "Height of the view in pixels, from 160 to 2000.",
+        "type": "integer"
+      },
+      {
         "name": "rasterUri",
         "required": true,
-        "description": "",
-        "type": "string"
+        "description": "Reference to a registered raster artifact, or a binding to a selection so one viewer follows the selected row.",
+        "type": "value"
       },
       {
         "name": "title",
@@ -359,16 +371,22 @@
         "type": "value"
       },
       {
+        "name": "height",
+        "required": false,
+        "description": "Height of the view in pixels, from 160 to 2000. Give a 3D view room when it is the result being read.",
+        "type": "integer"
+      },
+      {
         "name": "materialUri",
         "required": false,
-        "description": "Registered MTL companion file for an OBJ model.",
-        "type": "string"
+        "description": "Registered MTL companion file for an OBJ model. It can be bound like meshUri.",
+        "type": "value"
       },
       {
         "name": "meshUri",
         "required": true,
-        "description": "Reference to a registered mesh artifact, such as artifact://artifact_specimen. The viewer loads the model from that artifact.",
-        "type": "string"
+        "description": "Reference to a registered mesh artifact, such as artifact://artifact_specimen, or a binding such as /selection/case/values/0 so one viewer follows the case selected in a table or chart. The viewer loads the model from that artifact.",
+        "type": "value"
       },
       {
         "name": "showField",
@@ -637,8 +655,8 @@
       {
         "name": "selected",
         "required": false,
-        "description": "",
-        "type": "string"
+        "description": "The selected node id; bind it to follow a selection.",
+        "type": "value"
       }
     ]
   },
@@ -870,7 +888,7 @@
     ]
   },
   "clio.mermaid.v1": {
-    "description": "A declarative Mermaid diagram, inline source or from a referenced file.",
+    "description": "Mermaid diagrams: workflows, protocols, ER/class models, states, git histories, grammars, trees and 33 supported families. Load this component for syntax and examples.",
     "properties": [
       {
         "name": "dataUri",
@@ -1115,7 +1133,7 @@
         "name": "value",
         "required": true,
         "description": "Current numeric value, or two bounds in range mode. A bound data path lets other components read the same value.",
-        "type": "object"
+        "type": "value"
       }
     ]
   },
@@ -1223,7 +1241,7 @@
         "name": "name",
         "required": true,
         "description": "",
-        "type": "object"
+        "type": "value"
       }
     ]
   },

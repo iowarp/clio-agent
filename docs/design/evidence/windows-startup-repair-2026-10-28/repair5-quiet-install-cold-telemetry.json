@@ -1,0 +1,2093 @@
+{
+  "exit_code": 0,
+  "samples": [
+    {
+      "epoch": 1793180943.5496752,
+      "cpu_percent": 49.8,
+      "encoders": []
+    },
+    {
+      "epoch": 1793180944.5708826,
+      "cpu_percent": 44.2,
+      "encoders": []
+    },
+    {
+      "epoch": 1793180945.6094,
+      "cpu_percent": 41.1,
+      "encoders": []
+    },
+    {
+      "epoch": 1793180946.707463,
+      "cpu_percent": 39.8,
+      "encoders": []
+    },
+    {
+      "epoch": 1793180947.782516,
+      "cpu_percent": 21.4,
+      "encoders": []
+    },
+    {
+      "epoch": 1793180948.8682957,
+      "cpu_percent": 12.8,
+      "encoders": []
+    },
+    {
+      "epoch": 1793180949.956374,
+      "cpu_percent": 13.3,
+      "encoders": []
+    },
+    {
+      "epoch": 1793180951.0466533,
+      "cpu_percent": 14.8,
+      "encoders": []
+    },
+    {
+      "epoch": 1793180952.1390276,
+      "cpu_percent": 18.5,
+      "encoders": []
+    },
+    {
+      "epoch": 1793180953.2278104,
+      "cpu_percent": 13.8,
+      "encoders": []
+    },
+    {
+      "epoch": 1793180954.3207796,
+      "cpu_percent": 16.1,
+      "encoders": []
+    },
+    {
+      "epoch": 1793180955.4123864,
+      "cpu_percent": 16.2,
+      "encoders": []
+    },
+    {
+      "epoch": 1793180956.472038,
+      "cpu_percent": 18.1,
+      "encoders": []
+    },
+    {
+      "epoch": 1793180957.5302896,
+      "cpu_percent": 44.3,
+      "encoders": []
+    },
+    {
+      "epoch": 1793180958.6105928,
+      "cpu_percent": 38.0,
+      "encoders": []
+    },
+    {
+      "epoch": 1793180959.683106,
+      "cpu_percent": 42.7,
+      "encoders": []
+    },
+    {
+      "epoch": 1793180960.729048,
+      "cpu_percent": 48.9,
+      "encoders": []
+    },
+    {
+      "epoch": 1793180961.9967532,
+      "cpu_percent": 61.0,
+      "encoders": []
+    },
+    {
+      "epoch": 1793180963.1666236,
+      "cpu_percent": 32.2,
+      "encoders": []
+    },
+    {
+      "epoch": 1793180964.509674,
+      "cpu_percent": 36.0,
+      "encoders": []
+    },
+    {
+      "epoch": 1793180966.077295,
+      "cpu_percent": 63.6,
+      "encoders": []
+    },
+    {
+      "epoch": 1793180967.915122,
+      "cpu_percent": 79.9,
+      "encoders": []
+    },
+    {
+      "epoch": 1793180969.433323,
+      "cpu_percent": 87.4,
+      "encoders": []
+    },
+    {
+      "epoch": 1793180971.2183332,
+      "cpu_percent": 89.4,
+      "encoders": []
+    },
+    {
+      "epoch": 1793180973.1778462,
+      "cpu_percent": 98.7,
+      "encoders": []
+    },
+    {
+      "epoch": 1793180975.087045,
+      "cpu_percent": 97.4,
+      "encoders": []
+    },
+    {
+      "epoch": 1793180976.3689418,
+      "cpu_percent": 64.4,
+      "encoders": []
+    },
+    {
+      "epoch": 1793180977.6877425,
+      "cpu_percent": 50.7,
+      "encoders": []
+    },
+    {
+      "epoch": 1793180978.9931703,
+      "cpu_percent": 49.4,
+      "encoders": []
+    },
+    {
+      "epoch": 1793180980.2351708,
+      "cpu_percent": 30.5,
+      "encoders": []
+    },
+    {
+      "epoch": 1793180981.514123,
+      "cpu_percent": 51.0,
+      "encoders": []
+    },
+    {
+      "epoch": 1793180982.778498,
+      "cpu_percent": 71.8,
+      "encoders": []
+    },
+    {
+      "epoch": 1793180984.0787807,
+      "cpu_percent": 48.2,
+      "encoders": []
+    },
+    {
+      "epoch": 1793180985.3434844,
+      "cpu_percent": 78.4,
+      "encoders": []
+    },
+    {
+      "epoch": 1793180986.7825,
+      "cpu_percent": 90.2,
+      "encoders": []
+    },
+    {
+      "epoch": 1793180988.0666995,
+      "cpu_percent": 89.3,
+      "encoders": []
+    },
+    {
+      "epoch": 1793180989.3865411,
+      "cpu_percent": 81.5,
+      "encoders": []
+    },
+    {
+      "epoch": 1793180990.8735561,
+      "cpu_percent": 91.8,
+      "encoders": []
+    },
+    {
+      "epoch": 1793180992.4824855,
+      "cpu_percent": 100.0,
+      "encoders": []
+    },
+    {
+      "epoch": 1793180993.8403184,
+      "cpu_percent": 72.0,
+      "encoders": []
+    },
+    {
+      "epoch": 1793180995.1686075,
+      "cpu_percent": 76.2,
+      "encoders": []
+    },
+    {
+      "epoch": 1793180996.4940875,
+      "cpu_percent": 70.6,
+      "encoders": []
+    },
+    {
+      "epoch": 1793180998.3321545,
+      "cpu_percent": 98.0,
+      "encoders": []
+    },
+    {
+      "epoch": 1793181002.110917,
+      "cpu_percent": 96.6,
+      "encoders": []
+    },
+    {
+      "epoch": 1793181004.058688,
+      "cpu_percent": 100.0,
+      "encoders": []
+    },
+    {
+      "epoch": 1793181006.336593,
+      "cpu_percent": 100.0,
+      "encoders": []
+    },
+    {
+      "epoch": 1793181008.4402966,
+      "cpu_percent": 100.0,
+      "encoders": []
+    },
+    {
+      "epoch": 1793181010.7644796,
+      "cpu_percent": 99.8,
+      "encoders": []
+    },
+    {
+      "epoch": 1793181013.6047583,
+      "cpu_percent": 100.0,
+      "encoders": []
+    },
+    {
+      "epoch": 1793181015.9801295,
+      "cpu_percent": 100.0,
+      "encoders": []
+    },
+    {
+      "epoch": 1793181017.9250932,
+      "cpu_percent": 97.2,
+      "encoders": []
+    },
+    {
+      "epoch": 1793181020.4181657,
+      "cpu_percent": 100.0,
+      "encoders": []
+    },
+    {
+      "epoch": 1793181023.5583634,
+      "cpu_percent": 100.0,
+      "encoders": []
+    },
+    {
+      "epoch": 1793181025.891252,
+      "cpu_percent": 100.0,
+      "encoders": []
+    },
+    {
+      "epoch": 1793181027.7476752,
+      "cpu_percent": 98.4,
+      "encoders": []
+    },
+    {
+      "epoch": 1793181029.230812,
+      "cpu_percent": 69.1,
+      "encoders": []
+    },
+    {
+      "epoch": 1793181030.9615364,
+      "cpu_percent": 99.8,
+      "encoders": []
+    },
+    {
+      "epoch": 1793181032.231474,
+      "cpu_percent": 90.3,
+      "encoders": []
+    },
+    {
+      "epoch": 1793181033.6696987,
+      "cpu_percent": 84.4,
+      "encoders": []
+    },
+    {
+      "epoch": 1793181034.9232743,
+      "cpu_percent": 71.9,
+      "encoders": []
+    },
+    {
+      "epoch": 1793181036.9291162,
+      "cpu_percent": 87.6,
+      "encoders": []
+    },
+    {
+      "epoch": 1793181038.27483,
+      "cpu_percent": 95.6,
+      "encoders": []
+    },
+    {
+      "epoch": 1793181039.9060972,
+      "cpu_percent": 95.9,
+      "encoders": []
+    },
+    {
+      "epoch": 1793181041.7532134,
+      "cpu_percent": 95.9,
+      "encoders": []
+    },
+    {
+      "epoch": 1793181043.4928658,
+      "cpu_percent": 99.5,
+      "encoders": []
+    },
+    {
+      "epoch": 1793181045.37458,
+      "cpu_percent": 93.0,
+      "encoders": []
+    },
+    {
+      "epoch": 1793181046.6970913,
+      "cpu_percent": 94.2,
+      "encoders": []
+    },
+    {
+      "epoch": 1793181047.8985806,
+      "cpu_percent": 35.1,
+      "encoders": []
+    },
+    {
+      "epoch": 1793181049.1804125,
+      "cpu_percent": 72.3,
+      "encoders": []
+    },
+    {
+      "epoch": 1793181050.455711,
+      "cpu_percent": 99.7,
+      "encoders": []
+    },
+    {
+      "epoch": 1793181051.6729631,
+      "cpu_percent": 67.0,
+      "encoders": []
+    },
+    {
+      "epoch": 1793181052.9175527,
+      "cpu_percent": 79.7,
+      "encoders": []
+    },
+    {
+      "epoch": 1793181054.235163,
+      "cpu_percent": 74.6,
+      "encoders": []
+    },
+    {
+      "epoch": 1793181055.554365,
+      "cpu_percent": 70.3,
+      "encoders": []
+    },
+    {
+      "epoch": 1793181056.8283381,
+      "cpu_percent": 89.0,
+      "encoders": []
+    },
+    {
+      "epoch": 1793181058.1468654,
+      "cpu_percent": 64.8,
+      "encoders": []
+    },
+    {
+      "epoch": 1793181059.5324805,
+      "cpu_percent": 88.3,
+      "encoders": []
+    },
+    {
+      "epoch": 1793181060.8894517,
+      "cpu_percent": 73.0,
+      "encoders": []
+    },
+    {
+      "epoch": 1793181062.3650193,
+      "cpu_percent": 100.0,
+      "encoders": []
+    },
+    {
+      "epoch": 1793181063.7630596,
+      "cpu_percent": 100.0,
+      "encoders": []
+    },
+    {
+      "epoch": 1793181065.2059126,
+      "cpu_percent": 95.7,
+      "encoders": []
+    },
+    {
+      "epoch": 1793181066.5229752,
+      "cpu_percent": 82.7,
+      "encoders": []
+    },
+    {
+      "epoch": 1793181067.8818512,
+      "cpu_percent": 40.4,
+      "encoders": []
+    },
+    {
+      "epoch": 1793181069.2620175,
+      "cpu_percent": 58.3,
+      "encoders": []
+    },
+    {
+      "epoch": 1793181070.5783427,
+      "cpu_percent": 49.2,
+      "encoders": []
+    },
+    {
+      "epoch": 1793181071.9466012,
+      "cpu_percent": 34.7,
+      "encoders": []
+    },
+    {
+      "epoch": 1793181073.335069,
+      "cpu_percent": 42.6,
+      "encoders": []
+    },
+    {
+      "epoch": 1793181074.7510035,
+      "cpu_percent": 97.7,
+      "encoders": []
+    },
+    {
+      "epoch": 1793181076.1673248,
+      "cpu_percent": 100.0,
+      "encoders": []
+    },
+    {
+      "epoch": 1793181077.6648083,
+      "cpu_percent": 100.0,
+      "encoders": []
+    },
+    {
+      "epoch": 1793181079.1416903,
+      "cpu_percent": 99.4,
+      "encoders": []
+    },
+    {
+      "epoch": 1793181080.6181037,
+      "cpu_percent": 87.2,
+      "encoders": []
+    },
+    {
+      "epoch": 1793181082.004653,
+      "cpu_percent": 79.9,
+      "encoders": []
+    },
+    {
+      "epoch": 1793181083.420925,
+      "cpu_percent": 56.9,
+      "encoders": []
+    },
+    {
+      "epoch": 1793181084.8193069,
+      "cpu_percent": 88.3,
+      "encoders": []
+    },
+    {
+      "epoch": 1793181086.1576984,
+      "cpu_percent": 66.1,
+      "encoders": []
+    },
+    {
+      "epoch": 1793181087.4434445,
+      "cpu_percent": 64.5,
+      "encoders": []
+    },
+    {
+      "epoch": 1793181088.6037824,
+      "cpu_percent": 62.7,
+      "encoders": []
+    },
+    {
+      "epoch": 1793181089.8043811,
+      "cpu_percent": 68.2,
+      "encoders": []
+    },
+    {
+      "epoch": 1793181091.0857403,
+      "cpu_percent": 63.8,
+      "encoders": []
+    },
+    {
+      "epoch": 1793181092.3610058,
+      "cpu_percent": 58.5,
+      "encoders": []
+    },
+    {
+      "epoch": 1793181093.5903583,
+      "cpu_percent": 43.5,
+      "encoders": []
+    },
+    {
+      "epoch": 1793181094.730003,
+      "cpu_percent": 36.0,
+      "encoders": []
+    },
+    {
+      "epoch": 1793181095.8703363,
+      "cpu_percent": 39.9,
+      "encoders": []
+    },
+    {
+      "epoch": 1793181097.025126,
+      "cpu_percent": 41.5,
+      "encoders": []
+    },
+    {
+      "epoch": 1793181098.1040394,
+      "cpu_percent": 45.7,
+      "encoders": []
+    },
+    {
+      "epoch": 1793181099.1851273,
+      "cpu_percent": 38.1,
+      "encoders": []
+    },
+    {
+      "epoch": 1793181100.2296677,
+      "cpu_percent": 32.3,
+      "encoders": []
+    },
+    {
+      "epoch": 1793181101.2886908,
+      "cpu_percent": 35.6,
+      "encoders": []
+    },
+    {
+      "epoch": 1793181102.3483505,
+      "cpu_percent": 59.7,
+      "encoders": []
+    },
+    {
+      "epoch": 1793181103.430193,
+      "cpu_percent": 47.6,
+      "encoders": []
+    }
+  ],
+  "owned": [
+    {
+      "pid": 32940,
+      "created": 1793180941.2370064,
+      "exe": "C:\\Users\\jaime\\.cache\\codex-runtimes\\codex-primary-runtime\\dependencies\\native\\powershell\\pwsh.exe"
+    },
+    {
+      "pid": 50524,
+      "created": 1793180941.6364672,
+      "exe": "C:\\Users\\jaime\\.cache\\codex-runtimes\\codex-primary-runtime\\dependencies\\native\\powershell\\pwsh.exe"
+    },
+    {
+      "pid": 29044,
+      "created": 1793180945.1591413,
+      "exe": "C:\\Program Files\\Git\\cmd\\git.exe"
+    },
+    {
+      "pid": 44320,
+      "created": 1793180945.1724396,
+      "exe": "C:\\Program Files\\Git\\mingw64\\bin\\git.exe"
+    },
+    {
+      "pid": 9892,
+      "created": 1793180945.214548,
+      "exe": "C:\\Program Files\\Git\\mingw64\\libexec\\git-core\\git.exe"
+    },
+    {
+      "pid": 51324,
+      "created": 1793180945.2330272,
+      "exe": "C:\\Program Files\\Git\\mingw64\\libexec\\git-core\\git-remote-https.exe"
+    },
+    {
+      "pid": 27156,
+      "created": 1793180947.4474137,
+      "exe": "C:\\Program Files\\Git\\mingw64\\libexec\\git-core\\git.exe"
+    },
+    {
+      "pid": 32652,
+      "created": 1793180959.827332,
+      "exe": "C:\\Users\\jaime\\.cache\\codex-runtimes\\codex-primary-runtime\\dependencies\\native\\powershell\\pwsh.exe"
+    },
+    {
+      "pid": 42164,
+      "created": 1793180959.8433404,
+      "exe": "C:\\Program Files\\Git\\cmd\\git.exe"
+    },
+    {
+      "pid": 29092,
+      "created": 1793180959.8571208,
+      "exe": "C:\\Program Files\\Git\\mingw64\\bin\\git.exe"
+    },
+    {
+      "pid": 45376,
+      "created": 1793180959.877697,
+      "exe": "C:\\Program Files\\Git\\usr\\bin\\sh.exe"
+    },
+    {
+      "pid": 29864,
+      "created": 1793180960.6168692,
+      "exe": "C:\\Program Files\\Git\\usr\\bin\\sh.exe"
+    },
+    {
+      "pid": 38860,
+      "created": 1793180960.62985,
+      "exe": "C:\\Program Files\\Git\\mingw64\\libexec\\git-core\\git.exe"
+    },
+    {
+      "pid": 37404,
+      "created": 1793180960.6636457,
+      "exe": "C:\\Program Files\\Git\\mingw64\\libexec\\git-core\\git.exe"
+    },
+    {
+      "pid": 41396,
+      "created": 1793180960.685382,
+      "exe": "C:\\Program Files\\Git\\mingw64\\libexec\\git-core\\git.exe"
+    },
+    {
+      "pid": 27888,
+      "created": 1793180959.8401906,
+      "exe": "C:\\Windows\\System32\\conhost.exe"
+    },
+    {
+      "pid": 37400,
+      "created": 1793180960.6192036,
+      "exe": "D:\\cw\\fp6\\bin\\uv.exe"
+    },
+    {
+      "pid": 24620,
+      "created": 1793180960.6874251,
+      "exe": "C:\\Python314\\python.exe"
+    },
+    {
+      "pid": 25400,
+      "created": 1793180960.7387447,
+      "exe": "C:\\Program Files\\Git\\mingw64\\libexec\\git-core\\git.exe"
+    },
+    {
+      "pid": 24660,
+      "created": 1793180961.7262075,
+      "exe": "C:\\Program Files\\Git\\mingw64\\libexec\\git-core\\git.exe"
+    },
+    {
+      "pid": 43444,
+      "created": 1793180960.7552528,
+      "exe": "C:\\Program Files\\Git\\mingw64\\libexec\\git-core\\git-remote-https.exe"
+    },
+    {
+      "pid": 45728,
+      "created": 1793180962.1572957,
+      "exe": "C:\\Program Files\\Git\\mingw64\\libexec\\git-core\\git.exe"
+    },
+    {
+      "pid": 16376,
+      "created": 1793180962.1771567,
+      "exe": "C:\\Program Files\\Git\\mingw64\\libexec\\git-core\\git.exe"
+    },
+    {
+      "pid": 33628,
+      "created": 1793180962.2432375,
+      "exe": "C:\\Program Files\\Git\\mingw64\\libexec\\git-core\\git.exe"
+    },
+    {
+      "pid": 51312,
+      "created": 1793180962.2600725,
+      "exe": "C:\\Program Files\\Git\\mingw64\\libexec\\git-core\\git-remote-https.exe"
+    },
+    {
+      "pid": 40808,
+      "created": 1793180962.6936848,
+      "exe": "D:\\cw\\fp6\\bin\\uv.exe"
+    },
+    {
+      "pid": 39248,
+      "created": 1793180962.8938508,
+      "exe": "D:\\cw\\fp6\\local\\clio-agent\\data\\app\\clio-agent\\.venv-install-bootstrap\\Scripts\\python.exe"
+    },
+    {
+      "pid": 31612,
+      "created": 1793180962.9037576,
+      "exe": "C:\\Python314\\python.exe"
+    },
+    {
+      "pid": 32580,
+      "created": 1793180964.0501552,
+      "exe": "C:\\Program Files\\Git\\mingw64\\libexec\\git-core\\git.exe"
+    },
+    {
+      "pid": 7156,
+      "created": 1793180964.128276,
+      "exe": "D:\\cw\\fp6\\bin\\uv.exe"
+    },
+    {
+      "pid": 46656,
+      "created": 1793180964.1344552,
+      "exe": "C:\\Windows\\System32\\conhost.exe"
+    },
+    {
+      "pid": 49324,
+      "created": 1793180964.1827316,
+      "exe": "D:\\cw\\fp6\\local\\clio-agent\\data\\app\\clio-agent\\.venv-install-bootstrap\\Scripts\\python.exe"
+    },
+    {
+      "pid": 37268,
+      "created": 1793180964.194805,
+      "exe": "C:\\Python314\\python.exe"
+    },
+    {
+      "pid": 39156,
+      "created": 1793180967.1657517,
+      "exe": "C:\\Program Files\\Git\\mingw64\\libexec\\git-core\\git.exe"
+    },
+    {
+      "pid": 48428,
+      "created": 1793180967.4337351,
+      "exe": "C:\\Program Files\\Git\\mingw64\\libexec\\git-core\\git.exe"
+    },
+    {
+      "pid": 50068,
+      "created": 1793180967.5455148,
+      "exe": "C:\\Program Files\\Git\\mingw64\\libexec\\git-core\\git.exe"
+    },
+    {
+      "pid": 11548,
+      "created": 1793180967.641252,
+      "exe": "C:\\Program Files\\Git\\mingw64\\libexec\\git-core\\git-remote-https.exe"
+    },
+    {
+      "pid": 51412,
+      "created": 1793180969.0025132,
+      "exe": "C:\\Program Files\\Git\\mingw64\\libexec\\git-core\\git.exe"
+    },
+    {
+      "pid": 2464,
+      "created": 1793180969.035129,
+      "exe": "C:\\Program Files\\Git\\mingw64\\libexec\\git-core\\git.exe"
+    },
+    {
+      "pid": 32736,
+      "created": 1793180969.106727,
+      "exe": "C:\\Program Files\\Git\\mingw64\\libexec\\git-core\\git.exe"
+    },
+    {
+      "pid": 39356,
+      "created": 1793180969.5504456,
+      "exe": "C:\\Program Files\\Git\\mingw64\\libexec\\git-core\\git.exe"
+    },
+    {
+      "pid": 43136,
+      "created": 1793180969.5968213,
+      "exe": "C:\\Program Files\\Git\\mingw64\\libexec\\git-core\\git.exe"
+    },
+    {
+      "pid": 19240,
+      "created": 1793180969.6420207,
+      "exe": "C:\\Program Files\\Git\\mingw64\\libexec\\git-core\\git-remote-https.exe"
+    },
+    {
+      "pid": 48764,
+      "created": 1793180971.1369028,
+      "exe": "C:\\Program Files\\Git\\mingw64\\libexec\\git-core\\git.exe"
+    },
+    {
+      "pid": 43544,
+      "created": 1793180972.5100472,
+      "exe": "C:\\Program Files\\Git\\mingw64\\libexec\\git-core\\git.exe"
+    },
+    {
+      "pid": 48868,
+      "created": 1793180972.6798828,
+      "exe": "C:\\Program Files\\Git\\mingw64\\libexec\\git-core\\git.exe"
+    },
+    {
+      "pid": 40672,
+      "created": 1793180972.8410604,
+      "exe": "C:\\Program Files\\Git\\mingw64\\libexec\\git-core\\git.exe"
+    },
+    {
+      "pid": 46532,
+      "created": 1793180972.9018688,
+      "exe": "C:\\Program Files\\Git\\mingw64\\libexec\\git-core\\git.exe"
+    },
+    {
+      "pid": 10728,
+      "created": 1793180973.843746,
+      "exe": "D:\\cw\\fp6\\local\\clio-agent\\cache\\document-runtime\\uv-document-cache\\builds-v0\\.tmpHcewpZ\\Scripts\\python.exe"
+    },
+    {
+      "pid": 39060,
+      "created": 1793180974.8878107,
+      "exe": "C:\\Program Files\\Git\\mingw64\\libexec\\git-core\\git.exe"
+    },
+    {
+      "pid": 29592,
+      "created": 1793180974.8276942,
+      "exe": "C:\\Python314\\python.exe"
+    },
+    {
+      "pid": 6332,
+      "created": 1793180975.3726113,
+      "exe": "C:\\Program Files\\Git\\mingw64\\libexec\\git-core\\git.exe"
+    },
+    {
+      "pid": 11976,
+      "created": 1793180975.400658,
+      "exe": "C:\\Program Files\\Git\\mingw64\\libexec\\git-core\\git.exe"
+    },
+    {
+      "pid": 51528,
+      "created": 1793180975.4325209,
+      "exe": "C:\\Program Files\\Git\\mingw64\\libexec\\git-core\\git-remote-https.exe"
+    },
+    {
+      "pid": 36240,
+      "created": 1793180976.2417138,
+      "exe": "D:\\cw\\fp6\\local\\clio-agent\\cache\\document-runtime\\uv-document-cache\\builds-v0\\.tmpHcewpZ\\Scripts\\python.exe"
+    },
+    {
+      "pid": 38324,
+      "created": 1793180976.2523031,
+      "exe": "C:\\Python314\\python.exe"
+    },
+    {
+      "pid": 50760,
+      "created": 1793180977.3771005,
+      "exe": "C:\\Program Files\\Git\\mingw64\\libexec\\git-core\\git.exe"
+    },
+    {
+      "pid": 45852,
+      "created": 1793180977.4011965,
+      "exe": "C:\\Program Files\\Git\\mingw64\\libexec\\git-core\\git.exe"
+    },
+    {
+      "pid": 29608,
+      "created": 1793180977.4230328,
+      "exe": "C:\\Program Files\\Git\\mingw64\\libexec\\git-core\\git-remote-https.exe"
+    },
+    {
+      "pid": 3192,
+      "created": 1793180979.522268,
+      "exe": "C:\\Program Files\\Git\\mingw64\\libexec\\git-core\\git.exe"
+    },
+    {
+      "pid": 30976,
+      "created": 1793180980.2023587,
+      "exe": "C:\\Program Files\\Git\\mingw64\\libexec\\git-core\\git.exe"
+    },
+    {
+      "pid": 29740,
+      "created": 1793180984.1656125,
+      "exe": "C:\\Program Files\\Git\\bin\\bash.exe"
+    },
+    {
+      "pid": 35460,
+      "created": 1793180984.182086,
+      "exe": "D:\\cw\\fp6\\bin\\uv.exe"
+    },
+    {
+      "pid": 49508,
+      "created": 1793180984.5397632,
+      "exe": "C:\\Program Files\\Git\\cmd\\git.exe"
+    },
+    {
+      "pid": 46168,
+      "created": 1793180984.5553646,
+      "exe": "C:\\Program Files\\Git\\mingw64\\bin\\git.exe"
+    },
+    {
+      "pid": 27416,
+      "created": 1793180984.5847015,
+      "exe": "C:\\Program Files\\Git\\mingw64\\libexec\\git-core\\git.exe"
+    },
+    {
+      "pid": 24404,
+      "created": 1793180984.6106875,
+      "exe": "C:\\Program Files\\Git\\mingw64\\libexec\\git-core\\git-remote-https.exe"
+    },
+    {
+      "pid": 33208,
+      "created": 1793180984.1832612,
+      "exe": "C:\\Program Files\\Git\\usr\\bin\\bash.exe"
+    },
+    {
+      "pid": 11124,
+      "created": 1793180984.8222723,
+      "exe": "C:\\Program Files\\Git\\usr\\bin\\bash.exe"
+    },
+    {
+      "pid": 35216,
+      "created": 1793180984.8409212,
+      "exe": "C:\\Program Files\\Go\\bin\\go.exe"
+    },
+    {
+      "pid": 30192,
+      "created": 1793180986.305157,
+      "exe": "C:\\Program Files\\Git\\mingw64\\libexec\\git-core\\git.exe"
+    },
+    {
+      "pid": 52872,
+      "created": 1793180986.3867817,
+      "exe": "C:\\Program Files\\Git\\mingw64\\libexec\\git-core\\git.exe"
+    },
+    {
+      "pid": 32524,
+      "created": 1793180986.5486252,
+      "exe": "C:\\Program Files\\Git\\mingw64\\libexec\\git-core\\git.exe"
+    },
+    {
+      "pid": 31640,
+      "created": 1793180986.5845325,
+      "exe": "C:\\Program Files\\Git\\mingw64\\libexec\\git-core\\git.exe"
+    },
+    {
+      "pid": 5620,
+      "created": 1793180986.690824,
+      "exe": "C:\\Program Files\\Git\\mingw64\\libexec\\git-core\\git.exe"
+    },
+    {
+      "pid": 52152,
+      "created": 1793180987.755855,
+      "exe": "C:\\Program Files\\Git\\cmd\\git.exe"
+    },
+    {
+      "pid": 53140,
+      "created": 1793180987.7764387,
+      "exe": "C:\\Program Files\\Git\\mingw64\\bin\\git.exe"
+    },
+    {
+      "pid": 44228,
+      "created": 1793180987.8164985,
+      "exe": "C:\\Program Files\\Git\\usr\\bin\\sh.exe"
+    },
+    {
+      "pid": 31880,
+      "created": 1793180987.9233534,
+      "exe": "D:\\cw\\fp6\\local\\clio-agent\\cache\\document-runtime\\68fd91e579837b59bebd\\python\\Scripts\\python.exe"
+    },
+    {
+      "pid": 9704,
+      "created": 1793180987.9414504,
+      "exe": "C:\\Windows\\System32\\conhost.exe"
+    },
+    {
+      "pid": 40896,
+      "created": 1793180989.0652223,
+      "exe": "C:\\Program Files\\Git\\cmd\\git.exe"
+    },
+    {
+      "pid": 38520,
+      "created": 1793180989.086489,
+      "exe": "C:\\Program Files\\Git\\mingw64\\bin\\git.exe"
+    },
+    {
+      "pid": 21704,
+      "created": 1793180987.9659305,
+      "exe": "C:\\Python314\\python.exe"
+    },
+    {
+      "pid": 31664,
+      "created": 1793180989.1205091,
+      "exe": "C:\\Program Files\\Git\\usr\\bin\\sh.exe"
+    },
+    {
+      "pid": 45416,
+      "created": 1793180989.2575285,
+      "exe": "C:\\Program Files\\Git\\usr\\bin\\sh.exe"
+    },
+    {
+      "pid": 20860,
+      "created": 1793180989.272923,
+      "exe": "C:\\Program Files\\Git\\mingw64\\libexec\\git-core\\git.exe"
+    },
+    {
+      "pid": 28240,
+      "created": 1793180997.459797,
+      "exe": "D:\\cw\\fp6\\local\\clio-agent\\cache\\document-runtime\\68fd91e579837b59bebd\\python\\Lib\\site-packages\\nodejs_wheel\\node.exe"
+    },
+    {
+      "pid": 48272,
+      "created": 1793180997.4930143,
+      "exe": "C:\\Windows\\System32\\conhost.exe"
+    },
+    {
+      "pid": 30284,
+      "created": 1793181007.0705755,
+      "exe": "C:\\Windows\\System32\\icacls.exe"
+    },
+    {
+      "pid": 17436,
+      "created": 1793181015.8077369,
+      "exe": "D:\\cw\\fp6\\uv-cache\\builds-v0\\.tmp11eXVE\\Scripts\\python.exe"
+    },
+    {
+      "pid": 9392,
+      "created": 1793181016.1467035,
+      "exe": "D:\\cw\\fp6\\uv-cache\\builds-v0\\.tmpRQShfX\\Scripts\\python.exe"
+    },
+    {
+      "pid": 32960,
+      "created": 1793181016.4299767,
+      "exe": "C:\\Python314\\python.exe"
+    },
+    {
+      "pid": 30152,
+      "created": 1793181015.9849257,
+      "exe": "C:\\Python314\\python.exe"
+    },
+    {
+      "pid": 37004,
+      "created": 1793181018.3563707,
+      "exe": "D:\\cw\\fp6\\uv-cache\\builds-v0\\.tmpUEMmnj\\Scripts\\python.exe"
+    },
+    {
+      "pid": 28380,
+      "created": 1793181018.4056065,
+      "exe": "D:\\cw\\fp6\\uv-cache\\builds-v0\\.tmp24E111\\Scripts\\python.exe"
+    },
+    {
+      "pid": 20104,
+      "created": 1793181018.432566,
+      "exe": "C:\\Python314\\python.exe"
+    },
+    {
+      "pid": 1820,
+      "created": 1793181018.4179869,
+      "exe": "C:\\Python314\\python.exe"
+    },
+    {
+      "pid": 29380,
+      "created": 1793181019.3515682,
+      "exe": "D:\\cw\\fp6\\uv-cache\\builds-v0\\.tmp11eXVE\\Scripts\\python.exe"
+    },
+    {
+      "pid": 46076,
+      "created": 1793181019.7653909,
+      "exe": "C:\\Python314\\python.exe"
+    },
+    {
+      "pid": 39092,
+      "created": 1793181020.7913666,
+      "exe": "D:\\cw\\fp6\\uv-cache\\builds-v0\\.tmpRQShfX\\Scripts\\python.exe"
+    },
+    {
+      "pid": 30928,
+      "created": 1793181020.900152,
+      "exe": "C:\\Python314\\python.exe"
+    },
+    {
+      "pid": 6260,
+      "created": 1793181021.8840072,
+      "exe": "C:\\Windows\\System32\\cmd.exe"
+    },
+    {
+      "pid": 23608,
+      "created": 1793181022.2851949,
+      "exe": "C:\\Windows\\System32\\cmd.exe"
+    },
+    {
+      "pid": 17592,
+      "created": 1793181025.6051552,
+      "exe": "D:\\cw\\fp6\\uv-cache\\builds-v0\\.tmp24E111\\Scripts\\python.exe"
+    },
+    {
+      "pid": 19924,
+      "created": 1793181026.09226,
+      "exe": "D:\\cw\\fp6\\uv-cache\\builds-v0\\.tmpUEMmnj\\Scripts\\python.exe"
+    },
+    {
+      "pid": 36552,
+      "created": 1793181026.1096015,
+      "exe": "C:\\Python314\\python.exe"
+    },
+    {
+      "pid": 43640,
+      "created": 1793181025.6395557,
+      "exe": "C:\\Python314\\python.exe"
+    },
+    {
+      "pid": 22556,
+      "created": 1793181030.9302938,
+      "exe": "D:\\cw\\fp6\\local\\clio-agent\\cache\\document-runtime\\68fd91e579837b59bebd\\python\\Lib\\site-packages\\nodejs_wheel\\node.exe"
+    },
+    {
+      "pid": 35168,
+      "created": 1793181030.9402924,
+      "exe": "C:\\Windows\\System32\\conhost.exe"
+    },
+    {
+      "pid": 45520,
+      "created": 1793181032.618886,
+      "exe": "D:\\cw\\fp6\\local\\clio-agent\\cache\\document-runtime\\68fd91e579837b59bebd\\python\\Lib\\site-packages\\nodejs_wheel\\node.exe"
+    },
+    {
+      "pid": 32024,
+      "created": 1793181032.6276999,
+      "exe": "C:\\Windows\\System32\\conhost.exe"
+    },
+    {
+      "pid": 3256,
+      "created": 1793181032.7076955,
+      "exe": "D:\\cw\\fp6\\local\\clio-agent\\cache\\document-runtime\\68fd91e579837b59bebd\\javascript-tools\\node_modules\\@pnpm\\exe.win32-x64\\pnpm.exe"
+    },
+    {
+      "pid": 14748,
+      "created": 1793181040.8587036,
+      "exe": "D:\\cw\\fp6\\local\\clio-agent\\cache\\document-runtime\\68fd91e579837b59bebd\\python\\Lib\\site-packages\\nodejs_wheel\\node.exe"
+    },
+    {
+      "pid": 5288,
+      "created": 1793181040.8866503,
+      "exe": "C:\\Windows\\System32\\conhost.exe"
+    },
+    {
+      "pid": 22004,
+      "created": 1793181042.03266,
+      "exe": "D:\\cw\\fp6\\local\\clio-agent\\cache\\document-runtime\\68fd91e579837b59bebd\\python\\Lib\\site-packages\\nodejs_wheel\\node.exe"
+    },
+    {
+      "pid": 15556,
+      "created": 1793181042.0567713,
+      "exe": "C:\\Windows\\System32\\conhost.exe"
+    },
+    {
+      "pid": 33212,
+      "created": 1793181053.81136,
+      "exe": "C:\\Program Files\\Go\\pkg\\tool\\windows_amd64\\compile.exe"
+    },
+    {
+      "pid": 43984,
+      "created": 1793181053.820995,
+      "exe": "C:\\Program Files\\Go\\pkg\\tool\\windows_amd64\\compile.exe"
+    },
+    {
+      "pid": 3676,
+      "created": 1793181053.8654912,
+      "exe": "C:\\Program Files\\Go\\pkg\\tool\\windows_amd64\\compile.exe"
+    },
+    {
+      "pid": 5328,
+      "created": 1793181053.9347475,
+      "exe": "C:\\Program Files\\Go\\pkg\\tool\\windows_amd64\\asm.exe"
+    },
+    {
+      "pid": 43704,
+      "created": 1793181053.9513235,
+      "exe": "C:\\Program Files\\Go\\pkg\\tool\\windows_amd64\\compile.exe"
+    },
+    {
+      "pid": 48024,
+      "created": 1793181054.0387833,
+      "exe": "C:\\Program Files\\Go\\pkg\\tool\\windows_amd64\\asm.exe"
+    },
+    {
+      "pid": 28272,
+      "created": 1793181054.044358,
+      "exe": "C:\\Program Files\\Go\\pkg\\tool\\windows_amd64\\compile.exe"
+    },
+    {
+      "pid": 40260,
+      "created": 1793181054.047147,
+      "exe": "C:\\Program Files\\Go\\pkg\\tool\\windows_amd64\\compile.exe"
+    },
+    {
+      "pid": 29168,
+      "created": 1793181054.0838764,
+      "exe": "C:\\Program Files\\Go\\pkg\\tool\\windows_amd64\\compile.exe"
+    },
+    {
+      "pid": 49124,
+      "created": 1793181054.099012,
+      "exe": "C:\\Program Files\\Go\\pkg\\tool\\windows_amd64\\compile.exe"
+    },
+    {
+      "pid": 36120,
+      "created": 1793181054.0998666,
+      "exe": "C:\\Program Files\\Go\\pkg\\tool\\windows_amd64\\asm.exe"
+    },
+    {
+      "pid": 51992,
+      "created": 1793181054.111576,
+      "exe": "C:\\Program Files\\Go\\pkg\\tool\\windows_amd64\\compile.exe"
+    },
+    {
+      "pid": 36064,
+      "created": 1793181054.1380565,
+      "exe": "C:\\Program Files\\Go\\pkg\\tool\\windows_amd64\\compile.exe"
+    },
+    {
+      "pid": 40008,
+      "created": 1793181054.138094,
+      "exe": "C:\\Program Files\\Go\\pkg\\tool\\windows_amd64\\compile.exe"
+    },
+    {
+      "pid": 28388,
+      "created": 1793181054.1613932,
+      "exe": "C:\\Program Files\\Go\\pkg\\tool\\windows_amd64\\compile.exe"
+    },
+    {
+      "pid": 41004,
+      "created": 1793181054.1912203,
+      "exe": "C:\\Program Files\\Go\\pkg\\tool\\windows_amd64\\asm.exe"
+    },
+    {
+      "pid": 42880,
+      "created": 1793181054.915106,
+      "exe": "C:\\Program Files\\Go\\pkg\\tool\\windows_amd64\\compile.exe"
+    },
+    {
+      "pid": 39976,
+      "created": 1793181054.9699204,
+      "exe": "C:\\Program Files\\Go\\pkg\\tool\\windows_amd64\\compile.exe"
+    },
+    {
+      "pid": 3672,
+      "created": 1793181055.1371655,
+      "exe": "C:\\Program Files\\Go\\pkg\\tool\\windows_amd64\\compile.exe"
+    },
+    {
+      "pid": 34220,
+      "created": 1793181055.1582296,
+      "exe": "C:\\Program Files\\Go\\pkg\\tool\\windows_amd64\\compile.exe"
+    },
+    {
+      "pid": 14532,
+      "created": 1793181055.1685734,
+      "exe": "C:\\Program Files\\Go\\pkg\\tool\\windows_amd64\\asm.exe"
+    },
+    {
+      "pid": 43360,
+      "created": 1793181055.1660805,
+      "exe": "C:\\Program Files\\Go\\pkg\\tool\\windows_amd64\\asm.exe"
+    },
+    {
+      "pid": 20312,
+      "created": 1793181055.177024,
+      "exe": "C:\\Program Files\\Go\\pkg\\tool\\windows_amd64\\asm.exe"
+    },
+    {
+      "pid": 34444,
+      "created": 1793181055.2195659,
+      "exe": "C:\\Program Files\\Go\\pkg\\tool\\windows_amd64\\compile.exe"
+    },
+    {
+      "pid": 11776,
+      "created": 1793181055.3360069,
+      "exe": "C:\\Program Files\\Go\\pkg\\tool\\windows_amd64\\compile.exe"
+    },
+    {
+      "pid": 49408,
+      "created": 1793181055.360073,
+      "exe": "C:\\Program Files\\Go\\pkg\\tool\\windows_amd64\\compile.exe"
+    },
+    {
+      "pid": 44884,
+      "created": 1793181055.376518,
+      "exe": "C:\\Program Files\\Go\\pkg\\tool\\windows_amd64\\compile.exe"
+    },
+    {
+      "pid": 31172,
+      "created": 1793181055.399026,
+      "exe": "C:\\Program Files\\Go\\pkg\\tool\\windows_amd64\\compile.exe"
+    },
+    {
+      "pid": 14188,
+      "created": 1793181055.4325671,
+      "exe": "C:\\Program Files\\Go\\pkg\\tool\\windows_amd64\\compile.exe"
+    },
+    {
+      "pid": 37400,
+      "created": 1793181055.434652,
+      "exe": "C:\\Program Files\\Go\\pkg\\tool\\windows_amd64\\asm.exe"
+    },
+    {
+      "pid": 32232,
+      "created": 1793181055.4417367,
+      "exe": "C:\\Program Files\\Go\\pkg\\tool\\windows_amd64\\compile.exe"
+    },
+    {
+      "pid": 52924,
+      "created": 1793181055.4454083,
+      "exe": "C:\\Program Files\\Go\\pkg\\tool\\windows_amd64\\compile.exe"
+    },
+    {
+      "pid": 24916,
+      "created": 1793181055.493934,
+      "exe": "C:\\Program Files\\Go\\pkg\\tool\\windows_amd64\\compile.exe"
+    },
+    {
+      "pid": 50116,
+      "created": 1793181055.510066,
+      "exe": "C:\\Program Files\\Go\\pkg\\tool\\windows_amd64\\asm.exe"
+    },
+    {
+      "pid": 28212,
+      "created": 1793181055.523814,
+      "exe": "C:\\Program Files\\Go\\pkg\\tool\\windows_amd64\\asm.exe"
+    },
+    {
+      "pid": 50844,
+      "created": 1793181056.0537508,
+      "exe": "D:\\cw\\fp6\\local\\clio-agent\\data\\app\\clio-agent\\.venv\\Scripts\\python.exe"
+    },
+    {
+      "pid": 41180,
+      "created": 1793181056.3704727,
+      "exe": "D:\\cw\\fp6\\local\\clio-agent\\data\\app\\clio-agent\\.venv\\Scripts\\python.exe"
+    },
+    {
+      "pid": 39060,
+      "created": 1793181056.3857005,
+      "exe": "C:\\Python314\\python.exe"
+    },
+    {
+      "pid": 33232,
+      "created": 1793181056.0743744,
+      "exe": "C:\\Windows\\System32\\conhost.exe"
+    },
+    {
+      "pid": 37116,
+      "created": 1793181056.1289108,
+      "exe": "C:\\Python314\\python.exe"
+    },
+    {
+      "pid": 41312,
+      "created": 1793181056.0714366,
+      "exe": "C:\\Program Files\\Go\\pkg\\tool\\windows_amd64\\compile.exe"
+    },
+    {
+      "pid": 50384,
+      "created": 1793181056.7065184,
+      "exe": "D:\\cw\\fp6\\local\\clio-agent\\data\\app\\clio-agent\\.venv\\Scripts\\python.exe"
+    },
+    {
+      "pid": 33356,
+      "created": 1793181056.7225904,
+      "exe": "C:\\Python314\\python.exe"
+    },
+    {
+      "pid": 51980,
+      "created": 1793181059.0538487,
+      "exe": "C:\\Program Files\\Go\\pkg\\tool\\windows_amd64\\compile.exe"
+    },
+    {
+      "pid": 21632,
+      "created": 1793181059.0742884,
+      "exe": "C:\\Program Files\\Go\\pkg\\tool\\windows_amd64\\compile.exe"
+    },
+    {
+      "pid": 52768,
+      "created": 1793181059.1257243,
+      "exe": "C:\\Program Files\\Go\\pkg\\tool\\windows_amd64\\compile.exe"
+    },
+    {
+      "pid": 44368,
+      "created": 1793181059.2813747,
+      "exe": "C:\\Program Files\\Go\\pkg\\tool\\windows_amd64\\asm.exe"
+    },
+    {
+      "pid": 48316,
+      "created": 1793181059.2943957,
+      "exe": "C:\\Program Files\\Go\\pkg\\tool\\windows_amd64\\compile.exe"
+    },
+    {
+      "pid": 36700,
+      "created": 1793181059.3122976,
+      "exe": "C:\\Program Files\\Go\\pkg\\tool\\windows_amd64\\compile.exe"
+    },
+    {
+      "pid": 37812,
+      "created": 1793181059.3274205,
+      "exe": "C:\\Program Files\\Go\\pkg\\tool\\windows_amd64\\compile.exe"
+    },
+    {
+      "pid": 36804,
+      "created": 1793181059.3623133,
+      "exe": "C:\\Program Files\\Go\\pkg\\tool\\windows_amd64\\compile.exe"
+    },
+    {
+      "pid": 36000,
+      "created": 1793181059.377875,
+      "exe": "C:\\Program Files\\Go\\pkg\\tool\\windows_amd64\\compile.exe"
+    },
+    {
+      "pid": 10464,
+      "created": 1793181059.413656,
+      "exe": "C:\\Program Files\\Go\\pkg\\tool\\windows_amd64\\compile.exe"
+    },
+    {
+      "pid": 28360,
+      "created": 1793181060.5264223,
+      "exe": "C:\\Program Files\\Go\\pkg\\tool\\windows_amd64\\compile.exe"
+    },
+    {
+      "pid": 47964,
+      "created": 1793181060.5574467,
+      "exe": "C:\\Program Files\\Go\\pkg\\tool\\windows_amd64\\compile.exe"
+    },
+    {
+      "pid": 51052,
+      "created": 1793181060.5579016,
+      "exe": "C:\\Program Files\\Go\\pkg\\tool\\windows_amd64\\compile.exe"
+    },
+    {
+      "pid": 42820,
+      "created": 1793181060.7087092,
+      "exe": "C:\\Program Files\\Go\\pkg\\tool\\windows_amd64\\compile.exe"
+    },
+    {
+      "pid": 31768,
+      "created": 1793181060.7307756,
+      "exe": "C:\\Program Files\\Go\\pkg\\tool\\windows_amd64\\asm.exe"
+    },
+    {
+      "pid": 9820,
+      "created": 1793181060.7403796,
+      "exe": "C:\\Program Files\\Go\\pkg\\tool\\windows_amd64\\compile.exe"
+    },
+    {
+      "pid": 49860,
+      "created": 1793181060.7409613,
+      "exe": "C:\\Program Files\\Go\\pkg\\tool\\windows_amd64\\compile.exe"
+    },
+    {
+      "pid": 23636,
+      "created": 1793181060.7422807,
+      "exe": "C:\\Program Files\\Go\\pkg\\tool\\windows_amd64\\compile.exe"
+    },
+    {
+      "pid": 48480,
+      "created": 1793181060.7504268,
+      "exe": "C:\\Program Files\\Go\\pkg\\tool\\windows_amd64\\compile.exe"
+    },
+    {
+      "pid": 27780,
+      "created": 1793181060.7602067,
+      "exe": "C:\\Program Files\\Go\\pkg\\tool\\windows_amd64\\compile.exe"
+    },
+    {
+      "pid": 46672,
+      "created": 1793181060.7644546,
+      "exe": "C:\\Program Files\\Go\\pkg\\tool\\windows_amd64\\compile.exe"
+    },
+    {
+      "pid": 36128,
+      "created": 1793181060.8388805,
+      "exe": "C:\\Program Files\\Go\\pkg\\tool\\windows_amd64\\compile.exe"
+    },
+    {
+      "pid": 33988,
+      "created": 1793181060.963333,
+      "exe": "C:\\Program Files\\Go\\pkg\\tool\\windows_amd64\\compile.exe"
+    },
+    {
+      "pid": 9176,
+      "created": 1793181061.471773,
+      "exe": "C:\\Program Files\\Go\\pkg\\tool\\windows_amd64\\compile.exe"
+    },
+    {
+      "pid": 45108,
+      "created": 1793181061.8782997,
+      "exe": "C:\\Program Files\\Go\\pkg\\tool\\windows_amd64\\compile.exe"
+    },
+    {
+      "pid": 48660,
+      "created": 1793181062.0243857,
+      "exe": "C:\\Program Files\\Go\\pkg\\tool\\windows_amd64\\asm.exe"
+    },
+    {
+      "pid": 38100,
+      "created": 1793181062.0469823,
+      "exe": "C:\\Program Files\\Go\\pkg\\tool\\windows_amd64\\asm.exe"
+    },
+    {
+      "pid": 37748,
+      "created": 1793181062.1181147,
+      "exe": "C:\\Program Files\\Go\\pkg\\tool\\windows_amd64\\asm.exe"
+    },
+    {
+      "pid": 43880,
+      "created": 1793181062.144614,
+      "exe": "C:\\Program Files\\Go\\pkg\\tool\\windows_amd64\\compile.exe"
+    },
+    {
+      "pid": 33952,
+      "created": 1793181062.1580627,
+      "exe": "C:\\Program Files\\Go\\pkg\\tool\\windows_amd64\\compile.exe"
+    },
+    {
+      "pid": 34356,
+      "created": 1793181062.1739552,
+      "exe": "C:\\Program Files\\Go\\pkg\\tool\\windows_amd64\\compile.exe"
+    },
+    {
+      "pid": 17476,
+      "created": 1793181062.1738727,
+      "exe": "C:\\Program Files\\Go\\pkg\\tool\\windows_amd64\\compile.exe"
+    },
+    {
+      "pid": 52152,
+      "created": 1793181062.748844,
+      "exe": "C:\\Program Files\\Go\\pkg\\tool\\windows_amd64\\compile.exe"
+    },
+    {
+      "pid": 43632,
+      "created": 1793181063.009201,
+      "exe": "C:\\Program Files\\Go\\pkg\\tool\\windows_amd64\\compile.exe"
+    },
+    {
+      "pid": 37976,
+      "created": 1793181063.0118093,
+      "exe": "C:\\Program Files\\Go\\pkg\\tool\\windows_amd64\\compile.exe"
+    },
+    {
+      "pid": 2148,
+      "created": 1793181063.097944,
+      "exe": "C:\\Program Files\\Go\\pkg\\tool\\windows_amd64\\compile.exe"
+    },
+    {
+      "pid": 25024,
+      "created": 1793181063.2273972,
+      "exe": "C:\\Program Files\\Go\\pkg\\tool\\windows_amd64\\compile.exe"
+    },
+    {
+      "pid": 19792,
+      "created": 1793181063.2625,
+      "exe": "C:\\Program Files\\Go\\pkg\\tool\\windows_amd64\\compile.exe"
+    },
+    {
+      "pid": 35744,
+      "created": 1793181063.3088913,
+      "exe": "C:\\Program Files\\Go\\pkg\\tool\\windows_amd64\\compile.exe"
+    },
+    {
+      "pid": 38864,
+      "created": 1793181063.312815,
+      "exe": "C:\\Program Files\\Go\\pkg\\tool\\windows_amd64\\compile.exe"
+    },
+    {
+      "pid": 50720,
+      "created": 1793181063.3179111,
+      "exe": "C:\\Program Files\\Go\\pkg\\tool\\windows_amd64\\compile.exe"
+    },
+    {
+      "pid": 43548,
+      "created": 1793181063.35942,
+      "exe": "C:\\Program Files\\Go\\pkg\\tool\\windows_amd64\\compile.exe"
+    },
+    {
+      "pid": 6412,
+      "created": 1793181064.4848952,
+      "exe": "D:\\cw\\fp6\\local\\clio-agent\\data\\app\\clio-agent\\.venv\\Lib\\site-packages\\iowarp_core\\bin\\clio_run.exe"
+    },
+    {
+      "pid": 23764,
+      "created": 1793181064.4993556,
+      "exe": "C:\\Windows\\System32\\conhost.exe"
+    },
+    {
+      "pid": 23208,
+      "created": 1793181064.3152432,
+      "exe": "C:\\Program Files\\Go\\pkg\\tool\\windows_amd64\\compile.exe"
+    },
+    {
+      "pid": 42888,
+      "created": 1793181064.3332355,
+      "exe": "C:\\Program Files\\Go\\pkg\\tool\\windows_amd64\\compile.exe"
+    },
+    {
+      "pid": 38836,
+      "created": 1793181064.999958,
+      "exe": "C:\\Program Files\\Go\\pkg\\tool\\windows_amd64\\compile.exe"
+    },
+    {
+      "pid": 33056,
+      "created": 1793181065.0092237,
+      "exe": "C:\\Program Files\\Go\\pkg\\tool\\windows_amd64\\compile.exe"
+    },
+    {
+      "pid": 45572,
+      "created": 1793181065.01422,
+      "exe": "C:\\Program Files\\Go\\pkg\\tool\\windows_amd64\\compile.exe"
+    },
+    {
+      "pid": 28780,
+      "created": 1793181065.0412378,
+      "exe": "C:\\Program Files\\Go\\pkg\\tool\\windows_amd64\\compile.exe"
+    },
+    {
+      "pid": 38432,
+      "created": 1793181065.1825073,
+      "exe": "D:\\cw\\fp6\\local\\clio-agent\\data\\app\\clio-agent\\.venv\\Scripts\\python.exe"
+    },
+    {
+      "pid": 23476,
+      "created": 1793181065.1406083,
+      "exe": "C:\\Program Files\\Go\\pkg\\tool\\windows_amd64\\compile.exe"
+    },
+    {
+      "pid": 48676,
+      "created": 1793181066.1568427,
+      "exe": "C:\\Program Files\\Go\\pkg\\tool\\windows_amd64\\compile.exe"
+    },
+    {
+      "pid": 31960,
+      "created": 1793181066.3472943,
+      "exe": "C:\\Program Files\\Go\\pkg\\tool\\windows_amd64\\compile.exe"
+    },
+    {
+      "pid": 43240,
+      "created": 1793181066.3556986,
+      "exe": "C:\\Program Files\\Go\\pkg\\tool\\windows_amd64\\compile.exe"
+    },
+    {
+      "pid": 46104,
+      "created": 1793181067.0329545,
+      "exe": "C:\\Program Files\\Go\\pkg\\tool\\windows_amd64\\compile.exe"
+    },
+    {
+      "pid": 36976,
+      "created": 1793181067.211293,
+      "exe": "C:\\Program Files\\Go\\pkg\\tool\\windows_amd64\\compile.exe"
+    },
+    {
+      "pid": 32124,
+      "created": 1793181067.3844097,
+      "exe": "C:\\Program Files\\Go\\pkg\\tool\\windows_amd64\\compile.exe"
+    },
+    {
+      "pid": 27440,
+      "created": 1793181067.3845506,
+      "exe": "C:\\Program Files\\Go\\pkg\\tool\\windows_amd64\\compile.exe"
+    },
+    {
+      "pid": 36504,
+      "created": 1793181067.4355948,
+      "exe": "C:\\Program Files\\Go\\pkg\\tool\\windows_amd64\\compile.exe"
+    },
+    {
+      "pid": 41536,
+      "created": 1793181067.450487,
+      "exe": "C:\\Program Files\\Go\\pkg\\tool\\windows_amd64\\compile.exe"
+    },
+    {
+      "pid": 28528,
+      "created": 1793181068.1622512,
+      "exe": "C:\\Program Files\\Go\\pkg\\tool\\windows_amd64\\compile.exe"
+    },
+    {
+      "pid": 39120,
+      "created": 1793181068.5231392,
+      "exe": "C:\\Program Files\\Go\\pkg\\tool\\windows_amd64\\compile.exe"
+    },
+    {
+      "pid": 25392,
+      "created": 1793181068.67848,
+      "exe": "C:\\Program Files\\Go\\pkg\\tool\\windows_amd64\\compile.exe"
+    },
+    {
+      "pid": 31256,
+      "created": 1793181068.8801072,
+      "exe": "C:\\Program Files\\Go\\pkg\\tool\\windows_amd64\\compile.exe"
+    },
+    {
+      "pid": 32024,
+      "created": 1793181068.9052994,
+      "exe": "C:\\Program Files\\Go\\pkg\\tool\\windows_amd64\\asm.exe"
+    },
+    {
+      "pid": 43156,
+      "created": 1793181069.0572877,
+      "exe": "C:\\Program Files\\Go\\pkg\\tool\\windows_amd64\\compile.exe"
+    },
+    {
+      "pid": 44856,
+      "created": 1793181069.070451,
+      "exe": "C:\\Program Files\\Go\\pkg\\tool\\windows_amd64\\compile.exe"
+    },
+    {
+      "pid": 21108,
+      "created": 1793181069.9361312,
+      "exe": "C:\\Program Files\\Go\\pkg\\tool\\windows_amd64\\compile.exe"
+    },
+    {
+      "pid": 44892,
+      "created": 1793181070.1336963,
+      "exe": "C:\\Program Files\\Go\\pkg\\tool\\windows_amd64\\asm.exe"
+    },
+    {
+      "pid": 45748,
+      "created": 1793181073.9900634,
+      "exe": "C:\\Program Files\\Go\\pkg\\tool\\windows_amd64\\compile.exe"
+    },
+    {
+      "pid": 44320,
+      "created": 1793181074.1063359,
+      "exe": "C:\\Program Files\\Go\\pkg\\tool\\windows_amd64\\compile.exe"
+    },
+    {
+      "pid": 29044,
+      "created": 1793181074.1313455,
+      "exe": "C:\\Program Files\\Go\\pkg\\tool\\windows_amd64\\compile.exe"
+    },
+    {
+      "pid": 18712,
+      "created": 1793181074.151424,
+      "exe": "C:\\Program Files\\Go\\pkg\\tool\\windows_amd64\\compile.exe"
+    },
+    {
+      "pid": 47816,
+      "created": 1793181074.152661,
+      "exe": "C:\\Program Files\\Go\\pkg\\tool\\windows_amd64\\asm.exe"
+    },
+    {
+      "pid": 10608,
+      "created": 1793181074.1597035,
+      "exe": "C:\\Program Files\\Go\\pkg\\tool\\windows_amd64\\compile.exe"
+    },
+    {
+      "pid": 36868,
+      "created": 1793181074.1813152,
+      "exe": "C:\\Program Files\\Go\\pkg\\tool\\windows_amd64\\compile.exe"
+    },
+    {
+      "pid": 29436,
+      "created": 1793181074.2054307,
+      "exe": "C:\\Program Files\\Go\\pkg\\tool\\windows_amd64\\compile.exe"
+    },
+    {
+      "pid": 42312,
+      "created": 1793181074.237565,
+      "exe": "C:\\Program Files\\Go\\pkg\\tool\\windows_amd64\\compile.exe"
+    },
+    {
+      "pid": 42756,
+      "created": 1793181074.2953882,
+      "exe": "C:\\Program Files\\Go\\pkg\\tool\\windows_amd64\\compile.exe"
+    },
+    {
+      "pid": 31688,
+      "created": 1793181074.3516924,
+      "exe": "C:\\Program Files\\Go\\pkg\\tool\\windows_amd64\\compile.exe"
+    },
+    {
+      "pid": 52204,
+      "created": 1793181074.4594202,
+      "exe": "C:\\Program Files\\Go\\pkg\\tool\\windows_amd64\\compile.exe"
+    },
+    {
+      "pid": 17828,
+      "created": 1793181074.4637537,
+      "exe": "C:\\Program Files\\Go\\pkg\\tool\\windows_amd64\\compile.exe"
+    },
+    {
+      "pid": 11092,
+      "created": 1793181074.4904792,
+      "exe": "C:\\Program Files\\Go\\pkg\\tool\\windows_amd64\\compile.exe"
+    },
+    {
+      "pid": 36896,
+      "created": 1793181074.5021927,
+      "exe": "C:\\Program Files\\Go\\pkg\\tool\\windows_amd64\\compile.exe"
+    },
+    {
+      "pid": 2724,
+      "created": 1793181074.5261612,
+      "exe": "C:\\Program Files\\Go\\pkg\\tool\\windows_amd64\\compile.exe"
+    },
+    {
+      "pid": 28820,
+      "created": 1793181074.537927,
+      "exe": "C:\\Program Files\\Go\\pkg\\tool\\windows_amd64\\compile.exe"
+    },
+    {
+      "pid": 47272,
+      "created": 1793181075.7318797,
+      "exe": "D:\\cw\\fp6\\local\\clio-agent\\data\\app\\clio-agent\\.venv\\Lib\\site-packages\\iowarp_core\\bin\\clio_run.exe"
+    },
+    {
+      "pid": 44044,
+      "created": 1793181074.6911776,
+      "exe": "C:\\Program Files\\Go\\pkg\\tool\\windows_amd64\\compile.exe"
+    },
+    {
+      "pid": 7044,
+      "created": 1793181074.8499131,
+      "exe": "C:\\Program Files\\Go\\pkg\\tool\\windows_amd64\\compile.exe"
+    },
+    {
+      "pid": 2180,
+      "created": 1793181074.902712,
+      "exe": "C:\\Program Files\\Go\\pkg\\tool\\windows_amd64\\compile.exe"
+    },
+    {
+      "pid": 37144,
+      "created": 1793181074.9784,
+      "exe": "C:\\Program Files\\Go\\pkg\\tool\\windows_amd64\\compile.exe"
+    },
+    {
+      "pid": 37404,
+      "created": 1793181075.0618136,
+      "exe": "C:\\Program Files\\Go\\pkg\\tool\\windows_amd64\\compile.exe"
+    },
+    {
+      "pid": 20300,
+      "created": 1793181075.0762758,
+      "exe": "C:\\Program Files\\Go\\pkg\\tool\\windows_amd64\\compile.exe"
+    },
+    {
+      "pid": 3000,
+      "created": 1793181075.0801558,
+      "exe": "C:\\Program Files\\Go\\pkg\\tool\\windows_amd64\\compile.exe"
+    },
+    {
+      "pid": 47300,
+      "created": 1793181075.1061082,
+      "exe": "C:\\Program Files\\Go\\pkg\\tool\\windows_amd64\\compile.exe"
+    },
+    {
+      "pid": 29620,
+      "created": 1793181075.1065636,
+      "exe": "C:\\Program Files\\Go\\pkg\\tool\\windows_amd64\\compile.exe"
+    },
+    {
+      "pid": 20100,
+      "created": 1793181075.1633873,
+      "exe": "C:\\Program Files\\Go\\pkg\\tool\\windows_amd64\\compile.exe"
+    },
+    {
+      "pid": 45148,
+      "created": 1793181075.5757587,
+      "exe": "C:\\Program Files\\Go\\pkg\\tool\\windows_amd64\\compile.exe"
+    },
+    {
+      "pid": 31172,
+      "created": 1793181075.3374133,
+      "exe": "D:\\cw\\fp6\\local\\clio-agent\\cache\\document-office\\office-extract-ov6ju605\\image\\program\\soffice.com"
+    },
+    {
+      "pid": 23976,
+      "created": 1793181075.354278,
+      "exe": "C:\\Windows\\System32\\conhost.exe"
+    },
+    {
+      "pid": 53168,
+      "created": 1793181075.421101,
+      "exe": "D:\\cw\\fp6\\local\\clio-agent\\cache\\document-office\\office-extract-ov6ju605\\image\\program\\soffice.bin"
+    },
+    {
+      "pid": 44916,
+      "created": 1793181076.492725,
+      "exe": "C:\\Program Files\\Go\\pkg\\tool\\windows_amd64\\compile.exe"
+    },
+    {
+      "pid": 19472,
+      "created": 1793181076.6405149,
+      "exe": "C:\\Program Files\\Go\\pkg\\tool\\windows_amd64\\compile.exe"
+    },
+    {
+      "pid": 44952,
+      "created": 1793181076.705348,
+      "exe": "C:\\Program Files\\Go\\pkg\\tool\\windows_amd64\\compile.exe"
+    },
+    {
+      "pid": 13452,
+      "created": 1793181077.145455,
+      "exe": "C:\\Program Files\\Go\\pkg\\tool\\windows_amd64\\compile.exe"
+    },
+    {
+      "pid": 41272,
+      "created": 1793181077.1695309,
+      "exe": "C:\\Program Files\\Go\\pkg\\tool\\windows_amd64\\compile.exe"
+    },
+    {
+      "pid": 24592,
+      "created": 1793181077.3135302,
+      "exe": "C:\\Program Files\\Go\\pkg\\tool\\windows_amd64\\compile.exe"
+    },
+    {
+      "pid": 44652,
+      "created": 1793181077.388022,
+      "exe": "C:\\Program Files\\Go\\pkg\\tool\\windows_amd64\\compile.exe"
+    },
+    {
+      "pid": 11976,
+      "created": 1793181078.468624,
+      "exe": "C:\\Program Files\\Go\\pkg\\tool\\windows_amd64\\compile.exe"
+    },
+    {
+      "pid": 15788,
+      "created": 1793181078.50111,
+      "exe": "C:\\Program Files\\Go\\pkg\\tool\\windows_amd64\\compile.exe"
+    },
+    {
+      "pid": 31080,
+      "created": 1793181078.5622933,
+      "exe": "C:\\Program Files\\Go\\pkg\\tool\\windows_amd64\\compile.exe"
+    },
+    {
+      "pid": 38324,
+      "created": 1793181078.5899339,
+      "exe": "C:\\Program Files\\Go\\pkg\\tool\\windows_amd64\\compile.exe"
+    },
+    {
+      "pid": 43048,
+      "created": 1793181078.6141415,
+      "exe": "C:\\Program Files\\Go\\pkg\\tool\\windows_amd64\\compile.exe"
+    },
+    {
+      "pid": 43952,
+      "created": 1793181078.663488,
+      "exe": "C:\\Program Files\\Go\\pkg\\tool\\windows_amd64\\compile.exe"
+    },
+    {
+      "pid": 41060,
+      "created": 1793181078.737634,
+      "exe": "C:\\Program Files\\Go\\pkg\\tool\\windows_amd64\\compile.exe"
+    },
+    {
+      "pid": 41232,
+      "created": 1793181078.7443173,
+      "exe": "C:\\Program Files\\Go\\pkg\\tool\\windows_amd64\\compile.exe"
+    },
+    {
+      "pid": 49964,
+      "created": 1793181078.8622336,
+      "exe": "C:\\Program Files\\Go\\pkg\\tool\\windows_amd64\\compile.exe"
+    },
+    {
+      "pid": 45796,
+      "created": 1793181079.942802,
+      "exe": "C:\\Program Files\\Go\\pkg\\tool\\windows_amd64\\compile.exe"
+    },
+    {
+      "pid": 36804,
+      "created": 1793181079.9486198,
+      "exe": "C:\\Program Files\\Go\\pkg\\tool\\windows_amd64\\compile.exe"
+    },
+    {
+      "pid": 38524,
+      "created": 1793181080.2416432,
+      "exe": "C:\\Program Files\\Go\\pkg\\tool\\windows_amd64\\compile.exe"
+    },
+    {
+      "pid": 50088,
+      "created": 1793181080.243066,
+      "exe": "C:\\Program Files\\Go\\pkg\\tool\\windows_amd64\\compile.exe"
+    },
+    {
+      "pid": 26252,
+      "created": 1793181080.326033,
+      "exe": "C:\\Program Files\\Go\\pkg\\tool\\windows_amd64\\compile.exe"
+    },
+    {
+      "pid": 42808,
+      "created": 1793181081.4888427,
+      "exe": "C:\\Program Files\\Go\\pkg\\tool\\windows_amd64\\compile.exe"
+    },
+    {
+      "pid": 49860,
+      "created": 1793181081.4925783,
+      "exe": "C:\\Program Files\\Go\\pkg\\tool\\windows_amd64\\compile.exe"
+    },
+    {
+      "pid": 43220,
+      "created": 1793181081.796957,
+      "exe": "C:\\Program Files\\Go\\pkg\\tool\\windows_amd64\\compile.exe"
+    },
+    {
+      "pid": 39196,
+      "created": 1793181085.3909914,
+      "exe": "C:\\Program Files\\Go\\pkg\\tool\\windows_amd64\\link.exe"
+    },
+    {
+      "pid": 50652,
+      "created": 1793181087.7734404,
+      "exe": "D:\\cw\\fp6\\local\\clio-agent\\data\\app\\clio-agent\\.venv\\Scripts\\python.exe"
+    },
+    {
+      "pid": 29952,
+      "created": 1793181087.784096,
+      "exe": "C:\\Python314\\python.exe"
+    },
+    {
+      "pid": 18588,
+      "created": 1793181088.5067585,
+      "exe": "C:\\Program Files\\Git\\usr\\bin\\bash.exe"
+    },
+    {
+      "pid": 38100,
+      "created": 1793181089.135032,
+      "exe": "D:\\cw\\fp6\\local\\clio-agent\\cache\\document-office\\26.2.6\\program\\soffice.com"
+    },
+    {
+      "pid": 30716,
+      "created": 1793181089.2693622,
+      "exe": "D:\\cw\\fp6\\local\\clio-agent\\cache\\document-runtime\\68fd91e579837b59bebd\\python\\Scripts\\python.exe"
+    },
+    {
+      "pid": 27396,
+      "created": 1793181089.2854202,
+      "exe": "C:\\Windows\\System32\\conhost.exe"
+    },
+    {
+      "pid": 47152,
+      "created": 1793181089.3064487,
+      "exe": "C:\\Python314\\python.exe"
+    },
+    {
+      "pid": 34920,
+      "created": 1793181089.148443,
+      "exe": "C:\\Windows\\System32\\conhost.exe"
+    },
+    {
+      "pid": 50480,
+      "created": 1793181089.1756368,
+      "exe": "D:\\cw\\fp6\\local\\clio-agent\\cache\\document-office\\26.2.6\\program\\soffice.bin"
+    },
+    {
+      "pid": 22656,
+      "created": 1793181089.2734487,
+      "exe": "C:\\Program Files\\Git\\usr\\bin\\bash.exe"
+    },
+    {
+      "pid": 43796,
+      "created": 1793181091.4515588,
+      "exe": "D:\\cw\\fp6\\local\\clio-agent\\cache\\document-office\\26.2.6\\program\\soffice.com"
+    },
+    {
+      "pid": 31520,
+      "created": 1793181091.4581604,
+      "exe": "C:\\Windows\\System32\\conhost.exe"
+    },
+    {
+      "pid": 49396,
+      "created": 1793181091.4799857,
+      "exe": "D:\\cw\\fp6\\local\\clio-agent\\cache\\document-office\\26.2.6\\program\\soffice.bin"
+    },
+    {
+      "pid": 8772,
+      "created": 1793181094.6095984,
+      "exe": "D:\\cw\\fp6\\local\\clio-agent\\cache\\document-runtime\\68fd91e579837b59bebd\\python\\Lib\\site-packages\\nodejs_wheel\\node.exe"
+    },
+    {
+      "pid": 20860,
+      "created": 1793181094.6171436,
+      "exe": "C:\\Windows\\System32\\conhost.exe"
+    },
+    {
+      "pid": 35692,
+      "created": 1793181094.69451,
+      "exe": "D:\\cw\\fp6\\local\\clio-agent\\cache\\document-runtime\\68fd91e579837b59bebd\\javascript-tools\\node_modules\\@pnpm\\exe.win32-x64\\pnpm.exe"
+    },
+    {
+      "pid": 38376,
+      "created": 1793181096.1842644,
+      "exe": "D:\\cw\\fp6\\local\\clio-agent\\data\\app\\clio-agent\\.venv\\Lib\\site-packages\\codex_cli_bin\\bin\\codex.exe"
+    },
+    {
+      "pid": 53216,
+      "created": 1793181096.1945999,
+      "exe": "C:\\Windows\\System32\\conhost.exe"
+    },
+    {
+      "pid": 28912,
+      "created": 1793181096.4605033,
+      "exe": "D:\\cw\\fp6\\local\\clio-agent\\data\\app\\clio-agent\\.venv\\Lib\\site-packages\\codex_cli_bin\\bin\\codex.exe"
+    },
+    {
+      "pid": 26708,
+      "created": 1793181099.182004,
+      "exe": "D:\\cw\\fp6\\bin\\uv.exe"
+    }
+  ],
+  "survivors": []
+}

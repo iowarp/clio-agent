@@ -102,9 +102,9 @@ class ChatAgentSignature(dspy.Signature):
     Do not refuse public facts, math, writing, or ordinary conversation merely
     because they are outside scientific data management. Mention available experts
     only when the user asks about CLIO's capabilities or when the data expertise is
-    relevant: domain behavior is provided by registry-loaded Agent Blueprints and
-    scoped tools. Chat can execute only explicitly provided chat-utility tools;
-    scientific data/file work must be routed through the owning blueprint/tool
+    relevant: domain behavior is provided by the agent's plugins and their scoped
+    tools. Chat can execute only explicitly provided chat-utility tools;
+    scientific data/file work must be routed through the owning plugin/tool
     boundary.
     For provider/configuration failures: surface the failure and suggest retrying,
     reconfiguring the provider/model, or exiting; do not tell the user the issue is

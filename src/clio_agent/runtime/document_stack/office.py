@@ -6,11 +6,9 @@ import hashlib
 import http.client
 import io
 import logging
-import os
 import platform
 import shutil
 import ssl
-import subprocess
 import sysconfig
 import tarfile
 import tempfile
@@ -25,10 +23,10 @@ from filelock import FileLock
 
 if TYPE_CHECKING or __package__:
     from . import office_compat
-    from .process import DocumentError, inherit_parent_access, run
+    from .process import DocumentError, _cleanup_profile, inherit_parent_access, run
 else:
     import office_compat
-    from process import DocumentError, inherit_parent_access, run
+    from process import DocumentError, _cleanup_profile, inherit_parent_access, run
 
 VERSION = "26.2.6"
 # Published by The Document Foundation at each download URL's .sha256 endpoint.
@@ -210,21 +208,10 @@ def _extract_linux(archive: Path, root: Path) -> None:
 
 def _extract(archive: Path, root: Path) -> None:
     if platform.system() == "Windows":
-        msiexec = Path(os.environ.get("SystemRoot", "C:/Windows")) / "System32" / "msiexec.exe"
-        # /a builds an administrative IMAGE; /qn neither installs nor opens UI.
-        command = [str(msiexec), "/a", str(archive), "/qn", "/norestart"]
-        # Windows Installer requires PROPERTY="value with spaces". Python's
-        # standard argv serializer emits "PROPERTY=value with spaces", which
-        # msiexec rejects with 1639 and a help dialog even when /qn is present.
-        if '"' in str(root) or "\0" in str(root):
-            raise DocumentError("Invalid private LibreOffice extraction path")
-        command_line = subprocess.list2cmdline(command) + f' TARGETDIR="{root}"'
-        run(
-            [*command, f"TARGETDIR={root}"],
-            cwd=root,
-            timeout=300,
-            windows_command_line=command_line,
-        )
+        from importlib import import_module
+
+        module = import_module(f"{__package__}.windows_msi" if __package__ else "windows_msi")
+        module.extract_application(archive, root)
     elif platform.system() == "Darwin":
         with tempfile.TemporaryDirectory(dir=root.parent) as temporary:
             mount = Path(temporary)
@@ -249,11 +236,32 @@ def _extract(archive: Path, root: Path) -> None:
         _extract_linux(archive, root)
 
 
+def _verify_office(executable_path: Path, *, cwd: Path) -> None:
+    """Probe without joining another Office instance or touching the user's profile."""
+    temporary = tempfile.TemporaryDirectory(prefix="lo-version-")
+    try:
+        profile = Path(temporary.name).resolve() / "profile"
+        run(
+            [
+                str(executable_path),
+                f"-env:UserInstallation={profile.as_uri()}",
+                "--headless",
+                "--nologo",
+                "--norestore",
+                "--version",
+            ],
+            cwd=cwd,
+            timeout=30,
+        )
+    finally:
+        _cleanup_profile(temporary)
+
+
 def ensure_office(root: Path) -> str:
     """Download, verify and extract the renderer once under an owned cache root.
 
-    The tree includes LibreOffice's license/notices. Linux still needs the OS
-    runtime libraries required by LibreOffice; a missing library is a typed error.
+    The tree includes LibreOffice's license/notices. On Linux, Office runs on its
+    own pinned userland (``office_compat``), so it needs nothing from the host.
     """
     root = root.resolve()
     root.parent.mkdir(parents=True, exist_ok=True)
@@ -268,7 +276,7 @@ def ensure_office(root: Path) -> str:
                         "Private LibreOffice launcher disappeared during preparation"
                     )
             inherit_parent_access(root)
-            run([str(existing), "--version"], cwd=root, timeout=30)
+            _verify_office(existing, cwd=root)
             return str(existing)
         url, name, checksum = asset()
         downloads = root.parent / "downloads"
@@ -295,7 +303,7 @@ def ensure_office(root: Path) -> str:
                 candidate = executable(image)
                 if candidate is None:
                     raise DocumentError("LibreOffice image contains no supported executable")
-                run([str(candidate), "--version"], cwd=image, timeout=30)
+                _verify_office(candidate, cwd=image)
                 if root.exists():
                     raise DocumentError(
                         f"Incomplete renderer cache at {root}; remove it before retrying"

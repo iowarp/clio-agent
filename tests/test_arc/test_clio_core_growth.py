@@ -77,6 +77,7 @@ def store(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Any:
             file_tier=_cte_yaml_path(tmp_path / "storage.bin"),
             file_capacity="8MB",
             metadata_log=_cte_yaml_path(tmp_path / "metadata.log"),
+            indexer="",
         ),
         encoding="utf-8",
     )
@@ -198,3 +199,73 @@ def test_concurrent_refusals_add_one_target(store: Any) -> None:
         )
     assert results.count(True) == 1
     assert len(store._client.registered) == 1
+
+
+def _pre_durability_seed(config: Path) -> str:
+    """The seed as CLIO wrote it before the durable file tier, enrolled for growth."""
+    from clio_agent.arc.clio_core_durability import _PERSISTENCE_LINE
+
+    text = config.read_text()
+    assert _PERSISTENCE_LINE in text
+    old = text.replace(_PERSISTENCE_LINE, "", 1)
+    config.write_text(old)
+    growth.initialize_managed_capacity(config)
+    return old
+
+
+def test_clios_own_durability_upgrade_keeps_growth(store: Any) -> None:
+    """Live (#1846): the in-place upgrade changed the config CLIO had enrolled, growth
+    then took it for a person's edit, and the full store stopped the server booting."""
+    from clio_agent.arc.clio_core_durability import ensure_seeded_config_durable
+
+    config = Path(store._config_path)
+    _pre_durability_seed(config)
+    ensure_seeded_config_durable(config)
+    assert growth.recover_capacity(store, "tag", "record", 1024)
+
+
+def test_a_config_upgraded_before_this_fix_recovers(store: Any) -> None:
+    config = Path(store._config_path)
+    old = _pre_durability_seed(config)
+    from clio_agent.arc.clio_core_durability import _PERSISTENCE_LINE
+
+    config.write_text(
+        old.replace("        score: 1.0\n", "        score: 1.0\n" + _PERSISTENCE_LINE, 1)
+    )
+    assert growth.recover_capacity(store, "tag", "record", 1024)
+
+
+def test_a_person_s_edit_after_the_upgrade_still_opts_out(store: Any) -> None:
+    from clio_agent.arc.clio_core_durability import ensure_seeded_config_durable
+
+    config = Path(store._config_path)
+    _pre_durability_seed(config)
+    ensure_seeded_config_durable(config)
+    config.write_text(config.read_text().replace("8MB", "16MB"))
+    assert not growth.recover_capacity(store, "tag", "record", 1024)
+    assert not store._client.registered
+
+
+def test_clios_own_indexer_upgrade_keeps_growth(store: Any, tmp_path: Path) -> None:
+    """Live (q13): the in-place indexer upgrade disabled growth the same way."""
+    from clio_agent.arc.clio_core_indexer import ensure_seeded_config_indexed
+
+    ensure_seeded_config_indexed(Path(store._config_path), tmp_path / "index.log")
+    assert growth.recover_capacity(store, "tag", "record", 1024)
+
+
+def test_a_config_given_the_indexer_before_this_fix_recovers(store: Any, tmp_path: Path) -> None:
+    from clio_agent.arc.clio_core_indexer import indexer_block
+
+    config = Path(store._config_path)
+    config.write_text(config.read_text() + indexer_block((tmp_path / "index.log").as_posix()))
+    assert growth.recover_capacity(store, "tag", "record", 1024)
+
+
+def test_an_edited_indexer_entry_still_opts_out(store: Any, tmp_path: Path) -> None:
+    from clio_agent.arc.clio_core_indexer import indexer_block
+
+    config = Path(store._config_path)
+    block = indexer_block((tmp_path / "index.log").as_posix()).replace("local", "dynamic", 1)
+    config.write_text(config.read_text() + block)
+    assert not growth.recover_capacity(store, "tag", "record", 1024)

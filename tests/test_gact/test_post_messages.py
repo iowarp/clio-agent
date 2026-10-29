@@ -31,12 +31,42 @@ from clio_agent.gact.providers.config import _effective_lm_config
 from clio_agent.gact.sessions import SessionStore
 from tests._config_layer import set_config
 from tests._harness import emit_live_text, runner_module_builder
+from tests._plugin_fixtures import custom_marketplace
 from tests.turn_signals import TURN_SIGNAL_BACKSTOP_S, wait_for_terminal_status
 
-# #948 S4b: default sessions run the blueprint react ``main``; route it to each
+# Default sessions run their plugin agent (clio/standard); route it to each
 # test's ``build_app(agent=...)`` host fake (agent=None ingress paths return their
 # structured 503 before any module is built, so they are unaffected).
 pytestmark = pytest.mark.usefixtures("host_agent_executor")
+
+
+REVIEWER_AGENT = """
+from clio_agent.sdk import Agent
+
+
+class Reviewer(Agent):
+    id = "reviewer"
+    version = "1.0.0"
+    name = "Reviewer"
+    role = "a careful code reviewer"
+    description = "Reviews code changes, code review"
+    plugins = Agent.plugins + ["workspace"]
+"""
+
+#: The turn builds the session agent's module through this seam.
+BUILD = "clio_agent.gact.agents.builders.build_agent_module"
+
+
+def _reviewer_marketplace(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    custom_marketplace(tmp_path, monkeypatch, agents={"reviewer.py": REVIEWER_AGENT})
+
+
+def _agent_session(client: TestClient, agent_ref: str) -> str:
+    response = client.post(
+        "/v1/sessions", json={"title": "x", "metadata": {"agent_ref": agent_ref}}
+    )
+    assert response.status_code in (200, 201), response.text
+    return response.json()["id"]
 
 
 @dataclass
@@ -253,7 +283,7 @@ def test_post_message_happy_path(client: TestClient, fake_agent: FakeClioAgent) 
     # The routing decision is attributed to the orchestrator (the decider), while
     # the answer text part carries the responding expert's agent_id so a client
     # can attribute every part to its source without inference.
-    assert routing_events[0].payload["actor"]["agent_id"] == "main"
+    assert routing_events[0].payload["actor"]["agent_id"] == "standard"
     assert routing_events[0].payload["subject"]["selected_agent"] == "code_expert"
     assert a["parts"][0]["text"] == "hello from fake"
     assert a["parts"][0]["agent_id"] == "code_expert"
@@ -456,7 +486,7 @@ def test_post_message_dispatches_image_parts_to_image_aware_agent(tmp_path: Path
     assert assistant["parts"][-1]["text"] == "image seen"
     assert fake_agent.calls == [("describe this image", sid)]
     # The turn hands the native images to the built module's ``forward(images=)``
-    # (the blueprint modules declare it); the host fake stands in for that module,
+    # (the plugin agent module declares it); the host fake stands in for that module,
     # so it receives the one decoded image exactly once.
     assert len(fake_agent.image_calls) == 1
     assert len(fake_agent.image_calls[0]) == 1
@@ -496,7 +526,7 @@ def test_running_turn_persists_exact_user_message_count(tmp_path: Path) -> None:
         assert agent.entered.wait(TURN_SIGNAL_BACKSTOP_S), "turn never reached the agent"
 
         running = client.get(f"/v1/sessions/{sid}").json()
-        cold_running = SessionStore(sessions_path).get(sid)
+        cold_running = SessionStore(sessions_path, store=app.state.arc._store).get(sid)
         assert running["status"] == "running"
         assert running["message_count"] == 1
         assert cold_running is not None
@@ -677,6 +707,13 @@ def test_post_message_agent_exception_populates_error_info(
         err = a["error_info"]
         assert err["error"] == "agent_error"
         assert "simulated agent failure" in err["message"]
+        events = c.get(f"/v1/sessions/{sid}/trace").json()["events"]
+        invocation_terminal = [
+            event for event in events if event["event_type"] == "agent.invocation.failed"
+        ]
+        assert len(invocation_terminal) == 1
+        assert invocation_terminal[0]["turn_id"] == a["turn_id"]
+        assert invocation_terminal[0]["actor"]["agent_id"]
         # Session left in error state.
         sess = c.get(f"/v1/sessions/{sid}").json()
         assert sess["status"] == "error"
@@ -886,124 +923,7 @@ def test_post_message_empty_prediction_without_error_info_sets_error_turn(
     assert sess["status"] == "error"
 
 
-def test_post_message_unsupported_session_agent_sets_error_turn(
-    tmp_path: Path,
-) -> None:
-    from .conftest import complete_turn
-
-    agent = FakeClioAgent(answer="should not run")
-    app = build_app(sessions_path=tmp_path / "s.json", agent=agent)
-    with TestClient(app) as c:
-        sid = c.post(
-            "/v1/sessions",
-            json={"title": "x", "agent": {"id": "code_reviewer"}},
-        ).json()["id"]
-        assistant = complete_turn(c, sid, "hi")
-        sess = c.get(f"/v1/sessions/{sid}").json()
-
-    assert agent.calls == []
-    assert assistant["stop_reason"] == "error"
-    assert assistant["error_info"]["error"] == "not_implemented"
-    assert assistant["error_info"]["details"]["agent_id"] == "code_reviewer"
-    # No parts: the routing decision is a semantic event (a0e1d9a9); the
-    # selected-agent fact rides that event.
-    assert assistant["parts"] == []
-    routing_events = _routing_decision_events(app, sid)
-    assert len(routing_events) == 1
-    assert routing_events[0].payload["payload"]["selected_agent"] == "code_reviewer"
-    assert sess["status"] == "error"
-
-
-def test_post_message_disabled_blueprint_root_fails_typed(
-    tmp_path: Path,
-) -> None:
-    """#948 S4: an active blueprint whose declared root is DISABLED by validation
-    (e.g. a pre-migration pack: chain_of_thought main with children) fails the
-    turn typed — never a silently substituted root, never the legacy planner."""
-
-    from .conftest import complete_turn
-
-    source = tmp_path / "stale-pack"
-    (source / "experts").mkdir(parents=True)
-    source.joinpath("AGENT.md").write_text(
-        """---
-id: stale-pack
-version: 0.1.0
-title: Stale Pack
-root_expert: root
----
-Pre-migration pack.
-""",
-        encoding="utf-8",
-    )
-    # Activation-time validation rejects a broken pack outright, so reproduce the
-    # STALE-INSTALL shape observed live: the pack is VALID when activated, then
-    # the on-disk root loses its react declaration (an old install re-validated
-    # under the new S4 hierarchy rules) — runtime resolution re-validates rows
-    # each turn and disables the root.
-    source.joinpath("experts", "root.md").write_text(
-        """---
-id: root
-title: Valid Root
-tier: 1
-module:
-  kind: react
----
-Coordinate work.
-""",
-        encoding="utf-8",
-    )
-    source.joinpath("experts", "leaf.md").write_text(
-        """---
-id: leaf
-title: Enabled Leaf
-parent_id: root
-tier: 2
-module:
-  kind: react
----
-Do leaf work.
-""",
-        encoding="utf-8",
-    )
-
-    agent = FakeClioAgent(answer="legacy planner must not run")
-    app = build_app(sessions_path=tmp_path / "s.json", agent=agent)
-    with TestClient(app) as c:
-        workspace = app.state.workspaces.create(name="stale-install test", root_path=str(tmp_path))
-        sid = c.post("/v1/sessions", json={"title": "x", "workspace_id": workspace.id}).json()["id"]
-        activated = c.post(f"/v1/sessions/{sid}/agent-blueprint", json={"path": str(source)})
-        assert activated.status_code == 200, activated.text
-        # The stale-install mutation: the declared root is no longer react while
-        # it still has a declared child — disabled at the next runtime resolve.
-        installed = Path(
-            c.get(f"/v1/sessions/{sid}").json()["metadata"]["active_agent_blueprint_path"]
-        )
-        assert installed != source
-        installed.joinpath("experts", "root.md").write_text(
-            """---
-id: root
-title: Stale Root
-tier: 1
----
-Coordinate work.
-""",
-            encoding="utf-8",
-        )
-        assistant = complete_turn(c, sid, "hello")
-        sess = c.get(f"/v1/sessions/{sid}").json()
-
-    # The legacy ClioAgent planner NEVER ran (the observed live fall-through).
-    assert agent.calls == []
-    assert assistant["stop_reason"] == "error"
-    assert assistant["error_info"]["error"] == "blueprint_root_disabled"
-    details = assistant["error_info"]["details"]
-    assert details["root_id"] == "root"
-    assert any("module.kind: react" in err for err in details["validation_errors"])
-    assert sess["status"] == "error"
-
-
-def test_post_message_prompt_user_agent_executes_registered_agent(
+def test_post_message_runs_the_sessions_plugin_agent(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -1011,37 +931,20 @@ def test_post_message_prompt_user_agent_executes_registered_agent(
 
     calls: list[tuple[str, str, str]] = []
 
-    def fake_prompt_agent(base_agent: Any, agent_def: Any, question: str, session_id: str) -> Any:
+    def fake_runner(base_agent: Any, agent_def: Any, question: str, session_id: str) -> Any:
         calls.append((agent_def.id, question, session_id))
         return FakePrediction(
             answer="USER_AGENT_OK",
             selected_expert=agent_def.id,
-            routing_rationale="selected registered user agent",
+            routing_rationale="the session's agent answered",
         )
 
-    monkeypatch.setattr(
-        "clio_agent.gact.app._build_prompt_user_agent_module",
-        runner_module_builder(fake_prompt_agent),
-    )
-
+    _reviewer_marketplace(tmp_path, monkeypatch)
+    monkeypatch.setattr(BUILD, runner_module_builder(fake_runner))
     agent = FakeClioAgent(answer="should not run")
     app = build_app(sessions_path=tmp_path / "s.json", agent=agent)
     with TestClient(app) as c:
-        created = c.post(
-            "/v1/agents",
-            json={
-                "id": "reviewer",
-                "title": "Reviewer",
-                "system_prompt": "Reply exactly USER_AGENT_OK.",
-                "default_provider": "openai",
-                "default_model": "gpt-4.1",
-            },
-        )
-        assert created.status_code == 201
-        sid = c.post(
-            "/v1/sessions",
-            json={"title": "x", "agent": {"id": "reviewer"}},
-        ).json()["id"]
+        sid = _agent_session(c, "clio/reviewer")
         assistant = complete_turn(c, sid, "hi")
         sess = c.get(f"/v1/sessions/{sid}").json()
 
@@ -1057,45 +960,18 @@ def test_post_message_prompt_user_agent_executes_registered_agent(
     assert assistant["parts"][0]["text"] == "USER_AGENT_OK"
     assert assistant["metadata"]["stream_source"] == "batch"
     assert assistant["metadata"]["stream_fallback"]["reason"] == "sync_execution_path"
-    assert assistant["metadata"]["agent_runtime"] == {
-        "kind": "dynamic_agent",
-        "agent_id": "reviewer",
-        "source": "user",
-        "title": "Reviewer",
-        "execution_mode": "prompt_agent",
-        "module": {},
-        "tools": [],
-        "structured_outputs": {},
-        "fanout": {},
-        "prompt": {
-            "source": "agent_definition",
-            "has_system_prompt": True,
-        },
-        "model": {
-            "provider_id": "openai",
-            "model_id": "gpt-4.1",
-            "provider_source": "agent_default",
-            "model_source": "agent_default",
-            "fallback_to_global": False,
-        },
-        "reasoning": {
-            "effective_level": "default",
-            "lm_kwargs": {},
-            "provider": "openai",
-            "requested_level": "",
-            "source": "provider_default",
-        },
-    }
+    runtime = assistant["metadata"]["agent_runtime"]
+    assert runtime["agent_id"] == "reviewer" and runtime["source"] == "plugin"
     assert sess["status"] == "idle"
 
 
-def test_post_message_agent_override_executes_user_agent_for_one_turn(
+def test_post_message_agent_override_runs_another_agent_for_one_turn(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     calls: list[tuple[str, str, str]] = []
 
-    def fake_prompt_agent(base_agent: Any, agent_def: Any, question: str, session_id: str) -> Any:
+    def fake_runner(base_agent: Any, agent_def: Any, question: str, session_id: str) -> Any:
         calls.append((agent_def.id, question, session_id))
         return FakePrediction(
             answer="OVERRIDE_AGENT_OK",
@@ -1103,38 +979,24 @@ def test_post_message_agent_override_executes_user_agent_for_one_turn(
             routing_rationale="per-turn agent override",
         )
 
-    monkeypatch.setattr(
-        "clio_agent.gact.app._build_prompt_user_agent_module",
-        runner_module_builder(fake_prompt_agent),
-    )
-
-    agent = FakeClioAgent(answer="main agent should not run")
+    _reviewer_marketplace(tmp_path, monkeypatch)
+    monkeypatch.setattr(BUILD, runner_module_builder(fake_runner))
+    agent = FakeClioAgent(answer="the session agent should not run")
     app = build_app(sessions_path=tmp_path / "s.json", agent=agent)
     with TestClient(app) as c:
-        assert (
-            c.post(
-                "/v1/agents",
-                json={
-                    "id": "reviewer",
-                    "title": "Reviewer",
-                    "system_prompt": "Reply exactly OVERRIDE_AGENT_OK.",
-                },
-            ).status_code
-            == 201
-        )
         sid = c.post("/v1/sessions", json={"title": "x"}).json()["id"]
         ack = c.post(
             f"/v1/sessions/{sid}/messages",
             json={
                 "parts": [{"type": "text", "text": "hi"}],
-                "agent": {"id": "reviewer"},
+                "agent": {"id": "clio/reviewer"},
             },
         )
         assert ack.status_code == 202, ack.text
         assert ack.json()["task_handle"]
         user_id = ack.json()["message_id"]
 
-        deadline = time.monotonic() + 10
+        deadline = time.monotonic() + 30
         assistant = None
         user_msg = None
         while time.monotonic() < deadline:
@@ -1149,27 +1011,26 @@ def test_post_message_agent_override_executes_user_agent_for_one_turn(
             time.sleep(0.05)
         assert assistant is not None
         assert user_msg is not None
-        sess = c.get(f"/v1/sessions/{sid}").json()
+        agent_pin = c.get(f"/v1/sessions/{sid}/agent").json()
 
     assert agent.calls == []
     assert calls == [("reviewer", "hi", sid)]
-    assert sess["agent"]["id"] == "main"
-    # Text answer only; the selected-agent fact rides the routing.decision
-    # semantic event (a0e1d9a9), never a part.
+    # The override is for one turn: the session stays on its own agent.
+    assert agent_pin["resolution"]["agent"]["ref"] == "clio/standard"
     assert [part["type"] for part in assistant["parts"]] == ["text"]
     assert assistant["parts"][0]["text"] == "OVERRIDE_AGENT_OK"
     routing_events = _routing_decision_events(app, sid)
     assert len(routing_events) == 1
     assert routing_events[0].payload["payload"]["selected_agent"] == "reviewer"
     assert assistant["metadata"]["agent_override"] == {
-        "requested_agent_id": "reviewer",
-        "session_agent_id": "main",
+        "requested_agent_id": "clio/reviewer",
+        "session_agent_id": "standard",
         "effective_agent_id": "reviewer",
         "scope": "turn",
     }
     assert user_msg["metadata"]["agent_override"] == {
-        "requested_agent_id": "reviewer",
-        "session_agent_id": "main",
+        "requested_agent_id": "clio/reviewer",
+        "session_agent_id": "standard",
         "scope": "turn",
     }
 
@@ -1185,54 +1046,37 @@ def test_post_message_agent_id_override_reports_structured_error_without_mutatin
         client,
         sid,
         "hi",
-        json_override={"agent_id": "missing_agent"},
+        json_override={"agent_id": "clio/missing-agent"},
     )
-    sess = client.get(f"/v1/sessions/{sid}").json()
+    agent_pin = client.get(f"/v1/sessions/{sid}/agent").json()
 
     assert fake_agent.calls == []
-    assert sess["agent"]["id"] == "main"
+    assert agent_pin["resolution"]["agent"]["ref"] == "clio/standard"
     assert assistant["stop_reason"] == "error"
     # No parts: the routing decision is a semantic event (a0e1d9a9).
     assert assistant["parts"] == []
     routing_events = _routing_decision_events(client.app, sid)
     assert len(routing_events) == 1
-    assert routing_events[0].payload["payload"]["selected_agent"] == "missing_agent"
-    assert assistant["error_info"]["error"] == "not_implemented"
-    assert assistant["error_info"]["details"]["agent_id"] == "missing_agent"
-    assert assistant["metadata"]["agent_override"] == {
-        "requested_agent_id": "missing_agent",
-        "session_agent_id": "main",
-        "effective_agent_id": "missing_agent",
-        "scope": "turn",
-    }
+    assert routing_events[0].payload["payload"]["selected_agent"] == "clio/missing-agent"
+    assert assistant["error_info"]["error"] == "agent_unavailable"
+    assert assistant["error_info"]["details"]["agent_ref"] == "clio/missing-agent"
+    assert assistant["metadata"]["agent_override"]["requested_agent_id"] == "clio/missing-agent"
+    assert assistant["metadata"]["agent_override"]["session_agent_id"] == "standard"
 
 
-def test_post_message_main_path_answers_without_keyword_routing(
+def test_post_message_session_agent_answers_without_keyword_routing(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    """An installed agent whose description matches the prompt never takes the turn:
+    the session's own agent answers (no keyword auto-routing)."""
+
     from .conftest import complete_turn
 
-    def fail_prompt_agent(*args: Any, **kwargs: Any) -> Any:
-        raise AssertionError("no keyword auto-routing: the main path must answer")
-
-    monkeypatch.setattr("clio_agent.gact.app._run_prompt_user_agent", fail_prompt_agent)
-
+    _reviewer_marketplace(tmp_path, monkeypatch)
     agent = FakeClioAgent(answer="MAIN_OK", selected_expert="")
     app = build_app(sessions_path=tmp_path / "s.json", agent=agent)
     with TestClient(app) as c:
-        assert (
-            c.post(
-                "/v1/agents",
-                json={
-                    "id": "reviewer",
-                    "title": "Reviewer",
-                    "system_prompt": "Review code carefully.",
-                    "keywords": ["code review", "reviewer"],
-                },
-            ).status_code
-            == 201
-        )
         sid = c.post("/v1/sessions", json={"title": "x"}).json()["id"]
         assistant = complete_turn(c, sid, "please do a code review of this patch")
 
@@ -1241,7 +1085,7 @@ def test_post_message_main_path_answers_without_keyword_routing(
     assert assistant["parts"][0]["text"] == "MAIN_OK"
 
 
-def test_post_message_prompt_user_agent_streams_live_when_available(
+def test_post_message_plugin_agent_streams_live_when_available(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -1260,27 +1104,13 @@ def test_post_message_prompt_user_agent_streams_live_when_available(
             routing_rationale="selected registered user agent",
         )
 
-    monkeypatch.setattr(
-        "clio_agent.gact.app._build_prompt_user_agent_module",
-        runner_module_builder(streaming_prompt_agent),
-    )
+    _reviewer_marketplace(tmp_path, monkeypatch)
+    monkeypatch.setattr(BUILD, runner_module_builder(streaming_prompt_agent))
 
     agent = FakeClioAgent(answer="should not run")
     app = build_app(sessions_path=tmp_path / "s.json", agent=agent)
     with TestClient(app) as c:
-        created = c.post(
-            "/v1/agents",
-            json={
-                "id": "reviewer",
-                "title": "Reviewer",
-                "system_prompt": "Reply exactly USER_AGENT_LIVE_OK.",
-            },
-        )
-        assert created.status_code == 201
-        sid = c.post(
-            "/v1/sessions",
-            json={"title": "x", "agent": {"id": "reviewer"}},
-        ).json()["id"]
+        sid = _agent_session(c, "clio/reviewer")
         assistant = complete_turn(c, sid, "hi")
 
     history = app.state.bus._history.get(sid, [])
@@ -1302,229 +1132,6 @@ def test_post_message_prompt_user_agent_streams_live_when_available(
     ]
     assert all(d.payload["stream_source"] == "live" for d in deltas)
     assert completed[-1].payload["metadata"]["stream_source"] == "live"
-
-
-def test_post_message_tool_user_agent_executes_registered_agent(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    from .conftest import complete_turn
-
-    calls: list[tuple[str, str, str]] = []
-
-    def fake_tool_agent(base_agent: Any, agent_def: Any, question: str, session_id: str) -> Any:
-        from clio_agent.tools.execution import current_tool_runtime
-        from clio_agent.tools.tool_observation import notify_tool_observer
-
-        calls.append((agent_def.id, question, session_id))
-        observer = current_tool_runtime().tool_observer
-        assert observer is not None
-        notify_tool_observer(observer, "fs_read_file", {"path": "README.md"}, "started")
-        notify_tool_observer(observer, "fs_read_file", {"path": "README.md"}, "completed")
-        return FakePrediction(
-            answer="TOOL_USER_AGENT_OK",
-            selected_expert=agent_def.id,
-            routing_rationale="selected registered tool user agent",
-        )
-
-    def fail_prompt_module(*args: Any, **kwargs: Any) -> Any:
-        raise AssertionError("tool-declaring user agent should build the tool module")
-
-    monkeypatch.setattr(
-        "clio_agent.gact.app._build_tool_user_agent_module",
-        runner_module_builder(fake_tool_agent),
-    )
-    monkeypatch.setattr("clio_agent.gact.app._build_prompt_user_agent_module", fail_prompt_module)
-
-    agent = FakeClioAgent(answer="should not run")
-    app = build_app(sessions_path=tmp_path / "s.json", agent=agent)
-    with TestClient(app) as c:
-        created = c.post(
-            "/v1/agents",
-            json={
-                "id": "tool_reviewer",
-                "title": "Tool Reviewer",
-                "system_prompt": "Read files before answering.",
-                "tools": ["fs_read_file"],
-            },
-        )
-        assert created.status_code == 201
-        sid = c.post(
-            "/v1/sessions",
-            json={"title": "x", "agent": {"id": "tool_reviewer"}},
-        ).json()["id"]
-        assistant = complete_turn(c, sid, "hi")
-        sess = c.get(f"/v1/sessions/{sid}").json()
-
-    assert agent.calls == []
-    assert calls == [("tool_reviewer", "hi", sid)]
-    assert assistant["stop_reason"] == "end_turn"
-    assert assistant.get("error_info") is None
-    # #731 / #767 PR3: the persisted message IS the ledger in ARRIVAL ORDER —
-    # the observer's tool_call / tool_result parts landed live during the turn;
-    # the batch answer is appended at finalize, after them. The routing
-    # decision is a routing.decision semantic event (a0e1d9a9), never a part.
-    assert [part["type"] for part in assistant["parts"]] == [
-        "tool_call",
-        "tool_result",
-        "text",
-    ]
-    # #731: every persisted part carries a monotonic 1-based arrival-order key.
-    assert [part["sequence"] for part in assistant["parts"]] == [1, 2, 3]
-    routing_events = _routing_decision_events(app, sid)
-    assert len(routing_events) == 1
-    assert routing_events[0].payload["payload"]["selected_agent"] == "tool_reviewer"
-    assert assistant["parts"][0]["tool_name"] == "fs_read_file"
-    assert assistant["parts"][-1]["text"] == "TOOL_USER_AGENT_OK"
-    assert assistant["metadata"]["stream_source"] == "batch"
-    assert assistant["metadata"]["stream_fallback"]["reason"] == "sync_execution_path"
-    assert assistant["metadata"]["tools_called"][0]["name"] == "fs_read_file"
-    assert assistant["metadata"]["tools_called"][0]["args"] == {"path": "README.md"}
-    assert assistant["metadata"]["agent_runtime"] == {
-        "kind": "dynamic_agent",
-        "agent_id": "tool_reviewer",
-        "source": "user",
-        "title": "Tool Reviewer",
-        "execution_mode": "tool_agent",
-        "module": {},
-        "tools": ["fs_read_file"],
-        "structured_outputs": {},
-        "fanout": {},
-        "prompt": {
-            "source": "agent_definition",
-            "has_system_prompt": True,
-        },
-        "model": {
-            "provider_id": "",
-            "model_id": "",
-            "provider_source": "global_active",
-            "model_source": "global_active",
-            "fallback_to_global": True,
-        },
-        "reasoning": {
-            "effective_level": "default",
-            "lm_kwargs": {},
-            "provider": "",
-            "requested_level": "",
-            "source": "provider_default",
-        },
-    }
-    assert sess["status"] == "idle"
-
-
-def test_post_message_tool_user_agent_streams_live_when_available(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    from .conftest import complete_turn
-
-    def streaming_tool_agent(
-        base_agent: Any, agent_def: Any, question: str, session_id: str
-    ) -> Any:
-        del base_agent, question, session_id
-        assert agent_def.id == "tool_reviewer"
-        emit_live_text("TOOL_")
-        emit_live_text("USER_AGENT_LIVE_OK")
-        return FakePrediction(
-            answer="TOOL_USER_AGENT_LIVE_OK",
-            selected_expert="tool_reviewer",
-            routing_rationale="selected registered tool user agent",
-        )
-
-    def fail_prompt_module(*args: Any, **kwargs: Any) -> Any:
-        raise AssertionError("tool-declaring user agent should build the tool module")
-
-    monkeypatch.setattr(
-        "clio_agent.gact.app._build_tool_user_agent_module",
-        runner_module_builder(streaming_tool_agent),
-    )
-    monkeypatch.setattr("clio_agent.gact.app._build_prompt_user_agent_module", fail_prompt_module)
-
-    agent = FakeClioAgent(answer="should not run")
-    app = build_app(sessions_path=tmp_path / "s.json", agent=agent)
-    with TestClient(app) as c:
-        created = c.post(
-            "/v1/agents",
-            json={
-                "id": "tool_reviewer",
-                "title": "Tool Reviewer",
-                "system_prompt": "Read files before answering.",
-                "tools": ["fs_read_file"],
-            },
-        )
-        assert created.status_code == 201
-        sid = c.post(
-            "/v1/sessions",
-            json={"title": "x", "agent": {"id": "tool_reviewer"}},
-        ).json()["id"]
-        assistant = complete_turn(c, sid, "hi")
-
-    history = app.state.bus._history.get(sid, [])
-    deltas = [ev for ev in history if ev.type == "message.part.delta"]
-    completed = [ev for ev in history if ev.type == "message.completed"]
-
-    assert agent.calls == []
-    # The streamed answer is the only part — the routing decision is a
-    # routing.decision semantic event (a0e1d9a9), never a part.
-    assert [part["type"] for part in assistant["parts"]] == ["text"]
-    routing_events = _routing_decision_events(app, sid)
-    assert len(routing_events) == 1
-    assert routing_events[0].payload["payload"]["selected_agent"] == "tool_reviewer"
-    assert assistant["parts"][0]["text"] == "TOOL_USER_AGENT_LIVE_OK"
-    assert assistant["metadata"]["stream_source"] == "live"
-    assert [d.payload["delta"]["text_append"] for d in deltas] == [
-        "TOOL_",
-        "USER_AGENT_LIVE_OK",
-    ]
-    assert all(d.payload["stream_source"] == "live" for d in deltas)
-    assert completed[-1].payload["metadata"]["stream_source"] == "live"
-
-
-def test_post_message_tool_user_agent_missing_declared_tool_sets_error_turn(
-    tmp_path: Path,
-) -> None:
-    from .conftest import complete_turn
-
-    class _Tool:
-        name = "hdf5_list_datasets"
-
-    class _Executor:
-        def to_dspy_tools(self) -> list[Any]:
-            return [_Tool()]
-
-    agent = FakeClioAgent(answer="should not run")
-    agent.tool_executor = _Executor()  # type: ignore[attr-defined]
-    app = build_app(sessions_path=tmp_path / "s.json", agent=agent)
-    with TestClient(app) as c:
-        created = c.post(
-            "/v1/agents",
-            json={
-                "id": "tool_reviewer",
-                "title": "Tool Reviewer",
-                "system_prompt": "Read files before answering.",
-                "tools": ["fs_read_file"],
-            },
-        )
-        assert created.status_code == 201
-        sid = c.post(
-            "/v1/sessions",
-            json={"title": "x", "agent": {"id": "tool_reviewer"}},
-        ).json()["id"]
-        assistant = complete_turn(c, sid, "hi")
-        sess = c.get(f"/v1/sessions/{sid}").json()
-
-    assert agent.calls == []
-    assert assistant["stop_reason"] == "error"
-    assert assistant["error_info"]["error"] == "not_implemented"
-    assert assistant["error_info"]["details"]["agent_id"] == "tool_reviewer"
-    assert assistant["error_info"]["details"]["reason"] == "custom_agent_tools_unavailable"
-    assert assistant["error_info"]["details"]["unsupported_tools"] == ["fs_read_file"]
-    # No parts: the routing decision is a semantic event (a0e1d9a9).
-    assert assistant["parts"] == []
-    routing_events = _routing_decision_events(app, sid)
-    assert len(routing_events) == 1
-    assert routing_events[0].payload["payload"]["selected_agent"] == "tool_reviewer"
-    assert sess["status"] == "error"
 
 
 def test_post_message_model_override_returns_structured_501(

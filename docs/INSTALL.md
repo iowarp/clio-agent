@@ -4,10 +4,9 @@ CLIO is **one engine + three frontends**: `clio-agent` (the Python core + the ga
 server) is the brain; the **TUI**, **web**, and **desktop** are frontends that talk to a
 gact backend. Every pathway below is "get clio-agent running + a frontend on it."
 
-This checkout selects standard Python 3.14 with the GIL enabled for source builds,
-source installers, containers, and the next bundled Desktop release. Examples pinned to
-older published releases retain Python 3.13; their native dependencies predate the
-3.14 upgrade.
+CLIO 0.9.5 selects standard Python 3.14 with the GIL enabled for source builds,
+installers, containers and bundled Desktop. The installer provisions its managed
+Python and uv runtimes.
 
 There are **4 install mechanisms** exposing **6 usage experiences** (a–f).
 
@@ -31,15 +30,11 @@ Installs `clio-agent` from PyPI + the `clio-tui` binary + the `clio` launcher. W
 
 ## Beta releases
 
-To opt into CLIO v0.9.5-beta.8, pin the backend explicitly:
-
-```sh
-uv tool install --python 3.14 --with dspy==3.4.0 --with fastmcp==4.1.0 --with fastmcp-tasks==4.1.0 --with mcp==2.0.0 clio-agent==0.9.5b8
-```
-
-Use `CLIO_VERSION=v0.9.5-beta.8` with the complete installer when you also want
-the matching frontend. Desktop's beta update preference controls later updates;
-the default install channel continues to select published stable releases.
+Beta releases are opt-in. Select a published beta tag with
+`CLIO_VERSION=vX.Y.Z-beta.N` for the complete installer, or its PEP 440 package
+version `X.Y.ZbN` for a backend-only install. Use that beta's documented SDK roots.
+Desktop's beta update preference controls later updates; the default install
+channel selects published stable releases.
 
 ## b) No-install, Docker (TUI)
 
@@ -72,32 +67,42 @@ to point at your model provider.
 Download the installer for your OS from the
 [latest release](https://github.com/iowarp/clio-agent/releases/latest):
 the `-bundled` `.msi`/`.exe` (Windows), `.dmg` (Apple Silicon macOS), or `.deb`/`.rpm`
-(Linux). Bundled installers ship clio-agent, so there is nothing else to install. Installers
-without `-bundled` in the name, including every Linux `.AppImage` and the Intel macOS
-`.dmg`, are attach-only: they connect to a clio-agent you install and run separately.
+(Linux). Bundled installers ship clio-agent, so there is nothing else to install. The
+release also carries files without `-bundled` in the name: the desktop uses them to
+update itself, and they are not meant to be installed by hand. There is no desktop app
+for Intel Macs yet; use the install script without `--desktop` there.
 
 ### Desktop from a terminal
 
-macOS 14 or newer, without Python/uv/Node prerequisites:
+The install script installs the desktop app, bundled with its agent, with `--desktop`
+(macOS 14+ and Linux; Windows uses `install.ps1 -Desktop`). No Python, uv or Node is
+needed:
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/iowarp/clio-agent/main/install/desktop.sh \
-  | CLIO_VERSION=v0.9.5-beta.8 bash
+curl -fsSL https://raw.githubusercontent.com/iowarp/clio-agent/main/install/install.sh | bash -s -- --desktop
 ```
-
-Windows (bundled x64 setup, including x64 emulation on ARM):
 
 ```powershell
-$env:CLIO_VERSION = 'v0.9.5-beta.8'
-irm https://raw.githubusercontent.com/iowarp/clio-agent/main/install/desktop.ps1 | iex
+& ([scriptblock]::Create((irm https://raw.githubusercontent.com/iowarp/clio-agent/main/install/install.ps1))) -Desktop
 ```
 
-Both verify the asset against its release checksum before installation. macOS installs
-into `~/Applications` (`CLIO_DESKTOP_DIR` overrides it), keeps the previous app when
-upgrading, and verifies the app's signature. Intel Macs get the attach-only package.
-Save the script and use `--download-only DIR` (macOS) or `-DownloadOnly
--DownloadDirectory DIR` (Windows) to verify without installing. Omitting `CLIO_VERSION`
-selects the latest stable release; older unsigned Mac packages are refused.
+`--dev` picks the newest release including pre-releases, and `--version <v>` pins one,
+as for the agent install. The download is verified against the release's checksum
+manifest before anything is installed:
+- **macOS:** the bundled `.dmg` (Apple Silicon) goes into `~/Applications`
+  (`CLIO_DESKTOP_DIR` overrides it); the previous app is kept, and the app's signature
+  is verified. Intel Macs are refused, with nothing downloaded.
+- **Linux:** the bundled `.deb` (with `dpkg`) or `.rpm` (with `rpm`) is installed with
+  `apt-get` / `dnf`, through `sudo` when not run as root.
+- **Windows:** the bundled x64 setup opens with its pages for the model provider and
+  infrastructure (it also runs under emulation on ARM).
+
+After installing, the script runs the app's own setup step as you (from 0.9.5): the agent's
+tool packages and the Office renderer are prepared then, as the Windows installer does,
+so the first launch only checks them. A package installed by double-clicking does this on
+its first launch instead.
+
+`--download-only DIR` (`-DownloadOnly DIR` on Windows) stops after the verified download.
 
 The macOS app is ad-hoc signed, not Apple-notarized. A first-launch approval may still
 be needed in System Settings → Privacy & Security → Open Anyway. Neither script
@@ -127,14 +132,14 @@ cd clio-agent && uv sync --extra optimizers --extra argonne
 uv run src/clio_agent/ui/cli.py        # or: uv run clio-agent serve
 ```
 
-CLIO intentionally pins DSPy, FastMCP, and FastMCP Tasks prereleases and the tested
-stable LiteLLM release. Registry-backed uv tool resolution requires those exact
-prereleases as explicit roots, avoiding global admission of unrelated prereleases.
+CLIO pins verified DSPy, FastMCP, FastMCP Tasks and LiteLLM releases.
+Registry-backed uv tool installation uses the same exact SDK roots as the
+official installers.
 For a persistent backend-only installation, use `uv tool` (not the
 ephemeral `uvx` / `uv tool run` path):
 
 ```sh
-uv tool install --python 3.13 --with dspy==3.4.0 --with fastmcp==4.0.0b5 --with fastmcp-slim==4.0.0b5 --with fastmcp-tasks==4.0.0b5 clio-agent==0.9.4.24
+uv tool install --python 3.14 --with dspy==3.4.0 --with fastmcp==4.1.2 --with fastmcp-tasks==4.1.2 --with mcp==2.2.0 clio-agent==0.9.5
 clio-agent serve
 ```
 
@@ -185,6 +190,14 @@ occupied destinations, links and live writers, verifies file hashes, keeps
 backups and receipts under `state/migrations`, and rolls back failed cutovers.
 Generated legacy workspace copies remain readable at their original paths.
 Nothing moves or removes the shared `~/.clio` tree owned by other CLIO products.
+
+Store upgrades run at install time, not at start: `install.sh`, `install.ps1` and the
+desktop's install step run `clio-agent migrate`, which converts what an older CLIO
+wrote (legacy transcripts, the task index, the artifact index) once and records a
+marker for each conversion; running it again does nothing. It refuses while a CLIO
+server holds the store (`store_in_use`, exit 3). A server that finds a conversion
+still owed runs it once before it reports ready and says so in `clio doctor`
+(`store_migrations`).
 
 Reinstall replaces executable payloads while retaining sessions and user data.
 Remote bootstrap also protects data when it must invoke an older release's

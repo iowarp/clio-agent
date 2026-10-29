@@ -315,3 +315,25 @@ async def test_drop_streak_recovery_logs_one_info_line_and_rearms(
         bus.publish(Event(type="a", session_id="s4", payload={}))  # overflow #2 -> new streak
         assert bus.dropped_total("s4") == 2
         assert bus._drop_burst_active["s4"] is True
+
+
+@pytest.mark.asyncio
+async def test_a_subscriber_that_lost_events_reads_a_stream_gap_first() -> None:
+    """After a drop the reader gets one ``stream.gap`` (so the client reconciles from
+    the transcript), then the events still queued; a later clean read gets none."""
+    bus = EventBus(queue_capacity=2)
+    reader = bus.subscribe("s")
+    first = asyncio.ensure_future(reader.__anext__())
+    await asyncio.sleep(0)  # registers the queue and waits on it
+    for index in range(3):  # two fit, the third is dropped
+        bus.publish(Event(type="message.part.delta", session_id="s", payload={"i": index}))
+    seen = [await first] + [await reader.__anext__() for _ in range(2)]
+    assert [(e.type, e.payload.get("i", e.payload.get("reason"))) for e in seen] == [
+        ("stream.gap", "subscriber_queue_full"),
+        ("message.part.delta", 0),
+        ("message.part.delta", 1),
+    ]
+    assert seen[0].id == 0 and seen[0].transient  # connection-local, never replayed
+    bus.publish(Event(type="message.completed", session_id="s", payload={}))
+    assert (await reader.__anext__()).type == "message.completed"  # no second gap
+    await reader.aclose()

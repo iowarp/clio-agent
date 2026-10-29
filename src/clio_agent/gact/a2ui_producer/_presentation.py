@@ -7,9 +7,9 @@ when its OWN schema composes the official ``Checkable`` mixin
 component that supports client-side ``checks``), and its label otherwise
 comes from its RESOLVED KERNEL name (the sidecar's
 ``implements[<name>].kernel``, falling back to the bare name when
-unaliased), parsed the same ``clio.<kind>.v<n>`` way as before -- so a pack
+unaliased), parsed the same ``clio.<kind>.v<n>`` way as before -- so a plugin
 catalog that aliases a kernel under its own vocabulary still labels
-correctly without this module knowing the pack's names in advance.
+correctly without this module knowing the catalog's names in advance.
 """
 
 from __future__ import annotations
@@ -51,7 +51,7 @@ def _is_checkable(entry: "CatalogEntry", name: str) -> bool:
 
 
 def _kernel_name(entry: "CatalogEntry", name: str) -> str:
-    """The renderer kernel ``name`` resolves to (a pack alias's real identity)."""
+    """The renderer kernel ``name`` resolves to (a catalog alias's real identity)."""
 
     implementation = entry.sidecar.implements.get(name)
     return implementation.kernel if implementation is not None else name

@@ -88,11 +88,7 @@ def test_catalog_row_serves_only_accepted_parameters(
 
 class _StubAgent:
     def __init__(self, *args: Any, **kwargs: Any) -> None:
-        self.arc = SimpleNamespace(
-            set_highway_sink=lambda _f: None,
-            set_segment_op_logger=lambda _f: None,
-            get_cache_stats=lambda: {"hits": 0, "misses": 0, "hit_rate": 0.0, "capacity": 10},
-        )
+        self.arc = kwargs["arc"]
 
     def rebind_lms(self, cfg: Any) -> None:
         self._provider_config = cfg

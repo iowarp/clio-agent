@@ -10,8 +10,8 @@ from fastapi.testclient import TestClient
 
 from clio_agent.gact.app import build_app
 
-# #948 S4b: default sessions run the blueprint react ``main``; route it to each
-# test's ``build_app(agent=...)`` host fake.
+# Every session runs its pinned plugin agent (the hermetic ``standard``); route its
+# module to each test's ``build_app(agent=...)`` host fake.
 pytestmark = pytest.mark.usefixtures("host_agent_executor")
 
 
@@ -54,7 +54,7 @@ def _create_session(client: TestClient) -> str:
         json={
             "title": "context frame",
             "metadata": {"prompt_profile": "heavy"},
-            "agent": {"id": "main"},
+            "agent": {"id": "standard"},
             "routing_mode": "reasoning_only",
         },
     ).json()["id"]
@@ -73,7 +73,7 @@ def test_context_frame_recorded_for_successful_turn(client: TestClient) -> None:
     assert frame["status"] == "completed"
     assert frame["assistant_message_id"] == assistant["id"]
     assert frame["user_message_id"].startswith("msg_user_")
-    assert frame["agent"]["id"] == "main"
+    assert frame["agent"]["id"] == "standard"
     assert frame["agent"]["routing_mode"] == "reasoning_only"
     assert frame["prompt"]["profile"] == "heavy"
     assert frame["model"] == {"provider_id": "", "model_id": "", "variant": ""}

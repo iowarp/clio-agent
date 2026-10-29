@@ -14,6 +14,7 @@ from typing import Any
 import pytest
 
 from clio_agent import conf
+from clio_agent.arc.blob_frame import size_class
 from clio_agent.arc.clio_core_async_ops import TagIds
 from clio_agent.arc.clio_core_liveness import LivenessGate
 from clio_agent.arc.companion_policy import (
@@ -21,10 +22,11 @@ from clio_agent.arc.companion_policy import (
     SEGMENT_NAME_SEP,
     may_carry_companion,
 )
+from clio_agent.arc.companion_write import CompanionSizes, companion_body
 from clio_agent.arc.lane_chunking import chunk_for_append, chunk_scope
 from clio_agent.arc.live import EVENTS_SCOPE
 from clio_agent.arc.segments import SegmentStore
-from clio_agent.arc.storage import ClioCoreStore
+from clio_agent.arc.storage import ARC_KINDS, ClioCoreStore
 
 # clio-core is the only ARC store: each backing ``path`` a test used to hand a local
 # store maps to its own namespace under this test's namespace on the worker's private
@@ -55,6 +57,8 @@ def _clear_clio_core_namespaces():
 
 class _RecordingCte:
     """A fake ``clio_cte_core_ext`` that records every native call."""
+
+    PoolQuery = type("PoolQuery", (), {"Local": staticmethod(lambda: None)})
 
     def __init__(self, companion_size: int = 0) -> None:
         self.calls: list[tuple[str, str]] = []
@@ -102,6 +106,10 @@ class _Client:
         self._calls.append(("DelBlob", name))
         return _Ready(0)
 
+    def AsyncGetBlobSize(self, _tag_id: int, name: str, _query: Any) -> _Ready:  # noqa: N802
+        self._calls.append(("GetBlobSize", name))
+        return _Ready(1)  # GetBlobSize's "no such blob"
+
 
 def _store(cte: _RecordingCte) -> ClioCoreStore:
     store = ClioCoreStore.__new__(ClioCoreStore)
@@ -112,6 +120,8 @@ def _store(cte: _RecordingCte) -> ClioCoreStore:
     store._log_level = "error"
     store._gate = LivenessGate(config_path="", probe=lambda _p: True, ttl_s=100.0)
     store._reconnect = lambda: None  # type: ignore[method-assign]
+    store._kinds = ARC_KINDS
+    store._companion_sizes = CompanionSizes()
     return store
 
 
@@ -146,12 +156,38 @@ def test_indexed_scope_without_text_drops_any_stale_companion() -> None:
 
 
 def test_indexed_scope_with_text_writes_the_companion() -> None:
+    """A companion this store has not written is probed once for a larger stored blob
+    (a shrink must not keep its old tail, MD9); after that its size is known."""
     cte = _RecordingCte()
-    _store(cte).put("segments", _events_name("agentA"), b"x", search_text="hello")
+    store = _store(cte)
+    store.put("segments", _events_name("agentA"), b"x", search_text="hello")
+    store.put("segments", _events_name("agentA"), b"y", search_text="hello again")
     assert cte.calls == [
+        ("PutBlob", "sess__agentA"),
+        ("GetBlobSize", "sess__agentA.text"),
+        ("PutBlob", "sess__agentA.text"),
         ("PutBlob", "sess__agentA"),
         ("PutBlob", "sess__agentA.text"),
     ]
+
+
+def test_a_companion_shrinking_to_a_smaller_class_is_deleted_before_the_put() -> None:
+    cte = _RecordingCte()
+    store = _store(cte)
+    store.put("segments", _events_name("agentA"), b"x", search_text="word " * 3000)
+    cte.calls.clear()
+    store.put("segments", _events_name("agentA"), b"x", search_text="word")
+    assert cte.calls == [
+        ("PutBlob", "sess__agentA"),
+        ("DelBlob", "sess__agentA.text"),
+        ("PutBlob", "sess__agentA.text"),
+    ]
+
+
+def test_a_companion_is_padded_with_spaces_to_its_size_class() -> None:
+    body = companion_body("hello")
+    assert body.startswith(b"hello") and body[5:].strip(b" ") == b""
+    assert len(body) == size_class(5)
 
 
 def test_non_segment_kinds_are_untouched_by_the_policy() -> None:

@@ -76,7 +76,7 @@ FILE_TTL_S = 30 * 24 * 3600.0
 #: gated id it serves.
 MISS_TTL_S = METADATA_TTL_S
 
-_misses: dict[str, float] = {}
+_misses: dict[str, tuple[float, str]] = {}
 _misses_lock = threading.Lock()
 
 
@@ -85,7 +85,7 @@ def _recent_miss(key: str) -> bool:
         at = _misses.get(key)
         if at is None:
             return False
-        if time.monotonic() - at < MISS_TTL_S:
+        if time.monotonic() - at[0] < MISS_TTL_S:
             return True
         del _misses[key]
         return False
@@ -93,7 +93,7 @@ def _recent_miss(key: str) -> bool:
 
 def _record_miss(key: str, reason: str) -> None:
     with _misses_lock:
-        _misses[key] = time.monotonic()
+        _misses[key] = (time.monotonic(), reason)
     logger.info("hf_repo: reason=%s key=%s (not re-asked for %.0fs)", reason, key, MISS_TTL_S)
 
 
@@ -227,6 +227,21 @@ def resolve_repo(model_key: str, *, allow_fetch: bool = True) -> RepoResolution 
     return _resolution(base_model, base_sha, model_key, base_meta)
 
 
+def resolve_repo_card(model_key: str, *, allow_fetch: bool = True) -> RepoResolution | None:
+    """Resolve the requested repo itself for its README, without following base_model.
+
+    Capability resolution may intentionally follow a GGUF repo's base model;
+    its model card remains a separate document belonging to the selected repo.
+    """
+    meta = _fetch_metadata(model_key, allow_fetch=allow_fetch)
+    if meta is None:
+        return None
+    sha = str(meta.get("sha") or "")
+    if not sha:
+        return None
+    return _resolution(model_key, sha, model_key, meta)
+
+
 def _is_gguf_repo(meta: Mapping[str, Any]) -> bool:
     """Whether a repo's metadata marks it as a GGUF quantization repo."""
     tags = meta.get("tags")
@@ -289,9 +304,9 @@ def _fetch_text(resolution: RepoResolution, filename: str, *, allow_fetch: bool)
         result = _file_catalog(resolution.repo, resolution.sha, filename).get(
             allow_fetch=allow_fetch
         )
-    except FetchedCatalogUnavailable:
+    except FetchedCatalogUnavailable as exc:
         if allow_fetch:
-            _record_miss(key, "hf_repo_file_unavailable")
+            _record_miss(key, exc.fetch_failure)
         return None
     return result.data
 
@@ -431,6 +446,32 @@ def scan_tool_support(template: str) -> bool:
 def fetch_model_card(resolution: RepoResolution, *, allow_fetch: bool = True) -> str | None:
     """Read a model's README at its resolved SHA through the shared catalog cache."""
     return _fetch_text(resolution, "README.md", allow_fetch=allow_fetch)
+
+
+def model_card_failure(resolution: RepoResolution) -> str:
+    """Return a conservative card status after an unsuccessful public README read.
+
+    The shared fetched-catalog cache retains the exact failed HTTP status for a
+    remembered miss. Network errors and other statuses remain ``unavailable``.
+    """
+    key = f"file:{resolution.repo}@{resolution.sha}/README.md"
+    with _misses_lock:
+        miss = _misses.get(key)
+    if miss is None:
+        return "unavailable"
+    if time.monotonic() - miss[0] >= MISS_TTL_S:
+        return "unavailable"
+    failure = miss[1]
+    if failure == "http_status_404":
+        gated = resolution.metadata.get("gated")
+        if gated is True or (isinstance(gated, str) and gated.casefold() in {"auto", "manual"}):
+            return "access_required"
+        return "missing"
+    if failure in {"http_status_401", "http_status_403"}:
+        return "access_required"
+    if failure.startswith("too_large:"):
+        return "truncated"
+    return "unavailable"
 
 
 class HfRepoCatalogSource:

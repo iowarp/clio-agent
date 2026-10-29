@@ -19,21 +19,19 @@ USER INPUT (question, session_id)
   |
   |-- 3. Plan next action or resolve selected session agent
   |       Core CLIO can still plan tool/answer actions.
-  |       GACT sessions may instead select an Agent Blueprint expert loaded
-  |       from the registry/marketplace store.
+  |       GACT sessions run their pinned plugin agent instead (its flow,
+  |       `react` by default; see docs/PLUGINS_AND_FLOWS.md).
   |
   |-- 4. Execute selected action
   |       "tool"      -> direct tool call through the MCP gateway
-  |       "blueprint" -> compile selected Agent Blueprint node by module.kind
   |       "answer"    -> chat answer via ChatAgentSignature
   |       "none"      -> planner explanation, or routing_error
   |
-  |       Blueprint expert inner flow:
-  |         - `module.kind: predict` -> dspy.Predict
-  |         - `module.kind: chain_of_thought` -> dspy.ChainOfThought
-  |         - `module.kind: react` -> dspy.ReAct with scoped tools and
-  |           generated child-expert tools
-  |         - Structured outputs normalize answer/evidence/artifacts/errors/delegation.
+  |       GACT plugin agent inner flow:
+  |         - the agent's flow runs; `react` drives ClioReAct over the
+  |           tools, servers and skills its plugins bring
+  |         - subagents and flows start as child tasks (spawn tools,
+  |           run_flow / run_plan), returned through the mailbox
   |
   |-- 5. Store invocation, conversation, routing decision, and metrics
   |
@@ -73,7 +71,6 @@ USER INPUT (question, session_id)
 | Planner action | Runtime behavior |
 |---|---|
 | `tool` | Calls a listed MCP/visualization tool and records the observation. |
-| `blueprint` | Runs the selected registry Agent Blueprint expert and records blueprint/module/provider provenance. |
 | `answer` | Runs the chat answer path for conversation, capability, or safety-style responses. |
 | `none` | Requires a meaningful planner explanation; missing explanations surface as `routing_error`. |
 
@@ -82,9 +79,9 @@ The planner sees registered expert/tool capabilities built from the Registry (`r
 ## State-Surface Summary
 
 ```text
-GET /v1/agents                           -> active registry and Agent Blueprint rows
+GET /v1/agents                           -> installed agents and user agents
+GET /v1/sessions/{sid}/agent             -> the session's pinned plugin resolution
 agent.registry.list_agents()             -> core/runtime registry rows
-blueprint metadata                       -> id, version, scope, definition_path, install commit
 agent.arc.get_conversation(session_id)  -> Conversation | None
 agent.arc.get_cache_stats()             -> {hits, misses, hit_rate}
 agent.arc.get_invocations_by_agent(id)  -> [Invocation, ...]

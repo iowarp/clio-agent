@@ -1,0 +1,6 @@
+{
+  "provenance": "Get-Counter sample captured in tool output during fresh NSIS setup; aggregate process CPU, not wall-time attribution",
+  "timestamp": "2026-10-28T11:13:11-00:00",
+  "counter": "\\Process(MsMpEng)\\% Processor Time",
+  "cooked_value": 78.55
+}

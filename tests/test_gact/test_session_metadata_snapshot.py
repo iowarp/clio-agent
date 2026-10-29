@@ -16,6 +16,8 @@ class _CopyGate:
         self.patched = patched
 
     def __deepcopy__(self, memo: dict[int, Any]) -> str:
+        if self.copying.is_set():
+            return "captured"
         self.copying.set()
         assert self.patched.wait(10), "metadata writer did not finish while projection was held"
         return "captured"
@@ -25,7 +27,10 @@ def test_session_projection_keeps_metadata_snapshot_during_store_update() -> Non
     """A concurrent durable metadata patch cannot resize the projection's mapping."""
     store = SessionStore()
     copying, patched = Event(), Event()
-    session = store.create(workspace_id="ws", metadata={"first": _CopyGate(copying, patched)})
+    session = store.create(workspace_id="ws", metadata={"first": "captured"})
+    # Creation now snapshots records too. Gate only the projection under test;
+    # the concurrent writer must be free to serialize its own replacement row.
+    session.metadata["first"] = _CopyGate(copying, patched)
     original = session.metadata
 
     def update_metadata() -> None:

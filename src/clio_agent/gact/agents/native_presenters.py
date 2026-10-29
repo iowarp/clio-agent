@@ -121,6 +121,71 @@ def _fields_presentation(declaration: str, row: Mapping[str, Any]) -> list[dict[
     return blocks
 
 
+def _specialized_presentation(row: Mapping[str, Any]) -> dict[str, Any]:
+    """Render the shared, explicit outcome fields used by specialized receipts.
+
+    This deliberately recognizes only typed receipt fields. Arbitrary payload
+    truthiness must not be interpreted as a successful or failed operation.
+    """
+
+    error = row.get("error")
+    message = row.get("message")
+    if isinstance(error, str) and error.strip():
+        diagnostic = message.strip() if isinstance(message, str) and message.strip() else error
+        return {
+            "status": "failed",
+            "summary": "Action unsuccessful",
+            "blocks": [
+                {
+                    "id": "outcome",
+                    "type": "text",
+                    "label": "Reason",
+                    "severity": "error",
+                    "text": diagnostic,
+                    "detail": error if diagnostic != error else "",
+                }
+            ],
+        }
+
+    emitted = row.get("emitted")
+    reason = row.get("reason")
+    if emitted is True or emitted is False:
+        delivered = emitted is True
+        session_id = row.get("session_id")
+        outcome: dict[str, Any] = {
+            "id": "outcome",
+            "type": "text",
+            "label": "Notification",
+            "text": "Delivered" if delivered else "Not delivered",
+        }
+        if not delivered:
+            outcome["severity"] = "error"
+            if isinstance(reason, str) and reason.strip():
+                outcome["detail"] = reason
+        blocks: list[dict[str, Any]] = [outcome]
+        if isinstance(session_id, str) and session_id:
+            blocks.append(
+                {
+                    "id": "parent-session",
+                    "type": "link",
+                    "target": "session",
+                    "uri": session_id,
+                    "label": "Parent session",
+                }
+            )
+        part_id = row.get("part_id")
+        if delivered and isinstance(part_id, str) and part_id:
+            outcome["detail"] = f"Notification ID: {part_id}"
+        summary = "Notification delivered" if delivered else "Notification not delivered"
+        return {
+            **({"status": "failed"} if not delivered else {}),
+            "summary": summary,
+            "blocks": blocks,
+        }
+
+    return {"summary": str(message or error or ""), "blocks": []}
+
+
 def native_presentation(
     declaration: str, args: Mapping[str, Any], result: Any, structured: Any
 ) -> dict[str, Any]:
@@ -173,15 +238,13 @@ def native_presentation(
         )
     elif declaration.startswith("fields:"):
         blocks = _fields_presentation(declaration, row)
+    elif declaration == "specialized":
+        return _specialized_presentation(row)
     elif declaration != "specialized":
         raise ValueError(f"Unknown native presentation declaration: {declaration}")
 
     return {
-        **(
-            {"action": "Message"}
-            if declaration == "message"
-            else ({"action": header_action} if header_action else {})
-        ),
+        **({"action": header_action} if header_action else {}),
         **({"subject": subject} if subject else {}),
         **({"status": presentation_status} if presentation_status else {}),
         "summary": summary,

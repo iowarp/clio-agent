@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import copy
+import html
 import json
 import logging
 from collections.abc import Callable, Mapping
@@ -13,7 +14,8 @@ from typing import Any
 import yaml
 
 from clio_agent.tools.file_diff import unified_file_diff
-from clio_agent.tools.file_policy import validate_read_path, validate_write_path
+from clio_agent.tools.file_policy import validate_read_path
+from clio_agent.tools.fs_edit import PreviousContent, capture_previous_content
 from clio_agent.tools.result_errors import structured_tool_result_error
 from clio_agent.tools.shell_spill_presentation import saved_output_blocks
 
@@ -31,14 +33,6 @@ class PresentationAdapter:
     start: Capture | None = None
     action: str = ""
     subject: str = ""
-
-
-@dataclass(frozen=True)
-class FileWriteSnapshot:
-    """Observed file content before a write."""
-
-    path: str
-    content: str
 
 
 MCP_PRESENTATION_ADAPTERS: dict[str, PresentationAdapter] = {}
@@ -135,7 +129,7 @@ def _semantic_error_message(value: Any, fallback: str) -> str:
 
 
 def standard_mcp_presentation(result: Any) -> dict[str, Any]:
-    """Present standard MCP content; structured results remain technical detail."""
+    """Present standard MCP content or readable recorded structured values."""
 
     blocks: list[dict[str, Any]] = []
     semantic_error = structured_tool_result_error(result)
@@ -177,7 +171,8 @@ def standard_mcp_presentation(result: Any) -> dict[str, Any]:
                     "id": block_id,
                     "type": "media" if item.get("data") else "text",
                     "media_type": str(item.get("mimeType") or ""),
-                    "label": f"{str(item['type']).capitalize()} · {item.get('mimeType', '')}",
+                    "label": str(item["type"]).capitalize()
+                    + (f" ({item['mimeType']})" if item.get("mimeType") else ""),
                     "text": str(
                         item.get("data") or "Media payload unavailable in the retained tool result."
                     ),
@@ -198,6 +193,14 @@ def standard_mcp_presentation(result: Any) -> dict[str, Any]:
                             "label": str(resource.get("name") or resource["uri"]),
                         }
                     )
+    if not failed and not blocks and _structured(result):
+        blocks.append(
+            {
+                "id": "structured-result",
+                "type": "markdown",
+                "text": _structured_markdown(_structured(result)),
+            }
+        )
     if failed and not blocks:
         message = result.get("message") if isinstance(result, Mapping) else None
         blocks.append(
@@ -216,6 +219,86 @@ def standard_mcp_presentation(result: Any) -> dict[str, Any]:
         "summary": "",
         "blocks": blocks,
     }
+
+
+def _structured_markdown(value: Mapping[str, Any]) -> str:
+    """Bound a literal data outline without inferring domain meaning or outcomes."""
+    lines: list[str] = []
+    omitted = False
+
+    def literal(text: str) -> str:
+        return "".join(
+            "\\" + char if char in r"\`*_{}[]()#+-.!|>" else char
+            for char in html.escape(text, quote=False)
+        )
+
+    def visit(item: Any, label: str, depth: int) -> None:
+        nonlocal omitted
+        if len(lines) >= 24:
+            omitted = True
+            return
+        if depth < 4 and isinstance(item, Mapping) and item:
+            for key, child in item.items():
+                if len(lines) >= 24:
+                    omitted = True
+                    break
+                name = str(key).replace("_", " ")
+                visit(
+                    child, f"{label} › {name}" if label else name[:1].upper() + name[1:], depth + 1
+                )
+            return
+        if depth < 4 and isinstance(item, list) and item:
+            for index, child in enumerate(item):
+                if len(lines) >= 24:
+                    omitted = True
+                    break
+                visit(child, f"{label} › {index + 1}", depth + 1)
+            return
+        if isinstance(item, (Mapping, list)):
+            text = f"{len(item)} {'fields' if isinstance(item, Mapping) else 'items'}"
+            omitted |= bool(item)
+        else:
+            text = (
+                "null"
+                if item is None
+                else "true"
+                if item is True
+                else "false"
+                if item is False
+                else str(item)
+            )
+        if len(text) > 1000 or len(label) > 160:
+            omitted = True
+        label = label.replace("\r", " ").replace("\n", " ")
+        lines.append(
+            f"- **{literal(label[:160])}:** {literal(text[:1000]).replace(chr(10), chr(10) + '  ')}"
+            + ("…" if len(text) > 1000 else "")
+        )
+
+    visit(value, "", 0)
+    if omitted:
+        lines.append("\nMore recorded values are available in Technical details.")
+    return "\n".join(lines)
+
+
+def legacy_standard_mcp_presentation(part: Mapping[str, Any]) -> dict[str, Any] | None:
+    """Repair an empty historical SDK presentation from its exact retained result."""
+    current = part.get("presentation")
+    if not isinstance(current, Mapping) or any(
+        current.get(key)
+        for key in ("action", "subject", "status", "summary", "blocks", "diagnostic")
+    ):
+        return None
+    metadata = part.get("metadata")
+    raw = metadata.get("result") if isinstance(metadata, Mapping) else None
+    if (
+        not isinstance(raw, Mapping)
+        or not isinstance(raw.get("content"), list)
+        or not _structured(raw)
+        or raw.get("truncated")
+    ):
+        return None
+    return standard_mcp_presentation(raw)
 
 
 def present_mcp_result(
@@ -241,14 +324,22 @@ def present_mcp_result(
         return {"summary": "", "blocks": [], "diagnostic": "presentation_failed"}
 
 
+#: Observer-copy key carrying a write tool's pre-call :class:`PreviousContent`. The
+#: GACT observer pops it before the copy reaches any wire, ledger or trace.
+PREVIOUS_CONTENT_KEY = "_clio_previous_content"
+
+
 def enrich_tool_observer_result(
-    result: Any, args: dict[str, Any], snapshot: Any, *, name: str = "fs_apply_edit_write"
+    result: Any, args: dict[str, Any], snapshot: Any, *, name: str
 ) -> Any:
     """Attach presentation to the observer copy without changing the raw result."""
 
     if not isinstance(result, Mapping):
         return result
-    return {**result, "presentation": present_mcp_result(name, args, result, snapshot)}
+    enriched = {**result, "presentation": present_mcp_result(name, args, result, snapshot)}
+    if isinstance(snapshot, PreviousContent):
+        enriched[PREVIOUS_CONTENT_KEY] = snapshot
+    return enriched
 
 
 def observe_mcp_result(name: str, result: Any, args: dict[str, Any], snapshot: Any) -> Any:
@@ -260,14 +351,9 @@ def observe_mcp_result(name: str, result: Any, args: dict[str, Any], snapshot: A
     )
 
 
-def _capture_write(args: Mapping[str, Any]) -> FileWriteSnapshot:
-    path = Path(validate_write_path(str(args["filepath"]), field="filepath"))
-    content = (
-        Path(validate_read_path(str(path))).read_text(encoding="utf-8", errors="replace")
-        if path.exists()
-        else ""
-    )
-    return FileWriteSnapshot(str(path), content)
+def _capture_write(args: Mapping[str, Any]) -> PreviousContent | None:
+    """Keep the file as it was before the write, for the person's Undo."""
+    return capture_previous_content(args.get("filepath"))
 
 
 def _file_start(args: Mapping[str, Any]) -> dict[str, Any] | None:
@@ -363,8 +449,8 @@ def _directory(args: Mapping[str, Any], result: Any, snapshot: Any) -> dict[str,
     if not isinstance(entries, list):
         return standard_mcp_presentation(result)
     view = _inspection_start({"path": row.get("path") or args.get("path")})
-    view["summary"] = f"{len(entries)} entries" + (
-        " · partial listing" if row.get("truncated") else ""
+    view["summary"] = f"{len(entries)} {'entry' if len(entries) == 1 else 'entries'}" + (
+        " (partial listing)" if row.get("truncated") else ""
     )
     view["blocks"].extend(
         {
@@ -400,7 +486,7 @@ def _search(args: Mapping[str, Any], result: Any, snapshot: Any) -> dict[str, An
     count = len(matches)
     files = row.get("files_scanned", 0)
     view["summary"] = (
-        f"{count} {'match' if count == 1 else 'matches'} · "
+        f"{count} {'match' if count == 1 else 'matches'}, "
         f"{files} {'file' if files == 1 else 'files'} searched"
     )
     view["blocks"].append(
@@ -452,11 +538,18 @@ def _search(args: Mapping[str, Any], result: Any, snapshot: Any) -> dict[str, An
 def _diff(args: Mapping[str, Any], result: Any, snapshot: Any) -> dict[str, Any]:
     row = _structured(result)
     diff = str(row.get("unified_diff") or "")
-    if isinstance(snapshot, FileWriteSnapshot) and row.get("ok") is True:
-        after = Path(validate_read_path(snapshot.path)).read_text(
-            encoding="utf-8", errors="replace"
-        )
-        diff = unified_file_diff(snapshot.content, after, Path(snapshot.path).name, context=1)
+    if isinstance(snapshot, PreviousContent) and row.get("ok") is True:
+        # A compact view: one context line around each change, from the pre-write copy.
+        before = snapshot.content if snapshot.existed else ""
+        if before is not None:
+            # The captured before-copy preserves line endings. A text-mode read
+            # here normalizes CRLF and makes unchanged Windows lines look edited.
+            after = (
+                Path(validate_read_path(snapshot.path))
+                .read_bytes()
+                .decode("utf-8", errors="replace")
+            )
+            diff = unified_file_diff(before, after, Path(snapshot.path).name, context=1)
     return {
         "subject": "file-link",
         "summary": "",
@@ -508,6 +601,8 @@ def _terminal(args: Mapping[str, Any], result: Any, snapshot: Any) -> dict[str, 
 
 def _web(args: Mapping[str, Any], result: Any, snapshot: Any) -> dict[str, Any]:
     del snapshot
+    if structured_tool_result_error(result) is not None:
+        return standard_mcp_presentation(result)
     row = _structured(result)
     blocks: list[dict[str, Any]] = []
     document = row.get("document")
@@ -521,14 +616,14 @@ def _web(args: Mapping[str, Any], result: Any, snapshot: Any) -> dict[str, Any]:
             break
     identity = []
     if row.get("content_type"):
-        identity.append(str(row["content_type"]))
+        identity.append(f"Content type: {row['content_type']}")
     if isinstance(row.get("size_bytes"), int):
-        identity.append(f"{row['size_bytes']:,} bytes")
+        identity.append(f"Size: {row['size_bytes']:,} bytes")
     structure = document.get("structure_summary")
     if isinstance(structure, Mapping) and isinstance(structure.get("pages"), int):
         identity.append(f"Pages: {structure['pages']}")
     if identity:
-        blocks.append({"id": "identity", "type": "text", "text": " · ".join(identity)})
+        blocks.append({"id": "identity", "type": "text", "text": "\n".join(identity)})
     results = row.get("results")
     failures = row.get("unresponsive_engines")
     if isinstance(failures, list) and failures:
@@ -559,7 +654,9 @@ def _web(args: Mapping[str, Any], result: Any, snapshot: Any) -> dict[str, Any]:
     events = row.get("events", [])
     if isinstance(events, list):
         text = "\n".join(
-            f"{event.get('stage', '')} · {event.get('message', '')}"
+            ": ".join(
+                filter(None, (str(event.get("stage") or ""), str(event.get("message") or "")))
+            )
             for event in events
             if isinstance(event, Mapping)
         )
@@ -630,16 +727,13 @@ register_presentation_adapter(
     "fs_read_file",
     PresentationAdapter(_read, start=_file_start, action="Read", subject="file-link"),
 )
-register_presentation_adapter(
-    "fs_propose_edit",
-    PresentationAdapter(_diff, start=_file_start, action="Propose edit", subject="file-link"),
-)
-register_presentation_adapter(
-    "fs_apply_edit_write",
-    PresentationAdapter(
-        _diff, _capture_write, start=_file_start, action="Write", subject="file-link"
-    ),
-)
+for _name, _action in (("fs_write_file", "Write"), ("fs_edit_file", "Edit")):
+    register_presentation_adapter(
+        _name,
+        PresentationAdapter(
+            _diff, _capture_write, start=_file_start, action=_action, subject="file-link"
+        ),
+    )
 register_presentation_adapter(
     "shell_bash",
     PresentationAdapter(_terminal, start=lambda args: _terminal(args, {}, None), action="Run"),

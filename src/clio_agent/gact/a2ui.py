@@ -27,7 +27,6 @@ from clio_agent.gact.a2ui_catalogs.validation import (
     validate_value,
 )
 from clio_agent.gact.a2ui_component_fold import (
-    A2UIComponentLimitExceededError,
     is_structural_message,
     materialize_update_components,
 )
@@ -40,7 +39,6 @@ def utcnow_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
-MAX_A2UI_COMPONENTS = 256
 MAX_A2UI_DEPTH = 20
 
 
@@ -227,7 +225,7 @@ def validate_server_message(
 
     Args:
         message: One raw server-to-client envelope.
-        catalogs: Resolver over every installed catalog (builtin ∪ packs).
+        catalogs: Resolver over every installed catalog (builtin ∪ plugins).
         catalog_entry: The surface's already-resolved catalog, for
             ``updateComponents``/``updateDataModel``/``deleteSurface`` on an
             EXISTING surface (a surface's catalog is fixed for its
@@ -273,9 +271,7 @@ def validate_server_message(
     if operation == "updateComponents":
         if catalog_entry is None:
             raise A2UIValidationError("A2UI updateComponents requires a resolved surface catalog")
-        validate_components(
-            catalog_entry, payload.get("components"), max_components=MAX_A2UI_COMPONENTS
-        )
+        validate_components(catalog_entry, payload.get("components"))
     if operation == "updateDataModel":
         # Optional per the official schema: omitted (or "/") means the WHOLE
         # data model; when present it must be an absolute JSON Pointer.
@@ -439,13 +435,11 @@ def _apply_staged_message(
         # Materialize, don't subset-drop (a2ui_component_fold.py has the full
         # rationale): one current, re-stamped definition per component id.
         # Never ALSO appended below, so this never needs eviction either.
-        # F5: raises A2UIComponentLimitExceededError past MAX_A2UI_COMPONENTS.
         surface.messages, surface.message_revisions = materialize_update_components(
             surface.messages,
             surface.message_revisions,
             message,
             new_revision,
-            max_components=MAX_A2UI_COMPONENTS,
         )
     else:
         if len(surface.messages) >= max_a2ui_messages():
@@ -784,7 +778,6 @@ def project_a2ui_parts(
 __all__ = [
     "A2UICatalogNotProducibleError",
     "A2UICatalogUnknownError",
-    "A2UIComponentLimitExceededError",
     "A2UIEventContextInvalidError",
     "A2UIFunctionNotInCatalogError",
     "A2UISurfaceRecord",

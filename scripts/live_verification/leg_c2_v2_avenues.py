@@ -111,9 +111,9 @@ Avenues (see ``LEG_C2.md`` for the full per-avenue writeup + citations):
                          bounded child-turn spawn, `gact/agent_elicitation.py`).
 
 Mechanics mirror ``leg_c_synthetic_session.py``: its own server boot on a
-free port, allow-all policies FIRST, the ``v2ex-avenues`` testing-agent pack
+free port, allow-all policies FIRST, the ``v2ex-avenues`` testing agent
 (``agents/v2ex-avenues/`` -- a SIBLING of ``agents/v2ex-testing/``, not an
-edit to it, exposing every exerciser tool leg C's narrower pack does not),
+edit to it, documenting every exerciser tool its avenues drive),
 zero-LM readiness gate before any turn, ``claude_code``/``sonnet`` turns ONLY
 for the FIVE avenues that genuinely need a model in the loop (1, 2, 5, 11,
 and 12 as of C1-S7) -- every other avenue is driven through a headless
@@ -158,8 +158,8 @@ from tests.test_tools.mcp_exerciser import (  # noqa: E402
     URL_GUARDED_INPUT_URL,
 )
 
-#: The v2ex-avenues pack template this leg materializes per run (sibling of
-#: leg C's narrower v2ex-testing pack -- see agents/v2ex-avenues/AGENT.md).
+#: The v2ex-avenues marketplace template this leg materializes per run (sibling
+#: of leg C's v2ex-testing agent -- see agents/v2ex-avenues/README.md).
 PACK_TEMPLATE_DIR = Path(__file__).resolve().parent / "agents" / "v2ex-avenues"
 
 #: Every tool build_exerciser_server() registers (mirrors leg_c_synthetic_
@@ -188,7 +188,7 @@ EXERCISER_EXPECTED_TOOLS = {
     AGENT_GUARDED_INPUT_TOOL_NAME,  # C1-S7, #1309: the agent-elicitation avenue's tool
 }
 
-#: Every namespaced tool the pack's `main` expert must resolve before any
+#: Every namespaced tool the session agent must resolve before any
 #: turn is driven (the readiness gate; also avenue 6's evidence).
 NEEDED_AGENT_TOOLS = {f"{EXERCISER_NAMESPACE}_{name}" for name in EXERCISER_EXPECTED_TOOLS}
 
@@ -1587,8 +1587,9 @@ def main() -> int:
     if not args.apps_ui_only and hcap_log.exists():
         hcap_log.unlink()
 
-    command = common.quoted_command(sys.executable, str(EXERCISER_PATH))
-    pack_root = common.materialize_testing_pack(
+    # ``python`` resolves to this interpreter (boot_server puts it first on PATH).
+    command = ["python", str(EXERCISER_PATH)]
+    pack_root = common.materialize_testing_marketplace(
         PACK_TEMPLATE_DIR, ws_dir, {EXERCISER_NAMESPACE: command}
     )
 
@@ -1647,10 +1648,9 @@ def main() -> int:
         verdict["workspace_id"] = wsid
         verdict["session_id"] = sid
 
-        install_result = common.install_blueprint(call, pack_root, wsid)
-        blueprint_id = str(install_result.get("id") or "")
-        common.activate_blueprint(call, sid, blueprint_id)
-        verdict["blueprint_id"] = blueprint_id
+        agent_ref = common.install_testing_agent(call, pack_root)
+        common.use_agent(call, sid, agent_ref)
+        verdict["agent_ref"] = agent_ref
 
         handshake = call(
             "GET", "/v1/mcp/handshake", params={"workspace_id": wsid, "session_id": sid}
@@ -1660,7 +1660,7 @@ def main() -> int:
         verdict["handshake_v2ex_row"] = v2ex_row
 
         resolved = common.resolved_agent_tools(call, sid, workspace_id=wsid)
-        main_tools = set(resolved.get("main") or [])
+        main_tools = set(resolved.get(common.agent_id_of(agent_ref)) or [])
         readiness_ready = NEEDED_AGENT_TOOLS.issubset(main_tools)
         verdict["readiness_gate"] = {
             "needed_tools": sorted(NEEDED_AGENT_TOOLS),

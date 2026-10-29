@@ -1,23 +1,18 @@
 """Filesystem MCP server for CLIO.
 
-Read-only repository inspection and the file_diff workflow GACT clients render:
+Five curated tools. Three read, without executing anything; two write:
 
     - read_file: pull a file's contents (capped at 256 KB).
-    - list_directory: discover immediate approved directory entries.
-    - search_text: inspect bounded literal matches and line-numbered context.
-    - propose_edit: produce a unified diff against a candidate
-      replacement WITHOUT touching disk. Returns the diff text;
-      the GACT layer materialises it as a file_diff Part the user
-      approves via /v1/sessions/{sid}/diffs/apply.
-    - apply_edit: actually write the edit to disk. Designed to be
-      invoked by the GACT layer when /diffs/apply fires, NOT
-      directly by the agent (the agent should call propose_edit).
-      Path validation goes through file_policy.
+    - list_directory: discover an approved folder's immediate entries (bounded).
+    - search_text: find literal text with line-numbered context (bounded).
+    - write_file: create a file or replace its whole content (Claude Code's Write).
+    - edit_file: replace an exact string in an existing file (Claude Code's Edit).
 
-All tools honor file_policy + workspace boundaries; reads are
-always allowed inside the policy, writes go through the
-permission gate (apply_edit's name matches "edit"/"write" so the
-gate fires).
+Every tool honors file_policy + workspace boundaries. Reads inside the policy are
+always allowed. The two writes change the file on disk; their declared annotations
+make them writes, so the permission gate asks or allows by the session's mode and
+PreToolUse hooks run on them. GACT records each successful write as an applied
+``file_diff`` the person can undo (``POST /v1/sessions/{sid}/diffs/revert``).
 """
 
 from __future__ import annotations
@@ -29,23 +24,20 @@ from fastmcp import FastMCP
 from pydantic import Field
 
 from clio_agent import conf
+from clio_agent.tools import fs_edit
 from clio_agent.tools.builtin_annotations import (
-    _APPLY_EDIT_WRITE_ANNOTATIONS,
-    _PROPOSE_EDIT_ANNOTATIONS,
+    _FILE_WRITE_ANNOTATIONS,
     _READ_FILE_ANNOTATIONS,
 )
 from clio_agent.tools.builtin_annotations import (
     FS_TOOL_ANNOTATIONS as FS_TOOL_ANNOTATIONS,
 )
-from clio_agent.tools.file_diff import unified_file_diff
 from clio_agent.tools.file_policy import (
     validate_non_empty_string,
     validate_read_path,
-    validate_write_path,
 )
 from clio_agent.tools.fs_inspection import list_directory as _list_directory
 from clio_agent.tools.fs_inspection import search_text as _search_text
-from clio_agent.tools.fs_write import write_text_with_policy
 
 fs_server = FastMCP("fs")
 
@@ -59,13 +51,11 @@ _MAX_READ_BYTES = conf.resolve(
 # of these hints (``clio_agent.tools.catalog.classification_tags``); no
 # hand-authored read/write tag competes with the declaration below.
 #
-#   - read_file: provably read-only, closed-world (local disk read only).
-#   - propose_edit: read-only DELIBERATELY — it stages a unified diff WITHOUT
-#     touching disk, so the permission gate must treat it as a read (preserving
-#     the pre-#1061 "read" classification). readOnlyHint=True carries that truth.
-#   - apply_edit_write: NOT read-only; a bounded, closed-world destructive write
-#     (a single known path), so it projects to the catalog ``write`` tag the
-#     auto-edits approval mode keys on.
+#   - read_file / list_directory / search_text: provably read-only, closed-world
+#     (local disk read only).
+#   - write_file / edit_file: NOT read-only; a bounded, closed-world destructive
+#     write (a single known path), so they project to the catalog ``write`` tag
+#     the auto-edits approval mode keys on.
 
 
 @fs_server.tool(annotations=_READ_FILE_ANNOTATIONS)
@@ -132,79 +122,45 @@ def read_file(
     }
 
 
-@fs_server.tool(annotations=_PROPOSE_EDIT_ANNOTATIONS)
-def propose_edit(
+@fs_server.tool(annotations=_FILE_WRITE_ANNOTATIONS)
+def write_file(
     filepath: str,
-    new_content: str,
-    access_reason: Annotated[
-        str, Field(description="Explain why this file edit needs access outside permitted folders.")
-    ] = "",
-) -> dict[str, Any]:
-    """Produce a unified diff for an edit WITHOUT touching disk.
-
-    The agent uses this when planning a change: it reads the file,
-    computes the new contents, calls propose_edit, and returns the
-    diff text. The GACT layer materialises it as a file_diff Part;
-    the user approves via /v1/sessions/{sid}/diffs/apply, which
-    triggers apply_edit.
-
-    Returns the diff and authored content with ``applied: false`` and
-    ``requires_review: true``. GACT can later apply the accepted diff without
-    trying to replay a patch.
-    """
-
-    validate_non_empty_string(filepath, field="filepath")
-    safe_write = validate_write_path(filepath, field="filepath")
-    p = Path(safe_write)
-    if not p.exists():
-        # Treat as a new file — diff against empty.
-        old = ""
-    else:
-        safe_read = validate_read_path(str(p), field="filepath")
-        p = Path(safe_read)
-        old = p.read_text(encoding="utf-8", errors="replace")
-    new = new_content if isinstance(new_content, str) else str(new_content)
-    diff = unified_file_diff(old, new, p.name)
-    diff_lines = diff.splitlines()
-    added = sum(1 for ln in diff_lines if ln.startswith("+") and not ln.startswith("+++"))
-    removed = sum(1 for ln in diff_lines if ln.startswith("-") and not ln.startswith("---"))
-    return {
-        "path": str(p),
-        "unified_diff": diff,
-        "new_content": new,
-        "lines_added": added,
-        "lines_removed": removed,
-        "applied": False,
-        "requires_review": True,
-    }
-
-
-@fs_server.tool(
-    annotations=_APPLY_EDIT_WRITE_ANNOTATIONS,
-    meta={"ui": {"visibility": ["model:plan"]}},
-)
-def apply_edit_write(
-    filepath: str,
-    new_content: str,
+    content: str,
     access_reason: Annotated[
         str, Field(description="Explain why this write needs access outside permitted folders.")
     ] = "",
 ) -> dict[str, Any]:
-    """Write ``new_content`` to ``filepath`` on disk. Its declared MCP
-    annotations (``destructiveHint=True``, not read-only) project to the
-    catalog ``write`` tag. The tool remains in the effective runtime catalog
-    for audit and harness execution. It is model-visible only while the active
-    session is in Plan mode, where the permission resolver limits it to the
-    recorded plan file in Agent-managed workspace state. Outside Plan mode the model proposes a
-    reviewable edit and the approved ``/diffs/apply`` route owns this write.
+    """Create a file, or replace its whole content, with ``content``.
 
-    Designed for the GACT /diffs/apply path: when the user accepts
-    a file_diff, the layer calls apply_edit_write with the full
-    new contents. (Not the diff — re-applying a unified diff is
-    fragile; we always write the whole file.)
+    Missing parent folders are created. The bytes on disk are exactly ``content``.
+    The result says whether the file was ``created`` and carries the ``unified_diff``
+    of the change, its line counts, and the sha256 of the file before and after.
+    The change is listed in the person's diff panel, where they can undo it.
     """
 
-    return write_text_with_policy(filepath, new_content)
+    return fs_edit.write_file(filepath, content)
+
+
+@fs_server.tool(annotations=_FILE_WRITE_ANNOTATIONS)
+def edit_file(
+    filepath: str,
+    old_string: str,
+    new_string: str,
+    replace_all: bool = False,
+    access_reason: Annotated[
+        str, Field(description="Explain why this edit needs access outside permitted folders.")
+    ] = "",
+) -> dict[str, Any]:
+    """Replace ``old_string`` with ``new_string`` in an existing text file.
+
+    The match is exact, including whitespace and indentation. ``old_string`` must
+    occur exactly once unless ``replace_all`` is true, which replaces every
+    occurrence. A missing file, a missing ``old_string``, or one that occurs more
+    than once returns a typed error and changes nothing. The result carries the
+    ``unified_diff`` of the change, its line counts, and the sha256 before and after.
+    """
+
+    return fs_edit.edit_file(filepath, old_string, new_string, replace_all)
 
 
 __all__ = ["FS_TOOL_ANNOTATIONS", "fs_server"]

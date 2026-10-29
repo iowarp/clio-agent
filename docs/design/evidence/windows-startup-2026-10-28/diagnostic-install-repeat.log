@@ -1,0 +1,64 @@
+==> Updating the clio-agent clone in 'D:\cw\ip\local\clio-agent\data\app\clio-agent' to develop (was c6cb553)
+==> Building the CLIO-branded TUI in the background (log: D:\cw\ip\t\clio-tui-build-5937555c95ce4c089cf794f421f21e72.log)
+==> Installing clio-agent deps (uv sync --locked --python 3.14 --extra argonne --extra flowcept)
+Resolved 241 packages in 2ms
+Checked 206 packages in 34ms
+==> Migrating the CLIO store (clio-agent migrate)
+migrate step=open_store status=running
+migrate step=open_store status=done seconds=3.538
+migrate step=session_records_import status=checking summary='Import the legacy sessions.json into one clio-core record per session'
+migrate step=session_records_import status=already_done seconds=0.000
+migrate step=task_event_lane status=checking summary="Copy each conversation's task events into their own lane (task trees read only it)"
+migrate step=task_event_lane status=already_done seconds=0.000
+migrate step=task_lane_reads status=checking summary='Annotate each task-event lane so a task tree loads from the lane alone'
+migrate step=task_lane_reads status=already_done seconds=0.000
+migrate step=transcript_legacy_import status=checking summary="Keep each conversation's legacy JSON transcript as evidence in clio-core"
+migrate step=transcript_legacy_import status=already_done seconds=0.000
+migrate step=task_index_build status=checking summary='Convert retained task formats and build the task lookup and open-work records'
+migrate step=task_index_build status=already_done seconds=0.000
+migrate step=artifact_index status=checking summary='Fold the artifact history once into the clio-core artifact records'
+migrate step=artifact_index status=already_done seconds=0.000
+migrate status=done ran=0 seconds=14.044
+==> Installing managed Python/uv and Node/pnpm packages and Office rendering
+Preparing and checking the Office renderer...
+Preparing and checking the GitHub command-line tool...
+GitHub command-line tool is ready.
+Preparing and checking Python document packages...
+Office rendering is ready.
+Python document packages are ready. Preparing Node.js packages...
+Node.js document packages are ready.
+Preparing and checking protected execution...
+Protected execution: MXC unavailable (cached check).
+Native MXC unavailable (codex_mxc_unverified); checking legacy protected execution...
+Preparing protected access to CLIO's runtime packages...
+Preparing access to uv tool bin...
+Preparing access to uv tools...
+Preparing access to uv python...
+Access to tool packages is ready.
+Preparing access to temporary workspaces...
+Verifying protected execution...
+Traceback (most recent call last):
+  File "<frozen runpy>", line 203, in _run_module_as_main
+  File "<frozen runpy>", line 88, in _run_code
+  File "D:\cw\ip\local\clio-agent\data\app\clio-agent\src\clio_agent\runtime\document_install.py", line 199, in <module>
+    main()
+    ~~~~^^
+  File "D:\cw\ip\local\clio-agent\data\app\clio-agent\src\clio_agent\runtime\document_install.py", line 161, in main
+    result = install_document_runtime(
+        args.workspace,
+    ...<2 lines>...
+        reuse_installed=args.reuse_installed,
+    )
+  File "D:\cw\ip\local\clio-agent\data\app\clio-agent\src\clio_agent\runtime\document_install.py", line 102, in install_document_runtime
+    result["native_tools"]["protected_execution"] = prepare_existing_windows_fence(
+                                                    ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~^
+        progress=report, allow_elevation=setup_protected_execution
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    )
+    ^
+  File "D:\cw\ip\local\clio-agent\data\app\clio-agent\src\clio_agent\runtime\codex_desktop_setup.py", line 37, in prepare_existing_windows_fence
+    raise DocumentRuntimeError(
+        f"Protected execution verification failed: {detail} {result.next_action}"
+    )
+clio_agent.runtime.document_runtime.DocumentRuntimeError: Protected execution verification failed: The Codex Windows sandbox accounts are provisioned, but codex could NOT enforce a confined write (codex_enforcement_unverified). clio runs with the advisory file policy (honest degrade � no OS write fence in force on this host). Re-run `clio sandbox setup` to re-verify enforcement.
+xx installing the managed packages and Office rendering failed (exit 1); the cause is in the lines above. Fix it and run this installer again: it resumes from what is already installed.

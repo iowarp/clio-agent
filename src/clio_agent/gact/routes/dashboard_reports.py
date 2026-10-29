@@ -7,12 +7,14 @@ import asyncio
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel, ConfigDict, Field
 
+from clio_agent.gact.dashboard_export import DashboardExportRefused
 from clio_agent.gact.dashboard_reports import (
     export_dashboard_image,
     export_dashboard_report,
     list_dashboard_reports,
     read_dashboard_report,
 )
+from clio_agent.gact.routes.artifact_table_preview import _error
 from clio_agent.gact.routes.session_export import VisualReview
 
 
@@ -63,6 +65,9 @@ def register_dashboard_report_routes(app: FastAPI) -> None:
                 )
                 extension = "html"
             report = await asyncio.to_thread(read_dashboard_report, app, sid, artifact_id)
+        except DashboardExportRefused as exc:
+            status = 413 if exc.code == "dashboard_export_too_large" else 409
+            raise _error(status, exc.code, str(exc), **exc.details) from exc
         except (OSError, ValueError) as exc:
             raise HTTPException(409, str(exc)) from exc
         name = (

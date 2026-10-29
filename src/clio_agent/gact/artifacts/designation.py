@@ -183,8 +183,12 @@ def ground_output_paths(
     tool's own declared inputSchema.
     """
 
+    from clio_agent.tools.write_scope import active_tool_write_root  # noqa: PLC0415
+
     grounded = dict(args)
-    root = workspace_root.strip()
+    # An isolated workflow node's outputs land in its own folder.
+    node = active_tool_write_root()
+    root = str(node) if node is not None else workspace_root.strip()
     if not root:
         return grounded
     root_path = Path(root).expanduser()
@@ -218,6 +222,29 @@ def ground_output_paths(
         grounded[prop_name] = str(root_path / default_name)
 
     return grounded
+
+
+def node_output_refusal(effective_args: Mapping[str, Any]) -> str:
+    """Why a call's declared output path may not be written by an isolated node, or ``""``.
+
+    The grounding above puts a relative output in the node's folder; an absolute one
+    outside the node's write territory is refused at the boundary with the file
+    policy's typed reason, before the tool runs.
+    """
+
+    from clio_agent.tools.file_policy import FileAccessPolicy, FilePolicyError  # noqa: PLC0415
+
+    policy = FileAccessPolicy.from_env()
+    if not policy.write_roots:
+        return ""
+    for key, value in effective_args.items():
+        if key not in OUTPUT_PATH_ARG_NAMES or not isinstance(value, str) or not value.strip():
+            continue
+        try:
+            policy._ensure_writable(Path(value).expanduser().resolve(strict=False), field=key)
+        except FilePolicyError as refused:
+            return refused.to_text()
+    return ""
 
 
 def grounded_output_paths(effective_args: Mapping[str, Any]) -> dict[str, str]:
@@ -289,7 +316,7 @@ def pack_declared_paths(
     workflow_state: Mapping[str, Any],
     path_specs: Any,
 ) -> list[str]:
-    """Return the path-string values a pack schema declares under ``artifact_paths``.
+    """Return the path-string values a plugin schema declares under ``artifact_paths``.
 
     The pack-declared designation channel (secondary/optional — owner decision
     #966.1): ``path_specs`` is the schema's ``[(section, key), ...]`` list; for

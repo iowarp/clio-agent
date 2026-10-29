@@ -128,6 +128,22 @@ def test_outputs_come_from_the_task_only_when_no_source_states_them() -> None:
     assert _values(stated.output_modalities) == ["image", "text"]
 
 
+@pytest.mark.parametrize(
+    ("task", "expected"),
+    [
+        ("image-text-to-image", ["image"]),
+        ("image-text-to-video", ["video"]),
+        ("video-to-video", ["video"]),
+        ("audio-to-audio", ["audio"]),
+        ("visual-question-answering", ["text"]),
+    ],
+)
+def test_hub_task_evidence_supplies_known_output_modality(task: str, expected: list[str]) -> None:
+    record = _tags(ModelCapabilities(model_key="m", task=Fact(task, "hf_repo", AT, "pipeline_tag")))
+
+    assert _values(record.output_modalities) == expected
+
+
 def test_capabilities_need_a_true_fact_and_reasoning_a_real_mechanism() -> None:
     record = _tags(
         ModelCapabilities(

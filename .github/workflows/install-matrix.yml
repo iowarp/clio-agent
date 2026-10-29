@@ -1,0 +1,457 @@
+name: Install and startup matrix
+
+# Measures every official way to install Clio and how Clio starts on a long-lived store,
+# on Linux, macOS and Windows. Every step is timed and recorded, a failing step is
+# reported in the job summary and the job carries on; at the end of each job the steps
+# whose numbers are known and stable are held to their budgets (scripts/ci/
+# install_budgets.json, checked by scripts/ci/check_budgets.py), which fails the job with
+# the step and the number. Steps without a budget stay report-only. The crash job kills
+# Clio with SIGKILL during flow-heavy work and fails when anything acknowledged was lost
+# (docs/design/install-and-startup-implementation.md, A0, A4 and R7).
+
+on:
+  pull_request:
+    branches: [develop, main, 'claude/**']
+    paths:
+      - 'install/**'
+      - 'src/clio_agent/gact/app.py'
+      - 'src/clio_agent/gact/server_boot.py'
+      - 'src/clio_agent/gact/task_runtime.py'
+      - 'src/clio_agent/gact/transcript_file.py'
+      - 'src/clio_agent/gact/boot_timing.py'
+      - 'src/clio_agent/gact/infrastructure/**'
+      - 'scripts/create_reference_store.py'
+      - 'scripts/measure_startup.py'
+      - 'scripts/ci/record_step.py'
+      - 'scripts/ci/check_budgets.py'
+      - 'scripts/ci/install_budgets.json'
+      - 'scripts/crash_test.py'
+      - 'scripts/ci/ssh_deploy_steps.py'
+      - 'scripts/smoke_desktop_package.py'
+      - '.github/workflows/install-matrix.yml'
+  schedule:
+    - cron: '17 6 * * *'
+  workflow_dispatch:
+    inputs:
+      scale:
+        description: 'Reference store sizes to measure (space separated)'
+        default: '1 4'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: install-matrix-${{ github.head_ref || github.ref }}
+  cancel-in-progress: true
+
+env:
+  TIMINGS: ${{ github.workspace }}/timings.jsonl
+  PYTHONUNBUFFERED: '1'
+
+jobs:
+  startup:
+    name: Startup on a long-lived store
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+      - uses: astral-sh/setup-uv@v5
+      - name: Install dependencies
+        run: uv sync --frozen --extra dev
+      - name: Generate and measure reference stores
+        continue-on-error: true
+        env:
+          SCALES: ${{ github.event.inputs.scale || (github.event_name == 'schedule' && '1 4') || '1' }}
+        run: |
+          mkdir -p "$RUNNER_TEMP/stores" results
+          for scale in $SCALES; do
+            store="$RUNNER_TEMP/stores/x$scale"
+            uv run --frozen --no-sync python scripts/ci/record_step.py --file "$TIMINGS" \
+              --name "generate reference store x$scale" -- \
+              uv run --frozen --no-sync python scripts/create_reference_store.py \
+                --out "$store" --scale "$scale" --capacity "$((scale > 1 ? 4 : 1))GB"
+            uv run --frozen --no-sync python scripts/measure_startup.py --store "$store" \
+              --open 50 --idle 60 --work-dir "$RUNNER_TEMP" --out "results/startup-x$scale.json" || true
+          done
+      # Report-only until its numbers are known: a store with a backlog of interrupted
+      # fan-outs and open children. Time to ready with the backlog, then again on the same
+      # store once the obligations lane drained it; peak memory while it drains; the first
+      # page of conversations opened mid-drain (R7 backlog test).
+      - name: Backlog of interrupted flows and pending mail
+        continue-on-error: true
+        run: |
+          store="$RUNNER_TEMP/stores/backlog"
+          uv run --frozen --no-sync python scripts/ci/record_step.py --file "$TIMINGS" \
+            --name "generate backlog store" -- \
+            uv run --frozen --no-sync python scripts/create_reference_store.py --out "$store" \
+              --flows 10 --chats 5 --chat-turns 3 --children 3 --open 20 --interrupted 60 \
+              --settle 30 --capacity 512MB
+          for run in backlog backlog-drained; do
+            timeout 2400 uv run --frozen --no-sync python scripts/measure_startup.py --store "$store" \
+              --in-place --scripted-model --wait-obligations --open-during-drain 5 \
+              --work-dir "$RUNNER_TEMP" --out "results/startup-$run.json" || true
+          done
+      - name: Report
+        if: always()
+        run: |
+          {
+            echo "## Startup on reference stores"
+            for file in results/startup-*.json; do
+              [ -f "$file" ] || continue
+              python3 - "$file" <<'PY'
+          import json, sys
+          r = json.load(open(sys.argv[1]))
+          m = r.get("marks", {})
+          print(f"\n### {sys.argv[1]}\n")
+          print(f"- conversations listed: {r.get('sessions_listed')}")
+          print(f"- first health: {r.get('first_health_s')} s; task runtime ready: {m.get('task_runtime_ready')} s")
+          print(f"- memory at ready: {r.get('rss_ready_mb')} MB; after opening {r.get('opened')}: {r.get('rss_after_open_mb')} MB; after idle: {r.get('rss_after_idle_mb')} MB")
+          print(f"- shutdown: {r.get('shutdown_s')} s (forced: {r.get('shutdown_forced')}); clio-core left running: {r.get('daemon_left_running')}")
+          if "obligations_wait_s" in r:
+              print(f"- obligations drained in {r['obligations_wait_s']} s; peak memory by phase: {r.get('rss_peak_mb')} MB")
+          for o in r.get("opened_during_drain", []):
+              print(f"- opened mid-drain: {o['title']}: HTTP {o['status']}, {o['messages']} messages in {o['seconds']} s (drain running: {o['obligations_running']})")
+          print("\n| Step | Start (s) | Seconds | Outcome |\n|---|---|---|---|")
+          for s in r.get("steps", []):
+              print(f"| {s['name']} | {s['start_s']} | {s['seconds']} | {s['outcome']} |")
+          PY
+            done
+            echo
+            if [ -f "$TIMINGS" ]; then python3 scripts/ci/record_step.py --file "$TIMINGS" --summary; else echo "No step ran."; fi
+          } >> "$GITHUB_STEP_SUMMARY"
+      - name: Enforce budgets (agent start to ready < 30 s, shutdown < 20 s)
+        if: always()
+        run: python3 scripts/ci/check_budgets.py --startup results >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: startup-results
+          path: |
+            results/
+            timings.jsonl
+          if-no-files-found: ignore
+
+  crash:
+    name: Crash test (kill -9 during flow-heavy work)
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+      - uses: astral-sh/setup-uv@v5
+      - name: Install dependencies
+        run: uv sync --frozen --extra dev
+      # A real server on a private clio-core with a scripted model; SIGKILL at a random
+      # point each iteration, restart, and compare everything the API acknowledged.
+      # Fails when anything acknowledged was lost; work that does not settle after the
+      # restart (liveness) or resumes as something else (semantic) is reported without
+      # failing the job.
+      - name: Kill, restart and compare
+        run: |
+          mkdir -p results
+          uv run --frozen --no-sync python scripts/crash_test.py --out "$RUNNER_TEMP/crash" \
+            --iterations 5 --report results/crash.json --port 18991
+      - name: Report
+        if: always()
+        run: |
+          {
+            echo "## Crash test"
+            if [ -f results/crash.json ]; then
+              python3 - results/crash.json <<'PY'
+          import json, sys
+          r = json.load(open(sys.argv[1]))
+          s = r["summary"]
+          print(f"- seed {r['seed']}; {s['iterations']} iterations in {s['seconds']} s; kill points: {', '.join(s['kill_points'])}")
+          print(f"- acknowledged: {s['acknowledged']}")
+          print(f"- lost: {s['lost']}; liveness: {s['liveness']}; semantic: {s.get('semantic', 0)}; findings: {s['findings_by_type'] or 'none'}")
+          print("\n| Iteration | Killed at (s) | Kill points | Restart to ready (s) | Settled (s) | Findings |\n|---|---|---|---|---|---|")
+          for it in r["iterations"]:
+              kinds = {}
+              for f in it.get("findings", []):
+                  kinds[f["type"]] = kinds.get(f["type"], 0) + 1
+              settle = it.get("settle", {})
+              print(f"| {it['iteration']} | {it['killed_at_s']} | {', '.join(it['kill_points'])} | {it.get('restart', {}).get('ready_s')} | {settle.get('seconds')}{'' if settle.get('settled', True) else ' (not settled)'} | {kinds or 'none'} |")
+          PY
+            else
+              echo "No report was written."
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: crash-results
+          path: |
+            results/
+            ${{ runner.temp }}/crash/server-*.log
+          if-no-files-found: ignore
+
+  script:
+    name: Install script (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-15, windows-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+      - uses: astral-sh/setup-uv@v5
+      # The release path runs the script people get (main), which installs the latest
+      # release; the checkout's script installs that release too, but may already call
+      # code the release does not have. The source path below runs this checkout.
+      # Published paths (main's one-liner, the latest release) run on schedule and on
+      # request; a pull request tests its own code (the source steps below).
+      - name: Fetch the published install script
+        if: github.event_name != 'pull_request'
+        shell: bash
+        run: |
+          curl -fsSL https://raw.githubusercontent.com/iowarp/clio-agent/main/install/install.sh -o "$RUNNER_TEMP/install.sh"
+          curl -fsSL https://raw.githubusercontent.com/iowarp/clio-agent/main/install/install.ps1 -o "$RUNNER_TEMP/install.ps1"
+      - name: Release install, start, stop, re-run, interrupted re-run, uninstall (POSIX)
+        if: runner.os != 'Windows' && github.event_name != 'pull_request'
+        continue-on-error: true
+        shell: bash
+        env:
+          CLIO_PREFIX: ${{ runner.temp }}/clio/app
+          CLIO_BIN_DIR: ${{ runner.temp }}/clio/bin
+          CLIO_AGENT_HOME: ${{ runner.temp }}/clio/home
+        run: |
+          rec() { python scripts/ci/record_step.py --file "$TIMINGS" "$@"; }
+          release="$RUNNER_TEMP/install.sh"
+          rec --name "script: fresh install" -- bash "$release"
+          rec --name "script: start" -- "$CLIO_BIN_DIR/clio" start
+          rec --name "script: stop" -- "$CLIO_BIN_DIR/clio" stop
+          rec --name "script: re-run over an install" -- bash "$release"
+          rec --name "script: interrupted after 20s" --kill-after 20 -- bash "$release"
+          rec --name "script: re-run after interruption" -- bash "$release"
+          rec --name "script: start after re-run" -- "$CLIO_BIN_DIR/clio" start
+          rec --name "script: stop after re-run" -- "$CLIO_BIN_DIR/clio" stop
+          rec --name "script: uninstall" -- "$CLIO_BIN_DIR/clio" uninstall --yes
+          left=$(find "$CLIO_PREFIX" -type f 2>/dev/null | wc -l | tr -d ' ')
+          echo "{\"name\": \"script: files left after uninstall\", \"os\": \"$RUNNER_OS\", \"seconds\": 0, \"exit_code\": $left, \"killed\": false, \"outcome\": \"$([ "$left" = 0 ] && echo ok || echo "$left files left")\"}" >> "$TIMINGS"
+      - name: From source (POSIX)
+        if: runner.os != 'Windows'
+        continue-on-error: true
+        shell: bash
+        env:
+          CLIO_PREFIX: ${{ runner.temp }}/clio-src/app
+          CLIO_BIN_DIR: ${{ runner.temp }}/clio-src/bin
+          CLIO_AGENT_HOME: ${{ runner.temp }}/clio-src/home
+          CLIO_REF: ${{ github.head_ref || github.ref_name }}
+        run: |
+          rec() { python scripts/ci/record_step.py --file "$TIMINGS" "$@"; }
+          rec --name "source: fresh install" -- bash install/install.sh
+          rec --name "source: start" -- "$CLIO_BIN_DIR/clio" start
+          rec --name "source: stop" -- "$CLIO_BIN_DIR/clio" stop
+          rec --name "source: re-run over an install" -- bash install/install.sh
+          rec --name "source: interrupted after 20s" --kill-after 20 -- bash install/install.sh
+          rec --name "source: re-run after interruption" -- bash install/install.sh
+          rec --name "source: start after re-run" -- "$CLIO_BIN_DIR/clio" start
+          rec --name "source: stop after re-run" -- "$CLIO_BIN_DIR/clio" stop
+          rec --name "source: uninstall" -- "$CLIO_BIN_DIR/clio" uninstall --yes
+      - name: Release install, start, stop, re-run, interrupted re-run, uninstall (Windows)
+        if: runner.os == 'Windows' && github.event_name != 'pull_request'
+        continue-on-error: true
+        shell: pwsh
+        env:
+          CLIO_PREFIX: ${{ runner.temp }}\clio\app
+          CLIO_BIN_DIR: ${{ runner.temp }}\clio\bin
+          CLIO_AGENT_HOME: ${{ runner.temp }}\clio\home
+        run: |
+          function Rec { python scripts/ci/record_step.py --file $env:TIMINGS @args }
+          $release = Join-Path $env:RUNNER_TEMP "install.ps1"
+          Rec --name "script: fresh install" -- pwsh -NoProfile -File $release
+          Rec --name "script: start" -- pwsh -NoProfile -File "$env:CLIO_BIN_DIR\clio.ps1" start
+          Rec --name "script: stop" -- pwsh -NoProfile -File "$env:CLIO_BIN_DIR\clio.ps1" stop
+          Rec --name "script: re-run over an install" -- pwsh -NoProfile -File $release
+          Rec --kill-after 20 --name "script: interrupted after 20s" -- pwsh -NoProfile -File $release
+          Rec --name "script: re-run after interruption" -- pwsh -NoProfile -File $release
+          Rec --name "script: uninstall" -- pwsh -NoProfile -File "$env:CLIO_BIN_DIR\clio.ps1" uninstall -Yes
+      - name: From source (Windows)
+        if: runner.os == 'Windows'
+        continue-on-error: true
+        shell: pwsh
+        env:
+          CLIO_PREFIX: ${{ runner.temp }}\clio-src\app
+          CLIO_BIN_DIR: ${{ runner.temp }}\clio-src\bin
+          CLIO_AGENT_HOME: ${{ runner.temp }}\clio-src\home
+          CLIO_REF: ${{ github.head_ref || github.ref_name }}
+        run: |
+          function Rec { python scripts/ci/record_step.py --file $env:TIMINGS @args }
+          Rec --name "source: fresh install" -- pwsh -NoProfile -File install/install.ps1
+          Rec --name "source: start" -- pwsh -NoProfile -File "$env:CLIO_BIN_DIR\clio.ps1" start
+          Rec --name "source: stop" -- pwsh -NoProfile -File "$env:CLIO_BIN_DIR\clio.ps1" stop
+          Rec --name "source: re-run over an install" -- pwsh -NoProfile -File install/install.ps1
+          Rec --name "source: uninstall" -- pwsh -NoProfile -File "$env:CLIO_BIN_DIR\clio.ps1" uninstall -Yes
+      - name: Report
+        if: always()
+        shell: bash
+        run: |
+          { echo "## Install script on ${{ matrix.os }}"; if [ -f "$TIMINGS" ]; then python scripts/ci/record_step.py --file "$TIMINGS" --summary; else echo "No step ran."; fi; } >> "$GITHUB_STEP_SUMMARY"
+      - name: Enforce budgets (install < 180 s, stop < 20 s)
+        if: always()
+        shell: bash
+        run: python scripts/ci/check_budgets.py --job script --timings "$TIMINGS" >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: script-${{ matrix.os }}
+          path: timings.jsonl
+          if-no-files-found: ignore
+
+  ssh:
+    name: SSH deployment (Linux container)
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - name: Start an sshd container
+        run: |
+          ssh-keygen -t ed25519 -N '' -f "$RUNNER_TEMP/key" -q
+          docker run -d --name target -p 2222:22 ubuntu:24.04 sleep infinity
+          docker exec target bash -c "apt-get update -qq && apt-get install -y -qq openssh-server curl ca-certificates sudo git iproute2 procps >/dev/null && useradd -m -s /bin/bash clio && mkdir -p /home/clio/.ssh /run/sshd"
+          docker cp "$RUNNER_TEMP/key.pub" target:/home/clio/.ssh/authorized_keys
+          docker exec target bash -c "chown -R clio /home/clio/.ssh && chmod 600 /home/clio/.ssh/authorized_keys && /usr/sbin/sshd"
+      - uses: astral-sh/setup-uv@v5
+      - name: Install dependencies
+        run: uv sync --frozen
+      # The app's own deployment, not a one-liner: the claim, install and start command
+      # specs the desktop sends to its SSH transport, then its status, stop, a second
+      # deploy over that install, and teardown (scripts/ci/ssh_deploy_steps.py).
+      - name: Deploy over SSH with the app's commands
+        continue-on-error: true
+        run: |
+          uv run --frozen --no-sync python scripts/ci/ssh_deploy_steps.py --file "$TIMINGS" \
+            --ssh "ssh -i $RUNNER_TEMP/key -p 2222 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR clio@127.0.0.1"
+      - name: Report
+        if: always()
+        run: |
+          { echo "## SSH deployment"; if [ -f "$TIMINGS" ]; then python3 scripts/ci/record_step.py --file "$TIMINGS" --summary; else echo "No step ran."; fi; } >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: ssh
+          path: timings.jsonl
+          if-no-files-found: ignore
+
+  desktop:
+    name: Desktop package (${{ matrix.os }})
+    # The published installers: meaningful once a release carries the change under test.
+    if: github.event_name != 'pull_request'
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            asset: '*_amd64-bundled.deb'
+          - os: windows-latest
+            asset: '*_x64-setup-bundled.exe'
+          - os: macos-15
+            asset: '*aarch64-bundled.dmg'
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 90
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+      # The release people download: the most recently published one, pre-releases
+      # included (the stable line predates the bundled installers).
+      - name: Download the latest published installer
+        id: asset
+        shell: bash
+        run: |
+          tag="$(gh api 'repos/${{ github.repository }}/releases?per_page=20' \
+            -q '[.[] | select(.draft | not) | select(.tag_name | startswith("v"))][0].tag_name')"
+          mkdir -p "$RUNNER_TEMP/asset"
+          if gh release download "$tag" --repo '${{ github.repository }}' -p '${{ matrix.asset }}' -D "$RUNNER_TEMP/asset"; then
+            echo "path=$(ls "$RUNNER_TEMP"/asset/* | head -1)" >> "$GITHUB_OUTPUT"
+          else
+            echo "{\"name\": \"desktop: $tag has no ${{ matrix.asset }}\", \"os\": \"$RUNNER_OS\", \"seconds\": 0, \"exit_code\": 1, \"killed\": false, \"outcome\": \"no installer\"}" >> "$TIMINGS"
+          fi
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+      - name: Install, first launch, quit, second launch, quit, uninstall (Linux)
+        if: runner.os == 'Linux' && steps.asset.outputs.path
+        continue-on-error: true
+        run: |
+          rec() { python3 scripts/ci/record_step.py --file "$TIMINGS" "$@"; }
+          sudo apt-get update -qq && sudo apt-get install -y -qq xvfb >/dev/null
+          smoke() {
+            xvfb-run -a uv run --no-project --python 3.14 --with psutil scripts/smoke_desktop_package.py \
+              /usr/bin/clio-desktop --quit --timeout 900 --evidence-dir "$RUNNER_TEMP/evidence-$1" \
+              --agent-home "$HOME/.local/share/clio-agent-ci" \
+              --boot-log "$HOME/.local/share/ai.iowarp.clio.desktop/logs/backend-boot.log"
+          }
+          # The terminal path people use: install.sh --desktop (downloads, verifies, installs).
+          rec --name "desktop: install.sh --desktop (deb)" -- bash install/install.sh --desktop --version "${{ steps.asset.outputs.tag }}"
+          rec --name "desktop: first launch to ready, then quit" -- bash -c "$(declare -f smoke); smoke first"
+          rec --name "desktop: returning launch to ready, then quit" -- bash -c "$(declare -f smoke); smoke second"
+          rec --name "desktop: uninstall (apt)" -- sudo apt-get remove -y -qq clio-desktop
+      - name: Install, first launch, quit, second launch, quit, uninstall (Windows)
+        if: runner.os == 'Windows' && steps.asset.outputs.path
+        continue-on-error: true
+        shell: pwsh
+        run: |
+          function Rec { python scripts/ci/record_step.py --file $env:TIMINGS @args }
+          $dir = Join-Path $env:RUNNER_TEMP 'clio-desktop'
+          $log = "$env:LOCALAPPDATA/ai.iowarp.clio.desktop/logs/backend-boot.log"
+          Rec --name "desktop: install (NSIS /S)" -- "${{ steps.asset.outputs.path }}" /S "/D=$dir"
+          foreach ($run in 'first', 'second') {
+            Rec --name "desktop: $run launch to ready, then killed" -- uv run --no-project --python 3.14 --with psutil scripts/smoke_desktop_package.py "$dir/clio-desktop.exe" --quit --timeout 900 --evidence-dir "$env:RUNNER_TEMP/evidence-$run" --boot-log $log --agent-home "$dir/data/clio-agent"
+          }
+          Rec --name "desktop: uninstall (NSIS /S)" -- "$dir/uninstall.exe" /S
+      - name: Install, first launch, quit, second launch, quit, uninstall (macOS)
+        if: runner.os == 'macOS' && steps.asset.outputs.path
+        continue-on-error: true
+        run: |
+          rec() { python3 scripts/ci/record_step.py --file "$TIMINGS" "$@"; }
+          export CLIO_DESKTOP_DIR=/Applications
+          rec --name "desktop: install.sh --desktop (dmg)" -- bash install/install.sh --desktop --version "${{ steps.asset.outputs.tag }}"
+          app="/Applications/CLIO Desktop.app"
+          for run in first second; do
+            rec --name "desktop: $run launch to ready, then quit" -- uv run --no-project --python 3.14 --with psutil \
+              scripts/smoke_desktop_package.py "$app/Contents/MacOS/clio-desktop" --quit --timeout 900 \
+              --evidence-dir "$RUNNER_TEMP/evidence-$run"
+          done
+          rec --name "desktop: uninstall (remove the app)" -- rm -rf "$app"
+      - name: Report
+        if: always()
+        shell: bash
+        run: |
+          {
+            echo "## Desktop ${{ steps.asset.outputs.tag }} on ${{ matrix.os }}"
+            for receipt in "$RUNNER_TEMP"/evidence-*/receipt.json; do
+              [ -f "$receipt" ] || continue
+              python3 - "$receipt" <<'PY'
+          import json, sys
+          r = json.load(open(sys.argv[1]))
+          print(f"- {sys.argv[1].split('evidence-')[1].split('/')[0]}: ready in {r.get('backend_ready_seconds')} s;"
+                f" quit in {r.get('quit_seconds')} s (forced: {r.get('quit_forced')});"
+                f" left running: {r.get('left_running_after_quit')}; clio-core left: {r.get('clio_core_left_running')}")
+          PY
+            done
+            if [ -f "$TIMINGS" ]; then python3 scripts/ci/record_step.py --file "$TIMINGS" --summary; else echo "No step ran."; fi
+          } >> "$GITHUB_STEP_SUMMARY"
+      # The desktop budgets: package install < 180 s and launch to ready < 60 s (every
+      # launch receipt; the first launch must have one).
+      - name: Enforce budgets (desktop install < 180 s, launch to ready < 60 s)
+        if: always() && steps.asset.outputs.path
+        shell: bash
+        run: |
+          python3 scripts/ci/check_budgets.py --timings "$TIMINGS" --desktop "$RUNNER_TEMP" >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: desktop-${{ matrix.os }}
+          path: |
+            timings.jsonl
+            ${{ runner.temp }}/evidence-*/receipt.json
+            ${{ runner.temp }}/evidence-*/failure.json
+            ${{ runner.temp }}/evidence-*/boot.log
+          if-no-files-found: ignore

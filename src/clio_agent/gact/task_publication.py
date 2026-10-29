@@ -45,6 +45,54 @@ def publish_task_notice(
     attention_content: CoreReference | None = None,
 ) -> None:
     """Confirm an outcome/attention notification; reads and progress never acknowledge it."""
+    _publish_task_notice(history, current, episode=episode, attention_content=attention_content)
+    if current.terminal_at is not None and current.kind in {"Session", "Subagent"}:
+        # Every recipient now holds the outcome: boot no longer needs to retry it.
+        history.task_obligation_settled(current)
+
+
+def settle_published_outcomes(history: TaskHistory) -> dict[str, int]:
+    """After the one-time task-index build, finish every terminal outcome's publication.
+
+    The build derives a ``t~`` open record for each terminal Session/Subagent outcome:
+    a replay cannot see that its publication finished, because online the owner deletes
+    the record then without writing an event. Left alone, the next start's startup row
+    reads every one of them (one clio-core get each) and its obligations lane republishes
+    them. This runs boot recovery's own action instead, :func:`publish_task_notice`, which
+    skips notices already recorded, writes any still missing, and settles the record, so
+    the open records match what the online path leaves.
+
+    Returns:
+        ``outcomes`` checked and ``open_tasks`` (``t~`` records) left afterwards.
+    """
+    from clio_agent.gact.task_index_writes import trim  # noqa: PLC0415 - import cycle
+
+    checked = 0
+    for _name, row in history.index.open_records("t~"):
+        task = history.task_snapshot(str(row.get("handle", "")))
+        if (
+            task is None
+            or task.terminal_at is None
+            or task.kind not in {"Session", "Subagent"}
+            or task.settlement not in {"confirmed", "never_started"}
+            or task.result is None
+        ):
+            continue
+        publish_task_notice(history, task)
+        checked += 1
+        if checked % 64 == 0:
+            trim(history)  # one tree at a time stays resident, not the whole history
+    trim(history)
+    return {"outcomes": checked, "open_tasks": len(history.index.open_records("t~"))}
+
+
+def _publish_task_notice(
+    history: TaskHistory,
+    current: TaskSnapshot,
+    *,
+    episode: str,
+    attention_content: CoreReference | None,
+) -> None:
     with history.serialized():
         if current.terminal_at is not None:
             kind: MailKind = (

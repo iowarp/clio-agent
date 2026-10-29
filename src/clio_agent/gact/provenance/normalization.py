@@ -13,11 +13,17 @@ _SPAN_FAMILIES = {
     "expert.extract.completed": "expert.lifecycle",
     "llm.request.started": "llm.request",
     "llm.response.completed": "llm.request",
+    "llm.response.failed": "llm.request",
 }
+_TURN_OWNED_EXECUTION_LIFECYCLES = frozenset(
+    {"agent.invocation.started", "expert.lifecycle.started", "llm.request.started"}
+)
 _TOOL_INPUT_FIELDS: dict[str, tuple[str, ...]] = {
-    "fs_apply_edit_write": ("filepath",),
-    "fs_propose_edit": ("filepath",),
+    "fs_write_file": ("filepath",),
+    "fs_edit_file": ("filepath",),
     "fs_read_file": ("filepath",),
+    "fs_list_directory": ("path",),
+    "fs_search_text": ("query", "path", "file_glob"),
     "web_search": ("query", "count"),
     "web_fetch": ("target", "to_file"),
     "workspace_resource_inspect": ("resource_id",),
@@ -54,7 +60,7 @@ def _event_kind(event_type: str) -> str:
         return "session"
     if event_type.startswith("turn."):
         return "turn"
-    if event_type.startswith(("expert.", "agent.", "delegation.", "blueprint.delegation.")):
+    if event_type.startswith(("expert.", "agent.", "delegation.")):
         return "agent"
     if event_type.startswith(("lm.", "provider.")):
         return "llm"
@@ -143,6 +149,19 @@ def normalize_semantic_events(
             for call in payload.get("tool_calls") or []
         ):
             status = "failed"
+        if is_terminal and base_type == "turn":
+            turn_id = str(event.get("turn_id") or "")
+            if turn_id:
+                _close_turn_owned_execution_spans(
+                    open_spans,
+                    spans,
+                    session_id=event_session,
+                    turn_id=turn_id,
+                    status=status,
+                    occurred=occurred,
+                    terminal_event_type=event_type,
+                    terminal_event_id=str(event.get("event_id") or ""),
+                )
         raw_subject = event.get("subject")
         subject: dict[str, Any] = raw_subject if isinstance(raw_subject, dict) else {}
         identity = {
@@ -267,6 +286,36 @@ def normalize_semantic_events(
         "nodes": nodes,
         "edges": edges,
     }
+
+
+def _close_turn_owned_execution_spans(
+    open_spans: dict[tuple[str, str, str], int],
+    spans: list[dict[str, Any]],
+    *,
+    session_id: str,
+    turn_id: str,
+    status: str,
+    occurred: float | None,
+    terminal_event_type: str,
+    terminal_event_id: str,
+) -> None:
+    """Close only execution lifecycle starts explicitly owned by this terminal turn."""
+    for key, index in list(open_spans.items()):
+        span = spans[index]
+        if (
+            key[0] != session_id
+            or span["event_type"] not in _TURN_OWNED_EXECUTION_LIFECYCLES
+            or span["attributes"].get("turn_id") != turn_id
+        ):
+            continue
+        open_spans.pop(key)
+        span["status"] = status
+        span["end_time"] = occurred
+        if span.get("start_time") is not None and occurred is not None:
+            span["duration_ms"] = max(0.0, (occurred - float(span["start_time"])) * 1000.0)
+        if terminal_event_id:
+            span["source_event_ids"].append(terminal_event_id)
+        span["attributes"]["terminal_event_type"] = terminal_event_type
 
 
 def _tool_input_attributes(tool_name: str, payload: dict[str, Any]) -> dict[str, object]:

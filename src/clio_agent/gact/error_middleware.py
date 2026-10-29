@@ -189,8 +189,7 @@ def install_error_envelope(app: FastAPI) -> None:
 
 
 def install_typed_error_handlers(app: FastAPI) -> None:
-    """Register HTTP, request-validation, and skill errors in the GACT envelope."""
-    from clio_agent.gact.skills import SkillNotDelegatableError
+    """Register HTTP and request-validation errors in the GACT envelope."""
     from clio_agent.gact.task_history import RecordingUnconfirmed
 
     @app.exception_handler(RecordingUnconfirmed)
@@ -225,21 +224,6 @@ def install_typed_error_handlers(app: FastAPI) -> None:
         return JSONResponse(
             status_code=exc.status_code,
             content=envelope.model_dump(exclude_none=True),
-        )
-
-    @app.exception_handler(SkillNotDelegatableError)
-    async def _skill_not_delegatable(
-        request: object, exc: SkillNotDelegatableError
-    ) -> JSONResponse:
-        """Typed 400 for a skill id used as an agent id (#918)."""
-        info = ErrorInfo(
-            error="skill_not_delegatable",
-            message=str(exc),
-            details={"skill_id": exc.skill_id, "skill_path": exc.path},
-            recoverable=True,
-        )
-        return JSONResponse(
-            status_code=400, content=ErrorEnvelope(error=info).model_dump(exclude_none=True)
         )
 
     @app.exception_handler(RequestValidationError)

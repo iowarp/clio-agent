@@ -298,11 +298,47 @@ def hub_snapshots(root: Path) -> list[dict[str, Any]]:
     return rows
 
 
+def _clio_uv() -> str | None:
+    """CLIO's own uv on this host, the host's only after it.
+
+    The order of ``native_service_platform.clio_tool``, written out here because this
+    file also runs as the standalone worker, which imports only the standard library
+    and its declared client: the bundled desktop runtime, beside the interpreter (a
+    desktop runtime's ``python/bin`` -> ``bin``, a deployed install's
+    ``<root>/clio-agent/.venv/bin`` -> ``<root>/bin``), ``CLIO_BIN_DIR``, a deployed
+    install's default root, then ``PATH`` and ``~/.local/bin``.
+    """
+    executable = "uv.exe" if os.name == "nt" else "uv"
+    python = Path(sys.executable).absolute()
+    bundled = os.environ.get("GACT_BUNDLED_RUNTIME_DIR", "").strip()
+    data = Path(os.environ.get("XDG_DATA_HOME") or Path.home() / ".local/share")
+    candidates = [
+        *([Path(bundled) / "bin" / executable] if bundled else []),
+        *(parent / "bin" / executable for parent in python.parents[0:4]),
+        *(
+            [Path(os.environ["CLIO_BIN_DIR"]) / executable]
+            if os.environ.get("CLIO_BIN_DIR")
+            else []
+        ),
+        data / "clio-agent/app/bin" / executable,
+    ]
+    for candidate in candidates:
+        if candidate.is_file():
+            return str(candidate)
+    found = shutil.which(executable)
+    if found:
+        return found
+    home = Path.home() / ".local/bin" / executable
+    return str(home) if home.is_file() else None
+
+
 def start(root: Path, request: dict[str, Any], script: str) -> dict[str, Any]:
     """Start or reuse one durable acquisition, with a target-owned process and cache."""
-    uv = shutil.which("uv") or str(Path.home() / ".local/bin/uv")
-    if not Path(uv).is_file():
-        raise ValueError("Install uv on this execution host before downloading models")
+    uv = _clio_uv()
+    if uv is None:
+        raise ValueError(
+            "CLIO's uv is missing on this host: reinstall CLIO here (its installer brings uv)"
+        )
     repository, revision = request["repository"], request["revision"]
     if not re.fullmatch(r"[A-Za-z0-9][\w.-]*(?:/[A-Za-z0-9][\w.-]*)?", repository):
         raise ValueError("Invalid model repository")

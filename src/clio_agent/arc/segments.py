@@ -34,15 +34,11 @@ import msgspec
 
 from clio_agent.arc.context_restore import PlainContextRestore
 from clio_agent.arc.context_view import ViewSnapshot, next_generation, order_at
-from clio_agent.arc.loop_guard import LoopThreadStoreWrite, assert_store_write_off_loop
-from clio_agent.arc.schema import (
-    WORKING_SET_KINDS,
-    Segment,
-    SegmentKind,
-    decode_segments,
-    encode_segments,
-    segment_text,
-)
+from clio_agent.arc.loop_guard import assert_store_write_off_loop
+from clio_agent.arc.schema import WORKING_SET_KINDS, Segment, SegmentKind, segment_text
+from clio_agent.arc.segment_cache import _SCOPE_SEP as _SCOPE_SEP
+from clio_agent.arc.segment_cache import _SLASH_SUB as _SLASH_SUB
+from clio_agent.arc.segment_cache import ScopeCache
 from clio_agent.arc.segment_errors import ArcPersistError as ArcPersistError
 from clio_agent.arc.segment_errors import SegmentReadError as SegmentReadError
 from clio_agent.arc.segment_ids import ContextOpLogError, require_live
@@ -130,15 +126,17 @@ def _coerce_content(content: dict[str, Any]) -> dict[str, Any]:
     return coerced if isinstance(coerced, dict) else {"value": coerced}
 
 
+def _tombstone(segment: Segment, at: int) -> Segment:
+    """A tombstoned copy of a committed segment (the cached one is never mutated)."""
+    return msgspec.structs.replace(segment, status="tombstoned", tombstoned_at=at)
+
+
 # op_logger(op, session_id, scope, *, logical_time, step, position,
 #           segments_written, segments_tombstoned, derived_from) -> event dict | None
 OpLogger = Callable[..., Optional[dict[str, Any]]]
 
-_SCOPE_SEP = "__"  # session_id <SEP> scope, in the store record name
-_SLASH_SUB = "~"  # scope's '/' replaced so the record name is one path segment
 
-
-class SegmentStore(PlainContextRestore):
+class SegmentStore(ScopeCache, PlainContextRestore):
     """Ordered, scoped, mutable live-context store. Thread-safe."""
 
     def __init__(
@@ -170,15 +168,16 @@ class SegmentStore(PlainContextRestore):
         # single store-wide lock held through disk I/O. The lock-registry itself is
         # guarded by a tiny ``_registry_lock`` (held only to look up / create a scope
         # lock and for store-wide structural ops, never through disk I/O). LOCK ORDER
-        # is fixed to avoid deadlock: registry -> scope -> clock (never reverse).
+        # lookup is brief. Structural drops acquire scope locks outside the
+        # registry, then recheck its keys, so nested lane lookups cannot deadlock.
         self._registry_lock = threading.RLock()
         self._scope_locks: dict[tuple[str, str], threading.RLock] = {}
         # The shared logical-time clock gets its OWN tiny lock so the brief tick is
         # serialized across all scopes without serializing the scopes themselves.
         self._clock_lock = threading.Lock()
-        # In-memory working copy: (session_id, scope) -> list[Segment] (all, incl
-        # tombstoned), kept loaded write-through. Scopes loaded lazily once. Each
-        # scope's entry is touched only under that scope's lock.
+        # In-memory read copy: (session_id, scope) -> list[Segment] (all, incl
+        # tombstoned). A write commits to clio-core first, then replaces the entry
+        # (``ScopeCache._commit_scope``). Touched only under that scope's lock.
         self._scopes: dict[tuple[str, str], list[Segment]] = {}
         self._loaded: set[tuple[str, str]] = set()
         # Per-scope B-tree locator built in parallel with the scope lists (additive;
@@ -189,8 +188,7 @@ class SegmentStore(PlainContextRestore):
         self._next_lt = 1
         # Per-scope op generation (bumped by every op but append): see context_view.
         self._generations: dict[tuple[str, str], int] = {}
-
-    # ---- record naming -------------------------------------------------
+        self._invocation_counts: dict[str, int] = {}  # counted by the residency owner
 
     def set_op_logger(self, op_logger: OpLogger | None) -> None:
         """Inject (or replace) the durable-Trace op logger after construction.
@@ -201,10 +199,6 @@ class SegmentStore(PlainContextRestore):
         """
         self._op_logger = op_logger
         logger.debug("segments: op_logger %s", "attached" if op_logger else "cleared")
-
-    @staticmethod
-    def _record_name(session_id: str, scope: str) -> str:
-        return f"{session_id}{_SCOPE_SEP}{scope.replace('/', _SLASH_SUB)}"
 
     def _lock_for(self, session_id: str, scope: str) -> threading.RLock:
         """Return the per-scope lock for ``(session_id, scope)``, creating it once.
@@ -217,74 +211,6 @@ class SegmentStore(PlainContextRestore):
                 lk = threading.RLock()
                 self._scope_locks[key] = lk
             return lk
-
-    # ---- load / persist ------------------------------------------------
-
-    def _segs(self, session_id: str, scope: str) -> list[Segment]:
-        """Return the in-memory segment list for a scope, loading it once.
-
-        Always called under this scope's per-scope lock, so the scope's own entry in
-        ``_scopes``/``_loaded``/``_index`` is never concurrently mutated; the shared
-        clock is recovered past the loaded segments (:meth:`_recover_clock`)."""
-        key = (session_id, scope)
-        if key not in self._loaded:
-            raw = self._store.get("segments", self._record_name(session_id, scope))
-            try:
-                segs = decode_segments(raw) if raw else []
-            except msgspec.DecodeError as exc:
-                raise SegmentReadError(session_id, scope) from exc
-            self._scopes[key] = segs
-            self._loaded.add(key)
-            self._index.bulk_load(session_id, scope, segs)  # parallel locator
-            self._recover_clock(segs)
-            logger.debug(
-                "segments: cold-load session=%s scope=%s loaded=%d next_lt=%d",
-                session_id,
-                scope,
-                len(segs),
-                self._next_lt,
-            )
-        return self._scopes[key]
-
-    def _persist(self, session_id: str, scope: str) -> None:
-        """Encode + put the whole scope record; clio-core must accept it. On failure the
-        in-memory copy (changed before this call) is DISCARDED -- the next read reloads
-        clio-core's record -- and a typed :class:`ArcPersistError` is raised."""
-        segs = self._scopes[(session_id, scope)]
-        try:
-            self._put_scope(session_id, scope, segs)
-        except Exception as exc:  # noqa: BLE001 - re-raised typed after the memory is discarded
-            self._discard_scope(session_id, scope)
-            if isinstance(exc, LoopThreadStoreWrite):
-                raise  # a write from the event loop is a caller bug, typed as itself
-            raise ArcPersistError(session_id, scope, exc) from exc
-
-    def _discard_scope(self, session_id: str, scope: str) -> None:
-        """Drop the in-memory copy (changed, not persisted); the next read reloads clio-core."""
-        self._scopes.pop((session_id, scope), None)
-        self._loaded.discard((session_id, scope))
-        self._index.drop_scope(session_id, scope)
-
-    def _put_scope(self, session_id: str, scope: str, segs: list[Segment]) -> None:
-        """Encode the scope's segments and put the record (with the live search_text
-        companion). Raises if ``encode_segments`` / ``store.put`` rejects any segment,
-        or (#1334) if the caller is a thread running an event loop."""
-        assert_store_write_off_loop("segments.put", scope=scope)
-        # search_text: the live render flattened to plain text, so semantic discovery
-        # (Thread D) can find this scope by content. Empty -> None drops the companion. A
-        # scope the ``search_indexed`` predicate excludes (the reserved ``_events`` chunk
-        # family) NEVER writes the companion: the semantic-event log is never searchable.
-        if self._search_indexed is None or self._search_indexed(scope):
-            live_text = "\n".join(segment_text(s) for s in self._live_sorted(segs))
-            search_text = live_text or None
-        else:
-            search_text = None
-        self._store.put(
-            "segments",
-            self._record_name(session_id, scope),
-            encode_segments(segs),
-            search_text=search_text,
-        )
 
     def _recover_clock(self, segs: Iterable[Segment]) -> None:
         """Advance the shared clock past persisted segments (scope -> clock lock order)."""
@@ -349,7 +275,6 @@ class SegmentStore(PlainContextRestore):
                 expert_span_id=expert_span_id,
                 run_span_id=run_span_id,
             )
-            segs.append(seg)
             logger.debug(
                 "segments: append scope=%s kind=%s step=%d lt=%d order=%.4f tokens=%d id=%s",
                 scope,
@@ -364,6 +289,7 @@ class SegmentStore(PlainContextRestore):
                 session_id,
                 scope,
                 "append",
+                [*segs, seg],
                 written=[seg],
                 step=step,
                 logical_time=seg.logical_time,
@@ -410,7 +336,6 @@ class SegmentStore(PlainContextRestore):
                 expert_span_id=expert_span_id,
                 run_span_id=run_span_id,
             )
-            segs.append(seg)
             logger.debug(
                 "segments: insert scope=%s pos=%d kind=%s lt=%d order=%.4f id=%s",
                 scope,
@@ -424,6 +349,7 @@ class SegmentStore(PlainContextRestore):
                 session_id,
                 scope,
                 "insert",
+                [*segs, seg],
                 written=[seg],
                 step=step,
                 position=position,
@@ -447,11 +373,11 @@ class SegmentStore(PlainContextRestore):
             target = set(ids)
             tombstoned: list[str] = []
             op_lt = 0
-            for s in segs:
+            staged = list(segs)  # committed copies are never mutated: replace, then commit
+            for i, s in enumerate(staged):
                 if s.id in target and s.status == "live":
-                    s.status = "tombstoned"
                     op_lt = self._new_lt()  # tombstoning time (as-of-T); keep creation lt
-                    s.tombstoned_at = op_lt
+                    staged[i] = _tombstone(s, op_lt)
                     tombstoned.append(s.id)
             if tombstoned:
                 logger.debug(
@@ -463,7 +389,7 @@ class SegmentStore(PlainContextRestore):
                     tombstoned,
                 )
                 self._finish_write(
-                    session_id, scope, "delete", tombstoned=tombstoned, logical_time=op_lt
+                    session_id, scope, "delete", staged, tombstoned=tombstoned, logical_time=op_lt
                 )
             return len(tombstoned)
 
@@ -497,11 +423,11 @@ class SegmentStore(PlainContextRestore):
             order = first.order if position is None else at
             step = min((s.step for s in replaced), default=-1)
             summary_lt = self._new_lt()
-            tombstoned: list[str] = []
-            for s in replaced:
-                s.status = "tombstoned"
-                s.tombstoned_at = summary_lt  # replaced exactly when the summary appears
-                tombstoned.append(s.id)
+            tombstoned = [s.id for s in replaced]
+            staged = [  # replaced exactly when the summary appears
+                _tombstone(s, summary_lt) if s.id in target and s.status == "live" else s
+                for s in segs
+            ]
             summary = Segment(
                 scope=scope,
                 kind="summary",
@@ -517,8 +443,8 @@ class SegmentStore(PlainContextRestore):
                 expert_span_id=expert_span_id,
                 run_span_id=run_span_id,
             )
-            segs.append(summary)
-            live_remaining = sum(1 for s in segs if s.status == "live")
+            staged.append(summary)
+            live_remaining = sum(1 for s in staged if s.status == "live")
             if tombstoned:
                 logger.info(
                     "segments: summarize scope=%s replaced=%d/%d -> summary lt=%d "
@@ -540,6 +466,7 @@ class SegmentStore(PlainContextRestore):
                 session_id,
                 scope,
                 "summarize",
+                staged,
                 written=[summary],
                 tombstoned=tombstoned,
                 step=step,
@@ -583,9 +510,7 @@ class SegmentStore(PlainContextRestore):
             live_ids = {s.id for s in segs if s.status == "live"}
             require_live([target_id], live_ids, op="replace", scope=scope)
             original = next(s for s in segs if s.id == target_id and s.status == "live")
-            op_lt = self._new_lt()
-            original.status = "tombstoned"
-            original.tombstoned_at = op_lt  # replaced exactly when the new segment appears
+            op_lt = self._new_lt()  # the original is replaced exactly when the new one appears
             replacement = Segment(
                 scope=scope,
                 kind=kind if kind is not None else original.kind,
@@ -601,7 +526,8 @@ class SegmentStore(PlainContextRestore):
                 expert_span_id=expert_span_id or original.expert_span_id,
                 run_span_id=run_span_id or original.run_span_id,
             )
-            segs.append(replacement)
+            staged = [_tombstone(s, op_lt) if s is original else s for s in segs]
+            staged.append(replacement)
             logger.debug(
                 "segments: replace scope=%s target=%s -> id=%s kind=%s lt=%d order=%.4f",
                 scope,
@@ -615,6 +541,7 @@ class SegmentStore(PlainContextRestore):
                 session_id,
                 scope,
                 "replace",
+                staged,
                 written=[replacement],
                 tombstoned=[original.id],
                 step=original.step,
@@ -649,6 +576,7 @@ class SegmentStore(PlainContextRestore):
         session_id: str,
         scope: str,
         op: str,
+        staged: list[Segment],
         *,
         written: list[Segment] | None = None,
         tombstoned: list[str] | None = None,
@@ -657,14 +585,10 @@ class SegmentStore(PlainContextRestore):
         derived_from: list[str] | None = None,
         logical_time: int | None = None,
     ) -> None:
-        """Log the applied op to the Trace, stamp ``trace_ref`` on written segments,
-        then persist. Called under this scope's per-scope lock."""
+        """Log the op to the Trace, stamp ``trace_ref`` on the written segments, commit
+        ``staged`` to clio-core and only then cache it (write-through: a refusal leaves
+        the cache at the last committed record). Called under this scope's lock."""
         written = written or []
-        if op != "append":  # an op may rewrite the prefix: a new view generation
-            key = (session_id, scope)
-            self._generations[key] = next_generation()
-        for seg in written:  # parallel locator: index every newly-written segment
-            self._index.add(session_id, scope, seg)
         if logical_time is not None:
             lt = logical_time
         elif written:
@@ -689,10 +613,13 @@ class SegmentStore(PlainContextRestore):
                 if event_id:
                     for s in written:
                         s.trace_ref = event_id
-            except Exception as exc:  # noqa: BLE001 - re-raised typed; memory discarded
-                self._discard_scope(session_id, scope)  # changed in memory, not persisted
+            except Exception as exc:  # noqa: BLE001 - re-raised typed; nothing was cached
                 raise ContextOpLogError(op=op, scope=scope, cause=exc) from exc
-        self._persist(session_id, scope)
+        self._commit_scope(session_id, scope, staged)
+        if op != "append":  # an op may rewrite the prefix: a new view generation
+            self._generations[(session_id, scope)] = next_generation()
+        for seg in written:  # parallel locator: index every newly-written segment
+            self._index.add(session_id, scope, seg)
         logger.debug(
             "segments: persisted op=%s scope=%s lt=%d written=%d tombstoned=%d",
             op,
@@ -809,28 +736,6 @@ class SegmentStore(PlainContextRestore):
             index_ids = set(self._index.locate_ids(session_id, scope))
             return scan_ids == index_ids
 
-    def scan_scopes(self, session_id: str, scope_pattern: str = "") -> list[str]:
-        """Scope addresses for a session under a prefix (e.g. ``"agentX/"`` for
-        agent-level, ``""`` for all). Backs cross-scope reads."""
-        prefix = f"{session_id}{_SCOPE_SEP}"
-        out: set[str] = set()
-        for name in self._store.scan_names("segments", prefix=prefix):
-            scope = name[len(prefix) :].replace(_SLASH_SUB, "/")
-            if scope.startswith(scope_pattern):
-                out.add(scope)
-        return sorted(out)
-
-    def sessions_with_scope(self, scope: str) -> list[str]:
-        """Every ``session_id`` that currently holds a record for ``scope`` (across all
-        sessions). Backs wholesale lifecycle erase of an ephemeral scope (e.g. the
-        observer's ``_events`` log scope) without callers reaching into store internals."""
-        suffix = f"{_SCOPE_SEP}{scope.replace('/', _SLASH_SUB)}"
-        out: set[str] = set()
-        for name in self._store.scan_names("segments"):
-            if name.endswith(suffix):
-                out.add(name[: -len(suffix)])
-        return sorted(out)
-
     def supports_search(self) -> bool:
         """Whether the backend does real BM25 ranking (clio-core) vs the naive fallback."""
         fn = getattr(self._store, "supports_search", None)
@@ -881,71 +786,10 @@ class SegmentStore(PlainContextRestore):
         which must return to baseline on session release / wholesale clear rather than
         persist for replay. Held under this scope's per-scope lock."""
         with self._lock_for(session_id, scope):
-            key = (session_id, scope)
-            existing = self._segs(session_id, scope)
-            count = len(existing)
-            self._scopes.pop(key, None)
-            self._loaded.discard(key)
-            self._index.drop_scope(session_id, scope)
-            self._generations[key] = next_generation()  # erased: no reader keeps a prefix
+            count = len(self._segs(session_id, scope))
             assert_store_write_off_loop("segments.delete", scope=scope)
-            self._store.delete("segments", self._record_name(session_id, scope))
+            self._store.delete("segments", self._record_name(session_id, scope))  # store first
+            self._discard_scope(session_id, scope)
+            self._generations[(session_id, scope)] = next_generation()  # no reader keeps a prefix
             logger.debug("segments: drop_scope %s/%s dropped=%d", session_id, scope, count)
             return count
-
-    def release(self, session_id: str) -> int:
-        """Drop a session's in-memory scopes (write-through, nothing lost). Returns
-        the number of scopes released.
-
-        Store-wide structural op: it holds the registry lock (freezing the lock set)
-        AND each affected scope lock, so it never races a per-scope op in flight. No
-        deadlock: a per-scope op only re-touches the registry at its single
-        ``_lock_for`` entry (before taking its scope lock, releasing the registry
-        immediately) — it never holds a scope lock while waiting on the registry, so
-        this acquire-registry-then-scopes order has no reverse cycle.
-
-        The affected keys are derived from the lock registry (``_scope_locks``, whose
-        structure is guarded by ``_registry_lock``) and NOT by iterating ``_scopes``
-        (or the locator's ``_by_scope``): a per-scope cold-load (``_segs``) inserts into
-        BOTH ``_scopes`` and the ``_index`` under only its own scope lock, so iterating
-        either live dict here would race a load on a *different* session
-        ("dictionary changed size during iteration"). Every in-memory scope is always
-        locked before it is loaded, so the lock keys are a superset of the loaded keys —
-        nothing loaded (segment list OR locator entry) is missed. Both the ``_scopes``
-        pop and the ``_index.drop_scope`` pop below are per-known-key (never a scan), so
-        a concurrent cold-load on another session mutates a *different* key and can never
-        collide with this release."""
-        with self._registry_lock:
-            lock_keys = sorted(k for k in self._scope_locks if k[0] == session_id)
-            held = [self._scope_locks[k] for k in lock_keys]
-            for lk in held:
-                lk.acquire()
-            try:
-                released = 0
-                for k in lock_keys:
-                    if self._scopes.pop(k, None) is not None:
-                        released += 1
-                    self._loaded.discard(k)
-                    self._index.drop_scope(k[0], k[1])  # per-key: keep locator consistent
-            finally:
-                for lk in held:
-                    lk.release()
-            logger.info("segments: release session=%s scopes=%d", session_id, released)
-            return released
-
-    def clear(self) -> None:
-        """Drop ALL in-memory scope state (store untouched).
-
-        Store-wide: holds the registry lock + every scope lock (deterministic order)
-        so it never races a per-scope op (same no-deadlock argument as ``release``)."""
-        with self._registry_lock:
-            held = [self._scope_locks[k] for k in sorted(self._scope_locks)]
-            for lk in held:
-                lk.acquire()
-            try:
-                self._scopes.clear()
-                self._loaded.clear()
-                self._index.clear()
-            finally:
-                for lk in held:
-                    lk.release()

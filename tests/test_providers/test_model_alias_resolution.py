@@ -25,14 +25,13 @@ from typing import Any
 import pytest
 
 from clio_agent.gact import context as gact_context
-from clio_agent.gact.agents.declared_native_tools import (
+from clio_agent.gact.agents.native_tool_registry import (
+    build_native_tools,
     declared_native_capabilities,
-    resolve_declared_native_tools,
 )
-from clio_agent.gact.catalog import _builtin_main_agent
 from clio_agent.gact.modality_evidence import live_model_modalities
 from clio_agent.gact.providers.config import _pdf_capability, _vision_capability
-from clio_agent.gact.types import ModelRef
+from clio_agent.gact.types import AgentDef, ModelRef
 from clio_agent.providers.capabilities import invalidation
 from clio_agent.providers.capabilities.records import (
     DeploymentCapabilities,
@@ -232,17 +231,16 @@ def test_vision_and_pdf_capability_treat_an_unrelated_id_as_unknown() -> None:
 
 
 # ---------------------------------------------------------------------------
-# Declared native tools -- the default agent's resolved tool surface
+# Claimed native tools -- an agent's resolved built-in tool surface
 # ---------------------------------------------------------------------------
 
 
-def test_default_agent_resolves_view_image_and_view_pdf_for_an_alias_bound_model() -> None:
+def test_claimed_view_image_and_view_pdf_are_built_for_an_alias_bound_model() -> None:
     """An agent bound to {provider_id: claude_code, model: sonnet} keeps its native tools.
 
     Before the fix, ``declared_native_capabilities`` (via ``_vision_capability``/
-    ``_pdf_capability``) answered False for the alias, so ``resolve_declared_native_tools``
-    dropped ``view_image``/``view_pdf`` from the default agent's tool surface even
-    though it declares both (see ``_builtin_main_agent``).
+    ``_pdf_capability``) answered False for the alias, so ``build_native_tools``
+    withheld ``view_image``/``view_pdf`` from an agent whose plugins claim both.
     """
 
     app = _app(catalog=_catalog_payload())
@@ -254,13 +252,12 @@ def test_default_agent_resolves_view_image_and_view_pdf_for_an_alias_bound_model
         capabilities = declared_native_capabilities(config)
         assert capabilities == {"supports_vision": True, "supports_pdf": True}
 
-        agent = _builtin_main_agent()
-        assert "view_image" in agent.tools
-        assert "view_pdf" in agent.tools
-        requested, available, _gateway = resolve_declared_native_tools(agent, {}, **capabilities)
-        assert "view_image" in requested
+        agent = AgentDef(
+            id="standard", source="plugin", title="CLIO", tools=["view_image", "view_pdf"]
+        )
+        available, _gateway, withheld = build_native_tools(agent, agent.tools, {}, **capabilities)
         assert "view_image" in available
-        assert "view_pdf" in requested
         assert "view_pdf" in available
+        assert withheld == {}
     finally:
         gact_context.set_turn_identity(app=None, session_id="", turn_id="", trace_id="")

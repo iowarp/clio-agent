@@ -105,10 +105,10 @@ _DEFAULT_HINTS: dict[str, str] = {
         "none of this agent's declared A2UI catalogs could be loaded, so it "
         "cannot create surfaces; answer in prose, do not retry"
     ),
-    "a2ui_blueprint_unresolved": (
-        "this session's agent blueprint could not be loaded, so its catalogs are "
+    "a2ui_agent_unresolved": (
+        "this session's agent could not be resolved, so its catalogs are "
         "unknown right now; answer in prose for now -- this can change once the "
-        "blueprint is repaired or re-activated"
+        "agent's plugins resolve again"
     ),
     "a2ui_preferred_catalog_not_selectable": (
         "omit catalog_id to auto-select instead, or pass one present in "
@@ -127,11 +127,9 @@ _DEFAULT_HINTS: dict[str, str] = {
         "call load_skill for the failing component's schema, then retry "
         "with a components payload that matches it"
     ),
-    "a2ui_component_limit_exceeded": (
-        "reuse existing component ids for content that already has one "
-        "instead of minting new ids for the same thing, or call "
-        "delete_a2ui_surface and recreate it with only the components "
-        "currently shown"
+    "a2ui_bound_file_invalid": (
+        "bind the viewer to values that are artifact:// references or paths of "
+        "files inside the workspace, or write such a value at the bound path"
     ),
     "a2ui_url_unresolved": (
         "reference an existing file inside this session's workspace by its path "
@@ -218,7 +216,7 @@ KNOWN_REFUSAL_REASONS: frozenset[str] = frozenset(
         "a2ui_catalog_not_producible",
         "a2ui_function_not_in_catalog",
         "a2ui_validation_failed",
-        "a2ui_component_limit_exceeded",
+        "a2ui_bound_file_invalid",
         "a2ui_surface_not_found",
         "a2ui_client_capabilities_unknown",
         "a2ui_catalog_no_client_match",
@@ -301,10 +299,10 @@ def catalog_selection_refusal(
             "this session's agent declares a2ui_catalogs, but none of them "
             "resolved to a loadable catalog"
         )
-    elif reason == "a2ui_blueprint_unresolved":
+    elif reason == "a2ui_agent_unresolved":
         detail = (
-            "this session's bound agent blueprint did not resolve to an installed or "
-            "path-activated blueprint, so its declared catalogs are unavailable"
+            "this session's agent did not resolve to an installed agent and plugin "
+            "set, so its declared catalogs are unavailable"
         )
     elif reason == "a2ui_client_capabilities_unknown":
         detail = (

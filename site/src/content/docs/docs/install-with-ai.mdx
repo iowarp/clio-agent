@@ -1,0 +1,50 @@
+---
+title: Install with your AI assistant
+description: Give your AI assistant one link and it installs CLIO for you, on Windows, macOS or Linux.
+---
+
+import { Aside, CardGrid, LinkCard } from '@astrojs/starlight/components';
+
+If you use an AI assistant that can run commands on your computer, such as Claude Code,
+Codex, Cursor or Gemini CLI, it can install CLIO for you. Paste this into it:
+
+```text
+Install CLIO on this computer by following https://clio.iowarp.ai/install.md
+```
+
+## What the assistant does
+
+The page at [`/install.md`](/install.md) is written for assistants. Following it, the
+assistant:
+
+1. asks whether you want the desktop app or the terminal install, unless you said so;
+2. checks your operating system and processor;
+3. runs the same commands as [Install CLIO](/docs/install/), which verify every download
+   against the release's published checksums;
+4. checks the result with `clio doctor` and `clio status`, or by finding the app;
+5. stops at the first error and shows it to you.
+
+It does not ask for model accounts or API keys. CLIO asks which model to use when it first
+opens; see [Choose a model](/docs/connect-a-model/).
+
+<Aside type="note" title="Steps that need you">
+The desktop app on Linux asks for your password to install its package, and on Windows
+the installer window opens for you to click through. The assistant tells you when.
+</Aside>
+
+## Say what you want
+
+Add details to the prompt to skip the questions:
+
+```text
+Install the CLIO desktop app on this computer by following https://clio.iowarp.ai/install.md
+```
+
+```text
+Install CLIO for the terminal on this server, latest beta, by following https://clio.iowarp.ai/install.md
+```
+
+<CardGrid>
+  <LinkCard title="Install CLIO" href="/docs/install/" description="Every method, by operating system, if you prefer to run the steps yourself." />
+  <LinkCard title="Choose a model" href="/docs/connect-a-model/" description="Connect an account, a local model, or a model your lab provides." />
+</CardGrid>

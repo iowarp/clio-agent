@@ -31,6 +31,8 @@ from clio_agent.gact import context, external_task_connections, external_task_in
 from clio_agent.gact.native_work import now
 from clio_agent.gact.task_access import TaskAccessDenied, TaskCaller
 from clio_agent.gact.task_publication import publish_task_notice
+from clio_agent.tools.caller_scope import caller_meta
+from clio_agent.tools.mcp_runtime import enter_connection
 from clio_agent.tools.task_call_context import TASK_CALL, permission_snapshot, safe_description
 from clio_agent.tools.task_client import (
     AcceptedNativeCall,
@@ -352,7 +354,11 @@ class ExternalTasks:
                     raise ValueError("External task transport is unavailable before submission")
                 with client.submission(binding):
                     return await client.call_tool(
-                        name, public, raise_on_error=False, progress_handler=report_progress
+                        name,
+                        public,
+                        raise_on_error=False,
+                        progress_handler=report_progress,
+                        meta=caller_meta(),  # the calling session, for per-branch state
                     )
             finally:
                 host.inline.reset(token)
@@ -503,7 +509,7 @@ class ExternalTasks:
                                 # cannot reconnect, so retrying cannot establish custody.
                                 return True
                             await host.client.close()
-                            await host.client.__aenter__()
+                            await enter_connection(host.client)
                         await host.client.check_health()
                         rebound = call.reconnected(host.client)
                         host.calls[call.task.task_id] = rebound

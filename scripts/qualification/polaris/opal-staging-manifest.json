@@ -1,0 +1,842 @@
+{
+ "source": "https://drive.google.com/drive/folders/1_bcYVgi8bj9umTup29sM2oZFEYKpg11W",
+ "method": "curl https://drive.usercontent.google.com/download?id=<drive_id>, sha256-verified",
+ "files": 139,
+ "bytes": 1237266797,
+ "rows": [
+  {
+   "path": "67_2026.04.09_OPAL.0002_Weston_PC/README.md",
+   "bytes": 3340,
+   "sha256": "0a987721aa71f753adf53c9828836ef9aaec9168ede1bbaac1ae59e00141f19f",
+   "drive_id": "1e5eITWXtXwuJ4cX0F8CjVsEcUrNyzrJK"
+  },
+  {
+   "path": "67_2026.04.09_OPAL.0002_Weston_PC/appl-vision/data/v5-2026-09-01T08-53-35-00-00/fc1/core-0002.js",
+   "bytes": 1385138,
+   "sha256": "8a69bd92cd2140587f2756f8d7d9224b0d75e03f303d1fae80a2c0ffb613f288",
+   "drive_id": "1_PaCPsj4uEyhxNH47742dom1gTE3YP3r"
+  },
+  {
+   "path": "67_2026.04.09_OPAL.0002_Weston_PC/appl-vision/data/v5-2026-09-01T08-53-35-00-00/fc1/traits-0000-0001.js",
+   "bytes": 1168625,
+   "sha256": "66e8f77e2ade94f2a99f8c4f7b81d97cd1d1f13b73a664922b240d480cee334b",
+   "drive_id": "1-axMqq_k6AWvAtOxMRDw9WOIrzZ8T7iX"
+  },
+  {
+   "path": "67_2026.04.09_OPAL.0002_Weston_PC/appl-vision/data/v5-2026-09-01T08-53-35-00-00/fc1/traits-0001-0000.js",
+   "bytes": 1120864,
+   "sha256": "dbf0d85707a19c563b4420c91e21055023176949bfd8815404654188516339ea",
+   "drive_id": "1sLjKi1Ok7Prf0Ta0XppnYpxLUJkQNeq8"
+  },
+  {
+   "path": "67_2026.04.09_OPAL.0002_Weston_PC/appl-vision/data/v5-2026-09-01T08-53-35-00-00/fc1/traits-0001-0004.js",
+   "bytes": 171804,
+   "sha256": "6777b045740a450c44f602a4c1c269c56f688ec3afe1913a7fa2e72daf39ab6e",
+   "drive_id": "1iWhqUB3XknHCYAPNunNbSFu07B-pHoVK"
+  },
+  {
+   "path": "67_2026.04.09_OPAL.0002_Weston_PC/appl-vision/data/v5-2026-09-01T08-53-35-00-00/fc1/traits-0002-0003.js",
+   "bytes": 1216204,
+   "sha256": "587b38d12478659d75d6afa563f4ede1a0f68ecce65178e0aa8c71affc7ff791",
+   "drive_id": "11q-GwF0cdPX7FfztIWdJNtndO0_CS3TE"
+  },
+  {
+   "path": "67_2026.04.09_OPAL.0002_Weston_PC/appl-vision/data/v5-2026-09-01T08-53-35-00-00/fc1/traits-0003-0002.js",
+   "bytes": 1515319,
+   "sha256": "8ba2dd1b4757ec6cd8b6cda8be2c8c35f0543eca0d7e96077ad9731d7554fb08",
+   "drive_id": "1CDH_UJ29ZsstCA8DcR8u6PhwOSrf5r3W"
+  },
+  {
+   "path": "67_2026.04.09_OPAL.0002_Weston_PC/appl-vision/data/v5-2026-09-01T08-53-35-00-00/fc1/traits-0004-0001.js",
+   "bytes": 1627474,
+   "sha256": "0438cc2b072efc950b5566df6d94264cc40df5e8d1feee13e797c1a61af00103",
+   "drive_id": "1LCVjEDZlsMuwsn1R-3Z0BDbLjJI5Jh3n"
+  },
+  {
+   "path": "67_2026.04.09_OPAL.0002_Weston_PC/appl-vision/data/v5-2026-09-01T08-53-35-00-00/fc1/traits-0005-0000.js",
+   "bytes": 1242554,
+   "sha256": "99fe67a5d336404a0ee3e4889cf19db105db6723544495be2c4d58b5887a827a",
+   "drive_id": "1X5mi0Wx3E1j1AWGT_zd_Qnyblt_PN2yV"
+  },
+  {
+   "path": "67_2026.04.09_OPAL.0002_Weston_PC/appl-vision/data/v5-2026-09-01T08-53-35-00-00/fc1/traits-0005-0004.js",
+   "bytes": 236424,
+   "sha256": "ac3ae339f8aa5b25f14106839700d33718d3ad723d7260dbdf9101c2ccdc626c",
+   "drive_id": "157sFQryeJgiSHCQPZhguqpjjZ3SAVz0q"
+  },
+  {
+   "path": "67_2026.04.09_OPAL.0002_Weston_PC/appl-vision/data/v5-2026-09-01T08-53-35-00-00/fc1/traits-0006-0003.js",
+   "bytes": 354788,
+   "sha256": "6d3908f0e9cd7281560958f98dddbdf69ecb331cc576d5986e713e694a7dbd5f",
+   "drive_id": "15N2dhl5yWow83wF7zaaVwfsT44lproct"
+  },
+  {
+   "path": "67_2026.04.09_OPAL.0002_Weston_PC/appl-vision/data/v5-2026-09-01T08-53-35-00-00/gallery/bucket-02.js",
+   "bytes": 815905,
+   "sha256": "c050d497434b25d3e9576d6f303b19eeb508109d07eeaa58e1bc171fa091a581",
+   "drive_id": "1Z-XlEhUBggbBbOxvi1asiXs3TQbWLZFx"
+  },
+  {
+   "path": "67_2026.04.09_OPAL.0002_Weston_PC/appl-vision/data/v5-2026-09-01T08-53-35-00-00/gallery/bucket-06.js",
+   "bytes": 811552,
+   "sha256": "429fae44515b319e85ace86883c722c6ecca4a43a3e72ca2b670c1b84590d2f9",
+   "drive_id": "1zsE-1_wbRirhtMCppReUQklqKAyhAljw"
+  },
+  {
+   "path": "67_2026.04.09_OPAL.0002_Weston_PC/appl-vision/data/v5-2026-09-01T08-53-35-00-00/gallery/bucket-10.js",
+   "bytes": 796850,
+   "sha256": "4a13b1dc2285ee0cdba1132e6e4eec25f8d970d1d8e5c955cfb7e07a4687cff0",
+   "drive_id": "1z1yqg3R6_kwPaP-DAygaU-dUy1smyB0Z"
+  },
+  {
+   "path": "67_2026.04.09_OPAL.0002_Weston_PC/data-issues.csv",
+   "bytes": 98,
+   "sha256": "02522b94191e84ea513cf948db6821b71858dbafe0bf644e2fb5daec0f6dfcc3",
+   "drive_id": "1FmZI6vJ26iuUWyo8cSQDniFBlXZ6qbze"
+  },
+  {
+   "path": "67_2026.04.09_OPAL.0002_Weston_PC/docs/modalities/MSC1.md",
+   "bytes": 5578,
+   "sha256": "b4c8a283359ede1b1d2b87bd4021cca88d36338af8380ce46d2deb323046e5e8",
+   "drive_id": "1AavilIJfLC4a5uxN46iXFuDK9QtdpIlS"
+  },
+  {
+   "path": "67_2026.04.09_OPAL.0002_Weston_PC/docs/modalities/S3D.md",
+   "bytes": 8843,
+   "sha256": "83ae89b87b646261ac74c0a41f0c03f16a442566fa0dfbd46eb47962dc9569fa",
+   "drive_id": "1yuGO3bhkaUXtXPVSpQYVAoaZSdRhan8P"
+  },
+  {
+   "path": "67_2026.04.09_OPAL.0002_Weston_PC/experiment-metadata.csv",
+   "bytes": 1043,
+   "sha256": "f5bdda6c275074a3de4f9f26bbc223d260e42947064ada7eaf4a7bbf26fafc3f",
+   "drive_id": "1OsGh415KrDX8d58FWyZXWYxUHC0mikat"
+  },
+  {
+   "path": "67_2026.04.09_OPAL.0002_Weston_PC/fc1/fc1-design.csv",
+   "bytes": 3545399,
+   "sha256": "7a9b624c0faac75d19793f360c9c104d4c91a059ef9c074c03cb054395df57aa",
+   "drive_id": "1Tc31oFqANIxFwQS3LxTf-7BW2Mhh_cVg"
+  },
+  {
+   "path": "67_2026.04.09_OPAL.0002_Weston_PC/fc1/fc1-metadata.csv",
+   "bytes": 135148595,
+   "sha256": "41ecfe9f57f7605bd77e1074a9d2c6fcf4c541053037afadb94851ae1496d425",
+   "drive_id": "16WE3UzgNhctSCB8FgkZ99KxZ50NISOqy"
+  },
+  {
+   "path": "67_2026.04.09_OPAL.0002_Weston_PC/fc1/fc1-samples.csv",
+   "bytes": 19278825,
+   "sha256": "cab0309b298a080a76bc6c658540800549d8f12874f7c5789f6c97f15ced2d88",
+   "drive_id": "1FU8b3u_WzMQKjWRTFXpmifCQTMVLIXft"
+  },
+  {
+   "path": "67_2026.04.09_OPAL.0002_Weston_PC/fc1/fc1-variables.csv",
+   "bytes": 7507,
+   "sha256": "6ce88eaf4f997ab2fdd9dfae9cd20c027e87dac08154cac3d8e7e746784b3d4a",
+   "drive_id": "1JtcwNftDb5-khK63zYKSZi796TgiqSEY"
+  },
+  {
+   "path": "67_2026.04.09_OPAL.0002_Weston_PC/msc1/msc1-columns.json",
+   "bytes": 3964,
+   "sha256": "794a35f7ef5f9b18732a39670b60137a34cbf6f5477aecd49419eee2d60164a6",
+   "drive_id": "1I_NF17d5tGs5MP7KpGGnwDL664US5RqB"
+  },
+  {
+   "path": "67_2026.04.09_OPAL.0002_Weston_PC/msc1/msc1-features.parquet",
+   "bytes": 2424399,
+   "sha256": "4f21a9f6e6a8aa7181eb20441cea24e932b412b0585344ccc5380d555b90dc12",
+   "drive_id": "1JX_zuxhMSEais3UBNewIbeNPDf7H4XZc"
+  },
+  {
+   "path": "67_2026.04.09_OPAL.0002_Weston_PC/plant-weights.parquet",
+   "bytes": 899631,
+   "sha256": "72b08f503c829d7dc8e78e73f9909de05ecbe9dc67400fcd5a20f2c307514b4f",
+   "drive_id": "1lJzXHEW49ibG9OM5rYyjdQd2iuo3aPql"
+  },
+  {
+   "path": "67_2026.04.09_OPAL.0002_Weston_PC/rgb2/rgb2-design.parquet",
+   "bytes": 268440,
+   "sha256": "d2e4cda68efdd644cb3b107832448c0920fba394439bb25f979e2fbcab63b03a",
+   "drive_id": "16FZC4k7rMo6HGewMLV8ZEuhALmrsJALI"
+  },
+  {
+   "path": "67_2026.04.09_OPAL.0002_Weston_PC/rgb2/rgb2-metadata.parquet",
+   "bytes": 961255,
+   "sha256": "5873cf5dfb21902105b90df875777567e90b348133b2645cb7572110053debb9",
+   "drive_id": "1cmY3ifwCKiOINk9JoiNUygcDxCtvEe9R"
+  },
+  {
+   "path": "67_2026.04.09_OPAL.0002_Weston_PC/s3d/s3d-design.parquet",
+   "bytes": 89152,
+   "sha256": "b90fa6ab64a90bbc415038987e2ba2f4716d1c711745b663024f4e3228269c9e",
+   "drive_id": "1jtS4rYwV1uQKKRaUo9j4PtNY7lYK5ODf"
+  },
+  {
+   "path": "67_2026.04.09_OPAL.0002_Weston_PC/s3d/s3d-leaf-values.parquet",
+   "bytes": 341485,
+   "sha256": "60607c40f81131784537a8c934fd7fdccfb84b1ecc432e5c1b4baf8361ebd5be",
+   "drive_id": "1ybjOErUuDlC3C2PORZnsnonpfW8WVE0Q"
+  },
+  {
+   "path": "67_2026.04.09_OPAL.0002_Weston_PC/s3d/s3d-values.parquet",
+   "bytes": 258036,
+   "sha256": "04e2c3c7daa16e5efa78571b54d99f9b58ef616c4f1ccec38d430f82bc00a619",
+   "drive_id": "1EQpnSihGgAw10LACwbd-b3BAdg2oN1Do"
+  },
+  {
+   "path": "67_2026.04.09_OPAL.0002_Weston_PC/swir/swir-columns.json",
+   "bytes": 54799,
+   "sha256": "6b4adbaa5430bf4e720ca86800fa1ea6d698d7c23d4cc54a3fb0a4b9edd92ad9",
+   "drive_id": "1DJgjwGsRtE19RYgcl39wIyjopRbKa7oE"
+  },
+  {
+   "path": "67_2026.04.09_OPAL.0002_Weston_PC/swir/swir-features.parquet",
+   "bytes": 1174742,
+   "sha256": "d96ce5fd2116dbada87b28a0190ebe2676a9d71c23863c8228350ba2621b9edc",
+   "drive_id": "1LhkrKsU5H2_9EvoBCjWyTE0hy44mTAbf"
+  },
+  {
+   "path": "67_2026.04.09_OPAL.0002_Weston_PC/swir/swir-signatures.parquet",
+   "bytes": 37140242,
+   "sha256": "dce8af3a43b28163166d9ebbe7fb827b18eacae6a0e2792a3b200beeae7f0a0e",
+   "drive_id": "1G9P1ucT62SsH1h7d95Ko_HincI7qz79M"
+  },
+  {
+   "path": "67_2026.04.09_OPAL.0002_Weston_PC/vnir/vnir-design.parquet",
+   "bytes": 114113,
+   "sha256": "5d6606ceaf2282fee3ab4aa9f7d8ac6169f75080ab73e9e04421476409a352e5",
+   "drive_id": "1ihw_4daQnENc22-n3i6fdNBdT8ACjla_"
+  },
+  {
+   "path": "67_2026.04.09_OPAL.0002_Weston_PC/vnir/vnir-metadata.parquet",
+   "bytes": 314731,
+   "sha256": "46478da4a2377855781f94fa5939060ebdcb1afb46ad291e51a10797916e8ac0",
+   "drive_id": "1cS2-pPs7dmdOXm7u-sNSbEKDO-ww928M"
+  },
+  {
+   "path": "67_2026.04.09_OPAL.0002_Weston_PC/appl-vision.html",
+   "bytes": 2557,
+   "sha256": "487d8754e0457de349872c4eb489ae57b0eb09cebfd634f939323a09b64dbbe8",
+   "drive_id": "1dw1eE8I0R2fh9-UrAtXCw-eJstNm6fYd"
+  },
+  {
+   "path": "67_2026.04.09_OPAL.0002_Weston_PC/appl-vision/data/v5-2026-09-01T08-53-35-00-00/fc1/core-0003.js",
+   "bytes": 1384792,
+   "sha256": "45e457304dce4b3dc023f6f3c520948fff7fff5d6a68afe2a7408a35468796f2",
+   "drive_id": "1it_ulDZ80ok2nihwkrBo0mntHyCvS0wG"
+  },
+  {
+   "path": "67_2026.04.09_OPAL.0002_Weston_PC/appl-vision/data/v5-2026-09-01T08-53-35-00-00/fc1/traits-0000-0002.js",
+   "bytes": 1165679,
+   "sha256": "68ea43f292e73533f00023fb76892f201ae085302aeae172b2a96c7f0d73f171",
+   "drive_id": "1yHN13gEjOjGrhdSdDF4KvoeBLIkrXvwV"
+  },
+  {
+   "path": "67_2026.04.09_OPAL.0002_Weston_PC/appl-vision/data/v5-2026-09-01T08-53-35-00-00/fc1/traits-0001-0001.js",
+   "bytes": 1284196,
+   "sha256": "9a7da9b8e137b2bafd3726a25ad196f466151f0bd8d00e7098bdcf338fb42577",
+   "drive_id": "153lkB3gUad9NBMz55PBkT49CcY_kuTT0"
+  },
+  {
+   "path": "67_2026.04.09_OPAL.0002_Weston_PC/appl-vision/data/v5-2026-09-01T08-53-35-00-00/fc1/traits-0002-0000.js",
+   "bytes": 1180120,
+   "sha256": "facd21db65f2cd074f0c7eac63891696385e9becb0f66c0a2da77b952dc96324",
+   "drive_id": "1E18S29-behdQb46vVK6Fe0fbIOoghJrz"
+  },
+  {
+   "path": "67_2026.04.09_OPAL.0002_Weston_PC/appl-vision/data/v5-2026-09-01T08-53-35-00-00/fc1/traits-0002-0004.js",
+   "bytes": 178760,
+   "sha256": "111486b1fbdd8b255fe6b70370694089d05a51aac85014e8b506bebcee6980f6",
+   "drive_id": "1uQROSeLt3eYhO_LdeWMYePSqAodCfc7x"
+  },
+  {
+   "path": "67_2026.04.09_OPAL.0002_Weston_PC/appl-vision/data/v5-2026-09-01T08-53-35-00-00/fc1/traits-0003-0003.js",
+   "bytes": 1359603,
+   "sha256": "73ceda383bdd4f075f35deab11b6496246d3522cac2f97e910305f789c9c8677",
+   "drive_id": "1HsT_5icXCN8Tl3N_8qCaiehi74WZfIkJ"
+  },
+  {
+   "path": "67_2026.04.09_OPAL.0002_Weston_PC/appl-vision/data/v5-2026-09-01T08-53-35-00-00/fc1/traits-0004-0002.js",
+   "bytes": 1624301,
+   "sha256": "cb4c270872aa3ac4046af465a6a2a77c596f31101e05a867d4c57519e1e3876e",
+   "drive_id": "13qtOvx_i4PTZp2ZEfbIThTC5xEkHyJ5t"
+  },
+  {
+   "path": "67_2026.04.09_OPAL.0002_Weston_PC/appl-vision/data/v5-2026-09-01T08-53-35-00-00/fc1/traits-0005-0001.js",
+   "bytes": 1650379,
+   "sha256": "625fd85edb95198a77bad3856f68233f9b794d3677375a3e51e2c4a3a79d1f74",
+   "drive_id": "1X5vngSahBHQcM2UHXA8a-Br8BvHdWehB"
+  },
+  {
+   "path": "67_2026.04.09_OPAL.0002_Weston_PC/appl-vision/data/v5-2026-09-01T08-53-35-00-00/fc1/traits-0006-0000.js",
+   "bytes": 307395,
+   "sha256": "60aefdc94a949cd330b7014fb404162dd837b96a817bd30cf5759d241e2b3432",
+   "drive_id": "1deHYWJzD864NTHA2meMacUPerNc4jrGd"
+  },
+  {
+   "path": "67_2026.04.09_OPAL.0002_Weston_PC/appl-vision/data/v5-2026-09-01T08-53-35-00-00/fc1/traits-0006-0004.js",
+   "bytes": 57959,
+   "sha256": "11416fb0ba5c9c081fec4b78e0d5d32bf69990ebb2d025474df8e20714670022",
+   "drive_id": "1cQUz1hfZhFwueFDFKeIbrnbm3oRss6MK"
+  },
+  {
+   "path": "67_2026.04.09_OPAL.0002_Weston_PC/appl-vision/data/v5-2026-09-01T08-53-35-00-00/gallery/bucket-03.js",
+   "bytes": 789340,
+   "sha256": "757b6875cf704619a833f03e8ee42541ed147cca3237413c542fd93cf6c4d811",
+   "drive_id": "1Fo188tct_NpB_ai1pBwroWmavKkwC7d_"
+  },
+  {
+   "path": "67_2026.04.09_OPAL.0002_Weston_PC/appl-vision/data/v5-2026-09-01T08-53-35-00-00/gallery/bucket-07.js",
+   "bytes": 816424,
+   "sha256": "96b0796f3a14d8d0cd4c4b8ec3cd125648e0a764e2beb2ff5a15304712b4a337",
+   "drive_id": "1XDsTr6p-8LDksUVGAgmk27ul-U8OEIw1"
+  },
+  {
+   "path": "67_2026.04.09_OPAL.0002_Weston_PC/appl-vision/data/v5-2026-09-01T08-53-35-00-00/gallery/bucket-11.js",
+   "bytes": 787601,
+   "sha256": "3e8b9c876e692f96345983e8295048158963028b642ecfa761bbaadf5c27278a",
+   "drive_id": "1QaIKf1_GSiVgCQiL-03YQNjdQcqpyzGI"
+  },
+  {
+   "path": "67_2026.04.09_OPAL.0002_Weston_PC/data-issues.parquet",
+   "bytes": 1834,
+   "sha256": "767c9f8496397c5271b9dec6326717d2cdcd44e0335ce24f0df43c96548e7554",
+   "drive_id": "1n1T4k8JKvHAt-yjYSvdqGsMhL82oy8x0"
+  },
+  {
+   "path": "67_2026.04.09_OPAL.0002_Weston_PC/docs/modalities/PROTOCOL_METADATA.md",
+   "bytes": 6026,
+   "sha256": "26a23266e95be34b180027889d5c641b7beb92e518342d315b22580bc5385bfb",
+   "drive_id": "16L3uGOVTNhTWgbRboDyA3JYFmtWr_x8e"
+  },
+  {
+   "path": "67_2026.04.09_OPAL.0002_Weston_PC/docs/modalities/SWIR.md",
+   "bytes": 6352,
+   "sha256": "4b34a7f9bae06414bf9a8247c85a0fe29324e2e8498f1552160eb8560bda2c4c",
+   "drive_id": "1cm0FD6iIklSvdoH-nJRgS_l4W3X85PYa"
+  },
+  {
+   "path": "67_2026.04.09_OPAL.0002_Weston_PC/experiment-metadata.parquet",
+   "bytes": 4047,
+   "sha256": "20135e1bd84ae3ad1976f410f8d96c75105c995d8ad904c93716a617d60ece27",
+   "drive_id": "1oPcNyYsgnmy5olWw3G2VLVvEqjveXxjN"
+  },
+  {
+   "path": "67_2026.04.09_OPAL.0002_Weston_PC/fc1/fc1-design.parquet",
+   "bytes": 192731,
+   "sha256": "028ee547c5857ced1893da92bc8954ff381827aa15601f30a6648b43aa1a71d4",
+   "drive_id": "1kRNQkJ2jYzn5DUkfuMzrrFRp8TLgj7Na"
+  },
+  {
+   "path": "67_2026.04.09_OPAL.0002_Weston_PC/fc1/fc1-metadata.parquet",
+   "bytes": 8269135,
+   "sha256": "86211a6fc817a7dc5b3e0431d9e261d0253d7dda19d16117c5d4bf8296567e5d",
+   "drive_id": "1QDiugg4bmrmXhnoW3xtWIbGQIijjaaqt"
+  },
+  {
+   "path": "67_2026.04.09_OPAL.0002_Weston_PC/fc1/fc1-samples.parquet",
+   "bytes": 295836,
+   "sha256": "8369a0c4444e2c6ae34a91227838e1bcf4f09ddf50ddb78900bef351543604d7",
+   "drive_id": "1sabrNvU3Q8Gy_2DEdGb4ddQgPYhMiSF1"
+  },
+  {
+   "path": "67_2026.04.09_OPAL.0002_Weston_PC/fc1/fc1-variables.parquet",
+   "bytes": 4495,
+   "sha256": "e98dc98dd1ff4f86bb224e4d59123170c59373b5c052a811d6ca8691794e5cbc",
+   "drive_id": "1crzwyIimggYZEc7yFUMCBBz9R9iN1Atv"
+  },
+  {
+   "path": "67_2026.04.09_OPAL.0002_Weston_PC/msc1/msc1-design.csv",
+   "bytes": 5037524,
+   "sha256": "69a3d56d2b7744fb5fad2353a88eaae3592dae96f84921e4bd64d225aa896451",
+   "drive_id": "1mpGptnWb696eC4FW-jE4Ws6C-UX9l71N"
+  },
+  {
+   "path": "67_2026.04.09_OPAL.0002_Weston_PC/msc1/msc1-metadata.csv",
+   "bytes": 18112903,
+   "sha256": "8ac30ee4fbdcf9a4f9a53fdd665115903c36785f19fdd22a993643aa69ed5071",
+   "drive_id": "13o8E81XyW89uLCB8p6nabt2t8FTxO80O"
+  },
+  {
+   "path": "67_2026.04.09_OPAL.0002_Weston_PC/rgb2/rgb2-columns.csv",
+   "bytes": 7141,
+   "sha256": "6fb8be7e5dfb3e24247ada1460c2e6592a40a076af5961259f6dfcce4b8d9f47",
+   "drive_id": "1TWkPPRTaHd56z25hZQMiOhnhhDbbZlsG"
+  },
+  {
+   "path": "67_2026.04.09_OPAL.0002_Weston_PC/rgb2/rgb2-features.csv",
+   "bytes": 28861326,
+   "sha256": "6e161467d7283efaf619bdeb38fde838db1448518dedadccae3986690053414c",
+   "drive_id": "1lu-Uprh89sBCuXNAyUbnMbajK24D3MwY"
+  },
+  {
+   "path": "67_2026.04.09_OPAL.0002_Weston_PC/s3d/s3d-columns.csv",
+   "bytes": 6529,
+   "sha256": "421846c71e1ca94fe8d8907e4b3432dc35c62725015e8aa59377503c23185431",
+   "drive_id": "1CJIUwPD7zWELFK71HsRCaVYyvig1dCKx"
+  },
+  {
+   "path": "67_2026.04.09_OPAL.0002_Weston_PC/s3d/s3d-features.csv",
+   "bytes": 1670420,
+   "sha256": "dcf984cc6ef473e11f5e32e11f7fe632b741201f5a71029614641be582947303",
+   "drive_id": "1jJ5ID_iXfL8cdQnasZuJ1tGPdhRWTmn8"
+  },
+  {
+   "path": "67_2026.04.09_OPAL.0002_Weston_PC/s3d/s3d-metadata.csv",
+   "bytes": 3902642,
+   "sha256": "56c0f58fd8d1fa5a7aa0740a584fc92d42385c500d1114ed9758f547b5e50d53",
+   "drive_id": "1TRPp-ehd6XUZ_But86fI18mtzrwwnTMG"
+  },
+  {
+   "path": "67_2026.04.09_OPAL.0002_Weston_PC/s3d/s3d-variables.csv",
+   "bytes": 1068,
+   "sha256": "4d135085c2dcc915dbf6dec3ba0f7fc28ea8a0234f6631306e51194635aed611",
+   "drive_id": "15R0ZxYpFasrOEKlub2nGXEVQS9GsBXD9"
+  },
+  {
+   "path": "67_2026.04.09_OPAL.0002_Weston_PC/swir/swir-design.csv",
+   "bytes": 1666855,
+   "sha256": "965f7900908a08667a8d09d194f09da78199e67e0fa8f57994b30c662d599fa8",
+   "drive_id": "1hLzruhbx1OfwOdZTebkQPjjLz6rd5l2b"
+  },
+  {
+   "path": "67_2026.04.09_OPAL.0002_Weston_PC/swir/swir-metadata.csv",
+   "bytes": 5368866,
+   "sha256": "0051d89f5f54ea6862adc47b3ae6663e819cd69e05c75670c365604d4213379d",
+   "drive_id": "1pARIUlV0zpFEI_RMDv7iGxAjmZWq1sw8"
+  },
+  {
+   "path": "67_2026.04.09_OPAL.0002_Weston_PC/vnir/vnir-columns.csv",
+   "bytes": 56268,
+   "sha256": "ecb871e0d907b276a0afc0aec50fc66030fb6f508d1888b44dcf62f59c065f9c",
+   "drive_id": "1qy-tWtU27nS9MjAG56v1lNJEZjeq4W4H"
+  },
+  {
+   "path": "67_2026.04.09_OPAL.0002_Weston_PC/vnir/vnir-features.csv",
+   "bytes": 9056519,
+   "sha256": "2b85199527e28f5b9250b240db30c2950a3c9070176ca633952bd803d4f4fcce",
+   "drive_id": "1qERTHvF0GHbjDxv5vwBdKAsXJNVKbE8I"
+  },
+  {
+   "path": "67_2026.04.09_OPAL.0002_Weston_PC/vnir/vnir-signatures.csv",
+   "bytes": 63951652,
+   "sha256": "e51b2351879cb1d1dac6b922b34404d9875f03439862d99358ea271908c7a5b5",
+   "drive_id": "1qCZzVaIeM0Offw-AM4Xqz3IPb5TAOa-S"
+  },
+  {
+   "path": "67_2026.04.09_OPAL.0002_Weston_PC/appl-vision/data/v5-2026-09-01T08-53-35-00-00/fc1/core-0000.js",
+   "bytes": 1385060,
+   "sha256": "70de2a7647800049ed9285af0ff43def2c94fc6907f079e62ad9a918ec9fa0b8",
+   "drive_id": "1JOxW0FMM7AQjHXNqV69niaOuomKDBwIY"
+  },
+  {
+   "path": "67_2026.04.09_OPAL.0002_Weston_PC/appl-vision/data/v5-2026-09-01T08-53-35-00-00/fc1/core-0004.js",
+   "bytes": 124985,
+   "sha256": "2819e6862b13d7a36e4f4873e9b3765a5b0e9cfa97faff89fc15250c6b5ccea2",
+   "drive_id": "1GAyxIB59UBdDIlCSrZQNHxHtQr4gGgDr"
+  },
+  {
+   "path": "67_2026.04.09_OPAL.0002_Weston_PC/appl-vision/data/v5-2026-09-01T08-53-35-00-00/fc1/traits-0000-0003.js",
+   "bytes": 1087335,
+   "sha256": "55703a66e5edd456bc202ee9ed6e544f1616499568df2ecf0f345cbcefc3a09d",
+   "drive_id": "1I0hzVm4U01hmhpWHa1FOaS4Jk76rYGjA"
+  },
+  {
+   "path": "67_2026.04.09_OPAL.0002_Weston_PC/appl-vision/data/v5-2026-09-01T08-53-35-00-00/fc1/traits-0001-0002.js",
+   "bytes": 1276384,
+   "sha256": "54056e67fb23177258be53ecc77a0734124693f07b7ac4c87b7821927f127f32",
+   "drive_id": "1ciA8j6-eugUq9pOsW9uvaYhbfutgcoKA"
+  },
+  {
+   "path": "67_2026.04.09_OPAL.0002_Weston_PC/appl-vision/data/v5-2026-09-01T08-53-35-00-00/fc1/traits-0002-0001.js",
+   "bytes": 1355842,
+   "sha256": "56acd515ad72e23bcda14701b174bebb28c65287dc6c23b9ebe24880a8c91fc7",
+   "drive_id": "17BIfb1gukWP6z9-ViYwctli-HoqGaPC-"
+  },
+  {
+   "path": "67_2026.04.09_OPAL.0002_Weston_PC/appl-vision/data/v5-2026-09-01T08-53-35-00-00/fc1/traits-0003-0000.js",
+   "bytes": 1235906,
+   "sha256": "c438a0b529efa94fa66ded23937bd381b408b26f745b5edbc047616e0892d4ec",
+   "drive_id": "1oclYtzActwid7UEDhUGgIBTl27hgGP42"
+  },
+  {
+   "path": "67_2026.04.09_OPAL.0002_Weston_PC/appl-vision/data/v5-2026-09-01T08-53-35-00-00/fc1/traits-0003-0004.js",
+   "bytes": 203114,
+   "sha256": "d0d6e42c3176052c9f7d0d03d46d2b22c1c664d53e19ffe18e6cafdb27d20d53",
+   "drive_id": "1e4gNSVie9tauaZZtzWu783HEuTht7fmE"
+  },
+  {
+   "path": "67_2026.04.09_OPAL.0002_Weston_PC/appl-vision/data/v5-2026-09-01T08-53-35-00-00/fc1/traits-0004-0003.js",
+   "bytes": 1424525,
+   "sha256": "d74f75b822d1340012e71f6979bcac7fb3517d074a6bc8dfb87b7ed34ce1ed67",
+   "drive_id": "1mlNGUhlQIHCiVIYgEQUdVoce8HvlH0Zv"
+  },
+  {
+   "path": "67_2026.04.09_OPAL.0002_Weston_PC/appl-vision/data/v5-2026-09-01T08-53-35-00-00/fc1/traits-0005-0002.js",
+   "bytes": 1644627,
+   "sha256": "a1eaa548779ed8a5ac7f3082830825263bbc45df7d1d261ddd17e99417b262d7",
+   "drive_id": "1o5FTQTuuCrzglp9AuWqy89m4R5fLKbJY"
+  },
+  {
+   "path": "67_2026.04.09_OPAL.0002_Weston_PC/appl-vision/data/v5-2026-09-01T08-53-35-00-00/fc1/traits-0006-0001.js",
+   "bytes": 406304,
+   "sha256": "c86d02a95e56fe2345aaf375bc59864501f6feb479cb2e65cc1af301d8054614",
+   "drive_id": "1phfFkRzjg5y4mzDeQA76QTlI5lfsO0ko"
+  },
+  {
+   "path": "67_2026.04.09_OPAL.0002_Weston_PC/appl-vision/data/v5-2026-09-01T08-53-35-00-00/gallery/bucket-00.js",
+   "bytes": 801306,
+   "sha256": "097d9fd91496b04ca69d59535306d522676f8028c1bf61748ed2c8a712fccd18",
+   "drive_id": "1WA9jgh6UM-1-MFYsP1kPZ8a9roReQSyo"
+  },
+  {
+   "path": "67_2026.04.09_OPAL.0002_Weston_PC/appl-vision/data/v5-2026-09-01T08-53-35-00-00/gallery/bucket-04.js",
+   "bytes": 827079,
+   "sha256": "d51eb1c24b40c4fc01ffffdf12568a3275e238cde5fd96a3603ef8fa0e1536f7",
+   "drive_id": "1IFk0baoxDjGgLZ0aUvB1BDaOCdjQeCj0"
+  },
+  {
+   "path": "67_2026.04.09_OPAL.0002_Weston_PC/appl-vision/data/v5-2026-09-01T08-53-35-00-00/gallery/bucket-08.js",
+   "bytes": 792926,
+   "sha256": "701e427b2c39a9b789a8c80a3ca949cef9b2277723654a07162296dada0608ae",
+   "drive_id": "1iN9zXAlXDgZm7oQQXVTS2GJEyfg_NS68"
+  },
+  {
+   "path": "67_2026.04.09_OPAL.0002_Weston_PC/appl-vision/data/v5-2026-09-01T08-53-35-00-00/gallery/bucket-12.js",
+   "bytes": 818098,
+   "sha256": "551b0d0c14e1dc33bbfdb8d8315bed5ad9973408d49b641d9b498ea1460f8dc4",
+   "drive_id": "1BKqsHuZvpJuDE8KNxLm82K54WTfP13Kt"
+  },
+  {
+   "path": "67_2026.04.09_OPAL.0002_Weston_PC/docs/experiment-export-summary.md",
+   "bytes": 14853,
+   "sha256": "f01670bc48b386099b7f0f5a7d8b2109b993eb975350e4e8b54968d16e638940",
+   "drive_id": "1yYKiEiEmWf9pT09val4JGyr2MS6vNm6I"
+  },
+  {
+   "path": "67_2026.04.09_OPAL.0002_Weston_PC/docs/modalities/README.md",
+   "bytes": 6136,
+   "sha256": "8068211c301807a9bd2c6a5f2a0c0b2be8693bb7c041ca4ead79a59c0fa61539",
+   "drive_id": "1xecbnKE3z9x-kuWnewNE-auDaBKWpa3p"
+  },
+  {
+   "path": "67_2026.04.09_OPAL.0002_Weston_PC/docs/modalities/VNIR.md",
+   "bytes": 7104,
+   "sha256": "62f95e5457c214f0a7a2aa64000a766dca2658941c33813be839f45e743f1689",
+   "drive_id": "1RJAiYXyR5emiluzxIvWDZ4kJnLBfGGow"
+  },
+  {
+   "path": "67_2026.04.09_OPAL.0002_Weston_PC/fc1/fc1-columns.csv",
+   "bytes": 8089,
+   "sha256": "373a875f5f93788a6fedfc76c6dd06908715fff7da97667471f93513424cc0b8",
+   "drive_id": "1TcPTJ19wllJTApNOGF4inhv1WiE6K4Ai"
+  },
+  {
+   "path": "67_2026.04.09_OPAL.0002_Weston_PC/fc1/fc1-features.csv",
+   "bytes": 9004564,
+   "sha256": "343420eab5dfa3cf4427eb89a7da6c55209010a8837e9aa1ff2e627b89ddb2af",
+   "drive_id": "1EUNJnLA6WkBtIML9Owvrx6_1Xt6oAi14"
+  },
+  {
+   "path": "67_2026.04.09_OPAL.0002_Weston_PC/fc1/fc1-parameter-images.csv",
+   "bytes": 133373788,
+   "sha256": "d18a6bcca9262fea8b80a3a4b531471b3e9880a4da7931fa5375999264518d47",
+   "drive_id": "1s_ifVFGs_Aa-3Xi5W0kTpj58FPM98_qO"
+  },
+  {
+   "path": "67_2026.04.09_OPAL.0002_Weston_PC/fc1/fc1-values.csv",
+   "bytes": 459941624,
+   "sha256": "be006d47a4669c3c8c2f58bfa61ff758d08adfdb60fbf4dc16e9d8a264ec8629",
+   "drive_id": "1XhY3Gt78TTwgH86DeWCoaY85ktPMatxO"
+  },
+  {
+   "path": "67_2026.04.09_OPAL.0002_Weston_PC/manifest.json",
+   "bytes": 8872,
+   "sha256": "76bf90275f7a98392fc6d1363b46cc3a28142ebfd219c8705e19636604771757",
+   "drive_id": "186YtpCcDCipuw6aBVFd57q-1Uws9cMkM"
+  },
+  {
+   "path": "67_2026.04.09_OPAL.0002_Weston_PC/msc1/msc1-design.parquet",
+   "bytes": 268936,
+   "sha256": "e93cf26831518264adf264b2931d47f4f9e0b3a4ef25035f4fc84d0515cc3b31",
+   "drive_id": "1p_19S_KPAK_fpP_TD_3VDiBKlzMt1IKM"
+  },
+  {
+   "path": "67_2026.04.09_OPAL.0002_Weston_PC/msc1/msc1-metadata.parquet",
+   "bytes": 832204,
+   "sha256": "e1a429f6d3b1b3750caba56aff20bfca0500e917df0b66bfe5bf70a73ceb3038",
+   "drive_id": "1YZjsTtBACqjaXsWrr18pgbjEIn5TMQFl"
+  },
+  {
+   "path": "67_2026.04.09_OPAL.0002_Weston_PC/rgb2/rgb2-columns.json",
+   "bytes": 5403,
+   "sha256": "be236fb2fc1263019a03ed3b5d00f49f8a6a90387b0072739b189c68fdba263b",
+   "drive_id": "1e7UOB3OHQwcrRiThXYIxwINlvUxpWTyh"
+  },
+  {
+   "path": "67_2026.04.09_OPAL.0002_Weston_PC/rgb2/rgb2-features.parquet",
+   "bytes": 8751739,
+   "sha256": "8aba1396b52054ef9ec15e925541eed03795ebaa0886522a57e96f13e9f16010",
+   "drive_id": "1_Ikz4EMqWLv3QNTCu-stoNTpPOl3DIfN"
+  },
+  {
+   "path": "67_2026.04.09_OPAL.0002_Weston_PC/s3d/s3d-columns.json",
+   "bytes": 4728,
+   "sha256": "a2aba9e2e5f0cdf3e3238cce403b1dc42bdb57c8c25a425fd360e420e12986a8",
+   "drive_id": "1hQWy0uLzs6cRLOtoUDZIofyz9PnrcFYI"
+  },
+  {
+   "path": "67_2026.04.09_OPAL.0002_Weston_PC/s3d/s3d-features.parquet",
+   "bytes": 426746,
+   "sha256": "1c7d496327b05e833b2a08049f54b45f487e01dc41a42b73e386f706a3bcefd0",
+   "drive_id": "1KHpCx9DScCDYSVFgJ4MaSXePosVL4ac2"
+  },
+  {
+   "path": "67_2026.04.09_OPAL.0002_Weston_PC/s3d/s3d-metadata.parquet",
+   "bytes": 597434,
+   "sha256": "821ab8776667475e05c1e8cc67c4e0f0ee7e856bd397e3eb66263519af1f1722",
+   "drive_id": "1bWgFkJiZrv1hLhZ90nH2YDn87nBScHXH"
+  },
+  {
+   "path": "67_2026.04.09_OPAL.0002_Weston_PC/s3d/s3d-variables.parquet",
+   "bytes": 3184,
+   "sha256": "200439ba34e0eefd87ff44291cae3e00fb9c8692a5de2f9896a164ff3b00349b",
+   "drive_id": "1v5Slx1uatc3LwXd5XnHbexiEs-dhBJCB"
+  },
+  {
+   "path": "67_2026.04.09_OPAL.0002_Weston_PC/swir/swir-design.parquet",
+   "bytes": 129695,
+   "sha256": "8ab280067d44abd53b0de26435713b0360ee0c2fbcc90074123814ebe991f99b",
+   "drive_id": "1_8baXFHCj9IWFsJ_ouukqJrZOWpSnTq_"
+  },
+  {
+   "path": "67_2026.04.09_OPAL.0002_Weston_PC/swir/swir-metadata.parquet",
+   "bytes": 350268,
+   "sha256": "35607d4544a0196e3206d6fa28b8bbc763734e8d37a2e6656b61fec4b94d092c",
+   "drive_id": "1XS7LynodPawgv1-bf83CnULFoYlYs9lQ"
+  },
+  {
+   "path": "67_2026.04.09_OPAL.0002_Weston_PC/vnir/vnir-columns.json",
+   "bytes": 42044,
+   "sha256": "d0ff9df543183e26f1c05057b05586df0c39630f8afd8b064955fa2a41a01a3c",
+   "drive_id": "1S-OxohOmzTK-un_LbMenWIkXx5Vja8DE"
+  },
+  {
+   "path": "67_2026.04.09_OPAL.0002_Weston_PC/vnir/vnir-features.parquet",
+   "bytes": 2700590,
+   "sha256": "37f24bffac6edb2c4d41adff15223b46f645df35829c6063b13edca983aa0572",
+   "drive_id": "1eO7DTyEq_wexNGXYgz8DFoMLDGGTUWyT"
+  },
+  {
+   "path": "67_2026.04.09_OPAL.0002_Weston_PC/vnir/vnir-signatures.parquet",
+   "bytes": 21342574,
+   "sha256": "6c95e52a68b8a93949960661405008ce3e5969556cde5b1e86037100b40d7155",
+   "drive_id": "1CZsMxkQUV61GAKo1jgyjSyhTWjdut6Dw"
+  },
+  {
+   "path": "67_2026.04.09_OPAL.0002_Weston_PC/appl-vision/data/v5-2026-09-01T08-53-35-00-00/fc1/core-0001.js",
+   "bytes": 1384965,
+   "sha256": "934488a50faefd7d2edb14f29242931540d0e9272a42fd733318f7e1642a90fd",
+   "drive_id": "1hHqBo2JvJorHWVn_AxOQXdxsQ7CLyzwP"
+  },
+  {
+   "path": "67_2026.04.09_OPAL.0002_Weston_PC/appl-vision/data/v5-2026-09-01T08-53-35-00-00/fc1/traits-0000-0000.js",
+   "bytes": 1079788,
+   "sha256": "642cfcbeff528a4b7d15fee1ac44c3e72ffe5ddeda32468d91d68b922698e834",
+   "drive_id": "10ukvPzeWtfKK3QcPCozRPsaALvtf6Trk"
+  },
+  {
+   "path": "67_2026.04.09_OPAL.0002_Weston_PC/appl-vision/data/v5-2026-09-01T08-53-35-00-00/fc1/traits-0000-0004.js",
+   "bytes": 139533,
+   "sha256": "67bba2ca022cd104351f40e131215967dee9d028dbef811227e5f10f30095fd3",
+   "drive_id": "1OGriqUCrw777EbknPL66mTffx-_NQAyW"
+  },
+  {
+   "path": "67_2026.04.09_OPAL.0002_Weston_PC/appl-vision/data/v5-2026-09-01T08-53-35-00-00/fc1/traits-0001-0003.js",
+   "bytes": 1141426,
+   "sha256": "e44ccf79b8e5c6fd31d9fd24fc2d17a10bcdce4ce2975e614a749772b09f0ea9",
+   "drive_id": "1_CnQvtb3EwnVx0lIidMD87UmQorODnt-"
+  },
+  {
+   "path": "67_2026.04.09_OPAL.0002_Weston_PC/appl-vision/data/v5-2026-09-01T08-53-35-00-00/fc1/traits-0002-0002.js",
+   "bytes": 1354536,
+   "sha256": "6f2dcf23f8ff592de8097c24edec33ade6a1be993a26a1c604825b72d94cdd70",
+   "drive_id": "1qzz50cwopJ0vac-jBU2uQdQG9uVeXWEu"
+  },
+  {
+   "path": "67_2026.04.09_OPAL.0002_Weston_PC/appl-vision/data/v5-2026-09-01T08-53-35-00-00/fc1/traits-0003-0001.js",
+   "bytes": 1515515,
+   "sha256": "16ebee072c92491af3db0442036ae2a1d207994413ae50ddc68142ee1081b0ea",
+   "drive_id": "15yc5VqGy37KcElcT5DoPtvnBbxdpNSC6"
+  },
+  {
+   "path": "67_2026.04.09_OPAL.0002_Weston_PC/appl-vision/data/v5-2026-09-01T08-53-35-00-00/fc1/traits-0004-0000.js",
+   "bytes": 1230852,
+   "sha256": "c32a2da19c703e23a2e55b8c0edde45b36b7f97ec28ad6ae3b1aaf23e7bbd031",
+   "drive_id": "1DT0gzuid0JyPVw4hqUJb-i0tNjxtxAA3"
+  },
+  {
+   "path": "67_2026.04.09_OPAL.0002_Weston_PC/appl-vision/data/v5-2026-09-01T08-53-35-00-00/fc1/traits-0004-0004.js",
+   "bytes": 232780,
+   "sha256": "ebb787c2968b5449810558578ed6c499c899bbf23e77d3208cf678bf35364715",
+   "drive_id": "1SKaViKci6_KN5BjeHf8a_5yFshw_J1uk"
+  },
+  {
+   "path": "67_2026.04.09_OPAL.0002_Weston_PC/appl-vision/data/v5-2026-09-01T08-53-35-00-00/fc1/traits-0005-0003.js",
+   "bytes": 1440508,
+   "sha256": "545c7cc1b4179e6cd896eedfa5a4f6d374f8cdb292eeaaa8a4765098aaf79788",
+   "drive_id": "1JSHE50t_BozgUqUXj58BXJ0iEhT7ZNws"
+  },
+  {
+   "path": "67_2026.04.09_OPAL.0002_Weston_PC/appl-vision/data/v5-2026-09-01T08-53-35-00-00/fc1/traits-0006-0002.js",
+   "bytes": 404542,
+   "sha256": "dd6d497646df3cd320315a461789a36c32d5d4894a8a65cdbe1ae147d1e47fda",
+   "drive_id": "1pnGy9yq3MYxoUXSWUXwYvd2gzdX_eOKW"
+  },
+  {
+   "path": "67_2026.04.09_OPAL.0002_Weston_PC/appl-vision/data/v5-2026-09-01T08-53-35-00-00/gallery/bucket-01.js",
+   "bytes": 808683,
+   "sha256": "69679734931a4f058953801609a3b751e939046f7bc8bf013393dfd270e14f83",
+   "drive_id": "1mocA636QmiuVCGPulWlsmqgHxI665eJl"
+  },
+  {
+   "path": "67_2026.04.09_OPAL.0002_Weston_PC/appl-vision/data/v5-2026-09-01T08-53-35-00-00/gallery/bucket-05.js",
+   "bytes": 807922,
+   "sha256": "96dd540abcaa29fc778274da6ad0e3f386e97acdcee62fe01828083fc3bc8d3d",
+   "drive_id": "1GkK_Wyd6oig1VVIaAXl66Ms1Pemo5WAO"
+  },
+  {
+   "path": "67_2026.04.09_OPAL.0002_Weston_PC/appl-vision/data/v5-2026-09-01T08-53-35-00-00/gallery/bucket-09.js",
+   "bytes": 796996,
+   "sha256": "0d9a461e98380e27a6ae5e02270b8f9863ed67b3437afd273b409c8c512e3efb",
+   "drive_id": "11TlBFZi5GLaklM_dX0VP6cvJxSrEWoTv"
+  },
+  {
+   "path": "67_2026.04.09_OPAL.0002_Weston_PC/appl-vision/data/v5-2026-09-01T08-53-35-00-00/gallery/bucket-13.js",
+   "bytes": 680874,
+   "sha256": "f73082023938e122ceb265e677eec07133ebe5585c4526bfcaa1b88ba6a03439",
+   "drive_id": "1Sk_jD5aVYWsDt_rQ2R6kU-6VIN3pGLkb"
+  },
+  {
+   "path": "67_2026.04.09_OPAL.0002_Weston_PC/docs/modalities/FC1.md",
+   "bytes": 15455,
+   "sha256": "2f9039e72fce1c698e962d4e01dcce04932e401fc94b788022c0e7d58b1bbbde",
+   "drive_id": "1ECQC2g9xtUn9J1bo9PamvodeQ5g9zvGM"
+  },
+  {
+   "path": "67_2026.04.09_OPAL.0002_Weston_PC/docs/modalities/RGB2.md",
+   "bytes": 5115,
+   "sha256": "46b60911c40cce66f76cf05467ce1e5e4f028d04ea2b6ac15be47db574c7ad2f",
+   "drive_id": "1G9MgO286IPhVLgb3KiUet1GUKscMO_La"
+  },
+  {
+   "path": "67_2026.04.09_OPAL.0002_Weston_PC/docs/modalities/WEIGHING_WATERING.md",
+   "bytes": 5259,
+   "sha256": "a010116e96f9cecc7b0bfd0f96187619d7d018cb2ba4839ee1bb213d55595084",
+   "drive_id": "1fim4-TqQMX2qOVuox2nSzkHzj9icF9SB"
+  },
+  {
+   "path": "67_2026.04.09_OPAL.0002_Weston_PC/fc1/fc1-columns.json",
+   "bytes": 5814,
+   "sha256": "66301a8efe9e2518ce2b792596ca438e39f814d3807919c043dce7d250f9af32",
+   "drive_id": "1RO7HcMMZ1AO2xo-sqCslhBOLkDStnzrW"
+  },
+  {
+   "path": "67_2026.04.09_OPAL.0002_Weston_PC/fc1/fc1-features.parquet",
+   "bytes": 1200639,
+   "sha256": "8f1199c6cbe971b5c57872e672b22e1818d4164ee2b2b3d62c432267334607ba",
+   "drive_id": "1Bj129TRsYcyZUngp_JJYi1D9HhHxPo2K"
+  },
+  {
+   "path": "67_2026.04.09_OPAL.0002_Weston_PC/fc1/fc1-parameter-images.parquet",
+   "bytes": 5088754,
+   "sha256": "fc698d3c3e2865d3f8046d1233b4cc198d5a9fde39c1b434e6c54ecbea67100e",
+   "drive_id": "13PWCRNAYhp_wX6BNw-3qhHCwvcXe_sVU"
+  },
+  {
+   "path": "67_2026.04.09_OPAL.0002_Weston_PC/fc1/fc1-values.parquet",
+   "bytes": 28063121,
+   "sha256": "d4fe382b2e585d7451b5a72b4f54aaa134e2b4ba8b9b92a72a4e0676d56d9859",
+   "drive_id": "1fAtCJse_nN6-7XqjIJN7uTfr45GrzeIR"
+  },
+  {
+   "path": "67_2026.04.09_OPAL.0002_Weston_PC/msc1/msc1-columns.csv",
+   "bytes": 5395,
+   "sha256": "a2b1e5156f2ea1390ed03b9dc7ff59641accfb17210d562772fc5482c45c20e0",
+   "drive_id": "1hJ0iCR8cRsizQs3peh012n_X4nmPqGjs"
+  },
+  {
+   "path": "67_2026.04.09_OPAL.0002_Weston_PC/msc1/msc1-features.csv",
+   "bytes": 14388912,
+   "sha256": "d9dd53b66b0d72558103337c203c51619dda2a229e2278e7e69cccd86d07d2db",
+   "drive_id": "1BggR4N5qybsyU7KPde3y44UF8dgKDd0n"
+  },
+  {
+   "path": "67_2026.04.09_OPAL.0002_Weston_PC/plant-weights.csv",
+   "bytes": 7976430,
+   "sha256": "722836e2d6abffd2f1116501502faf20859df1d4b591139319334731ae15cf83",
+   "drive_id": "1TkPuruxAUea8Rx6c8GmlwKgmuJKK7qtc"
+  },
+  {
+   "path": "67_2026.04.09_OPAL.0002_Weston_PC/rgb2/rgb2-design.csv",
+   "bytes": 5037524,
+   "sha256": "6b94cef0c2e55d29fb76ef9c2cab7a1cf71a4d6c887f4f8d9bdf2a91696ead50",
+   "drive_id": "1Qivi96bteEjuqGQy92fDc8v6vfgYVc2v"
+  },
+  {
+   "path": "67_2026.04.09_OPAL.0002_Weston_PC/rgb2/rgb2-metadata.csv",
+   "bytes": 16415027,
+   "sha256": "2dae6452a1f77794a8d3b8dbc854e5b9ea4a376dfb58ac5ec8b1d76ddb65482b",
+   "drive_id": "1iNemWvBJr89as4dGdrbE8O8AZs_mlTrv"
+  },
+  {
+   "path": "67_2026.04.09_OPAL.0002_Weston_PC/s3d/s3d-design.csv",
+   "bytes": 824931,
+   "sha256": "8a9818a954b9601552d97bdd30bd928bd648ae13f3431553db6ab2355a351ed1",
+   "drive_id": "1FbWQOBGXi4tR6oln5Hrc1D0zBE5vkLq7"
+  },
+  {
+   "path": "67_2026.04.09_OPAL.0002_Weston_PC/s3d/s3d-leaf-values.csv",
+   "bytes": 3317127,
+   "sha256": "62c0802e3392aa16af75d97dccccd7b7f23cf248005dee0819e1662f4055d5e1",
+   "drive_id": "1cZ__QbtpItnTnOw0GzS3mSrlj8_TQl8b"
+  },
+  {
+   "path": "67_2026.04.09_OPAL.0002_Weston_PC/s3d/s3d-values.csv",
+   "bytes": 3698980,
+   "sha256": "ea8817962f69ae817b6fb5889ac746828f4a4b415d37521b8e8830ae6f2739f4",
+   "drive_id": "1Q_pnD0FAZgBoBbtrqWOhHJhgrK0DhbgW"
+  },
+  {
+   "path": "67_2026.04.09_OPAL.0002_Weston_PC/swir/swir-columns.csv",
+   "bytes": 72892,
+   "sha256": "ba5d623dbee6176a58dd703c83ad9a465c6e42e6d74460a030b4f714873ce307",
+   "drive_id": "1vx2SYCXAdYpe5MJWTWzmShTS3sJsj4IE"
+  },
+  {
+   "path": "67_2026.04.09_OPAL.0002_Weston_PC/swir/swir-features.csv",
+   "bytes": 5876430,
+   "sha256": "45b36189dbc00b41f77a09a0fd67fd6e83253d4e8e24cb30a1b04764b1c9a027",
+   "drive_id": "1KHDSeJhRbFJqiV2eNXKCt9Ayej9kb348"
+  },
+  {
+   "path": "67_2026.04.09_OPAL.0002_Weston_PC/swir/swir-signatures.csv",
+   "bytes": 101672026,
+   "sha256": "6a5dd7f198ba350a4a0e679dc0c835f1e2990663ea97bf9edcceb734c94ac0d2",
+   "drive_id": "1JXaP6n1Ll9yjDp018bGePUaIx1DzOwnU"
+  },
+  {
+   "path": "67_2026.04.09_OPAL.0002_Weston_PC/vnir/vnir-design.csv",
+   "bytes": 1375293,
+   "sha256": "93d227ea4b63cf8a1e34de849a32108c4d5e63ac6768fd0b61dc1c5c81a5ac48",
+   "drive_id": "1Jjgq7g5MlunWra4agipN7cGI5EFZyOeY"
+  },
+  {
+   "path": "67_2026.04.09_OPAL.0002_Weston_PC/vnir/vnir-metadata.csv",
+   "bytes": 4421694,
+   "sha256": "eb3c857bb90b72febf9aadca57e2b1f7af9a23d9e0ae5d70d2f9adf19a4ff305",
+   "drive_id": "1H0wf4Hdt3CXjUdxtZwvDOSvRUB27OWDN"
+  }
+ ]
+}

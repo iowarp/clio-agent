@@ -2,7 +2,7 @@
 """Leg (ii): clio-kit web MCP ``task=required`` fetch, end-to-end (#1286, #1301).
 
 The original #1274 user failure is reproduced through the DECLARED path only.
-The pack supplies the local ``clio-kit mcp-server web`` fallback and the
+The ``web`` plugin supplies the local ``clio-kit mcp-server web`` fallback and the
 user-level ``mcp.yaml`` supplies an optional durable ``--remote-url`` override;
 this leg never uses the process-only ``POST /v1/mcp/servers`` lane.
 
@@ -11,30 +11,30 @@ Investigation proved the bare-session builtin main's toolset is a hardcoded
 4-tool list, so a declared server's tools never reach it no matter what
 ``mcp.yaml`` declares (#1301, deferred upstream -- the Python builtin main is
 being dissolved). This leg now rides the WORKING path instead: a
-purpose-built single-expert Agent Blueprint pack
-(``agents/web-testing/``) whose ``AGENT.md`` declares ``mcp_servers: {web:
-...}`` and whose ``main`` expert declares ``tools: [web_fetch, web_search,
-web_fetch_events]`` -- the same mechanism every real marketplace pack (e.g.
-``deep-researcher``) uses.  When a high-capacity endpoint is supplied, the leg
-persists it through ``PUT /v1/mcp/configuration/web`` before activating the
-pack. The normal user-over-pack declaration precedence then selects the saved
-remote override across processes and workspaces.
+purpose-built testing agent (``agents/web-testing/``, a native marketplace)
+that carries the default marketplace's ``web`` plugin, whose ``mcp.json``
+declares the ``web`` server (``web_fetch``, ``web_search``,
+``web_fetch_events``) -- the same mechanism every marketplace agent (e.g.
+``deep-researcher``) uses. When a high-capacity endpoint is supplied, the leg
+persists it through ``PUT /v1/mcp/configuration/web`` before selecting the
+agent. The normal user-over-plugin declaration precedence then selects the
+saved remote override across processes and workspaces.
 
 Sequence: boot a gact ``run_server`` with isolated user configuration and its
 OS cwd pinned to a fresh workspace dir -> health poll -> ``PUT /v1/policies``
 allow-all -> create workspace (``root_path`` == the SAME dir) + session ->
 persist the explicitly supplied Web Search endpoint, if any -> materialize the
-``web-testing`` pack into that workspace dir -> install it onto the workspace
-(``POST /v1/agent-blueprints/install``) -> activate it on the session
-(``POST /v1/sessions/{sid}/agent-blueprint``) -> ``GET /v1/mcp/handshake``
+``web-testing`` marketplace into that workspace dir -> install and trust it
+(``POST /v1/plugins/marketplaces`` + ``.../{name}/trust``) -> select its agent
+for the session (``PATCH /v1/sessions/{sid}/agent``) -> ``GET /v1/mcp/handshake``
 asserts ``web`` reachable with its 3 tools (``fetch``/``fetch_events``/
 ``search`` -- verified live via a direct fastmcp stdio probe of ``clio-kit
 mcp-server web`` during the #1286 package's own build/verify pass,
 protocol_version ``2026-07-28``, ``server_capabilities.extensions`` carries
 ``io.modelcontextprotocol/tasks``) -> PRE-TURN READINESS GATE:
-``GET /v1/agents?session_id=...`` asserts the resolved ``main`` agent's
-``tools`` include ``web_fetch`` (proof the declared-server tool reached this
-session's active agent, not merely that the pack's frontmatter parsed) --
+``GET /v1/sessions/{sid}/agent`` asserts the session agent's resolved tools
+include ``web_fetch`` (proof the declared-server tool reached this session's
+agent, not merely that the plugin loaded) --
 then, unless ``--plumbing-only``, bind the provider and drive ONE turn: search,
 fetch a stable official PDF with ``to_file=true``, and read its durable
 conversion events. This deliberately exercises the document-conversion task
@@ -89,12 +89,12 @@ other tool."""
 
 EXPECTED_WEB_TOOLS = {"fetch", "fetch_events", "search"}
 
-#: The web-testing pack template this leg materializes per run.
+#: The web-testing marketplace template this leg materializes per run.
 PACK_TEMPLATE_DIR = Path(__file__).resolve().parent / "agents" / "web-testing"
 
-#: The root ``main`` expert's tools that must be resolved BEFORE any turn is
-#: driven (the readiness gate -- proves the blueprint path, not the old
-#: hardcoded-4-tool bare-session path).
+#: The session agent's tools that must be resolved BEFORE any turn is driven
+#: (the readiness gate -- proves the plugin path, not the old hardcoded-4-tool
+#: bare-session path).
 NEEDED_AGENT_TOOLS = {"web_fetch", "web_fetch_events", "web_search"}
 
 
@@ -247,11 +247,10 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def _assert_web_handshake(call: Any, wsid: str, sid: str) -> dict[str, Any]:
-    # ``session_id`` is REQUIRED to see the pack-declared server: the
-    # handshake route's spec resolution keys entirely off the session's
-    # active blueprint (``gact/routes/mcp_specs.py::declared_mcp_specs`` ->
-    # ``active_blueprint_id(app, session_id)``) -- an empty session_id
-    # resolves no blueprint and therefore no pack-declared servers at all.
+    # ``session_id`` is REQUIRED to see the plugin-declared server: the
+    # handshake route's spec resolution reads the session's pinned agent
+    # resolution (``gact/routes/mcp_specs.py::declared_mcp_specs``) -- an
+    # empty session_id resolves no agent and therefore no plugin servers.
     handshake = call("GET", "/v1/mcp/handshake", params={"workspace_id": wsid, "session_id": sid})
     rows = handshake.get("servers") or []
     web_row = next((r for r in rows if r.get("name") == "web"), None)
@@ -265,12 +264,12 @@ def _assert_web_handshake(call: Any, wsid: str, sid: str) -> dict[str, Any]:
     return result
 
 
-def _assert_readiness(call: Any, sid: str, wsid: str) -> dict[str, Any]:
-    """PRE-TURN READINESS GATE: the resolved ``main`` agent must already carry
+def _assert_readiness(call: Any, sid: str, wsid: str, agent_id: str) -> dict[str, Any]:
+    """PRE-TURN READINESS GATE: the session agent must already carry
     ``NEEDED_AGENT_TOOLS`` before any provider is bound or turn is driven."""
 
     resolved = common.resolved_agent_tools(call, sid, workspace_id=wsid)
-    main_tools = set(resolved.get("main") or [])
+    main_tools = set(resolved.get(agent_id) or [])
     return {
         "resolved_agent_tools": resolved,
         "readiness_gate": {
@@ -290,9 +289,8 @@ def main() -> int:
     ws_dir = Path(args.ws_dir).resolve()
     ws_dir.mkdir(parents=True, exist_ok=True)
 
-    pack_root = common.materialize_testing_pack(
-        PACK_TEMPLATE_DIR, ws_dir, {"web": "clio-kit mcp-server web"}
-    )
+    # The ``web`` plugin declares ``clio-kit mcp-server web``; no mcp.json here.
+    pack_root = common.materialize_testing_marketplace(PACK_TEMPLATE_DIR, ws_dir, {})
 
     base = f"http://127.0.0.1:{args.port}"
     verdict: dict[str, Any] = {
@@ -336,15 +334,14 @@ def main() -> int:
             configuration = call("GET", "/v1/mcp/configuration/web")
         verdict["web_configuration"] = configuration
 
-        install_result = common.install_blueprint(call, pack_root, wsid)
-        blueprint_id = str(install_result.get("id") or "")
-        common.activate_blueprint(call, sid, blueprint_id)
-        verdict["blueprint_id"] = blueprint_id
+        agent_ref = common.install_testing_agent(call, pack_root)
+        common.use_agent(call, sid, agent_ref)
+        verdict["agent_ref"] = agent_ref
 
         handshake_result = _assert_web_handshake(call, wsid, sid)
         verdict.update(handshake_result)
 
-        readiness_result = _assert_readiness(call, sid, wsid)
+        readiness_result = _assert_readiness(call, sid, wsid, common.agent_id_of(agent_ref))
         verdict.update(readiness_result)
         readiness_ok = readiness_result["readiness_gate"]["ready"]
 

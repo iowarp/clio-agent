@@ -65,10 +65,10 @@ def slow_clio_core(monkeypatch, tmp_path):
     real_store = storage.ClioCoreStore
 
     class _SlowClioCoreStore(real_store):  # type: ignore[misc, valid-type]
-        def __init__(self, *, config_path: str, namespace: str = "") -> None:
+        def __init__(self, *, config_path: str, namespace: str = "", **kwargs: Any) -> None:
             entered.set()
             released.wait(_FAKE_CLIO_CORE_WAIT_S)
-            super().__init__(config_path=config_path, namespace=namespace)
+            super().__init__(config_path=config_path, namespace=namespace, **kwargs)
 
     monkeypatch.setattr(storage, "ClioCoreStore", _SlowClioCoreStore)
     # The server's lifespan teardown releases the runtime client of an app whose ARC is a

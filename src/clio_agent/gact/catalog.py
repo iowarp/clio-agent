@@ -17,96 +17,9 @@ from typing import Any, cast
 # no longer materialize as agents — only the frontmatter parser is shared here.
 from clio_agent.gact.skills import _parse_skill_frontmatter
 from clio_agent.gact.types import AgentDef, Tool, ToolDomain
+from clio_agent.plugins.command_text import expand_plugin_text
 
 logger = logging.getLogger(__name__)
-
-
-def _builtin_agents() -> list[AgentDef]:
-    """Return the code-shipped builtin agent catalog: just the react ``main``.
-
-    This USED to silently load whatever Agent Blueprint snapshot happened to be
-    pinned as ``DEFAULT_AGENT_BLUEPRINT_ID`` (an installed marketplace default,
-    e.g. ``earthscope-gnss-region``) and re-label its rows "builtin" -- so every
-    merge that treated this list as ground truth (``GET /v1/agents``' fallback,
-    declared-child resolution for spawn, the session-less prompt-context tree,
-    ``/v1/catalog/tools``) silently surfaced an installed-but-never-activated
-    marketplace pack as if it were part of the product. That is exactly the
-    implicit agent selection the blueprint lane's explicit-activation-only ruling
-    forbids (owner, 2026-08-05, commit aa906022) -- it just survived in this
-    parallel "builtin" seam instead of ``_runtime_active_agent_blueprint_id``.
-
-    The fallback is deleted here too: the ONLY code-shipped agent is
-    :func:`_builtin_main_agent`, and every consumer that merges this list with
-    genuinely-installed expert packs (loose/workspace/global, or an EXPLICITLY
-    activated blueprint/pack) now sees an honest catalog -- no
-    discoverable-but-unactivated registry snapshot leaks in.
-    """
-
-    return [_builtin_main_agent()]
-
-
-#: The builtin main's A2UI catalog declaration (v15 S8): the code-shipped agent
-#: declares its catalogs like any shipped agent does -- an explicit list, never
-#: an implicit "every builtin". ``a2ui_catalogs.activation`` turns it into the
-#: session's declaration source when no Agent Blueprint is active.
-BUILTIN_MAIN_A2UI_CATALOGS: tuple[str, ...] = ("clio-workspace",)
-
-
-def builtin_main_catalog_source() -> Any:
-    """The builtin main's A2UI catalog declaration source (a builtin-agent unit)."""
-
-    from clio_agent.gact.a2ui_catalogs.declarations import (  # noqa: PLC0415
-        parse_catalog_declarations,
-    )
-
-    return parse_catalog_declarations(
-        list(BUILTIN_MAIN_A2UI_CATALOGS),
-        unit_kind="builtin_agent",
-        unit_id="builtin:main",
-        root=Path(),
-    )
-
-
-def _builtin_main_agent() -> AgentDef:
-    """The in-code react ``main`` a session with NO activated Agent Blueprint runs.
-
-    Owner ruling (2026-08-05): a session never resolves a DISCOVERABLE Agent
-    Blueprint it did not activate. A bare session must still work (RULE 2), so
-    it executes THIS shipped definition — code, not disk discovery. It runs on
-    the same react runtime as blueprint mains (``definition_kind: builtin_main``
-    routes it through ``_build_blueprint_dspy_module``), and its tool surface is
-    the universal in-process builtins (``clio_agent.tools.catalog.TOOL_CATALOG``,
-    the fs/shell tools every host tool fleet mounts). Loose expert-pack experts
-    declaring ``parent_id: main`` hang off it in the builtin/expert-pack
-    hierarchy, so they remain reachable as declared spawn children.
-    """
-
-    from clio_agent.tools.catalog import TOOL_CATALOG  # noqa: PLC0415
-
-    return AgentDef(
-        id="main",
-        source="builtin",
-        title="CLIO Main Agent",
-        description=("Built-in react main executed by sessions with no activated Agent Blueprint."),
-        tier=1,
-        specialization="orchestrator",
-        module={"kind": "react"},
-        prompt_id="clio.chat",
-        tools=sorted(
-            {
-                *TOOL_CATALOG,
-                "view_image",
-                "view_pdf",
-                "prepare_document_runtime",
-                "prepare_execution_runtime",
-                "prepare_document",
-            }
-        ),
-        metadata={
-            "definition_kind": "builtin_main",
-            "a2ui_catalogs": list(BUILTIN_MAIN_A2UI_CATALOGS),
-        },
-    )
 
 
 def _load_command_files_from_disk(
@@ -133,6 +46,9 @@ def _load_command_files_from_disk(
             except Exception:  # noqa: BLE001 - unreadable skill markdown skipped
                 continue
             meta, body = _parse_skill_frontmatter(text)
+            if extra_metadata.get("command_scope") == "plugin":
+                # A plugin's command names its own files; resolve them for the model.
+                body = expand_plugin_text(body, md.parent.parent)
             command_id = _normalize_file_command_id(meta, md)
             if not command_id:
                 continue
@@ -158,12 +74,13 @@ def _load_command_files_from_disk(
             enabled = _truthy_command_field(meta.get("enabled"), status == "available")
             if status != "available":
                 enabled = False
+            # Empty names the session's agent; otherwise one of its defined subagents.
             agent_id = str(
                 meta.get("agent")
                 or meta.get("agent_id")
                 or meta.get("target_agent")
                 or meta.get("target-agent")
-                or "main"
+                or ""
             ).strip()
             command = {
                 "id": command_id,
@@ -257,30 +174,29 @@ def _builtin_tool_declarations() -> list[tuple[str, str, str, Any]]:
     name/title/description.
     """
 
-    from clio_agent.gact.agents.auto_tools import build_auto_react_tools  # noqa: PLC0415
-    from clio_agent.gact.agents.declared_native_tools import (  # noqa: PLC0415
-        resolve_declared_native_tools,
+    from clio_agent.gact.agents.native_tool_registry import (  # noqa: PLC0415
+        AGENT_RUNTIME_TOOLS,
+        GATEWAY_TOOLS,
+        NATIVE_TOOL_NAMES,
+        build_native_tools,
     )
+    from clio_agent.gact.spawn_tools import build_spawn_runtime_tools  # noqa: PLC0415
 
     seen: dict[str, tuple[str, str, str, Any]] = {}
-    main = _builtin_main_agent()
-    # Declared native tools (e.g. view_image, view_pdf) are constructed
-    # in-process, not listed by the gateway; the catalog describes the full
-    # declared surface.
-    _, native_tools, _ = resolve_declared_native_tools(
-        main, {}, supports_vision=True, supports_pdf=True
+    describer = AgentDef(id="catalog", title="Tool catalog", tools=sorted(NATIVE_TOOL_NAMES))
+    native_tools, _, _ = build_native_tools(
+        describer,
+        sorted(NATIVE_TOOL_NAMES - AGENT_RUNTIME_TOOLS),
+        {},
+        supports_vision=True,
+        supports_pdf=True,
+        describe_all=True,
     )
     for tool in native_tools.values():
         _record_declaration(seen, tool)
-    for tool_name in main.tools:
+    for tool_name in sorted(GATEWAY_TOOLS):
         seen.setdefault(tool_name, (tool_name, tool_name.replace("_", " ").title(), "", None))
-    for tool in build_auto_react_tools(
-        main, a2ui_producers=True, supports_vision=True, ndp_tools=True
-    ):
-        _record_declaration(seen, tool)
-    from clio_agent.gact.task_declarations import build_spawn_runtime_tools, build_task_tools
-
-    for tool in (*build_task_tools(), *build_spawn_runtime_tools(None, main)):
+    for tool in build_spawn_runtime_tools(None, describer):
         _record_declaration(seen, tool)
     return list(seen.values())
 
@@ -313,7 +229,7 @@ def _builtin_tools() -> list[Tool]:
 
     This is a product catalog, not a session-effective inventory: it includes
     the workspace gateway, universal react tools, and root coordination tools.
-    Blueprint/session additions remain visible through the effective-toolset
+    Plugin/session additions remain visible through the effective-toolset
     endpoint and are deliberately not guessed here.
     """
 

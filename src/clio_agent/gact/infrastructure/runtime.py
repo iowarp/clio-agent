@@ -8,13 +8,16 @@ import logging
 from collections import defaultdict
 from collections.abc import Awaitable, Callable
 from contextlib import suppress
+from typing import Literal
 from urllib.parse import urlsplit
 
 import httpx
 from anyio.to_thread import run_sync
 
 from clio_agent.gact.infrastructure import reuse
+from clio_agent.gact.infrastructure.claim_outcome import conflict_question
 from clio_agent.gact.infrastructure.clio_agent_deploy import ClaimResult, parse_claim
+from clio_agent.gact.infrastructure.clio_python import on_clio_tools
 from clio_agent.gact.infrastructure.deployment_ledger import (
     forget_created,
     held_elsewhere,
@@ -24,7 +27,7 @@ from clio_agent.gact.infrastructure.deployment_ledger import (
 from clio_agent.gact.infrastructure.drivers import (
     DriverPlan,
     build_driver_plan,
-    clio_agent_version,
+    deployed_clio_version,
     loopback_only,
     service_connection_port,
     service_definitions,
@@ -45,7 +48,6 @@ from clio_agent.gact.infrastructure.models import (
     ServiceRecord,
     ServiceState,
     TargetFacts,
-    VersionConflictDetail,
 )
 from clio_agent.gact.infrastructure.operation_events import TERMINAL_EVENT, OperationEventLog
 from clio_agent.gact.infrastructure.operation_progress import OperationTracker
@@ -138,6 +140,7 @@ class InfrastructureRuntime(ExternalConnectionsMixin, ServerAccessMixin, ModelRo
             return await self._local_executor(spec)
         if target.kind != "ssh":
             raise ValueError("Connection-only targets do not support lifecycle commands")
+        spec = on_clio_tools(target, spec)  # the target's own CLIO python3/uv first
         if on_output is not None and isinstance(self.transports, InfrastructureTransportRegistry):
             return await self.transports.execute(target_id, spec, on_output)
         return await self.transports.execute(target_id, spec)
@@ -299,7 +302,11 @@ class InfrastructureRuntime(ExternalConnectionsMixin, ServerAccessMixin, ModelRo
             return "unknown"
 
     def start_action(
-        self, service_id: str, request: ServiceActionRequest
+        self,
+        service_id: str,
+        request: ServiceActionRequest,
+        *,
+        initiator: Literal["person", "clio"] = "person",
     ) -> InfrastructureOperation:
         """Start one operation and return its durable receipt immediately."""
 
@@ -311,6 +318,7 @@ class InfrastructureRuntime(ExternalConnectionsMixin, ServerAccessMixin, ModelRo
                 service_id=service_id,
                 target_id=request.target_id,
                 action=request.action,
+                initiator=initiator,
             )
         )
         task = asyncio.create_task(self._run_operation(row, request))
@@ -553,40 +561,22 @@ class InfrastructureRuntime(ExternalConnectionsMixin, ServerAccessMixin, ModelRo
                         ):
                             resolved_root_update = claim.owner.strip()
                         break
-                    # Nothing was stopped or installed. Surface what was found so the caller
-                    # can ask "Connect" or "Replace" instead of clio deciding either way. An
-                    # unanswered health check is no reason to stop a process: `health` says so.
-                    health = claim.health or "unknown"
-                    progress = (
-                        (
-                            f"CLIO {claim.installed_version or '(unknown version)'} "
-                            f"is already running on this host (pid {claim.pid or 'unknown'})."
-                        )
-                        if health == "healthy"
-                        else (
-                            f"A CLIO-looking process is already on this host's port "
-                            f"(pid {claim.pid or 'unknown'}), but it isn't answering."
-                        )
-                    )
+                # Nothing was stopped, started or installed: ask the person (claim_outcome).
+                question = claim and conflict_question(
+                    claim,
+                    target_version=deployed_clio_version(),
+                    port=plan.connection_port or 17800,
+                )
+                if question:
+                    progress, conflict = question
                     tracker.finish(
                         "failed",
                         progress,
                         error="clio_deploy_version_conflict",
-                        conflict=VersionConflictDetail(
-                            installed_version=claim.installed_version or "unknown",
-                            pid=claim.pid or "",
-                            health=health,
-                            target_version=clio_agent_version(),
-                            owner=claim.owner or "",
-                            port=plan.connection_port or 17800,
-                        ),
+                        conflict=conflict,
                         logs=_bounded("\n".join(output)),
                     )
                     return
-                if claim is not None and claim.result == "adopted":
-                    # The healthy server of this exact install and version
-                    # keeps running; installing or starting again is not needed.
-                    break
                 if spec.settle_seconds:
                     await asyncio.sleep(spec.settle_seconds)
 
@@ -599,7 +589,7 @@ class InfrastructureRuntime(ExternalConnectionsMixin, ServerAccessMixin, ModelRo
                     plan.readiness, execute, tracker.message, sink=tracker.log_text
                 )
             for spec in plan.after_ready:
-                tracker.enter("after-ready", "Preparing the model")
+                tracker.enter("after-ready", "Completing service setup")
                 tracker.command_started(None, spec)
                 result = await self._execute(request.target_id, spec, tracker.output)
                 tracker.command_finished(None, result)
@@ -611,7 +601,7 @@ class InfrastructureRuntime(ExternalConnectionsMixin, ServerAccessMixin, ModelRo
                         or f"{spec.program} exited with code {result.exit_code}"
                     )
             if plan.after_ready_hook is not None:
-                tracker.enter("after-ready", "Preparing the model")
+                tracker.enter("after-ready", "Completing service setup")
                 chosen = await plan.after_ready_hook(execute, tracker.message)
                 base = plan.configuration or request.configuration
                 plan = dataclasses.replace(plan, configuration={**base, **chosen})
@@ -624,13 +614,15 @@ class InfrastructureRuntime(ExternalConnectionsMixin, ServerAccessMixin, ModelRo
                 "start",
                 "reinstall",
             }:
-                adopted = claim is not None and claim.result in {"found", "adopted"}
+                adopted = claim is not None and claim.result == "found"
+                # An adopted agent, or a stopped one started as it is, keeps its version.
+                kept = adopted or on_conflict == "connect"
                 configuration = dict(request.configuration)
                 configuration.update(
                     desktop_owned="false" if adopted else "true",
-                    version=(claim.installed_version or "unknown")
-                    if adopted and claim is not None
-                    else clio_agent_version(),
+                    version=(claim.installed_version if claim else None) or "unknown"
+                    if kept
+                    else deployed_clio_version(),
                 )
                 request = request.model_copy(update={"configuration": configuration})
                 if not adopted and plan.remote_launch:

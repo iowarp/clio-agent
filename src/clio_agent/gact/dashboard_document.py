@@ -17,7 +17,13 @@ from clio_agent.gact.a2ui_catalogs.activation import (
     session_catalog_resolver,
     session_producible_catalog_ids,
 )
-from clio_agent.gact.a2ui_producer import _chart_spec, _common, _data_reference, _export
+from clio_agent.gact.a2ui_producer import (
+    _bound_files,
+    _chart_spec,
+    _common,
+    _data_reference,
+    _export,
+)
 from clio_agent.gact.artifacts.minting import _contained, _session_workspace_id, _workspace_root
 from clio_agent.gact.protocol_v3 import A2UI_V091_WIRE
 
@@ -61,6 +67,19 @@ def compile_dashboard_surface(
     if isinstance(exported, dict):
         raise ValueError(json.dumps(exported))
     components, export_report = exported
+    bound = _bound_files.export_selection_rows(app, sid, components)
+    if isinstance(bound, dict):
+        raise ValueError(json.dumps(bound))
+    modelled = _bound_files.export_bound_values(app, sid, components, "/", document.data_model)
+    if isinstance(modelled, dict):
+        raise ValueError(json.dumps(modelled))
+    data_model, more = modelled
+    if bound or more:
+        export_report["exported_artifacts"] = [
+            *export_report.get("exported_artifacts", []),
+            *bound,
+            *more,
+        ]
     # Preserve the agent's chosen groups while isolating this artifact's cameras.
     for component in components:
         group = component.get("syncGroup")
@@ -97,7 +116,7 @@ def compile_dashboard_surface(
             "version": A2UI_V091_WIRE,
             "updateDataModel": {
                 "surfaceId": surface_id,
-                "value": document.data_model,
+                "value": data_model,
             },
         },
     ]

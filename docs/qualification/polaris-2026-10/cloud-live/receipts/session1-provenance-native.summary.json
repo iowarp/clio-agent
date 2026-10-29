@@ -1,0 +1,161 @@
+{
+ "source_route": "GET /v1/sessions/{sid}/provenance/execution?provider=native",
+ "provider": "native",
+ "session_id": "sess_5f6eea93ae15",
+ "complete": false,
+ "provider_health": {},
+ "span_count": 1967,
+ "event_type_counts": {
+  "lm.token.delta": 1688,
+  "arc.op": 178,
+  "task.observed": 21,
+  "hook.invocation.started": 10,
+  "lm.call": 7,
+  "react.step.completed": 7,
+  "session.input.prepared": 7,
+  "routing.decision": 5,
+  "session.mail.accepted": 5,
+  "session.mail.updated": 5,
+  "turn.started": 5,
+  "agent.invocation.started": 5,
+  "agent.toolset.prepare.started": 5,
+  "llm.request.started": 5,
+  "expert.lifecycle.started": 5,
+  "tool.call.started": 2,
+  "artifact.transform.recorded": 2,
+  "expert.extract.completed": 1,
+  "llm.response.completed": 1,
+  "agent.invocation.completed": 1,
+  "turn.completed": 1,
+  "task.submission": 1
+ },
+ "workflows": [],
+ "agents": [
+  {
+   "id": "spotter-ai"
+  },
+  {
+   "id": "standard"
+  }
+ ],
+ "session_lineage": [
+  {
+   "session_id": "sess_5f6eea93ae15",
+   "parent_session_id": "",
+   "task_id": "",
+   "agent_id": "",
+   "label": "Greenhouse drought check",
+   "depth": 0,
+   "task_path": [],
+   "attribution": "root"
+  },
+  {
+   "session_id": "sess_f4f659990f9d4cc79c20d13d9c25a29f",
+   "parent_session_id": "sess_5f6eea93ae15",
+   "task_id": "task_bfe146cb6bcdb7fa8569593863ba40765cd6fb9a8711555cd683d7bdfd578ba6",
+   "agent_id": "spotter-ai",
+   "label": "SPOTTER",
+   "depth": 1,
+   "task_path": [
+    "task_bfe146cb6bcdb7fa8569593863ba40765cd6fb9a8711555cd683d7bdfd578ba6"
+   ],
+   "attribution": "agent_task",
+   "status": "completed",
+   "created_at": "2026-10-26T06:04:26.256133+00:00",
+   "updated_at": "2026-10-26T06:05:23.582884+00:00"
+  }
+ ],
+ "lm_call_spans": [
+  {
+   "id": "sem_c8316570dd01417e",
+   "session_id": "sess_f4f659990f9d4cc79c20d13d9c25a29f",
+   "workflow_id": "",
+   "label": "LM call (stop).",
+   "event_type": "lm.call",
+   "status": "completed",
+   "start_time": 1792994762.288138,
+   "model": {
+    "model_id": "claude_code/claude-haiku-5-5"
+   },
+   "flowcept_task_ids": []
+  },
+  {
+   "id": "sem_301d78d245824726",
+   "session_id": "sess_5f6eea93ae15",
+   "workflow_id": "",
+   "label": "LM call (stop).",
+   "event_type": "lm.call",
+   "status": "completed",
+   "start_time": 1792994776.265481,
+   "model": {
+    "model_id": "claude_code/claude-haiku-5-5"
+   },
+   "flowcept_task_ids": []
+  },
+  {
+   "id": "sem_68b3c80502e44867",
+   "session_id": "sess_f4f659990f9d4cc79c20d13d9c25a29f",
+   "workflow_id": "",
+   "label": "LM call (tool_call).",
+   "event_type": "lm.call",
+   "status": "completed",
+   "start_time": 1792994784.759785,
+   "model": {
+    "model_id": "claude_code/claude-haiku-5-5"
+   },
+   "flowcept_task_ids": []
+  },
+  {
+   "id": "sem_4637f2e463bf493f",
+   "session_id": "sess_f4f659990f9d4cc79c20d13d9c25a29f",
+   "workflow_id": "",
+   "label": "LM call (stop).",
+   "event_type": "lm.call",
+   "status": "completed",
+   "start_time": 1792994790.79685,
+   "model": {
+    "model_id": "claude_code/claude-haiku-5-5"
+   },
+   "flowcept_task_ids": []
+  },
+  {
+   "id": "sem_c62429adb5724b0b",
+   "session_id": "sess_5f6eea93ae15",
+   "workflow_id": "",
+   "label": "LM call (stop).",
+   "event_type": "lm.call",
+   "status": "completed",
+   "start_time": 1792994806.752105,
+   "model": {
+    "model_id": "claude_code/claude-haiku-5-5"
+   },
+   "flowcept_task_ids": []
+  },
+  {
+   "id": "sem_bc9a97de6d4e455c",
+   "session_id": "sess_f4f659990f9d4cc79c20d13d9c25a29f",
+   "workflow_id": "",
+   "label": "LM call (tool_call).",
+   "event_type": "lm.call",
+   "status": "completed",
+   "start_time": 1792994815.301826,
+   "model": {
+    "model_id": "claude_code/claude-haiku-5-5"
+   },
+   "flowcept_task_ids": []
+  },
+  {
+   "id": "sem_a52124f2b4df4842",
+   "session_id": "sess_f4f659990f9d4cc79c20d13d9c25a29f",
+   "workflow_id": "",
+   "label": "LM call (stop).",
+   "event_type": "lm.call",
+   "status": "completed",
+   "start_time": 1792994823.274842,
+   "model": {
+    "model_id": "claude_code/claude-haiku-5-5"
+   },
+   "flowcept_task_ids": []
+  }
+ ]
+}

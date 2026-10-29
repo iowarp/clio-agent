@@ -668,8 +668,8 @@ def test_the_loop_places_media_by_the_lms_tag(monkeypatch: pytest.MonkeyPatch) -
 
     original = clio_react_record.result_part
 
-    def with_image(call_id: str, name: str, value: Any, is_error: bool) -> Any:
-        part = original(call_id, name, value, is_error)
+    def with_image(call_id: str, name: str, value: Any, is_error: bool, **kwargs: Any) -> Any:
+        part = original(call_id, name, value, is_error, **kwargs)
         return ToolResultPart(id=part.id, name=part.name, content=(*part.content, image))
 
     monkeypatch.setattr(clio_react_record, "result_part", with_image)

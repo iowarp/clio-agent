@@ -18,7 +18,7 @@ import pytest
 from rich.console import Console
 
 from clio_agent import __version__, serve
-from clio_agent.sdk import ClioClient
+from clio_agent.client import ClioClient
 from clio_agent.ui.cli import ClioAgentCLI, boot_client, main
 
 # #948 S4b: default sessions run the blueprint react ``main``; route it to each

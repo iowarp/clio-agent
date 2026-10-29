@@ -16,10 +16,9 @@ from jsonschema.exceptions import ValidationError
 from clio_agent.arc.memory import ARCMemory
 from clio_agent.arc.task_types import SubmissionContext
 from clio_agent.gact import context
-from clio_agent.gact.agents import blueprint_commission
 from clio_agent.gact.builtin_boundary import BuiltinBoundary
 from clio_agent.gact.conversations import Conversations
-from clio_agent.gact.task_declarations import build_spawn_runtime_tools
+from clio_agent.gact.spawn_tools import build_spawn_runtime_tools
 from tests.test_arc.conftest import core_arc as core_arc
 from tests.test_arc.test_conversation_owner_contracts import create_environment
 
@@ -33,21 +32,22 @@ async def _spawn_boundary(
         BuiltinBoundary,
         dict[str, Any],
         contextvars.Context,
-        list[tuple[str, str | None]],
+        list[str],
     ]
 ]:
-    """Use actual Core, MCP custody and conversation acceptance; substitute catalog discovery."""
+    """Use actual Core, MCP custody and conversation acceptance; substitute child resolution."""
     app, owner, root = await create_environment(arc, tmp_path)
     app.state.mcp_app_loop = asyncio.get_running_loop()
     app.state.workspaces = SimpleNamespace(
         get=lambda _wid: SimpleNamespace(root_path=str(tmp_path))
     )
-    resolved: list[tuple[str, str | None]] = []
+    resolved: list[str] = []
+    prepare_child = owner.prepare_child
 
-    def resolve(_app: Any, sid: str, agent: str, blueprint_id: str | None) -> tuple[Any, ...]:
-        assert sid == root.owner.session_id
-        resolved.append((agent, blueprint_id))
-        return agent, None, None, None
+    def prepare(parent: str, agent: str, scope: dict[str, Any] | None, model: str = "") -> Any:
+        assert parent == root.owner.session_id
+        resolved.append(agent)
+        return prepare_child(parent, agent, scope, model)
 
     def authorize(saved: SubmissionContext) -> None:
         assert saved.owner.assignment_id == root.handle
@@ -55,7 +55,7 @@ async def _spawn_boundary(
         assert current is not None
         owner.require_admission(current)
 
-    monkeypatch.setattr(blueprint_commission, "resolve_commission_target", resolve)
+    monkeypatch.setattr(owner, "prepare_child", prepare)
     tools = {
         tool.name: tool for tool in build_spawn_runtime_tools(None, SimpleNamespace(fanout={}))
     }
@@ -75,12 +75,12 @@ async def _spawn_boundary(
 @pytest.mark.parametrize(
     "optional",
     [
-        {"blueprint_id": None},
         {"placement": None},
         {"input_task_ids": None},
-        {"blueprint_id": None, "placement": None, "input_task_ids": None},
+        {"strategy": None},
+        {"placement": None, "input_task_ids": None, "strategy": None},
     ],
-    ids=["blueprint", "placement", "inputs", "all"],
+    ids=["placement", "inputs", "strategy", "all"],
 )
 async def test_model_can_submit_nullable_spawn_options(
     arc: ARCMemory, tmp_path: Path, optional: dict[str, Any], monkeypatch: pytest.MonkeyPatch
@@ -106,10 +106,55 @@ async def test_model_can_submit_nullable_spawn_options(
         child = owner.sessions.get(result["session_id"])
         assert child is not None and child.agent["id"] == "data_expert"
         assert child.creation_hook_state == "pending"
-        assert resolved == [("data_expert", None)]
+        assert resolved == ["data_expert"]
         assert await asyncio.to_thread(owner.history.task_handles, kind="Subagent") == {
             current.handle
         }
+
+
+@pytest.mark.asyncio
+async def test_spawn_name_is_persisted_and_part_of_idempotency(
+    arc: ARCMemory, tmp_path: Path
+) -> None:
+    """Names survive acceptance/replay and cannot change under an accepted invocation."""
+    from clio_agent.gact.task_access import TaskCaller
+
+    app, owner, root = await create_environment(arc, tmp_path)
+    caller = TaskCaller(root.owner.session_id, "human")
+    try:
+        accepted = await owner.spawn(
+            caller,
+            "Inspect source layout",
+            "data_expert",
+            "named-invocation",
+            session_metadata={"subagent_name": "Source layout"},
+        )
+        child = owner.sessions.get(accepted["session_id"])
+        task = owner.history.task_snapshot(accepted["handle"])
+        assert child is not None and child.title == "Source layout"
+        assert child.metadata["subagent_name"] == "Source layout"
+        assert task is not None and task.label == "Source layout"
+        assert (
+            await owner.spawn(
+                caller,
+                "Inspect source layout",
+                "data_expert",
+                "named-invocation",
+                session_metadata={"subagent_name": "Source layout"},
+            )
+            == accepted
+        )
+        with pytest.raises(ValueError, match="different work or name"):
+            await owner.spawn(
+                caller,
+                "Inspect source layout",
+                "data_expert",
+                "named-invocation",
+                session_metadata={"subagent_name": "Different name"},
+            )
+    finally:
+        await owner.shutdown()
+        await owner.recovery.drain()
 
 
 @pytest.mark.asyncio
@@ -126,7 +171,12 @@ async def test_model_can_inherit_batch_placement(
     ):
         result = await boundary.call(
             tools["spawn_agents_parallel"],
-            {"spawns": [{"agent": "data_expert", "task": "Inspect owned data"}], "placement": None},
+            {
+                "spawns": [
+                    {"agent": "data_expert", "task": "Inspect owned data", "name": "Data scan"}
+                ],
+                "placement": None,
+            },
             captured,
         )
         assert result["outcomes"] == result["spawned"]
@@ -134,15 +184,24 @@ async def test_model_can_inherit_batch_placement(
         assert child["accepted"] is True and child["task_id"] == child["handle"]
         current = await asyncio.to_thread(owner.history.task_snapshot, child["handle"])
         assert current is not None and current.description == "Inspect owned data"
-        assert resolved == [("data_expert", None)]
+        assert current.label == "Data scan"
+        saved = owner.sessions.get(child["session_id"])
+        assert saved is not None and saved.metadata["subagent_name"] == "Data scan"
+        assert resolved == ["data_expert"]
         assert len(await asyncio.to_thread(owner.history.task_handles, kind="Subagent")) == 1
 
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
     "invalid",
-    [{"task": None}, {"blueprint_id": 1}, {"input_task_ids": "task_x"}],
-    ids=["task", "blueprint", "inputs"],
+    [
+        {"task": None},
+        {"agent": 1},
+        {"input_task_ids": "task_x"},
+        {"strategy": "best_of_n"},
+        {"name": ["not", "a", "string"]},
+    ],
+    ids=["task", "agent", "inputs", "strategy", "name"],
 )
 async def test_invalid_spawn_arguments_are_rejected_before_submission(
     arc: ARCMemory, tmp_path: Path, invalid: dict[str, Any], monkeypatch: pytest.MonkeyPatch

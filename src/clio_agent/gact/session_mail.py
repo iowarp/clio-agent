@@ -24,6 +24,11 @@ from clio_agent.gact.task_publication import task_owner_recipient
 
 Eligibility = Callable[[str, MailItem], bool]
 ATOMIC_INPUT_KINDS = frozenset({"human", "composer", "delegation", "question_answer"})
+#: Mail kinds whose own text is the turn's input when they trigger it (a written request);
+#: any other trigger is admitted with the generic continuation (``Conversations._admit``).
+WRITTEN_INPUT_KINDS = frozenset(
+    {"human", "composer", "goal", "loop", "schedule", "hook", "approval"}
+)
 
 
 class MailText(str):
@@ -150,6 +155,24 @@ class SessionMail:
                 items.append(item)
                 used += len(text)
             return StagedInput(tuple(items), tuple(injections), collected)
+
+    def interrupting_input(self, caller: TaskCaller) -> tuple[str, ...]:
+        """Inspect authorized, eligible coordination/input without consuming any mail.
+
+        Selected-task completion notices do not interrupt an all-wait. Actual
+        messages and question answers can require the waiting model's attention;
+        their existing recipient-input commitment remains the delivery owner.
+        """
+        with self.history.serialized():
+            access = TaskAccess(self.history, caller)
+            return tuple(
+                item.id
+                for item in self.history.pending_mail(caller.session_id)
+                if item.kind in {"peer", "human", "composer", "question_answer"}
+                and item.delivery == "eligible"
+                and self.eligible(caller.session_id, item)
+                and self._authorized(item, access)
+            )
 
     def bound_rendered(
         self, staged: StagedInput, rendered: Mapping[str, dict[str, Any]]

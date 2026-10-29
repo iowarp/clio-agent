@@ -31,8 +31,6 @@ PUBLIC_SYMBOLS: list[str] = [
 # Each must stay importable from clio_agent.gact.app as the shim re-exports
 # decomposed internals (#714).
 SEAM_SYMBOLS: list[str] = [
-    "_blueprint_runtime_signature",
-    "_build_tool_user_agent_module",
     "_estimate_cost_usd",
     "_format_sse",
     "_gact_turn_timeout_s",
@@ -43,7 +41,6 @@ SEAM_SYMBOLS: list[str] = [
     "_record_stream_fallback",
     "_refresh_argonne_lm_token",
     "_replace_session_messages",
-    "_resolve_runtime_dynamic_agent",
     "_tool_session_context",
 ]
 
@@ -69,14 +66,6 @@ def test_public_main_importable() -> None:
 
 def test_public_active_gact_app_importable() -> None:
     _assert_importable("_ACTIVE_GACT_APP")
-
-
-def test_seam_blueprint_runtime_signature_importable() -> None:
-    _assert_importable("_blueprint_runtime_signature")
-
-
-def test_seam_build_tool_user_agent_module_importable() -> None:
-    _assert_importable("_build_tool_user_agent_module")
 
 
 def test_seam_estimate_cost_usd_importable() -> None:
@@ -117,10 +106,6 @@ def test_seam_refresh_argonne_lm_token_importable() -> None:
 
 def test_seam_replace_session_messages_importable() -> None:
     _assert_importable("_replace_session_messages")
-
-
-def test_seam_resolve_runtime_dynamic_agent_importable() -> None:
-    _assert_importable("_resolve_runtime_dynamic_agent")
 
 
 def test_seam_tool_session_context_importable() -> None:

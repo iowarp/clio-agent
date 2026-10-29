@@ -15,6 +15,10 @@ from clio_agent.gact.infrastructure.clio_agent_deploy import (
     teardown_command,
 )
 from clio_agent.gact.infrastructure.context_sizing.deployment import sized_model_runtime_plan
+from clio_agent.gact.infrastructure.controller_source import (
+    controller_commit,
+    deployment_version,
+)
 from clio_agent.gact.infrastructure.gpu_share import share_launch
 from clio_agent.gact.infrastructure.model_instances import (
     ROUTER_SERVICE,
@@ -51,6 +55,7 @@ from clio_agent.gact.infrastructure.monitoring_services import (
     monitoring_plan,
     monitoring_port,
 )
+from clio_agent.gact.infrastructure.native_service_platform import clio_tool
 from clio_agent.gact.infrastructure.plan import DriverPlan
 from clio_agent.gact.infrastructure.remote_lifecycle import RemoteLaunch, start_owned_command
 from clio_agent.gact.infrastructure.reuse import Reuse, ReuseCheck, from_scratch
@@ -77,6 +82,7 @@ __all__ = [
     "DriverPlan",
     "build_driver_plan",
     "clio_agent_version",
+    "deployed_clio_version",
     "service_connection_port",
     "service_definitions",
 ]
@@ -109,6 +115,19 @@ def clio_agent_version() -> str:
     """The clio-agent version this CLIO runs: the one a remote CLIO installs."""
 
     return importlib.metadata.version("clio-agent")
+
+
+def deployed_clio_version() -> str:
+    """The version a remote CLIO must report to run this CLIO's code (``+g<commit>`` from source)."""
+
+    return deployment_version(clio_agent_version())
+
+
+def _clio_agent_artifact() -> str:
+    commit = controller_commit()
+    if commit:
+        return f"clio-agent at commit {commit[:12]} (source)"
+    return f"clio-agent=={clio_agent_version()} (PyPI)"
 
 
 def service_connection_port(
@@ -201,9 +220,9 @@ def service_definitions(
             ServiceVariant(
                 id="released",
                 label="Published release",
-                version=clio_agent_version(),
+                version=deployed_clio_version(),
                 install_type="bootstrap",
-                artifact=f"clio-agent=={clio_agent_version()} (PyPI)",
+                artifact=_clio_agent_artifact(),
                 compatible=facts.os == "linux" and facts.target_id != "local",
                 reason="Remote CLIO deployment requires a Linux SSH target.",
             )
@@ -365,7 +384,7 @@ def _relay_plan(
         return DriverPlan(
             (
                 CommandSpec(
-                    program="uv",
+                    program=clio_tool("uv") or "uv",
                     args=["tool", "uninstall", "clio-relay"],
                     scope="controller",
                     allowed_exit_codes=[0, 1],
@@ -378,7 +397,7 @@ def _relay_plan(
         raise ValueError("relay_artifact_sha256 must contain exactly 64 hexadecimal characters")
     commands = [
         CommandSpec(
-            program="uv",
+            program=clio_tool("uv") or "uv",
             args=[
                 "tool",
                 "install",
@@ -472,10 +491,13 @@ def _clio_agent_plan(
         raise ValueError("Choose reconnect, update, or replace for the existing CLIO")
     if on_conflict == "replace":
         root = target.install_root.strip()
-    if on_conflict == "update":
+    # "Start it and connect" for an agent installed but stopped starts that
+    # install as it is, at its own version: no reinstall.
+    start_existing = on_conflict == "connect" and configuration.get("conflict_state") == "stopped"
+    if on_conflict == "update" or start_existing:
         root = configuration.get("conflict_root", "").strip()
         if not root.startswith("/"):
-            raise ValueError("Updating requires the existing agent's absolute installation path")
+            raise ValueError("Using the existing agent requires its absolute installation path")
 
     def launcher(script: str) -> CommandSpec:
         return CommandSpec(
@@ -522,7 +544,12 @@ def _clio_agent_plan(
     replace = on_conflict in {"replace", "update"}
     commands: list[CommandSpec] = [
         claim_command(
-            root, port, version, replace=replace, expected_pid=configuration.get("conflict_pid", "")
+            root,
+            port,
+            version,
+            replace=replace,
+            expected_pid=configuration.get("conflict_pid", ""),
+            answered=on_conflict is not None,
         )
     ]
     if action == "reinstall":
@@ -531,8 +558,12 @@ def _clio_agent_plan(
                 "uninstall", target, resolved_root=resolved_root, configuration=configuration
             ).commands
         )
-    if action in {"install", "reinstall"}:
-        commands.append(install_command(root, version, fresh=from_scratch(configuration)))
+    if action in {"install", "reinstall"} and not start_existing:
+        commands.append(
+            install_command(
+                root, version, fresh=from_scratch(configuration), source_commit=controller_commit()
+            )
+        )
     launch = RemoteLaunch(
         root,
         port,

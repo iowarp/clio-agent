@@ -11,7 +11,7 @@ CLIO keeps three kinds of files in three places: your user configuration folder,
 
 ### User configuration folder
 
-This folder holds what is shared across all your workspaces: saved provider keys, installed blueprints, hooks, tool server settings, and your `config.yaml`.
+This folder holds what is shared across all your workspaces: saved provider keys, installed marketplaces and plugins, your saved agents, hooks, tool server settings, and your `config.yaml`.
 
 | System | Location |
 |---|---|
@@ -100,6 +100,7 @@ These are the settings most people need. Each is read when the backend starts.
 | `CLIO_USER_DIR` | none | Replaces the user configuration folder. |
 | `CLIO_ALLOWED_ROOTS` | `tools.file_policy.allowed_roots` | Folders the agent's file tools may use. Separate several with commas or your system's path separator. |
 | `CLIO_MAX_FILE_SIZE_BYTES` | `tools.file_policy.max_file_size_bytes` | Largest file the file tools will read. Default 1 GiB. Accepts suffixes such as `K`, `M`, and `G`. |
+| `CLIO_DASHBOARD_EXPORT_MAX_BYTES` | `artifacts.dashboard_export_max_bytes` | Largest HTML dashboard export, including the files it embeds. Default 2 GiB. A larger export is refused with its size. |
 | `CLIO_ALLOW_SYMLINKS` | `tools.file_policy.allow_symlinks` | Let file tools follow symbolic links. Default off. |
 | `CLIO_GACT_ALLOWED_HOSTS` | `gact.allowed_hosts` | Extra host names the backend accepts from clients without a token, for LAN or Docker use. Names only, comma-separated. |
 | `CLIO_GACT_CORS_ORIGINS` | `gact.cors.origins` | Browser origins allowed to call the backend. See [Data and network](/docs/privacy/). |

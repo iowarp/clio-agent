@@ -47,6 +47,13 @@ from tests.turn_signals import TURN_SIGNAL_BACKSTOP_S
 pytestmark = pytest.mark.usefixtures("host_agent_executor")
 
 
+class _StubTransport:
+    """A stand-in stdio transport: records its argv and, like the real one, can be collected."""
+
+    def __init__(self, command: str, args: list[str], env: dict[str, str] | None = None) -> None:
+        self.command, self.args = command, args
+
+
 def _use_external_client_class(monkeypatch: pytest.MonkeyPatch, client_cls: type[Any]) -> None:
     """Inject an external-call double without replacing the native SDK class."""
     from clio_agent.tools import mcp_runtime
@@ -181,7 +188,7 @@ def test_external_mcp_non_read_only_hint_registers_pending_permission(tmp_path: 
 
         response = client.post(f"/v1/permissions/{pending['id']}", json={"action": "deny"})
         assert response.status_code == 204
-        thread.join(timeout=2.0)
+        thread.join(timeout=30.0)  # under coverage the allowed call can take seconds
         assert not thread.is_alive()
         assert result["decision"] == "deny"
 
@@ -274,7 +281,7 @@ def test_child_permission_lifecycle_is_visible_on_attended_root(tmp_path: Path) 
             json={"action": "allow"},
         )
         assert response.status_code == 204
-        thread.join(timeout=2.0)
+        thread.join(timeout=30.0)  # under coverage the allowed call can take seconds
         assert not thread.is_alive()
         assert result["decision"] == "allow"
 
@@ -395,7 +402,7 @@ def test_declared_mcp_mutation_blocks_before_transport_until_ui_resolution(
 
             response = client.post(f"/v1/permissions/{pending['id']}", json={"action": "allow"})
             assert response.status_code == 204
-            thread.join(timeout=2.0)
+            thread.join(timeout=30.0)  # under coverage the allowed call can take seconds
             assert not thread.is_alive(), "".join(
                 traceback.format_stack(sys._current_frames().get(thread.ident or -1))
             )
@@ -412,7 +419,7 @@ def test_declared_mcp_mutation_blocks_before_transport_until_ui_resolution(
                         and row["tool_call"]["tool_name"] == "relay_jarvis_run"
                     ):
                         client.post(f"/v1/permissions/{row['id']}", json={"action": "deny"})
-                thread.join(timeout=2.0)
+                thread.join(timeout=30.0)  # under coverage the allowed call can take seconds
                 assert not thread.is_alive(), "".join(
                     traceback.format_stack(sys._current_frames().get(thread.ident or -1))
                 )
@@ -430,7 +437,7 @@ def test_dynamic_external_mcp_requires_permission_before_client_invocation(
     monkeypatch: pytest.MonkeyPatch,
     annotations: Any,
 ) -> None:
-    from clio_agent.gact.agents import builders
+    from clio_agent.gact.agents import external_mcp_calls
 
     class MustNotStartClient:
         constructed = False
@@ -447,7 +454,7 @@ def test_dynamic_external_mcp_requires_permission_before_client_invocation(
 
     with pytest.raises(PermissionError, match="denied by permission gate"):
         asyncio.run(
-            builders._call_enabled_external_mcp_tool(
+            external_mcp_calls._call_enabled_external_mcp_tool(
                 app,
                 "srv",
                 info,
@@ -468,7 +475,7 @@ def test_dynamic_external_mcp_read_only_hint_invokes_client(
 ) -> None:
     from fastmcp import FastMCP
 
-    from clio_agent.gact.agents import builders
+    from clio_agent.gact.agents import external_mcp_calls
     from clio_agent.tools.task_call_context import TASK_CALL
 
     server = FastMCP("read-only-permission")
@@ -511,9 +518,11 @@ def test_dynamic_external_mcp_read_only_hint_invokes_client(
                 {"readOnlyHint": True},
             )
             if route == "async":
-                result = client.portal.call(builders._call_enabled_external_mcp_tool, *arguments)
+                result = client.portal.call(
+                    external_mcp_calls._call_enabled_external_mcp_tool, *arguments
+                )
             else:
-                result = builders._run_external_mcp_tool_sync(*arguments)
+                result = external_mcp_calls._run_external_mcp_tool_sync(*arguments)
         assert calls == ["resource-1"]
         assert result == "lookup:ok"
         assert app.state.permissions == {}
@@ -622,7 +631,7 @@ def test_destructive_tool_blocks_until_resolved(tmp_path: Path) -> None:
         # Approve via the API.
         resp = c.post(f"/v1/permissions/{pid}", json={"action": "allow"})
         assert resp.status_code == 204
-        thread.join(timeout=2.0)
+        thread.join(timeout=30.0)  # under coverage the allowed call can take seconds
         assert not thread.is_alive(), "gate didn't unblock after allow"
         assert result["decision"] == "allow"
 
@@ -663,7 +672,7 @@ def test_deny_decision_raises_permission_error(tmp_path: Path) -> None:
             time.sleep(0.05)
         pid = list(app.state.permissions)[0]
         c.post(f"/v1/permissions/{pid}", json={"action": "deny"})
-        thread.join(timeout=2.0)
+        thread.join(timeout=30.0)  # under coverage the allowed call can take seconds
         assert result["decision"] == "deny"
 
 
@@ -756,7 +765,7 @@ def test_allow_session_resolution_adds_policy_and_audits_future_calls(
 
         resp = c.post(f"/v1/permissions/{pending['id']}", json={"action": "allow_session"})
         assert resp.status_code == 204
-        thread.join(timeout=2.0)
+        thread.join(timeout=30.0)  # under coverage the allowed call can take seconds
         assert decision_holder["decision"] == "allow"
         # A sticky runtime append is stamped an explicit priority (P0.1 #1059 follow-up): it must
         # land in its own strictly-lowest band so it never collides with a migrated legacy row's
@@ -889,12 +898,14 @@ def test_direct_delete_policy_deny_blocks_app_state_routes(tmp_path: Path) -> No
         assert resp.status_code == 403
         assert app.state.schedules.get(schedule["id"]) is not None
 
-        # Agent delete.
-        c.post("/v1/agents", json={"id": "policy_agent", "title": "Policy Agent"})
-        _put_single_policy(c, tool_name_pattern="gact.agent.delete", action="deny")
-        resp = c.delete("/v1/agents/policy_agent")
+        # User agent delete.
+        saved = c.post("/v1/agents/user", json={"id": "policy-agent", "extends": "clio/standard"})
+        assert saved.status_code == 201, saved.text
+        _put_single_policy(c, tool_name_pattern="gact.agent.user.delete", action="deny")
+        resp = c.delete("/v1/agents/user/policy-agent")
         assert resp.status_code == 403
-        assert c.get("/v1/agents/policy_agent").status_code == 200
+        listed = c.get("/v1/agents").json()["agents"]
+        assert "user/policy-agent" in {row["ref"] for row in listed}
 
         # Workspace delete.
         workspace = c.post("/v1/workspaces", json={"name": "policy ws"}).json()
@@ -1180,7 +1191,9 @@ def test_external_mcp_call_policy_allow_executes_without_prompt(
 
     _use_external_client_class(monkeypatch, FakeClient)
     monkeypatch.setattr(
-        transports, "StdioTransport", lambda command, args, env=None: (command, args)
+        transports,
+        "StdioTransport",
+        _StubTransport,
     )
 
     app = build_app(sessions_path=tmp_path / "s.json")
@@ -1249,7 +1262,9 @@ def test_external_mcp_call_uses_explicit_session_for_policy_and_telemetry(
 
     _use_external_client_class(monkeypatch, FakeClient)
     monkeypatch.setattr(
-        transports, "StdioTransport", lambda command, args, env=None: (command, args)
+        transports,
+        "StdioTransport",
+        _StubTransport,
     )
 
     app = build_app(sessions_path=tmp_path / "s.json")
@@ -1417,7 +1432,7 @@ def test_gate_denies_write_tool_in_plan_mode_via_plan_acl(tmp_path: Path) -> Non
         sid = c.post("/v1/sessions", json={"title": "t", "mode": "plan"}).json()["id"]
         gate = _make_permission_gate(app)
         with _tool_session_context(sid):
-            assert gate("fs_apply_edit_write", {"filepath": "src/x.py"}) == "deny"
+            assert gate("fs_write_file", {"filepath": "src/x.py"}) == "deny"
         rows = list(app.state.permissions.values())
         assert len(rows) == 1
         assert rows[0]["status"] == "auto_denied"
@@ -1435,7 +1450,7 @@ def test_gate_allows_plans_dir_md_write_in_plan_mode(tmp_path: Path) -> None:
         gate = _make_permission_gate(app)
         target = str(plans_dir() / "2026-07-25-plan.md")
         with _tool_session_context(sid):
-            assert gate("fs_apply_edit_write", {"filepath": target}) == "allow"
+            assert gate("fs_write_file", {"filepath": target}) == "allow"
 
 
 def test_gate_denies_write_tool_in_architect_mode(tmp_path: Path) -> None:
@@ -1448,11 +1463,11 @@ def test_gate_denies_write_tool_in_architect_mode(tmp_path: Path) -> None:
         gate = _make_permission_gate(app)
         with _tool_session_context(sid):
             # Even a plans-dir .md write is denied in architect (the carve-out is plan-only).
-            assert gate("fs_apply_edit_write", {"filepath": str(plans_dir() / "p.md")}) == "deny"
+            assert gate("fs_write_file", {"filepath": str(plans_dir() / "p.md")}) == "deny"
 
 
 def test_gate_user_allow_policy_does_not_override_plan_mode(tmp_path: Path) -> None:
-    """An explicit user allow(fs_apply_edit_write, src/**) does NOT beat the plan_acl deny band."""
+    """An explicit user allow(fs_write_file, src/**) does NOT beat the plan_acl deny band."""
     app = build_app(sessions_path=tmp_path / "s.json")
     with TestClient(app) as c:
         sid = c.post("/v1/sessions", json={"title": "t", "mode": "plan"}).json()["id"]
@@ -1460,14 +1475,14 @@ def test_gate_user_allow_policy_does_not_override_plan_mode(tmp_path: Path) -> N
             {
                 "scope": "session",
                 "scope_id": sid,
-                "tool_name_pattern": "fs_apply_edit_write",
+                "tool_name_pattern": "fs_write_file",
                 "path_pattern": "src/**",
                 "action": "allow",
             }
         ]
         gate = _make_permission_gate(app)
         with _tool_session_context(sid):
-            assert gate("fs_apply_edit_write", {"filepath": "src/x.py"}) == "deny"
+            assert gate("fs_write_file", {"filepath": "src/x.py"}) == "deny"
 
 
 def test_plan_acl_deny_surfaces_mode_aware_message(tmp_path: Path) -> None:
@@ -1480,7 +1495,7 @@ def test_plan_acl_deny_surfaces_mode_aware_message(tmp_path: Path) -> None:
         sid = c.post("/v1/sessions", json={"title": "t", "mode": "plan"}).json()["id"]
         gate = _make_permission_gate(app)
         with _tool_session_context(sid):
-            decision = gate("fs_apply_edit_write", {"filepath": "src/x.py"})
+            decision = gate("fs_write_file", {"filepath": "src/x.py"})
         # Backward compatible: still equals "deny" for every legacy comparison.
         assert decision == "deny"
         assert isinstance(decision, DenyDecision)
@@ -1504,12 +1519,12 @@ def test_user_policy_deny_in_edit_mode_carries_no_plan_message(tmp_path: Path) -
             {
                 "scope": "session",
                 "scope_id": sid,
-                "tool_name_pattern": "fs_apply_edit_write",
+                "tool_name_pattern": "fs_write_file",
                 "action": "deny",
             }
         ]
         gate = _make_permission_gate(app)
         with _tool_session_context(sid):
-            decision = gate("fs_apply_edit_write", {"filepath": "src/x.py"})
+            decision = gate("fs_write_file", {"filepath": "src/x.py"})
         assert decision == "deny"
         assert getattr(decision, "deny_message", "") == ""

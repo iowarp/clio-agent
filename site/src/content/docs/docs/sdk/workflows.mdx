@@ -1,0 +1,138 @@
+---
+title: Workflows as data
+description: Write a procedure as a list of steps and what each waits on, let editors extend it while it runs, and start it from a flow or let the agent start it.
+---
+
+import { Aside, CardGrid, LinkCard } from '@astrojs/starlight/components';
+
+A workflow is a procedure written as data: a list of steps, each naming who runs it, what it receives, and which steps it waits on. Because it is data, it can be read before it runs, shown while it runs, and written by the agent itself. The `workflow` flow, which every agent has, runs it.
+
+<Aside type="caution" title="Development build">
+The SDK is in the development build. It is not in the published v0.9.5-beta.8 release. See [Features and versions](/docs/versions/).
+</Aside>
+
+[Flows and workflows](/docs/flows/#workflows) describes workflows from the person's side: asking for one, approving edits, and following the run. This page is for writing them.
+
+## A workflow
+
+```json
+{
+  "steps": [
+    {"id": "survey", "target": "evidence_researcher", "input": "$task"},
+    {"id": "images", "target": "characterization_expert",
+     "input": "Measure grain size and porosity in data/batch7/micrographs/"},
+    {"id": "tests", "target": "fatigue_failure_expert",
+     "input": "Fit S-N curves to data/batch7/fatigue.csv"},
+    {"id": "relate", "target": "data_analysis_expert", "after": ["images", "tests"]},
+    {"id": "review", "target": "independent_reviewer", "after": ["survey", "relate"]}
+  ]
+}
+```
+
+The targets here are subagents of the Factorio agent in the `clio` marketplace; a workflow can name any target its agent can reach.
+
+Every step whose dependencies have finished starts at once, and each step starts as soon as its own dependencies finish, never waiting for unrelated steps. Here `survey`, `images` and `tests` start together, `relate` starts when `images` and `tests` finish even if `survey` is still running, and `review` starts last.
+
+## Steps
+
+| Field | Meaning |
+|---|---|
+| `id` | The step's name: lowercase letters, digits, `-` and `_`, up to 64 characters. `task` is reserved. Required. |
+| `target` | Who runs the step: a subagent, an installed agent as `marketplace/id`, a flow id, a tool, or `self` for this agent. Required. |
+| `input` | What the step receives: text or a JSON object. See [Inputs](#inputs). |
+| `after` | The ids of the steps it waits on. |
+| `description` | Instructions for a step without an `input`. |
+| `options` | Options for a flow target, such as a council's `members`. Options on a target that is not a flow are refused. |
+| `model` | The model the step runs on, as `account/model` or a model id. |
+
+A workflow is checked before it starts. Two steps with the same id, a step that waits on a step that does not exist, or a cycle stops it with an error naming the first problem.
+
+## Inputs
+
+In a step's `input`, `$task` is the workflow's task and `$<step>` is the answer of a finished step, anywhere in the text or in the values of an object:
+
+- A value that is only a reference, such as `"$task"`, is replaced by the value itself.
+- A reference inside text, such as `"Review $draft against $task"`, is replaced by the text of the value.
+
+A step without an `input` receives an object with the workflow's `task`, its `description` as `instructions`, and the answers of the steps it waits on under `inputs`. A step with no `input`, no `description` and no dependencies receives the task.
+
+<Aside type="caution" title="Tool steps">
+A step's answer is what `$<step>` and `inputs` pass on. A tool has no answer unless it returns a mapping with an `answer` key, so a later step that refers to a tool step receives empty text. Return `{"answer": ...}` from a tool you use as a step, or have a subagent call the tool.
+</Aside>
+
+## Editors
+
+A workflow can name editors, usually a critic or a reviewer. While an editor's step runs, it gets two extra tools:
+
+- `workflow_add_step(step_id, target, input, after, reason, options)` proposes a new step. It waits on the editor's own step unless `after` says otherwise.
+- `workflow_cancel_step(step_id, reason)` proposes cancelling a step that has not started.
+
+These tools only propose. The workflow applies the proposals after the editor's step finishes, within its bounds:
+
+| Bound | Effect |
+|---|---|
+| `max_added_steps` | The most steps editors may add to the run. |
+| `max_edit_rounds` | The most editing rounds in the run. |
+| `allowed_targets` | The only targets an added step may name. |
+| `approve_edits` | Each proposed step waits for the person's yes or no before it is added. |
+
+A proposal past a bound, with an unknown target, or with an id already in use is refused and recorded with its reason. Without bounds, growth is open, limited by CLIO's own bounds on subagents and by the person's settings: in Settings, **Execution & history**, **Workflows** sets **Steps editors may add** and **Editing rounds** for every workflow, and the tighter of the two limits applies. The limits in force are recorded when the run starts.
+
+Every edit is recorded, so when the workflow runs again after a restart it rebuilds the same steps.
+
+## When a step fails
+
+A failed step is first offered to each editor in turn, with what failed and why. An editor may add a repair step, which takes the failed step's place: the steps that waited on the failed step wait on the repair instead. If no editor repairs it, the steps that depend on it are skipped and the workflow ends with `FlowStall` (`step_failed`), naming the step and its error.
+
+A cancelled step is not offered for repair: its dependents are skipped and the run ends cancelled.
+
+## What a workflow returns
+
+The answer holds the answers of the final steps, the ones nothing waits on, each under its step id and the model it ran on, then every earlier step's answer. The result also carries `results` (each step's answer by id), `workflow` (every step with its status and task handle) and, when steps return typed `workflow_state`, the merged state.
+
+## Starting a workflow
+
+**From the agent.** With the `orchestration` plugin, the agent can write a workflow and start it with its `run_workflow` tool:
+
+```text
+run_workflow(workflow, task="", editors=None, max_added_steps=None,
+             max_edit_rounds=None, allowed_targets=None, approve_edits=False, model="")
+```
+
+The workflow runs as background work. The agent gets its handle at once, and the result arrives when it ends. If a step runs a flow from a plugin that is not trusted yet, the person is asked before any step starts.
+
+**From a flow.** Call the `workflow` flow with the same fields:
+
+```python
+from clio_agent.sdk import Flow, Step, Workflow
+
+
+class Batch7(Flow):
+    id = "batch7"
+
+    async def forward(self, task, ctx):
+        workflow = Workflow(steps=[
+            Step("survey", "evidence_researcher", input="$task"),
+            Step("relate", "data_analysis_expert", after=["survey"]),
+            Step("review", "independent_reviewer", after=["relate"]),
+        ])
+        result = await ctx.call("workflow", {
+            "workflow": workflow.to_dict(),
+            "task": task,
+            "editors": ["independent_reviewer"],
+            "max_added_steps": 2,
+            "approve_edits": True,
+        })
+        return result
+```
+
+`Workflow` checks its steps when you build it and raises `WorkflowError` naming the first problem. `Workflow.from_dict` reads the JSON form.
+
+## Workflow or flow
+
+A workflow can be read, approved and edited before and while it runs, and it replays exactly. Prefer it for work with jobs, cost or outside effects. Write a [flow](/docs/sdk/flows/) when what happens next depends on intermediate results in ways a list of steps cannot express, such as a loop over values a step produces.
+
+<CardGrid>
+  <LinkCard title="Write a flow" href="/docs/sdk/flows/" description="Procedures in Python, for control that depends on results." />
+  <LinkCard title="Flows and workflows" href="/docs/flows/" description="Follow, steer and cancel a running workflow." />
+</CardGrid>

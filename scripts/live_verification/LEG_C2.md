@@ -20,8 +20,8 @@ boot for `--dry-run`).
 ## Study first
 
 - `_common.py` — the shared harness (boot_server, wait_health, allow-all
-  policies-first, `materialize_testing_pack`, install/activate blueprint,
-  `resolved_agent_tools`). Unmodified.
+  policies-first, `materialize_testing_marketplace`, `install_testing_agent`,
+  `use_agent`, `resolved_agent_tools`).
 - `leg_c_synthetic_session.py` — the pattern this leg extends: readiness
   gate, headless HITL answer via
   `POST /v1/sessions/{sid}/questions/{question_id}/answer`, verdict JSON to

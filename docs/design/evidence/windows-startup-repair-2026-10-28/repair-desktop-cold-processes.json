@@ -1,0 +1,498 @@
+[
+  {
+    "pid": 24552,
+    "parent": 39428,
+    "created": "2026-10-28T11:14:32.0334780Z",
+    "executable": "D:\\CLIO-Desktop-095-Repair\\clio-desktop.exe",
+    "cmd": "\"D:\\CLIO-Desktop-095-Repair\\clio-desktop.exe\"",
+    "rss_mb": 39.3
+  },
+  {
+    "pid": 28728,
+    "parent": 24552,
+    "created": "2026-10-28T11:14:32.2489750Z",
+    "executable": "C:\\Program Files (x86)\\Microsoft\\EdgeWebView\\Application\\156.0.4314.50\\msedgewebview2.exe",
+    "cmd": "\"C:\\Program Files (x86)\\Microsoft\\EdgeWebView\\Application\\156.0.4314.50\\msedgewebview2.exe\" --embedded-browser-webview=1 --webview-exe-name=clio-desktop.exe --webview-exe-version=0.7.3 --user-data-dir=\"D:\\cw\\rp\\home\\Temp\\scoped_dir39428_905058187\\EBWebView\" --noerrdialogs --embedded-browser-webview-dpi-awareness=2 --allow-pre-commit-input --autoplay-policy=no-user-gesture-required --disable-background-networking --disable-background-timer-throttling --disable-backgrounding-occluded-windows --disable-client-side-phishing-detection --disable-default-apps --disable-features=msWebOOUI,msPdfOOUI,msSmartScreenProtection,IgnoreDuplicateNavs,Prewarm --disable-hang-monitor --disable-popup-blocking --disable-prompt-on-repost --disable-sync --enable-automation --enable-logging --log-level=0 --no-first-run --no-service-autorun --password-store=basic --remote-debugging-port=0 --test-type=webdriver --use-mock-keychain --lang=en-US --mojo-named-platform-channel-pipe=24552.20460.609291639162344116 /pfhostedapp:66a8910c65ec9e0bf9eb29b76bbb0da82d1deb8b",
+    "rss_mb": 114.8
+  },
+  {
+    "pid": 28864,
+    "parent": 28728,
+    "created": "2026-10-28T11:14:32.2926960Z",
+    "executable": "C:\\Program Files (x86)\\Microsoft\\EdgeWebView\\Application\\156.0.4314.50\\msedgewebview2.exe",
+    "cmd": "\"C:\\Program Files (x86)\\Microsoft\\EdgeWebView\\Application\\156.0.4314.50\\msedgewebview2.exe\" --type=crashpad-handler --user-data-dir=D:\\cw\\rp\\home\\Temp\\scoped_dir39428_905058187\\EBWebView /prefetch:4 /pfhostedapp:66a8910c65ec9e0bf9eb29b76bbb0da82d1deb8b --monitor-self-annotation=ptype=crashpad-handler --user-stream-region=336,65568 --database=D:\\cw\\rp\\home\\Temp\\scoped_dir39428_905058187\\EBWebView\\Crashpad --annotation=IsOfficialBuild=1 --annotation=channel= --annotation=chromium-version=156.0.8078.49 \"--annotation=exe=C:\\Program Files (x86)\\Microsoft\\EdgeWebView\\Application\\156.0.4314.50\\msedgewebview2.exe\" --annotation=plat=Win64 \"--annotation=prod=Edge WebView2\" --annotation=ver=156.0.4314.50 --initial-client-data=0x18c,0x190,0x194,0x140,0x19c,0x7ffb86a17470,0x7ffb86a17480,0x7ffb86a17490",
+    "rss_mb": 12.5
+  },
+  {
+    "pid": 53056,
+    "parent": 28728,
+    "created": "2026-10-28T11:14:32.3442530Z",
+    "executable": "C:\\WINDOWS\\system32\\conhost.exe",
+    "cmd": "\\??\\C:\\WINDOWS\\system32\\conhost.exe 0x4",
+    "rss_mb": 14.6
+  },
+  {
+    "pid": 31444,
+    "parent": 28728,
+    "created": "2026-10-28T11:14:32.5758880Z",
+    "executable": "C:\\Program Files (x86)\\Microsoft\\EdgeWebView\\Application\\156.0.4314.50\\msedgewebview2.exe",
+    "cmd": "\"C:\\Program Files (x86)\\Microsoft\\EdgeWebView\\Application\\156.0.4314.50\\msedgewebview2.exe\" --type=gpu-process --gpu-recent-crash-count=0 --noerrdialogs --user-data-dir=\"D:\\cw\\rp\\home\\Temp\\scoped_dir39428_905058187\\EBWebView\" --webview-exe-name=clio-desktop.exe --webview-exe-version=0.7.3 --embedded-browser-webview=1 --embedded-browser-webview-dpi-awareness=2 --gpu-preferences=WAAAAAAAAADgAAAEAAAAAAAAAAAAAGAAQAAAAAAAAAADAAAAAAAAADgAAAAAAAAAAAAAAAAAAAACAAAAAAAAAAAAAAAAAAAAKAAAAAAAAAAoAAAAAAAAAAgAAAAAAAAAEAAAAAIAAAABAAAAAAAAAAgAAAAAAAAACAAAAAAAAAA= --startup-read-main-dll --metrics-shmem-handle=2000,i,14849957540938798329,12715880291517349237,262144 --field-trial-handle=2140,i,9632525752475664728,8950844906030857323,262144 --enable-features=msMetricsLogFastStartup,msSendMetricsLogOnClose --disable-features=IgnoreDuplicateNavs,Prewarm,msPdfOOUI,msSmartScreenProtection,msWebOOUI --variations-seed-version --pseudonymization-salt-handle=2144,i,4516359824832902456,5932651958098104537,4 --trace-process-track-uuid=3190708988185955192 --enable-logging=handle --log-file=2156 --log-level=0 --mojo-platform-channel-handle=2136 /prefetch:2 /pfhostedapp:66a8910c65ec9e0bf9eb29b76bbb0da82d1deb8b",
+    "rss_mb": 136.5
+  },
+  {
+    "pid": 42424,
+    "parent": 28728,
+    "created": "2026-10-28T11:14:32.5846090Z",
+    "executable": "C:\\Program Files (x86)\\Microsoft\\EdgeWebView\\Application\\156.0.4314.50\\msedgewebview2.exe",
+    "cmd": "\"C:\\Program Files (x86)\\Microsoft\\EdgeWebView\\Application\\156.0.4314.50\\msedgewebview2.exe\" --type=utility --utility-sub-type=network.mojom.NetworkService --lang=en-US --service-sandbox-type=none --noerrdialogs --user-data-dir=\"D:\\cw\\rp\\home\\Temp\\scoped_dir39428_905058187\\EBWebView\" --webview-exe-name=clio-desktop.exe --webview-exe-version=0.7.3 --embedded-browser-webview=1 --embedded-browser-webview-dpi-awareness=2 --startup-read-main-dll --metrics-shmem-handle=2364,i,15741494079613278111,3786567634142244170,524288 --field-trial-handle=2140,i,9632525752475664728,8950844906030857323,262144 --enable-features=msMetricsLogFastStartup,msSendMetricsLogOnClose --disable-features=IgnoreDuplicateNavs,Prewarm,msPdfOOUI,msSmartScreenProtection,msWebOOUI --variations-seed-version --pseudonymization-salt-handle=2144,i,4516359824832902456,5932651958098104537,4 --trace-process-track-uuid=3190708989122997041 --enable-logging=handle --log-file=2372 --log-level=0 --mojo-platform-channel-handle=2352 /prefetch:11 /pfhostedapp:66a8910c65ec9e0bf9eb29b76bbb0da82d1deb8b",
+    "rss_mb": 37.9
+  },
+  {
+    "pid": 21032,
+    "parent": 28728,
+    "created": "2026-10-28T11:14:32.6267720Z",
+    "executable": "C:\\Program Files (x86)\\Microsoft\\EdgeWebView\\Application\\156.0.4314.50\\msedgewebview2.exe",
+    "cmd": "\"C:\\Program Files (x86)\\Microsoft\\EdgeWebView\\Application\\156.0.4314.50\\msedgewebview2.exe\" --type=utility --utility-sub-type=storage.mojom.StorageService --lang=en-US --service-sandbox-type=service --noerrdialogs --user-data-dir=\"D:\\cw\\rp\\home\\Temp\\scoped_dir39428_905058187\\EBWebView\" --webview-exe-name=clio-desktop.exe --webview-exe-version=0.7.3 --embedded-browser-webview=1 --embedded-browser-webview-dpi-awareness=2 --startup-read-main-dll --metrics-shmem-handle=2716,i,1213618458865694780,5260400300539411312,524288 --field-trial-handle=2140,i,9632525752475664728,8950844906030857323,262144 --enable-features=msMetricsLogFastStartup,msSendMetricsLogOnClose --disable-features=IgnoreDuplicateNavs,Prewarm,msPdfOOUI,msSmartScreenProtection,msWebOOUI --variations-seed-version --pseudonymization-salt-handle=2144,i,4516359824832902456,5932651958098104537,4 --trace-process-track-uuid=3190708990060038890 --enable-logging=handle --log-file=2744 --log-level=0 --mojo-platform-channel-handle=2740 /prefetch:13 /pfhostedapp:66a8910c65ec9e0bf9eb29b76bbb0da82d1deb8b",
+    "rss_mb": 19.4
+  },
+  {
+    "pid": 27856,
+    "parent": 28728,
+    "created": "2026-10-28T11:14:32.7705190Z",
+    "executable": "C:\\Program Files (x86)\\Microsoft\\EdgeWebView\\Application\\156.0.4314.50\\msedgewebview2.exe",
+    "cmd": "\"C:\\Program Files (x86)\\Microsoft\\EdgeWebView\\Application\\156.0.4314.50\\msedgewebview2.exe\" --type=renderer --noerrdialogs --user-data-dir=\"D:\\cw\\rp\\home\\Temp\\scoped_dir39428_905058187\\EBWebView\" --webview-exe-name=clio-desktop.exe --webview-exe-version=0.7.3 --embedded-browser-webview=1 --embedded-browser-webview-dpi-awareness=2 --autoplay-policy=no-user-gesture-required --disable-background-timer-throttling --enable-automation --remote-debugging-port=0 --test-type=webdriver --allow-pre-commit-input --video-capture-use-gpu-memory-buffer --lang=en-US --js-flags --device-scale-factor=1 --num-raster-threads=4 --enable-main-frame-before-activation --renderer-client-id=5 --js-flags=--ms-user-locale=en_UM --ssd-no-pressure-read-main-dll --launch-time-ticks=71401851856 --metrics-shmem-handle=3948,i,15400087482451913869,1583942114105456412,1048576 --field-trial-handle=2140,i,9632525752475664728,8950844906030857323,262144 --enable-features=msMetricsLogFastStartup,msSendMetricsLogOnClose --disable-features=IgnoreDuplicateNavs,Prewarm,msPdfOOUI,msSmartScreenProtection,msWebOOUI --variations-seed-version --pseudonymization-salt-handle=2144,i,4516359824832902456,5932651958098104537,4 --trace-process-track-uuid=3190708990997080739 --enable-logging=handle --log-file=3968 --log-level=0 --mojo-platform-channel-handle=3964 /pfhostedapp:66a8910c65ec9e0bf9eb29b76bbb0da82d1deb8b /prefetch:1",
+    "rss_mb": 156.2
+  },
+  {
+    "pid": 41760,
+    "parent": 24552,
+    "created": "2026-10-28T11:14:33.8117280Z",
+    "executable": "D:\\CLIO-Desktop-095-Repair\\clio-agent.exe",
+    "cmd": "\"D:\\CLIO-Desktop-095-Repair\\clio-agent.exe\" --managed-package-command \\\\?\\D:\\CLIO-Desktop-095-Repair\\data\\bundled-runtime\\gact-runtime\\python\\python.exe -I -B -X utf8 -u -m clio_agent.runtime.document_install --workspace \\\\?\\D:\\CLIO-Desktop-095-Repair\\data\\workspace --protected-execution-only",
+    "rss_mb": 7.9
+  },
+  {
+    "pid": 28620,
+    "parent": 41760,
+    "created": "2026-10-28T11:14:33.8214360Z",
+    "executable": "C:\\WINDOWS\\system32\\conhost.exe",
+    "cmd": "\\??\\C:\\WINDOWS\\system32\\conhost.exe 0x4",
+    "rss_mb": 7.5
+  },
+  {
+    "pid": 24264,
+    "parent": 41760,
+    "created": "2026-10-28T11:14:33.8495830Z",
+    "executable": "\\\\?\\D:\\CLIO-Desktop-095-Repair\\data\\bundled-runtime\\gact-runtime\\python\\python.exe",
+    "cmd": "\\\\?\\D:\\CLIO-Desktop-095-Repair\\data\\bundled-runtime\\gact-runtime\\python\\python.exe -I -B -X utf8 -u -m clio_agent.runtime.document_install --workspace \\\\?\\D:\\CLIO-Desktop-095-Repair\\data\\workspace --protected-execution-only",
+    "rss_mb": 47.7
+  },
+  {
+    "pid": 49732,
+    "parent": 24264,
+    "created": "2026-10-28T11:14:33.8598440Z",
+    "executable": "C:\\WINDOWS\\system32\\conhost.exe",
+    "cmd": "\\??\\C:\\WINDOWS\\system32\\conhost.exe 0x4",
+    "rss_mb": 7.7
+  },
+  {
+    "pid": 50064,
+    "parent": 24264,
+    "created": "2026-10-28T11:14:34.5802900Z",
+    "executable": "\\\\?\\D:\\CLIO-Desktop-095-Repair\\data\\bundled-runtime\\gact-runtime\\python\\Lib\\site-packages\\codex_cli_bin\\bin\\codex.exe",
+    "cmd": "\\\\?\\D:\\CLIO-Desktop-095-Repair\\data\\bundled-runtime\\gact-runtime\\python\\Lib\\site-packages\\codex_cli_bin\\bin\\codex.exe sandbox --include-managed-config -p clio-sb-6ef259db --permission-profile clio-mxc-check -C D:\\cw\\rp\\home\\Temp\\clio-mxc-check-ayyzdbrs\\workspace -- \\\\?\\D:\\CLIO-Desktop-095-Repair\\data\\bundled-runtime\\gact-runtime\\python\\python.exe -I -B -c \"\nimport json, pathlib, socket, subprocess, sys\nroot = pathlib.Path.cwd()\nchecks = {}\n(root / 'inside.txt').write_text('allowed')\nchecks['workspace_write'] = True\nchecks['source_read'] = (root / 'source/data.txt').read_text() == 'approved'\nfor name, path, operation in (\n    ('outside_write_denied', root.parent / 'outside.txt', 'write'),\n    ('source_write_denied', root / 'source/data.txt', 'write'),\n    ('private_read_denied', root / 'private/secret.txt', 'read'),\n):\n    try:\n        path.read_text() if operation == 'read' else path.write_text('changed')\n        checks[name] = False\n    except PermissionError:\n        checks[name] = True\nchild = subprocess.run([sys.executable, '-I', '-B', '-c',\n    \\\"from pathlib import Path; import sys\\ntry: Path('private/secret.txt').read_text()\\\"\n    \\\"\\nexcept PermissionError: sys.exit(42)\\\"],\n    stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=10)\nchecks['descendant_read_denied'] = child.returncode == 42\ntry:\n    socket.create_connection(('192.0.2.1', 9), timeout=2).close()\n    checks['direct_network_denied'] = False\nexcept PermissionError:\n    checks['direct_network_denied'] = True\nexcept OSError:\n    checks['direct_network_denied'] = False\n(root / 'checks.json').write_text(json.dumps(checks))\n\"",
+    "rss_mb": 0
+  },
+  {
+    "pid": 4524,
+    "parent": 50064,
+    "created": "2026-10-28T11:14:34.5919660Z",
+    "executable": "C:\\WINDOWS\\system32\\conhost.exe",
+    "cmd": "\\??\\C:\\WINDOWS\\system32\\conhost.exe 0x4",
+    "rss_mb": 0
+  },
+  {
+    "pid": 27256,
+    "parent": 50064,
+    "created": "2026-10-28T11:14:34.7130160Z",
+    "executable": "D:\\CLIO-Desktop-095-Repair\\data\\bundled-runtime\\gact-runtime\\python\\Lib\\site-packages\\codex_cli_bin\\bin\\codex.exe",
+    "cmd": "\"\\\\?\\D:\\CLIO-Desktop-095-Repair\\data\\bundled-runtime\\gact-runtime\\python\\Lib\\site-packages\\codex_cli_bin\\bin\\codex.exe\" --__codex-windows-mxc",
+    "rss_mb": 0
+  },
+  {
+    "pid": 16928,
+    "parent": 24552,
+    "created": "2026-10-28T11:14:35.5171090Z",
+    "executable": "D:\\CLIO-Desktop-095-Repair\\clio-agent.exe",
+    "cmd": "\"D:\\CLIO-Desktop-095-Repair\\clio-agent.exe\" --host 127.0.0.1 --port 60503 --token <redacted>",
+    "rss_mb": 9.5
+  },
+  {
+    "pid": 52772,
+    "parent": 16928,
+    "created": "2026-10-28T11:14:35.5271410Z",
+    "executable": "C:\\WINDOWS\\system32\\conhost.exe",
+    "cmd": "\\??\\C:\\WINDOWS\\system32\\conhost.exe 0x4",
+    "rss_mb": 7.5
+  },
+  {
+    "pid": 48156,
+    "parent": 16928,
+    "created": "2026-10-28T11:14:35.5550620Z",
+    "executable": "\\\\?\\D:\\CLIO-Desktop-095-Repair\\data\\bundled-runtime\\gact-runtime\\python\\python.exe",
+    "cmd": "\\\\?\\D:\\CLIO-Desktop-095-Repair\\data\\bundled-runtime\\gact-runtime\\python\\python.exe -I -B -m clio_agent.gact --no-agent --host 127.0.0.1 --port 60503",
+    "rss_mb": 344.8
+  },
+  {
+    "pid": 8656,
+    "parent": 48156,
+    "created": "2026-10-28T11:14:35.5683540Z",
+    "executable": "C:\\WINDOWS\\system32\\conhost.exe",
+    "cmd": "\\??\\C:\\WINDOWS\\system32\\conhost.exe 0x4",
+    "rss_mb": 7.7
+  },
+  {
+    "pid": 28552,
+    "parent": 24552,
+    "created": "2026-10-28T11:14:36.2792190Z",
+    "executable": "D:\\CLIO-Desktop-095-Repair\\clio-agent.exe",
+    "cmd": "\"D:\\CLIO-Desktop-095-Repair\\clio-agent.exe\" --managed-package-command \\\\?\\D:\\CLIO-Desktop-095-Repair\\data\\bundled-runtime\\gact-runtime\\python\\python.exe -I -B -X utf8 -u -m clio_agent.runtime.document_install --workspace \\\\?\\D:\\CLIO-Desktop-095-Repair\\data\\workspace --reuse-installed",
+    "rss_mb": 8.1
+  },
+  {
+    "pid": 34196,
+    "parent": 28552,
+    "created": "2026-10-28T11:14:36.2877380Z",
+    "executable": "C:\\WINDOWS\\system32\\conhost.exe",
+    "cmd": "\\??\\C:\\WINDOWS\\system32\\conhost.exe 0x4",
+    "rss_mb": 7.5
+  },
+  {
+    "pid": 42376,
+    "parent": 28552,
+    "created": "2026-10-28T11:14:36.3100840Z",
+    "executable": "\\\\?\\D:\\CLIO-Desktop-095-Repair\\data\\bundled-runtime\\gact-runtime\\python\\python.exe",
+    "cmd": "\\\\?\\D:\\CLIO-Desktop-095-Repair\\data\\bundled-runtime\\gact-runtime\\python\\python.exe -I -B -X utf8 -u -m clio_agent.runtime.document_install --workspace \\\\?\\D:\\CLIO-Desktop-095-Repair\\data\\workspace --reuse-installed",
+    "rss_mb": 92
+  },
+  {
+    "pid": 31148,
+    "parent": 42376,
+    "created": "2026-10-28T11:14:36.3217630Z",
+    "executable": "C:\\WINDOWS\\system32\\conhost.exe",
+    "cmd": "\\??\\C:\\WINDOWS\\system32\\conhost.exe 0x4",
+    "rss_mb": 7.7
+  },
+  {
+    "pid": 40356,
+    "parent": 42376,
+    "created": "2026-10-28T11:14:37.6256770Z",
+    "executable": "\\\\?\\D:\\CLIO-Desktop-095-Repair\\data\\bundled-runtime\\gact-runtime\\bin\\uv.exe",
+    "cmd": "\\\\?\\D:\\CLIO-Desktop-095-Repair\\data\\bundled-runtime\\gact-runtime\\bin\\uv.exe pip sync --python D:\\cw\\r4\\home\\cache\\document-runtime\\68fd91e579837b59bebd\\python\\Scripts\\python.exe D:\\cw\\r4\\home\\cache\\document-runtime\\68fd91e579837b59bebd\\project\\bundled-requirements.txt --no-index --find-links \\\\?\\D:\\CLIO-Desktop-095-Repair\\data\\bundled-runtime\\gact-runtime\\document-wheels --require-hashes --only-binary=:all:",
+    "rss_mb": 44.4
+  },
+  {
+    "pid": 43700,
+    "parent": 40356,
+    "created": "2026-10-28T11:14:37.6376400Z",
+    "executable": "C:\\WINDOWS\\system32\\conhost.exe",
+    "cmd": "\\??\\C:\\WINDOWS\\system32\\conhost.exe 0x4",
+    "rss_mb": 7.5
+  },
+  {
+    "pid": 50492,
+    "parent": 40356,
+    "created": "2026-10-28T11:14:37.7575960Z",
+    "executable": "",
+    "cmd": "",
+    "rss_mb": 0
+  },
+  {
+    "pid": 38316,
+    "parent": 50492,
+    "created": "2026-10-28T11:14:37.7765940Z",
+    "executable": "",
+    "cmd": "",
+    "rss_mb": 0
+  },
+  {
+    "pid": 45684,
+    "parent": 42376,
+    "created": "2026-10-28T11:14:51.1744520Z",
+    "executable": "D:\\cw\\r4\\home\\cache\\document-runtime\\68fd91e579837b59bebd\\python\\Scripts\\python.exe",
+    "cmd": "D:\\cw\\r4\\home\\cache\\document-runtime\\68fd91e579837b59bebd\\python\\Scripts\\python.exe \\\\?\\D:\\CLIO-Desktop-095-Repair\\data\\bundled-runtime\\gact-runtime\\python\\Lib\\site-packages\\clio_agent\\runtime\\document_stack\\inventory.py",
+    "rss_mb": 4.2
+  },
+  {
+    "pid": 27264,
+    "parent": 45684,
+    "created": "2026-10-28T11:14:51.1874510Z",
+    "executable": "C:\\WINDOWS\\system32\\conhost.exe",
+    "cmd": "\\??\\C:\\WINDOWS\\system32\\conhost.exe 0x4",
+    "rss_mb": 7.6
+  },
+  {
+    "pid": 33512,
+    "parent": 45684,
+    "created": "2026-10-28T11:14:51.2078290Z",
+    "executable": "D:\\CLIO-Desktop-095-Repair\\data\\bundled-runtime\\gact-runtime\\python\\python.exe",
+    "cmd": "D:\\cw\\r4\\home\\cache\\document-runtime\\68fd91e579837b59bebd\\python\\Scripts\\python.exe \\\\?\\D:\\CLIO-Desktop-095-Repair\\data\\bundled-runtime\\gact-runtime\\python\\Lib\\site-packages\\clio_agent\\runtime\\document_stack\\inventory.py",
+    "rss_mb": 115.4
+  },
+  {
+    "pid": 48352,
+    "parent": 48156,
+    "created": "2026-10-28T11:15:05.5725950Z",
+    "executable": "C:\\Program Files\\Docker\\Docker\\resources\\bin\\docker.exe",
+    "cmd": "\"C:\\Program Files\\Docker\\Docker\\resources\\bin\\docker.exe\" info --format \"{{.ServerVersion}}{{range .SecurityOptions}} {{.}}{{end}}\"",
+    "rss_mb": 21.7
+  },
+  {
+    "pid": 35268,
+    "parent": 48156,
+    "created": "2026-10-28T11:15:05.5963850Z",
+    "executable": "\\\\?\\D:\\CLIO-Desktop-095-Repair\\data\\bundled-runtime\\gact-runtime\\python\\Lib\\site-packages\\iowarp_core\\bin\\clio_run.exe",
+    "cmd": "\\\\?\\D:\\CLIO-Desktop-095-Repair\\data\\bundled-runtime\\gact-runtime\\python\\Lib\\site-packages\\iowarp_core\\bin\\clio_run.exe start",
+    "rss_mb": 494.3
+  },
+  {
+    "pid": 31024,
+    "parent": 48352,
+    "created": "2026-10-28T11:15:05.6063810Z",
+    "executable": "C:\\WINDOWS\\system32\\conhost.exe",
+    "cmd": "\\??\\C:\\WINDOWS\\system32\\conhost.exe 0x4",
+    "rss_mb": 7.7
+  },
+  {
+    "pid": 43444,
+    "parent": 35268,
+    "created": "2026-10-28T11:15:05.6091260Z",
+    "executable": "C:\\WINDOWS\\system32\\conhost.exe",
+    "cmd": "\\??\\C:\\WINDOWS\\system32\\conhost.exe 0x4",
+    "rss_mb": 7.5
+  },
+  {
+    "pid": 50940,
+    "parent": 48352,
+    "created": "2026-10-28T11:15:05.7450480Z",
+    "executable": "",
+    "cmd": "",
+    "rss_mb": 3.1
+  },
+  {
+    "pid": 40672,
+    "parent": 48352,
+    "created": "2026-10-28T11:15:05.8444720Z",
+    "executable": "C:\\Program Files\\Docker\\cli-plugins\\docker-compose.exe",
+    "cmd": "\"C:\\Program Files\\Docker\\cli-plugins\\docker-compose.exe\" docker-cli-plugin-metadata",
+    "rss_mb": 0
+  },
+  {
+    "pid": 17884,
+    "parent": 48352,
+    "created": "2026-10-28T11:15:05.9084360Z",
+    "executable": "C:\\Program Files\\Docker\\cli-plugins\\docker-scout.exe",
+    "cmd": "\"C:\\Program Files\\Docker\\cli-plugins\\docker-scout.exe\" docker-cli-plugin-metadata",
+    "rss_mb": 0
+  },
+  {
+    "pid": 36540,
+    "parent": 48156,
+    "created": "2026-10-28T11:15:06.0128340Z",
+    "executable": "",
+    "cmd": "",
+    "rss_mb": 0
+  },
+  {
+    "pid": 25188,
+    "parent": 48156,
+    "created": "2026-10-28T11:15:11.0639370Z",
+    "executable": "C:\\Program Files\\Docker\\Docker\\resources\\bin\\docker.exe",
+    "cmd": "\"C:\\Program Files\\Docker\\Docker\\resources\\bin\\docker.exe\" info --format \"{{.ServerVersion}}{{range .SecurityOptions}} {{.}}{{end}}\"",
+    "rss_mb": 0
+  },
+  {
+    "pid": 28936,
+    "parent": 25188,
+    "created": "2026-10-28T11:15:11.0821660Z",
+    "executable": "C:\\WINDOWS\\system32\\conhost.exe",
+    "cmd": "\\??\\C:\\WINDOWS\\system32\\conhost.exe 0x4",
+    "rss_mb": 0
+  },
+  {
+    "pid": 43864,
+    "parent": 48156,
+    "created": "2026-10-28T11:15:11.1619760Z",
+    "executable": "",
+    "cmd": "",
+    "rss_mb": 0
+  },
+  {
+    "pid": 31380,
+    "parent": 43864,
+    "created": "2026-10-28T11:15:11.2047180Z",
+    "executable": "",
+    "cmd": "",
+    "rss_mb": 0
+  },
+  {
+    "pid": 51796,
+    "parent": 25188,
+    "created": "2026-10-28T11:15:11.2196010Z",
+    "executable": "",
+    "cmd": "",
+    "rss_mb": 0
+  },
+  {
+    "pid": 30712,
+    "parent": 25188,
+    "created": "2026-10-28T11:15:11.2197350Z",
+    "executable": "C:\\Program Files\\Docker\\cli-plugins\\docker-ai.exe",
+    "cmd": "\"C:\\Program Files\\Docker\\cli-plugins\\docker-ai.exe\" docker-cli-plugin-metadata",
+    "rss_mb": 0
+  },
+  {
+    "pid": 36800,
+    "parent": 25188,
+    "created": "2026-10-28T11:15:11.2197990Z",
+    "executable": "C:\\Program Files\\Docker\\cli-plugins\\docker-scout.exe",
+    "cmd": "\"C:\\Program Files\\Docker\\cli-plugins\\docker-scout.exe\" docker-cli-plugin-metadata",
+    "rss_mb": 0
+  },
+  {
+    "pid": 10784,
+    "parent": 25188,
+    "created": "2026-10-28T11:15:11.2200110Z",
+    "executable": "",
+    "cmd": "",
+    "rss_mb": 0
+  },
+  {
+    "pid": 33108,
+    "parent": 25188,
+    "created": "2026-10-28T11:15:11.2269500Z",
+    "executable": "C:\\Program Files\\Docker\\cli-plugins\\docker-buildx.exe",
+    "cmd": "\"C:\\Program Files\\Docker\\cli-plugins\\docker-buildx.exe\" docker-cli-plugin-metadata",
+    "rss_mb": 0
+  },
+  {
+    "pid": 39132,
+    "parent": 25188,
+    "created": "2026-10-28T11:15:11.2269500Z",
+    "executable": "C:\\Program Files\\Docker\\cli-plugins\\docker-cloud.exe",
+    "cmd": "\"C:\\Program Files\\Docker\\cli-plugins\\docker-cloud.exe\" docker-cli-plugin-metadata",
+    "rss_mb": 0
+  },
+  {
+    "pid": 41772,
+    "parent": 25188,
+    "created": "2026-10-28T11:15:11.2273640Z",
+    "executable": "C:\\Program Files\\Docker\\cli-plugins\\docker-compose.exe",
+    "cmd": "\"C:\\Program Files\\Docker\\cli-plugins\\docker-compose.exe\" docker-cli-plugin-metadata",
+    "rss_mb": 0
+  },
+  {
+    "pid": 37908,
+    "parent": 25188,
+    "created": "2026-10-28T11:15:11.2431360Z",
+    "executable": "C:\\Program Files\\Docker\\cli-plugins\\docker-desktop.exe",
+    "cmd": "\"C:\\Program Files\\Docker\\cli-plugins\\docker-desktop.exe\" docker-cli-plugin-metadata",
+    "rss_mb": 0
+  },
+  {
+    "pid": 42948,
+    "parent": 42376,
+    "created": "2026-10-28T11:15:38.8829360Z",
+    "executable": "D:\\cw\\r4\\home\\cache\\document-runtime\\68fd91e579837b59bebd\\python\\Lib\\site-packages\\nodejs_wheel\\node.exe",
+    "cmd": "D:\\cw\\r4\\home\\cache\\document-runtime\\68fd91e579837b59bebd\\python\\Lib\\site-packages\\nodejs_wheel\\node.exe D:\\cw\\r4\\home\\cache\\document-runtime\\68fd91e579837b59bebd\\python\\Lib\\site-packages\\nodejs_wheel\\lib\\node_modules\\npm\\bin\\npm-cli.js install --prefix D:\\cw\\r4\\home\\cache\\document-runtime\\68fd91e579837b59bebd\\javascript-tools --ignore-scripts --no-audit --no-fund pnpm@12.9.1",
+    "rss_mb": 103
+  },
+  {
+    "pid": 11492,
+    "parent": 42948,
+    "created": "2026-10-28T11:15:38.8983650Z",
+    "executable": "C:\\WINDOWS\\system32\\conhost.exe",
+    "cmd": "\\??\\C:\\WINDOWS\\system32\\conhost.exe 0x4",
+    "rss_mb": 7.7
+  },
+  {
+    "pid": 36240,
+    "parent": 42376,
+    "created": "2026-10-28T11:15:52.2372790Z",
+    "executable": "D:\\cw\\r4\\home\\cache\\document-runtime\\68fd91e579837b59bebd\\python\\Lib\\site-packages\\nodejs_wheel\\node.exe",
+    "cmd": "D:\\cw\\r4\\home\\cache\\document-runtime\\68fd91e579837b59bebd\\python\\Lib\\site-packages\\nodejs_wheel\\node.exe D:\\cw\\r4\\home\\cache\\document-runtime\\68fd91e579837b59bebd\\javascript-tools\\node_modules\\pnpm\\pnpm --version",
+    "rss_mb": 0
+  },
+  {
+    "pid": 9704,
+    "parent": 36240,
+    "created": "2026-10-28T11:15:52.3184350Z",
+    "executable": "C:\\WINDOWS\\system32\\conhost.exe",
+    "cmd": "\\??\\C:\\WINDOWS\\system32\\conhost.exe 0x4",
+    "rss_mb": 0
+  },
+  {
+    "pid": 45464,
+    "parent": 42376,
+    "created": "2026-10-28T11:15:54.8532910Z",
+    "executable": "D:\\cw\\r4\\home\\cache\\document-runtime\\68fd91e579837b59bebd\\python\\Lib\\site-packages\\nodejs_wheel\\node.exe",
+    "cmd": "D:\\cw\\r4\\home\\cache\\document-runtime\\68fd91e579837b59bebd\\python\\Lib\\site-packages\\nodejs_wheel\\node.exe --input-type=module -e \"await import('docx'); await import('pptxgenjs'); await import('sharp');\"",
+    "rss_mb": 0
+  },
+  {
+    "pid": 41172,
+    "parent": 45464,
+    "created": "2026-10-28T11:15:54.8700420Z",
+    "executable": "C:\\WINDOWS\\system32\\conhost.exe",
+    "cmd": "\\??\\C:\\WINDOWS\\system32\\conhost.exe 0x4",
+    "rss_mb": 0
+  },
+  {
+    "pid": 46244,
+    "parent": 42376,
+    "created": "2026-10-28T11:15:58.7919320Z",
+    "executable": "D:\\cw\\r4\\home\\cache\\document-office\\office-extract-4vvzjukn\\image\\program\\soffice.com",
+    "cmd": "D:\\cw\\r4\\home\\cache\\document-office\\office-extract-4vvzjukn\\image\\program\\soffice.com -env:UserInstallation=file:///D:/cw/rp/home/Temp/lo-version-eap3bmoj/profile --headless --nologo --norestore --version",
+    "rss_mb": 6.9
+  },
+  {
+    "pid": 22772,
+    "parent": 46244,
+    "created": "2026-10-28T11:15:58.8264960Z",
+    "executable": "C:\\WINDOWS\\system32\\conhost.exe",
+    "cmd": "\\??\\C:\\WINDOWS\\system32\\conhost.exe 0x4",
+    "rss_mb": 7.5
+  },
+  {
+    "pid": 31836,
+    "parent": 46244,
+    "created": "2026-10-28T11:15:58.9671680Z",
+    "executable": "D:\\cw\\r4\\home\\cache\\document-office\\office-extract-4vvzjukn\\image\\program\\soffice.bin",
+    "cmd": "\"D:\\cw\\r4\\home\\cache\\document-office\\office-extract-4vvzjukn\\image\\program\\soffice.com\" \"-env:UserInstallation=file:///D:/cw/rp/home/Temp/lo-version-eap3bmoj/profile\" \"--headless\" \"--nologo\" \"--norestore\" \"--version\" \"-env:OOO_CWD=2D:\\\\cw\\\\r4\\\\home\\\\cache\\\\document-office\\\\office-extract-4vvzjukn\\\\image\"",
+    "rss_mb": 140.3
+  },
+  {
+    "pid": 45148,
+    "parent": 48156,
+    "created": "2026-10-28T11:16:11.3474670Z",
+    "executable": "\\\\?\\D:\\CLIO-Desktop-095-Repair\\data\\bundled-runtime\\gact-runtime\\python\\Lib\\site-packages\\iowarp_core\\bin\\clio_run.exe",
+    "cmd": "\\\\?\\D:\\CLIO-Desktop-095-Repair\\data\\bundled-runtime\\gact-runtime\\python\\Lib\\site-packages\\iowarp_core\\bin\\clio_run.exe stop",
+    "rss_mb": 10.1
+  },
+  {
+    "pid": 33604,
+    "parent": 16928,
+    "created": "2026-10-28T11:16:17.0754900Z",
+    "executable": "\\\\?\\D:\\CLIO-Desktop-095-Repair\\data\\bundled-runtime\\gact-runtime\\python\\python.exe",
+    "cmd": "\\\\?\\D:\\CLIO-Desktop-095-Repair\\data\\bundled-runtime\\gact-runtime\\python\\python.exe -I -B -m clio_agent.gact --no-agent --cleanup-runtime-after-crash",
+    "rss_mb": 172.4
+  },
+  {
+    "pid": 32340,
+    "parent": 33604,
+    "created": "2026-10-28T11:16:17.0977430Z",
+    "executable": "C:\\WINDOWS\\system32\\conhost.exe",
+    "cmd": "\\??\\C:\\WINDOWS\\system32\\conhost.exe 0x4",
+    "rss_mb": 7.7
+  }
+]

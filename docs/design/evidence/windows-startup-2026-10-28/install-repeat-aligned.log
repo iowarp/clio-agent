@@ -1,0 +1,52 @@
+2026-10-28T07:17:56.8172396Z ==> Updating the clio-agent clone in 'D:\cw\ip2\local\clio-agent\data\app\clio-agent' to develop (was c6cb553)
+2026-10-28T07:17:58.5674627Z ==> Building the CLIO-branded TUI in the background (log: D:\cw\ip2\t\clio-tui-build-b29507b764e44f698cb4fc85d01235aa.log)
+2026-10-28T07:17:58.5843958Z ==> Installing clio-agent deps (uv sync --locked --python 3.14 --extra argonne --extra flowcept)
+2026-10-28T07:17:58.9151139Z Resolved 241 packages in 2ms
+2026-10-28T07:17:59.0006213Z Checked 206 packages in 39ms
+2026-10-28T07:17:59.4197019Z ==> Migrating the CLIO store (clio-agent migrate)
+2026-10-28T07:18:00.4144648Z migrate step=open_store status=running
+2026-10-28T07:18:03.9144675Z migrate step=open_store status=done seconds=3.501
+2026-10-28T07:18:04.7674739Z migrate step=session_records_import status=checking summary='Import the legacy sessions.json into one clio-core record per session'
+2026-10-28T07:18:04.7691603Z migrate step=session_records_import status=already_done seconds=0.000
+2026-10-28T07:18:04.7693604Z migrate step=task_event_lane status=checking summary="Copy each conversation's task events into their own lane (task trees read only it)"
+2026-10-28T07:18:04.7714551Z migrate step=task_event_lane status=already_done seconds=0.000
+2026-10-28T07:18:04.7716077Z migrate step=task_lane_reads status=checking summary='Annotate each task-event lane so a task tree loads from the lane alone'
+2026-10-28T07:18:04.7896532Z migrate step=task_lane_reads status=already_done seconds=0.000
+2026-10-28T07:18:04.7899249Z migrate step=transcript_legacy_import status=checking summary="Keep each conversation's legacy JSON transcript as evidence in clio-core"
+2026-10-28T07:18:04.8045007Z migrate step=transcript_legacy_import status=already_done seconds=0.000
+2026-10-28T07:18:04.8047170Z migrate step=task_index_build status=checking summary='Convert retained task formats and build the task lookup and open-work records'
+2026-10-28T07:18:04.8061037Z migrate step=task_index_build status=already_done seconds=0.000
+2026-10-28T07:18:04.8062338Z migrate step=artifact_index status=checking summary='Fold the artifact history once into the clio-core artifact records'
+2026-10-28T07:18:04.8196304Z migrate step=artifact_index status=already_done seconds=0.000
+2026-10-28T07:18:14.1602195Z migrate status=done ran=0 seconds=13.746
+2026-10-28T07:18:14.3839638Z ==> Installing managed Python/uv and Node/pnpm packages and Office rendering
+2026-10-28T07:18:15.0079456Z Preparing and checking the Office renderer...
+2026-10-28T07:18:15.0081373Z Preparing and checking the GitHub command-line tool...
+2026-10-28T07:18:16.0990008Z GitHub command-line tool is ready.
+2026-10-28T07:18:16.2957141Z Preparing and checking Python document packages...
+2026-10-28T07:18:17.5183804Z Office rendering is ready.
+2026-10-28T07:18:20.5143085Z Python document packages are ready. Preparing Node.js packages...
+2026-10-28T07:18:21.0785714Z Node.js document packages are ready.
+2026-10-28T07:18:21.0797376Z Preparing and checking protected execution...
+2026-10-28T07:18:21.1303215Z Protected execution: MXC verified (cached check).
+2026-10-28T07:18:21.7237467Z All managed runtime packages are installed and verified.
+2026-10-28T07:18:21.8009356Z {"status": "ready", "runtime_id": "68fd91e579837b59bebd", "office": {"status": "available", "path": "D:\\cw\\ip2\\local\\clio-agent\\cache\\document-office\\26.2.6\\program\\soffice.com"}, "store_migrations": {"status": "skipped", "reason": "skipped_by_caller"}, "mcp_cache": {"status": "pruned", "freed_bytes": 0, "evicted": 0}}
+2026-10-28T07:18:21.9616609Z ==> Provisioning released clio-kit launcher (clio-kit==2.10.6; legacy runtime semantics)
+2026-10-28T07:18:22.1511969Z `clio-kit==2.10.6` is already installed
+2026-10-28T07:18:22.1611509Z ==> Waiting for the TUI build
+2026-10-28T07:18:22.1759379Z ==> TUI built in 24 s: D:\cw\ip2\local\clio-agent\data\app\gact.exe
+2026-10-28T07:18:22.1798770Z ==> Installing launcher: D:\cw\ip2\bin\clio.cmd
+2026-10-28T07:18:22.2047372Z ==> Installing uninstaller: D:\cw\ip2\local\clio-agent\data\app\uninstall.ps1
+2026-10-28T07:18:22.2068955Z ==> Done.
+2026-10-28T07:18:22.2071519Z
+2026-10-28T07:18:22.2072419Z Installed to:   D:\cw\ip2\local\clio-agent\data\app
+2026-10-28T07:18:22.2073247Z Launcher:       D:\cw\ip2\bin\clio.cmd
+2026-10-28T07:18:22.2079068Z clio-agent:     source: D:\cw\ip2\local\clio-agent\data\app\clio-agent
+2026-10-28T07:18:22.2080253Z gact:           built from the checkout's submodule
+2026-10-28T07:18:22.2081486Z
+2026-10-28T07:18:22.2082473Z Next steps:
+2026-10-28T07:18:22.2083876Z   1. Make sure D:\cw\ip2\bin is on your PATH (it usually is on Win 10/11).
+2026-10-28T07:18:22.2084999Z   2. Run:   clio
+2026-10-28T07:18:22.2086143Z   3. Manage the server: clio status | clio restart | clio logs
+2026-10-28T07:18:22.2087276Z   4. Tab-completion:    clio completion powershell >> $PROFILE
+2026-10-28T07:18:22.2088416Z   5. Uninstall:         clio uninstall   (add -Purge to drop config)

@@ -26,7 +26,7 @@ for (const widget of widgets) {
       name,
       required: required.has(name),
       description: definition.description ?? widgetFieldHelp[widget.name]?.[name] ?? '',
-      type: definition.type ?? (definition.enum ? definition.enum.map(String).join(' | ') : definition.$ref ? 'value' : 'object'),
+      type: definition.type ?? (definition.enum ? definition.enum.map(String).join(' | ') : definition.$ref || definition.oneOf ? 'value' : 'object'),
     })),
   };
   const description = String(schema.description ?? '').replaceAll('"', '\\"');

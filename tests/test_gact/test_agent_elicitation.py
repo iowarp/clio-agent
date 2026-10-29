@@ -335,16 +335,16 @@ def test_apply_session_tool_allowlist_is_a_noop_without_the_stamped_metadata() -
     app: Any = SimpleNamespace(
         state=SimpleNamespace(
             sessions=_FakeSessions(
-                {"sid1": SimpleNamespace(metadata={}, agent=SimpleNamespace(id="main"))}
+                {"sid1": SimpleNamespace(metadata={}, agent=SimpleNamespace(id="standard"))}
             )
         )
     )
     row = AgentDef(
-        id="main", title="Main", module={"kind": "react"}, tools=["fs_read", "shell_exec"]
+        id="standard", title="CLIO", module={"kind": "react"}, tools=["fs_read", "shell_exec"]
     )
-    out = _resolution._apply_session_tool_allowlist(app, [row], session_id="sid1")
-    assert out[0].tools == ["fs_read", "shell_exec"]
-    assert out[0].module == {"kind": "react"}
+    out = _resolution.apply_session_tool_allowlist(app, row, session_id="sid1")
+    assert out.tools == ["fs_read", "shell_exec"]
+    assert out.module == {"kind": "react"}
 
 
 def test_decide_routing_unknown_namespace_fails_closed() -> None:

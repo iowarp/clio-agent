@@ -1,0 +1,11 @@
+{
+  "cpu_busy_percent_before_install": 17,
+  "captured_at": "2026-10-28T06:01:28.3799834Z",
+  "physical_cores": 6,
+  "ram_gib": 31.95,
+  "free_ram_gib": 13.04,
+  "os": "Microsoft Windows 11 Home",
+  "logical_cores": 12,
+  "build": "26300",
+  "cpu": "AMD Ryzen 5 3600 6-Core Processor"
+}

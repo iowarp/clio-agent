@@ -440,6 +440,7 @@ def test_off_a_legacy_row_takes_its_last_atom_message_time_never_messages_dir(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     _legacy_rows(tmp_path, ["sess_talked", "sess_silent"])
+    monkeypatch.setenv("CLIO_SESSIONS_PATH", str(tmp_path / "sessions.json"))
     seeding = ARCMemory(data_dir=str(tmp_path / "arc"))
     last = _message("sess_talked", "msg_last", "bye").model_copy(
         update={"updated_at": "2026-08-22T18:21:00+00:00"}
@@ -467,10 +468,12 @@ def test_off_a_legacy_row_takes_its_last_atom_message_time_never_messages_dir(
     assert stat_calls == []
     _no_messages_dir(tmp_path)
 
-    # Settled once and persisted: the restart reads the row's own value.
-    stored = json.loads((tmp_path / "sessions.json").read_text())
-    assert stored["sess_talked"]["last_interaction_at"] == "2026-08-22T18:21:00+00:00"
+    # Settled once and persisted: the restart reads the record's own value.
+    first.state.sessions.flush()
     second = _app(tmp_path)
+    stored = second.state.sessions.get("sess_talked")
+    assert stored is not None
+    assert stored.last_interaction_at == "2026-08-22T18:21:00+00:00"
     assert second.state.sessions.get("sess_silent").last_interaction_at == (
         "2026-08-01T00:00:00+00:00"
     )
@@ -478,10 +481,13 @@ def test_off_a_legacy_row_takes_its_last_atom_message_time_never_messages_dir(
     _no_messages_dir(tmp_path)
 
 
-def test_legacy_file_mtime_cannot_rewrite_session_interaction_time(tmp_path: Path) -> None:
+def test_legacy_file_mtime_cannot_rewrite_session_interaction_time(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     """Optional cache timestamps are not proof of a later accepted interaction."""
 
     _legacy_rows(tmp_path, ["sess_legacy", "sess_no_file"])
+    monkeypatch.setenv("CLIO_SESSIONS_PATH", str(tmp_path / "sessions.json"))
     messages_dir = tmp_path / "messages"
     messages_dir.mkdir()
     ledger = messages_dir / "sess_legacy.json"

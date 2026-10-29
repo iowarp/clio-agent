@@ -19,7 +19,9 @@ export default defineConfig({
 		'/contributing.html': '/docs/contributing/',
 		'/tutorials': '/docs/examples/',
 		'/tutorials/guides/first-analysis': '/docs/examples/ground-motion/',
-		'/tutorials/guides/install-a-blueprint': '/docs/marketplaces/#choose-a-blueprint-for-a-conversation',
+		'/tutorials/guides/install-a-blueprint': '/docs/agents-and-plugins/#pick-an-agent-for-a-conversation',
+		// Agent blueprints were replaced by agents and plugins.
+		'/docs/blueprints': '/docs/agents-and-plugins/',
 	},
 	integrations: [
 		starlight({
@@ -42,7 +44,7 @@ export default defineConfig({
 			plugins: [starlightLinksValidator({
 				errorOnLocalLinks: false,
 				// Static native HTML endpoints are checked by the archive browser tests.
-				exclude: ['/conversations/ndp/alta/', '/conversations/ndp/tahoe/', '/conversations/ndp/konza/', '/conversations/ndp/endpoint/'],
+				exclude: ['/conversations/**'],
 			})],
 			sidebar: [
 				{
@@ -50,7 +52,8 @@ export default defineConfig({
 					collapsed: false,
 					items: [
 						{ label: 'Start here', slug: 'docs' },
-						{ label: 'Install and open CLIO', slug: 'docs/install' },
+						{ label: 'Install CLIO', slug: 'docs/install' },
+						{ label: 'Install with your AI assistant', slug: 'docs/install-with-ai' },
 						{ label: 'Choose a model', slug: 'docs/connect-a-model' },
 						{ label: 'Your first analysis', slug: 'docs/examples/check-a-dataset' },
 						{ label: 'Your workspace', slug: 'docs/workspace-panels' },
@@ -91,6 +94,10 @@ export default defineConfig({
 						},
 						{ label: 'Answer a question', slug: 'docs/questions' },
 						{ label: 'Follow work in progress', slug: 'docs/following-work' },
+						{ label: 'Flows and workflows', slug: 'docs/flows' },
+						{ label: 'Subagents', slug: 'docs/subagents' },
+						{ label: 'Science log', slug: 'docs/science-log' },
+						{ label: 'Models and usage', slug: 'docs/models-and-usage' },
 						{ label: 'Updates during a conversation', slug: 'docs/injections' },
 						{ label: 'Continue work over time', slug: 'docs/long-running-work' },
 						{ label: 'Choose what CLIO may do', slug: 'docs/permissions' },
@@ -112,6 +119,7 @@ export default defineConfig({
 					collapsed: true,
 					items: [
 						{ label: 'Search files and conversations', slug: 'docs/search' },
+						{ label: 'Long-term memory', slug: 'docs/long-term-memory' },
 						{ label: 'What CLIO remembers', slug: 'docs/memory' },
 						{ label: 'Try another approach', slug: 'docs/branch-and-rewind' },
 					],
@@ -124,6 +132,7 @@ export default defineConfig({
 						{ label: 'Explore ground motion', slug: 'docs/examples/ground-motion' },
 						{ label: 'EarthScope data from NDP', slug: 'docs/examples/ndp-earthscope' },
 						{ label: 'Scientific questions for NDP', slug: 'docs/examples/ndp-science' },
+						{ label: 'A branched study', slug: 'docs/examples/branched-study' },
 						{ label: 'Find a decision in research notes', slug: 'docs/examples/research-notes' },
 						{ label: 'Create a report and slides', slug: 'docs/examples/reports-and-slides' },
 					],
@@ -132,11 +141,26 @@ export default defineConfig({
 					label: 'Customize CLIO',
 					collapsed: true,
 					items: [
-						{ label: 'Choose a specialist agent', slug: 'docs/marketplaces' },
-						{ label: 'Install and update blueprints', slug: 'docs/marketplaces/manage' },
-						{ label: 'Connect tools and services', slug: 'docs/mcp-servers' },
+						{ label: 'Agents and plugins', slug: 'docs/agents-and-plugins' },
 						{ label: 'Extensions preview', slug: 'docs/extensions' },
+						{ label: 'Plugin marketplaces', slug: 'docs/marketplaces' },
+						{ label: 'Add and manage marketplaces', slug: 'docs/marketplaces/manage' },
+						{ label: 'Connect tools and services', slug: 'docs/mcp-servers' },
 						{ label: 'Interactive views and controls', slug: 'docs/widgets' },
+					],
+				},
+				{
+					label: 'Build with the SDK',
+					collapsed: true,
+					items: [
+						{ label: 'How agents and plugins are built', slug: 'docs/sdk' },
+						{ label: 'Build your first plugin', slug: 'docs/sdk/build-a-plugin' },
+						{ label: 'Write a flow', slug: 'docs/sdk/flows' },
+						{ label: 'Workflows as data', slug: 'docs/sdk/workflows' },
+						{ label: "What's available", slug: 'docs/sdk/available' },
+						{ label: 'Plugin reference', slug: 'docs/sdk/plugins' },
+						{ label: 'Agent reference', slug: 'docs/sdk/agents' },
+						{ label: 'SDK reference', slug: 'docs/sdk/reference' },
 					],
 				},
 				{
@@ -155,9 +179,9 @@ export default defineConfig({
 					collapsed: true,
 					items: [
 						{ label: 'Server and terminal setup', slug: 'docs/server-setup' },
+						{ label: 'Managed infrastructure', slug: 'docs/managed-infrastructure' },
 						{ label: 'Command line', slug: 'docs/cli' },
 						{ label: 'Configuration', slug: 'docs/configuration' },
-						{ label: 'Write an agent blueprint', slug: 'docs/blueprints' },
 						{ label: 'Hooks and automation', slug: 'docs/hooks' },
 						{ label: 'Background work and limits', slug: 'docs/background-work-reference' },
 						{ label: 'Interactive component catalog', slug: 'docs/widgets/components' },

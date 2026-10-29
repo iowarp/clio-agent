@@ -1,5 +1,5 @@
 {
-  "tool": "memory_read_session_summary",
+  "tool": "session_read_summary",
   "summary": {
     "session_id": "sess_b8da563aa65f",
     "title": "Compare report introductions — Best of N",
@@ -57,7 +57,7 @@
     "caller": {},
     "provenance": {
       "source": "gact_memory_tool",
-      "tool_name": "memory_read_session_summary",
+      "tool_name": "session_read_summary",
       "session_id": "sess_b8da563aa65f",
       "target_session_id": "sess_b8da563aa65f"
     }

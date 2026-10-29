@@ -77,8 +77,6 @@ _SIGNING_ASSETS: list[str] = [
 _INSTALLER_ASSETS: list[str] = [
     "install.sh",
     "install.ps1",
-    "desktop.sh",
-    "desktop.ps1",
     "uninstall.sh",
     "uninstall.ps1",
     "clio",
@@ -89,8 +87,6 @@ _INSTALLER_ASSETS: list[str] = [
 _INSTALLER_LABELS: set[str] = {
     "installer script (POSIX)",
     "installer script (PowerShell)",
-    "desktop installer (macOS)",
-    "desktop installer (Windows)",
     "uninstaller script (POSIX)",
     "uninstaller script (PowerShell)",
     "clio launcher (POSIX)",
@@ -215,12 +211,8 @@ def test_extra_assets_are_ignored() -> None:
 
 
 def test_real_v09418_release_passes_the_publish_gate() -> None:
-    """The historical release predates only the new desktop terminal installers."""
-    assert {label for label, _ in find_missing(_V09418_ASSETS)} == {
-        "desktop installer (macOS)",
-        "desktop installer (Windows)",
-    }
-    assert find_missing([*_V09418_ASSETS, "desktop.sh", "desktop.ps1"]) == []
+    """A real published release's asset list satisfies the gate."""
+    assert find_missing(_V09418_ASSETS) == []
 
 
 def test_each_installer_asset_is_individually_required() -> None:
@@ -230,9 +222,7 @@ def test_each_installer_asset_is_individually_required() -> None:
     pathway, so a release missing one must stay a draft.
     """
     for dropped in _INSTALLER_ASSETS:
-        listing = [
-            name for name in [*_V09418_ASSETS, "desktop.sh", "desktop.ps1"] if name != dropped
-        ]
+        listing = [name for name in _V09418_ASSETS if name != dropped]
         missing = find_missing(listing)
         assert len(missing) == 1, (dropped, missing)
         label, pattern = missing[0]
@@ -246,11 +236,7 @@ def test_release_without_updater_manifests_fails_the_gate() -> None:
     Publishing (and so becoming ``latest``) in this state is exactly what made
     ``releases/latest/download/latest-lite.json`` 404; the gate must name both.
     """
-    listing = [
-        n
-        for n in [*_V09418_ASSETS, "desktop.sh", "desktop.ps1"]
-        if n not in {"latest.json", "latest-lite.json"}
-    ]
+    listing = [n for n in _V09418_ASSETS if n not in {"latest.json", "latest-lite.json"}]
     labels = {label for label, _ in find_missing(listing)}
     assert labels == {"Tauri update manifest (bundled)", "Tauri update manifest (lite)"}
 
@@ -293,7 +279,7 @@ def test_beta_macos_exception_removes_only_desktop_requirements(tmp_path: Path) 
         == 0
     )
     required = expected_assets("v0.9.5-beta.5.1", True)
-    for name in ("clio-tui-darwin-arm64", "desktop.sh", "latest-lite.json"):
+    for name in ("clio-tui-darwin-arm64", "install.sh", "latest-lite.json"):
         assert find_missing([asset for asset in listing if asset != name], required)
     for name in ("CLIO.Desktop_0.7.1_x64-setup.exe.sig", "CLIO.Desktop_0.7.1_amd64.AppImage"):
         assert find_missing([asset for asset in listing if asset != name], required)

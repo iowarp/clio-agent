@@ -1,7 +1,7 @@
 """Submit operator-local prompts to an existing CLIO session with resumable request receipts.
 
 Run on the operator's computer. The input must contain prompts only; evaluator
-answers and injection manifests are refused. Configure the model, blueprint and
+answers and injection manifests are refused. Configure the model, agent and
 SPOTTER approval mode in CLIO first. This runner does not approve pending actions.
 """
 

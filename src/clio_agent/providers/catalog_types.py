@@ -15,6 +15,9 @@ ProviderKind = Literal[
     "claude_code",
 ]
 AuthMethod = Literal["none", "api_key", "oauth", "subscription"]
+#: How an account pays for calls: a plan with usage windows, prepaid credit,
+#: per-token metering, or nothing (local and site endpoints).
+Billing = Literal["subscription", "credit", "metered", "free"]
 
 
 @dataclass(frozen=True)
@@ -76,3 +79,5 @@ class Provider:
     #: assumed, so the rest of CLIO never silently assumes context-policy
     #: parity (rewind/compaction/etc.) it does not actually have.
     inner_loop_owner: str = "clio"
+    #: How calls are paid for (the fleet's billing kind; see docs/design/sdk/model-fleet.md).
+    billing: Billing = "metered"

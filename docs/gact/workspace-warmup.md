@@ -22,10 +22,11 @@ is ready. `disabled` means `tools.mcp.session_warmup` /
 available yet. Unknown workspaces return 404; unavailable roots return 409.
 
 The connected agent resolves its registered workspace root and the persisted
-session-default blueprint. It lists and connects that blueprint's MCP servers
+session-default agent (the session defaults' `agent_ref`, else `clio/standard`),
+without pinning a session. It lists and connects that agent's plugin MCP servers
 and always-load services concurrently, using the same workspace fleet as later
 sessions. No user turn or model request runs. Calls for the same app, root and
-blueprint coalesce while preparation is in flight. Failures are logged and may
+plugin server set coalesce while preparation is in flight. Failures are logged and may
 be retried by subsequent preparation or normal tool use.
 
 Desktop requests preparation when entering a supported draft and once per

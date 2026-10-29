@@ -42,6 +42,15 @@ from dspy.lm15 import (
 )
 
 from clio_agent.errors import ClioError
+from clio_agent.gact.agents.context_errors import (
+    ContextFoldError as ContextFoldError,
+)
+from clio_agent.gact.agents.context_errors import (
+    ContextReadError as ContextReadError,
+)
+from clio_agent.gact.agents.context_errors import (
+    ContextWriteError as ContextWriteError,
+)
 from clio_agent.gact.agents.context_reader import ContextReader
 from clio_agent.gact.agents.recorded_media import (
     _media as _media,
@@ -72,57 +81,6 @@ _NON_CONTEXT_KINDS = frozenset(
         "recipient_input",
     }
 )
-
-
-class ContextReadError(ClioError):
-    """The loop could not read its context from the ARC live plane (typed turn failure)."""
-
-    reason = "arc_context_read_failed"
-
-    def __init__(self, scope: str, cause: BaseException) -> None:
-        super().__init__(
-            f"could not read the agent context for scope {scope!r}: {cause}",
-            error_type=self.reason,
-            details={"scope": scope, "cause": type(cause).__name__},
-        )
-
-
-class ContextFoldError(ClioError):
-    """A clio-core record could not be folded into the agent's messages (typed turn failure).
-
-    The fold never guesses: an unmodelled kind, malformed content, an observation that
-    answers no open call, a call left unanswered or a summary with no text would each
-    silently change what the model sees.
-    """
-
-    reason = "context_fold_failed"
-
-    def __init__(self, problem: str, segment: Any, detail: str = "") -> None:
-        seg_id = str(getattr(segment, "id", "") or "")
-        kind = str(getattr(segment, "kind", "") or "")
-        super().__init__(
-            f"cannot fold the agent context: {problem} at segment {seg_id or '?'} ({kind})"
-            + (f": {detail}" if detail else ""),
-            error_type=self.reason,
-            details={"problem": problem, "segment_id": seg_id, "kind": kind},
-        )
-
-
-class ContextWriteError(ClioError):
-    """The loop could not record a message on the ARC live plane (typed turn failure).
-
-    The plane is the conversation: a lost write would leave the model a context that
-    silently lacks what just happened, so it fails the turn instead.
-    """
-
-    reason = "arc_context_write_failed"
-
-    def __init__(self, scope: str, kind: str, cause: BaseException) -> None:
-        super().__init__(
-            f"could not record the agent's {kind} for scope {scope!r}: {cause}",
-            error_type=self.reason,
-            details={"scope": scope, "kind": kind, "cause": type(cause).__name__},
-        )
 
 
 def arc_scope() -> tuple[Any, str, str]:
@@ -296,7 +254,11 @@ class _StepFold:
         if call is None or call_id in self.results:
             raise ContextFoldError("orphan_observation", seg, f"no open call {call_id!r}")
         self.results[call_id] = result_part(
-            call_id, call.name, content.get("text", ""), bool(content.get("is_error"))
+            call_id,
+            call.name,
+            content.get("text", ""),
+            bool(content.get("is_error")),
+            call_ref=str(content.get("call_ref") or ""),
         )
 
     def messages(self, next_seg: Any) -> list[Message]:
@@ -570,12 +532,14 @@ class StepRecorder:
         results: Mapping[str, tuple[Any, bool]],
         thinking_source: str = "",
         thinking_complete: bool = True,
+        refs: Mapping[str, str] | None = None,
     ) -> None:
         """Write the step's segments and put ``react.step.completed`` on the highway.
 
         ``thinking_source`` labels the step's thinking (``provider_field`` /
         ``inline_tag``); an inline block the reply never closed is marked
-        ``thinking_incomplete``.
+        ``thinking_incomplete``. ``refs`` carries each call's ``call:`` reference,
+        which the observation keeps so the model sees it with the result.
         """
         from clio_agent.gact.runtime.context_tokens import _arc_obs_value  # noqa: PLC0415
         from clio_agent.gact.runtime.globals import _emit_react_step_event  # noqa: PLC0415
@@ -611,6 +575,7 @@ class StepRecorder:
                 "call_id": call.id,
                 "text": _arc_obs_value(value),
                 "is_error": is_error,
+                **({"call_ref": refs[call.id]} if refs and refs.get(call.id) else {}),
                 **({"notification_ids": notification_ids} if notification_ids else {}),
                 **({"task_read_handles": read_handles} if read_handles else {}),
                 **({"task_observe_handles": observe_handles} if observe_handles else {}),
@@ -759,6 +724,26 @@ class StepRecorder:
                 self.expert_id,
                 reason,
                 exc_info=True,
+            )
+
+    def cancelled(self, exc: Exception) -> None:
+        """Close the expert lifecycle on cooperative cancellation without adding a note."""
+        from clio_agent.gact.runtime.globals import _emit_expert_lifecycle_event  # noqa: PLC0415
+
+        reason = str(getattr(exc, "reason", "") or type(exc).__name__)
+        try:
+            _emit_expert_lifecycle_event(
+                "expert.lifecycle.cancelled",
+                expert_id=self.expert_id,
+                expert_span_id=self.expert_span_id,
+                status="cancelled",
+                payload={"reason": reason, "error": str(exc)},
+            )
+        except Exception:  # noqa: BLE001 - cleanup must never mask the real cancellation
+            logger.exception(
+                "clio_react cancellation cleanup failed expert_id=%s reason=%s",
+                self.expert_id,
+                reason,
             )
 
     def _write(self, kind: str, content: dict[str, Any], step: int, span: str) -> str:

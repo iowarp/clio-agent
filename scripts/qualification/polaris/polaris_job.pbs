@@ -1,0 +1,54 @@
+#!/bin/bash -l
+# CLIO on one Polaris node, unattended: preflight -> stage-up (no-op when current) -> CLIO
+# deploys Flowcept + vLLM attention (Granite 4.2, MODEL_STAGE 1 = 8B on one GPU) -> one attention smoke turn
+# -> OPAL (only if the smoke passed and RUN_OPAL=1) -> serve for the user until the walltime
+# margin or `touch $ROOT/run/END-<job>` -> teardown. Submit with submit.sh (it passes -A,
+# because PBS directives cannot expand ${PBS_ACCOUNT}).
+#PBS -N clio-polaris
+#PBS -l select=1:system=polaris
+#PBS -l place=scatter
+#PBS -l filesystems=home:eagle
+#PBS -l walltime=06:00:00
+#PBS -q capacity
+#PBS -j oe
+#PBS -k doe
+set -uo pipefail
+KIT_DIR="${KIT_DIR:?submit with submit.sh, which passes KIT_DIR}"
+# shellcheck source=common.sh
+. "$KIT_DIR/common.sh"
+exec > >(tee -a "$LOGS/job-$JOB_TAG.log") 2>&1
+log "job $PBS_JOBID on $HOST; kit $KIT_DIR; root $ROOT"
+
+# PBS sends no warning before the walltime kill: compute our own deadline.
+wall=$(qstat -f "$PBS_JOBID" 2>/dev/null | awk -F'= ' '/Resource_List.walltime/{print $2; exit}')
+IFS=: read -r h m s <<< "${wall:-06:00:00}"
+KIT_DEADLINE=$(( $(date +%s) + 10#$h * 3600 + 10#$m * 60 + 10#$s - TEARDOWN_MARGIN_S ))
+export KIT_DEADLINE
+log "teardown starts at $(date -d "@$KIT_DEADLINE" -Is) (walltime $wall, margin ${TEARDOWN_MARGIN_S}s)"
+
+finish() {
+  trap - EXIT TERM INT
+  log "teardown"
+  bash "$KIT_DIR/teardown.sh"
+  exit "${1:-0}"
+}
+trap 'finish 1' TERM INT
+trap 'finish $?' EXIT
+
+bash "$KIT_DIR/00_preflight.sh" || { log "preflight failed (FORCE=1 to override)"; finish 1; }
+[ "${STAGE_UP:-1}" = 1 ] && { bash "$KIT_DIR/01_stage_up.sh" || finish 1; }
+bash "$KIT_DIR/02_services_up.sh" || finish 1
+smoke=0; bash "$KIT_DIR/03_attention_smoke.sh" || smoke=$?
+bash "$KIT_DIR/tunnel.sh" || true
+if [ "$smoke" = 0 ] && [ "${RUN_OPAL:-1}" = 1 ]; then
+  if ! { bash "$KIT_DIR/04_stage_opal_data.sh" && bash "$KIT_DIR/05_opal_run.sh"; }; then
+    log "OPAL run did not complete (receipts in $EVIDENCE/opal; rerun resumes)"
+  fi
+elif [ "$smoke" != 0 ]; then
+  log "attention smoke FAILED: OPAL not started; CLIO stays up for diagnosis until the deadline"
+fi
+end_flag="$ROOT/run/END-$JOB_TAG"; rm -f "$end_flag"
+log "serving; end early with: touch $end_flag"
+while [ ! -e "$end_flag" ] && [ "$(date +%s)" -lt "$KIT_DEADLINE" ] && [ "${HOLD:-1}" = 1 ]; do sleep 30; done
+rm -f "$end_flag"
+finish 0

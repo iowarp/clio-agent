@@ -8,12 +8,13 @@ plus the redacted arc.op SSE-bus frame for the TUI.
 from __future__ import annotations
 
 import asyncio
-from collections.abc import Iterator
+from collections.abc import Iterator, Sequence
 from pathlib import Path
 from typing import Any
 
 from fastapi.testclient import TestClient
 
+from clio_agent.arc.batch_put import PutRecord
 from clio_agent.arc.memory import ARCMemory
 from clio_agent.gact.app import build_app
 
@@ -301,10 +302,25 @@ def test_post_context_op_insert_without_position_400(tmp_path):
     assert r.status_code == 400
 
 
-def test_search_context_is_a_typed_503_when_clio_core_cannot_search(tmp_path):
-    """#905: the iowarp-core wheels ship no indexer chimod, so clio-core cannot search;
-    the route says so, typed, instead of answering with empty hits."""
+def test_search_context_finds_the_scope_on_the_default_topology(tmp_path):
+    """#905: the seeded config composes the indexer, so context search answers."""
     arc = ARCMemory(data_dir=str(tmp_path / "arc"))
+    client = _client(tmp_path, arc)
+    sid = _session(client)
+    arc.append_segment(sid, "agentA/hdf5", "observation", {"text": "HDF5 compression"}, step=0)
+
+    r = client.get(f"/v1/sessions/{sid}/context/search", params={"q": "HDF5 compression"})
+
+    assert r.status_code == 200, r.text
+    assert r.json()["semantic"] is True
+    assert [hit["scope"] for hit in r.json()["hits"]] == ["agentA/hdf5"]
+
+
+def test_search_context_is_a_typed_503_when_clio_core_cannot_search(tmp_path, monkeypatch):
+    """A config without the indexer cannot search; the route says so, typed, instead of
+    answering with empty hits."""
+    arc = ARCMemory(data_dir=str(tmp_path / "arc"))
+    monkeypatch.setattr(arc._store, "_indexer_present", False)
     client = _client(tmp_path, arc)
     sid = _session(client)
     arc.append_segment(sid, "agentA/hdf5", "observation", {"text": "HDF5 compression"}, step=0)
@@ -314,7 +330,7 @@ def test_search_context_is_a_typed_503_when_clio_core_cannot_search(tmp_path):
     assert r.status_code == 503, r.text
     error = r.json()["error"]
     assert error["error"] == "search_unavailable"
-    assert error["details"]["reason"] == "clio_core_search_indexer_absent"
+    assert error["details"]["reason"] == "clio_core_search_unavailable"
 
 
 def test_search_context_404_503(tmp_path):
@@ -337,6 +353,11 @@ class _CteShapedStore:
 
     def put(self, kind, name, data, *, tier="warm", search_text=None):
         self._blobs[(kind, name)] = data
+
+    def put_many(self, kind: str, records: Sequence[PutRecord]) -> None:
+        """Implement the current store contract for session-record writes."""
+        for record in records:
+            self.put(kind, record.name, record.data, search_text=record.search_text)
 
     def get(self, kind, name):
         return self._blobs.get((kind, name))
@@ -374,13 +395,13 @@ def test_search_context_unavailable_is_typed_not_an_empty_result(tmp_path):
     """#905: a clio-core-shaped backend whose indexer chimod is absent is a typed 503
     with the reason, never a 200 with an empty list a caller could misread."""
     arc = ARCMemory(
-        data_dir=str(tmp_path / "arc"), store=_CteShapedStore("clio_core_search_indexer_absent")
+        data_dir=str(tmp_path / "arc"), store=_CteShapedStore("clio_core_search_unavailable")
     )
     client = _client(tmp_path, arc)
     sid = _session(client)
     r = client.get(f"/v1/sessions/{sid}/context/search", params={"q": "HDF5"})
     assert r.status_code == 503, r.text
-    assert r.json()["error"]["details"]["reason"] == "clio_core_search_indexer_absent"
+    assert r.json()["error"]["details"]["reason"] == "clio_core_search_unavailable"
 
 
 def test_search_context_semantic_true_carries_no_reason(tmp_path):

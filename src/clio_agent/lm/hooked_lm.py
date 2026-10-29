@@ -325,7 +325,7 @@ class _HookedLMBehaviour:
     def __call__(self, prompt: Any = None, messages: Any = None, **kwargs: Any) -> Any:
         if _is_typed(prompt):
             return self._typed_call(prompt, kwargs, sync=True)
-        # Per-wrapper invocation state. Each blueprint forward builds its own
+        # Per-wrapper invocation state. Each agent forward builds its own
         # wrapper, so concurrent sessions cannot overwrite one another. Clear it
         # before hooks: synthetic, denied, or failed routing must never reuse a
         # prior real target.

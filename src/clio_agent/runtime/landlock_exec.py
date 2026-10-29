@@ -91,6 +91,10 @@ _WRITABLE_DEV_NODES = (
     "/dev/urandom",
     "/dev/tty",
 )
+#: The shared-memory tmpfs where ``sem_open``/``shm_open`` create their objects
+#: (``multiprocessing`` locks and pools). srt/bwrap mount a private one; the native rung
+#: grants the host's, as it grants the temp dir, or every multiprocessing child fails.
+_SHARED_MEMORY_DIR = "/dev/shm"
 
 
 class _RulesetAttr(ctypes.Structure):
@@ -211,6 +215,7 @@ def apply_write_fence(roots: list[str]) -> None:
         # Standard writable device nodes — WRITE_FILE only (never MAKE/REMOVE, never all of /dev).
         for node in _WRITABLE_DEV_NODES:
             _add_path_rule(libc, ruleset_fd, node, _FS_WRITE_FILE)
+        _add_path_rule(libc, ruleset_fd, _SHARED_MEMORY_DIR, handled)
         if _syscall(libc, _NR_RESTRICT_SELF, ctypes.c_int(ruleset_fd), ctypes.c_uint(0)) != 0:
             raise OSError(ctypes.get_errno(), "landlock_restrict_self failed")
     finally:

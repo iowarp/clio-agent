@@ -1,6 +1,6 @@
 [project]
 name = "clio-agent"
-version = "0.9.5b8"
+version = "0.9.5"
 description = "CLIO Agent — Autonomous AI agent framework for scientific data management. Part of the IOWarp platform."
 authors = [
     { name = "Jaime Cernuda", email = "jcernudagarcia@illinoistech.edu" },
@@ -41,7 +41,7 @@ classifiers = [
 dependencies = [
     "pyyaml>=6.0.3,<7",
     # Runtime preparation must also work for pip-installed Clio without a host uv.
-    "uv>=0.8,<1",
+    "uv>=0.13.4,<1",
     "truststore==0.10.4",
     "zstandard==0.25.0",  # Pinned private LibreOffice ABI packages use data.tar.zst.
     # Intentional exact prereleases: registry-backed uv installs must declare DSPy,
@@ -49,7 +49,7 @@ dependencies = [
     "dspy==3.4.0",
     # DSPy permits a broad LiteLLM range. Pin the tested stable wheel so a global
     # prerelease policy can never select a LiteLLM dev sdist on Windows.
-    "litellm==1.102.1",
+    "litellm==1.102.2",
     # The Codex runtime. The Codex LM provider calls the Codex backend directly
     # over HTTP/WebSocket (providers/codex/) and runs no CLI, but it presents
     # this distribution's version as its model list's client_version, and the
@@ -64,12 +64,12 @@ dependencies = [
     # transitively (litellm/fastmcp's own tree), declared explicitly now that
     # first-party code imports it directly.
     "websockets>=13.0",
-    "clio-kit==2.11.0",  # Source-locked scientific MCP components and launcher.
-    "fastmcp==4.1.0",  # stable native Tasks integration; adapter contracts are acceptance gates
-    "fastmcp-tasks==4.1.0",
-    "mcp==2.0.0",  # reviewed native Tasks wire/client contract
+    "clio-kit==2.11.1",  # Source-locked scientific MCP components and launcher.
+    "fastmcp==4.1.2",  # stable native Tasks integration; adapter contracts are acceptance gates
+    "fastmcp-tasks==4.1.2",
+    "mcp==2.2.0",  # reviewed native Tasks wire/client contract
     "pydocket==0.26.2",  # fastmcp-tasks 4.1 requires >=0.26; native execution owner
-    "clio-schemas==0.6.0b15",
+    "clio-schemas==0.6.0",
     "pydantic>=2.12,<2.14",
     # A2UI catalog validation: official catalog.json files are validated at runtime
     # with Draft 2020-12 (docs/design/a2ui-compat-campaign-2026-09.md, S2).
@@ -123,10 +123,12 @@ dependencies = [
     # The default WebSocket protocol must avoid the deprecated websockets.legacy API.
     "uvicorn>=0.54.0",
     "sse-starlette>=1.6.0",
-    # clio_agent.sdk (#799) — the typed GACT client imports httpx directly
+    # clio_agent.client (#799) — the typed GACT client imports httpx directly
     # (already present transitively via fastmcp/dspy; declared so the SDK
     # does not lean on someone else's dependency tree).
     "httpx>=0.27.0",
+    # MCP 2's OAuth auth-flow request/response types and consent revocation guard.
+    "httpx2>=2.9.1",
     # Connected storage uses file APIs, never an implicit FUSE mount.
     "fsspec>=2025.9.0",
     "paramiko>=3.5.0",
@@ -226,9 +228,9 @@ flowcept = [
 ]
 
 dev = [
-    "pytest>=7.4.0",
+    "pytest>=9.0.3",
     "pytest-cov>=4.1.0",
-    "pytest-asyncio>=0.21.0",
+    "pytest-asyncio>=0.24.0",
     "pytest-xdist>=3.5.0",  # -n / --dist loadfile for the concurrency flake-hunt (#735)
     "pytest-repeat>=0.9.3",  # --count for the flake-hunt (#735)
     "pytest-timeout>=2.3.1",  # per-test hard limit: a hung test fails with every thread's stack
@@ -240,6 +242,19 @@ dev = [
 
 all = [
     "clio-agent[optimizers,adios,argonne,claude-code,desktop,flowcept,dev]",
+]
+
+[dependency-groups]
+# The Windows source installer prepares Office alongside the main environment.
+# Resolve the independent managed-tool worker from the same lock, without the agent.
+install-bootstrap = [
+    "filelock>=3.12.0",
+    "httpx>=0.28.1",
+    "packaging>=23.0",
+    "psutil>=5.9.0",  # bounded subprocess-tree cleanup if first Office startup times out
+    "pyyaml>=6.0.3,<7",
+    "truststore==0.10.4",
+    "zstandard==0.25.0",
 ]
 
 [project.urls]
@@ -294,6 +309,7 @@ python_files = ["test_*.py"]
 python_classes = ["Test*"]
 python_functions = ["test_*"]
 asyncio_mode = "auto"  # SSE tests use async httpx
+asyncio_default_fixture_loop_scope = "function"
 markers = [
     "real_runtime_release: the test exercises release_runtime_client itself (the harness no-op is skipped)",
     "history_mode: the test may enter the loud DSPy History mode (every other test fails if it does)",
@@ -340,6 +356,9 @@ warn_unused_configs = true
 disallow_untyped_defs = false  # Set to true for stricter typing
 ignore_missing_imports = true
 disable_error_code = ["import-untyped"]
+# Built-in plugins' code is loaded by path, as any installed plugin's is, not imported as
+# part of the clio_agent package; their folders repeat module names (tools/runtime.py).
+exclude = ['src/clio_agent/plugins/builtin/[^/]+/ai\.iowarp\.clio/']
 
 [tool.mutmut]
 # Mutation-testing pilot scope (#773 slice 19): the two correctness-critical
@@ -357,4 +376,4 @@ also_copy = ["src/clio_agent/", "tests/"]
 # Override it so the mcp-2 core and the claude-code extra co-resolve; the
 # combination's import surface is test-verified, the live session smoke runs
 # at the phase gate. Drop this override when upstream supports mcp 2.
-override-dependencies = ["mcp==2.0.0"]
+override-dependencies = ["mcp==2.2.0"]

@@ -1006,20 +1006,7 @@ def test_put_lm_provider_omitted_model_claude_code_binds_account_default(
 
     class _StubAgent(_RebindLMStub):
         def __init__(self, *args: Any, **kwargs: Any) -> None:
-            self.arc = type(
-                "ARC",
-                (),
-                {
-                    "set_highway_sink": lambda self, _f: None,
-                    "set_segment_op_logger": lambda self, _f: None,
-                    "get_cache_stats": lambda self: {
-                        "hits": 0,
-                        "misses": 0,
-                        "hit_rate": 0.0,
-                        "capacity": 10,
-                    },
-                },
-            )()
+            self.arc = kwargs["arc"]
 
         def forward(self, *args: Any, **kwargs: Any) -> Any:
             return type("Pred", (), {"answer": "ok", "selected_expert": ""})()
@@ -1065,20 +1052,7 @@ def test_put_lm_provider_omitted_model_binds_the_overlay_default(
 
     class _StubAgent(_RebindLMStub):
         def __init__(self, *args: Any, **kwargs: Any) -> None:
-            self.arc = type(
-                "ARC",
-                (),
-                {
-                    "set_highway_sink": lambda self, _f: None,
-                    "set_segment_op_logger": lambda self, _f: None,
-                    "get_cache_stats": lambda self: {
-                        "hits": 0,
-                        "misses": 0,
-                        "hit_rate": 0.0,
-                        "capacity": 10,
-                    },
-                },
-            )()
+            self.arc = kwargs["arc"]
 
         def forward(self, *args: Any, **kwargs: Any) -> Any:
             return type("Pred", (), {"answer": "ok", "selected_expert": ""})()
@@ -1223,20 +1197,7 @@ def test_get_lm_provider_when_configured_via_put(tmp_path: Path, monkeypatch) ->
         def __init__(self, *args: Any, **kwargs: Any) -> None:
             fake_agent_constructed["called"] = True
             fake_agent_constructed["provider_config"] = kwargs.get("provider_config")
-            self.arc = type(
-                "ARC",
-                (),
-                {
-                    "set_highway_sink": lambda self, _f: None,
-                    "set_segment_op_logger": lambda self, _f: None,
-                    "get_cache_stats": lambda self: {
-                        "hits": 1,
-                        "misses": 0,
-                        "hit_rate": 1.0,
-                        "capacity": 10,
-                    },
-                },
-            )()
+            self.arc = kwargs["arc"]
 
         def forward(self, *args: Any, **kwargs: Any) -> Any:
             return type("Pred", (), {"answer": "ok", "selected_expert": ""})()
@@ -1316,20 +1277,7 @@ def test_put_argonne_omits_client_output_cap_when_omitted(tmp_path: Path, monkey
 
     class _StubAgent(_RebindLMStub):
         def __init__(self, *args: Any, **kwargs: Any) -> None:
-            self.arc = type(
-                "ARC",
-                (),
-                {
-                    "set_highway_sink": lambda self, _f: None,
-                    "set_segment_op_logger": lambda self, _f: None,
-                    "get_cache_stats": lambda self: {
-                        "hits": 0,
-                        "misses": 0,
-                        "hit_rate": 0.0,
-                        "capacity": 10,
-                    },
-                },
-            )()
+            self.arc = kwargs["arc"]
 
         def forward(self, *args: Any, **kwargs: Any) -> Any:
             return type("Pred", (), {"answer": "ok", "selected_expert": ""})()
@@ -1381,20 +1329,7 @@ def test_put_argonne_preset_id_normalizes_to_runtime_provider_kind(
 
     class _StubAgent(_RebindLMStub):
         def __init__(self, *args: Any, **kwargs: Any) -> None:
-            self.arc = type(
-                "ARC",
-                (),
-                {
-                    "set_highway_sink": lambda self, _f: None,
-                    "set_segment_op_logger": lambda self, _f: None,
-                    "get_cache_stats": lambda self: {
-                        "hits": 0,
-                        "misses": 0,
-                        "hit_rate": 0.0,
-                        "capacity": 10,
-                    },
-                },
-            )()
+            self.arc = kwargs["arc"]
 
         def forward(self, *args: Any, **kwargs: Any) -> Any:
             return type("Pred", (), {"answer": "ok", "selected_expert": ""})()
@@ -1444,20 +1379,7 @@ def test_put_argonne_ignores_placeholder_api_key(tmp_path: Path, monkeypatch) ->
 
     class _StubAgent(_RebindLMStub):
         def __init__(self, *args: Any, **kwargs: Any) -> None:
-            self.arc = type(
-                "ARC",
-                (),
-                {
-                    "set_highway_sink": lambda self, _f: None,
-                    "set_segment_op_logger": lambda self, _f: None,
-                    "get_cache_stats": lambda self: {
-                        "hits": 0,
-                        "misses": 0,
-                        "hit_rate": 0.0,
-                        "capacity": 10,
-                    },
-                },
-            )()
+            self.arc = kwargs["arc"]
 
         def forward(self, *args: Any, **kwargs: Any) -> Any:
             return type("Pred", (), {"answer": "ok", "selected_expert": ""})()
@@ -1526,20 +1448,7 @@ def test_put_lm_provider_rejects_invalid_codex_transport(tmp_path: Path, monkeyp
 
     class _StubAgent(_RebindLMStub):
         def __init__(self, *args: Any, **kwargs: Any) -> None:
-            self.arc = type(
-                "ARC",
-                (),
-                {
-                    "set_highway_sink": lambda self, _f: None,
-                    "set_segment_op_logger": lambda self, _f: None,
-                    "get_cache_stats": lambda self: {
-                        "hits": 0,
-                        "misses": 0,
-                        "hit_rate": 0.0,
-                        "capacity": 10,
-                    },
-                },
-            )()
+            self.arc = kwargs["arc"]
 
         def forward(self, *args: Any, **kwargs: Any) -> Any:
             return type("Pred", (), {"answer": "ok", "selected_expert": ""})()
@@ -1588,20 +1497,7 @@ def test_put_lm_provider_accepts_explicit_codex_transport(tmp_path: Path, monkey
 
     class _StubAgent(_RebindLMStub):
         def __init__(self, *args: Any, **kwargs: Any) -> None:
-            self.arc = type(
-                "ARC",
-                (),
-                {
-                    "set_highway_sink": lambda self, _f: None,
-                    "set_segment_op_logger": lambda self, _f: None,
-                    "get_cache_stats": lambda self: {
-                        "hits": 0,
-                        "misses": 0,
-                        "hit_rate": 0.0,
-                        "capacity": 10,
-                    },
-                },
-            )()
+            self.arc = kwargs["arc"]
 
         def forward(self, *args: Any, **kwargs: Any) -> Any:
             return type("Pred", (), {"answer": "ok", "selected_expert": ""})()
@@ -1662,20 +1558,7 @@ def test_put_lm_provider_rejects_removed_claude_code_transport(
 
     class _StubAgent(_RebindLMStub):
         def __init__(self, *args: Any, **kwargs: Any) -> None:
-            self.arc = type(
-                "ARC",
-                (),
-                {
-                    "set_highway_sink": lambda self, _f: None,
-                    "set_segment_op_logger": lambda self, _f: None,
-                    "get_cache_stats": lambda self: {
-                        "hits": 0,
-                        "misses": 0,
-                        "hit_rate": 0.0,
-                        "capacity": 10,
-                    },
-                },
-            )()
+            self.arc = kwargs["arc"]
 
         def forward(self, *args: Any, **kwargs: Any) -> Any:
             return type("Pred", (), {"answer": "ok", "selected_expert": ""})()
@@ -1735,20 +1618,7 @@ def test_put_lm_provider_defaults_claude_code_to_sdk_transport(
 
     class _StubAgent(_RebindLMStub):
         def __init__(self, *args: Any, **kwargs: Any) -> None:
-            self.arc = type(
-                "ARC",
-                (),
-                {
-                    "set_highway_sink": lambda self, _f: None,
-                    "set_segment_op_logger": lambda self, _f: None,
-                    "get_cache_stats": lambda self: {
-                        "hits": 0,
-                        "misses": 0,
-                        "hit_rate": 0.0,
-                        "capacity": 10,
-                    },
-                },
-            )()
+            self.arc = kwargs["arc"]
 
         def forward(self, *args: Any, **kwargs: Any) -> Any:
             return type("Pred", (), {"answer": "ok", "selected_expert": ""})()
@@ -1825,20 +1695,7 @@ def test_lm_provider_reports_resolved_model_id_for_a_claude_code_alias(
 
     class _StubAgent(_RebindLMStub):
         def __init__(self, *args: Any, **kwargs: Any) -> None:
-            self.arc = type(
-                "ARC",
-                (),
-                {
-                    "set_highway_sink": lambda self, _f: None,
-                    "set_segment_op_logger": lambda self, _f: None,
-                    "get_cache_stats": lambda self: {
-                        "hits": 0,
-                        "misses": 0,
-                        "hit_rate": 0.0,
-                        "capacity": 10,
-                    },
-                },
-            )()
+            self.arc = kwargs["arc"]
 
         def forward(self, *args: Any, **kwargs: Any) -> Any:
             return type("Pred", (), {"answer": "ok", "selected_expert": ""})()
@@ -1891,20 +1748,7 @@ def test_put_lm_provider_applies_lm_studio_context_length(tmp_path: Path, monkey
 
     class _StubAgent(_RebindLMStub):
         def __init__(self, *args: Any, **kwargs: Any) -> None:
-            self.arc = type(
-                "ARC",
-                (),
-                {
-                    "set_highway_sink": lambda self, _f: None,
-                    "set_segment_op_logger": lambda self, _f: None,
-                    "get_cache_stats": lambda self: {
-                        "hits": 0,
-                        "misses": 0,
-                        "hit_rate": 0.0,
-                        "capacity": 10,
-                    },
-                },
-            )()
+            self.arc = kwargs["arc"]
 
         def forward(self, *args: Any, **kwargs: Any) -> Any:
             return type("Pred", (), {"answer": "ok", "selected_expert": ""})()
@@ -1990,20 +1834,7 @@ def test_put_lm_provider_reuses_loaded_lm_studio_model(tmp_path: Path, monkeypat
 
     class _StubAgent(_RebindLMStub):
         def __init__(self, *args: Any, **kwargs: Any) -> None:
-            self.arc = type(
-                "ARC",
-                (),
-                {
-                    "set_highway_sink": lambda self, _f: None,
-                    "set_segment_op_logger": lambda self, _f: None,
-                    "get_cache_stats": lambda self: {
-                        "hits": 0,
-                        "misses": 0,
-                        "hit_rate": 0.0,
-                        "capacity": 10,
-                    },
-                },
-            )()
+            self.arc = kwargs["arc"]
 
         def forward(self, *args: Any, **kwargs: Any) -> Any:
             return type("Pred", (), {"answer": "ok", "selected_expert": ""})()
@@ -2030,11 +1861,11 @@ def test_put_lm_provider_reuses_loaded_lm_studio_model(tmp_path: Path, monkeypat
                 "context_length": 32768,
             },
         )
-
-    assert resp.status_code == 200, resp.text
-    assert captured["post_called"] is False
-    assert app.state.lm_config["context_length"] == 32768
-    assert app.state.lm_studio_owned_instance is None
+        assert resp.status_code == 200, resp.text
+        assert _wait_lm_provider_ready(c)["state"] == "ready"
+        assert captured["post_called"] is False
+        assert app.state.lm_config["context_length"] == 32768
+        assert app.state.lm_studio_owned_instance is None
 
 
 def test_lifespan_unloads_clio_owned_lm_studio_instance(tmp_path: Path, monkeypatch) -> None:
@@ -2193,20 +2024,7 @@ def _make_stub_agent_cls() -> type:
 
     class _StubAgent(_RebindLMStub):
         def __init__(self, *args: Any, **kwargs: Any) -> None:
-            self.arc = type(
-                "ARC",
-                (),
-                {
-                    "set_highway_sink": lambda self, _f: None,
-                    "set_segment_op_logger": lambda self, _f: None,
-                    "get_cache_stats": lambda self: {
-                        "hits": 0,
-                        "misses": 0,
-                        "hit_rate": 0.0,
-                        "capacity": 10,
-                    },
-                },
-            )()
+            self.arc = kwargs["arc"]
 
         def forward(self, *args: Any, **kwargs: Any) -> Any:
             return type("Pred", (), {"answer": "ok", "selected_expert": ""})()
@@ -2373,15 +2191,7 @@ def test_put_lm_provider_accepts_thinking_level(tmp_path: Path, monkeypatch) -> 
 
     class _StubAgent(_RebindLMStub):
         def __init__(self, *args: Any, **kwargs: Any) -> None:
-            self.arc = type(
-                "ARC",
-                (),
-                {
-                    "set_highway_sink": lambda self, _f: None,
-                    "set_segment_op_logger": lambda self, _f: None,
-                    "get_cache_stats": lambda self: {"hits": 0, "misses": 0, "hit_rate": 0.0},
-                },
-            )()
+            self.arc = kwargs["arc"]
 
         def forward(self, *args: Any, **kwargs: Any) -> Any:
             return type("Pred", (), {"answer": "ok", "selected_expert": ""})()

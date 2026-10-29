@@ -183,44 +183,43 @@ async def test_subtree_control_closes_admission_before_recording(
 async def test_failed_restore_keeps_the_last_confirmed_control_identity(
     arc: ARCMemory, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """An incomplete rebuild cannot temporarily erase the task or its rights."""
+    """A read of Core that fails part-way never shows the task as gone; a retry finds it.
+
+    A load that loses Core visibility raises; it does not leave a half-built tree
+    (or, before the index build, a half-built replay) that would erase the task or
+    its control rights.
+    """
     native, recovery = await native_owner(arc, monkeypatch)
     history = native.history
     original = history.task_snapshot("task_cancel")
     assert original is not None
-    events = history.arc._live.iter_event_contents
-    entered, release = asyncio.Event(), threading.Event()
-    loop = asyncio.get_running_loop()
-    injected = False
+    segments = history.arc._live.iter_session_event_segments
+    failures = iter([True])
 
-    def interrupted_replay() -> Iterator[dict[str, Any]]:
-        nonlocal injected
-        if injected:
-            yield from events()
-            return
-        injected = True
-        stream = iter(events())
-        yield next(stream)
-        loop.call_soon_threadsafe(entered.set)
-        assert release.wait(10), "The interrupted replay was not released"
-        raise OSError("Replay visibility lost after its first observation")
+    def interrupted_load(session_id: str) -> Iterator[Any]:
+        stream = iter(segments(session_id))
+        if next(failures, False):
+            yield next(stream)
+            raise OSError("Load visibility lost after its first segment")
+        yield from stream
 
-    monkeypatch.setattr(history.arc._live, "iter_event_contents", interrupted_replay)
-    restoring = asyncio.create_task(asyncio.to_thread(history.restore))
-    try:
-        await asyncio.wait_for(entered.wait(), 5)
-        assert history.task_snapshot(original.handle) == original
-        assert history.resolve_handle(original.handle) == original.handle
-        assert (
-            TaskAccess(history, TaskCaller("owner", "human")).require(original.handle, "control")
-            == original
-        )
-    finally:
-        release.set()
-        with pytest.raises(OSError, match="Replay visibility lost"):
-            await asyncio.wait_for(restoring, 5)
-        assert history.task_snapshot(original.handle) == original
-        await recovery.drain()
+    monkeypatch.setattr(history.arc._live, "iter_session_event_segments", interrupted_load)
+
+    def restore_then_read() -> Any:
+        # Before the one-time index build, restore itself replays; after it, the
+        # first read loads the tree. Either way the injected loss surfaces here.
+        history.restore()
+        return history.task_snapshot(original.handle)
+
+    with pytest.raises(OSError, match="Load visibility lost"):
+        await asyncio.to_thread(restore_then_read)
+    assert await asyncio.to_thread(history.task_snapshot, original.handle) == original
+    assert history.resolve_handle(original.handle) == original.handle
+    assert (
+        TaskAccess(history, TaskCaller("owner", "human")).require(original.handle, "control")
+        == original
+    )
+    await recovery.drain()
 
 
 @pytest.mark.asyncio

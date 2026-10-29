@@ -18,10 +18,16 @@ uv run mypy src/
 uv run pytest tests/ -m "not integration" --cov-fail-under=80
 ```
 
-Run full test suite (including integration tests) when changing routing, experts, ARC, or API behavior:
+Run full test suite (including integration tests) when changing plugins, agents, flows, ARC, or API behavior:
 
 ```bash
 uv run pytest tests/
+```
+
+When changing a plugin, a pack or an agent class, run the install resolver on it:
+
+```bash
+uv run clio-agent plugin check external/clio-agent-marketplace
 ```
 
 ## 3) Run the app locally
@@ -38,25 +44,35 @@ uv run clio-agent serve --host 0.0.0.0 --port 8100
 
 ## 4) Where to put code
 
-- Core orchestration: `src/clio_agent/agent.py`, `src/clio_agent/registry/`
+- Runtime host: `src/clio_agent/agent.py`
+- Agent SDK (`Plugin`, `Pack`, `Agent`, `Subagent`, `Flow`): `src/clio_agent/sdk/`
+- Plugin loader, importer, store, resolver and `plugin check`: `src/clio_agent/plugins/`
+- Flow runtime (`ctx`, journal, outcomes): `src/clio_agent/flows/`
+- Built-in `core` and `orchestration` plugins: `src/clio_agent/plugins/builtin/`
 - Memory and indexing: `src/clio_agent/arc/`
-- Expert logic: `src/clio_agent/experts/`
 - Tools and servers: `src/clio_agent/tools/`
 - Interfaces: `src/clio_agent/ui/`
 - Tests: mirror code domains under `tests/`
+
+For a new or changed tool, follow the
+[tool authoring guide](tool-result-presentation.md#adding-or-changing-a-tool).
+The change includes its readable request/result presentation and representative
+browser showcases, as well as the callable implementation. Use the existing
+producer contract and shared frontend readers rather than another tool viewer.
 
 ## 5) Submodules
 
 clio-agent ships two pinned git submodules:
 
 - `external/gact-tui` — the TUI/web/desktop frontend.
-- `external/clio-agent-marketplace` — agent blueprints.
+- `external/clio-agent-marketplace` — the default marketplace: plugins, packs and
+  agent classes ([PLUGINS_AND_FLOWS.md](PLUGINS_AND_FLOWS.md)).
 
 **What the pins mean.** Both submodules are pinned at a **released tag**, not a
 moving branch. The release skill (`.claude/skills/release-clio/SKILL.md`, steps
 1–2) tags the marketplace first, then checks out the aligned `gact-tui` release
 tag, and commits those exact SHAs into clio-agent. A given clio-agent commit
-therefore always reproduces against a fixed frontend + blueprint set. Do **not**
+therefore always reproduces against a fixed frontend + plugin set. Do **not**
 bump a submodule pointer casually in a feature PR — pin changes belong to the
 release flow.
 
@@ -96,6 +112,7 @@ Use Conventional Commit style:
 - `test(core): cover ...`
 
 PR checklist:
+
 - Explain problem and solution clearly.
 - Link issue(s) when relevant.
 - Include lint/test command output in PR description.

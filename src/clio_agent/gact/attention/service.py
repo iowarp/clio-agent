@@ -24,13 +24,13 @@ from dataclasses import dataclass, replace
 from typing import Any
 
 import numpy as np
-from clio_schemas.attention import UNIFORM_MEAN, AttentionProfile, display_intensities
+from clio_schemas.attention import AttentionProfile, display_intensities
 
 from clio_agent.gact.attention import aggregate as agg
 from clio_agent.gact.attention.capture import load_capture
 from clio_agent.gact.attention.chat_render import ChatRenderer, Encoded
 from clio_agent.gact.attention.lm_calls import LmCall, turn_calls
-from clio_agent.gact.attention.profiles import reduce_steps
+from clio_agent.gact.attention.profiles import DEFAULT_PROFILE, NO_ENTRY, reduce_steps
 from clio_agent.gact.attention.reasons import AttentionUnavailable
 from clio_agent.gact.attention.rendered import find_rendered
 from clio_agent.gact.attention.selection import (
@@ -76,7 +76,7 @@ class SelectionRequest:
     #: The rendered text the person selected; located in the message's parts when
     #: no explicit span is given (:mod:`.rendered`).
     text: str = ""
-    profile: AttentionProfile = UNIFORM_MEAN
+    profile: AttentionProfile = DEFAULT_PROFILE
     content_revision: str = ""
     lm_call_id: str = ""
 
@@ -408,7 +408,8 @@ def _drilldown(
     for step in steps[:DRILLDOWN_TOKENS]:
         # Ranked by the mean over (layer, head): the max saturates at ~1.0 on many
         # positions (some head always spikes), so it cannot order them.
-        order = np.argsort(-step.mean, kind="stable")[:DRILLDOWN_TOP]
+        filled = np.flatnonzero(step.pos != NO_ENTRY)
+        order = filled[np.argsort(-step.mean[filled], kind="stable")[:DRILLDOWN_TOP]]
         top = []
         for k in order:
             pos = int(step.pos[k])

@@ -1,0 +1,16 @@
+{
+  "gact_commit": "f5b0ae3c0cbbc64f1a543484a5ed96b68d8dbda6",
+  "clio_runtime_commit": "8af46e42136360a3384c0a07e16040757ae44eb4",
+  "installer_sha256": "26575ECCA51FC23A952329078C4622551CAD11A083686AFE4BC4694C9BCA392F",
+  "cpu_samples": [
+    6.748806524815709,
+    10.301948632635483,
+    6.472137009101542
+  ],
+  "runtime_archive_sha256": "781d8c2f137e50c60d5656a285d8e5a0c22a3d6731a9cf099c022039ee4dbe06",
+  "installer_bytes": 549754227,
+  "started_at": "2026-10-28T11:10:43.9591798Z",
+  "encoders": [],
+  "managed_command_witness_exit": 7,
+  "installer": "D:\\Libraries\\Documents\\projects\\gact-windows-startup-acceptance\\.acceptance-runtime\\cargo-target\\release\\bundle\\nsis\\CLIO Desktop_0.7.3_x64-setup.exe"
+}

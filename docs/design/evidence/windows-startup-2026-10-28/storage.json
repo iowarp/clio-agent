@@ -1,0 +1,9 @@
+{
+  "model": "PCIe SSD",
+  "disk_gib": 953.87,
+  "captured_at": "2026-10-28T06:51:03.2377638Z",
+  "free_gib": 171.24,
+  "volume_gib": 953.85,
+  "file_system": "NTFS",
+  "bus_type": "NVMe"
+}

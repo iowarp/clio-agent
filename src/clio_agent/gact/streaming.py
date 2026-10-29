@@ -88,13 +88,13 @@ def _ambient_lm_fallback_payload(reason: str, message: str = "") -> dict[str, An
 
 
 # --- workflow_state schema fallback reason catalog (#646/#648, Phase C) -------
-# A SIBLING of the stream_fallback catalog for the pack-declared workflow_state
-# vocabulary seam: a session whose active Agent Blueprint declares no
+# A SIBLING of the stream_fallback catalog for the plugin-declared workflow_state
+# vocabulary seam: a session whose agent resolves no plugin declaring a
 # ``workflow_state`` schema runs the typed-state engine with the GENERIC
 # (presence-only) schema instead of a domain-typed one. Deliberately kept OUT of
 # ``_STREAM_FALLBACK_REASON_DEFINITIONS`` (and its client-facing
 # ``x_clio_stream_fallback_reasons`` capability, an audited *closed set* of
-# live-streaming fallbacks) so an unrelated pack-declaration reason cannot break
+# live-streaming fallbacks) so an unrelated plugin-declaration reason cannot break
 # that contract. It follows the same typed, reject-unknowns pattern and is
 # recorded per session in a dedicated bounded ledger
 # (``app.state.workflow_schema_fallbacks``) so the generic degradation stays
@@ -103,11 +103,11 @@ _WORKFLOW_SCHEMA_FALLBACK_REASON_DEFINITIONS: dict[str, dict[str, Any]] = {
     "workflow_state_schema_absent": {
         "category": "pack_declaration",
         "recovery_actions": [
-            "declare_workflow_state_schema_in_agent_md",
+            "declare_workflow_state_in_a_plugin",
             "continue_with_generic_merge",
         ],
         "description": (
-            "The session's active Agent Blueprint declares no workflow_state schema, "
+            "No plugin of the session's agent declares a workflow_state schema, "
             "so the typed-state engine ran with the generic presence-only schema "
             "(rank 0 everywhere, no artifact grounding, no domain scrub aliases). "
             "Legitimate generic behavior, recorded so the degradation is queryable "
@@ -179,7 +179,7 @@ def _record_workflow_schema_fallback(
     payload = _workflow_schema_fallback_payload(reason, message)
     entries = _workflow_schema_fallbacks(app).setdefault(sid, [])
     # Collapse consecutive same-message records so a re-resolution leaves ONE
-    # queryable entry per (session, blueprint) rather than one per call.
+    # queryable entry per (session, resolved agent) rather than one per call.
     if not entries or entries[-1].get("message") != message:
         entries.append(payload)
     if len(entries) > _MAX_WORKFLOW_SCHEMA_LEDGER_ENTRIES:

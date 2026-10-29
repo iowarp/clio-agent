@@ -47,6 +47,15 @@ class _SlowAgent:
 def _make(
     tmp_path: Path, agent: Any, request: pytest.FixtureRequest
 ) -> tuple[Any, TestClient, str]:
+    from clio_agent.gact import app as app_module
+
+    async def parked_scheduler(_app: Any) -> None:
+        await asyncio.Event().wait()
+
+    # These tests drive the real tick explicitly. A second lifespan-owned tick
+    # can fire the same due schedule while the manual tick is staging its turn.
+    monkeypatch = request.getfixturevalue("monkeypatch")
+    monkeypatch.setattr(app_module, "_scheduler_tick", parked_scheduler)
     app = build_app(sessions_path=tmp_path / "s.json", agent=agent)
     client = TestClient(app)
     client.__enter__()

@@ -19,8 +19,6 @@ from clio_agent.gact.infrastructure.service_paths import service_directory
 from clio_agent.gact.infrastructure.storage import resolved_locations
 from clio_agent.gact.infrastructure.supervised_service import supervised_plan
 
-LLAMA_REVISION = "2b129ccfa03aea330d2d9ac4650a10de393dbe3a"
-LLAMA_SOURCE_SHA = "d95bc0a7688e1c18795bf413121ceef6cfdda69ef15cc6e3822ab13fcc5796d7"
 LLAMA_BUILD = "b11206"
 OLLAMA_VERSION = "0.34.4"
 LLAMA_ASSETS = {
@@ -44,6 +42,27 @@ LLAMA_ASSETS = {
         "win-cuda-12.4-x64.zip",
         "8327474c51ac8f830e6e0abf15707267fb39cc130d5700643a16e5f7b5451c62",
     ),
+    # Upstream's Ubuntu builds (glibc >= 2.34); nothing is compiled on the host.
+    ("linux", "x86_64", "cpu"): (
+        "ubuntu-x64.tar.gz",
+        "aea9ff64167ea473bf5cf463f07b42beac16c857cdffce57c7ed9cc323ea4da5",
+    ),
+    ("linux", "aarch64", "cpu"): (
+        "ubuntu-arm64.tar.gz",
+        "695a52577845f513e3fcceac4792dab62858a6aaf1e8e67054279b6b84e9ec23",
+    ),
+    ("linux", "x86_64", "vulkan"): (
+        "ubuntu-vulkan-x64.tar.gz",
+        "82475f17280905296548066d864e08f65b995a0caad5d61e3752539ed584ebe6",
+    ),
+    ("linux", "aarch64", "vulkan"): (
+        "ubuntu-vulkan-arm64.tar.gz",
+        "721cd21e2498a7305ecb8636a67b235954dcb3a1e67c3a3af9e3f9a9243da162",
+    ),
+    ("linux", "x86_64", "cuda"): (
+        "ubuntu-cuda-12.8-x64.tar.gz",
+        "fa78d7d80b8dca117638c49fc4aa58d6b01407541804483876c27323ebb887de",
+    ),
     ("macos", "x86_64", "cpu"): (
         "macos-x64.tar.gz",
         "9a8d8df869373d2ae3db63ae8cf80be1aec643d435c1c19aa5c927a5d0f8f873",
@@ -53,6 +72,17 @@ LLAMA_ASSETS = {
         "a93cca3e3c86fc3430b036b56ba22a74a335893e7f930cc5a81314c6df4a5174",
     ),
 }
+# The Linux CUDA build links the CUDA 12 runtime it does not bundle: NVIDIA's own wheels.
+LINUX_CUDA_RUNTIME = (
+    (
+        "https://files.pythonhosted.org/packages/0d/9b/a997b638fcd068ad6e4d53b8551a7d30fe8b404d6f1804abf1df69838932/nvidia_cuda_runtime_cu12-12.8.90-py3-none-manylinux2014_x86_64.manylinux_2_17_x86_64.whl",
+        "adade8dcbd0edf427b7204d480d6066d33902cab2a4707dcfc48a2d0fd44ab90",
+    ),
+    (
+        "https://files.pythonhosted.org/packages/dc/61/e24b560ab2e2eaeb3c839129175fb330dfcfc29e5203196e5541a4c44682/nvidia_cublas_cu12-12.8.4.1-py3-none-manylinux_2_27_x86_64.whl",
+        "8ac4e771d5a348c551b2a426eda6193c19aa630236b418086020df5ba9667142",
+    ),
+)
 OLLAMA_ASSETS = {
     ("windows", "x86_64"): (
         "windows-amd64.zip",
@@ -108,15 +138,17 @@ def native_model_variants(engine: str, facts: TargetFacts) -> list[ServiceVarian
         else ["cpu", "vulkan", "rocm", "cuda"]
     )
     for backend in backends:
-        source = engine == "llama_cpp" and facts.os == "linux"
         available = (
-            (facts.os, facts.arch, backend) in LLAMA_ASSETS or source
+            (facts.os, facts.arch, backend) in LLAMA_ASSETS
             if engine == "llama_cpp"
             else (facts.os, facts.arch) in OLLAMA_ASSETS
         )
         reason = ""
         if not available or facts.arch not in {"x86_64", "aarch64"}:
-            reason = "No upstream native build for this OS and architecture."
+            reason = (
+                "No upstream prebuilt build for this OS, architecture and backend; "
+                "CLIO does not compile it. Use the container variant."
+            )
         elif facts.os == "windows" and facts.target_id != "local":
             reason = "Native Windows installation currently runs beside the active CLIO."
         elif not facts.uv_available:
@@ -135,19 +167,9 @@ def native_model_variants(engine: str, facts: TargetFacts) -> list[ServiceVarian
                 label=BACKENDS[backend] + " (native)",
                 version=LLAMA_BUILD if engine == "llama_cpp" else OLLAMA_VERSION,
                 install_type="native_uv",
-                artifact=f"llama.cpp@{LLAMA_REVISION}" if source else f"{engine}:{backend}",
+                artifact=f"{engine}:{backend}",
                 compatible=not reason,
-                reason=reason
-                or (
-                    "Builds against this host's libc; requires a C++ compiler"
-                    + (
-                        f" and the {BACKENDS[backend]} development SDK."
-                        if backend != "cpu"
-                        else "."
-                    )
-                    if source
-                    else "Native installation; no container runtime is needed."
-                ),
+                reason=reason or "Native installation; no container runtime is needed.",
             )
         )
     # Windows Radeon drivers expose Vulkan directly; Linux compute hosts use ROCm.
@@ -184,16 +206,8 @@ def native_model_plan(
     if action in {"install", "reinstall", "start"} and not selected.compatible:
         raise ValueError(selected.reason)
     backend = variant.rsplit("-", 1)[-1]
-    source = engine == "llama_cpp" and facts.os == "linux"
     artifacts: list[dict[str, str]] = []
-    if source:
-        artifacts.append(
-            {
-                "url": f"https://github.com/ggml-org/llama.cpp/archive/{LLAMA_REVISION}.tar.gz",
-                "sha256": LLAMA_SOURCE_SHA,
-            }
-        )
-    elif engine == "llama_cpp":
+    if engine == "llama_cpp":
         suffix, checksum = LLAMA_ASSETS[facts.os, facts.arch, backend]
         artifacts.append(
             {
@@ -201,7 +215,9 @@ def native_model_plan(
                 "sha256": checksum,
             }
         )
-        if backend == "cuda":
+        if backend == "cuda" and facts.os == "linux":
+            artifacts.extend({"url": url, "sha256": sha} for url, sha in LINUX_CUDA_RUNTIME)
+        elif backend == "cuda":
             artifacts.append(
                 {
                     "url": f"https://github.com/ggml-org/llama.cpp/releases/download/{LLAMA_BUILD}/cudart-llama-bin-win-cuda-12.4-x64.zip",
@@ -270,7 +286,7 @@ def native_model_plan(
         flags += ["--alias", served, *(compiled.flags if compiled else ())]
         if backend != "cpu" and not configuration.get("param.gpu_layers"):
             flags += ["--n-gpu-layers", "999"]
-    dependencies = ["zstandard==0.25.0", *(["cmake==4.4.4", "ninja==1.13.2"] if source else [])]
+    dependencies = ["zstandard==0.25.0"]
     manifest: dict[str, Any] = {
         "service": engine,
         "definition_version": PROFILE,
@@ -294,7 +310,6 @@ def native_model_plan(
         "native_model": {
             "engine": engine,
             "backend": backend,
-            "source": source,
             "artifacts": artifacts,
             "executable": ("llama-server" if engine == "llama_cpp" else "ollama")
             + (".exe" if windows else ""),

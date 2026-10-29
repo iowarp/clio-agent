@@ -1,0 +1,469 @@
+=== backend boot log ===
+Startup checkpoint: existing backend check 0.000s
+Startup checkpoint: bundled runtime ready 0.002s
+Preparing and checking protected execution...
+Checking native Windows protected execution (MXC; no administrator setup)...
+{"status": "ready", "protected_execution": {"status": "available", "reason": "codex_mxc_verified", "implementation": "mxc"}, "codex_windows_helpers": {"status": "not_required", "implementation": "mxc"}}
+Checking managed packages alongside the agent reason=launch_stamp_changed
+Startup checkpoint: managed package step done 2.551s
+managed backend workspace="\\\\?\\D:\\CLIO-Desktop-095-Repair\\data\\workspace"
+managed backend user_dir="\\\\?\\D:\\CLIO-Desktop-095-Repair\\data\\clio-agent"
+spawning launcher "D:\\CLIO-Desktop-095-Repair\\clio-agent.exe" on 127.0.0.1:60503
+sidecar-launcher: resolved backend argv=[\\?\D:\CLIO-Desktop-095-Repair\data\bundled-runtime\gact-runtime\python\python.exe -I -B -m clio_agent.gact --no-agent] dir="\\\\?\\D:\\CLIO-Desktop-095-Repair\\data\\bundled-runtime\\gact-runtime"
+sidecar-progress: launcher is waiting for backend readiness
+sidecar-progress: backend startup is active
+clio-runtime-repair: version=0.9.5b8 scanned_bytecode=2687 removed_stale_bytecode=0 removed_stale_metadata=0 removed_leftover_files=0 errors=0
+Preparing and checking the Office renderer...
+Preparing and checking the GitHub command-line tool...
+Preparing and checking Python document packages...
+sidecar-progress: launcher is waiting for backend readiness
+sidecar-progress: backend startup is active
+sidecar-progress: launcher is waiting for backend readiness
+sidecar-progress: backend startup is active
+INFO:     Started server process [48156]
+INFO:     Waiting for application startup.
+WARNING | ⚑ BOOT mark=lifespan_started at=11.538
+GitHub command-line tool is ready.
+sidecar-progress: launcher is waiting for backend readiness
+WARNING | ⚑ BOOT mark=serving at=16.615
+sidecar-progress: backend startup is active
+INFO:     Application startup complete.
+INFO:     Uvicorn running on http://127.0.0.1:60503 (Press CTRL+C to quit)
+sidecar-progress: launcher is waiting for backend readiness
+WARNING | ⚑ BOOT step=marketplace seconds=4.716 start=16.629 thread=MainThread outcome=ok
+INFO:     127.0.0.1:54298 - "GET /v1/capabilities HTTP/1.1" 200 OK
+sidecar answered /v1/capabilities — backend ready
+Startup checkpoint: backend ready 24.214s
+INFO:     127.0.0.1:54300 - "GET /v1/infrastructure/service-connections HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:54301 - "GET /v1/provider-catalog HTTP/1.1" 503 Service Unavailable
+sidecar-progress: backend startup is active
+INFO:     127.0.0.1:54303 - "GET /v1/system/sandbox HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:54304 - "GET /v1/infrastructure/targets HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:54305 - "GET /v1/providers/lm HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:54307 - "GET /v1/infrastructure/catalog?target_id=local HTTP/1.1" 503 Service Unavailable
+sidecar-progress: launcher is waiting for backend readiness
+sidecar-progress: backend startup is active
+INFO:     127.0.0.1:54309 - "GET /v1/health HTTP/1.1" 200 OK
+INFO:     127.0.0.1:54314 - "GET /v1/provider-catalog HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:54315 - "GET /v1/health HTTP/1.1" 200 OK
+WARNING | ⚑ BOOT step=orphans seconds=13.409 start=16.615 thread=MainThread outcome=ok
+INFO:     127.0.0.1:54316 - "GET /v1/system/sandbox HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:54318 - "GET /v1/infrastructure/targets HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:54320 - "GET /v1/providers/lm HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:54322 - "GET /v1/health HTTP/1.1" 200 OK
+INFO:     127.0.0.1:54326 - "GET /v1/capabilities HTTP/1.1" 200 OK
+sidecar-progress: backend is ready
+INFO:     127.0.0.1:54322 - "GET /v1/health HTTP/1.1" 200 OK
+INFO:     127.0.0.1:54306 - "GET /v1/capabilities HTTP/1.1" 200 OK
+INFO:     127.0.0.1:54312 - "GET /v1/capabilities HTTP/1.1" 200 OK
+INFO:     127.0.0.1:54302 - "GET /v1/capabilities HTTP/1.1" 200 OK
+INFO:     127.0.0.1:54336 - "GET /v1/workspaces HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:54337 - "GET /v1/sessions?include_all_workspaces=true&limit=20&kinds=conversation%2Cbranch HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:54322 - "GET /v1/health HTTP/1.1" 200 OK
+INFO:     127.0.0.1:54338 - "GET /v1/capabilities HTTP/1.1" 200 OK
+INFO:     127.0.0.1:54340 - "GET /v1/sessions?include_all_workspaces=true&limit=20&kinds=conversation%2Cbranch HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:54339 - "GET /v1/workspaces HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:54341 - "GET /v1/capabilities HTTP/1.1" 200 OK
+INFO:     127.0.0.1:54343 - "GET /v1/sessions?include_all_workspaces=true&limit=20&kinds=conversation%2Cbranch HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:54342 - "GET /v1/workspaces HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:54344 - "GET /v1/capabilities HTTP/1.1" 200 OK
+INFO:     127.0.0.1:54345 - "GET /v1/workspaces HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:54346 - "GET /v1/sessions?include_all_workspaces=true&limit=20&kinds=conversation%2Cbranch HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:54347 - "GET /v1/capabilities HTTP/1.1" 200 OK
+INFO:     127.0.0.1:54349 - "GET /v1/sessions?include_all_workspaces=true&limit=20&kinds=conversation%2Cbranch HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:54348 - "GET /v1/workspaces HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:54350 - "GET /v1/capabilities HTTP/1.1" 200 OK
+INFO:     127.0.0.1:54351 - "GET /v1/workspaces HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:54352 - "GET /v1/sessions?include_all_workspaces=true&limit=20&kinds=conversation%2Cbranch HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:54353 - "GET /v1/capabilities HTTP/1.1" 200 OK
+INFO:     127.0.0.1:54354 - "GET /v1/workspaces HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:54355 - "GET /v1/sessions?include_all_workspaces=true&limit=20&kinds=conversation%2Cbranch HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:54356 - "GET /v1/capabilities HTTP/1.1" 200 OK
+INFO:     127.0.0.1:54357 - "GET /v1/workspaces HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:54358 - "GET /v1/sessions?include_all_workspaces=true&limit=20&kinds=conversation%2Cbranch HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:54359 - "GET /v1/capabilities HTTP/1.1" 200 OK
+INFO:     127.0.0.1:54361 - "GET /v1/sessions?include_all_workspaces=true&limit=20&kinds=conversation%2Cbranch HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:54360 - "GET /v1/workspaces HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:54362 - "GET /v1/capabilities HTTP/1.1" 200 OK
+INFO:     127.0.0.1:54364 - "GET /v1/workspaces HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:54363 - "GET /v1/sessions?include_all_workspaces=true&limit=20&kinds=conversation%2Cbranch HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:54365 - "GET /v1/capabilities HTTP/1.1" 200 OK
+INFO:     127.0.0.1:54367 - "GET /v1/sessions?include_all_workspaces=true&limit=20&kinds=conversation%2Cbranch HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:54366 - "GET /v1/workspaces HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:54368 - "GET /v1/capabilities HTTP/1.1" 200 OK
+INFO:     127.0.0.1:54370 - "GET /v1/sessions?include_all_workspaces=true&limit=20&kinds=conversation%2Cbranch HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:54369 - "GET /v1/workspaces HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:54371 - "GET /v1/capabilities HTTP/1.1" 200 OK
+INFO:     127.0.0.1:54373 - "GET /v1/sessions?include_all_workspaces=true&limit=20&kinds=conversation%2Cbranch HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:54372 - "GET /v1/workspaces HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:54374 - "GET /v1/capabilities HTTP/1.1" 200 OK
+INFO:     127.0.0.1:54376 - "GET /v1/sessions?include_all_workspaces=true&limit=20&kinds=conversation%2Cbranch HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:54375 - "GET /v1/workspaces HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:54377 - "GET /v1/capabilities HTTP/1.1" 200 OK
+INFO:     127.0.0.1:54379 - "GET /v1/sessions?include_all_workspaces=true&limit=20&kinds=conversation%2Cbranch HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:54378 - "GET /v1/workspaces HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:54380 - "GET /v1/capabilities HTTP/1.1" 200 OK
+INFO:     127.0.0.1:54381 - "GET /v1/sessions?include_all_workspaces=true&limit=20&kinds=conversation%2Cbranch HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:54382 - "GET /v1/workspaces HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:54383 - "GET /v1/capabilities HTTP/1.1" 200 OK
+INFO:     127.0.0.1:54384 - "GET /v1/workspaces HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:54385 - "GET /v1/sessions?include_all_workspaces=true&limit=20&kinds=conversation%2Cbranch HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:54386 - "GET /v1/capabilities HTTP/1.1" 200 OK
+INFO:     127.0.0.1:54387 - "GET /v1/workspaces HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:54388 - "GET /v1/sessions?include_all_workspaces=true&limit=20&kinds=conversation%2Cbranch HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:54389 - "GET /v1/capabilities HTTP/1.1" 200 OK
+INFO:     127.0.0.1:54390 - "GET /v1/workspaces HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:54391 - "GET /v1/sessions?include_all_workspaces=true&limit=20&kinds=conversation%2Cbranch HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:54393 - "GET /v1/capabilities HTTP/1.1" 200 OK
+INFO:     127.0.0.1:54395 - "GET /v1/sessions?include_all_workspaces=true&limit=20&kinds=conversation%2Cbranch HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:54394 - "GET /v1/workspaces HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:54396 - "GET /v1/capabilities HTTP/1.1" 200 OK
+INFO:     127.0.0.1:54397 - "GET /v1/workspaces HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:54398 - "GET /v1/sessions?include_all_workspaces=true&limit=20&kinds=conversation%2Cbranch HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:54399 - "GET /v1/capabilities HTTP/1.1" 200 OK
+INFO:     127.0.0.1:54401 - "GET /v1/sessions?include_all_workspaces=true&limit=20&kinds=conversation%2Cbranch HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:54400 - "GET /v1/workspaces HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:54402 - "GET /v1/capabilities HTTP/1.1" 200 OK
+INFO:     127.0.0.1:54403 - "GET /v1/sessions?include_all_workspaces=true&limit=20&kinds=conversation%2Cbranch HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:54404 - "GET /v1/workspaces HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:54406 - "GET /v1/capabilities HTTP/1.1" 200 OK
+INFO:     127.0.0.1:54408 - "GET /v1/sessions?include_all_workspaces=true&limit=20&kinds=conversation%2Cbranch HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:54407 - "GET /v1/workspaces HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:54409 - "GET /v1/capabilities HTTP/1.1" 200 OK
+INFO:     127.0.0.1:54410 - "GET /v1/workspaces HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:54411 - "GET /v1/sessions?include_all_workspaces=true&limit=20&kinds=conversation%2Cbranch HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:54412 - "GET /v1/capabilities HTTP/1.1" 200 OK
+INFO:     127.0.0.1:54414 - "GET /v1/workspaces HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:54413 - "GET /v1/sessions?include_all_workspaces=true&limit=20&kinds=conversation%2Cbranch HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:54415 - "GET /v1/capabilities HTTP/1.1" 200 OK
+INFO:     127.0.0.1:54417 - "GET /v1/sessions?include_all_workspaces=true&limit=20&kinds=conversation%2Cbranch HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:54416 - "GET /v1/workspaces HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:54418 - "GET /v1/capabilities HTTP/1.1" 200 OK
+INFO:     127.0.0.1:54419 - "GET /v1/workspaces HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:54420 - "GET /v1/sessions?include_all_workspaces=true&limit=20&kinds=conversation%2Cbranch HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:54421 - "GET /v1/capabilities HTTP/1.1" 200 OK
+INFO:     127.0.0.1:54423 - "GET /v1/sessions?include_all_workspaces=true&limit=20&kinds=conversation%2Cbranch HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:54422 - "GET /v1/workspaces HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:54424 - "GET /v1/capabilities HTTP/1.1" 200 OK
+INFO:     127.0.0.1:54426 - "GET /v1/sessions?include_all_workspaces=true&limit=20&kinds=conversation%2Cbranch HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:54425 - "GET /v1/workspaces HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:54427 - "GET /v1/capabilities HTTP/1.1" 200 OK
+INFO:     127.0.0.1:54428 - "GET /v1/workspaces HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:54429 - "GET /v1/sessions?include_all_workspaces=true&limit=20&kinds=conversation%2Cbranch HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:54430 - "GET /v1/capabilities HTTP/1.1" 200 OK
+INFO:     127.0.0.1:54432 - "GET /v1/sessions?include_all_workspaces=true&limit=20&kinds=conversation%2Cbranch HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:54431 - "GET /v1/workspaces HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:54322 - "GET /v1/health HTTP/1.1" 200 OK
+INFO:     127.0.0.1:54433 - "GET /v1/capabilities HTTP/1.1" 200 OK
+INFO:     127.0.0.1:54435 - "GET /v1/sessions?include_all_workspaces=true&limit=20&kinds=conversation%2Cbranch HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:54434 - "GET /v1/workspaces HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:54436 - "GET /v1/capabilities HTTP/1.1" 200 OK
+INFO:     127.0.0.1:54437 - "GET /v1/sessions?include_all_workspaces=true&limit=20&kinds=conversation%2Cbranch HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:54438 - "GET /v1/workspaces HTTP/1.1" 503 Service Unavailable
+WARNING | ⚑ BOOT step=task_history_restore seconds=0.021 start=33.492 thread=asyncio_1 outcome=ok
+INFO:     127.0.0.1:54439 - "GET /v1/capabilities HTTP/1.1" 200 OK
+WARNING | memory pass skipped reason=lm_provider_unconfigured roles=memory_extract,memory_consolidate
+INFO:     127.0.0.1:54441 - "GET /v1/sessions?include_all_workspaces=true&limit=20&kinds=conversation%2Cbranch HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:54440 - "GET /v1/workspaces HTTP/1.1" 503 Service Unavailable
+WARNING | ⚑ BOOT step=interrupted_sessions seconds=0.002 start=33.548 thread=asyncio_1 outcome=ok
+WARNING | ⚑ BOOT step=interaction_times seconds=0.000 start=33.550 thread=asyncio_1 outcome=ok
+WARNING | ⚑ BOOT step=clio_core_and_store seconds=8.710 start=24.841 thread=MainThread outcome=ok
+INFO:     127.0.0.1:54442 - "GET /v1/capabilities HTTP/1.1" 200 OK
+INFO:     127.0.0.1:54443 - "GET /v1/sessions?include_all_workspaces=true&limit=20&kinds=conversation%2Cbranch HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:54444 - "GET /v1/workspaces HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:54445 - "GET /v1/capabilities HTTP/1.1" 200 OK
+INFO:     127.0.0.1:54450 - "GET /v1/sessions?include_all_workspaces=true&limit=20&kinds=conversation%2Cbranch HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:54449 - "GET /v1/workspaces HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:54451 - "GET /v1/capabilities HTTP/1.1" 200 OK
+INFO:     127.0.0.1:54452 - "GET /v1/workspaces HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:54453 - "GET /v1/sessions?include_all_workspaces=true&limit=20&kinds=conversation%2Cbranch HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:54454 - "GET /v1/capabilities HTTP/1.1" 200 OK
+INFO:     127.0.0.1:54456 - "GET /v1/workspaces HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:54455 - "GET /v1/sessions?include_all_workspaces=true&limit=20&kinds=conversation%2Cbranch HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:54457 - "GET /v1/capabilities HTTP/1.1" 200 OK
+INFO:     127.0.0.1:54458 - "GET /v1/workspaces HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:54459 - "GET /v1/sessions?include_all_workspaces=true&limit=20&kinds=conversation%2Cbranch HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:54460 - "GET /v1/capabilities HTTP/1.1" 200 OK
+INFO:     127.0.0.1:54461 - "GET /v1/workspaces HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:54462 - "GET /v1/sessions?include_all_workspaces=true&limit=20&kinds=conversation%2Cbranch HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:54463 - "GET /v1/capabilities HTTP/1.1" 200 OK
+INFO:     127.0.0.1:54464 - "GET /v1/sessions?include_all_workspaces=true&limit=20&kinds=conversation%2Cbranch HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:54465 - "GET /v1/workspaces HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:54466 - "GET /v1/capabilities HTTP/1.1" 200 OK
+INFO:     127.0.0.1:54468 - "GET /v1/sessions?include_all_workspaces=true&limit=20&kinds=conversation%2Cbranch HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:54467 - "GET /v1/workspaces HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:54469 - "GET /v1/capabilities HTTP/1.1" 200 OK
+INFO:     127.0.0.1:54471 - "GET /v1/sessions?include_all_workspaces=true&limit=20&kinds=conversation%2Cbranch HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:54472 - "GET /v1/workspaces HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:54473 - "GET /v1/capabilities HTTP/1.1" 200 OK
+INFO:     127.0.0.1:54475 - "GET /v1/sessions?include_all_workspaces=true&limit=20&kinds=conversation%2Cbranch HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:54474 - "GET /v1/workspaces HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:54477 - "GET /v1/capabilities HTTP/1.1" 200 OK
+INFO:     127.0.0.1:54478 - "GET /v1/sessions?include_all_workspaces=true&limit=20&kinds=conversation%2Cbranch HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:54479 - "GET /v1/workspaces HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:54480 - "GET /v1/capabilities HTTP/1.1" 200 OK
+INFO:     127.0.0.1:54482 - "GET /v1/workspaces HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:54481 - "GET /v1/sessions?include_all_workspaces=true&limit=20&kinds=conversation%2Cbranch HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:54483 - "GET /v1/capabilities HTTP/1.1" 200 OK
+INFO:     127.0.0.1:54485 - "GET /v1/sessions?include_all_workspaces=true&limit=20&kinds=conversation%2Cbranch HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:54484 - "GET /v1/workspaces HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:54486 - "GET /v1/capabilities HTTP/1.1" 200 OK
+INFO:     127.0.0.1:54487 - "GET /v1/sessions?include_all_workspaces=true&limit=20&kinds=conversation%2Cbranch HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:54488 - "GET /v1/workspaces HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:54489 - "GET /v1/capabilities HTTP/1.1" 200 OK
+INFO:     127.0.0.1:54491 - "GET /v1/workspaces HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:54490 - "GET /v1/sessions?include_all_workspaces=true&limit=20&kinds=conversation%2Cbranch HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:54492 - "GET /v1/capabilities HTTP/1.1" 200 OK
+INFO:     127.0.0.1:54493 - "GET /v1/workspaces HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:54494 - "GET /v1/sessions?include_all_workspaces=true&limit=20&kinds=conversation%2Cbranch HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:54495 - "GET /v1/capabilities HTTP/1.1" 200 OK
+INFO:     127.0.0.1:54496 - "GET /v1/workspaces HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:54497 - "GET /v1/sessions?include_all_workspaces=true&limit=20&kinds=conversation%2Cbranch HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:54498 - "GET /v1/capabilities HTTP/1.1" 200 OK
+INFO:     127.0.0.1:54499 - "GET /v1/workspaces HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:54500 - "GET /v1/sessions?include_all_workspaces=true&limit=20&kinds=conversation%2Cbranch HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:54501 - "GET /v1/capabilities HTTP/1.1" 200 OK
+INFO:     127.0.0.1:54503 - "GET /v1/workspaces HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:54502 - "GET /v1/sessions?include_all_workspaces=true&limit=20&kinds=conversation%2Cbranch HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:54504 - "GET /v1/capabilities HTTP/1.1" 200 OK
+INFO:     127.0.0.1:54506 - "GET /v1/workspaces HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:54505 - "GET /v1/sessions?include_all_workspaces=true&limit=20&kinds=conversation%2Cbranch HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:54507 - "GET /v1/capabilities HTTP/1.1" 200 OK
+INFO:     127.0.0.1:54509 - "GET /v1/sessions?include_all_workspaces=true&limit=20&kinds=conversation%2Cbranch HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:54508 - "GET /v1/workspaces HTTP/1.1" 503 Service Unavailable
+sidecar-progress: backend startup is active
+INFO:     127.0.0.1:54322 - "GET /v1/health HTTP/1.1" 200 OK
+INFO:     127.0.0.1:54510 - "GET /v1/capabilities HTTP/1.1" 200 OK
+WARNING | ⚑ BOOT step=obligations_held seconds=0.566 start=33.730 thread=MainThread outcome=ok
+WARNING | ⚑ BOOT mark=task_runtime_ready at=34.297
+INFO:     127.0.0.1:54511 - "GET /v1/capabilities HTTP/1.1" 200 OK
+INFO:     127.0.0.1:54513 - "GET /v1/workspaces HTTP/1.1" 200 OK
+INFO:     127.0.0.1:54512 - "GET /v1/sessions?include_all_workspaces=true&limit=20&kinds=conversation%2Cbranch HTTP/1.1" 200 OK
+WARNING | ⚑ BOOT step=first_doctor_pass seconds=0.953 start=33.554 thread=MainThread outcome=ok
+INFO:     127.0.0.1:54515 - "GET /v1/providers/lm HTTP/1.1" 200 OK
+INFO:     127.0.0.1:54518 - "GET /v1/system/sandbox HTTP/1.1" 200 OK
+INFO:     127.0.0.1:54516 - "GET /v1/sessions?workspace_id=ws_default&limit=30&kinds=conversation%2Cbranch HTTP/1.1" 200 OK
+WARNING | local SearXNG not started reason=not_installed: The last installation did not finish (install exited with code 15; inspect its logs).
+INFO:     127.0.0.1:54523 - "GET /v1/session-defaults HTTP/1.1" 200 OK
+INFO:     127.0.0.1:54519 - "GET /v1/infrastructure/targets HTTP/1.1" 200 OK
+INFO:     127.0.0.1:54520 - "GET /v1/sessions?waiting_on_person=true HTTP/1.1" 200 OK
+INFO:     127.0.0.1:54522 - "GET /v1/capabilities HTTP/1.1" 200 OK
+INFO:     127.0.0.1:54524 - "GET /v1/capabilities HTTP/1.1" 200 OK
+INFO:     127.0.0.1:54542 - "POST /v1/workspaces/ws_default/warmup HTTP/1.1" 202 Accepted
+INFO:     127.0.0.1:54526 - "GET /v1/capabilities HTTP/1.1" 200 OK
+WARNING | ⚑ SPOTTER spotter_unavailable reason=spotter_watcher_agent_not_installed session= workspace=ws_default
+INFO:     127.0.0.1:54525 - "GET /v1/spotter/availability?workspace_id=ws_default HTTP/1.1" 200 OK
+INFO:     127.0.0.1:54521 - "GET /v1/mcp/servers?workspace_id=ws_default HTTP/1.1" 200 OK
+INFO:     127.0.0.1:54517 - "GET /v1/health HTTP/1.1" 200 OK
+INFO:     127.0.0.1:54543 - "GET /v1/health HTTP/1.1" 200 OK
+WARNING | ⚑ SESSION restart_interrupted session=sess_0be75b529387 messages=2 transcript=closed
+WARNING | ⚑ RESIDENT-LEDGER obligation_done session=sess_0be75b529387 bytes=105702
+WARNING | ⚑ RESIDENT-LEDGER arc_released session=sess_0be75b529387 segments=14 inflight_pending=0
+WARNING | ⚑ RESIDENT-LEDGER model_clients_released session=sess_0be75b529387
+WARNING | ⚑ RESIDENT-LEDGER task_tree_released session=sess_0be75b529387 dropped=True
+WARNING | ⚑ SESSION restart_interrupted session=sess_63dc5aec0971 messages=2 transcript=closed
+WARNING | ⚑ RESIDENT-LEDGER obligation_done session=sess_63dc5aec0971 bytes=105702
+WARNING | ⚑ RESIDENT-LEDGER model_clients_released session=sess_63dc5aec0971
+WARNING | ⚑ RESIDENT-LEDGER arc_released session=sess_63dc5aec0971 segments=14 inflight_pending=0
+WARNING | ⚑ RESIDENT-LEDGER task_tree_released session=sess_63dc5aec0971 dropped=True
+WARNING | ⚑ SESSION restart_interrupted session=sess_8ff801b1b10d messages=2 transcript=closed
+WARNING | ⚑ RESIDENT-LEDGER obligation_done session=sess_8ff801b1b10d bytes=105702
+WARNING | ⚑ RESIDENT-LEDGER model_clients_released session=sess_8ff801b1b10d
+WARNING | ⚑ RESIDENT-LEDGER arc_released session=sess_8ff801b1b10d segments=14 inflight_pending=0
+WARNING | ⚑ RESIDENT-LEDGER task_tree_released session=sess_8ff801b1b10d dropped=True
+WARNING | ⚑ SESSION restart_interrupted session=sess_d22bd1dbc4f3 messages=2 transcript=closed
+WARNING | ⚑ RESIDENT-LEDGER obligation_done session=sess_d22bd1dbc4f3 bytes=105702
+WARNING | ⚑ RESIDENT-LEDGER model_clients_released session=sess_d22bd1dbc4f3
+WARNING | ⚑ RESIDENT-LEDGER arc_released session=sess_d22bd1dbc4f3 segments=14 inflight_pending=0
+WARNING | ⚑ SESSION restart_interrupted session=sess_bc9490534782b97e8c494ea7d9787674 messages=0 transcript=closed
+WARNING | ⚑ RESIDENT-LEDGER task_tree_released session=sess_d22bd1dbc4f3 dropped=True
+WARNING | ⚑ RESIDENT-LEDGER obligation_done session=sess_bc9490534782b97e8c494ea7d9787674 bytes=43986
+WARNING | ⚑ RESIDENT-LEDGER model_clients_released session=sess_bc9490534782b97e8c494ea7d9787674
+WARNING | ⚑ RESIDENT-LEDGER arc_released session=sess_bc9490534782b97e8c494ea7d9787674 segments=11 inflight_pending=0
+WARNING | ⚑ RESIDENT-LEDGER task_tree_released session=sess_bc9490534782b97e8c494ea7d9787674 dropped=True
+WARNING | ⚑ SESSION restart_interrupted session=sess_401013f94a78 messages=2 transcript=closed
+WARNING | ⚑ RESIDENT-LEDGER obligation_done session=sess_401013f94a78 bytes=98590
+WARNING | ⚑ RESIDENT-LEDGER model_clients_released session=sess_401013f94a78
+WARNING | ⚑ RESIDENT-LEDGER arc_released session=sess_401013f94a78 segments=14 inflight_pending=0
+WARNING | ⚑ SESSION restart_interrupted session=sess_20efa27a279bfaa21dd62a0165cc24a4 messages=0 transcript=closed
+WARNING | ⚑ RESIDENT-LEDGER task_tree_released session=sess_401013f94a78 dropped=True
+WARNING | ⚑ RESIDENT-LEDGER obligation_done session=sess_20efa27a279bfaa21dd62a0165cc24a4 bytes=43986
+WARNING | ⚑ RESIDENT-LEDGER model_clients_released session=sess_20efa27a279bfaa21dd62a0165cc24a4
+WARNING | ⚑ RESIDENT-LEDGER arc_released session=sess_20efa27a279bfaa21dd62a0165cc24a4 segments=11 inflight_pending=0
+WARNING | ⚑ RESIDENT-LEDGER task_tree_released session=sess_20efa27a279bfaa21dd62a0165cc24a4 dropped=True
+WARNING | ⚑ SESSION restart_interrupted session=sess_ff0a6d4082dd messages=2 transcript=closed
+INFO:     127.0.0.1:54541 - "GET /v1/infrastructure/catalog?target_id=local HTTP/1.1" 200 OK
+WARNING | ⚑ RESIDENT-LEDGER obligation_done session=sess_ff0a6d4082dd bytes=91478
+WARNING | ⚑ RESIDENT-LEDGER model_clients_released session=sess_ff0a6d4082dd
+WARNING | ⚑ RESIDENT-LEDGER arc_released session=sess_ff0a6d4082dd segments=14 inflight_pending=0
+WARNING | ⚑ RESIDENT-LEDGER task_tree_released session=sess_ff0a6d4082dd dropped=True
+WARNING | ⚑ SESSION restart_interrupted session=sess_2b290c3a89a5 messages=2 transcript=closed
+WARNING | ⚑ RESIDENT-LEDGER obligation_done session=sess_2b290c3a89a5 bytes=84366
+WARNING | ⚑ RESIDENT-LEDGER model_clients_released session=sess_2b290c3a89a5
+WARNING | ⚑ RESIDENT-LEDGER arc_released session=sess_2b290c3a89a5 segments=14 inflight_pending=0
+WARNING | ⚑ RESIDENT-LEDGER task_tree_released session=sess_2b290c3a89a5 dropped=True
+WARNING | ⚑ SESSION restart_interrupted session=sess_3d65c96595a405e2fd527d123beac139 messages=0 transcript=closed
+WARNING | ⚑ RESIDENT-LEDGER obligation_done session=sess_3d65c96595a405e2fd527d123beac139 bytes=43986
+WARNING | ⚑ RESIDENT-LEDGER model_clients_released session=sess_3d65c96595a405e2fd527d123beac139
+WARNING | ⚑ RESIDENT-LEDGER arc_released session=sess_3d65c96595a405e2fd527d123beac139 segments=11 inflight_pending=0
+WARNING | ⚑ RESIDENT-LEDGER task_tree_released session=sess_3d65c96595a405e2fd527d123beac139 dropped=True
+WARNING | ⚑ SESSION restart_interrupted session=sess_3b525d570622 messages=2 transcript=closed
+WARNING | ⚑ RESIDENT-LEDGER obligation_done session=sess_3b525d570622 bytes=84366
+WARNING | ⚑ RESIDENT-LEDGER model_clients_released session=sess_3b525d570622
+WARNING | ⚑ RESIDENT-LEDGER arc_released session=sess_3b525d570622 segments=14 inflight_pending=0
+WARNING | ⚑ RESIDENT-LEDGER task_tree_released session=sess_3b525d570622 dropped=True
+WARNING | ⚑ SESSION restart_interrupted session=sess_c90946e8178e messages=2 transcript=closed
+WARNING | ⚑ RESIDENT-LEDGER obligation_done session=sess_c90946e8178e bytes=77254
+WARNING | ⚑ RESIDENT-LEDGER model_clients_released session=sess_c90946e8178e
+WARNING | ⚑ RESIDENT-LEDGER arc_released session=sess_c90946e8178e segments=14 inflight_pending=0
+WARNING | ⚑ RESIDENT-LEDGER task_tree_released session=sess_c90946e8178e dropped=True
+WARNING | ⚑ SESSION restart_interrupted session=sess_d10a986cf94da3c0bfa396ffbc264157 messages=0 transcript=closed
+WARNING | ⚑ RESIDENT-LEDGER obligation_done session=sess_d10a986cf94da3c0bfa396ffbc264157 bytes=43986
+WARNING | ⚑ RESIDENT-LEDGER model_clients_released session=sess_d10a986cf94da3c0bfa396ffbc264157
+WARNING | ⚑ RESIDENT-LEDGER arc_released session=sess_d10a986cf94da3c0bfa396ffbc264157 segments=11 inflight_pending=0
+WARNING | ⚑ RESIDENT-LEDGER task_tree_released session=sess_d10a986cf94da3c0bfa396ffbc264157 dropped=True
+WARNING | ⚑ SESSION restart_interrupted session=sess_6be0c5ff651c messages=2 transcript=closed
+WARNING | ⚑ RESIDENT-LEDGER obligation_done session=sess_6be0c5ff651c bytes=77254
+WARNING | ⚑ RESIDENT-LEDGER model_clients_released session=sess_6be0c5ff651c
+WARNING | ⚑ RESIDENT-LEDGER arc_released session=sess_6be0c5ff651c segments=14 inflight_pending=0
+WARNING | ⚑ RESIDENT-LEDGER task_tree_released session=sess_6be0c5ff651c dropped=True
+WARNING | ⚑ SESSION restart_interrupted session=sess_d66ebf59adad08f676be116b5bef7ba8 messages=0 transcript=closed
+WARNING | ⚑ RESIDENT-LEDGER obligation_done session=sess_d66ebf59adad08f676be116b5bef7ba8 bytes=43986
+WARNING | ⚑ RESIDENT-LEDGER model_clients_released session=sess_d66ebf59adad08f676be116b5bef7ba8
+WARNING | ⚑ RESIDENT-LEDGER arc_released session=sess_d66ebf59adad08f676be116b5bef7ba8 segments=11 inflight_pending=0
+WARNING | ⚑ RESIDENT-LEDGER task_tree_released session=sess_d66ebf59adad08f676be116b5bef7ba8 dropped=True
+WARNING | ⚑ SESSION restart_interrupted session=sess_fcb3e45c944c7cb0a65fa5533f51a6ed messages=0 transcript=closed
+WARNING | ⚑ RESIDENT-LEDGER obligation_done session=sess_fcb3e45c944c7cb0a65fa5533f51a6ed bytes=43986
+WARNING | ⚑ RESIDENT-LEDGER model_clients_released session=sess_fcb3e45c944c7cb0a65fa5533f51a6ed
+WARNING | ⚑ RESIDENT-LEDGER arc_released session=sess_fcb3e45c944c7cb0a65fa5533f51a6ed segments=9 inflight_pending=0
+WARNING | ⚑ RESIDENT-LEDGER task_tree_released session=sess_fcb3e45c944c7cb0a65fa5533f51a6ed dropped=True
+WARNING | ⚑ SESSION restart_interrupted session=sess_c9f4597b5bc03553d0155b5f4bede300 messages=0 transcript=closed
+WARNING | ⚑ RESIDENT-LEDGER obligation_done session=sess_c9f4597b5bc03553d0155b5f4bede300 bytes=43986
+WARNING | ⚑ RESIDENT-LEDGER model_clients_released session=sess_c9f4597b5bc03553d0155b5f4bede300
+WARNING | ⚑ RESIDENT-LEDGER arc_released session=sess_c9f4597b5bc03553d0155b5f4bede300 segments=9 inflight_pending=0
+WARNING | ⚑ RESIDENT-LEDGER task_tree_released session=sess_c9f4597b5bc03553d0155b5f4bede300 dropped=True
+WARNING | ⚑ SESSION restart_interrupted session=sess_a26a506b4ca6c7141c89c6948c12c460 messages=0 transcript=closed
+WARNING | ⚑ RESIDENT-LEDGER obligation_done session=sess_a26a506b4ca6c7141c89c6948c12c460 bytes=43986
+WARNING | ⚑ RESIDENT-LEDGER model_clients_released session=sess_a26a506b4ca6c7141c89c6948c12c460
+WARNING | ⚑ RESIDENT-LEDGER arc_released session=sess_a26a506b4ca6c7141c89c6948c12c460 segments=11 inflight_pending=0
+WARNING | ⚑ RESIDENT-LEDGER task_tree_released session=sess_a26a506b4ca6c7141c89c6948c12c460 dropped=True
+WARNING | ⚑ SESSION restart_interrupted session=sess_59799658a1e391465f1a73246e887f66 messages=0 transcript=closed
+WARNING | ⚑ RESIDENT-LEDGER obligation_done session=sess_59799658a1e391465f1a73246e887f66 bytes=43986
+WARNING | ⚑ RESIDENT-LEDGER model_clients_released session=sess_59799658a1e391465f1a73246e887f66
+WARNING | ⚑ RESIDENT-LEDGER arc_released session=sess_59799658a1e391465f1a73246e887f66 segments=11 inflight_pending=0
+WARNING | ⚑ RESIDENT-LEDGER task_tree_released session=sess_59799658a1e391465f1a73246e887f66 dropped=True
+WARNING | ⚑ SESSION restart_interrupted session=sess_6106e473dacca4aec3d1b201113e8aae messages=0 transcript=closed
+WARNING | ⚑ RESIDENT-LEDGER obligation_done session=sess_6106e473dacca4aec3d1b201113e8aae bytes=37181
+WARNING | ⚑ RESIDENT-LEDGER model_clients_released session=sess_6106e473dacca4aec3d1b201113e8aae
+WARNING | ⚑ RESIDENT-LEDGER arc_released session=sess_6106e473dacca4aec3d1b201113e8aae segments=9 inflight_pending=0
+WARNING | ⚑ RESIDENT-LEDGER task_tree_released session=sess_6106e473dacca4aec3d1b201113e8aae dropped=True
+WARNING | ⚑ RESIDENT-LEDGER obligation_done session=sess_46214e526e1d29ad7c9f2a02178d50fd bytes=28196
+WARNING | ⚑ RESIDENT-LEDGER model_clients_released session=sess_46214e526e1d29ad7c9f2a02178d50fd
+WARNING | ⚑ RESIDENT-LEDGER arc_released session=sess_46214e526e1d29ad7c9f2a02178d50fd segments=7 inflight_pending=0
+WARNING | ⚑ RESIDENT-LEDGER task_tree_released session=sess_46214e526e1d29ad7c9f2a02178d50fd dropped=True
+WARNING | ⚑ RESIDENT-LEDGER obligation_done session=sess_631233a00e3e455045bb381922147598 bytes=28196
+WARNING | ⚑ RESIDENT-LEDGER model_clients_released session=sess_631233a00e3e455045bb381922147598
+WARNING | ⚑ RESIDENT-LEDGER arc_released session=sess_631233a00e3e455045bb381922147598 segments=7 inflight_pending=0
+WARNING | ⚑ RESIDENT-LEDGER task_tree_released session=sess_631233a00e3e455045bb381922147598 dropped=True
+WARNING | ⚑ RESIDENT-LEDGER obligation_done session=sess_19838bcf7d9adee18901be2af5e63410 bytes=28196
+WARNING | ⚑ RESIDENT-LEDGER model_clients_released session=sess_19838bcf7d9adee18901be2af5e63410
+WARNING | ⚑ RESIDENT-LEDGER arc_released session=sess_19838bcf7d9adee18901be2af5e63410 segments=7 inflight_pending=0
+WARNING | ⚑ RESIDENT-LEDGER task_tree_released session=sess_19838bcf7d9adee18901be2af5e63410 dropped=True
+WARNING | ⚑ RESIDENT-LEDGER obligation_done session=sess_e7db91679776104960371fd8b136f2f0 bytes=28196
+WARNING | ⚑ RESIDENT-LEDGER model_clients_released session=sess_e7db91679776104960371fd8b136f2f0
+WARNING | ⚑ RESIDENT-LEDGER arc_released session=sess_e7db91679776104960371fd8b136f2f0 segments=7 inflight_pending=0
+WARNING | ⚑ RESIDENT-LEDGER task_tree_released session=sess_e7db91679776104960371fd8b136f2f0 dropped=True
+WARNING | ⚑ RESIDENT-LEDGER obligation_done session=sess_c02f8fcb47fa0da195b193cfbdafafc3 bytes=28196
+WARNING | ⚑ RESIDENT-LEDGER model_clients_released session=sess_c02f8fcb47fa0da195b193cfbdafafc3
+WARNING | ⚑ RESIDENT-LEDGER arc_released session=sess_c02f8fcb47fa0da195b193cfbdafafc3 segments=7 inflight_pending=0
+WARNING | ⚑ RESIDENT-LEDGER task_tree_released session=sess_c02f8fcb47fa0da195b193cfbdafafc3 dropped=True
+WARNING | ⚑ RESIDENT-LEDGER obligation_done session=sess_88331aa22e94e56909e80562e383f6c9 bytes=28196
+WARNING | ⚑ RESIDENT-LEDGER model_clients_released session=sess_88331aa22e94e56909e80562e383f6c9
+WARNING | ⚑ RESIDENT-LEDGER arc_released session=sess_88331aa22e94e56909e80562e383f6c9 segments=7 inflight_pending=0
+WARNING | ⚑ RESIDENT-LEDGER task_tree_released session=sess_88331aa22e94e56909e80562e383f6c9 dropped=True
+WARNING | ⚑ RESIDENT-LEDGER obligation_done session=sess_41aa3d2c81970c77f005431d03981ee6 bytes=28196
+WARNING | ⚑ RESIDENT-LEDGER model_clients_released session=sess_41aa3d2c81970c77f005431d03981ee6
+WARNING | ⚑ RESIDENT-LEDGER arc_released session=sess_41aa3d2c81970c77f005431d03981ee6 segments=7 inflight_pending=0
+WARNING | ⚑ RESIDENT-LEDGER task_tree_released session=sess_41aa3d2c81970c77f005431d03981ee6 dropped=True
+WARNING | ⚑ RESIDENT-LEDGER obligation_done session=sess_be41c5aa3fbdf168e64ad8d06e7b7eb5 bytes=28196
+WARNING | ⚑ RESIDENT-LEDGER model_clients_released session=sess_be41c5aa3fbdf168e64ad8d06e7b7eb5
+WARNING | ⚑ RESIDENT-LEDGER arc_released session=sess_be41c5aa3fbdf168e64ad8d06e7b7eb5 segments=7 inflight_pending=0
+WARNING | ⚑ RESIDENT-LEDGER task_tree_released session=sess_be41c5aa3fbdf168e64ad8d06e7b7eb5 dropped=True
+WARNING | ⚑ RESIDENT-LEDGER obligation_done session=sess_5c953a6745f98c8724901c84e12c2afb bytes=28196
+WARNING | ⚑ RESIDENT-LEDGER model_clients_released session=sess_5c953a6745f98c8724901c84e12c2afb
+WARNING | ⚑ RESIDENT-LEDGER arc_released session=sess_5c953a6745f98c8724901c84e12c2afb segments=7 inflight_pending=0
+WARNING | ⚑ RESIDENT-LEDGER task_tree_released session=sess_5c953a6745f98c8724901c84e12c2afb dropped=True
+WARNING | ⚑ RESIDENT-LEDGER obligation_done session=sess_5c828d526ca9fb70f49caad55a28537d bytes=7484
+WARNING | ⚑ RESIDENT-LEDGER model_clients_released session=sess_5c828d526ca9fb70f49caad55a28537d
+WARNING | ⚑ RESIDENT-LEDGER arc_released session=sess_5c828d526ca9fb70f49caad55a28537d segments=3 inflight_pending=0
+WARNING | ⚑ RESIDENT-LEDGER task_tree_released session=sess_5c828d526ca9fb70f49caad55a28537d dropped=True
+WARNING | ⚑ RESIDENT-LEDGER obligation_done session=sess_f5a173a2b268170224e5c1aa7f61c106 bytes=7484
+WARNING | ⚑ RESIDENT-LEDGER model_clients_released session=sess_f5a173a2b268170224e5c1aa7f61c106
+WARNING | ⚑ RESIDENT-LEDGER arc_released session=sess_f5a173a2b268170224e5c1aa7f61c106 segments=3 inflight_pending=0
+WARNING | ⚑ RESIDENT-LEDGER task_tree_released session=sess_f5a173a2b268170224e5c1aa7f61c106 dropped=True
+WARNING | ⚑ RESIDENT-LEDGER obligation_done session=sess_129442c6795e544e04d77ba5e48e74f6 bytes=7484
+WARNING | ⚑ RESIDENT-LEDGER model_clients_released session=sess_129442c6795e544e04d77ba5e48e74f6
+WARNING | ⚑ RESIDENT-LEDGER arc_released session=sess_129442c6795e544e04d77ba5e48e74f6 segments=3 inflight_pending=0
+WARNING | ⚑ RESIDENT-LEDGER task_tree_released session=sess_129442c6795e544e04d77ba5e48e74f6 dropped=True
+WARNING | ⚑ RESIDENT-LEDGER obligation_done session=sess_e8317ff72d47cdd9614b8c79015c9503 bytes=7484
+WARNING | ⚑ RESIDENT-LEDGER model_clients_released session=sess_e8317ff72d47cdd9614b8c79015c9503
+WARNING | ⚑ RESIDENT-LEDGER arc_released session=sess_e8317ff72d47cdd9614b8c79015c9503 segments=3 inflight_pending=0
+WARNING | ⚑ RESIDENT-LEDGER task_tree_released session=sess_e8317ff72d47cdd9614b8c79015c9503 dropped=True
+WARNING | ⚑ RESIDENT-LEDGER obligation_done session=sess_5aecf4c620898c8c8598d102e1e2ceca bytes=7484
+WARNING | ⚑ RESIDENT-LEDGER model_clients_released session=sess_5aecf4c620898c8c8598d102e1e2ceca
+WARNING | ⚑ RESIDENT-LEDGER arc_released session=sess_5aecf4c620898c8c8598d102e1e2ceca segments=3 inflight_pending=0
+WARNING | ⚑ RESIDENT-LEDGER task_tree_released session=sess_5aecf4c620898c8c8598d102e1e2ceca dropped=True
+WARNING | ⚑ RESIDENT-LEDGER obligation_done session=sess_6b4d74902b55baeee45b24094a066fb9 bytes=5684
+WARNING | ⚑ RESIDENT-LEDGER model_clients_released session=sess_6b4d74902b55baeee45b24094a066fb9
+WARNING | ⚑ RESIDENT-LEDGER arc_released session=sess_6b4d74902b55baeee45b24094a066fb9 segments=3 inflight_pending=0
+WARNING | ⚑ RESIDENT-LEDGER task_tree_released session=sess_6b4d74902b55baeee45b24094a066fb9 dropped=True
+WARNING | ⚑ RESIDENT-LEDGER obligation_done session=sess_adfe011b1fd930ced97cbfd16ff949ac bytes=5684
+WARNING | ⚑ RESIDENT-LEDGER model_clients_released session=sess_adfe011b1fd930ced97cbfd16ff949ac
+WARNING | ⚑ RESIDENT-LEDGER arc_released session=sess_adfe011b1fd930ced97cbfd16ff949ac segments=3 inflight_pending=0
+WARNING | ⚑ RESIDENT-LEDGER task_tree_released session=sess_adfe011b1fd930ced97cbfd16ff949ac dropped=True
+WARNING | ⚑ RESIDENT-LEDGER obligation_done session=sess_219804fd278a121abac89c2af033ae03 bytes=5684
+WARNING | ⚑ RESIDENT-LEDGER model_clients_released session=sess_219804fd278a121abac89c2af033ae03
+WARNING | ⚑ RESIDENT-LEDGER arc_released session=sess_219804fd278a121abac89c2af033ae03 segments=3 inflight_pending=0
+WARNING | ⚑ RESIDENT-LEDGER task_tree_released session=sess_219804fd278a121abac89c2af033ae03 dropped=True
+WARNING | ⚑ RESIDENT-LEDGER obligation_done session=sess_b1381a3b26e43db168d524222b73ae9d bytes=5684
+WARNING | ⚑ RESIDENT-LEDGER model_clients_released session=sess_b1381a3b26e43db168d524222b73ae9d
+WARNING | ⚑ RESIDENT-LEDGER arc_released session=sess_b1381a3b26e43db168d524222b73ae9d segments=3 inflight_pending=0
+WARNING | ⚑ RESIDENT-LEDGER task_tree_released session=sess_b1381a3b26e43db168d524222b73ae9d dropped=True
+WARNING | ⚑ RESIDENT-LEDGER obligation_done session=sess_99d794986b10da718ec4263f86f1823e bytes=5684
+WARNING | ⚑ BOOT step=obligations seconds=5.770 start=34.298 thread=MainThread outcome=ok
+WARNING | ⚑ RESIDENT-LEDGER arc_release_skipped_active session=sess_99d794986b10da718ec4263f86f1823e
+WARNING | ⚑ RESIDENT-LEDGER model_clients_release_skipped_active session=sess_99d794986b10da718ec4263f86f1823e
+INFO:     127.0.0.1:54514 - "GET /v1/provider-catalog HTTP/1.1" 200 OK
+INFO:     127.0.0.1:54575 - "GET /v1/sessions?waiting_on_person=true HTTP/1.1" 200 OK
+INFO:     127.0.0.1:54578 - "GET /v1/health HTTP/1.1" 200 OK
+INFO:     127.0.0.1:54584 - "GET /v1/sessions?limit=30 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:54601 - "GET /v1/sessions?waiting_on_person=true HTTP/1.1" 200 OK
+INFO:     127.0.0.1:54602 - "GET /v1/mcp/servers?workspace_id=ws_default HTTP/1.1" 200 OK
+INFO:     127.0.0.1:54608 - "GET /v1/health HTTP/1.1" 200 OK
+Python document packages are ready. Preparing Node.js packages...
+Installing the pinned pnpm package manager...
+INFO:     127.0.0.1:62788 - "GET /v1/capabilities HTTP/1.1" 200 OK
+INFO:     127.0.0.1:62790 - "GET /v1/sessions?waiting_on_person=true HTTP/1.1" 200 OK
+INFO:     127.0.0.1:62793 - "GET /v1/capabilities HTTP/1.1" 200 OK
+INFO:     127.0.0.1:62794 - "GET /v1/health HTTP/1.1" 200 OK
+INFO:     127.0.0.1:62817 - "GET /v1/sessions?waiting_on_person=true HTTP/1.1" 200 OK
+INFO:     127.0.0.1:62818 - "GET /v1/mcp/servers?workspace_id=ws_default HTTP/1.1" 200 OK
+INFO:     127.0.0.1:62826 - "GET /v1/health HTTP/1.1" 200 OK
+Node.js document packages are ready.
+INFO:     127.0.0.1:62844 - "GET /v1/sessions?waiting_on_person=true HTTP/1.1" 200 OK
+Office rendering is ready.
+Preparing and checking protected execution...
+Protected execution: MXC verified (cached check).
+All managed runtime packages are installed and verified.
+{"status": "ready", "runtime_id": "68fd91e579837b59bebd", "office": {"status": "available", "path": "D:\\cw\\r4\\home\\cache\\document-office\\26.2.6\\program\\soffice.com"}, "store_migrations": {"status": "skipped", "reason": "reuse_installed"}}
+Managed packages checked reason=managed_packages_installed 94.090s
+INFO:     127.0.0.1:62861 - "GET /v1/capabilities HTTP/1.1" 200 OK
+INFO:     127.0.0.1:52882 - "POST /v1/workspaces/ws_default/warmup HTTP/1.1" 202 Accepted
+INFO:     127.0.0.1:52883 - "GET /v1/sessions?waiting_on_person=true HTTP/1.1" 200 OK
+INFO:     127.0.0.1:52885 - "POST /v1/infrastructure/desktop-exit HTTP/1.1" 200 OK
+INFO:     127.0.0.1:52886 - "POST /v1/desktop/shutdown HTTP/1.1" 202 Accepted
+INFO:     Shutting down
+INFO:     Waiting for application shutdown.
+sidecar-progress: backend exited; starting crash cleanup
+sidecar-progress: crash cleanup completed
+sidecar-progress: crash cleanup helper exited

@@ -126,3 +126,22 @@ def _merge_tool_call_rows(
         if new_key != old_key and candidate_index not in by_key.get(new_key, []):
             by_key.setdefault(new_key, []).append(candidate_index)
     return merged
+
+
+def _tool_calls_from_handoff_rows(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Return nested child tool-call evidence from delegation rows."""
+
+    tool_rows: list[dict[str, Any]] = []
+
+    def visit(row: Any) -> None:
+        if not isinstance(row, Mapping):
+            return
+        for call in row.get("tools_called") or []:
+            if isinstance(call, Mapping):
+                tool_rows.append(_normalize_tool_call_row(call))
+        for child in row.get("children") or []:
+            visit(child)
+
+    for row in rows:
+        visit(row)
+    return tool_rows

@@ -10,7 +10,7 @@ from pydantic import BaseModel, Field
 # the marketplace artifact id at the message-contract boundary so every client
 # (desktop, REST, queued promotion) selects the same real coordinator rather
 # than merely changing routing flags on whichever base agent happens to be open.
-DEEP_RESEARCH_BLUEPRINT_ID = "deep-researcher"
+DEEP_RESEARCH_AGENT = "clio/deep-researcher"
 
 from clio_agent.gact.types import AgentRef, ModelRef, Part
 

@@ -748,104 +748,20 @@ def test_create_artifact_tool_accepts_used_without_touching_promotion(tmp_path):
     assert result["artifacts"][0]["accepted"] is True
 
 
-SKILL_BODY = "PROCEDURE_BODY_MARKER"
-
-
-@pytest.fixture
-def skill_pack(tmp_path: Path) -> Path:
-    """A pack root shipping one resolvable skill (for the with-skills assertion)."""
-    skill_dir = tmp_path / "pack" / "skills" / "quality-rubric"
-    skill_dir.mkdir(parents=True)
-    (skill_dir / "SKILL.md").write_text(
-        f"---\nname: quality-rubric\ndescription: Judge data quality\n---\n\n{SKILL_BODY}\n",
-        encoding="utf-8",
-    )
-    return tmp_path / "pack"
-
-
-def _react_agent(
-    pack: Path,
-    *,
-    skills: list[str],
-    source: str = "expert_pack",
-    module: dict[str, Any] | None = None,
-) -> Any:
-    from clio_agent.gact.types import AgentDef
-
-    return AgentDef(
-        id="analyst",
-        source=source,
-        title="Analyst",
-        system_prompt="Analyze things.",
-        skills=list(skills),
-        module=module if module is not None else {"kind": "react"},
-        metadata={"pack_definition_path": str(pack / "AGENT.md")},
-    )
-
-
-def _patch_lm(monkeypatch: Any) -> None:
-    monkeypatch.setattr("clio_agent.config.create_lm", lambda config: object(), raising=True)
-    monkeypatch.setattr(
-        "clio_agent.config.create_chat_adapter", lambda config: object(), raising=True
-    )
-    monkeypatch.setattr(
-        "clio_agent.gact.agents.builders._dynamic_agent_lm_config",
-        lambda base_agent, agent_def: SimpleNamespace(
-            materialize=lambda cred=None: SimpleNamespace(
-                provider="openai", model="m", temperature=0.0
-            )
-        ),
-        raising=True,
-    )
-
-
 def _tool_names(module: Any) -> set[str]:
     return {str(getattr(t, "name", "")) for t in module.tools}
 
 
-def test_react_branches_attach_create_artifact_unconditionally(skill_pack, monkeypatch):
-    """Finding [8]: both react builder branches attach create_artifact REGARDLESS
-    of whether a skill resolved — proven on the REAL built module, not a source grep.
+def test_every_resolved_agent_carries_create_artifact_from_core() -> None:
+    """Finding [8]: create_artifact never depends on a skill resolving. ``core`` (which
+    no agent can remove) claims it, so every resolved agent and subagent carries it."""
 
-    Sabotage: indent the create_artifact append INSIDE the ``if skill_rt.resolved:``
-    guard (builders.py, either react site) → the skills-less assertions below go red
-    (the tool vanishes when no skill resolves, the exact regression this guards)."""
-    from clio_agent.gact.agents.builders import (
-        _build_blueprint_dspy_module,
-        _build_tool_user_agent_module,
-    )
+    from clio_agent.plugins.service import PluginService
 
-    _patch_lm(monkeypatch)
-    base = SimpleNamespace(tool_executor=None)
-
-    # (1) Blueprint react expert with NO resolvable skill: load_skill is absent, but
-    # create_artifact MUST still be attached (un-nested from the skill guard).
-    bp_noskill = _tool_names(
-        _build_blueprint_dspy_module(base, _react_agent(skill_pack, skills=[]))
-    )
-    assert "create_artifact" in bp_noskill
-    assert "load_skill" not in bp_noskill
-    # With a resolved skill: BOTH the skill tool AND create_artifact are present.
-    bp_skill = _tool_names(
-        _build_blueprint_dspy_module(base, _react_agent(skill_pack, skills=["quality-rubric"]))
-    )
-    assert {"create_artifact", "load_skill"} <= bp_skill
-
-    # (2) The second react site (tool-declaring user agents) honors the same contract.
-    tu_noskill = _tool_names(
-        _build_tool_user_agent_module(
-            base, _react_agent(skill_pack, skills=[], source="user", module={})
-        )
-    )
-    assert "create_artifact" in tu_noskill
-    assert "load_skill" not in tu_noskill
-    tu_skill = _tool_names(
-        _build_tool_user_agent_module(
-            base,
-            _react_agent(skill_pack, skills=["quality-rubric"], source="user", module={}),
-        )
-    )
-    assert {"create_artifact", "load_skill"} <= tu_skill
+    resolution = PluginService().resolve("clio/standard", pin=False)
+    owners = {row["name"]: row["plugin"] for row in resolution.tools}
+    assert owners["create_artifact"] == "core"
+    assert "load_skill" in owners
 
 
 # --------------------------------------------------------------------------- #
@@ -1273,22 +1189,7 @@ def test_designation_and_file_diff_proposal_events_coexist(tmp_path):
     # type-filtering consumer can't distinguish the two producers -> red.
     assert payload["stage"] == "designation"
     assert "designation" in payload
-    assert "unified_diff" not in payload  # NOT the file_diff shape
-
-    from clio_agent.gact.artifacts.wire import PROPOSED_ARTIFACT_EVENT, proposed_diff_payload
-
-    # Same type string, disjoint (file_diff) shape — no 'stage', its own keys.
-    assert PROPOSED_ARTIFACT_EVENT == P.PROPOSED_ARTIFACT_EVENT
-    file_diff = proposed_diff_payload(
-        path="n.py",
-        unified_diff="@@",
-        new_content="x\n",
-        edit_mode="diff",
-        lines_added=1,
-        lines_removed=0,
-    )
-    assert file_diff.get("stage") is None
-    assert "unified_diff" in file_diff
+    assert "unified_diff" not in payload  # NOT a file_diff shape
 
 
 # --------------------------------------------------------------------------- #

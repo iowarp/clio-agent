@@ -1,17 +1,18 @@
 """CLIO agent-test SUT.
 
 Defines *how to run CLIO* for agent-test: set the provider/model (so the model
-matrix works), activate an Agent Blueprint, send a prompt to the live gact
-server, and normalize the resulting session trace into an agent-test ``Run``.
+matrix works), pin a marketplace agent to a new session by its ref, send a
+prompt to the live gact server, and normalize the resulting session trace into an
+agent-test ``Run``.
 
 Tests stay declarative: they pass the runtime semantics (provider, model,
-blueprint, prompt) and assert on the ``Run``. Everything about *driving* CLIO
+agent ref, prompt) and assert on the ``Run``. Everything about *driving* CLIO
 lives here.
 
 Runtime knobs (env):
   CLIO_GACT_URL          base URL of a running gact server (default :17960)
   CLIO_AGENTTEST_CELLS   "provider:model,provider:model" cells() override
-The blueprint, marketplace source, workdir, and timeout are passed per call via
+The agent ref, marketplace source, workdir, and timeout are passed per call via
 the ``agent.run({...})`` input dict.
 """
 
@@ -106,7 +107,7 @@ def _cells_from_env() -> list[tuple[str, str]] | None:
 
 
 class ClioAgent(SUT):
-    """Drives a live CLIO gact server through one blueprint turn."""
+    """Drives a live CLIO gact server through one pinned-agent session."""
 
     name = "clio"
 
@@ -415,11 +416,22 @@ class ClioAgent(SUT):
         raise TimeoutError(f"LM provider not ready in {timeout_s:g}s (last state: {last!r})")
 
     def invoke(self, input: Any) -> Run:
-        """Run one blueprint turn and normalize the trace into a Run.
+        """Run one pinned-agent session and normalize the trace into a Run.
 
-        input: {"task": str, "blueprint_id": str, "marketplace_source"?: str,
-                "workdir"?: str, "timeout_s"?: float, "trace_path"?: str,
+        input: {"task": str, "agent_ref": str, "marketplace_source"?: str,
+                "workdir": str, "timeout_s"?: float, "trace_path"?: str,
                 "message_metadata"?: dict}
+
+        ``agent_ref`` (``<marketplace>/<agent id>``, e.g.
+        ``clio/earthscope``) pins that marketplace agent to the
+        session at creation (``metadata.agent_ref``); the run records
+        ``agent_ref``, the session's pinned ``active_agent_ref`` (from
+        ``GET /v1/sessions/{sid}/agent``) and ``agent_activated``. The default
+        ``clio`` marketplace provides every shipped agent; a case that needs a
+        different marketplace passes its local path or git URL as
+        ``marketplace_source``, which is installed through
+        ``POST /v1/plugins/marketplaces`` and trusted through
+        ``POST /v1/plugins/marketplaces/{name}/trust`` before the session starts.
 
         ``message_metadata``, when given, is attached verbatim to the
         ``metadata`` field of EVERY posted message (every prompt in a
@@ -432,7 +444,7 @@ class ClioAgent(SUT):
         """
         spec = input if isinstance(input, dict) else {"task": str(input)}
         prompt = str(spec.get("task") or spec.get("prompt") or "")
-        blueprint_id = str(spec.get("blueprint_id") or "")
+        agent_ref = str(spec.get("agent_ref") or "")
         message_metadata = spec.get("message_metadata")
         # ``workdir`` is MANDATORY: it becomes the session's workspace root, and
         # the agent writes its real deliverables (staged CSVs, rendered PNGs)
@@ -455,16 +467,8 @@ class ClioAgent(SUT):
         with httpx.Client(base_url=self._base_url, timeout=200.0) as http:
             workspace_id = self._ensure_workspace(http, Path(workdir))
             if spec.get("marketplace_source"):
-                http.post(
-                    "/v1/agent-blueprints/install",
-                    json={
-                        "source": spec["marketplace_source"],
-                        "scope": "workspace",
-                        "workspace_id": workspace_id,
-                    },
-                    timeout=180.0,
-                ).raise_for_status()
-            session_id = self._create_session(http, workspace_id, blueprint_id)
+                self._install_marketplace(http, str(spec["marketplace_source"]))
+            session_id = self._create_session(http, workspace_id, agent_ref)
             # Multi-turn: a "turns" list runs several prompts on the SAME session
             # (progressive exploration — #687). Single "task" is the one-turn case.
             turns = spec.get("turns")
@@ -494,7 +498,7 @@ class ClioAgent(SUT):
                             [],
                             {},
                             session_id,
-                            blueprint_id,
+                            agent_ref,
                             None,
                             artifacts=self._existing_paths(turn_items),
                         )
@@ -522,7 +526,7 @@ class ClioAgent(SUT):
                 resp = http.get(f"/v1/sessions/{desc_id}/messages")
                 desc_messages = resp.json().get("messages", []) if resp.status_code == 200 else []
                 descendant_payloads.append((row, desc_messages))
-            active = http.get(f"/v1/sessions/{session_id}/agent-blueprint").json()
+            active = http.get(f"/v1/sessions/{session_id}/agent").json()
             run_artifacts = self._existing_paths(self._registry_artifacts(http, session_id))
 
         trace_path = self._resolve_trace_path(spec)
@@ -532,7 +536,7 @@ class ClioAgent(SUT):
             children,
             active,
             session_id,
-            blueprint_id,
+            agent_ref,
             trace_path,
             artifacts=run_artifacts,
         )
@@ -594,17 +598,30 @@ class ClioAgent(SUT):
         created.raise_for_status()
         return str(created.json().get("id") or "")
 
-    def _create_session(self, http: httpx.Client, workspace_id: str, blueprint_id: str) -> str:
-        created = http.post(
-            "/v1/sessions", json={"title": "agent-test", "workspace_id": workspace_id}
-        )
+    def _install_marketplace(self, http: httpx.Client, source: str) -> str:
+        """Install a non-default marketplace and trust it; returns its name.
+
+        Only the shipped default marketplace is trusted at install, and a
+        re-install that changes executable parts is held until trust runs again,
+        so a case's own marketplace always goes through the explicit trust step
+        before its agents run.
+        """
+        installed = http.post("/v1/plugins/marketplaces", json={"source": source}, timeout=180.0)
+        installed.raise_for_status()
+        summary = installed.json()
+        name = str(summary.get("marketplace") or "")
+        if not name:
+            raise RuntimeError(f"marketplace install of {source!r} did not report its name")
+        http.post(f"/v1/plugins/marketplaces/{name}/trust", timeout=180.0).raise_for_status()
+        return name
+
+    def _create_session(self, http: httpx.Client, workspace_id: str, agent_ref: str) -> str:
+        payload: dict[str, Any] = {"title": "agent-test", "workspace_id": workspace_id}
+        if agent_ref:
+            payload["metadata"] = {"agent_ref": agent_ref}
+        created = http.post("/v1/sessions", json=payload)
         created.raise_for_status()
-        session_id = created.json()["id"]
-        if blueprint_id:
-            http.post(
-                f"/v1/sessions/{session_id}/agent-blueprint", json={"blueprint_id": blueprint_id}
-            ).raise_for_status()
-        return session_id
+        return str(created.json()["id"])
 
     def _post_turn(
         self,
@@ -824,13 +841,13 @@ class ClioAgent(SUT):
         children: list[dict],
         active: dict,
         session_id: str,
-        blueprint_id: str,
+        agent_ref: str,
         trace_path: Path | None = None,
         *,
         artifacts: list[str] | None = None,
     ) -> Run:
         tool_calls, steps, cost, structured = self._extract_messages(messages)
-        active_id = str(active.get("active_agent_blueprint_id") or "")
+        active_ref = self._active_agent_ref(active)
         error_info = assistant.get("error_info")
         workflow_state = self._extract_workflow_state(messages)
         return Run(
@@ -841,9 +858,9 @@ class ClioAgent(SUT):
             error=str(error_info) if error_info else None,
             extra={
                 "session_id": session_id,
-                "blueprint_id": blueprint_id,
-                "active_agent_blueprint_id": active_id,
-                "blueprint_activated": active_id == blueprint_id,
+                "agent_ref": agent_ref,
+                "active_agent_ref": active_ref,
+                "agent_activated": bool(agent_ref) and active_ref == agent_ref,
                 "child_session_ids": [str(c.get("id")) for c in children],
                 # Full child rows (workspace-scoped listing — bare GET /v1/sessions
                 # defaults to ws_default and HIDES per-cell-workspace children, the
@@ -862,6 +879,13 @@ class ClioAgent(SUT):
                 "trace_path": str(trace_path) if trace_path else "",
             },
         )
+
+    @staticmethod
+    def _active_agent_ref(active: dict[str, Any]) -> str:
+        """The ref pinned to the session, from ``GET /v1/sessions/{sid}/agent``."""
+        resolution = active.get("resolution") if isinstance(active, dict) else None
+        agent = resolution.get("agent") if isinstance(resolution, dict) else None
+        return str(agent.get("ref") or "") if isinstance(agent, dict) else ""
 
     @staticmethod
     def _extract_workflow_state(messages: list[dict]) -> dict[str, Any]:
@@ -971,9 +995,7 @@ class ClioAgent(SUT):
         out.parent.mkdir(parents=True, exist_ok=True)
         with out.open("w", encoding="utf-8") as fh:
             fh.write(json.dumps({"record": "run", "run": run.to_dict()}, default=str) + "\n")
-            fh.write(
-                json.dumps({"record": "agent_blueprint", "active": active}, default=str) + "\n"
-            )
+            fh.write(json.dumps({"record": "session_agent", "active": active}, default=str) + "\n")
             for child in children:
                 fh.write(
                     json.dumps({"record": "child_session", "child": child}, default=str) + "\n"

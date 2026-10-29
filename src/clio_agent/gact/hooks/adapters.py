@@ -84,11 +84,16 @@ class SubprocessAdapter(HookAdapter):
         argv = [entry.run.command, *entry.run.args]
         # ``default=str`` keeps a non-JSON value in an observation payload from
         # exploding the envelope (a SemanticEvent payload can carry arbitrary objects).
-        stdin_blob = json.dumps(envelope.to_json(hook_id=entry.id), default=str)
+        stdin_blob = json.dumps(self.stdin_body(entry, envelope), default=str)
+        env = self.environment(entry, envelope)
         # A manual Popen (rather than subprocess.run) so the timeout path below can
         # kill the whole process GROUP, not just the direct child PID — start_new_session
         # (POSIX) makes the child a group leader, so a hook that forks would otherwise
         # leave orphans running past the timeout kill (a resource leak, worst on CI).
+        spawn_options: dict[str, Any] = {
+            **task_spawn_options(_no_tty_kwargs()),
+            **({"env": env} if env is not None else {}),
+        }
         try:
             proc = subprocess.Popen(  # noqa: S603 - argv is exec-form (never shell); command is operator-declared
                 argv,
@@ -96,7 +101,7 @@ class SubprocessAdapter(HookAdapter):
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
                 text=True,
-                **task_spawn_options(_no_tty_kwargs()),
+                **spawn_options,
             )
         except FileNotFoundError as exc:
             record_hook_reason(
@@ -190,7 +195,7 @@ class SubprocessAdapter(HookAdapter):
                     event=envelope.hook_event_name,
                 )
                 return HookDecision(decision="allow", hook_id=entry.id)
-            return parse_hook_output(obj, hook_id=entry.id, event=envelope.hook_event_name)
+            return self.decision(obj, entry, envelope)
         if returncode == 2:
             reason = (stderr or "").strip() or f"hook {entry.id!r} denied the call"
             return HookDecision(decision="deny", reason=reason, hook_id=entry.id)
@@ -206,6 +211,21 @@ class SubprocessAdapter(HookAdapter):
             f"hook {entry.id!r} exited {returncode}: {(stderr or '').strip()[:200]}",
             hook_id=entry.id,
         )
+
+    def stdin_body(self, entry: HookEntry, envelope: HookEnvelope) -> dict[str, Any]:
+        """The JSON the hook reads on stdin."""
+        return envelope.to_json(hook_id=entry.id)
+
+    def environment(self, entry: HookEntry, envelope: HookEnvelope) -> dict[str, str] | None:
+        """The hook process environment (``None`` inherits the server's)."""
+        del entry, envelope
+        return None
+
+    def decision(
+        self, obj: dict[str, Any] | None, entry: HookEntry, envelope: HookEnvelope
+    ) -> HookDecision:
+        """The decision a hook that exited 0 printed."""
+        return parse_hook_output(obj, hook_id=entry.id, event=envelope.hook_event_name)
 
 
 class _HookCancelledWait(Exception):
@@ -319,8 +339,13 @@ def default_adapters() -> dict[str, HookAdapter]:
     them fails with a typed infra error rather than silently doing nothing.
     """
 
+    from clio_agent.gact.hooks.claude_code_hooks import ClaudeCodeHookAdapter  # noqa: PLC0415
+    from clio_agent.gact.hooks.plugin_hooks import PythonHookAdapter  # noqa: PLC0415
+
     return {
         "command": SubprocessAdapter(),
+        "claude-code": ClaudeCodeHookAdapter(),
+        "python": PythonHookAdapter(),
         "http": _NotImplementedAdapter("http"),
         "prompt": _NotImplementedAdapter("prompt"),
     }

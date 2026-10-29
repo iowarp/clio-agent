@@ -234,7 +234,13 @@ class _MemoryStore:
         return False
 
     def search(
-        self, kind: str, query_text: str, *, name_prefix: str = "", k: int = 10
+        self,
+        kind: str,
+        query_text: str,
+        *,
+        name_prefix: str = "",
+        name_re: str = "",
+        k: int = 10,
     ) -> list[tuple[str, float]]:
         return []
 
@@ -338,8 +344,12 @@ class LiveRuntimeContext:
 
         Yields:
             Persisted semantic-event segments, oldest first across ordered chunks.
+
+        The chunks are found by the dense walk (one point read per chunk), not by
+        listing every blob in the ``segments`` tag: a per-session read must cost
+        O(this session), never O(the whole store).
         """
-        for scope in self.events_scopes(session_id):
+        for scope in lane_chunking.lane_scopes(self._segments, session_id, EVENTS_SCOPE):
             for segment in self._segments.render(session_id, scope):
                 if segment.kind == "semantic_event" and isinstance(segment.content, dict):
                     yield segment

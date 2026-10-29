@@ -1,4 +1,5 @@
-"""Independent, durable model choices for CLIO's judges and search assistant."""
+"""Independent, durable model choices for CLIO's judges, search assistant and the
+long-term memory background pass (``memory_extract``, ``memory_consolidate``)."""
 
 from __future__ import annotations
 
@@ -16,8 +17,14 @@ from clio_agent.user_config_document import (
     write_document,
 )
 
-JudgeRole = Literal["goals", "variants", "permissions"]
-ROLES: tuple[JudgeRole, ...] = ("goals", "variants", "permissions")
+JudgeRole = Literal["goals", "variants", "permissions", "memory_extract", "memory_consolidate"]
+ROLES: tuple[JudgeRole, ...] = (
+    "goals",
+    "variants",
+    "permissions",
+    "memory_extract",
+    "memory_consolidate",
+)
 
 
 def fleet_role_configured(role: JudgeRole) -> bool:
@@ -33,7 +40,7 @@ def _judge_choices() -> dict[str, Any]:
         cast=lambda raw: json.loads(raw) if isinstance(raw, str) else raw,
     )
     if not isinstance(value, dict) or value.keys() - set(ROLES):
-        raise ValueError("Fleet judges must map goals, variants or permissions to a model or null")
+        raise ValueError(f"Fleet judges must map {', '.join(ROLES)} to a model or null")
     return value
 
 

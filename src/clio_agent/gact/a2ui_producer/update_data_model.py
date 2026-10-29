@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from clio_agent.gact.a2ui_producer import _common
+from clio_agent.gact.a2ui_producer import _bound_files, _common
 from clio_agent.gact.a2ui_producer._presentation import surface_presentation
 from clio_agent.gact.a2ui_producer._refusal import refusal
 from clio_agent.gact.agents.tool_instrumentation import native_tool
@@ -58,6 +58,13 @@ def build_update_a2ui_data_model_tool() -> Any:
         if existing is None or existing.state == "deleted":
             return refusal("a2ui_surface_not_found", detail=f"A2UI surface not found: {surface_id}")
 
+        exported: list[dict[str, Any]] = []
+        if not delete:
+            components = _common.merged_surface_components(existing, [])
+            modelled = _bound_files.export_bound_values(app, session_id, components, path, value)
+            if isinstance(modelled, dict):
+                return modelled
+            value, exported = modelled
         payload: dict[str, Any] = {"surfaceId": surface_id, "path": path}
         if not delete:
             payload["value"] = value
@@ -84,6 +91,8 @@ def build_update_a2ui_data_model_tool() -> Any:
             "revision": surface.revision,
             "state": surface.state,
         }
+        if exported:
+            result["exported_artifacts"] = exported
         result.update(_common.surface_registry_fields(outcome))
         return result
 

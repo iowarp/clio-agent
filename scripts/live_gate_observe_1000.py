@@ -1,12 +1,13 @@
 #!/usr/bin/env python3
-"""Live gate for #1000 ``observe_agent_tasks`` (OBSERVE posture).
+"""Live gate for #1000 (OBSERVE posture): observing a child task's intermediate state.
 
 Boots a GACT server with the Claude SDK transport, inherits the provider's
-selected model, pre-allows permissions, activates the marketplace
-``earthscope-flat`` Agent Blueprint by path, and posts a prompt where acting on
-INTERMEDIATE evidence is naturally advantageous — WITHOUT naming any tool. PASS
-= the main uses ``observe_agent_tasks`` (or an observe-shaped pattern) to surface
-the selected station id from intermediate typed state BEFORE the child's terminal.
+selected model, pre-allows permissions, pins the marketplace EarthScope
+agent (``clio/earthscope``) to the session, and posts a prompt where acting
+on INTERMEDIATE evidence is naturally advantageous — WITHOUT naming any tool.
+PASS = the main observes its child (the shared ``observe_tasks`` control, or the
+``observe_agent_tasks`` compatibility alias #1000 introduced) to surface the
+selected station id from intermediate typed state BEFORE the child's terminal.
 
 Run detached; it writes a verdict JSON to --out.
 """
@@ -36,10 +37,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser()
     parser.add_argument("--port", type=int, default=17818)
     parser.add_argument("--transport", default="sdk")
-    parser.add_argument(
-        "--blueprint-path",
-        default="external/clio-agent-marketplace/earthscope-flat",
-    )
+    parser.add_argument("--agent", default="clio/earthscope", help="agent ref to pin")
     parser.add_argument("--out", default="out/live_gate_observe_1000.json")
     parser.add_argument("--turn-timeout-s", type=float, default=900.0)
     return parser
@@ -63,11 +61,6 @@ def main() -> int:
     base = f"http://127.0.0.1:{args.port}"
     out_path = (REPO / args.out).resolve()
     out_path.parent.mkdir(parents=True, exist_ok=True)
-    blueprint_path = (REPO / args.blueprint_path).resolve()
-    if not (blueprint_path / "AGENT.md").is_file():
-        raise FileNotFoundError(
-            f"marketplace blueprint is unavailable: {blueprint_path / 'AGENT.md'}"
-        )
 
     env = dict(os.environ)
     env["CLIO_LM_PROVIDER"] = "claude_code"
@@ -121,13 +114,12 @@ def main() -> int:
         wsid = ws.get("id") or ws.get("workspace_id")
         sess = call("POST", "/v1/sessions", {"title": "observe-gate", "workspace_id": wsid})
         sid = sess["id"]
-        # activate the earthscope-flat blueprint by path
-        act = call(
-            "POST",
-            f"/v1/sessions/{sid}/agent-blueprint",
-            {"path": str(blueprint_path)},
-        )
-        verdict["activation"] = {k: act.get(k) for k in ("active_agent_blueprint_id",)}
+        # pin the EarthScope agent to the session
+        pinned = call("PATCH", f"/v1/sessions/{sid}/agent", {"ref": args.agent})
+        verdict["agent"] = {
+            "ref": pinned["resolution"]["agent"]["ref"],
+            "resolution_digest": pinned["resolution"]["digest"],
+        }
         # post the prompt
         call("POST", f"/v1/sessions/{sid}/messages", {"text": PROMPT}, ok=(200, 201, 202))
         # wait for the turn to finish
@@ -147,7 +139,7 @@ def main() -> int:
         for m in msgs:
             for p in m.get("parts", []) or []:
                 blob = json.dumps(p, default=str)
-                if "observe_agent_tasks" in blob:
+                if "observe_tasks" in blob or "observe_agent_tasks" in blob:
                     observe_calls.append(
                         {"role": m.get("role"), "type": p.get("type"), "excerpt": blob[:400]}
                     )

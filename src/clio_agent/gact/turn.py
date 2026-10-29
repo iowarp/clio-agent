@@ -17,31 +17,28 @@ from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Any, Literal, Optional
 
 from clio_agent.errors import ClioError
-from clio_agent.gact.agents.unresolved_blueprint import no_resolvable_error
+from clio_agent.flows.outcomes import FlowOutcome
+from clio_agent.gact.agents.resolution import SessionAgentUnavailable
 from clio_agent.gact.context_reference_delivery import record_context_reference_deliveries
 from clio_agent.gact.delegation import (
     _coerce_expert_handoff_rows,
     _prediction_workflow_state,
 )
 from clio_agent.gact.events import Event, EventBus, _publish_transcript_event
-from clio_agent.gact.evidence import _propose_edit_diffs_from_pred
 from clio_agent.gact.messaging import (
     _agent_accepts_images,
     _image_part_summaries,
-    _prediction_summary,
     _user_message_parts,
 )
 from clio_agent.gact.off_loop import emit_semantic_event_async
 from clio_agent.gact.permission_delivery import publish_permission_event
 from clio_agent.gact.runtime import bringup_timing
 from clio_agent.gact.runtime.globals import (
-    _BlueprintRootDisabled,
     _cancelled_error_info,
     _coerce_error_info,
     _ContextFileAccessError,
     _iso_from_epoch,
     _new_message_id,
-    _NoResolvableAgent,
     _session_agent_id,
     _TurnCancelled,
     _TurnTimedOut,
@@ -49,7 +46,6 @@ from clio_agent.gact.runtime.globals import (
 )
 from clio_agent.gact.runtime.retention import enforce_dict_bound
 from clio_agent.gact.session_store import _append_session_message
-from clio_agent.gact.skills import SkillNotDelegatableError
 from clio_agent.gact.stream_failures import forward_error_info
 from clio_agent.gact.streaming import _extract_tools_called, _pop_stream_fallback
 from clio_agent.gact.tool_observer import (
@@ -65,15 +61,15 @@ from clio_agent.gact.turn_stream import bind_live_emitter, settle_turn_transcrip
 from clio_agent.gact.turn_usage import roll_up_usage
 from clio_agent.gact.turn_watchdog import make_turn_cancel_event
 from clio_agent.gact.types import ErrorInfo, Message, Part, Session
-from clio_agent.gact.usage import _snapshot_lm_history_index
+from clio_agent.gact.usage import _turn_call_count
 from clio_agent.runtime import turn_lm_ledger
+from clio_agent.tools.mcp_runtime import wire_value
 
 # NOTE (#714): every turn helper above is imported from its true *leaf* owner,
 # not from ``clio_agent.gact.app``. The turn loop originally lived in ``app.py``
-# and resolved these through the ``app`` re-export shims; only the agent-builder /
-# blueprint-runner seams + ``_enrich_cancellation_error_info`` (the "danger set"
-# that tests monkeypatch as e.g. ``clio_agent.gact.app._build_tool_user_agent_module``)
-# are still read back through ``app`` at call time — via a function-local import at
+# and resolved these through the ``app`` re-export shims; only the agent-builder
+# seams + ``_enrich_cancellation_error_info`` (the "danger set" that tests
+# monkeypatch on ``clio_agent.gact.app``) are still read back through ``app`` at call time — via a function-local import at
 # their single call site — to preserve that monkeypatch contract with zero test
 # edits (``stage_intent_user_message`` keeps that contract for the user-message
 # persist seam). Those app imports are function-local, so the graph stays acyclic.
@@ -185,15 +181,6 @@ async def _apply_turn_prediction(
     # state.turn_tokens / state.turn_cost from the prediction
     # or the per-turn LM history slice (see turn_usage.py).
     roll_up_usage(state, state.pred)
-    state.proposed_diffs = list(getattr(state.pred, "file_diffs", None) or [])
-    if not state.proposed_diffs:
-        # Dynamic tool agents call fs_propose_edit as a TOOL and never set
-        # pred.file_diffs; promote those results so they materialize as
-        # file_diff parts + pending /diffs rows (iowarp/clio-agent#674).
-        state.proposed_diffs = _propose_edit_diffs_from_pred(
-            state.pred,
-            state.tools_called,
-        )
     state.nanoagents = list(getattr(state.pred, "nanoagents_spawned", None) or [])
     for req in getattr(state.pred, "permissions_requested", None) or []:
         src = (
@@ -265,19 +252,6 @@ async def _run_turn_in_background(
     the failure live. We never re-raise; the request that started us
     is long gone.
     """
-    # #714 DANGER SET: the assistant-persist + cancellation-enricher seams are
-    # resolved through ``app`` via a *function-local* import so the ~83 ``app._X``
-    # test monkeypatches (which retarget these at call time) keep working with
-    # zero test edits. ``_EXECUTABLE_SESSION_AGENT_IDS`` is an ``app``-owned module
-    # constant kept here too (read by the except-chain). The agent-builder /
-    # blueprint-runner danger-set seams moved with the forward orchestration to
-    # ``turn_forward.py`` (#767 Phase B Slice 5), which keeps its own function-local
-    # ``app`` import. Every other former app helper is imported at module top from
-    # its true leaf owner (#714), so turn.py has ZERO top-level ``app`` imports.
-    from clio_agent.gact.app import (  # noqa: PLC0415
-        _EXECUTABLE_SESSION_AGENT_IDS,
-    )
-
     bus: EventBus = app.state.bus
     sess = app.state.sessions.get(sid)
     if sess is None:
@@ -364,34 +338,31 @@ async def _run_turn_in_background(
     # :func:`~clio_agent.gact.turn_stream.emit_chunk` is a thin adapter: semantic lm.token.delta +
     # the parent-resume suppression gate + stream_audit, then one transcript call.
     from clio_agent.gact.agents.resolution import (  # noqa: PLC0415
-        _active_workflow_state_schema,
+        session_workflow_state_schema,
     )
     from clio_agent.gact.tool_observer import _open_turn_transcript  # noqa: PLC0415
 
-    # #767 Phase C: resolve the turn's pack workflow_state schema at the one turn
+    # #767 Phase C: resolve the turn's plugin workflow_state schema at the one turn
     # seam and carry it on ``state`` for every delegation/grounding/scrub site.
-    state.workflow_schema = _active_workflow_state_schema(state.app, state.sid)
+    state.workflow_schema = session_workflow_state_schema(state.app, state.sid)
     state.transcript = _open_turn_transcript(state.app, state.sid, state.turn_id)
     # TRICKY #1 (Phase B spec): bind the emitter over ``state`` so its LATE reads
     # of state.active_agent_id / state.invocation_agent_id see the forward seam's
     # IN-PLACE mutations.
 
     # Unified LM token highway (#693): bind this turn's loop + chat publisher so a
-    # blueprint/expert LM call streamed in an executor thread feeds the SAME
-    # emitter — one streaming path for chat AND blueprint turns, instead of the
+    # agent or subagent LM call streamed in an executor thread feeds the SAME
+    # emitter — one streaming path for chat AND agent turns, instead of the
     # old executor drain-and-discard. The executor inherits this binding via the
     # contextvars.copy_context() at the forward sites below.
     bind_live_emitter(state, asyncio.get_running_loop())
 
-    # iowarp/clio-agent#8: snapshot LM history before the turn so we
-    # can sum every call this turn made. ContextVars don't propagate
-    # to asyncio executor threads (so dspy.settings.usage_tracker is
-    # unreliable from worker threads), but ``lm.history`` IS shared
-    # across threads — list.append under the GIL gives us a clean,
-    # thread-safe ledger. We diff history[start:end] post-turn. The LMs the
-    # forward builds itself (one per expert forward) join the turn LM ledger.
+    # iowarp/clio-agent#8: every LM call the turn makes -- planner, experts, chat,
+    # in any worker thread or on the LM loop -- lands in the turn's LM ledger, the
+    # only place a call's history entry lives; the usage rollup reads the calls made
+    # after this point.
     lm_ledger_token = turn_lm_ledger.open_ledger()
-    state.history_start = _snapshot_lm_history_index(state.app)
+    state.calls_start = _turn_call_count()
     _pop_stream_fallback(state.app, state.sid)
     # #767 Phase B Slice 5: mint + register the cancel event and derive the
     # no-progress watchdog cadence onto ``state`` (formerly the inline setup
@@ -429,7 +400,7 @@ async def _run_turn_in_background(
         # immediately before each model call, including subsequent iterations.
 
         # #767 Phase B Slice 5: agent resolve -> module build -> streamed/sync
-        # forward -> expert-pack delegation settle lives in ``turn_forward.py``.
+        # forward (the agent's flow) lives in ``turn_forward.py``.
         # It sets state.active_agent_id / invocation_agent_id (IN PLACE, TRICKY
         # #1) / agent_runtime / prompt_resolution / dynamic_agent_used /
         # expert_handoffs and returns the prediction (TRICKY #2: pred is a seam
@@ -474,44 +445,40 @@ async def _run_turn_in_background(
         )
         state.answer_text = partial_answer
         state.tools_called = []
-    except _BlueprintRootDisabled as exc:
-        # #948 S4: the active blueprint's declared root is disabled by validation.
-        # Typed failure carrying the exact errors — never a substitute root,
-        # never the legacy planner.
-        state.selected_agent = exc.root_id
-        state.rationale = "The active Agent Blueprint's root expert is disabled by validation."
+    except FlowOutcome as exc:
+        # A flow ended on a typed outcome it did not handle (a failed gather, a
+        # limit, a stall, an uncertain task): the reason is the error, with the
+        # handle and details, never a guessed answer.
+        state.rationale = f"The agent's flow ended with {exc.reason}."
         state.error_info = ErrorInfo(
-            error="blueprint_root_disabled",
-            message=(
-                f"Active Agent Blueprint root expert {exc.root_id!r} is disabled "
-                "by validation; the turn cannot run."
-            ),
-            details={
-                "root_id": exc.root_id,
-                "agent_blueprint_id": exc.blueprint_id,
-                "validation_errors": exc.validation_errors,
-                "recovery_actions": [
-                    "update_agent_blueprint_install",
-                    "fix_blueprint_declaration",
-                    "activate_another_blueprint",
-                ],
-            },
+            error=exc.reason,
+            message=str(exc),
+            details=wire_value(exc.to_dict(), mode="gact_runtime"),
             recoverable=True,
         )
         state.answer_text = ""
         state.tools_called = []
-    except _NoResolvableAgent as exc:
-        # #948 S4b: a default/main session resolved NO executable Agent Blueprint,
-        # and the legacy Tier-1 planner that used to run here is deleted. Fail
-        # TYPED — never fall through to a legacy pathway.
-        state.selected_agent = exc.agent_id
-        state.rationale = (
-            "No Agent Blueprint resolved for this session, and the legacy planner "
-            "is removed, so the turn has nothing to execute."
-        )
-        # #1455: name the blueprint and the observed cause, never a generic blame.
-        state.error_info = await asyncio.to_thread(
-            no_resolvable_error, state.app, state.sid, exc.agent_id
+    except SessionAgentUnavailable as exc:
+        # The session's agent does not resolve (a plugin missing, untrusted,
+        # colliding, or the agent uninstalled). Typed, with every resolution
+        # error -- never a substitute agent.
+        state.selected_agent = exc.ref
+        state.rationale = "The session's agent could not be resolved from its plugins."
+        state.error_info = ErrorInfo(
+            error="agent_unavailable",
+            message=str(exc),
+            details={
+                "agent_ref": exc.ref,
+                "reason": exc.reason,
+                "errors": exc.errors,
+                "recovery_actions": [
+                    "install_missing_plugin",
+                    "trust_marketplace",
+                    "remove_plugin_from_agent",
+                    "choose_another_agent",
+                ],
+            },
+            recoverable=True,
         )
         state.answer_text = ""
         state.tools_called = []
@@ -539,13 +506,10 @@ async def _run_turn_in_background(
             details={
                 "agent_id": exc.agent_id,
                 "reason": exc.reason,
-                "supported_agent_ids": sorted(
-                    agent_id for agent_id in _EXECUTABLE_SESSION_AGENT_IDS if agent_id
-                ),
                 "unsupported_tools": exc.tools,
                 "mount_failures": mount_failures,
                 "recovery_actions": [
-                    "choose_builtin_agent",
+                    "choose_another_agent",
                     "remove_custom_agent_tools",
                     "retry",
                     "exit",
@@ -557,22 +521,6 @@ async def _run_turn_in_background(
         state.tools_called = []
     except _ContextFileAccessError as exc:
         state.error_info = exc.error_info
-        state.answer_text = ""
-        state.tools_called = []
-    except SkillNotDelegatableError as exc:
-        # #918: a session/turn bound to a skill id fails TYPED (skills are not
-        # agents since the skill-semantics change), never as a generic
-        # agent_error that hides the fix.
-        state.error_info = ErrorInfo(
-            error="skill_not_delegatable",
-            message=str(exc),
-            details={
-                "skill_id": exc.skill_id,
-                "skill_path": exc.path,
-                "recovery_actions": ["choose_builtin_agent", "retry", "exit"],
-            },
-            recoverable=True,
-        )
         state.answer_text = ""
         state.tools_called = []
     except ClioError as exc:
@@ -622,11 +570,10 @@ async def _run_turn_in_background(
     finally:
         turn_lm_ledger.close_ledger(lm_ledger_token)
     from clio_agent.gact.conversations import ConversationOutcome
+    from clio_agent.gact.turn_finalize import turn_outputs
 
     return ConversationOutcome(
-        outputs=_prediction_summary(state.pred)
-        if state.pred is not None
-        else {"answer": state.answer_text},
+        outputs=turn_outputs(state),
         disposition=getattr(state.pred, "assignment_disposition", None),
         context=getattr(state.pred, "clio_context_boundary", None),
         error=state.error_info.model_dump(mode="json") if state.error_info is not None else None,

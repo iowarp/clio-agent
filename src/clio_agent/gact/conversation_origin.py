@@ -61,4 +61,11 @@ def saved_fork_origin(metadata: Mapping[str, Any]) -> dict[str, Any] | None:
     title = value.get("title")
     if isinstance(title, str) and title:
         result["title"] = title
+    # An agent's fork names its author, the fork call and the note it gave.
+    author = value.get("author")
+    if isinstance(author, Mapping) and author.get("kind") in {"agent", "human"}:
+        result["author"] = {k: str(v) for k, v in author.items() if isinstance(v, str)}
+    for key in ("note", "invocation"):
+        if isinstance(value.get(key), str) and value[key]:
+            result[key] = value[key]
     return result

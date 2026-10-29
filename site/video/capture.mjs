@@ -6,9 +6,10 @@ import {installPointerGuide} from './pointer-guide.mjs';
 // Records the browser continuously. Screenshots are review evidence only.
 const takeDir = resolve('public/takes');
 await mkdir(takeDir, {recursive: true});
-const commandDir = resolve('.capture-commands');
+// CAPTURE_COMMANDS / CAPTURE_PROFILE let two recorders run side by side.
+const commandDir = resolve(process.env.CAPTURE_COMMANDS || '.capture-commands');
 await mkdir(commandDir, {recursive: true});
-const browser = await puppeteer.launch({headless: true, executablePath:process.env.DEMO_CHROME_PATH || undefined, userDataDir:resolve('.capture-profile'), defaultViewport: {width: 1280, height: 870, deviceScaleFactor: 1}});
+const browser = await puppeteer.launch({headless: true, executablePath:process.env.DEMO_CHROME_PATH || undefined, userDataDir:resolve(process.env.CAPTURE_PROFILE || '.capture-profile'), defaultViewport: {width: 1280, height: 870, deviceScaleFactor: 1}});
 const page = await browser.newPage();
 const diagnostics=[];
 page.on('pageerror',error=>diagnostics.push(String(error)));
@@ -33,7 +34,7 @@ async function run(action) {
     if(!Number.isInteger(action.width) || !Number.isInteger(action.height) || action.width<640 || action.height<480) throw new Error('Supply a viewport at least 640 x 480');
     await page.setViewport({width:action.width,height:action.height,deviceScaleFactor:action.scale??1});
   }
-  if (action.op === 'goto') {await page.goto(action.url, {waitUntil:'networkidle2', timeout:60000}); await pointer();}
+  if (action.op === 'goto') {await page.goto(action.url, {waitUntil:'networkidle2', timeout:Number(process.env.CAPTURE_GOTO_MS || 60000)}); await pointer();}
   if (action.op === 'downloads') {
     if(recorder) throw new Error('Set the download directory before recording');
     const downloadPath=resolve(action.path);

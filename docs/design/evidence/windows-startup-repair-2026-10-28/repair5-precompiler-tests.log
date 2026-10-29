@@ -1,0 +1,25 @@
+============================= test session starts =============================
+platform win32 -- Python 3.14.6, pytest-8.4.2, pluggy-1.6.0
+cachedir: .pytest-runtime\run-43480-1ae9f34cc1ef\cache\pytest
+rootdir: D:\cw
+configfile: pyproject.toml
+plugins: anyio-4.11.0, hypothesis-6.156.2, asyncio-1.2.0, cov-7.0.0, repeat-0.9.4, timeout-2.4.0, xdist-3.8.0, zarr-3.4.0
+asyncio: mode=Mode.AUTO, debug=False, asyncio_default_fixture_loop_scope=None, asyncio_default_test_loop_scope=function
+timeout: 180.0s
+timeout method: thread
+timeout func_only: False
+collected 2 items
+
+tests\test_scripts\test_precompile_runtime.py ..                         [100%]
+
+============================== warnings summary ===============================
+src\clio_agent\paths.py:114
+src\clio_agent\paths.py:114
+tests/test_scripts/test_precompile_runtime.py::test_startup_graph_compiles_only_selected_roots[False]
+tests/test_scripts/test_precompile_runtime.py::test_startup_graph_compiles_only_selected_roots[False]
+tests/test_scripts/test_precompile_runtime.py::test_startup_graph_compiles_only_selected_roots[True]
+  D:\cw\src\clio_agent\paths.py:114: FutureWarning: CLIO_USER_DIR is deprecated; migrate to CLIO_AGENT_HOME
+    root = resolve_root(role, home=base_home, env=source, platform=_platform())
+
+-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
+======================= 2 passed, 5 warnings in 20.64s ========================

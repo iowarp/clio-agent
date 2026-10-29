@@ -13,7 +13,7 @@ from clio_agent.gact import context
 from clio_agent.gact.agents.tool_instrumentation import native_tool
 from clio_agent.gact.off_loop import join_off_loop
 from clio_agent.gact.task_access import TaskAccess
-from clio_agent.gact.task_publication import publish_task_notice
+from clio_agent.gact.task_tool_collection import collected as _collected
 from clio_agent.gact.tool_observation import CollectedTaskResult
 from clio_agent.tools.task_call_context import TASK_CALL
 
@@ -48,38 +48,6 @@ def _runtime() -> tuple[Any, Any]:
     if app is None or not context.active_session_id():
         raise ValueError("Task controls require a product conversation")
     return app, app.state.conversations.caller(context.active_session_id())
-
-
-def _collected(app: Any, caller: Any, value: dict[str, Any]) -> CollectedTaskResult:
-    if value.get("result_kind") == "shared_evidence":
-        return CollectedTaskResult(value, ())
-    handles = {
-        row["handle"]
-        for row in value.get("outcomes", [])
-        if row.get("handle")
-        and row.get("pending") is False
-        and not row.get("error")
-        and row.get("status") != "task_state_uncertain"
-    }
-    if value.get("handle") and value.get("pending") is False:
-        handles.add(value["handle"])
-    read_handles = handles | ({value["handle"]} if value.get("handle") else set())
-    observe_handles: tuple[str, ...] = ()
-    if isinstance(value, CollectedTaskResult):
-        read_handles.update(value.read_handles)
-        observe_handles = value.observe_handles
-    with app.state.task_history.serialized():
-        for handle in handles:
-            current = TaskAccess(app.state.task_history, caller).require(handle, "read")
-            publish_task_notice(app.state.task_history, current)
-        identities = tuple(
-            item.id
-            for item in app.state.task_history.pending_mail(caller.session_id)
-            if item.handle in handles and item.kind in {"task_result", "question_answer"}
-        )
-    return CollectedTaskResult(
-        value, identities, tuple(sorted(read_handles)), observe_handles=observe_handles
-    )
 
 
 def _task_read(value: dict[str, Any]) -> CollectedTaskResult:
@@ -187,20 +155,27 @@ def build_task_tools() -> list[Any]:
         return _task_read(value)
 
     async def wait_tasks(
-        tasks: str | list[str], return_when: str = "all", timeout_s: float | None = None
+        tasks: str | list[str],
+        return_when: str = "all",
+        timeout_s: float | None = None,
+        interrupt_on_mail: bool = True,
     ) -> dict[str, Any]:
         app, caller = _runtime()
-        value = await app.state.task_operations.wait(caller, tasks, return_when, timeout_s)
+        value = await app.state.task_operations.wait(
+            caller, tasks, return_when, timeout_s, interrupt_on_mail=interrupt_on_mail
+        )
         return await app.state.task_history.io.run(_collected, app, caller, value)
 
     async def cancel_tasks(tasks: str | list[str]) -> dict[str, Any]:
         app, caller = _runtime()
         return await app.state.task_operations.cancel(caller, tasks)
 
-    async def get_task_result(handle: str, cursor: str | None = None) -> dict[str, Any]:
+    async def get_task_result(
+        handle: str, cursor: str | None = None, select: list[str] | None = None
+    ) -> dict[str, Any]:
         app, caller = _runtime()
         value = await app.state.task_history.io.run(
-            app.state.task_operations.result, caller, handle, cursor
+            app.state.task_operations.result, caller, handle, cursor, select
         )
         return await app.state.task_history.io.run(_collected, app, caller, value)
 
@@ -274,6 +249,7 @@ def build_task_tools() -> list[Any]:
                 "limit": {"type": "integer", "minimum": 1, "maximum": 200, "default": 50},
             },
             "Peek without consuming completion: view progress (default), transcript, recorded summary, or linked artifacts. Transcript preserves typed source rows, IDs and resumable JSON fragments for large rows. history=session requires stable session read rights; assignment stays on the selected run. Content views return immediately; patterns/subscriptions use progress. Follow cursor while has_more. timeout_s ends only a progress wait; tasks continue.",
+            read=True,
         ),
         _tool(
             wait_tasks,
@@ -282,8 +258,10 @@ def build_task_tools() -> list[Any]:
                 "tasks": _TASKS,
                 "return_when": {"type": "string", "enum": ["any", "all"], "default": "all"},
                 "timeout_s": _TIMEOUT,
+                "interrupt_on_mail": {"type": "boolean", "default": True},
             },
-            "Collect independent task outcomes. With return_when='any', a member error is an available outcome; other handles remain explicitly pending and continue running. task_state_uncertain requires inspection, not repeated waits for the same receipt. Default wait is unbounded; zero snapshots; positive expiry or Stop ends only this waiter.",
+            "Collect independent task outcomes. With return_when='any', a member error is an available outcome; other handles remain explicitly pending and continue running. task_state_uncertain requires inspection, not repeated waits for the same receipt. Default wait is unbounded; zero snapshots; positive expiry or Stop ends only this waiter. By default, authorized messages or answers return interrupted=mail_received with pending tasks so you can coordinate before waiting again. Set interrupt_on_mail=false to wait only for task outcomes; task-result notices alone do not interrupt all.",
+            read=True,
         ),
         _tool(
             cancel_tasks,
@@ -294,8 +272,24 @@ def build_task_tools() -> list[Any]:
         _tool(
             get_task_result,
             "get_task_result",
-            {"handle": {"type": "string"}, "cursor": _STRING},
-            "Collect retained terminal output and publish its completion notices, or report pending. Follow next_cursor for bounded output; concatenate JSON chunks before parsing. A delegated evidence cursor reads only its committed snapshot. Later explicit reads remain possible.",
+            {
+                "handle": {"type": "string"},
+                "cursor": _STRING,
+                "select": {
+                    "anyOf": [
+                        {
+                            "type": "array",
+                            "items": {"type": "string"},
+                            "minItems": 1,
+                            "maxItems": 32,
+                        },
+                        {"type": "null"},
+                    ],
+                    "default": None,
+                },
+            },
+            "Collect retained terminal output and publish its completion notices, or report pending. Optional select lists JSON Pointers, e.g. ['/workflow_state'], returning a pointer-keyed result object without paging unrelated report text. Escape key / as ~1 and ~ as ~0. Unselected dictionary reads list result_keys. Missing paths are errors. Follow next_cursor for bounded output; concatenate JSON chunks before parsing. The cursor pins source, selection and recipient; omit select on continuation or repeat it unchanged. A delegated evidence cursor reads only its committed snapshot. Later explicit reads remain possible.",
+            read=True,
         ),
         _tool(
             send_agent_message,
@@ -581,192 +575,3 @@ def build_task_compatibility_tools(requested: list[str]) -> list[Any]:
         for function, name, args, read in declarations
         if name in requested
     ]
-
-
-def build_spawn_runtime_tools(base_agent: Any, agent_def: Any, **options: Any) -> list[Any]:
-    """Spawn through the same conversation owner; no agent-only wait/cancel catalogs."""
-    fanout = getattr(agent_def, "fanout", {}) or {}
-    limits = fanout.get("limits", {})
-    concurrency = limits.get("concurrency")
-    if concurrency is not None and (
-        isinstance(concurrency, bool) or not isinstance(concurrency, int) or concurrency < 1
-    ):
-        raise ValueError("Declared fanout concurrency must be a positive integer")
-
-    def local_placement(placement: str | None) -> None:
-        if placement == "":
-            raise ValueError("placement must be 'local' or null")
-        if placement not in {None, "local"}:
-            raise ValueError(
-                "Special relay placement is unavailable; configure an ordinary MCP server"
-            )
-
-    async def prepare_and_spawn(
-        agent: str,
-        task: str,
-        placement: str | None,
-        input_task_ids: list[str] | None,
-        blueprint_id: str | None,
-        strategy: dict[str, Any] | None,
-        invocation: str,
-    ) -> dict[str, Any]:
-        local_placement(placement)
-        app, caller = _runtime()
-        from clio_agent.gact.agents.blueprint_commission import resolve_commission_target
-        from clio_agent.gact.assignment_evidence import select_assignment_evidence
-
-        target, scope, _, _ = await app.state.task_history.io.run(
-            resolve_commission_target, app, caller.session_id, agent, blueprint_id
-        )
-        pins = await app.state.task_history.io.run(
-            select_assignment_evidence, app.state.task_history, caller, input_task_ids
-        )
-        result = await app.state.conversations.spawn(
-            caller,
-            task,
-            target,
-            invocation,
-            inference_concurrency=concurrency,
-            target_scope=scope,
-            strategy=strategy,
-            launch_context={"input_task_refs": [pin.model_dump(mode="json") for pin in pins]},
-        )
-        return {**result, **({"task_id": result["handle"]} if "handle" in result else {})}
-
-    async def spawn_agent_task(
-        agent: str = "",
-        task: str = "",
-        placement: str | None = None,
-        input_task_ids: list[str] | None = None,
-        blueprint_id: str | None = None,
-        strategy: dict[str, Any] | None = None,
-    ) -> dict[str, Any]:
-        return await prepare_and_spawn(
-            agent,
-            task,
-            placement,
-            input_task_ids,
-            blueprint_id,
-            strategy,
-            TASK_CALL.get().invocation_id or uuid4().hex,
-        )
-
-    async def spawn_agents_parallel(
-        spawns: list[dict[str, Any]],
-        placement: str | None = None,
-    ) -> dict[str, Any]:
-        local_placement(placement)
-        maximum = limits.get("max_items", 0)
-        if not spawns or maximum and len(spawns) > maximum:
-            raise ValueError("Spawn batch is empty or exceeds its declared item budget")
-        invocation = TASK_CALL.get().invocation_id or uuid4().hex
-        outcomes = []
-        for index, assignment in enumerate(spawns):
-            try:
-                outcomes.append(
-                    await prepare_and_spawn(
-                        assignment.get("agent", ""),
-                        assignment["task"],
-                        placement,
-                        assignment.get("input_task_ids"),
-                        assignment.get("blueprint_id"),
-                        assignment.get("strategy"),
-                        invocation + ":" + str(index),
-                    )
-                )
-            except Exception as error:
-                logger.exception(
-                    "Task boundary reason=group_member_control_failed error_type=%s",
-                    type(error).__name__,
-                )
-                outcomes.append({"index": index, "error": str(error)})
-        return {"spawned": outcomes, "outcomes": outcomes}
-
-    strategy_schema = {
-        "anyOf": [
-            {
-                "type": "object",
-                "properties": {
-                    "variant": {"type": "string", "enum": ["best_of_n", "refine"]},
-                    "n": {"type": "integer", "minimum": 1},
-                    "rubric": {"type": "string"},
-                    "threshold": {"type": "number"},
-                    "judge": {"type": "string", "enum": ["lm", "user"]},
-                },
-                "required": ["variant", "n", "rubric"],
-                "additionalProperties": False,
-            },
-            {"type": "null"},
-        ],
-        "default": None,
-    }
-    tools = [
-        _tool(
-            spawn_agent_task,
-            "spawn_agent_task",
-            {
-                "agent": {"type": "string", "default": ""},
-                "task": {"type": "string"},
-                "blueprint_id": _STRING,
-                "placement": _STRING,
-                "input_task_ids": {
-                    "anyOf": [{"type": "array", "items": {"type": "string"}}, {"type": "null"}],
-                    "default": None,
-                },
-                "strategy": strategy_schema,
-            },
-            "Delegate the original assignment and immediately receive a Subagent handle. Optional strategy selects best_of_n/refine with n, rubric, threshold and lm/user judge. Continue work, observe_tasks, or wait_tasks. Child results wake eligible idle parents. Pause holds only the child model; cancel_tasks includes its descendant work.",
-        )
-    ]
-    tools.append(
-        _tool(
-            spawn_agents_parallel,
-            "spawn_agents_parallel",
-            {
-                "placement": _STRING,
-                "spawns": {
-                    "type": "array",
-                    "minItems": 1,
-                    "items": {
-                        "type": "object",
-                        "properties": {
-                            "agent": {"type": "string"},
-                            "task": {"type": "string"},
-                            "blueprint_id": _STRING,
-                            "input_task_ids": {
-                                "anyOf": [
-                                    {"type": "array", "items": {"type": "string"}},
-                                    {"type": "null"},
-                                ],
-                                "default": None,
-                            },
-                            "strategy": strategy_schema,
-                        },
-                        "required": ["task"],
-                        "additionalProperties": False,
-                    },
-                },
-            },
-            "Accept several child assignments and return their Subagent handles with independent errors. Native inference budgets apply only to model calls. Use shared observation or waiting across the returned handles.",
-        )
-    )
-    from clio_agent.gact.workflows import parse_workflow, run_declared_workflow
-
-    if parse_workflow(agent_def) is not None:
-
-        async def run_workflow(request: str = "") -> dict[str, Any]:
-            app, caller = _runtime()
-            value = await run_declared_workflow(
-                app, caller, agent_def, request, TASK_CALL.get().invocation_id or uuid4().hex
-            )
-            return await app.state.task_history.io.run(_collected, app, caller, value)
-
-        tools.append(
-            _tool(
-                run_workflow,
-                "run_workflow",
-                {"request": {"type": "string", "default": ""}},
-                "Run this agent's declared workflow using ordinary child tasks and shared waits. Stop ends the wait and leaves accepted children running. Calling again with the same request continues unfinished steps without replaying them.",
-            )
-        )
-    return tools

@@ -29,7 +29,7 @@ def _loaded_runtime_sources(python_root: Path) -> list[Path]:
     return sorted(sources)
 
 
-def precompile_startup_modules(python_root: Path) -> int:
+def precompile_startup_modules(python_root: Path, source_root: Path | None = None) -> int:
     """Build the app and write portable bytecode for its loaded modules."""
 
     root = python_root.resolve(strict=True)
@@ -39,12 +39,20 @@ def precompile_startup_modules(python_root: Path) -> int:
 
     build_app()
     sources = _loaded_runtime_sources(root)
+    if source_root is not None:
+        sources = sorted(
+            set(sources) | set(_loaded_runtime_sources(source_root.resolve(strict=True)))
+        )
     if not sources:
         raise RuntimeError(f"GACT startup loaded no Python sources under {root}")
 
     for source in sources:
         cache_path = Path(importlib.util.cache_from_source(str(source)))
-        display_path = Path("gact-runtime/python") / source.relative_to(root)
+        display_path = (
+            Path("gact-runtime/python") / source.relative_to(root)
+            if source_root is None
+            else source
+        )
         py_compile.compile(
             str(source),
             cfile=str(cache_path),
@@ -67,8 +75,9 @@ def main() -> int:
 
     parser = argparse.ArgumentParser()
     parser.add_argument("--python-root", required=True, type=Path)
+    parser.add_argument("--source-root", type=Path, help="also prepare an editable source install")
     args = parser.parse_args()
-    compiled = precompile_startup_modules(args.python_root)
+    compiled = precompile_startup_modules(args.python_root, args.source_root)
     print(f"prepared {compiled} startup bytecode files")
     return 0
 

@@ -42,6 +42,35 @@ class ClioNativeTool(dspy.Tool):
                             args[arg_name][annotation] = schema.pop(annotation)
         super().__init__(func, name, desc, args, arg_types, arg_desc)
 
+    def _validate_and_parse_args(self, **kwargs: Any) -> Any:
+        """The call's arguments, validated; a failed call is recorded with its reason.
+
+        JSON null for an argument that has a default means it was not given: the
+        argument is left out and its default applies. Any other invalid argument
+        never reaches the tool, so the call is recorded here as a failed call, as
+        the transcript and the UI show every call the agent made.
+        """
+
+        parameters = inspect.signature(self.func).parameters
+        given = {
+            key: value
+            for key, value in kwargs.items()
+            if not (
+                value is None
+                and key in parameters
+                and parameters[key].default not in (None, inspect.Parameter.empty)
+            )
+        }
+        try:
+            return super()._validate_and_parse_args(**given)
+        except ValueError as exc:
+            from clio_agent.tools import execution  # noqa: PLC0415
+
+            reason = f"invalid arguments: {exc}"
+            execution.notify_global_tool_observer(str(self.name), kwargs, "started")
+            execution.notify_global_tool_observer(str(self.name), kwargs, "completed", reason)
+            raise
+
     def format_as_litellm_function_call(self) -> dict[str, Any]:
         """Return a LiteLLM schema requiring only arguments without defaults."""
 

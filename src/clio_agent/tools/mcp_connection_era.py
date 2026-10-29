@@ -84,9 +84,6 @@ from collections.abc import Sequence
 from dataclasses import dataclass
 from typing import Any, Literal, TypeVar
 
-from fastmcp.utilities.tasks import TASKS_EXTENSION_ID
-from mcp_types.version import HANDSHAKE_PROTOCOL_VERSIONS, MODERN_PROTOCOL_VERSIONS
-
 from clio_agent.errors import (
     MCP_PROTOCOL_DOWNGRADED_TO_LEGACY,
     MCP_TASK_CAPABILITY_DEMOTED,
@@ -149,6 +146,11 @@ def protocol_version_era(protocol_version: str | None) -> ProtocolEra:
     equally-authoritative re-read from a downgraded one) -- kept in exactly
     ONE place so the two never derive era differently.
     """
+
+    from mcp_types.version import (  # noqa: PLC0415 - MCP SDK loads on first use (#702)
+        HANDSHAKE_PROTOCOL_VERSIONS,
+        MODERN_PROTOCOL_VERSIONS,
+    )
 
     if protocol_version in MODERN_PROTOCOL_VERSIONS:
         return "modern"
@@ -452,6 +454,8 @@ def _server_declares_tasks(client: Any) -> bool:
     equivalent helper: that module imports FROM this one, so the reverse
     import would cycle. Both are three lines; keep them in sync by hand.
     """
+
+    from fastmcp.utilities.tasks import TASKS_EXTENSION_ID  # noqa: PLC0415 - first use (#702)
 
     capabilities = getattr(client, "server_capabilities", None)
     extensions = getattr(capabilities, "extensions", None) or {}

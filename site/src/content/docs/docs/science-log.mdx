@@ -1,0 +1,179 @@
+---
+title: Science log
+description: Ask CLIO to answer a question by experiment, then follow its hypotheses, measurements, evidence and conclusions in the Science log.
+---
+
+import { Aside, CardGrid, LinkCard, Steps } from '@astrojs/starlight/components';
+import Capture from '../../../components/overview/Capture';
+import { captureImage } from '../../../lib/captures';
+import tab from '../../../assets/captures/docs-science-log-tab.png';
+import tree from '../../../assets/captures/docs-science-log-tree.png';
+import sources from '../../../assets/captures/docs-science-log-sources.png';
+import conflict from '../../../assets/captures/docs-science-log-conflict.png';
+import views from '../../../assets/captures/docs-science-log-views.png';
+import graph from '../../../assets/captures/docs-science-log-graph.png';
+
+Some questions are answered by experiment: running code, taking measurements, comparing conditions. An agent with the science log treats such a question as a study. It records what it learns in the study's **science log** as typed, linked entries, and you follow the study in the **Science log** tab. Each claim in the log points to the entries it rests on, and each measurement points to the recorded tool calls that produced it.
+
+## Ask for a study
+
+Start a conversation with the **CLIO Science** agent, or with an agent built on it. See [Pick an agent for a conversation](/docs/agents-and-plugins/#pick-an-agent-for-a-conversation). To give another agent a science log, [add the `science-log` plugin](/docs/agents-and-plugins/#add-or-remove-plugins). It needs the `delegation` and `orchestration` plugins.
+
+Then ask your question in your own words. This study started from a plain request:
+
+```text
+Does vaccinating the best-connected people stop an epidemic better than
+vaccinating people at random, and by how much? I've read claims ranging from
+'it barely matters' to 'you need ten times fewer vaccines'. Work out who is
+right, and when.
+```
+
+The agent is given a study method that works in any domain. It asks the agent to:
+
+- write the question, then one hypothesis for each competing answer, each with the result that would show it wrong;
+- run the study as a [workflow](/docs/flows/#workflows): one step per hypothesis, each run by a copy of the agent, a merge step after them, and the `review` role as an editor;
+- in each branch, design the experiment, run it, and log every run as an observation that cites the calls behind it;
+- analyze the measurements in its own code, and record the evidence for or against each hypothesis;
+- fork when a branch finds an explanation no hypothesis offered, or decides the question should change;
+- close with a conclusion in which every claim cites entries, and a chart of the comparison.
+
+In the study above, the agent ran a short pilot to size the study, then started a workflow with three hypothesis steps and a merge. The method guides the agent; it does not force a shape. A small study can run in the conversation itself, without a workflow.
+
+## What the log records
+
+| Entry | What it holds |
+|---|---|
+| **Question** | The statement and its scope. The study's first question can also carry a budget. |
+| **Hypothesis** | A claim and the result that would refute it. A law can also be given as a formula. |
+| **Experiment** | The method and the intended sample size. |
+| **Observation** | One run's measurements, each with its unit and the conditions it was taken under, and the recorded calls that produced it. |
+| **Evidence** | The agent's reading of one or more observations, how strong it is, and which hypotheses it supports or refutes. Numbers from an analysis cite the analysis run. |
+| **Reframe** | Why the question should change, linking the old question, the new one and the evidence. |
+| **Conflict** | A disagreement between results that the study did not resolve, linking both sides. |
+| **Conclusion** | Claims that each cite entries, a confidence, caveats, and whether it answers the question, refutes its premise or replaces it. |
+
+Nothing in the log is edited in place. When a hypothesis is supported, refuted or superseded, the agent adds a status change with its reason, and the entry shows the new status and **Status reason**.
+
+<Aside type="note">
+The log checks shape and references, never correctness. A link must point to an entry of the study, every claim in a conclusion must cite at least one entry, and an observation must cite at least one recorded call its branch may cite. An entry that breaks a rule is refused, and the agent gets the reason. Whether a claim is right is for the evidence, and you, to decide.
+</Aside>
+
+**Every conversation in the study is a branch.** The workflow's steps, the children the agent delegates to, and the forks each write their own entries. Every branch can read the whole study, so a branch can check what the others have measured and claimed before it claims anything. The method asks it to form its own hypothesis and design first, and to say in its evidence when it relied on another branch's result.
+
+**Measurements are data.** The agent can export the study's measurements to a Parquet or CSV file, next to a manifest that lists the observations, the conditions and the file's SHA-256, and analyze that file with its own code. In a workflow with node folders the files go to the node's folder; otherwise they go to a folder named after the session under `.clio/science-log/` in the workspace, which is removed with the session.
+
+## Open the Science log
+
+<Steps>
+
+1. Open the conversation that runs the study, or any step, child or fork in it.
+
+2. Choose **Open workspace canvas** at the right of the session header.
+
+3. Choose the **Science log** tab. If you closed it, choose **+** in the canvas, labeled "Open a canvas tab", then **Science log**.
+
+</Steps>
+
+The tab appears only for a conversation that belongs to a study: one that wrote the study's question, or one in the same tree of steps, children and forks. Other conversations do not offer it. For more room, choose **Maximize canvas**; the same button restores the conversation beside it.
+
+The tab has three modes, each using the whole tab:
+
+- **List**: the study tree and the selected branch's log.
+- **Graph**: every entry and the links between them. Each experiment's observations are drawn as one group.
+- **Views**: the dashboards the study's agent attached, when it has any.
+
+<Capture client:visible image={await captureImage(tab)}
+  alt="Science log tab in List mode with the canvas maximized: the question, three hypotheses with refuted or supported chips, and steps with their delegated children and folders"
+  caption="List: the study tree of the Wordle study, with each step's delegated children."
+  sizes="(min-width: 50rem) 46rem, 100vw" />
+
+## Read the study tree
+
+In **List**, the study tree comes first. It starts with the question, lists the hypotheses under it, and then every branch under its parent: **Step** for a workflow step, **Delegated** for a child the agent started, and **Fork** for a fork. Each node names its kind and its state in words, such as open, supported, refuted, completed or superseded. Forks are framed with a dashed line and reframes with a dotted one. The hypotheses a branch wrote appear under that branch.
+
+**Task** on a branch opens its task. **Folder** opens the branch's folder in the Files view (see [Node folders](#node-folders)). When a candidate was derived from an earlier result, the node says **Derived from** and links to it.
+
+<Capture client:visible image={await captureImage(tree)}
+  alt="Study tree of a bench study: the question, four hypotheses with refuted or supported chips, steps angle, length, temperature, mass and merge with their folders, and Fork temperature~1 framed with a dashed line under the temperature step"
+  caption="A study of a simulated bench oscillator. The temperature step forked temperature~1 to pursue a threshold law; the fork has its own folder and hypothesis."
+  sizes="(min-width: 50rem) 46rem, 100vw" />
+
+**Select a node** to open its branch's entries below the tree, under **Log of** and the branch's name with its entry count. A selected hypothesis is brought into view. Selecting never leaves the conversation you are in.
+
+## Read the study as a graph
+
+Choose **Graph** to see the whole study at once, from the question down to the conclusion. Select a node to read its record beside the graph; select a group to list its observations. **Selected and linked** narrows the graph to the selected entry and its direct links, and **Entire study** shows everything again. **Show in list** opens the record in its branch's log.
+
+<Capture client:visible image={await captureImage(graph)}
+  alt="Science log tab in Graph mode: the question, three hypotheses, three experiments, each experiment's 20 observations as one group, three evidence entries, two conflicts and the conclusion, with the question's record beside the graph"
+  caption="Graph: the Wordle study with the question selected."
+  sizes="(min-width: 50rem) 46rem, 100vw" />
+
+## Follow a citation
+
+Each entry lists its **Links** and the entries that cite it under **Cited by**. Select one to jump to that entry. When the entry belongs to another branch, its name follows the link, as in "in temperature~1", and the log switches to that branch with the entry outlined.
+
+**View in transcript** on an entry opens the turn that wrote it, in its branch's conversation.
+
+An observation's **Sources** list each call it cites: the tool, its arguments, when it ran, a digest of its result, the conversation that called it, and the files it read or wrote with their SHA-256. **View in transcript** beside a source opens that call in its conversation. When evidence or a conclusion claim cites the analysis run behind its numbers, **Analysis** opens that run the same way.
+
+<Capture client:visible image={await captureImage(sources)}
+  alt="An observation with six ten_cycles_s readings and their conditions, its links and Cited by list, and Sources expanded: the bench_measure call with its arguments, run time, result digest and the length branch it was called in"
+  caption="An observation and its source: the measurement call it cites, with the arguments and the digest of the result it recorded."
+  sizes="(min-width: 50rem) 46rem, 100vw" />
+
+When the study ends with results that disagree, the merge records a **Conflict** that links both sides. This one names a hypothesis from the temperature step and the fork's competing hypothesis and evidence.
+
+<Capture client:visible image={await captureImage(conflict)}
+  alt="An open Conflict entry stating that the temperature functional form is unresolved, linking two hypotheses and two evidence entries, one in temperature and two in temperature~1, and cited by the conclusion"
+  caption="An open conflict between the temperature step and its fork. The conclusion cites it, so the disagreement stays visible in the answer."
+  sizes="(min-width: 50rem) 46rem, 100vw" />
+
+## Node folders
+
+The study method starts its workflow with node folders, so branches running side by side do not overwrite each other's files. The run gets `runs/<run-id>/` in the workspace, and each step gets its own folder in it: `runs/<run-id>/<step>/`. A fork gets `<step>~1/` beside its step and starts with a copy of its step's folder. A child's folder is nested in its parent's.
+
+A node's shell starts in its folder, and the node may write only there. It can still read the whole workspace. The run's folder is an ordinary workspace folder, so you can browse it in the Files view; **Folder** on a node opens it there.
+
+<Aside type="caution">
+Node folders rely on CLIO's write confinement. When it cannot confine writes on your computer, a workflow that asks for node folders does not start, and the agent is told why. Confinement covers what the agent and its shell write, and output paths it passes to tools. A plugin's tool server that writes files on its own is not confined to one node.
+</Aside>
+
+## Views and the current law
+
+A study's views are dashboards its agent builds and attaches to the study, so you can watch the study and check its conclusion. No plugin decides what a view shows; the agent designs it around the question and can revise it or add another as the study changes course. Choose **Views** at the top of the Science log tab. With several views, a row of their titles switches between them.
+
+A view's charts and tables can read the study directly: its measurements, its entries, and the records a plugin's tools keep (for example a game's board or a bench's readings). They show new entries as branches log them, without the agent rebuilding the view.
+
+When a hypothesis states a law as a formula written in the data's own names, such as `ten_cycles_s = 20 * sqrt(arm_length_m)`, the newest such hypothesis that has not been refuted, superseded or withdrawn is the study's current law. Each measurement it covers carries the law's value, so a chart can draw the law beside the readings and name it. A wrong law sits away from the readings and a good one settles onto them; the chart redraws when a hypothesis arrives or changes status.
+
+<Capture client:visible image={await captureImage(views)}
+  alt="Science log tab in Views mode: a chart of the time for ten cycles against arm length, with the readings as points and the current law as a line named in the legend"
+  caption="A view drawing the readings and the study's current law, named in the legend."
+  sizes="(min-width: 50rem) 46rem, 100vw" />
+
+## Set a budget
+
+A budget is optional. If you give the study a limit, such as a number of measurements or games, the agent records it on the study's question as an amount and a unit. Every observation then states its cost in that unit, and the log refuses an observation that would overspend the budget. The question shows **Budget**, and each observation shows **Cost**.
+
+Without a budget, the agent decides when the evidence is enough. The method asks it to state each experiment's intended sample size, so you can see how much evidence stands behind a claim.
+
+## Approve forks and new steps
+
+By default a study's workflow grows on its own: a fork or a step an editor adds runs at once. To decide each one yourself, ask for approval when you request the study, for example "ask me before the study forks or adds a step". When the workflow runs with approval, each fork and each added step waits for your answer to a question such as:
+
+```text
+Fork step 'b' as 'b~1': Give the strongest counterargument in one line. Allow?
+```
+
+Answering no means the fork or step is not made, and the work that asked for it continues. A reframe is a log entry and never needs approval. A fork also counts against the limit on steps a workflow may add. See [Fork a step](/docs/flows/#fork-a-step).
+
+## Export a study
+
+Export the conversation from the session's **⋯** menu with **Export session**, as described in [Save and share your work](/docs/exports/#export-the-conversation). The saved review opens in a browser without CLIO and has a **Science log** section with the study's views, its tree, and each branch's entries.
+
+<CardGrid>
+  <LinkCard title="Flows and workflows" href="/docs/flows/" description="How a study's workflow runs its steps, forks and editors." />
+  <LinkCard title="Subagents" href="/docs/subagents/" description="A copy of the agent, the read-only explore, planner and review roles, and forks." />
+  <LinkCard title="Try another approach" href="/docs/branch-and-rewind/" description="Branch a conversation yourself, and see the forks the agent makes." />
+</CardGrid>

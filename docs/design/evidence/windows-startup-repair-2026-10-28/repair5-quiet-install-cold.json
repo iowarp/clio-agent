@@ -1,0 +1,9 @@
+{
+  "profile": "D:\\cw\\fp6",
+  "exit_code": 0,
+  "finished_at": "2026-10-28T09:51:43.7216784Z",
+  "candidate": "d9a476623f6c2d3ec3878c97e9ec0d166f71ac64",
+  "label": "repair5-quiet-install-cold",
+  "ref": "codex/windows-startup-acceptance",
+  "seconds": 162.102642
+}

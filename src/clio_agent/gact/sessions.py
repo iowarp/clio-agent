@@ -2,9 +2,10 @@
 
 Tasks, assignment history, mail and input commitments live in the confirmed Core
 hierarchy. This thread-safe store supplies session metadata and trusted startup
-receipts, with optional JSON persistence at ``state/server/sessions.json``.
-``CLIO_SESSIONS_PATH`` overrides that path. Public wire fields are projected from
-the record; private approval and initialization fields never enter public updates.
+receipts. Each session is one clio-core record (:mod:`clio_agent.gact.session_records`),
+imported once from a legacy ``sessions.json`` (``CLIO_SESSIONS_PATH`` overrides its
+path). Records load on first use into a bounded cache. Public wire fields are projected
+from the record; private approval and initialization fields never enter public updates.
 """
 
 from __future__ import annotations
@@ -17,6 +18,8 @@ import json
 import logging
 import threading
 import uuid
+import weakref
+from collections import OrderedDict
 from collections.abc import Callable, Mapping
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timedelta, timezone
@@ -24,8 +27,15 @@ from pathlib import Path
 from typing import Any, Optional, get_args
 
 from clio_agent.gact.message_marks import merge_session_metadata
+from clio_agent.gact.session_records import (
+    ROW_UNREADABLE_REASON,
+    PageQuery,
+    SessionRecords,
+    cache_capacity,
+    record_columns,
+)
 from clio_agent.gact.types import Session as _WireSession
-from clio_agent.platform_paths import atomic_write_text
+from clio_agent.runtime.stream_audit import stream_audit
 
 logger = logging.getLogger(__name__)
 
@@ -171,6 +181,9 @@ class Session:
     # produced a known cost for this session -- the wire projection serializes
     # cost_usd as null rather than an indistinguishable $0.00 (#775).
     cost_known: bool = False
+    # The same rollup per ``account/model``: ``{ref: {tokens_input, tokens_output,
+    # cost_usd, turns}}`` (the fleet's spend; docs/design/sdk/model-fleet.md).
+    usage_by_model: dict[str, dict[str, Any]] = field(default_factory=dict)
     # iowarp/clio-agent — capabilities.plan_mode + edit_modes:
     # mode controls what the agent can do; edit_mode controls how
     # it proposes changes when it can. Default {edit, diff}.
@@ -230,6 +243,7 @@ class Session:
         wire.pop("creation_digest", None)
         wire.pop("creation_lifecycle_confirmed", None)
         wire.pop("creation_hook_state", None)
+        wire.pop("usage_by_model", None)
         # cost_known is bookkeeping, not part of the wire contract -- it
         # decides whether cost_usd is a real number or null, never rides
         # along itself (#775: no turn ever reporting a cost must read as
@@ -240,37 +254,29 @@ class Session:
 
 
 class SessionStore:
-    """Thread-safe session registry with optional JSON persistence.
+    """Thread-safe session registry over one clio-core record per session.
 
-    Construction
-    ------------
-
-    ``path=None`` → purely in-memory (used in tests that don't care
-    about persistence). ``path=Path`` → load on startup, write on
-    every mutation.
-
-    Concurrency
-    -----------
-
-    A single ``threading.Lock`` guards the in-memory dict. Every
-    mutation writes to disk while holding the lock, so an interrupted
-    write (process crash mid-flush) at worst loses the last
-    un-committed change — it can't leave a half-written JSON file
-    because we write+fsync to a temp file and atomically rename.
+    The records (:mod:`clio_agent.gact.session_records`) live in memory until a
+    clio-core store is bound (:meth:`bind_store`; the app binds the process ARC's
+    store, ``store=`` binds at once). ``path`` names the legacy ``sessions.json``
+    the ``session_records_import`` store migration imports. Every mutation writes
+    only the changed session's record.
     """
 
-    def __init__(self, path: Optional[Path] = None) -> None:
+    def __init__(self, path: Optional[Path] = None, *, store: Any = None) -> None:
         self._path = path
-        self._lock = threading.Lock()
-        self._sessions: dict[str, Session] = {}
-        # Rows persisted before ``last_interaction_at`` existed: their interaction time
-        # lives with the transcript, so the transcript store's boot settles it
-        # (:meth:`settle_interaction_times`); until then the field reads "" (unknown).
-        self._interaction_unknown: set[str] = set()
+        self._lock = threading.RLock()
+        self._records = SessionRecords()
+        if store is not None:
+            self._records.bind(store)
+        # Rows load on first use. The LRU bounds what stays resident; the weak map
+        # keeps one object per session while any caller still holds it, so an
+        # update is never applied to a stale copy of a row someone is reading.
+        self._cache: OrderedDict[str, Session] = OrderedDict()
+        self._identity: weakref.WeakValueDictionary[str, Session] = weakref.WeakValueDictionary()
+        self._cache_cap = cache_capacity()
         self._lifecycle_observer: Callable[[str, Session], None] | None = None
         self._initializing: set[str] = set()
-        if path is not None:
-            self._load()
 
     # ---- lifecycle ----------------------------------------------------
 
@@ -284,46 +290,74 @@ class SessionStore:
         if observer is not None:
             observer(event_type, session)
 
-    def _load(self) -> None:
-        """Populate in-memory dict from the on-disk JSON, if any."""
+    # ---- rows (caller holds ``self._lock``) -----------------------------
 
-        assert self._path is not None
-        if not self._path.exists():
-            return
+    def _decode(self, sid: str, body: str) -> Optional[Session]:
         try:
-            raw = json.loads(self._path.read_text())
-        except (json.JSONDecodeError, OSError):
-            # Corrupted / unreadable store — start fresh, don't
-            # crash the server. The previous file stays on disk so
-            # operators can salvage it out-of-band.
-            return
-        if not isinstance(raw, dict):
-            return
-        for sid, payload in raw.items():
-            if not isinstance(payload, dict):
-                continue
-            try:
-                session = Session(**payload)
-                if not session.last_interaction_at:
-                    self._interaction_unknown.add(sid)
-                self._sessions[sid] = session
-            except TypeError:
-                # Schema drift (e.g. a field was renamed between
-                # releases). Skip that one row and keep going.
-                continue
+            return Session(**json.loads(body))
+        except (TypeError, ValueError) as exc:
+            # Schema drift (a field renamed between releases): this one row is
+            # unreadable; every other session keeps working.
+            stream_audit(
+                ROW_UNREADABLE_REASON,
+                reason=ROW_UNREADABLE_REASON,
+                session_id=sid,
+                error=type(exc).__name__,
+            )
+            return None
 
-    def _flush(self) -> None:
-        """Serialise the in-memory dict to disk atomically.
+    def _remember(self, session: Session) -> Session:
+        self._identity[session.id] = session
+        self._cache[session.id] = session
+        self._cache.move_to_end(session.id)
+        while len(self._cache) > self._cache_cap:
+            self._cache.popitem(last=False)
+        return session
 
-        Caller holds ``self._lock``.
-        """
+    def _sessions(self, ids: "builtins.list[str]") -> "builtins.list[Session]":
+        missing = [sid for sid in ids if (self._cache.get(sid) or self._identity.get(sid)) is None]
+        bodies = self._records.bodies_for(missing)
+        rows: builtins.list[Session] = []
+        for sid in ids:
+            held = self._cache.get(sid) or self._identity.get(sid)
+            if held is None and sid in bodies and (held := self._decode(sid, bodies[sid])):
+                self._identity[sid] = held
+            if held is not None:
+                rows.append(held)
+        return rows
 
-        if self._path is None:
-            return
-        payload = {sid: asdict(s) for sid, s in self._sessions.items()}
-        # Staged, fsynced, then replaced: a crash never leaves a partial blob,
-        # and a reader holding the file open is waited out, not a failure.
-        atomic_write_text(self._path, json.dumps(payload, indent=2, sort_keys=True))
+    def bind_store(self, store: Any) -> None:
+        """Keep the records in ``store`` (clio-core) from now on (off the server loop)."""
+        self._records.bind(store)
+
+    def expect_store(self) -> None:
+        """A clio-core store will be bound: reads wait for it (a server's boot)."""
+        self._records.expect_store()
+
+    def flush(self, timeout: float = 120.0) -> bool:
+        """Wait until every session write has landed in the store."""
+        return self._records.flush(timeout)
+
+    def _row(self, sid: str) -> Optional[Session]:
+        held = self._cache.get(sid) or self._identity.get(sid)
+        if held is not None:
+            return self._remember(held)
+        body = self._records.body(sid)
+        session = None if body is None else self._decode(sid, body)
+        return None if session is None else self._remember(session)
+
+    def _persist(self, session: Session) -> None:
+        """Write this one session's record; on failure the next read reloads it."""
+        try:
+            self._records.put(record_columns(session), json.dumps(asdict(session), sort_keys=True))
+        except BaseException:
+            self._forget(session.id)
+            raise
+        self._remember(session)
+
+    def _forget(self, sid: str) -> None:
+        self._cache.pop(sid, None)
+        self._identity.pop(sid, None)
 
     # ---- CRUD ---------------------------------------------------------
 
@@ -400,7 +434,7 @@ class SessionStore:
             creation_hook_state="pending" if creation_id else "unknown",
         )
         with self._lock:
-            existing = self._sessions.get(sid)
+            existing = self._row(sid)
             if existing is not None:
                 if (
                     not creation_id
@@ -413,11 +447,10 @@ class SessionStore:
                     raise ValueError("Session creation identity was reused with different work")
                 # Reconfirm the original address, then resume only initialization
                 # that is known unfinished. Completed work is never repeated.
-                self._flush()
+                self._persist(existing)
                 sess = existing
             else:
-                self._sessions[sid] = sess
-                self._flush()
+                self._persist(sess)
         if defer_initialization:
             return sess
         if creation_id:
@@ -432,7 +465,7 @@ class SessionStore:
         """
         _require_creation_worker()
         with self._lock:
-            sess = self._sessions.get(sid)
+            sess = self._row(sid)
             if sess is None:
                 raise ValueError("Prepared session is unavailable")
             if not sess.creation_digest:
@@ -454,7 +487,7 @@ class SessionStore:
         self, sess: Session, *, cancel_event: threading.Event | None = None
     ) -> Session:
         sid, trusted = sess.id, bool(sess.creation_digest)
-        from clio_agent.gact.hooks import dispatch_session_start  # noqa: PLC0415
+        from clio_agent.gact import hooks  # noqa: PLC0415
         from clio_agent.gact.hooks.wire import HookCancelled  # noqa: PLC0415
 
         if cancel_event is not None and cancel_event.is_set():
@@ -467,7 +500,7 @@ class SessionStore:
                 if trusted:
                     with self._lock:
                         sess.creation_lifecycle_confirmed = True
-                        self._flush()
+                        self._persist(sess)
         except BaseException:
             # Trusted task creation can already have a confirmed Core event
             # whose reply was lost. Retain its stable address for reconciliation.
@@ -475,31 +508,35 @@ class SessionStore:
                 raise
             # No session exists that clio-core has no record of.
             with self._lock:
-                self._sessions.pop(sid, None)
-                self._flush()
+                self._records.delete(sid)
+                self._forget(sid)
             raise
         # Reuse known-unattempted initialization. An admitted hook with no
         # completion receipt is uncertain and must never be replayed by reuse.
         if cancel_event is not None and cancel_event.is_set():
             raise HookCancelled("session-start")
+        # No hook can run: no 'started' receipt, so a crash here leaves 'pending' (re-run).
+        receipted = not trusted or hooks.session_start_may_run_hooks(sid)
         if trusted:
             with self._lock:
                 if sess.creation_hook_state != "pending":
                     raise RuntimeError(
                         f"SessionStart effects are unconfirmed for {sid}; inspect before retrying"
                     )
-                sess.creation_hook_state = "started"
                 try:
-                    self._flush()
+                    if receipted:
+                        sess.creation_hook_state = "started"
+                        self._persist(sess)
                 except BaseException:
                     # This process knows the hook was never called. A restart
                     # seeing a persisted 'started' receipt remains uncertain.
                     sess.creation_hook_state = "pending"
                     raise
         try:
-            dispatch_session_start(
+            hooks.dispatch_session_start(
                 session_id=sid,
                 cancel_event=cancel_event,
+                hooks_expected=receipted,
                 payload={
                     "workspace_id": sess.workspace_id,
                     "parent_session_id": sess.parent_session_id,
@@ -513,28 +550,28 @@ class SessionStore:
                     sess.creation_hook_state = (
                         "pending" if error.invocation_started is False else "interrupted"
                     )
-                    self._flush()
+                    self._persist(sess)
             raise
         if trusted:
             with self._lock:
                 sess.creation_hook_state = "completed"
-                self._flush()
+                self._persist(sess)
         return sess
 
     def get(self, sid: str) -> Optional[Session]:
         with self._lock:
-            return self._sessions.get(sid)
+            return self._row(sid)
 
     def snapshot(self, sid: str) -> Session | None:
         """Return an independent, atomically captured metadata row for preparation."""
         with self._lock:
-            session = self._sessions.get(sid)
+            session = self._row(sid)
             return copy.deepcopy(session) if session is not None else None
 
     def startup_retirement_error(self, sid: str) -> str | None:
         """Report missing physical proof; unknown effects alone do not imply a live process."""
         with self._lock:
-            session = self._sessions.get(sid)
+            session = self._row(sid)
             if session is None:
                 return "Session startup evidence is unavailable; settlement remains unconfirmed."
             if session.creation_digest and session.creation_hook_state == "started":
@@ -546,24 +583,63 @@ class SessionStore:
         *,
         workspace_id: Optional[str] = None,
     ) -> list[Session]:
-        """List sessions, newest-first. Optional workspace filter."""
+        """Every session (reads every record: prefer :meth:`page` / :meth:`ids`)."""
 
         with self._lock:
-            rows = list(self._sessions.values())
-        if workspace_id:
-            rows = [r for r in rows if r.workspace_id == workspace_id]
-        # created_at is ISO-8601 UTC — lexicographic sort is
-        # chronological here, so descending reverse-sort works.
-        rows.sort(key=lambda r: r.created_at, reverse=True)
-        return rows
+            ids = self._records.select(PageQuery(workspace_id=workspace_id, archived=None))
+            return self._sessions(ids)
+
+    def page(self, query: PageQuery) -> tuple["builtins.list[Session]", Optional[str], int]:
+        """One page newest interaction first, the next cursor, the total (bad cursor:
+        :class:`~clio_agent.gact.session_records.InvalidCursorError`)."""
+
+        with self._lock:
+            ids, next_cursor, total = self._records.page(query)
+            return self._sessions(ids), next_cursor, total
+
+    def select(self, query: PageQuery) -> "builtins.list[Session]":
+        """Every session matching ``query`` (no paging), newest created first."""
+
+        with self._lock:
+            return self._sessions(self._records.select(query))
+
+    def related(self, *, family_of: str = "") -> "builtins.list[Session]":
+        """``family_of``'s conversation tree, else the sessions waiting on a person
+        and their ancestors (:meth:`SessionRecords.related_ids`), by index only."""
+
+        with self._lock:
+            return self._sessions(self._records.related_ids(family_of))
+
+    def import_legacy(self) -> dict[str, Any]:
+        """Import the legacy ``sessions.json`` (the store migration's body; idempotent)."""
+        return self._records.import_legacy(self._path)
+
+    def ids(self) -> "builtins.list[str]":
+        """Every session id, without reading a row."""
+
+        with self._lock:
+            return self._records.ids()
+
+    def child_ids_by_parent(self) -> dict[str, "builtins.list[str]"]:
+        """``{parent id: [child ids]}`` from the parent column, without reading rows."""
+
+        with self._lock:
+            return self._records.child_ids_by_parent()
+
+    def most_recent(self) -> Optional[Session]:
+        """The newest created session, or ``None``."""
+
+        with self._lock:
+            sid = self._records.most_recent_id()
+            return None if sid is None else self._row(sid)
 
     def delete(self, sid: str) -> bool:
         with self._lock:
-            existing = self._sessions.get(sid)
+            existing = self._row(sid)
             existed = existing is not None
-            self._sessions.pop(sid, None)
             if existed:
-                self._flush()
+                self._records.delete(sid)
+            self._forget(sid)
         if existed:
             # P2.3 SessionEnd lifecycle hook (observation): fires exactly once, only
             # when a session actually existed and was removed.
@@ -585,6 +661,7 @@ class SessionStore:
         add_tokens_output: int = 0,
         add_cost_usd: Optional[float] = None,
         usage_totals: tuple[int, int, float, bool] | None = None,
+        usage_by_model: Optional[dict[str, dict[str, Any]]] = None,
         mode: Optional[str] = None,
         edit_mode: Optional[str] = None,
         routing_mode: Optional[str] = None,
@@ -611,7 +688,7 @@ class SessionStore:
         """
 
         with self._lock:
-            sess = self._sessions.get(sid)
+            sess = self._row(sid)
             if sess is None:
                 return None
             if approval_profile is not None:
@@ -644,6 +721,8 @@ class SessionStore:
                 sess.cost_known = True
             if usage_totals is not None:
                 sess.tokens_input, sess.tokens_output, sess.cost_usd, sess.cost_known = usage_totals
+            if usage_by_model is not None:
+                sess.usage_by_model = {ref: dict(row) for ref, row in usage_by_model.items()}
             if mode is not None and mode in {"plan", "edit", "architect"}:
                 sess.mode = mode
             if edit_mode is not None and edit_mode in {"diff", "whole", "patch"}:
@@ -678,43 +757,42 @@ class SessionStore:
             if message_count is not None:
                 sess.last_interaction_at = now
             sess.updated_at = now
-            self._flush()
+            self._persist(sess)
             return sess
 
     def sessions_without_interaction_time(self) -> "builtins.list[Session]":
-        """Loaded rows that predate ``last_interaction_at`` and still lack it.
+        """Rows that predate ``last_interaction_at`` and still lack it.
 
         The transcript store answers when each was last used (the ``messages/`` file's
         mtime, or the last atom message with ``transcript.file`` off) and hands the
-        answers to :meth:`settle_interaction_times`.
+        answers to :meth:`settle_interaction_times`. Read from the indexed
+        ``interaction_known`` column, so a store with none reads no row.
         """
 
         with self._lock:
-            return [
-                self._sessions[sid]
-                for sid in sorted(self._interaction_unknown)
-                if sid in self._sessions and not self._sessions[sid].last_interaction_at
-            ]
+            rows = [self._row(sid) for sid in self._records.without_interaction_time()]
+        return [row for row in rows if row is not None and not row.last_interaction_at]
 
     def settle_interaction_times(self, times: Mapping[str, str]) -> None:
-        """Record recovered interaction times for rows that still lack one; flush once.
+        """Record recovered interaction times for rows that still lack one.
 
         A row that gained a real interaction time meanwhile (a new message) keeps it.
         """
 
         with self._lock:
-            changed = False
             for sid, when in times.items():
-                session = self._sessions.get(sid)
-                self._interaction_unknown.discard(sid)
+                session = self._row(sid)
                 if session is not None and not session.last_interaction_at and when:
                     session.last_interaction_at = when
-                    changed = True
-            if changed:
-                self._flush()
+                    self._persist(session)
 
     # ---- introspection hooks (for /v1/memory/stats + tests) ----------
 
     def count(self) -> int:
         with self._lock:
-            return len(self._sessions)
+            return self._records.count()
+
+    def resident_count(self) -> int:
+        """How many rows the bounded cache holds (memory evidence)."""
+        with self._lock:
+            return len(self._cache)

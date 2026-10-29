@@ -49,7 +49,7 @@ def test_listing_reports_entry_types_and_bound(approved: Path) -> None:
     view = present_mcp_result(
         "fs_list_directory", {"path": str(approved)}, {"structuredContent": limited}
     )
-    assert "partial listing" in view["summary"]
+    assert view["summary"].endswith(" (partial listing)")
     assert any("incomplete" in block.get("text", "") for block in view["blocks"])
 
 
@@ -72,7 +72,7 @@ def test_literal_search_has_line_numbers_context_and_glob(approved: Path) -> Non
         "fs_search_text", {"path": str(approved), "query": "a.*b"}, {"structuredContent": result}
     )
     assert view["action"] == "Search text"
-    assert view["summary"] == "1 match · 1 file searched"
+    assert view["summary"] == "1 match, 1 file searched"
     assert any("2: call(a.*b)" in block.get("text", "") for block in view["blocks"])
     assert "diagnostic" not in view
     assert (

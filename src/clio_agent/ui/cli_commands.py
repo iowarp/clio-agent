@@ -14,8 +14,17 @@ def handle_local_command(arguments: Sequence[str]) -> bool:
 
         migrate_main(list(arguments[1:]))
         return True
-    if arguments[0] == "blueprints":
-        from clio_agent.runtime.blueprint_coordination_cli import run_blueprint_coordination_cli
+    if arguments[0] == "migrate":
+        from clio_agent.gact.store_migrate_command import exit_released
+        from clio_agent.gact.store_migrate_command import main as store_migrate_main
 
-        raise SystemExit(run_blueprint_coordination_cli(arguments[1:]))
+        exit_released(store_migrate_main(arguments[1:]))
+    if arguments[0] == "plugin":
+        from clio_agent.plugins.cli import run_plugin_cli
+
+        raise SystemExit(run_plugin_cli(arguments[1:]))
+    if arguments[0] == "mcp":
+        from clio_agent.ui.mcp_cli import run_mcp_cli
+
+        raise SystemExit(run_mcp_cli(arguments[1:]))
     return False

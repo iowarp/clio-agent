@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from collections.abc import Awaitable, Callable
 from pathlib import Path
 
 from clio_agent.gact.infrastructure.models import (
@@ -80,6 +81,24 @@ def test_steps_follow_the_plan_and_one_step_spans_both_pull_attempts(tmp_path: P
     assert row.current_step is None and row.finished_at and row.elapsed_seconds is not None
     persisted = store.operation(row.id)
     assert persisted is not None and [step.state for step in persisted.steps] == ["succeeded"] * 6
+
+
+async def _service_setup_hook(
+    _execute: Callable[[CommandSpec], Awaitable[CommandResult]],
+    _message: Callable[[str], None],
+) -> dict[str, str]:
+    return {}
+
+
+def test_after_ready_hook_uses_service_setup_label_without_a_model_step(tmp_path: Path) -> None:
+    tracker, _store, _events = _tracker(tmp_path)
+    plan = DriverPlan((MKDIR,), after_ready_hook=_service_setup_hook)
+
+    tracker.begin()
+    tracker.plan(plan)
+
+    after_ready = next(step for step in tracker.row.steps if step.id == "after-ready")
+    assert after_ready.label == "Complete service setup"
 
 
 def test_a_failed_and_a_cancelled_step_are_marked_and_the_rest_skipped(tmp_path: Path) -> None:

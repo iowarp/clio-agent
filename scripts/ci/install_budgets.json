@@ -1,0 +1,84 @@
+{
+  "_doc": "Budgets the install matrix enforces (scripts/ci/check_budgets.py). The limits are the user's budgets (upper limits; lower is better): agent start to ready < 30 s, desktop launch to ready < 60 s, install < 180 s; plus the 20 s shutdown budget. A step without a budget stays report-only. Seconds are wall-clock on GitHub-hosted runners. See docs/design/install-and-startup-implementation.md (A0, A4, R7).",
+  "timings": {
+    "source: fresh install": {
+      "seconds": 180,
+      "ok": true,
+      "budget": "install < 180 s",
+      "measured": "Linux 78-125 s, macOS 43-49 s, Windows 138-182 s (runs 40577489917, 40582098011, 40584785874)",
+      "required_in": [
+        "script"
+      ]
+    },
+    "script: fresh install": {
+      "seconds": 180,
+      "ok": true,
+      "budget": "install < 180 s",
+      "measured": "release path; runs on schedule and on request only"
+    },
+    "desktop: install.sh --desktop (deb)": {
+      "seconds": 180,
+      "ok": true,
+      "budget": "install < 180 s",
+      "measured": "desktop job; runs on schedule and on request only"
+    },
+    "desktop: install (NSIS /S)": {
+      "seconds": 180,
+      "ok": true,
+      "budget": "install < 180 s",
+      "measured": "desktop job; runs on schedule and on request only"
+    },
+    "desktop: install.sh --desktop (dmg)": {
+      "seconds": 180,
+      "ok": true,
+      "budget": "install < 180 s",
+      "measured": "desktop job; runs on schedule and on request only"
+    },
+    "source: stop": {
+      "seconds": 20,
+      "ok": true,
+      "budget": "shutdown < 20 s",
+      "measured": "0.3-3.3 s on every OS",
+      "required_in": [
+        "script"
+      ]
+    },
+    "source: stop after re-run": {
+      "seconds": 20,
+      "budget": "shutdown < 20 s",
+      "measured": "0.3-3.1 s on Linux and macOS"
+    }
+  },
+  "startup": {
+    "startup-x1.json": {
+      "task_runtime_ready_s": {
+        "max": 30,
+        "budget": "agent start to ready < 30 s",
+        "measured": "ubuntu-latest: 11.5-13.2 s (runs 40577489917, 40582098011, 40584785874)"
+      },
+      "shutdown_s": {
+        "max": 20,
+        "budget": "shutdown < 20 s",
+        "measured": "1.9-2.3 s"
+      },
+      "shutdown_forced": {
+        "equals": false,
+        "budget": "a stop is never forced"
+      },
+      "daemon_left_running": {
+        "equals": false,
+        "budget": "a stop leaves no clio-core running"
+      }
+    }
+  },
+  "desktop": {
+    "backend_ready_seconds": {
+      "max": 60,
+      "required_launches": [
+        "first"
+      ],
+      "budget": "desktop launch to ready < 60 s",
+      "measured": "smoke_desktop_package.py receipts: launch of the installed app to a healthy backend"
+    }
+  }
+}

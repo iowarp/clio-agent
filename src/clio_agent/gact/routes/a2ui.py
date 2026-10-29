@@ -10,7 +10,6 @@ from clio_agent.errors import ClioError
 from clio_agent.gact.a2ui import (
     A2UICatalogNotProducibleError,
     A2UICatalogUnknownError,
-    A2UIComponentLimitExceededError,
     A2UIFunctionNotInCatalogError,
     A2UIValidationError,
 )
@@ -137,14 +136,6 @@ def register_a2ui_routes(app: FastAPI, deps: "GactDeps") -> None:
                 catalog_id=exc.catalog_id,
             )
             raise _error(422, "a2ui_function_not_in_catalog", str(exc)) from exc
-        except A2UIComponentLimitExceededError as exc:
-            app.state.a2ui_catalogs.record_session_reason(
-                sid,
-                "a2ui_component_limit_exceeded",
-                component_count=exc.component_count,
-                limit=exc.limit,
-            )
-            raise _error(422, "a2ui_component_limit_exceeded", str(exc)) from exc
         except A2UIValidationError as exc:
             raise _error(422, "a2ui_validation_failed", str(exc)) from exc
         # Sibling of the model tool's ``created`` flag: the same fold-derived

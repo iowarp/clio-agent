@@ -121,7 +121,7 @@ class Qualification(LongHorizonAcceptance):
     def task_goal(self) -> None:
         """Park on an accepted Shell task; completion, rather than polling, resumes work."""
         sid = self.session("Goal: wait for a simulation task")
-        self.call("POST", f"/v1/sessions/{sid}/agent-blueprint", {"blueprint_id": "base-agent"})
+        self.call("PATCH", f"/v1/sessions/{sid}/agent", {"ref": "clio/standard"})
         self.command(
             sid,
             "goal",
@@ -344,7 +344,7 @@ class Qualification(LongHorizonAcceptance):
     def recovery(self, restart: Callable[[], None]) -> None:
         """Restart the actual backend while a goal awaits one accepted operation."""
         sid = self.session("Recovery: inspect interrupted work")
-        self.call("POST", f"/v1/sessions/{sid}/agent-blueprint", {"blueprint_id": "base-agent"})
+        self.call("PATCH", f"/v1/sessions/{sid}/agent", {"ref": "clio/standard"})
         self.command(
             sid,
             "goal",

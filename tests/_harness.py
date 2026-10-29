@@ -9,23 +9,19 @@ default/``main`` session with no resolvable Agent Blueprint ran
 ``build_app(agent=<fake with a .forward>)`` a canned-``Prediction`` fake and
 asserting the turn produced that prediction.
 
-S4b deleted the legacy planner and its ``else`` branch. Every default/``main``
-session now resolves a react ``main``, builds it through
-``_build_blueprint_dspy_module(app.state.agent, dynamic_agent)`` and runs that
+S4b deleted the legacy planner and its ``else`` branch. Every session now runs
+its pinned plugin resolution (the test marketplace's ``clio/standard`` by
+default): the turn builds it through
+``build_agent_module(app.state.agent, agent_def, resolution)`` and runs that
 module ONCE in the turn's forward executor
-(:func:`clio_agent.gact.turn_forward._run_module`). Which ``main`` -- a session
-with an EXPLICITLY activated Agent Blueprint runs that blueprint's root; a BARE
-session (no activation, owner ruling 2026-08-05, commit aa906022) runs the
-in-code ``catalog._builtin_main_agent()`` instead, on the SAME builder seam
-(``_agent_definition_uses_blueprint_runtime`` routes ``definition_kind:
-builtin_main`` through it too). Either way that module is a real DSPy react
+(:func:`clio_agent.gact.turn_forward._run_module`). That module is a real DSPy
 program that would call an LM — which unit tests do not have.
 
 The seam
 --------
 :func:`install_host_agent_executor` monkeypatches the ONE builder seam the turn
-engine resolves at call time (``clio_agent.gact.app._build_blueprint_dspy_module``,
-re-imported inside ``forward_turn`` on every turn) so the "built module" simply
+engine resolves at call time (``clio_agent.gact.agents.builders.build_agent_module``,
+re-imported inside the turn's forward on every turn) so the "built module" simply
 DELEGATES to the host agent's own ``forward(...)``. The fake host agent stays the
 executor, so a test still expresses "the turn produces prediction X" by handing
 ``build_app`` a fake whose ``forward`` returns X — no per-test rewrite of the fake.
@@ -112,9 +108,9 @@ def _commit_test_model_input(agent_def: Any, question: str, session_id: str) -> 
             context.reset(token)
 
 
-class _HostAgentBlueprintModule:
-    """A stand-in for the compiled blueprint DSPy module that delegates to the
-    host agent's ``forward``.
+class _HostAgentModule:
+    """A stand-in for the compiled agent module that delegates to the host
+    agent's ``forward``.
 
     Accepts every standard forward kwarg the turn passes and forwards to the host
     only those its ``forward`` declares. Declares no native-input parameter, so a
@@ -167,7 +163,7 @@ class _HostAgentBlueprintModule:
         return self._base_agent.forward(**call_kwargs)
 
 
-class _NativeInputHostAgentBlueprintModule(_HostAgentBlueprintModule):
+class _NativeInputHostAgentModule(_HostAgentModule):
     """The delegating module for a host whose ``forward`` takes native inputs."""
 
     def forward(  # type: ignore[override]
@@ -195,7 +191,7 @@ class _NativeInputHostAgentBlueprintModule(_HostAgentBlueprintModule):
         )
 
 
-def host_agent_module(base_agent: Any, agent_def: Any) -> _HostAgentBlueprintModule:
+def host_agent_module(base_agent: Any, agent_def: Any, resolution: Any = None) -> _HostAgentModule:
     """Build the delegating module for ``base_agent``.
 
     The module declares ``images``/``files`` exactly when the host's ``forward``
@@ -204,23 +200,22 @@ def host_agent_module(base_agent: Any, agent_def: Any) -> _HostAgentBlueprintMod
 
     params, accepts_var_kw = _forward_parameters(_host_forward(base_agent))
     if accepts_var_kw or "images" in params:
-        return _NativeInputHostAgentBlueprintModule(base_agent, agent_def)
-    return _HostAgentBlueprintModule(base_agent, agent_def)
+        return _NativeInputHostAgentModule(base_agent, agent_def)
+    return _HostAgentModule(base_agent, agent_def)
 
 
 def install_host_agent_executor(monkeypatch: Any) -> None:
-    """Route the ONE blueprint-runtime build seam to the host agent's ``forward``.
+    """Route the ONE agent-module build seam to the host agent's ``forward``.
 
-    Monkeypatches ``clio_agent.gact.app._build_blueprint_dspy_module`` so a default
-    session's react ``main`` executes the ``build_app(agent=...)`` host fake
-    instead of compiling a real (LM-bound) DSPy react program. The delegating
-    module is returned unconditionally so the real, LM-bound builder never runs
-    under this fixture.
+    Monkeypatches ``clio_agent.gact.agents.builders.build_agent_module`` so a
+    session's agent executes the ``build_app(agent=...)`` host fake instead of
+    compiling a real (LM-bound) DSPy program. The delegating module is returned
+    unconditionally so the real, LM-bound builder never runs under this fixture.
     """
 
-    from clio_agent.gact import app as gact_app
+    from clio_agent.gact.agents import builders
 
-    monkeypatch.setattr(gact_app, "_build_blueprint_dspy_module", host_agent_module)
+    monkeypatch.setattr(builders, "build_agent_module", host_agent_module)
 
 
 class _ScriptedModule:
@@ -252,13 +247,13 @@ def install_scripted_module(
     forward executor, so it can stream live text with :func:`emit_live_text`.
     """
 
-    from clio_agent.gact import app as gact_app
+    from clio_agent.gact.agents import builders
 
-    def _builder(base_agent: Any, agent_def: Any) -> _ScriptedModule:
-        del base_agent
+    def _builder(base_agent: Any, agent_def: Any, resolution: Any = None) -> _ScriptedModule:
+        del base_agent, resolution
         return _ScriptedModule(script, agent_def, commit_input=commit_input)
 
-    monkeypatch.setattr(gact_app, "_build_blueprint_dspy_module", _builder)
+    monkeypatch.setattr(builders, "build_agent_module", _builder)
 
 
 def emit_live_text(
@@ -271,8 +266,8 @@ def emit_live_text(
     """Stream one delta through the LM token hooks, as a provider call does.
 
     Call it from inside a built module's forward (the turn's executor). An
-    ``agent_id`` enters that expert's react scope (with ``kind`` as its declared
-    ``module.kind``) the way a blueprint module's forward does; ``answer`` is
+    ``agent_id`` enters that agent's react scope (with ``kind`` as its declared
+    ``module.kind``) the way an agent module's forward does; ``answer`` is
     marked transcript-visible for the call. A ``provider_thinking:<source>``
     field streams as the provider's own thinking.
     """
@@ -294,17 +289,16 @@ def emit_live_text(
             ctx.reset(token)
 
 
-def runner_module_builder(runner: Callable[..., Any]) -> Callable[[Any, Any], Any]:
+def runner_module_builder(runner: Callable[..., Any]) -> Callable[..., Any]:
     """A module-builder stand-in whose built module calls ``runner``.
 
-    For patching one of the turn's builder seams (``_build_blueprint_dspy_module``,
-    ``_build_prompt_user_agent_module``, ``_build_tool_user_agent_module``): the
+    For patching the turn's builder seam (``builders.build_agent_module``): the
     turn builds the module and runs it once with the standard forward kwargs, and
     the module calls ``runner(base_agent, agent_def, question, session_id, ...)``
     with whichever of those kwargs ``runner`` declares (e.g. ``cancel_requested``).
     """
 
-    def build(base_agent: Any, agent_def: Any) -> Callable[..., Any]:
+    def build(base_agent: Any, agent_def: Any, resolution: Any = None) -> Callable[..., Any]:
         def run(question: str, session_id: str, **kwargs: Any) -> Any:
             _commit_test_model_input(agent_def, question, session_id)
             params, accepts_var_kw = _forward_parameters(runner)

@@ -1,0 +1,1 @@
+{"$schema": "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json", "name": "a2ui-minimal", "version": "1.0.0", "description": "Test-only plugin shipping the 'minimal' A2UI catalog in ai.iowarp.clio/a2ui/minimal/."}

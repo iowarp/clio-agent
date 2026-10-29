@@ -5,12 +5,16 @@ from __future__ import annotations
 import hashlib
 import json
 from collections import Counter
+from datetime import UTC, datetime
 from functools import partial
 from typing import Any
 
 from clio_agent.gact.types import Message
 
 LEGACY_SCOPE = "_transcript_legacy_import/"
+#: Done marker of the one complete pass. Conversations created after it are Core-native
+#: (their transcript was never legacy JSON), so later boots skip the whole scan.
+IMPORT_DONE = "transcript_legacy_import"
 
 
 def migrate_transcripts(app: Any) -> None:
@@ -27,6 +31,8 @@ def migrate_transcripts(app: Any) -> None:
     if cache is None:
         return
     history = app.state.task_history
+    if history.index.done_marker(IMPORT_DONE) is not None:
+        return
     store = history.arc._segments
     sessions = {row.id for row in app.state.sessions.list()} | set(cache.session_ids())
     for sid in sorted(sessions):
@@ -69,6 +75,12 @@ def migrate_transcripts(app: Any) -> None:
                             }
                         )
             history.confirm_write(partial(store.append, sid, LEGACY_SCOPE, "observation", receipt))
+    completed = {
+        "version": 1,
+        "completed_at": datetime.now(UTC).isoformat(),
+        "sessions": len(sessions),
+    }
+    history.confirm_write(partial(history.index.put_done_marker, IMPORT_DONE, completed))
 
 
 def legacy_transcript(app: Any, session_id: str) -> dict[str, Any] | None:

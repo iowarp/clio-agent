@@ -1,0 +1,152 @@
+---
+title: What's available
+description: The plugins built into CLIO and in the clio marketplace, the flows you can run or call, which plugin brings each tool, and the agents you can build on.
+---
+
+import { Aside, CardGrid, LinkCard } from '@astrojs/starlight/components';
+
+Everything here can be required by your plugin, added to your agent, or called from your flows. Require a plugin by its id to get its tools, skills and subagents; never copy them.
+
+<Aside type="caution" title="Development build">
+The SDK is in the development build. It is not in the published v0.9.5-beta.8 release. This page lists the plugins built into the development build and those in the `clio` marketplace it installs. See [Features and versions](/docs/versions/).
+</Aside>
+
+## Built into CLIO
+
+These plugins ship inside CLIO, in the `clio-builtin` marketplace, and are always trusted.
+
+| Plugin | What it brings |
+|---|---|
+| `core` | Carried by every agent and never removable. Requires `fleet`. The `react` and `workflow` flows; the operating guidelines, rendering and task-lifecycle prompt fragments; the `planning` skill; the `clio-workspace` interactive catalog; and the conversation tools listed below. |
+| `memory` | Long-term memory of the person, their projects and how they work, and recall of past conversations. Carried by the base `Agent`, and removable. |
+| `fleet` | The models work can run on and what each account has left. The `update-models` skill. |
+| `orchestration` | Requires `delegation`. The `run_flow` and `run_workflow` tools that start flows and workflows as background work, `make_plugin`, which writes a flow plugin the person can review and trust, the `council` and `arena` flows, and the `author-a-flow` skill. |
+
+## Flows
+
+| Flow | From | What it does | Options |
+|---|---|---|---|
+| `react` | `core` | The default: the agent reads the conversation, calls tools and decides its next step until it answers. | |
+| `workflow` | `core` | Runs a [workflow](/docs/sdk/workflows/): steps that start as soon as the steps they wait on finish, with optional editors. | None; its input holds `workflow`, `task`, `editors`, `max_added_steps`, `max_edit_rounds`, `allowed_targets` and `approve_edits` |
+| `council` | `orchestration` | Several members answer the same question independently, then one synthesis says where they agree and resolves where they differ. | `members` (targets; default three of `self`), `perspectives` (one per member), `models` (one per member), `synthesizer` (a target; empty synthesizes inside the flow), `synthesizer_model` |
+| `arena` | `orchestration` | Contestants attempt the same task, then a judge compares the entries and picks one, with its reasons. The votes are appended to `arena/votes.jsonl` in the workspace. | `contestants` (targets; default three of `self`), `models` (one per contestant) |
+| `deep-research` | `deep-research` in `clio` | Plans research directions, researches them in parallel, has an independent critic verify every claim against fetched sources, researches the gaps it names, then writes a report separating verified facts, supplied context and proposals. | `max_directions` (default 6, at most 12), `max_rounds` (gap rounds, default 2, at most 5), `concurrency` (researchers at once; 0 runs a round together), `researcher_model`, `critic_model` |
+
+Call any of them from a flow with `ctx.call("council", question)` or `ctx.call(Flow("arena", models=[...]), task)`, start them from the model with `run_flow`, or use them as a workflow step.
+
+## Plugins in the clio marketplace
+
+The `clio` marketplace is installed by default and trusted at install.
+
+### General capabilities
+
+| Plugin | What it brings | Requires |
+|---|---|---|
+| `workspace` | Read, search and edit files in the conversation's workspace, and view images. | |
+| `shell` | A shell in the workspace, with CLIO's managed execution runtime. | |
+| `ssh` | Run commands on a configured remote host over SSH. | `shell` |
+| `slurm` | Submit Slurm batch jobs, record their ids, wait in bounded steps, and read a failed job's output before resubmitting (skill). | `shell` |
+| `web` | Fetch web pages and search the web (tool server). | |
+| `delegation` | Start general subagents: any installed agent, or one of this agent's defined subagents, with a task prompt. | |
+| `visuals` | Interactive analysis, dashboards, diagrams, 3D geometry, and rendered visual review in the side panel. | |
+| `connected-data` | Connect research data sources and work with the National Data Platform and knowledge stores. | |
+| `clio-search` | Search and read the connected CLIO service's conversations, passages and workspace files. | |
+| `weather` | Weather forecasts for a place. | |
+
+### Documents
+
+| Plugin | What it brings | Requires |
+|---|---|---|
+| `documents` | A pack of `pdf`, `docx`, `xlsx`, `pptx`, `latex` and `opendocument`. | |
+| `document-runtime` | CLIO's managed document toolchain: converters, fonts and bounded inspection. | `shell` |
+| `pdf` | Read, review and produce PDF documents. | `document-runtime` |
+| `docx` | Create, edit and review Word documents. | `document-runtime` |
+| `xlsx` | Create, edit and analyze spreadsheets and CSV or TSV tables. | `document-runtime` |
+| `pptx` | Create, edit and review presentations. | `document-runtime` |
+| `latex` | Author LaTeX documents and build them to PDF. | `document-runtime` |
+| `opendocument` | Create and edit OpenDocument text, spreadsheets and presentations. | `document-runtime` |
+| `document-production` | Edit the canonical source, preserve packages, validate the format, review the rendered result, and apply review comments. | `documents`, `document-runtime` |
+
+### Data formats and sources
+
+| Plugin | What it brings | Requires |
+|---|---|---|
+| `hdf5` | Open and inspect HDF5 files (tool server), with the `hdf5` skill. | |
+| `adios` | Inspect ADIOS2 BP4 and BP5 output (tool server), with the `adios2` skill. | |
+| `parquet` | Summaries, slices, previews and aggregates of Parquet files (tool server), with the `parquet` skill. | |
+| `pandas` | Load, profile, filter and summarize tables (tool server). | |
+| `plot` | Static plots: line, scatter, histogram, heatmap and time series (tool server). | |
+| `ndp` | Search National Data Platform datasets and stage their resources (tool server). | |
+| `geo` | Geocode places, filter points by radius and query geospatial features (tool server). | |
+| `data-onboarding` | Habits for unfamiliar datasets: inventory and audit tables, an experiment card, and an audit by a child agent (skills). | |
+
+### Science methods
+
+| Plugin | What it brings | Requires |
+|---|---|---|
+| `scientific-method` | Study design, literature review, research gaps, citations, data analysis, statistics, uncertainty, figures and scientific writing (skills), and the `data_analysis_expert` subagent. | |
+| `deep-research` | The `deep-research` flow with its `researcher` and `critic` subagents. | `delegation` |
+| `geodesy` | GNSS position time series, station catalogs, region resolution and station-coverage comparison (skills). | `geo` |
+| `phenotyping` | Plant-phenotyping methods: design and identity checks, growth traits, treatment response, spectral signals and reports (skills). | `data-onboarding` |
+| `manufacturing` | A pack of `materials`, `manufacturing-processes`, `characterization`, `mechanical-testing`, `fatigue` and `fea-methods`. | |
+| `materials` | Materials science for metallic parts (skills), and the `materials_scientist` subagent. | |
+| `manufacturing-processes` | Additive and conventional processes, parameters, build orientation and manufacturability (skills), and the `manufacturing_expert` subagent. | |
+| `characterization` | X-ray CT, porosity, surface roughness, fractography and defect synthesis (skills), and the `characterization_expert` subagent. | |
+| `mechanical-testing` | Test design against standards, tensile testing, load frames and data acquisition (skills), and the `mechanical_testing_expert` subagent. | |
+| `fatigue` | Fatigue and failure: high-cycle, multiaxial, critical-plane and defect-driven life prediction, and fracture mechanics (skills), and the `fatigue_failure_expert` subagent. | |
+| `fea-methods` | Finite-element and topology-optimization method, independent of any program (skills). | |
+| `abaqus` | Script, run and audit Abaqus and Tosca packages, with result views (skills), and the `abaqus_engineer` subagent. | `shell` |
+| `morphorm` | The Morphorm topology-optimization program, with bundled checks (skill). | `shell` |
+
+### Agent-specific plugins
+
+These carry one agent's mission and are rarely useful elsewhere: `factorio` (with the `evidence_researcher`, `research_methodologist`, `simulation_methodologist`, `virtual_lab`, `independent_reviewer`, `evidence_leaf` and `evidence_critic` subagents), `earthscope`, `appl-core`, `clio-data` and `spotter`.
+
+## Agents in the clio marketplace
+
+| Agent | Name | Builds on | Adds |
+|---|---|---|---|
+| `clio/standard` | CLIO | `Agent` | `workspace`, `shell`, `web`, `documents`, `visuals`, `connected-data`, `delegation`, `orchestration` |
+| `clio/science` | CLIO Science | `standard` | `scientific-method` |
+| `clio/factorio` | Factorio | `science` | `manufacturing`, `abaqus`, `morphorm`, `slurm`, `factorio` |
+| `clio/earthscope` | EarthScope | `science` | `earthscope`, `geodesy`, `geo`, `ndp` |
+| `clio/clio-data` | CLIO Data | `science` | `clio-data`, `data-onboarding`, `hdf5`, `adios`, `parquet` |
+| `clio/appl-core` | OPAL | `science` | `appl-core`, `data-onboarding`, `phenotyping`, `parquet` |
+| `clio/deep-researcher` | Deep Researcher | `Agent` | `orchestration`, `deep-research` |
+| `clio/document-production` | Document Production | `Agent` | `document-production`, `workspace`, `shell` |
+| `clio/clio-search` | CLIO Search | `Agent` | `clio-search` |
+| `clio/spotter-ai` | SPOTTER | `Agent` | `spotter` |
+
+An agent in your own marketplace can carry any of these plugins by id. To start from one of these agents without writing a class, change a conversation's plugins and [save it as your own agent](/docs/agents-and-plugins/#save-your-own-agent).
+
+## Tools by plugin
+
+Each tool belongs to one plugin. Require that plugin to give your plugin or subagent the tool.
+
+| Plugin | Tools |
+|---|---|
+| `core` | `query_tasks`, `observe_tasks`, `wait_tasks`, `cancel_tasks`, `get_task_result`, `send_agent_message`, `pause_agent`, `resume_agent`, `restart_agent`, `ask_user`, `plan_exit`, `write_todos`, `create_artifact`, `raise_alert_card`, `recall_context`, `load_skill`, `set_goal`, `wait_for`, `goal_status`, `set_loop`, `loop_wakeup`, `cron_create`, `cron_list`, `cron_delete`, `workspace_resource_list`, `workspace_resource_inspect`, `workspace_resource_wait`, `workspace_resource_read`, `workspace_resource_search`, `workspace_resource_structure` |
+| `memory` | `memory_search`, `memory_read`, `create_memory`, `update_memory`, `forget_memory`, `propose_memory_change`, `session_search`, `session_read_summary`, `session_read_context_frame` |
+| `fleet` | `list_models`, `usage`, `refresh_provider_models` |
+| `orchestration` | `run_flow`, `run_workflow`, `make_plugin` |
+| `workspace` | `fs_read_file`, `fs_list_directory`, `fs_search_text`, `fs_write_file`, `fs_edit_file`, `view_image` |
+| `shell` | `shell_bash`, `prepare_execution_runtime` |
+| `ssh` | `ssh_execute` |
+| `delegation` | `spawn_agent_task`, `spawn_agents_parallel`, `spawn_skill_task` |
+| `visuals` | `create_a2ui_surface`, `update_a2ui_components`, `update_a2ui_data_model`, `delete_a2ui_surface`, `inspect_a2ui_surface`, `capture_a2ui_surface`, `publish_dashboard_report` |
+| `connected-data` | `connected_data_status`, `connected_data_connect`, `connected_data_index`, `connected_data_open`, `connected_data_download`, `connected_data_write`, `connected_data_search_ndp`, `connected_data_ndp_organizations`, `connected_data_ndp_endpoint_connect`, `connected_data_ndp_endpoint_operations`, `connected_data_ndp_upload_artifact`, `connected_data_ndp_endpoint_request`, `knowledge_open`, `knowledge_search`, `knowledge_related`, `knowledge_create`, `knowledge_edit` |
+| `document-runtime` | `prepare_document_runtime`, `prepare_document` |
+| `pdf` | `view_pdf` |
+| `clio-search` | `clio_search`, `clio_search_read` |
+| `weather` | `get_weather_forecast` |
+
+Plugins with a tool server (`web`, `hdf5`, `adios`, `parquet`, `pandas`, `plot`, `ndp`, `geo`, `spotter`) bring that server's tools, named after the server: `web_fetch` and `web_search` from `web`, for example.
+
+## Hook events
+
+A plugin's hooks can run on `tool_call`, `tool_result`, `tool_batch`, `prompt_submit`, `stop`, `answer`, `session_start`, `session_end`, `subagent_start`, `subagent_stop`, `pre_compact`, `before_model` and `after_model`. See [Hooks](/docs/sdk/plugins/#hooks) for what each can do.
+
+<CardGrid>
+  <LinkCard title="Build your first plugin" href="/docs/sdk/build-a-plugin/" description="Require these plugins from your own." />
+  <LinkCard title="Agent reference" href="/docs/sdk/agents/" description="Build an agent on these plugins." />
+</CardGrid>

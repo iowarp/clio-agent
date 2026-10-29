@@ -19,7 +19,6 @@ def test_turn_context_defaults():
     assert tc.turn_id == ""
     assert tc.trace_id == ""
     assert tc.tool_session_id == ""
-    assert tc.execution_blueprint_id == ""
 
 
 def test_runtime_context_defaults():
@@ -28,7 +27,7 @@ def test_runtime_context_defaults():
     assert rc.react_scope == ""
     assert rc.react_session == ""
     assert rc.react_context_window == 0
-    assert rc.blueprint_tool_rows is None
+    assert rc.agent_tool_rows is None
     assert rc.parent_span_id == ""
 
 
@@ -39,13 +38,13 @@ def test_runtime_context_construction():
         react_scope="scope",
         react_session="sess",
         react_context_window=4096,
-        blueprint_tool_rows=[{"name": "x"}],
+        agent_tool_rows=[{"name": "x"}],
         parent_span_id="span",
     )
     assert rc.turn is turn
     assert rc.react_scope == "scope"
     assert rc.react_context_window == 4096
-    assert rc.blueprint_tool_rows == [{"name": "x"}]
+    assert rc.agent_tool_rows == [{"name": "x"}]
     assert rc.parent_span_id == "span"
 
 
@@ -120,18 +119,18 @@ def test_parent_span_nested_dance():
     assert ctx.active_parent_span_id() == ""
 
 
-def test_blueprint_tool_rows_stores_identity():
+def test_agent_tool_rows_stores_identity():
     rows: list[dict] = []
-    token = ctx.set_blueprint_tool_rows(rows)
+    token = ctx.set_agent_tool_rows(rows)
     try:
         # The field holds the SAME list object so a wrapped tool's append is visible.
-        active = ctx.active_blueprint_tool_rows()
+        active = ctx.active_agent_tool_rows()
         assert active is rows
         active.append({"name": "tool"})
         assert rows == [{"name": "tool"}]
     finally:
         ctx.reset(token)
-    assert ctx.active_blueprint_tool_rows() is None
+    assert ctx.active_agent_tool_rows() is None
 
 
 def test_set_turn_identity_bare_and_preserves_tool_session():
@@ -145,7 +144,6 @@ def test_set_turn_identity_bare_and_preserves_tool_session():
                 session_id="sid",
                 turn_id="tid",
                 trace_id="trid",
-                execution_blueprint_id="deep-researcher",
             )
             assert ctx.active_app() is app_obj
             assert ctx.active_session_id() == "sid"
@@ -153,7 +151,6 @@ def test_set_turn_identity_bare_and_preserves_tool_session():
             assert ctx.active_trace_id() == "trid"
             # tool_session_id is carried forward across the turn-identity set.
             assert ctx.active_tool_session_id() == "tool-sess"
-            assert ctx.active_execution_blueprint_id() == "deep-researcher"
         finally:
             # ts_token was set BEFORE the tokenless set_turn_identity; resetting it
             # restores the pre-tool-session layer (the tokenless set is discarded).

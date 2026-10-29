@@ -1,0 +1,51 @@
+{
+ "steps": [
+  {
+   "id": "inspect",
+   "label": "Inspect target",
+   "state": "succeeded",
+   "started_at": "2026-10-26T13:48:05.766582+00:00",
+   "finished_at": "2026-10-26T13:48:06.682410+00:00",
+   "elapsed_seconds": 0.9,
+   "progress": null,
+   "message": "Running verify"
+  },
+  {
+   "id": "command-0",
+   "label": "Verify the service",
+   "state": "succeeded",
+   "started_at": "2026-10-26T13:48:06.684734+00:00",
+   "finished_at": "2026-10-26T13:48:09.680266+00:00",
+   "elapsed_seconds": 3.0,
+   "progress": null,
+   "message": ""
+  },
+  {
+   "id": "finish",
+   "label": "Record the deployment",
+   "state": "succeeded",
+   "started_at": "2026-10-26T13:48:09.683797+00:00",
+   "finished_at": "2026-10-26T13:48:09.688807+00:00",
+   "elapsed_seconds": 0.0,
+   "progress": null,
+   "message": "Recording the deployment"
+  }
+ ],
+ "current_step": null,
+ "started_at": "2026-10-26T13:48:05.766571+00:00",
+ "finished_at": "2026-10-26T13:48:09.688855+00:00",
+ "elapsed_seconds": 3.9,
+ "reused": [],
+ "from_scratch": false,
+ "log_cursor": 9,
+ "id": "2cb89b42-40d4-452a-bf0a-61b6c952f5cc",
+ "service_id": "flowcept",
+ "target_id": "local",
+ "action": "verify",
+ "state": "succeeded",
+ "progress": "Completed",
+ "error": null,
+ "conflict": null,
+ "created_at": "2026-10-26T13:48:05.764048+00:00",
+ "updated_at": "2026-10-26T13:48:09.688884+00:00"
+}

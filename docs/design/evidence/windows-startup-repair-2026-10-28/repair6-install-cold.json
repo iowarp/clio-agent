@@ -1,0 +1,9 @@
+{
+  "ref": "codex/windows-startup-acceptance",
+  "exit_code": 0,
+  "seconds": 167.82942,
+  "label": "repair6-install-cold",
+  "candidate": "8af46e42136360a3384c0a07e16040757ae44eb4",
+  "profile": "D:\\cw\\fp7",
+  "finished_at": "2026-10-28T10:36:30.0720290Z"
+}

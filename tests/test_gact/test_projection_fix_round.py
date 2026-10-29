@@ -160,7 +160,7 @@ def test_fork_pending_permission_is_listable_from_its_own_conversation(tmp_path:
             "status": "pending",
             "summary": "Allow the fork to write",
             "created_at": "2026-09-03T00:00:00+00:00",
-            "tool_call": {"tool_name": "fs_apply_edit_write"},
+            "tool_call": {"tool_name": "fs_write_file"},
         }
         listed = client.get(
             f"/v1/sessions/{root.id}/interactions", params={"include_children": True}
@@ -212,7 +212,8 @@ def test_the_interactions_projection_serves_the_a2ui_quarantine_reasons(tmp_path
 
     assert listed.status_code == 200, listed.text
     reasons = {row["reason"] for row in listed.json()["degradations"]}
-    assert reasons & {row["reason"] for row in quarantined}
+    # The interaction wire exposes the typed code; quarantine's reason is detail text.
+    assert reasons == {row["code"] for row in quarantined}
 
 
 def test_the_interactions_projection_bounds_the_owners_it_walks(tmp_path: Path) -> None:
@@ -460,7 +461,8 @@ def test_the_execution_route_survives_a_deleted_child(tmp_path) -> None:
         child = app.state.sessions.create(workspace_id="ws_default", title="child")
         _seed_task(app, parent=root.id, child=child.id, task_id="task_a")
         # Drop the session WITHOUT the route's purge, reproducing a torn write.
-        app.state.sessions._sessions.pop(child.id, None)
+        app.state.sessions._records.delete(child.id)
+        app.state.sessions._forget(child.id)
         response = client.get(f"/v1/sessions/{root.id}/provenance/execution")
 
     assert response.status_code == 200, response.text

@@ -1,0 +1,38 @@
+   Compiling clio-desktop v0.7.3 (D:\Libraries\Documents\projects\gact-windows-startup-acceptance\desktop\src-tauri)
+warning: fields `ref_env` and `force_env` are never read
+  --> src\brand_backend.rs:77:9
+   |
+72 | pub struct BrandInstall {
+   |            ------------ fields in this struct
+...
+77 |     pub ref_env: String,
+   |         ^^^^^^^
+78 |     /// Env var that forces a reinstall (rebuild a broken runtime).
+79 |     pub force_env: String,
+   |         ^^^^^^^^^
+   |
+   = note: `BrandInstall` has derived impls for the traits `Clone` and `Debug`, but these are intentionally ignored during dead code analysis
+   = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: `clio-desktop` (lib test) generated 1 warning
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 49.64s
+     Running unittests src\lib.rs (.acceptance-runtime\cargo-target\debug\deps\clio_desktop_lib-069133e00757c7be.exe)
+
+running 14 tests
+test execution_install::tests::installer_output_fixture ... ok
+test execution_install::tests::startup_help_fixture ... ok
+test execution_install::tests::package_owner_preserves_command_and_environment_without_attaching_the_gui ... ok
+test execution_install::tests::routine_startup_requests_reuse_without_creating_sandbox_accounts ... ok
+test execution_install::tests::only_explicit_installation_requests_sandbox_creation ... ok
+test execution_install::tests::installer_uses_bundled_python_and_managed_workspace ... ok
+test execution_install::tests::legacy_startup_keeps_existing_packages_without_running_unsupported_arguments ... ok
+test execution_install::tests::a_broken_help_probe_does_not_silently_skip_setup ... ok
+test execution_install::tests::old_runtimes_require_the_full_check_instead_of_skipping_the_fence ... ok
+test execution_install::tests::streams_progress_and_retains_failure_output ... ok
+test execution_install::tests::independent_fence_verification_requires_success_before_packages_may_defer ... ok
+test execution_install::tests::validates_the_runtime_interpreter_before_launching ... ok
+test execution_install::tests::independent_fence_verification_preserves_a_real_setup_failure ... ok
+test execution_install::tests::modern_startup_runs_setup_and_preserves_its_failure ... ok
+
+test result: ok. 14 passed; 0 failed; 0 ignored; 0 measured; 309 filtered out; finished in 0.06s
+

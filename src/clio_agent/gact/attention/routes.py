@@ -25,6 +25,13 @@ from fastapi import FastAPI, HTTPException, Query
 from pydantic import BaseModel, Field
 from starlette.concurrency import run_in_threadpool
 
+from clio_agent.gact.attention.items import (
+    CSV_COLUMNS,
+    items_csv,
+    items_payload,
+    reduce_items,
+    round_number,
+)
 from clio_agent.gact.attention.lm_calls import (
     LmCall,
     flowcept_lm_call_filter,
@@ -32,6 +39,7 @@ from clio_agent.gact.attention.lm_calls import (
     lm_calls_from_jsonl,
 )
 from clio_agent.gact.attention.lookup import lookup_attention
+from clio_agent.gact.attention.profiles import DEFAULT_PROFILE
 from clio_agent.gact.attention.reasons import AttentionUnavailable
 from clio_agent.gact.attention.service import SelectionRequest, explain_selection
 from clio_agent.gact.attention.store import AttentionStore
@@ -52,9 +60,40 @@ class AttentionRequestBody(BaseModel):
     end: int | None = None
     #: Rendered text the person selected (located server-side when no span is given).
     text: str = ""
-    profile: AttentionProfile = AttentionProfile()
+    profile: AttentionProfile = DEFAULT_PROFILE
     content_revision: str = ""
     lm_call_id: str = ""
+
+
+class AttentionItemBody(BaseModel):
+    """One answer item: an explicit span over a generated text, or its rendered text."""
+
+    part_id: str = ""
+    field: str = "text"
+    start: int | None = None
+    end: int | None = None
+    text: str = ""
+    content_revision: str = ""
+
+
+class AttentionItemsBody(BaseModel):
+    """Items of one answer, each reduced on its own (the SPOTTER per-item view)."""
+
+    items: list[AttentionItemBody] = Field(min_length=1, max_length=32)
+    #: Cut each item at this delimiter (``;`` reads ``NIL 373; DIVERGES`` as two items).
+    split: str = Field(default="", max_length=8)
+    profile: AttentionProfile = DEFAULT_PROFILE
+    lm_call_id: str = ""
+    include_scores: bool = False
+
+
+class AttentionItemsExportBody(AttentionItemsBody):
+    """The per-item view as ``attn_analytics.py`` CSV rows, with its row labels."""
+
+    chain_id: str = ""
+    round_no: str = ""
+    task_type: str = ""
+    model: str = ""
 
 
 class AttentionLookupBody(BaseModel):
@@ -62,7 +101,7 @@ class AttentionLookupBody(BaseModel):
 
     selections: list[ContentSelection] = Field(min_length=1, max_length=32)
     direction: Literal["generated_to_source", "source_to_generation"] = "generated_to_source"
-    profile: AttentionProfile = AttentionProfile()
+    profile: AttentionProfile = DEFAULT_PROFILE
     cursor: int = Field(default=0, ge=0)
     limit: int = Field(default=16, ge=1, le=32)
     lm_call_id: str = Field(default="", max_length=256)
@@ -204,6 +243,63 @@ def register_attention_routes(app: FastAPI) -> None:
                     lm_call_id=body.lm_call_id,
                 ),
             )
+
+        try:
+            return await run_in_threadpool(run)
+        except AttentionUnavailable as exc:
+            return exc.to_wire()
+
+    def _items_view(sid: str, mid: str, body: AttentionItemsBody) -> Any:
+        return reduce_items(
+            messages=list(app.state.messages.get(sid, [])),
+            calls=session_lm_calls(app, sid),
+            store=attention_store(app),
+            renderer_for=_renderer,
+            requests=[
+                SelectionRequest(
+                    message_id=mid,
+                    profile=body.profile,
+                    lm_call_id=body.lm_call_id,
+                    **item.model_dump(),
+                )
+                for item in body.items
+            ],
+            delimiter=body.split,
+            profile=body.profile,
+        )
+
+    @app.post("/v1/sessions/{sid}/messages/{mid}/attention/items")
+    async def post_attention_items(sid: str, mid: str, body: AttentionItemsBody) -> dict[str, Any]:
+        def run() -> dict[str, Any]:
+            return items_payload(_items_view(sid, mid, body), include_scores=body.include_scores)
+
+        try:
+            return await run_in_threadpool(run)
+        except AttentionUnavailable as exc:
+            return exc.to_wire()
+
+    @app.post("/v1/sessions/{sid}/messages/{mid}/attention/items/export")
+    async def post_attention_items_export(
+        sid: str, mid: str, body: AttentionItemsExportBody
+    ) -> dict[str, Any]:
+        def run() -> dict[str, Any]:
+            view = _items_view(sid, mid, body)
+            messages = list(app.state.messages.get(sid, []))
+            text = items_csv(
+                view,
+                chain_id=body.chain_id or sid,
+                round_no=body.round_no or str(round_number(messages, mid)),
+                task_type=body.task_type,
+                model=body.model,
+            )
+            return {
+                "schema": "clio.attention.items.csv.v1",
+                "available": True,
+                "filename": f"attn_{body.chain_id or sid}_{mid}.csv",
+                "columns": list(CSV_COLUMNS),
+                "rows": len(view.items),
+                "csv": text,
+            }
 
         try:
             return await run_in_threadpool(run)

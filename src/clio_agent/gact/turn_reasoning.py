@@ -133,6 +133,16 @@ def _parent_turn_reasoning(app: "FastAPI | None", user_msg: "Message") -> dict[s
     return record if record.get("source") in {"per_message", "parent_message"} else None
 
 
+def _preferred_effort(session: Any) -> str:
+    """The effort the session's ``model_choice`` took from a ``Prefers``, if any."""
+
+    metadata = getattr(session, "metadata", None)
+    choice = metadata.get("model_choice") if isinstance(metadata, dict) else None
+    if not isinstance(choice, dict):
+        return ""
+    return str(choice.get("effort") or "").strip().lower()
+
+
 def apply_turn_reasoning(
     user_msg: "Message",
     agent_def: "AgentDef",
@@ -142,7 +152,8 @@ def apply_turn_reasoning(
 ) -> "AgentDef":
     """Overlay this turn's reasoning effort onto a LOCAL copy of ``agent_def``.
 
-    The message's own level wins. A spawned child without one inherits its
+    The message's own level wins, then the effort a ``Prefers`` chose with the
+    child's model (``model_choice.effort``). A spawned child without either inherits its
     parent turn's per-message level when it runs on the same provider+model
     (see the module docstring); otherwise the non-inheritance is recorded.
     Returns ``agent_def`` unchanged when no level applies.
@@ -151,7 +162,11 @@ def apply_turn_reasoning(
     level = message_reasoning_effort(user_msg)
     if level:
         return _with_level(agent_def, level, **{TURN_REASONING_SOURCE_KEY: "per_message"})
-    del session  # the trusted message carries the fixed delegation turn
+    preferred = _preferred_effort(session)
+    if preferred:
+        # The effort a Prefers chose with the child's model; a level the model
+        # cannot carry shows as "unsupported" in the turn's provenance.
+        return _with_level(agent_def, preferred, **{TURN_REASONING_SOURCE_KEY: "prefers"})
     parent = _parent_turn_reasoning(app, user_msg)
     if parent is None:
         return agent_def

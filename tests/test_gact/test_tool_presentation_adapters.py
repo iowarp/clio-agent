@@ -148,13 +148,13 @@ def test_failed_execution_presents_the_authoritative_reason_without_fabricating_
     ]
 
     _raw, denied = completed_presentation(
-        "memory_read_session_summary",
+        "session_read_summary",
         {},
         None,
         None,
         "",
         error=(
-            "403: {'error': {'error': 'memory_policy_denied', "
+            "403: {'error': {'error': 'session_recall_policy_denied', "
             "'message': 'raw policy payload', "
             "'details': {'policy_decision': 'deny_other_workspace'}}}"
         ),
@@ -581,9 +581,9 @@ def test_web_conversion_exposes_saved_outputs_and_progress() -> None:
     assert view["subject"] == "subject"
     assert view["blocks"][0]["uri"] == "https://example.org/paper.pdf"
     blocks = {block["id"]: block for block in view["blocks"]}
-    assert blocks["identity"]["text"] == "application/pdf"
+    assert blocks["identity"]["text"] == "Content type: application/pdf"
     assert "Conversion:" not in json.dumps(blocks)
-    assert blocks["events"]["text"] == "docling · Converting page 3"
+    assert blocks["events"]["text"] == "docling: Converting page 3"
     assert blocks["local_path"]["uri"] == "D:/workspace/paper.md"
     assert blocks["metadata_path"]["uri"] == "D:/workspace/paper.json"
     assert json.dumps(result) == before

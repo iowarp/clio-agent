@@ -1,12 +1,12 @@
 """``agent.toolset.recorded`` -- the server half of the obs Tools tab's
 "called | available" toggle.
 
-Fires once per built react expert, at the ``instrument_tools()`` assembly
-seam in ``builders.py`` (the blueprint react branch AND the tool-user-agent
-branch), carrying the REAL final toolset -- never a recomputed guess. It
-rides the existing semantic-trace highway (``_emit_semantic_event``), so the
-obs UI reads it back from the SAME ``GET /v1/sessions/{sid}/trace`` route it
-already polls for parent + children. No new store, no new route (RULE 4).
+Fires once per built react agent, at the ``instrument_tools()`` assembly seam in
+``builders.build_agent_module``, carrying the REAL final toolset -- never a
+recomputed guess. It rides the existing semantic-trace highway
+(``_emit_semantic_event``), so the obs UI reads it back from the SAME
+``GET /v1/sessions/{sid}/trace`` route it already polls for parent + children.
+No new store, no new route (RULE 4).
 """
 
 from __future__ import annotations
@@ -15,6 +15,7 @@ import contextvars
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
+from functools import partial
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, Callable
@@ -23,8 +24,65 @@ import pytest
 from fastapi.testclient import TestClient
 
 from clio_agent.gact import context as _ctx
+from clio_agent.gact.agents.builders import build_agent_module
+from clio_agent.gact.agents.resolution import resolution_agent_def
 from clio_agent.gact.app import build_app
 from clio_agent.gact.types import AgentDef
+from clio_agent.plugins.service import PluginService
+from tests._plugin_fixtures import custom_marketplace
+
+#: A react agent carrying only ``core`` and ``delegation``: no gateway tools, so it
+#: builds with no tool executor.
+_LEAF_AGENT = """
+from clio_agent.sdk import Agent
+
+
+class ToolsetLeaf(Agent):
+    id = "toolset-leaf"
+    version = "1.0.0"
+    role = "a leaf agent for the toolset inventory tests"
+    plugins = Agent.plugins + ["delegation"]
+"""
+
+#: A react agent with gateway tools and a plugin MCP server (``earthscope``).
+_MOUNTED_AGENT = """
+from clio_agent.sdk import Agent
+
+
+class ToolsetMounted(Agent):
+    id = "toolset-mounted"
+    version = "1.0.0"
+    role = "an agent with gateway and plugin MCP tools"
+    plugins = Agent.plugins + ["workspace", "shell", "earth-data"]
+"""
+
+
+@pytest.fixture
+def marketplace(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    custom_marketplace(
+        tmp_path,
+        monkeypatch,
+        plugins={
+            "earth-data": {
+                "servers": {"earthscope": {"type": "stdio", "command": "never-launch", "args": []}}
+            }
+        },
+        agents={"leaf.py": _LEAF_AGENT, "mounted.py": _MOUNTED_AGENT},
+    )
+
+
+def _agent(ref: str = "clio/toolset-leaf", **update: Any) -> tuple[AgentDef, Callable]:
+    """The resolved agent's ``AgentDef`` and its ``(base_agent, agent_def)`` builder."""
+
+    resolution = PluginService().resolve(ref, pin=False)
+    agent_def = resolution_agent_def(resolution)
+    if update:
+        agent_def = agent_def.model_copy(update=update)
+    return agent_def, partial(_build_module, resolution=resolution)
+
+
+def _build_module(base_agent: Any, agent_def: AgentDef, *, resolution: Any) -> Any:
+    return build_agent_module(base_agent, agent_def, resolution)
 
 
 def _patch_lm(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -85,38 +143,30 @@ def _build_under_turn_identity(
 
 
 @pytest.fixture
-def live_app(tmp_path: Path) -> Any:
+def live_app(tmp_path: Path, marketplace: None) -> Any:
     application = build_app(sessions_path=tmp_path / "s.json")
     with TestClient(application) as c:
         sid = c.post("/v1/sessions", json={"title": "t"}).json()["id"]
         yield application, sid
 
 
-def test_blueprint_react_build_emits_toolset_recorded_with_native_tools(
+def test_react_build_emits_toolset_recorded_with_native_and_spawn_tools(
     live_app: Any, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """A plain react root (no tools/skills/children declared) still built the
-    auto-attached native tool set -- one inventory event, shaped
+    """A react agent with only ``core`` and ``delegation`` builds the claimed native
+    tool set -- one inventory event, shaped
     {agent_id, session_id, tools:[{name,title,source,representation}]}, matching
-    the module's REAL ``.tools`` 1:1 (never a subset/superset)."""
-
-    from clio_agent.gact.agents.builders import _build_blueprint_dspy_module
+    the module's REAL ``.tools`` 1:1 (never a subset/superset). The spawn surface
+    ``delegation`` claims is labeled ``source: "spawn-runtime"`` -- never confused
+    with a curated domain tool."""
 
     application, sid = live_app
     _patch_lm(monkeypatch)
     captured = _capture_emit(monkeypatch)
-
-    base_agent = SimpleNamespace(tool_executor=None)
-    agent_def = AgentDef(
-        id="toolset_inventory_leaf_9f2c",
-        source="expert_pack",
-        title="Leaf",
-        system_prompt="Root.",
-        module={"kind": "react"},
-    )
+    agent_def, build = _agent()
 
     module = _build_under_turn_identity(
-        _build_blueprint_dspy_module, base_agent, agent_def, application, sid
+        build, SimpleNamespace(tool_executor=None), agent_def, application, sid
     )
 
     events = _events_of(captured, "agent.toolset.recorded")
@@ -126,7 +176,7 @@ def test_blueprint_react_build_emits_toolset_recorded_with_native_tools(
     assert event["trace_id"] == "trace_tsi"
     assert event["session_id"] == sid
     payload = event["payload"]
-    assert payload["agent_id"] == "toolset_inventory_leaf_9f2c"
+    assert payload["agent_id"] == agent_def.id
     assert payload["session_id"] == sid
 
     rows = {row["name"]: row for row in payload["tools"]}
@@ -135,120 +185,61 @@ def test_blueprint_react_build_emits_toolset_recorded_with_native_tools(
     for row in rows.values():
         assert set(row) == {"name", "title", "source", "representation"}
 
-    # Auto-attached infra is native, never mistaken for an MCP server. A root
-    # blueprint also owns the commissioning surface even without declared
-    # children so it can target an installed blueprint by id.
+    # Core's claimed infra is native, never mistaken for an MCP server.
     assert rows["create_artifact"]["source"] == "native"
     assert rows["create_artifact"]["representation"] == "chip"
     assert rows["write_todos"]["source"] == "native"
     assert rows["goal_status"]["source"] == "native"
+    assert rows["wait_tasks"]["source"] == "native"
+    assert rows["observe_tasks"]["source"] == "native"
     assert rows["spawn_agent_task"]["source"] == "spawn-runtime"
     assert rows["spawn_agents_parallel"]["source"] == "spawn-runtime"
+    assert not {"wait_agent_tasks", "observe_agent_tasks", "get_agent_task_output"} & rows.keys()
+    assert "check_agent_tasks" not in rows
 
 
-def test_tool_user_agent_build_also_emits_toolset_recorded(
-    live_app: Any, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """The second call site (``_build_tool_user_agent_module``) fires the same event."""
-
-    from clio_agent.gact.agents.builders import _build_tool_user_agent_module
-
-    application, sid = live_app
-    _patch_lm(monkeypatch)
-    captured = _capture_emit(monkeypatch)
-
-    base_agent = SimpleNamespace(tool_executor=None)
-    agent_def = AgentDef(
-        id="analyst",
-        source="user",
-        title="Analyst",
-        system_prompt="Analyze.",
-        module={},
-    )
-
-    module = _build_under_turn_identity(
-        _build_tool_user_agent_module, base_agent, agent_def, application, sid
-    )
-
-    events = _events_of(captured, "agent.toolset.recorded")
-    assert len(events) == 1
-    payload = events[0]["payload"]
-    assert payload["agent_id"] == "analyst"
-    assert {row["name"] for row in payload["tools"]} == {
-        str(getattr(t, "name", "")) for t in module.tools
-    }
-
-
-def test_gateway_and_external_mcp_tools_carry_their_real_source(
+def test_gateway_and_plugin_mcp_tools_carry_their_real_source(
     live_app: Any, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """``source`` is the ACTUAL provenance: a gateway-mounted tool's namespace
-    prefix (the same encoding ``mcp_executor._route`` dispatches on) for the
-    base fleet, and the declared external MCP server id for an Agent Blueprint
-    MCP tool -- never a generic 'mcp' bucket that would erase which server.
+    prefix (the same encoding ``mcp_executor._route`` dispatches on), and a plugin
+    MCP server's tools carry that server's namespace -- never a generic 'mcp'
+    bucket that would erase which server.
 
     Finding [D]: the namespace prefix is trusted ONLY when it names a namespace
     the tool_executor ACTUALLY mounts (``_namespace_servers``, read the same set
     ``mcp_executor._route`` validates against) -- ``fs`` is mounted so
-    ``fs_read_file`` labels itself, but a name whose prefix is NOT in that set
-    (``ghost_probe``) and a name with no underscore at all (``solo``) both fall
-    back to the literal "gateway" bucket instead of a fabricated namespace."""
-
-    from clio_agent.gact.agents.builders import _build_blueprint_dspy_module
+    ``fs_read_file`` labels itself, but ``shell_bash``, whose prefix is NOT in
+    that set, falls back to the literal "gateway" bucket instead of a fabricated
+    namespace."""
 
     application, sid = live_app
     _patch_lm(monkeypatch)
     captured = _capture_emit(monkeypatch)
-
-    application.state.external_mcp_servers = {
-        "agent_blueprint_mcp_earth_earthscope": {
-            "id": "agent_blueprint_mcp_earth_earthscope",
-            "status": "ready",
-            "tools": [
-                {
-                    "id": "earthscope_query",
-                    "name": "earthscope_query",
-                    "description": "query EarthScope catalog",
-                    "status": "ready",
-                    "enabled": True,
-                    "input_schema": {"type": "object", "properties": {}},
-                }
-            ],
-        }
-    }
     base_agent = SimpleNamespace(
         tool_executor=SimpleNamespace(
             to_dspy_tools=lambda: [
                 SimpleNamespace(name="fs_read_file"),
-                SimpleNamespace(name="ghost_probe_scan"),
-                SimpleNamespace(name="solo"),
+                SimpleNamespace(name="shell_bash"),
+                SimpleNamespace(name="earthscope_query"),
             ],
-            # The real dispatcher's mounted-namespace set (finding [D]): only "fs"
-            # is actually mounted, so "ghost_probe_scan" is an unmounted prefix.
-            _namespace_servers={"fs": object()},
+            # The real dispatcher's mounted-namespace set (finding [D]): "shell" is
+            # not mounted, so "shell_bash" carries an unmounted prefix.
+            _namespace_servers={"fs": object(), "earthscope": object()},
+            _clio_namespace_specs={"earthscope": object()},
         )
     )
-    agent_def = AgentDef(
-        id="main",
-        source="expert_pack",
-        title="Main",
-        system_prompt="Root.",
-        module={"kind": "react"},
-        tools=["fs_read_file", "ghost_probe_scan", "solo", "earthscope_query"],
-    )
+    agent_def, build = _agent("clio/toolset-mounted")
 
-    _build_under_turn_identity(
-        _build_blueprint_dspy_module, base_agent, agent_def, application, sid
-    )
+    _build_under_turn_identity(build, base_agent, agent_def, application, sid)
 
     rows = {
         row["name"]: row
         for row in _events_of(captured, "agent.toolset.recorded")[0]["payload"]["tools"]
     }
     assert rows["fs_read_file"]["source"] == "fs"
-    assert rows["ghost_probe_scan"]["source"] == "gateway"
-    assert rows["solo"]["source"] == "gateway"
-    assert rows["earthscope_query"]["source"] == "agent_blueprint_mcp_earth_earthscope"
+    assert rows["shell_bash"]["source"] == "gateway"
+    assert rows["earthscope_query"]["source"] == "earthscope"
 
 
 def test_mounted_namespace_set_reads_the_executors_namespace_servers() -> None:
@@ -269,56 +260,12 @@ def test_mounted_namespace_set_reads_the_executors_namespace_servers() -> None:
     assert toolset_inventory.mounted_namespace_set(SimpleNamespace()) == set()
 
 
-def test_declared_children_give_spawn_tools_the_spawn_runtime_source(
-    live_app: Any, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """A react main with declared children gets the spawn/wait/check surface,
-    and every one of those tools is labeled ``source: "spawn-runtime"`` --
-    never confused with a curated domain tool."""
-
-    from clio_agent.gact.agents.builders import _build_blueprint_dspy_module
-
-    application, sid = live_app
-    _patch_lm(monkeypatch)
-    captured = _capture_emit(monkeypatch)
-    monkeypatch.setattr(
-        "clio_agent.gact.agents.resolution._runtime_declared_child_ids",
-        lambda a, pid, session_id="": {"child_a"},
-    )
-
-    base_agent = SimpleNamespace(tool_executor=None)
-    agent_def = AgentDef(
-        id="main",
-        source="expert_pack",
-        title="Main",
-        system_prompt="Root.",
-        module={"kind": "react"},
-    )
-
-    _build_under_turn_identity(
-        _build_blueprint_dspy_module, base_agent, agent_def, application, sid
-    )
-
-    rows = {
-        row["name"]: row
-        for row in _events_of(captured, "agent.toolset.recorded")[0]["payload"]["tools"]
-    }
-    assert rows["spawn_agent_task"]["source"] == "spawn-runtime"
-    assert rows["wait_tasks"]["source"] == "native"
-    assert rows["observe_tasks"]["source"] == "native"
-    assert not {"wait_agent_tasks", "observe_agent_tasks", "get_agent_task_output"} & rows.keys()
-    assert "check_agent_tasks" not in rows
-    assert rows["spawn_agents_parallel"]["source"] == "spawn-runtime"
-
-
 def test_no_app_or_session_skips_event_with_a_structured_reason(
-    monkeypatch: pytest.MonkeyPatch,
+    marketplace: None, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """The recorder handle being unreachable is a FINDING (logged), never a
     silent pass: a build with no active app/session context leaves no event
     but DOES leave a traceable reason (no-silent-fallback ground rule)."""
-
-    from clio_agent.gact.agents.builders import _build_blueprint_dspy_module
 
     reasons: list[str] = []
     monkeypatch.setattr(
@@ -327,19 +274,11 @@ def test_no_app_or_session_skips_event_with_a_structured_reason(
     )
     _patch_lm(monkeypatch)
     captured = _capture_emit(monkeypatch)
-
-    base_agent = SimpleNamespace(tool_executor=None)
-    agent_def = AgentDef(
-        id="main",
-        source="expert_pack",
-        title="Main",
-        system_prompt="Root.",
-        module={"kind": "react"},
-    )
+    agent_def, build = _agent()
 
     # No _ctx.set_turn_identity / set_app here: the ambient context carries no
     # active app or session, mirroring a build reached off the normal turn path.
-    _build_blueprint_dspy_module(base_agent, agent_def)
+    build(SimpleNamespace(tool_executor=None), agent_def)
 
     assert _events_of(captured, "agent.toolset.recorded") == []
     assert any("skipped reason=no_app_or_session" in r for r in reasons)
@@ -350,8 +289,6 @@ def test_emit_failure_never_breaks_a_successful_build(
 ) -> None:
     """Observability must not destroy the observed work: an ARC/sink failure in
     the emitter leaves the build intact and a structured reason in the trace."""
-
-    from clio_agent.gact.agents.builders import _build_blueprint_dspy_module
 
     application, sid = live_app
     _patch_lm(monkeypatch)
@@ -366,18 +303,10 @@ def test_emit_failure_never_breaks_a_successful_build(
         raise RuntimeError("ARC unavailable")
 
     monkeypatch.setattr("clio_agent.gact.runtime.globals._emit_semantic_event", _boom)
-
-    base_agent = SimpleNamespace(tool_executor=None)
-    agent_def = AgentDef(
-        id="main",
-        source="expert_pack",
-        title="Main",
-        system_prompt="Root.",
-        module={"kind": "react"},
-    )
+    agent_def, build = _agent()
 
     module = _build_under_turn_identity(
-        _build_blueprint_dspy_module, base_agent, agent_def, application, sid
+        build, SimpleNamespace(tool_executor=None), agent_def, application, sid
     )
 
     assert module.tools  # the build itself succeeded despite the emit failure
@@ -446,27 +375,14 @@ def test_concurrent_registrations_with_a_colliding_name_never_cross_contaminate(
 def test_identical_rebuild_in_the_same_session_emits_only_once(
     live_app: Any, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    from clio_agent.gact.agents.builders import _build_blueprint_dspy_module
-
     application, sid = live_app
     _patch_lm(monkeypatch)
     captured = _capture_emit(monkeypatch)
-
+    agent_def, build = _agent()
     base_agent = SimpleNamespace(tool_executor=None)
-    agent_def = AgentDef(
-        id="dup_agent",
-        source="expert_pack",
-        title="Dup",
-        system_prompt="Root.",
-        module={"kind": "react"},
-    )
 
-    _build_under_turn_identity(
-        _build_blueprint_dspy_module, base_agent, agent_def, application, sid
-    )
-    _build_under_turn_identity(
-        _build_blueprint_dspy_module, base_agent, agent_def, application, sid
-    )
+    _build_under_turn_identity(build, base_agent, agent_def, application, sid)
+    _build_under_turn_identity(build, base_agent, agent_def, application, sid)
 
     assert len(_events_of(captured, "agent.toolset.recorded")) == 1
 
@@ -483,7 +399,7 @@ def test_changed_toolset_in_the_same_session_emits_again(
     captured = _capture_emit(monkeypatch)
     agent_def = AgentDef(
         id="grow_agent",
-        source="expert_pack",
+        source="plugin",
         title="Grow",
         system_prompt="Root.",
         module={"kind": "react"},
@@ -525,7 +441,7 @@ def test_skip_reason_reaches_the_structured_catalog_when_app_is_reachable(
     application, _sid = live_app
     agent_def = AgentDef(
         id="orphan",
-        source="expert_pack",
+        source="plugin",
         title="Orphan",
         system_prompt="Root.",
         module={"kind": "react"},
@@ -556,7 +472,7 @@ def test_emit_failure_reason_reaches_the_structured_catalog(
     monkeypatch.setattr("clio_agent.gact.runtime.globals._emit_semantic_event", _boom)
     agent_def = AgentDef(
         id="flaky",
-        source="expert_pack",
+        source="plugin",
         title="Flaky",
         system_prompt="Root.",
         module={"kind": "react"},

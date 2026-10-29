@@ -2258,3 +2258,45 @@ async def test_failed_transform_never_leaks_to_sse_under_attach_race():
     assert history_types.count("artifact.created") >= 1
     # Every history frame is an allow-listed atom (or a failure of a listed type).
     assert all(_frame_event_type(ev) not in SSE_TRACE_ONLY_EVENT_TYPES for ev in history_frames)
+
+
+def test_shell_command_names_its_script_and_input(tmp_path):
+    """A shell analysis records the script it ran and the exported file it read.
+
+    Live, ``cd <node> && python3 -I fit.py measurements.csv`` recorded ``used: []`` and no
+    script hash, so a claim citing that analysis could not show what it was computed from.
+    """
+    from clio_agent.gact.artifacts.shell_command_paths import COMMAND_PATHS_ARG, command_path_args
+
+    node = tmp_path / "runs" / "r1" / "length"
+    node.mkdir(parents=True)
+    split = command_path_args(
+        "shell_bash",
+        {"command": "cd runs/r1/length && OUT=res.json python3 -I fit.py data.csv --seed 3"},
+        tmp_path,
+    )
+    assert split == {
+        COMMAND_PATHS_ARG: [str(node / "res.json"), str(node / "fit.py"), str(node / "data.csv")]
+    }
+    assert command_path_args("shell_bash", {"command": "echo 'unbalanced"}, tmp_path) == {}
+    assert command_path_args("plot", {"command": "fit.py"}, tmp_path) == {}
+
+    app, sess, _arc = _make_app(tmp_path)
+    csv, version = _register_file(app, sess, tmp_path, "runs/r1/length/data.csv", b"L,T\n", "c0")
+    (node / "fit.py").write_text("print(1)\n")
+    os.utime(node / "fit.py", (time.time() - 60, time.time() - 60))
+    rec = record_transform(
+        app,
+        sess.id,
+        tool_name="shell_bash",
+        args={"command": "cd runs/r1/length && python3 -I fit.py data.csv"},
+        call_id="call_fit",
+        ok=True,
+        result=None,
+        minted=[],
+        workspace_id="ws1",
+        started_at=time.time(),
+    )
+    assert rec is not None
+    assert any(e.artifact_id == version.artifact_id for e in rec.used)
+    assert rec.instrument.script_hash == _sha(b"print(1)\n")

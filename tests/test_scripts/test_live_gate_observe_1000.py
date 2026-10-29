@@ -8,6 +8,8 @@ from types import ModuleType
 
 import pytest
 
+from tests._marketplace import MARKETPLACE_ROOT
+
 _REPO = Path(__file__).resolve().parents[2]
 _SCRIPT = _REPO / "scripts" / "live_gate_observe_1000.py"
 
@@ -22,7 +24,7 @@ def _load_script() -> ModuleType:
 
 
 @pytest.mark.marketplace
-def test_live_gate_inherits_model_and_uses_real_marketplace_blueprint() -> None:
+def test_live_gate_inherits_model_and_uses_real_marketplace_agent() -> None:
     """The gate must not pin a model or reference the removed experiment tree."""
     module = _load_script()
 
@@ -31,5 +33,8 @@ def test_live_gate_inherits_model_and_uses_real_marketplace_blueprint() -> None:
     destinations = {action.dest for action in parser._actions}
 
     assert "model" not in destinations
-    assert args.blueprint_path == "external/clio-agent-marketplace/earthscope-flat"
-    assert (module.REPO / args.blueprint_path / "AGENT.md").is_file()
+    assert args.agent == "clio/earthscope"
+    agents = MARKETPLACE_ROOT / "agents"
+    assert any(
+        'id = "earthscope"' in path.read_text(encoding="utf-8") for path in agents.glob("*.py")
+    )

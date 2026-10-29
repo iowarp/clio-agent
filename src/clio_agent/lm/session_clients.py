@@ -19,7 +19,6 @@ from clio_agent.lm.resources import (
     model_resources,
     transfer_created_lm,
 )
-from clio_agent.runtime import turn_lm_ledger
 from clio_agent.runtime.stream_audit import stream_audit
 
 if TYPE_CHECKING:
@@ -89,6 +88,16 @@ class SessionModelClients:
             entry.leases -= 1
             return [entry.lm] if entry.retired and entry.leases == 0 else []
 
+    def release_idle(self, sid: str) -> list[Any]:
+        """Retire an idle session's clients; its next forward builds fresh ones.
+
+        Unlike :meth:`close`, the session stays open. A client still in use closes on
+        its final release.
+        """
+        with self._lock:
+            keys = [key for key in self._entries if key[0] == sid]
+            return [lm for key in keys for lm in self._retire(self._entries.pop(key))]
+
     def close(self, sid: str | None = None) -> list[Any]:
         """Retire one deleted session or the whole app; active users close on release."""
         with self._lock:
@@ -139,7 +148,6 @@ def session_model(config: LMProviderConfig, scope: str, sid: str) -> Iterator[An
             stream_audit(
                 "lm.work_client.leased", session_id=sid, scope=scope, client_id=id(entry.lm)
             )
-            turn_lm_ledger.record(view)
             yield wrap_lm_with_hooks(view)
         except BaseException as exc:
             primary = exc
@@ -149,6 +157,11 @@ def session_model(config: LMProviderConfig, scope: str, sid: str) -> Iterator[An
             stream_audit(
                 "lm.work_client.released", session_id=sid, scope=scope, client_id=id(entry.lm)
             )
+
+
+def release_idle_session_model_clients(app: Any, sid: str) -> None:
+    """Close an idle session's work pools; a later turn of the session opens new ones."""
+    close_model_clients(_owner(app).release_idle(sid))
 
 
 def close_session_model_clients(app: Any, sid: str | None = None) -> None:

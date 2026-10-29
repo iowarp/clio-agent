@@ -7,6 +7,7 @@ from typing import Any
 
 from clio_agent import conf
 from clio_agent.arc.task_types import AssignmentDetails, AssignmentEvidence, CoreReference
+from clio_agent.gact.result_selection import result_keys, select_fields, validate_selection
 from clio_agent.gact.task_access import TaskAccessDenied, TaskCaller
 from clio_agent.gact.task_cursors import decode_cursor, encode_cursor
 from clio_agent.gact.task_history import TaskHistory
@@ -15,7 +16,12 @@ SERIALIZATION = "json-sort-unicode-v1"
 
 
 def result_cursor(
-    recipient: str, handle: str, reference: CoreReference, mode: str, offset: int = 0
+    recipient: str,
+    handle: str,
+    reference: CoreReference,
+    mode: str,
+    offset: int = 0,
+    select: list[str] | None = None,
 ) -> str:
     """Pin a continuation to its recipient, result bytes and read mode, not current task state."""
     return encode_cursor(
@@ -27,6 +33,7 @@ def result_cursor(
             "mode": mode,
             "reference": reference.model_dump(mode="json"),
             "offset": offset,
+            "select": validate_selection(select),
         }
     )
 
@@ -45,6 +52,7 @@ def read_cursor(cursor: str, caller: TaskCaller, handle: str) -> dict[str, Any]:
     ):
         raise ValueError("Result cursor belongs to a different read")
     CoreReference.model_validate(value.get("reference"))
+    validate_selection(value.get("select"))
     return value
 
 
@@ -84,11 +92,19 @@ def result_page(
     reference: CoreReference,
     mode: str,
     position: dict[str, Any],
+    select: list[str] | None = None,
 ) -> dict[str, Any]:
     """Read deterministic JSON pages; fragments explicitly require concatenation before parsing."""
     if position and CoreReference.model_validate(position["reference"]) != reference:
         raise ValueError("Pinned result reference changed")
-    value = history.read_content(reference)
+    selection = validate_selection(select)
+    if position:
+        pinned = position.get("select")
+        if selection is not None and selection != pinned:
+            raise ValueError("Result cursor belongs to a different selection")
+        selection = pinned
+    original = history.read_content(reference)
+    value = select_fields(original, selection)
     encoded = json.dumps(value, ensure_ascii=False, sort_keys=True)
     offset = position.get("offset", 0)
     if offset > len(encoded):
@@ -97,6 +113,10 @@ def result_page(
         "limits.tool_result_chars", env="CLIO_TOOL_RESULT_CHARS", default=12000, cast=conf.as_int
     )
     result: dict[str, Any] = {"result_reference": reference.model_dump(mode="json")}
+    if selection is not None:
+        result["result_selection"] = selection
+    elif isinstance(original, dict):
+        result.update(result_keys(original))
     if not position and (bound <= 0 or len(encoded) <= bound):
         return {**result, "result": value, "next_cursor": None}
     end = min(len(encoded), offset + bound) if bound > 0 else len(encoded)
@@ -108,7 +128,7 @@ def result_page(
         serialization=SERIALIZATION,
         fragments_require_concatenation=True,
         next_cursor=(
-            result_cursor(caller.session_id, handle, reference, mode, end)
+            result_cursor(caller.session_id, handle, reference, mode, end, selection)
             if end < len(encoded)
             else None
         ),

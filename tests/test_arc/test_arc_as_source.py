@@ -26,6 +26,7 @@ from clio_agent.gact.semantic_events import (
     SemanticEvent,
     SemanticEventSink,
 )
+from clio_agent.gact.sessions import SessionStore
 
 
 def _ev(event_type: str, *, sid: str = "s1", turn: str = "t1", **kw: Any) -> SemanticEvent:
@@ -216,7 +217,7 @@ def _arc_less_app(monkeypatch):
         state=types.SimpleNamespace(
             semantic_event_sink=sink,
             arc=None,
-            sessions={},
+            sessions=SessionStore(),
             semantic_trace_detail_level="semantic",
         )
     )

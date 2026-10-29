@@ -89,7 +89,8 @@ TURN_REMINDER = (
     "complete fenced block: an opening line of three backticks followed by tool_calls, "
     "the JSON list on the next line, then a closing line of three backticks. Include BOTH "
     "fences; a JSON list alone or XML invoke/parameter tags are not calls. "
-    "A JSON object wrapping a tool_calls list or XML <tool_calls> tags is not a call either. "
+    "A JSON object wrapping a tool_calls list, XML <tool_calls> tags or [tool_calls] tags "
+    "are not calls either. "
     "A single JSON call object also needs the complete fenced JSON list. "
     "Underscores are not tool-call fences. "
     "Stop after the closing fence and wait for host observations; do not simulate "
@@ -218,9 +219,25 @@ def split_reply(
                 "XML tool-call fragments require a complete ```tool_calls JSON block",
                 call_prefix,
             )
+        if _element_call_block(reply, available_tools):
+            return _invalid_reply(
+                "",
+                reply.strip(),
+                "markup tags are not calls; a call needs a complete fenced ```tool_calls "
+                "JSON list; no operation was submitted",
+                call_prefix,
+            )
         if _orphaned_call_block(reply, available_tools):
             return _invalid_reply(
                 "", reply.strip(), "missing opening ```tool_calls fence", call_prefix
+            )
+        if _bracket_call_block(reply, available_tools):
+            return _invalid_reply(
+                "",
+                reply.strip(),
+                "[tool_calls] tags are not calls; a call needs a complete fenced "
+                "```tool_calls JSON list; no operation was submitted",
+                call_prefix,
             )
         if _bare_call_json(reply, available_tools):
             return _invalid_reply(
@@ -281,6 +298,23 @@ def _xml_call_block(reply: str, available_tools: Collection[str]) -> bool:
     )
 
 
+def _element_call_block(reply: str, available_tools: Collection[str]) -> bool:
+    """Reject a reply that is one markup element around a declared tool's name.
+
+    Live, a typed child ended with ``<invoke_tool>submit</invoke_tool>`` and that markup
+    became its answer. Whatever the tag, an element whose whole body is a declared
+    tool's name is a call in a shape the host does not run; a name is never data.
+    Attributes are not read, and markup inside prose, or around anything else, stays
+    an answer.
+    """
+    element = re.fullmatch(
+        r"\s*<(?P<tag>[A-Za-z_][\w:.-]*)(?:\s[^<>]*)?>(?P<body>.*?)</(?P=tag)>\s*",
+        reply,
+        re.DOTALL,
+    )
+    return bool(available_tools and element and element["body"].strip() in available_tools)
+
+
 def _orphaned_call_block(reply: str, available_tools: Collection[str]) -> bool:
     """Recognize observed broken openers without guessing executable calls.
 
@@ -296,6 +330,24 @@ def _orphaned_call_block(reply: str, available_tools: Collection[str]) -> bool:
         body = body.removeprefix("_tool_calls\n")
     try:
         calls = json.loads(body)
+    except ValueError:
+        return False
+    return _known_call_list(calls, available_tools) or _known_call_list([calls], available_tools)
+
+
+def _bracket_call_block(reply: str, available_tools: Collection[str]) -> bool:
+    """Reject a whole declared call closed by a ``[/tool_calls]`` tag (observed live).
+
+    The reply is only the call (list or single object), optionally opened by
+    ``[tool_calls]``; anything else, including an example inside prose, stays an answer.
+    """
+    match = re.fullmatch(
+        r"\s*(?:\[tool_calls\]\s*)?(?P<body>.+?)\s*\[/tool_calls\]\s*", reply, re.DOTALL
+    )
+    if not available_tools or match is None:
+        return False
+    try:
+        calls = json.loads(match["body"])
     except ValueError:
         return False
     return _known_call_list(calls, available_tools) or _known_call_list([calls], available_tools)
@@ -359,18 +411,63 @@ def _call(call: Any, call_id: str) -> ToolCallPart:
     return ToolCallPart(id=call_id, name=name, input=arguments)
 
 
+#: A call written as the model's native invoke markup in its prose. Only the fenced block
+#: is ever executed, so the markup is a duplicate the person should not read as text.
+_INVOKE_MARKUP = re.compile(
+    r"""(?:<function_calls>\s*)?<invoke\s+name=(["'])[^"']*\1\s*>.*?</invoke>"""
+    r"""(?:\s*</function_calls>)?""",
+    re.DOTALL,
+)
+_INVOKE_OPENER = re.compile(r"""<function_calls>|<invoke\s+name=""")
+_INVOKE_OPENERS = ("<function_calls>", "<invoke name=")
+
+
+def _without_invoke_markup(text: str) -> tuple[str, int]:
+    """``text`` without complete invoke fragments, cut before an unfinished one (or a tail
+    that could start one); returns the text and how many fragments were removed."""
+
+    cleaned, removed = _INVOKE_MARKUP.subn("", text)
+    if opener := _INVOKE_OPENER.search(cleaned):
+        return cleaned[: opener.start()], removed
+    for n in range(min(max(map(len, _INVOKE_OPENERS)) - 1, len(cleaned)), 0, -1):
+        if any(o.startswith(cleaned[-n:]) for o in _INVOKE_OPENERS):
+            return cleaned[:-n], removed
+    return cleaned, removed
+
+
+#: The fence's corrupted spelling on a line of its own (the opening backticks lost),
+#: which models write next to a real block; protocol markup, never prose.
+_FENCE_WORD_LINE = re.compile(r"(?m)^[ \t]*_tool_calls?[ \t]*\r?\n")
+_FENCE_WORDS = ("_tool_calls", "_tool_call")
+
+
+def _without_fence_words(text: str) -> tuple[str, int]:
+    """``text`` without corrupted-fence lines; a last line that could still become one
+    waits for its newline. Returns the text and how many lines were removed."""
+    cleaned, removed = _FENCE_WORD_LINE.subn("", text)
+    last = cleaned.rsplit("\n", 1)[-1].strip(" \t\r")
+    if last and any(word.startswith(last) for word in _FENCE_WORDS):
+        cleaned = cleaned[: len(cleaned) - len(cleaned.rsplit("\n", 1)[-1])]
+    return cleaned, removed
+
+
 class StreamSplitter:
     """Stream a reply's visible text live, holding back the tool-call block.
 
     ``push(chunk)`` returns the text that is safe to show now: everything before the
     fence, minus a tail that could still be the start of the fence. Once the fence is
     seen nothing more streams (the block is parsed at the end by :func:`split_reply`).
+    A call the model also wrote as invoke markup in its prose is not shown: only the
+    fenced block runs. ``dropped_invoke_markup`` counts those fragments, for the audit;
+    ``dropped_fence_words`` counts lines that were only the fence's corrupted spelling.
     """
 
     def __init__(self) -> None:
         self._buffer = ""
         self._shown = 0
         self._stopped = False
+        self.dropped_invoke_markup = 0
+        self.dropped_fence_words = 0
 
     def push(self, chunk: str) -> str:
         """Add ``chunk``; return the newly showable text (possibly empty)."""
@@ -383,6 +480,8 @@ class StreamSplitter:
             safe = self._buffer[:fence_at]
         else:
             safe = self._buffer[: len(self._buffer) - _partial_fence_len(self._buffer)]
+        safe, self.dropped_invoke_markup = _without_invoke_markup(safe)
+        safe, self.dropped_fence_words = _without_fence_words(safe)
         # Trailing newlines wait for what follows: before the fence they are not text.
         safe = safe.rstrip("\n")
         out = safe[self._shown :]

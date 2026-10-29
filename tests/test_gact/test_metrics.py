@@ -36,26 +36,34 @@ class _FakeAgent:
         return _Pred()
 
 
-def test_command_confirmations_remain_counted_in_metrics_after_cache_rebuild() -> None:
-    from clio_agent.gact.metrics_counters import MetricsCounters
+def test_metrics_counters_track_roles_and_session_counts_skip_confirmations() -> None:
+    from clio_agent.gact.metrics_counters import (
+        LATENCY_WINDOW,
+        MetricsCounters,
+        conversation_count,
+        counts_toward_conversation,
+    )
     from clio_agent.gact.types import Message
 
     answer = Message(
-        id="answer", session_id="session", role="assistant", created_at="t", updated_at="t"
+        id="answer",
+        session_id="session",
+        role="assistant",
+        created_at="t",
+        updated_at="t",
+        metadata={"tools_called": [{"name": "ls", "duration_ms": 5}]},
     )
     confirmation = answer.model_copy(
         update={"id": "confirmation", "metadata": {"synthetic": "command_result"}}
     )
     counters = MetricsCounters()
     counters.add_messages("session", [answer, confirmation])
-    assert counters.message_total == 2
     assert counters.role_counts() == {"assistant": 2}
-    assert counters.session_count("session") == 1
-    counters.set_session("session", [answer, confirmation])
-    assert counters.message_total == 2
-    assert counters.session_count("session") == 1
-    counters.remove_session("session")
-    assert counters.message_total == counters.session_count("session") == 0
+    assert conversation_count([answer, confirmation]) == 1
+    assert counts_toward_conversation(answer) and not counts_toward_conversation(confirmation)
+    for _ in range(LATENCY_WINDOW + 5):
+        counters.add_message("session", answer)
+    assert len(counters.latency_samples["tool:ls"]) == LATENCY_WINDOW
 
 
 @pytest.fixture()

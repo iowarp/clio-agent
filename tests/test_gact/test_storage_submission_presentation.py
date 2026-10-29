@@ -36,7 +36,8 @@ def test_submission_has_a_truthful_typed_receipt(
         for raw, structured in ((result, None), (None, result)):
             receipt = ToolPresentation.model_validate(presenter({}, raw, structured))
             assert receipt.summary == f"{kind} {summary}"
-            assert receipt.blocks[0].text == "Task: task_index"
+            assert receipt.blocks[0].text == kind
+            assert receipt.blocks[0].detail == "Task handle: task_index"
             assert receipt.blocks[0].result_kind == result_kind
             if status == "failed":
                 assert receipt.status == "degraded"
@@ -49,7 +50,7 @@ def test_submission_has_a_truthful_typed_receipt(
 def test_missing_task_identity_does_not_claim_an_acceptance(result: dict[str, Any]) -> None:
     """An incomplete return does not become a fake task handle."""
     presentation = native_presentation("tasks", {}, result, None)
-    assert presentation["summary"] == "Tasks"
+    assert presentation["summary"] == "1 task"
     assert all(block["id"] != "task-submission" for block in presentation["blocks"])
 
 
@@ -75,8 +76,9 @@ def test_spawn_and_question_receipts_keep_their_shared_presentation() -> None:
         },
         None,
     )
+    assert any(block.get("label") == "Question" for block in question["blocks"])
     assert any(
-        block.get("label") == "Question" and "input_required" in block.get("text", "")
+        block.get("label") == "Status" and block.get("text") == "input_required"
         for block in question["blocks"]
     )
     assert all(

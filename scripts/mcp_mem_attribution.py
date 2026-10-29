@@ -2,7 +2,7 @@
 
 Samples a running gact server's WHOLE process tree per-process (role-
 classified), drives the standard acceptance load (N concurrent sessions on
-the active blueprint), and reports IDLE / PEAK / FINAL attribution. The whole
+one agent, pinned per session), and reports IDLE / PEAK / FINAL attribution. The whole
 run repeats ``--runs`` times (default 3, each on a freshly booted server) and
 the verdict uses the MEDIAN peak and MEDIAN final, printing every run and the
 spread. With ``--assert-budget`` the gate FAILS if the medians exceed the
@@ -13,27 +13,32 @@ to make a regression pass).
 Usage (the #921/#929 acceptance shape — 3 concurrent claude-haiku sessions):
 
     uv run python scripts/mcp_mem_attribution.py \
-        --pack external/clio-agent-marketplace/data-semantics \
+        --agent clio/clio-data \
         --workspace <dir with sensor_readings.csv> \
         --sessions 3 --settle-s 180 --runs 3 --assert-budget
+
+The agent comes from the default marketplace, which the fresh gate config
+installs on first use; ``--marketplace PATH`` also installs (and trusts) a local
+marketplace before the load, for an agent that is not shipped.
 
 The server is booted as a child of THIS process (claude_code/haiku + the real
 CTE substrate per the accepted gate config) and
 torn down on exit. Run it as ONE task: server and load share this process
 tree so external task eviction cannot split them.
 
-Background-children scenario (#955): pass ``--children-pack <blueprint with
-declared children>`` (e.g. the S5 canary pack). Session 0 then drives that
-blueprint and fans out 2 BACKGROUND children (alpha+beta) via the async spawn
-tools instead of the data-semantics load; the other sessions keep the standard
+Background-children scenario (#955): pass ``--children-agent <agent ref with
+defined alpha and beta subagents>`` (e.g. a canary agent installed with
+``--marketplace``). Session 0 then drives that agent and fans out 2 BACKGROUND
+children (alpha+beta) via the async spawn
+tools instead of the clio-data load; the other sessions keep the standard
 load. The children are REAL sessions — ``resident_ledgers`` caps their
 transcripts and the #933 workspace-fleet reaper cleans their fleets — so the
 gate exercises the bound with real child sessions resident.
 
-HONEST CAVEAT (the load is a SWAP, not an add): session 0 runs the canary pack
-INSTEAD of the data-semantics pack, so this scenario has 2 MCP-fleet data
-sessions (1-2) vs the baseline's 3, and the canary children declare NO
-``mcp_servers`` (they add transcript + provider-CLI cost, not a fleet). The
+HONEST CAVEAT (the load is a SWAP, not an add): session 0 runs the canary agent
+INSTEAD of the clio-data agent, so this scenario has 2 MCP-fleet data
+sessions (1-2) vs the baseline's 3, and the canary children carry NO MCP
+servers (they add transcript + provider-CLI cost, not a fleet). The
 children peak is therefore a LIGHTER fleet load than the baseline and is NOT a
 peak-vs-baseline delta measurement — its value is (a) the dedicated ``children``
 budget block ratchet (its own recorded cold-max numbers) and (b) the
@@ -47,6 +52,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 import os
 import shutil
 import statistics
@@ -231,8 +237,8 @@ def check_budget(peak_gb: float, final_gb: float, budget: dict) -> tuple[bool, s
     return peak_gb <= peak_cap and final_gb <= final_cap, detail
 
 
-def prepare_session(base: str, pack: Path, idx: int, workspace_id: str | None = None) -> str:
-    """Create and configure one session before any acceptance turn starts."""
+def prepare_session(base: str, agent: str, idx: int, workspace_id: str | None = None) -> str:
+    """Create one session and pin ``agent`` to it before any acceptance turn starts."""
 
     with requests.Session() as session:
         session_input = {"title": f"membudget {idx}"}
@@ -246,30 +252,28 @@ def prepare_session(base: str, pack: Path, idx: int, workspace_id: str | None = 
             raise ValueError(f"session {idx} creation returned an invalid id")
         if workspace_id and created.get("workspace_id") != workspace_id:
             raise ValueError(f"session {idx} was not created in its measurement workspace")
-        session.post(
-            f"{base}/v1/sessions/{sid}/agent-blueprint",
-            json={"path": str(pack.resolve())},
-            timeout=120,
+        session.patch(
+            f"{base}/v1/sessions/{sid}/agent", json={"ref": agent}, timeout=120
         ).raise_for_status()
     return sid
 
 
 def drive_load(
     base: str,
-    plan: list[tuple[Path, str]],
+    plan: list[tuple[str, str]],
     out: dict[int, str],
     sids: dict[int, str],
     workspace_id: str | None = None,
     model: dict[str, str] | None = None,
 ) -> bool:
-    """Prepare every blueprint, then drive the complete concurrent acceptance load."""
+    """Prepare every session's agent, then drive the complete concurrent acceptance load."""
 
-    for idx, (pack, _prompt) in enumerate(plan):
+    for idx, (agent, _prompt) in enumerate(plan):
         try:
             sids[idx] = (
-                prepare_session(base, pack, idx, workspace_id=workspace_id)
+                prepare_session(base, agent, idx, workspace_id=workspace_id)
                 if workspace_id
-                else prepare_session(base, pack, idx)
+                else prepare_session(base, agent, idx)
             )
         except (requests.RequestException, KeyError, ValueError) as exc:
             out[idx] = f"setup error: {exc!r}"
@@ -283,7 +287,7 @@ def drive_load(
             else (base, sids[idx], prompt, out, idx),
             daemon=True,
         )
-        for idx, (_pack, prompt) in enumerate(plan)
+        for idx, (_agent, prompt) in enumerate(plan)
     ]
     for thread in threads:
         thread.start()
@@ -505,15 +509,22 @@ def summarize_runs(runs: list[RunMeasurement]) -> RunSummary:
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--pack", required=True, type=Path)
     parser.add_argument(
-        "--children-pack",
+        "--agent", default="clio/clio-data", help="agent ref each session is pinned to"
+    )
+    parser.add_argument(
+        "--marketplace",
         type=Path,
         default=None,
+        help="local marketplace to install and trust before the load (for a non-shipped agent)",
+    )
+    parser.add_argument(
+        "--children-agent",
+        default=None,
         help=(
-            "Blueprint with declared children (e.g. out/s5-gate/canary-pack). When "
-            "set, session 0 fans out 2 BACKGROUND children instead of the data load; "
-            "--assert-budget then checks the 'children' block of mcp_mem_budget.json."
+            "Agent ref with defined alpha and beta subagents. When set, session 0 fans "
+            "out 2 BACKGROUND children instead of the data load; --assert-budget then "
+            "checks the 'children' block of mcp_mem_budget.json."
         ),
     )
     parser.add_argument("--workspace", required=True, type=Path)
@@ -543,6 +554,12 @@ def main() -> int:
         ),
     )
     parser.add_argument("--assert-budget", action="store_true")
+    parser.add_argument(
+        "--private-core-root",
+        type=Path,
+        help="start and retire a fresh private Core daemon and store for every run",
+    )
+    parser.add_argument("--measurement-out", type=Path, help=argparse.SUPPRESS)
     args = parser.parse_args()
 
     if args.sessions < 1:
@@ -565,6 +582,19 @@ def main() -> int:
         print(f"FAIL: --assert-budget compares a median; it needs --runs >= {MIN_ASSERT_RUNS}")
         return 2
 
+    if args.measurement_out is not None:
+        if args.assert_budget or args.runs != 1 or args.private_core_root is not None:
+            print("FAIL: an isolated sample cannot assert or recursively aggregate a budget")
+            return 2
+        sample = _run_once(args)
+        if isinstance(sample, int):
+            return sample
+        args.measurement_out.write_text(
+            json.dumps({"peak_gb": sample.peak_gb, "final_gb": sample.final_gb}),
+            encoding="utf-8",
+        )
+        return 0
+
     measurements: list[RunMeasurement] = []
     for run_index in range(args.runs):
         print(f"\n########## run {run_index + 1}/{args.runs} ##########")
@@ -582,12 +612,12 @@ def main() -> int:
 
     if args.assert_budget:
         budget_root = json.loads(BUDGET_PATH.read_text(encoding="utf-8"))
-        if args.children_pack is not None:
+        if args.children_agent is not None:
             budget = budget_root.get("children")
             budget_label = "children"
             if not isinstance(budget, dict):
                 print(
-                    "FAIL: --children-pack asserted but no 'children' budget block "
+                    "FAIL: --children-agent asserted but no 'children' budget block "
                     f"is recorded in {BUDGET_PATH.name}"
                 )
                 return 2
@@ -616,6 +646,62 @@ def main() -> int:
     return 0
 
 
+def _run_with_fresh_core(args: argparse.Namespace) -> RunMeasurement | int:
+    """Measure in a fresh process/Core store; the parent alone judges the median."""
+    root = args.private_core_root.resolve()
+    root.mkdir(parents=True, exist_ok=True)
+    with tempfile.TemporaryDirectory(prefix="memory-sample-", dir=root) as temporary:
+        sample_root = Path(temporary).resolve()
+        if not sample_root.is_relative_to(root):
+            raise RuntimeError("Private memory sample escaped its owned root")
+        output = sample_root / "measurement.json"
+        command = [
+            sys.executable,
+            "-B",
+            str(REPO / "scripts/live_verification/run_with_private_cte.py"),
+            "--runtime-root",
+            str(sample_root),
+            str(Path(__file__).resolve()),
+            "--runs",
+            "1",
+            "--measurement-out",
+            str(output),
+        ]
+        for name in (
+            "agent",
+            "workspace",
+            "data",
+            "sessions",
+            "port",
+            "model",
+            "provider",
+            "settle_s",
+        ):
+            command.extend(["--" + name.replace("_", "-"), str(getattr(args, name))])
+        for name in ("marketplace", "children_agent", "xdg"):
+            value = getattr(args, name, None)
+            if value is not None:
+                command.extend(["--" + name.replace("_", "-"), str(value)])
+        result = subprocess.run(command, cwd=REPO, check=False)
+        if result.returncode:
+            return result.returncode
+        if not output.is_file():
+            print("FAIL: isolated run returned no measurement")
+            return 2
+        recorded = json.loads(output.read_text(encoding="utf-8"))
+        values = [recorded.get("peak_gb"), recorded.get("final_gb")]
+        if any(
+            isinstance(value, bool)
+            or not isinstance(value, (int, float))
+            or not math.isfinite(value)
+            or value <= 0
+            for value in values
+        ):
+            print("FAIL: isolated run returned an invalid measurement")
+            return 2
+        return RunMeasurement(peak_gb=values[0], final_gb=values[1])
+
+
 def _gate_environment(args: argparse.Namespace, xdg: Path) -> dict[str, str]:
     """Keep every CLIO role private on Windows as well as XDG-based hosts."""
     instance = xdg / "clio-home"
@@ -635,6 +721,29 @@ def _gate_environment(args: argparse.Namespace, xdg: Path) -> dict[str, str]:
     }
 
 
+def _stop_private_services(env: Mapping[str, str]) -> None:
+    """Retire controllers belonging to this run's freshly generated private home."""
+    from clio_agent.gact.infrastructure import node_service
+
+    root = (Path(env["CLIO_AGENT_DATA_DIR"]) / "services").resolve()
+    for marker in root.glob("*/*/owner.json"):
+        service = marker.parent.resolve()
+        if not service.is_relative_to(root):
+            raise RuntimeError("Private service escaped its owned data directory")
+        owner = json.loads(marker.read_text(encoding="utf-8"))["owner"]
+        receipt = json.loads((service / "receipt.json").read_text(encoding="utf-8"))
+        outcome = node_service.control(
+            {
+                "action": "stop",
+                "root": str(service),
+                "owner": owner,
+                "require_operation_id": receipt.get("operation_id"),
+            }
+        )
+        if outcome.get("running") or outcome.get("phase") != "stopped":
+            raise RuntimeError(f"Private service did not settle: {service}")
+
+
 def _run_once(args: argparse.Namespace) -> RunMeasurement | int:
     """One complete gate run: boot, verify substrate, drive the load, settle, measure.
 
@@ -644,15 +753,13 @@ def _run_once(args: argparse.Namespace) -> RunMeasurement | int:
         or a children run that never spawned its children).
     """
 
+    if getattr(args, "private_core_root", None) is not None:
+        return _run_with_fresh_core(args)
     xdg = args.xdg or Path(tempfile.mkdtemp(prefix="clio-mem-gate-xdg-"))
-    # Pack mcp_servers mount at AGENT CONSTRUCTION from INSTALLED blueprints
-    # (path-activation alone mounts nothing), so the pack must be installed
-    # into the gate XDG or the run measures a fleet-less server.
+    # The gate config is fresh: the default marketplace installs into it on first
+    # use, and a pinned session's plugin servers form its fleet. --marketplace
+    # installs a local one too (after boot, below).
     env = _gate_environment(args, xdg)
-    install_root = Path(env["CLIO_AGENT_CONFIG_DIR"]) / "agent-blueprints" / args.pack.name
-    if not install_root.exists():
-        shutil.copytree(args.pack, install_root)
-        print(f"installed pack into gate XDG: {install_root}")
     base = f"http://127.0.0.1:{args.port}"
     # A pre-existing clio-core daemon (connect-or-spawn) is OUTSIDE the server
     # tree — sample it explicitly or the substrate cost silently drops out.
@@ -735,6 +842,17 @@ def _run_once(args: argparse.Namespace) -> RunMeasurement | int:
         workspace_id = workspace_response.json()["id"]
         if not isinstance(workspace_id, str) or not workspace_id:
             raise ValueError("Memory qualification workspace has no usable id")
+        if args.marketplace is not None:
+            name = "mem-gate-" + args.marketplace.resolve().name
+            requests.post(
+                f"{base}/v1/plugins/marketplaces",
+                json={"source": str(args.marketplace.resolve()), "name": name},
+                timeout=300,
+            ).raise_for_status()
+            requests.post(
+                f"{base}/v1/plugins/marketplaces/{name}/trust", json={}, timeout=300
+            ).raise_for_status()
+            print(f"installed and trusted marketplace {name} from {args.marketplace}")
         requests.put(
             f"{base}/v1/policies",
             json={
@@ -760,23 +878,23 @@ def _run_once(args: argparse.Namespace) -> RunMeasurement | int:
         out: dict[int, str] = {}
         sids: dict[int, str] = {}
 
-        def _assign(i: int) -> tuple[Path, str]:
-            # Children scenario: session 0 drives the declared-children blueprint
-            # and fans out 2 background children (alpha+beta); the rest run the
-            # standard data-semantics load so the fleet cost is measured WITH real
+        def _assign(i: int) -> tuple[str, str]:
+            # Children scenario: session 0 drives the agent with alpha and beta
+            # subagents and fans out 2 background children; the rest run the
+            # standard clio-data load so the fleet cost is measured WITH real
             # child sessions resident alongside the normal acceptance load.
-            if args.children_pack is not None and i == 0:
-                return args.children_pack, CHILDREN_PROMPT
-            return args.pack, PROMPT_SHAPES[i % len(PROMPT_SHAPES)].format(data=data_path)
+            if args.children_agent is not None and i == 0:
+                return args.children_agent, CHILDREN_PROMPT
+            return args.agent, PROMPT_SHAPES[i % len(PROMPT_SHAPES)].format(data=data_path)
 
         plan = [_assign(i) for i in range(args.sessions)]
-        if args.children_pack is not None:
+        if args.children_agent is not None:
             print(
-                f"scenario: children — session 0 -> {args.children_pack} "
+                f"scenario: children — session 0 -> {args.children_agent} "
                 "(fan-out of 2 background children: alpha+beta)"
             )
         started = time.time()
-        # Sampling already covers setup. No blueprint may change workspace
+        # Sampling already covers setup. No session's agent may change workspace
         # access after another session starts its turn.
         if not drive_load(
             base,
@@ -818,7 +936,7 @@ def _run_once(args: argparse.Namespace) -> RunMeasurement | int:
 
         # Children scenario is only meaningful if the children ACTUALLY spawned: a
         # no-spawn run measures a lighter load and must never be recorded as a pass.
-        if args.children_pack is not None:
+        if args.children_agent is not None:
             child_ok, child_detail = _assert_children_spawned(base, sids.get(0))
             print(child_detail)
             if not child_ok:
@@ -835,23 +953,30 @@ def _run_once(args: argparse.Namespace) -> RunMeasurement | int:
     finally:
         if sampler is not None:
             sampler.stop()
-        server.terminate()
         try:
-            server.wait(timeout=20)
-        except Exception:  # noqa: BLE001 - hard-kill fallback on teardown
-            server.kill()
-        if listener_pid is not None:
+            if args.xdg is None:
+                _stop_private_services(env)
+        finally:
+            server.terminate()
             try:
-                root = psutil.Process(listener_pid)
-                for child in root.children(recursive=True):
-                    try:
-                        child.kill()
-                    except psutil.Error:
-                        pass
-                root.kill()
-            except psutil.Error:
-                pass  # already gone with the wrapper
-        log.close()
+                server.wait(timeout=20)
+            except subprocess.TimeoutExpired:
+                server.kill()
+            if listener_pid is not None:
+                try:
+                    root = psutil.Process(listener_pid)
+                    for child in root.children(recursive=True):
+                        try:
+                            child.kill()
+                        except psutil.Error:
+                            pass
+                    root.kill()
+                except psutil.Error:
+                    pass  # already gone with the wrapper
+            log.close()
+            retained = args.workspace / f"mem-gate-server-{os.getpid()}-{time.time_ns()}.log"
+            shutil.copyfile(log.name, retained)
+            print(f"retained complete server log: {retained}")
 
 
 if __name__ == "__main__":

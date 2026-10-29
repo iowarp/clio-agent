@@ -1,0 +1,30 @@
+From 4c1a9fa8e6b03e269348b162314c74cbb3f4f39e Mon Sep 17 00:00:00 2001
+From: Jaime Cernuda <jaime.cernuda95@gmail.com>
+Date: Fri, 9 Oct 2026 00:37:38 -0500
+Subject: [PATCH] fix(build): drop License classifier superseded by the SPDX
+ license expression
+
+setuptools rejects a PEP 639 license expression combined with License ::
+classifiers (InvalidConfigError), so no setuptools release can build this
+revision and uv installs that depend on it fail.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ pyproject.toml | 1 -
+ 1 file changed, 1 deletion(-)
+
+diff --git a/pyproject.toml b/pyproject.toml
+index 97b5662..679a465 100644
+--- a/pyproject.toml
++++ b/pyproject.toml
+@@ -8,7 +8,6 @@ version = "0.1.0"
+ description = "Out-of-tree vLLM connector capturing exact per-decode-step attention over the prompt, as Flowcept provenance."
+ requires-python = ">=3.10"
+ license = "MIT"
+-classifiers = ["License :: OSI Approved :: MIT License"]
+ dependencies = []  # vllm and flowcept provided by the host environment
+ 
+ [tool.setuptools.packages.find]
+-- 
+2.47.3
+

@@ -1,0 +1,332 @@
+{
+  "label": "repair-desktop-cold",
+  "app": "D:\\CLIO-Desktop-095-Repair\\clio-desktop.exe",
+  "home": "D:\\cw\\rp\\home",
+  "started_at": "2026-10-28T11:14:31.970Z",
+  "events": [
+    {
+      "t": 0,
+      "event": "open"
+    },
+    {
+      "t": 1,
+      "event": "window"
+    },
+    {
+      "t": 1,
+      "event": "boot_log_resolution_failed",
+      "error": "Error: WD POST /session/6b4333d4c207f08337602a96932eb4f9/execute/async -> 500: {\"value\":{\"error\":\"javascript error\",\"mes"
+    },
+    {
+      "t": 1,
+      "event": "state",
+      "state": "blank",
+      "text": ""
+    },
+    {
+      "t": 2.1,
+      "event": "state",
+      "state": "starting",
+      "text": "CLIO Connecting Search Ctrl K Starting CLIO Your local scientific workspace is getting ready. LOCAL STARTUP Installing local runtime Preparing CLIO for first use 0s Check 2 Install 3 Open"
+    },
+    {
+      "t": 5.6,
+      "event": "server_process",
+      "pid": 48156
+    },
+    {
+      "t": 38.9,
+      "event": "state",
+      "state": "workspace",
+      "text": "Toggle Sidebar default › New conversation New conversation in default with Loading agents… Customize Live CLIO Local CLIO Search Ctrl K Workspaces default interrupted 9 New interrupted 8 New interrupt"
+    },
+    {
+      "t": 38.9,
+      "event": "workspace_usable"
+    },
+    {
+      "t": 97.7,
+      "event": "package_validation",
+      "valid": true,
+      "detail": "Managed packages checked reason=managed_packages_installed 94.090s",
+      "observed_s": 97.7
+    },
+    {
+      "t": 99,
+      "event": "quit"
+    },
+    {
+      "t": 105.5,
+      "event": "exited",
+      "process": "server:48156",
+      "after_quit_s": 6.5
+    },
+    {
+      "t": 105.5,
+      "event": "exited",
+      "process": "other:8656",
+      "after_quit_s": 6.5
+    },
+    {
+      "t": 105.5,
+      "event": "exited",
+      "process": "clio-core:35268",
+      "after_quit_s": 6.5
+    },
+    {
+      "t": 105.5,
+      "event": "exited",
+      "process": "other:43444",
+      "after_quit_s": 6.5
+    },
+    {
+      "t": 110.7,
+      "event": "exited",
+      "process": "desktop:24552",
+      "after_quit_s": 11.7
+    },
+    {
+      "t": 110.7,
+      "event": "exited",
+      "process": "other:28728",
+      "after_quit_s": 11.7
+    },
+    {
+      "t": 110.7,
+      "event": "exited",
+      "process": "other:28864",
+      "after_quit_s": 11.7
+    },
+    {
+      "t": 110.7,
+      "event": "exited",
+      "process": "other:53056",
+      "after_quit_s": 11.7
+    },
+    {
+      "t": 110.7,
+      "event": "exited",
+      "process": "other:31444",
+      "after_quit_s": 11.7
+    },
+    {
+      "t": 110.7,
+      "event": "exited",
+      "process": "other:42424",
+      "after_quit_s": 11.7
+    },
+    {
+      "t": 110.7,
+      "event": "exited",
+      "process": "other:21032",
+      "after_quit_s": 11.7
+    },
+    {
+      "t": 110.7,
+      "event": "exited",
+      "process": "other:27856",
+      "after_quit_s": 11.7
+    },
+    {
+      "t": 110.7,
+      "event": "exited",
+      "process": "launcher:16928",
+      "after_quit_s": 11.7
+    },
+    {
+      "t": 110.7,
+      "event": "exited",
+      "process": "other:52772",
+      "after_quit_s": 11.7
+    },
+    {
+      "t": 110.7,
+      "event": "done"
+    }
+  ],
+  "states": [
+    {
+      "t": 1,
+      "state": "blank",
+      "text": ""
+    },
+    {
+      "t": 2.1,
+      "state": "starting",
+      "text": "CLIO Connecting Search Ctrl K Starting CLIO Your local scientific workspace is getting ready. LOCAL STARTUP Installing local runtime Preparing CLIO for first use 0s Check 2 Install 3 Open"
+    },
+    {
+      "t": 38.9,
+      "state": "workspace",
+      "text": "Toggle Sidebar default › New conversation New conversation in default with Loading agents… Customize Live CLIO Local CLIO Search Ctrl K Workspaces default interrupted 9 New interrupted 8 New interrupt"
+    }
+  ],
+  "shots": [
+    "D:\\Libraries\\Documents\\projects\\clio-windows-startup-acceptance\\docs\\design\\evidence\\windows-startup-repair-2026-10-28\\repair-desktop-cold-01-blank.png",
+    "D:\\Libraries\\Documents\\projects\\clio-windows-startup-acceptance\\docs\\design\\evidence\\windows-startup-repair-2026-10-28\\repair-desktop-cold-02-starting.png",
+    "D:\\Libraries\\Documents\\projects\\clio-windows-startup-acceptance\\docs\\design\\evidence\\windows-startup-repair-2026-10-28\\repair-desktop-cold-03-workspace.png",
+    "D:\\Libraries\\Documents\\projects\\clio-windows-startup-acceptance\\docs\\design\\evidence\\windows-startup-repair-2026-10-28\\repair-desktop-cold-04-before-quit.png"
+  ],
+  "boot_checkpoints": [
+    "Startup checkpoint: existing backend check 0.000s",
+    "Startup checkpoint: bundled runtime ready 0.002s",
+    "Startup checkpoint: managed package step done 2.551s",
+    "Preparing and checking Python document packages...",
+    "sidecar answered /v1/capabilities — backend ready",
+    "Startup checkpoint: backend ready 24.214s",
+    "WARNING | local SearXNG not started reason=not_installed: The last installation did not finish (install exited with code 15; inspect its logs).",
+    "WARNING | ⚑ SPOTTER spotter_unavailable reason=spotter_watcher_agent_not_installed session= workspace=ws_default"
+  ],
+  "rail_after_settle": {
+    "loading_agents": true,
+    "session_links": 8
+  },
+  "backend_validation": {
+    "readiness": "ready",
+    "rail_rows": 30,
+    "rail_total": 929,
+    "expected_sessions": 929,
+    "valid": true
+  },
+  "package_validation": {
+    "valid": true,
+    "detail": "Managed packages checked reason=managed_packages_installed 94.090s",
+    "observed_s": 97.7
+  },
+  "processes_before_quit": [
+    {
+      "kind": "desktop",
+      "pid": 24552,
+      "created": "2026-10-28T11:14:32.0334780Z",
+      "rss_mb": 39.2,
+      "cmd": "\"D:\\CLIO-Desktop-095-Repair\\clio-desktop.exe\""
+    },
+    {
+      "kind": "other",
+      "pid": 28728,
+      "created": "2026-10-28T11:14:32.2489750Z",
+      "rss_mb": 113.1,
+      "cmd": "\"C:\\Program Files (x86)\\Microsoft\\EdgeWebView\\Application\\156.0.4314.50\\msedgewebview2.exe\" --embedded-browser-webview=1 --webview-exe-name=clio-desktop.exe --webview-exe-version=0.7.3 --user-data-dir=\"D:\\cw\\rp\\home\\Temp\\scoped_dir39428_905058187\\EBWebView\" --noerrdialogs --embedded-browser-webview-dpi-awareness=2 --allow-pre-commit-input --autoplay-policy=no-user-gesture-required --disable-background-networking --disable-background-timer-throttling --disable-backgrounding-occluded-windows --disable-client-side-phishing-detection --disable-default-apps --disable-features=msWebOOUI,msPdfOOUI,msSmartScreenProtection,IgnoreDuplicateNavs,Prewarm --disable-hang-monitor --disable-popup-blocking --disable-prompt-on-repost --disable-sync --enable-automation --enable-logging --log-level=0 --no-first-run --no-service-autorun --password-store=basic --remote-debugging-port=0 --test-type=webdriver --use-mock-keychain --lang=en-US --mojo-named-platform-channel-pipe=24552.20460.609291639162344116 /pfhostedapp:66a8910c65ec9e0bf9eb29b76bbb0da82d1deb8b"
+    },
+    {
+      "kind": "other",
+      "pid": 28864,
+      "created": "2026-10-28T11:14:32.2926960Z",
+      "rss_mb": 12.5,
+      "cmd": "\"C:\\Program Files (x86)\\Microsoft\\EdgeWebView\\Application\\156.0.4314.50\\msedgewebview2.exe\" --type=crashpad-handler --user-data-dir=D:\\cw\\rp\\home\\Temp\\scoped_dir39428_905058187\\EBWebView /prefetch:4 /pfhostedapp:66a8910c65ec9e0bf9eb29b76bbb0da82d1deb8b --monitor-self-annotation=ptype=crashpad-handler --user-stream-region=336,65568 --database=D:\\cw\\rp\\home\\Temp\\scoped_dir39428_905058187\\EBWebView\\Crashpad --annotation=IsOfficialBuild=1 --annotation=channel= --annotation=chromium-version=156.0.8078.49 \"--annotation=exe=C:\\Program Files (x86)\\Microsoft\\EdgeWebView\\Application\\156.0.4314.50\\msedgewebview2.exe\" --annotation=plat=Win64 \"--annotation=prod=Edge WebView2\" --annotation=ver=156.0.4314.50 --initial-client-data=0x18c,0x190,0x194,0x140,0x19c,0x7ffb86a17470,0x7ffb86a17480,0x7ffb86a17490"
+    },
+    {
+      "kind": "other",
+      "pid": 53056,
+      "created": "2026-10-28T11:14:32.3442530Z",
+      "rss_mb": 14.6,
+      "cmd": "\\??\\C:\\WINDOWS\\system32\\conhost.exe 0x4"
+    },
+    {
+      "kind": "other",
+      "pid": 31444,
+      "created": "2026-10-28T11:14:32.5758880Z",
+      "rss_mb": 126.5,
+      "cmd": "\"C:\\Program Files (x86)\\Microsoft\\EdgeWebView\\Application\\156.0.4314.50\\msedgewebview2.exe\" --type=gpu-process --gpu-recent-crash-count=0 --noerrdialogs --user-data-dir=\"D:\\cw\\rp\\home\\Temp\\scoped_dir39428_905058187\\EBWebView\" --webview-exe-name=clio-desktop.exe --webview-exe-version=0.7.3 --embedded-browser-webview=1 --embedded-browser-webview-dpi-awareness=2 --gpu-preferences=WAAAAAAAAADgAAAEAAAAAAAAAAAAAGAAQAAAAAAAAAADAAAAAAAAADgAAAAAAAAAAAAAAAAAAAACAAAAAAAAAAAAAAAAAAAAKAAAAAAAAAAoAAAAAAAAAAgAAAAAAAAAEAAAAAIAAAABAAAAAAAAAAgAAAAAAAAACAAAAAAAAAA= --startup-read-main-dll --metrics-shmem-handle=2000,i,14849957540938798329,12715880291517349237,262144 --field-trial-handle=2140,i,9632525752475664728,8950844906030857323,262144 --enable-features=msMetricsLogFastStartup,msSendMetricsLogOnClose --disable-features=IgnoreDuplicateNavs,Prewarm,msPdfOOUI,msSmartScreenProtection,msWebOOUI --variations-seed-version --pseudonymization-salt-handle=2144,i,4516359824832902456,5932651958098104537,4 --trace-process-track-uuid=3190708988185955192 --enable-logging=handle --log-file=2156 --log-level=0 --mojo-platform-channel-handle=2136 /prefetch:2 /pfhostedapp:66a8910c65ec9e0bf9eb29b76bbb0da82d1deb8b"
+    },
+    {
+      "kind": "other",
+      "pid": 42424,
+      "created": "2026-10-28T11:14:32.5846090Z",
+      "rss_mb": 38,
+      "cmd": "\"C:\\Program Files (x86)\\Microsoft\\EdgeWebView\\Application\\156.0.4314.50\\msedgewebview2.exe\" --type=utility --utility-sub-type=network.mojom.NetworkService --lang=en-US --service-sandbox-type=none --noerrdialogs --user-data-dir=\"D:\\cw\\rp\\home\\Temp\\scoped_dir39428_905058187\\EBWebView\" --webview-exe-name=clio-desktop.exe --webview-exe-version=0.7.3 --embedded-browser-webview=1 --embedded-browser-webview-dpi-awareness=2 --startup-read-main-dll --metrics-shmem-handle=2364,i,15741494079613278111,3786567634142244170,524288 --field-trial-handle=2140,i,9632525752475664728,8950844906030857323,262144 --enable-features=msMetricsLogFastStartup,msSendMetricsLogOnClose --disable-features=IgnoreDuplicateNavs,Prewarm,msPdfOOUI,msSmartScreenProtection,msWebOOUI --variations-seed-version --pseudonymization-salt-handle=2144,i,4516359824832902456,5932651958098104537,4 --trace-process-track-uuid=3190708989122997041 --enable-logging=handle --log-file=2372 --log-level=0 --mojo-platform-channel-handle=2352 /prefetch:11 /pfhostedapp:66a8910c65ec9e0bf9eb29b76bbb0da82d1deb8b"
+    },
+    {
+      "kind": "other",
+      "pid": 21032,
+      "created": "2026-10-28T11:14:32.6267720Z",
+      "rss_mb": 19.4,
+      "cmd": "\"C:\\Program Files (x86)\\Microsoft\\EdgeWebView\\Application\\156.0.4314.50\\msedgewebview2.exe\" --type=utility --utility-sub-type=storage.mojom.StorageService --lang=en-US --service-sandbox-type=service --noerrdialogs --user-data-dir=\"D:\\cw\\rp\\home\\Temp\\scoped_dir39428_905058187\\EBWebView\" --webview-exe-name=clio-desktop.exe --webview-exe-version=0.7.3 --embedded-browser-webview=1 --embedded-browser-webview-dpi-awareness=2 --startup-read-main-dll --metrics-shmem-handle=2716,i,1213618458865694780,5260400300539411312,524288 --field-trial-handle=2140,i,9632525752475664728,8950844906030857323,262144 --enable-features=msMetricsLogFastStartup,msSendMetricsLogOnClose --disable-features=IgnoreDuplicateNavs,Prewarm,msPdfOOUI,msSmartScreenProtection,msWebOOUI --variations-seed-version --pseudonymization-salt-handle=2144,i,4516359824832902456,5932651958098104537,4 --trace-process-track-uuid=3190708990060038890 --enable-logging=handle --log-file=2744 --log-level=0 --mojo-platform-channel-handle=2740 /prefetch:13 /pfhostedapp:66a8910c65ec9e0bf9eb29b76bbb0da82d1deb8b"
+    },
+    {
+      "kind": "other",
+      "pid": 27856,
+      "created": "2026-10-28T11:14:32.7705190Z",
+      "rss_mb": 164,
+      "cmd": "\"C:\\Program Files (x86)\\Microsoft\\EdgeWebView\\Application\\156.0.4314.50\\msedgewebview2.exe\" --type=renderer --noerrdialogs --user-data-dir=\"D:\\cw\\rp\\home\\Temp\\scoped_dir39428_905058187\\EBWebView\" --webview-exe-name=clio-desktop.exe --webview-exe-version=0.7.3 --embedded-browser-webview=1 --embedded-browser-webview-dpi-awareness=2 --autoplay-policy=no-user-gesture-required --disable-background-timer-throttling --enable-automation --remote-debugging-port=0 --test-type=webdriver --allow-pre-commit-input --video-capture-use-gpu-memory-buffer --lang=en-US --js-flags --device-scale-factor=1 --num-raster-threads=4 --enable-main-frame-before-activation --renderer-client-id=5 --js-flags=--ms-user-locale=en_UM --ssd-no-pressure-read-main-dll --launch-time-ticks=71401851856 --metrics-shmem-handle=3948,i,15400087482451913869,1583942114105456412,1048576 --field-trial-handle=2140,i,9632525752475664728,8950844906030857323,262144 --enable-features=msMetricsLogFastStartup,msSendMetricsLogOnClose --disable-features=IgnoreDuplicateNavs,Prewarm,msPdfOOUI,msSmartScreenProtection,msWebOOUI --variations-seed-version --pseudonymization-salt-handle=2144,i,4516359824832902456,5932651958098104537,4 --trace-process-track-uuid=3190708990997080739 --enable-logging=handle --log-file=3968 --log-level=0 --mojo-platform-channel-handle=3964 /pfhostedapp:66a8910c65ec9e0bf9eb29b76bbb0da82d1deb8b /prefetch:1"
+    },
+    {
+      "kind": "launcher",
+      "pid": 16928,
+      "created": "2026-10-28T11:14:35.5171090Z",
+      "rss_mb": 9.4,
+      "cmd": "\"D:\\CLIO-Desktop-095-Repair\\clio-agent.exe\" --host 127.0.0.1 --port 60503 --token <redacted>"
+    },
+    {
+      "kind": "other",
+      "pid": 52772,
+      "created": "2026-10-28T11:14:35.5271410Z",
+      "rss_mb": 7.5,
+      "cmd": "\\??\\C:\\WINDOWS\\system32\\conhost.exe 0x4"
+    },
+    {
+      "kind": "server",
+      "pid": 48156,
+      "created": "2026-10-28T11:14:35.5550620Z",
+      "rss_mb": 344.4,
+      "cmd": "\\\\?\\D:\\CLIO-Desktop-095-Repair\\data\\bundled-runtime\\gact-runtime\\python\\python.exe -I -B -m clio_agent.gact --no-agent --host 127.0.0.1 --port 60503"
+    },
+    {
+      "kind": "other",
+      "pid": 8656,
+      "created": "2026-10-28T11:14:35.5683540Z",
+      "rss_mb": 7.7,
+      "cmd": "\\??\\C:\\WINDOWS\\system32\\conhost.exe 0x4"
+    },
+    {
+      "kind": "clio-core",
+      "pid": 35268,
+      "created": "2026-10-28T11:15:05.5963850Z",
+      "rss_mb": 494,
+      "cmd": "\\\\?\\D:\\CLIO-Desktop-095-Repair\\data\\bundled-runtime\\gact-runtime\\python\\Lib\\site-packages\\iowarp_core\\bin\\clio_run.exe start"
+    },
+    {
+      "kind": "other",
+      "pid": 43444,
+      "created": "2026-10-28T11:15:05.6091260Z",
+      "rss_mb": 7.5,
+      "cmd": "\\??\\C:\\WINDOWS\\system32\\conhost.exe 0x4"
+    }
+  ],
+  "rss_mb": {
+    "desktop": 39.2,
+    "server": 344.4,
+    "all": 1397.8
+  },
+  "quit": {
+    "seconds_until_all_gone": 11.7,
+    "exited_after_s": {
+      "server:48156": 6.5,
+      "other:8656": 6.5,
+      "clio-core:35268": 6.5,
+      "other:43444": 6.5,
+      "desktop:24552": 11.7,
+      "other:28728": 11.7,
+      "other:28864": 11.7,
+      "other:53056": 11.7,
+      "other:31444": 11.7,
+      "other:42424": 11.7,
+      "other:21032": 11.7,
+      "other:27856": 11.7,
+      "launcher:16928": 11.7,
+      "other:52772": 11.7
+    },
+    "left_running": []
+  },
+  "boot_log_path": "D:\\cw\\rp\\home\\AppData\\Local\\ai.iowarp.clio.desktop\\logs\\backend-boot.log",
+  "boot_log_current": true,
+  "quit_log": [
+    "INFO:     127.0.0.1:52885 - \"POST /v1/infrastructure/desktop-exit HTTP/1.1\" 200 OK",
+    "INFO:     127.0.0.1:52886 - \"POST /v1/desktop/shutdown HTTP/1.1\" 202 Accepted",
+    "INFO:     Shutting down",
+    "INFO:     Waiting for application shutdown.",
+    "sidecar-progress: backend exited; starting crash cleanup",
+    "sidecar-progress: crash cleanup completed",
+    "sidecar-progress: crash cleanup helper exited"
+  ]
+}

@@ -294,7 +294,7 @@ def test_xml_parameter_fragment_is_a_protocol_error_not_a_completed_answer(pool:
         ('[{"name":"search","arguments":{"q":"actual data"}}]\n```', "missing opening"),
         ('<invoke name="search"><parameter name="q">actual data</parameter></invoke>', "XML"),
         ('<parameter name="q">actual data</parameter>\n</invoke>\n</invoke>', "XML"),
-        pytest.param("<br>\n" * 2000, "only HTML line breaks", id="formatting-only"),
+        pytest.param("<br>\n" * 2000, "only line breaks or one word", id="formatting-only"),
         pytest.param(
             '{"tool_calls":[{"name":"search","arguments":{"q":"actual data"}}]}',
             "fenced",
@@ -456,8 +456,10 @@ def test_a_dropped_client_of_another_session_leaves_this_one_kept(
 def test_the_sdk_cost_reaches_the_turn_usage_as_known(pool: FakePool) -> None:
     import dspy
 
-    from clio_agent.gact.usage import _usage_from_history_slice
+    from clio_agent.gact.usage import _usage_from_turn_calls
     from clio_agent.providers.claude_code_engine import ClaudeCodeEngine
+    from clio_agent.runtime.turn_lm_ledger import route_history
+    from tests._turn_ledger import turn_with_calls
 
     priced = _result()
     priced.total_cost_usd = 0.0125
@@ -469,9 +471,10 @@ def test_the_sdk_cost_reaches_the_turn_usage_as_known(pool: FakePool) -> None:
         cache=False,
         num_retries=0,
     )
-    lm(_request(HEAD))
-    with dspy.context(lm=lm):
-        usage = _usage_from_history_slice(0)
+    route_history(lm)  # as the lm.call callback every clio LM carries does
+    with turn_with_calls():
+        lm(_request(HEAD))
+        usage = _usage_from_turn_calls(0)
     assert (usage["cost_usd"], usage["cost_known"]) == (0.0125, True)
 
 
@@ -562,3 +565,25 @@ def test_an_unhandled_sdk_message_is_audited_not_dropped(
 
     [row] = [r for r in audit if r["stage"] == "provider.message_unhandled"]
     assert row["message_type"] == "SomethingNew"
+
+
+def test_a_released_entry_is_retried_once_on_the_sessions_fresh_entry(pool: FakePool) -> None:
+    """A dead pooled entry before anything was sent takes the session's fresh entry once.
+
+    Live, a workflow step failed with "claude agent sdk entry released during a queued
+    connect": its entry was released between ``entry_for`` and the connect, and the
+    error, typed as retryable, was never retried.
+    """
+    from clio_agent.providers.claude_code_lifecycle import DEAD_ENTRY_MARKER
+
+    pool.turns = [RuntimeError(DEAD_ENTRY_MARKER), [_text("fine"), _result()]]
+    response = _run(_request(HEAD))
+    assert [p.text for p in response.message.parts if isinstance(p, TextPart)] == ["fine"]
+    assert len(pool.sends) == 2
+    # A second release in a row, or any other error, is not retried.
+    pool.turns = [RuntimeError(DEAD_ENTRY_MARKER), RuntimeError(DEAD_ENTRY_MARKER)]
+    with pytest.raises(Exception, match="released during a queued connect"):
+        _run(_request(HEAD))
+    pool.turns = [RuntimeError("something else"), [_text("never"), _result()]]
+    with pytest.raises(Exception, match="something else"):
+        _run(_request(HEAD))

@@ -1,0 +1,9 @@
+{
+  "seconds": 235.8603577,
+  "ref": "codex/windows-startup-acceptance",
+  "label": "repair-install-cold",
+  "exit_code": 0,
+  "profile": "D:\\cw\\fp1",
+  "candidate": "74fea6f38410867d5171509e0e1c36276b7f2132",
+  "finished_at": "2026-10-28T08:38:01.4612762Z"
+}

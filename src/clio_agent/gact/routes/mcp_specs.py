@@ -2,57 +2,49 @@
 
 from __future__ import annotations
 
-from collections.abc import Callable, Mapping
+from collections.abc import Mapping
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any
 
 from clio_agent.errors import MCP_YAML_DECLARATION_UNREADABLE
 from clio_agent.gact.agents.resolution import (
-    _runtime_active_agent_blueprint_id,
-    _runtime_active_agent_blueprint_path,
+    SessionAgentUnavailable,
+    agent_server_set,
+    default_agent_ref,
+    session_resolution,
+    session_server_set,
 )
-from clio_agent.gact.blueprint_activation import blueprint_mcp_servers, blueprint_server_map
 from clio_agent.tools.mcp_config import MCPServerSpec, unreadable_mcp_yaml_snapshot
 from clio_agent.tools.mcp_inventory_snapshot import WorkspaceMcpSnapshot, workspace_mcp_snapshot
 from clio_agent.tools.mcp_redaction import redact_mcp_spec
 
 
 def declared_mcp_specs(
-    app: Any,
-    cwd: Path | None = None,
-    *,
-    session_id: str = "",
-    active_blueprint_id: Callable[[Any, str], str] = _runtime_active_agent_blueprint_id,
-    active_blueprint_path: Callable[[Any, str], Path | None] = (
-        _runtime_active_agent_blueprint_path
-    ),
-    load_blueprint_servers: Callable[..., dict[str, dict[str, Any]]] = blueprint_mcp_servers,
+    app: Any, cwd: Path | None = None, *, session_id: str = ""
 ) -> dict[str, Any]:
-    """Return MCP specs declared for the selected session and workspace."""
+    """Return MCP specs declared for the selected session and workspace.
 
+    The session agent's plugin servers, then user and workspace ``mcp.yaml``.
+    """
+
+    from clio_agent.plugins.servers import server_set_declarations  # noqa: PLC0415
     from clio_agent.search.web_mcp_default import load_agent_mcp_servers  # noqa: PLC0415
 
-    blueprint_id = active_blueprint_id(app, session_id)
-    pack_servers: dict[str, dict[str, Any]] = {}
-    if blueprint_id:
-        blueprint_path = active_blueprint_path(app, session_id)
-        if blueprint_path is not None:
-            try:
-                from clio_agent.gact.agent_blueprints import (  # noqa: PLC0415
-                    parse_agent_blueprint_root,
-                )
+    server_set = session_server_set(app, session_id) if session_id else ""
+    plugin_servers = server_set_declarations(server_set) if server_set else {}
+    return load_agent_mcp_servers(cwd=cwd, plugin_servers=plugin_servers)
 
-                blueprint = parse_agent_blueprint_root(blueprint_path, scope="session")
-                if blueprint.enabled and blueprint.id == blueprint_id:
-                    servers = blueprint_server_map(blueprint, app=app, workspace_root=cwd)
-                    if servers:
-                        pack_servers[blueprint_id] = servers
-            except Exception:  # noqa: BLE001,S110 - mcp.yaml remains available
-                pass
-        else:
-            pack_servers = load_blueprint_servers(blueprint_id, cwd=cwd)
-    return load_agent_mcp_servers(cwd=cwd, pack_servers=pack_servers)
+
+def _draft_mcp_specs(app: Any, cwd: Path | None, agent_ref: str) -> dict[str, Any]:
+    """The MCP specs a new conversation on ``agent_ref`` in this workspace would declare."""
+
+    from clio_agent.plugins.servers import server_set_declarations  # noqa: PLC0415
+    from clio_agent.search.web_mcp_default import load_agent_mcp_servers  # noqa: PLC0415
+
+    server_set = agent_server_set(app, agent_ref)
+    plugin_servers = server_set_declarations(server_set) if server_set else {}
+    return load_agent_mcp_servers(cwd=cwd, plugin_servers=plugin_servers)
 
 
 @dataclass(frozen=True)
@@ -69,27 +61,36 @@ def session_mcp_inventory(
     cwd: Path | None,
     session_id: str,
 ) -> SessionMcpInventory:
-    """Project one session's declared MCPs, resident state, and why it is partial.
+    """Project one session's (with none, a new conversation's) declared MCPs and state.
 
     Declaration discovery is file-only. The optional runtime snapshot reads an
     already-resident workspace fleet and must not create an executor, connect a
     client, or launch a server.
 
-    BLOCKING: reads ``mcp.yaml`` / blueprint files and takes the fleet's
+    BLOCKING: reads ``mcp.yaml`` / plugin records and takes the fleet's
     ``threading.Lock``. Async callers run it on a worker (see ``routes.mcp``).
     """
 
-    if not session_id:
-        return SessionMcpInventory()
-    blueprint_id = _runtime_active_agent_blueprint_id(app, session_id)
-    session = app.state.sessions.get(session_id)
-    metadata = getattr(session, "metadata", {}) or {}
-    blueprint_name = (
-        str(metadata.get("active_agent_blueprint_name") or blueprint_id)
-        if isinstance(metadata, Mapping)
-        else blueprint_id
-    )
-    specs = declared_mcp_specs(app, cwd=cwd, session_id=session_id)
+    if session_id:
+        try:
+            agent_ref = str(session_resolution(app, session_id).agent.get("ref") or "")
+        except SessionAgentUnavailable as exc:
+            agent_ref = exc.ref
+        try:
+            specs = declared_mcp_specs(app, cwd=cwd, session_id=session_id)
+            connection_error = ""
+        except SessionAgentUnavailable as exc:
+            specs = {}
+            connection_error = str(exc)
+    else:
+        # No conversation chosen: what a new one here would get, on the default agent.
+        agent_ref = default_agent_ref(app)
+        try:
+            specs = _draft_mcp_specs(app, cwd, agent_ref)
+            connection_error = ""
+        except SessionAgentUnavailable as exc:
+            specs = {}
+            connection_error = str(exc)
     # A declaration file that failed to PARSE is not the same as one that is
     # absent: without this the listing is simply shorter and says nothing.
     degradations: list[dict[str, str]] = [
@@ -100,6 +101,8 @@ def session_mcp_inventory(
         for row in unreadable_mcp_yaml_snapshot()
     ]
     snapshot = WorkspaceMcpSnapshot()
+    if connection_error:
+        degradations.append({"reason": "mcp_connection_unavailable", "detail": connection_error})
     if cwd is not None:
         snapshot = workspace_mcp_snapshot(getattr(app.state, "agent", None), str(cwd))
     degraded = snapshot.degraded
@@ -113,8 +116,7 @@ def session_mcp_inventory(
                 runtime=snapshot.namespaces.get(namespace, {}),
                 runtime_unavailable=snapshot.reason,
                 session_id=session_id,
-                blueprint_id=blueprint_id,
-                blueprint_name=blueprint_name,
+                agent_ref=agent_ref,
             )
             for namespace, spec in sorted(specs.items())
         ],
@@ -129,33 +131,44 @@ def _session_mcp_server_row(
     runtime: Mapping[str, Any],
     runtime_unavailable: str,
     session_id: str,
-    blueprint_id: str,
-    blueprint_name: str,
+    agent_ref: str,
 ) -> dict[str, Any]:
     """Shape one declared namespace without exposing credentials."""
 
+    from clio_agent.tools import mcp_prepare  # noqa: PLC0415
+
     tools = [str(name) for name in runtime.get("tools", [])]
-    pack_owned = spec.source == f"pack:{blueprint_id}"
+    plugin_owned = spec.source.startswith("plugin:")
     status = str(runtime.get("status") or "available") if spec.usable else "unavailable"
+    # A server being prepared (or whose preparation failed) says so, with its phase and
+    # typed reason, until its connection is up.
+    preparation = mcp_prepare.preparation_state(namespace)
+    if spec.usable and status != "ready" and preparation is not None:
+        if preparation["state"] in (mcp_prepare.PREPARING, mcp_prepare.FAILED):
+            status = str(preparation["state"])
     row: dict[str, Any] = {
-        "id": f"session_mcp_{session_id}_{namespace}",
+        "id": f"session_mcp_{session_id}_{namespace}" if session_id else f"draft_mcp_{namespace}",
         "name": namespace,
         "status": status,
         "transport": spec.transport,
         "tools_count": len(tools),
         "tools": tools,
-        "source": "agent_blueprint" if pack_owned else spec.source or "workspace",
+        "source": "plugin" if plugin_owned else spec.source or "workspace",
         "enabled": spec.usable,
         "session_id": session_id,
         "spec": redact_mcp_spec(asdict(spec)),
     }
+    if preparation is not None:
+        row["preparation"] = preparation
+        if status == mcp_prepare.FAILED:
+            row["reason"] = preparation.get("reason", "")
     if runtime_unavailable:
         # ``available`` alone conflates "declared, fleet never started" with
         # "declared, fleet reaped" with "declared, reader is broken".
         row["runtime_unavailable"] = runtime_unavailable
     if spec.validation_errors:
         row["error"] = "; ".join(spec.validation_errors)
-    if pack_owned:
-        row["agent_blueprint_id"] = blueprint_id
-        row["agent_blueprint_name"] = blueprint_name
+    if plugin_owned:
+        row["plugin"] = spec.source.removeprefix("plugin:")
+        row["agent_ref"] = agent_ref
     return row

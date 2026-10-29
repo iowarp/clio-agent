@@ -14,9 +14,29 @@ explicitly request these shipped aliases for one Tasks release cycle:
 `cancel_agent_tasks` was an unfinished branch addition, not a shipped alias in
 the selected compatibility baseline. Use `cancel_tasks`.
 
-`spawn_agent_task` preserves `agent`, `task`, `placement`, `input_task_ids`,
-`blueprint_id` and `strategy`. `spawn_agents_parallel` preserves `spawns` and
-`placement`; each entry uses the same blueprint, evidence and strategy preparation
+Native model-facing `wait_tasks` defaults `interrupt_on_mail` to true. An
+authorized, eligible peer message, live human input, or question answer can
+return `interrupted="mail_received"` with the actual still-pending handles.
+This does not satisfy `return_when="all"`, settle/cancel a child, or consume mail.
+The existing model-input commit delivers the addressed input before the next
+model decision. Already committed messages do not interrupt a later wait;
+task-result notices alone do not turn an all-wait into any-wait. Explicit false
+keeps an outcome-only wait. The shared `TaskOperations.wait` API keeps false as
+its default, so authored flow waits retain their existing control-flow contract.
+
+An MCP-to-native Shell handoff retains the original approval for one exact
+observer invocation. It does not create a session or workspace grant. Changed
+arguments, app/session/workspace/assignment ownership, approval posture, applicable
+policies or active playbook restrictions require the normal gate again. Reuse is
+one-shot; current folder/source/symlink policy and SPOTTER clearance still apply
+before native submission. PreToolUse interception remains at its original boundary;
+a hook that changes the command cannot inherit approval for the old arguments.
+
+`spawn_agent_task` takes `agent`, `task`, `placement`, `input_task_ids` and
+`strategy`; `agent` names a defined subagent of the session's agent or an
+installed agent (`marketplace/id`). The former `blueprint_id` argument is gone
+with the blueprint system. `spawn_agents_parallel` preserves `spawns` and
+`placement`; each entry uses the same agent, evidence and strategy preparation
 as a single spawn. Invalid members return independent errors. Omitted or local
 placement works. Special relay placement is explicitly rejected; configure an
 ordinary MCP server instead.
@@ -47,7 +67,19 @@ and serialization describe how to reconstruct it. Explicit
 collection is acknowledged through the recipient-input commitment used by
 automatic delivery. Readable results remain available afterward.
 
-`input_task_ids` selects finished children owned by the spawning session. The
+`get_task_result(handle, select=["/workflow_state/delivery"])` reads selected
+RFC 6901 JSON Pointer paths into a pointer-keyed result object. Escape `/` in a
+dictionary key as `~1` and `~` as `~0`; array positions use canonical zero-based
+indices. Missing paths fail explicitly. Selection does not change the immutable
+source reference or authorization; both normal and committed delegated-evidence
+reads retain their original scope. A continuation pins the selection: omit
+`select` or repeat the same list. Selected large values still use the existing
+page bound. Unselected dictionary reads include bounded `result_keys` metadata.
+The REST result route accepts repeated `select` query parameters.
+
+`input_task_ids` selects readable finished task results in the spawning session's
+own same-human tree, including a child's completed tool results. A read grant
+for an unrelated peer does not make its result shareable. The
 child receives bounded quoted evidence and a pinned `get_task_result` cursor.
 That cursor reads only the exact snapshot in its confirmed delegation input,
 including after a successor continues the stable session. It grants no sibling

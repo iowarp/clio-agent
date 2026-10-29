@@ -6,6 +6,7 @@ import asyncio
 import io
 import os
 import posixpath
+import shutil
 import socket
 import threading
 from pathlib import Path
@@ -33,6 +34,9 @@ def sftp_host(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> Iterator[tuple[SshRoute, str, Path]]:
     """Serve a disposable SFTP directory using real password and public-key authentication."""
+    if shutil.which("ssh") is None:
+        # ``connect_route`` resolves every route with the OpenSSH client (``ssh -G``).
+        pytest.skip("the OpenSSH client (ssh) is not installed on this host")
     host_key = paramiko.RSAKey.generate(2048)
     client_key = paramiko.RSAKey.generate(2048)
     key_text = io.StringIO()

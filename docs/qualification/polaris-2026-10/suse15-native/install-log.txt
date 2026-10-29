@@ -1,0 +1,517 @@
+CLIO_SERVICE_OBSERVATION {"definition_version": "monitoring-native-1", "configuration_revision": "3883823f8c565894e0410ae88ca342f6288a4f0319e290b4f65e2fbfb72207b7", "phase": "stopped", "installed": false, "running": false, "serving": false, "worker_alive": false, "provenance_ingesting": false, "attention_verified": false, "error": "install exited with code 1; inspect its logs", "observed_at": 1793022364.918506, "evidence_directory": "/work/home/data/services/vm/flowcept/evidence", "effective_artifacts": {"python_lock_sha256": "c39e65278255b595d5b37c766656a4d7eee3821e4287f18d52f86881656a8f26"}}
+CLIO_SERVICE_OBSERVATION {"definition_version": "monitoring-native-1", "configuration_revision": "3883823f8c565894e0410ae88ca342f6288a4f0319e290b4f65e2fbfb72207b7", "phase": "installing", "installed": false, "running": false, "serving": false, "worker_alive": true, "provenance_ingesting": false, "attention_verified": false, "error": null, "observed_at": 1793022365.0818942, "evidence_directory": "/work/home/data/services/vm/flowcept/evidence", "effective_artifacts": {"python_lock_sha256": "c39e65278255b595d5b37c766656a4d7eee3821e4287f18d52f86881656a8f26"}}
+warning: The `UV_NATIVE_TLS` environment variable is deprecated and will be removed in a future release. Use `UV_SYSTEM_CERTS` instead.
+Resolved 45 packages in 1ms
+Checked 44 packages in 0.66ms
+cd src && make all
+make[1]: Entering directory '/work/home/data/services/vm/flowcept/tmp/valkey/valkey-8.1.3/src'
+/bin/sh: which: command not found
+/bin/sh: which: command not found
+    [34mCC[0m [33mMakefile.dep[0m
+/bin/sh: which: command not found
+/bin/sh: which: command not found
+rm -rf valkey-server valkey-sentinel valkey-cli valkey-benchmark valkey-check-rdb valkey-check-aof valkey-unit-tests libvalkey.a unit/*.o unit/*.d lua/*.o lua/*.d *.o *.gcda *.gcno *.gcov valkey.info lcov-html Makefile.dep *.so
+rm -f threads_mngr.d adlist.d quicklist.d ae.d anet.d dict.d hashtable.d kvstore.d server.d sds.d zmalloc.d lzf_c.d lzf_d.d pqsort.d zipmap.d sha1.d ziplist.d release.d memory_prefetch.d io_threads.d networking.d util.d object.d db.d replication.d rdb.d t_string.d t_list.d t_set.d t_zset.d t_hash.d config.d aof.d pubsub.d multi.d debug.d sort.d intset.d syncio.d cluster.d cluster_legacy.d cluster_slot_stats.d crc16.d endianconv.d commandlog.d eval.d bio.d rio.d rand.d memtest.d syscheck.d crcspeed.d crccombine.d crc64.d bitops.d sentinel.d notify.d setproctitle.d blocked.d hyperloglog.d latency.d sparkline.d valkey-check-rdb.d valkey-check-aof.d geo.d lazyfree.d module.d evict.d expire.d geohash.d geohash_helper.d childinfo.d allocator_defrag.d defrag.d siphash.d rax.d t_stream.d listpack.d localtime.d lolwut.d lolwut5.d lolwut6.d acl.d tracking.d socket.d tls.d sha256.d timeout.d setcpuaffinity.d monotonic.d mt19937-64.d resp_parser.d call_reply.d script.d functions.d commands.d strl.d connection.d unix.d logreqres.d rdma.d scripting_engine.d lua/script_lua.d lua/function_lua.d lua/engine_lua.d lua/debug_lua.d anet.d adlist.d dict.d valkey-cli.d zmalloc.d release.d ae.d serverassert.d crcspeed.d crccombine.d crc64.d siphash.d crc16.d monotonic.d cli_common.d mt19937-64.d strl.d cli_commands.d ae.d anet.d valkey-benchmark.d adlist.d dict.d zmalloc.d serverassert.d release.d crcspeed.d crccombine.d crc64.d siphash.d crc16.d monotonic.d cli_common.d mt19937-64.d strl.d
+(cd ../deps && make distclean)
+make[2]: Entering directory '/work/home/data/services/vm/flowcept/tmp/valkey/valkey-8.1.3/deps'
+(cd hiredis && make clean) > /dev/null || true
+(cd linenoise && make clean) > /dev/null || true
+(cd lua && make clean) > /dev/null || true
+(cd jemalloc && [ -f Makefile ] && make distclean) > /dev/null || true
+(cd hdr_histogram && make clean) > /dev/null || true
+(cd fpconv && make clean) > /dev/null || true
+(cd fast_float_c_interface && make clean) > /dev/null || true
+(rm -f .make-*)
+make[2]: Leaving directory '/work/home/data/services/vm/flowcept/tmp/valkey/valkey-8.1.3/deps'
+(cd modules && make clean)
+make[2]: Entering directory '/work/home/data/services/vm/flowcept/tmp/valkey/valkey-8.1.3/src/modules'
+rm -rf *.xo *.so
+make[2]: Leaving directory '/work/home/data/services/vm/flowcept/tmp/valkey/valkey-8.1.3/src/modules'
+(cd ../tests/modules && make clean)
+make[2]: Entering directory '/work/home/data/services/vm/flowcept/tmp/valkey/valkey-8.1.3/tests/modules'
+rm -f commandfilter.so basics.so testrdb.so fork.so infotest.so propagate.so misc.so hooks.so blockonkeys.so blockonbackground.so scan.so datatype.so datatype2.so auth.so keyspace_events.so block_keyspace_notification.so blockedclient.so getkeys.so getchannels.so test_lazyfree.so timer.so defragtest.so keyspecs.so hash.so zset.so stream.so mallocsize.so aclcheck.so list.so subcommands.so reply.so cmdintrospection.so eventloop.so moduleconfigs.so moduleconfigstwo.so moduleparameter.so publish.so usercall.so postnotifications.so moduleauthtwo.so rdbloadsave.so crash.so cluster.so helloscripting.so commandfilter.xo basics.xo testrdb.xo fork.xo infotest.xo propagate.xo misc.xo hooks.xo blockonkeys.xo blockonbackground.xo scan.xo datatype.xo datatype2.xo auth.xo keyspace_events.xo block_keyspace_notification.xo blockedclient.xo getkeys.xo getchannels.xo test_lazyfree.xo timer.xo defragtest.xo keyspecs.xo hash.xo zset.xo stream.xo mallocsize.xo aclcheck.xo list.xo subcommands.xo reply.xo cmdintrospection.xo eventloop.xo moduleconfigs.xo moduleconfigstwo.xo moduleparameter.xo publish.xo usercall.xo postnotifications.xo moduleauthtwo.xo rdbloadsave.xo crash.xo cluster.xo helloscripting.xo
+make[2]: Leaving directory '/work/home/data/services/vm/flowcept/tmp/valkey/valkey-8.1.3/tests/modules'
+(rm -f .make-*)
+echo STD=-pedantic -std=gnu11 >> .make-settings
+echo WARN=-Wall -W -Wno-missing-field-initializers -Werror=deprecated-declarations -Wstrict-prototypes >> .make-settings
+echo OPT=-O3 -flto=auto -ffat-lto-objects -fno-omit-frame-pointer >> .make-settings
+echo MALLOC=libc >> .make-settings
+echo BUILD_TLS=no >> .make-settings
+echo BUILD_RDMA= >> .make-settings
+echo USE_SYSTEMD= >> .make-settings
+echo CFLAGS= >> .make-settings
+echo LDFLAGS= >> .make-settings
+echo SERVER_CFLAGS= >> .make-settings
+echo SERVER_LDFLAGS= >> .make-settings
+echo PREV_FINAL_CFLAGS=-pedantic -std=gnu11 -Wall -W -Wno-missing-field-initializers -Werror=deprecated-declarations -Wstrict-prototypes -O3 -flto=auto -ffat-lto-objects -fno-omit-frame-pointer -g -ggdb   -I../deps/hiredis -I../deps/linenoise -I../deps/lua/src -I../deps/hdr_histogram -I../deps/fpconv >> .make-settings
+echo PREV_FINAL_LDFLAGS= -O3 -flto=auto -ffat-lto-objects -fno-omit-frame-pointer  -g -ggdb -rdynamic >> .make-settings
+(cd ../deps && make hiredis linenoise lua hdr_histogram fpconv)
+make[2]: Entering directory '/work/home/data/services/vm/flowcept/tmp/valkey/valkey-8.1.3/deps'
+(cd hiredis && make clean) > /dev/null || true
+(cd linenoise && make clean) > /dev/null || true
+(cd lua && make clean) > /dev/null || true
+(cd jemalloc && [ -f Makefile ] && make distclean) > /dev/null || true
+(cd hdr_histogram && make clean) > /dev/null || true
+(cd fpconv && make clean) > /dev/null || true
+(cd fast_float_c_interface && make clean) > /dev/null || true
+(rm -f .make-*)
+(echo "" > .make-cflags)
+(echo "" > .make-ldflags)
+[32;1mMAKE[0m [37;1mhiredis[0m
+[32;1mMAKE[0m [37;1mlinenoise[0m
+cd hiredis && make static
+cd linenoise && make
+make[3]: Entering directory '/work/home/data/services/vm/flowcept/tmp/valkey/valkey-8.1.3/deps/hiredis'
+make[3]: Entering directory '/work/home/data/services/vm/flowcept/tmp/valkey/valkey-8.1.3/deps/linenoise'
+cc  -Wall -Os -g  -c linenoise.c
+cc -std=c99 -c -O3 -fPIC   -Wall -Wextra -Werror -Wstrict-prototypes -Wwrite-strings -Wno-missing-field-initializers -g -ggdb  -pedantic alloc.c
+cc -std=c99 -c -O3 -fPIC   -Wall -Wextra -Werror -Wstrict-prototypes -Wwrite-strings -Wno-missing-field-initializers -g -ggdb  -pedantic net.c
+make[3]: Leaving directory '/work/home/data/services/vm/flowcept/tmp/valkey/valkey-8.1.3/deps/linenoise'
+[32;1mMAKE[0m [37;1mlua[0m
+cd lua/src && make all CFLAGS="-Wall -DLUA_ANSI -DENABLE_CJSON_GLOBAL -DLUA_USE_MKSTEMP  -O2 " MYLDFLAGS="" AR="ar rc"
+make[3]: Entering directory '/work/home/data/services/vm/flowcept/tmp/valkey/valkey-8.1.3/deps/lua/src'
+cc -Wall -DLUA_ANSI -DENABLE_CJSON_GLOBAL -DLUA_USE_MKSTEMP  -O2    -c -o lapi.o lapi.c
+cc -std=c99 -c -O3 -fPIC   -Wall -Wextra -Werror -Wstrict-prototypes -Wwrite-strings -Wno-missing-field-initializers -g -ggdb  -pedantic hiredis.c
+cc -Wall -DLUA_ANSI -DENABLE_CJSON_GLOBAL -DLUA_USE_MKSTEMP  -O2    -c -o lcode.o lcode.c
+cc -std=c99 -c -O3 -fPIC   -Wall -Wextra -Werror -Wstrict-prototypes -Wwrite-strings -Wno-missing-field-initializers -g -ggdb  -pedantic sds.c
+cc -Wall -DLUA_ANSI -DENABLE_CJSON_GLOBAL -DLUA_USE_MKSTEMP  -O2    -c -o ldebug.o ldebug.c
+cc -Wall -DLUA_ANSI -DENABLE_CJSON_GLOBAL -DLUA_USE_MKSTEMP  -O2    -c -o ldo.o ldo.c
+cc -std=c99 -c -O3 -fPIC   -Wall -Wextra -Werror -Wstrict-prototypes -Wwrite-strings -Wno-missing-field-initializers -g -ggdb  -pedantic async.c
+cc -Wall -DLUA_ANSI -DENABLE_CJSON_GLOBAL -DLUA_USE_MKSTEMP  -O2    -c -o ldump.o ldump.c
+cc -Wall -DLUA_ANSI -DENABLE_CJSON_GLOBAL -DLUA_USE_MKSTEMP  -O2    -c -o lfunc.o lfunc.c
+cc -Wall -DLUA_ANSI -DENABLE_CJSON_GLOBAL -DLUA_USE_MKSTEMP  -O2    -c -o lgc.o lgc.c
+cc -std=c99 -c -O3 -fPIC   -Wall -Wextra -Werror -Wstrict-prototypes -Wwrite-strings -Wno-missing-field-initializers -g -ggdb  -pedantic read.c
+cc -Wall -DLUA_ANSI -DENABLE_CJSON_GLOBAL -DLUA_USE_MKSTEMP  -O2    -c -o llex.o llex.c
+cc -Wall -DLUA_ANSI -DENABLE_CJSON_GLOBAL -DLUA_USE_MKSTEMP  -O2    -c -o lmem.o lmem.c
+cc -Wall -DLUA_ANSI -DENABLE_CJSON_GLOBAL -DLUA_USE_MKSTEMP  -O2    -c -o lobject.o lobject.c
+cc -std=c99 -c -O3 -fPIC   -Wall -Wextra -Werror -Wstrict-prototypes -Wwrite-strings -Wno-missing-field-initializers -g -ggdb  -pedantic sockcompat.c
+ar rcs libhiredis.a alloc.o net.o hiredis.o sds.o async.o read.o sockcompat.o
+make[3]: Leaving directory '/work/home/data/services/vm/flowcept/tmp/valkey/valkey-8.1.3/deps/hiredis'
+[32;1mMAKE[0m [37;1mhdr_histogram[0m
+cd hdr_histogram && make
+cc -Wall -DLUA_ANSI -DENABLE_CJSON_GLOBAL -DLUA_USE_MKSTEMP  -O2    -c -o lopcodes.o lopcodes.c
+make[3]: Entering directory '/work/home/data/services/vm/flowcept/tmp/valkey/valkey-8.1.3/deps/hdr_histogram'
+cc -std=c99 -Wall -Os -g  -DHDR_MALLOC_INCLUDE=\"hdr_redis_malloc.h\" -c  hdr_histogram.c
+cc -Wall -DLUA_ANSI -DENABLE_CJSON_GLOBAL -DLUA_USE_MKSTEMP  -O2    -c -o lparser.o lparser.c
+ar rcs libhdrhistogram.a hdr_histogram.o
+make[3]: Leaving directory '/work/home/data/services/vm/flowcept/tmp/valkey/valkey-8.1.3/deps/hdr_histogram'
+[32;1mMAKE[0m [37;1mfpconv[0m
+cd fpconv && make
+make[3]: Entering directory '/work/home/data/services/vm/flowcept/tmp/valkey/valkey-8.1.3/deps/fpconv'
+cc  -Wall -Os -g  -c  fpconv_dtoa.c
+cc -Wall -DLUA_ANSI -DENABLE_CJSON_GLOBAL -DLUA_USE_MKSTEMP  -O2    -c -o lstate.o lstate.c
+ar rcs libfpconv.a fpconv_dtoa.o
+make[3]: Leaving directory '/work/home/data/services/vm/flowcept/tmp/valkey/valkey-8.1.3/deps/fpconv'
+cc -Wall -DLUA_ANSI -DENABLE_CJSON_GLOBAL -DLUA_USE_MKSTEMP  -O2    -c -o lstring.o lstring.c
+cc -Wall -DLUA_ANSI -DENABLE_CJSON_GLOBAL -DLUA_USE_MKSTEMP  -O2    -c -o ltable.o ltable.c
+cc -Wall -DLUA_ANSI -DENABLE_CJSON_GLOBAL -DLUA_USE_MKSTEMP  -O2    -c -o ltm.o ltm.c
+cc -Wall -DLUA_ANSI -DENABLE_CJSON_GLOBAL -DLUA_USE_MKSTEMP  -O2    -c -o lundump.o lundump.c
+cc -Wall -DLUA_ANSI -DENABLE_CJSON_GLOBAL -DLUA_USE_MKSTEMP  -O2    -c -o lvm.o lvm.c
+cc -Wall -DLUA_ANSI -DENABLE_CJSON_GLOBAL -DLUA_USE_MKSTEMP  -O2    -c -o lzio.o lzio.c
+cc -Wall -DLUA_ANSI -DENABLE_CJSON_GLOBAL -DLUA_USE_MKSTEMP  -O2    -c -o strbuf.o strbuf.c
+cc -Wall -DLUA_ANSI -DENABLE_CJSON_GLOBAL -DLUA_USE_MKSTEMP  -O2    -c -o fpconv.o fpconv.c
+cc -Wall -DLUA_ANSI -DENABLE_CJSON_GLOBAL -DLUA_USE_MKSTEMP  -O2    -c -o lauxlib.o lauxlib.c
+cc -Wall -DLUA_ANSI -DENABLE_CJSON_GLOBAL -DLUA_USE_MKSTEMP  -O2    -c -o lbaselib.o lbaselib.c
+cc -Wall -DLUA_ANSI -DENABLE_CJSON_GLOBAL -DLUA_USE_MKSTEMP  -O2    -c -o ldblib.o ldblib.c
+cc -Wall -DLUA_ANSI -DENABLE_CJSON_GLOBAL -DLUA_USE_MKSTEMP  -O2    -c -o liolib.o liolib.c
+cc -Wall -DLUA_ANSI -DENABLE_CJSON_GLOBAL -DLUA_USE_MKSTEMP  -O2    -c -o lmathlib.o lmathlib.c
+cc -Wall -DLUA_ANSI -DENABLE_CJSON_GLOBAL -DLUA_USE_MKSTEMP  -O2    -c -o loslib.o loslib.c
+cc -Wall -DLUA_ANSI -DENABLE_CJSON_GLOBAL -DLUA_USE_MKSTEMP  -O2    -c -o ltablib.o ltablib.c
+cc -Wall -DLUA_ANSI -DENABLE_CJSON_GLOBAL -DLUA_USE_MKSTEMP  -O2    -c -o lstrlib.o lstrlib.c
+cc -Wall -DLUA_ANSI -DENABLE_CJSON_GLOBAL -DLUA_USE_MKSTEMP  -O2    -c -o loadlib.o loadlib.c
+cc -Wall -DLUA_ANSI -DENABLE_CJSON_GLOBAL -DLUA_USE_MKSTEMP  -O2    -c -o linit.o linit.c
+cc -Wall -DLUA_ANSI -DENABLE_CJSON_GLOBAL -DLUA_USE_MKSTEMP  -O2    -c -o lua_cjson.o lua_cjson.c
+cc -Wall -DLUA_ANSI -DENABLE_CJSON_GLOBAL -DLUA_USE_MKSTEMP  -O2    -c -o lua_struct.o lua_struct.c
+cc -Wall -DLUA_ANSI -DENABLE_CJSON_GLOBAL -DLUA_USE_MKSTEMP  -O2    -c -o lua_cmsgpack.o lua_cmsgpack.c
+cc -Wall -DLUA_ANSI -DENABLE_CJSON_GLOBAL -DLUA_USE_MKSTEMP  -O2    -c -o lua_bit.o lua_bit.c
+cc -Wall -DLUA_ANSI -DENABLE_CJSON_GLOBAL -DLUA_USE_MKSTEMP  -O2    -c -o lua.o lua.c
+cc -Wall -DLUA_ANSI -DENABLE_CJSON_GLOBAL -DLUA_USE_MKSTEMP  -O2    -c -o luac.o luac.c
+cc -Wall -DLUA_ANSI -DENABLE_CJSON_GLOBAL -DLUA_USE_MKSTEMP  -O2    -c -o print.o print.c
+ar rc liblua.a lapi.o lcode.o ldebug.o ldo.o ldump.o lfunc.o lgc.o llex.o lmem.o lobject.o lopcodes.o lparser.o lstate.o lstring.o ltable.o ltm.o lundump.o lvm.o lzio.o strbuf.o fpconv.o lauxlib.o lbaselib.o ldblib.o liolib.o lmathlib.o loslib.o ltablib.o lstrlib.o loadlib.o linit.o lua_cjson.o lua_struct.o lua_cmsgpack.o lua_bit.o	# DLL needs all object files
+ranlib liblua.a
+cc -o lua  lua.o liblua.a -lm
+cc -o luac  luac.o print.o liblua.a -lm
+make[3]: Leaving directory '/work/home/data/services/vm/flowcept/tmp/valkey/valkey-8.1.3/deps/lua/src'
+make[2]: Leaving directory '/work/home/data/services/vm/flowcept/tmp/valkey/valkey-8.1.3/deps'
+    [34mCC[0m [33madlist.o[0m
+    [34mCC[0m [33mthreads_mngr.o[0m
+    [34mCC[0m [33mquicklist.o[0m
+    [34mCC[0m [33mae.o[0m
+    [34mCC[0m [33manet.o[0m
+    [34mCC[0m [33mdict.o[0m
+    [34mCC[0m [33mhashtable.o[0m
+    [34mCC[0m [33mkvstore.o[0m
+    [34mCC[0m [33mserver.o[0m
+    [34mCC[0m [33msds.o[0m
+    [34mCC[0m [33mzmalloc.o[0m
+    [34mCC[0m [33mlzf_c.o[0m
+    [34mCC[0m [33mlzf_d.o[0m
+    [34mCC[0m [33mpqsort.o[0m
+    [34mCC[0m [33mzipmap.o[0m
+    [34mCC[0m [33msha1.o[0m
+    [34mCC[0m [33mziplist.o[0m
+    [34mCC[0m [33mrelease.o[0m
+    [34mCC[0m [33mmemory_prefetch.o[0m
+    [34mCC[0m [33mio_threads.o[0m
+    [34mCC[0m [33mnetworking.o[0m
+    [34mCC[0m [33mutil.o[0m
+    [34mCC[0m [33mobject.o[0m
+    [34mCC[0m [33mdb.o[0m
+    [34mCC[0m [33mreplication.o[0m
+    [34mCC[0m [33mrdb.o[0m
+    [34mCC[0m [33mt_string.o[0m
+    [34mCC[0m [33mt_list.o[0m
+    [34mCC[0m [33mt_set.o[0m
+    [34mCC[0m [33mt_zset.o[0m
+    [34mCC[0m [33mt_hash.o[0m
+    [34mCC[0m [33mconfig.o[0m
+    [34mCC[0m [33maof.o[0m
+    [34mCC[0m [33mpubsub.o[0m
+    [34mCC[0m [33mmulti.o[0m
+    [34mCC[0m [33mdebug.o[0m
+    [34mCC[0m [33msort.o[0m
+    [34mCC[0m [33mintset.o[0m
+    [34mCC[0m [33msyncio.o[0m
+    [34mCC[0m [33mcluster.o[0m
+    [34mCC[0m [33mcluster_legacy.o[0m
+    [34mCC[0m [33mcluster_slot_stats.o[0m
+    [34mCC[0m [33mcrc16.o[0m
+    [34mCC[0m [33mendianconv.o[0m
+    [34mCC[0m [33mcommandlog.o[0m
+    [34mCC[0m [33meval.o[0m
+    [34mCC[0m [33mbio.o[0m
+    [34mCC[0m [33mrio.o[0m
+    [34mCC[0m [33mrand.o[0m
+    [34mCC[0m [33mmemtest.o[0m
+    [34mCC[0m [33msyscheck.o[0m
+    [34mCC[0m [33mcrcspeed.o[0m
+    [34mCC[0m [33mcrccombine.o[0m
+    [34mCC[0m [33mcrc64.o[0m
+    [34mCC[0m [33mbitops.o[0m
+    [34mCC[0m [33msentinel.o[0m
+    [34mCC[0m [33mnotify.o[0m
+    [34mCC[0m [33msetproctitle.o[0m
+    [34mCC[0m [33mblocked.o[0m
+    [34mCC[0m [33mhyperloglog.o[0m
+    [34mCC[0m [33mlatency.o[0m
+    [34mCC[0m [33msparkline.o[0m
+    [34mCC[0m [33mvalkey-check-rdb.o[0m
+    [34mCC[0m [33mvalkey-check-aof.o[0m
+    [34mCC[0m [33mgeo.o[0m
+    [34mCC[0m [33mlazyfree.o[0m
+    [34mCC[0m [33mmodule.o[0m
+    [34mCC[0m [33mevict.o[0m
+    [34mCC[0m [33mexpire.o[0m
+    [34mCC[0m [33mgeohash.o[0m
+    [34mCC[0m [33mgeohash_helper.o[0m
+    [34mCC[0m [33mchildinfo.o[0m
+    [34mCC[0m [33mallocator_defrag.o[0m
+    [34mCC[0m [33mdefrag.o[0m
+    [34mCC[0m [33msiphash.o[0m
+    [34mCC[0m [33mrax.o[0m
+    [34mCC[0m [33mt_stream.o[0m
+    [34mCC[0m [33mlistpack.o[0m
+    [34mCC[0m [33mlocaltime.o[0m
+    [34mCC[0m [33mlolwut.o[0m
+    [34mCC[0m [33mlolwut5.o[0m
+    [34mCC[0m [33mlolwut6.o[0m
+    [34mCC[0m [33macl.o[0m
+    [34mCC[0m [33mtracking.o[0m
+    [34mCC[0m [33msocket.o[0m
+    [34mCC[0m [33mtls.o[0m
+    [34mCC[0m [33msha256.o[0m
+    [34mCC[0m [33mtimeout.o[0m
+    [34mCC[0m [33msetcpuaffinity.o[0m
+    [34mCC[0m [33mmonotonic.o[0m
+    [34mCC[0m [33mmt19937-64.o[0m
+    [34mCC[0m [33mresp_parser.o[0m
+    [34mCC[0m [33mcall_reply.o[0m
+    [34mCC[0m [33mscript.o[0m
+    [34mCC[0m [33mfunctions.o[0m
+    [34mCC[0m [33mcommands.o[0m
+    [34mCC[0m [33mstrl.o[0m
+    [34mCC[0m [33mconnection.o[0m
+    [34mCC[0m [33munix.o[0m
+    [34mCC[0m [33mlogreqres.o[0m
+    [34mCC[0m [33mrdma.o[0m
+    [34mCC[0m [33mscripting_engine.o[0m
+    [34mCC[0m [33mlua/script_lua.o[0m
+    [34mCC[0m [33mlua/function_lua.o[0m
+    [34mCC[0m [33mlua/engine_lua.o[0m
+    [34mCC[0m [33mlua/debug_lua.o[0m
+    [34mCC[0m [33mvalkey-cli.o[0m
+    [34mCC[0m [33mserverassert.o[0m
+    [34mCC[0m [33mcli_common.o[0m
+    [34mCC[0m [33mcli_commands.o[0m
+    [34mCC[0m [33mvalkey-benchmark.o[0m
+    [34;1mLINK[0m [37;1mvalkey-server[0m
+    [34;1mLINK[0m [37;1mvalkey-benchmark[0m
+    [34;1mLINK[0m [37;1mvalkey-cli[0m
+    [34;1mINSTALL[0m [37;1mvalkey-sentinel[0m
+    [34;1mINSTALL[0m [37;1mvalkey-check-rdb[0m
+    [34;1mINSTALL[0m [37;1mvalkey-check-aof[0m
+Hint: It's a good idea to run 'make test' ;)
+make[1]: Leaving directory '/work/home/data/services/vm/flowcept/tmp/valkey/valkey-8.1.3/src'
+Traceback (most recent call last):
+  File "/work/home/data/services/vm/flowcept/native_monitoring_hook.py", line 567, in <module>
+    main()
+  File "/work/home/data/services/vm/flowcept/native_monitoring_hook.py", line 547, in main
+    install(root, manifest)
+  File "/work/home/data/services/vm/flowcept/native_monitoring_hook.py", line 182, in install
+    check_mongod(binaries / "mongod", platform)
+  File "/work/home/data/services/vm/flowcept/native_monitoring_hook.py", line 237, in check_mongod
+    raise RuntimeError(
+RuntimeError: MongoDB's verified suse15 build does not run on this host: /work/home/data/services/vm/flowcept/environment/databases/mongod: error while loading shared libraries: libssl.so.1.1: cannot open shared object file: No such file or directory. On SUSE 15 the OpenSSL 1.1 library comes from the libopenssl1_1 package. Install the missing system library or choose site databases.
+warning: The `UV_NATIVE_TLS` environment variable is deprecated and will be removed in a future release. Use `UV_SYSTEM_CERTS` instead.
+Resolved 45 packages in 2ms
+Checked 44 packages in 1ms
+cd src && make all
+make[1]: Entering directory '/work/home/data/services/vm/flowcept/tmp/valkey/valkey-8.1.3/src'
+/bin/sh: which: command not found
+/bin/sh: which: command not found
+    [34mCC[0m [33mMakefile.dep[0m
+/bin/sh: which: command not found
+/bin/sh: which: command not found
+rm -rf valkey-server valkey-sentinel valkey-cli valkey-benchmark valkey-check-rdb valkey-check-aof valkey-unit-tests libvalkey.a unit/*.o unit/*.d lua/*.o lua/*.d *.o *.gcda *.gcno *.gcov valkey.info lcov-html Makefile.dep *.so
+rm -f threads_mngr.d adlist.d quicklist.d ae.d anet.d dict.d hashtable.d kvstore.d server.d sds.d zmalloc.d lzf_c.d lzf_d.d pqsort.d zipmap.d sha1.d ziplist.d release.d memory_prefetch.d io_threads.d networking.d util.d object.d db.d replication.d rdb.d t_string.d t_list.d t_set.d t_zset.d t_hash.d config.d aof.d pubsub.d multi.d debug.d sort.d intset.d syncio.d cluster.d cluster_legacy.d cluster_slot_stats.d crc16.d endianconv.d commandlog.d eval.d bio.d rio.d rand.d memtest.d syscheck.d crcspeed.d crccombine.d crc64.d bitops.d sentinel.d notify.d setproctitle.d blocked.d hyperloglog.d latency.d sparkline.d valkey-check-rdb.d valkey-check-aof.d geo.d lazyfree.d module.d evict.d expire.d geohash.d geohash_helper.d childinfo.d allocator_defrag.d defrag.d siphash.d rax.d t_stream.d listpack.d localtime.d lolwut.d lolwut5.d lolwut6.d acl.d tracking.d socket.d tls.d sha256.d timeout.d setcpuaffinity.d monotonic.d mt19937-64.d resp_parser.d call_reply.d script.d functions.d commands.d strl.d connection.d unix.d logreqres.d rdma.d scripting_engine.d lua/script_lua.d lua/function_lua.d lua/engine_lua.d lua/debug_lua.d anet.d adlist.d dict.d valkey-cli.d zmalloc.d release.d ae.d serverassert.d crcspeed.d crccombine.d crc64.d siphash.d crc16.d monotonic.d cli_common.d mt19937-64.d strl.d cli_commands.d ae.d anet.d valkey-benchmark.d adlist.d dict.d zmalloc.d serverassert.d release.d crcspeed.d crccombine.d crc64.d siphash.d crc16.d monotonic.d cli_common.d mt19937-64.d strl.d
+(cd ../deps && make distclean)
+make[2]: Entering directory '/work/home/data/services/vm/flowcept/tmp/valkey/valkey-8.1.3/deps'
+(cd hiredis && make clean) > /dev/null || true
+(cd linenoise && make clean) > /dev/null || true
+(cd lua && make clean) > /dev/null || true
+(cd jemalloc && [ -f Makefile ] && make distclean) > /dev/null || true
+(cd hdr_histogram && make clean) > /dev/null || true
+(cd fpconv && make clean) > /dev/null || true
+(cd fast_float_c_interface && make clean) > /dev/null || true
+(rm -f .make-*)
+make[2]: Leaving directory '/work/home/data/services/vm/flowcept/tmp/valkey/valkey-8.1.3/deps'
+(cd modules && make clean)
+make[2]: Entering directory '/work/home/data/services/vm/flowcept/tmp/valkey/valkey-8.1.3/src/modules'
+rm -rf *.xo *.so
+make[2]: Leaving directory '/work/home/data/services/vm/flowcept/tmp/valkey/valkey-8.1.3/src/modules'
+(cd ../tests/modules && make clean)
+make[2]: Entering directory '/work/home/data/services/vm/flowcept/tmp/valkey/valkey-8.1.3/tests/modules'
+rm -f commandfilter.so basics.so testrdb.so fork.so infotest.so propagate.so misc.so hooks.so blockonkeys.so blockonbackground.so scan.so datatype.so datatype2.so auth.so keyspace_events.so block_keyspace_notification.so blockedclient.so getkeys.so getchannels.so test_lazyfree.so timer.so defragtest.so keyspecs.so hash.so zset.so stream.so mallocsize.so aclcheck.so list.so subcommands.so reply.so cmdintrospection.so eventloop.so moduleconfigs.so moduleconfigstwo.so moduleparameter.so publish.so usercall.so postnotifications.so moduleauthtwo.so rdbloadsave.so crash.so cluster.so helloscripting.so commandfilter.xo basics.xo testrdb.xo fork.xo infotest.xo propagate.xo misc.xo hooks.xo blockonkeys.xo blockonbackground.xo scan.xo datatype.xo datatype2.xo auth.xo keyspace_events.xo block_keyspace_notification.xo blockedclient.xo getkeys.xo getchannels.xo test_lazyfree.xo timer.xo defragtest.xo keyspecs.xo hash.xo zset.xo stream.xo mallocsize.xo aclcheck.xo list.xo subcommands.xo reply.xo cmdintrospection.xo eventloop.xo moduleconfigs.xo moduleconfigstwo.xo moduleparameter.xo publish.xo usercall.xo postnotifications.xo moduleauthtwo.xo rdbloadsave.xo crash.xo cluster.xo helloscripting.xo
+make[2]: Leaving directory '/work/home/data/services/vm/flowcept/tmp/valkey/valkey-8.1.3/tests/modules'
+(rm -f .make-*)
+echo STD=-pedantic -std=gnu11 >> .make-settings
+echo WARN=-Wall -W -Wno-missing-field-initializers -Werror=deprecated-declarations -Wstrict-prototypes >> .make-settings
+echo OPT=-O3 -flto=auto -ffat-lto-objects -fno-omit-frame-pointer >> .make-settings
+echo MALLOC=libc >> .make-settings
+echo BUILD_TLS=no >> .make-settings
+echo BUILD_RDMA= >> .make-settings
+echo USE_SYSTEMD= >> .make-settings
+echo CFLAGS= >> .make-settings
+echo LDFLAGS= >> .make-settings
+echo SERVER_CFLAGS= >> .make-settings
+echo SERVER_LDFLAGS= >> .make-settings
+echo PREV_FINAL_CFLAGS=-pedantic -std=gnu11 -Wall -W -Wno-missing-field-initializers -Werror=deprecated-declarations -Wstrict-prototypes -O3 -flto=auto -ffat-lto-objects -fno-omit-frame-pointer -g -ggdb   -I../deps/hiredis -I../deps/linenoise -I../deps/lua/src -I../deps/hdr_histogram -I../deps/fpconv >> .make-settings
+echo PREV_FINAL_LDFLAGS= -O3 -flto=auto -ffat-lto-objects -fno-omit-frame-pointer  -g -ggdb -rdynamic >> .make-settings
+(cd ../deps && make hiredis linenoise lua hdr_histogram fpconv)
+make[2]: Entering directory '/work/home/data/services/vm/flowcept/tmp/valkey/valkey-8.1.3/deps'
+(cd hiredis && make clean) > /dev/null || true
+(cd linenoise && make clean) > /dev/null || true
+(cd lua && make clean) > /dev/null || true
+(cd jemalloc && [ -f Makefile ] && make distclean) > /dev/null || true
+(cd hdr_histogram && make clean) > /dev/null || true
+(cd fpconv && make clean) > /dev/null || true
+(cd fast_float_c_interface && make clean) > /dev/null || true
+(rm -f .make-*)
+(echo "" > .make-cflags)
+(echo "" > .make-ldflags)
+[32;1mMAKE[0m [37;1mhiredis[0m
+cd hiredis && make static
+[32;1mMAKE[0m [37;1mlinenoise[0m
+cd linenoise && make
+make[3]: Entering directory '/work/home/data/services/vm/flowcept/tmp/valkey/valkey-8.1.3/deps/hiredis'
+make[3]: Entering directory '/work/home/data/services/vm/flowcept/tmp/valkey/valkey-8.1.3/deps/linenoise'
+cc  -Wall -Os -g  -c linenoise.c
+cc -std=c99 -c -O3 -fPIC   -Wall -Wextra -Werror -Wstrict-prototypes -Wwrite-strings -Wno-missing-field-initializers -g -ggdb  -pedantic alloc.c
+cc -std=c99 -c -O3 -fPIC   -Wall -Wextra -Werror -Wstrict-prototypes -Wwrite-strings -Wno-missing-field-initializers -g -ggdb  -pedantic net.c
+cc -std=c99 -c -O3 -fPIC   -Wall -Wextra -Werror -Wstrict-prototypes -Wwrite-strings -Wno-missing-field-initializers -g -ggdb  -pedantic hiredis.c
+make[3]: Leaving directory '/work/home/data/services/vm/flowcept/tmp/valkey/valkey-8.1.3/deps/linenoise'
+[32;1mMAKE[0m [37;1mlua[0m
+cd lua/src && make all CFLAGS="-Wall -DLUA_ANSI -DENABLE_CJSON_GLOBAL -DLUA_USE_MKSTEMP  -O2 " MYLDFLAGS="" AR="ar rc"
+make[3]: Entering directory '/work/home/data/services/vm/flowcept/tmp/valkey/valkey-8.1.3/deps/lua/src'
+cc -Wall -DLUA_ANSI -DENABLE_CJSON_GLOBAL -DLUA_USE_MKSTEMP  -O2    -c -o lapi.o lapi.c
+cc -Wall -DLUA_ANSI -DENABLE_CJSON_GLOBAL -DLUA_USE_MKSTEMP  -O2    -c -o lcode.o lcode.c
+cc -std=c99 -c -O3 -fPIC   -Wall -Wextra -Werror -Wstrict-prototypes -Wwrite-strings -Wno-missing-field-initializers -g -ggdb  -pedantic sds.c
+cc -Wall -DLUA_ANSI -DENABLE_CJSON_GLOBAL -DLUA_USE_MKSTEMP  -O2    -c -o ldebug.o ldebug.c
+cc -Wall -DLUA_ANSI -DENABLE_CJSON_GLOBAL -DLUA_USE_MKSTEMP  -O2    -c -o ldo.o ldo.c
+cc -std=c99 -c -O3 -fPIC   -Wall -Wextra -Werror -Wstrict-prototypes -Wwrite-strings -Wno-missing-field-initializers -g -ggdb  -pedantic async.c
+cc -Wall -DLUA_ANSI -DENABLE_CJSON_GLOBAL -DLUA_USE_MKSTEMP  -O2    -c -o ldump.o ldump.c
+cc -Wall -DLUA_ANSI -DENABLE_CJSON_GLOBAL -DLUA_USE_MKSTEMP  -O2    -c -o lfunc.o lfunc.c
+cc -Wall -DLUA_ANSI -DENABLE_CJSON_GLOBAL -DLUA_USE_MKSTEMP  -O2    -c -o lgc.o lgc.c
+cc -std=c99 -c -O3 -fPIC   -Wall -Wextra -Werror -Wstrict-prototypes -Wwrite-strings -Wno-missing-field-initializers -g -ggdb  -pedantic read.c
+cc -Wall -DLUA_ANSI -DENABLE_CJSON_GLOBAL -DLUA_USE_MKSTEMP  -O2    -c -o llex.o llex.c
+cc -Wall -DLUA_ANSI -DENABLE_CJSON_GLOBAL -DLUA_USE_MKSTEMP  -O2    -c -o lmem.o lmem.c
+cc -Wall -DLUA_ANSI -DENABLE_CJSON_GLOBAL -DLUA_USE_MKSTEMP  -O2    -c -o lobject.o lobject.c
+cc -std=c99 -c -O3 -fPIC   -Wall -Wextra -Werror -Wstrict-prototypes -Wwrite-strings -Wno-missing-field-initializers -g -ggdb  -pedantic sockcompat.c
+ar rcs libhiredis.a alloc.o net.o hiredis.o sds.o async.o read.o sockcompat.o
+make[3]: Leaving directory '/work/home/data/services/vm/flowcept/tmp/valkey/valkey-8.1.3/deps/hiredis'
+[32;1mMAKE[0m [37;1mhdr_histogram[0m
+cd hdr_histogram && make
+make[3]: Entering directory '/work/home/data/services/vm/flowcept/tmp/valkey/valkey-8.1.3/deps/hdr_histogram'
+cc -std=c99 -Wall -Os -g  -DHDR_MALLOC_INCLUDE=\"hdr_redis_malloc.h\" -c  hdr_histogram.c
+cc -Wall -DLUA_ANSI -DENABLE_CJSON_GLOBAL -DLUA_USE_MKSTEMP  -O2    -c -o lopcodes.o lopcodes.c
+cc -Wall -DLUA_ANSI -DENABLE_CJSON_GLOBAL -DLUA_USE_MKSTEMP  -O2    -c -o lparser.o lparser.c
+ar rcs libhdrhistogram.a hdr_histogram.o
+make[3]: Leaving directory '/work/home/data/services/vm/flowcept/tmp/valkey/valkey-8.1.3/deps/hdr_histogram'
+[32;1mMAKE[0m [37;1mfpconv[0m
+cd fpconv && make
+make[3]: Entering directory '/work/home/data/services/vm/flowcept/tmp/valkey/valkey-8.1.3/deps/fpconv'
+cc  -Wall -Os -g  -c  fpconv_dtoa.c
+cc -Wall -DLUA_ANSI -DENABLE_CJSON_GLOBAL -DLUA_USE_MKSTEMP  -O2    -c -o lstate.o lstate.c
+ar rcs libfpconv.a fpconv_dtoa.o
+make[3]: Leaving directory '/work/home/data/services/vm/flowcept/tmp/valkey/valkey-8.1.3/deps/fpconv'
+cc -Wall -DLUA_ANSI -DENABLE_CJSON_GLOBAL -DLUA_USE_MKSTEMP  -O2    -c -o lstring.o lstring.c
+cc -Wall -DLUA_ANSI -DENABLE_CJSON_GLOBAL -DLUA_USE_MKSTEMP  -O2    -c -o ltable.o ltable.c
+cc -Wall -DLUA_ANSI -DENABLE_CJSON_GLOBAL -DLUA_USE_MKSTEMP  -O2    -c -o ltm.o ltm.c
+cc -Wall -DLUA_ANSI -DENABLE_CJSON_GLOBAL -DLUA_USE_MKSTEMP  -O2    -c -o lundump.o lundump.c
+cc -Wall -DLUA_ANSI -DENABLE_CJSON_GLOBAL -DLUA_USE_MKSTEMP  -O2    -c -o lvm.o lvm.c
+cc -Wall -DLUA_ANSI -DENABLE_CJSON_GLOBAL -DLUA_USE_MKSTEMP  -O2    -c -o lzio.o lzio.c
+cc -Wall -DLUA_ANSI -DENABLE_CJSON_GLOBAL -DLUA_USE_MKSTEMP  -O2    -c -o strbuf.o strbuf.c
+cc -Wall -DLUA_ANSI -DENABLE_CJSON_GLOBAL -DLUA_USE_MKSTEMP  -O2    -c -o fpconv.o fpconv.c
+cc -Wall -DLUA_ANSI -DENABLE_CJSON_GLOBAL -DLUA_USE_MKSTEMP  -O2    -c -o lauxlib.o lauxlib.c
+cc -Wall -DLUA_ANSI -DENABLE_CJSON_GLOBAL -DLUA_USE_MKSTEMP  -O2    -c -o lbaselib.o lbaselib.c
+cc -Wall -DLUA_ANSI -DENABLE_CJSON_GLOBAL -DLUA_USE_MKSTEMP  -O2    -c -o ldblib.o ldblib.c
+cc -Wall -DLUA_ANSI -DENABLE_CJSON_GLOBAL -DLUA_USE_MKSTEMP  -O2    -c -o liolib.o liolib.c
+cc -Wall -DLUA_ANSI -DENABLE_CJSON_GLOBAL -DLUA_USE_MKSTEMP  -O2    -c -o lmathlib.o lmathlib.c
+cc -Wall -DLUA_ANSI -DENABLE_CJSON_GLOBAL -DLUA_USE_MKSTEMP  -O2    -c -o loslib.o loslib.c
+cc -Wall -DLUA_ANSI -DENABLE_CJSON_GLOBAL -DLUA_USE_MKSTEMP  -O2    -c -o ltablib.o ltablib.c
+cc -Wall -DLUA_ANSI -DENABLE_CJSON_GLOBAL -DLUA_USE_MKSTEMP  -O2    -c -o lstrlib.o lstrlib.c
+cc -Wall -DLUA_ANSI -DENABLE_CJSON_GLOBAL -DLUA_USE_MKSTEMP  -O2    -c -o loadlib.o loadlib.c
+cc -Wall -DLUA_ANSI -DENABLE_CJSON_GLOBAL -DLUA_USE_MKSTEMP  -O2    -c -o linit.o linit.c
+cc -Wall -DLUA_ANSI -DENABLE_CJSON_GLOBAL -DLUA_USE_MKSTEMP  -O2    -c -o lua_cjson.o lua_cjson.c
+cc -Wall -DLUA_ANSI -DENABLE_CJSON_GLOBAL -DLUA_USE_MKSTEMP  -O2    -c -o lua_struct.o lua_struct.c
+cc -Wall -DLUA_ANSI -DENABLE_CJSON_GLOBAL -DLUA_USE_MKSTEMP  -O2    -c -o lua_cmsgpack.o lua_cmsgpack.c
+cc -Wall -DLUA_ANSI -DENABLE_CJSON_GLOBAL -DLUA_USE_MKSTEMP  -O2    -c -o lua_bit.o lua_bit.c
+cc -Wall -DLUA_ANSI -DENABLE_CJSON_GLOBAL -DLUA_USE_MKSTEMP  -O2    -c -o lua.o lua.c
+cc -Wall -DLUA_ANSI -DENABLE_CJSON_GLOBAL -DLUA_USE_MKSTEMP  -O2    -c -o luac.o luac.c
+cc -Wall -DLUA_ANSI -DENABLE_CJSON_GLOBAL -DLUA_USE_MKSTEMP  -O2    -c -o print.o print.c
+ar rc liblua.a lapi.o lcode.o ldebug.o ldo.o ldump.o lfunc.o lgc.o llex.o lmem.o lobject.o lopcodes.o lparser.o lstate.o lstring.o ltable.o ltm.o lundump.o lvm.o lzio.o strbuf.o fpconv.o lauxlib.o lbaselib.o ldblib.o liolib.o lmathlib.o loslib.o ltablib.o lstrlib.o loadlib.o linit.o lua_cjson.o lua_struct.o lua_cmsgpack.o lua_bit.o	# DLL needs all object files
+ranlib liblua.a
+cc -o lua  lua.o liblua.a -lm
+cc -o luac  luac.o print.o liblua.a -lm
+make[3]: Leaving directory '/work/home/data/services/vm/flowcept/tmp/valkey/valkey-8.1.3/deps/lua/src'
+make[2]: Leaving directory '/work/home/data/services/vm/flowcept/tmp/valkey/valkey-8.1.3/deps'
+    [34mCC[0m [33mthreads_mngr.o[0m
+    [34mCC[0m [33madlist.o[0m
+    [34mCC[0m [33mquicklist.o[0m
+    [34mCC[0m [33mae.o[0m
+    [34mCC[0m [33manet.o[0m
+    [34mCC[0m [33mdict.o[0m
+    [34mCC[0m [33mhashtable.o[0m
+    [34mCC[0m [33mkvstore.o[0m
+    [34mCC[0m [33mserver.o[0m
+    [34mCC[0m [33msds.o[0m
+    [34mCC[0m [33mzmalloc.o[0m
+    [34mCC[0m [33mlzf_c.o[0m
+    [34mCC[0m [33mlzf_d.o[0m
+    [34mCC[0m [33mpqsort.o[0m
+    [34mCC[0m [33mzipmap.o[0m
+    [34mCC[0m [33msha1.o[0m
+    [34mCC[0m [33mziplist.o[0m
+    [34mCC[0m [33mrelease.o[0m
+    [34mCC[0m [33mmemory_prefetch.o[0m
+    [34mCC[0m [33mio_threads.o[0m
+    [34mCC[0m [33mnetworking.o[0m
+    [34mCC[0m [33mutil.o[0m
+    [34mCC[0m [33mobject.o[0m
+    [34mCC[0m [33mdb.o[0m
+    [34mCC[0m [33mreplication.o[0m
+    [34mCC[0m [33mrdb.o[0m
+    [34mCC[0m [33mt_string.o[0m
+    [34mCC[0m [33mt_list.o[0m
+    [34mCC[0m [33mt_set.o[0m
+    [34mCC[0m [33mt_zset.o[0m
+    [34mCC[0m [33mt_hash.o[0m
+    [34mCC[0m [33mconfig.o[0m
+    [34mCC[0m [33maof.o[0m
+    [34mCC[0m [33mpubsub.o[0m
+    [34mCC[0m [33mmulti.o[0m
+    [34mCC[0m [33mdebug.o[0m
+    [34mCC[0m [33msort.o[0m
+    [34mCC[0m [33mintset.o[0m
+    [34mCC[0m [33msyncio.o[0m
+    [34mCC[0m [33mcluster.o[0m
+    [34mCC[0m [33mcluster_legacy.o[0m
+    [34mCC[0m [33mcluster_slot_stats.o[0m
+    [34mCC[0m [33mcrc16.o[0m
+    [34mCC[0m [33mendianconv.o[0m
+    [34mCC[0m [33mcommandlog.o[0m
+    [34mCC[0m [33meval.o[0m
+    [34mCC[0m [33mbio.o[0m
+    [34mCC[0m [33mrio.o[0m
+    [34mCC[0m [33mrand.o[0m
+    [34mCC[0m [33mmemtest.o[0m
+    [34mCC[0m [33msyscheck.o[0m
+    [34mCC[0m [33mcrcspeed.o[0m
+    [34mCC[0m [33mcrccombine.o[0m
+    [34mCC[0m [33mcrc64.o[0m
+    [34mCC[0m [33mbitops.o[0m
+    [34mCC[0m [33msentinel.o[0m
+    [34mCC[0m [33mnotify.o[0m
+    [34mCC[0m [33msetproctitle.o[0m
+    [34mCC[0m [33mblocked.o[0m
+    [34mCC[0m [33mhyperloglog.o[0m
+    [34mCC[0m [33mlatency.o[0m
+    [34mCC[0m [33msparkline.o[0m
+    [34mCC[0m [33mvalkey-check-rdb.o[0m
+    [34mCC[0m [33mvalkey-check-aof.o[0m
+    [34mCC[0m [33mgeo.o[0m
+    [34mCC[0m [33mlazyfree.o[0m
+    [34mCC[0m [33mmodule.o[0m
+    [34mCC[0m [33mevict.o[0m
+    [34mCC[0m [33mexpire.o[0m
+    [34mCC[0m [33mgeohash.o[0m
+    [34mCC[0m [33mgeohash_helper.o[0m
+    [34mCC[0m [33mchildinfo.o[0m
+    [34mCC[0m [33mallocator_defrag.o[0m
+    [34mCC[0m [33mdefrag.o[0m
+    [34mCC[0m [33msiphash.o[0m
+    [34mCC[0m [33mrax.o[0m
+    [34mCC[0m [33mt_stream.o[0m
+    [34mCC[0m [33mlistpack.o[0m
+    [34mCC[0m [33mlocaltime.o[0m
+    [34mCC[0m [33mlolwut.o[0m
+    [34mCC[0m [33mlolwut5.o[0m
+    [34mCC[0m [33mlolwut6.o[0m
+    [34mCC[0m [33macl.o[0m
+    [34mCC[0m [33mtracking.o[0m
+    [34mCC[0m [33msocket.o[0m
+    [34mCC[0m [33mtls.o[0m
+    [34mCC[0m [33msha256.o[0m
+    [34mCC[0m [33mtimeout.o[0m
+    [34mCC[0m [33msetcpuaffinity.o[0m
+    [34mCC[0m [33mmonotonic.o[0m
+    [34mCC[0m [33mmt19937-64.o[0m
+    [34mCC[0m [33mresp_parser.o[0m
+    [34mCC[0m [33mcall_reply.o[0m
+    [34mCC[0m [33mscript.o[0m
+    [34mCC[0m [33mfunctions.o[0m
+    [34mCC[0m [33mcommands.o[0m
+    [34mCC[0m [33mstrl.o[0m
+    [34mCC[0m [33mconnection.o[0m
+    [34mCC[0m [33munix.o[0m
+    [34mCC[0m [33mlogreqres.o[0m
+    [34mCC[0m [33mrdma.o[0m
+    [34mCC[0m [33mscripting_engine.o[0m
+    [34mCC[0m [33mlua/script_lua.o[0m
+    [34mCC[0m [33mlua/function_lua.o[0m
+    [34mCC[0m [33mlua/engine_lua.o[0m
+    [34mCC[0m [33mlua/debug_lua.o[0m
+    [34mCC[0m [33mvalkey-cli.o[0m
+    [34mCC[0m [33mserverassert.o[0m
+    [34mCC[0m [33mcli_common.o[0m
+    [34mCC[0m [33mcli_commands.o[0m
+    [34mCC[0m [33mvalkey-benchmark.o[0m
+    [34;1mLINK[0m [37;1mvalkey-server[0m
+    [34;1mLINK[0m [37;1mvalkey-benchmark[0m
+    [34;1mLINK[0m [37;1mvalkey-cli[0m
+    [34;1mINSTALL[0m [37;1mvalkey-sentinel[0m
+    [34;1mINSTALL[0m [37;1mvalkey-check-rdb[0m
+    [34;1mINSTALL[0m [37;1mvalkey-check-aof[0m
+Hint: It's a good idea to run 'make test' ;)
+make[1]: Leaving directory '/work/home/data/services/vm/flowcept/tmp/valkey/valkey-8.1.3/src'
+CLIO_SERVICE_OBSERVATION {"definition_version": "monitoring-native-1", "configuration_revision": "3883823f8c565894e0410ae88ca342f6288a4f0319e290b4f65e2fbfb72207b7", "phase": "stopped", "installed": true, "running": false, "serving": false, "worker_alive": false, "provenance_ingesting": false, "attention_verified": false, "error": null, "observed_at": 1793022444.0848403, "evidence_directory": "/work/home/data/services/vm/flowcept/evidence", "effective_artifacts": {"python_lock_sha256": "c39e65278255b595d5b37c766656a4d7eee3821e4287f18d52f86881656a8f26"}}

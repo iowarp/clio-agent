@@ -8,10 +8,14 @@ and the prompt/token coordinates come from the recorded test fixture.
 
 from __future__ import annotations
 
+import asyncio
 import os
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
 from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
+from typing import Any
 
 import uvicorn
 
@@ -61,12 +65,26 @@ def main() -> None:
     routes.session_lm_calls = lambda app, sid: [replace(_call(), session_id=session.id)]
     # The fixture carries no live writer; route overrides above read the fixture.
     app.state.semantic_trace_backend = SimpleNamespace()
-    from tests.test_gact.test_attention.reviewer_fixture import add_reviewer_fixture
+    # The reviewer and media fixtures write durable task records, which exist only
+    # once the app's lifespan has started the task runtime.
+    serve_after_startup = app.router.lifespan_context
 
-    add_reviewer_fixture(app, session.id)
-    from tests.test_gact.test_attention.media_fixture import add_media_fixture
+    @asynccontextmanager
+    async def lifespan(started: Any) -> AsyncIterator[Any]:
+        async with serve_after_startup(started) as state:
+            for _ in range(600):
+                if getattr(app.state, "human_principal", None):
+                    break
+                await asyncio.sleep(0.1)
+            from tests.test_gact.test_attention.media_fixture import add_media_fixture
+            from tests.test_gact.test_attention.reviewer_fixture import add_reviewer_fixture
 
-    add_media_fixture(app, session.id, root)
+            # Store writes run off the event loop, as the app's own writers do.
+            await asyncio.to_thread(add_reviewer_fixture, app, session.id)
+            await asyncio.to_thread(add_media_fixture, app, session.id, root)
+            yield state
+
+    app.router.lifespan_context = lifespan
     print(f"Replay session: {session.id}", flush=True)
     uvicorn.run(app, host="127.0.0.1", port=18824)
 

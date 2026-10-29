@@ -44,6 +44,7 @@ PROVIDERS: tuple[Provider, ...] = (
     # ----- local-only ------------------------------------------------
     Provider(
         id="lm_studio",
+        billing="free",
         label="LM Studio",
         description=(
             "Locally-hosted models via LM Studio. Clear the model "
@@ -65,6 +66,7 @@ PROVIDERS: tuple[Provider, ...] = (
     ),
     Provider(
         id="ollama",
+        billing="free",
         label="Ollama",
         description="Locally-hosted models via Ollama.",
         provider_kind="ollama",
@@ -89,6 +91,7 @@ PROVIDERS: tuple[Provider, ...] = (
     ),
     Provider(
         id="llama_cpp",
+        billing="free",
         label="llama.cpp server",
         description="A local or remote llama.cpp OpenAI-compatible server.",
         provider_kind="openai",
@@ -224,6 +227,7 @@ PROVIDERS: tuple[Provider, ...] = (
     ),
     Provider(
         id="openrouter",
+        billing="credit",
         label="OpenRouter",
         description=(
             "OpenAI-compatible gateway over many providers. Free tier "
@@ -240,6 +244,7 @@ PROVIDERS: tuple[Provider, ...] = (
     ),
     Provider(
         id="amsc_mag",
+        billing="free",
         label="AmSC Model Access Gateway",
         description=(
             "American Science Cloud's Model Access Gateway for Genesis Mission "
@@ -259,6 +264,7 @@ PROVIDERS: tuple[Provider, ...] = (
     ),
     Provider(
         id="codex",
+        billing="subscription",
         label="Codex",
         description=(
             "Calls the Codex backend directly from CLIO's own process, signed in "
@@ -288,6 +294,7 @@ PROVIDERS: tuple[Provider, ...] = (
     ),
     Provider(
         id="claude_code",
+        billing="subscription",
         label="Claude Code",
         description=(
             "Uses the Claude Agent SDK with Claude Code subscription auth "
@@ -353,6 +360,7 @@ PROVIDERS: tuple[Provider, ...] = (
     # LMProviderConfig.__post_init__.
     Provider(
         id="argonne_sophia",
+        billing="free",
         label="ALCF Sophia",
         description=(
             "Argonne's Sophia inference gateway (vLLM, OpenAI-"
@@ -375,6 +383,7 @@ PROVIDERS: tuple[Provider, ...] = (
     ),
     Provider(
         id="argonne_metis",
+        billing="free",
         label="ALCF Metis",
         description=(
             "Argonne's Metis inference gateway (FastCoE 'api' "
@@ -398,6 +407,7 @@ PROVIDERS: tuple[Provider, ...] = (
     *(
         Provider(
             id=f"argonne_{cluster}",
+            billing="free",
             label=f"ALCF {cluster.title()}",
             description=(
                 f"Argonne's {cluster.title()} inference gateway. Uses the same "
@@ -417,6 +427,7 @@ PROVIDERS: tuple[Provider, ...] = (
     ),
     Provider(
         id="vllm",
+        billing="free",
         label="vLLM",
         description=(
             "Any local OpenAI-compatible vLLM server. No Globus needed; "

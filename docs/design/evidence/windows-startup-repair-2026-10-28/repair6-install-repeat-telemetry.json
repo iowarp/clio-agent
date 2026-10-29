@@ -1,0 +1,363 @@
+{
+  "exit_code": 0,
+  "samples": [
+    {
+      "epoch": 1793183819.3093832,
+      "cpu_percent": 46.6,
+      "encoders": []
+    },
+    {
+      "epoch": 1793183820.336333,
+      "cpu_percent": 52.7,
+      "encoders": []
+    },
+    {
+      "epoch": 1793183821.4298701,
+      "cpu_percent": 83.8,
+      "encoders": []
+    },
+    {
+      "epoch": 1793183822.7546706,
+      "cpu_percent": 80.3,
+      "encoders": []
+    },
+    {
+      "epoch": 1793183824.2271721,
+      "cpu_percent": 71.5,
+      "encoders": []
+    },
+    {
+      "epoch": 1793183825.6845832,
+      "cpu_percent": 65.5,
+      "encoders": []
+    },
+    {
+      "epoch": 1793183827.1424522,
+      "cpu_percent": 54.2,
+      "encoders": []
+    },
+    {
+      "epoch": 1793183828.4414256,
+      "cpu_percent": 53.0,
+      "encoders": []
+    },
+    {
+      "epoch": 1793183829.60849,
+      "cpu_percent": 41.2,
+      "encoders": []
+    },
+    {
+      "epoch": 1793183830.7031944,
+      "cpu_percent": 34.5,
+      "encoders": []
+    },
+    {
+      "epoch": 1793183831.8590615,
+      "cpu_percent": 53.3,
+      "encoders": []
+    },
+    {
+      "epoch": 1793183833.1438606,
+      "cpu_percent": 64.3,
+      "encoders": []
+    },
+    {
+      "epoch": 1793183834.42849,
+      "cpu_percent": 58.5,
+      "encoders": []
+    },
+    {
+      "epoch": 1793183835.6925411,
+      "cpu_percent": 58.5,
+      "encoders": []
+    },
+    {
+      "epoch": 1793183836.8935819,
+      "cpu_percent": 42.4,
+      "encoders": []
+    },
+    {
+      "epoch": 1793183838.0311718,
+      "cpu_percent": 55.4,
+      "encoders": []
+    },
+    {
+      "epoch": 1793183839.170058,
+      "cpu_percent": 44.5,
+      "encoders": []
+    },
+    {
+      "epoch": 1793183840.2693756,
+      "cpu_percent": 42.9,
+      "encoders": []
+    },
+    {
+      "epoch": 1793183841.3675795,
+      "cpu_percent": 33.4,
+      "encoders": []
+    },
+    {
+      "epoch": 1793183842.4766278,
+      "cpu_percent": 35.2,
+      "encoders": []
+    }
+  ],
+  "owned": [
+    {
+      "pid": 47092,
+      "created": 1793183817.1373975,
+      "exe": "C:\\Users\\jaime\\.cache\\codex-runtimes\\codex-primary-runtime\\dependencies\\native\\powershell\\pwsh.exe"
+    },
+    {
+      "pid": 42624,
+      "created": 1793183817.5770109,
+      "exe": "C:\\Users\\jaime\\.cache\\codex-runtimes\\codex-primary-runtime\\dependencies\\native\\powershell\\pwsh.exe"
+    },
+    {
+      "pid": 368,
+      "created": 1793183820.2974951,
+      "exe": "C:\\Users\\jaime\\.cache\\codex-runtimes\\codex-primary-runtime\\dependencies\\native\\powershell\\pwsh.exe"
+    },
+    {
+      "pid": 45616,
+      "created": 1793183820.3091104,
+      "exe": "C:\\Windows\\System32\\conhost.exe"
+    },
+    {
+      "pid": 33432,
+      "created": 1793183820.327569,
+      "exe": "C:\\Program Files\\Git\\bin\\bash.exe"
+    },
+    {
+      "pid": 50880,
+      "created": 1793183820.9364493,
+      "exe": "D:\\cw\\fp7\\local\\clio-agent\\data\\app\\clio-agent\\.venv\\Scripts\\python.exe"
+    },
+    {
+      "pid": 11092,
+      "created": 1793183821.2403162,
+      "exe": "D:\\cw\\fp7\\local\\clio-agent\\data\\app\\clio-agent\\.venv\\Scripts\\python.exe"
+    },
+    {
+      "pid": 32760,
+      "created": 1793183821.254735,
+      "exe": "C:\\Python314\\python.exe"
+    },
+    {
+      "pid": 47456,
+      "created": 1793183820.9481056,
+      "exe": "C:\\Windows\\System32\\conhost.exe"
+    },
+    {
+      "pid": 25308,
+      "created": 1793183820.9908683,
+      "exe": "C:\\Python314\\python.exe"
+    },
+    {
+      "pid": 53228,
+      "created": 1793183820.3454397,
+      "exe": "C:\\Program Files\\Git\\usr\\bin\\bash.exe"
+    },
+    {
+      "pid": 17104,
+      "created": 1793183820.9537983,
+      "exe": "C:\\Program Files\\Git\\usr\\bin\\bash.exe"
+    },
+    {
+      "pid": 43964,
+      "created": 1793183820.978364,
+      "exe": "C:\\Program Files\\Go\\bin\\go.exe"
+    },
+    {
+      "pid": 39432,
+      "created": 1793183821.2812977,
+      "exe": "C:\\Program Files\\Git\\mingw64\\bin\\git.exe"
+    },
+    {
+      "pid": 41772,
+      "created": 1793183821.3433049,
+      "exe": "C:\\Program Files\\Git\\mingw64\\libexec\\git-core\\git.exe"
+    },
+    {
+      "pid": 22328,
+      "created": 1793183820.8584807,
+      "exe": "D:\\cw\\fp7\\bin\\uv.exe"
+    },
+    {
+      "pid": 45140,
+      "created": 1793183820.8972983,
+      "exe": "D:\\cw\\fp7\\local\\clio-agent\\data\\app\\clio-agent\\.venv-install-bootstrap\\Scripts\\python.exe"
+    },
+    {
+      "pid": 48996,
+      "created": 1793183820.9179723,
+      "exe": "C:\\Python314\\python.exe"
+    },
+    {
+      "pid": 38048,
+      "created": 1793183821.5190802,
+      "exe": "D:\\cw\\fp7\\local\\clio-agent\\data\\app\\clio-agent\\.venv\\Scripts\\python.exe"
+    },
+    {
+      "pid": 17456,
+      "created": 1793183821.5344489,
+      "exe": "C:\\Python314\\python.exe"
+    },
+    {
+      "pid": 43284,
+      "created": 1793183821.968591,
+      "exe": "C:\\Program Files\\Go\\pkg\\tool\\windows_amd64\\link.exe"
+    },
+    {
+      "pid": 40712,
+      "created": 1793183822.1941516,
+      "exe": "D:\\cw\\fp7\\local\\clio-agent\\cache\\document-office\\26.2.6\\program\\soffice.com"
+    },
+    {
+      "pid": 51284,
+      "created": 1793183822.225405,
+      "exe": "D:\\cw\\fp7\\local\\clio-agent\\cache\\document-runtime\\68fd91e579837b59bebd\\python\\Scripts\\python.exe"
+    },
+    {
+      "pid": 49524,
+      "created": 1793183822.2389345,
+      "exe": "C:\\Windows\\System32\\conhost.exe"
+    },
+    {
+      "pid": 41828,
+      "created": 1793183822.2652755,
+      "exe": "C:\\Python314\\python.exe"
+    },
+    {
+      "pid": 23544,
+      "created": 1793183822.204301,
+      "exe": "C:\\Windows\\System32\\conhost.exe"
+    },
+    {
+      "pid": 39120,
+      "created": 1793183822.2326412,
+      "exe": "D:\\cw\\fp7\\local\\clio-agent\\cache\\document-office\\26.2.6\\program\\soffice.bin"
+    },
+    {
+      "pid": 45468,
+      "created": 1793183823.1422524,
+      "exe": "D:\\cw\\fp7\\local\\clio-agent\\data\\app\\clio-agent\\.venv\\Lib\\site-packages\\iowarp_core\\bin\\clio_run.exe"
+    },
+    {
+      "pid": 29780,
+      "created": 1793183823.1546264,
+      "exe": "C:\\Windows\\System32\\conhost.exe"
+    },
+    {
+      "pid": 20640,
+      "created": 1793183824.9504163,
+      "exe": "D:\\cw\\fp7\\local\\clio-agent\\data\\app\\clio-agent\\.venv\\Lib\\site-packages\\iowarp_core\\bin\\clio_run.exe"
+    },
+    {
+      "pid": 36064,
+      "created": 1793183824.9956656,
+      "exe": "C:\\Program Files\\Git\\usr\\bin\\bash.exe"
+    },
+    {
+      "pid": 2148,
+      "created": 1793183825.0158906,
+      "exe": "C:\\Program Files\\Go\\bin\\go.exe"
+    },
+    {
+      "pid": 14160,
+      "created": 1793183824.442452,
+      "exe": "D:\\cw\\fp7\\local\\clio-agent\\cache\\document-office\\26.2.6\\program\\soffice.com"
+    },
+    {
+      "pid": 45884,
+      "created": 1793183824.4496872,
+      "exe": "C:\\Windows\\System32\\conhost.exe"
+    },
+    {
+      "pid": 45612,
+      "created": 1793183824.4773932,
+      "exe": "D:\\cw\\fp7\\local\\clio-agent\\cache\\document-office\\26.2.6\\program\\soffice.bin"
+    },
+    {
+      "pid": 39756,
+      "created": 1793183826.150068,
+      "exe": "C:\\Program Files\\Git\\usr\\bin\\bash.exe"
+    },
+    {
+      "pid": 21380,
+      "created": 1793183828.0196855,
+      "exe": "D:\\cw\\fp7\\local\\clio-agent\\cache\\document-runtime\\68fd91e579837b59bebd\\python\\Lib\\site-packages\\nodejs_wheel\\node.exe"
+    },
+    {
+      "pid": 48484,
+      "created": 1793183828.0267315,
+      "exe": "C:\\Windows\\System32\\conhost.exe"
+    },
+    {
+      "pid": 36008,
+      "created": 1793183828.3033907,
+      "exe": "D:\\cw\\fp7\\local\\clio-agent\\cache\\document-runtime\\68fd91e579837b59bebd\\python\\Lib\\site-packages\\nodejs_wheel\\node.exe"
+    },
+    {
+      "pid": 19792,
+      "created": 1793183828.3109515,
+      "exe": "C:\\Windows\\System32\\conhost.exe"
+    },
+    {
+      "pid": 43860,
+      "created": 1793183830.556223,
+      "exe": "D:\\cw\\fp7\\local\\clio-agent\\data\\app\\clio-agent\\.venv\\Scripts\\python.exe"
+    },
+    {
+      "pid": 26008,
+      "created": 1793183830.566936,
+      "exe": "C:\\Python314\\python.exe"
+    },
+    {
+      "pid": 15556,
+      "created": 1793183831.4112723,
+      "exe": "D:\\cw\\fp7\\local\\clio-agent\\cache\\document-office\\26.2.6\\program\\soffice.com"
+    },
+    {
+      "pid": 28772,
+      "created": 1793183831.5369008,
+      "exe": "D:\\cw\\fp7\\local\\clio-agent\\cache\\document-runtime\\68fd91e579837b59bebd\\python\\Scripts\\python.exe"
+    },
+    {
+      "pid": 48176,
+      "created": 1793183831.5473783,
+      "exe": "C:\\Windows\\System32\\conhost.exe"
+    },
+    {
+      "pid": 24024,
+      "created": 1793183831.5684354,
+      "exe": "C:\\Python314\\python.exe"
+    },
+    {
+      "pid": 16288,
+      "created": 1793183831.420284,
+      "exe": "C:\\Windows\\System32\\conhost.exe"
+    },
+    {
+      "pid": 7036,
+      "created": 1793183831.4467728,
+      "exe": "D:\\cw\\fp7\\local\\clio-agent\\cache\\document-office\\26.2.6\\program\\soffice.bin"
+    },
+    {
+      "pid": 47576,
+      "created": 1793183833.538014,
+      "exe": "D:\\cw\\fp7\\local\\clio-agent\\cache\\document-office\\26.2.6\\program\\soffice.com"
+    },
+    {
+      "pid": 30360,
+      "created": 1793183833.5446937,
+      "exe": "C:\\Windows\\System32\\conhost.exe"
+    },
+    {
+      "pid": 49380,
+      "created": 1793183833.568898,
+      "exe": "D:\\cw\\fp7\\local\\clio-agent\\cache\\document-office\\26.2.6\\program\\soffice.bin"
+    }
+  ],
+  "survivors": []
+}

@@ -27,6 +27,17 @@ def test_official_assets_are_pinned(
     assert len(checksum) == 64
 
 
+@pytest.mark.parametrize("machine", [m for system, m in office.ASSETS if system == "Linux"])
+def test_every_linux_build_has_a_pinned_userland(
+    machine: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Each Linux LibreOffice build CLIO downloads runs on its own private userland."""
+    monkeypatch.setattr(office.office_compat.platform, "system", lambda: "Linux")
+    monkeypatch.setattr(office.office_compat.platform, "machine", lambda: machine)
+    assert office.office_compat.supported() is True
+    assert office.office_compat.packages()
+
+
 def test_bad_download_checksum_never_extracts(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -40,28 +51,17 @@ def test_windows_renderer_is_extracted_to_private_image(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.setattr(office.platform, "system", lambda: "Windows")
-    seen: list[str] = []
-    options: dict[str, Any] = {}
+    from clio_agent.runtime.document_stack import windows_msi
 
-    def run(command: list[str], **kwargs: Any) -> str:
-        seen.extend(command)
-        options.update(kwargs)
-        return ""
+    seen: list[tuple[Path, Path]] = []
 
-    monkeypatch.setattr(office, "run", run)
+    monkeypatch.setattr(
+        windows_msi, "extract_application", lambda archive, root: seen.append((archive, root))
+    )
     archive = tmp_path / "CLIO Desktop" / "renderer.msi"
     private = tmp_path / "CLIO Desktop" / "private image"
     office._extract(archive, private)
-    assert seen[1:4] == ["/a", str(archive), "/qn"]
-    assert seen[-1] == f"TARGETDIR={private}"
-    assert options["windows_command_line"] == (
-        subprocess.list2cmdline(seen[:-1]) + f' TARGETDIR="{private}"'
-    )
-    assert '"TARGETDIR=' not in options["windows_command_line"]
-    assert options["cwd"] == private
-    assert options["timeout"] == 300
-    assert "/norestart" in seen
-    assert "/i" not in seen
+    assert seen == [(archive, private)]
 
 
 def test_explicit_windows_command_line_reaches_createprocess_without_a_shell(
@@ -108,9 +108,43 @@ def test_private_renderer_is_probed_before_warm_reuse(
     program.parent.mkdir()
     program.touch()
     seen: list[list[str]] = []
+    # A Windows-layout tree: no private Linux userland applies.
+    monkeypatch.setattr(office.office_compat, "supported", lambda: False)
     monkeypatch.setattr(office, "run", lambda command, **kwargs: seen.append(command) or "26.2.6")
     assert office.ensure_office(tmp_path) == str(program)
-    assert seen == [[str(program), "--version"]]
+    assert len(seen) == 1
+    assert seen[0][0] == str(program)
+    assert seen[0][-1] == "--version"
+    assert "--headless" in seen[0]
+    assert seen[0][1].startswith("-env:UserInstallation=file:")
+
+
+def test_renderer_probe_uses_and_cleans_an_exclusive_profile_on_failure(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A failed startup cannot pollute the user's Office profile or leave its own."""
+    from urllib.parse import unquote, urlparse
+
+    profiles: list[Path] = []
+
+    def fail(command: list[str], **kwargs: Any) -> str:
+        profile_uri = command[1].split("=", 1)[1]
+        path = unquote(urlparse(profile_uri).path)
+        if path.startswith("/") and len(path) > 2 and path[2] == ":":
+            path = path[1:]
+        profile = Path(path)
+        assert profile.parent.is_dir()
+        assert "--headless" in command and "--norestore" in command
+        assert kwargs["timeout"] == 30
+        profiles.append(profile)
+        raise DocumentError("version probe failed")
+
+    monkeypatch.setattr(office, "run", fail)
+    for _ in range(2):
+        with pytest.raises(DocumentError, match="version probe failed"):
+            office._verify_office(tmp_path / "soffice.com", cwd=tmp_path)
+    assert profiles[0] != profiles[1]
+    assert all(not profile.parent.exists() for profile in profiles)
 
 
 def test_debian_archive_parser_reads_real_data_member() -> None:

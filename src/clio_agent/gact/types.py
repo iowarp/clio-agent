@@ -97,6 +97,13 @@ class HealthResponse(BaseModel):
     # — see ``agent_init_error``).
     tool_hooks_installed: Optional[bool] = None
     context_mode: Optional[Literal["clio_core", "history"]] = None  # history: no clio-core
+    # When each startup step ran, in seconds since the process started (gact/boot_timing.py):
+    # ``steps`` (finished), ``running`` and ``marks`` such as ``serving`` and ``agent_ready``.
+    boot: Optional[dict[str, Any]] = None
+    # ``starting`` until the startup row is up (task runtime, marketplace, agent), then
+    # ``ready``; ``starting`` lists what is still coming up (gact/boot_timing.readiness).
+    readiness: Optional[Literal["starting", "ready"]] = None
+    starting: Optional[list[str]] = None
 
 
 class BackendInfo(BaseModel):
@@ -371,7 +378,7 @@ class MemoryStats(BaseModel):
     model_config = {"populate_by_name": True}
 
 
-class MemorySearchHit(BaseModel):
+class SessionRecallHit(BaseModel):
     """One transcript-memory match.
 
     This is intentionally provenance-heavy so a future orchestrator or TUI can
@@ -392,13 +399,13 @@ class MemorySearchHit(BaseModel):
     metadata: dict[str, Any] = Field(default_factory=dict)
 
 
-class MemorySearchResponse(BaseModel):
-    """GET /v1/memory/search response."""
+class SessionRecallResponse(BaseModel):
+    """GET /v1/session-recall/search response."""
 
     query: str
     include_cross_session: bool = False
     searched_sessions: list[str] = Field(default_factory=list)
-    hits: list[MemorySearchHit] = Field(default_factory=list)
+    hits: list[SessionRecallHit] = Field(default_factory=list)
     metadata: dict[str, Any] = Field(default_factory=dict)
 
 
@@ -506,9 +513,15 @@ class UpdateSessionRequest(BaseModel):
 
 
 class ListSessionsResponse(BaseModel):
-    """GET /v1/sessions body."""
+    """GET /v1/sessions body.
+
+    ``next_cursor`` and ``total`` are set on a paged request (``limit`` or
+    ``cursor`` given); an unpaged request returns every row and leaves them unset.
+    """
 
     sessions: list[Session]
+    next_cursor: Optional[str] = None
+    total: Optional[int] = None
 
 
 # ---------------------------------------------------------------------------
@@ -609,13 +622,13 @@ class AgentCapabilityRef(BaseModel):
 class AgentDef(BaseModel):
     """GACT §6.5 + v0.2 §4.3.1 multi-tier additions.
 
-    Prompt/provider/model fields are explicit so clients can inspect
-    and persist user or skill agent definitions without hiding their
-    execution semantics in metadata.
+    The executable view of a resolved plugin agent (``resolution_agent_def``), with
+    prompt/provider/model explicit so the turn engine reads them directly.
     """
 
     id: str
-    source: Literal["builtin", "user", "recipe", "skill", "expert_pack"] = "builtin"
+    #: plugin agent or subagent; ``skill`` command shim; ``builtin`` internal describer.
+    source: Literal["plugin", "skill", "builtin"] = "builtin"
     title: str
     description: str = ""
     parent_id: str = ""
@@ -677,6 +690,7 @@ ToolDomain = Literal[
     "skills",
     "messaging",
     "interaction",
+    "science",
 ]
 
 
@@ -744,8 +758,8 @@ class MetricsSessions(BaseModel):
 
 
 class MetricsMessages(BaseModel):
-    total: int = 0
-    by_role: dict[str, int] = Field(default_factory=dict)
+    total: int = 0  # every session's persisted message_count
+    by_role: dict[str, int] = Field(default_factory=dict)  # recorded since this server started
 
 
 class MetricsTokens(BaseModel):

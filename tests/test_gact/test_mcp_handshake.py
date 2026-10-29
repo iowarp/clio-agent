@@ -17,6 +17,7 @@ from fastapi.testclient import TestClient
 from clio_agent.gact.app import build_app
 from clio_agent.providers.handshake.mcp import MCPServerReport
 from clio_agent.providers.handshake.model import ConnectivityState
+from tests._plugin_fixtures import custom_marketplace
 
 
 @pytest.fixture()
@@ -82,38 +83,54 @@ def test_mcp_handshake_empty_declared_set(client: TestClient, monkeypatch) -> No
     assert body == {"servers": []}
 
 
-def test_mcp_handshake_scopes_pack_servers_to_selected_session_blueprint(
-    client: TestClient, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """The handshake never warms every blueprint merely because it is installed."""
+_EARTHSCOPE_AGENT = """
+from clio_agent.sdk import Agent
 
-    captured_names: list[str] = []
+
+class Earthscope(Agent):
+    id = "earthscope"
+    version = "0.1.0"
+    role = "an EarthScope data investigator"
+    plugins = Agent.plugins + ["earthscope-tools"]
+"""
+
+
+def test_mcp_handshake_scopes_plugin_servers_to_the_session_agent(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The handshake never warms a plugin's servers merely because it is installed."""
+
+    custom_marketplace(
+        tmp_path,
+        monkeypatch,
+        plugins={
+            "earthscope-tools": {
+                "servers": {
+                    name: {"type": "stdio", "command": "clio-kit", "args": ["mcp-server", name]}
+                    for name in ("geo", "ndp")
+                }
+            }
+        },
+        agents={"earthscope.py": _EARTHSCOPE_AGENT},
+    )
+    captured: list[set[str]] = []
 
     async def _capture(specs, **kwargs):  # noqa: ANN001 - test double
         del kwargs
-        captured_names.extend(spec.name for spec in specs)
+        captured.append({spec.name for spec in specs})
         return []
 
-    monkeypatch.setattr(
-        "clio_agent.gact.routes.mcp._runtime_active_agent_blueprint_id",
-        lambda app, session_id="": "earthscope" if session_id == "selected" else "",
-    )
-    monkeypatch.setattr(
-        "clio_agent.gact.routes.mcp._runtime_active_agent_blueprint_path",
-        lambda app, session_id="": None,
-    )
-    monkeypatch.setattr(
-        "clio_agent.gact.routes.mcp.blueprint_mcp_servers",
-        lambda blueprint_id, cwd=None: {
-            blueprint_id: {
-                "geo": {"command": "clio-kit", "args": ["mcp-server", "geo"]},
-                "ndp": {"command": "clio-kit", "args": ["mcp-server", "ndp"]},
-            }
-        },
-    )
     monkeypatch.setattr("clio_agent.providers.handshake.handshake_mcp_servers", _capture)
 
-    body = client.get("/v1/mcp/handshake?session_id=selected").json()
+    with TestClient(build_app(sessions_path=tmp_path / "s.json")) as scoped:
+        selected = scoped.post(
+            "/v1/sessions", json={"title": "earth", "metadata": {"agent_ref": "clio/earthscope"}}
+        ).json()["id"]
+        other = scoped.post("/v1/sessions", json={"title": "standard"}).json()["id"]
 
-    assert body == {"servers": []}
-    assert set(captured_names) == {"geo", "ndp"}
+        body = scoped.get(f"/v1/mcp/handshake?session_id={selected}").json()
+        assert body == {"servers": []}
+        assert {"geo", "ndp"} <= captured[-1]
+
+        scoped.get(f"/v1/mcp/handshake?session_id={other}")
+        assert not {"geo", "ndp"} & captured[-1]

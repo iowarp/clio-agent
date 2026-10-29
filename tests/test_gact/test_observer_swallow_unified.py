@@ -1,5 +1,5 @@
 """Slice 5 (#772): the hand-rolled observer swallows in ``routes/mcp.py`` and
-``agents/builders.py`` are unified onto ``notify_tool_observer``.
+``agents/external_mcp_calls.py`` are unified onto ``notify_tool_observer``.
 
 The observer records the call in clio-core (the transcript and the UI read it
 from there). An observer that cannot record is NOT swallowed -- clio-core would
@@ -127,14 +127,14 @@ def _patch_transport(monkeypatch: pytest.MonkeyPatch, module: str) -> None:
 
 
 # --------------------------------------------------------------------------- #
-# agents/builders.py :: _call_enabled_external_mcp_tool
+# agents/external_mcp_calls.py :: _call_enabled_external_mcp_tool
 # --------------------------------------------------------------------------- #
 
 
-def test_builders_exploding_observer_fails_the_tool_call(
+def test_external_mcp_call_exploding_observer_fails_the_tool_call(
     monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
 ) -> None:
-    from clio_agent.gact.agents import builders
+    from clio_agent.gact.agents import external_mcp_calls
 
     monkeypatch.setattr(
         "clio_agent.tools.mcp_runtime.make_mcp_client",
@@ -156,17 +156,19 @@ def test_builders_exploding_observer_fails_the_tool_call(
 
     with pytest.raises(RuntimeError):
         asyncio.run(
-            builders._call_enabled_external_mcp_tool(app, "srv", info, "do_thing", {"a": 1})
+            external_mcp_calls._call_enabled_external_mcp_tool(
+                app, "srv", info, "do_thing", {"a": 1}
+            )
         )
     assert observer.calls, "the observer was reached"
 
 
-def test_builders_observer_receives_structured_mcp_result(
+def test_external_mcp_call_observer_receives_structured_mcp_result(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """External MCP telemetry retains structuredContent while the model gets text."""
 
-    from clio_agent.gact.agents import builders
+    from clio_agent.gact.agents import external_mcp_calls
 
     monkeypatch.setattr(
         "clio_agent.tools.mcp_runtime.make_mcp_client",
@@ -189,7 +191,7 @@ def test_builders_observer_receives_structured_mcp_result(
     async def call() -> str:
         """Supply the actual hosting loop to this isolated result-projection unit."""
         app.state.mcp_app_loop = asyncio.get_running_loop()
-        return await builders._call_enabled_external_mcp_tool(
+        return await external_mcp_calls._call_enabled_external_mcp_tool(
             app, "srv", info, "do_thing", {"a": 1}
         )
 

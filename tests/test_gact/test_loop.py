@@ -11,7 +11,7 @@ Asserts the loop primitive built on the P4.3 scheduler one-shot:
 * loop state lives on ``session.metadata`` (no fifth store);
 * CANCEL-BOTH — ending/cancelling the session cancels the pending wakeup (no orphan
   schedule survives);
-* the ``/loop`` command row exists and ``loop_wakeup`` is auto-attached.
+* the ``/loop`` command row exists and ``core`` claims ``loop_wakeup``.
 
 Each body runs in a fresh ``contextvars.copy_context()`` so the (reset-less)
 ``set_app``/``set_session_id`` bindings never leak between tests.
@@ -627,12 +627,18 @@ def test_loop_command_arms_a_loop(tmp_path: Path) -> None:
     _in_ctx(body)
 
 
-def test_loop_wakeup_tool_is_auto_attached() -> None:
-    from clio_agent.gact.agents.auto_tools import build_auto_react_tools
+def test_loop_wakeup_tool_is_claimed_by_core() -> None:
+    """``core`` (carried by every agent) claims ``loop_wakeup``, and the claim builds."""
+    from clio_agent.gact.agents.native_tool_registry import build_native_tools
+    from clio_agent.plugins.service import PluginService
 
+    resolution = PluginService().resolve("clio/standard", pin=False)
+    owners = {row["name"]: row["plugin"] for row in resolution.tools}
+    assert owners["loop_wakeup"] == "core"
     agent_def = SimpleNamespace(id="agent", metadata={})
-    tools = build_auto_react_tools(agent_def)
-    assert any(getattr(t, "name", "") == "loop_wakeup" for t in tools)
+    available, _gateway, withheld = build_native_tools(agent_def, ["loop_wakeup"], {})
+    assert available["loop_wakeup"].name == "loop_wakeup"
+    assert withheld == {}
 
 
 def test_loop_wakeup_tool_builds_with_schema() -> None:

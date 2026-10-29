@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import socket
 import threading
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
@@ -926,3 +927,50 @@ def test_wrap_confined_codex_records_egress_recipe_a(
     # The child cannot bypass codex's managed proxy → the honest per-edge label is proxy-enforced.
     assert captured["mechanism"] == nc.MECHANISM_PROXY_ENFORCED
     assert captured["workspace_root"] == str(tmp_path)
+
+
+def test_confined_spawn_release_closes_its_real_channel(monkeypatch: pytest.MonkeyPatch) -> None:
+    """``release`` closes the spawn's listener and retires its accept thread, idempotently."""
+    from clio_agent.runtime import sandbox
+
+    cp = nc.Chokepoint().start()
+    monkeypatch.setattr(nc, "_CHOKEPOINT", cp)
+    try:
+        cp.open_child_channel("child-R")
+        thread = cp._channels["child-R"].thread
+        confined = sandbox.ConfinedSpawn(
+            command="tool",
+            args=[],
+            env_overlay={},
+            popen_kwargs={},
+            result=replace(_landlock_state(), details={"net_child_id": "child-R"}),
+        )
+        confined.release()
+        assert "child-R" not in cp._channels
+        assert not thread.is_alive()
+        confined.release()  # idempotent
+    finally:
+        cp.stop()
+
+
+def test_confined_stdio_transport_releases_its_channel_when_collected() -> None:
+    """A stdio transport respawns on reconnect, so its channel lives as long as the transport."""
+    import gc
+
+    from clio_agent.runtime import sandbox
+    from clio_agent.tools.desktop_mcp_runtime import build_confined_stdio_transport
+
+    released: list[str] = []
+
+    class Spawn(sandbox.ConfinedSpawn):
+        def release(self) -> None:
+            released.append("released")
+
+    confined = Spawn(
+        command="python", args=[], env_overlay={}, popen_kwargs={}, result=_landlock_state()
+    )
+    transport = build_confined_stdio_transport(confined, {}, "probe")
+    assert released == []
+    del transport
+    gc.collect()
+    assert released == ["released"]

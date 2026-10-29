@@ -23,6 +23,7 @@ from dspy.lm15 import (
 )
 
 from clio_agent import conf
+from clio_agent.providers.usage.capture import record_codex_headers
 
 StreamEvent: TypeAlias = StreamStartEvent | StreamDeltaEvent | StreamEndEvent | StreamErrorEvent
 # Keep private SDK hooks in this one pinned boundary, rather than importing
@@ -51,6 +52,7 @@ class CodexSSEWire(AsyncOpenAICodexLM):
             req = await self._build(self._inner.build_request, request, stream=True)
         try:
             async with self.transport.stream(req) as response:
+                record_codex_headers(response.headers)
                 if response.status >= 400:
                     body = await response.read()
                     error = self._inner.normalize_error(

@@ -37,7 +37,11 @@ from collections.abc import Iterator
 from dataclasses import dataclass
 from typing import Literal
 
-from clio_agent.arc.clio_core_liveness import _resolve_runtime_port, _runtime_alive
+from clio_agent.arc.clio_core_liveness import (
+    _resolve_runtime_port,
+    _runtime_alive,
+    runtime_socket_status,
+)
 from clio_agent.arc.runtime_crash import DaemonStillStarting, expect_daemon_exit
 from clio_agent.arc.runtime_spawn import _dynamic_library_env_var, _runtime_launcher_path
 
@@ -363,8 +367,11 @@ def stop_runtime_daemon(config_path: str, log_level: str) -> StopOutcome:
             started = window = time.monotonic()
             last_work = process_work(daemon_pid) if daemon_pid is not None else None
             while True:
-                if not _runtime_alive(runtime_port) and not _daemon_process_alive(
-                    daemon_pid, recorded_create_time
+                alive, probe_reason = runtime_socket_status(runtime_port, probe=_runtime_alive)
+                if (
+                    not alive
+                    and probe_reason is None
+                    and not _daemon_process_alive(daemon_pid, recorded_create_time)
                 ):
                     stopped = True
                     path = "clean_stop"
@@ -422,7 +429,10 @@ def stop_runtime_daemon(config_path: str, log_level: str) -> StopOutcome:
         stopped = False
         path = "error_kill"
     # Confirm the port actually freed; fall back to a direct kill if not.
-    if not stopped or _runtime_alive(_resolve_runtime_port(config_path)):
+    alive, probe_reason = runtime_socket_status(
+        _resolve_runtime_port(config_path), probe=_runtime_alive
+    )
+    if not stopped or alive or probe_reason is not None:
         storage._kill_daemon_pidfile()
     with contextlib.suppress(OSError):
         storage._daemon_pidfile().unlink()

@@ -1,6 +1,6 @@
 import { Download } from 'lucide-react';
 import { Button } from '@/components/ui/button';
-import { PLATFORMS, pickAsset, variantNote } from '@/lib/downloads';
+import { DOWNLOAD_NOTE, PLATFORMS, pickAsset } from '@/lib/downloads';
 import { useRelease } from './use-release';
 
 /**
@@ -13,10 +13,9 @@ import { useRelease } from './use-release';
 export default function HeroDownload() {
 	const { status, assets, os, arch } = useRelease();
 	const platform = PLATFORMS.find((p) => p.os === os);
-	const picked =
-		status === 'ready' && platform
-			? pickAsset(assets, platform.primary.format, platform.primary.arch ?? arch)
-			: null;
+	// An Intel Mac has no installer: never hand it the Apple Silicon disk image.
+	const target = platform?.os === 'macos' ? arch : (platform?.primary.arch ?? arch);
+	const picked = status === 'ready' && platform ? pickAsset(assets, platform.primary.format, target) : null;
 
 	return (
 		<div className="flex flex-col items-start gap-2">
@@ -29,7 +28,7 @@ export default function HeroDownload() {
 				<Download aria-hidden="true" />
 				{picked && platform ? `Download for ${platform.name}` : 'Download CLIO'}
 			</Button>
-			<p className="m-0 min-h-5 text-sm text-muted-foreground">{picked ? variantNote(picked.variant) : ''}</p>
+			<p className="m-0 min-h-5 text-sm text-muted-foreground">{picked ? DOWNLOAD_NOTE : ''}</p>
 		</div>
 	);
 }

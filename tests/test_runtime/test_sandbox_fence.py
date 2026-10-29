@@ -223,3 +223,23 @@ def test_landlock_dev_null_write_succeeds(tmp_path: Path) -> None:
     _require_fence_enforced(result)
     assert result.returncode == 0, result.stderr
     assert "lives" in result.stdout
+
+
+@_LANDLOCK
+def test_landlock_shared_memory_semaphore_succeeds(tmp_path: Path) -> None:
+    """False-positive guard: a POSIX semaphore (``multiprocessing``) works under the fence.
+
+    ``sem_open`` creates its object in ``/dev/shm``; live, a study's ``multiprocessing.Pool``
+    was denied there and fell back to one process per shell. srt/bwrap mount a private
+    ``/dev/shm``; the native rung grants the shared one, like the temp dir it already grants.
+    """
+    state = _landlock_state()
+    roots = sandbox.effective_write_roots(sandbox.PROFILE_SHELL, workspace_root=str(tmp_path))
+    code = "import multiprocessing as m; lock = m.Lock(); lock.acquire(); print('locked')"
+    confined = sandbox.wrap_confined(
+        sys.executable, ["-c", code], write_roots=roots, profile=sandbox.PROFILE_SHELL, state=state
+    )
+    result = _run(confined, cwd=tmp_path)
+    _require_fence_enforced(result)
+    assert result.returncode == 0, result.stderr
+    assert "locked" in result.stdout

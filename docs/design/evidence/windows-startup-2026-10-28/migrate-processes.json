@@ -1,0 +1,65 @@
+{
+  "command_seconds": 15.505,
+  "exit_code": 0,
+  "owned": [
+    {
+      "pid": 49484,
+      "created": 1793171951.7003384,
+      "exe": "D:\\cw\\ip2\\local\\clio-agent\\data\\app\\clio-agent\\.venv\\Scripts\\clio-agent.exe",
+      "cmd": [
+        "D:\\cw\\ip2\\local\\clio-agent\\data\\app\\clio-agent\\.venv\\Scripts\\clio-agent.exe",
+        "migrate"
+      ]
+    },
+    {
+      "pid": 36616,
+      "created": 1793171951.7152271,
+      "exe": "D:\\cw\\ip2\\local\\clio-agent\\data\\app\\clio-agent\\.venv\\Scripts\\python.exe",
+      "cmd": [
+        "D:\\cw\\ip2\\local\\clio-agent\\data\\app\\clio-agent\\.venv\\Scripts\\python.exe",
+        "D:\\cw\\ip2\\local\\clio-agent\\data\\app\\clio-agent\\.venv\\Scripts\\clio-agent.exe",
+        "migrate"
+      ]
+    },
+    {
+      "pid": 35692,
+      "created": 1793171951.7242827,
+      "exe": "C:\\Python314\\python.exe",
+      "cmd": [
+        "D:\\cw\\ip2\\local\\clio-agent\\data\\app\\clio-agent\\.venv\\Scripts\\python.exe",
+        "D:\\cw\\ip2\\local\\clio-agent\\data\\app\\clio-agent\\.venv\\Scripts\\clio-agent.exe",
+        "migrate"
+      ]
+    },
+    {
+      "pid": 40972,
+      "created": 1793171955.203035,
+      "exe": "D:\\cw\\ip2\\local\\clio-agent\\data\\app\\clio-agent\\.venv\\Lib\\site-packages\\iowarp_core\\bin\\clio_run.exe",
+      "cmd": [
+        "D:\\cw\\ip2\\local\\clio-agent\\data\\app\\clio-agent\\.venv\\Lib\\site-packages\\iowarp_core\\bin\\clio_run.exe",
+        "start"
+      ]
+    },
+    {
+      "pid": 32924,
+      "created": 1793171955.2095473,
+      "exe": "C:\\Windows\\System32\\conhost.exe",
+      "cmd": [
+        "\\??\\C:\\WINDOWS\\system32\\conhost.exe",
+        "0x4"
+      ]
+    },
+    {
+      "pid": 51456,
+      "created": 1793171957.497821,
+      "exe": "D:\\cw\\ip2\\local\\clio-agent\\data\\app\\clio-agent\\.venv\\Lib\\site-packages\\iowarp_core\\bin\\clio_run.exe",
+      "cmd": [
+        "D:\\cw\\ip2\\local\\clio-agent\\data\\app\\clio-agent\\.venv\\Lib\\site-packages\\iowarp_core\\bin\\clio_run.exe",
+        "stop"
+      ]
+    }
+  ],
+  "forced": [],
+  "survivors": [],
+  "finished_at": "2026-10-28T07:19:27.185061+00:00"
+}

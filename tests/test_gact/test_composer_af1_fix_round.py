@@ -164,7 +164,7 @@ def test_a2ui_approval_respond_refuses_a_permission_outside_its_session_scope(
         "status": "pending",
         "summary": "Allow victim write",
         "created_at": datetime.now(timezone.utc).isoformat(),
-        "tool_call": {"tool_name": "fs_apply_edit_write", "input": {"path": "x"}},
+        "tool_call": {"tool_name": "fs_write_file", "input": {"path": "x"}},
     }
     action = {
         "version": "v0.9.1",
@@ -220,7 +220,7 @@ def test_a2ui_approval_respond_still_resolves_its_own_session_permission(
         "status": "pending",
         "summary": "Allow own write",
         "created_at": datetime.now(timezone.utc).isoformat(),
-        "tool_call": {"tool_name": "fs_apply_edit_write", "input": {"path": "x"}},
+        "tool_call": {"tool_name": "fs_write_file", "input": {"path": "x"}},
     }
     action = {
         "version": "v0.9.1",
@@ -257,7 +257,7 @@ def test_interaction_permission_response_forwards_the_intercept_payload(tmp_path
         "status": "pending",
         "summary": "Allow write",
         "created_at": datetime.now(timezone.utc).isoformat(),
-        "tool_call": {"tool_name": "fs_apply_edit_write", "input": {"path": "x"}},
+        "tool_call": {"tool_name": "fs_write_file", "input": {"path": "x"}},
     }
 
     with TestClient(app) as client:
@@ -594,13 +594,13 @@ def test_admitted_diff_reference_redelivers_its_snapshot_with_a_stale_marker(
 
     app = build_app(sessions_path=tmp_path / "sessions.json")
     _workspace_id, sid = _workspace_session(app, tmp_path, name="diffs")
-    app.state.pending_diffs = {
+    app.state.file_changes = {
         sid: [
             {
                 "path": "src/app.py",
                 "part_id": "d1",
                 "message_id": "msg_1",
-                "status": "pending",
+                "status": "applied",
                 "unified_diff": "@@ -1 +1 @@\n-a\n+b\n",
             }
         ]
@@ -630,14 +630,14 @@ def test_admitted_diff_reference_redelivers_its_snapshot_with_a_stale_marker(
         updated_at="",
         parts=admitted,
     )
-    # The diff settles -- exactly what happens between the send and the retry.
-    app.state.pending_diffs[sid][0]["status"] = "applied"
+    # The change is undone -- exactly what can happen between the send and the retry.
+    app.state.file_changes[sid][0]["status"] = "reverted"
 
     enriched = enrich_with_context_references(app, sid, "retry me", message)
 
     assert "as-of snapshot" in enriched
     assert row["id"] in enriched
-    assert '"status": "pending"' in enriched
+    assert '"status": "applied"' in enriched
 
 
 # --------------------------------------------------------------------------- #
@@ -696,7 +696,9 @@ def test_the_session_store_refuses_an_out_of_vocabulary_status(tmp_path) -> None
     """
 
     import json
+    from dataclasses import asdict, replace
 
+    from clio_agent.gact.session_records import record_columns
     from clio_agent.gact.sessions import SessionStore
 
     path = tmp_path / "sessions.json"
@@ -709,14 +711,14 @@ def test_the_session_store_refuses_an_out_of_vocabulary_status(tmp_path) -> None
     # Every legal status still writes.
     assert store.update(session.id, status="error").status == "error"
 
-    # A store that ALREADY holds a bad row (an older build, a hand-edited file)
+    # A store that ALREADY holds a bad row (an older build, a hand-edited row)
     # must not take the listing down with it.
-    raw = json.loads(path.read_text(encoding="utf-8"))
-    raw[session.id]["status"] = "failed"
-    raw["sess_good"] = dict(raw[session.id], id="sess_good", status="idle")
-    path.write_text(json.dumps(raw), encoding="utf-8")
+    stored = asdict(store.get(session.id))
+    for row in (dict(stored, status="failed"), dict(stored, id="sess_good", status="idle")):
+        columns = replace(record_columns(store.get(session.id)), id=row["id"], status=row["status"])
+        store._records.put(columns, json.dumps(row))
 
-    reloaded = SessionStore(path=path)
+    reloaded = store
     app = build_app(sessions_path=path)
     app.state.sessions = reloaded
     with TestClient(app) as client:
@@ -890,7 +892,12 @@ def test_interactions_read_only_the_owning_app_core_history(tmp_path: Path) -> N
         assert (
             second_client.get(f"/v1/sessions/{right.id}/interactions").json()["interactions"] == []
         )
-        assert second.state.task_history.task_snapshot(q.id) is None
+        # The apps share one clio-core store, and clio-core is the memory: the second
+        # app refreshes its independent pre-migration projection to read the task,
+        # yet nothing surfaces it in another session's list.
+        second.state.task_history.restore()
+        shared = second.state.task_history.task_snapshot(q.id)
+        assert shared == first.state.task_history.task_snapshot(q.id)
 
 
 def test_interaction_projection_is_bounded(tmp_path) -> None:
@@ -905,7 +912,7 @@ def test_interaction_projection_is_bounded(tmp_path) -> None:
             "status": "pending",
             "summary": f"Allow {index}",
             "created_at": now,
-            "tool_call": {"tool_name": "fs_apply_edit_write"},
+            "tool_call": {"tool_name": "fs_write_file"},
         }
 
     with TestClient(app) as client:

@@ -278,7 +278,9 @@ async def test_partial_answers_survive_waiter_cancellation_and_transport_reentry
         )
         assert final["answers"]["first"]["content"] == {"format": "png"}
         assert final["answers"]["second"]["content"] == {"format": "webp"}
-        assert len(app.state.task_history.task_handles(kind="Question")) == 2
+        history = app.state.task_history
+        human = (await asyncio.to_thread(history.task_snapshot, handle)).owner.human_id
+        assert len(history.task_handles(kind="Question", human_id=human)) == 2
     finally:
         for worker in workers:
             if not worker.done():

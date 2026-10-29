@@ -362,7 +362,7 @@ def test_last_good_entry_is_reprobed_and_replaced_in_background(
     app.state.provider_catalog = snapshot
     published: list[Any] = []
     monkeypatch.setattr(app.state.bus, "publish", published.append)
-    monkeypatch.setattr(app.state.sessions, "list", lambda: [type("S", (), {"id": "s1"})()])
+    monkeypatch.setattr(app.state.sessions, "ids", lambda: ["s1"])
 
     async def _discover(preset: LMProviderPreset, *, refresh: bool = False) -> dict[str, Any]:
         assert refresh is False  # bounded by the handshake TTL cache

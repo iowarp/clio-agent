@@ -47,7 +47,7 @@
       "payload": {
         "message_id": "<msg#4>",
         "part": {
-          "agent_id": "main",
+          "agent_id": "standard",
           "id": "<part#5>",
           "metadata": {
             "default_collapsed": true,
@@ -81,7 +81,7 @@
         "final_text": "Weighing the options...",
         "message_id": "<msg#4>",
         "part": {
-          "agent_id": "main",
+          "agent_id": "standard",
           "id": "<part#5>",
           "metadata": {
             "default_collapsed": true,
@@ -104,7 +104,7 @@
       "payload": {
         "message_id": "<msg#4>",
         "part": {
-          "agent_id": "main",
+          "agent_id": "standard",
           "id": "<part#6>",
           "metadata": {
             "signature_field_name": "reasoning",
@@ -157,7 +157,7 @@
       "payload": {
         "message_id": "<msg#4>",
         "part": {
-          "agent_id": "main",
+          "agent_id": "standard",
           "id": "<part#7>",
           "metadata": {
             "signature_field_name": "answer",
@@ -211,8 +211,28 @@
         "message_id": "<msg#4>",
         "metadata": {
           "agent_runtime": {
-            "agent_id": "main",
-            "execution_mode": "blueprint_react",
+            "agent_id": "standard",
+            "agent_resolution": {
+              "digest": "b655681f2029e7a47d2cea7fbd8a05bc9be82605375cdd7e2cdba404573af5fb",
+              "flow": {
+                "id": "react",
+                "options": {}
+              },
+              "kind": "agent",
+              "plugins": [
+                "core",
+                "memory",
+                "workspace",
+                "shell",
+                "visuals",
+                "delegation",
+                "document-runtime",
+                "fleet"
+              ],
+              "ref": "clio/standard"
+            },
+            "commands": [],
+            "execution_mode": "flow_react",
             "fanout": {},
             "kind": "dynamic_agent",
             "model": {
@@ -225,6 +245,7 @@
             "module": {
               "kind": "react"
             },
+            "parent_id": "",
             "prompt": {
               "has_system_prompt": true,
               "source": "agent_definition"
@@ -236,30 +257,76 @@
               "requested_level": "",
               "source": "provider_default"
             },
-            "source": "builtin",
+            "skills": [
+              "planning",
+              "update-models"
+            ],
+            "source": "plugin",
             "structured_outputs": {},
-            "title": "CLIO Main Agent",
+            "title": "CLIO",
             "tools": [
-              "fs_apply_edit_write",
-              "fs_list_directory",
-              "fs_propose_edit",
+              "query_tasks",
+              "observe_tasks",
+              "wait_tasks",
+              "cancel_tasks",
+              "get_task_result",
+              "send_agent_message",
+              "pause_agent",
+              "resume_agent",
+              "restart_agent",
+              "ask_user",
+              "plan_exit",
+              "write_todos",
+              "create_artifact",
+              "raise_alert_card",
+              "recall_context",
+              "load_skill",
+              "set_goal",
+              "wait_for",
+              "goal_status",
+              "set_loop",
+              "loop_wakeup",
+              "cron_create",
+              "cron_list",
+              "cron_delete",
+              "workspace_resource_list",
+              "workspace_resource_inspect",
+              "workspace_resource_wait",
+              "workspace_resource_read",
+              "workspace_resource_search",
+              "workspace_resource_structure",
+              "memory_search",
+              "memory_read",
+              "create_memory",
+              "update_memory",
+              "forget_memory",
+              "session_search",
+              "session_read_summary",
+              "session_read_context_frame",
               "fs_read_file",
+              "fs_list_directory",
               "fs_search_text",
-              "prepare_document",
-              "prepare_document_runtime",
-              "prepare_execution_runtime",
-              "shell_bash",
+              "fs_write_file",
+              "fs_edit_file",
               "view_image",
-              "view_pdf"
+              "shell_bash",
+              "prepare_execution_runtime",
+              "create_a2ui_surface",
+              "update_a2ui_components",
+              "update_a2ui_data_model",
+              "delete_a2ui_surface",
+              "inspect_a2ui_surface",
+              "capture_a2ui_surface",
+              "publish_dashboard_report",
+              "spawn_agent_task",
+              "spawn_agents_parallel",
+              "fork",
+              "prepare_document_runtime",
+              "prepare_document",
+              "list_models",
+              "usage",
+              "refresh_provider_models"
             ]
-          },
-          "prompt_resolution": {
-            "checksum": "8dea078acb1f18f51f97b3981a7b620f52659d4d045d1bd3cb02b4f88d14178a",
-            "id": "clio.chat",
-            "profile": "default",
-            "scope": "builtin",
-            "source_path": "package://clio_agent.prompt_packs.builtin/clio.chat.md",
-            "status": "resolved"
           },
           "stream_source": "live"
         },
@@ -271,7 +338,7 @@
   ],
   "persisted_assistant_parts": [
     {
-      "agent_id": "main",
+      "agent_id": "standard",
       "id": "<part#5>",
       "metadata": {
         "default_collapsed": true,
@@ -285,7 +352,7 @@
       "type": "thinking"
     },
     {
-      "agent_id": "main",
+      "agent_id": "standard",
       "id": "<part#6>",
       "metadata": {
         "signature_field_name": "reasoning",
@@ -296,7 +363,7 @@
       "type": "text"
     },
     {
-      "agent_id": "main",
+      "agent_id": "standard",
       "id": "<part#7>",
       "metadata": {
         "signature_field_name": "answer",

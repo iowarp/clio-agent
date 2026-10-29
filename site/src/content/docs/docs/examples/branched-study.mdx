@@ -1,0 +1,103 @@
+---
+title: A branched study
+description: Ask a question that needs experiments, then follow the study in the Science log as parallel branches test competing answers.
+lastUpdated: false
+---
+
+import { LinkCard } from '@astrojs/starlight/components';
+import Capture from '../../../../components/overview/Capture';
+import { captureImage } from '../../../../lib/captures';
+import strategiesView from '../../../../assets/tutorials/branched-study/study-view-strategies.png';
+import boardsView from '../../../../assets/tutorials/branched-study/study-view-boards.png';
+import studyGraph from '../../../../assets/tutorials/branched-study/study-graph.png';
+import observations from '../../../../assets/tutorials/branched-study/observations-inspected.png';
+
+Some questions are answered by experiment rather than by reading. This example is
+a real recorded session in which the **CLIO Science** agent, asked a plain question,
+ran a small study: it proposed competing answers, tested them side by side and
+reported which ones the evidence can and cannot separate. You can open the whole
+session below and follow every claim to the games behind it.
+
+## The question
+
+The session started from this request, with no tools, steps or hypotheses named:
+
+```text
+What is the best approach to solving Wordle? Use the word list from the wordle
+tools, not the official one. Play every game yourself instead of writing a solver.
+```
+
+The agent used a Wordle plugin that serves games from its own synthetic word list
+and checks each guess. The plugin's answers stay on the server, so the agent could
+learn about the list only by playing.
+
+## How the study ran
+
+1. The agent wrote the question in the [Science log](/docs/science-log/) and proposed
+   three competing strategies as hypotheses: an opener chosen for this list's common
+   letters, the same opener followed by a fixed second word, and an English-style
+   opener. Each hypothesis states the result that would show it wrong.
+2. It started a workflow with one branch per hypothesis, all on the same twenty
+   seeds, and a merge step after them.
+3. Each branch handed its twenty games to four helper agents, five games each, so
+   twelve players worked at once and every guess was still chosen by a model.
+4. The merge compared the strategies seed by seed in its own analysis script and
+   wrote the conclusion, with two recorded conflicts about what the sample cannot
+   show.
+
+<Capture client:visible image={await captureImage(studyGraph)}
+  alt="Science log tab showing Graph: the question, three hypotheses, three experiments, each experiment's 20 observations as one group, three evidence entries, two conflicts and the conclusion"
+  caption="Graph: the whole study, from the question down to the conclusion. Each experiment's observations are drawn as one group." />
+
+## What it found
+
+All three strategies solved all sixty games, in 3 to 5 guesses. Their means were
+3.75 guesses for the English-style opener and 3.65 for each of the other two. The
+paired comparisons over the shared seeds all had intervals that include zero, so
+the study concluded that twenty seeds cannot separate the strategies. It estimated
+that about 150 paired seeds would be needed to detect a difference of a quarter of
+a guess. A reference solver run separately on the same seeds averaged 3.65, in line
+with the study.
+
+## Views
+
+A study's views are dashboards its agent builds and attaches to the study. They read
+the study's measurements and records live, so they fill in as branches log games.
+Nothing about them is fixed by the plugin: in a later run of the same request the
+agent built a seed-by-seed comparison of its three strategies over the study's
+measurements, looked at its own chart and revised it. Asked for a way to look at
+the games themselves, it added a second view with a seed picker that replays one
+game's boards. The Views mode shows one view at a time, switched by title. The
+session you can open below ran before views existed, so the captures here come from
+that later run.
+
+<Capture client:visible image={await captureImage(strategiesView)}
+  alt="Science log tab in Views mode: a chart of guesses per game for strategies A, B and C over the same ten seeds, lines joining each seed, with the mean of each strategy marked"
+  caption="A view the agent designed: guesses per game for each strategy on the same ten seeds, read live from the study's measurements." />
+
+<Capture client:visible image={await captureImage(boardsView)}
+  alt="Science log tab in Views mode with two view titles, Guesses per game by strategy and Game boards by seed; the second is shown, with a seed picker set to 5 and a Wordle board of colored guesses"
+  caption="The second view, added when asked for a look at the games: pick a seed to replay its boards. The agent's own chart has flaws it did not catch: the heading reads undefined, and the three strategies' boards are drawn on top of each other." />
+
+## Check a claim
+
+Every claim in the conclusion cites the entries it rests on. Each game is an
+observation that points to the recorded calls that played it, so you can follow a
+number from the conclusion to the evidence, to the observation, and to the guesses
+in the transcript.
+
+<Capture client:visible image={await captureImage(observations)}
+  alt="Science log graph with one group of 20 observations selected and its observations listed beside it, each with measurements, links and the evidence that cites it"
+  caption="Select a group or an entry to read its records: here one experiment's games, each with its measurements, the evidence that cites it and its sources." />
+
+## Open the session
+
+<LinkCard title="Open the Wordle study" description="The recorded session: the conversation, the workflow and the Science log with every branch. 48 MB." href="/conversations/studies/wordle/" />
+
+The page is an interactive archive of the actual session. Opening it does not run
+the agent or contact any service. The session ran with tool approvals turned off
+(**Bypass checks**), so the agent did not stop to ask before each game.
+
+Model choices vary from run to run. In other runs of the same request the agent
+played every game itself or enlarged the sample after a first merge, so treat this
+session as one example of how a study can unfold, not as a fixed recipe.

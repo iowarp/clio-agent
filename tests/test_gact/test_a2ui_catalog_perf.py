@@ -1,13 +1,16 @@
 """A2UI catalog registry: discovery is cached, never repeated per message.
 
 Adversarial review, BLOCKING perf: ``CatalogRegistry.get``/``.installed()``
-used to call ``discover_agent_blueprints()`` (a real filesystem scan +
-per-blueprint parse) on EVERY message; ``activation.py``'s producibility
-resolver added a SECOND, independent discovery call per production door.
-Measured before this fix: POST updateComponents #30 = 2.0s, transcript GET
-= 2.0s. The cache doctrine (docs/design/... feedback_cache_doctrine):
-caches accelerate, never own truth; staleness is explicit, not implicit
-re-validation per call.
+used to re-discover every installed catalog (a real filesystem scan + parse)
+on EVERY message, and the producibility resolver added a SECOND, independent
+discovery per production door. Measured before the fix: POST updateComponents
+#30 = 2.0s, transcript GET = 2.0s. The cache doctrine: caches accelerate, never
+own truth; staleness is explicit (``CatalogRegistry.invalidate`` after a plugin
+install), never implicit re-validation per call.
+
+Discovery is now ``a2ui_catalogs.plugin.installed_plugin_catalogs`` over the
+plugin store's records; loading one shipped catalog folder is
+``a2ui_catalogs.plugin.load_catalog_directory``.
 """
 
 from __future__ import annotations
@@ -17,19 +20,24 @@ from pathlib import Path
 import pytest
 from fastapi.testclient import TestClient
 
-from clio_agent.gact import agent_blueprints as agent_blueprints_module
 from clio_agent.gact.a2ui import project_a2ui_parts
+from clio_agent.gact.a2ui_catalogs import plugin as plugin_catalogs
 from clio_agent.gact.a2ui_catalogs.builtin import workspace_catalog_id
 from clio_agent.gact.app import build_app
 from clio_agent.gact.parts import Part
 
+from .a2ui_catalog_binding import MINIMAL_CATALOG_ID, MINIMAL_PLUGIN, bind_session_plugins
+
 HEADERS = {"X-GACT-Version": "0.3", "X-A2UI-Version": "0.9.1"}
 
 
-def _create_message(surface_id: str = "surface_1") -> dict[str, object]:
+def _create_message(surface_id: str = "surface_1", catalog_id: str = "") -> dict[str, object]:
     return {
         "version": "v0.9.1",
-        "createSurface": {"surfaceId": surface_id, "catalogId": workspace_catalog_id()},
+        "createSurface": {
+            "surfaceId": surface_id,
+            "catalogId": catalog_id or workspace_catalog_id(),
+        },
     }
 
 
@@ -40,17 +48,17 @@ def _update_message(surface_id: str, index: int) -> dict[str, object]:
     }
 
 
-def _counting_discover(monkeypatch: pytest.MonkeyPatch) -> list[int]:
-    """Wrap ``discover_agent_blueprints`` to count real filesystem-discovery calls."""
+def _counting(monkeypatch: pytest.MonkeyPatch, name: str) -> list[int]:
+    """Wrap ``a2ui_catalogs.plugin.<name>`` to count real filesystem-discovery calls."""
 
     calls: list[int] = [0]
-    real = agent_blueprints_module.discover_agent_blueprints
+    real = getattr(plugin_catalogs, name)
 
     def _counted(*args: object, **kwargs: object) -> object:
         calls[0] += 1
         return real(*args, **kwargs)
 
-    monkeypatch.setattr(agent_blueprints_module, "discover_agent_blueprints", _counted)
+    monkeypatch.setattr(plugin_catalogs, name, _counted)
     return calls
 
 
@@ -58,10 +66,10 @@ def test_discovery_is_called_at_most_once_across_50_message_production_folds(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """50 sequential POSTs against an existing surface trigger at most one
-    real blueprint discovery -- every subsequent producibility/registry
+    real installed-catalog discovery -- every subsequent producibility/registry
     lookup must hit the cache, not re-scan the filesystem."""
 
-    calls = _counting_discover(monkeypatch)
+    calls = _counting(monkeypatch, "installed_plugin_catalogs")
     app = build_app(sessions_path=tmp_path / "sessions.json")
     session = app.state.sessions.create(workspace_id="ws_default", title="perf")
     client = TestClient(app)
@@ -81,16 +89,16 @@ def test_discovery_is_called_at_most_once_across_50_message_production_folds(
         )
         assert response.status_code == 200, response.text
 
-    assert calls[0] <= 1, f"discover_agent_blueprints called {calls[0]} times across 50 folds"
+    assert calls[0] <= 1, f"installed_plugin_catalogs called {calls[0]} times across 50 folds"
 
 
 def test_discovery_is_called_at_most_once_across_50_transcript_reads(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """50 session-transcript GETs (each projects A2UI surfaces) trigger at
-    most one real blueprint discovery."""
+    most one real installed-catalog discovery."""
 
-    calls = _counting_discover(monkeypatch)
+    calls = _counting(monkeypatch, "installed_plugin_catalogs")
     app = build_app(sessions_path=tmp_path / "sessions.json")
     session = app.state.sessions.create(workspace_id="ws_default", title="perf-read")
     client = TestClient(app)
@@ -107,15 +115,44 @@ def test_discovery_is_called_at_most_once_across_50_transcript_reads(
         )
         assert response.status_code == 200, response.text
 
-    assert calls[0] <= 1, f"discover_agent_blueprints called {calls[0]} times across 50 reads"
+    assert calls[0] <= 1, f"installed_plugin_catalogs called {calls[0]} times across 50 reads"
+
+
+def test_plugin_catalog_surface_is_not_reloaded_from_disk_per_message(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A surface on a catalog a session's plugin SHIPS: 50 updates load that
+    catalog folder from disk at most once (the cached installed set serves it)."""
+
+    app = build_app(sessions_path=tmp_path / "sessions.json")
+    session = app.state.sessions.create(workspace_id="ws_default", title="perf-plugin")
+    bind_session_plugins(app, session.id, MINIMAL_PLUGIN)
+    client = TestClient(app)
+    response = client.post(
+        f"/v1/sessions/{session.id}/a2ui/messages",
+        headers=HEADERS,
+        json={"messages": [_create_message(catalog_id=MINIMAL_CATALOG_ID)]},
+    )
+    assert response.status_code == 200, response.text
+
+    calls = _counting(monkeypatch, "load_catalog_directory")
+    for index in range(50):
+        response = client.post(
+            f"/v1/sessions/{session.id}/a2ui/messages",
+            headers=HEADERS,
+            json={"messages": [_update_message("surface_1", index)]},
+        )
+        assert response.status_code == 200, response.text
+
+    assert calls[0] <= 1, f"load_catalog_directory called {calls[0]} times across 50 folds"
 
 
 def test_registry_get_resolves_builtins_with_zero_discovery_calls(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """A builtin catalogId never triggers pack discovery at all."""
+    """A builtin catalogId never triggers installed-catalog discovery at all."""
 
-    calls = _counting_discover(monkeypatch)
+    calls = _counting(monkeypatch, "installed_plugin_catalogs")
     from clio_agent.gact.a2ui_catalogs.registry import CatalogRegistry
 
     registry = CatalogRegistry()

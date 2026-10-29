@@ -16,11 +16,13 @@ from typing import TYPE_CHECKING, Any, Optional, cast
 
 from clio_agent.gact import context as _ctx
 from clio_agent.gact.artifacts.ingest_edges import join_call_to_serving_child
+from clio_agent.gact.artifacts.observer_bridge import report_observer_call
 from clio_agent.gact.artifacts.observer_provenance import tool_provenance_metadata
 from clio_agent.gact.artifacts.provenance_presentation import with_provenance_blocks
 from clio_agent.gact.delegation import _expert_handoff_fields
 from clio_agent.gact.events import Event
 from clio_agent.gact.evidence import _bounded_tool_call_result
+from clio_agent.gact.file_changes import pop_previous_content, record_file_change
 from clio_agent.gact.permission_gate import (
     _make_cancellation_checker,
     _make_permission_gate,
@@ -33,6 +35,7 @@ from clio_agent.gact.runtime.globals import (
     _new_message_id,
     _resolve_tool_session,
 )
+from clio_agent.gact.task_wait_presentation import completed_after_cancel_error, completion_status
 from clio_agent.gact.thought_dedup import TOOL_THOUGHT_STAGE, resolve_started_tool_call_thought
 from clio_agent.gact.tool_call_merge import (
     _merge_tool_call_rows as _merge_tool_call_rows,
@@ -42,6 +45,9 @@ from clio_agent.gact.tool_call_merge import (
 )
 from clio_agent.gact.tool_call_merge import (
     _tool_call_has_result_evidence as _tool_call_has_result_evidence,
+)
+from clio_agent.gact.tool_call_merge import (
+    _tool_calls_from_handoff_rows as _tool_calls_from_handoff_rows,
 )
 from clio_agent.gact.tool_completion_delivery import terminal_tool_delivery
 from clio_agent.gact.tool_observer_parts import completed_tool_metadata, completed_tool_text
@@ -70,25 +76,6 @@ from clio_agent.gact.tool_event_identity import (
 from clio_agent.gact.tool_event_identity import (
     _tool_call_name_args_key as _tool_call_name_args_key,
 )
-
-
-def _tool_calls_from_handoff_rows(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    """Return nested child tool-call evidence from delegation rows."""
-
-    tool_rows: list[dict[str, Any]] = []
-
-    def visit(row: Any) -> None:
-        if not isinstance(row, Mapping):
-            return
-        for call in row.get("tools_called") or []:
-            if isinstance(call, Mapping):
-                tool_rows.append(_normalize_tool_call_row(call))
-        for child in row.get("children") or []:
-            visit(child)
-
-    for row in rows:
-        visit(row)
-    return tool_rows
 
 
 def _session_turn_transcript(app: "FastAPI", sid: str) -> "Optional[TurnTranscript]":
@@ -544,6 +531,7 @@ def _make_tool_observer(app: "FastAPI"):
             call_id = f"call_{uuid.uuid4().hex[:12]}"
             # Concurrent coroutines must retain their own call identity and clock.
             _OBSERVER_CALL_IDS.set(call_id)
+            report_observer_call(call_id)
             started_at = time.time()
             _OBSERVER_CALL_T0.set(started_at)
             observer_handle = progress_registry.started(call_id, sid)
@@ -648,22 +636,17 @@ def _make_tool_observer(app: "FastAPI"):
                 cancel_event is not None and cancel_event.is_set()
             )
             completion_error = error
+            prev = pop_previous_content(result)  # Undo's pre-write copy: never on a wire
             if completion_error is None and result is not None:
                 completion_error = structured_tool_result_error(result)
             cancellation_metadata: dict[str, Any] = {}
             if completed_after_cancel:
-                completion_error = (
-                    completion_error or "tool call completed after session cancellation"
-                )
+                completion_error = completed_after_cancel_error(name, completion_error)
                 cancellation_metadata = {"execution_cancellation": "best_effort"}
             ok = completion_error is None
-            # A native tool may DECLARE its own typed structured payload (P5 wire
-            # semantics — the same declared-presentation contract an MCP tool's
-            # structuredContent gives, without changing what the model itself
-            # received as the tool's plain return value). Read + clear it exactly
-            # once per completed call — success or error — so a stale declaration
-            # can never leak onto a later call on this thread. Falls back to the
-            # MCP-shaped extraction below when nothing was declared.
+            # A native tool may DECLARE its typed structured payload (P5; the model's
+            # return value is unchanged). Read + cleared once per completed call so it
+            # never leaks onto a later call; else the MCP-shaped extraction below.
             declared_structured = pop_declared_structured_content()
             structured_content = (
                 declared_structured
@@ -674,10 +657,11 @@ def _make_tool_observer(app: "FastAPI"):
                     else None
                 )
             )
-            result_summary = f"Tool {name} {'completed' if ok else 'failed'}."
             result, presentation = completed_presentation(
                 name, args, result, structured_content, terminal_output, error=completion_error
             )
+            status = completion_status(name, ok, completed_after_cancel, result, presentation)
+            result_summary = f"Tool {name} {status}."
             # Seam #966 S1+S5 (#971): TransformRecord before the SSE payload (reload==live).
             from clio_agent.gact.artifacts.transforms import observe_tool_transform  # noqa: PLC0415
 
@@ -745,7 +729,7 @@ def _make_tool_observer(app: "FastAPI"):
                         "tool.call.completed",
                         turn_id=_ctx.active_turn_id(),
                         trace_id=_ctx.active_trace_id(),
-                        status="completed" if ok else "failed",
+                        status=status,
                         summary=result_summary,
                         actor={"tool": name},
                         subject={"call_id": call_id},
@@ -792,6 +776,8 @@ def _make_tool_observer(app: "FastAPI"):
                             ),
                         ),
                     )
+                # A write that ran is on disk even if the turn was cancelled meanwhile.
+                record_file_change(app, sid, name, call_id, error, result, prev, invoking_expert)
         return None
 
     return observe

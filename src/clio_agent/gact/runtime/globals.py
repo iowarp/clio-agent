@@ -107,9 +107,7 @@ _ACTIVE_GACT_APP = _CompatVar(_ctx.active_app, _ctx.set_app)
 _ACTIVE_GACT_SESSION_ID = _CompatVar(_ctx.active_session_id, _ctx.set_session_id)
 _ACTIVE_GACT_TURN_ID = _CompatVar(_ctx.active_turn_id, _ctx.set_turn_id_token)
 _ACTIVE_GACT_TRACE_ID = _CompatVar(_ctx.active_trace_id, _ctx.set_trace_id_token)
-_ACTIVE_BLUEPRINT_TOOL_ROWS = _CompatVar(
-    _ctx.active_blueprint_tool_rows, _ctx.set_blueprint_tool_rows
-)
+_ACTIVE_AGENT_TOOL_ROWS = _CompatVar(_ctx.active_agent_tool_rows, _ctx.set_agent_tool_rows)
 
 # The resolve-once expert caches (declared child ids for the spawn-tool routing
 # surface; the orchestrator-identity briefing) no longer live here as process-global dicts
@@ -135,9 +133,8 @@ def _resolve_tool_session(app: "FastAPI") -> tuple[str, Any | None]:
     sid = _ctx.active_tool_session_id().strip()
     if sid:
         return sid, app.state.sessions.get(sid)
-    sessions_by_recency = app.state.sessions.list()
-    if sessions_by_recency:
-        current = sessions_by_recency[0]
+    current = app.state.sessions.most_recent()
+    if current is not None:
         return current.id, current
     return "", None
 
@@ -264,7 +261,7 @@ def _build_semantic_event(
     summary: str = "",
     actor: Optional[dict[str, Any]] = None,
     subject: Optional[dict[str, Any]] = None,
-    blueprint: Optional[dict[str, Any]] = None,
+    agent: Optional[dict[str, Any]] = None,
     provider: Optional[dict[str, Any]] = None,
     payload: Optional[dict[str, Any]] = None,
     live_observed: bool = True,
@@ -299,7 +296,7 @@ def _build_semantic_event(
         summary=summary,
         actor=actor or {},
         subject=subject or {},
-        blueprint=blueprint or {},
+        agent=agent or {},
         provider=provider or {},
         payload=event_payload,
         live_observed=live_observed,
@@ -323,7 +320,7 @@ def _emit_semantic_event(
     summary: str = "",
     actor: Optional[dict[str, Any]] = None,
     subject: Optional[dict[str, Any]] = None,
-    blueprint: Optional[dict[str, Any]] = None,
+    agent: Optional[dict[str, Any]] = None,
     provider: Optional[dict[str, Any]] = None,
     payload: Optional[dict[str, Any]] = None,
     live_observed: bool = True,
@@ -360,7 +357,7 @@ def _emit_semantic_event(
         summary=summary,
         actor=actor,
         subject=subject,
-        blueprint=blueprint,
+        agent=agent,
         provider=provider,
         payload=payload,
         live_observed=live_observed,
@@ -380,7 +377,12 @@ def _emit_semantic_event(
         )
         trace.event("ARC-AS-SOURCE", "%s", msg)
         raise RuntimeError(msg)
-    return rec(event)
+    recorded = rec(event)
+    if event_type.startswith("artifact."):  # its index record was written first; confirm it
+        from clio_agent.gact.artifacts.registry_store import confirm_artifact_event  # noqa: PLC0415
+
+        confirm_artifact_event(app, payload)
+    return recorded
 
 
 def _emit_react_step_event(
@@ -638,6 +640,9 @@ def _set_app_arc(app: "FastAPI", arc: Any) -> None:
     app.state.arc = arc
     if arc is not None:
         _PROCESS_ARC = arc
+        sessions = getattr(app.state, "sessions", None)
+        if sessions is not None:  # session records live in this ARC's clio-core store
+            sessions.bind_store(arc._store)
     _wire_arc_op_logger(app)
     # ARC-as-source: wire the highway-derive sink onto the arc so a recorded semantic
     # event fans out to the durable trace / SSE / hooks AFTER ARC persists+folds it.
@@ -653,6 +658,9 @@ def _set_app_arc(app: "FastAPI", arc: Any) -> None:
                 else {}
             )
         )
+        from clio_agent.gact.resident_ledgers import attach_arc_residency  # noqa: PLC0415
+
+        attach_arc_residency(app, arc)  # the one residency owner counts ARC's scopes
 
 
 def _coerce_error_info(value: Any) -> Optional["ErrorInfo"]:
@@ -711,43 +719,6 @@ class _UnsupportedSessionAgent(RuntimeError):
         # fact -- the next resolve re-attempts). Names the server + reason at
         # the point the expert's tool unavailability is surfaced.
         self.mount_failures = dict(mount_failures or {})
-
-
-class _NoResolvableAgent(RuntimeError):
-    """Raised when a default/main session resolves NO executable agent.
-
-    #948 S4b: the legacy planner is DELETED, and a BARE session (nothing activated)
-    runs the in-code builtin react main (``catalog._builtin_main_agent``) — so this
-    marks the remaining hole: an EXPLICITLY activated blueprint (session id/path
-    set) that resolves no executable agent. Fail TYPED — never a legacy pathway,
-    never a silent builtin-main substitute; maps to ``no_resolvable_agent``.
-    """
-
-    def __init__(self, agent_id: str = "") -> None:
-        super().__init__(agent_id)
-        self.agent_id = agent_id
-
-
-class _BlueprintRootDisabled(RuntimeError):
-    """Raised when the active Agent Blueprint's declared root expert is disabled.
-
-    #948 S4: a disabled root (validation errors — e.g. a pre-migration pack whose
-    chain_of_thought main declares children) must fail the turn TYPED. It must
-    never silently substitute another enabled expert as the root, and never fall
-    through to the legacy planner pathway (both observed live before this guard).
-    """
-
-    def __init__(
-        self,
-        root_id: str,
-        *,
-        blueprint_id: str = "",
-        validation_errors: list[str] | None = None,
-    ) -> None:
-        super().__init__(root_id)
-        self.root_id = root_id
-        self.blueprint_id = blueprint_id
-        self.validation_errors = validation_errors or []
 
 
 class _ContextFileAccessError(RuntimeError):

@@ -66,7 +66,8 @@ def test_latest_input_preserves_epoch_timestamp_and_tie_order_after_restore(arc:
         assert owner.latest_input("parent", epoch="new") == newest
         assert owner.latest_input("parent", epoch="missing") is None
         assert owner.latest_input("other") == unrelated
-        owner._inputs = NoInputScan(owner._inputs)
+        state = owner._session_state("owner")
+        state._inputs = NoInputScan(state._inputs)
         assert owner.latest_input("parent") == newest
         assert owner.latest_input("absent") is None
 
@@ -80,7 +81,7 @@ def test_input_commit_fault_does_not_publish_unconfirmed_projection(
     accept = task_history_projection._accept_input
 
     def crash(owner: TaskHistory, record: RecipientInput) -> None:
-        if owner is history:
+        if getattr(owner, "history", owner) is history:
             raise OSError("lost reply after durable input commit")
         accept(owner, record)
 

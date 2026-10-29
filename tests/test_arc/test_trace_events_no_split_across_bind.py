@@ -103,7 +103,7 @@ def _make_app(arc: ARCMemory, trace_backend: _CaptureTraceBackend) -> Any:
             semantic_event_sink=sink,
             semantic_trace_backend=trace_backend,
             arc=None,
-            sessions={},
+            sessions=app_mod.SessionStore(),
             semantic_trace_detail_level="semantic",
         )
     )

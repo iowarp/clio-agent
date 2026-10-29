@@ -1,0 +1,66 @@
+[
+  {
+    "pid": 10364,
+    "parent": 39476,
+    "created": "2026-10-28T07:23:17.8287610Z",
+    "executable": "",
+    "cmd": "",
+    "rss_mb": 40
+  },
+  {
+    "pid": 31336,
+    "parent": 10364,
+    "created": "2026-10-28T07:23:18.0743230Z",
+    "executable": "C:\\Program Files (x86)\\Microsoft\\EdgeWebView\\Application\\156.0.4314.50\\msedgewebview2.exe",
+    "cmd": "\"C:\\Program Files (x86)\\Microsoft\\EdgeWebView\\Application\\156.0.4314.50\\msedgewebview2.exe\" --embedded-browser-webview=1 --webview-exe-name=clio-desktop.exe --webview-exe-version=0.7.3 --user-data-dir=\"D:\\cw\\dh\\Temp\\scoped_dir39476_259581724\\EBWebView\" --noerrdialogs --embedded-browser-webview-dpi-awareness=2 --allow-pre-commit-input --autoplay-policy=no-user-gesture-required --disable-background-networking --disable-background-timer-throttling --disable-backgrounding-occluded-windows --disable-client-side-phishing-detection --disable-default-apps --disable-features=msWebOOUI,msPdfOOUI,msSmartScreenProtection,IgnoreDuplicateNavs,Prewarm --disable-hang-monitor --disable-popup-blocking --disable-prompt-on-repost --disable-sync --enable-automation --enable-logging --log-level=0 --no-first-run --no-service-autorun --password-store=basic --remote-debugging-port=0 --test-type=webdriver --use-mock-keychain --lang=en-US --mojo-named-platform-channel-pipe=10364.32080.7062078294595293675 /pfhostedapp:c76968326e309e4c5bba1da9b6ce2955239cfc7e",
+    "rss_mb": 110.9
+  },
+  {
+    "pid": 12188,
+    "parent": 31336,
+    "created": "2026-10-28T07:23:18.1346110Z",
+    "executable": "C:\\Program Files (x86)\\Microsoft\\EdgeWebView\\Application\\156.0.4314.50\\msedgewebview2.exe",
+    "cmd": "\"C:\\Program Files (x86)\\Microsoft\\EdgeWebView\\Application\\156.0.4314.50\\msedgewebview2.exe\" --type=crashpad-handler --user-data-dir=D:\\cw\\dh\\Temp\\scoped_dir39476_259581724\\EBWebView /prefetch:4 /pfhostedapp:c76968326e309e4c5bba1da9b6ce2955239cfc7e --monitor-self-annotation=ptype=crashpad-handler --user-stream-region=324,65568 --database=D:\\cw\\dh\\Temp\\scoped_dir39476_259581724\\EBWebView\\Crashpad --annotation=IsOfficialBuild=1 --annotation=channel= --annotation=chromium-version=156.0.8078.49 \"--annotation=exe=C:\\Program Files (x86)\\Microsoft\\EdgeWebView\\Application\\156.0.4314.50\\msedgewebview2.exe\" --annotation=plat=Win64 \"--annotation=prod=Edge WebView2\" --annotation=ver=156.0.4314.50 --initial-client-data=0x184,0x188,0x18c,0x160,0x194,0x7ffb86a17470,0x7ffb86a17480,0x7ffb86a17490",
+    "rss_mb": 12.9
+  },
+  {
+    "pid": 46448,
+    "parent": 31336,
+    "created": "2026-10-28T07:23:18.1971320Z",
+    "executable": "C:\\WINDOWS\\system32\\conhost.exe",
+    "cmd": "\\??\\C:\\WINDOWS\\system32\\conhost.exe 0x4",
+    "rss_mb": 16.7
+  },
+  {
+    "pid": 41288,
+    "parent": 31336,
+    "created": "2026-10-28T07:23:18.5037580Z",
+    "executable": "C:\\Program Files (x86)\\Microsoft\\EdgeWebView\\Application\\156.0.4314.50\\msedgewebview2.exe",
+    "cmd": "\"C:\\Program Files (x86)\\Microsoft\\EdgeWebView\\Application\\156.0.4314.50\\msedgewebview2.exe\" --type=gpu-process --gpu-recent-crash-count=0 --noerrdialogs --user-data-dir=\"D:\\cw\\dh\\Temp\\scoped_dir39476_259581724\\EBWebView\" --webview-exe-name=clio-desktop.exe --webview-exe-version=0.7.3 --embedded-browser-webview=1 --embedded-browser-webview-dpi-awareness=2 --gpu-preferences=WAAAAAAAAADgAAAEAAAAAAAAAAAAAGAAQAAAAAAAAAADAAAAAAAAADgAAAAAAAAAAAAAAAAAAAACAAAAAAAAAAAAAAAAAAAAKAAAAAAAAAAoAAAAAAAAAAgAAAAAAAAAEAAAAAIAAAABAAAAAAAAAAgAAAAAAAAACAAAAAAAAAA= --startup-read-main-dll --metrics-shmem-handle=2036,i,4803447253640440197,7495851668041879646,262144 --field-trial-handle=2180,i,6135483894297988341,5417250620287004600,262144 --enable-features=msMetricsLogFastStartup,msSendMetricsLogOnClose --disable-features=IgnoreDuplicateNavs,Prewarm,msPdfOOUI,msSmartScreenProtection,msWebOOUI --variations-seed-version --pseudonymization-salt-handle=2196,i,12886035863887941588,14249133020873286481,4 --trace-process-track-uuid=3190708988185955192 --enable-logging=handle --log-file=2232 --log-level=0 --mojo-platform-channel-handle=2176 /prefetch:2 /pfhostedapp:c76968326e309e4c5bba1da9b6ce2955239cfc7e",
+    "rss_mb": 117.8
+  },
+  {
+    "pid": 35700,
+    "parent": 31336,
+    "created": "2026-10-28T07:23:18.5037570Z",
+    "executable": "",
+    "cmd": "",
+    "rss_mb": 38.1
+  },
+  {
+    "pid": 19704,
+    "parent": 31336,
+    "created": "2026-10-28T07:23:18.5492650Z",
+    "executable": "",
+    "cmd": "",
+    "rss_mb": 19.4
+  },
+  {
+    "pid": 32496,
+    "parent": 31336,
+    "created": "2026-10-28T07:23:18.7083300Z",
+    "executable": "",
+    "cmd": "",
+    "rss_mb": 112.9
+  }
+]

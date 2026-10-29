@@ -141,19 +141,24 @@ budget in `scripts/mcp_mem_budget.json` (CI cannot run it — live LM + real CTE
 required — so it runs here):
 ```sh
 uv run python scripts/mcp_mem_attribution.py \
-    --pack external/clio-agent-marketplace/data-semantics \
+    --agent clio/clio-data \
     --workspace <dir with sensor_readings.csv> \
-    --sessions 3 --settle-s 180 --runs 3 --assert-budget    # must print GATE: PASS
+    --private-core-root <owned disposable runtime directory> \
+    --sessions 3 --settle-s 1830 --runs 3 --assert-budget    # must print GATE: PASS
 ```
-`--pack` is a SOURCE directory (the script copies it into a fresh stamped gate
-XDG itself); the settle must stay ≥ 180s so the fleet reaper's TTL elapses
-before FINAL (the script enforces this under `--assert-budget`). The gate is
+Each sample starts and retires its own real Core daemon and store. Fresh CLIO/XDG
+directories alone do not isolate records inside a reused Core store. Do not wrap
+all three samples in one private-Core invocation. Preserve the default 30-minute
+MCP hold for conversations waiting for user input: the release settle of 1830s
+allows that hold and two fleet-reaper ticks to expire before FINAL. The script
+also enforces its 180s minimum; that minimum alone does not expire the user-wait
+hold. Record the earlier 180s working set separately if measured. The gate is
 judged on the MEDIAN peak and median final of `--runs` complete runs (default
-3, each a fresh server boot; `--assert-budget` refuses fewer than 3): one run's
+3, each a fresh server/Core boot; `--assert-budget` refuses fewer than 3): one run's
 noise spans the whole 5% tolerance band (two clean runs of one commit measured
 final 0.97 and 0.95 GB against a 0.966 cap). The log prints every run and the
 spread; a wide spread is worth a look even on a PASS. Budget three runs of
-wall time (about 3 x 10 min). `GATE: FAIL` (median over budget, any run with
+wall time (about 3 x 35 min). `GATE: FAIL` (median over budget, any run with
 sessions not idle, or degraded substrate) blocks the tag. The
 budget only ratchets DOWN — peak is recorded at the honest COLD maximum
 (spawn-diet plans expire after 24h, so release runs boot undieted); the unit

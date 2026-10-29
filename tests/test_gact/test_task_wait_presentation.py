@@ -19,6 +19,7 @@ def test_wait_defaults_are_explicit_in_the_agent_visible_declaration() -> None:
         assert parameters["required"] == ["tasks"]
         assert parameters["properties"]["timeout_s"]["default"] is None
         assert parameters["properties"]["return_when"]["default"] == "all"
+        assert parameters["properties"]["interrupt_on_mail"]["default"] is True
         assert parameters["properties"]["timeout_s"]["anyOf"] == [
             {"type": "number", "minimum": 0},
             {"type": "null"},
@@ -26,6 +27,51 @@ def test_wait_defaults_are_explicit_in_the_agent_visible_declaration() -> None:
         description = declaration["description"]
         assert "unbounded" in description and "zero snapshots" in description
         assert "positive expiry or Stop ends only this waiter" in description
+
+
+def test_mail_interrupt_receipt_explains_pending_work_without_claiming_completion() -> None:
+    presentation = wait_presentation(
+        {"tasks": ["task_child"], "return_when": "all", "timeout_s": None},
+        {
+            "outcomes": [],
+            "pending": ["task_child"],
+            "timed_out": False,
+            "interrupted": "mail_received",
+        },
+    )
+    assert "New input received" in presentation["summary"]
+    assert presentation["status"] == "interrupted"
+    assert "Interrupted by mail" in presentation["diagnostic"]
+    assert "1 pending" in presentation["summary"]
+    assert any(
+        "New input is available" in block.get("text", "") for block in presentation["blocks"]
+    )
+
+
+def test_stop_interrupt_is_marked_without_making_pending_tasks_unsuccessful() -> None:
+    presentation = wait_presentation(
+        {"tasks": ["task_child"], "return_when": "all"},
+        {"outcomes": [], "pending": ["task_child"], "interrupted": "stopped"},
+    )
+    assert presentation["status"] == "interrupted"
+    assert "stop request" in presentation["diagnostic"]
+    assert "1 pending" in presentation["summary"]
+    assert not any(block.get("severity") == "error" for block in presentation["blocks"])
+
+
+def test_wait_interruption_keeps_independent_child_failure_detail() -> None:
+    presentation = wait_presentation(
+        {"tasks": ["failed", "pending"]},
+        {
+            "outcomes": [{"handle": "failed", "status": "failed", "result": "Bad input"}],
+            "pending": ["pending"],
+            "interrupted": "mail_received",
+        },
+    )
+    assert presentation["status"] == "interrupted"
+    assert "1 unsuccessful" in presentation["summary"]
+    failed = next(block for block in presentation["blocks"] if block.get("severity") == "error")
+    assert failed["text"] == "Bad input"
 
 
 @pytest.mark.parametrize("timeout", [0, 2.5, None])

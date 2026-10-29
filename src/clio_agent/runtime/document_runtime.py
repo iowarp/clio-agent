@@ -146,11 +146,38 @@ for name in json.loads(sys.argv[1]):
         checks[name] = {"status": "ready"}
 print(json.dumps(checks))
 """
-    output = _run([str(python), "-c", source, json.dumps(names)], cwd=python.parent)
+    output = _run([str(python), "-B", "-c", source, json.dumps(names)], cwd=python.parent)
     checks = json.loads(output)
     if not isinstance(checks, dict) or set(checks) != set(names):
         raise DocumentRuntimeError("Import checks did not return the requested modules")
     return checks
+
+
+def inspect_execution_runtime(workspace: Path) -> dict[str, Any]:
+    """Inspect existing tools without installing dependencies or creating runtime caches."""
+    workspace = workspace.resolve(strict=True)
+    inventory = json.loads(
+        _run(
+            [sys.executable, "-B", str(STACK_ROOT / "inventory.py"), "--execution-host"],
+            cwd=workspace,
+            env={**os.environ, "PYTHONDONTWRITEBYTECODE": "1"},
+        )
+    )
+    if not isinstance(inventory, dict) or inventory.get("inventory_scope") != "execution_host":
+        raise DocumentRuntimeError("Execution inventory did not describe the current host")
+    uv = _document_uv()
+    inventory.update(
+        {
+            "status": "ready",
+            "distribution": "execution-host",
+            "python_argv": [inventory["python"], "-B"],
+            "uv": uv,
+            "uv_argv": [uv] if uv else [],
+            "workspace": str(workspace),
+            "installs_dependencies": False,
+        }
+    )
+    return inventory
 
 
 def _python_runtime(
@@ -414,17 +441,6 @@ def prepare_document_runtime(
                     "python",
                 ],
                 "helper_argv": [str(python), str(STACK_ROOT / "cli.py")],
-                "skills": {
-                    name: str(
-                        Path(__file__).resolve().parents[1] / "gact" / "builtin_skills" / name
-                    )
-                    for name in (
-                        "work-with-pdfs",
-                        "work-with-word",
-                        "work-with-presentations",
-                        "work-with-spreadsheets",
-                    )
-                },
                 "capabilities": {
                     "pdf_extract_render": "ready",
                     "office_create_inspect": "ready",
@@ -505,22 +521,25 @@ def run_document_helper(runtime: dict[str, Any], args: list[str], *, cwd: Path) 
         profile=sandbox.PROFILE_SHELL,
         pdeathsig=False,
     )
-    result = json.loads(
-        _run(
-            [confined.command, *confined.args],
-            cwd=cwd,
-            env={
-                **environment,
-                **confined.env_overlay,
-                **{
-                    key: value
-                    for key, value in runtime.get("shell_environment", {}).items()
-                    if key in {"TEMP", "TMP", "TMPDIR"}
+    try:
+        result = json.loads(
+            _run(
+                [confined.command, *confined.args],
+                cwd=cwd,
+                env={
+                    **environment,
+                    **confined.env_overlay,
+                    **{
+                        key: value
+                        for key, value in runtime.get("shell_environment", {}).items()
+                        if key in {"TEMP", "TMP", "TMPDIR"}
+                    },
                 },
-            },
-            accepted_exit_codes=(0, 1),
+                accepted_exit_codes=(0, 1),
+            )
         )
-    )
+    finally:
+        confined.release()
     if not isinstance(result, dict):
         raise DocumentRuntimeError("Document helper returned no structured result")
     return result

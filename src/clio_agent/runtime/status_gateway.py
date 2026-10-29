@@ -2,6 +2,8 @@
 
 from typing import Any
 
+from clio_agent.runtime.fresh_loop import run_in_new_loop
+
 
 def _list_gateway_capabilities() -> list[dict[str, Any]]:
     import asyncio
@@ -18,10 +20,10 @@ def _list_gateway_capabilities() -> list[dict[str, Any]]:
     try:
         asyncio.get_running_loop()
     except RuntimeError:
-        tools = asyncio.run(_list_tools())
+        tools = run_in_new_loop(_list_tools())
     else:
         with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
-            tools = pool.submit(lambda: asyncio.run(_list_tools())).result()
+            tools = pool.submit(lambda: run_in_new_loop(_list_tools())).result()
 
     capabilities = []
     for tool in sorted(tools, key=lambda item: item.name):

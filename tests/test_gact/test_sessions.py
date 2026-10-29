@@ -11,14 +11,23 @@ from pathlib import Path
 
 import pytest
 
+from clio_agent.arc.live import _MemoryStore
+from clio_agent.gact.session_records import KIND
 from clio_agent.gact.sessions import SessionStore
 
 
 @pytest.fixture()
-def store(tmp_path: Path) -> SessionStore:
-    """File-backed store; tmp_path isolates each test."""
+def backing() -> _MemoryStore:
+    """The clio-core record store a session store binds (in-process for unit tests)."""
 
-    return SessionStore(path=tmp_path / "sessions.json")
+    return _MemoryStore()
+
+
+@pytest.fixture()
+def store(tmp_path: Path, backing: _MemoryStore) -> SessionStore:
+    """Store bound to a record store; a second store on ``backing`` is a restart."""
+
+    return SessionStore(path=tmp_path / "sessions.json", store=backing)
 
 
 @pytest.fixture()
@@ -128,7 +137,9 @@ def test_update_patches_fields_and_bumps_updated_at(
     assert interacted.last_interaction_at > original_interaction
 
 
-def test_legacy_session_interaction_time_waits_for_the_transcript_store(tmp_path: Path) -> None:
+def test_legacy_session_interaction_time_waits_for_the_transcript_store(
+    tmp_path: Path, backing: _MemoryStore
+) -> None:
     """A row older than ``last_interaction_at`` reads "" until the transcript store's
     boot settles it (file mtime or last atom message -- test_transcript_replace_atomic);
     the registry itself never reads a transcript (no ``messages/`` stat here)."""
@@ -148,7 +159,9 @@ def test_legacy_session_interaction_time_waits_for_the_transcript_store(tmp_path
         )
     )
 
-    store = SessionStore(path=sessions_path)
+    store = SessionStore(path=sessions_path, store=backing)
+    assert store.get("sess_legacy") is None
+    assert store.import_legacy() == {"sessions": 1}  # the session_records_import migration
     session = store.get("sess_legacy")
     assert session is not None
     assert session.last_interaction_at == ""
@@ -157,7 +170,7 @@ def test_legacy_session_interaction_time_waits_for_the_transcript_store(tmp_path
     store.settle_interaction_times({"sess_legacy": "2026-08-22T18:21:00+00:00"})
     assert store.get("sess_legacy").last_interaction_at == "2026-08-22T18:21:00+00:00"
     assert store.sessions_without_interaction_time() == []
-    reloaded = SessionStore(path=sessions_path).get("sess_legacy")
+    reloaded = SessionStore(path=sessions_path, store=backing).get("sess_legacy")
     assert reloaded is not None
     assert reloaded.last_interaction_at == "2026-08-22T18:21:00+00:00"
 
@@ -178,6 +191,7 @@ def test_settle_keeps_an_interaction_time_set_meanwhile(tmp_path: Path) -> None:
         )
     )
     store = SessionStore(path=sessions_path)
+    store.import_legacy()
     live = store.update("sess_legacy", message_count=3)
     assert live is not None and live.last_interaction_at
     store.settle_interaction_times({"sess_legacy": "2026-08-22T18:21:00+00:00"})
@@ -195,47 +209,47 @@ def test_delete_returns_true_then_false(mem_store: SessionStore) -> None:
     assert mem_store.delete(sess.id) is False
 
 
-def test_persistence_roundtrip(tmp_path: Path) -> None:
-    """A store created with path=X, mutated, then discarded — and a
-    fresh store with the same path — must see the same records."""
+def test_persistence_roundtrip(tmp_path: Path, backing: _MemoryStore) -> None:
+    """A store mutated, then discarded -- and a fresh store on the same record
+    store (a restart) -- must see the same records."""
 
     path = tmp_path / "sessions.json"
 
-    a = SessionStore(path=path)
+    a = SessionStore(path=path, store=backing)
     s1 = a.create(workspace_id="ws", title="keep")
     s2 = a.create(workspace_id="ws", title="also")
     _ = a  # drop reference
 
-    b = SessionStore(path=path)
+    b = SessionStore(path=path, store=backing)
     got = b.list()
     assert {s.id for s in got} == {s1.id, s2.id}
 
 
-def test_persistence_file_is_valid_json(tmp_path: Path) -> None:
+def test_persistence_is_one_record_per_session(tmp_path: Path, backing: _MemoryStore) -> None:
+    """Each session is one clio-core record; no whole-registry JSON file is written."""
     path = tmp_path / "sessions.json"
-    store = SessionStore(path=path)
-    store.create(workspace_id="ws", title="x")
-    # File exists after the first write.
-    assert path.exists()
-    # Valid JSON, keyed by session id.
-    raw = json.loads(path.read_text())
-    assert isinstance(raw, dict)
-    assert len(raw) == 1
+    store = SessionStore(path=path, store=backing)
+    sess = store.create(workspace_id="ws", title="x")
+    rows = [name for kind, name in backing._data if kind == KIND and name.startswith("row/")]
+    assert rows == [f"row/{sess.id}"]
+    assert not path.exists()
+    assert SessionStore(path=path, store=backing).count() == 1
 
 
-def test_corrupted_store_file_starts_empty(tmp_path: Path) -> None:
-    """Resilience: a half-written / malformed JSON file must not
-    crash the server on boot. The store just starts empty so new
-    sessions can be created."""
+def test_corrupted_store_file_starts_empty(tmp_path: Path, backing: _MemoryStore) -> None:
+    """Resilience: a half-written / malformed legacy JSON file must not crash the
+    server. The import is refused typed (so the migration stays owed and a repaired
+    file is imported later); new sessions can be created."""
 
     path = tmp_path / "sessions.json"
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text("{not json")
 
-    store = SessionStore(path=path)
+    store = SessionStore(path=path, store=backing)
+    with pytest.raises(ValueError, match="session_records_legacy_unreadable"):
+        store.import_legacy()
     assert store.list() == []
 
-    # And future creates still work + overwrite the corrupted file.
     sess = store.create(workspace_id="ws", title="recovered")
     assert store.get(sess.id) is not None
 
@@ -249,32 +263,16 @@ def test_count_tracks_create_delete(mem_store: SessionStore) -> None:
     assert mem_store.count() == 1
 
 
-def test_flush_fsyncs_before_rename(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    """#771 truth pass: the docstring's durability claim is now real.
+def test_each_write_is_committed_before_the_call_returns(
+    tmp_path: Path, backing: _MemoryStore
+) -> None:
+    """Off the server loop, a change lands in the record store before the call returns."""
 
-    ``_flush`` (through ``platform_paths.atomic_write_text``) must ``os.fsync``
-    the staged file's descriptor before the atomic
-    rename publishes it, so a crash can't leave a half-written blob on disk.
-    """
-
-    import os as _os
-
-    fsynced: list[int] = []
-    real_fsync = _os.fsync
-
-    def _spy_fsync(fd: int) -> None:
-        fsynced.append(fd)
-        real_fsync(fd)
-
-    monkeypatch.setattr("clio_agent.platform_paths.os.fsync", _spy_fsync)
-
-    store = SessionStore(path=tmp_path / "sessions.json")
-    store.create(workspace_id="ws", title="durable")
-
-    assert fsynced, "os.fsync was never called on the persisted session file"
-    # And the record actually landed on disk.
-    reloaded = SessionStore(path=tmp_path / "sessions.json")
-    assert reloaded.count() == 1
+    store = SessionStore(path=tmp_path / "sessions.json", store=backing)
+    sess = store.create(workspace_id="ws", title="durable")
+    assert (KIND, f"row/{sess.id}") in backing._data
+    store.update(sess.id, title="renamed")
+    assert SessionStore(store=backing).get(sess.id).title == "renamed"
 
 
 class _RecordFailed(RuntimeError):
@@ -294,7 +292,7 @@ def test_a_session_whose_creation_cannot_be_recorded_is_not_created(store: Sessi
         store.create(workspace_id="ws_default", title="unrecorded")
 
     assert store.list() == []
-    assert SessionStore(path=store._path).list() == []
+    assert SessionStore(store=store._records._writer.store).list() == []
 
 
 def test_a_deletion_that_cannot_be_recorded_is_the_callers_error(store: SessionStore) -> None:

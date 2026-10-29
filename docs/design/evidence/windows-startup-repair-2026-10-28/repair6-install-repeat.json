@@ -1,0 +1,9 @@
+{
+  "candidate": "8af46e42136360a3384c0a07e16040757ae44eb4",
+  "seconds": 25.3802237,
+  "profile": "D:\\cw\\fp7",
+  "finished_at": "2026-10-28T10:37:22.9318521Z",
+  "label": "repair6-install-repeat",
+  "ref": "codex/windows-startup-acceptance",
+  "exit_code": 0
+}

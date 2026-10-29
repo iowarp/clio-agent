@@ -15,6 +15,9 @@ import threading
 import zipfile
 from pathlib import Path
 
+# httpx imports its transport (httpcore, anyio) on the first Client; the installer's worker
+# threads doing that at once deadlock on import (_DeadlockError), so load it here.
+import httpcore  # noqa: F401
 import httpx
 
 from clio_agent import paths

@@ -220,6 +220,7 @@ def test_memory_budget_is_the_arena_and_data_is_disk_only() -> None:
         file_capacity="50GB",
         ram_budget="1GB",
         metadata_log="m",
+        indexer="",
     )
     assert 'capacity: "1GB"' in rendered  # the arena = the budget, hard bound
     assert "cte_ram_tier" not in rendered  # disk-only: no ram data tier

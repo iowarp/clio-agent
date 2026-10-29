@@ -1,0 +1,379 @@
+---
+title: Write a flow
+description: Write a procedure in Python that calls tools, subagents and agents, in parallel or in sequence, asks the person, and continues after a restart.
+---
+
+import { Aside, CardGrid, LinkCard } from '@astrojs/starlight/components';
+
+A flow is a procedure written in Python. It calls tools, subagents, other agents and other flows through `ctx`, and every call is a CLIO task. That gives every step of your procedure a handle you can follow, Stop and cancel that work, and recovery after a restart, without any code of your own.
+
+<Aside type="caution" title="Development build">
+The SDK is in the development build. It is not in the published v0.9.5-beta.8 release. See [Features and versions](/docs/versions/).
+</Aside>
+
+## When to write a flow
+
+Choose the lightest form that expresses the work:
+
+| Form | Use it when | Who writes it |
+|---|---|---|
+| A plain request | The agent can work out the steps itself. This is the default `react` flow. | Nobody |
+| A [workflow](/docs/sdk/workflows/) | You can list the steps and what each waits on before it starts | You, or the agent |
+| A flow | The next step depends on earlier results: loops, retries, branches, a reviewer who sends work back | You, in a plugin |
+
+A flow is plugin content: it lives in `ai.iowarp.clio/flows/` of a plugin, and an agent or the model selects it by id.
+
+## A first flow
+
+```python title="ai.iowarp.clio/flows/review.py"
+from clio_agent.sdk import Flow
+
+
+class Review(Flow):
+    """Draft, have two reviewers read the draft, then revise."""
+
+    id = "review"
+    description = "A writer drafts, a critic and a fact-checker review, the writer revises."
+
+    async def forward(self, task, ctx):
+        draft = await ctx.call("writer", task)
+        reviews = await ctx.gather(
+            [ctx.call(reviewer, draft) for reviewer in ("critic", "fact-checker")]
+        )
+        return await ctx.call(
+            "writer",
+            {"task": task, "draft": draft.answer, "reviews": [r.answer for r in reviews]},
+        )
+```
+
+- `forward(task, ctx)` is the procedure. It is `async`, and every `ctx` call is awaited.
+- `ctx.call(target, input)` runs one target and returns its result. Here `writer`, `critic` and `fact-checker` are [subagents](/docs/sdk/plugins/#subagents) of the same plugin.
+- `ctx.gather([...])` runs several calls together and returns their results in order.
+- Whatever `forward` returns is the flow's answer.
+
+## The flow class
+
+| Attribute | Meaning |
+|---|---|
+| `id` | The flow's id, used to select it and to call it. Required. |
+| `description` | What the flow does and which options it takes. The model reads it in `run_flow`'s list of flows, so write it for someone choosing a flow. |
+| `shape` | Optional. A diagram of the flow's steps in the railroad grammar (`sequence`, `choice`, `optional`, `oneOrMore`, `terminal`). It is shown when someone is asked to trust a plugin. It describes the code; CLIO does not check it against the code. |
+| `model` | Optional. The model the flow's calls run on when a call names none, as `account/model` or a model id. |
+| `max_depth`, `max_concurrency`, `max_model_calls`, `budget_tokens` | Optional limits; see [Limits](#limits). |
+| Any other attribute | An option, with its default value. |
+
+### Options
+
+An option is a class attribute. Annotate it, and CLIO checks every value given for it and converts it where it can (a list becomes a tuple):
+
+```python
+from typing import Annotated
+from pydantic import Field
+
+class Campaign(Flow):
+    id = "campaign"
+    max_cycles: Annotated[int, Field(ge=1)] = 3
+    reviewers: tuple[str, ...] = ("independent_reviewer",)
+```
+
+A value of the wrong type is refused with the option's name and the type it needs. `True` is never accepted for a number. Options without an annotation pass through unchecked.
+
+Options are set wherever the flow is selected: on an agent, `flow = Flow("campaign", max_cycles=5)`; from the model, `run_flow("campaign", input, options={"max_cycles": 5})`; from another flow, `ctx.call(Flow("campaign", max_cycles=5), task)`; or in a workflow step's `options`.
+
+### What `task` is
+
+- When the flow is an agent's own flow, `task` is the text of the message the person sent.
+- When the model starts it with `run_flow`, `task` is the `input` it passed: text, or a JSON object or list.
+- When another flow calls it, `task` is the input of that call.
+
+### What a flow returns
+
+Return text, or a mapping whose `answer` key is the text. The other keys travel with the result, so a flow that calls this one can read them as attributes: `result.report`. A `CallResult` can be returned as it is.
+
+## Calling things: `ctx.call`
+
+```python
+ctx.call(target, input=None, *, evidence=None, key="", model="", label="")
+```
+
+`target` is matched in this order:
+
+1. A `Flow` class, or a selection such as `Flow("council", members=[...])`.
+2. `"self"`: this agent, as a worker running its default `react` flow. Use it for a model judgment without a defined subagent.
+3. A defined subagent of a plugin this agent carries.
+4. A flow id.
+5. A tool this agent has, by name.
+6. An installed agent, as `marketplace/id`, for example `clio/standard`.
+
+Anything else raises `FlowTargetUnknown`. A flow from a plugin that is installed but not trusted raises `FlowNotTrusted`.
+
+`ctx.call` returns an awaitable. The call starts when you await it, or when you pass it to `ctx.gather` or `ctx.as_completed`.
+
+| Argument | Meaning |
+|---|---|
+| `input` | What the target receives. It defaults to the flow's own `task`. A tool takes a mapping of its arguments. |
+| `evidence` | Task handles of earlier calls whose results the child may read. Nothing else from the flow reaches the child. |
+| `key` | A stable name for this call; see [Calls in an order that can change](#calls-in-an-order-that-can-change). |
+| `model` | The model the child runs on, as `account/model` or a model id. Without it: the flow's `model`, then the child's own preference, then the model this run uses. A model that cannot meet the child's requirements is refused with `model_requirement_unmet`. |
+| `label` | The child's name in the conversation and the work views. It does not change what is called. |
+
+### Passing results along
+
+A subagent or an agent receives its input as the text of its task:
+
+- Text is passed as it is.
+- A single result, `ctx.call("reviewer", draft)`, passes the result's public text.
+- Anything else is passed as JSON.
+
+Build plain data from results before you pass them on. A list or mapping that contains result objects does not convert: the child would see `CallResult(target=..., handle=...)` instead of their content.
+
+```python
+found = await ctx.gather([ctx.call("find_peaks", {"path": f}) for f in files])
+review = await ctx.call("peak-reviewer", {"results": [r.value for r in found]})   # tool results
+summary = await ctx.call("writer", {"views": [v.answer for v in views]})          # agent answers
+```
+
+### Reading a result
+
+A call returns a `CallResult`:
+
+| Read | What it holds |
+|---|---|
+| `result.answer` | The child's final answer as text. Empty for a tool, which has no answer. |
+| `result.value` | The raw result. For a tool, the value the function returned. |
+| `result.response_text` | The child's whole public response in order, including any addendum it posted after its first answer. Use it when you collect views for comparison or synthesis. |
+| `result.handle` | The child's task handle. |
+| `result.model` | The model the child ran on, as `account/model`. Empty for a tool. |
+| `result.<name>` | Another output of the child, or else a section of its `workflow_state`. |
+| `result["<name>"]` | Another output of the child. |
+| `result.workflow_state` | The child's typed `workflow_state`. |
+
+## Running calls together
+
+### `ctx.gather`
+
+```python
+results = await ctx.gather(calls, limit=4, return_when="all", return_exceptions=False)
+```
+
+Runs the calls at once, at most `limit` at a time, and returns their results in call order.
+
+- One call failing never cancels the others. With `return_exceptions=False`, once every call has settled the gather raises `GatherFailed`, whose `results` holds each call's result or error.
+- With `return_exceptions=True`, each failed call's place holds its error instead, and you decide.
+- With `return_when="any"`, the gather returns as soon as one call settles, with `None` for the others, which keep running.
+
+### `ctx.as_completed`
+
+```python
+async for result in ctx.as_completed(calls, limit=16):
+    ...
+```
+
+Yields each result as it settles, in finishing order, with no waiting for the slowest. Each result's `index` is its position in `calls`. A failed call is yielded as its error, with the position in `error.details["index"]`.
+
+```python
+from clio_agent.flows.outcomes import FlowOutcome
+
+async for run in ctx.as_completed(calls, limit=16):
+    if isinstance(run, FlowOutcome):
+        row = {"case": run.details["index"], "error": run.reason}
+    else:
+        row = {"case": run.index, "result": run.answer}
+    await ctx.step(ctx.workspace.append, "sweep/results.jsonl", row)
+```
+
+### `ctx.start`
+
+```python
+handle = await ctx.start("abaqus_engineer", job)
+```
+
+Starts a subagent, agent or flow and returns its task handle as soon as it is accepted, without waiting for the result. It cannot start a tool.
+
+## Asking the person: `ctx.ask`
+
+```python
+go = await ctx.ask("Send this design to the cluster?", schema=bool)
+choice = await ctx.ask("Which mesh?", options=["coarse", "fine"])
+note = await ctx.ask("Anything to add before the report?")
+```
+
+Posts a question in the conversation and waits for the answer, however long it takes, including across a restart. `schema=bool` asks yes or no and returns a bool. `options` offers a choice and returns the chosen option's value, which is its text in lowercase: `"coarse"` or `"fine"` above, and `"accept"` for an option shown as **Accept**. Otherwise the answer is returned as text. `reason` is recorded with the question, to tell the person why you ask.
+
+## Doing anything else: `ctx.step`
+
+```python
+path = await ctx.step(ctx.workspace.write, "reports/summary.md", text)
+```
+
+Runs a function once and records its result. When the flow runs again after a restart, `ctx.step` returns the recorded result instead of running the function again. Use it for every side effect and every computation whose result must not change on a second run: writing files, calling an outside service, reading the clock, drawing random numbers, or asking a model directly. The function may be ordinary or `async`, and its result should be plain data (text, numbers, lists, mappings).
+
+## The workspace: `ctx.workspace`
+
+`ctx.workspace` is the conversation's workspace folder. `read(path)`, `write(path, text)` and `append(path, value)` take paths inside it; `append` writes one line, and turns a value that is not text into JSON. Writes are side effects, so run them through `ctx.step`. `ctx.workspace.root` is `None` when the conversation has no workspace folder, and using it then raises `CallRefused` with `no_workspace`.
+
+## Other helpers
+
+| Helper | What it does |
+|---|---|
+| `ctx.react(task)` | Runs this agent's own `react` loop on `task`, inside the flow's task. Counts as a model call. |
+| `ctx.depth` | How many flows this run is nested in. A flow that calls itself can use it to stop recursing. |
+| `ctx.run_id` | The run's id. |
+| `ctx.record_event(event)` | Records an event, a mapping, in the run. It appears with the run's events in the run view. |
+| `ctx.publish(view)` | Replaces the run's live view, which the run card draws. The `workflow` flow uses it for its steps. |
+| `ctx.permission_receipts(refresh=False)` | A snapshot of the tool-permission decisions made in this run and its children. Each snapshot is recorded, so a restart sees the same one; `refresh=True` takes a new one. It describes history, never current permission. |
+| `ctx.tool_results(handle)` | The finished tool results of a child the flow called, read without starting any work. |
+
+## When something goes wrong
+
+A call returns its result or raises a typed error that carries the child's handle. Catch the ones your procedure can handle; any other ends the run, and the run records how it ended. All are in `clio_agent.flows.outcomes` and derive from `FlowOutcome`, whose `reason` is the code below.
+
+| Error | `reason` | Meaning |
+|---|---|---|
+| `CallFailed` | `call_failed` | The child failed. |
+| `CallAwaitingInput` | `call_awaiting_input` | The child ended its turn waiting for input. `error.answer` is its last answer. A kind of `CallFailed`. |
+| `CallStopped` | `call_stopped` | The child's turn stopped, by Stop or by an error such as a provider timeout. A kind of `CallFailed`. |
+| `CallCancelled` | `call_cancelled` | The child was cancelled. |
+| `CallInterrupted` | `call_interrupted` | The child stopped without a result, or never started. |
+| `TaskStateUncertain` | `task_state_uncertain` | CLIO cannot confirm whether the child was accepted. It is never submitted again. |
+| `CallRefused` | `call_refused` | The call was not accepted. |
+| `FlowTargetUnknown` | `flow_target_unknown` | The target names nothing this agent can reach. |
+| `FlowNotTrusted` | `flow_not_trusted` | The target is a flow from a plugin that is not trusted. |
+| `FlowLimitExceeded` | `flow_limit_exceeded` | A limit refused the call. `error.details["limit"]` names it. |
+| `FlowCheckpointLimit` | `flow_checkpoint_limit` | The run recorded 10,000 entries and cannot record more. |
+| `FlowReplayMismatch` | `flow_replay_mismatch` | A resumed run met different code or input than it recorded. |
+| `FlowStall` | `flow_stall` | A flow raised it because work cannot proceed. It carries `stall`, `step`, `predicate` and `observed`. |
+| `GatherFailed` | `gather_failed` | At least one gathered call failed. `error.results` holds every result or error. |
+
+Raise `FlowStall` yourself when your procedure meets a state it cannot continue from, rather than guessing:
+
+```python
+from clio_agent.flows.outcomes import FlowStall
+
+if not plan["directions"]:
+    raise FlowStall("planner_no_directions", "the planner returned no directions",
+                    step="plan", observed=plan)
+```
+
+## Restarts
+
+CLIO records every call a run makes. When CLIO restarts while a flow runs, the flow runs again from the top of `forward`, and each call finds its record:
+
+- A call that finished returns its recorded result.
+- A call still running is picked up and waited on. Nothing is submitted twice.
+- A call whose acceptance CLIO cannot confirm raises `TaskStateUncertain`.
+- A call that never started starts now.
+
+Restarting a flow's task continues the same way: work that finished in the earlier run is kept. A message sent to a flow's conversation after its run ended does not run it again.
+
+For this to work, a flow must make the same calls in the same order when given the same results.
+
+- **Do** put every side effect and every value that could differ on a second run inside `ctx.step`: file writes, outside services, the time, random numbers.
+- **Do** derive everything else from the task, the options and earlier results.
+- **Do not** read the clock, draw random numbers, or read or write files directly in `forward`.
+
+A model call made directly inside `forward`, not through `ctx`, may run again after a restart. A run that resumes with different code, a different plugin set or a different input raises `FlowReplayMismatch`. Because each conversation keeps the plugin versions it started with, an update never changes a running flow's code.
+
+### Calls in an order that can change
+
+A call is identified by the run, the place in the code where it is made, a digest of its target and input, and how many times that same call was made before. Calls made in a loop over a fixed list are fine. When the order of calls depends on timing, for example calls made as other results arrive, give each a `key` that names it, unique within the run:
+
+```python
+calls = [ctx.call("abaqus_engineer", case, key=f"case-{case['id']}") for case in cases]
+```
+
+A `key` also keeps a long-running call identified when you edit the line it is on.
+
+## Limits
+
+A flow may set limits that CLIO enforces on top of its own bounds on subagent depth and concurrency. Zero, the default, means no flow-level limit. Set them as class attributes or as options.
+
+| Limit | What it caps |
+|---|---|
+| `max_depth` | How deeply flows may nest when this flow calls flows. |
+| `max_concurrency` | How many of the run's calls run at once. |
+| `max_model_calls` | How many agent, subagent, flow and `react` calls the run makes. |
+| `budget_tokens` | Input plus output tokens of the run's children so far, including their own children. It is checked before each new call; work already running may finish past it. |
+
+One run records at most 10,000 entries (calls, steps, questions and edits). Past that it ends with `FlowCheckpointLimit`.
+
+## Starting a flow
+
+| From | How |
+|---|---|
+| An agent | Set `flow = "review"` or `flow = Flow("campaign", max_cycles=5)` on the agent class. Every message to that agent runs the flow. |
+| The model | The `run_flow` tool from the `orchestration` plugin: `run_flow(flow, input, options, model)`. The flow runs as background work; the model gets its handle at once and keeps working, and the result arrives when the flow ends. |
+| A person | Ask for it in a conversation, by name or by describing it. See [Flows and workflows](/docs/flows/). |
+| Another flow | `await ctx.call("review", draft)` or `await ctx.call(Flow("council", members=[...]), question)`. |
+| A workflow | A step whose `target` is the flow's id, with its `options`. |
+
+The model sees the flows of its agent's plugins in the `run_flow` tool, each with its `description`. It also sees the flows of installed, trusted plugins the agent does not carry yet; running one adds its plugin to the conversation. A flow from a plugin that is not trusted yet asks the person first.
+
+Stop ends the model's turn, not the flow: a started flow keeps running. Cancelling the flow's task cancels the flow and everything it started.
+
+## Examples
+
+### Revise until the person accepts
+
+```python
+class DraftAndReview(Flow):
+    id = "draft-and-review"
+    description = "Draft, have the reviewer comment, and revise until the person accepts."
+    max_rounds: int = 3
+
+    async def forward(self, task, ctx):
+        draft = await ctx.call("self", task)
+        for _ in range(self.max_rounds):
+            notes = await ctx.call("reviewer", draft)
+            choice = await ctx.ask(
+                f"The reviewer's notes:\n\n{notes.answer}\n\nAccept the draft, or revise it?",
+                options=["Accept", "Revise"],
+            )
+            if choice == "accept":  # options come back in lowercase
+                break
+            draft = await ctx.call(
+                "self", {"task": task, "draft": draft.answer, "notes": notes.answer}
+            )
+        return draft
+```
+
+`reviewer` is a subagent of the same plugin. The person makes each decision; the flow only limits the number of rounds.
+
+### Three models, one synthesis
+
+```python
+class ThreeModels(Flow):
+    id = "three-models"
+    models: tuple[str, ...] = ()
+
+    async def forward(self, question, ctx):
+        council = Flow("council", models=list(self.models))
+        return await ctx.call(council, question)
+```
+
+The `council` flow from the `orchestration` plugin asks several members the same question and synthesizes one answer, so the agent must carry `orchestration`. Its `models` option puts each member on its own model. See [What's available](/docs/sdk/available/#flows) for its options.
+
+### Research, verify, close the gaps
+
+The `deep-research` plugin in the `clio` marketplace ships a flow that plans research directions, sends a researcher subagent after each one in parallel, has a critic verify every claim against the sources, researches the gaps the critic names for a bounded number of rounds, and writes a report from verified claims only. Its source is a complete example of a production flow: `plugins/deep-research/ai.iowarp.clio/flows/deep_research.py` in [clio-agent-marketplace](https://github.com/iowarp/clio-agent-marketplace).
+
+## Check and test
+
+`clio-agent plugin check <folder>` loads your plugin the way an install does and fails on errors in it, such as a flow selected by an agent that no plugin provides (`flow_missing`). The same check runs in your own tests:
+
+```python
+from pathlib import Path
+
+pytest_plugins = ["clio_agent.plugins.pytest_plugin"]
+
+
+def test_marketplace_resolves(plugin_check):
+    report = plugin_check(Path(__file__).parents[1])
+    assert report.ok, report.render()
+```
+
+<CardGrid>
+  <LinkCard title="Workflows as data" href="/docs/sdk/workflows/" description="Steps and dependencies the agent can write, and editors who extend them." />
+  <LinkCard title="SDK reference" href="/docs/sdk/reference/" description="Every signature in one place." />
+  <LinkCard title="Build your first plugin" href="/docs/sdk/build-a-plugin/" description="A plugin with a tool, a subagent and a flow, end to end." />
+</CardGrid>

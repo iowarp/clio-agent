@@ -1,18 +1,16 @@
 """Usage / cost metering for the GACT server (#714).
 
-Behavior-preserving extraction from :mod:`clio_agent.gact.app`. This module is the
-single source of truth for rolling a turn's token usage and cost up out of DSPy's
-per-LM ``history``, plus the best-effort per-token price table used when an
-upstream provider doesn't report a cost.
+This module rolls a turn's token usage, cost, reasoning and prompt size up out of the
+calls the turn made, plus the best-effort per-token price table used when an upstream
+provider doesn't report a cost.
 
-The turn engine snapshots ``len(lm.history)`` for every known LM at turn start
-(:func:`_snapshot_lm_history_index`), then diffs the slice at turn end
-(:func:`_usage_from_history_slice`, :func:`_reasoning_records_from_history_slice`)
-so planner + every expert + chat token counts (and reasoning traces) roll up
-across the whole turn. The history diff IS the path the turn uses: ``lm.history``
-is shared across threads (list.append under the GIL), so it survives the
-executor-thread + streaming hops that make ``dspy.settings.usage_tracker``
-unreliable from worker threads.
+The calls are the DSPy history entries in the turn's ledger
+(:mod:`clio_agent.runtime.turn_lm_ledger`): every clio LM records there and nowhere
+else, and the ledger ends with the turn, so the agent process keeps no history of its
+own (the durable record of each call is the ``lm.call`` event). The turn notes how
+many calls its ledger held at the start (:func:`_turn_call_count`) and reads the calls
+after it (:func:`_usage_from_turn_calls`, :func:`_reasoning_records_from_turn_calls`,
+:func:`_last_prompt_usage_from_turn_calls`) -- planner, every expert and chat alike.
 
 The reasoning/answer split of a history entry is the single-owner rule in
 :mod:`clio_agent.gact.reasoning_extract` (the same one the live stream applies, so a
@@ -32,26 +30,21 @@ from clio_agent.gact.reasoning_extract import entry_response_text as _entry_resp
 from clio_agent.runtime import trace, turn_lm_ledger
 
 if TYPE_CHECKING:
-    from fastapi import FastAPI
-
     from clio_agent.gact.turn_state import TurnState
 
 logger = logging.getLogger(__name__)
 
 __all__ = [
-    "_all_known_lms",
-    "_snapshot_lm_history_index",
-    "_usage_from_history_slice",
-    "_last_prompt_usage_from_history_slice",
+    "_turn_call_count",
+    "_usage_from_turn_calls",
+    "_last_prompt_usage_from_turn_calls",
     "_estimated_prompt_usage",
     "_entry_reasoning_text",
     "_entry_response_text",
     "_entry_prompt_text",
-    "_reasoning_records_from_history_slice",
-    "_usage_from_dspy_history",
+    "_reasoning_records_from_turn_calls",
     "_estimate_cost_usd",
     "_price_table_match",
-    "_PRICE_TABLE_PER_M",
     "_capture_reasoning_enabled",
     "capture_reasoning_log",
     "reported_cost_total",
@@ -84,121 +77,54 @@ def _usage_cache_tokens(usage: dict[str, Any]) -> tuple[int, int, bool]:
     return cache_read, cache_write, measured
 
 
-def _all_known_lms(app: "FastAPI") -> list[Any]:
-    """Return every LM instance the running agent might call —
-    ``dspy.settings.lm`` plus the agent's ``_main_lm`` and any
-    expert-bound LMs. Lets the turn handler diff history across
-    all of them so main + expert + chat token counts roll up."""
+def _turn_call_count() -> int:
+    """How many calls the current turn's ledger holds (0 outside a turn)."""
 
-    lms: list[Any] = []
-    try:
-        from clio_agent.gact.runtime.ambient_lm import resolve_active_lm  # noqa: PLC0415
-
-        # The global dspy LM: the bound profile inside a ``dspy.context``, else the
-        # process boot default — recorded as a structured ``ambient_lm_default``
-        # reason (queryable), never a silent ambient read. The agent's explicit LMs
-        # gathered below cover the accounting even when this is the boot default, so
-        # removing the global default cannot silently under-count the turn (#818).
-        main = resolve_active_lm(site="usage._all_known_lms", app=app)
-        if main is not None:
-            lms.append(main)
-    except Exception as exc:  # pragma: no cover  # noqa: BLE001 - roll up what we can
-        logger.warning(
-            "global dspy LM not reachable; usage rollup may under-count this turn "
-            "reason=usage_lm_discovery_failed error=%s",
-            exc,
-        )
-    agent = getattr(getattr(app, "state", None), "agent", None)
-    # Include _main_lm: the agent's primary LM (experts route through it
-    # when it is not the global dspy.settings.lm). Missing it under-counts usage
-    # AND drops the reasoning trace for the bulk of the turn. Keep the others.
-    for attr in ("_main_lm", "_expert_lm", "main_lm"):
-        side = getattr(agent, attr, None) if agent is not None else None
-        if side is not None and side not in lms:
-            lms.append(side)
-    # Include this turn's fresh LMs and isolated views over session-owned pools.
-    for built in turn_lm_ledger.ledger_lms():
-        if not any(built is known for known in lms):
-            lms.append(built)
-    return lms
+    return len(turn_lm_ledger.ledger_calls())
 
 
-def _snapshot_lm_history_index(app: Optional["FastAPI"] = None) -> dict[int, int]:
-    """Return current ``len(lm.history)`` for every known LM,
-    keyed by ``id(lm)`` so the diff side can find them again
-    even if the agent rebinds attributes mid-turn."""
+def _turn_calls(start: int) -> list[dict[str, Any]]:
+    """The current turn's calls after the first ``start``."""
 
-    if app is None:
-        from clio_agent.gact.runtime.ambient_lm import resolve_active_lm  # noqa: PLC0415
-
-        lm = resolve_active_lm(site="usage._snapshot_lm_history_index")
-        return {id(lm): len(getattr(lm, "history", None) or [])} if lm else {}
-    snapshot: dict[int, int] = {}
-    for lm in _all_known_lms(app):
-        history = getattr(lm, "history", None) or []
-        snapshot[id(lm)] = len(history)
-    return snapshot
+    return turn_lm_ledger.ledger_calls()[start:]
 
 
-def _usage_from_history_slice(start: Any, app: Optional["FastAPI"] = None) -> dict[str, Any]:
-    """Sum usage from each known LM's ``history[start:]`` — every
-    call this turn made across planner + experts + chat. Accepts
-    either a ``dict[id(lm) -> int]`` snapshot (preferred) or a
-    legacy single int for backwards compat with single-LM callers.
-    """
+def _usage_from_turn_calls(start: int) -> dict[str, Any]:
+    """Sum usage over the calls the turn made after its first ``start`` calls."""
 
-    if app is not None:
-        lms = _all_known_lms(app)
-    else:
-        from clio_agent.gact.runtime.ambient_lm import resolve_active_lm  # noqa: PLC0415
-
-        lm = resolve_active_lm(site="usage._usage_from_history_slice")
-        lms = [lm] if lm else []
-    if not lms:
-        return {}
-    if isinstance(start, int):
-        # Legacy single-int callers — apply to main LM only.
-        snap = {id(lms[0]): start}
-    else:
-        snap = start
     input_tok = output_tok = cache_read = cache_write = 0
     raw_cost = 0.0
     cost_reported = False
     last_model = ""
-    for lm in lms:
-        start_idx = snap.get(id(lm), 0)
-        history = getattr(lm, "history", None) or []
-        for entry in history[start_idx:]:
-            if not isinstance(entry, dict):
-                continue
-            usage = entry.get("usage") or {}
-            if not isinstance(usage, dict):
-                continue
-            input_tok += int(usage.get("prompt_tokens") or usage.get("input_tokens") or 0)
-            output_tok += int(usage.get("completion_tokens") or usage.get("output_tokens") or 0)
-            entry_cache_read, entry_cache_write, _ = _usage_cache_tokens(usage)
-            cache_read += entry_cache_read
-            cache_write += entry_cache_write
-            # dspy.clients.base_lm records a REAL provider/subscription cost as
-            # the history entry's own top-level "cost" (from the LM response's
-            # ``_hidden_params["response_cost"]``) -- a SIBLING of "usage", not
-            # nested inside it. That's the primary, authoritative source; the
-            # nested usage["cost_usd"]/["total_cost"] fallback covers upstream
-            # OpenAI-compatible proxies that stick their own cost field onto
-            # the usage block instead (iowarp/clio-agent#8).
-            entry_cost_raw = entry.get("cost")
-            if entry_cost_raw is None:
-                entry_cost_raw = usage.get("cost_usd") or usage.get("total_cost")
-            if entry_cost_raw is None:
-                # An engine LM (Claude Code) reports its provider cost on the typed
-                # response; DSPy has no pricing provider for custom engines.
-                provider_data = getattr(entry.get("response"), "provider_data", None) or {}
-                entry_cost_raw = provider_data.get("cost_usd")
-            entry_cost = float(entry_cost_raw or 0.0)
-            if entry_cost_raw is not None:
-                cost_reported = True
-            raw_cost += entry_cost
-            last_model = entry.get("model") or last_model
+    for entry in _turn_calls(start):
+        usage = entry.get("usage") or {}
+        if not isinstance(usage, dict):
+            continue
+        input_tok += int(usage.get("prompt_tokens") or usage.get("input_tokens") or 0)
+        output_tok += int(usage.get("completion_tokens") or usage.get("output_tokens") or 0)
+        entry_cache_read, entry_cache_write, _ = _usage_cache_tokens(usage)
+        cache_read += entry_cache_read
+        cache_write += entry_cache_write
+        # dspy.clients.base_lm records a REAL provider/subscription cost as
+        # the history entry's own top-level "cost" (from the LM response's
+        # ``_hidden_params["response_cost"]``) -- a SIBLING of "usage", not
+        # nested inside it. That's the primary, authoritative source; the
+        # nested usage["cost_usd"]/["total_cost"] fallback covers upstream
+        # OpenAI-compatible proxies that stick their own cost field onto
+        # the usage block instead (iowarp/clio-agent#8).
+        entry_cost_raw = entry.get("cost")
+        if entry_cost_raw is None:
+            entry_cost_raw = usage.get("cost_usd") or usage.get("total_cost")
+        if entry_cost_raw is None:
+            # An engine LM (Claude Code) reports its provider cost on the typed
+            # response; DSPy has no pricing provider for custom engines.
+            provider_data = getattr(entry.get("response"), "provider_data", None) or {}
+            entry_cost_raw = provider_data.get("cost_usd")
+        entry_cost = float(entry_cost_raw or 0.0)
+        if entry_cost_raw is not None:
+            cost_reported = True
+        raw_cost += entry_cost
+        last_model = entry.get("model") or last_model
     cost_known = cost_reported
     if raw_cost == 0.0 and not cost_reported:
         cost_known = _price_table_match(last_model) is not None
@@ -217,46 +143,26 @@ def _usage_from_history_slice(start: Any, app: Optional["FastAPI"] = None) -> di
     }
 
 
-def _last_prompt_usage_from_history_slice(
-    start: Any, app: Optional["FastAPI"] = None
-) -> dict[str, Any]:
-    """Return the newest prompt reading produced after ``start``.
+def _last_prompt_usage_from_turn_calls(start: int) -> dict[str, Any]:
+    """Return the newest prompt reading among the calls the turn made after ``start``.
 
-    The reading is provider-measured when the history entry carries prompt usage.
+    The reading is provider-measured when the call's entry carries prompt usage.
     When a provider omits that number, the actual rendered messages are counted with
     the same model-aware fallback used by automatic compaction. Cache utilization is
     exposed only when the provider emitted cache detail fields.
     """
 
-    if app is not None:
-        lms = _all_known_lms(app)
-    else:
-        from clio_agent.gact.runtime.ambient_lm import resolve_active_lm  # noqa: PLC0415
-
-        lm = resolve_active_lm(site="usage._last_prompt_usage_from_history_slice")
-        lms = [lm] if lm else []
-    snap = (
-        {id(lms[0]): start}
-        if isinstance(start, int) and lms
-        else start
-        if isinstance(start, Mapping)
-        else {}
-    )
-    candidates: list[tuple[str, int, Any, dict[str, Any]]] = []
-    ordinal = 0
-    for lm in lms:
-        history = getattr(lm, "history", None) or []
-        for entry in history[snap.get(id(lm), 0) :]:
-            if isinstance(entry, dict):
-                candidates.append((str(entry.get("timestamp") or ""), ordinal, lm, entry))
-                ordinal += 1
+    candidates = [
+        (str(entry.get("timestamp") or ""), ordinal, entry)
+        for ordinal, entry in enumerate(_turn_calls(start))
+    ]
     if not candidates:
         return {}
-    _, _, lm, entry = max(candidates, key=lambda row: (row[0], row[1]))
+    _, _, entry = max(candidates, key=lambda row: (row[0], row[1]))
     usage = entry.get("usage") or {}
     if not isinstance(usage, dict):
         usage = {}
-    model = str(entry.get("model") or getattr(lm, "model", "") or "")
+    model = str(entry.get("model") or "")
     used_tokens = int(usage.get("prompt_tokens") or usage.get("input_tokens") or 0)
     cache_read, cache_write, cache_measured = _usage_cache_tokens(usage)
     source = "provider" if used_tokens > 0 else ""
@@ -345,45 +251,27 @@ def _entry_prompt_text(entry: dict[str, Any]) -> str:
     return ""
 
 
-def _reasoning_records_from_history_slice(
-    start: Any, app: Optional["FastAPI"] = None
-) -> list[dict[str, Any]]:
-    """Collect ``(question, reasoning, response)`` per LM call in the turn's
-    history slice -- across planner + every expert + chat -- so the reasoning
-    tokens are LOGGED, not discarded. Only entries that actually carried
-    reasoning are included (non-reasoning models yield an empty list)."""
+def _reasoning_records_from_turn_calls(start: int) -> list[dict[str, Any]]:
+    """Collect ``(question, reasoning, response)`` per call the turn made after
+    ``start`` -- across planner + every expert + chat -- so the reasoning tokens are
+    LOGGED, not discarded. Only calls that actually carried reasoning are included
+    (non-reasoning models yield an empty list)."""
 
-    if app is not None:
-        lms = _all_known_lms(app)
-    else:
-        from clio_agent.gact.runtime.ambient_lm import resolve_active_lm  # noqa: PLC0415
-
-        lm = resolve_active_lm(site="usage._reasoning_records_from_history_slice")
-        lms = [lm] if lm else []
-    lms = [lm for lm in lms if lm is not None]
-    if not lms:
-        return []
-    snap = {id(lms[0]): start} if isinstance(start, int) else (start or {})
     records: list[dict[str, Any]] = []
-    for lm in lms:
-        start_idx = snap.get(id(lm), 0)
-        history = getattr(lm, "history", None) or []
-        for entry in history[start_idx:]:
-            if not isinstance(entry, dict):
-                continue
-            reasoning = _entry_reasoning_text(entry)
-            if not reasoning:
-                continue
-            records.append(
-                {
-                    "model": entry.get("model") or "",
-                    "question": _entry_prompt_text(entry),
-                    "reasoning": reasoning,
-                    "response": _entry_response_text(entry),
-                    "reasoning_chars": len(reasoning),
-                    "timestamp": entry.get("timestamp") or "",
-                }
-            )
+    for entry in _turn_calls(start):
+        reasoning = _entry_reasoning_text(entry)
+        if not reasoning:
+            continue
+        records.append(
+            {
+                "model": entry.get("model") or "",
+                "question": _entry_prompt_text(entry),
+                "reasoning": reasoning,
+                "response": _entry_response_text(entry),
+                "reasoning_chars": len(reasoning),
+                "timestamp": entry.get("timestamp") or "",
+            }
+        )
     return records
 
 
@@ -410,14 +298,14 @@ def capture_reasoning_log(state: "TurnState") -> None:
     """
 
     # Reasoning capture: log the chain-of-thought tokens for EVERY LM call this
-    # turn (planner + each expert + chat), extracted from dspy.lm.history. Most
+    # turn (planner + each expert + chat), read from the turn's calls. Most
     # stacks discard reasoning_content; we persist (question, reasoning, response)
     # on the assistant message metadata because the reasoning has scientific
     # value for analysing how the model reached its answer. Gated by
     # CLIO_CAPTURE_REASONING (default on); set to 0 to avoid the metadata growth.
     if _capture_reasoning_enabled():
         try:
-            _reasoning_log = _reasoning_records_from_history_slice(state.history_start, state.app)
+            _reasoning_log = _reasoning_records_from_turn_calls(state.calls_start)
         except Exception:  # noqa: BLE001 - reasoning capture is best-effort, never fail a turn
             _reasoning_log = []
         if _reasoning_log:
@@ -433,115 +321,39 @@ def capture_reasoning_log(state: "TurnState") -> None:
             )
 
 
-def _usage_from_dspy_history() -> dict[str, Any]:
-    """Reach into DSPy's currently-configured LM and pull the most
-    recent call's usage block. Returns ``{}`` whenever DSPy isn't
-    importable, no LM is configured, or the history is empty —
-    callers default to zeros.
-
-    Best-effort. DSPy's history shape changes between minor versions;
-    we accept any dict-shaped record under ``lm.history[-1]`` whose
-    ``usage`` (or ``response.usage``) carries the OpenAI-style keys
-    we already use on the wire.
-    """
-
-    from clio_agent.gact.runtime.ambient_lm import resolve_active_lm  # noqa: PLC0415
-
-    lm = resolve_active_lm(site="usage._usage_from_dspy_history")
-    if lm is None:
-        return {}
-    history = getattr(lm, "history", None)
-    if not history:
-        return {}
-    last = history[-1]
-    usage = last.get("usage") if isinstance(last, dict) else getattr(last, "usage", None)
-    if usage is None and isinstance(last, dict):
-        resp = last.get("response", {}) or {}
-        usage = resp.get("usage", {}) if isinstance(resp, dict) else None
-    if not isinstance(usage, dict):
-        return {}
-    input_tok = int(usage.get("prompt_tokens") or usage.get("input_tokens") or 0)
-    output_tok = int(usage.get("completion_tokens") or usage.get("output_tokens") or 0)
-    cache_read, cache_write, _ = _usage_cache_tokens(usage)
-    # dspy.clients.base_lm records a REAL provider/subscription cost as the
-    # history entry's own top-level "cost" (from the LM response's
-    # ``_hidden_params["response_cost"]``) -- a SIBLING of "usage", not nested
-    # inside it. Primary source; the nested usage["cost_usd"]/["total_cost"]
-    # fallback covers upstream OpenAI-compatible proxies that stick their own
-    # cost field onto the usage block instead (iowarp/clio-agent#8).
-    entry_cost_raw = last.get("cost") if isinstance(last, dict) else getattr(last, "cost", None)
-    if entry_cost_raw is None:
-        entry_cost_raw = usage.get("cost_usd") or usage.get("total_cost")
-    raw_cost = float(entry_cost_raw or 0.0)
-    cost_known = entry_cost_raw is not None
-    # iowarp/clio-agent#8: some OpenAI-compatible proxies don't pass
-    # cost_usd through, so the upstream usage dict reports zero. Fall
-    # back to a per-token price table keyed by the LM's model id when
-    # raw_cost == 0.
-    if raw_cost == 0.0 and not cost_known:
-        model = ""
-        if isinstance(last, dict):
-            model = last.get("model") or last.get("response", {}).get("model", "") or ""
-        else:
-            model = getattr(last, "model", "") or ""
-        cost_known = _price_table_match(model) is not None
-        raw_cost = _estimate_cost_usd(model, input_tok, output_tok)
-    return {
-        "input": input_tok,
-        "output": output_tok,
-        "cache_read": cache_read,
-        "cache_write": cache_write,
-        "cost_usd": raw_cost,
-        "cost_known": cost_known,
-    }
-
-
-# iowarp/clio-agent#8: per-million-token prices (USD) for models we
-# expect to see through our presets. Best-effort — the LM provider
-# is the source of truth when it actually reports cost; this kicks
-# in only when the upstream usage dict has zero. Keys match the
-# substrings we look for in the reported model id (case-insensitive).
-_PRICE_TABLE_PER_M: dict[str, tuple[float, float]] = {
-    # (input $/M tokens, output $/M tokens) as of model-card pricing.
-    "claude-haiku-4-5": (1.0, 5.0),
-    "claude-sonnet-4": (3.0, 15.0),
-    "claude-sonnet-4-6": (3.0, 15.0),
-    "claude-opus-4": (15.0, 75.0),
-    "claude-opus-4-6": (15.0, 75.0),
-    "claude-3-5-haiku": (0.8, 4.0),
-    "claude-3-5-sonnet": (3.0, 15.0),
-    "claude-3-opus": (15.0, 75.0),
-    # OpenRouter free tier — by definition $0.
-    ":free": (0.0, 0.0),
-    # OpenAI defaults if someone wires direct.
-    "gpt-4o-mini": (0.15, 0.6),
-    "gpt-4o": (2.5, 10.0),
-}
-
-
 def _price_table_match(model_id: str) -> Optional[tuple[float, float]]:
-    """Return the ``_PRICE_TABLE_PER_M`` entry substring-matching ``model_id``.
+    """List price per million tokens (input, output) for ``model_id``, or ``None``.
 
-    ``None`` means the model is genuinely unpriced here (e.g. a local/self-hosted
-    model the marketplace can't look up) -- distinct from a matched entry that
-    happens to price at $0 (the OpenRouter ``:free`` tier). Callers use this to
-    tell "no cost data exists" apart from "the provider/table says it's free."
+    Read from the community model cost map (LiteLLM's, the same source the
+    provider catalog's pricing facts cite), never a table compiled into CLIO.
+    ``None`` means the model is genuinely unpriced (a local or self-hosted
+    model) -- distinct from a listed price of $0 (an OpenRouter ``:free``
+    model). Callers use this to tell "no cost data exists" apart from "free".
     """
 
     if not model_id:
         return None
-    needle = model_id.lower()
-    for key, prices in _PRICE_TABLE_PER_M.items():
-        if key in needle:
-            return prices
-    return None
+    from clio_agent.providers.handshake.sources.litellm_catalog import (  # noqa: PLC0415
+        lookup_litellm_info,
+    )
+
+    found = lookup_litellm_info(model_id, allow_fetch=False)
+    if found is None:
+        return None
+    info = found[1]
+    inp, out = info.get("input_cost_per_token"), info.get("output_cost_per_token")
+    if isinstance(inp, bool) or isinstance(out, bool):
+        return None
+    if not (isinstance(inp, int | float) and isinstance(out, int | float)):
+        return None
+    return inp * 1_000_000, out * 1_000_000
 
 
 def _estimate_cost_usd(model_id: str, input_tokens: int, output_tokens: int) -> float:
     """Best-effort cost estimate when the LM doesn't report one.
 
-    Substring-matches the model id against ``_PRICE_TABLE_PER_M``;
-    returns 0.0 when nothing matches (no false-precision number).
+    Prices the tokens at the model's list price (:func:`_price_table_match`);
+    returns 0.0 when the model has none (no false-precision number).
     """
 
     match = _price_table_match(model_id)

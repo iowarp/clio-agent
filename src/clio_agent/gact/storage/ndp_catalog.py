@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import asyncio
 import hashlib
 import json
 import os
@@ -17,6 +16,7 @@ from pydantic import Field, field_validator
 from clio_agent.gact.storage import ndp_discovery_client as catalog_client
 from clio_agent.gact.storage.models import StorageModel
 from clio_agent.gact.storage.ndp_ckan import PUBLIC_CATALOG_URL, NDPCkanCatalog, catalog_description
+from clio_agent.runtime.fresh_loop import run_in_new_loop
 
 
 class NDPEndpoint(StorageModel):
@@ -207,7 +207,7 @@ class NDPCatalog:
                         for record in records
                     ]
                 elif organization:
-                    rows = asyncio.run(
+                    rows = run_in_new_loop(
                         client.search_datasets_advanced(
                             owner_org=organization, server=endpoint.server
                         )
@@ -231,7 +231,7 @@ class NDPCatalog:
                             )
                         ]
                 else:
-                    rows = asyncio.run(
+                    rows = run_in_new_loop(
                         client.search_datasets_simple(terms=[query], server=endpoint.server)
                     )
                 if not endpoint.catalog_url:
@@ -321,7 +321,7 @@ class NDPCatalog:
                 names = (
                     self._public_catalog.organizations(endpoint.catalog_url)
                     if endpoint.catalog_url
-                    else asyncio.run(
+                    else run_in_new_loop(
                         client.list_organizations(name_filter=query or None, server=endpoint.server)
                     )
                 )

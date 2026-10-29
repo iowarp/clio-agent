@@ -31,8 +31,12 @@ def register_session_defaults_routes(app: FastAPI) -> None:
     def _respond(value: SessionDefaults) -> SessionDefaultsResponse:
         # Typed load/migration facts (a quarantined file, a cleared legacy
         # effort) travel with the defaults instead of living only in a log.
+        from clio_agent.gact.agents.resolution import default_agent_ref  # noqa: PLC0415
+
         return SessionDefaultsResponse(
-            **value.model_dump(), degradations=app.state.session_defaults.degradations
+            **value.model_dump(),
+            default_agent_ref=default_agent_ref(app),
+            degradations=app.state.session_defaults.degradations,
         )
 
     @app.get("/v1/session-defaults", response_model=SessionDefaultsResponse)

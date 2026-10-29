@@ -24,6 +24,7 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 SPOTTER_APPROVAL_MODE = "spotter-ai"
+# gact-tui recognizes the watcher card by this title prefix (subagent-card.tsx); change both together.
 WATCHER_RUN_LABEL = "SPOTTER AI"
 _WAKE_TURN_FINAL_TEXT = "Watched session activity: the session's turn completed. The provenance store may have new entries."
 _WAKE_COALESCED_TEXT = "Watched session activity: multiple tool calls completed. The provenance store may have new entries."
@@ -103,28 +104,15 @@ def _wake_text(*, tool_name: str = "", tool_ok: bool = True, tool_result: Any = 
     )
 
 
-def _watcher_blueprint_id() -> str:
-    """The Agent Blueprint id the watcher child activates (config: ``spotter.watcher_blueprint_id``)."""
+def _watcher_agent_ref() -> str:
+    """The agent the watcher child runs (config: ``spotter.watcher_agent``)."""
 
     from clio_agent import conf  # noqa: PLC0415
 
     return conf.resolve(
-        "spotter.watcher_blueprint_id",
-        env="CLIO_SPOTTER_BLUEPRINT_ID",
-        default="spotter-ai",
-        cast=conf.as_str,
-    )
-
-
-def _watcher_expert_id() -> str:
-    """The expert id the watcher child runs (config: ``spotter.watcher_expert_id``)."""
-
-    from clio_agent import conf  # noqa: PLC0415
-
-    return conf.resolve(
-        "spotter.watcher_expert_id",
-        env="CLIO_SPOTTER_EXPERT_ID",
-        default="spotter_watcher",
+        "spotter.watcher_agent",
+        env="CLIO_SPOTTER_AGENT",
+        default="clio/spotter-ai",
         cast=conf.as_str,
     )
 
@@ -145,7 +133,7 @@ def sync_watcher_for_mode(
     title rename, a pin toggle) is a true no-op: neither branch runs.
 
     An arming transition is GATED first (:mod:`clio_agent.gact.spotter_arming`,
-    which carries the full case): the watcher blueprint's declared MCP servers
+    which carries the full case): the watcher agent's plugin MCP servers
     must statically resolve. When they do not, the transition is REFUSED with a
     typed 422 instead of arming a watcher that cannot execute — whose only
     downstream signal would be the clearance barrier denying every mutating tool
@@ -237,24 +225,19 @@ def ensure_spotter_watcher(app: "FastAPI", session: "Session") -> TaskSnapshot |
                 predecessor=parent,
                 invocation_id="spotter-arm:" + uuid4().hex,
             )
-        from clio_agent.gact.spawn_context import resolve_installed_blueprint_target
-
-        root, scope, _ = resolve_installed_blueprint_target(
-            app, _watcher_blueprint_id(), workspace_id=session.workspace_id
-        )
         invocation = "spotter:" + parent.handle
     # Route callers run this finite adapter off the application loop.
     receipt = asyncio.run_coroutine_threadsafe(
         owner.spawn(
             owner.caller(session.id),
             "Observe the owning session when workload evidence arrives and raise factual review findings.",
-            root,
+            _watcher_agent_ref(),
             invocation,
-            target_scope=scope,
             resource_id="spotter:" + session.id,
             session_metadata={"spotter_parent_session": session.id},
             approval_profile="spotter-watcher",
             start=False,
+            standing=True,
         ),
         owner._loop,
     ).result()

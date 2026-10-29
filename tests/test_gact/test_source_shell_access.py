@@ -79,7 +79,7 @@ def test_approved_read_does_not_request_writable_folder(
         policy.validate_write(str(snapshot / "data.csv"))
 
 
-@pytest.mark.parametrize("name", ["fs_propose_edit", "fs_apply_edit_write"])
+@pytest.mark.parametrize("name", ["fs_write_file", "fs_edit_file"])
 def test_edit_tools_still_reject_read_only_source(
     source_paths: tuple[Path, Path], name: str
 ) -> None:

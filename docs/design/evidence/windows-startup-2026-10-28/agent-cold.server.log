@@ -1,0 +1,74 @@
+INFO:     Started server process [35404]
+INFO:     Waiting for application startup.
+WARNING | ⚑ BOOT mark=lifespan_started at=14.721
+WARNING | ⚑ BOOT mark=serving at=19.210
+INFO:     Application startup complete.
+INFO:     Uvicorn running on http://127.0.0.1:19101 (Press CTRL+C to quit)
+INFO:     127.0.0.1:50284 - "GET /v1/health HTTP/1.1" 200 OK
+WARNING | ⚑ BOOT step=marketplace seconds=4.607 start=19.236 thread=MainThread outcome=ok
+INFO:     127.0.0.1:50291 - "GET /v1/health HTTP/1.1" 200 OK
+INFO:     127.0.0.1:56416 - "GET /v1/health HTTP/1.1" 200 OK
+INFO:     127.0.0.1:56417 - "GET /v1/health HTTP/1.1" 200 OK
+INFO:     127.0.0.1:56418 - "GET /v1/health HTTP/1.1" 200 OK
+INFO:     127.0.0.1:56419 - "GET /v1/health HTTP/1.1" 200 OK
+WARNING | ⚑ BOOT step=orphans seconds=7.331 start=19.210 thread=MainThread outcome=ok
+INFO:     127.0.0.1:56420 - "GET /v1/health HTTP/1.1" 200 OK
+INFO:     127.0.0.1:56424 - "GET /v1/health HTTP/1.1" 200 OK
+INFO:     127.0.0.1:56428 - "GET /v1/health HTTP/1.1" 200 OK
+INFO:     127.0.0.1:56430 - "GET /v1/health HTTP/1.1" 200 OK
+INFO:     127.0.0.1:56433 - "GET /v1/health HTTP/1.1" 200 OK
+INFO:     127.0.0.1:56436 - "GET /v1/health HTTP/1.1" 200 OK
+INFO:     127.0.0.1:56437 - "GET /v1/health HTTP/1.1" 200 OK
+INFO:     127.0.0.1:56438 - "GET /v1/health HTTP/1.1" 200 OK
+INFO:     127.0.0.1:56440 - "GET /v1/health HTTP/1.1" 200 OK
+INFO:     127.0.0.1:56441 - "GET /v1/health HTTP/1.1" 200 OK
+INFO:     127.0.0.1:56442 - "GET /v1/health HTTP/1.1" 200 OK
+INFO:     127.0.0.1:56443 - "GET /v1/health HTTP/1.1" 200 OK
+INFO:     127.0.0.1:56444 - "GET /v1/health HTTP/1.1" 200 OK
+INFO:     127.0.0.1:56446 - "GET /v1/health HTTP/1.1" 200 OK
+INFO:     127.0.0.1:56449 - "GET /v1/health HTTP/1.1" 200 OK
+INFO:     127.0.0.1:56450 - "GET /v1/health HTTP/1.1" 200 OK
+INFO:     127.0.0.1:56457 - "GET /v1/health HTTP/1.1" 200 OK
+INFO:     127.0.0.1:56458 - "GET /v1/health HTTP/1.1" 200 OK
+INFO:     127.0.0.1:56483 - "GET /v1/health HTTP/1.1" 200 OK
+INFO:     127.0.0.1:56515 - "GET /v1/health HTTP/1.1" 200 OK
+INFO:     127.0.0.1:56576 - "GET /v1/health HTTP/1.1" 200 OK
+INFO:     127.0.0.1:56698 - "GET /v1/health HTTP/1.1" 200 OK
+INFO:     127.0.0.1:56807 - "GET /v1/health HTTP/1.1" 200 OK
+INFO:     127.0.0.1:54637 - "GET /v1/health HTTP/1.1" 200 OK
+INFO:     127.0.0.1:54767 - "GET /v1/health HTTP/1.1" 200 OK
+INFO:     127.0.0.1:54870 - "GET /v1/health HTTP/1.1" 200 OK
+INFO:     127.0.0.1:54982 - "GET /v1/health HTTP/1.1" 200 OK
+INFO:     127.0.0.1:55073 - "GET /v1/health HTTP/1.1" 200 OK
+INFO:     127.0.0.1:55188 - "GET /v1/health HTTP/1.1" 200 OK
+WARNING | ⚑ BOOT step=task_history_restore seconds=0.015 start=34.233 thread=asyncio_0 outcome=ok
+WARNING | ⚑ SESSION restart_interrupted session=sess_11f2efb86ce5 transcript=pending
+WARNING | ⚑ SESSION restart_interrupted session=sess_5d5c54a9d37e transcript=pending
+WARNING | ⚑ SESSION restart_interrupted session=sess_664c9bd276eb transcript=pending
+WARNING | ⚑ SESSION restart_interrupted session=sess_6c6d1b35a55d transcript=pending
+WARNING | ⚑ SESSION restart_interrupted session=sess_263da4f0c806 transcript=pending
+WARNING | ⚑ SESSION restart_interrupted session=sess_749ff93afbfb transcript=pending
+WARNING | ⚑ SESSION restart_interrupted session=sess_bb077393693b transcript=pending
+WARNING | memory pass skipped reason=lm_provider_unconfigured roles=memory_extract,memory_consolidate
+WARNING | ⚑ SESSION restart_interrupted session=sess_dfa3670a75e2 transcript=pending
+WARNING | ⚑ SESSION restart_interrupted session=sess_f51b6c6909e9 transcript=pending
+WARNING | ⚑ SESSION restart_interrupted session=sess_95a5f85535a2 transcript=pending
+WARNING | ⚑ SESSION restart_interrupted session=sess_79015b5bc504c431b9fde260db3f1933 transcript=pending
+WARNING | ⚑ BOOT step=interrupted_sessions seconds=0.081 start=34.259 thread=asyncio_0 outcome=ok
+WARNING | ⚑ BOOT step=interaction_times seconds=0.000 start=34.340 thread=asyncio_0 outcome=ok
+WARNING | ⚑ BOOT step=clio_core_and_store seconds=6.708 start=27.632 thread=MainThread outcome=ok
+INFO:     127.0.0.1:55243 - "GET /v1/health HTTP/1.1" 200 OK
+INFO:     127.0.0.1:55278 - "GET /v1/health HTTP/1.1" 200 OK
+INFO:     127.0.0.1:55317 - "GET /v1/health HTTP/1.1" 200 OK
+WARNING | ⚑ BOOT step=obligations_held seconds=0.557 start=34.434 thread=MainThread outcome=ok
+WARNING | ⚑ BOOT mark=task_runtime_ready at=34.991
+INFO:     127.0.0.1:55353 - "GET /v1/health HTTP/1.1" 200 OK
+INFO:     127.0.0.1:55355 - "GET /v1/sessions?limit=30 HTTP/1.1" 200 OK
+WARNING | ⚑ TOOLS session_warmup_deferred_agent_starting session=sess_6fce153395d2775d2d7caa98663cf17a trigger=conversation_opened
+INFO:     127.0.0.1:55358 - "GET /v1/sessions/sess_6fce153395d2775d2d7caa98663cf17a/messages?limit=50 HTTP/1.1" 200 OK
+INFO:     Shutting down
+INFO:     Waiting for application shutdown.
+WARNING | ⚑ BOOT step=first_doctor_pass seconds=1.194 start=34.341 thread=MainThread outcome=CancelledError
+WARNING | ⚑ BOOT step=obligations seconds=0.548 start=34.991 thread=MainThread outcome=CancelledError
+INFO:     Application shutdown complete.
+INFO:     Finished server process [35404]

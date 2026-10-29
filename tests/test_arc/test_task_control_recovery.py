@@ -303,3 +303,77 @@ async def test_deferred_peer_control_rechecks_revoked_rights_before_input(
         await asyncio.gather(operation, return_exceptions=True)
         await owner.shutdown()
         await owner.recovery.drain()
+
+
+@pytest.mark.asyncio
+async def test_an_agent_wait_ends_when_its_conversation_is_stopped(
+    arc: ARCMemory,
+    tmp_path: Path,
+) -> None:
+    """Stop retires a turn only once its in-flight call returns: a wait_tasks blocked on
+    running work must return when its own assignment is stopped, leaving the work running."""
+    from uuid import uuid4
+
+    app, owner, root = await create_environment(arc, tmp_path)
+    owner.execution_gate = lambda _sid: "human-review"
+    owner.start()
+    try:
+        caller = TaskCaller(root.owner.session_id, "human")
+        child = await owner.spawn(caller, "Queued assignment", "writer", "queued-child")
+        operations = TaskOperations(
+            owner.history, lambda task, actor: owner.cancel(actor, task.handle)
+        )
+        waiting = asyncio.create_task(operations.wait(caller, child["handle"]))
+        await asyncio.sleep(0.2)
+        assert not waiting.done()
+
+        current = owner.history.task_snapshot(root.handle)
+        await asyncio.to_thread(
+            owner.history.record_snapshot,
+            current.model_copy(update={"activity": "stopping"}),
+            observation_id=uuid4().hex,
+        )
+        result = await asyncio.wait_for(waiting, 5)
+
+        assert result["interrupted"] == "stopped"
+        assert result["pending"] == [child["handle"]]
+        assert owner.history.task_snapshot(child["handle"]).terminal_at is None
+    finally:
+        await owner.shutdown()
+        await owner.recovery.drain()
+
+
+@pytest.mark.asyncio
+async def test_a_cancel_from_a_short_lived_loop_still_settles(
+    arc: ARCMemory,
+    tmp_path: Path,
+) -> None:
+    """A model's cancel_tasks can run on an executor thread's own asyncio.run loop. The
+    cancellation job must run on the owner's loop, or it dies with that loop and the
+    task stays 'cancelling' forever."""
+    import threading
+
+    app, owner, root = await create_environment(arc, tmp_path)
+    owner.execution_gate = lambda _sid: "human-review"
+    owner.start()
+    try:
+        caller = TaskCaller(root.owner.session_id, "human")
+        child = await owner.spawn(caller, "Queued assignment", "writer", "queued-child")
+        replies: list[dict[str, Any]] = []
+
+        def cancel_from_another_loop() -> None:
+            replies.append(asyncio.run(owner.cancel(caller, child["handle"])))
+
+        thread = threading.Thread(target=cancel_from_another_loop)
+        thread.start()
+        await asyncio.to_thread(thread.join, 10)
+        assert replies and replies[0]["cancellation_requested"] is True
+
+        operations = TaskOperations(
+            owner.history, lambda task, actor: owner.cancel(actor, task.handle)
+        )
+        settled = await asyncio.wait_for(operations.wait(caller, child["handle"]), 10)
+        assert settled["outcomes"][0]["status"] == "cancelled"
+    finally:
+        await owner.shutdown()
+        await owner.recovery.drain()

@@ -21,6 +21,19 @@ def _tool_workspace_root(sid: str) -> str:
     return str(getattr(workspace, "root_path", "") or "")
 
 
+def _tree_root(app: Any, sid: str) -> str:
+    """The session at the root of ``sid``'s task tree (``sid`` itself for a root)."""
+
+    history = getattr(getattr(app, "state", None), "task_history", None)
+    task = history.latest_assignment(sid) if history is not None and sid else None
+    while history is not None and task is not None and task.owner.parent_handle:
+        parent = history.task_snapshot(task.owner.parent_handle)
+        if parent is None:
+            break
+        task = parent
+    return task.owner.session_id if task is not None else sid
+
+
 async def _finish_fleet_lease_change(change: asyncio.Task[Any]) -> bool:
     """Join an off-loop lease change even when cancellation arrives during it."""
     cancelled = False
@@ -63,7 +76,7 @@ async def _async_tool_session_context(sid: str) -> AsyncIterator[None]:
 
 @contextmanager
 def _tool_session_context(sid: str, *, lease_fleet: bool = True) -> Iterator[None]:
-    """Bind the tool session id + workspace root + active blueprint for the turn.
+    """Bind the tool session id + workspace root + plugin MCP server set for the turn.
 
     The four tool-runtime hooks are resolved per tool call by the installed
     ``ToolRuntimeHooks`` resolver (``resolve_tool_runtime`` dispatching on the
@@ -71,25 +84,27 @@ def _tool_session_context(sid: str, *, lease_fleet: bool = True) -> Iterator[Non
     the tool session id (read by the permission gate to attribute the call to
     the live turn's session), the workspace root — resolved off the live app so
     the tool executor grounds output artifacts into the bound workspace (#735) —
-    and the session's EXPLICITLY-activated Agent Blueprint id (#1232 pt 1), so
-    ``ClioAgent._active_tool_executor`` mounts exactly that blueprint's declared
-    ``mcp_servers`` (if any) into the per-workspace gateway, never every
-    installed blueprint's servers and never at boot.
+    and the session's plugin MCP server set (#1232 pt 1), so
+    ``ClioAgent._active_tool_executor`` mounts exactly the servers of the
+    session's resolved plugins into the per-workspace gateway, never every
+    installed plugin's servers and never at boot.
     """
-    from clio_agent.gact.agents.resolution import (  # noqa: PLC0415
-        _runtime_effective_agent_blueprint_id,
-        _runtime_effective_agent_blueprint_path,
-    )
+    from clio_agent.gact.agents.resolution import session_server_set  # noqa: PLC0415
+    from clio_agent.gact.node_folders import session_node_folder  # noqa: PLC0415
     from clio_agent.tools.execution import (  # noqa: PLC0415
-        tool_blueprint_context,
+        tool_server_set_context,
         tool_workspace_context,
     )
+    from clio_agent.tools.write_scope import tool_write_root_context  # noqa: PLC0415
 
     workspace_root = _tool_workspace_root(sid)
     app = _ctx.active_app()
+    node_folder = session_node_folder(app, sid)
+    from clio_agent.tools.caller_scope import tool_caller_context  # noqa: PLC0415
+
+    caller = tool_caller_context(sid, _tree_root(app, sid))
     app_state = getattr(app, "state", None) if app is not None else None
-    blueprint_id = _runtime_effective_agent_blueprint_id(app, sid) if app is not None else ""
-    blueprint_path = _runtime_effective_agent_blueprint_path(app, sid) if app is not None else None
+    server_set = session_server_set(app, sid) if app is not None else ""
     token = _ctx.set_tool_session_id(sid)
     # #933: pin the workspace fleet for the WHOLE turn — between-call idleness
     # inside a live turn must not count toward the reaper's TTL.
@@ -102,7 +117,9 @@ def _tool_session_context(sid: str, *, lease_fleet: bool = True) -> Iterator[Non
             with (
                 lease(workspace_root),
                 tool_workspace_context(workspace_root),
-                tool_blueprint_context(blueprint_id, blueprint_path),
+                tool_write_root_context(node_folder),
+                caller,
+                tool_server_set_context(server_set),
             ):
                 yield
         else:
@@ -117,7 +134,9 @@ def _tool_session_context(sid: str, *, lease_fleet: bool = True) -> Iterator[Non
                 )
             with (
                 tool_workspace_context(workspace_root),
-                tool_blueprint_context(blueprint_id, blueprint_path),
+                tool_write_root_context(node_folder),
+                caller,
+                tool_server_set_context(server_set),
             ):
                 yield
     finally:

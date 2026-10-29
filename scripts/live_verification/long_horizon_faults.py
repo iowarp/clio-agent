@@ -257,7 +257,7 @@ class Faults(LongHorizonAcceptance):
     def answered_question(self) -> None:
         """An overdue loop cannot bypass human input; an actual answer resumes once."""
         sid = self.session("Answer an overdue human question")
-        self.call("POST", f"/v1/sessions/{sid}/agent-blueprint", {"blueprint_id": "base-agent"})
+        self.call("PATCH", f"/v1/sessions/{sid}/agent", {"ref": "clio/standard"})
         self.command(
             sid, "goal", "answer.md was successfully written containing exactly HUMAN-BLUE"
         )

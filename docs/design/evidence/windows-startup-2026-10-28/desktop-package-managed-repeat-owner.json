@@ -1,0 +1,8 @@
+{
+  "purpose": "Requested installed develop desktop, retained after acceptance",
+  "installer": "D:\\Libraries\\Documents\\projects\\gact-windows-startup-acceptance\\.acceptance-runtime\\cargo-target\\release\\bundle\\nsis\\CLIO Desktop_0.7.3_x64-setup.exe",
+  "profile": "D:\\cw\\mp",
+  "started_at": "2026-10-28T07:36:05.2168964Z",
+  "target_existed": true,
+  "target": "D:\\CLIO-Desktop-095"
+}

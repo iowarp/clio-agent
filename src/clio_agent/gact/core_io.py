@@ -7,7 +7,7 @@ import contextvars
 import threading
 import weakref
 from collections.abc import Callable
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import Future, ThreadPoolExecutor
 from functools import partial
 from typing import Any, TypeVar
 
@@ -37,6 +37,10 @@ class CoreIO:
 
     async def run(self, operation: Callable[..., T], /, *args: Any, **kwargs: Any) -> T:
         """Await Core work with caller context, without blocking native notification I/O."""
+        return await asyncio.wrap_future(self.submit(operation, *args, **kwargs))
+
+    def submit(self, operation: Callable[..., T], /, *args: Any, **kwargs: Any) -> Future[T]:
+        """Queue one Core operation without tying its lifetime to an asyncio waiter."""
         with self._lock:
             if self._closed:
                 raise RuntimeError("Core I/O resource is closed")
@@ -54,7 +58,7 @@ class CoreIO:
             context = contextvars.copy_context()
             future = executor.submit(context.run, partial(operation, *args, **kwargs))
             self._submitted = True
-        return await asyncio.wrap_future(future)
+        return future
 
     async def close(self) -> None:
         """Drain submitted I/O and retire its thread without borrowing another executor."""

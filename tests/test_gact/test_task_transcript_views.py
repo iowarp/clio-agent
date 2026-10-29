@@ -479,13 +479,13 @@ def test_legacy_activity_alias_does_not_reveal_unauthorized_session_existence(
     transcript_world: TranscriptWorld,
 ) -> None:
     """Missing and forbidden targets reach the same authorization boundary first."""
-    from clio_agent.gact.routes.memory import _memory_session_summary
+    from clio_agent.gact.routes.session_recall import _recall_session_summary
 
     world = transcript_world
     failures = []
     for target in (world.target, "sess_missing_ungranted"):
         with pytest.raises(ValueError) as denied:
-            _memory_session_summary(world.app, target, caller_id=world.reader)
+            _recall_session_summary(world.app, target, caller_id=world.reader)
         failures.append(str(denied.value))
     assert failures[0] == failures[1]
 

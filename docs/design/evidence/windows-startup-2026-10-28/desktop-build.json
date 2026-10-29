@@ -1,0 +1,10 @@
+{
+  "sha256": "910DACFDFB7BBED9A9EFDAE338ED34588E02D16B185F57A52898C7BC56A48F40",
+  "installer_target": "D:\\CLIO-Desktop-095",
+  "clio_agent": "c6cb5535b20f8fdf0b018a6924ae497f59a40adb",
+  "gact_tui": "59a0c97cfa78a233c1c361f2df8e72bdfa12b752",
+  "bytes": 549961989,
+  "installer": "CLIO Desktop_0.7.3_x64-setup.exe",
+  "signed": false,
+  "native_brand": "CLIO managed"
+}

@@ -1,4 +1,4 @@
-"""Shared filesystem write operations for CLIO edit workflows."""
+"""The one policy-checked text write behind the agent's file tools and Undo."""
 
 from __future__ import annotations
 
@@ -13,9 +13,9 @@ from clio_agent.tools.file_policy import validate_non_empty_string, validate_wri
 def write_text_with_policy(filepath: str, new_content: str) -> dict[str, Any]:
     """Write text after enforcing CLIO's write file policy.
 
-    This is the single implementation behind the MCP ``fs_apply_edit_write``
-    tool and the user-approved GACT ``/diffs/apply`` path. Callers may add
-    their own permission prompts or audit records before invoking it.
+    This is the single implementation behind the agent's ``fs_write_file`` and
+    ``fs_edit_file`` tools and the person's ``/diffs/revert`` (Undo). Callers
+    may add their own permission prompts or audit records before invoking it.
 
     The bytes on disk are the author's bytes, verbatim. ``newline=""`` disables
     Python's text-mode newline translation, which under its default
@@ -50,11 +50,9 @@ def write_text_with_policy(filepath: str, new_content: str) -> dict[str, Any]:
         "path": str(path),
         # #1247: the same value under the RECOGNIZED result-designation key.
         # The designation vocabulary deliberately excludes bare ``path`` (it
-        # commonly echoes an INPUT), so a DIRECT fs_apply_edit_write tool call
-        # never minted its output — only the /diffs/apply route (seam b) did.
-        # The writer KNOWS it wrote; declaring ``written_path`` makes seam (a)
-        # mint direct writes too, which is what puts the generated edge on the
-        # transform record (live gap: executions with zero OUTPUT events).
+        # commonly echoes an INPUT). The writer KNOWS it wrote; declaring
+        # ``written_path`` makes seam (a) mint the agent's writes, which is what
+        # puts the generated edge on the transform record.
         "written_path": str(path),
         "size_bytes": len(on_disk),
         "sha256": hashlib.sha256(on_disk).hexdigest(),

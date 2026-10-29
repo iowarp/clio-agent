@@ -1,0 +1,205 @@
+---
+title: "Long-term memory"
+description: What CLIO keeps about you and your projects across conversations, how it learns it, and how you review, correct and remove it.
+---
+
+import { Steps } from '@astrojs/starlight/components';
+import Capture from '../../../components/overview/Capture';
+import { captureImage } from '../../../lib/captures';
+import documents from '../../../assets/captures/docs-memory-documents.png';
+import inbox from '../../../assets/captures/docs-memory-inbox.png';
+import document from '../../../assets/captures/docs-memory-document.png';
+import history from '../../../assets/captures/docs-memory-history.png';
+import popover from '../../../assets/captures/docs-memory-popover.png';
+import notice from '../../../assets/captures/docs-memory-notice.png';
+import off from '../../../assets/captures/docs-memory-off.png';
+
+Long-term memory is what CLIO keeps about you, your projects and how you work, so
+a new conversation starts knowing that you want SI units on your axes or that your
+jobs run on Polaris. It is separate from a conversation's own history: memory
+lasts across conversations, and you can read and change every word of it on the
+memory page.
+
+Everything shown on this page comes from a real session against a running CLIO
+server; the conversations quoted are those sessions' own text.
+
+## What memory holds
+
+Memory is a set of short documents, one per subject. Each document is a list of
+facts, one sentence each, and every fact records where it came from.
+
+| Category | Holds |
+| --- | --- |
+| Profile | Who you are: name, role, institution |
+| Preferences | How you want work done |
+| Topics | Subjects you study or ask about |
+| Areas of work | Ongoing efforts: projects, papers, campaigns |
+| People | Colleagues and contacts |
+| Environments | Machines, allocations, accounts, software setups |
+
+**Account memory** follows you into every workspace. **Workspace memory**
+belongs to one workspace's project and stays there. A workspace can stop reading
+account memory: open the workspace's menu, choose **Edit workspace**, and turn off
+**Use account memory**. Its conversations then see only that workspace's memory.
+
+<Capture client:visible image={await captureImage(documents)}
+  alt="The memory page listing account documents under Profile, Preferences, Areas of work and Environments, then the memory-lab workspace's own Beamline 7 document, each with its fact count and how often it was read"
+  caption="What is remembered, by scope and category. Each row says how many facts it holds and when the agent last read it."
+  sizes="(min-width: 50rem) 46rem, 100vw" />
+
+## How memory is created
+
+### When you ask
+
+Say "remember", "actually it is", or "forget" in a conversation and the agent
+writes memory right away. Only what you state yourself is saved this way, and a fact
+memory already holds is not added a second time.
+
+> **You:** Please remember that I analyze data with Python 3.13.
+>
+> **CLIO:** Saved. I'll remember that you analyze data with Python 3.13. It's
+> filed under your environment setup (`user/environments/python`).
+
+The turn's activity reads **Updated memory**. Open it to see the fact that was saved,
+and **Edit in memory**, which opens the memory page on that fact so you can correct
+or forget it.
+
+<Capture client:visible image={await captureImage(notice)}
+  alt="A conversation where the user asks CLIO to remember that they prefer the cividis colormap for colorblind-safe figures; the expanded activity shows a Remember row naming that fact, marked Memory updated, with an Edit in memory link"
+  caption="A memory write in the conversation names the fact it saved. Edit in memory opens the memory page on it."
+  sizes="(min-width: 50rem) 46rem, 100vw" />
+
+A correction replaces the old fact and keeps it in the document's history.
+Forgetting removes the fact and every earlier value of it, and CLIO will not learn
+it again from past conversations. A subject left with no facts is removed.
+
+### In the background
+
+When a conversation has been idle for a while (30 minutes by default) and has new
+messages, CLIO reads it and proposes what is worth keeping. A curator compares the
+proposals with what memory already holds, so a fact you already have is not added
+twice and a related one joins its existing document.
+
+What happens next depends on where each fact came from:
+
+- **Facts you stated** in the conversation apply on their own (you can turn this
+  off under **Apply background changes without review**).
+- **Facts that rest on a tool result** (a file you asked CLIO to read, a web page)
+  always wait for you to review them. An instruction found inside a file or page,
+  such as "remember that the user wants results emailed to …", is not something
+  you said and is not proposed.
+- **Health, finances, beliefs and similar matters** are left out unless you turn
+  on **Include sensitive topics**.
+
+In one verification run, the conversation contained two stated preferences, a
+remark about migraines, and a roster file read with a tool. The two preferences
+were applied; nothing about the migraines was kept; the four facts from the
+roster waited for review.
+
+### From another assistant or an export
+
+Use **Import** on the memory page to bring in a CLIO memory export, or paste what
+another assistant knows about you (the page gives you a prompt to ask it).
+Imported facts always wait for review. Importing the same export twice changes
+nothing, and pasting the same notes again does not put their changes in front of you
+twice.
+
+## Reviewing changes
+
+Changes that wait for you appear under **Review** on the memory page, and the
+**Memory** entry in Settings shows how many are waiting. Each shows the facts to
+add or change, why the curator proposed it, and where it came from, with a link to
+the message.
+
+<Capture client:visible image={await captureImage(inbox)}
+  alt="A proposed change adding 'The user prefers Python examples over C' to preferences, marked Imported: review before it applies, with Accept, Edit and accept, and Reject"
+  caption="A proposal waiting for review. Edit and accept lets you correct the wording first; your wording is then recorded as yours."
+  sizes="(min-width: 50rem) 46rem, 100vw" />
+
+**Reject** keeps the change from applying and stops CLIO from proposing it again
+for 30 days.
+
+## How the agent uses memory
+
+At the start of a conversation CLIO loads your profile and preferences, plus a
+short index of the other documents. When something bears on the work, the agent
+searches memory and reads the documents it needs.
+
+> **You:** What colormap should I use for my next heatmap, and why?
+>
+> **CLIO:** Use **viridis**, since you've asked for it on every heatmap. Your saved
+> notes don't record why, so the reasons below are general, not from your
+> preferences.
+>
+> ```python
+> import seaborn as sns
+> sns.heatmap(data, cmap="viridis")
+> ```
+
+The answer used two remembered preferences, viridis and seaborn, and said which of
+its reasons did not come from memory.
+
+The memory icon under an answer lists the documents that answer used, each linked
+to the memory page.
+
+<Capture client:visible image={await captureImage(popover)}
+  alt="An answer recommending viridis with seaborn code, with the memory popover open: Used 1 memory document, loaded at the start of the conversation, linking to user/preferences/preferences"
+  caption="Which memory an answer used. Loaded documents came with the conversation; read documents were looked up while answering."
+  sizes="(min-width: 50rem) 46rem, 100vw" />
+
+Agents you delegate work to can read memory but never change it. A branch of a
+conversation starts with the memory its parent had and can save new facts.
+
+## Correcting and removing memory
+
+Open a document on the memory page to see its facts. The icon beside each fact
+tells you where it came from (you, a conversation, a tool result or an import);
+hover it for when and in which conversation. Use the pencil to correct a fact and
+the bin to forget it.
+
+<Capture client:visible image={await captureImage(document)}
+  alt="The preferences document with six facts, each with a source icon (a person for facts the user stated, a wrench for one from a tool result) and correct and forget buttons, and 4 replaced facts collapsed below"
+  caption="A document's facts and their sources. Replaced values are kept below the live ones."
+  sizes="(min-width: 50rem) 46rem, 32rem" />
+
+Your correction is what the next conversation sees. After the Frontier project id
+was corrected on this page, a new conversation answered:
+
+> **CLIO:** Your Frontier project id is **CSC789**. Memory holds three versions of
+> this fact, all recorded from your statements. CSC123 and CSC456 were superseded,
+> and CSC789 is the live one.
+
+**History** in a document's menu lists every change, who made it, and the
+difference from the current text, with **Restore this version**.
+
+<Capture client:visible image={await captureImage(history)}
+  alt="The history of the preferences document: changes from conversations, accepted proposals, an import and edits on the memory page, with the selected version's difference and Restore this version"
+  caption="Every change to a document, with restore."
+  sizes="(min-width: 50rem) 46rem, 32rem" />
+
+**Delete** in a document's menu forgets the whole document after you confirm.
+**Export** downloads one document or all of your memory.
+
+## Turning memory off
+
+- **For one conversation:** before sending the first message, select **Memory**
+  in the composer so it reads **Memory off**. That conversation neither reads nor
+  writes memory, and does not search past conversations either. It cannot be
+  turned back on once the conversation has started.
+- **Everywhere:** turn off **Use memory** on the memory page. Your documents are
+  kept.
+- **Background learning only:** turn off **Generate memory from sessions**.
+  Asking the agent to remember still works.
+
+<Capture client:visible image={await captureImage(off)}
+  alt="The composer's behavior controls with Memory off selected"
+  caption="Memory off for a new conversation."
+  sizes="(min-width: 50rem) 32rem, 100vw" />
+
+The models that read conversations and organize memory in the background are set
+under **Settings → Fleet** (**Memory: noticing facts** and **Memory:
+organizing**). Unset, they use the server's default model, never the one a
+conversation happens to use.
+
+To search what was said in earlier conversations, rather than what CLIO keeps
+long-term, see [What CLIO remembers](/docs/memory/).

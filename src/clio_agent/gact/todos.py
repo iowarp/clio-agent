@@ -9,7 +9,7 @@ guards on the mode boundary.
 
 **State, not a new store (RULE 4 / no fifth store).** The checklist lives on
 ``session.metadata['todos']`` — the #948 ``AgentTask`` no-fifth-store projection pattern, NOT
-``workflow_state`` (the pack/blueprint structured-merge engine) and NOT a new store. Each call
+``workflow_state`` (the plugin-declared structured-merge engine) and NOT a new store. Each call
 is a **whole-list replacement**: the model sends the complete list, clio replaces it. Per-item
 mutation is intentionally not offered — a partial update against a list the model cannot see
 atomically is ambiguous.

@@ -87,17 +87,20 @@ def _active_lm_session() -> str:
 # --- Unified LM token highway (#693) -----------------------------------------
 # The single LM-stream tap (``ClioReAct``'s streamed call on the persistent LM loop)
 # feeds the live answer text to the SAME chat publisher (_emit_chunk) so a
-# blueprint/expert call running in an executor thread streams to the UI exactly like
+# agent or subagent call running in an executor thread streams to the UI exactly like
 # a chat turn — no separate streaming path. The turn sets (loop, async _emit_chunk) here; the tap
 # schedules the answer delta onto that loop. ContextVar so it's copied into the
 # executor that runs the expert (and is naturally absent off-turn = no-op).
-_LIVE_CHUNK_EMITTER: ContextVar[tuple[Any, Any, Any] | None] = ContextVar(
+_LIVE_CHUNK_EMITTER: ContextVar[tuple[Any, Any, Any, Any] | None] = ContextVar(
     "clio_live_chunk_emitter", default=None
 )
 
 
-def set_live_chunk_emitter(loop: Any, emit_coro: Any, record_dedup: Any = None) -> None:
-    """Bind the turn's (event loop, async answer-chunk publisher, tap-dedup recorder).
+def set_live_chunk_emitter(
+    loop: Any, emit_coro: Any, record_dedup: Any = None, begin_call: Any = None
+) -> None:
+    """Bind the turn's (event loop, async answer-chunk publisher, tap-dedup recorder,
+    async model-call boundary).
 
     ``record_dedup`` is the turn transcript's synchronous
     ``record_streamed_field_text`` (#732): the tap calls it IN-THREAD before
@@ -105,13 +108,17 @@ def set_live_chunk_emitter(loop: Any, emit_coro: Any, record_dedup: Any = None) 
     thought-dedup gate reads a source with a real happens-before instead of
     racing the loop's asynchronous ledger append.
 
+    ``begin_call(agent_id)`` is the publisher's model-call boundary
+    (:func:`note_lm_call_start`): it runs on the same loop as the chunks, so it
+    lands after the previous call's deltas and before the new call's first one.
+
     The binding is a ContextVar set in the turn's context: it is copied into the
     executor that runs the expert and dies with the turn's context — no explicit
     reset is needed (or provided)."""
-    _LIVE_CHUNK_EMITTER.set((loop, emit_coro, record_dedup))
+    _LIVE_CHUNK_EMITTER.set((loop, emit_coro, record_dedup, begin_call))
 
 
-def redirect_live_chunks(emit_coro: Any) -> Token[tuple[Any, Any, Any] | None] | None:
+def redirect_live_chunks(emit_coro: Any) -> Token[tuple[Any, Any, Any, Any] | None] | None:
     """Send this context's streamed deltas to ``emit_coro`` instead of the turn's lane.
 
     A variant try streams into its own tab, never into the turn's answer: the coroutine
@@ -121,10 +128,10 @@ def redirect_live_chunks(emit_coro: Any) -> Token[tuple[Any, Any, Any] | None] |
     bound = _LIVE_CHUNK_EMITTER.get()
     if bound is None:
         return None
-    return _LIVE_CHUNK_EMITTER.set((bound[0], emit_coro, None))
+    return _LIVE_CHUNK_EMITTER.set((bound[0], emit_coro, None, None))
 
 
-def reset_live_chunks(token: Token[tuple[Any, Any, Any] | None] | None) -> None:
+def reset_live_chunks(token: Token[tuple[Any, Any, Any, Any] | None] | None) -> None:
     """Undo :func:`redirect_live_chunks` (a ``None`` token changed nothing)."""
     if token is not None:
         _LIVE_CHUNK_EMITTER.reset(token)
@@ -158,6 +165,26 @@ def after_live_chunks(operation: Callable[[], Any]) -> None:
     except TimeoutError:
         boundary.cancel()
         raise
+
+
+def note_lm_call_start() -> None:
+    """A new model call of the active agent begins: its streamed text starts a new part.
+
+    Every streamed delta reaches the transcript through the live chunk emitter, and
+    the ledger keeps one part open per ``(agent, field)`` until something else lands.
+    Two calls of the same agent with nothing appended between them (a tool-free
+    reply, then the next step after a message joined the running turn) would
+    otherwise stream into one part. The boundary is the call itself -- the same for
+    every provider -- never the text. Scheduled on the chunks' own loop, so it is
+    ordered after the previous call's deltas and before this call's first one.
+    No-op off-turn, and while deltas are redirected to a variant's own lane.
+    """
+    emitter = _LIVE_CHUNK_EMITTER.get()
+    if emitter is None or emitter[3] is None:
+        return
+    from clio_agent.gact.context import active_react_scope  # noqa: PLC0415
+
+    asyncio.run_coroutine_threadsafe(emitter[3](active_react_scope() or None), emitter[0])
 
 
 def note_suppressed_extract_field(
@@ -198,7 +225,7 @@ def note_lm_answer_delta(text: str, *, field: str = "answer") -> None:
     emitter = _LIVE_CHUNK_EMITTER.get()
     if not emitter:
         return
-    loop, emit_coro, record_dedup = emitter
+    loop, emit_coro, record_dedup, _begin_call = emitter
     # Attribute this delta to the expert whose LM call produced it. The tap runs in
     # the executor thread where the expert's react scope contextvar is set, so the
     # author is known here; the chat publisher splits parts when it changes (WS3).
@@ -329,7 +356,7 @@ def note_lm_provider_thinking_delta(text: str, *, provider: str = "") -> None:
     emitter = _LIVE_CHUNK_EMITTER.get()
     if not emitter:
         return
-    loop, emit_coro, _record_dedup = emitter
+    loop, emit_coro, _record_dedup, _begin_call = emitter
     agent_id = ""
     try:
         from clio_agent.gact.context import active_react_scope  # noqa: PLC0415

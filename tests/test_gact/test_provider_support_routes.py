@@ -26,6 +26,7 @@ from fastapi.testclient import TestClient
 
 from clio_agent.gact import provider_support_boot, server_boot
 from clio_agent.gact.app import build_app
+from clio_agent.gact.sessions import SessionStore
 from clio_agent.providers import support_record, support_restore
 
 
@@ -196,7 +197,10 @@ def test_server_startup_runs_the_restore_and_retires_catalog_evidence(
     async def _boot() -> None:
         app = SimpleNamespace(
             state=SimpleNamespace(
-                server_boot=True, arc=object(), mcp_app_loop=asyncio.get_running_loop()
+                server_boot=True,
+                arc=object(),
+                sessions=SessionStore(),
+                mcp_app_loop=asyncio.get_running_loop(),
             )
         )
         server_boot.start(app)  # type: ignore[arg-type]

@@ -12,7 +12,7 @@ import pytest
 from dspy.lm15 import ImagePart, ToolResultPart
 
 from clio_agent.gact.agents.clio_react import ClioReAct
-from clio_agent.gact.agents.declared_native_tools import resolve_declared_native_tools
+from clio_agent.gact.agents.native_tool_registry import build_native_tools
 from clio_agent.gact.types import AgentDef
 from clio_agent.gact.view_image_tool import (
     VIEW_IMAGE_DESCRIPTOR_TYPE,
@@ -145,23 +145,35 @@ def test_the_loop_sends_a_real_image_part_for_the_tool_result(tmp_path: Path) ->
 def test_view_image_is_exposed_only_to_image_capable_agents() -> None:
     agent = AgentDef(id="visual", title="Visual", tools=["view_image"])
 
-    requested_text, available_text, gateway_text = resolve_declared_native_tools(
-        agent, {}, supports_vision=False
+    available_text, gateway_text, withheld_text = build_native_tools(
+        agent, agent.tools, {}, supports_vision=False
     )
-    requested_image, available_image, gateway_image = resolve_declared_native_tools(
-        agent, {}, supports_vision=True
+    available_image, gateway_image, withheld_image = build_native_tools(
+        agent, agent.tools, {}, supports_vision=True
     )
 
-    assert requested_text == []
     assert available_text == {}
     assert gateway_text == []
-    assert requested_image == ["view_image"]
+    assert withheld_text == {"view_image": "model_lacks_image_input"}
     assert list(available_image) == ["view_image"]
     assert gateway_image == []
+    assert withheld_image == {}
+
+
+def test_view_image_is_claimed_by_the_standard_agents_workspace_plugin(tmp_path: Path) -> None:
+    from clio_agent.gact.agents.resolution import plugin_service, resolution_agent_def
+    from clio_agent.gact.app import build_app
+
+    app = build_app(sessions_path=tmp_path / "sessions.json")
+    resolution = plugin_service(app).resolve("clio/standard", pin=False)
+
+    [row] = [row for row in resolution.tools if row["name"] == "view_image"]
+    assert (row["plugin"], row["kind"]) == ("workspace", "native")
+    assert "view_image" in resolution_agent_def(resolution).tools
 
 
 def test_declared_capability_uses_live_model_evidence(monkeypatch: pytest.MonkeyPatch) -> None:
-    from clio_agent.gact.agents.declared_native_tools import declared_view_image_capability
+    from clio_agent.gact.agents.native_tool_registry import declared_view_image_capability
 
     app = SimpleNamespace(state=SimpleNamespace())
     monkeypatch.setattr("clio_agent.gact.context.active_app", lambda: app)

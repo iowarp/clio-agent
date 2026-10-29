@@ -82,7 +82,7 @@ def _rich_assistant_message() -> Message:
 
     Mirrors what ``turn_finalize.finalize_turn`` assembles: a routing_decision banner,
     a thinking part, the text answer, a tool_call + tool_result (with nested content),
-    and a file_diff frozen ``status="pending"`` — plus the message-level metadata
+    and a file_diff recorded ``status="applied"`` — plus the message-level metadata
     (``stream_source`` / ``expert_handoffs`` / ``tools_called``), tokens, and cost the
     finalize seam stamps before the ``Message`` is built.
     """
@@ -154,8 +154,7 @@ def _rich_assistant_message() -> Message:
                 agent_id="geospatial",
                 path="report.md",
                 unified_diff="@@ -0,0 +1 @@\n+5 stations\n",
-                new_content="5 stations\n",
-                status="pending",
+                status="applied",
                 edit_mode="whole",
                 lines_added=1,
                 lines_removed=0,
@@ -252,12 +251,12 @@ def test_expert_handoff_output_is_verbatim() -> None:
     )
 
 
-def test_file_diff_status_frozen_pending() -> None:
-    """A file_diff atom freezes ``status="pending"`` (frozen surface 1.14)."""
+def test_file_diff_status_frozen_applied() -> None:
+    """A file_diff atom freezes the recorded ``status="applied"`` (frozen surface 1.14)."""
     atoms = build_message_part_atoms(_rich_assistant_message())
     diff_atoms = [a for a in atoms if a["kind"] == "file_diff"]
     assert len(diff_atoms) == 1
-    assert diff_atoms[0]["status"] == "pending"
+    assert diff_atoms[0]["status"] == "applied"
 
 
 # --------------------------------------------------------------------------- #

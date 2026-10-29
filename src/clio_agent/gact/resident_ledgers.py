@@ -1,158 +1,50 @@
-"""Bounded, lazily-rehydrated resident set for GACT message ledgers (#889).
+"""The one residency owner of the GACT server: message ledgers and ARC scopes (#889, R6).
 
-Boot used to parse *every* ``messages/*.json`` into ``app.state.messages`` before
-the port bound (``MessageStore.load_all``), pinning ~2.36 MiB/session in RAM for
-the life of the process with no cap (238 MiB → 1.42 GiB at 500 sessions). Reads
-were "free" only because the whole corpus was already resident.
+clio-core is the record; everything this module tracks is a read cache of it.
+:class:`ResidentLedgerSet` is a ``MutableMapping[str, list[Message]]`` with the plain
+dict surface every transcript reader/writer uses, and it is also the
+:class:`~clio_agent.arc.segment_cache.ScopeResidency` ARC reports every cached scope to.
+So one budget bounds both copies of a session:
 
-This module replaces that eager dict with :class:`ResidentLedgerSet` — a
-``MutableMapping[str, list[Message]]`` whose surface is byte-identical to the plain
-dict every reader/writer already uses (``get`` / ``setdefault`` / ``[]`` /
-``pop`` / iteration), but which:
+* **nothing is resident at boot**; a session's ledger materializes on first access and
+  its ARC scopes load on first use, each counted against the session;
+* **bounded**: a byte cap and a session-count cap over ledgers + ARC scopes together,
+  oldest idle session first, and an **idle TTL**: a session no view (live SSE
+  subscriber) and no running work (turn, obligation) uses is released;
+* **never evicts an active session**;
+* the periodic sweeper (:mod:`clio_agent.gact.resident_sweeper`) applies the TTL while
+  the server is idle, and ARC asks for a sweep as soon as it pushes the set over a cap;
+* **a typed audit reason for every eviction and rehydration** (no silent fallback).
 
-* **boots on the index only** — no message body is resident after ``build_app``;
-* **materializes a session's ledger lazily** on first access (``GET /messages``,
-  SSE attach, turn start, any mutation) from the per-session file the store
-  already keeps, then caches it in a **bounded LRU** with a **byte cap**, a
-  **count cap**, and **idle-TTL** eviction;
-* **never evicts an active session** — one with a live SSE subscriber or an
-  in-flight turn is pinned until it goes idle;
-* **emits a typed audit reason for every eviction and every rehydration** (no
-  silent fallback — mirrors the ``stream_fallback`` / ledger-retention catalogs).
-
-Eviction is always safe because the on-disk per-session file is the authoritative
-copy: every writer (``session_store._append/_extend/_replace/_delete``) writes
-through to disk, so dropping the resident copy loses nothing — the next access
-rehydrates byte-identically. The resident copy is a pure cache/projection.
+Eviction loses nothing: every writer commits to clio-core first (the message atoms
+before the ledger, ARC's ``ScopeCache._commit_scope`` before its cache), so the next
+access rehydrates byte-identically. Search and recall read through :meth:`peek`, which
+makes nothing resident.
 """
 
 from __future__ import annotations
 
+import threading
 from collections import OrderedDict, deque
 from collections.abc import Callable, Iterator, MutableMapping
 from dataclasses import dataclass
-from datetime import datetime, timezone
 from time import monotonic
 from typing import TYPE_CHECKING, Any, Optional
 
 from clio_agent import conf
+from clio_agent.arc.segment_cache import transient_reads
 from clio_agent.gact.messages import LedgerReadError
+from clio_agent.gact.resident_reasons import (
+    resident_ledger_reason_catalog as resident_ledger_reason_catalog,
+)
+from clio_agent.gact.resident_reasons import resident_ledger_reason_payload
 from clio_agent.runtime import trace
 
 if TYPE_CHECKING:
     from fastapi import FastAPI
 
     from clio_agent.gact.messages import MessageStore
-    from clio_agent.gact.metrics_counters import MetricsCounters
     from clio_agent.gact.types import Message
-
-
-# --------------------------------------------------------------------------- #
-# Typed eviction / rehydration reason catalog (closed set; unknown rejected)
-# --------------------------------------------------------------------------- #
-
-_RESIDENT_LEDGER_REASON_DEFINITIONS: dict[str, dict[str, Any]] = {
-    "capacity_bytes": {
-        "category": "resident_ledger",
-        "policy": "lru_oldest_idle_first",
-        "recovery_actions": ["increase_byte_cap", "reduce_idle_ttl"],
-        "description": (
-            "The resident transcript set exceeded its byte cap; the oldest idle "
-            "session's in-memory ledger was dropped. The transcript is intact on "
-            "disk and rehydrates byte-identically on the next access."
-        ),
-    },
-    "capacity_count": {
-        "category": "resident_ledger",
-        "policy": "lru_oldest_idle_first",
-        "recovery_actions": ["increase_count_cap", "reduce_idle_ttl"],
-        "description": (
-            "The resident transcript set exceeded its session-count cap; the "
-            "oldest idle session's in-memory ledger was dropped (on-disk copy "
-            "retained, rehydrates on next access)."
-        ),
-    },
-    "idle_ttl": {
-        "category": "resident_ledger",
-        "policy": "idle_ttl_release",
-        "recovery_actions": ["increase_idle_ttl"],
-        "description": (
-            "A resident session ledger sat idle past the TTL and was released "
-            "from memory. The on-disk copy is retained and rehydrates on access."
-        ),
-    },
-    "eviction_skipped_all_active": {
-        "category": "resident_ledger",
-        "policy": "active_pin",
-        "recovery_actions": ["increase_byte_cap", "increase_count_cap"],
-        "description": (
-            "The resident set is over cap but every resident session is active "
-            "(live SSE subscriber or in-flight turn) and therefore pinned; no "
-            "eviction was performed. The cap is temporarily soft until a session "
-            "goes idle."
-        ),
-    },
-    "rehydrate": {
-        "category": "resident_ledger",
-        "policy": "lazy_materialize",
-        "recovery_actions": [],
-        "description": (
-            "A session's transcript was materialized into the resident set from "
-            "its persisted ledger on first access (lazy rehydration)."
-        ),
-    },
-    "rehydrate_failed": {
-        "category": "resident_ledger",
-        "policy": "propagate_typed_error",
-        "recovery_actions": ["retry_read", "inspect_ledger_file"],
-        "description": (
-            "A session's persisted ledger exists but could not be read or parsed on "
-            "rehydration (disk error or corrupt JSON). NOTHING was cached and the "
-            "typed error propagates to the caller instead of silently serving an "
-            "empty transcript — the on-disk ledger is untouched and a later read "
-            "rehydrates it byte-identically once the transient fault clears."
-        ),
-    },
-}
-
-
-def resident_ledger_reason_payload(reason: str, *, session_id: str, **extra: Any) -> dict[str, Any]:
-    """Build a typed, self-describing resident-ledger audit payload.
-
-    Mirrors :func:`clio_agent.gact.runtime.retention.ledger_eviction_payload`: the
-    ``reason`` must be a key of :data:`_RESIDENT_LEDGER_REASON_DEFINITIONS` (unknown
-    reasons raise), and the returned payload folds in that definition's static
-    metadata plus the dynamic provenance (session id, byte counts).
-    """
-
-    definition = _RESIDENT_LEDGER_REASON_DEFINITIONS.get(reason)
-    if definition is None:
-        raise ValueError(f"Unknown resident-ledger reason: {reason}")
-    payload: dict[str, Any] = {
-        "reason": reason,
-        "ledger": "resident_message_ledgers",
-        "session_id": session_id,
-        "at": datetime.now(timezone.utc).isoformat(),
-        **{
-            key: (list(value) if isinstance(value, list) else value)
-            for key, value in definition.items()
-        },
-    }
-    for key, value in extra.items():
-        if value != "" and value is not None:
-            payload[key] = value
-    return payload
-
-
-def resident_ledger_reason_catalog() -> dict[str, dict[str, Any]]:
-    """Return the audited resident-ledger reason catalog (for capability metadata)."""
-
-    return {
-        reason: {
-            key: list(value) if isinstance(value, list) else value for key, value in details.items()
-        }
-        for reason, details in _RESIDENT_LEDGER_REASON_DEFINITIONS.items()
-    }
 
 
 # --------------------------------------------------------------------------- #
@@ -162,23 +54,21 @@ def resident_ledger_reason_catalog() -> dict[str, dict[str, Any]]:
 
 @dataclass(frozen=True)
 class ResidentLedgerConfig:
-    """Residency bounds for the transcript LRU.
+    """Residency bounds for ledgers + ARC scopes (one budget per session).
 
-    Defaults are anchored to the measured ~2.36 MiB/session (#893):
-
-    * ``max_bytes`` 512 MiB ≈ 217 resident sessions — the primary memory guard.
-      Unbounded, a 500-session install held ~1.42 GiB and grew linearly; this
-      caps resident transcript RAM at O(1) in the *total* session count.
-    * ``max_sessions`` 512 — a cheap secondary guard so a flood of tiny sessions
-      cannot blow the count even while under the byte cap.
-    * ``idle_ttl_s`` 1800 s (30 min) — an idle session's transcript is released
-      well before either cap is hit, so a mostly-quiet server trends toward its
-      genuinely-active working set.
+    * ``max_bytes`` 512 MiB — the primary memory guard over transcript + ARC bytes,
+      O(1) in the total session count (unbounded, 500 sessions held ~1.42 GiB).
+    * ``max_sessions`` 512 — a secondary guard against a flood of tiny sessions.
+    * ``idle_ttl_s`` 60 s — a session nobody views (a viewed conversation holds an
+      SSE subscriber and is pinned) and nothing runs in is released a minute after
+      its last use, so memory follows the open views and running work, not history.
+    * ``sweep_interval_s`` 15 s — how often the idle sweep runs on its own.
     """
 
     max_bytes: int = 512 * 1024 * 1024
     max_sessions: int = 512
-    idle_ttl_s: float = 1800.0
+    idle_ttl_s: float = 60.0
+    sweep_interval_s: float = 15.0
 
     @classmethod
     def from_conf(cls) -> "ResidentLedgerConfig":
@@ -199,6 +89,11 @@ class ResidentLedgerConfig:
             ),
             idle_ttl_s=_resolve_positive_float(
                 "gact.resident_ledgers.idle_ttl_s", "CLIO_RESIDENT_LEDGERS_TTL_S", cls.idle_ttl_s
+            ),
+            sweep_interval_s=_resolve_positive_float(
+                "gact.resident_ledgers.sweep_interval_s",
+                "CLIO_RESIDENT_LEDGERS_SWEEP_S",
+                cls.sweep_interval_s,
             ),
         )
 
@@ -272,22 +167,37 @@ class _Entry:
     last_access: float
 
 
+@dataclass
+class _ArcEntry:
+    """One session's ARC scopes held in process: encoded bytes per scope."""
+
+    scopes: dict[str, int]
+    last_access: float
+
+    @property
+    def nbytes(self) -> int:
+        return sum(self.scopes.values())
+
+
 class ResidentLedgerSet(MutableMapping[str, list["Message"]]):
-    """Bounded, lazily-rehydrated view over the per-session message store.
+    """The one residency owner: message ledgers and ARC scopes, bounded together.
 
     Presents the exact ``dict[str, list[Message]]`` surface every reader/writer
     already relies on. ``get`` / ``setdefault`` / ``[]`` transparently rehydrate a
-    missing-but-persisted session from disk; iteration and ``len`` enumerate the
-    whole index (resident ∪ on-disk) so whole-index operations (delete-by-id, the
-    golden metrics walk) still see every session.
+    missing-but-persisted session; iteration and ``len`` enumerate the whole index
+    (resident ∪ stored) so whole-index operations still see every session.
 
-    Most ``MutableMapping`` conveniences (``get``, ``setdefault``, ``values``,
-    ``items``, ``keys``) are the stdlib mixins layered on the five primitives below,
-    so their semantics match a plain dict — including ``setdefault(sid, []).append(
-    msg)`` returning the *resident* list so the append mutates the cached copy.
-    ``clear`` / ``popitem`` are overridden (the mixin ``popitem`` would infinite-loop
-    over on-disk ids) to operate on the resident cache only, and :meth:`discard`
-    drops a resident copy without materializing a to-be-deleted ledger.
+    It is also ARC's :class:`~clio_agent.arc.segment_cache.ScopeResidency`: every scope
+    ARC caches is counted against its session, so the byte cap, the session-count cap
+    and the idle TTL bound the transcript AND the ARC copies of a session as one unit.
+    Evicting a session drops its ledger and calls ``on_evict``, which releases its ARC
+    scopes (and the copies derived from it). :meth:`sweep` applies the idle TTL and
+    the caps; it runs on every cache install and from the periodic sweeper.
+
+    ``clear`` / ``popitem`` operate on the resident cache only (the mixins would loop
+    forever over stored ids), and :meth:`discard` drops a resident copy without
+    materializing a to-be-deleted ledger. :meth:`peek` reads a session without making
+    it resident (search, recall).
     """
 
     def __init__(
@@ -298,6 +208,7 @@ class ResidentLedgerSet(MutableMapping[str, list["Message"]]):
         is_active: Optional[Callable[[str], bool]] = None,
         audit: Optional[Callable[[dict[str, Any]], None]] = None,
         materialize: Optional[Callable[[str], Optional[list["Message"]]]] = None,
+        before_rehydrate: Optional[Callable[[str], object]] = None,
         on_rehydrate: Optional[Callable[[str, list["Message"]], object]] = None,
         on_evict: Optional[Callable[[str], object]] = None,
         clock: Callable[[], float] = monotonic,
@@ -305,38 +216,22 @@ class ResidentLedgerSet(MutableMapping[str, list["Message"]]):
         """Wire the set to its durable store and its residency policy.
 
         Args:
-            store: The per-session durable ledger store (authoritative copy).
+            store: The session index (which sessions have a transcript).
             config: Residency bounds; defaults to :meth:`ResidentLedgerConfig.from_conf`.
             is_active: Predicate — is this session pinned (live SSE / in-flight turn)?
                 Active sessions are never evicted. Defaults to "nothing is active".
             audit: Sink for typed eviction/rehydration payloads (no silent fallback).
-                Defaults to a no-op (tests may inject ``list.append``).
-            materialize: The rehydration SOURCE (#737 S5): given a session id, return its
-                ``list[Message]`` (``None`` = never persisted, ``[]`` = empty,
-                :class:`~clio_agent.gact.messages.LedgerReadError` = propagate). Defaults
-                to ``store.load_session`` (today's legacy path); the app wires the
-                regime-aware transcript projection so an atoms-regime session rehydrates
-                from the canonical log. Only the SOURCE moves — the LRU/TTL/pin mechanics
-                are unchanged.
-            on_rehydrate: Optional once-per-materialization hook fired AFTER a
-                cache-miss install completes (session id, the just-materialized rows) —
-                never on a resident cache hit. The app wires this to the lazy stale-
-                handoff reconcile sweep
-                (:func:`clio_agent.gact.background_exit.sweep_stale_handoff_parts`,
-                round-9 wire defect D1): a session's first load since boot/eviction is
-                the natural, already-lazy seam to repair historical data without
-                reintroducing the eager whole-corpus boot walk #889 removed. Defaults
-                to a no-op.
-            on_evict: Optional hook fired with a session id AFTER this set drops its
-                resident ledger for a genuine capacity/idle-TTL eviction (S8, issue
-                #1374, focused re-review item 3) -- never for ``discard``/``clear``/
-                ``popitem`` (explicit removal, e.g. session delete, already handled
-                at that call site). The app wires this to
-                :meth:`clio_agent.gact.a2ui_store.A2UIStore.forget_session`'s cache
-                half so ``A2UIStore``'s per-session ``_ProjectionCache`` -- which
-                holds every surface's full message list, the same bytes this set's
-                ``max_bytes`` cap governs -- never outlives the ledger it was folded
-                from. No second budget knob: eviction here is the ONE bound.
+            materialize: The rehydration source: a session id to its ``list[Message]``
+                (``None`` = never persisted, ``[]`` = empty, ``LedgerReadError`` =
+                propagate). Defaults to ``store.load_session``.
+            before_rehydrate: Finish lifecycle writes before capturing the durable
+                transcript; called outside this set's lock, only for a cache miss.
+            on_rehydrate: Once-per-materialization hook fired AFTER a cache-miss install
+                (the lazy stale-handoff reconcile sweep); never on a cache hit.
+            on_evict: Hook fired with a session id AFTER this set evicts it (capacity or
+                idle TTL) — never for ``discard``/``clear``/``popitem``. The app wires it
+                to release the session's ARC scopes, A2UI projection, task tree and
+                model clients, so nothing derived from the session outlives it.
             clock: Monotonic time source (injectable for deterministic TTL tests).
         """
 
@@ -345,27 +240,40 @@ class ResidentLedgerSet(MutableMapping[str, list["Message"]]):
         self._is_active = is_active or (lambda _sid: False)
         self._audit = audit or (lambda _payload: None)
         self._materialize = materialize or store.load_session
+        self._before_rehydrate = before_rehydrate
         self._on_rehydrate = on_rehydrate
         self._on_evict = on_evict
         self._clock = clock
         self._resident: "OrderedDict[str, _Entry]" = OrderedDict()
         self._total_bytes = 0
+        # ARC scopes per session. ONE lock guards both maps and is never held while
+        # calling out (ARC reports into this set while holding its own scope locks).
+        self._arc: dict[str, _ArcEntry] = {}
+        self._arc_bytes = 0
+        self._lock = threading.RLock()
+        self.on_over_budget: Optional[Callable[[], object]] = None
+
+    @property
+    def config(self) -> ResidentLedgerConfig:
+        """The residency bounds in force."""
+        return self._cfg
 
     # ---- MutableMapping primitives ------------------------------------- #
 
     def __getitem__(self, sid: str) -> list["Message"]:
-        entry = self._resident.get(sid)
-        if entry is not None:
-            self._resident.move_to_end(sid)
-            entry.last_access = self._clock()
-            return entry.messages
+        with self._lock:
+            entry = self._resident.get(sid)
+            if entry is not None:
+                self._resident.move_to_end(sid)
+                entry.last_access = self._clock()
+                return entry.messages
+        if self._before_rehydrate is not None:
+            self._before_rehydrate(sid)
         try:
             rows = self._materialize(sid)
         except LedgerReadError as exc:
-            # The ledger exists on disk but could not be read/parsed. Emit a typed
-            # reason and PROPAGATE — never cache an empty list as if the session were
-            # empty (that would make GET /messages serve [] for a full transcript,
-            # then a partial one after the next write-through append). #889/§3.3.
+            # The ledger exists but could not be read/parsed: a typed reason, and the
+            # error PROPAGATES — never cache an empty list as if the session were empty.
             self._audit(
                 resident_ledger_reason_payload("rehydrate_failed", session_id=sid, error=str(exc))
             )
@@ -374,28 +282,28 @@ class ResidentLedgerSet(MutableMapping[str, list["Message"]]):
             raise KeyError(sid)
         self._install(sid, rows, rehydrated=True)
         if self._on_rehydrate is not None:
-            # Fires exactly once per cache-miss materialization, AFTER install so
-            # a hook that mutates the ledger in place (a reconcile-and-replace)
-            # sees — and can safely re-``self[sid]`` against — the already-cached
-            # entry rather than re-triggering materialization.
-            self._on_rehydrate(sid, self._resident[sid].messages)
-        return self._resident[sid].messages
+            # Once per cache-miss materialization, AFTER install, so a hook that
+            # replaces the ledger sees the cached entry instead of re-materializing.
+            installed = self.get_if_resident(sid)
+            self._on_rehydrate(sid, installed if installed is not None else rows)
+        current = self.get_if_resident(sid)
+        return current if current is not None else rows
 
     def __setitem__(self, sid: str, messages: list["Message"]) -> None:
-        # Store the caller's list object (not a copy): whole-ledger replace
-        # (compaction / undo / fork / import) hands us the new ledger and expects
-        # subsequent reads to see exactly it.
+        # Store the caller's list object (not a copy): whole-ledger replace hands us
+        # the new ledger and expects subsequent reads to see exactly it.
         self._install(sid, messages, rehydrated=False)
 
     def __delitem__(self, sid: str) -> None:
-        entry = self._resident.pop(sid, None)
-        if entry is None:
-            raise KeyError(sid)
-        self._total_bytes -= entry.nbytes
+        with self._lock:
+            entry = self._resident.pop(sid, None)
+            if entry is None:
+                raise KeyError(sid)
+            self._total_bytes -= entry.nbytes
 
     def __iter__(self) -> Iterator[str]:
         seen: set[str] = set()
-        for sid in list(self._resident.keys()):
+        for sid in self.resident_session_ids:
             seen.add(sid)
             yield sid
         for sid in self._store.session_ids():
@@ -404,7 +312,7 @@ class ResidentLedgerSet(MutableMapping[str, list["Message"]]):
                 yield sid
 
     def __len__(self) -> int:
-        return len(set(self._resident.keys()) | set(self._store.session_ids()))
+        return len(set(self.resident_session_ids) | set(self._store.session_ids()))
 
     def __contains__(self, sid: object) -> bool:
         # Cheap membership: never materializes a ledger just to answer ``in``.
@@ -415,171 +323,227 @@ class ResidentLedgerSet(MutableMapping[str, list["Message"]]):
     # ---- whole-store convenience overrides ----------------------------- #
 
     def discard(self, sid: str) -> None:
-        """Drop the resident (in-memory) copy of a ledger WITHOUT materializing it.
+        """Drop the resident copy of a ledger WITHOUT materializing it (session delete).
 
-        The delete seam (``_delete_session_messages`` → ``store.delete_session``)
-        calls this before unlinking the on-disk ledger. Unlike the ``MutableMapping``
-        ``pop`` mixin — implemented as ``self[sid]`` + ``del``, which forces a full
-        rehydration (disk read + parse) of a ledger that is about to be deleted, emits
-        a misleading ``rehydrate`` audit row, and can transiently push a warm session
-        out under cap pressure — this never touches disk and emits no audit row: it is
-        not an eviction, just releasing a cache slot for a session being destroyed.
+        Unlike the ``pop`` mixin (``self[sid]`` + ``del``, a full rehydration of a ledger
+        about to be deleted) this never touches the store and emits no audit row.
         """
 
-        entry = self._resident.pop(sid, None)
-        if entry is not None:
-            self._total_bytes -= entry.nbytes
+        with self._lock:
+            entry = self._resident.pop(sid, None)
+            if entry is not None:
+                self._total_bytes -= entry.nbytes
 
     def get_if_resident(self, sid: str) -> Optional[list["Message"]]:
-        """Return a resident ledger without attempting durable materialization.
+        """Return a resident ledger without attempting durable materialization."""
 
-        This is the read seam for a session whose persisted ``message_count`` is
-        still zero while its first user turn is already staged in memory. A
-        cache miss returns ``None`` and never performs a native store call.
+        with self._lock:
+            entry = self._resident.get(sid)
+            if entry is None:
+                return None
+            self._resident.move_to_end(sid)
+            entry.last_access = self._clock()
+            return entry.messages
+
+    def peek(self, sid: str) -> Optional[list["Message"]]:
+        """Read a session's ledger without making it (or its ARC scopes) resident.
+
+        A resident ledger is returned as is; otherwise the ledger is read from the
+        record inside :func:`~clio_agent.arc.segment_cache.transient_reads`, so neither
+        this set nor ARC keeps a copy. ``None`` when the session was never persisted.
+        Search and recall read every session through this.
         """
 
-        entry = self._resident.get(sid)
-        if entry is None:
-            return None
-        self._resident.move_to_end(sid)
-        entry.last_access = self._clock()
-        return entry.messages
+        with self._lock:
+            entry = self._resident.get(sid)
+            if entry is not None:
+                return entry.messages
+        with transient_reads():
+            return self._materialize(sid)
 
     def clear(self) -> None:
-        """Drop every resident (in-memory) ledger; on-disk copies are untouched.
+        """Drop every resident ledger (memory only; stored copies are untouched)."""
 
-        Overrides the ``MutableMapping`` mixin, whose ``popitem`` loop would spin
-        FOREVER here: ``__iter__`` re-yields on-disk session ids that ``__delitem__``
-        only removes from memory, so the default ``clear`` never terminates. This
-        releases the cache (memory only) — durable ledgers rehydrate on next access;
-        deleting the durable store is an explicit per-session ``delete_session``.
-        """
-
-        self._resident.clear()
-        self._total_bytes = 0
+        with self._lock:
+            self._resident.clear()
+            self._total_bytes = 0
 
     def popitem(self) -> tuple[str, list["Message"]]:
-        """Pop the most-recently-used RESIDENT ledger (memory only), or raise.
+        """Pop the most-recently-used RESIDENT ledger (memory only), or raise."""
 
-        Overrides the mixin default, which would infinite-loop over on-disk ids for
-        the same reason :meth:`clear` documents. Operates on the resident cache only.
-        """
+        with self._lock:
+            if not self._resident:
+                raise KeyError("popitem(): no resident ledger")
+            sid, entry = self._resident.popitem(last=True)
+            self._total_bytes -= entry.nbytes
+            return sid, entry.messages
 
-        if not self._resident:
-            raise KeyError("popitem(): no resident ledger")
-        sid, entry = self._resident.popitem(last=True)
-        self._total_bytes -= entry.nbytes
-        return sid, entry.messages
+    # ---- ARC residency (ScopeResidency) -------------------------------- #
+
+    def scope_resident(self, session_id: str, scope: str, nbytes: int) -> None:
+        """ARC cached (or re-committed) a scope of ``session_id``: count it."""
+
+        with self._lock:
+            entry = self._arc.get(session_id)
+            if entry is None:
+                entry = self._arc[session_id] = _ArcEntry({}, self._clock())
+            self._arc_bytes += nbytes - entry.scopes.get(scope, 0)
+            entry.scopes[scope] = nbytes
+            entry.last_access = self._clock()
+            over = self._over_caps()
+        if over and self.on_over_budget is not None:
+            self.on_over_budget()
+
+    def scope_dropped(self, session_id: str, scope: str) -> None:
+        """ARC dropped one cached scope."""
+
+        with self._lock:
+            entry = self._arc.get(session_id)
+            if entry is not None:
+                self._arc_bytes -= entry.scopes.pop(scope, 0)
+                if not entry.scopes:
+                    del self._arc[session_id]
+
+    def session_released(self, session_id: str) -> None:
+        """ARC dropped every cached scope of ``session_id``."""
+
+        with self._lock:
+            entry = self._arc.pop(session_id, None)
+            if entry is not None:
+                self._arc_bytes -= entry.nbytes
+
+    def scope_touched(self, session_id: str) -> None:
+        """A cached ARC scope of ``session_id`` was read."""
+
+        entry = self._arc.get(session_id)
+        if entry is not None:
+            entry.last_access = self._clock()
 
     # ---- residency mechanics ------------------------------------------- #
 
     def _install(self, sid: str, messages: list["Message"], *, rehydrated: bool) -> None:
-        """Cache a session's ledger, refresh accounting, and enforce the caps."""
+        """Cache a session's ledger, refresh accounting, and enforce the bounds."""
 
-        old = self._resident.pop(sid, None)
-        if old is not None:
-            self._total_bytes -= old.nbytes
         nbytes = _estimate_bytes(messages)
-        self._resident[sid] = _Entry(messages, nbytes, len(messages), self._clock())
-        self._total_bytes += nbytes
+        with self._lock:
+            old = self._resident.pop(sid, None)
+            if old is not None:
+                self._total_bytes -= old.nbytes
+            self._resident[sid] = _Entry(messages, nbytes, len(messages), self._clock())
+            self._total_bytes += nbytes
         if rehydrated:
             self._audit(resident_ledger_reason_payload("rehydrate", session_id=sid, bytes=nbytes))
-        self._sweep_idle(protect=sid)
-        self._enforce_caps(protect=sid)
+        self.sweep(protect=sid)
 
-    def _sweep_idle(self, *, protect: str) -> None:
-        """Release resident ledgers idle past the TTL (never the active/protected)."""
+    def sweep(self, *, protect: str = "") -> int:
+        """Release idle sessions, then the oldest idle ones until both caps hold.
 
-        now = self._clock()
-        ttl = self._cfg.idle_ttl_s
-        for sid in list(self._resident.keys()):
-            if sid == protect:
-                continue
-            entry = self._resident.get(sid)
-            if entry is None:
-                continue
-            if now - entry.last_access <= ttl:
-                continue
-            if self._is_active(sid):
-                continue
-            self._evict(sid, "idle_ttl")
+        Sizes and ages are snapshotted under the lock; the activity checks and the
+        evictions (``on_evict`` releases ARC) run after it is released, so this set never
+        holds its lock while calling out. Returns how many sessions were evicted.
+        """
 
-    def _enforce_caps(self, *, protect: str) -> None:
-        """Evict oldest idle ledgers until both the byte and count caps hold."""
-
-        self._reconcile_bytes()
-        skipped_bytes = False
-        while self._total_bytes > self._cfg.max_bytes:
-            victim = self._pick_victim(protect)
-            if victim is None:
-                skipped_bytes = True
-                break
-            self._evict(victim, "capacity_bytes")
-        skipped_count = False
-        while len(self._resident) > self._cfg.max_sessions:
-            victim = self._pick_victim(protect)
-            if victim is None:
-                skipped_count = True
-                break
-            self._evict(victim, "capacity_count")
-        if skipped_bytes or skipped_count:
+        with self._lock:
+            self._reconcile_bytes()
+            sizes = {sid: e.nbytes for sid, e in self._resident.items()}
+            ages = {sid: e.last_access for sid, e in self._resident.items()}
+            for sid, arc in self._arc.items():
+                sizes[sid] = sizes.get(sid, 0) + arc.nbytes
+                ages[sid] = max(ages.get(sid, arc.last_access), arc.last_access)
+        victims, over = self._pick_victims(sizes, ages, protect)
+        for sid, reason in victims:
+            self._evict(sid, reason)
+        if over:
             self._audit(
                 resident_ledger_reason_payload(
                     "eviction_skipped_all_active",
                     session_id=protect,
-                    resident=len(self._resident),
-                    bytes=self._total_bytes,
+                    resident=len(sizes) - len(victims),
+                    bytes=sum(sizes.values()),
                 )
             )
+        return len(victims)
 
-    def _pick_victim(self, protect: str) -> Optional[str]:
-        """Oldest resident session that is neither protected nor active, else None."""
+    def release(self, sid: str, reason: str) -> bool:
+        """Release one session now, unless a view or running work still uses it.
 
-        for sid in list(self._resident.keys()):  # LRU order: oldest first (snapshot)
-            if sid == protect:
+        For work that knows it is done with a session (an obligation that finished),
+        instead of waiting for the idle TTL. Traced with ``reason`` like any eviction.
+        """
+
+        if self._is_active(sid):
+            return False
+        with self._lock:
+            held = sid in self._resident or sid in self._arc
+        if held:
+            self._evict(sid, reason)
+        return held
+
+    def _over_caps(self) -> bool:
+        count = len(self._resident.keys() | self._arc.keys())
+        return (
+            self._total_bytes + self._arc_bytes > self._cfg.max_bytes
+            or count > self._cfg.max_sessions
+        )
+
+    def _pick_victims(
+        self, sizes: dict[str, int], ages: dict[str, float], protect: str
+    ) -> tuple[list[tuple[str, str]], bool]:
+        """Idle-TTL victims, then capacity victims oldest first; and whether the caps
+        still do not hold because every remaining session is active."""
+
+        now = self._clock()
+        ordered = sorted(ages, key=ages.__getitem__)
+        chosen: dict[str, str] = {}
+        for sid in ordered:
+            if sid == protect or now - ages[sid] <= self._cfg.idle_ttl_s:
                 continue
-            if self._is_active(sid):
+            if not self._is_active(sid):
+                chosen[sid] = "idle_ttl"
+        total = sum(sizes.values()) - sum(sizes[sid] for sid in chosen)
+        count = len(sizes) - len(chosen)
+        for sid in ordered:
+            if total <= self._cfg.max_bytes and count <= self._cfg.max_sessions:
+                break
+            if sid in chosen or sid == protect or self._is_active(sid):
                 continue
-            return sid
-        return None
+            chosen[sid] = "capacity_bytes" if total > self._cfg.max_bytes else "capacity_count"
+            total -= sizes[sid]
+            count -= 1
+        over = total > self._cfg.max_bytes or count > self._cfg.max_sessions
+        return list(chosen.items()), over
 
     def _evict(self, sid: str, reason: str) -> None:
-        entry = self._resident.pop(sid, None)
-        if entry is None:
+        with self._lock:
+            entry = self._resident.pop(sid, None)
+            arc = self._arc.pop(sid, None)
+            released = (entry.nbytes if entry else 0) + (arc.nbytes if arc else 0)
+            if entry is not None:
+                self._total_bytes -= entry.nbytes
+            if arc is not None:
+                self._arc_bytes -= arc.nbytes
+        if entry is None and arc is None:
             return
-        self._total_bytes -= entry.nbytes
-        self._audit(resident_ledger_reason_payload(reason, session_id=sid, bytes=entry.nbytes))
+        self._audit(
+            resident_ledger_reason_payload(
+                reason, session_id=sid, bytes=released, arc_bytes=arc.nbytes if arc else 0
+            )
+        )
         if self._on_evict is not None:
             self._on_evict(sid)
 
     def _reconcile_bytes(self) -> None:
-        """Cheaply true up byte accounting on the cap-enforcement hot path.
+        """True up ledger accounting for in-place appends (under the lock).
 
-        In-place writes (``setdefault(sid, []).append``) grow a cached list without
-        routing through :meth:`_install`, so a resident entry's ``nbytes`` can go
-        stale between installs. Re-measure ONLY the entries whose message count
-        changed since they were last measured — an ``O(resident)`` length-check
-        (trivial int compares) plus an ``O(changed)`` part walk — instead of the old
-        unconditional ``O(total resident bytes)`` re-walk on EVERY cache miss. Writers
-        only append (never mutate an existing part's text in place), so a length delta
-        catches every drift; a whole-ledger replace re-measures via :meth:`_install`.
+        ``setdefault(sid, []).append`` grows a cached list without routing through
+        :meth:`_install`; only entries whose length changed are re-measured.
         """
 
         total = 0
-        for entry in list(self._resident.values()):
+        for entry in self._resident.values():
             if len(entry.messages) != entry.nmsgs:
                 entry.nbytes = _estimate_bytes(entry.messages)
                 entry.nmsgs = len(entry.messages)
-            total += entry.nbytes
-        self._total_bytes = total
-
-    def _recompute_bytes(self) -> None:
-        """Fully re-measure every resident ledger (exact accounting for diagnostics)."""
-
-        total = 0
-        for entry in list(self._resident.values()):
-            entry.nbytes = _estimate_bytes(entry.messages)
-            entry.nmsgs = len(entry.messages)
             total += entry.nbytes
         self._total_bytes = total
 
@@ -587,9 +551,10 @@ class ResidentLedgerSet(MutableMapping[str, list["Message"]]):
 
     @property
     def resident_session_ids(self) -> list[str]:
-        """Currently-resident session ids, oldest → newest (LRU order)."""
+        """Sessions with a resident ledger, oldest → newest (LRU order)."""
 
-        return list(self._resident.keys())
+        with self._lock:
+            return list(self._resident.keys())
 
     @property
     def resident_count(self) -> int:
@@ -599,10 +564,27 @@ class ResidentLedgerSet(MutableMapping[str, list["Message"]]):
 
     @property
     def resident_bytes(self) -> int:
-        """Estimated resident transcript bytes (the byte-cap accounting)."""
+        """Estimated resident transcript bytes (exact re-measure, for diagnostics)."""
 
-        self._recompute_bytes()
-        return self._total_bytes
+        with self._lock:
+            for entry in self._resident.values():
+                entry.nbytes = _estimate_bytes(entry.messages)
+                entry.nmsgs = len(entry.messages)
+            self._total_bytes = sum(e.nbytes for e in self._resident.values())
+            return self._total_bytes
+
+    @property
+    def arc_bytes(self) -> int:
+        """Encoded bytes of the ARC scopes held in process (all sessions)."""
+
+        return self._arc_bytes
+
+    @property
+    def arc_session_ids(self) -> list[str]:
+        """Sessions with ARC scopes held in process."""
+
+        with self._lock:
+            return list(self._arc)
 
 
 def _estimate_bytes(messages: list["Message"]) -> int:
@@ -611,8 +593,8 @@ def _estimate_bytes(messages: list["Message"]) -> int:
     Uses each message's JSON serialization (``model_dump_json``) so the byte cap —
     the PRIMARY memory guard — accounts for EVERY payload-bearing field, not just
     top-level ``part.text``: base64 image ``data``, tool ``input`` and nested
-    ``content`` parts (where ``tool_result`` bodies live), ``unified_diff`` /
-    ``new_content`` file diffs, compaction ``summary``, ``thought``, and per-message
+    ``content`` parts (where ``tool_result`` bodies live), ``unified_diff``
+    file diffs, compaction ``summary``, ``thought``, and per-message
     / per-part ``metadata``. Those heavy payloads are exactly what #889 exists to
     bound; the old text-only estimate under-counted a tool-result-heavy or
     multimodal ledger by orders of magnitude, letting the byte cap be effectively
@@ -638,42 +620,14 @@ def _estimate_bytes(messages: list["Message"]) -> int:
 # --------------------------------------------------------------------------- #
 
 
-def seed_metrics_counters(store: "MessageStore", counters: "MetricsCounters") -> None:
-    """Seed the running metrics aggregate WITHOUT keeping any transcript resident.
-
-    Streams the per-session ledgers one at a time (:meth:`MessageStore.iter_session_ledgers`),
-    folding each into ``counters`` and dropping the bodies before the next is read.
-    The metrics wire (``GET /v1/metrics`` — total, by-role, tool-latency percentiles)
-    therefore stays byte-identical across a restart while peak transient boot memory
-    is O(largest session), not O(whole corpus), and — crucially — nothing lingers in
-    ``app.state.messages`` (the resident LRU boots empty).
-
-    KNOWN DEVIATION (typed, not silent): this streaming walk still PARSES every
-    session's bodies at boot, so boot *time* remains O(total messages). Design row
-    1.13 / §3.1 call for seeding from the session INDEX (per-session counts) with no
-    body walk. Doing so byte-identically requires persisting a per-session metrics
-    rollup — including tool-latency SAMPLES for exact cross-restart percentiles —
-    on the SessionStore records, which trades against §3.1's "keep the boot index
-    small" goal and the row-1.13 "byte-identical metrics across restart" frozen
-    surface. That store-schema choice is owner-gated (design §4.2 step 2+; #889's
-    delivered win is the bounded resident *memory*, not boot latency, which is
-    #891's front). The deviation is recorded here so it is queryable, not silent.
-    """
-
-    trace.event(
-        "RESIDENT-LEDGER",
-        "metrics seeded via streaming corpus walk (bounded memory, O(corpus) boot time); "
-        "index-only rollup is owner-gated (design 1.13/§3.1)",
-    )
-    for sid, rows in store.iter_session_ledgers():
-        counters.set_session(sid, rows)
-
-
 def _session_is_active(app: "FastAPI", sid: str) -> bool:
-    """A session is pinned while it has a live SSE subscriber or an in-flight turn."""
+    """A session is pinned while it has a live SSE subscriber or running work."""
 
     bus = getattr(app.state, "bus", None)
     if bus is not None and bus.subscriber_count(sid) > 0:
+        return True
+    runner = getattr(app.state, "turn_runner", None)
+    if runner is not None and runner.busy(sid):
         return True
     sessions = getattr(app.state, "sessions", None)
     if sessions is not None:
@@ -736,48 +690,56 @@ def _record_resident_audit(app: "FastAPI", payload: dict[str, Any]) -> None:
 
 
 def build_resident_ledger_set(app: "FastAPI") -> ResidentLedgerSet:
-    """Construct the app's resident transcript set from its message store.
+    """Construct the app's resident set from its session index.
 
-    Wires the active-session pin, typed audit sink and projection eviction.
-    Assignment state is read from Core; loading a transcript never changes it. Requires
-    ``app.state.transcript_index`` to be set (the ``messages/`` store, or the session
-    registry with ``transcript.file`` off -- :mod:`clio_agent.gact.transcript_file`).
+    Wires the active-session pin, the typed audit sink, the eviction hook (which
+    releases the session's ARC scopes and the copies derived from it) and the periodic
+    sweeper. ARC is attached later, once it exists (:func:`attach_arc_residency`).
     """
 
+    from clio_agent.gact.evicted_session import (  # noqa: PLC0415 - avoid import cycle
+        forget_evicted_session,
+    )
+    from clio_agent.gact.resident_sweeper import ResidentSweeper  # noqa: PLC0415
+    from clio_agent.gact.restart_interruptions import (  # noqa: PLC0415 - avoid import cycle
+        settle_restart_interruption,
+    )
     from clio_agent.gact.transcript_projection import (  # noqa: PLC0415 - avoid import cycle
         materialize_ledger,
     )
 
-    return ResidentLedgerSet(
+    resident = ResidentLedgerSet(
         app.state.transcript_index,
         config=ResidentLedgerConfig.from_conf(),
         is_active=lambda sid: _session_is_active(app, sid),
         audit=lambda payload: _record_resident_audit(app, payload),
         materialize=lambda sid: materialize_ledger(app, sid),
-        # S8 review round (issue #1374, focused re-review item 3): A2UIStore's
-        # per-session projection cache holds every surface's full message
-        # list -- the SAME bytes this set's max_bytes cap governs -- so it
-        # must not outlive the ledger it was folded from. One bound, no
-        # second knob: drop it exactly when THIS set evicts the session.
-        on_evict=lambda sid: _forget_a2ui_projection(app, sid),
+        # Settle before capturing atoms: background recovery may otherwise retire
+        # its marker between the read and install, leaving an old user-only copy.
+        before_rehydrate=lambda sid: settle_restart_interruption(app, sid),
+        # Opening a conversation a restart interrupted closes its transcript first.
+        on_rehydrate=lambda sid, rows: settle_restart_interruption(app, sid, rows),
+        on_evict=lambda sid: forget_evicted_session(
+            app, sid, is_active=lambda: _session_is_active(app, sid)
+        ),
     )
+    sweeper = ResidentSweeper(
+        resident.sweep,
+        interval_s=resident.config.sweep_interval_s,
+        loop=lambda: getattr(app.state, "mcp_app_loop", None),
+    )
+    resident.on_over_budget = sweeper.request
+    app.state.resident_sweeper = sweeper
+    return resident
 
 
-def _forget_a2ui_projection(app: "FastAPI", sid: str) -> None:
-    """Drop a just-evicted session's A2UI projection cache entry, if any.
+def attach_arc_residency(app: "FastAPI", arc: Any) -> None:
+    """Report every scope ``arc`` caches to the app's resident set (the one owner)."""
 
-    ``app.state.a2ui_store`` is always set before this set is built (see
-    ``app.py``'s boot order), but stays defensive against a future reorder or
-    a test harness that wires a bare ``ResidentLedgerSet`` without it.
-
-    Calls ``forget_projection``, NOT ``forget_session`` (S8 review round 3,
-    issue #1374 item A, HIGH): eviction can fire for a session mid-write on
-    ANOTHER thread, and ``forget_session`` also drops the session's write
-    lock -- letting a concurrent second writer mint a fresh one and enter
-    the same critical section. Only a genuine session DELETE may drop the
-    lock; see ``A2UIStore.forget_projection``'s own docstring.
-    """
-
-    store = getattr(app.state, "a2ui_store", None)
-    if store is not None:
-        store.forget_projection(sid)
+    resident = getattr(app.state, "messages", None)
+    segments = getattr(arc, "_segments", None)
+    if isinstance(resident, ResidentLedgerSet) and segments is not None:
+        segments.set_residency(resident)
+        sweeper = getattr(app.state, "resident_sweeper", None)
+        if sweeper is not None:
+            sweeper.request()  # starts the periodic sweep on the server loop

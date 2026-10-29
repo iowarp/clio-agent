@@ -43,7 +43,8 @@ class HookMatch:
     """Match predicate for one hook entry.
 
     * ``tool`` — an ANCHORED regex (wrapped ``^...$``) against the tool name, so
-      ``Edit`` does NOT match ``NotebookEdit`` (hooks-research §2.5 / M1).
+      ``Edit`` does NOT match ``NotebookEdit`` (hooks-research §2.5 / M1); for a
+      ``UserPromptExpansion`` hook, against the command name (``plugin:command``).
     * ``annotations`` — capability match against the wire ``tool_annotations``
       block (``readOnly``/``destructive``/``openWorld``), covering MCP tools
       nobody enumerated (M3/M4).
@@ -61,7 +62,8 @@ class HookMatch:
         """Return whether this predicate admits ``envelope``."""
 
         if self.tool is not None:
-            name = envelope.tool_name or ""
+            # A tool event matches its tool; a command expansion matches the command.
+            name = envelope.tool_name or str((envelope.payload or {}).get("command_name") or "")
             if not self.tool.match(name):
                 return False
         if self.annotations:

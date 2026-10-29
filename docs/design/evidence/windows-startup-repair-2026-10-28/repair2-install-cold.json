@@ -1,0 +1,9 @@
+{
+  "ref": "codex/windows-startup-acceptance",
+  "label": "repair2-install-cold",
+  "finished_at": "2026-10-28T09:15:15.5576574Z",
+  "profile": "D:\\cw\\fp2",
+  "candidate": "4a949ff9f",
+  "seconds": 187.0357934,
+  "exit_code": 1
+}

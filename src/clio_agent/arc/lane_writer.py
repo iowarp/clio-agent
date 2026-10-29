@@ -61,7 +61,9 @@ class LaneWriter:
 
         def _segs(self, session_id: str, scope: str) -> list[Segment]: ...
 
-        def _discard_scope(self, session_id: str, scope: str) -> None: ...
+        def _install_committed(
+            self, session_id: str, scope: str, staged: list[Segment], nbytes: int
+        ) -> None: ...
 
     def restore_empty(self, session_id: str, scope: str, segments: list[Segment]) -> bool:
         """Restore a missing scope to the correct canonical storage lane."""
@@ -126,33 +128,31 @@ class LaneWriter:
                 if note_atom(state.index, chunk, atom):
                     self._put_index(session_id, state.index)
             with self._lock_for(session_id, chunk):
-                segs = self._segs(session_id, chunk)
-                segs.append(atom)
+                staged = [*self._segs(session_id, chunk), atom]
+                late = self._put_batch(session_id, chunk, staged, atom)
                 self._index.add(session_id, chunk, atom)
-                late = self._put_batch(session_id, chunk, segs, atom)
         return chunk, late
 
     def _put_batch(
-        self, session_id: str, chunk: str, segs: list[Segment], atom: Segment
+        self, session_id: str, chunk: str, staged: list[Segment], atom: Segment
     ) -> SearchCompanionError | None:
         """Put the lane chunk and the atom's companion chunk concurrently (under the
-        chunk's lock); a lost lane chunk discards the in-memory chunk and raises."""
+        chunk's lock), then cache the chunk clio-core accepted (write-through). A lost
+        lane chunk leaves the cache at the committed chunk and raises typed."""
         assert_store_write_off_loop("segments.put", scope=chunk)
         lane = self._record_name(session_id, chunk)
+        data = encode_segments(staged)
+        late: SearchCompanionError | None = None
         try:
-            records = [
-                PutRecord(lane, encode_segments(segs)),
-                *self._search.stage(session_id, [atom]),
-            ]
+            records = [PutRecord(lane, data), *self._search.stage(session_id, [atom])]
             self._store.put_many("segments", records)
         except BatchPutError as exc:
             if lane in exc.failed:
-                self._discard_scope(session_id, chunk)
                 self._search.unstage(session_id, atom)
                 raise ArcPersistError(session_id, chunk, exc) from exc
-            return SearchCompanionError(session_id, atom.scope, exc)
-        except Exception as exc:  # noqa: BLE001 - re-raised typed after the memory is discarded
-            self._discard_scope(session_id, chunk)
+            late = SearchCompanionError(session_id, atom.scope, exc)
+        except Exception as exc:  # noqa: BLE001 - re-raised typed; the cache is unchanged
             self._search.unstage(session_id, atom)
             raise ArcPersistError(session_id, chunk, exc) from exc
-        return None
+        self._install_committed(session_id, chunk, staged, len(data))
+        return late

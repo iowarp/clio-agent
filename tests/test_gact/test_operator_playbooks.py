@@ -80,8 +80,8 @@ def _write_skill(ws: Path, skill_id: str, frontmatter: str, body: str) -> None:
     )
 
 
-def _invoke(app: Any, sid: str, ws: Path, skill_id: str, *, agent_id: str = "main") -> str:
-    agent = AgentDef(id=agent_id, source="expert_pack", title="A", skills=[skill_id], metadata={})
+def _invoke(app: Any, sid: str, ws: Path, skill_id: str, *, agent_id: str = "standard") -> str:
+    agent = AgentDef(id=agent_id, source="plugin", title="A", skills=[skill_id], metadata={})
     catalog = SkillCatalog(home=ws / "no-home", cwd=ws)
     rt = SkillRuntime(resolutions=catalog.resolve_declared([skill_id]))
     tool = build_load_skill_tool(agent, rt)
@@ -426,7 +426,7 @@ def test_playbook_never_strands_plan_exit_or_plan_file(tmp_path: Path) -> None:
             app,
             session_id=sess.id,
             session=fresh,
-            tool_name="fs_apply_edit_write",
+            tool_name="fs_write_file",
             args={"path": plan_file},
             mode="plan",
         )

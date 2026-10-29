@@ -50,7 +50,7 @@ def test_marks_persist_and_publish_without_changing_transcript(marked_client: An
     assert _mark(client, sid, {"msg_1": True}) == {"msg_1": True}
     assert _mark(client, sid, {"msg_3": True}) == {"msg_1": True, "msg_3": True}
     assert _mark(client, sid, {"msg_1": False}) == {"msg_3": True}
-    store = SessionStore(path=client.app.state.sessions._path)
+    store = SessionStore(path=client.app.state.sessions._path, store=client.app.state.arc._store)
     assert store.get(sid).metadata["message_marks"] == {"msg_3": True}
     assert client.get(f"/v1/sessions/{sid}/messages").json() == before
     event = client.app.state.bus._history[sid][-1]
@@ -151,8 +151,8 @@ def test_export_import_preserves_marks(marked_client: Any) -> None:
     assert client.app.state.sessions.get(sid).metadata["message_marks"] == {"msg_2": True}
 
 
-def test_concurrent_mark_deltas_do_not_overwrite_each_other(tmp_path: Path) -> None:
-    store = SessionStore(path=tmp_path / "sessions.json")
+def test_concurrent_mark_deltas_do_not_overwrite_each_other(tmp_path: Path, arc: Any) -> None:
+    store = SessionStore(path=tmp_path / "sessions.json", store=arc._store)
     sid = store.create(workspace_id="ws_default", title="Shared").id
 
     def mark(index: int) -> None:
@@ -160,9 +160,9 @@ def test_concurrent_mark_deltas_do_not_overwrite_each_other(tmp_path: Path) -> N
 
     with ThreadPoolExecutor(max_workers=4) as pool:
         list(pool.map(mark, range(12)))
-    assert SessionStore(path=tmp_path / "sessions.json").get(sid).metadata["message_marks"] == {
-        f"message_{index}": True for index in range(12)
-    }
+    assert SessionStore(path=tmp_path / "sessions.json", store=arc._store).get(sid).metadata[
+        "message_marks"
+    ] == {f"message_{index}": True for index in range(12)}
     assert merge_session_metadata({"pinned": True}, {"message_marks": {}}) == {
         "pinned": True,
         "message_marks": {},

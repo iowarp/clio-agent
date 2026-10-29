@@ -62,7 +62,7 @@ from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from clio_agent import conf
 from clio_agent.arc import loop_guard
-from clio_agent.gact import composer_runtime, server_boot
+from clio_agent.gact import boot_timing, composer_runtime, server_boot
 from clio_agent.gact.auth import configure_bearer_auth
 from clio_agent.gact.cors import gact_cors_origins as _gact_cors_origins
 from clio_agent.gact.error_middleware import install_error_envelope, install_typed_error_handlers
@@ -73,7 +73,7 @@ from clio_agent.gact.semantic_events import (
     build_trace_backend,
 )
 from clio_agent.prompts import PromptRegistry, PromptSource
-from clio_agent.runtime import trace
+from clio_agent.runtime import asyncio_wait_release, trace
 
 logger = logging.getLogger(__name__)
 
@@ -92,7 +92,7 @@ logger = logging.getLogger(__name__)
 # ``runtime.globals`` (test patch/reset sites target it there).                 #
 # --------------------------------------------------------------------------- #
 from clio_agent.gact.runtime.globals import (  # noqa: E402, F401
-    _ACTIVE_BLUEPRINT_TOOL_ROWS,
+    _ACTIVE_AGENT_TOOL_ROWS,
     _ACTIVE_GACT_APP,
     _ACTIVE_GACT_SESSION_ID,
     _ACTIVE_GACT_TRACE_ID,
@@ -164,22 +164,18 @@ def _web_dir() -> str:
 # clio_agent.gact.enrichment (#714 decomposition): context-file injection +
 # its structured access error and binary-inspector hook, explicit memory-search
 # enrichment, context-frame record/finalize + their token-accounting leaves,
-# the approved diffs/apply disk write, and the turn provenance projection.
-# Re-exported here so existing ``from clio_agent.gact.app import <name>`` callers
-# (the turn engine, tests) + test_import_seams stay green; GactDeps passes
-# _apply_edit_to_disk through from this module.
+# and the turn provenance projection. Re-exported here so existing
+# ``from clio_agent.gact.app import <name>`` callers (the turn engine, tests) +
+# test_import_seams stay green.
 from clio_agent.gact.enrichment import (  # noqa: E402,F401
     _BINARY_CONTEXT_INSPECTORS,
-    _apply_edit_to_disk,
     _context_file_access_error,
     _context_file_turn_provenance,
     _enrich_with_context_files,
     _estimate_context_tokens,
     _finalize_context_frame,
-    _memory_search_request_from_message,
     _message_text_for_frame,
     _record_context_frame,
-    _requested_memory_search,
 )
 from clio_agent.gact.session_store import (  # noqa: E402,F401
     _append_session_message,
@@ -188,7 +184,6 @@ from clio_agent.gact.session_store import (  # noqa: E402,F401
     _extend_session_messages,
     _flush_context_files,
     _load_context_files,
-    _reconcile_restart_interrupted_sessions,
     _release_session_arc,
     _replace_session_messages,
 )
@@ -238,7 +233,7 @@ def _enrich_cancellation_error_info(
 # --------------------------------------------------------------------------- #
 # Agent resolution + prompt composition re-export shims (#714 step 5/A).         #
 #                                                                               #
-# The stateless agent/blueprint/expert-pack RESOLUTION queries and the prompt   #
+# The stateless agent RESOLUTION queries (pinned plugin resolutions) and prompt #
 # COMPOSITION / dynamic-context renderers were carved out into                   #
 # ``clio_agent.gact.agents.resolution`` and ``clio_agent.gact.agents.composition``#
 # (each takes ``app`` explicitly; both import only the shared runtime base +     #
@@ -275,62 +270,21 @@ from clio_agent.gact._params import (  # noqa: E402,F401
 )
 from clio_agent.gact.agents import resolution as _resolution  # noqa: E402, F401
 
-# gact/agents/builders.py -- expert/blueprint runtime engine;
-# the kept turn-handler dispatch wrappers below reach the builders through these.
+# gact/agents/builders.py -- the resolved-agent module builder.
 from clio_agent.gact.agents.builders import (  # noqa: E402,F401
     _active_base_agent_tool_executor,
-    _blueprint_runtime_signature,
-    _build_blueprint_dspy_module,
-    _build_prompt_user_agent_module,
-    _build_tool_user_agent_module,
-    _call_enabled_external_mcp_tool,
     _dynamic_agent_lm_config,
-    _dynamic_agent_tools,
-    _emit_blueprint_llm_failure,
-    _emit_invalid_tool_selection_event,
-    _enabled_external_mcp_dspy_tools,
-    _invalid_tool_selection_from_exception,
-    _prompt_user_agent_signature,
-    _recording_blueprint_tool,
-    _run_external_mcp_tool_sync,
-    _tool_names,
     _tool_user_agent_max_iters,
-    _tool_user_agent_signature,
 )
 from clio_agent.gact.agents.composition import (  # noqa: E402, F401
-    _agent_prompt_request,
-    _agent_rows_prompt_render_context,
-    _apply_prompt_registry_to_agent,
     _prompt_render_context,
-    _prompt_resolution_metadata,
     _runtime_active_workspace_context,
-    _runtime_dynamic_agent_children_context,
 )
 from clio_agent.gact.agents.resolution import (  # noqa: E402, F401
-    _agent_definition_is_agent_blueprint,
-    _agent_definition_uses_blueprint_runtime,
-    _agent_overlay_patchable_fields,
-    _agent_with_capability_refs,
-    _merge_agent_def_rows,
-    _resolve_dynamic_agent,
-    _resolve_runtime_dynamic_agent,
-    _runtime_active_agent_blueprint_agent_ids,
-    _runtime_active_agent_blueprint_id,
-    _runtime_active_agent_blueprint_path,
-    _runtime_active_agent_blueprint_root_id,
-    _runtime_active_agent_blueprint_rows,
-    _runtime_active_session_expert_pack_id,
-    _runtime_active_session_expert_pack_path,
-    _runtime_apply_session_agent_overlay,
-    _runtime_child_agent_rows,
-    _runtime_declared_child_ids,
-    _runtime_session_agent_overlay,
+    SessionAgentUnavailable,
     _runtime_workspace_catalog_cwd,
-)
-from clio_agent.gact.agents.runners import (  # noqa: E402
-    _run_blueprint_dspy_agent,
-    _run_prompt_user_agent,
-    _run_tool_user_agent,
+    resolve_session_agent,
+    session_resolution,
 )
 
 # gact/delegation.py -- delegation + workflow-state derivation cluster.
@@ -351,7 +305,6 @@ from clio_agent.gact.evidence import (  # noqa: E402,F401
     _bounded_tool_call_result,
     _dynamic_agent_runtime_provenance,
     _is_bounded_tool_result,
-    _propose_edit_diffs_from_pred,
     _tool_result_is_error,
     _tool_result_preview,
 )
@@ -403,13 +356,6 @@ from clio_agent.gact.providers.lmstudio import (  # noqa: E402,F401
 )
 from clio_agent.gact.routes import artifact_workspace  # noqa: E402
 from clio_agent.gact.routes.a2ui import register_a2ui_routes  # noqa: E402
-from clio_agent.gact.routes.agents import (  # noqa: E402
-    register_agents_routes,
-)
-from clio_agent.gact.routes.blueprint_updates import register_blueprint_updates_routes  # noqa: E402
-from clio_agent.gact.routes.blueprints import (  # noqa: E402
-    register_blueprints_routes,
-)
 from clio_agent.gact.routes.catalog import register_catalog_routes  # noqa: E402
 from clio_agent.gact.routes.connected_storage import register_connected_storage_routes  # noqa: E402
 from clio_agent.gact.routes.context import (  # noqa: E402
@@ -419,7 +365,6 @@ from clio_agent.gact.routes.deps import GactDeps  # noqa: E402
 from clio_agent.gact.routes.diffs import (  # noqa: E402
     register_diffs_routes,
 )
-from clio_agent.gact.routes.expert_packs import register_expert_packs_routes  # noqa: E402
 from clio_agent.gact.routes.infrastructure import register_infrastructure_routes  # noqa: E402
 from clio_agent.gact.routes.interactions import (  # noqa: E402
     register_permission_and_interaction_routes,
@@ -428,15 +373,14 @@ from clio_agent.gact.routes.lifecycle import register_lifecycle_routes  # noqa: 
 from clio_agent.gact.routes.mcp import (  # noqa: E402
     register_mcp_routes,
 )
-from clio_agent.gact.routes.memory import (  # noqa: E402
-    register_memory_routes,
-)
+from clio_agent.gact.routes.memory import register_memory_routes  # noqa: E402
 from clio_agent.gact.routes.messages import (  # noqa: E402
     register_messages_routes,
 )
 from clio_agent.gact.routes.misc import (  # noqa: E402
     register_misc_routes,
 )
+from clio_agent.gact.routes.plugins import register_plugin_routes  # noqa: E402
 from clio_agent.gact.routes.prompts import (  # noqa: E402
     register_prompts_routes,
 )
@@ -450,6 +394,9 @@ from clio_agent.gact.routes.schedules import (  # noqa: E402
     register_schedules_routes,
 )
 from clio_agent.gact.routes.session_defaults import register_session_defaults_routes  # noqa: E402
+from clio_agent.gact.routes.session_recall import (  # noqa: E402
+    register_session_recall_routes,
+)
 from clio_agent.gact.routes.sessions import register_sessions_routes  # noqa: E402
 from clio_agent.gact.routes.system import register_system_routes  # noqa: E402
 from clio_agent.gact.routes.trace import register_trace_routes  # noqa: E402
@@ -477,7 +424,7 @@ from clio_agent.gact.runtime.capabilities import (  # noqa: E402,F401
 # share one source. Imported under the legacy underscore names the render-context
 # closure already used.
 from clio_agent.gact.runtime.commands import (  # noqa: E402
-    command_cwd_for_request as _command_cwd_for_request,
+    command_context_for_request as _command_context_for_request,
 )
 from clio_agent.gact.runtime.commands import (  # noqa: E402
     planner_command_rows as _planner_command_rows,
@@ -507,19 +454,6 @@ from clio_agent.gact.runtime.context_tokens import (  # noqa: E402,F401
     _resolve_expert_context_window,
 )
 
-# Transcript-memory search primitives (query normalization, excerpting, the
-# scope-controlled ranked search) + the shared message-excerpt projection moved
-# to gact/runtime/memory_search.py (#714 decomposition) so the agent-run path
-# (_requested_memory_search)
-# and the memory routes (routes/memory.py) share one implementation. Re-exported
-# here so existing ``from clio_agent.gact.app import <name>`` callers stay green.
-from clio_agent.gact.runtime.memory_search import (  # noqa: E402,F401
-    _memory_search_excerpt,
-    _memory_search_response,
-    _memory_search_terms,
-    _message_text_excerpt,
-)
-
 # Permission-policy data machinery (validation, load/flush, resolution-derived
 # policy + the constants) moved to gact/runtime/permission_policies.py (#714
 # decomposition step 7) so the permissions route module + this startup path share
@@ -536,9 +470,20 @@ from clio_agent.gact.runtime.permission_policies import (  # noqa: E402,F401
     _permission_path_from_args,
     _validate_permission_policies,
 )
+
+# Transcript-memory search primitives (query normalization, excerpting, the
+# scope-controlled ranked search) + the shared message-excerpt projection moved
+# to gact/runtime/session_recall_search.py (#714 decomposition) so the agent-run path
+# and the recall routes (routes/session_recall.py) share one implementation. Re-exported
+# here so existing ``from clio_agent.gact.app import <name>`` callers stay green.
+from clio_agent.gact.runtime.session_recall_search import (  # noqa: E402,F401
+    _message_text_excerpt,
+    _recall_search_excerpt,
+    _recall_search_response,
+    _recall_search_terms,
+)
 from clio_agent.gact.runtime.type_parsing import (  # noqa: E402,F401
     _SCALAR_FIELD_TYPES,
-    _blueprint_module_kind,
     _is_optional_annotation,
     _parse_field_annotation,
     _sanitize_model_name,
@@ -558,12 +503,6 @@ from clio_agent.gact.workflow_state.merge import (  # noqa: E402,F401
     _trajectory_key_index,
     _value_has_semantic_content,
 )
-
-
-def _blueprint_runner_for_agent(agent_def: "AgentDef") -> Any:
-    if _agent_definition_uses_blueprint_runtime(agent_def):
-        return _run_blueprint_dspy_agent
-    return _run_tool_user_agent if agent_def.tools else _run_prompt_user_agent
 
 
 def _clear_session_model_refs(app: "FastAPI") -> None:
@@ -618,13 +557,7 @@ _turn_start_background_user_turn = _start_background_user_turn
 from typing import Protocol
 
 from clio_agent.gact import agent_initialization
-from clio_agent.gact.agent_blueprints import (
-    discover_agent_blueprints,
-    load_agent_blueprint_path,
-    load_agent_blueprints,
-)
 from clio_agent.gact.catalog import (  # noqa: E402, F401
-    _builtin_agents,
     _command_search_roots,
     _load_command_files_from_disk,
     _normalize_file_command_id,
@@ -635,12 +568,6 @@ from clio_agent.gact.catalog import (  # noqa: E402, F401
     _truthy_command_field,
 )
 from clio_agent.gact.events import EventBus
-from clio_agent.gact.expert_packs import (
-    discover_expert_packs,
-    load_expert_pack_path,
-    load_expert_packs,
-    validate_expert_hierarchy,
-)
 from clio_agent.gact.permission_gate import (  # noqa: E402,F401
     _direct_permission_denied,
     _guard_direct_destructive_action,
@@ -650,7 +577,6 @@ from clio_agent.gact.permission_gate import (  # noqa: E402,F401
     _record_resolved_permission,
 )
 from clio_agent.gact.sessions import SessionStore, _default_store_path
-from clio_agent.gact.skills import SkillNotDelegatableError as SkillNotDelegatableError
 
 # Prediction rendering + the stream-fallback ledger (gact/streaming.py, #714),
 # re-exported for ``from clio_agent.gact.app import <name>`` callers.
@@ -693,16 +619,13 @@ from clio_agent.gact.types import (
     ErrorInfo,
 )
 from clio_agent.gact.usage import (  # noqa: E402,F401
-    _PRICE_TABLE_PER_M,
-    _all_known_lms,
     _entry_prompt_text,
     _entry_reasoning_text,
     _entry_response_text,
     _estimate_cost_usd,
-    _reasoning_records_from_history_slice,
-    _snapshot_lm_history_index,
-    _usage_from_dspy_history,
-    _usage_from_history_slice,
+    _reasoning_records_from_turn_calls,
+    _turn_call_count,
+    _usage_from_turn_calls,
 )
 from clio_agent.gact.workspaces import WorkspaceStore
 from clio_agent.gact.workspaces import _default_store_path as _ws_default_store_path
@@ -740,6 +663,7 @@ async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
 
     desktop_lifecycle.reset_for_boot()
     app.state.started_at = time.time()
+    boot_timing.mark(app, "lifespan_started")
     app.state.mcp_app_loop = asyncio.get_running_loop()
     # #948 S1 (#662): anchor turn tasks to THIS app-lifetime loop, not whatever
     # transient request/portal loop submits them.
@@ -761,13 +685,17 @@ async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
 
     app.state.sandbox = install_sandbox()
 
-    # Reap proven CLIO orphans before the MCP-cache liveness check (order matters,
-    # off-loop). The direct Codex provider owns one durable credential file,
+    # Reap proven CLIO orphans off-loop; cache pruning is install/doctor --gc work (B4).
+    # The direct Codex provider owns one durable credential file,
     # not a spawned CLI's scratch home, so there is nothing here for it to reap.
-    from clio_agent.gact import default_registry_migration as _registry_resync  # noqa: PLC0415
-
-    app.state.mcp_cache_prune_task = asyncio.create_task(server_boot.prune_orphans_and_cache(app))
-    app.state.registry_resync = _registry_resync.start_in_background(app)  # v15 S8, a thread
+    app.state.orphan_reap_task = asyncio.create_task(
+        boot_timing.timed(app, "orphans", server_boot.reap_orphans(app))
+    )
+    # Install or refresh the shipped default marketplace off the loop; a turn that
+    # resolves before it finishes waits on the same lock (PluginService.ready).
+    app.state.plugin_sync_task = asyncio.create_task(
+        boot_timing.timed(app, "marketplace", asyncio.to_thread(app.state.plugin_service.ready))
+    )
 
     task: Optional[asyncio.Task] = None
     if getattr(app.state, "schedules", None) is not None:
@@ -795,6 +723,7 @@ async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
     try:
         if not getattr(app.state, "server_boot", False):
             await asyncio.shield(readiness)
+        boot_timing.mark(app, "serving")
         yield
     finally:
         # Agent construction runs on an executor thread. Cancelling its asyncio task
@@ -806,7 +735,7 @@ async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
         # #1334: no request is served on this loop any more, so the teardown flushes below
         # (the turn drain, the trace close) must LAND rather than be refused and dropped.
         loop_guard.begin_server_loop_drain(app.state.mcp_app_loop)
-        await asyncio.to_thread(app.state.document_store.close)
+        await server_boot.close_request_owners(app)
         # #948 S1 (#662): quiesce the internal turn-PRODUCERS (the scheduler tick, the
         # agent-construction and lm-config tasks) BEFORE draining turns, so nothing can
         # spawn a fresh turn into the drain window. The scheduler (the live post-yield
@@ -924,7 +853,7 @@ async def _construct_agent_async(app: "FastAPI") -> None:
         return agent
 
     try:
-        agent = await loop.run_in_executor(None, _build)
+        agent = await boot_timing.timed(app, "agent_construct", loop.run_in_executor(None, _build))
     except Exception as exc:  # noqa: BLE001
         from clio_agent.gact.agent_initialization import record_init_failure  # noqa: PLC0415
 
@@ -940,27 +869,20 @@ async def _construct_agent_async(app: "FastAPI") -> None:
     # #971: boot-fold the artifact registry off-loop before ready (defects 2 + 1b; owner helper).
     from clio_agent.gact.artifacts import registry_boot  # noqa: PLC0415
 
-    if not await registry_boot.boot_fold_artifact_registry_offloop(app, loop):
+    if not await boot_timing.timed(
+        app, "artifact_registry", registry_boot.boot_fold_artifact_registry_offloop(app, loop)
+    ):
         return  # wedged store — agent stays unready with a typed agent_init_error
     agent_initialization.mark_agent_ready(app, agent, boot=True)
     starting = getattr(app.state, "task_runtime_start", None)
     if starting is not None:
-        await asyncio.shield(starting)
-        for sid in await app.state.task_history.io.run(app.state.task_history.pending_sessions):
-            app.state.turn_runner.signal(sid)
+        await asyncio.shield(starting)  # pending mail resumes in the obligations lane
 
     # #972: enforce the CAS store byte budget across every workspace at boot (off-loop,
     # #1001 cadence — the registry is now folded, so the reachability scan is ready).
-    # Best-effort: a GC failure never blocks the agent coming ready.
-    async def _boot_cas_gc() -> None:
-        try:
-            from clio_agent.gact.artifacts.cas_gc import run_boot_cas_gc  # noqa: PLC0415
+    from clio_agent.gact.artifacts.cas_gc import start_boot_cas_gc  # noqa: PLC0415
 
-            await loop.run_in_executor(None, run_boot_cas_gc, app)
-        except Exception as exc:  # noqa: BLE001 — boot CAS GC is best-effort
-            logger.warning("cas boot gc skipped reason=cas_boot_gc_failed error=%r", exc)
-
-    app.state.cas_boot_gc_task = asyncio.create_task(_boot_cas_gc())
+    app.state.cas_boot_gc_task = start_boot_cas_gc(app, loop)
 
     # Install the deferred permission gate + tool observer now that we
     # know an agent exists to gate. See build_app for why these aren't
@@ -1056,6 +978,7 @@ def build_app(
     )
 
     install_protocol_negotiation(app)
+    asyncio_wait_release.install()  # a pooled MCP session never keeps a tool call's turn
 
     configure_bearer_auth(app)
 
@@ -1144,12 +1067,11 @@ def build_app(
     # iowarp/clio-agent#369: agent-callable memory tool audit. Tool
     # reads are policy-gated and provenance-bearing so cross-session
     # context is visible after the fact.
-    app.state.memory_tool_audit = []
+    app.state.session_recall_audit = []
     # per-session pending diffs. Keyed by
-    # session_id -> list of {path, unified_diff, status,
-    # part_id, message_id}. Status is "pending" until apply/reject
-    # flips it.
-    app.state.pending_diffs = {}
+    # session_id -> the files the agent changed (gact/file_changes.py);
+    # status is "applied" until the person's Undo flips it to "reverted".
+    app.state.file_changes = {}
     # pending permission requests. Flat dict
     # keyed by permission_id so GET /v1/permissions can filter by
     # session cheaply. Each record carries
@@ -1338,20 +1260,10 @@ def build_app(
         if sessions_path is not None
         else _ws_default_store_path()
     )
-    # iowarp/clio-agent#19: dynamic agent registry. Persists user-
-    # registered Tier-2 specialists alongside sessions/workspaces;
-    # built-ins always take precedence on id clash (rejected at
-    # the HTTP layer).
-    from clio_agent.gact.user_agents import (
-        UserAgentStore,
-    )
-    from clio_agent.gact.user_agents import (
-        _default_store_path as _ua_default,
-    )
+    # Installed plugins, agents and pinned session resolutions (plugins/service.py).
+    from clio_agent.plugins.service import PluginService  # noqa: PLC0415
 
-    app.state.user_agents = UserAgentStore(
-        path=(sessions_path.parent / "agents.json") if sessions_path is not None else _ua_default()
-    )
+    app.state.plugin_service = PluginService()
     # iowarp/clio-agent#21: scheduled turns store + tick task.
     from clio_agent.gact.scheduler import ScheduleStore as _SchedStore
 
@@ -1392,18 +1304,6 @@ def build_app(
                     return Path(root_path).expanduser()
         return Path.cwd()
 
-    def _active_prompt_pack_path(session_id: str = "") -> Path | None:
-        if not session_id:
-            return None
-        sess = app.state.sessions.get(session_id)
-        if sess is None:
-            return None
-        metadata = getattr(sess, "metadata", {}) or {}
-        if not isinstance(metadata, Mapping):
-            return None
-        raw = str(metadata.get("active_expert_pack_path") or "").strip()
-        return Path(raw).expanduser() if raw else None
-
     def _prompt_sources_for_request(
         *,
         session_id: str = "",
@@ -1412,33 +1312,8 @@ def build_app(
         cwd = _prompt_workspace_root(workspace_id=workspace_id, session_id=session_id)
         sources = [
             PromptSource("global", prompt_write_root),
+            PromptSource("workspace", paths.workspace_config_path(cwd, "prompts")),
         ]
-        for pack in discover_expert_packs(cwd=cwd):
-            prompt_root = pack.root / "prompts"
-            if prompt_root.is_dir():
-                sources.append(PromptSource(f"{pack.scope}_pack", prompt_root))
-        sources.append(PromptSource("workspace", paths.workspace_config_path(cwd, "prompts")))
-        if session_id:
-            active_blueprint_path = _active_session_agent_blueprint_path(session_id)
-            active_blueprint_id = _active_session_agent_blueprint_id(session_id)
-            active_blueprint_root = active_blueprint_path
-            if active_blueprint_root is None and active_blueprint_id:
-                active = next(
-                    (
-                        row
-                        for row in discover_agent_blueprints(cwd=cwd)
-                        if row.id == active_blueprint_id
-                    ),
-                    None,
-                )
-                active_blueprint_root = active.root if active is not None else None
-            if active_blueprint_root is not None and (active_blueprint_root / "prompts").is_dir():
-                sources.append(
-                    PromptSource("session_agent_blueprint", active_blueprint_root / "prompts")
-                )
-        active_pack_path = _active_prompt_pack_path(session_id)
-        if active_pack_path is not None and (active_pack_path / "prompts").is_dir():
-            sources.append(PromptSource("session_pack", active_pack_path / "prompts"))
         if session_id:
             sources.append(
                 PromptSource("session", prompt_write_root.parent / "session-prompts" / session_id)
@@ -1481,128 +1356,33 @@ def build_app(
 
     app.state.prompt_registry_for_request = _prompt_registry_for_request
 
-    def _prompt_agent_overlay_for_request(session_id: str = "") -> dict[str, Any]:
-        if not session_id:
-            return {}
-        overlay = _session_agent_overlay(session_id)
-        agents = overlay.get("agents") if isinstance(overlay, Mapping) else None
-        if not isinstance(agents, Mapping):
-            return {}
-        rows: list[dict[str, Any]] = []
-        prompt_fields = {
-            "system_prompt",
-            "prompt_id",
-            "prompt_profile",
-            "default_provider",
-            "default_model",
-        }
-        for agent_id, raw_patch in sorted(agents.items(), key=lambda item: str(item[0])):
-            if not isinstance(raw_patch, Mapping):
-                continue
-            fields = sorted(str(key) for key in raw_patch if str(key) in prompt_fields)
-            if not fields:
-                continue
-            rows.append(
-                {
-                    "agent_id": str(agent_id),
-                    "fields": fields,
-                    "has_system_prompt": bool(str(raw_patch.get("system_prompt") or "").strip()),
-                    "prompt_id": str(raw_patch.get("prompt_id") or "").strip(),
-                    "prompt_profile": str(raw_patch.get("prompt_profile") or "").strip(),
-                    "default_provider": str(raw_patch.get("default_provider") or "").strip(),
-                    "default_model": str(raw_patch.get("default_model") or "").strip(),
-                    "source": "session_agent_overlay",
-                    "session_id": session_id,
-                }
-            )
-        return {
-            "session_id": session_id,
-            "source": "session_agent_overlay",
-            "agents": rows,
-        }
-
     def _prompt_render_context_for_request(
         *,
         session_id: str = "",
         workspace_id: str = "",
     ) -> dict[str, str]:
         context = _prompt_render_context(app)
-        if session_id or workspace_id:
-            try:
-                agents = [
-                    row
-                    for row in _agent_rows(session_id=session_id, workspace_id=workspace_id)
-                    if row.enabled
-                ]
-                by_parent: dict[str, list[AgentDef]] = {}
-                for agent in agents:
-                    by_parent.setdefault(agent.parent_id or "", []).append(agent)
-
-                def render_tree(parent_id: str = "", depth: int = 0) -> list[str]:
-                    lines: list[str] = []
-                    for agent in sorted(
-                        by_parent.get(parent_id, []), key=lambda row: (row.tier, row.id)
-                    ):
-                        indent = "  " * depth
-                        detail = f" - {agent.description}" if agent.description else ""
-                        lines.append(f"{indent}- {agent.id}: {agent.title}{detail}")
-                        lines.extend(render_tree(agent.id, depth + 1))
-                    return lines
-
-                context["agents.available_tree"] = (
-                    "\n".join(render_tree()) or "(no enabled experts)"
-                )
-                context["agents.available_flat"] = (
-                    "\n".join(
-                        f"- {agent.id}: {agent.title}"
-                        for agent in sorted(agents, key=lambda row: row.id)
-                    )
-                    or "(no enabled experts)"
-                )
-            except Exception:  # noqa: BLE001,S110 - enabled-experts prompt hint is best-effort; planner proceeds without it
-                pass
-            if session_id:
-                pack_id = ""
-                blueprint_id = ""
-                agent_id = ""
-                sess = app.state.sessions.get(session_id)
-                if sess is not None:
-                    agent_id = _session_agent_id(sess)
-                    metadata = getattr(sess, "metadata", {}) or {}
-                    if isinstance(metadata, Mapping):
-                        pack_id = str(metadata.get("active_expert_pack_id") or "").strip()
-                        blueprint_id = str(metadata.get("active_agent_blueprint_id") or "").strip()
-                context["session.active_pack"] = pack_id or "(no active expert pack)"
-                context["session.active_agent_blueprint"] = (
-                    blueprint_id or "(no active agent blueprint)"
-                )
-                try:
-                    commands = [
-                        f"- {row.get('id')}: {row.get('description') or row.get('title')}"
-                        for row in _planner_command_rows(
-                            app,
-                            _resolve_runtime_dynamic_agent_bound,
-                            agent_id=agent_id,
-                            cwd=_command_cwd_for_request(app, session_id),
-                            session_id=session_id,
-                        )
-                    ]
-                    context["commands.agent_invocable"] = (
-                        "\n".join(commands) or "(no agent-invocable commands)"
-                    )
-                except Exception as exc:  # noqa: BLE001 - enrichment; keep the base list
-                    # No silent fallback: record WHY the agent-scoped command
-                    # enrichment was skipped so an arity/resolver break is
-                    # queryable in the trace instead of silently reverting the
-                    # render context to the un-scoped base command list.
-                    trace.event(
-                        "PROMPT-CTX",
-                        "agent-invocable command enrichment failed for agent %r "
-                        "(session %r): %s; rendering un-scoped base command list",
-                        agent_id,
-                        session_id,
-                        exc,
-                    )
+        if not session_id:
+            return context
+        try:
+            resolution = session_resolution(app, session_id)
+        except SessionAgentUnavailable as exc:
+            context["session.agent"] = f"(unavailable: {exc.reason})"
+            return context
+        agent, targets = resolution.agent, _resolution.spawn_targets(resolution)
+        context["session.agent"] = str(agent.get("ref") or agent.get("id") or "")
+        context["agents.available_flat"] = (
+            "\n".join(f"- {t['id']}: {t['description']}" for t in targets)
+            or "(no defined subagents)"
+        )
+        agent_def = resolve_session_agent(app, "", session_id=session_id)
+        commands = [
+            f"- {row.get('id')}: {row.get('description') or row.get('title')}"
+            for row in _planner_command_rows(
+                app, agent_def, *_command_context_for_request(app, session_id)
+            )
+        ]
+        context["commands.agent_invocable"] = "\n".join(commands) or "(no agent-invocable commands)"
         return context
 
     # ---- /v1/sessions CRUD + delete -----------------------------------
@@ -1689,238 +1469,10 @@ def build_app(
     # routes are owned by routes/messages.py and registered below via
     # register_messages_routes(app, deps) (see the search pointer above).
 
-    # ---- /v1/agents catalog (BBB10) + dynamic registry (#19) ---------
-    #
-    # Effective-agent resolution (blueprint rows + MCP tool-gating + capability
-    # refs + default-blueprint fallback) is owned by
-    # ``clio_agent.gact.agents.resolution``; ``/v1/agents`` (``_agent_rows``) and
-    # the runtime turn path share the ONE ``_runtime_active_agent_blueprint_rows``
-    # seam so they can never disagree (#770 C1). The build_app-local closures kept
-    # here are the thin app-binding wrappers ``deps`` needs (1-arg seams that bind
-    # ``app``) plus the metadata-only readers that are deliberately distinct from
-    # the fallback-aware runtime readers.
+    def _resolve_session_agent_bound(agent_id: str, *, session_id: str) -> AgentDef | None:
+        """Bind ``app`` for the session-agent resolver seam ``deps`` carries."""
 
-    def _agent_with_capability_refs_bound(agent_def: AgentDef) -> AgentDef:
-        """Bind ``app`` for the 1-arg capability-ref seam ``deps`` + routes use."""
-
-        return _agent_with_capability_refs(app, agent_def)
-
-    def _workspace_catalog_cwd(workspace_id: str = "", session_id: str = "") -> Path | None:
-        wid = workspace_id
-        if session_id:
-            sess = app.state.sessions.get(session_id)
-            if sess is not None:
-                wid = wid or str(getattr(sess, "workspace_id", "") or "")
-        if not wid:
-            return None
-        ws = app.state.workspaces.get(wid)
-        if ws is None:
-            return None
-        root_path = str(getattr(ws, "root_path", "") or "")
-        return Path(root_path).expanduser() if root_path else None
-
-    def _active_session_agent_blueprint_id(session_id: str = "") -> str:
-        if not session_id:
-            return ""
-        sess = app.state.sessions.get(session_id)
-        if sess is None:
-            return ""
-        metadata = getattr(sess, "metadata", {}) or {}
-        if not isinstance(metadata, Mapping):
-            return ""
-        return str(metadata.get("active_agent_blueprint_id") or "").strip()
-
-    def _active_session_agent_blueprint_path(session_id: str = "") -> Path | None:
-        if not session_id:
-            return None
-        sess = app.state.sessions.get(session_id)
-        if sess is None:
-            return None
-        metadata = getattr(sess, "metadata", {}) or {}
-        if not isinstance(metadata, Mapping):
-            return None
-        raw = str(metadata.get("active_agent_blueprint_path") or "").strip()
-        return Path(raw).expanduser() if raw else None
-
-    def _agent_blueprint_activation_metadata(
-        *,
-        blueprint_wire: Mapping[str, Any],
-        install_root: Path | None,
-        scope: str,
-        session_id: str = "",
-    ) -> dict[str, str]:
-        # Body moved to gact/blueprint_activation.py (S8 review, issue #1374):
-        # that module owns the blueprint.resolution.degraded reason ledger the
-        # requires.clio_agent floor check (raised from inside it) needs.
-        from clio_agent.gact.blueprint_activation import (  # noqa: PLC0415
-            agent_blueprint_activation_metadata as _impl,
-        )
-
-        return _impl(
-            blueprint_wire=blueprint_wire,
-            install_root=install_root,
-            scope=scope,
-            app=app,
-            session_id=session_id,
-        )
-
-    def _session_agent_overlay(session_id: str = "") -> dict[str, Any]:
-        if not session_id:
-            return {}
-        sess = app.state.sessions.get(session_id)
-        if sess is None:
-            return {}
-        metadata = getattr(sess, "metadata", {}) or {}
-        if not isinstance(metadata, Mapping):
-            return {}
-        overlay = metadata.get("agent_blueprint_overlay")
-        return dict(overlay) if isinstance(overlay, Mapping) else {}
-
-    def _base_session_agent_blueprint_rows(
-        session_id: str = "",
-        workspace_id: str = "",
-    ) -> list[AgentDef]:
-        if not session_id:
-            return []
-        cwd = _workspace_catalog_cwd(workspace_id=workspace_id, session_id=session_id)
-        active_blueprint_id = _active_session_agent_blueprint_id(session_id)
-        active_blueprint_path = _active_session_agent_blueprint_path(session_id)
-        if active_blueprint_path is not None:
-            return load_agent_blueprint_path(active_blueprint_path, scope="session")
-        if active_blueprint_id:
-            return load_agent_blueprints(cwd=cwd, blueprint_id=active_blueprint_id)
-        return []
-
-    def _apply_agent_overlay_rows(
-        rows: list[AgentDef],
-        overlay: Mapping[str, Any],
-        *,
-        session_id: str = "",
-    ) -> list[AgentDef]:
-        agents = overlay.get("agents") if isinstance(overlay, Mapping) else None
-        if not isinstance(agents, Mapping):
-            return rows
-        patchable = _agent_overlay_patchable_fields()
-        out: list[AgentDef] = []
-        for row in rows:
-            raw_patch = agents.get(row.id)
-            if not isinstance(raw_patch, Mapping):
-                out.append(row)
-                continue
-            update = {key: value for key, value in raw_patch.items() if key in patchable}
-            metadata = {
-                **row.metadata,
-                "agent_blueprint_overlay": {
-                    "session_id": session_id,
-                    "fields": sorted(update),
-                    "status": "applied",
-                },
-            }
-            out.append(row.model_copy(update={**update, "metadata": metadata}))
-        return out
-
-    def _apply_session_agent_overlay(rows: list[AgentDef], session_id: str = "") -> list[AgentDef]:
-        overlay = _session_agent_overlay(session_id)
-        return _apply_agent_overlay_rows(rows, overlay, session_id=session_id)
-
-    def _agent_rows(session_id: str = "", workspace_id: str = "") -> list[AgentDef]:
-        """Resolve the effective agent catalog ``GET /v1/agents`` renders.
-
-        Delegates the active-blueprint branch to the shared
-        :func:`clio_agent.gact.agents.resolution._runtime_active_agent_blueprint_rows`
-        seam (dispatched through the module so a monkeypatch of that ONE function
-        is honoured identically by this route and the runtime turn path), so the
-        list a client sees and the agents that actually execute never diverge
-        (#770 C1). Only when no blueprint resolves does it fall back to the
-        builtin/user/skill/expert-pack hierarchy.
-        """
-
-        cwd = _workspace_catalog_cwd(workspace_id=workspace_id, session_id=session_id)
-        prompt_registry = _prompt_registry_for_request(
-            session_id=session_id,
-            workspace_id=workspace_id,
-        )
-        rows = _resolution._runtime_active_agent_blueprint_rows(
-            app,
-            session_id=session_id,
-            workspace_id=workspace_id,
-            prompt_registry=prompt_registry,
-        )
-        if rows:
-            # #1309 C1-S7 F1: same tool-allowlist enforcement the runtime turn
-            # path applies (_resolve_runtime_dynamic_agent) -- never let this
-            # read route disagree with what actually executes.
-            return _resolution._apply_session_tool_allowlist(app, rows, session_id=session_id)
-        active_pack_id = _runtime_active_session_expert_pack_id(app, session_id)
-        active_pack_path = _runtime_active_session_expert_pack_path(app, session_id)
-        explicit_session_rows = (
-            load_expert_pack_path(active_pack_path, scope="session")
-            if active_pack_path is not None
-            else []
-        )
-        rows = (
-            _builtin_agents()
-            + [AgentDef(**row.to_wire()) for row in app.state.user_agents.list()]
-            + load_expert_packs(cwd=cwd, pack_id=active_pack_id)
-            + explicit_session_rows
-        )
-        rows = [
-            _apply_prompt_registry_to_agent(
-                app,
-                _agent_with_capability_refs(app, row),
-                prompt_registry=prompt_registry,
-            )
-            for row in validate_expert_hierarchy(_merge_agent_def_rows(rows))
-        ]
-        return _resolution._apply_session_tool_allowlist(app, rows, session_id=session_id)
-
-    def _resolve_runtime_dynamic_agent_bound(
-        agent_id: str,
-        *,
-        session_id: str = "",
-        workspace_id: str = "",
-        prompt_registry: PromptRegistry | None = None,
-    ) -> "AgentDef | None":
-        """Bind ``app`` for the 1-arg overlay-aware resolver seam ``deps`` carries.
-
-        Dispatches through the ``resolution`` module so both this seam (command
-        dispatch / planner-command filter) and the runtime turn path share the ONE
-        unified resolver -- the divergent build_app shadow is gone (#770 C1).
-        """
-
-        return _resolution._resolve_runtime_dynamic_agent(
-            app,
-            agent_id,
-            session_id=session_id,
-            workspace_id=workspace_id,
-            prompt_registry=prompt_registry,
-        )
-
-    # ---- /v1/agent-blueprints/* + /v1/expert-packs/* lifecycle + session
-    # blueprint activation (iowarp/clio-agent#663) -----------------------
-    # Blueprint source registry, install/update/delete engine, MCP-descriptor
-    # enable, and the session-scoped get/set-active-blueprint routes are owned
-    # by routes/blueprints.py and registered below via
-    # ``register_blueprints_routes(app, deps)`` once ``deps`` is built. The
-    # expert-pack routes are thin aliases of the blueprint lifecycle (one engine,
-    # ``kind``-distinguished). The set-active route reaches the activation-metadata
-    # builder (and the metadata-only active-id reader) through ``deps``.
-
-    # ---- /v1/expert-packs/* discovery + session attachment ----------------
-    # The expert-pack discovery (list/get/validate) and session attachment
-    # (get/set active pack) routes are owned by routes/expert_packs.py and
-    # registered below via ``register_expert_packs_routes(app, deps)`` once
-    # ``deps`` is built. (Pack install/update/delete are blueprint-engine
-    # aliases owned by routes/blueprints.py.)
-
-    # ---- /v1/agents/* registry CRUD + extract + /v1/sessions/{sid}/agent-overlay ---
-    # The Tier-2 agent registry (list/get/create/update/delete + extract) and the
-    # session agent-overlay routes (get/put/export) are owned by routes/agents.py
-    # and registered below via ``register_agents_routes(app, deps)`` once ``deps``
-    # is built. They reach the shared row-resolution closures (``agent_rows``/
-    # ``agent_with_capability_refs``/``base_session_agent_blueprint_rows``/
-    # ``apply_agent_overlay_rows``/``prompt_registry_for_request``) plus the
-    # destructive-action guard through ``deps``.
+        return resolve_session_agent(app, agent_id, session_id=session_id)
 
     # Cross-concern seam (#714): built once and threaded to every extracted
     # ``register_<concern>_routes(app, deps)`` factory so moved handlers reach
@@ -1929,21 +1481,12 @@ def build_app(
     # — add a field only when a moved handler needs it.
     deps = GactDeps(
         guard_direct_destructive_action=_guard_direct_destructive_action,
-        apply_edit_to_disk=_apply_edit_to_disk,
         flush_context_files=_flush_context_files,
         prompt_registry_for_request=_prompt_registry_for_request,
-        prompt_agent_overlay_for_request=_prompt_agent_overlay_for_request,
         prompt_render_context_for_request=_prompt_render_context_for_request,
-        active_session_agent_blueprint_id=_active_session_agent_blueprint_id,
-        agent_blueprint_activation_metadata=_agent_blueprint_activation_metadata,
-        agent_rows=_agent_rows,
-        agent_with_capability_refs=_agent_with_capability_refs_bound,
-        base_session_agent_blueprint_rows=_base_session_agent_blueprint_rows,
-        apply_agent_overlay_rows=_apply_agent_overlay_rows,
         append_session_message=_append_session_message,
         delete_session_messages=_delete_session_messages,
-        blueprint_runner_for_agent=_blueprint_runner_for_agent,
-        resolve_runtime_dynamic_agent=_resolve_runtime_dynamic_agent_bound,
+        resolve_session_agent=_resolve_session_agent_bound,
         start_background_user_turn=_start_background_user_turn,
         delete_session_context_files=_delete_session_context_files,
         release_session_arc=_release_session_arc,
@@ -2000,26 +1543,11 @@ def build_app(
     # routes/workspaces.py; registered here so they bind to the same app.
     register_workspaces_routes(app, deps)
 
-    # ---- /v1/agent-blueprints/* + /v1/expert-packs/* + session blueprint ---
-    # Blueprint source registry, install/update/delete engine, MCP-descriptor
-    # enable, and the session get/set-active-blueprint routes are owned by
-    # routes/blueprints.py; the expert-pack routes are thin aliases of the same
-    # lifecycle. The set-active route reaches the activation-metadata builder
-    # and metadata-only active-id reader through ``deps``.
-    register_blueprint_updates_routes(app, deps)  # BEFORE the greedy {blueprint_id:path} below
-    register_blueprints_routes(app, deps)
-
-    # ---- /v1/expert-packs/* discovery + session attachment -----------
-    # Pack discovery (list/get/validate) and session attachment (get/set the
-    # active pack) are owned by routes/expert_packs.py. (Pack install/update/delete
-    # are blueprint-engine aliases registered above by register_blueprints_routes.)
-    register_expert_packs_routes(app, deps)
-
-    # ---- /v1/agents/* + /v1/sessions/{sid}/agent-overlay -------------
-    # Tier-2 agent registry CRUD + list + extract and the session agent-overlay
-    # routes (get/put/export) are owned by routes/agents.py; they reach the shared
-    # row-resolution closures plus the destructive-action guard through ``deps``.
-    register_agents_routes(app, deps)
+    # ---- /v1/plugins/* + /v1/agents/* + /v1/sessions/{sid}/agent ------
+    # Installed plugins and marketplaces (install/trust/update/uninstall/check),
+    # agents and user agents, resolution previews and the session's pinned
+    # agent are owned by routes/plugins.py.
+    register_plugin_routes(app, deps)
 
     # ---- /v1/mcp/servers (#13) ---------------------------------------
     # MCP server registry + dispatch (list/detail/install/call/reconnect/
@@ -2055,13 +1583,9 @@ def build_app(
     # action guard travel on ``deps``.
     register_diffs_routes(app, deps)
 
-    # ---- /v1/memory/* (transcript-memory recall surface) -------------
-    # The read-only memory search + the three agent-callable, policy-gated
-    # memory tools (search-sessions / read-session-summary / read-context-frame)
-    # are owned by routes/memory.py. The ranked-search primitives they share with
-    # the agent-run path live in runtime/memory_search.py (single source); the
-    # error/audit/policy + bounded-projection helpers are private to that module.
-    register_memory_routes(app, deps)
+    # ---- /v1/session-recall/* (past sessions) and /v1/memory/* (long-term memory) ----
+    register_session_recall_routes(app, deps)
+    register_memory_routes(app)
 
     # ---- /v1/sessions/{sid}/schedules + /v1/schedules/{id} (#21) -----
     # Scheduled-turn CRUD (list/add/delete) is owned by routes/schedules.py; the
@@ -2217,7 +1741,7 @@ def run_server(
     # 503s until app.state.agent is stamped by the background task.
     app_to_run: FastAPI = build_app()
     app_to_run.state.refresh_provider_catalog_on_startup = True
-    app_to_run.state.server_boot = True  # real server: owns clio-core attach + boot doctor
+    server_boot.mark_real_server(app_to_run)  # owns its process, clio-core and boot doctor
     from clio_agent.gact.providers.boot_selection import explicit_lm_provider  # noqa: PLC0415
 
     # Only a USER-selected provider builds an agent at boot; the committed lm_studio default

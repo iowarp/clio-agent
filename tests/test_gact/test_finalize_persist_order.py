@@ -20,12 +20,14 @@ inside finalize would be absorbed by the turn's own error envelope).
 from __future__ import annotations
 
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 
 import pytest
 from fastapi.testclient import TestClient
 
 from clio_agent.gact.app import build_app
+from clio_agent.gact.turn_finalize import _emit_unsettled_agent_invocation
 from tests.turn_signals import post_turn_and_wait
 
 from .test_post_messages import FakeClioAgent
@@ -80,6 +82,55 @@ def _assert_completion_after_persist(
             f"{event_type} was published before assistant message {message_id} was persisted"
         )
     return message_id
+
+
+def test_unsettled_invocation_terminal_preserves_cancellation_and_turn_identity(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    observed: list[tuple[str, dict[str, Any]]] = []
+    monkeypatch.setattr(
+        "clio_agent.gact.turn_finalize._emit_semantic_event",
+        lambda app, sid, event_type, **kwargs: observed.append((event_type, kwargs)),
+    )
+    state = SimpleNamespace(
+        invocation_agent_id="workshop-planner",
+        pred=None,
+        error_info=SimpleNamespace(error="cancelled"),
+        app=object(),
+        sid="sess_root",
+        turn_id="turn_cancelled",
+        trace_id="trace_cancelled",
+        user_msg=SimpleNamespace(id="msg_user"),
+    )
+
+    _emit_unsettled_agent_invocation(state)
+
+    assert len(observed) == 1
+    event_type, event = observed[0]
+    assert event_type == "agent.invocation.cancelled"
+    assert event["status"] == "cancelled"
+    assert event["turn_id"] == "turn_cancelled"
+    assert event["trace_id"] == "trace_cancelled"
+    assert event["actor"] == {"agent_id": "workshop-planner"}
+
+
+def test_completed_prediction_is_not_relabelled_when_finalization_fails(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    observed: list[str] = []
+    monkeypatch.setattr(
+        "clio_agent.gact.turn_finalize._emit_semantic_event",
+        lambda _app, _sid, event_type, **_kwargs: observed.append(event_type),
+    )
+    state = SimpleNamespace(
+        invocation_agent_id="workshop-planner",
+        pred=object(),
+        error_info=SimpleNamespace(error="finalize_error"),
+    )
+
+    _emit_unsettled_agent_invocation(state)
+
+    assert observed == []
 
 
 def test_finalize_publishes_completion_only_after_the_message_is_persisted(

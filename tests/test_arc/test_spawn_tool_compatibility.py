@@ -11,26 +11,31 @@ import pytest
 
 from clio_agent.arc.memory import ARCMemory
 from clio_agent.gact import context
-from clio_agent.gact.agents import blueprint_commission
-from clio_agent.gact.task_declarations import build_spawn_runtime_tools
+from clio_agent.gact.spawn_tools import build_spawn_runtime_tools
 from tests.test_arc.test_conversation_owner_contracts import create_environment
 
 
+def record_child_preparation(owner: Any, monkeypatch: pytest.MonkeyPatch) -> list[str]:
+    """Record every child agent the conversation owner is asked to prepare."""
+    prepared: list[str] = []
+    original = owner.prepare_child
+
+    def prepare(parent: str, agent: str, scope: dict[str, Any] | None, model: str = "") -> Any:
+        prepared.append(agent)
+        return original(parent, agent, scope, model)
+
+    monkeypatch.setattr(owner, "prepare_child", prepare)
+    return prepared
+
+
 @pytest.mark.asyncio
-async def test_single_and_batch_spawn_share_blueprint_preparation_and_preserve_names(
+async def test_single_and_batch_spawn_share_child_preparation_and_preserve_names(
     arc: ARCMemory,
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     app, owner, root = await create_environment(arc, tmp_path)
-    resolved: list[tuple[str, str | None]] = []
-
-    def resolve(_app: Any, sid: str, agent: str, blueprint_id: str | None) -> tuple[Any, ...]:
-        assert sid == root.owner.session_id
-        resolved.append((agent, blueprint_id))
-        return agent, {"blueprint_id": blueprint_id}, None, None
-
-    monkeypatch.setattr(blueprint_commission, "resolve_commission_target", resolve)
+    prepared = record_child_preparation(owner, monkeypatch)
     tools = {
         tool.name: tool for tool in build_spawn_runtime_tools(None, SimpleNamespace(fanout={}))
     }
@@ -38,34 +43,39 @@ async def test_single_and_batch_spawn_share_blueprint_preparation_and_preserve_n
         "parameters"
     ]
     assert "spawns" in schema["properties"] and "assignments" not in schema["properties"]
-    assert {"blueprint_id", "input_task_ids", "strategy"} <= schema["properties"]["spawns"][
-        "items"
-    ]["properties"].keys()
+    item = schema["properties"]["spawns"]["items"]
+    assert {"agent", "task", "input_task_ids", "strategy"} <= item["properties"].keys()
+    assert "blueprint_id" not in item["properties"]
     token, sid_token = context.set_app(app), context.set_session_id(root.owner.session_id)
     try:
         single = await tools["spawn_agent_task"].func(
-            agent="writer",
-            task="Write original",
-            blueprint_id="single",
-            placement="local",
+            agent="writer", task="Write original", placement="local"
         )
         assert single["task_id"] == single["handle"]
         batch = await tools["spawn_agents_parallel"].func(
             spawns=[
-                {"agent": "critic", "task": "Critique original", "blueprint_id": "batch"},
+                {"agent": "critic", "task": "Critique original"},
                 {"agent": "critic", "task": "Invalid evidence", "input_task_ids": ["missing"]},
-                {"agent": "writer", "task": "Continue independent work", "blueprint_id": "last"},
+                {"agent": "", "task": "No target"},
+                {"agent": "writer", "task": "Continue independent work"},
             ]
         )
-        assert len(batch["spawned"]) == 3
+        assert len(batch["spawned"]) == 4
         assert batch["spawned"] == batch["outcomes"]
         assert batch["outcomes"][1]["index"] == 1 and "error" in batch["outcomes"][1]
-        assert resolved == [
-            ("writer", "single"),
-            ("critic", "batch"),
-            ("critic", None),
-            ("writer", "last"),
-        ]
+        # An empty target delegates to a copy of the caller, running react (D14).
+        assert batch["outcomes"][2]["accepted"] is True
+        copy = app.state.sessions.get(batch["outcomes"][2]["session_id"])
+        assert copy.metadata["spawn_target"] == "self"
+        assert copy.metadata["agent_flow"] == {"id": "react", "options": {}}
+        assert batch["outcomes"][3]["accepted"] is True
+        # Invalid evidence fails before any child is prepared.
+        assert prepared == ["writer", "critic", "self", "writer"]
+        children = {
+            row["session_id"]: app.state.sessions.get(row["session_id"]).agent["id"]
+            for row in (single, batch["outcomes"][0], batch["outcomes"][3])
+        }
+        assert sorted(children.values()) == ["critic", "writer", "writer"]
         snapshots = await asyncio.to_thread(owner.history.session_handles, root.owner.session_id)
         assert root.handle in snapshots
         assert all(row["task_id"] == row["handle"] for row in batch["spawned"] if "handle" in row)

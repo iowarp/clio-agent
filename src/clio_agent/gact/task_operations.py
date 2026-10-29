@@ -3,26 +3,29 @@
 from __future__ import annotations
 
 import asyncio
-import hashlib
-import json
 import logging
 import math
 import re
-from bisect import bisect_right
-from collections.abc import Awaitable, Callable, Iterator, Sequence
+from collections.abc import Awaitable, Callable
 from datetime import datetime
-from heapq import merge
-from itertools import islice
-from typing import Any, get_args
+from typing import Any
 
-from clio_agent.arc.task_types import CoordinationRight, TaskKind, TaskSnapshot, TaskSubscription
+from clio_agent.arc.task_types import CoordinationRight, TaskSnapshot, TaskSubscription
+from clio_agent.gact.assignment_input import (
+    AWAITING_INPUT,
+    STOPPED,
+    awaiting_input_outcome,
+    waiting_for_input,
+)
 from clio_agent.gact.native_work import now
 from clio_agent.gact.task_access import TaskAccess, TaskAccessDenied, TaskCaller
 from clio_agent.gact.task_cursors import decode_cursor as _decode
 from clio_agent.gact.task_cursors import encode_cursor as _cursor
+from clio_agent.gact.task_forks import family_members
 from clio_agent.gact.task_history import TaskHistory
 from clio_agent.gact.task_observations import pattern_text, read_observations
 from clio_agent.gact.task_publication import publish_task_notice, task_owner_recipient
+from clio_agent.gact.task_queries import query_tasks
 from clio_agent.gact.task_result_content import committed_evidence, read_cursor, result_page
 from clio_agent.gact.tool_observation import CollectedTaskResult
 from clio_agent.runtime.commitment_activity import track
@@ -31,15 +34,6 @@ CancelOwner = Callable[[TaskSnapshot, TaskCaller], Awaitable[dict[str, Any]]]
 
 
 logger = logging.getLogger(__name__)
-
-
-def _ordered_after(
-    ordering: Sequence[tuple[str, str]], after: tuple[str, str] | None
-) -> Iterator[tuple[str, str]]:
-    """Seek an immutable ordering without copying or walking its preceding history."""
-    start = bisect_right(ordering, after) if after is not None else 0
-    for index in range(start, len(ordering)):
-        yield ordering[index]
 
 
 def _handles(tasks: str | list[str]) -> tuple[str, ...]:
@@ -60,14 +54,17 @@ def _timeout(value: float | None) -> float | None:
 
 
 def _wait_value(
-    outcomes: list[dict[str, Any]], pending: list[str], *, timed_out: bool
+    outcomes: list[dict[str, Any]], pending: list[str], *, timed_out: bool, interrupted: str = ""
 ) -> CollectedTaskResult:
     """Carry each disclosed wait outcome's permission to recipient-input commitment."""
     rows = [row for row in outcomes if row.get("handle") and not row.get("error")]
     reads = {row["handle"] for row in rows if row.get("pending") is False}
     observations = {row["handle"] for row in rows} | set(pending)
+    value: dict[str, Any] = {"outcomes": outcomes, "pending": pending, "timed_out": timed_out}
+    if interrupted:
+        value["interrupted"] = interrupted
     return CollectedTaskResult(
-        {"outcomes": outcomes, "pending": pending, "timed_out": timed_out},
+        value,
         (),
         tuple(sorted(reads)),
         observe_handles=tuple(sorted(observations - reads)),
@@ -89,163 +86,19 @@ class TaskOperations:
         self.refresh_owner = refresh_owner
         self.app = app
 
-    def query(
-        self,
-        caller: TaskCaller,
-        kind: str | None = None,
-        status: str | None = None,
-        handle: str | None = None,
-        tool: str | None = None,
-        agent: str | None = None,
-        active_only: bool = False,
-        cursor: str | None = None,
-        limit: int = 50,
-        scope: str = "tree",
-        query: str | None = None,
-        message_after: str | None = None,
-        message_before: str | None = None,
-    ) -> dict[str, Any]:
-        """Return authorized filtered snapshots; pages never disclose hidden counts."""
-        if limit < 1:
-            raise ValueError("limit must be positive")
-        access = TaskAccess(self.history, caller)
-        query = query.strip() or None if query is not None else None
-        start = end = None
-        if message_after is not None or message_before is not None:
-            from clio_agent.gact.task_transcripts import message_search_window
+    query = query_tasks
 
-            start, end = message_search_window(message_after, message_before)
-        content_filter = query is not None or start is not None or end is not None
-        filters = {
-            "kind": kind,
-            "status": status,
-            "handle": handle,
-            "tool": tool,
-            "agent": agent,
-            "active_only": active_only,
-            "scope": scope,
-            "query": query,
-            "recipient": caller.session_id,
-            "human": caller.human_id,
-            "human_action": caller.human_action,
-        }
-        if start is not None or end is not None:
-            filters.update(
-                message_after=start.isoformat() if start is not None else None,
-                message_before=end.isoformat() if end is not None else None,
-            )
-        signature = hashlib.sha256(json.dumps(filters, sort_keys=True).encode()).hexdigest()
-        position = _decode(cursor)
-        if position and position.get("filter") != signature:
-            raise ValueError("Task cursor belongs to a different query")
-        after = position.get("after", [])
-        if (
-            not isinstance(after, list)
-            or len(after) not in {0, 2}
-            or any(not isinstance(value, str) for value in after)
-        ):
-            raise ValueError("Task query cursor ordering is malformed")
-        canonical_kind = next(
-            (
-                value
-                for value in get_args(TaskKind)
-                if kind is not None and value.casefold() == kind.casefold()
-            ),
-            kind or "",
+    def _check_past_session_search(self, caller: TaskCaller) -> None:
+        """Text search across other conversations follows the past-session switches."""
+        if self.app is None or not caller.session_id:
+            return
+        from clio_agent.gact.memory.policy import (  # noqa: PLC0415
+            PastSessionSearchWithheld,
+            past_session_search_reason,
         )
-        with self.history.read_view():
-            orders = access.query_orders(scope, kind=canonical_kind, active_only=active_only)
-            total: int | None = (
-                len(orders[0])
-                if len(orders) == 1
-                and status is None
-                and tool is None
-                and agent is None
-                and not content_filter
-                else None
-            )
-            if handle is not None:
-                resolved = self.history.resolve_handle(handle)
-                task = self.history.task_snapshot(resolved) if resolved is not None else None
-                orders = (((task.created_at, task.handle),),) if task is not None else ((),)
-                total = None
-            anchor = (after[0], after[1]) if after else None
-            streams = (_ordered_after(ordering, anchor) for ordering in orders)
-            scan_limit = max(200, limit * 4)
-            # Copy only this bounded candidate page while the orderings are
-            # protected. Transcript hydration must not hold the writer's lock.
-            candidates = list(islice(merge(*streams), scan_limit + 1))
-        page, previous, last = [], None, None
-        last_readable, scanned = False, 0
-        for key in candidates[:scan_limit]:
-            scanned += 1
-            access = TaskAccess(self.history, caller)
-            if key == previous:
-                continue
-            previous = key
-            current = self.history.task_snapshot(key[1])
-            if (
-                current is None
-                or not access.in_scope(current, scope)
-                or not {"read", "observe"}.intersection(access.rights(current))
-            ):
-                if handle is not None:
-                    continue
-                raise ValueError("Task query visibility changed; restart the query")
-            last = key
-            last_readable = "read" in access.rights(current)
-            if (
-                (kind is not None and current.kind.casefold() != kind.casefold())
-                or (status is not None and current.status != status)
-                or (tool is not None and current.tool != tool)
-                or (
-                    agent is not None
-                    and current.owner.session_id != agent
-                    and current.owner.assignment_id != agent
-                )
-                or (active_only and current.terminal_at is not None)
-                or (
-                    content_filter
-                    and not self._matches_text(
-                        caller, current, query, message_after=start, message_before=end
-                    )
-                )
-            ):
-                matched = False
-            else:
-                matched = True
-                page.append(current)
-            if handle is not None:
-                total = int(matched)
-            if len(page) >= limit:
-                break
-        exhausted = scanned == len(candidates)
-        next_cursor = (
-            _cursor({"filter": signature, "after": list(last)})
-            if not exhausted and last is not None
-            else None
-        )
-        if handle is not None and total is None:
-            total = 0
-        access = TaskAccess(self.history, caller)
-        for task in page:
-            if not ({"read"} if content_filter else {"read", "observe"}).intersection(
-                access.rights(task)
-            ):
-                raise TaskAccessDenied("Task query visibility changed; restart the query")
-        value = {
-            "tasks": [access.view(task) for task in page],
-            "total": total,
-            "cursor": next_cursor,
-            "revision": self.history.revision,
-        }
-        return CollectedTaskResult(
-            value,
-            (),
-            (last[1],) if last is not None and last_readable else (),
-            observe_handles=(last[1],) if last is not None and not last_readable else (),
-            collect=False,
-        )
+
+        if reason := past_session_search_reason(self.app, caller.session_id):
+            raise PastSessionSearchWithheld(reason)
 
     def _matches_text(
         self,
@@ -270,9 +123,15 @@ class TaskOperations:
             message_before=message_before,
         )
 
-    def result(self, caller: TaskCaller, handle: str, cursor: str | None = None) -> dict[str, Any]:
+    def result(
+        self,
+        caller: TaskCaller,
+        handle: str,
+        cursor: str | None = None,
+        select: list[str] | None = None,
+    ) -> dict[str, Any]:
         """Read immutable result content outside the writer lock, then recheck disclosure."""
-        value = self._read_result(caller, handle, cursor)
+        value = self._read_result(caller, handle, cursor, select)
         if value.get("result_kind") == "shared_evidence":
             pin = committed_evidence(self.history, caller, value["handle"])
             if value.get("result_reference") != pin.result.model_dump(mode="json"):
@@ -281,7 +140,9 @@ class TaskOperations:
             TaskAccess(self.history, caller).require(value["handle"], "read")
         return value
 
-    def _read_result(self, caller: TaskCaller, handle: str, cursor: str | None) -> dict[str, Any]:
+    def _read_result(
+        self, caller: TaskCaller, handle: str, cursor: str | None, select: list[str] | None
+    ) -> dict[str, Any]:
         """Capture a retained reference and read its bounded page without serializing writers."""
         canonical = self.history.resolve_handle(handle) or handle
         position = read_cursor(cursor, caller, canonical) if cursor is not None else {}
@@ -305,7 +166,13 @@ class TaskOperations:
                 "description_missing": pin.description_missing,
                 "partial": pin.partial,
                 **result_page(
-                    self.history, caller, pin.handle, pin.result, "shared_evidence", position
+                    self.history,
+                    caller,
+                    pin.handle,
+                    pin.result,
+                    "shared_evidence",
+                    position,
+                    select,
                 ),
             }
         result: dict[str, Any] = {
@@ -331,6 +198,7 @@ class TaskOperations:
                         current.backend_observation,
                         "task_result",
                         position,
+                        select,
                     )
                 )
                 result.update(
@@ -344,7 +212,13 @@ class TaskOperations:
             return result
         result.update(
             result_page(
-                self.history, caller, current.handle, current.result, "task_result", position
+                self.history,
+                caller,
+                current.handle,
+                current.result,
+                "task_result",
+                position,
+                select,
             )
         )
         return result
@@ -355,8 +229,18 @@ class TaskOperations:
         tasks: str | list[str],
         return_when: str = "all",
         timeout_s: float | None = None,
+        *,
+        settle_awaiting_input: bool = False,
+        interrupt_on_mail: bool = False,
     ) -> dict[str, Any]:
-        """Await mixed owner observations; timeout/cancellation never cancels a member."""
+        """Await mixed owner observations; timeout/cancellation never cancels a member.
+
+        ``settle_awaiting_input`` (a flow's wait) settles a child that yielded, or whose
+        turn stopped, with nothing left to wake it as ``awaiting_input`` or ``stopped``
+        instead of waiting on it forever (:mod:`clio_agent.gact.assignment_input`).
+        ``interrupt_on_mail`` returns a truthful pending snapshot when authorized
+        coordination/input needs the caller. It never settles or consumes a task.
+        """
         with track(timeout_s != 0, session_id=caller.session_id):
             if return_when not in {"all", "any"}:
                 raise ValueError("return_when must be all or any")
@@ -366,15 +250,37 @@ class TaskOperations:
             )
             deadline = None if timeout is None else asyncio.get_running_loop().time() + timeout
             changed, loop = asyncio.Event(), asyncio.get_running_loop()
+            # An agent's wait ends when its own conversation is stopped (the waited
+            # tasks keep running): Stop retires the turn only once this call returns.
+            # A cancellation is different: it cascades to the waited members, and the
+            # caller (a flow above all) keeps waiting to observe them settle.
+            own = (
+                None
+                if caller.human_action
+                else await self.history.io.run(self.history.latest_assignment, caller.session_id)
+            )
 
             def wake(_revision: int) -> None:
                 loop.call_soon_threadsafe(changed.set)
 
-            remove = self.history.listen(wake, handles=handles, recipient_session=caller.session_id)
+            watched = handles + ((own.handle,) if own is not None else ())
+            remove = self.history.listen(wake, handles=watched, recipient_session=caller.session_id)
             try:
                 while True:
                     changed.clear()
-                    outcomes, pending = await self.history.io.run(self._outcomes, caller, handles)
+                    outcomes, pending = await self.history.io.run(
+                        self._outcomes, caller, handles, settle_awaiting_input, wake
+                    )
+                    for handle in pending:
+                        # A cancellation can end unconfirmed with no further history change.
+                        if (job := self._cancellation_job(handle)) is not None:
+                            job.get_loop().call_soon_threadsafe(
+                                job.add_done_callback, lambda _job: wake(0)
+                            )
+                    if own is not None and await self.history.io.run(self._stopping, own.handle):
+                        return _wait_value(
+                            outcomes, pending, timed_out=False, interrupted="stopped"
+                        )
                     uncertain = any(
                         item.get("status") == "task_state_uncertain" for item in outcomes
                     )
@@ -383,15 +289,56 @@ class TaskOperations:
                     remaining = None if deadline is None else max(0.0, deadline - loop.time())
                     if remaining == 0:
                         return _wait_value(outcomes, pending, timed_out=True)
+                    if interrupt_on_mail and await self.history.io.run(
+                        self._has_interrupting_input, caller
+                    ):
+                        return _wait_value(
+                            outcomes, pending, timed_out=False, interrupted="mail_received"
+                        )
                     try:
                         await asyncio.wait_for(changed.wait(), remaining)
                     except TimeoutError:
                         outcomes, pending = await self.history.io.run(
-                            self._outcomes, caller, handles
+                            self._outcomes, caller, handles, settle_awaiting_input
                         )
                         return _wait_value(outcomes, pending, timed_out=True)
             finally:
                 remove()
+
+    def _has_interrupting_input(self, caller: TaskCaller) -> bool:
+        """Use the sole mailbox's authorization and delivery policy for addressed input."""
+        owner = getattr(getattr(self.app, "state", None), "conversations", None)
+        return bool(owner is not None and owner.mail.interrupting_input(caller))
+
+    def _stopping(self, handle: str) -> bool:
+        """Whether the calling assignment was stopped (not cancelled) or has ended.
+
+        A cancellation unwinds through ``stopping`` too, before its request is recorded.
+        """
+        current = self.history.task_snapshot(handle)
+        if current is None:
+            return False
+        if current.terminal_at is not None:
+            return True
+        conversations = getattr(getattr(self.app, "state", None), "conversations", None)
+        cancelling = (
+            conversations.cancelling(current)
+            if conversations is not None
+            else current.cancellation_requested_at is not None
+        )
+        return current.activity == "stopping" and not cancelling
+
+    def _cancellation_settling(self, current: TaskSnapshot) -> bool:
+        """A cancellation still being confirmed is progress, not an uncertain state.
+
+        Its job marks a member uncertain while descendants settle; the wait goes on
+        until the job confirms the cancellation or records it as unconfirmed.
+        """
+        return self._cancellation_job(current.handle) is not None
+
+    def _cancellation_job(self, handle: str) -> asyncio.Task[None] | None:
+        conversations = getattr(getattr(self.app, "state", None), "conversations", None)
+        return conversations.cancellation_job(handle) if conversations is not None else None
 
     def _canonical_observed(self, caller: TaskCaller, handles: tuple[str, ...]) -> tuple[str, ...]:
         """Authorize aliases before registering for canonical owner observations."""
@@ -406,12 +353,18 @@ class TaskOperations:
             return tuple(dict.fromkeys(resolved))
 
     def _outcomes(
-        self, caller: TaskCaller, handles: tuple[str, ...]
+        self,
+        caller: TaskCaller,
+        handles: tuple[str, ...],
+        settle_awaiting_input: bool = False,
+        wake: Callable[[int], None] | None = None,
     ) -> tuple[list[dict[str, Any]], list[str]]:
         outcomes: list[dict[str, Any]] = []
         pending: list[str] = []
         checks: dict[int, tuple[str, CoordinationRight]] = {}
-        for handle in handles:
+        # Waiting on a handle waits on its forks too (task_forks): read again on every
+        # pass, since a fork may be created while the wait is open.
+        for handle in family_members(self.history, handles):
             access = TaskAccess(self.history, caller)
             try:
                 current = access.require(handle, "observe")
@@ -424,12 +377,20 @@ class TaskOperations:
                     outcomes.append(
                         {"handle": current.handle, "error": "cannot_wait_for_own_active_assignment"}
                     )
+                elif current.terminal_at is None and (
+                    waiting := waiting_for_input(self.app, current) if settle_awaiting_input else ""
+                ) in {AWAITING_INPUT, STOPPED}:
+                    outcomes.append(awaiting_input_outcome(self.app, current, waiting))
                 elif current.terminal_at is None:
+                    if waiting == "retiring" and wake is not None:
+                        # No history change follows the release: look again once it lands.
+                        sid = current.owner.session_id
+                        self.app.state.conversations.runner.run_when_released(sid, lambda: wake(0))
                     pending.append(handle)
                     if (
                         current.status == "task_state_uncertain"
                         or current.attention_episode is not None
-                    ):
+                    ) and not self._cancellation_settling(current):
                         checks[len(outcomes)] = (handle, "observe")
                         outcomes.append({"handle": handle, "status": "task_state_uncertain"})
                 elif "read" in access.rights(current):
@@ -459,6 +420,10 @@ class TaskOperations:
                         row.get("handle") == handle and row.get("error") for row in outcomes
                     ):
                         outcomes.append({"handle": handle, "error": "task_unavailable"})
+            for row in outcomes:
+                member = self.history.task_snapshot(str(row.get("handle") or ""))
+                if member is not None and member.fork_of and member.handle not in handles:
+                    row["fork_of"] = member.fork_of
         return outcomes, pending
 
     async def observe(

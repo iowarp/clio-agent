@@ -1,0 +1,68 @@
+INFO:     Started server process [51712]
+INFO:     Waiting for application startup.
+WARNING | ⚑ BOOT mark=lifespan_started at=6.803
+WARNING | ⚑ BOOT mark=serving at=12.705
+INFO:     Application startup complete.
+INFO:     Uvicorn running on http://127.0.0.1:19111 (Press CTRL+C to quit)
+INFO:     127.0.0.1:53860 - "GET /v1/health HTTP/1.1" 200 OK
+WARNING | ⚑ BOOT step=marketplace seconds=4.305 start=12.739 thread=MainThread outcome=ok
+INFO:     127.0.0.1:53863 - "GET /v1/health HTTP/1.1" 200 OK
+INFO:     127.0.0.1:53864 - "GET /v1/health HTTP/1.1" 200 OK
+INFO:     127.0.0.1:53866 - "GET /v1/health HTTP/1.1" 200 OK
+INFO:     127.0.0.1:53867 - "GET /v1/health HTTP/1.1" 200 OK
+INFO:     127.0.0.1:53868 - "GET /v1/health HTTP/1.1" 200 OK
+INFO:     127.0.0.1:53870 - "GET /v1/health HTTP/1.1" 200 OK
+INFO:     127.0.0.1:53871 - "GET /v1/health HTTP/1.1" 200 OK
+INFO:     127.0.0.1:53872 - "GET /v1/health HTTP/1.1" 200 OK
+INFO:     127.0.0.1:53874 - "GET /v1/health HTTP/1.1" 200 OK
+INFO:     127.0.0.1:53877 - "GET /v1/health HTTP/1.1" 200 OK
+INFO:     127.0.0.1:53880 - "GET /v1/health HTTP/1.1" 200 OK
+WARNING | ⚑ BOOT step=orphans seconds=10.733 start=12.705 thread=MainThread outcome=ok
+INFO:     127.0.0.1:53881 - "GET /v1/health HTTP/1.1" 200 OK
+INFO:     127.0.0.1:53883 - "GET /v1/health HTTP/1.1" 200 OK
+INFO:     127.0.0.1:53885 - "GET /v1/health HTTP/1.1" 200 OK
+INFO:     127.0.0.1:53889 - "GET /v1/health HTTP/1.1" 200 OK
+INFO:     127.0.0.1:53896 - "GET /v1/health HTTP/1.1" 200 OK
+INFO:     127.0.0.1:53897 - "GET /v1/health HTTP/1.1" 200 OK
+INFO:     127.0.0.1:53898 - "GET /v1/health HTTP/1.1" 200 OK
+INFO:     127.0.0.1:53899 - "GET /v1/health HTTP/1.1" 200 OK
+INFO:     127.0.0.1:53901 - "GET /v1/health HTTP/1.1" 200 OK
+WARNING | ⚑ BOOT step=task_history_restore seconds=0.017 start=25.718 thread=asyncio_1 outcome=ok
+INFO:     127.0.0.1:53902 - "GET /v1/health HTTP/1.1" 200 OK
+WARNING | ⚑ SESSION restart_interrupted session=sess_0be75b529387 transcript=pending
+WARNING | ⚑ SESSION restart_interrupted session=sess_63dc5aec0971 transcript=pending
+WARNING | ⚑ SESSION restart_interrupted session=sess_8ff801b1b10d transcript=pending
+WARNING | ⚑ SESSION restart_interrupted session=sess_d22bd1dbc4f3 transcript=pending
+WARNING | ⚑ SESSION restart_interrupted session=sess_bc9490534782b97e8c494ea7d9787674 transcript=pending
+WARNING | ⚑ SESSION restart_interrupted session=sess_401013f94a78 transcript=pending
+WARNING | ⚑ SESSION restart_interrupted session=sess_20efa27a279bfaa21dd62a0165cc24a4 transcript=pending
+WARNING | ⚑ SESSION restart_interrupted session=sess_ff0a6d4082dd transcript=pending
+WARNING | ⚑ SESSION restart_interrupted session=sess_2b290c3a89a5 transcript=pending
+WARNING | ⚑ SESSION restart_interrupted session=sess_3d65c96595a405e2fd527d123beac139 transcript=pending
+WARNING | ⚑ SESSION restart_interrupted session=sess_3b525d570622 transcript=pending
+WARNING | memory pass skipped reason=lm_provider_unconfigured roles=memory_extract,memory_consolidate
+WARNING | ⚑ SESSION restart_interrupted session=sess_c90946e8178e transcript=pending
+WARNING | ⚑ SESSION restart_interrupted session=sess_d10a986cf94da3c0bfa396ffbc264157 transcript=pending
+WARNING | ⚑ SESSION restart_interrupted session=sess_6be0c5ff651c transcript=pending
+WARNING | ⚑ SESSION restart_interrupted session=sess_d66ebf59adad08f676be116b5bef7ba8 transcript=pending
+WARNING | ⚑ SESSION restart_interrupted session=sess_fcb3e45c944c7cb0a65fa5533f51a6ed transcript=pending
+WARNING | ⚑ SESSION restart_interrupted session=sess_c9f4597b5bc03553d0155b5f4bede300 transcript=pending
+WARNING | ⚑ SESSION restart_interrupted session=sess_a26a506b4ca6c7141c89c6948c12c460 transcript=pending
+WARNING | ⚑ SESSION restart_interrupted session=sess_59799658a1e391465f1a73246e887f66 transcript=pending
+WARNING | ⚑ SESSION restart_interrupted session=sess_6106e473dacca4aec3d1b201113e8aae transcript=pending
+WARNING | ⚑ BOOT step=interrupted_sessions seconds=0.097 start=25.744 thread=asyncio_1 outcome=ok
+WARNING | ⚑ BOOT step=interaction_times seconds=0.000 start=25.841 thread=asyncio_1 outcome=ok
+WARNING | ⚑ BOOT step=clio_core_and_store seconds=2.361 start=23.480 thread=MainThread outcome=ok
+INFO:     127.0.0.1:53904 - "GET /v1/health HTTP/1.1" 200 OK
+WARNING | ⚑ BOOT step=obligations_held seconds=0.334 start=25.949 thread=MainThread outcome=ok
+WARNING | ⚑ BOOT mark=task_runtime_ready at=26.283
+INFO:     127.0.0.1:53908 - "GET /v1/health HTTP/1.1" 200 OK
+INFO:     127.0.0.1:53909 - "GET /v1/sessions?limit=30 HTTP/1.1" 200 OK
+WARNING | ⚑ TOOLS session_warmup_deferred_agent_starting session=sess_99d794986b10da718ec4263f86f1823e trigger=conversation_opened
+INFO:     127.0.0.1:53910 - "GET /v1/sessions/sess_99d794986b10da718ec4263f86f1823e/messages?limit=50 HTTP/1.1" 200 OK
+INFO:     Shutting down
+INFO:     Waiting for application shutdown.
+WARNING | ⚑ BOOT step=first_doctor_pass seconds=0.667 start=25.842 thread=MainThread outcome=CancelledError
+WARNING | ⚑ BOOT step=obligations seconds=0.226 start=26.284 thread=MainThread outcome=CancelledError
+INFO:     Application shutdown complete.
+INFO:     Finished server process [51712]

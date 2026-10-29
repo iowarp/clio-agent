@@ -218,8 +218,8 @@ class RuntimeProbe:
         self.module_checker = module_checker or _module_available
         self.lm_timeout = lm_timeout
         self.api_timeout = api_timeout
-        # Default resolved lazily to arc.storage._runtime_alive so unit tests
-        # never open real sockets and module import stays light.
+        # The injectable probe keeps tests socket-free; the default uses the
+        # liveness owner's typed distinction between absent and inconclusive.
         self._port_checker = port_checker
         # Where the shared daemon keeps its pidfile, log and version record; None =
         # the runtime's own per-host state dir (clio_core_effective_runtime).
@@ -559,25 +559,23 @@ class RuntimeProbe:
         """
         if self._clio_core_runtime is not None:
             return self._clio_core_runtime
-        from clio_agent.arc import storage as arc_storage  # noqa: PLC0415 - keep import light
         from clio_agent.arc.clio_core_effective_runtime import (  # noqa: PLC0415
             read_daemon_pid,
             resolve_effective_runtime,
         )
+        from clio_agent.arc.clio_core_liveness import runtime_socket_status  # noqa: PLC0415
 
         installed = self.module_checker("iowarp_core")
         where = resolve_effective_runtime(self._conf, env=self.env, state_dir=self.clio_runtime_dir)
-        port_checker = self._port_checker or arc_storage._runtime_alive
-        daemon_alive = bool(port_checker(where.port))
+        daemon_alive, probe_reason = runtime_socket_status(where.port, probe=self._port_checker)
 
         daemon_pid, daemon_pid_alive = read_daemon_pid(where.state_dir)
 
+        reason: str | None = probe_reason
         if not installed:
-            reason: str | None = "iowarp_core_not_installed"
-        elif not daemon_alive:
+            reason = "iowarp_core_not_installed"
+        elif not daemon_alive and reason is None:
             reason = "clio_core_daemon_not_listening"
-        else:
-            reason = None
 
         log_path = where.state_dir / "clio-runtime.log"
         log_tail: list[str] = []
@@ -645,25 +643,20 @@ class RuntimeProbe:
                 port=runtime.port,
                 log_path=str(runtime.log_path),
             )
-        # 905: "semantic-search" requires the indexer chimod to be composed;
-        # upgrading to a wheel that ships it does not change an existing config.
-        from clio_agent.arc import clio_core_config  # noqa: PLC0415 - keep import light
+        # 905: "semantic-search" needs the indexer chimod; its absence is the required
+        # clio_core_search row (runtime/clio_core_health.py), not a note on this one.
+        from clio_agent.arc import clio_core_indexer  # noqa: PLC0415 - keep import light
 
         capabilities = ["conversations", "invocations", "metrics", "variants"]
         summary = (
             "ARC clio-core backend is live: iowarp_core is installed and the shared "
             f"clio-core daemon is listening on port {runtime.port}."
         )
-        if clio_core_config.indexer_chimod_present(env=self.env):
+        if clio_core_indexer.indexer_chimod_present(env=self.env):
             capabilities.append("semantic-search")
         else:
-            issue = clio_core_config.UPSTREAM_INDEXER_ISSUE
-            summary += (
-                f" Semantic (BM25) scope search is unavailable (typed search_unavailable) -- the "
-                f"clio_cte_indexer chimod is not composed (clio-core#905: {issue})."
-            )
-            details = {**details, "reason": clio_core_config.CLIO_CORE_SEARCH_INDEXER_ABSENT}
-            details["upstream"] = issue
+            summary += " Search is unavailable: see the clio_core_search row."
+            details = {**details, "reason": clio_core_indexer.CLIO_CORE_SEARCH_UNAVAILABLE}
         return IntegrationStatus(
             name="arc",
             state=IntegrationState.READY,

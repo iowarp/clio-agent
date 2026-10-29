@@ -1,5 +1,5 @@
 import { useEffect, useState, type PropsWithChildren, type ReactNode } from 'react';
-import { useTheme } from 'next-themes';
+import { useTheme } from '@/providers/appearance-provider';
 import { createRoot } from 'react-dom/client';
 import { BrowserRouter } from 'react-router-dom';
 import { AppProviders } from '@/providers/app-providers';

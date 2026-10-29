@@ -16,6 +16,7 @@ import forkCheckpoint from "../../../assets/captures/docs-fork-checkpoint.png";
 import familyGantt from "../../../assets/captures/docs-conversation-family-gantt.png";
 import relationships from "../../../assets/captures/docs-conversation-relationships.png";
 import outputLineage from "../../../assets/captures/docs-conversation-output-lineage.png";
+import agentFork from "../../../assets/captures/docs-agent-fork.png";
 
 
 <PreviewGuide features="The conversation-family and rewind controls pictured here" />
@@ -89,6 +90,30 @@ The marker records the source at the time of branching. If the parent later
 rewinds past that message, the child keeps its copied history and marker; the
 source link still opens the parent, whose transcript may no longer contain that
 message. Older branches without a saved checkpoint do not get a guessed marker.
+
+## Forks the agent makes
+
+An agent can fork a conversation itself, to follow another direction beside the one it is on, such as a competing explanation. The fork is a new conversation with a copy of the history so far. The agent's note on what to do differently becomes the fork's first message, and the fork starts on it at once. The original continues. Neither waits for the other; you read both.
+
+**In the left panel**, the fork is listed under the conversation it came from, with a fork icon and **Forked by the agent:** followed by the note. A fork of a fork is nested one level further. Inside the fork, the marker reads **Forked by the agent here**, links to the source conversation, and shows the **Fork note**.
+
+<Capture client:visible image={await captureImage(agentFork)}
+  alt="Left panel with Poem fork nested under its source conversation, labeled Forked by the agent: Write a two..., and in the transcript the request to fork, then the marker Forked by the agent here with the fork note, then the note as the fork's first message"
+  caption="A directed check: the request told the agent to fork with this note and title. The fork sits under its source in the left panel, and the marker shows where the copied history ends."
+  sizes="(min-width: 50rem) 46rem, 100vw" />
+
+| | Your branch | The agent's fork |
+|---|---|---|
+| Started by | You, with **Branch from here** or **Branch into a new session** | The agent, with a note |
+| Copied history ends | At the message you choose | At the agent's request to fork |
+| Next | Waits for your message | Starts on the note right away |
+| Left panel | Listed with the workspace's other conversations | Nested under its source, with the note |
+| Marker | **Branched here** | **Forked by the agent here**, with the fork note |
+| Limit | None | **Forks per task** in Settings → **Execution & history** |
+
+When the agent gives no title, the fork is named after its source with "(fork)" added. Once it exists, an agent's fork is a conversation you can continue and branch like any other. It shares the workspace's files with its source.
+
+An agent working as a subagent or as a workflow step forks differently: its fork runs beside it under the same parent rather than as a new conversation in the left panel. See [Fork a step](/docs/flows/#fork-a-step).
 
 ## Find and compare related conversations
 

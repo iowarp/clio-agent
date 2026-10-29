@@ -26,6 +26,12 @@ def completed_tool_metadata(
         "completed_at": completed_at,
         "telemetry_source": "live_observer",
         **({"result": _bounded_tool_call_result(result)} if result is not None else {}),
+        # A plugin view's event from the result's ``_meta`` (tools/mcp_results.py).
+        **(
+            {"ui_event": result["uiEvent"]}
+            if isinstance(result, Mapping) and "uiEvent" in result
+            else {}
+        ),
         **cancellation,
         **provenance,
     }

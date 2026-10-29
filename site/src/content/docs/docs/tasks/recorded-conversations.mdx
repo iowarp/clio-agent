@@ -1,6 +1,6 @@
 ---
 title: Watch agents work together
-description: Read real CLIO conversations where independent agents inspect, message and review each other while background work and questions continue.
+description: Read real CLIO conversations where independent agents inspect, message and review each other, and where an agent delegates to read-only roles or forks itself.
 ---
 
 import { CardGrid, LinkCard, Steps } from '@astrojs/starlight/components';
@@ -183,3 +183,37 @@ summary is a recorded outcome, not a newly generated whole-session memory.
 Read [Observe and wait](/docs/tasks/observe-and-wait/) for task inspection,
 [Messages](/docs/tasks/messages/) for addressing, and
 [Answer a question](/docs/questions/) for the question surface.
+
+## Delegation and forks
+
+These recordings show an agent delegating to the [explore and review roles](/docs/subagents/#the-explore-planner-and-review-roles) and forking a conversation. The first two started from a plain request that named no tool, role or step; the agent chose to delegate.
+
+<CardGrid>
+  <LinkCard title="Open the reading guide" description="Ten read-only explore children read a folder of design documents; the agent merged their reports." href="/conversations/delegation/reading-guide/" />
+  <LinkCard title="Open the skill review" description="Review-role children check each plugin's skills; the agent merges their verdicts plugin by plugin." href="/conversations/delegation/skill-review/" />
+  <LinkCard title="Open the agent fork" description="A directed check: the agent forks its conversation with a note, and the fork answers the note." href="/conversations/delegation/agent-fork.html" />
+</CardGrid>
+
+### A reading guide from explore children
+
+The reading guide starts with:
+
+```text
+I'm new to this project and need a reading guide to the design/ folder. For every document in it, write a short paragraph: what it decided, what it builds on, and which questions it leaves open. Group them by topic.
+```
+
+The folder holds 93 documents. The agent listed the folder and the size of each file, then sent ten read-only `explore` children, each with a self-contained task naming its cluster of documents and the report it wanted. It waited for their reports and wrote the guide from them. It never read a document itself.
+
+### A skill review from review children
+
+The skill review starts with:
+
+```text
+Review the skills in every plugin under plugins/ and tell me, plugin by plugin, where a skill's instructions are unclear, contradict another skill, or refer to tools or files the plugin doesn't ship.
+```
+
+The agent started six `review`-role children in one call, each with a self-contained assignment: the paths to read, the checks to make, and the report format. It merged their reports into one answer, plugin by plugin.
+
+### An agent fork
+
+The agent fork was a directed check of the mechanism, not a plain request: the request told the agent to call its fork tool with a note and a title, then reply "original continues". The recording includes the original conversation and its fork, **Poem fork**, which answered the note. It shows how an agent's fork looks, not when an agent chooses to fork. See [Forks the agent makes](/docs/branch-and-rewind/#forks-the-agent-makes).

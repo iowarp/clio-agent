@@ -2,14 +2,15 @@
 """Leg B+D stress gate: web MCP + v2ex exerciser, ONE agent, ONE turn (#1286, C1-S6 addendum).
 
 Owner addendum to the C1-S6 EXPANDED verification: before the expensive
-multi-session marketplace `deep-researcher` pack is run (``leg_d_deep_
+multi-session marketplace ``deep-researcher`` agent is run (``leg_d_deep_
 researcher.md``, driven separately by the orchestrator against
-``external/clio-agent-marketplace/deep-researcher/`` -- NOT this script's
-scope), prove the SAME two-server, multi-step shape that pack relies on
-against a cheap, deterministic, purpose-built pack: ``agents/v2-stress/``
-declares BOTH the clio-kit ``web`` server (real network fetch/search,
-task=required) and the synthetic ``v2ex`` exerciser
-(``tests/test_tools/mcp_exerciser.py``) on ONE `main` expert, and this leg
+``clio/deep-researcher`` -- NOT this script's scope), prove the SAME
+two-server, multi-step shape that agent relies on against a cheap,
+deterministic, purpose-built testing agent: ``agents/v2-stress/`` carries
+BOTH the default marketplace's ``web`` plugin (the clio-kit ``web`` server,
+real network fetch/search, task=required) and its own plugin declaring the
+synthetic ``v2ex`` exerciser (``tests/test_tools/mcp_exerciser.py``) on ONE
+agent, and this leg
 drives ONE session through ONE turn that forces, in a single agent flow:
 
   (a) a ``web_search`` call;
@@ -28,12 +29,12 @@ drives ONE session through ONE turn that forces, in a single agent flow:
       ``gact/elicitation_bridge.py``'s traced HITL surface).
 
 Mechanics mirror leg B/C exactly: own server boot on a free port, allow-all
-policies FIRST, materialize the ``v2-stress`` pack (``_common.py::
-materialize_testing_pack`` patches BOTH ``mcp_servers`` entries -- ``web``'s
-committed value is already portable, ``v2ex``'s is resolved at run time),
-install + activate it, a zero-LM PRE-TURN READINESS GATE
-(``GET /v1/agents?session_id=...`` must already carry every one of the six
-declared tools), then ONE ``claude_code``/``sonnet`` turn.
+policies FIRST, materialize the ``v2-stress`` marketplace (``_common.py::
+materialize_testing_marketplace`` writes the plugin's ``v2ex`` ``mcp.json``,
+resolved at run time; ``web`` comes from the ``web`` plugin), install + trust
+it and select its agent, a zero-LM PRE-TURN READINESS GATE
+(``GET /v1/sessions/{sid}/agent`` plus the handshake must already carry every
+one of the six needed tools), then ONE ``claude_code``/``sonnet`` turn.
 
 Verdict JSON: ``out/live-verification/leg_bd_stress_verdict.json``. See
 ``LEG_BD_STRESS.md`` for what this proves and how to read a failing verdict.
@@ -73,7 +74,7 @@ STABLE_PDF_URL = "https://www.unicode.org/versions/Unicode15.0.0/ch01.pdf"
 #: live -- reused here as the PLAIN-HTML contrast fetch in the SAME turn.
 STABLE_HTML_URL = "https://www.iana.org/help/example-domains"
 
-#: The web-testing pack's own search query shape kept deliberately boring:
+#: The web-testing leg's own search query shape kept deliberately boring:
 #: this leg proves plumbing, not research quality.
 SEARCH_QUERY = "RFC 8259 JSON data interchange format"
 
@@ -90,11 +91,11 @@ EXPECTED_V2EX_TOOLS = {
     "silent_sleeper",
 }
 
-#: The v2-stress pack template this leg materializes per run.
+#: The v2-stress marketplace template this leg materializes per run.
 PACK_TEMPLATE_DIR = Path(__file__).resolve().parent / "agents" / "v2-stress"
 
-#: The six tools the pack's `main` expert declares -- must ALL resolve before
-#: any turn is driven (the readiness gate).
+#: The six tools the leg's prompt names -- must ALL resolve on the session agent
+#: before any turn is driven (the readiness gate).
 NEEDED_AGENT_TOOLS = {
     "web_fetch",
     "web_search",
@@ -171,9 +172,9 @@ def _assert_handshake(call: Any, wsid: str, sid: str) -> dict[str, Any]:
     }
 
 
-def _assert_readiness(call: Any, sid: str, wsid: str) -> dict[str, Any]:
+def _assert_readiness(call: Any, sid: str, wsid: str, agent_id: str) -> dict[str, Any]:
     resolved = common.resolved_agent_tools(call, sid, workspace_id=wsid)
-    main_tools = set(resolved.get("main") or [])
+    main_tools = set(resolved.get(agent_id) or [])
     return {
         "resolved_agent_tools": resolved,
         "readiness_gate": {
@@ -212,14 +213,11 @@ def main() -> int:
     ws_dir = Path(args.ws_dir).resolve()
     ws_dir.mkdir(parents=True, exist_ok=True)
 
-    command = common.quoted_command(sys.executable, str(EXERCISER_PATH))
-    pack_root = common.materialize_testing_pack(
-        PACK_TEMPLATE_DIR,
-        ws_dir,
-        {
-            "web": common.quoted_command("clio-kit", "mcp-server", "web"),
-            EXERCISER_NAMESPACE: command,
-        },
+    # ``web`` comes from the ``web`` plugin; only the exerciser is declared here,
+    # with ``python`` resolving to this interpreter (see boot_server).
+    command = ["python", str(EXERCISER_PATH)]
+    pack_root = common.materialize_testing_marketplace(
+        PACK_TEMPLATE_DIR, ws_dir, {EXERCISER_NAMESPACE: command}
     )
 
     base = f"http://127.0.0.1:{args.port}"
@@ -253,15 +251,14 @@ def main() -> int:
         verdict["workspace_id"] = wsid
         verdict["session_id"] = sid
 
-        install_result = common.install_blueprint(call, pack_root, wsid)
-        blueprint_id = str(install_result.get("id") or "")
-        common.activate_blueprint(call, sid, blueprint_id)
-        verdict["blueprint_id"] = blueprint_id
+        agent_ref = common.install_testing_agent(call, pack_root)
+        common.use_agent(call, sid, agent_ref)
+        verdict["agent_ref"] = agent_ref
 
         handshake_result = _assert_handshake(call, wsid, sid)
         verdict.update(handshake_result)
 
-        readiness_result = _assert_readiness(call, sid, wsid)
+        readiness_result = _assert_readiness(call, sid, wsid, common.agent_id_of(agent_ref))
         verdict.update(readiness_result)
         readiness_ok = readiness_result["readiness_gate"]["ready"]
         handshake_ok = handshake_result["web_ready"] and handshake_result["v2ex_ready"]

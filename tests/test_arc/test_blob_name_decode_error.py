@@ -31,6 +31,9 @@ def test_scan_reports_an_undecodable_name_typed(monkeypatch: pytest.MonkeyPatch)
         _reconnect=lambda: None,
     )
     stub.scan_names = lambda kind, prefix="": storage.ClioCoreStore.scan_names(stub, kind, prefix)
+    stub.query_names = lambda kind, name_re="": storage.ClioCoreStore.query_names(
+        stub, kind, name_re
+    )
 
     with pytest.raises(BlobNameDecodeError) as info:
         list(storage.ClioCoreStore.scan(stub, "segments"))

@@ -4,6 +4,9 @@ description: Add capabilities from a trusted tool server, with technical setup f
 ---
 
 import { Aside, FileTree, Steps } from '@astrojs/starlight/components';
+import Capture from '../../../components/overview/Capture';
+import { captureImage } from '../../../lib/captures';
+import saved from '../../../assets/captures/docs-mcp-saved.png';
 
 Agents act through tools. CLIO has a small set of built-in tools, and everything else comes from MCP servers. MCP, the Model Context Protocol, is an open standard for giving AI applications tools, data, and reusable prompts. Any server that speaks it can be connected to CLIO.
 
@@ -11,22 +14,22 @@ Agents act through tools. CLIO has a small set of built-in tools, and everything
 
 CLIO ships two built-in tool servers:
 
-- File system tools, such as `fs_read_file` and `fs_propose_edit`.
+- File system tools, such as `fs_read_file`, `fs_write_file` and `fs_edit_file`.
 - Shell tools, such as `shell_bash`.
 
-Domain tools are not built in. They come from MCP servers: the ones a blueprint declares, clio-kit servers for scientific data, and servers you add yourself. The installer provisions clio-kit for you when `uv` is available, and blueprints start its servers with commands such as `clio-kit mcp-server geo`.
+Domain tools are not built in. They come from MCP servers: the ones an agent's plugins declare, clio-kit servers for scientific data, and servers you add yourself. The installer provisions clio-kit for you when `uv` is available, and plugins start its servers with commands such as `clio-kit mcp-server geo`.
 
 A tool's name starts with its server's name. A server named `geo` that offers a geocoding tool shows up as `geo_geocode`. For that reason, a server name can only contain lowercase letters, digits, and hyphens, with no underscores.
 
 Whether a tool needs your approval depends on the [permissions](/docs/permissions/) in force, not on where the tool came from.
+
+## Add a server from the interface
 
 <Aside type="note" title="Next-release interface">
 The [Extensions preview](/docs/extensions/) shows the new shared library, custom MCP setup,
 browser sign-in and skill/plugin composition, with captures from the development build.
 The steps below describe the released interface.
 </Aside>
-
-## Add a server from the interface
 
 <Steps>
 
@@ -36,11 +39,35 @@ The steps below describe the released interface.
 
 3. Give the service a name, then choose a **Connection type**: **Remote service** takes a service address, and **Local command** takes an executable, its arguments, and optional environment variables.
 
-4. Choose **Connect MCP** to confirm. CLIO checks the service before making its tools available to agents.
+4. Leave **Available in every conversation** checked to give its tools to every conversation's agent. Clear it to give them only to a conversation that asks for that service.
+
+5. Choose **Connect MCP** to confirm. CLIO saves the service, checks it, and says whether it answered.
 
 </Steps>
 
-The list shows the connected services with their tools, resources, and prompts. Each service can be reconnected or disconnected.
+A saved service stays across restarts. **Your MCP services** lists each one with the command or address it uses and whether every conversation gets it. **Remove** takes it away from new conversations; one that is using it keeps it until its turn ends.
+
+<Capture client:visible image={await captureImage(saved)}
+  alt="Settings, MCP tools: the built-in Workspace files and Local commands services, and under Your MCP services, colab-mcp run by uvx from its GitHub repository, available in every conversation"
+  caption="A saved service shows what it runs. This one is Google's Colab MCP server, started with uvx straight from its repository."
+/>
+
+A server that `uvx` or `npx` downloads and builds on its first start can take a minute to answer the first time. CLIO waits for it and, if it still has not answered, saves it and says the launcher may still be preparing it, so you can check again shortly.
+
+## Add a server from a terminal
+
+`clio-agent mcp` manages the same saved services, on the machine that runs CLIO. Everything after `--` is the server's own command line:
+
+```sh
+clio-agent mcp add colab -- uvx git+https://github.com/googlecolab/colab-mcp
+clio-agent mcp add catalog --url https://tools.example.org/mcp
+clio-agent mcp add lab-data --env LAB_STATE=/data/lab -- uvx lab-data-mcp serve
+clio-agent mcp check colab
+clio-agent mcp list
+clio-agent mcp remove colab
+```
+
+`check` starts the server and lists its tools. `--only-when-asked` saves a service without giving it to every conversation.
 
 ## Add a server in mcp.yaml
 
@@ -119,7 +146,7 @@ The same server name can be declared in several places. They are merged by name,
 
 1. The workspace file, `<workspace>/.clio/mcp.yaml`.
 2. The user file, `mcp.yaml` in your CLIO configuration folder.
-3. The `mcp_servers` field of the active blueprint's `AGENT.md`.
+3. The servers of the conversation's plugins, declared in each plugin's `mcp.json`.
 4. The built-in tools.
 
 <FileTree>
@@ -133,9 +160,9 @@ The same server name can be declared in several places. They are merged by name,
 
 Put a server in the workspace file when only one project needs it, and in the user file when you want it everywhere. A file that cannot be read is skipped with a warning, and the rest still load.
 
-## Servers from blueprints
+## Servers from plugins
 
-A blueprint lists the servers it needs in `mcp_servers` in its `AGENT.md`, in the same short or mapping form. See [Agent blueprints](/docs/blueprints/). An expert can then use the tools those servers provide. A blueprint can also package tool descriptors under `tools/`. Installing the blueprint records them without turning them on. Enabling one checks that the server responds and then makes its tools callable.
+A plugin lists the servers it needs in its `mcp.json` file, in the Agent Plugins format. See [Agents and plugins](/docs/agents-and-plugins/). Every agent that carries the plugin can use the tools those servers provide. A server starts the first time one of its tools is used, in the session workspace. Two plugins in one conversation cannot declare servers with the same name. A plugin from a marketplace you added starts its servers only after the [trust step](/docs/marketplaces/manage/#run-the-trust-step).
 
 ## Lifecycle
 

@@ -44,6 +44,7 @@ def finish_terminal(self: ExternalTasks, handle: str) -> None:
             return
         publish_task_notice(self.history, current)
         close_input_questions(self, current)
+        self.history.task_obligation_settled(current)
 
 
 def _record_reply(

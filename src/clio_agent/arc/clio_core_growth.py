@@ -10,6 +10,7 @@ import hashlib
 import json
 import logging
 import os
+import re
 import shutil
 import tempfile
 from pathlib import Path
@@ -26,6 +27,8 @@ from clio_agent.arc.clio_core_config import (
     _default_cte_dir,
     parse_capacity_bytes,
 )
+from clio_agent.arc.clio_core_durability import _PERSISTENCE_LINE
+from clio_agent.arc.clio_core_indexer import indexer_block
 
 logger = logging.getLogger(__name__)
 _GIB = 1 << 30
@@ -65,7 +68,7 @@ def _managed_config(config: Path, text: str) -> dict[str, Any] | None:
     if not isinstance(document, dict):
         return None
     try:
-        ram, module = document["compose"]
+        ram, module, *indexer = document["compose"]
         (tier,) = module["storage"]
         capacity = parse_capacity_bytes(tier["capacity_limit"])
         # Older generated configs have no journal. Adopt only the unchanged seed
@@ -80,6 +83,9 @@ def _managed_config(config: Path, text: str) -> dict[str, Any] | None:
             file_tier=_cte_yaml_path(config.parent / "storage.bin"),
             file_capacity=tier["capacity_limit"],
             metadata_log=_cte_yaml_path(config.parent / "metadata.log"),
+            indexer=indexer_block(_cte_yaml_path(config.parent / "indexer_index.log"))
+            if indexer
+            else "",
         )
     except (KeyError, TypeError, ValueError):
         return None
@@ -183,8 +189,13 @@ def recover_capacity(store: Any, tag_id: Any, name: str, payload_bytes: int) -> 
             if _resume_plan(store, config, journal_path, journal):
                 return True
             if journal["config_sha256"] != _digest(text):
-                logger.warning("reason=clio_core_capacity_config_edited config=%s", config)
-                return False
+                if journal["config_sha256"] not in map(_digest, _before_clio_upgrades(text)):
+                    logger.warning("reason=clio_core_capacity_config_edited config=%s", config)
+                    return False
+                # Only CLIO's own in-place upgrades differ: the config is still CLIO's.
+                journal["config_sha256"] = _digest(text)
+                _persist_journal(journal_path, journal)
+                logger.warning("reason=clio_core_capacity_journal_rekeyed config=%s", config)
             # Recheck opt-out even after automatic growth created the journal.
             if not _growth_enabled(config):
                 return False
@@ -275,6 +286,39 @@ def _growth_enabled(config: Path) -> bool:
             "arc.cte.auto_expand", env="CLIO_ARC_CTE_AUTO_EXPAND", default=True, cast=conf.as_bool
         )
     )
+
+
+def _before_clio_upgrades(text: str) -> list[str]:
+    """``text`` without each combination of CLIO's own in-place additions to its seed.
+
+    The durability line (``ensure_seeded_config_durable``) and the indexer entry
+    (``ensure_seeded_config_indexed``), each removed only when it is exactly what CLIO
+    adds, so a person's edit is never mistaken for one.
+    """
+    without_line = text.replace(_PERSISTENCE_LINE, "", 1)
+    variants = [without_line] if without_line != text else []
+    marker = "  - mod_name: clio_cte_indexer\n"
+    if marker in text:
+        start = text.index(marker)
+        log = re.search(r'index_log_path: "([^"]*)"', text[start:])
+        if log and text[start:] == indexer_block(log.group(1)):
+            variants += [text[:start], text[:start].replace(_PERSISTENCE_LINE, "", 1)]
+    return variants
+
+
+def rekey_managed_capacity(config: Path, before: str, after: str) -> None:
+    """Keep CLIO's ownership of its config across an edit CLIO itself made.
+
+    A journal recorded for ``before`` moves to ``after``; one recorded for anything
+    else (a person's edit) is left alone, so that edit still opts out of growth.
+    """
+    journal_path = config.resolve().with_name("cte-capacity.json")
+    if not journal_path.is_file():
+        return
+    journal = json.loads(journal_path.read_text(encoding="utf-8"))
+    if journal.get("config_sha256") == _digest(before) and "pending" not in journal:
+        journal["config_sha256"] = _digest(after)
+        _persist_journal(journal_path, journal)
 
 
 def initialize_managed_capacity(config: Path) -> None:

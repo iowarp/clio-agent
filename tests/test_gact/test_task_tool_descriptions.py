@@ -7,11 +7,11 @@ from types import SimpleNamespace
 import pytest
 from mcp.types import Tool, ToolExecution
 
-from clio_agent.gact.agents.builders import _enabled_external_mcp_dspy_tools
+from clio_agent.gact.agents.builders import _gateway_and_namespace_tools
 from clio_agent.gact.agents.skill_runtime import SkillRuntime, build_spawn_skill_task_tool
+from clio_agent.gact.spawn_tools import build_spawn_runtime_tools
 from clio_agent.gact.storage.connect_tool import build_connected_data_connect_tool
 from clio_agent.gact.storage.download_tool import build_connected_data_download_tool
-from clio_agent.gact.task_declarations import build_spawn_runtime_tools
 from clio_agent.gact.types import AgentDef
 from clio_agent.tools.execution import _make_dspy_tool
 from clio_agent.tools.gateway import _list_tools_sync
@@ -97,28 +97,28 @@ def test_missing_mcp_description_preserves_namespaced_fallback(support: str | No
     assert ("durable task handle" in tool.desc) == (support == "required")
 
 
-def test_blueprint_mcp_task_capability_reaches_model_description() -> None:
-    """Cached blueprint tools receive the same capability-derived description."""
-    app = SimpleNamespace(
-        state=SimpleNamespace(
-            external_mcp_servers={
-                "domain": {
-                    "status": "ready",
-                    "tools": [
-                        {
-                            "name": "domain_work",
-                            "enabled": True,
-                            "status": "ready",
-                            "description": "Domain work.",
-                            "input_schema": {},
-                            "execution": {"taskSupport": "required"},
-                        }
-                    ],
-                }
-            }
-        )
+def test_plugin_mcp_task_capability_reaches_model_description() -> None:
+    """A plugin MCP namespace's tools keep the capability-derived description."""
+    upstream = Tool(
+        name="work",
+        description="Domain work.",
+        input_schema={"type": "object", "properties": {}},
+        execution=ToolExecution(task_support="required"),
     )
-    tools = _enabled_external_mcp_dspy_tools(app, ["domain_work"], {})
+    plain = Tool(name="read", description="Read.", input_schema={"type": "object"})
+
+    class Executor:
+        _clio_namespace_specs = {"domain": {"command": "unused"}}
+
+        def to_dspy_tools(self) -> list:
+            return [
+                _make_dspy_tool("domain_work", upstream, lambda _name, _args: "unused"),
+                _make_dspy_tool("other_read", plain, lambda _name, _args: "unused"),
+            ]
+
+    tools, failures = _gateway_and_namespace_tools(Executor(), [], ["domain"])
+    assert failures == {}
+    assert set(tools) == {"domain_work"}
     assert "durable task handle" in tools["domain_work"].desc
     assert "MCP task" in tools["domain_work"].desc
 
@@ -149,19 +149,21 @@ def test_skill_task_declaration_uses_shared_controls() -> None:
 
 
 @pytest.mark.parametrize("name", ["spawn_agent_task", "spawn_agents_parallel"])
-def test_spawn_declaration_explains_task_handle_and_wake(
-    name: str, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """The actual declared-child catalogs describe single and fanout task receipts."""
-    from clio_agent.gact import context
-    from clio_agent.gact.agents import resolution
-
-    monkeypatch.setattr(context, "active_app", lambda: SimpleNamespace())
-    monkeypatch.setattr(context, "active_session_id", lambda: "parent")
-    monkeypatch.setattr(resolution, "_runtime_declared_child_ids", lambda *a, **kw: {"worker"})
-    tools = build_spawn_runtime_tools(SimpleNamespace(), AgentDef(id="main", title="Main"))
+def test_spawn_declaration_explains_task_handle_and_wake(name: str) -> None:
+    """The delegation tools describe single and fanout task receipts and their targets."""
+    tools = build_spawn_runtime_tools(
+        SimpleNamespace(),
+        AgentDef(id="main", title="Main"),
+        resolution=SimpleNamespace(subagents=[{"id": "worker", "description": "Does work."}]),
+    )
     tool = next(tool for tool in tools if tool.name == name)
     assert "Subagent" in tool.desc and "handle" in tool.desc
+    schema = (
+        tool.args["agent"]
+        if name == "spawn_agent_task"
+        else tool.args["spawns"]["items"]["properties"]["agent"]
+    )
+    assert "worker (Does work.)" in schema["description"]
     if name == "spawn_agent_task":
         assert "observe_tasks" in tool.desc and "wait_tasks" in tool.desc and "wake" in tool.desc
         assert "Pause holds only the child model" in tool.desc

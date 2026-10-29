@@ -54,24 +54,36 @@ logger = logging.getLogger(__name__)
 def project_committed_feedback(
     history: "TaskHistory", session_id: str, messages: list["Message"]
 ) -> None:
-    """Derive delivery display from Core input commits, without rewriting accepted bodies."""
+    """Derive delivery display from Core's pending inputs, without rewriting accepted bodies.
+
+    ``pending_steer`` stays true only while the message is still a pending input in the
+    recipient index -- the truth ``GET .../pending-steers`` reads. A promoted queued
+    message keeps its queue item's identity in the mailbox while the message carries
+    ``client_message_id``, so the message id is matched against the input's message,
+    never assumed to be the mail item id.
+    """
     pending = [message for message in messages if message.metadata.get("pending_steer") is True]
     if not pending:
         return
-    acknowledged = history.acknowledged_notifications(session_id)
+    still = pending_input_message_ids(history, session_id)
     for message in pending:
-        if message.id in acknowledged:
+        if message.id not in still:
             message.metadata = {**message.metadata, "pending_steer": False}
 
 
-def _metrics_counters(app: "FastAPI") -> Any:
-    """Return the running metrics aggregate, or ``None`` when not wired.
-
-    #770 C3: the four message write seams below keep this aggregate current so
-    ``GET /v1/metrics`` reads a running counter instead of re-walking history.
-    """
-
-    return getattr(app.state, "metrics_counters", None)
+def pending_input_message_ids(history: "TaskHistory", session_id: str) -> set[str]:
+    """Message ids of accepted person inputs not yet given to the model (nor withdrawn)."""
+    ids: set[str] = set()
+    for item in history.pending_mail(session_id):
+        if item.kind not in {"human", "composer"} or item.delivery == "queued":
+            continue
+        if item.kind == "human":
+            ids.add(item.id)  # A direct message's mail item carries the message's id.
+            continue
+        content = history.read_content(item.content)
+        if isinstance(content, dict) and content.get("message_id"):
+            ids.add(str(content["message_id"]))
+    return ids
 
 
 def restore_pending_mail_messages(app: "FastAPI", history: "TaskHistory") -> None:
@@ -165,12 +177,14 @@ def _append_session_message(
     and the local message store are written here. Explicit, never inferred.
     """
 
+    from clio_agent.gact.restart_interruptions import settle_restart_interruption
     from clio_agent.gact.transcript_projection import canonical_log_arc
     from clio_agent.gact.transcript_recording import project_message, record_message
 
     arc = canonical_log_arc(app)
     if arc is None:
         raise RuntimeError("Transcript recording requires the canonical Core store")
+    settle_restart_interruption(app, session_id)  # never append after a dangling turn
     recording = "recorded" if atoms_minted else record_message(arc, session_id, message)
     if recording == "withdrawn":
         return
@@ -253,79 +267,6 @@ def _interrupted_assistant_row(
     )
 
 
-def _reconcile_restart_interrupted_sessions(app: "FastAPI") -> None:
-    """Settle persisted running sessions whose process-local executor is gone.
-
-    A user message is durable before its assistant turn starts. If the process
-    exits mid-turn, the session registry can therefore retain ``running`` and an
-    older message count even though no :class:`TurnRunner` task can survive the
-    restart. Reconcile only those stale running rows, reading one ledger at a
-    time so ordinary historical sessions remain lazily materialized. The ledger is
-    the durable transcript: the ``messages/`` file, or the atoms with
-    ``transcript.file`` off (:func:`~clio_agent.gact.transcript_file.load_durable_transcript`).
-    """
-
-    from clio_agent.gact.transcript_file import (  # noqa: PLC0415 - lazy: keep leaf
-        has_durable_transcript_store,
-        load_durable_transcript,
-    )
-
-    sessions = getattr(app.state, "sessions", None)
-    if sessions is None or not has_durable_transcript_store(app):
-        return
-    for session in sessions.list():
-        if session.status != "running":
-            continue
-        try:
-            messages = load_durable_transcript(app, session.id) or []
-        except OSError as exc:
-            logger.error(
-                "restart interruption reconciliation failed session=%s error=%r",
-                session.id,
-                exc,
-            )
-            continue
-        durable_messages = list(messages)
-        last_message = durable_messages[-1] if durable_messages else None
-        if last_message is not None and last_message.role == "user":
-            interrupted_message = _interrupted_assistant_row(app, session.id, last_message)
-            durable_messages.append(interrupted_message)
-            try:
-                # #1334 review round (Fable, F2): through the sanctioned replace
-                # seam (the same one undo/rewind uses) so the atom lane is
-                # re-materialized to match -- file and lane agree by
-                # construction and materialize_ledger's divergence repair never
-                # fires on this session's first post-restart read. Reconciliation
-                # runs at boot (no loop) or, with transcript.file off and the ARC
-                # attached later, on the ARC construction worker -- so
-                # on_ledger_replaced's mint runs inline, off any server loop thread.
-                _replace_session_messages(app, session.id, durable_messages)
-            except OSError as exc:
-                logger.error(
-                    "restart interruption boundary write failed session=%s error=%r",
-                    session.id,
-                    exc,
-                )
-                continue
-        sessions.update(
-            session.id,
-            status="error",
-            message_count=len(durable_messages),
-            metadata_patch={
-                "restart_interruption": {
-                    "reason": "server_restart_interrupted",
-                    "previous_status": "running",
-                }
-            },
-        )
-        trace.event(
-            "SESSION",
-            "restart_interrupted session=%s messages=%s",
-            session.id,
-            len(durable_messages),
-        )
-
-
 def _extend_session_messages(
     app: "FastAPI",
     session_id: str,
@@ -351,18 +292,17 @@ def _replace_session_messages(
     """
 
     from clio_agent.gact.part_atoms import MESSAGE_PART_SCOPE
+    from clio_agent.gact.restart_interruptions import settle_restart_interruption
     from clio_agent.gact.transcript_projection import canonical_log_arc, on_ledger_replaced
 
     arc = canonical_log_arc(app)
     if arc is None:
         raise RuntimeError("Transcript mutation requires the canonical Core store")
+    settle_restart_interruption(app, session_id)  # no-op inside the settle's own replace
     with arc._segments._lock_for(session_id, MESSAGE_PART_SCOPE):
         if not atoms_minted:
             on_ledger_replaced(app, session_id, list(messages))
         app.state.messages[session_id] = list(messages)
-        counters = _metrics_counters(app)
-        if counters is not None:
-            counters.set_session(session_id, messages)
         store = getattr(app.state, "message_store", None)
         if store is not None:
             try:
@@ -404,9 +344,6 @@ def _delete_session_messages(app: "FastAPI", session_id: str) -> None:
         discard(session_id)
     else:
         messages.pop(session_id, None)
-    counters = _metrics_counters(app)
-    if counters is not None:
-        counters.remove_session(session_id)
     store = getattr(app.state, "message_store", None)
     if store is not None:
         try:

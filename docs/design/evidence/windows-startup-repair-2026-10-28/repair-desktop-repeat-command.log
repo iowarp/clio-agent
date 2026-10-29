@@ -1,0 +1,24 @@
+{"t":0,"event":"open"}
+{"t":0.9,"event":"window"}
+{"t":1.6,"event":"boot_log_resolved","path":"D:\\cw\\rp\\home\\AppData\\Local\\ai.iowarp.clio.desktop\\logs\\backend-boot.log"}
+{"t":1.6,"event":"state","state":"starting","text":"CLIO Connecting Search Ctrl K Starting CLIO Your local scientific workspace is getting ready. LOCAL STARTUP Installing local runtime Preparing CLIO for first use 0s Check 2 Install 3 Open"}
+{"t":4.4,"event":"server_process","pid":36476}
+{"t":27,"event":"state","state":"workspace","text":"Toggle Sidebar default › New conversation New conversation in default with Loading agents… Live CLIO Local CLIO Search Ctrl K Workspaces default No sessions Explore Runs Checking Infrastructure Settin"}
+{"t":27,"event":"workspace_usable"}
+{"t":38,"event":"package_validation","valid":true,"detail":"Managed packages checked reason=managed_packages_unchanged 1.764s","observed_s":38}
+{"t":38.4,"event":"quit"}
+{"t":44.5,"event":"exited","process":"clio-core:44076","after_quit_s":6.1}
+{"t":44.5,"event":"exited","process":"other:13448","after_quit_s":6.1}
+{"t":45.8,"event":"exited","process":"server:36476","after_quit_s":7.4}
+{"t":45.8,"event":"exited","process":"other:31080","after_quit_s":7.4}
+{"t":49.8,"event":"exited","process":"desktop:50704","after_quit_s":11.4}
+{"t":49.8,"event":"exited","process":"other:34388","after_quit_s":11.4}
+{"t":49.8,"event":"exited","process":"other:52656","after_quit_s":11.4}
+{"t":49.8,"event":"exited","process":"other:53232","after_quit_s":11.4}
+{"t":49.8,"event":"exited","process":"other:49740","after_quit_s":11.4}
+{"t":49.8,"event":"exited","process":"other:40896","after_quit_s":11.4}
+{"t":49.8,"event":"exited","process":"other:50660","after_quit_s":11.4}
+{"t":49.8,"event":"exited","process":"other:44892","after_quit_s":11.4}
+{"t":49.8,"event":"exited","process":"launcher:39088","after_quit_s":11.4}
+{"t":49.8,"event":"exited","process":"other:5140","after_quit_s":11.4}
+{"t":49.8,"event":"done"}

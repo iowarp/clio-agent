@@ -10,6 +10,7 @@ from collections.abc import AsyncIterator, Awaitable, Callable
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from datetime import datetime, timezone
+from functools import partial
 from typing import Any
 from uuid import uuid4
 
@@ -33,12 +34,14 @@ from clio_agent.gact.agent_task_limits import max_inference_concurrency
 from clio_agent.gact.conversation_assignments import ConversationOutcome, ConversationSegment
 from clio_agent.gact.conversation_recovery import _confirm_segment_write
 from clio_agent.gact.core_recovery import CoreRecovery
+from clio_agent.gact.flow_restart import to_latest_flow_assignment
 from clio_agent.gact.native_work import now
+from clio_agent.gact.owner_loop import on_owner_loop
 from clio_agent.gact.session_input import input_delivery
-from clio_agent.gact.session_mail import SessionMail, StagedInput
+from clio_agent.gact.session_mail import WRITTEN_INPUT_KINDS, SessionMail, StagedInput
 from clio_agent.gact.sessions import SessionStore
 from clio_agent.gact.spawn_context import PrepareChild
-from clio_agent.gact.task_access import TaskAccess, TaskCaller
+from clio_agent.gact.task_access import AdmissionClosed, TaskAccess, TaskCaller
 from clio_agent.gact.task_history import TaskHistory
 
 logger = logging.getLogger(__name__)
@@ -82,6 +85,7 @@ class Conversations:
         self._controls: dict[str, asyncio.Task[None]] = {}
         self._cancel_watches: dict[str, Callable[[], None]] = {}
         self._control_holds: set[str] = set()
+        self._closed_spawn_invocations: set[tuple[str, str]] = set()
         self._model_recording: dict[str, set[str]] = {}
         self._paused: dict[str, str] = {}
         self._inference: dict[int, anyio.CapacityLimiter] = {}
@@ -90,6 +94,7 @@ class Conversations:
         self._pause_tokens: dict[str, str] = {}
         self._deadlines: dict[str, asyncio.TimerHandle] = {}
         self._restoring = True
+        self.obligations: Any = None  # holds conversations with open work (gact/obligations.py)
         self._closing = False
 
     def _input_committed(self, staged: StagedInput) -> None:
@@ -102,17 +107,7 @@ class Conversations:
         self.runner.bind_loop(self._loop)
         self._unlisten = self.history.listen_mail(self.runner.signal)
 
-        async def ready() -> None:
-            if self._restoring:
-                await self.restore()
-            if self.history.requires_recovery:
-                return
-            await self.history.io.run(self.app.state.questions.restore)
-            await self.app.state.question_events.restore()
-            await self.history.io.run(self._restore_input_projections)
-            self.signal_pending()
-
-        self.recovery.on_ready = ready
+        self.recovery.on_ready = partial(conversation_recovery.on_core_ready, self)
 
     def signal_pending(self) -> None:
         """Recheck indexed Core mail after readiness or policy changes."""
@@ -152,6 +147,8 @@ class Conversations:
 
     def eligible(self, sid: str, item: MailItem) -> bool:
         """One admission/injection policy; producers do not independently spawn turns."""
+        if self.obligations is not None and self.obligations.holds(sid):
+            return False
         if self._restoring or self._model_recording.get(sid):
             return False
         session = self.sessions.get(sid)
@@ -291,9 +288,7 @@ class Conversations:
                 value = self.history.read_content(trigger.content)
                 input_text = (
                     value.get("text", "")
-                    if trigger.kind
-                    in {"human", "composer", "goal", "loop", "schedule", "hook", "approval"}
-                    and isinstance(value, dict)
+                    if trigger.kind in WRITTEN_INPUT_KINDS and isinstance(value, dict)
                     else value
                     if trigger.kind in {"human", "composer"} and isinstance(value, str)
                     else "Continue the retained assignment using the queued messages and task outcomes."
@@ -493,6 +488,15 @@ class Conversations:
                 self.recovery.defer, "conversation-progress:" + source.content_id, confirm
             )
 
+    def cancelling(self, task: TaskSnapshot) -> bool:
+        """Whether ``task`` is being cancelled, including before the request is recorded."""
+        return task.cancellation_requested_at is not None or task.handle in self._control_holds
+
+    def cancellation_job(self, handle: str) -> asyncio.Task[None] | None:
+        """The job still confirming ``handle``'s cancellation, if one is running."""
+        job = self._controls.get(handle)
+        return job if job is not None and not job.done() else None
+
     def require_admission(self, task: TaskSnapshot) -> None:
         """Close descendant admission before any cancellation cascade starts."""
         seen: set[str] = set()
@@ -505,12 +509,15 @@ class Conversations:
                 if details.execution_deadline and datetime.now(
                     timezone.utc
                 ) >= datetime.fromisoformat(details.execution_deadline):
-                    raise ValueError("Assignment execution deadline exceeded; admission is closed")
+                    raise AdmissionClosed(
+                        "Assignment execution deadline exceeded; admission is closed",
+                        stopping=False,
+                    )
             latest = self.history.latest_assignment(task.owner.session_id)
             if latest is not None and (
                 latest.cancellation_requested_at is not None or latest.handle in self._control_holds
             ):
-                raise ValueError("Session descendant admission is closed")
+                raise AdmissionClosed("Session descendant admission is closed", stopping=True)
             native = getattr(self.app.state, "native_tools", None)
             if (
                 task.cancellation_requested_at is not None
@@ -518,7 +525,7 @@ class Conversations:
                 or native is not None
                 and native.admission_closed(task.handle)
             ):
-                raise ValueError("Assignment subtree admission is closed")
+                raise AdmissionClosed("Assignment subtree admission is closed", stopping=True)
             if task.owner.parent_handle is None:
                 return
             parent = self.history.task_snapshot(task.owner.parent_handle)
@@ -750,14 +757,15 @@ class Conversations:
 
     complete_deferred = conversation_assignments.complete_deferred
 
-    pause = conversation_controls.pause
-    resume = conversation_controls.resume
+    # A control can arrive from a tool call's short-lived loop; its jobs live on ours.
+    pause = on_owner_loop(conversation_controls.pause)
+    resume = on_owner_loop(conversation_controls.resume)
 
-    cancel = conversation_controls.cancel
+    cancel = on_owner_loop(conversation_controls.cancel)
 
     spawn = conversation_assignments.spawn
 
-    restart = conversation_controls.restart
+    restart = on_owner_loop(to_latest_flow_assignment(conversation_controls.restart))
 
     def close_admission(self) -> None:
         """Reject new model admission while existing owners retire their work."""

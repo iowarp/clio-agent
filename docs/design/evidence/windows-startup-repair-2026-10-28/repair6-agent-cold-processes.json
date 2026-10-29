@@ -1,0 +1,488 @@
+{
+  "command_seconds": 33.839,
+  "exit_code": 0,
+  "owned": [
+    {
+      "pid": 13056,
+      "created": 1793183883.4357376,
+      "exe": "D:\\cw\\.venv\\Scripts\\python.exe",
+      "cmd": [
+        "D:\\cw\\.venv\\Scripts\\python.exe",
+        "-B",
+        "D:\\Libraries\\Documents\\projects\\clio-windows-startup-acceptance\\scripts\\acceptance\\measure_functional_start.py",
+        "--clio-agent",
+        "D:\\cw\\fp7\\local\\clio-agent\\data\\app\\clio-agent\\.venv\\Scripts\\clio-agent.exe",
+        "--port",
+        "19111",
+        "--out",
+        "D:\\Libraries\\Documents\\projects\\clio-windows-startup-acceptance\\docs\\design\\evidence\\windows-startup-repair-2026-10-28\\repair6-agent-cold.json"
+      ]
+    },
+    {
+      "pid": 17792,
+      "created": 1793183883.4484968,
+      "exe": "C:\\Python314\\python.exe",
+      "cmd": [
+        "D:\\cw\\.venv\\Scripts\\python.exe",
+        "-B",
+        "D:\\Libraries\\Documents\\projects\\clio-windows-startup-acceptance\\scripts\\acceptance\\measure_functional_start.py",
+        "--clio-agent",
+        "D:\\cw\\fp7\\local\\clio-agent\\data\\app\\clio-agent\\.venv\\Scripts\\clio-agent.exe",
+        "--port",
+        "19111",
+        "--out",
+        "D:\\Libraries\\Documents\\projects\\clio-windows-startup-acceptance\\docs\\design\\evidence\\windows-startup-repair-2026-10-28\\repair6-agent-cold.json"
+      ]
+    },
+    {
+      "pid": 43244,
+      "created": 1793183883.653116,
+      "exe": "D:\\cw\\fp7\\local\\clio-agent\\data\\app\\clio-agent\\.venv\\Scripts\\clio-agent.exe",
+      "cmd": [
+        "D:\\cw\\fp7\\local\\clio-agent\\data\\app\\clio-agent\\.venv\\Scripts\\clio-agent.exe",
+        "serve",
+        "--host",
+        "127.0.0.1",
+        "--port",
+        "19111"
+      ]
+    },
+    {
+      "pid": 28820,
+      "created": 1793183883.66468,
+      "exe": "D:\\cw\\fp7\\local\\clio-agent\\data\\app\\clio-agent\\.venv\\Scripts\\python.exe",
+      "cmd": [
+        "D:\\cw\\fp7\\local\\clio-agent\\data\\app\\clio-agent\\.venv\\Scripts\\python.exe",
+        "D:\\cw\\fp7\\local\\clio-agent\\data\\app\\clio-agent\\.venv\\Scripts\\clio-agent.exe",
+        "serve",
+        "--host",
+        "127.0.0.1",
+        "--port",
+        "19111"
+      ]
+    },
+    {
+      "pid": 51712,
+      "created": 1793183883.675346,
+      "exe": "C:\\Python314\\python.exe",
+      "cmd": [
+        "D:\\cw\\fp7\\local\\clio-agent\\data\\app\\clio-agent\\.venv\\Scripts\\python.exe",
+        "D:\\cw\\fp7\\local\\clio-agent\\data\\app\\clio-agent\\.venv\\Scripts\\clio-agent.exe",
+        "serve",
+        "--host",
+        "127.0.0.1",
+        "--port",
+        "19111"
+      ]
+    },
+    {
+      "pid": 37616,
+      "created": 1793183890.502284,
+      "exe": "D:\\cw\\fp7\\local\\clio-agent\\data\\app\\clio-agent\\.venv\\Lib\\site-packages\\codex_cli_bin\\bin\\codex.exe",
+      "cmd": [
+        "D:\\cw\\fp7\\local\\clio-agent\\data\\app\\clio-agent\\.venv\\Lib\\site-packages\\codex_cli_bin\\bin\\codex.exe",
+        "--version"
+      ]
+    },
+    {
+      "pid": 39608,
+      "created": 1793183905.2172344,
+      "exe": "D:\\cw\\fp7\\local\\clio-agent\\data\\app\\clio-agent\\.venv\\Lib\\site-packages\\codex_cli_bin\\bin\\codex.exe",
+      "cmd": [
+        "D:\\cw\\fp7\\local\\clio-agent\\data\\app\\clio-agent\\.venv\\Lib\\site-packages\\codex_cli_bin\\bin\\codex.exe",
+        "sandbox",
+        "--include-managed-config",
+        "-p",
+        "clio-sb-d6da2db3",
+        "--permission-profile",
+        "clio-mxc-check",
+        "-C",
+        "D:\\cw\\ap2\\temp\\clio-mxc-check-jshp5nxl\\workspace",
+        "--",
+        "D:\\cw\\fp7\\local\\clio-agent\\data\\app\\clio-agent\\.venv\\Scripts\\python.exe",
+        "-I",
+        "-B",
+        "-c",
+        "\nimport json, pathlib, socket, subprocess, sys\nroot = pathlib.Path.cwd()\nchecks = {}\n(root / 'inside.txt').write_text('allowed')\nchecks['workspace_write'] = True\nchecks['source_read'] = (root / 'source/data.txt').read_text() == 'approved'\nfor name, path, operation in (\n    ('outside_write_denied', root.parent / 'outside.txt', 'write'),\n    ('source_write_denied', root / 'source/data.txt', 'write'),\n    ('private_read_denied', root / 'private/secret.txt', 'read'),\n):\n    try:\n        path.read_text() if operation == 'read' else path.write_text('changed')\n        checks[name] = False\n    except PermissionError:\n        checks[name] = True\nchild = subprocess.run([sys.executable, '-I', '-B', '-c',\n    \"from pathlib import Path; import sys\\ntry: Path('private/secret.txt').read_text()\"\n    \"\\nexcept PermissionError: sys.exit(42)\"],\n    stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=10)\nchecks['descendant_read_denied'] = child.returncode == 42\ntry:\n    socket.create_connection(('192.0.2.1', 9), timeout=2).close()\n    checks['direct_network_denied'] = False\nexcept PermissionError:\n    checks['direct_network_denied'] = True\nexcept OSError:\n    checks['direct_network_denied'] = False\n(root / 'checks.json').write_text(json.dumps(checks))\n"
+      ]
+    },
+    {
+      "pid": 29400,
+      "created": 1793183905.2267032,
+      "exe": "C:\\Windows\\System32\\conhost.exe",
+      "cmd": [
+        "\\??\\C:\\WINDOWS\\system32\\conhost.exe",
+        "0x4"
+      ]
+    },
+    {
+      "pid": 29480,
+      "created": 1793183905.358582,
+      "exe": "D:\\cw\\fp7\\local\\clio-agent\\data\\app\\clio-agent\\.venv\\Lib\\site-packages\\codex_cli_bin\\bin\\codex.exe",
+      "cmd": [
+        "D:\\cw\\fp7\\local\\clio-agent\\data\\app\\clio-agent\\.venv\\Lib\\site-packages\\codex_cli_bin\\bin\\codex.exe",
+        "--__codex-windows-mxc"
+      ]
+    },
+    {
+      "pid": 9708,
+      "created": 1793183905.5279546,
+      "exe": "D:\\cw\\fp7\\local\\clio-agent\\data\\app\\clio-agent\\.venv\\Scripts\\python.exe",
+      "cmd": [
+        "D:\\cw\\fp7\\local\\clio-agent\\data\\app\\clio-agent\\.venv\\Scripts\\python.exe",
+        "-I",
+        "-B",
+        "-c",
+        "\nimport json, pathlib, socket, subprocess, sys\nroot = pathlib.Path.cwd()\nchecks = {}\n(root / 'inside.txt').write_text('allowed')\nchecks['workspace_write'] = True\nchecks['source_read'] = (root / 'source/data.txt').read_text() == 'approved'\nfor name, path, operation in (\n    ('outside_write_denied', root.parent / 'outside.txt', 'write'),\n    ('source_write_denied', root / 'source/data.txt', 'write'),\n    ('private_read_denied', root / 'private/secret.txt', 'read'),\n):\n    try:\n        path.read_text() if operation == 'read' else path.write_text('changed')\n        checks[name] = False\n    except PermissionError:\n        checks[name] = True\nchild = subprocess.run([sys.executable, '-I', '-B', '-c',\n    \"from pathlib import Path; import sys\\ntry: Path('private/secret.txt').read_text()\"\n    \"\\nexcept PermissionError: sys.exit(42)\"],\n    stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=10)\nchecks['descendant_read_denied'] = child.returncode == 42\ntry:\n    socket.create_connection(('192.0.2.1', 9), timeout=2).close()\n    checks['direct_network_denied'] = False\nexcept PermissionError:\n    checks['direct_network_denied'] = True\nexcept OSError:\n    checks['direct_network_denied'] = False\n(root / 'checks.json').write_text(json.dumps(checks))\n"
+      ]
+    },
+    {
+      "pid": 23228,
+      "created": 1793183905.5362988,
+      "exe": "C:\\Windows\\System32\\conhost.exe",
+      "cmd": [
+        "\\??\\C:\\WINDOWS\\system32\\conhost.exe",
+        "0x4"
+      ]
+    },
+    {
+      "pid": 36184,
+      "created": 1793183905.5568295,
+      "exe": "C:\\Python314\\python.exe",
+      "cmd": [
+        "D:\\cw\\fp7\\local\\clio-agent\\data\\app\\clio-agent\\.venv\\Scripts\\python.exe",
+        "-I",
+        "-B",
+        "-c",
+        "\nimport json, pathlib, socket, subprocess, sys\nroot = pathlib.Path.cwd()\nchecks = {}\n(root / 'inside.txt').write_text('allowed')\nchecks['workspace_write'] = True\nchecks['source_read'] = (root / 'source/data.txt').read_text() == 'approved'\nfor name, path, operation in (\n    ('outside_write_denied', root.parent / 'outside.txt', 'write'),\n    ('source_write_denied', root / 'source/data.txt', 'write'),\n    ('private_read_denied', root / 'private/secret.txt', 'read'),\n):\n    try:\n        path.read_text() if operation == 'read' else path.write_text('changed')\n        checks[name] = False\n    except PermissionError:\n        checks[name] = True\nchild = subprocess.run([sys.executable, '-I', '-B', '-c',\n    \"from pathlib import Path; import sys\\ntry: Path('private/secret.txt').read_text()\"\n    \"\\nexcept PermissionError: sys.exit(42)\"],\n    stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=10)\nchecks['descendant_read_denied'] = child.returncode == 42\ntry:\n    socket.create_connection(('192.0.2.1', 9), timeout=2).close()\n    checks['direct_network_denied'] = False\nexcept PermissionError:\n    checks['direct_network_denied'] = True\nexcept OSError:\n    checks['direct_network_denied'] = False\n(root / 'checks.json').write_text(json.dumps(checks))\n"
+      ]
+    },
+    {
+      "pid": 27908,
+      "created": 1793183905.8388996,
+      "exe": "D:\\cw\\fp7\\local\\clio-agent\\data\\app\\clio-agent\\.venv\\Scripts\\python.exe",
+      "cmd": [
+        "D:\\cw\\fp7\\local\\clio-agent\\data\\app\\clio-agent\\.venv\\Scripts\\python.exe",
+        "-I",
+        "-B",
+        "-c",
+        "from pathlib import Path; import sys\ntry: Path('private/secret.txt').read_text()\nexcept PermissionError: sys.exit(42)"
+      ]
+    },
+    {
+      "pid": 28612,
+      "created": 1793183905.8493023,
+      "exe": "C:\\Python314\\python.exe",
+      "cmd": [
+        "D:\\cw\\fp7\\local\\clio-agent\\data\\app\\clio-agent\\.venv\\Scripts\\python.exe",
+        "-I",
+        "-B",
+        "-c",
+        "from pathlib import Path; import sys\ntry: Path('private/secret.txt').read_text()\nexcept PermissionError: sys.exit(42)"
+      ]
+    },
+    {
+      "pid": 45456,
+      "created": 1793183907.1277008,
+      "exe": "C:\\Program Files\\Docker\\Docker\\resources\\bin\\docker.exe",
+      "cmd": [
+        "C:\\Program Files\\Docker\\Docker\\resources\\bin\\docker.exe",
+        "info",
+        "--format",
+        "{{.ServerVersion}}{{range .SecurityOptions}} {{.}}{{end}}"
+      ]
+    },
+    {
+      "pid": 39840,
+      "created": 1793183907.2282755,
+      "exe": "D:\\cw\\fp7\\local\\clio-agent\\data\\app\\clio-agent\\.venv\\Lib\\site-packages\\iowarp_core\\bin\\clio_run.exe",
+      "cmd": [
+        "D:\\cw\\fp7\\local\\clio-agent\\data\\app\\clio-agent\\.venv\\Lib\\site-packages\\iowarp_core\\bin\\clio_run.exe",
+        "start"
+      ]
+    },
+    {
+      "pid": 2328,
+      "created": 1793183907.2363515,
+      "exe": "C:\\Windows\\System32\\conhost.exe",
+      "cmd": [
+        "\\??\\C:\\WINDOWS\\system32\\conhost.exe",
+        "0x4"
+      ]
+    },
+    {
+      "pid": 39004,
+      "created": 1793183907.1451836,
+      "exe": "C:\\Windows\\System32\\conhost.exe",
+      "cmd": [
+        "\\??\\C:\\WINDOWS\\system32\\conhost.exe",
+        "0x4"
+      ]
+    },
+    {
+      "pid": 50188,
+      "created": 1793183907.6124651,
+      "exe": "D:\\cw\\fp7\\local\\clio-agent\\data\\app\\clio-agent\\.venv\\Scripts\\python.exe",
+      "cmd": [
+        "D:\\cw\\fp7\\local\\clio-agent\\data\\app\\clio-agent\\.venv\\Scripts\\python.exe",
+        "-c",
+        "\nimport importlib, socket\nsocket.socket().close()\nimport iowarp_core  # noqa: F401 - library preload; must precede the extension\ncte = importlib.import_module('clio_cte_core_ext')\ninit = getattr(cte, \"clio_init\", None) or cte.chimaera_init\nmode = (getattr(cte, \"RuntimeMode\", None) or cte.ChimaeraMode).kClient\ninit(mode, False)\nprint(\"CLIO_NATIVE_PREFLIGHT_RETURNED\", flush=True)\nimport os\nos._exit(0)\n"
+      ]
+    },
+    {
+      "pid": 44164,
+      "created": 1793183907.6270754,
+      "exe": "C:\\Python314\\python.exe",
+      "cmd": [
+        "D:\\cw\\fp7\\local\\clio-agent\\data\\app\\clio-agent\\.venv\\Scripts\\python.exe",
+        "-c",
+        "\nimport importlib, socket\nsocket.socket().close()\nimport iowarp_core  # noqa: F401 - library preload; must precede the extension\ncte = importlib.import_module('clio_cte_core_ext')\ninit = getattr(cte, \"clio_init\", None) or cte.chimaera_init\nmode = (getattr(cte, \"RuntimeMode\", None) or cte.ChimaeraMode).kClient\ninit(mode, False)\nprint(\"CLIO_NATIVE_PREFLIGHT_RETURNED\", flush=True)\nimport os\nos._exit(0)\n"
+      ]
+    },
+    {
+      "pid": 46020,
+      "created": 1793183907.3978436,
+      "exe": "C:\\Program Files\\Docker\\cli-plugins\\docker-scout.exe",
+      "cmd": [
+        "C:\\Program Files\\Docker\\cli-plugins\\docker-scout.exe",
+        "docker-cli-plugin-metadata"
+      ]
+    },
+    {
+      "pid": 30288,
+      "created": 1793183908.6051068,
+      "exe": "C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe",
+      "cmd": [
+        "powershell",
+        "-NoProfile",
+        "-NonInteractive",
+        "-Command",
+        "Get-CimInstance Win32_VideoController | Select-Object -ExpandProperty PNPDeviceID"
+      ]
+    },
+    {
+      "pid": 22236,
+      "created": 1793183908.6318843,
+      "exe": "C:\\Windows\\System32\\conhost.exe",
+      "cmd": [
+        "\\??\\C:\\WINDOWS\\system32\\conhost.exe",
+        "0x4"
+      ]
+    },
+    {
+      "pid": 30996,
+      "created": 1793183909.99622,
+      "exe": "C:\\Program Files\\Docker\\Docker\\resources\\bin\\docker.exe",
+      "cmd": [
+        "C:\\Program Files\\Docker\\Docker\\resources\\bin\\docker.exe",
+        "info",
+        "--format",
+        "{{.ServerVersion}}{{range .SecurityOptions}} {{.}}{{end}}"
+      ]
+    },
+    {
+      "pid": 50672,
+      "created": 1793183910.0018399,
+      "exe": "C:\\Windows\\System32\\conhost.exe",
+      "cmd": [
+        "\\??\\C:\\WINDOWS\\system32\\conhost.exe",
+        "0x4"
+      ]
+    },
+    {
+      "pid": 31236,
+      "created": 1793183910.219628,
+      "exe": "D:\\cw\\fp7\\local\\clio-agent\\data\\app\\clio-agent\\.venv\\Lib\\site-packages\\iowarp_core\\bin\\clio_run.exe",
+      "cmd": [
+        "D:\\cw\\fp7\\local\\clio-agent\\data\\app\\clio-agent\\.venv\\Lib\\site-packages\\iowarp_core\\bin\\clio_run.exe",
+        "stop"
+      ]
+    },
+    {
+      "pid": 11992,
+      "created": 1793183911.8664496,
+      "exe": "C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe",
+      "cmd": [
+        "powershell",
+        "-NoProfile",
+        "-NonInteractive",
+        "-Command",
+        "Get-CimInstance Win32_VideoController | Select-Object -ExpandProperty PNPDeviceID"
+      ]
+    },
+    {
+      "pid": 50576,
+      "created": 1793183911.8713164,
+      "exe": "C:\\Windows\\System32\\conhost.exe",
+      "cmd": [
+        "\\??\\C:\\WINDOWS\\system32\\conhost.exe",
+        "0x4"
+      ]
+    },
+    {
+      "pid": 31952,
+      "created": 1793183912.6715426,
+      "exe": "C:\\Program Files\\Git\\cmd\\git.exe",
+      "cmd": [
+        "git",
+        "-C",
+        "D:\\cw\\fp7\\local\\clio-agent\\data\\app\\clio-agent",
+        "describe",
+        "--exact-match",
+        "--tags",
+        "HEAD"
+      ]
+    },
+    {
+      "pid": 11684,
+      "created": 1793183912.7241695,
+      "exe": "C:\\Program Files\\Git\\cmd\\git.exe",
+      "cmd": [
+        "git",
+        "-C",
+        "D:\\cw\\fp7\\local\\clio-agent\\data\\app\\clio-agent",
+        "rev-parse",
+        "HEAD"
+      ]
+    },
+    {
+      "pid": 27180,
+      "created": 1793183912.7351851,
+      "exe": "C:\\Program Files\\Git\\mingw64\\bin\\git.exe",
+      "cmd": [
+        "git.exe",
+        "-C",
+        "D:\\cw\\fp7\\local\\clio-agent\\data\\app\\clio-agent",
+        "rev-parse",
+        "HEAD"
+      ]
+    },
+    {
+      "pid": 5140,
+      "created": 1793183913.2869687,
+      "exe": "D:\\cw\\fp7\\local\\clio-agent\\data\\app\\clio-agent\\.venv\\Scripts\\python.exe",
+      "cmd": [
+        "D:\\cw\\fp7\\local\\clio-agent\\data\\app\\clio-agent\\.venv\\Scripts\\python.exe",
+        "-c",
+        "import json,sys,types\nrequest=json.load(sys.stdin)\nplatform=types.ModuleType('clio_native_platform')\nsys.modules[platform.__name__]=platform\nexec(request['platform_helper'], platform.__dict__)\ncontroller=types.ModuleType('clio_native_controller')\nexec(request['script'], controller.__dict__)\ntry:\n result=controller.control(request)\n print(result['logs'] if 'logs' in result else controller.MARKER+json.dumps(result))\nexcept (OSError,ValueError,RuntimeError) as error:\n print(str(error), file=sys.stderr); sys.exit(1)\n"
+      ]
+    },
+    {
+      "pid": 52528,
+      "created": 1793183913.291115,
+      "exe": "C:\\Windows\\System32\\conhost.exe",
+      "cmd": [
+        "\\??\\C:\\WINDOWS\\system32\\conhost.exe",
+        "0x4"
+      ]
+    },
+    {
+      "pid": 27708,
+      "created": 1793183913.307453,
+      "exe": "C:\\Python314\\python.exe",
+      "cmd": [
+        "D:\\cw\\fp7\\local\\clio-agent\\data\\app\\clio-agent\\.venv\\Scripts\\python.exe",
+        "-c",
+        "import json,sys,types\nrequest=json.load(sys.stdin)\nplatform=types.ModuleType('clio_native_platform')\nsys.modules[platform.__name__]=platform\nexec(request['platform_helper'], platform.__dict__)\ncontroller=types.ModuleType('clio_native_controller')\nexec(request['script'], controller.__dict__)\ntry:\n result=controller.control(request)\n print(result['logs'] if 'logs' in result else controller.MARKER+json.dumps(result))\nexcept (OSError,ValueError,RuntimeError) as error:\n print(str(error), file=sys.stderr); sys.exit(1)\n"
+      ]
+    },
+    {
+      "pid": 50804,
+      "created": 1793183913.601895,
+      "exe": "D:\\cw\\fp7\\local\\clio-agent\\data\\app\\clio-agent\\.venv\\Scripts\\python.exe",
+      "cmd": [
+        "D:\\cw\\fp7\\local\\clio-agent\\data\\app\\clio-agent\\.venv\\Scripts\\python.exe",
+        "D:\\cw\\r4\\home\\data\\services\\DESKTOP\\searxng\\controller.py",
+        "worker",
+        "D:\\cw\\r4\\home\\data\\services\\DESKTOP\\searxng",
+        "install",
+        "cc71498f-37af-4e4e-8300-f8de0787a847"
+      ]
+    },
+    {
+      "pid": 51096,
+      "created": 1793183913.6107728,
+      "exe": "C:\\Python314\\python.exe",
+      "cmd": [
+        "D:\\cw\\fp7\\local\\clio-agent\\data\\app\\clio-agent\\.venv\\Scripts\\python.exe",
+        "D:\\cw\\r4\\home\\data\\services\\DESKTOP\\searxng\\controller.py",
+        "worker",
+        "D:\\cw\\r4\\home\\data\\services\\DESKTOP\\searxng",
+        "install",
+        "cc71498f-37af-4e4e-8300-f8de0787a847"
+      ]
+    },
+    {
+      "pid": 46776,
+      "created": 1793183913.6195478,
+      "exe": "C:\\Windows\\System32\\conhost.exe",
+      "cmd": [
+        "\\??\\C:\\WINDOWS\\system32\\conhost.exe",
+        "0x4"
+      ]
+    },
+    {
+      "pid": 35392,
+      "created": 1793183914.464668,
+      "exe": "D:\\cw\\fp7\\local\\clio-agent\\data\\app\\clio-agent\\.venv\\Scripts\\python.exe",
+      "cmd": [
+        "D:\\cw\\fp7\\local\\clio-agent\\data\\app\\clio-agent\\.venv\\Scripts\\python.exe",
+        "-c",
+        "import json,sys,types\nrequest=json.load(sys.stdin)\nplatform=types.ModuleType('clio_native_platform')\nsys.modules[platform.__name__]=platform\nexec(request['platform_helper'], platform.__dict__)\ncontroller=types.ModuleType('clio_native_controller')\nexec(request['script'], controller.__dict__)\ntry:\n result=controller.control(request)\n print(result['logs'] if 'logs' in result else controller.MARKER+json.dumps(result))\nexcept (OSError,ValueError,RuntimeError) as error:\n print(str(error), file=sys.stderr); sys.exit(1)\n"
+      ]
+    },
+    {
+      "pid": 21544,
+      "created": 1793183914.4692297,
+      "exe": "C:\\Windows\\System32\\conhost.exe",
+      "cmd": [
+        "\\??\\C:\\WINDOWS\\system32\\conhost.exe",
+        "0x4"
+      ]
+    },
+    {
+      "pid": 10328,
+      "created": 1793183914.4889653,
+      "exe": "C:\\Python314\\python.exe",
+      "cmd": [
+        "D:\\cw\\fp7\\local\\clio-agent\\data\\app\\clio-agent\\.venv\\Scripts\\python.exe",
+        "-c",
+        "import json,sys,types\nrequest=json.load(sys.stdin)\nplatform=types.ModuleType('clio_native_platform')\nsys.modules[platform.__name__]=platform\nexec(request['platform_helper'], platform.__dict__)\ncontroller=types.ModuleType('clio_native_controller')\nexec(request['script'], controller.__dict__)\ntry:\n result=controller.control(request)\n print(result['logs'] if 'logs' in result else controller.MARKER+json.dumps(result))\nexcept (OSError,ValueError,RuntimeError) as error:\n print(str(error), file=sys.stderr); sys.exit(1)\n"
+      ]
+    },
+    {
+      "pid": 48324,
+      "created": 1793183915.866511,
+      "exe": "D:\\cw\\fp7\\local\\clio-agent\\data\\app\\clio-agent\\.venv\\Scripts\\uv.exe",
+      "cmd": [
+        "D:\\cw\\fp7\\local\\clio-agent\\data\\app\\clio-agent\\.venv\\Scripts\\uv.exe",
+        "sync",
+        "--no-config",
+        "--project",
+        "D:\\cw\\r4\\home\\data\\services\\DESKTOP\\searxng\\environment",
+        "--python",
+        "3.12",
+        "--managed-python"
+      ]
+    }
+  ],
+  "forced": [
+    {
+      "pid": 48324,
+      "created": 1793183915.866511,
+      "exe": "D:\\cw\\fp7\\local\\clio-agent\\data\\app\\clio-agent\\.venv\\Scripts\\uv.exe",
+      "cmd": [
+        "D:\\cw\\fp7\\local\\clio-agent\\data\\app\\clio-agent\\.venv\\Scripts\\uv.exe",
+        "sync",
+        "--no-config",
+        "--project",
+        "D:\\cw\\r4\\home\\data\\services\\DESKTOP\\searxng\\environment",
+        "--python",
+        "3.12",
+        "--managed-python"
+      ]
+    }
+  ],
+  "survivors": [],
+  "finished_at": "2026-10-28T10:38:42.338611+00:00"
+}

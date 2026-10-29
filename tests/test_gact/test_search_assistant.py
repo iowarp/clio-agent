@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import asyncio
-import shutil
 import threading
 from pathlib import Path
 from typing import Any
@@ -14,16 +13,14 @@ from fastapi.testclient import TestClient
 
 from clio_agent import conf
 from clio_agent.gact import context
-from clio_agent.gact.agent_blueprint_sources import (
-    refresh_agent_blueprint_source,
-    source_registry_id,
-    upsert_agent_blueprint_source,
-)
-from clio_agent.gact.agents.blueprint_tool_recording import recording_blueprint_tool
 from clio_agent.gact.agents.tool_instrumentation import instrument_tools
+from clio_agent.gact.agents.tool_recording import recording_tool
 from clio_agent.gact.app import build_app
 from clio_agent.gact.routes.workspace_file_read import readable_workspace_file
-from clio_agent.gact.runtime.memory_search import _memory_search_excerpt, _memory_search_response
+from clio_agent.gact.runtime.session_recall_search import (
+    _recall_search_excerpt,
+    _recall_search_response,
+)
 from clio_agent.gact.search_assistant import (
     _active,
     build_clio_search_read_tool,
@@ -31,28 +28,61 @@ from clio_agent.gact.search_assistant import (
     read_search_source,
     search_connected_service,
 )
+from clio_agent.gact.server_boot import process_arc
+from clio_agent.gact.session_store import _replace_session_messages
 from clio_agent.gact.side_sessions import READ_ONLY_SIDE_PROFILE, is_read_only_side_session
 from clio_agent.gact.types import Message, Part
-from tests._marketplace import MARKETPLACE_ROOT
+from tests._plugin_fixtures import custom_marketplace, tools_module
 
 pytestmark = pytest.mark.usefixtures("host_agent_executor")
+
+#: A stand-in for the marketplace's CLIO Search agent: one plugin claiming the
+#: two search tools.
+SEARCH_AGENT_SOURCE = """
+from clio_agent.sdk import Agent
+
+
+class ClioSearch(Agent):
+    id = "clio-search"
+    version = "1.0.0"
+    name = "CLIO Search"
+    role = "a read-only search assistant over the user's connected sources"
+    plugins = Agent.plugins + ["clio-search"]
+"""
+
+
+def _search_marketplace(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+    return custom_marketplace(
+        tmp_path,
+        monkeypatch,
+        plugins={
+            "clio-search": {
+                "files": {
+                    "ai.iowarp.clio/tools/search.py": tools_module(
+                        "clio_search", "clio_search_read"
+                    )
+                }
+            }
+        },
+        agents={"clio_search.py": SEARCH_AGENT_SOURCE},
+    )
 
 
 def test_literal_search_reads_the_corpus_off_the_request_loop(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    from clio_agent.gact.routes import memory
+    from clio_agent.gact.routes import session_recall as memory
 
     app = build_app(sessions_path=tmp_path / "sessions.json", agent=None)
     workspace, _ = _source(app, tmp_path / "data")
-    original = memory._memory_search_response
+    original = memory._recall_search_response
     reader_threads: list[int] = []
 
     def observed_search(*args: Any, **kwargs: Any) -> Any:
         reader_threads.append(threading.get_ident())
         return original(*args, **kwargs)
 
-    monkeypatch.setattr(memory, "_memory_search_response", observed_search)
+    monkeypatch.setattr(memory, "_recall_search_response", observed_search)
 
     @app.get("/__test/thread")
     async def loop_thread() -> dict[str, int]:
@@ -61,7 +91,7 @@ def test_literal_search_reads_the_corpus_off_the_request_loop(
     with TestClient(app) as client:
         loop = client.get("/__test/thread").json()["thread"]
         result = client.get(
-            "/v1/memory/search",
+            "/v1/session-recall/search",
             params={
                 "query": "share a plant",
                 "workspace_id": workspace.id,
@@ -85,12 +115,15 @@ def _message(session_id: str, text: str, *, message_id: str = "msg_match") -> Me
 
 
 def _source(app: FastAPI, root: Path, name: str = "Evidence") -> Any:
+    process_arc(app)
     root.mkdir(exist_ok=True)
     workspace = app.state.workspaces.create(name=name, root_path=str(root))
     session = app.state.sessions.create(workspace_id=workspace.id, title=f"{name} decision")
-    app.state.messages[session.id] = [
-        _message(session.id, "I checked the protocol. Share a plant with the reviewer.")
-    ]
+    _replace_session_messages(
+        app,
+        session.id,
+        [_message(session.id, "I checked the protocol. Share a plant with the reviewer.")],
+    )
     return workspace, session
 
 
@@ -101,11 +134,15 @@ def test_rendered_phrase_beats_common_words_and_excerpt_reaches_later_passage(
     workspace, session = _source(app, tmp_path / "data")
     query = "Share a plant with the reviewer"
     text = "A heading and unrelated context. " * 100 + "Share a **plant** with the reviewer."
-    app.state.messages[session.id] = [
-        _message(session.id, text),
-        _message(session.id, "a reviewer mentioned a protocol", message_id="msg_other"),
-    ]
-    response = _memory_search_response(
+    _replace_session_messages(
+        app,
+        session.id,
+        [
+            _message(session.id, text),
+            _message(session.id, "a reviewer mentioned a protocol", message_id="msg_other"),
+        ],
+    )
+    response = _recall_search_response(
         app, query=query, workspace_id=workspace.id, include_cross_session=True
     )
     hit = response.hits[0]
@@ -113,7 +150,7 @@ def test_rendered_phrase_beats_common_words_and_excerpt_reaches_later_passage(
     assert hit.metadata["exact_phrase"] is True
     assert "Share a **plant** with the reviewer" in hit.text
     assert len(hit.text) <= 486
-    assert "plant" in _memory_search_excerpt(text, ["a", "plant", "reviewer"], max_chars=200)
+    assert "plant" in _recall_search_excerpt(text, ["a", "plant", "reviewer"], max_chars=200)
 
 
 @pytest.mark.asyncio
@@ -121,8 +158,8 @@ async def test_search_crosses_registered_workspaces_and_returns_navigable_source
     tmp_path: Path,
 ) -> None:
     app = await asyncio.to_thread(build_app, sessions_path=tmp_path / "sessions.json", agent=None)
-    first, _ = _source(app, tmp_path / "first", "First")
-    second, session = _source(app, tmp_path / "second", "Second")
+    first, _ = await asyncio.to_thread(_source, app, tmp_path / "first", "First")
+    second, session = await asyncio.to_thread(_source, app, tmp_path / "second", "Second")
     (tmp_path / "second" / "notes.txt").write_text(
         "Intro\nShare a plant with the reviewer.\n", encoding="utf-8"
     )
@@ -156,7 +193,7 @@ async def test_policy_denial_and_partial_content_are_reported(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     app = await asyncio.to_thread(build_app, sessions_path=tmp_path / "sessions.json", agent=None)
-    workspace, _ = _source(app, tmp_path / "data")
+    workspace, _ = await asyncio.to_thread(_source, app, tmp_path / "data")
     config = tmp_path / "data" / ".clio" / "config.yaml"
     config.parent.mkdir(exist_ok=True)
     config.write_text("private_key: secret-token\n", encoding="utf-8")
@@ -216,17 +253,11 @@ def test_search_tools_require_server_owned_read_only_profile(tmp_path: Path) -> 
         context.reset(app_token)
 
 
-@pytest.mark.marketplace
-def test_explicit_search_blueprint_activation_inherits_model_without_copying_parent(
+def test_search_session_runs_the_search_agent_and_inherits_model_without_copying_parent(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    source = tmp_path / "blueprint"
-    original = MARKETPLACE_ROOT / "clio-search"
-    shutil.copytree(original, source)
-    source_id = source_registry_id(str(source))
-    row = refresh_agent_blueprint_source({"id": source_id, "source": str(source), "name": "Search"})
-    upsert_agent_blueprint_source(row)
+    _search_marketplace(tmp_path, monkeypatch)
     app = build_app(sessions_path=tmp_path / "sessions.json", agent=None)
     parent = app.state.sessions.create(
         workspace_id="ws_default",
@@ -245,7 +276,11 @@ def test_explicit_search_blueprint_activation_inherits_model_without_copying_par
         assert opened.model == parent.model
         assert opened.parent_session_id == ""
         assert opened.metadata["search_session"]["ephemeral"]
-        assert opened.metadata["active_agent_blueprint_id"] == "clio-search"
+        assert opened.metadata["agent_ref"] == "clio/clio-search"
+        assert opened.agent["id"] == "clio-search"
+        pinned = client.get(f"/v1/sessions/{opened.id}/agent").json()["resolution"]
+        assert "clio-search" in [row["id"] for row in pinned["plugins"]]
+        assert {"clio_search", "clio_search_read"} <= set(pinned["tool_names"])
         assert not app.state.messages.get(opened.id)
         assert app.state.messages[parent.id][0].parts[0].text == "This stays in the parent"
         assert client.delete(f"/v1/sessions/{opened.id}").status_code in {200, 204}
@@ -279,28 +314,55 @@ def test_explicit_search_blueprint_activation_inherits_model_without_copying_par
         assert denied.status_code == 403
 
 
+def test_search_session_without_the_search_agent_is_a_typed_422(tmp_path: Path) -> None:
+    """The hermetic default marketplace ships no ``clio-search`` agent."""
+
+    with TestClient(build_app(sessions_path=tmp_path / "sessions.json", agent=None)) as client:
+        before = {row["id"] for row in client.get("/v1/sessions").json()["sessions"]}
+        response = client.post("/v1/search/sessions", json={"workspace_id": "ws_default"})
+        assert response.status_code == 422, response.text
+        error = response.json()["error"]
+        assert error["error"] == "agent_unavailable"
+        assert error["details"]["agent_ref"] == "clio/clio-search"
+        assert error["details"]["reason"] == "agent_not_installed"
+        after = {row["id"] for row in client.get("/v1/sessions").json()["sessions"]}
+        assert after == before
+
+
 @pytest.mark.asyncio
 async def test_native_tools_read_real_sources_and_global_search_omits_ephemeral_chats(
     tmp_path: Path,
 ) -> None:
     app = await asyncio.to_thread(build_app, sessions_path=tmp_path / "sessions.json", agent=None)
-    workspace, session = _source(app, tmp_path / "data")
+    workspace, session = await asyncio.to_thread(_source, app, tmp_path / "data")
     (tmp_path / "data" / "notes.txt").write_text("Evidence from the file", encoding="utf-8")
-    side = app.state.sessions.create(
+    side = await asyncio.to_thread(
+        app.state.sessions.create,
         workspace_id=workspace.id,
         metadata={"search_session": {"ephemeral": True}, "side_session": {"ephemeral": True}},
         approval_profile=READ_ONLY_SIDE_PROFILE,
     )
-    app.state.messages[side.id] = [_message(side.id, "Share a plant with the reviewer.")]
-    app.state.sessions.create(workspace_id=workspace.id, metadata={"side_session": "legacy marker"})
-    hits = _memory_search_response(app, query="share a plant", include_cross_session=True)
+    await asyncio.to_thread(
+        _replace_session_messages,
+        app,
+        side.id,
+        [_message(side.id, "Share a plant with the reviewer.")],
+    )
+    await asyncio.to_thread(
+        app.state.sessions.create,
+        workspace_id=workspace.id,
+        metadata={"side_session": "legacy marker"},
+    )
+    hits = await asyncio.to_thread(
+        _recall_search_response, app, query="share a plant", include_cross_session=True
+    )
     assert side.id not in {hit.session_id for hit in hits.hits}
     app_token, session_token = context.set_app(app), context.set_session_id(side.id)
     try:
         search_tool, read_tool = instrument_tools(
             [
-                recording_blueprint_tool(build_clio_search_tool()),
-                recording_blueprint_tool(build_clio_search_read_tool()),
+                recording_tool(build_clio_search_tool()),
+                recording_tool(build_clio_search_read_tool()),
             ]
         )
 

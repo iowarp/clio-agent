@@ -21,14 +21,10 @@ disclosure would be a dead end for them: they get the resolved skill *bodies*
 compiled into their prompt (:func:`skill_bodies_context`) — the declaration is
 explicit and per-expert, so the cost is opted into (declaration-only, §3.6).
 
-**Default-expert auto-declaration** (§3.6): the built-in main agent and the ROOT
-expert of the default registry blueprint auto-declare workspace and built-in skills
-(:func:`effective_declared_skills`) so user-authored skills work in plain
-chat without editing the blueprint.
-
-Resolution here is workspace-correct: the catalog is built with the session's
-workspace cwd (via ``resolution._runtime_workspace_catalog_cwd``) and the
-declaring expert's own pack root, mirroring how the agent rows were loaded.
+An agent's skills are exactly the skills its resolved plugins ship
+(``AgentDef.skills``, with each plugin's ``skills/`` folder in
+``metadata["skill_folders"]``), plus the generated A2UI catalog skills when the
+agent can produce surfaces. Nothing else is declared implicitly.
 """
 
 from __future__ import annotations
@@ -57,10 +53,8 @@ if TYPE_CHECKING:
 
     from clio_agent.gact.types import AgentDef
 
-#: Declaring any of these tools (or being a root agent, per ``auto_tools.py``'s
-#: root compatibility) auto-declares this session's producible A2UI catalog
-#: skills (S4) -- an expert should never need to also spell out
-#: ``skills: [a2ui-catalog-...]`` just to use the tool it already declared.
+#: An agent with any of these tools gets this session's producible A2UI catalog
+#: skills (S4), so a plugin never spells out ``a2ui-catalog-...`` skill ids.
 _A2UI_PRODUCER_TOOL_NAMES = frozenset(
     {
         "create_a2ui_surface",
@@ -110,24 +104,11 @@ def skill_runtime_spawns_subagents(runtime: SkillRuntime) -> bool:
     return False
 
 
-def agent_pack_root(agent_def: "AgentDef") -> Path | None:
-    """The declaring expert's pack/blueprint root (for pack-local skills)."""
+def plugin_skill_folders(agent_def: "AgentDef") -> list[tuple[str, str]]:
+    """``(plugin id, skills folder)`` pairs recorded on a resolved agent."""
 
     meta = agent_def.metadata if isinstance(agent_def.metadata, dict) else {}
-    for key in ("agent_blueprint_definition_path", "pack_definition_path"):
-        raw = str(meta.get(key) or "").strip()
-        if raw:
-            path = Path(raw)
-            # definition paths point at the manifest .md file; a bare directory
-            # (even one with a dot in its name) stays as-is.
-            return path.parent if path.suffix.lower() == ".md" or path.is_file() else path
-    return None
-
-
-def _is_root_agent(agent_def: "AgentDef") -> bool:
-    """Root-compatibility check mirroring ``auto_tools.py``'s own gate."""
-
-    return not (agent_def.parent_id or "")
+    return [(str(plugin), str(folder)) for plugin, folder in meta.get("skill_folders") or []]
 
 
 def _declares_a2ui_producer_tool(agent_def: "AgentDef") -> bool:
@@ -158,73 +139,13 @@ def effective_declared_skills(
     app: "FastAPI | None" = None,
     session_id: str = "",
 ) -> list[str]:
-    """The expert's declared skill ids — plus, for a built-in main or default-registry
-    ROOT expert, every workspace and built-in skill (auto-declaration, §3.6), so
-    user-authored skills work in plain chat -- plus, for any expert that
-    declares a producer tool or is itself a root agent (S4), this session's
-    producible A2UI catalog skill ids and matching presentation procedures
-    (``app``/``session_id`` unavailable — e.g. an app-less rebuild — contributes
-    no automatic catalog capabilities). Declared producer children get shared
-    presentation/review skills; dashboard publishers also get authoring guidance."""
+    """The agent's plugin skills, plus this session's producible A2UI catalog
+    skills when the agent can produce surfaces (S4). An app-less rebuild
+    contributes no catalog skills."""
 
     declared = [str(s).strip() for s in agent_def.skills if str(s).strip()]
-    meta = agent_def.metadata if isinstance(agent_def.metadata, dict) else {}
-    # The EXECUTING seam (load_agent_blueprints via
-    # _runtime_active_agent_blueprint_rows, reached only for a session's
-    # EXPLICITLY activated blueprint) stamps agent_blueprint_id/
-    # agent_blueprint_root_expert. The former parallel "listing seam" stamp
-    # (metadata["source_blueprint"] == "default_registry") is deleted along with
-    # its only producer, catalog._builtin_agents()'s implicit default-registry
-    # load (no session ever activated it, so it never earned auto-declaration).
-    from clio_agent.gact.agent_blueprints import DEFAULT_AGENT_BLUEPRINT_ID  # noqa: PLC0415
-
-    is_root = not (agent_def.parent_id or "") or (
-        str(meta.get("agent_blueprint_root_expert") or "") == agent_def.id
-    )
-    is_default = str(meta.get("agent_blueprint_id") or "") == DEFAULT_AGENT_BLUEPRINT_ID
-    is_default_root = is_default and is_root
-    is_builtin_root = is_root and str(meta.get("definition_kind") or "") == "builtin_main"
-    wants_a2ui_catalogs = _declares_a2ui_producer_tool(agent_def) or _is_root_agent(agent_def)
-    if is_default_root or is_builtin_root:
-        # Auto-declare the user's workspace skills first (so they lead the surface), then
-        # clio's shipped built-in skills. Plain chat discovers installed procedures by
-        # metadata, without a skill-name allowlist in code or the default prompt.
-        # Built-ins are appended AFTER workspace so a user skill of the same id
-        # (which shadows the built-in in resolution) also leads it in the declared list.
-        discovered = catalog.discover()
-        for wanted_scope in ("workspace", "builtin"):
-            for ref in discovered:
-                if (
-                    ref.scope == wanted_scope
-                    and ref.layout != "unreadable"
-                    and ref.id not in declared
-                ):
-                    declared.append(ref.id)
-    catalog_skill_ids: list[str] = []
-    # Agents that already declare source setup share the NDP procedure, while
-    # retaining curated specialist boundaries and normal workspace overrides.
-    if "connect-data" in declared and "work-with-ndp" not in declared:
-        if catalog.resolve("work-with-ndp").status == "resolved":
-            declared.append("work-with-ndp")
-    if app is not None and session_id and wants_a2ui_catalogs:
-        catalog_skill_ids = _producible_a2ui_catalog_skill_ids(catalog)
-        for skill_id in catalog_skill_ids:
-            if skill_id not in declared:
-                declared.append(skill_id)
-    automatic_producer = _is_root_agent(agent_def) and bool(catalog_skill_ids)
-    if _declares_a2ui_producer_tool(agent_def) or automatic_producer:
-        # Automatic producer roots and explicitly curated producer children need
-        # the same presentation/review procedures. Catalog shapes alone do not
-        # teach composition or pixel review. Resolve the shared built-ins normally
-        # so pack/workspace overrides retain precedence; never copy their bodies.
-        presentation_skills = [
-            "present-interactive-analysis",
-            "review-visual-presentation",
-            "create-diagram",
-        ]
-        if automatic_producer or "publish_dashboard_report" in agent_def.tools:
-            presentation_skills.append("create-dashboard")
-        for skill_id in presentation_skills:
+    if app is not None and session_id and _declares_a2ui_producer_tool(agent_def):
+        for skill_id in _producible_a2ui_catalog_skill_ids(catalog):
             if skill_id not in declared:
                 declared.append(skill_id)
     return declared
@@ -258,16 +179,29 @@ def skill_runtime_for_agent(
         trace.event("SKILLS", "app-less skill resolution for %s uses process cwd", aid or "?")
     catalog_app = app if has_state else None
     catalog_session_id = session_id if has_state else ""
-    catalog = SkillCatalog(cwd=cwd, app=catalog_app, session_id=catalog_session_id)
+    catalog = SkillCatalog(
+        cwd=cwd,
+        app=catalog_app,
+        session_id=catalog_session_id,
+        plugin_skills=plugin_skill_folders(agent_def),
+    )
     declared = effective_declared_skills(
         agent_def, catalog, app=catalog_app, session_id=catalog_session_id
     )
     if not declared:
         return SkillRuntime()
-    resolutions = catalog.resolve_declared(declared, pack_root=agent_pack_root(agent_def))
+    resolutions = catalog.resolve_declared(declared)
     runtime = SkillRuntime(resolutions=resolutions)
-    runtime.prompt_block = skills_prompt_block(runtime)
-    runtime.bodies_block = skill_bodies_context(runtime)
+    # After a plugin change applied as a note, the prompt keeps listing the skills
+    # the model's cached prompt has (``prompt_skills``); the added ones still load.
+    shown = agent_def.metadata.get("prompt_skills")
+    listed = (
+        runtime
+        if shown is None
+        else SkillRuntime(resolutions={k: v for k, v in resolutions.items() if k in set(shown)})
+    )
+    runtime.prompt_block = skills_prompt_block(listed)
+    runtime.bodies_block = skill_bodies_context(listed)
     if aid:
         per_app_dict("skill_runtime_cache", app=app)[aid] = runtime
     for skill_id, res in resolutions.items():
@@ -302,8 +236,12 @@ def skills_prompt_block(runtime: SkillRuntime) -> str:
         EFFECT_SPAWN_SUBAGENT,
         parse_skill_effect,
     )
+    from clio_agent.gact.memory.turn_use import note_skill  # noqa: PLC0415
 
     for skill_id, res in resolved.items():
+        note_skill(
+            "loaded", skill_id, str(res.skill.source or res.skill.scope) if res.skill else ""
+        )
         if res.skill is None:
             continue
         effect = parse_skill_effect(res.skill.meta)
@@ -479,6 +417,9 @@ def build_load_skill_tool(agent_def: "AgentDef", runtime: SkillRuntime) -> Any:
             if app is None or not sid:
                 trace.event("SKILLS", "skill.loaded outside app/session: %s %s", skill_id, ref.path)
                 return
+            from clio_agent.gact.memory.turn_use import note_skill  # noqa: PLC0415
+
+            note_skill("read", skill_id, str(ref.source or ref.scope))
             payload: dict[str, Any] = {
                 "skill_id": skill_id,
                 "scope": ref.scope,
@@ -690,6 +631,7 @@ def build_load_skill_tool(agent_def: "AgentDef", runtime: SkillRuntime) -> Any:
     return native_tool(
         load_skill,
         name="load_skill",
+        read_only=True,
         presentation=present_skill,
         presentation_start=starting_skill,
         domain="skills",

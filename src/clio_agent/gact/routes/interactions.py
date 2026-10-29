@@ -229,9 +229,19 @@ def _a2ui_interactions(
         surfaces, quarantined = app.state.a2ui_store.list_wire_with_degradations(owner)
     except ClioError as error:
         return [], [{"reason": error.error_type, "owner_session_id": owner, "detail": str(error)}]
+    # The store's quarantine rows are ``{code, reason}``; this route's rows are
+    # ``{reason, detail}`` like every other degradation it returns.
+    quarantined = [
+        {
+            **row,
+            "reason": str(row.get("code") or row.get("reason")),
+            "detail": str(row.get("reason")),
+        }
+        for row in quarantined
+    ]
     rows: list[PendingInteraction] = []
     if not surfaces:
-        return rows, list(quarantined)
+        return rows, quarantined
     question_surfaces = question_surface_ids(app, owner)
     owner_task_id = _task_id_for_owner(app, owner)
     owner_attended = attended_session_id(app, owner)
@@ -371,7 +381,11 @@ def _question_interaction(app: FastAPI, question: UserQuestion) -> PendingIntera
                 if isinstance(bundle, dict)
                 else {}
             ),
-            **(plan_exit_payload(question) if is_plan_exit_question(question) else {}),
+            **(
+                {"plan_exit": plan_exit_payload(question)}
+                if is_plan_exit_question(question)
+                else {}
+            ),
             "task_handle": question.task_handle,
             "response_mode": question.response_mode,
         },
@@ -392,8 +406,12 @@ def project_pending_interactions(
     caller = TaskCaller(root_session_id, app.state.human_principal, human_action=True)
     access = TaskAccess(history, caller)
     owners = _session_scope(app, root_session_id, include_children)
-    handles = set().union(*(history.session_handles(owner) for owner in owners))
-    handles.intersection_update(history.task_handles(kind="Question", human_id=caller.human_id))
+    handles = set().union(
+        *(
+            history.task_handles(kind="Question", human_id=caller.human_id, session_id=owner)
+            for owner in owners
+        )
+    )
     pending: list[PendingInteraction] = []
     resolved: list[PendingInteraction] = []
     degradations: list[dict[str, str]] = []
@@ -406,6 +424,9 @@ def project_pending_interactions(
                     if task.details is None
                     else "question_posting_unconfirmed",
                     "owner_session_id": task.owner.session_id,
+                    "detail": f"A question in {task.owner.session_id} is not listed until its "
+                    + ("content" if task.details is None else "posting")
+                    + " is confirmed.",
                 }
             )
             continue
@@ -436,7 +457,13 @@ def project_pending_interactions(
         pending.extend(resolved[:resolved_limit])
     pending.sort(key=lambda row: (row.created_at, row.id), reverse=True)
     if limit > 0 and len(pending) > limit:
-        degradations.append({"reason": "projection_limit", "owner_session_id": root_session_id})
+        degradations.append(
+            {
+                "reason": "projection_limit",
+                "owner_session_id": root_session_id,
+                "detail": f"Showing the newest {limit} of {len(pending)} interactions.",
+            }
+        )
         pending = pending[:limit]
     return InteractionProjection(_stamp_request_sequence(pending), degradations)
 

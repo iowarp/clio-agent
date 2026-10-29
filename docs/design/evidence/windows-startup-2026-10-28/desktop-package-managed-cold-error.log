@@ -1,0 +1,51 @@
+Runtime installation failed.
+
+Error: managed Python/Node/Office package installation failed (exit code: 1): Traceback (most recent call last):
+  File "D:\CLIO-Desktop-095\data\bundled-runtime\gact-runtime\python\Lib\site-packages\clio_agent\runtime\document_stack\process.py", line 111, in run
+    stdout, stderr = process.communicate(timeout=timeout)
+                     ~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^
+  File "D:\CLIO-Desktop-095\data\bundled-runtime\gact-runtime\python\Lib\subprocess.py", line 1221, in communicate
+    stdout, stderr = self._communicate(input, endtime, timeout)
+                     ~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "D:\CLIO-Desktop-095\data\bundled-runtime\gact-runtime\python\Lib\subprocess.py", line 1664, in _communicate
+    raise TimeoutExpired(self.args, orig_timeout)
+subprocess.TimeoutExpired: Command '['D:\\CLIO-Desktop-095\\data\\clio-agent\\cache\\document-office\\office-extract-mlyxtxm2\\image\\program\\soffice.com', '--version']' timed out after 30 seconds
+
+The above exception was the direct cause of the following exception:
+
+Traceback (most recent call last):
+  File "<frozen runpy>", line 203, in _run_module_as_main
+  File "<frozen runpy>", line 88, in _run_code
+  File "D:\CLIO-Desktop-095\data\bundled-runtime\gact-runtime\python\Lib\site-packages\clio_agent\runtime\document_install.py", line 199, in <module>
+    main()
+    ~~~~^^
+  File "D:\CLIO-Desktop-095\data\bundled-runtime\gact-runtime\python\Lib\site-packages\clio_agent\runtime\document_install.py", line 161, in main
+    result = install_document_runtime(
+        args.workspace,
+    ...<2 lines>...
+        reuse_installed=args.reuse_installed,
+    )
+  File "D:\CLIO-Desktop-095\data\bundled-runtime\gact-runtime\python\Lib\site-packages\clio_agent\runtime\document_install.py", line 78, in install_document_runtime
+    office = office_job.result()
+  File "D:\CLIO-Desktop-095\data\bundled-runtime\gact-runtime\python\Lib\concurrent\futures\_base.py", line 454, in result
+    return self.__get_result()
+           ~~~~~~~~~~~~~~~~~^^
+  File "D:\CLIO-Desktop-095\data\bundled-runtime\gact-runtime\python\Lib\concurrent\futures\_base.py", line 396, in __get_result
+    raise self._exception
+  File "D:\CLIO-Desktop-095\data\bundled-runtime\gact-runtime\python\Lib\concurrent\futures\thread.py", line 86, in run
+    result = ctx.run(self.task)
+  File "D:\CLIO-Desktop-095\data\bundled-runtime\gact-runtime\python\Lib\concurrent\futures\thread.py", line 73, in run
+    return fn(*args, **kwargs)
+  File "D:\CLIO-Desktop-095\data\bundled-runtime\gact-runtime\python\Lib\site-packages\clio_agent\runtime\document_install.py", line 50, in prepare_office
+    office = prepare_office_runtime()
+  File "D:\CLIO-Desktop-095\data\bundled-runtime\gact-runtime\python\Lib\site-packages\clio_agent\runtime\document_runtime.py", line 499, in prepare_office_runtime
+    return ensure_office(managed_root)
+  File "D:\CLIO-Desktop-095\data\bundled-runtime\gact-runtime\python\Lib\site-packages\clio_agent\runtime\document_stack\office.py", line 298, in ensure_office
+    run([str(candidate), "--version"], cwd=image, timeout=30)
+    ~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "D:\CLIO-Desktop-095\data\bundled-runtime\gact-runtime\python\Lib\site-packages\clio_agent\runtime\document_stack\process.py", line 126, in run
+    raise DocumentError(f"{Path(command[0]).name} exceeded {timeout:g} seconds") from exc
+clio_agent.runtime.document_stack.process.DocumentError: soffice.com exceeded 30 seconds
+
+
+Please open an issue at https://github.com/iowarp/clio-agent/issues/new and attach this file.

@@ -31,7 +31,7 @@ def initialize_a2ui_store(app: FastAPI, state_root: Path) -> None:
     )
     # The registry (docs/design/a2ui-compat-campaign-2026-09.md S2) is the
     # ONE new app.state store this slice adds: builtin catalogs load once here;
-    # blueprint-declared pack catalogs are discovered live on every lookup.
+    # plugin-declared catalogs are discovered live on every lookup.
     app.state.a2ui_catalogs = CatalogRegistry()
     app.state.a2ui_store = A2UIStore(app=app, bus=app.state.bus)
 

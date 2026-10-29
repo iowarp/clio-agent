@@ -33,6 +33,7 @@ from clio_agent.gact import context as ctx
 from clio_agent.gact.compaction import AutoCompactionGuard, maybe_autocompact
 from clio_agent.gact.sessions import Session
 from clio_agent.gact.types import Message, Part, Tokens
+from tests._turn_ledger import turn_with_calls
 
 SID, SCOPE = "s1", "agentA"
 
@@ -295,35 +296,22 @@ def test_last_prompt_tokens_falls_back_to_token_counter(monkeypatch):
     vLLM endpoint returns prompt_tokens:0), _last_prompt_tokens must fall back to a
     client-side token_counter over the last call's real messages — else
     auto-compaction never fires in production. Uses tiktoken offline (no network)."""
-    fake_lm = type(
-        "FakeLM",
-        (),
-        {
-            "model": "gpt-3.5-turbo",  # tiktoken-native => offline count
-            "history": [{"messages": [{"role": "user", "content": "the quick brown fox " * 30}]}],
-        },
-    )()
-    with dspy.context(lm=fake_lm):
-        # no usage_tracker installed -> must use the history/token_counter fallback
+    fake_lm = type("FakeLM", (), {"model": "gpt-3.5-turbo"})()  # tiktoken-native => offline
+    call = {"messages": [{"role": "user", "content": "the quick brown fox " * 30}]}
+    with dspy.context(lm=fake_lm), turn_with_calls([call]):
+        # no usage_tracker installed -> must use the last call/token_counter fallback
         n = app._last_prompt_tokens()
     assert n > 0, "fallback failed: a non-empty prompt must count > 0 tokens"
 
 
-def test_last_prompt_tokens_fallback_when_tracker_reports_zero(monkeypatch):
+def test_last_prompt_tokens_fallback_when_tracker_reports_zero() -> None:
     """Even with a usage tracker present, a 0 prompt_tokens must fall back."""
-    fake_lm = type(
-        "FakeLM",
-        (),
-        {
-            "model": "gpt-3.5-turbo",
-            "history": [{"messages": [{"role": "user", "content": "hello world " * 25}]}],
-        },
-    )()
+    fake_lm = type("FakeLM", (), {"model": "gpt-3.5-turbo"})()
+    call = {"messages": [{"role": "user", "content": "hello world " * 25}]}
     fake_tracker = type(
         "FakeTracker", (), {"usage_data": {"gpt-3.5-turbo": [{"prompt_tokens": 0}]}}
     )()
-    with dspy.context(lm=fake_lm):
-        monkeypatch.setattr(dspy.settings, "usage_tracker", fake_tracker, raising=False)
+    with dspy.context(lm=fake_lm, usage_tracker=fake_tracker), turn_with_calls([call]):
         n = app._last_prompt_tokens()
     assert n > 0
 

@@ -62,12 +62,12 @@ from __future__ import annotations
 
 import logging
 from collections import deque
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Callable, Iterator, Mapping, Sequence
+from contextlib import contextmanager
+from contextvars import ContextVar
 from dataclasses import dataclass
 from threading import Lock
 from typing import TYPE_CHECKING, Any
-
-from fastmcp.utilities.tasks import TASKS_EXTENSION_ID
 
 from clio_agent.errors import (
     MCP_TASK_CAPABILITY_UNKNOWN,
@@ -90,10 +90,33 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
+#: A first start connected directly while the server's task capability was unknown.
+MCP_PREPARE_FIRST_START_DIRECT = "mcp_prepare_first_start_direct"
+
+#: Namespaces whose connect in this context is their first start (see
+#: :func:`first_start_direct`).
+_FIRST_START_DIRECT: ContextVar[frozenset[str]] = ContextVar(
+    "clio_mcp_first_start_direct", default=frozenset()
+)
+
+
+@contextmanager
+def first_start_direct(namespace: str) -> Iterator[None]:
+    """Connect ``namespace`` directly in this context when its capability is unknown."""
+
+    token = _FIRST_START_DIRECT.set(_FIRST_START_DIRECT.get() | {namespace})
+    try:
+        yield
+    finally:
+        _FIRST_START_DIRECT.reset(token)
+
+
 __all__ = [
+    "MCP_PREPARE_FIRST_START_DIRECT",
     "NamespaceRouteDecision",
     "capability_cache_fields",
     "direct_client_factory",
+    "first_start_direct",
     "record_definitive_capability",
     "record_namespace_route_decision",
     "record_route_healed",
@@ -120,6 +143,8 @@ def _extensions_declare_tasks(client: Any) -> bool:
     extension advertisement (#1119) still sees the backend's true
     capabilities here, since the server answers unconditionally.
     """
+
+    from fastmcp.utilities.tasks import TASKS_EXTENSION_ID  # noqa: PLC0415 - first use (#702)
 
     capabilities = getattr(client, "server_capabilities", None)
     extensions = getattr(capabilities, "extensions", None) or {}
@@ -244,6 +269,16 @@ def resolve_and_build_direct_client(
     """
 
     route = resolve_namespace_route(namespace)
+    if (
+        not route.use_direct
+        and route.reason == MCP_TASK_CAPABILITY_UNKNOWN
+        and namespace in _FIRST_START_DIRECT.get()
+        and namespace in direct_factories
+    ):
+        # A server's first start (``mcp_prepare``'s launch phase) connects directly: the
+        # one connection both serves calls and reads the server's real capabilities,
+        # so learning them never takes a second start through a heal (B3).
+        route = NamespaceRouteDecision(use_direct=True, reason=MCP_PREPARE_FIRST_START_DIRECT)
     if not route.use_direct:
         return None, route
     factory = direct_factories.get(namespace)

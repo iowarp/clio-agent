@@ -24,12 +24,14 @@ def recorded_presentation(
     from clio_agent.gact.agents.skill_presentation import legacy_skill_presentation
     from clio_agent.gact.ssh_recorded_presentation import legacy_ssh_presentation
     from clio_agent.gact.storage.ndp_recorded_presentation import legacy_ndp_presentation
+    from clio_agent.tools.tool_presentation import legacy_standard_mcp_presentation
 
     return (
         legacy_ssh_presentation(part, args)
         or legacy_ndp_presentation(part, args)
         or legacy_skill_presentation(part, args)
         or legacy_inspection_presentation(part, args)
+        or legacy_standard_mcp_presentation(part)
         or part.get("presentation")
     )
 
@@ -67,7 +69,15 @@ class PresentationBlock(BaseModel):
     pages: list[int] = Field(default_factory=list)
     target: (
         Literal[
-            "artifact", "resource", "session", "url", "file", "work", "surface", "connected_data"
+            "artifact",
+            "resource",
+            "session",
+            "url",
+            "file",
+            "work",
+            "surface",
+            "connected_data",
+            "memory",
         ]
         | None
     ) = None

@@ -16,12 +16,21 @@ import yaml
 
 from clio_agent import paths
 from clio_agent.platform_paths import atomic_write_text
+from clio_agent.tools.mcp_config import _validate_server_name
 
 _CONFIG_LOCK = threading.RLock()
 
 
 class McpUserConfigurationError(ValueError):
     """The durable user MCP configuration could not be read or updated safely."""
+
+
+def validate_user_mcp_server_name(name: str) -> None:
+    """Reject names that cannot form a valid runtime MCP tool namespace."""
+
+    error = _validate_server_name(name)
+    if error is not None:
+        raise McpUserConfigurationError(error)
 
 
 def user_mcp_configuration_path() -> Path:
@@ -40,6 +49,9 @@ def _read_document(path: Path) -> dict[str, Any]:
     if not isinstance(loaded, Mapping):
         raise McpUserConfigurationError(f"{path} must contain a YAML mapping")
     document = dict(loaded)
+    labels = document.get("mcp_service_labels")
+    if labels is not None and not isinstance(labels, Mapping):
+        raise McpUserConfigurationError(f"{path} mcp_service_labels must be a mapping")
     servers = document.get("mcp_servers", {})
     if servers is None:
         document["mcp_servers"] = {}
@@ -59,7 +71,7 @@ def _write_document(path: Path, document: Mapping[str, Any]) -> None:
         sort_keys=False,
     )
     try:
-        atomic_write_text(path, rendered)
+        atomic_write_text(path, rendered, file_mode=0o600)
     except OSError as exc:
         raise McpUserConfigurationError(f"could not write {path}: {exc}") from exc
 
@@ -71,6 +83,17 @@ def get_user_mcp_server(name: str) -> dict[str, Any] | None:
         document = _read_document(user_mcp_configuration_path())
         declaration = document.get("mcp_servers", {}).get(name)
         return dict(declaration) if isinstance(declaration, Mapping) else None
+
+
+def list_user_mcp_servers() -> dict[str, dict[str, Any]]:
+    """Every user-level MCP declaration, by name."""
+
+    with _CONFIG_LOCK:
+        document = _read_document(user_mcp_configuration_path())
+        servers = document.get("mcp_servers", {})
+        return {
+            str(name): dict(value) for name, value in servers.items() if isinstance(value, Mapping)
+        }
 
 
 def mcp_server_arg_value(declaration: Mapping[str, Any] | None, flag: str) -> str:
@@ -95,17 +118,35 @@ def configured_web_remote_url() -> str:
     return mcp_server_arg_value(get_user_mcp_server("web"), "--remote-url")
 
 
-def set_user_mcp_server(name: str, declaration: Mapping[str, Any]) -> dict[str, Any]:
+def set_user_mcp_server(
+    name: str, declaration: Mapping[str, Any], *, label: str | None = None
+) -> dict[str, Any]:
     """Create or replace one named declaration with an atomic file swap."""
 
+    validate_user_mcp_server_name(name)
     with _CONFIG_LOCK:
         path = user_mcp_configuration_path()
         document = _read_document(path)
         servers = dict(document.get("mcp_servers", {}))
         servers[name] = dict(declaration)
         document["mcp_servers"] = servers
+        if label is not None:
+            labels = dict(document.get("mcp_service_labels") or {})
+            labels[name] = label[:120]
+            document["mcp_service_labels"] = labels
         _write_document(path, document)
         return dict(servers[name])
+
+
+def user_mcp_labels() -> dict[str, str]:
+    """Read human names separately from executable transport declarations."""
+    with _CONFIG_LOCK:
+        labels = _read_document(user_mcp_configuration_path()).get("mcp_service_labels") or {}
+        return (
+            {str(key): value for key, value in labels.items() if isinstance(value, str)}
+            if isinstance(labels, Mapping)
+            else {}
+        )
 
 
 def remove_user_mcp_server(name: str) -> bool:
@@ -119,5 +160,8 @@ def remove_user_mcp_server(name: str) -> bool:
         if not removed:
             return False
         document["mcp_servers"] = servers
+        labels = dict(document.get("mcp_service_labels") or {})
+        labels.pop(name, None)
+        document["mcp_service_labels"] = labels
         _write_document(path, document)
         return True

@@ -99,10 +99,17 @@ async def test_terminal_assignment_recovers_owner_and_subscriber_notices(
     fail_notice = expected[root.owner.session_id] if child else expected["peer"]
     record = history._record
 
-    def fail_mail(event: str, sid: str, identity: str, payload: dict[str, Any]) -> None:
+    def fail_mail(
+        event: str,
+        sid: str,
+        identity: str,
+        payload: dict[str, Any],
+        *,
+        lane: dict[str, Any] | None = None,
+    ) -> None:
         if event == "session.mail.accepted" and identity == fail_notice:
             raise OSError("Core failed after assignment terminal persistence")
-        record(event, sid, identity, payload)
+        record(event, sid, identity, payload, lane=lane)
 
     async def finish() -> None:
         if deferred:

@@ -34,6 +34,7 @@ from clio_agent.gact.resource_lifecycle import refresh_processing
 from clio_agent.gact.resource_materialization import materialize_once
 from clio_agent.gact.resource_processing import resource_processing_task_id
 from clio_agent.gact.resource_processing_bounds import processing_poll_interval_s
+from clio_agent.runtime.fresh_loop import run_in_new_loop
 
 if TYPE_CHECKING:
     from fastapi import FastAPI
@@ -462,7 +463,7 @@ def build_resource_tools(agent_def: "AgentDef") -> list[Any]:
     def resource_wait(task_id: str, timeout_s: float) -> dict[str, Any]:
         app, workspace_id = active()
         started = time.perf_counter()
-        result = asyncio.run(
+        result = run_in_new_loop(
             wait_for_workspace_resource_processing(app, workspace_id, task_id, timeout_s)
         )
         return {
@@ -504,7 +505,7 @@ def build_resource_tools(agent_def: "AgentDef") -> list[Any]:
             name="workspace_resource_inspect",
             presentation="resource",
             domain="resources",
-            title="Inspect",
+            title="Inspect resource",
             representation="row",
             desc=(
                 "Inspect one uploaded resource without reading its bytes. Returns custody, "
@@ -543,7 +544,7 @@ def build_resource_tools(agent_def: "AgentDef") -> list[Any]:
             name="workspace_resource_read",
             presentation="resource",
             domain="resources",
-            title="Read",
+            title="Read resource",
             representation="row",
             desc=(
                 "Read a bounded textual upload or named Docling textual derivative. Use this "
@@ -566,7 +567,7 @@ def build_resource_tools(agent_def: "AgentDef") -> list[Any]:
             name="workspace_resource_search",
             presentation="resource",
             domain="resources",
-            title="Search",
+            title="Search resource",
             representation="row",
             desc=(
                 "Search bounded original text or a named Docling textual derivative. Use "

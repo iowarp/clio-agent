@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import base64
+import io
 import json
 from collections.abc import Iterator
 from pathlib import Path
@@ -22,6 +23,7 @@ from dspy.lm15 import (
     Usage,
     response_to_events,
 )
+from pypdf import PdfWriter
 
 from clio_agent.gact import context as gact_context
 from clio_agent.gact.agents.clio_react import ClioReAct
@@ -32,11 +34,19 @@ from clio_agent.providers.codex.file_inputs import (
     DocumentInputRecovery,
 )
 from clio_agent.tools.execution import tool_workspace_context
-from tests.test_gact.test_view_pdf_tool import _make_pdf
 from tests.test_providers import test_codex_direct_engine as base
 
 harness = base.harness
 loop_scope = base.loop_scope
+
+
+def _make_pdf(page_count: int) -> bytes:
+    writer = PdfWriter()
+    for _ in range(page_count):
+        writer.add_blank_page(width=72, height=72)
+    buffer = io.BytesIO()
+    writer.write(buffer)
+    return buffer.getvalue()
 
 
 def _document(content: bytes = b"test PDF") -> DocumentPart:

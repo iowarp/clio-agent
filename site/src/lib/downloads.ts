@@ -4,17 +4,15 @@
  * Pure functions only: the browser island fetches the release and calls
  * these, and the unit tests feed them real asset names.
  *
- * Release assets come in two variants. A "bundled" installer embeds the CLIO
- * backend and runs on its own; its name carries `-bundled` just before the
- * extension. A "lite" installer is attach-only and connects to a CLIO backend
- * installed separately. Some platforms ship only lite builds (Intel macOS,
- * Windows on ARM, every AppImage).
+ * Only "bundled" installers are offered: they embed the CLIO backend and run
+ * on their own, and their names carry `-bundled` just before the extension.
+ * The release also carries attach-only ("lite") builds, which the desktop's
+ * updater uses; they are not offered as downloads.
  */
 
 export type OS = 'windows' | 'macos' | 'linux';
 export type Arch = 'x64' | 'arm64';
-export type Variant = 'bundled' | 'lite';
-export type Format = 'exe' | 'msi' | 'dmg' | 'deb' | 'rpm' | 'appimage';
+export type Format = 'exe' | 'msi' | 'dmg' | 'deb' | 'rpm';
 
 /** The subset of a GitHub release asset the resolver reads. */
 export interface ReleaseAsset {
@@ -22,11 +20,10 @@ export interface ReleaseAsset {
 	browser_download_url: string;
 }
 
-/** A resolved download: the asset URL and which variant it is. */
+/** A resolved download. */
 export interface PickedAsset {
 	url: string;
 	name: string;
-	variant: Variant;
 }
 
 /** The page every download control falls back to when no asset matches. */
@@ -46,7 +43,6 @@ const EXTENSIONS: Record<Format, string> = {
 	dmg: '.dmg',
 	deb: '.deb',
 	rpm: '.rpm',
-	appimage: '.appimage',
 };
 
 const ARCH_TOKENS: Record<Arch, readonly string[]> = {
@@ -69,12 +65,11 @@ export function archOf(name: string): Arch | null {
 }
 
 /**
- * Pick the best desktop installer of `format` for `arch`.
+ * Pick the bundled desktop installer of `format` for `arch`.
  *
- * A bundled build is preferred over a lite one. An asset built for a
- * different architecture is never returned: an Apple Silicon disk image
- * handed to an Intel Mac does not run. Asset names that carry no
- * architecture are treated as universal.
+ * An asset built for a different architecture is never returned: an Apple
+ * Silicon disk image handed to an Intel Mac does not run. Asset names that
+ * carry no architecture are treated as universal.
  *
  * @returns the asset, or null when the release has nothing that fits.
  */
@@ -82,25 +77,16 @@ export function pickAsset(assets: readonly ReleaseAsset[], format: Format, arch:
 	const ext = EXTENSIONS[format];
 	const fits = assets.filter((asset) => {
 		const name = asset.name.toLowerCase();
-		if (!DESKTOP_ASSET_RE.test(asset.name) || !name.endsWith(ext)) return false;
+		if (!DESKTOP_ASSET_RE.test(asset.name) || !name.endsWith(ext) || !isBundled(asset.name)) return false;
 		const target = archOf(asset.name);
 		return target === null || target === arch;
 	});
-	const pick = fits.find((a) => isBundled(a.name)) ?? fits[0];
-	if (!pick) return null;
-	return {
-		url: pick.browser_download_url,
-		name: pick.name,
-		variant: isBundled(pick.name) ? 'bundled' : 'lite',
-	};
+	const pick = fits[0];
+	return pick ? { url: pick.browser_download_url, name: pick.name } : null;
 }
 
-/** One-line description of what a variant needs, shown under the button. */
-export function variantNote(variant: Variant): string {
-	return variant === 'bundled'
-		? 'Includes the CLIO backend. Nothing else to install.'
-		: 'Connects to a CLIO backend you install separately.';
-}
+/** One line under a download button. */
+export const DOWNLOAD_NOTE = 'Includes the CLIO backend. Nothing else to install.';
 
 /** Navigator fields the platform detection reads. */
 export interface NavigatorHints {
@@ -125,8 +111,8 @@ export function detectOS(hints: NavigatorHints): OS | null {
  *
  * Browsers rarely report it. Client hints are used when present; otherwise
  * a Mac is assumed to be Apple Silicon (Safari reports "Intel" on every Mac)
- * and everything else x64. The macOS card always offers both disk images, so
- * a wrong guess there costs one click.
+ * and everything else x64. The macOS card names its disk image Apple Silicon,
+ * so a wrong guess there stays visible.
  */
 export function detectArch(os: OS | null, hints: NavigatorHints): Arch {
 	const hint = (hints.architecture ?? '').toLowerCase();
@@ -153,6 +139,8 @@ export interface PlatformDownloads {
 	summary: string;
 	primary: DownloadChoice;
 	others: readonly DownloadChoice[];
+	/** Shown in place of the other formats when a platform has none. */
+	alternative?: { text: string; link: string; href: string };
 }
 
 /** The three platform cards, in default order. */
@@ -160,25 +148,23 @@ export const PLATFORMS: readonly PlatformDownloads[] = [
 	{
 		os: 'windows',
 		name: 'Windows',
-		summary: 'Windows 10 and 11, 64-bit',
-		primary: { format: 'exe', label: 'Download installer' },
-		others: [{ format: 'msi', label: '.msi' }],
+		summary: 'Windows 10 and 11 (x64; ARM through emulation)',
+		primary: { format: 'exe', label: 'Download installer', arch: 'x64' },
+		others: [{ format: 'msi', label: '.msi', arch: 'x64' }],
 	},
 	{
 		os: 'macos',
 		name: 'macOS',
-		summary: 'Apple Silicon and Intel',
+		summary: 'Apple Silicon',
 		primary: { format: 'dmg', label: 'Download for Apple Silicon', arch: 'arm64' },
-		others: [{ format: 'dmg', label: 'Intel', arch: 'x64' }],
+		others: [],
+		alternative: { text: 'Intel Mac?', link: 'Install from a terminal', href: '/docs/install/#install-script' },
 	},
 	{
 		os: 'linux',
 		name: 'Linux',
 		summary: 'Debian, Ubuntu, Fedora, and more',
 		primary: { format: 'deb', label: 'Download .deb' },
-		others: [
-			{ format: 'rpm', label: '.rpm' },
-			{ format: 'appimage', label: 'AppImage' },
-		],
+		others: [{ format: 'rpm', label: '.rpm' }],
 	},
 ];

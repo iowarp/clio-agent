@@ -20,7 +20,6 @@ from clio_agent.gact import context as _ctx
 from clio_agent.gact.a2ui import (
     A2UICatalogNotProducibleError,
     A2UICatalogUnknownError,
-    A2UIComponentLimitExceededError,
     A2UIFunctionNotInCatalogError,
     A2UITranscriptFrozenError,
     A2UIValidationError,
@@ -220,14 +219,6 @@ def apply_messages(
             detail=str(exc),
             hint=catalog_hint(app, exc.catalog_id),
         )
-    except A2UIComponentLimitExceededError as exc:
-        app.state.a2ui_catalogs.record_session_reason(
-            session_id,
-            "a2ui_component_limit_exceeded",
-            component_count=exc.component_count,
-            limit=exc.limit,
-        )
-        return refusal("a2ui_component_limit_exceeded", detail=str(exc))
     except A2UIValidationError as exc:
         return refusal(
             "a2ui_validation_failed",

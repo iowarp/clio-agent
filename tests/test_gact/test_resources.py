@@ -13,6 +13,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from clio_agent import paths
+from clio_agent.gact.agents.tool_instrumentation import TITLE_ATTR
 from clio_agent.gact.app import build_app
 from clio_agent.gact.messaging import _dspy_files_from_parts, _dspy_images_from_parts
 from clio_agent.gact.parts import Part
@@ -36,6 +37,7 @@ from clio_agent.gact.resource_processing import (
     resource_processing_task_id,
 )
 from clio_agent.gact.resource_tools import (
+    build_resource_tools,
     inspect_workspace_resource,
     list_workspace_resources,
     read_workspace_resource_structure,
@@ -46,6 +48,15 @@ from clio_agent.gact.resource_tools import (
 from tests.test_gact.test_post_messages import FakeClioAgent
 
 pytestmark = pytest.mark.usefixtures("host_agent_executor")
+
+
+def test_resource_tools_use_object_qualified_catalog_titles() -> None:
+    tools = build_resource_tools(None)  # type: ignore[arg-type]
+    titles = {tool.name: getattr(tool.func, TITLE_ATTR) for tool in tools}
+
+    assert titles["workspace_resource_inspect"] == "Inspect resource"
+    assert titles["workspace_resource_read"] == "Read resource"
+    assert titles["workspace_resource_search"] == "Search resource"
 
 
 def test_document_service_markdown_becomes_a_named_clio_derivative(tmp_path: Path) -> None:

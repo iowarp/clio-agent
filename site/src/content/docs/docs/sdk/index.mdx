@@ -1,0 +1,100 @@
+---
+title: Build agents, plugins and flows
+description: How CLIO agents are made from plugins, what each piece of a plugin does, and how a session turns them into a working agent.
+---
+
+import { Aside, CardGrid, LinkCard, FileTree } from '@astrojs/starlight/components';
+
+You can extend CLIO with your own tools, knowledge, specialists and procedures, and package them so every agent that needs them gets them. The Python SDK, `clio_agent.sdk`, is how you describe them.
+
+<Aside type="caution" title="Development build">
+The SDK described in this section is in the development build. It is not in the published v0.9.5-beta.8 release. See [Features and versions](/docs/versions/).
+</Aside>
+
+## What you can build
+
+- **A plugin** for your lab or your instrument: the tools that read your files, the skills that explain your methods, the specialists who review your results, and the procedures you repeat.
+- **An agent**: a name, a role, and the plugins it carries. CLIO's own agents, such as **CLIO**, **CLIO Science** and **Factorio**, are a few lines each.
+- **A flow**: a procedure written in plain Python, such as "fit every file, have a reviewer check the fits, then ask before writing the report." Every step is tracked, so the procedure survives a restart.
+- **A workflow**: the same kind of procedure written as data, a list of steps and what each waits on. The agent can write one itself.
+
+## The pieces
+
+An agent holds no content of its own. Everything it can do comes from its plugins.
+
+| Piece | What it is | Where it lives |
+|---|---|---|
+| Plugin | A folder that brings a capability: any of the pieces below | `plugins/<id>/` in a marketplace |
+| Pack | A plugin whose only content is a list of other plugins, such as `documents` (PDF, Word, spreadsheets and more) | `plugin.json` |
+| Agent | An id, a name, a role, a list of plugins, and optionally a flow and model requirements | `agents/*.py` in a marketplace |
+| Tool | A Python function the agent can call | `ai.iowarp.clio/tools/*.py` |
+| Tool server | An MCP server whose tools the agent can call | `mcp.json` |
+| Skill | Knowledge the agent loads when a task calls for it | `skills/<name>/SKILL.md` |
+| Prompt fragment | A short piece of the agent's prompt, shown only when it applies | `ai.iowarp.clio/prompt/*.md` |
+| Hook | A Python function that runs on an event, such as before a tool call, and can allow or refuse it | `ai.iowarp.clio/hooks/*.py` |
+| Subagent | A specialist with its own prompt and tools that the agent hands work to | `ai.iowarp.clio/subagents/*.py` |
+| Flow | A procedure in Python that calls tools, subagents and agents | `ai.iowarp.clio/flows/*.py` |
+| Command | A slash command | `ai.iowarp.clio/commands/*.md` |
+| Interactive catalog | Components the session can render | `ai.iowarp.clio/a2ui/<id>/catalog.json` |
+
+A marketplace is a folder or a git repository that holds plugins and agents:
+
+<FileTree>
+- my-lab-marketplace/
+  - ai.iowarp.clio/
+    - marketplace.json the marketplace's name and description
+  - agents/
+    - spectro.py agent classes
+  - plugins/
+    - spectroscopy/
+      - plugin.json the plugin's name, version and requirements
+      - mcp.json tool servers
+      - skills/
+        - peak-fitting/
+          - SKILL.md
+      - ai.iowarp.clio/
+        - plugin.py
+        - tools/
+        - hooks/
+        - subagents/
+        - flows/
+        - prompt/
+        - commands/
+        - a2ui/
+</FileTree>
+
+Every folder in a plugin is optional. `plugin.json`, `skills/` and `mcp.json` follow the [Agent Plugins 1.0.0](https://agent-plugins.org/specification) format, so other clients can read them. Everything specific to CLIO lives under `ai.iowarp.clio/`.
+
+## How it works
+
+**Install.** When you install a marketplace, CLIO copies its files, reads every plugin, and turns each agent class into a frozen description with a checksum. Sessions read that copy, never your working folder, so editing a file does nothing until you update the marketplace.
+
+**Trust.** Python files, tool servers and hook commands run code on the machine that runs CLIO. A marketplace you add yourself loads only its text (skills and prompt fragments) until you run the trust step. An update that changes code waits for the trust step again. See [Trust and executable parts](/docs/marketplaces/#trust-and-executable-parts).
+
+**Resolve.** When a conversation starts, CLIO works out its exact plugin set:
+
+1. Expand packs into their members.
+2. Apply the plugins you added or removed in the Agent panel, or saved in your own agent: additions, then removals.
+3. Add each plugin's hard requirements. Removing a plugin that others require removes them too.
+4. Check that every plugin is installed, in the right version, and trusted.
+5. Collect the tools, tool servers, skills, subagents, flows, commands and catalogs. Two plugins that bring the same tool name, skill or server stop resolution with an error that names both.
+6. Combine the model requirements of the agent and every plugin.
+7. Order the hooks and compose the prompt.
+
+The conversation keeps that result for its whole life. A plugin update reaches the next conversation. Adding or removing a plugin in a running conversation resolves it again for that conversation.
+
+**Compose the prompt.** The prompt is assembled from fragments in a fixed order: the agent's identity ("You are CLIO Science, a scientific research assistant..."), CLIO's operating guidelines, what CLIO can display, then one fragment per plugin that needs one, then domain framing. Each fragment comes from the plugin that owns the capability it describes, so an agent without a shell never reads instructions about a shell. You can read any agent's composed prompt with each part attributed to its plugin; see [Read the composed prompt](/docs/agents-and-plugins/#read-the-composed-prompt).
+
+**Run.** By default an agent runs the `react` flow: it reads the conversation, calls tools, and decides its next step until it answers. An agent can choose another flow, and the model can start one as background work. Every call a flow makes is a CLIO task, the same kind you follow in [Background work](/docs/tasks/), so it has a handle, can be stopped and cancelled, and continues after a restart.
+
+## Where to start
+
+<CardGrid>
+  <LinkCard title="Build your first plugin" href="/docs/sdk/build-a-plugin/" description="A tool, a skill, a prompt fragment, a hook, a subagent, a flow and an agent, checked, installed and used." />
+  <LinkCard title="Write a flow" href="/docs/sdk/flows/" description="Call tools and subagents from Python, in parallel, with questions to the person and steps that survive a restart." />
+  <LinkCard title="Workflows as data" href="/docs/sdk/workflows/" description="Steps, dependencies and editors that may extend a running workflow." />
+  <LinkCard title="What's available" href="/docs/sdk/available/" description="The built-in plugins, flows, tools and hook events, and the plugins and agents in the clio marketplace." />
+  <LinkCard title="Plugin reference" href="/docs/sdk/plugins/" description="Every file a plugin may contain, and the rules CLIO checks." />
+  <LinkCard title="Agent reference" href="/docs/sdk/agents/" description="Agent classes, plugin references and version ranges, flows and model requirements." />
+  <LinkCard title="SDK reference" href="/docs/sdk/reference/" description="Every class and function in clio_agent.sdk and the flow runtime." />
+</CardGrid>

@@ -11,10 +11,15 @@ from pathlib import Path
 from threading import RLock
 from typing import Any
 
-from clio_agent.runtime.github_cli import installed_github_cli
-
 _ENVIRONMENTS: dict[Path, dict[str, str]] = {}
 _LOCK = RLock()
+
+
+def installed_github_cli() -> Path | None:
+    """Resolve GitHub's installed binary only when a workspace needs its shell tools."""
+    from clio_agent.runtime.github_cli import installed_github_cli as resolve
+
+    return resolve()
 
 
 def bundled_root() -> Path | None:

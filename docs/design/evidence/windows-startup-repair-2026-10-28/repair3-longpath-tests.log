@@ -1,0 +1,24 @@
+============================= test session starts =============================
+platform win32 -- Python 3.14.6, pytest-8.4.2, pluggy-1.6.0
+cachedir: .pytest-runtime\run-49624-e91e9cc57d57\cache\pytest
+rootdir: D:\cw
+configfile: pyproject.toml
+plugins: anyio-4.11.0, hypothesis-6.156.2, asyncio-1.2.0, cov-7.0.0, repeat-0.9.4, timeout-2.4.0, xdist-3.8.0, zarr-3.4.0
+asyncio: mode=Mode.AUTO, debug=False, asyncio_default_fixture_loop_scope=None, asyncio_default_test_loop_scope=function
+timeout: 180.0s
+timeout method: thread
+timeout func_only: False
+collected 1 item
+
+tests\test_runtime\test_windows_msi.py .                                 [100%]
+
+============================== warnings summary ===============================
+src\clio_agent\paths.py:114
+src\clio_agent\paths.py:114
+tests/test_runtime/test_windows_msi.py::test_direct_cabinet_declines_long_paths_without_truncating
+tests/test_runtime/test_windows_msi.py::test_direct_cabinet_declines_long_paths_without_truncating
+  D:\cw\src\clio_agent\paths.py:114: FutureWarning: CLIO_USER_DIR is deprecated; migrate to CLIO_AGENT_HOME
+    root = resolve_root(role, home=base_home, env=source, platform=_platform())
+
+-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
+======================= 1 passed, 4 warnings in 15.90s ========================

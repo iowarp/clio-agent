@@ -5,11 +5,22 @@ from pathlib import Path
 import pytest
 from fastapi.testclient import TestClient
 
-from clio_agent.gact.agent_blueprints import install_agent_blueprint
 from clio_agent.gact.app import _clear_session_model_refs, build_app
 from clio_agent.gact.session_defaults import SessionDefaultsStore
+from tests._plugin_fixtures import custom_marketplace
 
 GACT_V3_HEADERS = {"x-gact-version": "0.3"}
+
+_AGENT_SOURCE = """
+from clio_agent.sdk import Agent
+
+
+class {cls}(Agent):
+    id = "{id}"
+    version = "1.0.0"
+    role = "a test agent"
+    plugins = Agent.plugins + ["workspace"]
+"""
 
 
 def _client(path: Path) -> TestClient:
@@ -18,14 +29,19 @@ def _client(path: Path) -> TestClient:
     return TestClient(build_app(sessions_path=path, agent=None))
 
 
-def test_session_defaults_persist_and_apply_only_when_fields_are_omitted(tmp_path: Path) -> None:
-    # Defaults select actual installed choices; an unknown selection now fails
+def test_session_defaults_persist_and_apply_only_when_fields_are_omitted(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Defaults select actual installed agents; an unknown selection fails
     # before session creation instead of leaving a session without its tools.
-    for identifier in ("earthscope-review", "manual"):
-        source = tmp_path / identifier
-        source.mkdir()
-        (source / "AGENT.md").write_text(f"---\nid: {identifier}\ntitle: Test\n---\nTest")
-        install_agent_blueprint(source=str(source), scope="global", cwd=tmp_path)
+    custom_marketplace(
+        tmp_path,
+        monkeypatch,
+        agents={
+            "earthscope_review.py": _AGENT_SOURCE.format(cls="Review", id="earthscope-review"),
+            "manual.py": _AGENT_SOURCE.format(cls="Manual", id="manual"),
+        },
+    )
     sessions_path = tmp_path / "sessions.json"
     client = _client(sessions_path)
 
@@ -41,7 +57,9 @@ def test_session_defaults_persist_and_apply_only_when_fields_are_omitted(tmp_pat
         "edit_mode": "diff",
         "routing_mode": "auto",
         "approval_mode": "ask",
-        "blueprint_id": "",
+        "agent_ref": "",
+        # Which agent "no agent" means, so a client can show and shape it before sending.
+        "default_agent_ref": "clio/standard",
         "degradations": [],
     }
 
@@ -55,7 +73,7 @@ def test_session_defaults_persist_and_apply_only_when_fields_are_omitted(tmp_pat
             "edit_mode": "patch",
             "routing_mode": "experts",
             "approval_mode": "ai-review",
-            "blueprint_id": "earthscope-review",
+            "agent_ref": "clio/earthscope-review",
         },
     )
     assert updated.status_code == 200
@@ -74,7 +92,8 @@ def test_session_defaults_persist_and_apply_only_when_fields_are_omitted(tmp_pat
         "edit_mode": "patch",
         "routing_mode": "experts",
         "approval_mode": "ai-review",
-        "active_blueprint_id": "earthscope-review",
+        "agent_id": "earthscope-review",
+        "agent_ref": "clio/earthscope-review",
     }
     assert {key: inherited.json().get(key) for key in inherited_expected} == inherited_expected
 
@@ -89,7 +108,7 @@ def test_session_defaults_persist_and_apply_only_when_fields_are_omitted(tmp_pat
             "edit_mode": "whole",
             "routing_mode": "chat",
             "approval_mode": "ask",
-            "metadata": {"effort": "high", "active_agent_blueprint_id": "manual"},
+            "metadata": {"effort": "high", "agent_ref": "clio/manual"},
         },
     )
     assert explicit.status_code == 201
@@ -102,12 +121,28 @@ def test_session_defaults_persist_and_apply_only_when_fields_are_omitted(tmp_pat
         "edit_mode": "whole",
         "routing_mode": "chat",
         "approval_mode": "ask",
-        "active_blueprint_id": "manual",
+        "agent_id": "manual",
+        "agent_ref": "clio/manual",
     }
     assert {key: payload.get(key) for key in explicit_expected} == explicit_expected
 
     rebuilt = _client(sessions_path)
     assert rebuilt.get("/v1/session-defaults").json() == updated.json()
+
+
+def test_session_default_agent_that_does_not_resolve_refuses_creation(tmp_path: Path) -> None:
+    client = _client(tmp_path / "sessions.json")
+    assert (
+        client.patch("/v1/session-defaults", json={"agent_ref": "clio/missing"}).status_code == 200
+    )
+
+    refused = client.post("/v1/sessions", json={"title": "no such agent"})
+    assert refused.status_code == 422, refused.text
+    error = refused.json()["error"]
+    assert error["error"] == "agent_unavailable"
+    assert error["details"]["agent_ref"] == "clio/missing"
+    assert error["details"]["reason"] == "agent_not_installed"
+    assert client.get("/v1/sessions").json()["sessions"] == []
 
 
 def test_session_defaults_reject_unknown_and_invalid_values(tmp_path: Path) -> None:

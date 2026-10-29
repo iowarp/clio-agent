@@ -2,7 +2,7 @@
 
 Covers the two gact execution sites the factory now owns:
 
-* ``agents/builders._call_enabled_external_mcp_tool`` -- the dynamic-agent
+* ``agents/external_mcp_calls._call_enabled_external_mcp_tool`` -- the agent's
   external tool call (a real ``call_tool``, not introspection) must construct
   its client through ``make_mcp_client``.
 * ``routes/mcp.call_external_mcp_tool`` -- a missing local dependency must read
@@ -28,18 +28,18 @@ class _RecordingObserver:
 
 
 # --------------------------------------------------------------------------- #
-# Finding #2: builders dynamic-agent tool call routes through make_mcp_client
+# Finding #2: the agent external tool call routes through make_mcp_client
 # --------------------------------------------------------------------------- #
 
 
-def test_builders_external_tool_call_routes_through_factory(
+def test_agent_external_tool_call_routes_through_factory(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
     arc: Any,
 ) -> None:
     from fastmcp import FastMCP
 
-    from clio_agent.gact.agents import builders
+    from clio_agent.gact.agents import external_mcp_calls
     from clio_agent.gact.app import build_app
     from clio_agent.tools.mcp_runtime import make_mcp_client
     from tests.test_gact.task_records import active_turn_fixture, record_assignment_fixture
@@ -70,7 +70,7 @@ def test_builders_external_tool_call_routes_through_factory(
         assert client.portal is not None
         with active_turn_fixture(app, sid):
             result = client.portal.call(
-                builders._call_enabled_external_mcp_tool,
+                external_mcp_calls._call_enabled_external_mcp_tool,
                 app,
                 "srv",
                 info,

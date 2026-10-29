@@ -15,8 +15,15 @@ from clio_agent.gact.infrastructure.context_sizing.target_probe import parse_lla
 from clio_agent.gact.infrastructure.drivers import build_driver_plan, service_definitions
 from clio_agent.gact.infrastructure.models import InfrastructureTarget, TargetFacts
 from clio_agent.gact.infrastructure.native_archive import digest, extract
-from clio_agent.gact.infrastructure.native_model_services import native_model_plan
-from clio_agent.gact.infrastructure.native_monitoring_hook import mongo_platform, private
+from clio_agent.gact.infrastructure.native_model_services import (
+    native_model_plan,
+    native_model_variants,
+)
+from clio_agent.gact.infrastructure.native_monitoring_hook import (
+    check_mongod,
+    mongo_platform,
+    private,
+)
 from clio_agent.gact.infrastructure.probe import _amd_gpu
 
 
@@ -123,14 +130,79 @@ def test_late_model_port_and_explicit_zero_offload_do_not_change_installed_packa
     assert "C:\\Models\\a model.gguf" in launch["flags"]
 
 
-def test_linux_llama_uses_host_source_build_instead_of_a_newer_glibc_binary() -> None:
+@pytest.mark.parametrize(
+    ("arch", "backend", "asset"),
+    [
+        ("x86_64", "cpu", "ubuntu-x64.tar.gz"),
+        ("aarch64", "cpu", "ubuntu-arm64.tar.gz"),
+        ("x86_64", "vulkan", "ubuntu-vulkan-x64.tar.gz"),
+        ("x86_64", "cuda", "ubuntu-cuda-12.8-x64.tar.gz"),
+    ],
+)
+def test_linux_llama_installs_upstream_prebuilt_binaries(
+    arch: str, backend: str, asset: str
+) -> None:
+    accelerator = {"vulkan": "nvidia", "cuda": "nvidia"}.get(backend, "none")
+    facts = host(accelerator=accelerator).model_copy(update={"arch": arch})
     plan = native_model_plan(
-        "llama_cpp", "clio-llama-cpp", "install", "native-linux-cpu", {}, host(), None, None
+        "llama_cpp", "clio-llama-cpp", "install", f"native-linux-{backend}", {}, facts, None, None
     )
-    spec = request(plan)["manifest"]["native_model"]
-    assert spec["source"] is True
-    assert len(spec["artifacts"][0]["sha256"]) == 64
-    assert "/archive/" in spec["artifacts"][0]["url"]
+    manifest = request(plan)["manifest"]
+    spec = manifest["native_model"]
+    assert "source" not in spec
+    assert spec["artifacts"][0]["url"].endswith(f"/llama-b11206-bin-{asset}")
+    assert all(len(artifact["sha256"]) == 64 for artifact in spec["artifacts"])
+    assert "cmake" not in manifest["project"] and "ninja" not in manifest["project"]
+    runtime = [a["url"] for a in spec["artifacts"][1:]]
+    if backend == "cuda":  # the CUDA 12 runtime it links comes from NVIDIA's own wheels
+        assert any("nvidia_cuda_runtime_cu12" in url for url in runtime)
+        assert any("nvidia_cublas_cu12" in url for url in runtime)
+    else:
+        assert runtime == []
+
+
+def test_linux_rocm_llama_has_no_prebuilt_build_and_points_to_containers() -> None:
+    facts = host(accelerator="amd")
+    variants = {row.id: row for row in native_model_variants("llama_cpp", facts)}
+    rocm = variants["native-linux-rocm"]
+    assert not rocm.compatible and "container variant" in rocm.reason
+    assert variants["native-linux-vulkan"].compatible
+
+
+def test_no_native_installer_compiles_on_the_host() -> None:
+    """Native installs fetch prebuilt binaries; a host they do not run on uses containers."""
+    from clio_agent.gact.infrastructure import native_model_hook, native_monitoring_hook
+
+    for module in (native_model_hook, native_monitoring_hook):
+        text = Path(module.__file__).read_text(encoding="utf-8")
+        for tool in ('"make"', '"cmake"', '"configure"', "/configure", '"ninja"', "c++"):
+            assert tool not in text, f"{module.__name__} invokes {tool}"
+
+
+def test_a_windows_binary_missing_its_runtime_dll_names_the_redistributable() -> None:
+    import subprocess
+
+    from clio_agent.gact.infrastructure.native_model_hook import refusal_detail
+
+    silent = subprocess.CalledProcessError(0xC0000135, ["llama-server.exe"], "", "")
+    assert "Visual C++ 2015-2022 Redistributable" in refusal_detail(silent)
+    loader = subprocess.CalledProcessError(127, ["llama-server"], "", "libgomp.so.1: not found")
+    assert refusal_detail(loader) == "libgomp.so.1: not found"
+
+
+def test_a_prebuilt_database_that_cannot_run_is_refused_toward_containers(tmp_path: Path) -> None:
+    from clio_agent.gact.infrastructure.native_monitoring_hook import check_runs
+
+    binary = tmp_path / "valkey-server"
+    binary.write_text(
+        "#!/bin/sh\necho \"valkey-server: /lib64/libc.so.6: version 'GLIBC_2.34' not found\" >&2\n"
+        "exit 1\n"
+    )
+    binary.chmod(0o755)
+    with pytest.raises(RuntimeError, match="GLIBC_2.34") as refused:
+        check_runs(binary, "Valkey's prebuilt Linux build")
+    assert "does not compile" in str(refused.value)
+    assert "container variant" in str(refused.value)
 
 
 def test_linux_amd_is_detected_from_pci_without_rocm_tools(tmp_path: Path) -> None:
@@ -227,15 +299,34 @@ def test_database_mode_switch_preserves_managed_passwords(tmp_path: Path) -> Non
         ('ID=ubuntu\nVERSION_ID="24.04"', "ubuntu2404"),
         ('ID=debian\nVERSION_ID="12"', "debian12"),
         ('ID=rocky\nVERSION_ID="8.10"', "rhel8"),
+        ('NAME="SLES"\nVERSION="15-SP5"\nID="sles"\nVERSION_ID="15.5"', "suse15"),
+        ('ID="sle_hpc"\nVERSION_ID="15.4"', "suse15"),
+        ('ID="opensuse-leap"\nVERSION_ID="15.6"', "suse15"),
     ],
 )
 def test_native_mongo_chooses_host_libc_build(release: str, platform: str) -> None:
     assert mongo_platform(release) == platform
 
 
+def test_mongod_check_names_the_missing_library(tmp_path: Path) -> None:
+    mongod = tmp_path / "mongod"
+    mongod.write_text(
+        "#!/bin/sh\necho 'mongod: error while loading shared libraries: libssl.so.1.1: "
+        "cannot open shared object file' >&2\nexit 127\n"
+    )
+    mongod.chmod(0o755)
+    with pytest.raises(RuntimeError, match="libopenssl1_1") as refused:
+        check_mongod(mongod, "suse15")
+    assert "libssl.so.1.1" in str(refused.value) and "container variant" in str(refused.value)
+    mongod.write_text("#!/bin/sh\necho 'db version v8.0.14'\n")
+    check_mongod(mongod, "suse15")
+
+
 def test_native_mongo_refuses_unknown_distribution() -> None:
-    with pytest.raises(RuntimeError, match="site databases"):
+    with pytest.raises(RuntimeError, match="container variant"):
         mongo_platform('ID=unknown\nVERSION_ID="99"')
+    with pytest.raises(RuntimeError, match="container variant"):
+        mongo_platform('ID="sles"\nVERSION_ID="12.5"')
 
 
 def test_native_llama_device_memory_and_source_mtimes(tmp_path: Path) -> None:

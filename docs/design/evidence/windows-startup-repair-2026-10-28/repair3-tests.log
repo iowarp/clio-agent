@@ -1,0 +1,112 @@
+============================= test session starts =============================
+platform win32 -- Python 3.14.6, pytest-8.4.2, pluggy-1.6.0
+cachedir: .pytest-runtime\run-49232-2419f19cd2e9\cache\pytest
+rootdir: D:\cw
+configfile: pyproject.toml
+plugins: anyio-4.11.0, hypothesis-6.156.2, asyncio-1.2.0, cov-7.0.0, repeat-0.9.4, timeout-2.4.0, xdist-3.8.0, zarr-3.4.0
+asyncio: mode=Mode.AUTO, debug=False, asyncio_default_fixture_loop_scope=None, asyncio_default_test_loop_scope=function
+timeout: 180.0s
+timeout method: thread
+timeout func_only: False
+collected 103 items
+
+tests\test_runtime\test_windows_msi.py ................................. [ 32%]
+..                                                                       [ 33%]
+tests\test_runtime\test_install_bootstrap_imports.py ....                [ 37%]
+tests\test_runtime\test_protected_execution_install.py ....              [ 41%]
+tests\test_runtime\test_document_install.py ............                 [ 53%]
+tests\test_runtime\test_execution_environment.py .........               [ 62%]
+tests\test_runtime\test_office_install.py .................              [ 78%]
+tests\test_tools\test_shell_github_cli.py .                              [ 79%]
+tests\test_integration\test_source_installer_office_worker.py ...        [ 82%]
+tests\test_gact\test_infrastructure.py .................                 [ 99%]
+tests\test_gact\test_infrastructure_transport_replacement.py .           [100%]
+
+============================== warnings summary ===============================
+src\clio_agent\paths.py:114: 2 warnings
+tests/test_runtime/test_windows_msi.py: 35 warnings
+tests/test_runtime/test_install_bootstrap_imports.py: 4 warnings
+tests/test_runtime/test_protected_execution_install.py: 4 warnings
+tests/test_runtime/test_document_install.py: 12 warnings
+tests/test_runtime/test_execution_environment.py: 9 warnings
+tests/test_runtime/test_office_install.py: 17 warnings
+tests/test_tools/test_shell_github_cli.py: 3 warnings
+tests/test_integration/test_source_installer_office_worker.py: 3 warnings
+tests/test_gact/test_infrastructure.py: 27 warnings
+tests/test_gact/test_infrastructure_transport_replacement.py: 1 warning
+  D:\cw\src\clio_agent\paths.py:114: FutureWarning: CLIO_USER_DIR is deprecated; migrate to CLIO_AGENT_HOME
+    root = resolve_root(role, home=base_home, env=source, platform=_platform())
+
+-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
+================ 103 passed, 117 warnings in 75.56s (0:01:15) =================
+nanobind: leaked 29 instances!
+ - leaked instance 000001A1F701F108 of type "clio_cte_core_ext.PoolQuery"
+ - leaked instance 000001A1F26923E8 of type "clio_cte_core_ext.UniqueId"
+ - leaked instance 000001A1F2692448 of type "clio_cte_core_ext.UniqueId"
+ - leaked instance 000001A223619648 of type "clio_cte_core_ext.Client"
+ - leaked instance 000001A1F2691A68 of type "clio_cte_core_ext.UniqueId"
+ - leaked instance 000001A1F701F1F8 of type "clio_cte_core_ext.PoolQuery"
+ - leaked instance 000001A1F701ED48 of type "clio_cte_core_ext.PoolQuery"
+ - leaked instance 000001A1F2692048 of type "clio_cte_core_ext.UniqueId"
+ - leaked instance 000001A1F399D648 of type "clio_cte_core_ext.UniqueId"
+ - leaked instance 000001A1F701F068 of type "clio_cte_core_ext.PoolQuery"
+ - leaked instance 000001A1F701EFC8 of type "clio_cte_core_ext.PoolQuery"
+ - leaked instance 000001A1F701F248 of type "clio_cte_core_ext.PoolQuery"
+ - leaked instance 000001A1F2691DE8 of type "clio_cte_core_ext.UniqueId"
+ - leaked instance 000001A1F701F3D8 of type "clio_cte_core_ext.PoolQuery"
+ - leaked instance 000001A1F701F158 of type "clio_cte_core_ext.PoolQuery"
+ - leaked instance 000001A1F701F2E8 of type "clio_cte_core_ext.PoolQuery"
+ - leaked instance 000001A1F701F018 of type "clio_cte_core_ext.PoolQuery"
+ - leaked instance 000001A1F701EED8 of type "clio_cte_core_ext.PoolQuery"
+ - leaked instance 000001A1F2691E28 of type "clio_cte_core_ext.UniqueId"
+ - leaked instance 000001A1F2691EE8 of type "clio_cte_core_ext.UniqueId"
+ - ... skipped remainder
+nanobind: leaked 3 types!
+ - leaked type "clio_cte_core_ext.Client"
+ - leaked type "clio_cte_core_ext.UniqueId"
+ - leaked type "clio_cte_core_ext.PoolQuery"
+nanobind: leaked 42 functions!
+ - leaked function "Broadcast"
+ - leaked function "AsyncListTargets"
+ - leaked function "AsyncDelBlob"
+ - leaked function "AsyncBlobQuery"
+ - leaked function "IsNull"
+ - leaked function "AwaitPutsUntilSpace"
+ - leaked function "AsyncPutBlobDefer"
+ - leaked function "AsyncGetBlobDefer"
+ - leaked function "Dynamic"
+ - leaked function "AsyncPollTelemetryLog"
+ - leaked function "__init__"
+ - leaked function "ToU64"
+ - leaked function "BlobQuery"
+ - leaked function "SemanticSearch"
+ - leaked function "DelBlob"
+ - leaked function "AsyncSemanticSearch"
+ - leaked function "DeferErrorCount"
+ - leaked function "AsyncGetContainedBlobs"
+ - leaked function "AsyncGetOrCreateTag"
+ - leaked function "RegisterTarget"
+ - leaked function "AsyncPutBlob"
+ - leaked function ""
+ - leaked function ""
+ - leaked function "Local"
+ - leaked function "PollTelemetryLog"
+ - leaked function "__init__"
+ - leaked function "AsyncGetBlob"
+ - leaked function "AsyncGetTargetInfo"
+ - leaked function ""
+ - leaked function "AsyncTagQuery"
+ - leaked function "AsyncReorganizeBlob"
+ - leaked function "AsyncRegisterTarget"
+ - leaked function "GetNull"
+ - leaked function ""
+ - leaked function "AsyncTemporalSearch"
+ - leaked function "AsyncStatTargets"
+ - leaked function "ReorganizeBlob"
+ - leaked function "AsyncGetCapacity"
+ - leaked function "__init__"
+ - leaked function "TagQuery"
+ - leaked function "TemporalSearch"
+ - leaked function "AsyncGetBlobSize"
+nanobind: this is likely caused by a reference counting issue in the binding code.
+See https://nanobind.readthedocs.io/en/latest/refleaks.html

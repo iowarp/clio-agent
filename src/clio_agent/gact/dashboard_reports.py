@@ -2,9 +2,8 @@
 
 from __future__ import annotations
 
-import base64
-import gzip
 import json
+import shutil
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
@@ -24,15 +23,20 @@ from clio_agent.gact.artifacts.records import ArtifactKind, Mechanism
 from clio_agent.gact.artifacts.registry import get_registry
 from clio_agent.gact.artifacts.storage import ingest_artifact_identity, resolve_owned_artifact_path
 from clio_agent.gact.dashboard_identity import dashboard_artifact_name
-from clio_agent.gact.session_export_document import escape
-from clio_agent.gact.session_export_viewer import _page
 from clio_agent.platform_paths import win_extended_path
 
 
 def _store(
-    app: FastAPI, sid: str, report: dict[str, Any], *, payload: bytes, extension: str
+    app: FastAPI,
+    sid: str,
+    report: dict[str, Any],
+    *,
+    payload: bytes | None = None,
+    source: Path | None = None,
+    extension: str,
 ) -> str:
-    """Register real workspace bytes through the ordinary artifact mint funnel."""
+    """Register real workspace bytes (``payload``, or a file at ``source`` copied in
+    chunks) through the ordinary artifact mint funnel."""
     wid = _session_workspace_id(app, sid)
     root = _workspace_root(app, wid)
     if root is None:
@@ -44,7 +48,10 @@ def _store(
     if not _contained(target, root):
         raise ValueError("The report storage directory resolves outside the workspace.")
     target.parent.mkdir(parents=True, exist_ok=True)
-    target.write_bytes(payload)
+    if source is not None:
+        shutil.copyfile(source, target)
+    else:
+        target.write_bytes(payload or b"")
     ingested = ingest_artifact_identity(app, target, workspace_root=root)
     outcome = mint_artifact_outcome(
         app,
@@ -195,42 +202,27 @@ def export_dashboard_report(
     ):
         raise ValueError("Export must capture exactly the published dashboard.")
 
-    def encoded(value: bytes) -> str:
-        return json.dumps(base64.b64encode(gzip.compress(value, mtime=0)).decode())
+    # Files travel by reference and are copied in chunks (#1823): the page is written
+    # to disk as a stream, never built in memory.
+    from clio_agent.gact.dashboard_export import (  # noqa: PLC0415
+        embed_artifacts,
+        write_dashboard_html,
+    )
 
-    bootstrap = (
-        "window.CLIO_DASHBOARD_DATA="
-        + encoded(json.dumps({"report": report, "snapshot": snapshot}).encode())
-        + ";"
-    )
-    loader = (
-        "new Response(new Blob([Uint8Array.from(atob("
-        + encoded(renderer["javascript"].encode())
-        + "),c=>c.charCodeAt(0))]).stream().pipeThrough(new DecompressionStream('gzip')))"
-        ".text().then(source=>(0,eval)(source)).catch(error=>{document.getElementById('archive-status').textContent=String(error);});"
-    )
-    fallback = (
-        '<div id="archive-document"><h1>'
-        + escape(report["title"])
-        + "</h1><p>Saved dashboard. Enable JavaScript to inspect its interactive views.</p>"
-        + "<details><summary>Report definition and source revisions</summary><pre>"
-        + escape(json.dumps(report, ensure_ascii=False, indent=2))
-        + "</pre></details></div>"
-    )
-    html = _page(
-        report["title"],
-        '<div id="archive-status" role="status"></div>' + fallback + '<div id="root" hidden></div>',
-        stylesheet=renderer["stylesheet"],
-        scripts=(bootstrap, loader),
-    )
-    exported_id = _store(app, sid, report, payload=html.encode(), extension="html")
-    # Downloads use a disposable copy; the artifact's verified bytes stay retained.
+    snapshot, files = embed_artifacts(app, sid, snapshot)
     import os  # noqa: PLC0415
     import tempfile  # noqa: PLC0415
 
     fd, filename = tempfile.mkstemp(prefix="clio-dashboard-", suffix=".html")
-    with os.fdopen(fd, "wb") as output:
-        output.write(html.encode())
+    os.close(fd)
+    page = Path(filename)
+    try:
+        write_dashboard_html(page, report=report, snapshot=snapshot, files=files, renderer=renderer)
+        # Downloads use the disposable page; the artifact's verified copy stays retained.
+        exported_id = _store(app, sid, report, source=page, extension="html")
+    except BaseException:
+        page.unlink(missing_ok=True)
+        raise
     return Path(filename), exported_id
 
 

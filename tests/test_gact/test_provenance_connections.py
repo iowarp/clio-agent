@@ -71,14 +71,28 @@ def test_activation_keeps_live_configuration_and_other_backend_until_restart(
     assert document["provenance"]["artifacts"]["cmf"]["server_url"] == cmf.url
     assert document["provenance"]["agentic"]["flowcept"]["persistence_owner"] == "collector"
     assert document["provenance"]["agentic"]["providers"] == ["jsonl", "flowcept"]
+    assert document["provenance"]["agentic"]["query_default"] == "flowcept"
     assert not attention_capture_enabled()  # no live cache/SDK mutation
     conf.reload()  # next-start configuration supports both the enabled flag and local files
     assert attention_capture_enabled()
     assert conf.store().file_value("provenance.attention.files_dir") == str(isolated / "captures")
     connections.disconnect_connection(flowcept)
+    assert read_document(user_config_path())["provenance"]["agentic"]["query_default"] == "native"
     assert not connections.connection_selected(flowcept)
     assert connections.connection_selected(cmf)
     assert flowcept.configuration["settings_path"] and (isolated / "settings.yaml").is_file()
+
+
+def test_query_source_may_change_after_activation_without_unselecting(isolated: Path) -> None:
+    row = verified(record(isolated))
+    connections.activate_connection(row)
+    document = read_document(user_config_path())
+    document["provenance"]["agentic"]["query_default"] = "native"
+    write_document(user_config_path(), document)
+    conf.reload()
+    assert connections.connection_selected(row)
+    connections.disconnect_connection(row)
+    assert read_document(user_config_path())["provenance"]["agentic"]["query_default"] == "native"
 
 
 def test_settings_change_invalidates_verification_and_activation(isolated: Path) -> None:

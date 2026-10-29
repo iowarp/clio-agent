@@ -19,6 +19,7 @@ from clio_agent.gact.part_atom_minter import persist_finalized_message
 from clio_agent.gact.resident_ledgers import build_resident_ledger_set
 from clio_agent.gact.transcript_file import RegistryTranscriptIndex, boot_transcript_store
 from clio_agent.gact.transcript_migration import (
+    IMPORT_DONE,
     LEGACY_SCOPE,
     legacy_transcript,
     migrate_transcripts,
@@ -111,7 +112,7 @@ async def test_lost_envelope_reply_recovers_original_output_without_duplicate_or
             assert raw_atoms(arc, sid) == before
             app.state.messages.discard(sid)
             assert app.state.messages[sid] == cache.load_session(sid) == [message]
-            assert app.state.metrics_counters.message_total == 1
+            assert app.state.sessions.get(sid).message_count == 1
             assert not owner.history.pending_mail(sid)
             assert not owner._model_recording
 
@@ -232,6 +233,33 @@ async def test_legacy_custody_preserves_duplicate_occurrences_without_inventing_
 
 
 @pytest.mark.asyncio
+async def test_one_complete_import_pass_ends_the_boot_scan(arc: ARCMemory, tmp_path: Path) -> None:
+    """Conversations created after a complete pass are Core-native: later boots skip the scan."""
+    app, owner, root = await create_environment(arc, tmp_path)
+    sid = root.owner.session_id
+    cache = install(app, tmp_path)
+
+    def exercise() -> None:
+        cache.replace_session(sid, [retained(sid, "legacy-request", 9)])
+        assert owner.history.index.done_marker(IMPORT_DONE) is None
+        migrate_transcripts(app)
+        done = owner.history.index.done_marker(IMPORT_DONE)
+        assert done is not None and done["version"] == 1 and done["sessions"] >= 1
+        assert legacy_transcript(app, sid) is not None
+        later = "sess_created_after_the_pass"
+        cache.replace_session(later, [retained(later, "core-native", 9)])
+        migrate_transcripts(app)
+        assert legacy_transcript(app, later) is None
+        assert arc._segments.list_segments(later, LEGACY_SCOPE) == []
+
+    try:
+        await asyncio.to_thread(exercise)
+    finally:
+        await owner.shutdown()
+        await owner.recovery.drain()
+
+
+@pytest.mark.asyncio
 async def test_boot_captures_legacy_before_reconciling_and_reads_metrics_from_core(
     arc: ARCMemory, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -253,11 +281,13 @@ async def test_boot_captures_legacy_before_reconciling_and_reads_metrics_from_co
         monkeypatch.setattr("clio_agent.gact.transcript_file.resolve_transcript_file", lambda: True)
         boot_transcript_store(app, tmp_path)
         assert app.state.transcript_boot_ready.is_set()
+        assert app.state.restart_interruptions.waiting(sid)
+        assert app.state.restart_interruptions.settle_quietly(sid)
         rows = assemble_session_messages(arc, sid)
         assert rows[0] == original and len(rows) == 2
         assert rows[1].error_info is not None
         assert rows[1].error_info.error == "server_restart_interrupted"
-        assert app.state.metrics_counters.message_total == 2
+        assert app.state.sessions.get(sid).message_count == 2
         preserved = legacy_transcript(app, sid)
         assert preserved is not None and preserved["content"]["text"] == source
         assert preserved["occurrences"][0]["visibility"] == "unknown"

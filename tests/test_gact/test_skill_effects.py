@@ -61,8 +61,8 @@ def _write_skill(ws: Path, skill_id: str, frontmatter: str, body: str) -> None:
     )
 
 
-def _tool(ws: Path, skill_id: str, *, agent_id: str = "main", spawn: bool = False) -> Any:
-    agent = AgentDef(id=agent_id, source="expert_pack", title="A", skills=[skill_id], metadata={})
+def _tool(ws: Path, skill_id: str, *, agent_id: str = "standard", spawn: bool = False) -> Any:
+    agent = AgentDef(id=agent_id, source="plugin", title="A", skills=[skill_id], metadata={})
     catalog = SkillCatalog(home=ws / "no-home", cwd=ws)
     rt = SkillRuntime(resolutions=catalog.resolve_declared([skill_id]))
     return build_spawn_skill_task_tool(agent, rt) if spawn else build_load_skill_tool(agent, rt)
@@ -226,7 +226,7 @@ def test_spawn_subagent_with_skill_seeds_body_not_inlined(tmp_path: Path) -> Non
     app = build_app(sessions_path=tmp_path / "s.json", agent=_Agent())
     with TestClient(app):
         sess = app.state.sessions.create(workspace_id="ws_default", title="p")
-        tool = _tool(ws, "research-sub", agent_id="main", spawn=True)
+        tool = _tool(ws, "research-sub", agent_id="standard", spawn=True)
         data = _spawn_via_mcp(
             app,
             sess.id,
@@ -276,7 +276,7 @@ def test_spawn_subagent_with_skill_uses_specific_task_assignment(tmp_path: Path)
     app = build_app(sessions_path=tmp_path / "s.json", agent=_Agent())
     with TestClient(app):
         sess = app.state.sessions.create(workspace_id="ws_default", title="p")
-        tool = _tool(ws, "region-worker", agent_id="main", spawn=True)
+        tool = _tool(ws, "region-worker", agent_id="standard", spawn=True)
         data = _spawn_via_mcp(
             app,
             sess.id,
@@ -325,7 +325,7 @@ def test_spawn_subagent_with_skill_from_plan_mode_parent_inherits_plan_mode(
     app = build_app(sessions_path=tmp_path / "s.json", agent=_Agent())
     with TestClient(app):
         sess = app.state.sessions.create(workspace_id="ws_default", title="p", mode="plan")
-        tool = _tool(ws, "research-sub", agent_id="main", spawn=True)
+        tool = _tool(ws, "research-sub", agent_id="standard", spawn=True)
         data = _spawn_via_mcp(
             app,
             sess.id,
@@ -433,7 +433,7 @@ def test_effectless_skill_loads_as_plain_text(tmp_path: Path) -> None:
 # ============================================================================ #
 
 
-def _invoke(app: Any, sid: str, ws: Path, skill_id: str, *, agent_id: str = "main") -> str:
+def _invoke(app: Any, sid: str, ws: Path, skill_id: str, *, agent_id: str = "standard") -> str:
     """Invoke a skill's load tool inside the active app/session context (returns the obs)."""
 
     tool = _tool(ws, skill_id, agent_id=agent_id)

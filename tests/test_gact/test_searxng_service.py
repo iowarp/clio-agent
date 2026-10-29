@@ -26,6 +26,7 @@ from clio_agent.gact.infrastructure.models import (
     CommandSpec,
     InfrastructureTarget,
     ServiceActionRequest,
+    ServiceObservation,
     TargetFacts,
 )
 from clio_agent.gact.infrastructure.node_service import MARKER
@@ -234,6 +235,12 @@ class FakeHost:
         if action == "install":
             self.installed = True
         elif action == "start":
+            if not self.installed:  # node_service refuses a start without its installation
+                return CommandResult(
+                    exit_code=1,
+                    stdout="",
+                    stderr="Install this exact native service configuration before starting it",
+                )
             self.running = True
         elif action == "stop":
             self.running = False
@@ -320,6 +327,58 @@ async def test_first_run_installs_and_starts_then_respects_a_stop(
     assert await search_bootstrap.ensure_local_searxng(runtime, other) == "not_selected"
     off = build_settings(auto_install=False)
     assert await search_bootstrap.ensure_local_searxng(runtime, off) == "auto_install_off"
+
+
+@pytest.mark.asyncio
+async def test_a_failed_install_is_not_started_on_every_boot(
+    host: FakeHost, tmp_path: Path
+) -> None:
+    store = InfrastructureStore(tmp_path / "infrastructure.json")
+    runtime = make_runtime(store, host)
+    app = SimpleNamespace(
+        state=SimpleNamespace(infrastructure_store=store, infrastructure_runtime=runtime)
+    )
+    search_bootstrap.register_local_endpoint(app)
+    host.fail_next = "install"
+    settings = build_settings()
+    try:
+        # First run: the install fails, and the record it left says so.
+        assert (
+            await search_bootstrap.ensure_local_searxng(runtime, settings, poll_seconds=0.01)
+            == "install_failed"
+        )
+        # Every later boot: no start that can only fail "install first".
+        for _boot in range(3):
+            assert (
+                await search_bootstrap.ensure_local_searxng(runtime, settings, poll_seconds=0.01)
+                == "not_installed"
+            )
+        assert [row.action for row in store.operations() if row.action == "start"] == []
+        record = store.service("local", SERVICE_ID)
+        assert record is not None and record.state == "not_installed"
+        assert record.auto_start_skipped is not None
+        assert record.auto_start_skipped.reason == "not_installed"
+        assert search_backend._local_phase() == "not_installed"  # noqa: SLF001
+        # Installing from Infrastructure clears the note; boot then starts it.
+        assert await finish(runtime, "install") == "succeeded"
+        record = store.service("local", SERVICE_ID)
+        assert record is not None and record.auto_start_skipped is None
+        assert (
+            await search_bootstrap.ensure_local_searxng(runtime, settings, poll_seconds=0.01)
+            == "started"
+        )
+    finally:
+        register_local_endpoint_resolver(None)
+    await asyncio.sleep(0)
+
+
+def test_an_observation_without_an_installation_is_not_installed() -> None:
+    # What a failed native install leaves: the supervisor wrote "stopped" over
+    # "installing", but nothing is installed.
+    failed = ServiceObservation(phase="stopped", installed=False, error="install exited 1")
+    assert failed.service_state == "not_installed"
+    assert ServiceObservation(phase="installing").service_state == "unknown"
+    assert ServiceObservation(phase="stopped", installed=True).service_state == "stopped"
 
 
 @pytest.mark.asyncio

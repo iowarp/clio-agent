@@ -130,7 +130,7 @@ def test_additional_folder_browses_previews_and_revokes_without_deleting(
     prefix = next(iter(folder_locations(root)))
     listing = client.get(f"/v1/workspaces/{wid}/files", params={"directory": ""}).json()
     assert any(
-        row["path"] == prefix and "Additional folder" in row["display_path"]
+        row["path"] == prefix and row["display_path"].endswith(" (additional folder)")
         for row in listing["entries"]
     )
     children = client.get(f"/v1/workspaces/{wid}/files", params={"directory": prefix}).json()
@@ -263,10 +263,10 @@ def test_real_write_and_move_continue_after_approval(
     with ThreadPoolExecutor(max_workers=1) as pool:
         future = pool.submit(
             run,
-            "fs_apply_edit_write",
-            {"filepath": str(source), "new_content": "reviewed"},
+            "fs_write_file",
+            {"filepath": str(source), "content": "reviewed"},
             fs_server,
-            "apply_edit_write",
+            "write_file",
         )
         row = pending(app, future)
         assert source.read_text() == "before"

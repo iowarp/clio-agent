@@ -14,7 +14,6 @@ from clio_agent.arc.task_types import (
     MailItem,
     TaskProgress,
     TaskSnapshot,
-    argument_digest,
 )
 from clio_agent.gact.native_work import now
 from clio_agent.gact.session_input import withdraw_assignment_input
@@ -309,121 +308,9 @@ async def cancel(self: Conversations, caller: TaskCaller, handle: str) -> dict[s
 
 async def restart(self: Conversations, caller: TaskCaller, handle: str) -> dict[str, Any]:
     """Request a linked assignment after known cancellation/worker settlement."""
-    current = await self.history.io.run(TaskAccess(self.history, caller).require, handle, "control")
-    self.require_execution_owner(current)
-    if current.kind not in {"Session", "Subagent"}:
-        raise ValueError("Only conversation assignments restart")
-    if handle in self._restarting:
-        return {"handle": handle, "restart_requested": True, "pending": True}
-    latest = await self.history.io.run(self.history.latest_assignment, current.owner.session_id)
-    if latest is None or latest.handle != handle:
-        raise ValueError("Historical assignment already has a successor")
-    if current.terminal_at is None:
-        await self.cancel(caller, handle)
-    cancellation = self._controls.get(handle)
+    from clio_agent.gact.conversation_restart import restart as restart_assignment
 
-    async def restart_settled() -> None:
-        if cancellation is not None:
-            # Unknown settlement ends this restart request; it never launches later.
-            await self.app.state.task_operations.wait(
-                TaskCaller("", current.owner.human_id, human_action=True), handle
-            )
-            settled = await self.history.io.run(self.history.task_snapshot, handle)
-            if (
-                settled is None
-                or settled.terminal_at is None
-                or settled.settlement not in {"confirmed", "never_started"}
-            ):
-                raise ValueError(
-                    "Restart settlement remains uncertain; no successor launched. "
-                    + (
-                        settled.progress.message
-                        if settled is not None
-                        else "Assignment unavailable"
-                    )
-                )
-            await asyncio.shield(cancellation)
-
-        def create() -> None:
-            with self.history.serialized():
-                previous = TaskAccess(self.history, caller).require(handle, "control")
-                if previous.terminal_at is None or previous.settlement not in {
-                    "confirmed",
-                    "never_started",
-                }:
-                    raise ValueError("Restart settlement remains uncertain; no successor launched")
-                latest = self.history.latest_assignment(previous.owner.session_id)
-                if latest is None or latest.handle != previous.handle:
-                    raise ValueError("Assignment acquired a successor while restart waited")
-                task = self._new_assignment(
-                    previous.owner.session_id,
-                    previous.description or "Retained assignment",
-                    previous.owner.human_id,
-                    predecessor=previous,
-                    invocation_id="restart:" + uuid4().hex,
-                )
-                content = self.history.write_content(
-                    task.owner.session_id,
-                    "This is a linked restart with retained Core context. Inspect the last confirmed operations and task handles; effects may have happened before a result was recorded. Do not replay accepted operations automatically.",
-                )
-                self.history.record_mail(
-                    MailItem(
-                        id="restart:" + task.handle,
-                        recipient_session=task.owner.session_id,
-                        kind="control",
-                        content=content,
-                        created_at=now(),
-                        handle=task.handle,
-                    )
-                )
-                publish_control_outcome(
-                    self.history,
-                    caller,
-                    previous,
-                    "restart",
-                    {
-                        "status": "started",
-                        "successor_handle": task.handle,
-                        "session_id": task.owner.session_id,
-                    },
-                    "restart-outcome:" + task.handle,
-                )
-
-        await self.history.io.run(create)
-
-    self._restarting.add(handle)
-
-    async def restart_once() -> None:
-        try:
-            await restart_settled()
-        except Exception as error:
-            reason = str(error)
-
-            async def report() -> None:
-                await self.history.io.run(
-                    publish_control_outcome,
-                    self.history,
-                    caller,
-                    current,
-                    "restart",
-                    {"status": "not_started", "error": reason},
-                    "restart-attention:" + handle + ":" + argument_digest({"reason": reason}),
-                )
-
-            try:
-                await report()
-            except Exception as error:
-                logger.exception(
-                    "Task boundary reason=restart_attention_recording_unconfirmed error_type=%s",
-                    type(error).__name__,
-                )
-                self.recovery.defer("restart-attention:" + handle, report)
-            raise
-        finally:
-            self._restarting.discard(handle)
-
-    self.retain_control("restart:" + handle, asyncio.create_task(restart_once()))
-    return {"handle": handle, "restart_requested": True, "pending": True}
+    return await restart_assignment(self, caller, handle)
 
 
 def _member_settled(task: TaskSnapshot | None) -> bool:

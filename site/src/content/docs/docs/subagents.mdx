@@ -1,0 +1,71 @@
+---
+title: Subagents
+description: The subagents CLIO can hand work to, a copy of the agent and the read-only explore, planner and review roles, and the forks an agent makes to try another direction.
+---
+
+import Capture from '../../../components/overview/Capture';
+import { captureImage } from '../../../lib/captures';
+import exploreChildren from '../../../assets/captures/docs-subagents-explore.png';
+
+A subagent works on part of a task in its own conversation and reports back to the
+agent that started it. The `delegation` plugin, which the default agent carries, gives
+an agent three kinds: a copy of itself, the read-only `explore`, `planner` and `review`
+roles, and forks of its own work.
+
+The agent hands a child work that stands apart from what it is doing, or that would fill its context with material it needs only a report of. The agent decides when to delegate. You can also ask for it in your own words.
+
+<Capture client:visible image={await captureImage(exploreChildren)}
+  alt="The agent says the folder holds 94 files, so it is splitting the reading across parallel readers; its Spawn agents parallel call lists 10 tasks, each a Subagent link"
+  caption="Asked for a reading guide to a folder of design documents, the agent split the reading across ten explore children in one call. Each Subagent link opens that child."
+  sizes="(min-width: 50rem) 46rem, 100vw" />
+
+## A copy of the agent
+
+When the agent delegates without naming another agent, the child is a copy of the delegating agent: the same plugins and the same model, unless the agent picks another model for it. A child of a domain agent keeps that domain's tools and skills.
+
+## The explore, planner and review roles
+
+The `delegation` plugin also brings three roles. Each runs with the delegating agent's plugins, read-only: any tool that would change something is refused, with the reason "This session is read-only".
+
+| Role | What it does | What it returns |
+|---|---|---|
+| `explore` | Surveys files, data, task records, logs and sources. | Findings, each with where it came from, such as a path and line, a task, a log entry or a URL, and where it looked and found nothing. No proposals. |
+| `planner` | Reads what it needs and designs a [workflow](/docs/flows/#workflows) for the assignment. | A workflow the delegating agent can start unchanged, and a few sentences on why these steps. |
+| `review` | Checks work or a claim it did not do against the material it rests on. | A verdict: it holds, it holds with the caveats named, or it does not hold, with what was checked for each point. |
+
+A read-only role cannot start subagents or workflows, and it does not ask you questions; it reports open choices in its result. The agent can also delegate to subagents its plugins define, or to any installed agent.
+
+## What a child starts with
+
+A child starts with only the task the agent writes for it. It does not see the parent conversation: not your messages, and not the agent's earlier work. The delegating agent is therefore asked to write a self-contained task, with the goal, the inputs and where they are, the constraints, and the report it wants back. [Inspect the assignment](/docs/tasks/subagents/#inspect-the-assignment) to read exactly what a child received.
+
+A child is told that no person reads its conversation, to stay inside its assignment, and to end with a report the delegating agent can act on: what it found or did, the evidence, and what remains open. It does not receive the guidance for presenting results to you.
+
+A child that is not read-only can still ask you a question. The question appears in the conversation that started the work, named after the child, and your answer goes back to the child.
+
+## Forks
+
+A fork is a copy of an agent's work so far, sent in another direction with a note
+that says what to do differently, such as testing a competing explanation. The agent
+decides when to fork. A fork runs on the same model as its source.
+
+| Where | What the fork is | Read more |
+|---|---|---|
+| A conversation | A new conversation with a copy of the history, listed under its source in the left panel as **Forked by the agent**. The note is its first message. | [Forks the agent makes](/docs/branch-and-rewind/#forks-the-agent-makes) |
+| A subagent | A copy of the child beside it under the same parent, named after it with `~1` added. The parent's wait covers both. | [Subagent controls](/docs/tasks/subagents/) |
+| A workflow step | A copy of the step drawn beside it, `b~1` for step `b`. The steps that waited on the step read both answers. Workflow approval and growth limits apply. | [Fork a step](/docs/flows/#fork-a-step) |
+
+**Forks per task** under Settings → **Execution & history** → **Subagents** limits how
+many forks one task, or one conversation, may have. Zero means unlimited.
+
+## See them work
+
+Two recorded conversations started from a plain request that named no tool or role;
+the agent chose to delegate:
+
+- [A reading guide](/conversations/delegation/reading-guide/): ten `explore` children read a folder of 93 design documents, and the agent wrote the guide from their reports.
+- [A skill review](/conversations/delegation/skill-review/): six `review` children checked every plugin's skills, and the agent merged their verdicts.
+
+[A branched study](/docs/examples/branched-study/) shows copies of the agent playing a
+study's games in parallel. [Real conversations](/docs/tasks/recorded-conversations/#delegation-and-forks)
+walks through the recordings, including an agent fork.

@@ -1,0 +1,156 @@
+---
+title: Flows and workflows
+description: Run several agents on one question as a council, an arena, or a workflow of steps; follow the run, steer it, and decide which flows may run.
+---
+
+import { Aside, CardGrid, LinkCard, Steps } from '@astrojs/starlight/components';
+import Capture from '../../../components/overview/Capture';
+import { captureImage } from '../../../lib/captures';
+import council from '../../../assets/captures/docs-flow-council.png';
+import workflow from '../../../assets/captures/docs-flow-workflow.png';
+import workflowFork from '../../../assets/captures/docs-flow-fork.png';
+
+A flow decides how an agent's work is organized. In an ordinary conversation the agent runs the default flow: it answers, calls tools, and chooses its next step from what it sees. Other flows coordinate several agent runs, for example several independent answers followed by one synthesis.
+
+A flow you start runs as background work. The agent gets its handle at once and keeps working, and the result reaches the conversation when the flow finishes. You can follow the run, open any of its steps, and cancel it.
+
+## Flows that ship with CLIO
+
+| Flow | What it does |
+|---|---|
+| `council` | Several members answer the same question independently, then one synthesis says where they agree and resolves where they differ. |
+| `arena` | Several contestants attempt the same task, then a judge compares the attempts and picks one, with its reasons. |
+| `workflow` | Runs the steps you or the agent lay out. Each step starts as soon as the steps it waits on have finished, so independent steps run side by side. |
+
+`council` and `arena` come with the `orchestration` plugin, which the standard agent carries. `workflow` is part of every agent. Plugins can bring more flows.
+
+## Ask for a flow
+
+Ask in your own words, and name the flow when you want a particular one:
+
+```text
+Run the council flow on this question and give me its synthesized answer:
+should a small lab store 2 TB of microscopy images as HDF5 or Zarr?
+```
+
+The agent is told which flows it can start. That includes flows from installed plugins this agent does not carry yet. Running one of those adds its plugin to the conversation; if the plugin is not trusted yet, CLIO asks you first (see [Flows from plugins you have not trusted](#flows-from-plugins-you-have-not-trusted)).
+
+## Workflows
+
+A workflow is a list of steps. Each step has an id, the agent or flow that runs it, its instructions, and the steps it waits on. A step's instructions can include the answer of a step it waits on. Describe the work and the agent builds the steps:
+
+```text
+Draft four bullet points on what limits HDF5 write throughput on a parallel
+file system, then have the critic review the draft. Let the critic add one
+step if a claim needs checking, and ask me before any added step runs.
+```
+
+A workflow can name **editors**, usually a critic. An editor may propose new steps, or cancel steps that have not started. When the workflow asks for approval, each proposed step reaches you as a question in the conversation, for example "Add workflow step 'verify_lustre_stripe_default' (researcher) after draft, review, proposed by review?". A step that was added waits on the step that proposed it.
+
+An editor acts at two moments:
+
+- when it runs as one of the workflow's steps, usually placed after the steps it should check;
+- when a step fails; it may then add a step that repairs the failure.
+
+An editor that is named but has no step of its own acts only when a step fails.
+
+How far a workflow may grow has no built-in limit. The agent may set one when it starts the workflow. To cap every workflow, open Settings, choose **Execution & history**, and set the **Workflows** limits:
+
+| Setting | What it caps |
+|---|---|
+| **Steps editors may add** | Steps the editors may add to one run. |
+| **Editing rounds** | Rounds of edits in one run. |
+
+Zero means unlimited. When both you and the agent set a limit, the smaller one applies. The limits in force are recorded when the run starts.
+
+### Fork a step
+
+A running step can fork itself to try another direction, such as a competing hypothesis, without being an editor. The fork is a copy of the step's agent. It carries the step's conversation so far, followed by a note that says what the fork should do differently. It runs beside its step, named after it in fork order: `b~1`, then `b~2`.
+
+- **It is drawn beside its step.** The diagram shows the fork under its step with a dotted outline, labeled as a fork of that step, from the same inputs to the same next step.
+- **The steps that waited on the step also wait on the fork.** They start once both have finished, and they read both answers, each labeled with its name, such as `[b]` and `[b~1]`.
+- **Approval applies.** When the workflow asks for approval, the fork first asks you, for example "Fork step 'b' as 'b~1': Give the strongest counterargument in one line. Allow?". If you answer no, the fork is not made and the step carries on.
+- **Growth limits apply.** A fork counts as an added step against **Steps editors may add**. Past the limit, the fork is refused and the step carries on.
+- **A failed fork is a failed step.** It is offered to the editors, who may add a step that repairs it.
+
+<Capture client:visible image={await captureImage(workflowFork)}
+  alt="A workflow run in full screen: under Changes while it ran, the added signoff step and two answered questions, Fork step 'b' as 'b~1' and Add workflow step 'signoff'; the diagram shows a, then b with b~1 fork of b drawn below it, and a council C, all joining at merge, then edit and signoff"
+  caption="A workflow from a directed check of these features: step b forked b~1 after its question was answered, and the editor step edit added signoff. Both questions and your answers are listed under Changes while it ran."
+/>
+
+Outside workflows, **Forks per task** under Settings → **Execution & history** → **Subagents** limits how many forks one task, or one conversation, may have. Zero means unlimited.
+
+### Give each step its own folder
+
+When steps must not overwrite each other's files, the agent can start a workflow
+isolated. The run gets its own folder, `runs/<run-id>/` in the workspace, and each
+step writes only in its subfolder, such as `runs/<run-id>/b/`. A fork starts with a
+copy of its step's folder, in `b~1/`, and a subagent a step hands work to writes
+in a folder nested under the step's. Steps can still read the rest of the workspace,
+and a merge step reads the folders of the steps it waited on.
+
+Isolation needs the operating system's write fence. Where the fence is not active,
+an isolated run is refused at start with that reason rather than run unconfined;
+[Permissions](/docs/permissions/) explains the fence.
+
+## Follow a run
+
+A flow appears as a card in the conversation, with its name, its state, and a count of its steps. The diagram reads left to right:
+
+- steps that run at the same time are drawn side by side, labeled with how many run in parallel;
+- a flow that runs inside another is drawn as a box with its name;
+- a fork is drawn with a dotted outline beside the step it was forked from;
+- each step's color shows its state, and the legend under the diagram names the states in words.
+
+<Capture client:visible image={await captureImage(council)}
+  alt="A completed council run: three members in parallel, then the synthesis, with the synthesized recommendation under the diagram"
+  caption="A council run: three members answered independently, then one synthesis. The card stays in the conversation after the run ends."
+/>
+
+<Capture client:visible image={await captureImage(workflow)}
+  alt="A completed workflow run with the steps draft, review and verify_stripe_default, where the last step was added by the critic"
+  caption="A workflow with a critic editor. The critic added verify_stripe_default after reviewing the draft."
+/>
+
+Select a step to see who runs it, what it waits on, its instructions, and its answer. A step an editor added says **Added** and shows who added it and why. **Open** opens the step's own conversation.
+
+The card also has **Full screen**, a button that opens the run in the side panel, and **Show the workflow** or **Show what the agent asked**. A flow's name, where it appears in a step, opens what the flow is: its plugin, its description, and the diagram its author drew.
+
+## Stop and cancel
+
+**Stop** ends the agent's current turn. A flow it started keeps running, because it is background work. To end the flow, ask the agent to cancel it:
+
+```text
+Cancel the running workflow and tell me what was cancelled.
+```
+
+Cancelling a flow cancels its running steps. Steps that had not started are skipped. The card shows the run as cancelled, with the cancelled step one click away.
+
+When CLIO restarts while a flow runs, the flow continues where it was. Finished steps are not run again, and steps that were running continue under the same handles.
+
+## Flows from plugins you have not trusted
+
+Running a flow from a plugin you have not trusted asks you first. The request appears in the conversation as **Running flow** followed by the flow's name, with who wrote the plugin and the file that defines the flow. Choose the file to review the plugin before you decide.
+
+- **Trust and run** trusts the plugin in its installed version, adds it to the conversation, and starts the flow.
+- **Deny** refuses. The flow does not run and the plugin stays untrusted.
+
+A workflow asks about each step's untrusted flow before any step starts. A new version of a plugin whose code changed asks again.
+
+Under **Bypass checks**, a flow that CLIO wrote itself, with its files unchanged, runs without asking, and the run is recorded. A flow from anyone else asks in every approval mode.
+
+## Have CLIO write a flow
+
+CLIO can write a flow for a pattern you describe, such as two takes on a question with a moderator. It writes a plugin into its own folder, checks it, and installs it untrusted. The first run asks you, as above. The plugin appears in Settings under **Plugins & marketplaces**, where you can review, update, or remove it.
+
+To write a flow or a workflow yourself, see [Write a flow](/docs/sdk/flows/) and [Workflows as data](/docs/sdk/workflows/).
+
+<Aside type="note">
+A flow runs with the agent's limits for background work: how many subagents may run at once and how deeply they may nest. Those limits are in Settings under **Execution & history**, in **Subagents**.
+</Aside>
+
+<CardGrid>
+  <LinkCard title="Agents and plugins" href="/docs/agents-and-plugins/" description="Which plugins an agent carries, and how to add or remove them." />
+  <LinkCard title="Background work" href="/docs/tasks/" description="Follow, wait for, and cancel the work a conversation starts." />
+  <LinkCard title="Answer a question" href="/docs/questions/" description="How questions from the agent and its flows reach you." />
+</CardGrid>

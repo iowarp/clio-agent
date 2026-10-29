@@ -1,0 +1,318 @@
+{
+ "source_route": "GET /v1/sessions/{sid}/provenance/execution?provider=flowcept",
+ "provider": "flowcept",
+ "session_id": "sess_5f6eea93ae15",
+ "complete": false,
+ "provider_health": {
+  "mq": "ok",
+  "kvdb": "ok",
+  "mongo": "ok"
+ },
+ "span_count": 592,
+ "event_type_counts": {
+  "arc.op": 387,
+  "task.observed": 52,
+  "session.input.prepared": 14,
+  "hook.invocation.started": 13,
+  "lm.call": 13,
+  "react.step.completed": 13,
+  "artifact.transform.recorded": 12,
+  "task.submission": 10,
+  "session.mail.accepted": 8,
+  "session.mail.updated": 8,
+  "turn.started": 7,
+  "agent.invocation.started": 7,
+  "agent.toolset.prepare.started": 7,
+  "llm.request.started": 7,
+  "expert.lifecycle.started": 7,
+  "routing.decision": 7,
+  "tool.call.started": 7,
+  "tool.call.completed": 5,
+  "session.created": 2,
+  "agent.toolset.recorded": 2,
+  "mcp.connection.downgraded": 2,
+  "session.coordination.grant": 1,
+  "skill.loaded": 1
+ },
+ "workflows": [
+  {
+   "workflow_id": "9047e3af-149c-51bc-9bbe-fd4e32f15ca5",
+   "name": "CLIO session sess_5f6eea93ae15",
+   "status": "RUNNING",
+   "subtype": "agentic_workflow",
+   "flowcept_version": "1.0.3"
+  },
+  {
+   "workflow_id": "ff54d8ab-8a56-59b5-9ff1-33444b067f2e",
+   "name": "CLIO session sess_f4f659990f9d4cc79c20d13d9c25a29f",
+   "status": "FINISHED",
+   "subtype": "agentic_workflow",
+   "flowcept_version": "1.0.3"
+  }
+ ],
+ "agents": [
+  {
+   "agent_id": "89d2c523-980a-5629-bd90-0cb7a0c0da7f",
+   "campaign_id": "78a5058e-d9af-5a69-be97-cc2caadc6058",
+   "extra_metadata": {
+    "mq_host": "127.0.0.1",
+    "mq_port": 16379
+   },
+   "name": "standard",
+   "registered_at": 1792994674.148156,
+   "type": "agent",
+   "user": "root",
+   "workflow_id": "9047e3af-149c-51bc-9bbe-fd4e32f15ca5"
+  },
+  {
+   "agent_id": "2f7a429d-b7d9-5029-941d-661741392bc9",
+   "campaign_id": "78a5058e-d9af-5a69-be97-cc2caadc6058",
+   "extra_metadata": {
+    "mq_host": "127.0.0.1",
+    "mq_port": 16379
+   },
+   "name": "main",
+   "registered_at": 1792994680.990402,
+   "type": "agent",
+   "user": "root",
+   "workflow_id": "9047e3af-149c-51bc-9bbe-fd4e32f15ca5"
+  },
+  {
+   "agent_id": "c82c4db2-0bb7-56d2-b397-d6d7de239bd7",
+   "campaign_id": "5de4dba2-eac5-5f89-89b0-ab2bdf2b1eec",
+   "extra_metadata": {
+    "mq_host": "127.0.0.1",
+    "mq_port": 16379
+   },
+   "name": "spotter-ai",
+   "registered_at": 1792994685.37317,
+   "type": "agent",
+   "user": "root",
+   "workflow_id": "ff54d8ab-8a56-59b5-9ff1-33444b067f2e"
+  }
+ ],
+ "session_lineage": [
+  {
+   "session_id": "sess_5f6eea93ae15",
+   "parent_session_id": "",
+   "task_id": "",
+   "agent_id": "",
+   "label": "Greenhouse drought check",
+   "depth": 0,
+   "task_path": [],
+   "attribution": "root"
+  },
+  {
+   "session_id": "sess_f4f659990f9d4cc79c20d13d9c25a29f",
+   "parent_session_id": "sess_5f6eea93ae15",
+   "task_id": "task_bfe146cb6bcdb7fa8569593863ba40765cd6fb9a8711555cd683d7bdfd578ba6",
+   "agent_id": "spotter-ai",
+   "label": "SPOTTER",
+   "depth": 1,
+   "task_path": [
+    "task_bfe146cb6bcdb7fa8569593863ba40765cd6fb9a8711555cd683d7bdfd578ba6"
+   ],
+   "attribution": "agent_task",
+   "status": "completed",
+   "created_at": "2026-10-26T06:04:26.256133+00:00",
+   "updated_at": "2026-10-26T06:05:23.582884+00:00"
+  }
+ ],
+ "lm_call_spans": [
+  {
+   "id": "sem_402b15646ff64a0f",
+   "session_id": "sess_5f6eea93ae15",
+   "workflow_id": "9047e3af-149c-51bc-9bbe-fd4e32f15ca5",
+   "label": "LM call (tool_call).",
+   "event_type": "lm.call",
+   "status": "completed",
+   "start_time": 1792994680.888,
+   "model": {
+    "model_id": "claude_code/claude-haiku-5-5"
+   },
+   "flowcept_task_ids": [
+    "12a0f1b7-9157-55b2-b449-367be406a139"
+   ]
+  },
+  {
+   "id": "sem_4ed63a923cdb4920",
+   "session_id": "sess_5f6eea93ae15",
+   "workflow_id": "9047e3af-149c-51bc-9bbe-fd4e32f15ca5",
+   "label": "LM call (tool_call).",
+   "event_type": "lm.call",
+   "status": "completed",
+   "start_time": 1792994687.726,
+   "model": {
+    "model_id": "claude_code/claude-haiku-5-5"
+   },
+   "flowcept_task_ids": [
+    "b3dc47ca-c20e-530e-83f8-4241f1715d5f"
+   ]
+  },
+  {
+   "id": "sem_3520842a8f6d4f3b",
+   "session_id": "sess_f4f659990f9d4cc79c20d13d9c25a29f",
+   "workflow_id": "ff54d8ab-8a56-59b5-9ff1-33444b067f2e",
+   "label": "LM call (tool_call).",
+   "event_type": "lm.call",
+   "status": "completed",
+   "start_time": 1792994701.602,
+   "model": {
+    "model_id": "claude_code/claude-haiku-5-5"
+   },
+   "flowcept_task_ids": [
+    "07dd0046-f888-51b8-8f63-b22d2d041cf5"
+   ]
+  },
+  {
+   "id": "sem_631e28fbf5294393",
+   "session_id": "sess_5f6eea93ae15",
+   "workflow_id": "9047e3af-149c-51bc-9bbe-fd4e32f15ca5",
+   "label": "LM call (stop).",
+   "event_type": "lm.call",
+   "status": "completed",
+   "start_time": 1792994707.321,
+   "model": {
+    "model_id": "claude_code/claude-haiku-5-5"
+   },
+   "flowcept_task_ids": [
+    "359d44cd-407c-55e4-a6b1-71e1bba6ca62"
+   ]
+  },
+  {
+   "id": "sem_2ecd050838ce49c9",
+   "session_id": "sess_f4f659990f9d4cc79c20d13d9c25a29f",
+   "workflow_id": "ff54d8ab-8a56-59b5-9ff1-33444b067f2e",
+   "label": "LM call (tool_call).",
+   "event_type": "lm.call",
+   "status": "completed",
+   "start_time": 1792994708.165,
+   "model": {
+    "model_id": "claude_code/claude-haiku-5-5"
+   },
+   "flowcept_task_ids": [
+    "6cd7202a-b6c8-5cec-a86e-4ade97ad306a"
+   ]
+  },
+  {
+   "id": "sem_be7051ed155c4955",
+   "session_id": "sess_f4f659990f9d4cc79c20d13d9c25a29f",
+   "workflow_id": "ff54d8ab-8a56-59b5-9ff1-33444b067f2e",
+   "label": "LM call (stop).",
+   "event_type": "lm.call",
+   "status": "completed",
+   "start_time": 1792994722.32,
+   "model": {
+    "model_id": "claude_code/claude-haiku-5-5"
+   },
+   "flowcept_task_ids": [
+    "c66a7aaf-f9ca-5d46-9f8e-9eee102d0d25"
+   ]
+  },
+  {
+   "id": "sem_f5bb586f81024187",
+   "session_id": "sess_5f6eea93ae15",
+   "workflow_id": "9047e3af-149c-51bc-9bbe-fd4e32f15ca5",
+   "label": "LM call (stop).",
+   "event_type": "lm.call",
+   "status": "completed",
+   "start_time": 1792994737.145,
+   "model": {
+    "model_id": "claude_code/claude-haiku-5-5"
+   },
+   "flowcept_task_ids": [
+    "ae5827be-e098-5d1c-8c05-a61e58d6faab"
+   ]
+  },
+  {
+   "id": "sem_89797c4e01a34cc8",
+   "session_id": "sess_f4f659990f9d4cc79c20d13d9c25a29f",
+   "workflow_id": "ff54d8ab-8a56-59b5-9ff1-33444b067f2e",
+   "label": "LM call (tool_call).",
+   "event_type": "lm.call",
+   "status": "completed",
+   "start_time": 1792994744.942,
+   "model": {
+    "model_id": "claude_code/claude-haiku-5-5"
+   },
+   "flowcept_task_ids": [
+    "70d8e1bb-49ef-5bf1-9a67-dbecd5e83bea"
+   ]
+  },
+  {
+   "id": "sem_5979aff1734345da",
+   "session_id": "sess_f4f659990f9d4cc79c20d13d9c25a29f",
+   "workflow_id": "ff54d8ab-8a56-59b5-9ff1-33444b067f2e",
+   "label": "LM call (tool_call).",
+   "event_type": "lm.call",
+   "status": "completed",
+   "start_time": 1792994753.241,
+   "model": {
+    "model_id": "claude_code/claude-haiku-5-5"
+   },
+   "flowcept_task_ids": [
+    "2774d450-00cb-5ac8-80d6-a43066969023"
+   ]
+  },
+  {
+   "id": "sem_c8316570dd01417e",
+   "session_id": "sess_f4f659990f9d4cc79c20d13d9c25a29f",
+   "workflow_id": "ff54d8ab-8a56-59b5-9ff1-33444b067f2e",
+   "label": "LM call (stop).",
+   "event_type": "lm.call",
+   "status": "completed",
+   "start_time": 1792994762.288,
+   "model": {
+    "model_id": "claude_code/claude-haiku-5-5"
+   },
+   "flowcept_task_ids": [
+    "6416b4bb-0b29-521e-97ea-355102931b39"
+   ]
+  },
+  {
+   "id": "sem_301d78d245824726",
+   "session_id": "sess_5f6eea93ae15",
+   "workflow_id": "9047e3af-149c-51bc-9bbe-fd4e32f15ca5",
+   "label": "LM call (stop).",
+   "event_type": "lm.call",
+   "status": "completed",
+   "start_time": 1792994776.265,
+   "model": {
+    "model_id": "claude_code/claude-haiku-5-5"
+   },
+   "flowcept_task_ids": [
+    "d8b07dbc-47e8-53af-9369-ef1e8c9790a1"
+   ]
+  },
+  {
+   "id": "sem_68b3c80502e44867",
+   "session_id": "sess_f4f659990f9d4cc79c20d13d9c25a29f",
+   "workflow_id": "ff54d8ab-8a56-59b5-9ff1-33444b067f2e",
+   "label": "LM call (tool_call).",
+   "event_type": "lm.call",
+   "status": "completed",
+   "start_time": 1792994784.759,
+   "model": {
+    "model_id": "claude_code/claude-haiku-5-5"
+   },
+   "flowcept_task_ids": [
+    "6434322a-4103-5e3d-94d0-728737e46eb5"
+   ]
+  },
+  {
+   "id": "sem_4637f2e463bf493f",
+   "session_id": "sess_f4f659990f9d4cc79c20d13d9c25a29f",
+   "workflow_id": "ff54d8ab-8a56-59b5-9ff1-33444b067f2e",
+   "label": "LM call (stop).",
+   "event_type": "lm.call",
+   "status": "completed",
+   "start_time": 1792994790.796,
+   "model": {
+    "model_id": "claude_code/claude-haiku-5-5"
+   },
+   "flowcept_task_ids": [
+    "b84da8b4-9896-50fb-a720-987b4bf58df5"
+   ]
+  }
+ ]
+}

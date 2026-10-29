@@ -1,0 +1,2 @@
+go: downloading golang.org/x/sys v0.29.0
+ok  	github.com/iowarp/gact-tui/desktop/sidecar-launcher	2.215s

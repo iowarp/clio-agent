@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import threading
 from collections.abc import Callable
 from pathlib import Path
 from types import SimpleNamespace
@@ -27,12 +28,22 @@ from clio_agent.arc.task_types import (
 )
 from clio_agent.gact import context
 from clio_agent.gact.agents.clio_react_record import StepRecorder
+from clio_agent.gact.agents.resolution import (
+    AGENT_RESOLUTION_KEY,
+    SUBAGENT_KEY,
+    session_resolution,
+)
+from clio_agent.gact.conversation_dispatch_fence import (
+    close_spawn_invocations,
+    release_spawn_invocations,
+)
 from clio_agent.gact.conversations import ConversationOutcome, Conversations, ConversationSegment
 from clio_agent.gact.core_recovery import CoreRecovery
 from clio_agent.gact.events import EventBus
 from clio_agent.gact.external_tasks import ExternalConnection, ExternalTasks
 from clio_agent.gact.native_work import now
 from clio_agent.gact.provenance_wiring import install_session_lifecycle_observer
+from clio_agent.gact.question_events import QuestionEvents
 from clio_agent.gact.question_surface import answer_question
 from clio_agent.gact.questions import QuestionCommands
 from clio_agent.gact.semantic_events import NoopSemanticTraceBackend, SemanticEventSink
@@ -42,6 +53,8 @@ from clio_agent.gact.spawn_context import CreatePreparedChild
 from clio_agent.gact.task_access import TaskCaller
 from clio_agent.gact.task_history import TaskHistory
 from clio_agent.gact.turn_runner import TurnRunner
+from clio_agent.gact.workspaces import WorkspaceStore
+from clio_agent.plugins.service import PluginService
 from clio_agent.tools.task_client import TaskSubmission, restore_native_call
 
 
@@ -83,13 +96,213 @@ async def test_spawn_strategy_is_validated_before_child_creation_and_immutable(
     await owner.recovery.drain()
 
 
+@pytest.mark.asyncio
+async def test_delayed_spawn_commit_is_found_and_cancelled_after_fence_timeout(
+    arc: ARCMemory, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A queued commit ahead of the fence is recovered through normal cancellation."""
+    _, owner, root = await create_environment(arc, tmp_path)
+    owner._loop = asyncio.get_running_loop()
+    caller = TaskCaller(root.owner.session_id, "human")
+    prepare_entered, release_prepare = threading.Event(), threading.Event()
+    core_entered, release_core = threading.Event(), threading.Event()
+    create_queued = threading.Event()
+    original_prepare, original_submit = owner.prepare_child, owner.history.io.submit
+
+    def blocked_prepare(
+        parent: str,
+        agent: str,
+        scope: dict[str, Any] | None,
+        model: str = "",
+    ) -> CreatePreparedChild:
+        prepare_entered.set()
+        assert release_prepare.wait(10)
+        return original_prepare(parent, agent, scope, model)
+
+    def observed_submit(operation: Callable[..., Any], *args: Any, **kwargs: Any) -> Any:
+        if getattr(operation, "__name__", "") == "create":
+            create_queued.set()
+        return original_submit(operation, *args, **kwargs)
+
+    def block_core() -> None:
+        core_entered.set()
+        assert release_core.wait(10)
+
+    monkeypatch.setattr(owner, "prepare_child", blocked_prepare)
+    monkeypatch.setattr(owner.history.io, "submit", observed_submit)
+    spawning = asyncio.create_task(
+        owner.spawn(caller, "Delayed child", "writer", "late-intent", start=False)
+    )
+    assert await asyncio.to_thread(prepare_entered.wait, 10)
+    blocker = owner.history.io.submit(block_core)
+    assert await asyncio.to_thread(core_entered.wait, 10)
+    release_prepare.set()
+    assert await asyncio.to_thread(create_queued.wait, 10)
+
+    fence = owner.history.io.submit(close_spawn_invocations, owner, root.handle, ("late-intent",))
+    with pytest.raises(TimeoutError):
+        await asyncio.wait_for(asyncio.shield(asyncio.wrap_future(fence)), timeout=0.05)
+    release_core.set()
+    await asyncio.wrap_future(blocker)
+    accepted = await asyncio.wait_for(spawning, timeout=10)
+    found = await asyncio.wait_for(asyncio.wrap_future(fence), timeout=10)
+    assert found == {"late-intent": (accepted["handle"],)}
+
+    deadline = asyncio.get_running_loop().time() + 10
+    while owner.history.task_snapshot(accepted["handle"]).terminal_at is None:
+        assert asyncio.get_running_loop().time() < deadline
+        await asyncio.sleep(0.02)
+    child = owner.history.task_snapshot(accepted["handle"])
+    assert child is not None and child.status == "cancelled"
+
+    monkeypatch.setattr(owner, "prepare_child", original_prepare)
+    await owner.history.io.run(close_spawn_invocations, owner, root.handle, ("blocked-intent",))
+    with pytest.raises(ValueError, match="closed before acceptance"):
+        await owner.spawn(caller, "Must remain unaccepted", "writer", "blocked-intent")
+    assert (
+        await owner.history.io.run(
+            owner.history.direct_child_by_invocation,
+            root.handle,
+            "blocked-intent",
+            session_id=root.owner.session_id,
+            human_id="human",
+        )
+        == ()
+    )
+    unrelated = await owner.spawn(
+        caller, "Independent child", "writer", "unrelated-intent", start=False
+    )
+    assert unrelated["accepted"] is True
+    await owner.history.io.run(release_spawn_invocations, owner, root.handle, ("late-intent",))
+    await owner.recovery.drain()
+
+
+@pytest.mark.asyncio
+async def test_cancelled_spawn_cannot_commit_after_parent_terminal_and_fence_release(
+    arc: ARCMemory, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A cancelled waiter does not settle a queued create; terminal ownership still fences it."""
+    _, owner, root = await create_environment(arc, tmp_path)
+    caller = TaskCaller(root.owner.session_id, "human")
+    owner._loop = asyncio.get_running_loop()
+    create_entered, release_create = threading.Event(), threading.Event()
+    original_submit = owner.history.io.submit
+    create_future: Any = None
+
+    def observed_submit(operation: Callable[..., Any], *args: Any, **kwargs: Any) -> Any:
+        nonlocal create_future
+        if getattr(operation, "__name__", "") == "create":
+
+            def delayed_create() -> Any:
+                create_entered.set()
+                assert release_create.wait(10)
+                return operation(*args, **kwargs)
+
+            future = original_submit(delayed_create)
+            create_future = future
+            return future
+        return original_submit(operation, *args, **kwargs)
+
+    monkeypatch.setattr(owner.history.io, "submit", observed_submit)
+    spawning = asyncio.create_task(
+        owner.spawn(caller, "Late child", "writer", "terminal-intent", start=False)
+    )
+    assert await asyncio.to_thread(create_entered.wait, 10)
+    with pytest.raises(TimeoutError):
+        await asyncio.wait_for(asyncio.shield(asyncio.wrap_future(create_future)), timeout=0.05)
+
+    # Cancelling the coroutine cannot stop a create already running on CoreIO.
+    assert create_future.running()
+    spawning.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await spawning
+
+    terminal = root.model_copy(
+        update={
+            "status": "failed",
+            "raw_status": "failed",
+            "settlement": "confirmed",
+            "terminal_at": now(),
+            "updated_at": now(),
+        }
+    )
+    await asyncio.to_thread(
+        owner.history.record_snapshot, terminal, observation_id="terminal-parent"
+    )
+    fence = original_submit(close_spawn_invocations, owner, root.handle, ("terminal-intent",))
+    release = original_submit(release_spawn_invocations, owner, root.handle, ("terminal-intent",))
+
+    release_create.set()
+    with pytest.raises(ValueError, match="active owning assignment|closed before acceptance"):
+        await asyncio.wrap_future(create_future)
+    found = await asyncio.wrap_future(fence)
+    assert found == {"terminal-intent": ()}
+    await asyncio.wrap_future(release)
+    children = await owner.history.io.run(
+        owner.history.direct_child_by_invocation,
+        root.handle,
+        "terminal-intent",
+        session_id=root.owner.session_id,
+        human_id="human",
+    )
+    assert children == ()
+    await owner.recovery.drain()
+
+
+@pytest.mark.asyncio
+async def test_terminal_parent_fence_pruning_does_not_mutate_during_iteration(
+    arc: ARCMemory, tmp_path: Path
+) -> None:
+    """A later active parent's spawn safely prunes stale fences from terminal owners."""
+    app, owner, old_root = await create_environment(arc, tmp_path)
+    await owner.history.io.run(close_spawn_invocations, owner, old_root.handle, ("old-intent",))
+    stamp = now()
+    terminal = old_root.model_copy(update={"status": "failed", "terminal_at": stamp})
+    new_session = await owner.history.io.run(
+        app.state.sessions.create, workspace_id="workspace", agent={"id": "main"}
+    )
+    new_root = old_root.model_copy(
+        update={
+            "handle": "task_new_root",
+            "owner": TaskOwner(
+                human_id="human",
+                session_id=new_session.id,
+                assignment_id="task_new_root",
+            ),
+            "invocation_id": "new-human-assignment",
+            "status": "active",
+            "terminal_at": None,
+            "created_at": stamp,
+            "updated_at": stamp,
+        }
+    )
+    await owner.history.io.run(
+        owner.history.record_snapshot, terminal, observation_id="terminal-old-root"
+    )
+    await owner.history.io.run(owner.history.record_snapshot, new_root, observation_id="new-root")
+    await owner.history.io.run(session_resolution, app, new_session.id)
+
+    accepted = await owner.spawn(
+        TaskCaller(new_session.id, "human"),
+        "Independent active child",
+        "writer",
+        "new-intent",
+        parent_handle=new_root.handle,
+        start=False,
+    )
+
+    assert accepted["accepted"] is True
+    assert not any(parent == old_root.handle for parent, _ in owner._closed_spawn_invocations)
+    await owner.recovery.drain()
+
+
 async def create_environment(
     arc: ARCMemory, tmp_path: Path
 ) -> tuple[Any, Conversations, TaskSnapshot]:
     """Build finite store data off-loop and async resources on the active loop."""
 
     def records() -> tuple[Any, TaskSnapshot]:
-        sessions = SessionStore(path=tmp_path / "sessions.json")
+        sessions = SessionStore(path=tmp_path / "sessions.json", store=arc._store)
         session = sessions.create(workspace_id="workspace", agent={"id": "main"})
         history, stamp = TaskHistory(arc), now()
         root = TaskSnapshot(
@@ -107,12 +320,23 @@ async def create_environment(
         )
         history.record_snapshot(root, observation_id="root")
         return SimpleNamespace(
-            state=SimpleNamespace(sessions=sessions, task_history=history, human_principal="human")
+            state=SimpleNamespace(
+                sessions=sessions,
+                task_history=history,
+                human_principal="human",
+                workspaces=WorkspaceStore(path=tmp_path / "workspaces.json"),
+            )
         ), root
 
     app, root = await asyncio.to_thread(records)
     app.state.arc, app.state.bus, app.state.messages = arc, EventBus(), {}
     app.state.questions = QuestionCommands(app.state.task_history)
+    # Core recovery's readiness restores question views too, as the server wires it.
+    app.state.question_events = QuestionEvents(app)
+    # A turn resolves its session's plugin agent (the hermetic default marketplace).
+    app.state.plugin_service = PluginService()
+    # Pin the root now, so preparing a child later only reads the pin.
+    await asyncio.to_thread(session_resolution, app, root.owner.session_id)
     app.state.semantic_event_sink = SemanticEventSink(
         bus=app.state.bus, trace_backend=NoopSemanticTraceBackend()
     )
@@ -129,7 +353,16 @@ async def create_environment(
         parent: str,
         agent: str,
         scope: dict[str, Any] | None,
+        model: str = "",
     ) -> CreatePreparedChild:
+        del model
+        # Pinned like a defined subagent, so no later first use re-pins the child to
+        # the default agent and rewrites its agent id.
+        pin = {
+            AGENT_RESOLUTION_KEY: session_resolution(app, parent).digest,
+            SUBAGENT_KEY: agent,
+        }
+
         def create(
             creation_id: str,
             creation_digest: str,
@@ -138,9 +371,12 @@ async def create_environment(
         ) -> Any:
             return app.state.sessions.create(
                 workspace_id="workspace",
+                title=str(initial_metadata.get("subagent_name") or ""),
                 parent_session_id=parent,
                 agent={"id": agent},
-                metadata={**(scope or {}), **initial_metadata},
+                # As spawn_context.prepare_child_session records it: the spawn's target
+                # survives the child's own agent pin.
+                metadata={**(scope or {}), **initial_metadata, **pin, "spawn_target": agent},
                 approval_profile=approval_profile or "",
                 creation_id=creation_id,
                 creation_digest=creation_digest,
@@ -311,6 +547,155 @@ async def test_human_arrival_during_cancellation_admits_after_settlement(
         assert "human-during-cancellation" in history.acknowledged_notifications(sid)
     finally:
         await asyncio.to_thread(settle_child)
+        await owner.shutdown()
+        await owner.recovery.drain()
+
+
+@pytest.mark.asyncio
+async def test_restart_of_failed_parent_settles_only_its_active_descendants(
+    arc: ARCMemory,
+    tmp_path: Path,
+) -> None:
+    """A terminal failed parent cannot restart above live children it already accepted."""
+    from tests.test_gact.task_records import record_assignment_fixture, record_delegation_fixture
+
+    app, owner, root = await create_environment(arc, tmp_path)
+    history = owner.history
+    children = []
+    for index in range(3):
+        children.append(
+            await asyncio.to_thread(
+                record_delegation_fixture,
+                app,
+                root.owner.session_id,
+                handle=f"task_restart_child_{index}",
+            )
+        )
+    unrelated_session = await asyncio.to_thread(
+        app.state.sessions.create,
+        workspace_id="workspace",
+        agent={"id": "unrelated"},
+        title="Unrelated work",
+    )
+    unrelated = await asyncio.to_thread(
+        record_assignment_fixture, app, unrelated_session.id, handle="task_restart_unrelated"
+    )
+    stamp = now()
+    failed = root.model_copy(
+        update={
+            "status": "failed",
+            "raw_status": "failed",
+            "activity": "",
+            "settlement": "confirmed",
+            "terminal_at": stamp,
+            "updated_at": stamp,
+            "supported_actions": ("get_result", "message", "restart"),
+        }
+    )
+    await asyncio.to_thread(history.record_snapshot, failed, observation_id="failed-parent")
+
+    try:
+        reply = await owner.restart(
+            TaskCaller(root.owner.session_id, "human", human_action=True), root.handle
+        )
+        assert reply["restart_requested"] is True
+        restart_job = owner._controls["restart:" + root.handle]
+        await asyncio.wait_for(asyncio.shield(restart_job), 5)
+
+        successor = await history.io.run(history.latest_assignment, root.owner.session_id)
+        assert successor is not None and successor.handle != root.handle
+        successor_details = AssignmentDetails.model_validate(
+            await history.io.run(history.read_content, successor.details)
+        )
+        assert successor_details.predecessor == root.handle
+        for child in children:
+            settled = await history.io.run(history.task_snapshot, child.handle)
+            assert (
+                settled is not None
+                and settled.terminal_at is not None
+                and settled.status == "cancelled"
+                and settled.settlement == "confirmed"
+            )
+        still_active = await history.io.run(history.task_snapshot, unrelated.handle)
+        assert still_active is not None and still_active.terminal_at is None
+        assert still_active.status == "active"
+    finally:
+        await owner.shutdown()
+        await owner.recovery.drain()
+
+
+@pytest.mark.asyncio
+async def test_restart_does_not_launch_when_terminal_parent_descendant_settlement_is_unknown(
+    arc: ARCMemory,
+    tmp_path: Path,
+) -> None:
+    """An unknown physical descendant outcome keeps the old lineage and blocks restart."""
+    app, owner, root = await create_environment(arc, tmp_path)
+    history = owner.history
+    stamp = now()
+    external = TaskSnapshot(
+        handle="task_restart_unknown_external",
+        kind="MCP",
+        tool="external",
+        owner=root.owner.model_copy(
+            update={"assignment_id": "task_restart_unknown_external", "parent_handle": root.handle}
+        ),
+        label="Uncertain external operation",
+        invocation_id="restart-unknown-external",
+        created_at=stamp,
+        updated_at=stamp,
+        status="running",
+        raw_status="running",
+    )
+    failed = root.model_copy(
+        update={
+            "status": "failed",
+            "raw_status": "failed",
+            "activity": "",
+            "settlement": "confirmed",
+            "terminal_at": stamp,
+            "updated_at": stamp,
+            "supported_actions": ("get_result", "message", "restart"),
+        }
+    )
+    await asyncio.to_thread(history.record_snapshot, external, observation_id="unknown-child")
+    await asyncio.to_thread(history.record_snapshot, failed, observation_id="failed-parent")
+
+    async def refuse_cancellation(task: TaskSnapshot) -> dict[str, str]:
+        assert task.handle == external.handle
+
+        def record_uncertainty() -> None:
+            current = history.task_snapshot(task.handle)
+            assert current is not None
+            history.record_snapshot(
+                current.model_copy(
+                    update={
+                        "status": "task_state_uncertain",
+                        "raw_status": "failed",
+                        "settlement": "unknown",
+                        "terminal_at": now(),
+                    }
+                ),
+                observation_id="external-settlement-unknown",
+            )
+
+        await history.io.run(record_uncertainty)
+        return {"error": "external cleanup was not confirmed"}
+
+    owner.cancel_work = refuse_cancellation
+    try:
+        await owner.restart(
+            TaskCaller(root.owner.session_id, "human", human_action=True), root.handle
+        )
+        restart_job = owner._controls["restart:" + root.handle]
+        with pytest.raises(ValueError, match="descendant settlement remains unconfirmed"):
+            await asyncio.wait_for(asyncio.shield(restart_job), 5)
+        latest = await history.io.run(history.latest_assignment, root.owner.session_id)
+        assert latest is not None and latest.handle == root.handle
+        assert owner._control_holds >= {root.handle}
+        unknown = await history.io.run(history.task_snapshot, external.handle)
+        assert unknown is not None and unknown.settlement == "unknown"
+    finally:
         await owner.shutdown()
         await owner.recovery.drain()
 

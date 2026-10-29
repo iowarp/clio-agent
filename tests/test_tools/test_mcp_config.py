@@ -15,7 +15,6 @@ from clio_agent.tools.mcp_config import (
     _read_mcp_yaml,
     expand_env,
     load_mcp_servers,
-    resolve_expert_servers,
     spec_from_declaration,
     specs_from_mapping,
     transport_for,
@@ -124,7 +123,7 @@ def test_load_precedence_frontmatter_user_workspace(tmp_path):
     (home / ".config" / "clio-agent").mkdir(parents=True)
     (cwd / ".clio").mkdir(parents=True)
 
-    pack_servers = {"earthscope": {"ndp": "pack-ndp", "geo": "pack-geo"}}
+    plugin_servers = {"earthscope": {"ndp": "pack-ndp", "geo": "pack-geo"}}
     (home / ".config" / "clio-agent" / "mcp.yaml").write_text(
         yaml.safe_dump({"mcp_servers": {"ndp": "user-ndp", "weather": "user-weather"}})
     )
@@ -136,10 +135,10 @@ def test_load_precedence_frontmatter_user_workspace(tmp_path):
     # fixture is deterministic across OSes (on Windows the resolver otherwise uses
     # %LOCALAPPDATA%/clio-agent, not home/.config/clio-agent).
     env = {"XDG_CONFIG_HOME": str(home / ".config")}
-    servers = load_mcp_servers(home=home, cwd=cwd, pack_servers=pack_servers, env=env)
+    servers = load_mcp_servers(home=home, cwd=cwd, plugin_servers=plugin_servers, env=env)
     assert servers["ndp"].command == "workspace-ndp"  # workspace wins
     assert servers["ndp"].source == "workspace"
-    assert servers["geo"].command == "pack-geo"  # only in pack frontmatter
+    assert servers["geo"].command == "pack-geo"  # only declared by a plugin
     assert servers["weather"].command == "user-weather"
 
 
@@ -186,34 +185,17 @@ def test_load_mcp_servers_malformed_yaml_warns_loud_and_never_crashes_boot(tmp_p
     (cwd / ".clio" / "mcp.yaml").write_text(
         yaml.safe_dump({"mcp_servers": {"ndp": "workspace-ndp"}})
     )
-    pack_servers = {"earthscope": {"geo": "pack-geo"}}
+    plugin_servers = {"earthscope": {"geo": "pack-geo"}}
     env = {"XDG_CONFIG_HOME": str(home / ".config")}
 
     with caplog.at_level(logging.WARNING, logger="clio_agent.tools.mcp_config"):
-        servers = load_mcp_servers(home=home, cwd=cwd, pack_servers=pack_servers, env=env)
+        servers = load_mcp_servers(home=home, cwd=cwd, plugin_servers=plugin_servers, env=env)
 
     assert servers["ndp"].command == "workspace-ndp"
     assert servers["geo"].command == "pack-geo"
     warnings = [r for r in caplog.records if MCP_YAML_DECLARATION_UNREADABLE in r.getMessage()]
     assert len(warnings) == 1
     assert "mcp.yaml" in warnings[0].getMessage()
-
-
-def test_resolve_expert_servers_select_and_local():
-    glob = specs_from_mapping(
-        {"ndp": "uvx clio-kit run ndp", "geo": "uvx clio-kit run geo"}, source="pack:p"
-    )
-    # per-expert SELECT from global by name
-    sel = resolve_expert_servers(glob, ["geo"])
-    assert set(sel) == {"geo"} and sel["geo"].command == "uvx"
-    # undeclared name -> recorded error, not silent
-    bad = resolve_expert_servers(glob, ["nope"])
-    assert not bad["nope"].usable
-    # per-expert LOCAL declaration (mapping) adds/overrides for that expert only
-    local = resolve_expert_servers(glob, {"private": "uvx my-private-mcp"})
-    assert local["private"].command == "uvx" and local["private"].args == ("my-private-mcp",)
-    # no declaration -> nothing extra
-    assert resolve_expert_servers(glob, None) == {}
 
 
 def test_transport_for():

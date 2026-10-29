@@ -1,0 +1,162 @@
+---
+title: Agent reference
+description: Define an agent as a Python class, refer to plugins by id and version range, choose its flow and model requirements, and read how CLIO resolves it.
+---
+
+import { Aside, CardGrid, LinkCard } from '@astrojs/starlight/components';
+
+An agent is a name, a role, a flow and a list of plugins. A new agent class is a new identity; new capabilities arrive as plugins, never as code in the agent.
+
+<Aside type="caution" title="Development build">
+The SDK is in the development build. It is not in the published v0.9.5-beta.8 release. See [Features and versions](/docs/versions/).
+</Aside>
+
+## An agent class
+
+Agents are Python classes in a marketplace's `agents/*.py`. These two ship in the `clio` marketplace:
+
+```python title="agents/standard.py"
+from clio_agent.sdk import Agent
+
+
+class StandardAgent(Agent):
+    """The default agent: grounded workspace work with no hidden routing hierarchy."""
+
+    id = "standard"
+    version = "1.0.0"
+    name = "CLIO"
+    role = "an autonomous scientific coding and data assistant working in the user's workspace"
+    plugins = Agent.plugins + [
+        "workspace", "shell", "web", "documents", "visuals",
+        "connected-data", "delegation", "orchestration",
+    ]
+
+
+class ScienceAgent(StandardAgent):
+    """A base for domain science agents: the standard agent plus scientific method."""
+
+    id = "science"
+    name = "CLIO Science"
+    role = "a scientific research assistant that grounds every claim in inspected data"
+    plugins = StandardAgent.plugins + ["scientific-method"]
+```
+
+A domain agent builds on them in a few lines:
+
+```python title="agents/factorio.py"
+from .standard import ScienceAgent
+
+
+class Factorio(ScienceAgent):
+    id = "factorio"
+    version = "0.6.0"
+    name = "Factorio"
+    role = "a research partner for manufacturing and materials science: ..."
+    plugins = ScienceAgent.plugins + ["manufacturing", "abaqus", "morphorm", "slurm", "factorio"]
+```
+
+An agent module can import the other agent modules of the same marketplace with a relative import.
+
+## Fields
+
+| Field | Meaning | Default |
+|---|---|---|
+| `id` | The agent's id within its marketplace. Required. | |
+| `version` | The agent's version. | `0.0.0` |
+| `name` | The name shown in the app and used in the prompt's identity line. | The `id` |
+| `role` | Completes `You are {name}, {role}.` at the top of the prompt. | |
+| `description` | What the agent is for, shown when someone chooses an agent. | The class docstring |
+| `plugins` | The plugins it carries, as [plugin references](#plugin-references). | `["core", "memory"]` |
+| `flow` | A flow id, a `Flow` class, or a selection with options such as `Flow("campaign", max_cycles=5)`. | `"react"` |
+| `requires` | `Requires(tool_calling=, vision=, context_tokens=, output_tokens=)`: what the model must support. | Nothing |
+| `prefers` | `Prefers(model=, provider=, effort=)`: what to choose when there is a choice. It never blocks a conversation. | Nothing |
+
+## Plugin lists and layers
+
+A subclass's `plugins` list replaces its parent's. Write `Parent.plugins + [...]` to keep the parent's plugins; leaving one out drops it. Every agent must carry `core`; `memory`, which the base `Agent` carries, can be dropped.
+
+Each class that sets `plugins` is a layer. A plugin belongs to the layer that first added it, which is what the app shows as its source (`core`, an agent layer, a pack, `required by <plugin>`, or your own change) and what orders hooks: the plugins a subclass adds run their hooks before the parent's.
+
+## Plugin references
+
+Agents and plugins name other plugins by id, never by importing their code:
+
+| Reference | Means |
+|---|---|
+| `shell` | Any installed version of `shell`. |
+| `pdf@^1.2` | `pdf` at 1.2 or later, below 2.0. `^0.3` stays within 0.3. |
+| `pdf@~1.2` | 1.2 or later, below 1.3. |
+| `pdf@>=1.2`, `pdf@<2`, `pdf@=1.2.3` | Comparisons; join several with commas: `pdf@>=1.2,<2`. |
+| `pdf@*` | Any version. |
+| `clio/pdf` | `pdf` from the `clio` marketplace, when several installed marketplaces provide a `pdf`. |
+
+When a bare id matches plugins in several marketplaces, CLIO prefers the agent's own marketplace, then the plugins built into CLIO, then the default `clio` marketplace. Otherwise the reference is ambiguous (`plugin_ambiguous`) and needs a marketplace.
+
+## Flows and model requirements
+
+`flow` sets what every message to the agent runs. Most agents keep `react` and let the model start other flows with `run_flow` when a task calls for one. Set a flow on the agent when the agent exists to run one procedure. The flow must come from a plugin the agent resolves (`flow_missing`). See [Write a flow](/docs/sdk/flows/).
+
+A conversation's model must meet the agent's `requires` and those of every resolved plugin. When it does not, sending is refused with the unmet requirements, which plugin needs each, and the models that meet them. `prefers` guides the choice of model where CLIO chooses one, for example for a subagent: the agent's own preference first, then its plugins' in resolution order.
+
+## Marketplaces
+
+A marketplace is a folder or a git repository:
+
+```text
+ai.iowarp.clio/marketplace.json   {"name": "spectro-lab", "description": "..."}
+plugins/<id>/                     one plugin per folder
+agents/*.py                       agent classes
+```
+
+An agent is addressed as `<marketplace>/<id>`, for example `clio/factorio`. A bare id works when only one marketplace has it, and `@<range>` constrains the agent's version. A single plugin folder can also be installed on its own, as a marketplace of one plugin.
+
+Installing a marketplace imports each agent class once and stores a frozen description of it with a checksum. Conversations use that description, so an edit to the class reaches conversations after you update the marketplace. An untrusted marketplace's agent classes are not imported until the trust step.
+
+## Your own agents in the app
+
+A person can change a conversation's plugins and save the result as their own agent, without writing a class. It is stored as its parent plus the changes, such as:
+
+```json
+{"id": "my-default", "name": "My default", "extends": "clio/standard@^1",
+ "add": ["clio-hdf5"], "remove": ["xlsx"]}
+```
+
+and addressed as `user/<id>`. Fixes to the parent and its plugins reach it, within the parent's major version. See [Save your own agent](/docs/agents-and-plugins/#save-your-own-agent).
+
+## Which agent a conversation runs
+
+A new conversation runs the agent it was started with, else the agent in **New session defaults**, else `clio/standard`. It resolves that agent once and keeps the result: plugin updates reach the next conversation, never a running one. Adding or removing a plugin in a running conversation resolves it again for that conversation.
+
+## Inspect an agent
+
+On the machine that runs CLIO:
+
+```console
+$ clio-agent plugin agents
+$ clio-agent plugin resolve clio/factorio
+$ clio-agent plugin resolve clio/factorio --remove abaqus
+$ clio-agent plugin resolve clio/factorio --prompt
+```
+
+`resolve` lists every plugin with its source, and what a removal would also remove and why. `--add` and `--remove` try changes without saving them. `--prompt` prints the composed prompt. Every command takes `--json`.
+
+## Resolution errors
+
+| Code | Meaning |
+|---|---|
+| `plugin_not_installed` | A referenced plugin is not installed. |
+| `plugin_version_mismatch` | No installed version is in the reference's range. |
+| `plugin_ambiguous` | Several marketplaces provide the id; name one. |
+| `plugin_untrusted` | A resolved plugin has executable parts and its marketplace is not trusted. |
+| `core_not_removable` | A change tried to remove `core`. |
+| `removal_not_present` | Warning: a change removes a plugin the agent does not carry. |
+| `flow_missing` | The agent's flow is not provided by any resolved plugin. |
+| `tool_collision`, `skill_collision`, `mcp_server_collision` | Two resolved plugins bring the same name. |
+| `hook_cycle` | Hook ordering forms a cycle. |
+
+An agent that does not resolve cannot start a conversation; the error lists every problem with the plugin it comes from.
+
+<CardGrid>
+  <LinkCard title="Plugin reference" href="/docs/sdk/plugins/" description="What a plugin can contain." />
+  <LinkCard title="What's available" href="/docs/sdk/available/" description="The plugins and agents you can build on." />
+</CardGrid>

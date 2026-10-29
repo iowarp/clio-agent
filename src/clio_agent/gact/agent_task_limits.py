@@ -32,3 +32,22 @@ def max_inference_concurrency() -> int:
     if value < 0:
         raise ValueError("Child inference concurrency must be nonnegative")
     return int(value)
+
+
+def max_forks_per_task() -> int:
+    """Forks one task may have outside a workflow (``fork``); zero means unlimited.
+
+    Inside a workflow a fork counts as an added step against the run's growth bounds
+    instead (``workflows.max_added_steps``).
+    """
+    value = conf.resolve(
+        "agent_tasks.max_forks_per_task",
+        env="CLIO_MAX_FORKS_PER_TASK",
+        default=0,
+        cast=conf.as_int,
+    )
+    if value < 0:
+        raise ValueError(
+            "agent_tasks.max_forks_per_task must be zero (unlimited) or a positive integer"
+        )
+    return int(value)

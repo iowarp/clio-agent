@@ -20,12 +20,27 @@ from clio_agent.gact.agents.media_cache import cached_media
 logger = logging.getLogger(__name__)
 
 
-def result_part(call_id: str, name: str, value: Any, is_error: bool) -> ToolResultPart:
+def result_part(
+    call_id: str, name: str, value: Any, is_error: bool, *, call_ref: str = ""
+) -> ToolResultPart:
     """A tool's result as the provider-native part (images/PDFs as media, else text).
 
     Media the history can no longer show (its snapshot is gone) becomes a note the
-    agent reads -- one old image never fails the whole conversation.
+    agent reads -- one old image never fails the whole conversation. ``call_ref``
+    (``call:<session>/<call_id>``) follows the result, once, so the call can be cited.
     """
+    part = _result_part(call_id, name, value, is_error)
+    if not call_ref:
+        return part
+    return ToolResultPart(
+        id=part.id,
+        content=(*part.content, TextPart(text=f"[{call_ref}]")),
+        name=part.name,
+        is_error=part.is_error,
+    )
+
+
+def _result_part(call_id: str, name: str, value: Any, is_error: bool) -> ToolResultPart:
     try:
         media = _media(value)
     except ValueError as exc:  # ViewImageError / ViewPdfError / ViewedMediaUnavailable

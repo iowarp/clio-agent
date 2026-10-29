@@ -1,0 +1,344 @@
+---
+title: Build your first plugin
+description: Build a spectroscopy plugin with a tool, a skill, a prompt fragment, a hook, a subagent and a flow, add an agent that carries it, then check, install, trust and use it.
+---
+
+import { Aside, CardGrid, LinkCard, FileTree, Steps } from '@astrojs/starlight/components';
+
+This guide builds a small marketplace for a spectroscopy lab. Its plugin finds peaks in spectrum files, has a reviewer check them, and writes a report. By the end you will have used every common piece of a plugin.
+
+<Aside type="caution" title="Development build">
+The SDK is in the development build. It is not in the published v0.9.5-beta.8 release. See [Features and versions](/docs/versions/).
+</Aside>
+
+You need a CLIO installation you can run `clio-agent` on, and a folder to work in. Plugin code runs inside CLIO, which provides `clio_agent.sdk`, so there is nothing else to install.
+
+Here is what you will build:
+
+<FileTree>
+- spectro-lab/
+  - ai.iowarp.clio/
+    - marketplace.json
+  - agents/
+    - spectro.py
+  - plugins/
+    - spectroscopy/
+      - plugin.json
+      - skills/
+        - peak-fitting/
+          - SKILL.md
+      - ai.iowarp.clio/
+        - plugin.py
+        - tools/
+          - peaks.py
+        - prompt/
+          - capabilities.md
+          - peak_reviewer.md
+        - hooks/
+          - raw_data.py
+        - subagents/
+          - reviewer.py
+        - flows/
+          - find_all.py
+</FileTree>
+
+## 1. Name the marketplace
+
+A marketplace needs one file that names it:
+
+```json title="spectro-lab/ai.iowarp.clio/marketplace.json"
+{"name": "spectro-lab", "description": "Our lab's spectroscopy plugin and agent."}
+```
+
+Agents in this marketplace are addressed as `spectro-lab/<agent id>`.
+
+## 2. Describe the plugin
+
+`plugin.json` is the plugin's manifest. `name` is its id: lowercase letters, digits, `-` and `.`. CLIO's own settings go under `extensions["ai.iowarp.clio"]`. Here the plugin requires `workspace`, the plugin that reads and writes files, because its reviewer reads the raw spectra.
+
+```json title="plugins/spectroscopy/plugin.json"
+{
+  "$schema": "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json",
+  "name": "spectroscopy",
+  "version": "0.1.0",
+  "description": "Find peaks in spectra, review them, and report.",
+  "author": {"name": "Spectroscopy Lab"},
+  "license": "BSD-3-Clause",
+  "extensions": {"ai.iowarp.clio": {"requires": ["workspace"]}}
+}
+```
+
+`plugin.py` declares the same identity in Python. It is optional; when present, its id, version and requirements must match `plugin.json`.
+
+```python title="plugins/spectroscopy/ai.iowarp.clio/plugin.py"
+from clio_agent.sdk import Plugin
+
+
+class Spectroscopy(Plugin):
+    id = "spectroscopy"
+    version = "0.1.0"
+    requires = ["workspace"]
+```
+
+## 3. Add a tool
+
+A tool is a Python function marked with `@tool`. Its name, its typed arguments and its docstring are what the model sees, so write the docstring for someone deciding whether to call it. `read_only=True` tells CLIO it changes nothing.
+
+```python title="plugins/spectroscopy/ai.iowarp.clio/tools/peaks.py"
+"""Peak finding for two-column spectrum files."""
+
+import csv
+from pathlib import Path
+
+from clio_agent.sdk import tool
+
+
+@tool(read_only=True)
+def find_peaks(path: str, min_height: float = 0.0) -> dict:
+    """Find the local maxima in a two-column CSV spectrum (x, intensity).
+
+    Returns each peak's position and height, highest first.
+    """
+    rows = [(float(x), float(y)) for x, y in csv.reader(Path(path).open())]
+    peaks = [
+        {"x": rows[i][0], "height": rows[i][1]}
+        for i in range(1, len(rows) - 1)
+        if rows[i - 1][1] < rows[i][1] >= rows[i + 1][1] and rows[i][1] >= min_height
+    ]
+    return {"file": path, "peaks": sorted(peaks, key=lambda p: -p["height"])}
+```
+
+Tool names are shared by every plugin in a conversation. Pick a specific name: two plugins that both bring `find_peaks` cannot be used together.
+
+## 4. Tell the agent what it cannot infer
+
+A prompt fragment is a short Markdown file with frontmatter. It reaches the prompt only when its `when` condition holds, here only when `find_peaks` is available. Keep it to what the model cannot learn from the tool's own description; CLIO warns above about 150 tokens.
+
+```markdown title="plugins/spectroscopy/ai.iowarp.clio/prompt/capabilities.md"
+---
+id: spectroscopy.peaks
+section: capabilities
+when: {tools: [find_peaks]}
+---
+Spectrum files are two-column CSV (x, intensity). The raw files in data/raw/ are read-only.
+```
+
+The `id` must start with the plugin's id. A plugin writes to the `capabilities` or `domain` section.
+
+## 5. Add a skill
+
+A skill is knowledge the agent loads only when it needs it. Only its name and description are in the prompt. The folder name must equal `name`.
+
+```markdown title="plugins/spectroscopy/skills/peak-fitting/SKILL.md"
+---
+name: peak-fitting
+description: How to choose a peak-height threshold and judge whether a peak is noise.
+---
+
+# Peak fitting
+
+Estimate the noise level from a flat region of the spectrum first...
+```
+
+## 6. Protect the raw data with a hook
+
+A hook runs on an event. This one runs before the file-writing tools and refuses edits under `data/raw/`. It returns `None` to allow the call, or a `decision` of `deny` with a reason the agent sees.
+
+```python title="plugins/spectroscopy/ai.iowarp.clio/hooks/raw_data.py"
+from clio_agent.sdk import hook
+
+
+@hook("tool_call", tools=r"fs_write_file|fs_edit_file")
+def protect_raw_data(ev):
+    """Refuse edits to the instrument's original files in data/raw/."""
+    path = "/" + str((ev.tool_input or {}).get("filepath", "")).replace("\\", "/")
+    if "/data/raw/" in path:
+        return {"decision": "deny", "reason": "data/raw/ holds the instrument's original files."}
+    return None
+```
+
+`tools` is a regular expression that must match the whole tool name. The hook's id is `spectroscopy.protect_raw_data`.
+
+## 7. Add a reviewer subagent
+
+A subagent is a specialist the agent hands work to. It runs as its own conversation, with its own prompt and only the plugins and tools you give it, and returns an answer.
+
+```python title="plugins/spectroscopy/ai.iowarp.clio/subagents/reviewer.py"
+from clio_agent.sdk import PromptFile, Subagent
+
+peak_reviewer = Subagent(
+    "peak-reviewer",
+    prompt=PromptFile("prompt/peak_reviewer.md"),
+    description="Checks found peaks against the raw spectra and says which ones are noise.",
+    plugins=["workspace"],
+    tools=["fs_read_file", "find_peaks"],
+)
+```
+
+`description` tells the delegating agent when to use it. `tools` lists the only tools it may call; each must come from its plugins or from this plugin. The prompt file is plain Markdown, relative to `ai.iowarp.clio/`:
+
+```markdown title="plugins/spectroscopy/ai.iowarp.clio/prompt/peak_reviewer.md"
+You review peaks found in spectra. For each file, say which peaks are real and
+which look like noise, and why. Read the raw file when a peak is in doubt.
+```
+
+A Markdown file under `prompt/` without a `section` in its frontmatter is a prompt file, not a fragment.
+
+## 8. Write the procedure as a flow
+
+A flow is a procedure in Python. This one finds the peaks in every file, at most eight at a time, sends all the results to the reviewer, asks the person, and writes the report.
+
+```python title="plugins/spectroscopy/ai.iowarp.clio/flows/find_all.py"
+from clio_agent.sdk import Flow
+
+
+class FindAll(Flow):
+    """Find peaks in every spectrum, have the reviewer check them, then write a report."""
+
+    id = "find-all-peaks"
+    description = "Find peaks in a list of spectrum files, review them, write a report."
+    min_height: float = 0.0
+
+    async def forward(self, files, ctx):
+        if isinstance(files, str):  # started from a message: one path per line
+            files = [line.strip() for line in files.splitlines() if line.strip()]
+        found = await ctx.gather(
+            [ctx.call("find_peaks", {"path": f, "min_height": self.min_height}) for f in files],
+            limit=8,
+        )
+        review = await ctx.call("peak-reviewer", {"results": [r.value for r in found]})
+        if not await ctx.ask("Peaks reviewed. Write the report?", schema=bool):
+            return review
+        await ctx.step(ctx.workspace.write, "reports/peaks.md", review.answer)
+        return {"answer": review.answer, "report": "reports/peaks.md"}
+```
+
+What each line does:
+
+- `ctx.call("find_peaks", {...})` calls the tool by name with its arguments. `ctx.gather` runs the calls together, eight at a time, and returns their results in order.
+- A tool's result is in `.value`. The flow passes plain data to the reviewer, which receives it as JSON.
+- `ctx.call("peak-reviewer", ...)` starts the subagent as a child task and waits for its answer, `review.answer`.
+- `ctx.ask(..., schema=bool)` posts a yes/no question in the conversation and waits for the person.
+- `ctx.step(...)` runs the write once and records it, so a restart does not write the file again.
+- `min_height` is an option. Its type annotation means CLIO checks any value given for it.
+
+If CLIO restarts while this runs, the flow runs again from the top: finished calls return their recorded results, running ones are picked up where they are, and nothing is done twice. [Write a flow](/docs/sdk/flows/) explains the rules this needs.
+
+## 9. Add an agent
+
+An agent is an id, a name, a role and its plugins. This one starts from the base `Agent`, which carries `core` and `memory`, and adds file access, subagents and the tools that start flows.
+
+```python title="agents/spectro.py"
+from clio_agent.sdk import Agent, Requires
+
+
+class SpectroLab(Agent):
+    """A spectroscopy assistant."""
+
+    id = "spectro-lab"
+    version = "0.1.0"
+    name = "Spectro Lab"
+    role = "a spectroscopy analysis assistant"
+    plugins = Agent.plugins + ["workspace", "delegation", "orchestration", "spectroscopy"]
+    requires = Requires(tool_calling=True)
+```
+
+`workspace`, `delegation` and `orchestration` come from other marketplaces; a bare id finds them. You do not need an agent of your own to use the plugin: you can add `spectroscopy` to any conversation with **Add plugin** in the Agent panel instead. See [Agents and plugins](/docs/agents-and-plugins/#add-or-remove-plugins).
+
+## 10. Check it
+
+`clio-agent plugin check` loads the folder exactly as an install would and resolves every plugin and agent in it:
+
+```console
+$ clio-agent plugin check spectro-lab
+plugin check spectro-lab
+ok   plugin spectroscopy@0.1.0
+ok   agent spectro-lab/spectro-lab
+2/2 passed
+```
+
+A mistake is reported with the file and a code, and the command exits with status 1. For example, a misspelled prompt file:
+
+```console
+FAIL plugin spectroscopy@0.1.0
+     error: subagent 'peak-reviewer': prompt file ai.iowarp.clio/prompt/peak_reviewr.md does not exist [prompt_file_missing]
+0/2 passed -- check failed
+```
+
+The output also lists warnings, for example fragments above the size budget. Warnings do not fail the check.
+
+## 11. Install and trust it
+
+<Steps>
+
+1. Install the folder as a marketplace. In the app, open Settings, **Plugins & marketplaces**, choose **Install marketplace**, and enter the folder's path. Or run, on the machine that runs CLIO:
+
+   ```console
+   $ clio-agent plugin install spectro-lab
+   installed spectro-lab (agent-plugins): 1 plugins, 0 agents -- run the trust step: clio-agent plugin trust spectro-lab
+   ```
+
+   Until you trust it, CLIO reads only the marketplace's text. Its agent classes are not loaded yet, which is why it reports 0 agents.
+
+2. Read the code, then run the trust step:
+
+   ```console
+   $ clio-agent plugin trust spectro-lab
+   trusted spectro-lab: 1 plugins, 1 agents
+   ```
+
+3. Confirm the agent resolves. Each plugin is listed with where it came from:
+
+   ```console
+   $ clio-agent plugin resolve spectro-lab/spectro-lab
+   core@1.0.0 [core]
+   memory@1.0.0 [agent]
+   workspace@1.1.0 [spectro-lab]
+   delegation@1.0.0 [spectro-lab]
+   orchestration@1.0.0 [spectro-lab]
+   spectroscopy@0.1.0 [spectro-lab]
+   fleet@1.0.0 [required by core]
+   removed:
+   ```
+
+   Add `--prompt` to print the composed prompt. It starts with "You are Spectro Lab, a spectroscopy analysis assistant." and includes the fragment from step 4.
+
+</Steps>
+
+[Add and manage marketplaces](/docs/marketplaces/manage/) covers the same steps in the app.
+
+## 12. Use it
+
+Start a conversation, choose **Spectro Lab** as its agent (see [Pick an agent for a conversation](/docs/agents-and-plugins/#pick-an-agent-for-a-conversation)), and ask in your own words:
+
+```text
+Find the peaks in every CSV file in data/raw/ and have them reviewed.
+```
+
+The agent can call `find_peaks` itself, hand the files to `peak-reviewer`, or start the `find-all-peaks` flow with its `run_flow` tool. A flow it starts runs as background work: it appears as a card you can follow, and its question appears in the conversation. See [Flows and workflows](/docs/flows/).
+
+## 13. Change it
+
+CLIO reads the installed copy, so after you edit a file:
+
+1. Run `clio-agent plugin check spectro-lab` again.
+2. Run `clio-agent plugin update spectro-lab`, or choose **Update** in the app.
+3. If you changed code (any `.py` file, `mcp.json` or a hook), the update is held until you run the trust step again, and the version you trusted earlier stays in use:
+
+   ```console
+   $ clio-agent plugin update spectro-lab
+   installed spectro-lab (agent-plugins): 0 plugins, 1 agents
+   held until trusted (executable parts changed): spectroscopy
+   $ clio-agent plugin trust spectro-lab
+   trusted spectro-lab: 1 plugins, 1 agents
+   ```
+
+   A change to text only, such as a skill or a fragment, needs no trust step.
+
+The next conversation uses the new version. A conversation already running keeps the version it started with.
+
+<CardGrid>
+  <LinkCard title="Write a flow" href="/docs/sdk/flows/" description="Every flow primitive, with examples and the rules for restarts." />
+  <LinkCard title="Plugin reference" href="/docs/sdk/plugins/" description="Everything a plugin can contain, field by field." />
+  <LinkCard title="What's available" href="/docs/sdk/available/" description="Built-in plugins, tools and flows you can require and reuse." />
+</CardGrid>

@@ -13,9 +13,9 @@ re-encodes it and re-throws).
 
 The fix runs every op's incoming ``content`` through ``_encode_safe`` at a single
 chokepoint (:func:`clio_agent.arc.segments._coerce_content`) BEFORE constructing the
-Segment, so the strict encode can never throw on content; and makes ``_persist``
-defensively non-poisoning (a segment that still fails to encode is removed from the
-in-memory list + logged via ``runtime.trace`` 'SEGMENT-DROP', never silently). These
+Segment, so the strict encode can never throw on content. The write-through commit
+encodes a staged record before replacing the last committed cache; a rejected write
+raises a typed error and leaves the committed scope readable. These
 tests are fully offline + deterministic: they construct content with exotic objects
 directly.
 """
@@ -23,6 +23,7 @@ directly.
 from __future__ import annotations
 
 from dataclasses import dataclass
+from pathlib import Path
 
 import msgspec
 import pytest
@@ -175,7 +176,7 @@ def test_insert_replace_summarize_coerce_exotic_content(tmp_path):
 #     into the in-memory list) is dropped (logged, never silent) and subsequent
 #     appends+persists to the SAME scope still succeed — no durable wedge.
 # ---------------------------------------------------------------------------
-def test_poison_segment_fails_typed_and_does_not_wedge_scope(tmp_path):
+def test_poison_segment_fails_typed_and_does_not_wedge_scope(tmp_path: Path) -> None:
     """A segment clio-core cannot store fails the write typed; memory reloads clio-core's
     record (which never held it), and the scope keeps working -- never a silent drop."""
     from clio_agent.arc.segments import ArcPersistError
@@ -184,8 +185,8 @@ def test_poison_segment_fails_typed_and_does_not_wedge_scope(tmp_path):
     sid, scope = "sess_poison", "agentD"
     store.append(sid, scope, "thought", {"text": "good-1"})
 
-    # Splice an un-encodable segment into the in-memory list, bypassing the
-    # _coerce_content chokepoint (a hypothetical write that slipped one through).
+    # Bypass coercion at the write-through staging boundary. Never mutate the
+    # last committed cache: the current writer publishes only after encoding/put.
     poison = Segment(
         scope=scope,
         kind="observation",
@@ -197,11 +198,8 @@ def test_poison_segment_fails_typed_and_does_not_wedge_scope(tmp_path):
     )
     with pytest.raises((TypeError, msgspec.MsgspecError)):
         encode_segments([poison])
-    store._segs(sid, scope).append(poison)
-    store._index.add(sid, scope, poison)
-
     with pytest.raises(ArcPersistError):
-        store.append(sid, scope, "thought", {"text": "good-2"})
+        store._commit_scope(sid, scope, [*store._segs(sid, scope), poison])
 
     assert [s.content.get("text") for s in store.render(sid, scope)] == ["good-1"]
     store.append(sid, scope, "thought", {"text": "good-3"})

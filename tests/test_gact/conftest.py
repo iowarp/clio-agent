@@ -50,6 +50,15 @@ def question_world(tmp_path: Path) -> Iterator[tuple[Any, TestClient, str]]:
 
 
 @pytest.fixture(autouse=True)
+def _released_controller(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Deploy plans built here come from a released CLIO, not this test checkout's commit."""
+    for owner in ("drivers", "controller_source"):
+        monkeypatch.setattr(
+            f"clio_agent.gact.infrastructure.{owner}.controller_commit", lambda: None
+        )
+
+
+@pytest.fixture(autouse=True)
 def a2ui_session_lifespan(
     request: pytest.FixtureRequest, monkeypatch: pytest.MonkeyPatch
 ) -> Iterator[None]:
@@ -283,7 +292,7 @@ def _live_equals_reload_property(monkeypatch):
 
 # ``host_agent_executor`` (the #948 S4b turn-executor seam) is defined in the ROOT
 # ``tests/conftest.py`` so every suite that drives a turn with a ``build_app``
-# host fake (test_gact, test_sdk, test_ui) can opt into it by name.
+# host fake (test_gact, test_client, test_ui) can opt into it by name.
 
 
 def settle_turn_slot(client: TestClient, sid: str, *, timeout: float = 30.0) -> None:

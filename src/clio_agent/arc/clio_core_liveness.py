@@ -17,13 +17,17 @@ The defense clio-agent ships now
 A cheap **liveness gate** wrapped around every clio-core op (:class:`LivenessGate`):
 
 * Before an op reaches the native binding, the gate confirms the daemon is
-  accepting connections. The probe result is cached for a short TTL
+  listening. Windows reads the OS listener table without consuming ephemeral
+  ports; other hosts connect to the endpoint. The result is cached for a short TTL
   (:data:`_DEFAULT_LIVENESS_TTL_S`, configurable) so the per-op overhead is a
   single ``time.monotonic()`` comparison in the common case, not a socket connect.
 * On probe failure the store enters a **QUARANTINED** state and every op raises a
   typed :class:`ClioCoreRuntimeLostError` *before* touching the binding. This shrinks the
   AV window from "any time the daemon can die" to "the daemon dies within the TTL
   race" — a residual honestly owned here and closed upstream by #722.
+  An inconclusive local probe (for example Windows socket allocation failure)
+  instead permits a bounded RPC through the verified original daemon/client.
+  A real reply establishes liveness without replacing either native object.
 * By default, the next op after quarantine makes **one** guarded reconnect attempt
   (rate-limited to once per TTL) through the injected reconnect seam — the existing
   connect-or-spawn path in :mod:`clio_agent.arc.storage`, which spawns + rebinds and
@@ -49,6 +53,7 @@ tests that reach them there.
 
 from __future__ import annotations
 
+import errno
 import logging
 import os
 import socket
@@ -88,7 +93,10 @@ RPC_STALLED_REASON = "clio_core_rpc_stalled"
 # The ladder exhausted while the daemon process could not be located, so whether it was
 # progressing is unknown: not evidence of a stall. Recovers like a stall (a real RPC).
 DAEMON_PID_UNRESOLVED_REASON = "clio_core_daemon_pid_unresolved"
-_RPC_PROBE_RECOVERY_REASONS = frozenset({RPC_STALLED_REASON, DAEMON_PID_UNRESOLVED_REASON})
+SOCKET_PROBE_UNAVAILABLE_REASON = "clio_core_socket_probe_unavailable"
+_RPC_PROBE_RECOVERY_REASONS = frozenset(
+    {RPC_STALLED_REASON, DAEMON_PID_UNRESOLVED_REASON, SOCKET_PROBE_UNAVAILABLE_REASON}
+)
 
 # Recovery back-off TTL for an ``rpc_stalled`` quarantine. A zombie's RPC-level health
 # re-probe (:func:`clio_agent.arc.rpc_liveness.probe_rpc_health`) costs up to
@@ -167,13 +175,48 @@ def _resolve_runtime_port(config_path: str) -> int:
     return _DEFAULT_RUNTIME_PORT
 
 
+def _listener_present(port: int) -> bool:
+    if os.name == "nt":
+        from clio_agent.arc.windows_tcp import loopback_listener_present
+
+        return loopback_listener_present(port)
+    with socket.create_connection(("127.0.0.1", port), timeout=3.0):
+        return True
+
+
 def _runtime_alive(port: int) -> bool:
-    """True if a clio-core runtime is accepting connections on ``127.0.0.1:port``."""
+    """Return listener presence; raise when the local probe cannot establish it.
+
+    A refused connection or Windows' OS listener table proves absence. Timeouts,
+    local socket exhaustion and table-query failures cannot authorize replacement
+    or permanent dead-client quarantine.
+    """
     try:
-        with socket.create_connection(("127.0.0.1", port), timeout=0.5):
-            return True
-    except OSError:
-        return False
+        # Windows reads actual OS listener state instead of allocating another
+        # connection: under sustained use the connect probe can exhaust local
+        # ports even while the existing native client is healthy.
+        return _listener_present(port)
+    except OSError as error:
+        if error.errno == errno.ECONNREFUSED or getattr(error, "winerror", None) == 10061:
+            return False
+        logger.warning(
+            "Core socket probe failed: port=%s error_type=%s errno=%s winerror=%s detail=%s",
+            port,
+            type(error).__name__,
+            error.errno,
+            getattr(error, "winerror", None),
+            error,
+        )
+        raise ClioCoreRuntimeLostError(
+            f"Cannot probe the Core endpoint on 127.0.0.1:{port}: {error}",
+            reason=SOCKET_PROBE_UNAVAILABLE_REASON,
+            port=port,
+            details={
+                "errno": error.errno,
+                "winerror": getattr(error, "winerror", None),
+                "recovery_actions": ["retry", "run_clio_doctor"],
+            },
+        ) from error
 
 
 def _resolve_liveness_ttl_s() -> float:
@@ -195,6 +238,18 @@ def _resolve_liveness_ttl_s() -> float:
     except Exception:  # noqa: BLE001 - a malformed value must not disable the gate
         return _DEFAULT_LIVENESS_TTL_S
     return ttl if ttl >= 0 else _DEFAULT_LIVENESS_TTL_S
+
+
+def runtime_socket_status(
+    port: int, *, probe: Callable[[int], bool] | None = None
+) -> tuple[bool, str | None]:
+    """Report an inconclusive socket probe without asserting daemon death."""
+    try:
+        return (probe or _runtime_alive)(port), None
+    except ClioCoreRuntimeLostError as error:
+        if error.details.get("reason") != SOCKET_PROBE_UNAVAILABLE_REASON:
+            raise
+        return False, SOCKET_PROBE_UNAVAILABLE_REASON
 
 
 # --------------------------------------------------------------------------- #
@@ -220,6 +275,7 @@ class ClioCoreRuntimeLostError(ClioError):
         port: int | None = None,
         details: dict | None = None,
     ) -> None:
+        self.degradation_reason = reason
         merged: dict = {
             "reason": reason,
             "recovery_actions": [
@@ -273,8 +329,8 @@ class LivenessGate:
     Args:
         config_path: The clio-core config path (used to resolve the RPC port).
         log_level: The runtime log level, carried for the reconnect seam.
-        probe: Injectable liveness probe ``(port) -> bool`` (defaults to a real TCP
-            connect); the seam the tests drive to simulate daemon loss without an AV.
+        probe: Injectable liveness probe ``(port) -> bool`` (OS listener state on
+            Windows, TCP connect elsewhere); tests simulate loss here without an AV.
         ttl_s: Probe-cache TTL in seconds; ``None`` resolves the configured default.
         auto_recover: Permit native rebinding when true. When false, only an RPC
             probe of the verified original daemon/client can recover a stall.
@@ -325,7 +381,9 @@ class LivenessGate:
                 "ttl_s": self._ttl_s,
             }
             identity = self._attached_identity
-            requires_restart = self._quarantined and not self._auto_recover
+            requires_restart = self._quarantined and (
+                not self._auto_recover or self._reason == SOCKET_PROBE_UNAVAILABLE_REASON
+            )
         snapshot["restart_required"] = requires_restart and not (
             snapshot["reason"] in _RPC_PROBE_RECOVERY_REASONS
             and identity is not None
@@ -354,6 +412,8 @@ class LivenessGate:
         probe / plain reconnect passes BY DEFINITION and would dissolve the quarantine
         into another full stall ladder. It instead recovers only through ``rpc_probe``,
         a real RPC-level health check; without one it stays quarantined.
+        An inconclusive local socket probe also uses a real RPC, but only through
+        the verified original daemon/client; it never permits a replacement spawn.
 
         Args:
             reconnect: The connect-or-spawn seam that rebuilds the native binding
@@ -374,10 +434,18 @@ class LivenessGate:
                 now = time.monotonic()
                 if self._last_ok_at is not None and now - self._last_ok_at < self._ttl_s:
                     return
-                if self._probe(self._port):
-                    self._last_ok_at = now
-                    return
-                self._enter_quarantine("clio_core_daemon_not_listening")
+                try:
+                    alive = self._probe(self._port)
+                except ClioCoreRuntimeLostError as error:
+                    if error.details.get("reason") != SOCKET_PROBE_UNAVAILABLE_REASON:
+                        raise
+                    self._enter_quarantine(SOCKET_PROBE_UNAVAILABLE_REASON)
+                    recover = True
+                else:
+                    if alive:
+                        self._last_ok_at = now
+                        return
+                    self._enter_quarantine("clio_core_daemon_not_listening")
         if recover:
             self._attempt_recovery(reconnect, rpc_probe)
             return
@@ -403,7 +471,7 @@ class LivenessGate:
         """
         return (
             _RPC_STALLED_RECOVERY_TTL_S
-            if self._reason in _RPC_PROBE_RECOVERY_REASONS
+            if self._reason in {RPC_STALLED_REASON, DAEMON_PID_UNRESOLVED_REASON}
             else self._ttl_s
         )
 
@@ -451,8 +519,13 @@ class LivenessGate:
             self._last_recovery_at = now
             self._recovery_in_progress = True
         try:
+            original_client_only = (
+                not self._auto_recover or reason == SOCKET_PROBE_UNAVAILABLE_REASON
+            )
             if reason in _RPC_PROBE_RECOVERY_REASONS:
-                if not self._auto_recover and _daemon_identity(self._config_path) != identity:
+                if original_client_only and (
+                    identity is None or _daemon_identity(self._config_path) != identity
+                ):
                     raise ClioCoreRuntimeLostError(
                         "The original Core process changed before its recovery probe.",
                         reason="clio_core_client_restart_required",
@@ -473,12 +546,10 @@ class LivenessGate:
                         reason="clio_core_reconnect_failed",
                         port=self._port,
                     ) from error
-            current_identity = (
-                _daemon_identity(self._config_path) if not self._auto_recover else None
-            )
+            current_identity = _daemon_identity(self._config_path) if original_client_only else None
             with self._lock:
                 if self._quarantine_revision != revision or (
-                    not self._auto_recover and current_identity != identity
+                    original_client_only and current_identity != identity
                 ):
                     raise ClioCoreRuntimeLostError(
                         "Core state changed during its recovery probe; retry after reconciliation.",

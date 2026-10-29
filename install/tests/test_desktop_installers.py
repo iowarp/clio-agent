@@ -7,11 +7,19 @@ import os
 import shlex
 import shutil
 import subprocess
+import sys
 from pathlib import Path
 
 import pytest
 
 ROOT = Path(__file__).resolve().parents[2]
+
+
+# The shared installer shims live in the repo's test package; this suite also runs
+# from install/tests alone (macos-bundle-smoke), where the repo root isn't importable.
+_REPO = str(Path(__file__).resolve().parents[2])
+if _REPO not in sys.path:
+    sys.path.insert(0, _REPO)
 
 
 def _bash_path(path: Path) -> str:
@@ -26,46 +34,16 @@ def test_backend_installer_requests_compatible_mac_wheels(
     tmp_path: Path, system: str, version: str
 ) -> None:
     """The registry install uses wheel-only resolution on Mac, retaining Linux source support."""
-    binaries = tmp_path / "bin"
-    binaries.mkdir()
-    args_file = tmp_path / "uv-args"
-    shims = {
-        "uname": f'if [ "$1" = -s ]; then echo {system}; else echo arm64; fi',
-        "curl": "exit 99",
-        "uv": 'if [ "$1" = venv ]; then exit 0; fi\nprintf "%s\\n" "$@" > "$TEST_UV_ARGS"\nexit 77',
-    }
-    for name, contents in shims.items():
-        shim = binaries / name
-        shim.write_text("#!/bin/bash\n" + contents + "\n", newline="\n")
-        shim.chmod(0o755)
-    env = {key: value for key, value in os.environ.items() if not key.startswith("CLIO_")}
-    env.update(
-        HOME=_bash_path(tmp_path),
-        TEST_PATH=f"{_bash_path(binaries)}:/usr/bin:/bin",
-        CLIO_PREFIX=_bash_path(tmp_path / "install"),
-        CLIO_BIN_DIR=_bash_path(tmp_path / "launchers"),
-        CLIO_VERSION=version,
-        TEST_UV_ARGS=_bash_path(args_file),
-    )
-    bash = "C:/Program Files/Git/bin/bash.exe" if os.name == "nt" else "bash"
-    result = subprocess.run(
-        [
-            bash,
-            "-c",
-            'export PATH="$TEST_PATH"; exec bash "$1"',
-            "installer-test",
-            _bash_path(ROOT / "install/install.sh"),
-        ],
-        env=env,
-        capture_output=True,
-        text=True,
-        timeout=10,
-    )
-    assert result.returncode == 77, result.stdout + result.stderr
-    args = args_file.read_text().splitlines()
+    from tests.test_scripts.installer_shims import RELEASE_STOP, run_installer, write_release
+
+    for tag in ("v0.9.5-beta.2", "v0.9.5-beta.5.1"):
+        write_release(tmp_path / "fixtures", tag, python="3.14")
+    result, calls = run_installer(tmp_path, "--version", version, system=system)
+    assert result.returncode == RELEASE_STOP, result.stdout + result.stderr
+    install = next(call for call in calls if call.startswith("uv pip install"))
     package_version = "0.9.5b5.post1" if version == "v0.9.5-beta.5.1" else version
-    assert f"clio-agent[argonne,flowcept]=={package_version}" in args
-    assert ("--only-binary=rasterio" in args) == (system == "Darwin")
+    assert f"clio-agent[argonne,flowcept]=={package_version}" in install
+    assert ("--only-binary=rasterio" in install) == (system == "Darwin")
 
 
 @pytest.mark.parametrize(
@@ -73,16 +51,26 @@ def test_backend_installer_requests_compatible_mac_wheels(
 )
 @pytest.mark.parametrize("integrity", ["valid", "tampered", "missing", "duplicate"])
 @pytest.mark.parametrize("checksum_format", ["canonical", "legacy", "binary"])
+@pytest.mark.parametrize("system", ["Darwin", "Linux"])
 def test_verified_desktop_download(
-    tmp_path: Path, version: str, integrity: str, checksum_format: str
+    tmp_path: Path, version: str, integrity: str, checksum_format: str, system: str
 ) -> None:
-    """A real hash check must precede setup, including beta normalization and bad manifests."""
+    """``install --desktop``: a real hash check precedes setup, with beta normalization
+    and bad manifests, on every OS (Windows runs ``install.ps1 -Desktop``)."""
     windows = os.name == "nt"
+    if windows and system == "Linux":
+        pytest.skip("one Windows variant")
     tag_version = {
         "0.9.5b2": "0.9.5-beta.2",
         "0.9.5b5.post1": "0.9.5-beta.5.1",
     }.get(version, version.removeprefix("v"))
-    suffix = "x64-setup-bundled.exe" if windows else "aarch64-bundled.dmg"
+    suffix = (
+        "x64-setup-bundled.exe"
+        if windows
+        else "aarch64-bundled.dmg"
+        if system == "Darwin"
+        else "amd64-bundled.deb"
+    )
     asset_name = f"CLIO.Desktop_{tag_version}_{suffix}"
     payload = tmp_path / "fixture.bin"
     payload.write_bytes(b"release payload")
@@ -117,7 +105,8 @@ function Invoke-WebRequest {{
     else {{ return @{{Content = (Get-Content -Raw -LiteralPath {quote(manifest)})}} }}
 }}
 function Start-Process {{ throw 'DownloadOnly must never start setup' }}
-& {quote(ROOT / "install/desktop.ps1")} -Version '{version}' -DownloadOnly -DownloadDirectory {quote(output)}
+& {quote(ROOT / "install/install.ps1")} -Desktop -Version '{version}' -DownloadOnly {quote(output)}
+exit $LASTEXITCODE
 """,
             encoding="utf-8",
         )
@@ -127,7 +116,10 @@ function Start-Process {{ throw 'DownloadOnly must never start setup' }}
         bin_dir = tmp_path / "bin"
         bin_dir.mkdir()
         commands = {
-            "uname": 'if [ "$1" = -s ]; then echo Darwin; else echo arm64; fi',
+            "uname": f'if [ "$1" = -s ]; then echo {system}; else echo '
+            + ("arm64" if system == "Darwin" else "x86_64")
+            + "; fi",
+            "dpkg": "exit 0",
             "sysctl": "echo 1",
             "sw_vers": "echo 14.0",
             "curl": """out=""; url=""
@@ -140,11 +132,12 @@ while [ "$#" -gt 0 ]; do
 done
 printf '%s\\n' "$url" >> "$TEST_URLS"
 case "$url" in
-  *.dmg) cp "$TEST_PAYLOAD" "$out" ;;
+  *.dmg|*.deb) cp "$TEST_PAYLOAD" "$out" ;;
   */SHA256SUMS.*.txt) cp "$TEST_MANIFEST" "$out" ;;
   *) exit 99 ;;
 esac""",
             "hdiutil": "echo 'Download-only must never mount' >&2; exit 99",
+            "apt-get": "echo 'Download-only must never install' >&2; exit 99",
         }
         for name, contents in commands.items():
             path = bin_dir / name
@@ -158,7 +151,13 @@ esac""",
             TEST_PAYLOAD=str(payload),
             TEST_MANIFEST=str(manifest),
         )
-        command = ["bash", str(ROOT / "install/desktop.sh"), "--download-only", str(output)]
+        command = [
+            "bash",
+            str(ROOT / "install/install.sh"),
+            "--desktop",
+            "--download-only",
+            str(output),
+        ]
     result = subprocess.run(command, env=env, text=True, capture_output=True, timeout=30)
     if integrity == "valid":
         assert result.returncode == 0, result.stdout + result.stderr
@@ -188,6 +187,11 @@ $env:CLIO_VERSION = 'v0.9.5-beta.5.1'
 $env:CLIO_REF = ''
 $env:GACT_REF = ''
 function uv {{
+    # The release's locked versions come first (uv export to a constraints file).
+    if ($args[0] -eq 'export') {{
+        Set-Content -LiteralPath $args[[array]::IndexOf($args, '-o') + 1] -Value ''
+        $global:LASTEXITCODE = 0; return
+    }}
     if ($args[0] -eq 'venv') {{ $global:LASTEXITCODE = 0; return }}
     $args | Set-Content -LiteralPath {quote(args_file)}
     exit 77
@@ -204,7 +208,10 @@ exit $LASTEXITCODE
         timeout=30,
     )
     assert result.returncode == 77, result.stdout + result.stderr
-    assert "clio-agent==0.9.5b5.post1" in args_file.read_text(encoding="utf-8-sig").splitlines()
+    assert (
+        "clio-agent[argonne,flowcept]==0.9.5b5.post1"
+        in args_file.read_text(encoding="utf-8-sig").splitlines()
+    )
 
 
 def test_shell_release_parser_accepts_bsd_whitespace(tmp_path: Path) -> None:
@@ -232,3 +239,97 @@ def test_shell_release_parser_accepts_bsd_whitespace(tmp_path: Path) -> None:
     )
     assert result.returncode == 0, result.stderr
     assert result.stdout.strip() == "v0.9.5-beta.2"
+
+
+@pytest.mark.skipif(os.name == "nt", reason="install.sh runs on macOS and Linux")
+def test_intel_mac_desktop_is_refused_before_any_download(tmp_path: Path) -> None:
+    """Intel Macs have only the attach-only app, which is not offered: say so, fetch nothing."""
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    for name, contents in {
+        "uname": 'if [ "$1" = -s ]; then echo Darwin; else echo x86_64; fi',
+        "sysctl": "echo 0",
+        "sw_vers": "echo 14.0",
+        "curl": "echo 'nothing may be downloaded' >&2; exit 99",
+    }.items():
+        path = bin_dir / name
+        path.write_text("#!/bin/bash\nset -eu\n" + contents + "\n")
+        path.chmod(0o755)
+    env = dict(os.environ, PATH=f"{bin_dir}:{os.environ['PATH']}", CLIO_VERSION="0.9.4.24")
+    result = subprocess.run(
+        ["bash", str(ROOT / "install/install.sh"), "--desktop"],
+        env=env,
+        text=True,
+        capture_output=True,
+        timeout=30,
+    )
+    assert result.returncode != 0
+    assert "not available for Intel Macs" in result.stdout + result.stderr
+    assert "nothing may be downloaded" not in result.stderr
+
+
+def _prepare_functions() -> str:
+    """install.sh's preparation step and the helpers it uses, without the rest."""
+    script = (ROOT / "install/install.sh").read_text(encoding="utf-8")
+    wanted = ("say", "desktop_prepares", "prepare_desktop")
+    blocks, keep = [], False
+    for line in script.splitlines():
+        if any(line.startswith(f"{name}()") for name in wanted):
+            keep = True
+        if keep:
+            blocks.append(line)
+            if line == "}" or (line.startswith("say()") and line.rstrip().endswith("}")):
+                keep = False
+    return "\n".join(blocks)
+
+
+@pytest.mark.skipif(os.name == "nt", reason="install.sh runs on macOS and Linux")
+@pytest.mark.parametrize(
+    ("tag", "prepares"),
+    [("v0.9.4.24", False), ("v0.9.5-beta.8", False), ("v0.9.5", True), ("v0.9.6-beta.1", True)],
+)
+def test_desktop_is_prepared_after_install_when_its_release_can(
+    tmp_path: Path, tag: str, prepares: bool
+) -> None:
+    """The first launch's setup runs at install, as on Windows; never an unknown flag."""
+    calls = tmp_path / "calls"
+    desktop = tmp_path / "clio-desktop"
+    desktop.write_text(f'#!/bin/bash\necho "$*" >> {shlex.quote(str(calls))}\n')
+    desktop.chmod(0o755)
+    result = subprocess.run(
+        [
+            "bash",
+            "-c",
+            _prepare_functions() + f"\nprepare_desktop {tag} {shlex.quote(str(desktop))}",
+        ],
+        text=True,
+        capture_output=True,
+        timeout=30,
+        env={k: v for k, v in os.environ.items() if k != "SUDO_USER"},
+    )
+    assert result.returncode == 0, result.stderr
+    if prepares:
+        assert calls.read_text() == "--prepare-runtime\n"
+        assert "ready to open" in result.stdout + result.stderr
+    else:
+        assert not calls.exists()
+
+
+@pytest.mark.skipif(os.name == "nt", reason="install.sh runs on macOS and Linux")
+def test_a_failed_preparation_is_reported_and_left_to_first_launch(tmp_path: Path) -> None:
+    desktop = tmp_path / "clio-desktop"
+    desktop.write_text("#!/bin/bash\necho 'no network' >&2\nexit 3\n")
+    desktop.chmod(0o755)
+    result = subprocess.run(
+        [
+            "bash",
+            "-c",
+            _prepare_functions() + f"\nprepare_desktop v0.9.5 {shlex.quote(str(desktop))}",
+        ],
+        text=True,
+        capture_output=True,
+        timeout=30,
+    )
+    assert result.returncode == 0
+    assert "did not finish" in result.stdout + result.stderr
+    assert "first launch" in result.stdout + result.stderr

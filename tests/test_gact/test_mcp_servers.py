@@ -11,6 +11,7 @@ from fastapi.testclient import TestClient
 from fastmcp import FastMCP
 
 from clio_agent.gact.app import build_app
+from tests._plugin_fixtures import custom_marketplace
 
 
 class _InventoryAgent:
@@ -44,36 +45,48 @@ def _ready_executor() -> SimpleNamespace:
     )
 
 
-def _earthscope_workspace(root: Path) -> None:
-    """Write a one-namespace blueprint whose server is never launched."""
+_EARTHSCOPE_AGENT = """
+from clio_agent.sdk import Agent
 
-    root.joinpath(".clio", "agent-blueprints", "earthscope").mkdir(parents=True)
-    root.joinpath(".clio", "agent-blueprints", "earthscope", "AGENT.md").write_text(
-        """---
-id: earthscope
-version: 0.1.0
-title: EarthScope Skills
-mcp_servers:
-  ndp: never-launch-ndp serve
----
-Investigate EarthScope data.
-""",
-        encoding="utf-8",
+
+class Earthscope(Agent):
+    id = "earthscope"
+    version = "0.1.0"
+    name = "EarthScope Skills"
+    role = "an EarthScope data investigator"
+    plugins = Agent.plugins + ["earthscope-tools"]
+"""
+
+_AGENT_REF = "clio/earthscope"
+
+
+def _never_launch(name: str) -> dict[str, object]:
+    return {"type": "stdio", "command": f"never-launch-{name}", "args": ["serve"]}
+
+
+def _earthscope_marketplace(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, *servers: str) -> None:
+    """Install an ``earthscope`` agent whose plugin declares never-launched servers."""
+
+    custom_marketplace(
+        tmp_path,
+        monkeypatch,
+        plugins={"earthscope-tools": {"servers": {name: _never_launch(name) for name in servers}}},
+        agents={"earthscope.py": _EARTHSCOPE_AGENT},
     )
 
 
-def _session_rows(client: TestClient, *, root_path: str, workspace: Path) -> dict[str, object]:
-    """Activate the blueprint and return the ``/v1/mcp/servers`` body."""
+def _session_rows(client: TestClient, *, root_path: str) -> dict[str, object]:
+    """Open an ``earthscope`` session and return the ``/v1/mcp/servers`` body."""
 
-    del workspace
     wid = client.post("/v1/workspaces", json={"name": "Workspace", "root_path": root_path}).json()[
         "id"
     ]
-    sid = client.post("/v1/sessions", json={"title": "Earth", "workspace_id": wid}).json()["id"]
-    activated = client.post(
-        f"/v1/sessions/{sid}/agent-blueprint", json={"blueprint_id": "earthscope"}
+    created = client.post(
+        "/v1/sessions",
+        json={"title": "Earth", "workspace_id": wid, "metadata": {"agent_ref": _AGENT_REF}},
     )
-    assert activated.status_code == 200, activated.text
+    assert created.status_code in (200, 201), created.text
+    sid = created.json()["id"]
     listed = client.get("/v1/mcp/servers", params={"workspace_id": wid, "session_id": sid})
     assert listed.status_code == 200, listed.text
     return listed.json()
@@ -105,73 +118,68 @@ def test_mcp_servers_lists_known_namespaces(client: TestClient) -> None:
         assert all(t.startswith(f"{name}_") for t in row["tools"])
 
 
-def test_mcp_servers_projects_selected_session_blueprint_without_launching(tmp_path: Path) -> None:
-    """Session inventory includes declared MCPs before a namespace is first used."""
+def test_mcp_servers_projects_the_session_agent_plugin_servers_without_launching(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Session inventory includes the agent's plugin MCPs before a namespace is first used."""
 
+    _earthscope_marketplace(tmp_path, monkeypatch, "ndp", "geo")
     workspace = tmp_path / "workspace"
-    blueprint = workspace / ".clio" / "agent-blueprints" / "earthscope"
-    (blueprint / "experts").mkdir(parents=True)
-    blueprint.joinpath("AGENT.md").write_text(
-        """---
-id: earthscope
-version: 0.1.0
-title: EarthScope Skills
-root_expert: investigator
-mcp_servers:
-  ndp: never-launch-ndp serve
-  geo: never-launch-geo serve
----
-Investigate EarthScope data.
-""",
-        encoding="utf-8",
-    )
-    blueprint.joinpath("experts", "investigator.md").write_text(
-        """---
-id: investigator
-title: Investigator
-tier: 1
----
-Investigate.
-""",
-        encoding="utf-8",
-    )
+    workspace.mkdir()
     app = build_app(sessions_path=tmp_path / "session-mcp.json", agent=_InventoryAgent())
     with TestClient(app) as session_client:
-        wid = session_client.post(
-            "/v1/workspaces",
-            json={"name": "Workspace", "root_path": str(workspace)},
-        ).json()["id"]
-        sid = session_client.post(
-            "/v1/sessions", json={"title": "Earth", "workspace_id": wid}
-        ).json()["id"]
-        activated = session_client.post(
-            f"/v1/sessions/{sid}/agent-blueprint", json={"blueprint_id": "earthscope"}
-        )
-        assert activated.status_code == 200, activated.text
-        response = session_client.get(
-            "/v1/mcp/servers", params={"workspace_id": wid, "session_id": sid}
-        )
+        body = _session_rows(session_client, root_path=str(workspace))
 
-    assert response.status_code == 200, response.text
-    rows = {row["name"]: row for row in response.json()["servers"]}
+    rows = {row["name"]: row for row in body["servers"]}
+    sid = rows["ndp"]["session_id"]
+    assert sid
     assert rows["ndp"]["status"] == "available"
-    assert rows["ndp"]["source"] == "agent_blueprint"
-    assert rows["ndp"]["agent_blueprint_id"] == "earthscope"
-    assert rows["ndp"]["agent_blueprint_name"] == "EarthScope Skills"
-    assert rows["ndp"]["session_id"] == sid
+    assert rows["ndp"]["source"] == "plugin"
+    assert rows["ndp"]["plugin"] == "earthscope-tools"
+    assert rows["ndp"]["agent_ref"] == _AGENT_REF
     assert rows["geo"]["status"] == "available"
+    assert rows["geo"]["session_id"] == sid
     assert rows["ndp"]["tools_count"] == 0
 
 
-def test_mcp_servers_reports_resident_session_namespace_as_ready(tmp_path: Path) -> None:
+def test_without_a_session_the_listing_is_what_a_new_conversation_would_get(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Settings asks per workspace: the default agent's plugin MCPs are listed too."""
+
+    _earthscope_marketplace(tmp_path, monkeypatch, "ndp")
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    app = build_app(sessions_path=tmp_path / "draft-mcp.json", agent=_InventoryAgent())
+    with TestClient(app) as draft_client:
+        wid = draft_client.post(
+            "/v1/workspaces", json={"name": "Workspace", "root_path": str(workspace)}
+        ).json()["id"]
+        patched = draft_client.patch("/v1/session-defaults", json={"agent_ref": _AGENT_REF})
+        assert patched.status_code == 200, patched.text
+        body = draft_client.get("/v1/mcp/servers", params={"workspace_id": wid}).json()
+
+    rows = {row["name"]: row for row in body["servers"]}
+    assert {"fs", "shell", "ndp"} <= set(rows)
+    assert rows["ndp"]["id"] == "draft_mcp_ndp"
+    assert rows["ndp"]["source"] == "plugin"
+    assert rows["ndp"]["plugin"] == "earthscope-tools"
+    assert rows["ndp"]["agent_ref"] == _AGENT_REF
+    assert rows["ndp"]["session_id"] == ""
+
+
+def test_mcp_servers_reports_resident_session_namespace_as_ready(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     """A connected persistent workspace namespace is reported as ready."""
 
+    _earthscope_marketplace(tmp_path, monkeypatch, "ndp")
     workspace = tmp_path / "workspace"
-    _earthscope_workspace(workspace)
+    workspace.mkdir()
     agent = _InventoryAgent(root=str(workspace), executor=_ready_executor())
     app = build_app(sessions_path=tmp_path / "ready-mcp.json", agent=agent)
     with TestClient(app) as session_client:
-        body = _session_rows(session_client, root_path=str(workspace), workspace=workspace)
+        body = _session_rows(session_client, root_path=str(workspace))
 
     ndp = next(row for row in body["servers"] if row["name"] == "ndp")
     assert ndp["status"] == "ready"
@@ -179,7 +187,9 @@ def test_mcp_servers_reports_resident_session_namespace_as_ready(tmp_path: Path)
     assert body["degradations"] == []
 
 
-def test_mcp_servers_finds_the_resident_fleet_under_any_root_spelling(tmp_path: Path) -> None:
+def test_mcp_servers_finds_the_resident_fleet_under_any_root_spelling(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     """One canonicalizer keys BOTH the fleet registry and the inventory reader.
 
     ``_runtime_workspace_catalog_cwd`` hands the reader ``str(Path(root).expanduser())``
@@ -189,15 +199,16 @@ def test_mcp_servers_finds_the_resident_fleet_under_any_root_spelling(tmp_path: 
     reported ``available`` forever -- a wrong answer, silently.
     """
 
+    _earthscope_marketplace(tmp_path, monkeypatch, "ndp")
     workspace = tmp_path / "workspace"
-    _earthscope_workspace(workspace)
+    workspace.mkdir()
     forward_slashed = workspace.as_posix() + "/"
     assert forward_slashed != str(workspace), "fixture must exercise a different spelling"
 
     agent = _InventoryAgent(root=forward_slashed, executor=_ready_executor())
     app = build_app(sessions_path=tmp_path / "spelled-mcp.json", agent=agent)
     with TestClient(app) as session_client:
-        body = _session_rows(session_client, root_path=forward_slashed, workspace=workspace)
+        body = _session_rows(session_client, root_path=forward_slashed)
 
     ndp = next(row for row in body["servers"] if row["name"] == "ndp")
     assert ndp["status"] == "ready"
@@ -241,7 +252,7 @@ def test_the_fleet_registry_keys_workspace_roots_canonically() -> None:
 
 
 def test_mcp_servers_names_why_a_session_namespace_has_no_runtime_state(
-    tmp_path: Path,
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """An empty snapshot is six different facts; the row must say which one.
 
@@ -252,13 +263,14 @@ def test_mcp_servers_names_why_a_session_namespace_has_no_runtime_state(
     indistinguishable on the Infrastructure page.
     """
 
+    _earthscope_marketplace(tmp_path, monkeypatch, "ndp")
     workspace = tmp_path / "workspace"
-    _earthscope_workspace(workspace)
+    workspace.mkdir()
 
     # (a) nothing resident for this root: the workspace was never used.
     idle = build_app(sessions_path=tmp_path / "idle.json", agent=_InventoryAgent())
     with TestClient(idle) as idle_client:
-        idle_body = _session_rows(idle_client, root_path=str(workspace), workspace=workspace)
+        idle_body = _session_rows(idle_client, root_path=str(workspace))
     idle_row = next(row for row in idle_body["servers"] if row["name"] == "ndp")
     assert idle_row["status"] == "available"
     assert idle_row["runtime_unavailable"] == "workspace_fleet_not_started"
@@ -275,7 +287,7 @@ def test_mcp_servers_names_why_a_session_namespace_has_no_runtime_state(
         agent=_InventoryAgent(root=str(workspace), executor=closed_executor),
     )
     with TestClient(reaped) as reaped_client:
-        reaped_body = _session_rows(reaped_client, root_path=str(workspace), workspace=workspace)
+        reaped_body = _session_rows(reaped_client, root_path=str(workspace))
     reaped_row = next(row for row in reaped_body["servers"] if row["name"] == "ndp")
     assert reaped_row["runtime_unavailable"] == "workspace_fleet_closed"
 
@@ -286,7 +298,7 @@ def test_mcp_servers_names_why_a_session_namespace_has_no_runtime_state(
         agent=_InventoryAgent(root=str(workspace), executor=SimpleNamespace(closed=False)),
     )
     with TestClient(drifted) as drifted_client:
-        drifted_body = _session_rows(drifted_client, root_path=str(workspace), workspace=workspace)
+        drifted_body = _session_rows(drifted_client, root_path=str(workspace))
     drifted_row = next(row for row in drifted_body["servers"] if row["name"] == "ndp")
     assert drifted_row["runtime_unavailable"] == "workspace_fleet_interface_drift"
     assert any(
@@ -294,7 +306,9 @@ def test_mcp_servers_names_why_a_session_namespace_has_no_runtime_state(
     )
 
 
-def test_mcp_servers_surfaces_an_unreadable_declaration_file(tmp_path: Path) -> None:
+def test_mcp_servers_surfaces_an_unreadable_declaration_file(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     """A declaration that could not be PARSED is not the same as one absent.
 
     ``load_mcp_servers`` already records unreadable ``mcp.yaml`` paths; the
@@ -302,13 +316,14 @@ def test_mcp_servers_surfaces_an_unreadable_declaration_file(tmp_path: Path) -> 
     page showed a shorter list and called it the truth.
     """
 
+    _earthscope_marketplace(tmp_path, monkeypatch, "ndp")
     workspace = tmp_path / "workspace"
-    _earthscope_workspace(workspace)
+    workspace.joinpath(".clio").mkdir(parents=True)
     workspace.joinpath(".clio", "mcp.yaml").write_text("mcp_servers: [oops\n", encoding="utf-8")
 
     app = build_app(sessions_path=tmp_path / "unreadable.json", agent=_InventoryAgent())
     with TestClient(app) as session_client:
-        body = _session_rows(session_client, root_path=str(workspace), workspace=workspace)
+        body = _session_rows(session_client, root_path=str(workspace))
 
     reasons = {row["reason"] for row in body["degradations"]}
     assert "mcp_yaml_declaration_unreadable" in reasons
@@ -319,7 +334,7 @@ def test_mcp_servers_surfaces_an_unreadable_declaration_file(tmp_path: Path) -> 
 
 
 def test_the_session_inventory_never_takes_the_fleet_lock_on_the_event_loop(
-    tmp_path: Path,
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """The snapshot holds ``ClioAgent._workspace_executor_lock``, a threading lock.
 
@@ -330,8 +345,9 @@ def test_the_session_inventory_never_takes_the_fleet_lock_on_the_event_loop(
 
     import asyncio
 
+    _earthscope_marketplace(tmp_path, monkeypatch, "ndp")
     workspace = tmp_path / "workspace"
-    _earthscope_workspace(workspace)
+    workspace.mkdir()
     loop_threads: list[int] = []
 
     class _WatchingAgent(_InventoryAgent):
@@ -350,7 +366,7 @@ def test_the_session_inventory_never_takes_the_fleet_lock_on_the_event_loop(
 
     app = build_app(sessions_path=tmp_path / "offloop.json", agent=_WatchingAgent())
     with TestClient(app) as session_client:
-        _session_rows(session_client, root_path=str(workspace), workspace=workspace)
+        _session_rows(session_client, root_path=str(workspace))
         server_loop_thread = session_client.portal.call(  # type: ignore[attr-defined]
             lambda: asyncio.get_running_loop()._thread_id  # type: ignore[attr-defined]
         )

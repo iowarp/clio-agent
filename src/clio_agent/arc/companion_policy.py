@@ -18,6 +18,8 @@ from __future__ import annotations
 
 NEVER_INDEXED_SCOPE_PREFIX = "_events"
 SEGMENT_NAME_SEP = "__"
+# Derived task lookup/open-work records are never searched, so they never carry one.
+NEVER_INDEXED_KINDS = frozenset({"task_lookup", "task_open", "session_records"})
 
 
 def may_carry_companion(kind: str, name: str) -> bool:
@@ -28,13 +30,21 @@ def may_carry_companion(kind: str, name: str) -> bool:
         name: The record stem.
 
     Returns:
-        ``False`` only for a ``segments`` record whose scope is under ``_events``.
+        ``False`` for a ``segments`` record whose scope is under ``_events`` and for
+        the derived task record kinds.
     """
 
+    if kind in NEVER_INDEXED_KINDS:
+        return False
     if kind != "segments":
         return True
     _sid, sep, scope = name.partition(SEGMENT_NAME_SEP)
     return not (sep and scope.startswith(NEVER_INDEXED_SCOPE_PREFIX))
 
 
-__all__ = ["NEVER_INDEXED_SCOPE_PREFIX", "SEGMENT_NAME_SEP", "may_carry_companion"]
+__all__ = [
+    "NEVER_INDEXED_KINDS",
+    "NEVER_INDEXED_SCOPE_PREFIX",
+    "SEGMENT_NAME_SEP",
+    "may_carry_companion",
+]

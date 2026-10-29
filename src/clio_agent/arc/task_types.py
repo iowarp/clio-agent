@@ -69,6 +69,7 @@ MailKind = Literal[
     "hook",
     "a2ui",
     "spotter",
+    "memory",  # a memory curator's brief (gact/memory/background.py)
     "approval",
     "composer",
 ]
@@ -164,6 +165,8 @@ class TaskSnapshot(TaskRecord):
     deduplication_key: str | None = None
     attention_episode: str | None = None
     resource_id: str | None = None
+    #: The handle this task was forked from: whoever waits on that handle waits on this too.
+    fork_of: str | None = None
 
     @classmethod
     def read_history(cls, record: dict[str, Any]) -> TaskSnapshot:
@@ -196,6 +199,7 @@ class TaskSnapshot(TaskRecord):
                 "created_at",
                 "description",
                 "description_missing",
+                "fork_of",
             )
         ):
             raise ValueError("Task identity cannot change under an existing handle")
@@ -442,6 +446,9 @@ class AssignmentDetails(TaskRecord):
     context_epoch_after: str | None = None
     last_output: CoreReference | None = None
     disposition: Literal["yield", "complete"] = "yield"
+    #: Declared at spawn: a standing assignment (SPOTTER's watcher) keeps its handle
+    #: across check segments; only cancellation or a failed check ends it.
+    standing: bool = False
     dependencies: tuple[str, ...] = ()
     return_when: Literal["any", "all"] = "all"
     workflow_id: str | None = None

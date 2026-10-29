@@ -28,11 +28,14 @@ def task_submission_presentation(result: Mapping[str, Any]) -> dict[str, Any] | 
         "denied",
         "error",
     }
+    description = str(result.get("description") or "").strip()
+    identity = description or str(kind)
     block = {
         "id": "task-submission",
         "type": "text",
-        "label": str(result.get("description") or label),
-        "text": f"Task: {handle}",
+        "label": identity,
+        "text": label,
+        "detail": f"Task handle: {handle}",
         "status": str(status or "pending") if completed or failed else "pending",
         "result_kind": "completion" if completed or failed else "snapshot",
     }
@@ -47,10 +50,20 @@ def task_submission_presentation(result: Mapping[str, Any]) -> dict[str, Any] | 
     return presentation
 
 
-def _label(row: Mapping[str, Any]) -> str:
+def _flow_label(value: Any) -> str:
+    """Humanize a flow identifier present in the invocation or result receipt."""
+    flow = str(value or "").strip()
+    return flow[:1].upper() + flow[1:].replace("-", " ").replace("_", " ") if flow else ""
+
+
+def _label(row: Mapping[str, Any], flow: str = "") -> str:
     """Use only the authorized response, never another session lookup."""
     return str(
-        row.get("label") or row.get("description") or row.get("kind") or row.get("handle") or "Task"
+        _flow_label(row.get("flow") or flow)
+        or row.get("label")
+        or row.get("description")
+        or row.get("kind")
+        or "Task"
     )
 
 
@@ -66,10 +79,10 @@ def _detail(value: Any) -> str:
 
 
 def _task_blocks(
-    row: Mapping[str, Any], index: int, *, result_body: bool = False
+    row: Mapping[str, Any], index: int, *, result_body: bool = False, flow: str = ""
 ) -> list[dict[str, Any]]:
     """Render a single common snapshot or independent control outcome."""
-    label = _label(row)
+    label = _label(row, flow)
     status = str(row.get("activity") or row.get("status") or "")
     error = row.get("error")
     blocks: list[dict[str, Any]] = []
@@ -93,17 +106,33 @@ def _task_blocks(
     if row.get("kind") in {"Session", "Subagent"} and isinstance(session, str) and session:
         blocks.append(
             {
-                "id": f"task-{index}-session",
+                "id": f"task-{index}-identity",
                 "type": "link",
                 "target": "session",
                 "uri": session,
                 "label": label,
+                "detail": str(row.get("handle") or ""),
+            }
+        )
+    else:
+        blocks.append(
+            {
+                "id": f"task-{index}-identity",
+                "type": "text",
+                "label": label,
+                "text": str(row.get("kind") or "Task"),
+                "detail": str(row.get("handle") or ""),
             }
         )
     description = str(row.get("description") or "")
     if description:
         blocks.append(
-            {"id": f"task-{index}-assignment", "type": "text", "label": label, "text": description}
+            {
+                "id": f"task-{index}-assignment",
+                "type": "text",
+                "label": "Assignment",
+                "text": description,
+            }
         )
     progress = row.get("progress")
     progress_text = ""
@@ -111,13 +140,24 @@ def _task_blocks(
         progress_text = str(progress.get("message") or "")
         done, total = progress.get("completed"), progress.get("total")
         if done is not None:
-            count = str(done) + (f" / {total}" if total is not None else "")
-            progress_text = " · ".join(
-                filter(None, (progress_text, count, str(progress.get("unit") or "")))
+            count = " ".join(
+                filter(
+                    None,
+                    (
+                        str(done) + (f" / {total}" if total is not None else ""),
+                        str(progress.get("unit") or ""),
+                    ),
+                )
             )
+            progress_text = f"{progress_text} ({count})" if progress_text else count
     text = str(error) if error else " — ".join(filter(None, (status, progress_text)))
     if text:
-        block = {"id": f"task-{index}-status", "type": "text", "label": label, "text": text}
+        block = {
+            "id": f"task-{index}-status",
+            "type": "text",
+            "label": "Status",
+            "text": text,
+        }
         if error or row.get("status") in {"failed", "interrupted", "task_state_uncertain"}:
             block["severity"] = "error"
         blocks.append(block)
@@ -175,13 +215,32 @@ def present_task_family(
 ) -> tuple[str, list[dict[str, Any]], str, str, str]:
     """Present shared task controls, preserving independent outcomes and pending work."""
     payload = _record(result) or dict(row)
+    if payload.get("restart_requested") is True and payload.get("pending") is True:
+        handle = payload.get("handle")
+        block: dict[str, Any] = {
+            "id": "task-restart",
+            "type": "text",
+            "label": "Task restart",
+            "text": "Restart requested; waiting for task restart",
+            "status": "pending",
+            "result_kind": "snapshot",
+        }
+        if isinstance(handle, str) and handle:
+            block["detail"] = f"Task handle: {handle}"
+        return (
+            "Restart requested; waiting for task restart",
+            [block],
+            "",
+            "",
+            "task-restart",
+        )
     if (submission := task_submission_presentation(payload)) is not None:
         return (
             submission["summary"],
             submission["blocks"],
-            "Inspect",
-            submission.get("status", ""),
             "",
+            submission.get("status", ""),
+            "task-submission",
         )
     if declaration == "wait":
         presentation = wait_presentation(args, payload)
@@ -220,7 +279,7 @@ def present_task_family(
         return (
             "Message accepted" if accepted else "Message not accepted",
             blocks,
-            "Message",
+            "",
             "failed" if error else "",
             "recipient" if accepted and isinstance(session, str) and session else "",
         )
@@ -231,18 +290,51 @@ def present_task_family(
         else [payload]
     )
     blocks = []
+    subjects: list[str] = []
     for index, selected_row in enumerate(selected):
-        blocks.extend(_task_blocks(selected_row, index, result_body=declaration == "task_output"))
+        row_blocks = _task_blocks(
+            selected_row,
+            index,
+            result_body=declaration == "task_output",
+            flow=str(args.get("flow") or ""),
+        )
+        blocks.extend(row_blocks)
+        subjects.extend(
+            block["id"] for block in row_blocks if block.get("id", "").endswith("-identity")
+        )
     pending = payload.get("pending")
     if isinstance(pending, list) and pending:
+        labels_by_handle = {
+            str(task.get("handle")): _label(task, str(args.get("flow") or ""))
+            for task in selected
+            if task.get("handle")
+        }
+        pending_details = [
+            f"{labels_by_handle.get(str(handle), 'Task')} ({handle})" for handle in pending
+        ]
         blocks.append(
             {
                 "id": "pending",
                 "type": "text",
                 "label": "Still running",
-                "text": ", ".join(str(handle) for handle in pending),
+                "text": ", ".join(pending_details),
             }
         )
     error = payload.get("error")
-    summary = "Task result" if declaration == "task_output" else "Tasks"
-    return summary, blocks, "Inspect", "failed" if error else "", ""
+    if declaration == "task_output":
+        collected = sum(
+            task.get("result") is not None or isinstance(task.get("output"), str)
+            for task in selected
+        )
+        summary = f"{collected} {'result' if collected == 1 else 'results'} collected"
+        if collected == 0:
+            summary = "No result body recorded"
+    elif payload.get("accepted") is True and (payload.get("flow") or args.get("flow")):
+        summary = "Flow accepted"
+    else:
+        count = len(selected)
+        summary = f"{count} {'task' if count == 1 else 'tasks'}"
+    if isinstance(pending, list) and pending:
+        summary += f", {len(pending)} pending"
+    subject = subjects[0] if len(subjects) == 1 else ""
+    return summary, blocks, "", "failed" if error else "", subject

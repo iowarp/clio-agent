@@ -1,0 +1,9 @@
+{
+  "finished_at": "2026-10-28T09:35:12.2607160Z",
+  "seconds": 210.1466054,
+  "exit_code": 0,
+  "ref": "codex/windows-startup-acceptance",
+  "profile": "D:\\cw\\fp4",
+  "candidate": "3b86557f6ba77addb3b57333fc7ea84aed4dad05",
+  "label": "repair4-install-cold"
+}

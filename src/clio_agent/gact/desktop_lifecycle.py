@@ -172,6 +172,9 @@ def serve_foreground(app: "FastAPI", *, host: str, port: int) -> None:
     """
     import uvicorn
 
+    from clio_agent.gact.auth import refuse_open_bind  # noqa: PLC0415
+
+    refuse_open_bind(host)
     server = uvicorn.Server(
         uvicorn.Config(
             app,
@@ -264,6 +267,10 @@ async def release_runtime_after_drain(
 
     from clio_agent.arc.storage import release_runtime_client  # noqa: PLC0415
 
+    # Session writes made on the loop land before clio-core is released (bounded).
+    sessions = getattr(app.state, "sessions", None)
+    if sessions is not None and not await asyncio.to_thread(sessions.flush, 30.0):
+        logger.error("runtime.release_after_drain reason=session_records_unflushed")
     await asyncio.to_thread(release_runtime_client)
     logger.info(
         "runtime.release_after_drain outcome=released owner=%s",

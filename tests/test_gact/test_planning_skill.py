@@ -1,7 +1,7 @@
-"""Built-in ``planning`` entry-skill + user toggle (P1.5 #1067).
+"""The ``core`` plugin's ``planning`` entry-skill + user toggle (P1.5 #1067).
 
 The shipped ``planning`` skill is the first ``enter_mode`` consumer (P1.0): the catalog scan
-finds it as a built-in, it declares ``effect: enter_mode:plan``, its body is the four-phase
+finds it in the ``core`` plugin every agent carries, it declares ``effect: enter_mode:plan``, its body is the four-phase
 plan-mode workflow, and invoking it via the skill-effect path enters plan mode and engages the
 plan machinery. The USER TOGGLE (``PATCH /v1/sessions`` mode=plan) drives the SAME machinery.
 """
@@ -14,6 +14,7 @@ from typing import Any
 import pytest
 from fastapi.testclient import TestClient
 
+import clio_agent.plugins
 from clio_agent.gact import context as _ctx
 from clio_agent.gact.agents.skill_effects import SkillEffect, parse_skill_effect
 from clio_agent.gact.agents.skill_runtime import SkillRuntime, build_load_skill_tool
@@ -28,21 +29,22 @@ from clio_agent.gact.types import AgentDef
 
 pytestmark = pytest.mark.usefixtures("host_agent_executor")
 
+CORE_SKILLS = Path(clio_agent.plugins.__file__).resolve().parent / "builtin" / "core" / "skills"
+
 
 def _catalog() -> SkillCatalog:
-    # The conftest isolation keeps clio's shipped built-in root, so a normally-built catalog
-    # resolves the built-in ``planning`` skill (no per-test authoring needed).
-    return SkillCatalog()
+    # ``planning`` ships in the core plugin (every agent carries it).
+    return SkillCatalog(plugin_skills=[("core", str(CORE_SKILLS))])
 
 
 # ---- the skill exists as a built-in + declares enter_mode:plan -------------------------
 
 
-def test_planning_skill_is_discovered_as_builtin() -> None:
+def test_planning_skill_is_discovered_in_the_core_plugin() -> None:
     res = _catalog().resolve("planning")
     assert res.status == "resolved"
     assert res.skill is not None
-    assert res.skill.scope == "builtin"
+    assert res.skill.scope == "plugin"
 
 
 def test_planning_skill_declares_enter_mode_plan() -> None:
@@ -71,9 +73,7 @@ def test_planning_skill_body_has_four_phases_and_turn_ending_contract() -> None:
 def test_invoking_planning_skill_enters_plan_mode_and_engages_machinery(tmp_path: Path) -> None:
     app = build_app(sessions_path=tmp_path / "s.json")
     sess = app.state.sessions.create(workspace_id="ws_default", title="t", mode="edit")
-    agent = AgentDef(
-        id="main", source="expert_pack", title="Main", skills=["planning"], metadata={}
-    )
+    agent = AgentDef(id="standard", source="plugin", title="CLIO", skills=["planning"], metadata={})
     rt = SkillRuntime(resolutions=_catalog().resolve_declared(["planning"]))
     tool = build_load_skill_tool(agent, rt)
 

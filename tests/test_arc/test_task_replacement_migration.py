@@ -348,10 +348,10 @@ def test_migration_twice_preserves_withdrawals_subscriptions_and_input_proofs(
     assert "keep" in history.acknowledged_notifications(owner.id)
     assert f"outcome:{task.handle}:{owner.id}" in history.acknowledged_notifications(owner.id)
     assert (
-        history.read_content(history._mail[owner.id]["removed"].content)["text"]
+        history.read_content(history.mail_item(owner.id, "removed").content)["text"]
         == "edited then withdrawn"
     )
-    assert history._mail[owner.id]["removed"].kind == "human"
+    assert history.mail_item(owner.id, "removed").kind == "human"
     before = len(list(arc._live.iter_event_contents()))
     migrate_history(app)
     assert len(list(arc._live.iter_event_contents())) == before
@@ -477,6 +477,6 @@ def test_cancelled_legacy_intent_finishes_withdrawal_after_interrupted_migration
     monkeypatch.setattr(history, "withdraw_mail", original)
     migrate_history(app)
     assert history.pending_mail(owner.id) == ()
-    assert "cancelled" in history._withdrawn[owner.id]
+    assert history.mail_withdrawn(owner.id, "cancelled")
     migrate_history(app)
     assert history.pending_mail(owner.id) == ()

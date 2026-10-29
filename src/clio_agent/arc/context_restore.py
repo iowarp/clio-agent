@@ -164,10 +164,8 @@ def restore_plain_context(store: Any, session_id: str, scope: str, segments: lis
     with store._lock_for(session_id, scope):
         if store._segs(session_id, scope) or not segments:
             return False
-        store._scopes[(session_id, scope)] = list(segments)
         store._recover_clock(segments)
-        store._index.bulk_load(session_id, scope, segments)
-        store._finish_write(session_id, scope, "restore", written=segments)
+        store._finish_write(session_id, scope, "restore", list(segments), written=segments)
         return True
 
 

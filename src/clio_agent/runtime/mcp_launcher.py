@@ -1,7 +1,7 @@
-"""Doctor check: MCP launcher commands declared by loaded packs must be on PATH.
+"""Doctor check: MCP launcher commands declared by installed plugins must be on PATH.
 
-Marketplace packs declare their MCP servers as stdio launcher commands in their
-``AGENT.md`` frontmatter (``mcp_servers:``). If a declared launcher is not installed
+Plugins declare their MCP servers as stdio launcher commands in their ``mcp.json``
+(Agent Plugins 1.0.0). If a declared launcher is not installed
 on PATH, the failure otherwise surfaces only at *first spawn* — deep inside the ReAct
 loop, three layers downstream as an opaque ``_UnsupportedSessionAgent`` / "tools
 unavailable". :func:`clio_agent.tools.mcp_config.transport_for` already raises a precise
@@ -10,7 +10,7 @@ the same reality *before* the first spawn, from the doctor, with an actionable
 remediation.
 
 The canonical clio-kit tool launcher (``clio-kit mcp-server <name>``) is provisioned by
-``uv tool install clio-kit==2.11.0``; when that launcher is the one missing, the
+``uv tool install clio-kit==2.11.1``; when that launcher is the one missing, the
 remediation names that exact command plus the ``uv tool dir --bin`` PATH step.
 """
 
@@ -28,10 +28,10 @@ WhichChecker = Callable[[str], str | None]
 
 # The clio-kit tool launcher and its exact provisioning command. Kept in lockstep with
 # install/install.sh + install/install.ps1 (which run this same ``uv tool install``) and
-# the marketplace packs that launch ``clio-kit mcp-server <name>``.
+# the marketplace plugins that launch ``clio-kit mcp-server <name>``.
 _CLIO_KIT_LAUNCHER = "clio-kit"
 _CLIO_KIT_REMEDIATION = (
-    "uv tool install clio-kit==2.11.0, then ensure the directory reported by "
+    "uv tool install clio-kit==2.11.1, then ensure the directory reported by "
     "`uv tool dir --bin` is on PATH for the clio-agent process."
 )
 
@@ -39,10 +39,10 @@ _CLIO_KIT_REMEDIATION = (
 def discover_declared_mcp_servers(
     *, env: Mapping[str, str] | None = None
 ) -> dict[str, MCPServerSpec]:
-    """Discover the MCP servers declared across loaded packs + user/workspace config.
+    """Discover the MCP servers declared by installed plugins + user/workspace config.
 
-    Mirrors ``ClioAgent._build_tool_gateway`` / the ``/v1/mcp`` route: merge each
-    discovered blueprint's ``mcp_servers`` frontmatter (pack scope) with the
+    Mirrors ``ClioAgent._build_tool_gateway`` / the ``/v1/mcp`` route: merge every
+    installed plugin's ``mcp.json`` servers (plugin scope) with the
     user/workspace ``mcp.yaml`` scopes via
     :func:`clio_agent.tools.mcp_config.load_mcp_servers`.
 
@@ -53,15 +53,16 @@ def discover_declared_mcp_servers(
     Returns:
         A ``{name: MCPServerSpec}`` mapping of every declared server.
     """
-    from clio_agent.gact.agent_blueprints import discover_agent_blueprints
+    from clio_agent.plugins.servers import server_declarations
+    from clio_agent.plugins.service import PluginService
     from clio_agent.tools.mcp_config import load_mcp_servers
 
-    pack_servers: dict[str, dict[str, object]] = {}
-    for blueprint in discover_agent_blueprints():
-        servers = blueprint.metadata.get("mcp_servers")
-        if isinstance(servers, Mapping) and servers:
-            pack_servers[blueprint.id] = {str(k): v for k, v in servers.items()}
-    return load_mcp_servers(pack_servers=pack_servers, env=env)
+    rows = {
+        name: {"plugin": record.id, "root": record.root, "spec": spec}
+        for record in PluginService().store.records()
+        for name, spec in record.mcp_servers.items()
+    }
+    return load_mcp_servers(plugin_servers=server_declarations(rows), env=env)
 
 
 def _remediation_for(command: str) -> str:
@@ -82,7 +83,7 @@ def probe_mcp_launchers(
 ) -> list[IntegrationStatus]:
     """Report a structured finding for each declared stdio MCP launcher missing on PATH.
 
-    A doctor sub-check: for every stdio MCP server declared by a loaded pack (or the
+    A doctor sub-check: for every stdio MCP server declared by an installed plugin (or the
     user/workspace ``mcp.yaml``) whose launcher command does not resolve on PATH, emit
     one :class:`~clio_agent.runtime.status.IntegrationStatus` naming the command and its
     remediation. This surfaces — before the first spawn — the exact precondition
@@ -109,9 +110,10 @@ def probe_mcp_launchers(
                     name="mcp_launchers",
                     state=IntegrationState.DEGRADED,
                     summary=f"Could not discover declared MCP servers to check launchers: {exc}",
-                    config_source="packs+mcp.yaml",
+                    config_source="plugins+mcp.yaml",
                     next_action=(
-                        "Inspect pack/blueprint discovery; MCP launcher provisioning was "
+                        "Inspect installed plugins (clio-agent plugin list) and mcp.yaml; "
+                        "MCP launcher provisioning was "
                         "not verified."
                     ),
                     required=False,
@@ -140,18 +142,28 @@ def probe_mcp_launchers(
         if bundled_module_launcher(spec.command, spec.args) is not None:
             continue
         seen_commands.add(spec.command)
+        # Every installed plugin's servers are declared, but a plugin's server only
+        # runs for sessions whose agent carries that plugin: its missing launcher
+        # degrades those sessions, not the whole service. mcp.yaml servers load
+        # for every session, so theirs stays required.
+        plugin = spec.source.removeprefix("plugin:") if spec.source.startswith("plugin:") else ""
         findings.append(
             IntegrationStatus(
                 name=f"mcp_launcher:{spec.command}",
-                state=IntegrationState.UNAVAILABLE,
+                state=IntegrationState.DEGRADED if plugin else IntegrationState.UNAVAILABLE,
                 summary=(
                     f"MCP launcher {spec.command!r} is declared but not found on PATH; "
-                    "the stdio MCP server(s) using it cannot spawn."
+                    + (
+                        f"plugin {plugin!r}'s stdio MCP server(s) using it cannot spawn "
+                        "in sessions whose agent carries that plugin."
+                        if plugin
+                        else "the stdio MCP server(s) using it cannot spawn."
+                    )
                 ),
-                config_source=spec.source or "packs+mcp.yaml",
+                config_source=spec.source or "plugins+mcp.yaml",
                 next_action=_remediation_for(spec.command),
                 fallback="none",
-                required=True,
+                required=not plugin,
             )
         )
     return findings
@@ -175,7 +187,7 @@ def probe_mcp_yaml_declarations(
             process environment).
         discovered: True when the caller already ran discovery in this collection
             (:func:`probe_mcp_launchers` does), so the unreadable-file snapshot is
-            current and a second full blueprint scan per health call is skipped.
+            current and a second full plugin scan per health call is skipped.
 
     Returns:
         Zero or more findings -- one per unreadable file.

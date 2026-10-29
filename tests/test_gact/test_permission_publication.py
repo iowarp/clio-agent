@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import threading
+from contextvars import copy_context
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -60,46 +61,51 @@ def test_immediate_permission_answer_wakes_the_original_gate(
         outcomes: list[str] = []
 
         def invoke() -> None:
-            with active_turn_fixture(app, sid), _tool_session_context(sid):
-                session = app.state.sessions.get(sid)
-                assert session is not None
-                if family == "folder":
-                    folder = tmp_path / "additional"
-                    folder.mkdir()
-                    decision = request_folder_access(
-                        app,
-                        sid,
-                        session,
-                        "fs_read_file",
-                        {"filepath": str(folder / "data.txt")},
-                        [str(folder)],
-                    )
-                elif family == "network":
-                    workspace = app.state.workspaces.get(session.workspace_id)
-                    assert workspace is not None
-                    decision = _prompt_egress(
-                        app,
-                        session.workspace_id,
-                        EgressRecord(
-                            child_id="",
-                            host=f"{sid}.example.invalid",
-                            port=443,
-                            resolved_ip="",
-                            transport="connect",
-                            mechanism="env_cooperative",
-                            workspace_root=workspace.root_path,
-                            at=datetime.now(timezone.utc).isoformat(),
-                        ),
-                    )
-                else:
-                    decision = _make_permission_gate(app)(
-                        "remote.mutate",
-                        {"value": "approved input"},
-                        _external_mcp_permission_context({"readOnlyHint": False}),
-                    )
-                outcomes.append(decision)
+            session = app.state.sessions.get(sid)
+            assert session is not None
+            if family == "folder":
+                folder = tmp_path / "additional"
+                folder.mkdir()
+                decision = request_folder_access(
+                    app,
+                    sid,
+                    session,
+                    "fs_read_file",
+                    {"filepath": str(folder / "data.txt")},
+                    [str(folder)],
+                )
+            elif family == "network":
+                workspace = app.state.workspaces.get(session.workspace_id)
+                assert workspace is not None
+                decision = _prompt_egress(
+                    app,
+                    session.workspace_id,
+                    EgressRecord(
+                        child_id="",
+                        host=f"{sid}.example.invalid",
+                        port=443,
+                        resolved_ip="",
+                        transport="connect",
+                        mechanism="env_cooperative",
+                        workspace_root=workspace.root_path,
+                        at=datetime.now(timezone.utc).isoformat(),
+                    ),
+                )
+            else:
+                decision = _make_permission_gate(app)(
+                    "remote.mutate",
+                    {"value": "approved input"},
+                    _external_mcp_permission_context({"readOnlyHint": False}),
+                )
+            outcomes.append(decision)
 
-        worker = threading.Thread(target=invoke, name="immediate-permission-answer")
+        # Bind the real assignment and tool scope before starting the publication
+        # deadline: native Core reads during fixture setup are not a gate wake.
+        with active_turn_fixture(app, sid), _tool_session_context(sid):
+            permission_context = copy_context()
+        worker = threading.Thread(
+            target=permission_context.run, args=(invoke,), name="immediate-permission-answer"
+        )
         worker.start()
         try:
             assert rows.published.wait(2), "The request was never published"

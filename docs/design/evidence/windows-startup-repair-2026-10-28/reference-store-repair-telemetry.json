@@ -1,0 +1,903 @@
+{
+  "exit_code": 1,
+  "samples": [
+    {
+      "epoch": 1793181858.728238,
+      "cpu_percent": 29.4,
+      "encoders": []
+    },
+    {
+      "epoch": 1793181859.7462919,
+      "cpu_percent": 14.6,
+      "encoders": []
+    },
+    {
+      "epoch": 1793181860.7644346,
+      "cpu_percent": 14.4,
+      "encoders": []
+    },
+    {
+      "epoch": 1793181861.796728,
+      "cpu_percent": 19.4,
+      "encoders": []
+    },
+    {
+      "epoch": 1793181862.9297562,
+      "cpu_percent": 56.8,
+      "encoders": []
+    },
+    {
+      "epoch": 1793181864.0193222,
+      "cpu_percent": 24.9,
+      "encoders": []
+    },
+    {
+      "epoch": 1793181865.1104598,
+      "cpu_percent": 20.9,
+      "encoders": []
+    },
+    {
+      "epoch": 1793181866.204511,
+      "cpu_percent": 18.2,
+      "encoders": []
+    },
+    {
+      "epoch": 1793181867.3584652,
+      "cpu_percent": 39.5,
+      "encoders": []
+    },
+    {
+      "epoch": 1793181868.4531095,
+      "cpu_percent": 25.8,
+      "encoders": []
+    },
+    {
+      "epoch": 1793181869.574137,
+      "cpu_percent": 23.8,
+      "encoders": []
+    },
+    {
+      "epoch": 1793181870.673921,
+      "cpu_percent": 19.3,
+      "encoders": []
+    },
+    {
+      "epoch": 1793181871.7708714,
+      "cpu_percent": 17.3,
+      "encoders": []
+    },
+    {
+      "epoch": 1793181872.8673534,
+      "cpu_percent": 18.0,
+      "encoders": []
+    },
+    {
+      "epoch": 1793181873.9639888,
+      "cpu_percent": 17.8,
+      "encoders": []
+    },
+    {
+      "epoch": 1793181875.0624397,
+      "cpu_percent": 19.8,
+      "encoders": []
+    },
+    {
+      "epoch": 1793181876.1581028,
+      "cpu_percent": 17.9,
+      "encoders": []
+    },
+    {
+      "epoch": 1793181877.256601,
+      "cpu_percent": 23.0,
+      "encoders": []
+    },
+    {
+      "epoch": 1793181878.3486993,
+      "cpu_percent": 20.0,
+      "encoders": []
+    },
+    {
+      "epoch": 1793181879.4406583,
+      "cpu_percent": 17.7,
+      "encoders": []
+    },
+    {
+      "epoch": 1793181880.5346804,
+      "cpu_percent": 15.8,
+      "encoders": []
+    },
+    {
+      "epoch": 1793181881.6300352,
+      "cpu_percent": 16.8,
+      "encoders": []
+    },
+    {
+      "epoch": 1793181882.7258182,
+      "cpu_percent": 20.6,
+      "encoders": []
+    },
+    {
+      "epoch": 1793181883.8201013,
+      "cpu_percent": 19.6,
+      "encoders": []
+    },
+    {
+      "epoch": 1793181884.914649,
+      "cpu_percent": 19.3,
+      "encoders": []
+    },
+    {
+      "epoch": 1793181886.0205343,
+      "cpu_percent": 21.0,
+      "encoders": []
+    },
+    {
+      "epoch": 1793181887.116836,
+      "cpu_percent": 24.3,
+      "encoders": []
+    },
+    {
+      "epoch": 1793181888.2204468,
+      "cpu_percent": 23.4,
+      "encoders": []
+    },
+    {
+      "epoch": 1793181889.317768,
+      "cpu_percent": 16.6,
+      "encoders": []
+    },
+    {
+      "epoch": 1793181890.4119575,
+      "cpu_percent": 23.9,
+      "encoders": []
+    },
+    {
+      "epoch": 1793181891.524918,
+      "cpu_percent": 24.0,
+      "encoders": []
+    },
+    {
+      "epoch": 1793181892.6314223,
+      "cpu_percent": 22.8,
+      "encoders": []
+    },
+    {
+      "epoch": 1793181893.7300715,
+      "cpu_percent": 23.8,
+      "encoders": []
+    },
+    {
+      "epoch": 1793181894.8980281,
+      "cpu_percent": 23.3,
+      "encoders": []
+    },
+    {
+      "epoch": 1793181896.0078516,
+      "cpu_percent": 23.9,
+      "encoders": []
+    },
+    {
+      "epoch": 1793181897.1380138,
+      "cpu_percent": 35.9,
+      "encoders": []
+    },
+    {
+      "epoch": 1793181898.2681866,
+      "cpu_percent": 36.8,
+      "encoders": []
+    },
+    {
+      "epoch": 1793181899.3725486,
+      "cpu_percent": 19.0,
+      "encoders": []
+    },
+    {
+      "epoch": 1793181900.4729578,
+      "cpu_percent": 25.5,
+      "encoders": []
+    },
+    {
+      "epoch": 1793181901.5683227,
+      "cpu_percent": 22.0,
+      "encoders": []
+    },
+    {
+      "epoch": 1793181902.666484,
+      "cpu_percent": 15.8,
+      "encoders": []
+    },
+    {
+      "epoch": 1793181903.7690656,
+      "cpu_percent": 28.4,
+      "encoders": []
+    },
+    {
+      "epoch": 1793181904.9105685,
+      "cpu_percent": 31.2,
+      "encoders": []
+    },
+    {
+      "epoch": 1793181906.0432582,
+      "cpu_percent": 22.7,
+      "encoders": []
+    },
+    {
+      "epoch": 1793181907.1864398,
+      "cpu_percent": 32.9,
+      "encoders": []
+    },
+    {
+      "epoch": 1793181908.314397,
+      "cpu_percent": 23.0,
+      "encoders": []
+    },
+    {
+      "epoch": 1793181909.4424145,
+      "cpu_percent": 20.2,
+      "encoders": []
+    },
+    {
+      "epoch": 1793181910.589072,
+      "cpu_percent": 29.1,
+      "encoders": []
+    },
+    {
+      "epoch": 1793181911.738407,
+      "cpu_percent": 47.8,
+      "encoders": []
+    },
+    {
+      "epoch": 1793181912.8612962,
+      "cpu_percent": 24.7,
+      "encoders": []
+    },
+    {
+      "epoch": 1793181914.0091877,
+      "cpu_percent": 28.7,
+      "encoders": []
+    },
+    {
+      "epoch": 1793181915.1550605,
+      "cpu_percent": 51.8,
+      "encoders": []
+    },
+    {
+      "epoch": 1793181916.3295186,
+      "cpu_percent": 34.6,
+      "encoders": []
+    },
+    {
+      "epoch": 1793181917.499118,
+      "cpu_percent": 56.0,
+      "encoders": []
+    },
+    {
+      "epoch": 1793181918.6263893,
+      "cpu_percent": 48.9,
+      "encoders": []
+    },
+    {
+      "epoch": 1793181919.7449791,
+      "cpu_percent": 9.4,
+      "encoders": []
+    },
+    {
+      "epoch": 1793181920.8606641,
+      "cpu_percent": 15.9,
+      "encoders": []
+    },
+    {
+      "epoch": 1793181921.985669,
+      "cpu_percent": 17.3,
+      "encoders": []
+    },
+    {
+      "epoch": 1793181923.111167,
+      "cpu_percent": 23.8,
+      "encoders": []
+    },
+    {
+      "epoch": 1793181924.2397344,
+      "cpu_percent": 24.6,
+      "encoders": []
+    },
+    {
+      "epoch": 1793181925.3670583,
+      "cpu_percent": 23.3,
+      "encoders": []
+    },
+    {
+      "epoch": 1793181926.4942434,
+      "cpu_percent": 26.6,
+      "encoders": []
+    },
+    {
+      "epoch": 1793181927.616041,
+      "cpu_percent": 21.0,
+      "encoders": []
+    },
+    {
+      "epoch": 1793181928.7402198,
+      "cpu_percent": 28.7,
+      "encoders": []
+    },
+    {
+      "epoch": 1793181929.868493,
+      "cpu_percent": 19.9,
+      "encoders": []
+    },
+    {
+      "epoch": 1793181931.0006368,
+      "cpu_percent": 24.6,
+      "encoders": []
+    },
+    {
+      "epoch": 1793181932.1343167,
+      "cpu_percent": 26.7,
+      "encoders": []
+    },
+    {
+      "epoch": 1793181933.280868,
+      "cpu_percent": 30.0,
+      "encoders": []
+    },
+    {
+      "epoch": 1793181934.4144042,
+      "cpu_percent": 34.7,
+      "encoders": []
+    },
+    {
+      "epoch": 1793181935.563682,
+      "cpu_percent": 32.9,
+      "encoders": []
+    },
+    {
+      "epoch": 1793181936.6901836,
+      "cpu_percent": 20.7,
+      "encoders": []
+    },
+    {
+      "epoch": 1793181937.812454,
+      "cpu_percent": 23.4,
+      "encoders": []
+    },
+    {
+      "epoch": 1793181938.941312,
+      "cpu_percent": 26.7,
+      "encoders": []
+    },
+    {
+      "epoch": 1793181940.0746944,
+      "cpu_percent": 20.6,
+      "encoders": []
+    },
+    {
+      "epoch": 1793181941.1966238,
+      "cpu_percent": 31.3,
+      "encoders": []
+    },
+    {
+      "epoch": 1793181942.3160193,
+      "cpu_percent": 20.1,
+      "encoders": []
+    },
+    {
+      "epoch": 1793181943.4373262,
+      "cpu_percent": 21.2,
+      "encoders": []
+    },
+    {
+      "epoch": 1793181944.5672412,
+      "cpu_percent": 21.6,
+      "encoders": []
+    },
+    {
+      "epoch": 1793181945.7038817,
+      "cpu_percent": 30.1,
+      "encoders": []
+    },
+    {
+      "epoch": 1793181946.8345132,
+      "cpu_percent": 26.2,
+      "encoders": []
+    },
+    {
+      "epoch": 1793181947.9514189,
+      "cpu_percent": 18.2,
+      "encoders": []
+    },
+    {
+      "epoch": 1793181949.0814672,
+      "cpu_percent": 29.0,
+      "encoders": []
+    },
+    {
+      "epoch": 1793181950.2039614,
+      "cpu_percent": 21.8,
+      "encoders": []
+    },
+    {
+      "epoch": 1793181951.3304174,
+      "cpu_percent": 18.9,
+      "encoders": []
+    },
+    {
+      "epoch": 1793181952.4978037,
+      "cpu_percent": 28.5,
+      "encoders": []
+    },
+    {
+      "epoch": 1793181953.6349447,
+      "cpu_percent": 36.4,
+      "encoders": []
+    },
+    {
+      "epoch": 1793181954.773264,
+      "cpu_percent": 35.4,
+      "encoders": []
+    },
+    {
+      "epoch": 1793181955.9113264,
+      "cpu_percent": 39.8,
+      "encoders": []
+    },
+    {
+      "epoch": 1793181957.0655298,
+      "cpu_percent": 40.2,
+      "encoders": []
+    },
+    {
+      "epoch": 1793181958.2154467,
+      "cpu_percent": 34.3,
+      "encoders": []
+    },
+    {
+      "epoch": 1793181959.3647187,
+      "cpu_percent": 41.6,
+      "encoders": []
+    },
+    {
+      "epoch": 1793181960.5246265,
+      "cpu_percent": 38.8,
+      "encoders": []
+    },
+    {
+      "epoch": 1793181961.678998,
+      "cpu_percent": 34.5,
+      "encoders": []
+    },
+    {
+      "epoch": 1793181962.878347,
+      "cpu_percent": 70.3,
+      "encoders": []
+    },
+    {
+      "epoch": 1793181964.022143,
+      "cpu_percent": 40.8,
+      "encoders": []
+    },
+    {
+      "epoch": 1793181965.1686478,
+      "cpu_percent": 34.4,
+      "encoders": []
+    },
+    {
+      "epoch": 1793181966.3183987,
+      "cpu_percent": 29.9,
+      "encoders": []
+    },
+    {
+      "epoch": 1793181967.4562736,
+      "cpu_percent": 30.3,
+      "encoders": []
+    },
+    {
+      "epoch": 1793181968.6013823,
+      "cpu_percent": 32.7,
+      "encoders": []
+    },
+    {
+      "epoch": 1793181969.7428517,
+      "cpu_percent": 36.1,
+      "encoders": []
+    },
+    {
+      "epoch": 1793181970.8925302,
+      "cpu_percent": 55.1,
+      "encoders": []
+    },
+    {
+      "epoch": 1793181972.033342,
+      "cpu_percent": 50.2,
+      "encoders": []
+    },
+    {
+      "epoch": 1793181973.171628,
+      "cpu_percent": 40.4,
+      "encoders": []
+    },
+    {
+      "epoch": 1793181974.3208563,
+      "cpu_percent": 27.1,
+      "encoders": []
+    },
+    {
+      "epoch": 1793181975.4893863,
+      "cpu_percent": 40.2,
+      "encoders": []
+    },
+    {
+      "epoch": 1793181976.6175787,
+      "cpu_percent": 36.9,
+      "encoders": []
+    },
+    {
+      "epoch": 1793181977.7597773,
+      "cpu_percent": 35.1,
+      "encoders": []
+    },
+    {
+      "epoch": 1793181978.909936,
+      "cpu_percent": 41.0,
+      "encoders": []
+    },
+    {
+      "epoch": 1793181980.0405831,
+      "cpu_percent": 33.4,
+      "encoders": []
+    },
+    {
+      "epoch": 1793181981.1780007,
+      "cpu_percent": 29.3,
+      "encoders": []
+    },
+    {
+      "epoch": 1793181982.3386166,
+      "cpu_percent": 27.9,
+      "encoders": []
+    },
+    {
+      "epoch": 1793181983.500741,
+      "cpu_percent": 32.4,
+      "encoders": []
+    },
+    {
+      "epoch": 1793181984.6543884,
+      "cpu_percent": 34.7,
+      "encoders": []
+    },
+    {
+      "epoch": 1793181985.8127337,
+      "cpu_percent": 34.7,
+      "encoders": []
+    },
+    {
+      "epoch": 1793181986.9667249,
+      "cpu_percent": 33.7,
+      "encoders": []
+    },
+    {
+      "epoch": 1793181988.124541,
+      "cpu_percent": 37.2,
+      "encoders": []
+    },
+    {
+      "epoch": 1793181989.3043923,
+      "cpu_percent": 37.1,
+      "encoders": []
+    },
+    {
+      "epoch": 1793181990.4464018,
+      "cpu_percent": 41.8,
+      "encoders": []
+    },
+    {
+      "epoch": 1793181991.5991468,
+      "cpu_percent": 34.6,
+      "encoders": []
+    },
+    {
+      "epoch": 1793181992.758823,
+      "cpu_percent": 37.2,
+      "encoders": []
+    },
+    {
+      "epoch": 1793181993.8947413,
+      "cpu_percent": 28.2,
+      "encoders": []
+    },
+    {
+      "epoch": 1793181995.0512471,
+      "cpu_percent": 35.7,
+      "encoders": []
+    },
+    {
+      "epoch": 1793181996.2027996,
+      "cpu_percent": 31.2,
+      "encoders": []
+    },
+    {
+      "epoch": 1793181997.3378832,
+      "cpu_percent": 32.5,
+      "encoders": []
+    },
+    {
+      "epoch": 1793181998.4925668,
+      "cpu_percent": 36.9,
+      "encoders": []
+    },
+    {
+      "epoch": 1793181999.6450577,
+      "cpu_percent": 32.2,
+      "encoders": []
+    },
+    {
+      "epoch": 1793182000.796671,
+      "cpu_percent": 39.5,
+      "encoders": []
+    },
+    {
+      "epoch": 1793182001.9370422,
+      "cpu_percent": 27.3,
+      "encoders": []
+    },
+    {
+      "epoch": 1793182003.0803397,
+      "cpu_percent": 30.7,
+      "encoders": []
+    },
+    {
+      "epoch": 1793182004.2284122,
+      "cpu_percent": 35.3,
+      "encoders": []
+    },
+    {
+      "epoch": 1793182005.370445,
+      "cpu_percent": 30.1,
+      "encoders": []
+    },
+    {
+      "epoch": 1793182006.515629,
+      "cpu_percent": 31.3,
+      "encoders": []
+    },
+    {
+      "epoch": 1793182007.660464,
+      "cpu_percent": 27.6,
+      "encoders": []
+    },
+    {
+      "epoch": 1793182008.8062897,
+      "cpu_percent": 46.1,
+      "encoders": []
+    },
+    {
+      "epoch": 1793182009.954883,
+      "cpu_percent": 37.4,
+      "encoders": []
+    },
+    {
+      "epoch": 1793182011.1090176,
+      "cpu_percent": 41.6,
+      "encoders": []
+    },
+    {
+      "epoch": 1793182012.2558208,
+      "cpu_percent": 32.2,
+      "encoders": []
+    },
+    {
+      "epoch": 1793182013.4108453,
+      "cpu_percent": 33.6,
+      "encoders": []
+    },
+    {
+      "epoch": 1793182014.5843022,
+      "cpu_percent": 40.4,
+      "encoders": []
+    },
+    {
+      "epoch": 1793182015.724949,
+      "cpu_percent": 34.7,
+      "encoders": []
+    },
+    {
+      "epoch": 1793182016.875159,
+      "cpu_percent": 36.2,
+      "encoders": []
+    },
+    {
+      "epoch": 1793182018.0288453,
+      "cpu_percent": 33.5,
+      "encoders": []
+    },
+    {
+      "epoch": 1793182019.179785,
+      "cpu_percent": 36.3,
+      "encoders": []
+    },
+    {
+      "epoch": 1793182020.343286,
+      "cpu_percent": 38.2,
+      "encoders": []
+    },
+    {
+      "epoch": 1793182021.4950786,
+      "cpu_percent": 29.9,
+      "encoders": []
+    },
+    {
+      "epoch": 1793182022.6587744,
+      "cpu_percent": 32.8,
+      "encoders": []
+    },
+    {
+      "epoch": 1793182023.8253467,
+      "cpu_percent": 44.0,
+      "encoders": []
+    },
+    {
+      "epoch": 1793182024.959408,
+      "cpu_percent": 36.7,
+      "encoders": []
+    },
+    {
+      "epoch": 1793182026.0763123,
+      "cpu_percent": 22.8,
+      "encoders": []
+    },
+    {
+      "epoch": 1793182027.203855,
+      "cpu_percent": 18.6,
+      "encoders": []
+    },
+    {
+      "epoch": 1793182028.3202605,
+      "cpu_percent": 15.7,
+      "encoders": []
+    },
+    {
+      "epoch": 1793182029.4475613,
+      "cpu_percent": 15.5,
+      "encoders": []
+    },
+    {
+      "epoch": 1793182030.5856736,
+      "cpu_percent": 18.4,
+      "encoders": []
+    },
+    {
+      "epoch": 1793182031.7024994,
+      "cpu_percent": 16.3,
+      "encoders": []
+    },
+    {
+      "epoch": 1793182032.8180344,
+      "cpu_percent": 11.2,
+      "encoders": []
+    },
+    {
+      "epoch": 1793182033.9680898,
+      "cpu_percent": 15.0,
+      "encoders": []
+    },
+    {
+      "epoch": 1793182035.068662,
+      "cpu_percent": 13.1,
+      "encoders": []
+    },
+    {
+      "epoch": 1793182036.1595533,
+      "cpu_percent": 12.3,
+      "encoders": []
+    },
+    {
+      "epoch": 1793182037.2452047,
+      "cpu_percent": 14.9,
+      "encoders": []
+    },
+    {
+      "epoch": 1793182038.3384929,
+      "cpu_percent": 9.6,
+      "encoders": []
+    },
+    {
+      "epoch": 1793182039.445089,
+      "cpu_percent": 18.5,
+      "encoders": []
+    },
+    {
+      "epoch": 1793182040.522557,
+      "cpu_percent": 19.1,
+      "encoders": []
+    },
+    {
+      "epoch": 1793182041.5799441,
+      "cpu_percent": 21.3,
+      "encoders": []
+    },
+    {
+      "epoch": 1793182042.6493425,
+      "cpu_percent": 7.4,
+      "encoders": []
+    },
+    {
+      "epoch": 1793182043.7055304,
+      "cpu_percent": 12.3,
+      "encoders": []
+    },
+    {
+      "epoch": 1793182044.7630227,
+      "cpu_percent": 11.5,
+      "encoders": []
+    }
+  ],
+  "owned": [
+    {
+      "pid": 15496,
+      "created": 1793181857.39831,
+      "exe": "C:\\Users\\jaime\\.cache\\codex-runtimes\\codex-primary-runtime\\dependencies\\native\\powershell\\pwsh.exe"
+    },
+    {
+      "pid": 40492,
+      "created": 1793181860.6769252,
+      "exe": "D:\\cw\\.venv\\Scripts\\uv.exe"
+    },
+    {
+      "pid": 29604,
+      "created": 1793181861.060624,
+      "exe": "D:\\cw\\.venv\\Scripts\\python.exe"
+    },
+    {
+      "pid": 43460,
+      "created": 1793181861.0700598,
+      "exe": "C:\\Python314\\python.exe"
+    },
+    {
+      "pid": 30124,
+      "created": 1793181861.3873613,
+      "exe": "D:\\cw\\.venv\\Scripts\\python.exe"
+    },
+    {
+      "pid": 29648,
+      "created": 1793181861.39681,
+      "exe": "C:\\Python314\\python.exe"
+    },
+    {
+      "pid": 20032,
+      "created": 1793181903.3412974,
+      "exe": "D:\\cw\\.venv\\Lib\\site-packages\\iowarp_core\\bin\\clio_run.exe"
+    },
+    {
+      "pid": 52588,
+      "created": 1793181903.3580546,
+      "exe": "C:\\Windows\\System32\\conhost.exe"
+    },
+    {
+      "pid": 49968,
+      "created": 1793181917.2968166,
+      "exe": "C:\\Users\\jaime\\.local\\bin\\claude.exe"
+    },
+    {
+      "pid": 47416,
+      "created": 1793181917.378144,
+      "exe": "C:\\Users\\jaime\\.local\\bin\\claude.exe"
+    },
+    {
+      "pid": 48008,
+      "created": 1793181917.3829994,
+      "exe": "C:\\Windows\\System32\\conhost.exe"
+    },
+    {
+      "pid": 34024,
+      "created": 1793182028.9591813,
+      "exe": "D:\\cw\\.venv\\Lib\\site-packages\\iowarp_core\\bin\\clio_run.exe"
+    },
+    {
+      "pid": 7144,
+      "created": 1793182040.8040955,
+      "exe": "D:\\cw\\.venv\\Lib\\site-packages\\iowarp_core\\bin\\clio_run.exe"
+    }
+  ],
+  "survivors": []
+}

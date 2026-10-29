@@ -18,6 +18,7 @@ from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Any
 
 from clio_agent.gact.permission_delivery import publish_permission_event
+from clio_agent.gact.permission_evidence import emit_permission_resolution
 
 if TYPE_CHECKING:
     from fastapi import FastAPI
@@ -87,6 +88,7 @@ def expire_permission(
     row["action"] = "deny"
     row["reason"] = REASON_PERMISSION_TIMEOUT
     row["resolved_at"] = datetime.now(timezone.utc).isoformat()
+    row["grantor"] = "system"
     app.state.permission_events.pop(pid, None)
     session_id = str(row.get("session_id") or "")
     logger.warning(
@@ -98,6 +100,7 @@ def expire_permission(
         session_id,
         waited,
     )
+    emit_permission_resolution(app, row)
     publish_permission_event(
         app,
         "permission.resolved",

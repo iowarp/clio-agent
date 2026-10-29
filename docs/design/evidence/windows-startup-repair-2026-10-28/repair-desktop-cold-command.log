@@ -1,0 +1,25 @@
+{"t":0,"event":"open"}
+{"t":1,"event":"window"}
+{"t":1,"event":"boot_log_resolution_failed","error":"Error: WD POST /session/6b4333d4c207f08337602a96932eb4f9/execute/async -> 500: {\"value\":{\"error\":\"javascript error\",\"mes"}
+{"t":1,"event":"state","state":"blank","text":""}
+{"t":2.1,"event":"state","state":"starting","text":"CLIO Connecting Search Ctrl K Starting CLIO Your local scientific workspace is getting ready. LOCAL STARTUP Installing local runtime Preparing CLIO for first use 0s Check 2 Install 3 Open"}
+{"t":5.6,"event":"server_process","pid":48156}
+{"t":38.9,"event":"state","state":"workspace","text":"Toggle Sidebar default › New conversation New conversation in default with Loading agents… Customize Live CLIO Local CLIO Search Ctrl K Workspaces default interrupted 9 New interrupted 8 New interrupt"}
+{"t":38.9,"event":"workspace_usable"}
+{"t":97.7,"event":"package_validation","valid":true,"detail":"Managed packages checked reason=managed_packages_installed 94.090s","observed_s":97.7}
+{"t":99,"event":"quit"}
+{"t":105.5,"event":"exited","process":"server:48156","after_quit_s":6.5}
+{"t":105.5,"event":"exited","process":"other:8656","after_quit_s":6.5}
+{"t":105.5,"event":"exited","process":"clio-core:35268","after_quit_s":6.5}
+{"t":105.5,"event":"exited","process":"other:43444","after_quit_s":6.5}
+{"t":110.7,"event":"exited","process":"desktop:24552","after_quit_s":11.7}
+{"t":110.7,"event":"exited","process":"other:28728","after_quit_s":11.7}
+{"t":110.7,"event":"exited","process":"other:28864","after_quit_s":11.7}
+{"t":110.7,"event":"exited","process":"other:53056","after_quit_s":11.7}
+{"t":110.7,"event":"exited","process":"other:31444","after_quit_s":11.7}
+{"t":110.7,"event":"exited","process":"other:42424","after_quit_s":11.7}
+{"t":110.7,"event":"exited","process":"other:21032","after_quit_s":11.7}
+{"t":110.7,"event":"exited","process":"other:27856","after_quit_s":11.7}
+{"t":110.7,"event":"exited","process":"launcher:16928","after_quit_s":11.7}
+{"t":110.7,"event":"exited","process":"other:52772","after_quit_s":11.7}
+{"t":110.7,"event":"done"}

@@ -1,4 +1,4 @@
-"""Session-bound execution wrappers for registered DSPy agent modules."""
+"""Run a resolved agent outside a turn (slash commands that name an agent)."""
 
 from __future__ import annotations
 
@@ -6,46 +6,12 @@ from typing import TYPE_CHECKING, Any
 
 from clio_agent.gact import context as _ctx
 from clio_agent.gact.agents.claude_code_precede import precede_connect_claude_code_session
-from clio_agent.gact.agents.signatures import (
-    _prompt_user_agent_signature,
-    _tool_user_agent_signature,
-)
 
 if TYPE_CHECKING:
     from clio_agent.gact.types import AgentDef
 
 
-def _app_builder(name: str) -> Any:
-    """Resolve a builder through the legacy app seam at execution time."""
-
-    from clio_agent.gact import app as gact_app  # noqa: PLC0415
-
-    return getattr(gact_app, name)
-
-
-def _runner_kwargs(
-    *,
-    question: str,
-    session_id: str,
-    cancel_requested: Any | None,
-    images: list[Any] | None,
-    files: list[Any] | None,
-) -> dict[str, Any]:
-    """Build additive runner kwargs without changing text-only call shapes."""
-
-    kwargs: dict[str, Any] = {
-        "question": question,
-        "session_id": session_id,
-        "cancel_requested": cancel_requested,
-    }
-    if images:
-        kwargs["images"] = list(images)
-    if files:
-        kwargs["files"] = list(files)
-    return kwargs
-
-
-def _run_blueprint_dspy_agent(
+def run_resolved_agent(
     base_agent: Any,
     agent_def: "AgentDef",
     question: str,
@@ -54,89 +20,42 @@ def _run_blueprint_dspy_agent(
     images: list[Any] | None = None,
     files: list[Any] | None = None,
 ) -> Any:
-    """Run a blueprint module with the active session and native images bound."""
+    """Build ``agent_def``'s module from its pinned resolution and run it once."""
 
+    from clio_agent.gact.agents.builders import build_agent_module  # noqa: PLC0415
+    from clio_agent.gact.agents.resolution import (  # noqa: PLC0415
+        SessionAgentUnavailable,
+        plugin_service,
+    )
+
+    digest = str(agent_def.metadata.get("resolution_digest") or "")
+    resolution = plugin_service(_ctx.active_app()).pinned(digest)
+    if resolution is None:
+        raise SessionAgentUnavailable(
+            str(agent_def.metadata.get("agent_ref") or agent_def.id),
+            "agent_resolution_missing",
+            [{"code": "agent_resolution_missing", "message": f"{digest} is not stored"}],
+        )
     token = _ctx.set_session_id(session_id)
     try:
-        module = _app_builder("_build_blueprint_dspy_module")(base_agent, agent_def)
-        # B2: background pre-connect with the REAL resolved config -- see
-        # gact.agents.claude_code_precede for the full contract.
+        module = build_agent_module(base_agent, agent_def, resolution)
         precede_connect_claude_code_session(
             getattr(module, "config", None),
             getattr(module, "signature", None),
             session_id=session_id,
         )
-        return module(
-            **_runner_kwargs(
-                question=question,
-                session_id=session_id,
-                cancel_requested=cancel_requested,
-                images=images,
-                files=files,
-            )
-        )
+        kwargs: dict[str, Any] = {
+            "question": question,
+            "session_id": session_id,
+            "cancel_requested": cancel_requested,
+        }
+        if images:
+            kwargs["images"] = list(images)
+        if files:
+            kwargs["files"] = list(files)
+        return module(**kwargs)
     finally:
         _ctx.reset(token)
 
 
-def _run_prompt_user_agent(
-    base_agent: Any,
-    agent_def: "AgentDef",
-    question: str,
-    session_id: str,
-    cancel_requested: Any | None = None,
-    images: list[Any] | None = None,
-    files: list[Any] | None = None,
-) -> Any:
-    """Execute a prompt-only user or skill agent through DSPy and LiteLLM."""
-
-    token = _ctx.set_session_id(session_id)
-    try:
-        module = _app_builder("_build_prompt_user_agent_module")(base_agent, agent_def)
-        precede_connect_claude_code_session(
-            getattr(module, "config", None), _prompt_user_agent_signature(), session_id=session_id
-        )
-        return module.forward(
-            **_runner_kwargs(
-                question=question,
-                session_id=session_id,
-                cancel_requested=cancel_requested,
-                images=images,
-                files=files,
-            )
-        )
-    finally:
-        _ctx.reset(token)
-
-
-def _run_tool_user_agent(
-    base_agent: Any,
-    agent_def: "AgentDef",
-    question: str,
-    session_id: str,
-    cancel_requested: Any | None = None,
-    images: list[Any] | None = None,
-    files: list[Any] | None = None,
-) -> Any:
-    """Execute a tool-declaring user or skill agent through DSPy ReAct."""
-
-    token = _ctx.set_session_id(session_id)
-    try:
-        module = _app_builder("_build_tool_user_agent_module")(base_agent, agent_def)
-        precede_connect_claude_code_session(
-            getattr(module, "config", None), _tool_user_agent_signature(), session_id=session_id
-        )
-        return module.forward(
-            **_runner_kwargs(
-                question=question,
-                session_id=session_id,
-                cancel_requested=cancel_requested,
-                images=images,
-                files=files,
-            )
-        )
-    finally:
-        _ctx.reset(token)
-
-
-__all__ = ["_run_blueprint_dspy_agent", "_run_prompt_user_agent", "_run_tool_user_agent"]
+__all__ = ["run_resolved_agent"]

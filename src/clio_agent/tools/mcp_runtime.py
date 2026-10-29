@@ -18,8 +18,8 @@ dispatch in ``gact/routes/mcp.py``, and the ``providers/handshake/mcp.py`` probe
 **The execution/introspection split (adopted default):** handlers wire on
 execution paths only (paths that ``call_tool`` / dispatch a proxy backend), so
 **list-only introspection sites do NOT migrate** and keep their bare
-``Client()`` — the catalog/blueprint/status/gateway-listing passes
-(``routes/catalog.py``, ``routes/blueprints.py``, ``runtime/status.py``,
+``Client()`` — the catalog/status/gateway-listing passes
+(``routes/catalog.py``, ``runtime/status.py``,
 ``tools/gateway.list_gateway_tools``) plus the install/reconnect/inventory
 ``list_tools`` passes in ``routes/mcp.py``. They never dispatch a tool call, so
 they never need the handler slot; forcing them through the factory would be pure
@@ -28,6 +28,7 @@ churn.
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
@@ -84,7 +85,19 @@ def _oauth_provider_from_config(
     from pydantic import ValidationError  # noqa: PLC0415
 
     from clio_agent.tools.mcp_config import MCPTransportError  # noqa: PLC0415
+    from clio_agent.tools.mcp_durable_oauth import DurableOAuthProvider  # noqa: PLC0415
     from clio_agent.tools.mcp_oauth_storage import DurableFileTokenStorage  # noqa: PLC0415
+
+    storage = config.storage or DurableFileTokenStorage(
+        server_url, connection_id=config.connection_id
+    )
+    if (
+        config.require_existing_tokens
+        and config.redirect_handler is None
+        and isinstance(storage, DurableFileTokenStorage)
+        and not storage.has_tokens()
+    ):
+        raise MCPTransportError("MCP sign-in required; connect this service in CLIO")
 
     try:
         metadata = (
@@ -92,14 +105,20 @@ def _oauth_provider_from_config(
             if isinstance(config.client_metadata, OAuthClientMetadata)
             else OAuthClientMetadata.model_validate(config.client_metadata)
         )
-        return OAuthClientProvider(
-            server_url=server_url,
-            client_metadata=metadata,
-            storage=config.storage or DurableFileTokenStorage(server_url),
-            redirect_handler=config.redirect_handler,
-            callback_handler=config.callback_handler,
-            client_metadata_url=config.client_metadata_url,
-        )
+        options: dict[str, Any] = {
+            "server_url": server_url,
+            "client_metadata": metadata,
+            "redirect_handler": config.redirect_handler,
+            "callback_handler": config.callback_handler,
+            "client_metadata_url": config.client_metadata_url,
+        }
+        if isinstance(storage, DurableFileTokenStorage):
+            return DurableOAuthProvider(
+                storage=storage,
+                sign_in_required=config.require_existing_tokens and config.redirect_handler is None,
+                **options,
+            )
+        return OAuthClientProvider(storage=storage, **options)
     except (TypeError, ValueError, ValidationError):
         raise MCPTransportError("invalid MCP OAuth configuration") from None
 
@@ -378,6 +397,23 @@ def _capability_session_class(declaration: MCPClientCapabilities, base: type) ->
     return session_class
 
 
+async def enter_connection(client_ctx: Any) -> Any:
+    """Enter a persistent MCP client outside the turn whose tool call opens it.
+
+    Entering a FastMCP client starts its session task (and an in-process server's
+    tasks), and a task copies the context it is created in. A connection opened by a
+    turn's first tool call carried that turn's context -- its ReAct loop, module, tools,
+    LM views and call ledger -- for as long as the pooled connection lived (live, #1846:
+    eleven finished agents kept alive by eleven pooled connections). The session starts
+    in :func:`~clio_agent.tools.mcp_server_progress.connection_context` instead.
+    """
+    from clio_agent.runtime import asyncio_wait_release  # noqa: PLC0415
+    from clio_agent.tools.mcp_server_progress import connection_context  # noqa: PLC0415
+
+    asyncio_wait_release.install()  # each call's wait must not pin its task on the session
+    return await asyncio.create_task(client_ctx.__aenter__(), context=connection_context())
+
+
 def make_mcp_client(
     target: Any,
     *,
@@ -385,6 +421,8 @@ def make_mcp_client(
     capabilities: MCPClientCapabilities | None = None,
     client_cls: Callable[..., Any] | None = None,
     server_id: str = "",
+    list_changed_namespace: str = "",
+    initialization_timeout: float | None = None,
 ) -> Any:
     """Construct an execution-path FastMCP client with CLIO identity + the handler slot.
 
@@ -400,13 +438,13 @@ def make_mcp_client(
     Identity scope — a deliberate decision (#1111 review): identity is stamped on
     the EXECUTION paths that route here (tool dispatch, both gateway proxy
     branches, and the handshake probe) plus the readiness probe. The documented
-    list-only introspection sites (``routes/catalog.py``, ``routes/blueprints.py``,
+    list-only introspection sites (``routes/catalog.py``,
     ``runtime/status.py``, ``tools/gateway.list_gateway_tools``, the install/
     reconnect ``list_tools`` passes in ``routes/mcp.py``) keep their bare
     ``Client()``: they only enumerate tools and never dispatch a call or receive a
     server-initiated request, so ``clientInfo`` there is cosmetic. Routing them
     through this factory purely for identity would either re-plumb their list-only
-    test doubles for no functional gain or add a per-file import to four modules
+    test doubles for no functional gain or add a per-file import to modules
     that sit exactly at their size-ratchet baselines — accretion the no-accretion
     guard forbids. The meaningful connection surface (every dispatch path + the
     readiness handshake) carries identity; the display-only enumerations do not.
@@ -450,6 +488,10 @@ def make_mcp_client(
             front leg is comparatively low-value -- see that module's
             docstring for why a PROXIED backend's real era is only ever
             observable at the seam that dials it, not at the front).
+        list_changed_namespace: The namespace a ``notifications/tools/list_changed``
+            on this client is recorded under, for a client that must not be
+            era-instrumented itself (the gateway proxy's never-entered base backend,
+            whose clones share its message handler). Defaults to ``server_id``.
     Extensions (#1115, #1283): every client built here declares the FULL generic MCP
     extension registry (:func:`clio_agent.tools.mcp_extension_registry.
     extensions_declaration`) — tasks (SEP-2663, so a task-serving backend may run a
@@ -553,10 +595,11 @@ def make_mcp_client(
     message_handler: Callable[[Any], Any] | None = (
         MessageMultiplexer(handlers.message) if handlers is not None and handlers.message else None
     )
-    if server_id:
+    listen_namespace = server_id or list_changed_namespace
+    if listen_namespace:
         from clio_agent.tools.mcp_listen import combined_message_handler  # noqa: PLC0415
 
-        message_handler = combined_message_handler(server_id, message_handler)
+        message_handler = combined_message_handler(listen_namespace, message_handler)
     if message_handler is not None:
         kwargs["message_handler"] = message_handler
 
@@ -581,6 +624,8 @@ def make_mcp_client(
     if declaration.extensions:
         kwargs["extensions"] = list(declaration.extensions)
 
+    if initialization_timeout is not None:
+        kwargs["init_timeout"] = initialization_timeout
     client = client_cls(target, **kwargs)
     if capabilities is not None:
         # ANY non-None declaration (incl. explicit empty) is authoritative for the

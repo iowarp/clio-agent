@@ -28,7 +28,7 @@ import pytest
 
 from clio_agent.config import LMProviderConfig
 from clio_agent.gact.turn_usage import roll_up_usage
-from clio_agent.gact.usage import _snapshot_lm_history_index
+from clio_agent.gact.usage import _turn_call_count
 from clio_agent.runtime import turn_lm_ledger
 
 pytestmark = pytest.mark.usefixtures("clio_core_plane")
@@ -108,16 +108,25 @@ def test_a_streamed_call_asks_for_and_records_the_provider_usage(metis: str) -> 
 
     lm = create_lm(_metis_config(metis))
     import dspy
+    from dspy.clients.base_lm import GLOBAL_HISTORY
 
     from clio_agent.gact.agents.clio_react import ClioReAct
 
+    before = len(GLOBAL_HISTORY)
     # The agent loop streams every call.
-    with dspy.context(lm=lm):
-        ClioReAct("question -> answer", tools=[])(question="Which station?")
+    token = turn_lm_ledger.open_ledger()
+    try:
+        with dspy.context(lm=lm):
+            ClioReAct("question -> answer", tools=[])(question="Which station?")
+        last = turn_lm_ledger.last_call()
+    finally:
+        turn_lm_ledger.close_ledger(token)
 
     assert _MetisReplay.requests[-1]["stream"] is True
     assert _MetisReplay.requests[-1]["stream_options"] == {"include_usage": True}
-    usage = lm.history[-1]["usage"]
+    # The turn's call, kept by no LM and not in DSPy's process-wide history.
+    assert last is not None and lm.history == [] and len(GLOBAL_HISTORY) == before
+    usage = last["usage"]
     assert (usage["prompt_tokens"], usage["completion_tokens"]) == (1874, 42)
 
 
@@ -128,7 +137,7 @@ def test_a_turn_on_a_per_forward_alcf_lm_rolls_up_its_tokens(metis: str) -> None
         state = SimpleNamespace(
             app=app,
             sid="sess_alcf",
-            history_start=_snapshot_lm_history_index(app),
+            calls_start=_turn_call_count(),
             turn_tokens={"input": 0, "output": 0, "cache_read": 0, "cache_write": 0},
             turn_cost=0.0,
             turn_cost_known=False,
@@ -163,8 +172,16 @@ def test_a_turn_on_a_per_forward_alcf_lm_rolls_up_its_tokens(metis: str) -> None
     assert state.turn_cost_known is False
 
 
-def test_the_ledger_is_empty_outside_a_turn(metis: str) -> None:
+def test_a_call_outside_a_turn_is_kept_nowhere(metis: str) -> None:
+    import dspy
+    from dspy.clients.base_lm import GLOBAL_HISTORY
+
+    from clio_agent.gact.agents.clio_react import ClioReAct
     from clio_agent.lm.factory import create_lm
 
-    create_lm(_metis_config(metis))
-    assert turn_lm_ledger.ledger_lms() == []
+    before = len(GLOBAL_HISTORY)
+    lm = create_lm(_metis_config(metis))
+    with dspy.context(lm=lm):
+        ClioReAct("question -> answer", tools=[])(question="Which station?")
+    assert turn_lm_ledger.ledger_calls() == []
+    assert lm.history == [] and len(GLOBAL_HISTORY) == before

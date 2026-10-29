@@ -182,43 +182,6 @@ def test_trace_scope_and_limit_keep_latest_matches_oldest_first(tmp_path: Path) 
         ]
 
 
-def test_blueprint_tools_validate_against_serve_runtime_catalog(tmp_path: Path) -> None:
-    """Ordinary MCP tools validate against the explicitly supplied runtime catalog."""
-    from pathlib import Path
-
-    from clio_agent.gact.agent_blueprints import validate_agent_blueprint_path
-
-    root = tmp_path / "bp"
-    (root / "experts").mkdir(parents=True)
-    (root / "AGENT.md").write_text(
-        "---\nid: bp\ntitle: BP\nversion: 0.1.0\ndescription: t\nroot_expert: main\n"
-        "blueprint:\n  format: agent-blueprint-v1\nexperts:\n  - experts/main.md\n---\nbody\n",
-        encoding="utf-8",
-    )
-    (root / "experts" / "main.md").write_text(
-        "---\nid: main\ntitle: M\ntier: 1\nrole: orchestrator\nmodule:\n  kind: react\n"
-        "signature:\n  inputs:\n    question:\n      description: q\n      type: string\n"
-        "  outputs:\n    answer:\n      description: a\n      type: string\n"
-        "tools:\n  - remote_scientific_jarvis_jarvis_run\n---\nbody\n",
-        encoding="utf-8",
-    )
-    # Without the runtime catalog: unknown tool -> root disabled (the old failure).
-    cold = validate_agent_blueprint_path(Path(root), scope="session")
-    cold_main = next(r for r in cold["agents"] if r["id"] == "main")
-    assert not cold_main["enabled"]
-    assert any("unknown tool reference" in e for e in cold_main["validation_errors"])
-    # With it: valid, carrying the typed serve_runtime provenance diagnostic.
-    warm = validate_agent_blueprint_path(
-        Path(root),
-        scope="session",
-        runtime_tool_names={"remote_scientific_jarvis_jarvis_run"},
-    )
-    warm_main = next(r for r in warm["agents"] if r["id"] == "main")
-    assert warm_main["enabled"]
-    diags = warm_main.get("metadata", {}).get("tool_diagnostics", [])
-    assert any(d.get("source") == "serve_runtime" for d in diags if isinstance(d, dict))
-
-
 class _AckAgent:
     """Minimal host agent -- the missing-parts request must 400 before this runs."""
 

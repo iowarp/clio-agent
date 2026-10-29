@@ -11,6 +11,7 @@ from contextlib import contextmanager
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
+from clio_agent.gact.owner_loop import on_owner_loop
 from clio_agent.gact.turn_revision_gate import TurnRevisionGate
 
 if TYPE_CHECKING:
@@ -95,6 +96,16 @@ class TurnRunner:
         pump = self._pumps.get(sid)
         if pump is None or pump.done():
             self._pumps[sid] = asyncio.create_task(self._pump(sid))
+
+    async def run_pending(self, sid: str) -> None:
+        """Admit ``sid``'s pending input now and wait until its turns settle (app loop only).
+
+        The obligations lane uses it to resume a bounded number of conversations at a time.
+        """
+        self._signal(sid)
+        pump = self._pumps.get(sid)
+        if pump is not None:
+            await asyncio.wait({pump})
 
     async def _pump(self, sid: str) -> None:
         sequence = self._signals.get(sid, 0)
@@ -201,9 +212,16 @@ class TurnRunner:
             try:
                 value = context.run(function)
             except BaseException as error:
-                logger.exception(
-                    "Task boundary reason=session_worker_failed error_type=%s", type(error).__name__
-                )
+                from clio_agent.gact.runtime.globals import _TurnCancelled  # noqa: PLC0415
+
+                if isinstance(error, _TurnCancelled):
+                    # Stop or cancel ended the turn: an outcome, not a worker failure.
+                    logger.info("Task boundary reason=session_worker_cancelled session=%s", sid)
+                else:
+                    logger.exception(
+                        "Task boundary reason=session_worker_failed error_type=%s",
+                        type(error).__name__,
+                    )
                 loop.call_soon_threadsafe(complete, None, error)
             else:
                 loop.call_soon_threadsafe(complete, value, None)
@@ -327,6 +345,7 @@ class TurnRunner:
             self._request_stop(resources)
             return resources.stop
 
+    @on_owner_loop
     async def stop(self, sid: str, *, reservation: threading.Event | None = None) -> None:
         """Stop the model segment and its waiters, preserving accepted background work."""
         with self._lock:

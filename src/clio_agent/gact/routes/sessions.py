@@ -37,7 +37,7 @@ from clio_agent.gact.routes.session_cancellation import cancel_session_state_asy
 from clio_agent.gact.routes.session_creation import register_session_creation_route
 from clio_agent.gact.routes.session_export import register_session_export_routes
 from clio_agent.gact.routes.session_fork import register_session_fork_route
-from clio_agent.gact.routes.session_rows import filter_session_rows, rows_to_wire
+from clio_agent.gact.routes.session_list import register_session_list_route
 from clio_agent.gact.routes.side_sessions import register_side_session_routes
 from clio_agent.gact.runtime.globals import _new_attempt_id
 from clio_agent.gact.runtime.retention import enforce_dict_bound
@@ -46,7 +46,6 @@ from clio_agent.gact.turn_reasoning import forget_session_reasoning
 from clio_agent.gact.types import (
     ErrorEnvelope,
     ErrorInfo,
-    ListSessionsResponse,
     Message,
     ModelRef,
     RetryTurnRequest,
@@ -138,26 +137,7 @@ def register_sessions_routes(app: FastAPI, deps: "GactDeps") -> None:
             v2=lambda: Session(**sess.to_wire()),
         )
 
-    @app.get("/v1/sessions", response_model=ListSessionsResponse)
-    async def list_sessions(
-        request: Request,
-        workspace_id: Optional[str] = None,
-        include_all_workspaces: bool = False,
-        archived: Optional[bool] = None,
-        parent_session_id: Optional[str] = None,
-    ) -> ListSessionsResponse | JSONResponse:
-        """List sessions, filtered by workspace scope, archive bucket (audit E-14),
-        and optionally fork lineage — ``parent_session_id`` non-empty restricts to
-        that parent's direct sub-sessions (#232); omitted/empty is unchanged."""
-
-        effective_workspace_id = workspace_id or (None if include_all_workspaces else "ws_default")
-        rows = app.state.sessions.list(workspace_id=effective_workspace_id)
-        rows = filter_session_rows(rows, archived=archived, parent_session_id=parent_session_id)
-        return project_for_request(
-            request,
-            v3=lambda: JSONResponse(content={"sessions": [session_to_v3(row) for row in rows]}),
-            v2=lambda: ListSessionsResponse(sessions=rows_to_wire(rows)),
-        )
+    register_session_list_route(app)
 
     @app.get("/v1/sessions/{sid}", response_model=Session)
     async def get_session(
@@ -203,9 +183,7 @@ def register_sessions_routes(app: FastAPI, deps: "GactDeps") -> None:
             summary=f"delete session {sid}",
             reason="user_requested_session_delete",
         )
-        active = app.state.task_history.tree_handles(sid) & app.state.task_history.task_handles(
-            active_only=True
-        )
+        active = app.state.task_history.tree_handles(sid, active_only=True)
         if active or app.state.turn_runner.busy(sid):
             raise HTTPException(
                 status_code=409,
@@ -233,7 +211,7 @@ def register_sessions_routes(app: FastAPI, deps: "GactDeps") -> None:
                 ).model_dump(exclude_none=True),
             ) from exc
         await run_off_loop(deps.delete_session_messages, app, sid)  # clio-core first: 503 keeps it
-        existed = app.state.sessions.delete(sid)
+        existed = await run_off_loop(app.state.sessions.delete, sid)  # trusted: off-loop only
         if not existed:
             raise HTTPException(
                 status_code=404,
@@ -258,24 +236,14 @@ def register_sessions_routes(app: FastAPI, deps: "GactDeps") -> None:
 
     async def copy_session_context(src: str, dst: str, at: str = "") -> int:
         """Deep-copy ``src``'s messages (to + including ``at``) and context files into ``dst``."""
-        src_msgs = list(app.state.messages.get(src, []))
-        if at and any(m.id == at for m in src_msgs):
-            src_msgs = src_msgs[: next(i for i, m in enumerate(src_msgs) if m.id == at) + 1]
-        # Deep-copy parts so the copy's log doesn't alias the source's (model_copy snapshot).
-        await run_off_loop(
-            deps.replace_session_messages,
-            app,
-            dst,
-            [m.model_copy(deep=True, update={"session_id": dst}) for m in src_msgs],
-        )
-        if source_context_files := app.state.context_files.get(src, {}):
-            app.state.context_files[dst] = {k: dict(row) for k, row in source_context_files.items()}
-        return len(src_msgs)
+        from clio_agent.gact.conversation_copy import copy_conversation  # noqa: PLC0415
+
+        return await run_off_loop(copy_conversation, app, src, dst, at)
 
     register_side_session_routes(
         app, copy_context=copy_session_context, delete_session=delete_session
     )
-    register_session_fork_route(app, copy_context=copy_session_context)
+    register_session_fork_route(app)
 
     # ---- Rollback (undo / rewind) -----------------------------------
 

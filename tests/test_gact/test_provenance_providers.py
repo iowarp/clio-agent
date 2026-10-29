@@ -476,6 +476,83 @@ def test_normalization_pairs_cross_family_lifecycles_and_ignores_running_samples
     assert result["spans"][2]["end_time"] is None
 
 
+def test_normalization_pairs_failed_llm_response_without_inventing_turn_closures() -> None:
+    rows = []
+    for event_type, status in (
+        ("agent.invocation.started", "running"),
+        ("llm.request.started", "running"),
+        ("expert.lifecycle.started", "running"),
+        ("llm.response.failed", "failed"),
+    ):
+        event = _event(event_type, status=status).to_dict()
+        event["payload"] = (
+            {"expert_span_id": "expert_1"}
+            if event_type == "expert.lifecycle.started"
+            else {"error": "request cancelled"}
+            if event_type == "llm.response.failed"
+            else {}
+        )
+        rows.append(event)
+
+    result = normalize_semantic_events(rows, provider="native", session_id="sess_root")
+
+    assert result["complete"] is False
+    by_type = {span["event_type"]: span for span in result["spans"]}
+    assert by_type["llm.request.started"]["status"] == "failed"
+    assert by_type["llm.request.started"]["attributes"]["terminal_event_type"] == (
+        "llm.response.failed"
+    )
+    # A failed request can be retried, and this event set has no turn terminal.
+    # Do not infer that the agent invocation or expert lifecycle has ended.
+    assert by_type["agent.invocation.started"]["status"] == "running"
+    assert by_type["expert.lifecycle.started"]["status"] == "running"
+
+
+def test_turn_terminal_closes_only_turn_owned_execution_lifecycles() -> None:
+    rows = []
+    for turn_id in ("turn_1", "turn_2"):
+        for event_type in ("agent.invocation.started", "expert.lifecycle.started"):
+            event = _event(event_type, status="running").to_dict()
+            event["turn_id"] = turn_id
+            event["payload"] = {"expert_span_id": f"expert_{turn_id}"}
+            rows.append(event)
+
+    for event_type in ("tool.call.started", "user_question.started"):
+        event = _event(event_type, status="running").to_dict()
+        event["payload"] = {"call_id": "call_1"} if event_type == "tool.call.started" else {}
+        rows.append(event)
+
+    terminal = _event("turn.failed", status="failed", occurred_at="2026-08-21T12:00:02+00:00")
+    terminal.payload = {"turn_id": "turn_1"}
+    rows.append(terminal.to_dict())
+
+    result = normalize_semantic_events(rows, provider="native", session_id="sess_root")
+
+    assert result["complete"] is False
+    turn_one = [
+        span
+        for span in result["spans"]
+        if span["event_type"] in {"agent.invocation.started", "expert.lifecycle.started"}
+        and span["attributes"]["turn_id"] == "turn_1"
+    ]
+    turn_two = [
+        span
+        for span in result["spans"]
+        if span["event_type"] in {"agent.invocation.started", "expert.lifecycle.started"}
+        and span["attributes"]["turn_id"] == "turn_2"
+    ]
+    assert len(turn_one) == len(turn_two) == 2
+    assert all(span["status"] == "failed" for span in turn_one)
+    assert all(span["attributes"]["terminal_event_type"] == "turn.failed" for span in turn_one)
+    assert all(span["status"] == "running" for span in turn_two)
+    assert all(span["end_time"] is None for span in turn_two)
+    # A turn outcome does not fabricate completion for still-open tools or questions.
+    assert {span["event_type"] for span in result["spans"] if span["end_time"] is None} >= {
+        "tool.call.started",
+        "user_question.started",
+    }
+
+
 def test_normalization_keeps_bounded_research_tool_coordinates_and_failure() -> None:
     event = _event("react.step.completed", status="completed").to_dict()
     event["payload"] = {

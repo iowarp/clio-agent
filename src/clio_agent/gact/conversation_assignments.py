@@ -21,6 +21,9 @@ from clio_agent.arc.task_types import (
     TaskSnapshot,
     argument_digest,
 )
+from clio_agent.gact.assignment_response import assignment_outputs
+from clio_agent.gact.fleet.child_model import warm_model_catalog
+from clio_agent.gact.fleet.guard import guard_spending
 from clio_agent.gact.native_work import now
 from clio_agent.gact.session_input import input_delivery
 from clio_agent.gact.task_access import TaskCaller
@@ -184,6 +187,7 @@ def _new_assignment(
     invocation_id: str,
     handle: str | None = None,
     initial_details: AssignmentDetails | None = None,
+    fork_of: str | None = None,
 ) -> TaskSnapshot:
     startup_error = self.sessions.startup_retirement_error(sid)
     if startup_error:
@@ -211,6 +215,9 @@ def _new_assignment(
         .model_copy(
             update={
                 "predecessor": predecessor.handle if predecessor is not None else None,
+                "standing": previous_details.standing
+                if previous_details is not None
+                else bool(initial_details and initial_details.standing),
                 "context": previous_details.context if previous_details is not None else None,
                 "context_epoch": previous_details.context_epoch if previous_details else "",
                 "context_epoch_after": previous_details.context_epoch_after
@@ -258,6 +265,7 @@ def _new_assignment(
         activity="queued",
         details=details,
         resource_id=predecessor.resource_id if predecessor is not None else None,
+        fork_of=fork_of,
         supported_actions=(
             "observe",
             "wait",
@@ -356,9 +364,11 @@ def _finish_segment(
             for task in pending
         )
         startup_error = self.sessions.startup_retirement_error(segment.session_id)
+        # A standing assignment's check never completes it, so it publishes no
+        # outcome that would wake its owner (agent-task-native-v3 §3).
         disposition = (
             "yield"
-            if gated or startup_error
+            if gated or startup_error or details.standing
             else outcome.disposition or ("yield" if has_work else "complete")
         )
         if disposition not in {"yield", "complete"}:
@@ -374,7 +384,10 @@ def _finish_segment(
             and outcome.error.get("recoverable") is True
         )
         execution_failed = outcome.error is not None and not presentation_only
-        output = self.history.write_content(segment.session_id, outcome.error or outcome.outputs)
+        output = self.history.write_content(
+            segment.session_id,
+            outcome.error or assignment_outputs(self.history, details, outcome.outputs),
+        )
         detail_ref = self.history.write_content(
             segment.session_id,
             details.model_copy(
@@ -518,8 +531,16 @@ async def spawn(
     approval_profile: str | None = None,
     resource_id: str | None = None,
     start: bool = True,
+    model: str = "",
+    standing: bool = False,
+    fork_of: str | None = None,
 ) -> dict[str, Any]:
-    """Persist the original assignment before enrichment or child inference starts."""
+    """Persist the original assignment before enrichment or child inference starts.
+
+    ``model`` names the model the child runs on (``account/model`` or a bare id);
+    empty lets the child's preferences, then the caller's model, decide.
+    ``standing`` keeps the assignment across check segments until cancelled.
+    """
     if not assignment.strip():
         raise ValueError("Subagent assignment cannot be empty")
     from clio_agent.gact.assignment_evidence import validate_assignment_evidence
@@ -564,11 +585,20 @@ async def spawn(
     prepared_parent = await self.history.io.run(preflight)
     from clio_agent.gact.off_loop import join_off_loop
 
+    if prepared_parent is not None:
+        await warm_model_catalog(self.app)
+
     prepared_child = (
-        await join_off_loop(self.prepare_child, caller.session_id, agent_id, target_scope)
+        await join_off_loop(self.prepare_child, caller.session_id, agent_id, target_scope, model)
         if prepared_parent is not None
         else None
     )
+    if prepared_child is not None and (
+        refused := await guard_spending(
+            self.app, caller.session_id, dict(getattr(prepared_child, "model_choice", {}) or {})
+        )
+    ):
+        return refused
 
     def create() -> TaskSnapshot:
         with self.history.serialized(writing=True):
@@ -578,11 +608,14 @@ async def spawn(
                 session = self.sessions.get(existing.owner.session_id)
                 if (
                     existing.description != assignment
+                    or existing.fork_of != fork_of
                     or existing.owner.human_id != caller.human_id
                     or session is None
-                    or session.agent.get("id") != agent_id
+                    or session.metadata.get("spawn_target", session.agent.get("id")) != agent_id
+                    or session.metadata.get("subagent_name", "")
+                    != str((session_metadata or {}).get("subagent_name") or "").strip()
                 ):
-                    raise ValueError("Spawn invocation was reused with different work")
+                    raise ValueError("Spawn invocation was reused with different work or name")
                 if session.metadata.get("variant_strategy") != normalized_strategy:
                     raise ValueError("Spawn invocation was reused with a different strategy")
                 if existing.details is None:
@@ -606,6 +639,25 @@ async def spawn(
                 or parent.owner.human_id != caller.human_id
             ):
                 raise ValueError("Spawning requires an active owning assignment")
+            terminal_parents = {
+                closed_parent
+                for closed_parent, _ in self._closed_spawn_invocations
+                if (closed_task := self.history.task_snapshot(closed_parent)) is None
+                or closed_task.terminal_at is not None
+            }
+            if terminal_parents:
+                self._closed_spawn_invocations.difference_update(
+                    {
+                        (closed_parent, closed_invocation)
+                        for closed_parent, closed_invocation in self._closed_spawn_invocations
+                        if closed_parent in terminal_parents
+                    }
+                )
+            if (
+                existing is None
+                and (parent.handle, invocation_id) in self._closed_spawn_invocations
+            ):
+                raise ValueError("Spawn invocation was closed before acceptance")
             self.require_admission(parent)
             if prepared_parent is not None and parent.handle != prepared_parent:
                 raise ValueError("Owning assignment changed during child preparation")
@@ -625,6 +677,8 @@ async def spawn(
                     "metadata": session_metadata,
                     "approval_profile": approval_profile,
                     "resource": resource_id,
+                    **({"model": model} if model else {}),
+                    **({"standing": True} if standing else {}),
                 }
             )
             initial_metadata = dict(session_metadata or {})
@@ -666,7 +720,9 @@ async def spawn(
                     inference_concurrency=inference_concurrency,
                     input_evidence=pins,
                     evidence_assignment=handle if pins else None,
+                    standing=standing,
                 ),
+                fork_of=fork_of,
             )
             if resource_id is not None:
                 if task.resource_id is not None and task.resource_id != resource_id:

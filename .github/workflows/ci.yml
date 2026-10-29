@@ -4,13 +4,15 @@ on:
   push:
     branches: [main, develop, "v*"]
   pull_request:
-    branches: [main, develop, "campaign/**", "codex/**"]
+    # claude/** covers stacked campaign PRs (a PR into claude/sdk-megachange-setup
+    # ran no tests at all before this).
+    branches: [main, develop, "campaign/**", "codex/**", "claude/**"]
   # provider-sdk-bump.yml dispatches CI on its bump branch: a PR opened with
   # GITHUB_TOKEN does not trigger pull_request workflows.
   workflow_dispatch: {}
 
 env:
-  CI_TEST_SHARD_COUNT: 4
+  CI_TEST_SHARD_COUNT: 6
 
 jobs:
   native-service-lifecycle:
@@ -78,12 +80,12 @@ jobs:
       # Tests marked `marketplace` read the pinned submodule and FAIL (never
       # skip) without it (tests/_marketplace.py); say so here, before the suite.
       - name: Assert the marketplace submodule is checked out
-        run: ls external/clio-agent-marketplace/*/AGENT.md > /dev/null
+        run: ls external/clio-agent-marketplace/agents/*.py > /dev/null
       - uses: astral-sh/setup-uv@v5
         with:
           version: "latest"
       - run: uv sync --python ${{ matrix.python-version }} --extra dev --extra optimizers --extra claude-code
-      - run: uv run ruff check src/ tests/ scripts/create_demo_data.py scripts/validate_marketplace_blueprints.py scripts/mcp_mem_attribution.py
+      - run: uv run ruff check src/ tests/ scripts/create_demo_data.py scripts/mcp_mem_attribution.py
       # Formatting is checked, never rewritten by CI: drift fails the job and the
       # author runs `uv run ruff format src/ tests/ scripts/` locally.
       - name: ruff format (check only)
@@ -103,6 +105,8 @@ jobs:
         run: uv run python scripts/check_no_settle_vocabulary.py
       - name: "guard: no elicitationId residue (baseline 0) (SEP-2577, C1-S4 #1284)"
         run: uv run python scripts/check_no_elicitation_id_vocabulary.py
+      - name: "guard: no middle dot in server copy (baseline 0)"
+        run: uv run python scripts/check_no_middle_dot_copy.py
       - name: "guard: no bare dspy.Tool outside the instrumentation factory/bridge (baseline 0)"
         run: uv run python scripts/check_tool_instrumentation.py
       # Model-capabilities brief Part 8 (P6). BLOCKING: fails if any
@@ -130,15 +134,15 @@ jobs:
   check:
     env:
       UV_PYTHON: ${{ matrix.python-version }}
-    # The suite runs as 4 deterministic shards (tests/_sharding.py) per interpreter,
+    # The suite runs as 6 deterministic shards (tests/_sharding.py) per interpreter,
     # each on its own runner with one xdist worker per logical CPU. One 4-worker
     # runner took 23-29 min; the tests are CPU-bound (every gact test builds an app),
     # so more workers on the same 4 vCPUs only contend.
     name: check (${{ matrix.python-version }}, shard ${{ matrix.shard }})
     runs-on: ubuntu-latest
-    # The three-shard Python 3.12 run still made progress at the 25-minute cap
-    # (one shard reached 92%). Partition across another runner while preserving
-    # the per-test deadlines, per-runner worker count and job deadline.
+    # Four-shard 3.12/3.13 runs reached 91%/99% at the 25-minute cap. Give the
+    # complete suite more runners while preserving the per-test deadlines,
+    # per-runner worker count, job deadline and complete coverage aggregation.
     timeout-minutes: 25
     strategy:
       # Every supported interpreter completes independently: existing hosts run
@@ -146,7 +150,7 @@ jobs:
       fail-fast: false
       matrix:
         python-version: ["3.12", "3.13", "3.14"]
-        shard: [0, 1, 2, 3]
+        shard: [0, 1, 2, 3, 4, 5]
     steps:
       - uses: actions/checkout@v4
         with:
