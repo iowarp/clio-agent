@@ -8,11 +8,22 @@ TUI/HTTP surface aren't tracked here.
 
 ## [0.9.5.1] - 2026-10-28
 
+### Changed
+
+- Make Desktop and Web the supported installation paths. Bare `clio` opens Web;
+  `clio attach` refuses to launch the frozen, unsupported terminal UI. Stop
+  building, downloading and publishing TUI binaries and images while retaining
+  the source and clearly marked integration notes for a future upgrade.
+- Put the website and Desktop downloads first in the README, and update the
+  installer, Docker and AI-assistant guidance for the current release.
+
 ### Fixed
 
 - Recover once from a Windows Office verification timeout with a fresh private
   profile, preserving the 30-second probe deadline and installation failure
   when the retry cannot verify the renderer.
+- Retry briefly when Windows retains handles on the verified Office staging
+  image; fail explicitly if it still cannot be moved into the cache.
 
 ## [0.9.5] - 2026-10-28
 

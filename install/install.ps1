@@ -19,9 +19,7 @@
 # Honors environment overrides:
 #   CLIO_PREFIX        install root           (default: <agent data>\app)
 #   CLIO_BIN_DIR       launcher location      (default: ...\WindowsApps)
-#   GACT_VERSION       legacy override for TUI release tag (default: match CLIO)
 #   CLIO_INSTALLER_REF pin launcher scripts   (default: the installed release's tag)
-#   GACT_REF           gact-tui branch for the TUI (source mode only)
 #   CLIO_KIT_PACKAGE   local candidate wheel/base spec (default: released 2.11.1)
 #   CLIO_GIT_PROTOCOL  https | ssh            (default: https; source mode only)
 
@@ -29,12 +27,7 @@ $ErrorActionPreference = 'Stop'
 
 function Say  ($m) { Write-Host "==> $m" -ForegroundColor Green }
 function Warn ($m) { Write-Host "!! $m"  -ForegroundColor Yellow }
-# A TUI build still running in the background (Start-TuiBuild) stops when the install
-# fails: its process tree, its half-built binary and its logs.
-$TuiProc = $null
-$TuiOut = $null
-$TuiLog = $null
-$TuiErr = $null
+# The legacy TUI is frozen and unsupported; no TUI payload is installed.
 $OfficeProc = $null
 $OfficeLog = $null
 $OfficeErr = $null
@@ -61,16 +54,9 @@ function Stop-OfficePrepare {
     }
     $script:OfficeProc = $null
 }
-function Stop-TuiBuild {
-    if ($script:TuiProc) {
-        if (-not $script:TuiProc.HasExited) { & taskkill /T /F /PID $script:TuiProc.Id *> $null }
-        Remove-Item -LiteralPath $script:TuiOut, $script:TuiLog, $script:TuiErr -Force -ErrorAction SilentlyContinue
-    }
-    $script:TuiProc = $null
-}
-function Die  ($m) { Stop-BytecodePrepare; Stop-OfficePrepare; Stop-TuiBuild; Write-Host "xx $m"  -ForegroundColor Red; exit 1 }
+function Die  ($m) { Stop-BytecodePrepare; Stop-OfficePrepare; Write-Host "xx $m"  -ForegroundColor Red; exit 1 }
 # DieWith CODE MESSAGE: Die, keeping the failed command's exit status.
-function DieWith ([int]$code, $m) { Stop-BytecodePrepare; Stop-OfficePrepare; Stop-TuiBuild; Write-Host "xx $m" -ForegroundColor Red; exit $code }
+function DieWith ([int]$code, $m) { Stop-BytecodePrepare; Stop-OfficePrepare; Write-Host "xx $m" -ForegroundColor Red; exit $code }
 function Have ($cmd) { return $null -ne (Get-Command $cmd -ErrorAction SilentlyContinue) }
 function RunNative($cmd, [string[]]$cmdArgs) {
     & $cmd @cmdArgs
@@ -206,20 +192,16 @@ if ($OptDesktop) {
     exit 0
 }
 if ($OptDownloadOnly) { Die '-DownloadOnly goes with -Desktop' }
-$GactVersion = if ($env:GACT_VERSION)      { $env:GACT_VERSION }     else { 'latest' }
 $ClioInstallerRef = $env:CLIO_INSTALLER_REF
-$GactRef     = $env:GACT_REF
 $ClioKitPackage = $env:CLIO_KIT_PACKAGE
 $Protocol    = if ($env:CLIO_GIT_PROTOCOL) { $env:CLIO_GIT_PROTOCOL } else { 'https' }
 
 switch ($Protocol) {
     'https' {
         $ClioRepo = 'https://github.com/iowarp/clio-agent.git'
-        $GactRepo = 'https://github.com/iowarp/gact-tui.git'
     }
     'ssh' {
         $ClioRepo = 'git@github.com:iowarp/clio-agent.git'
-        $GactRepo = 'git@github.com:iowarp/gact-tui.git'
     }
     default { Die "CLIO_GIT_PROTOCOL must be 'https' or 'ssh' (got: $Protocol)" }
 }
@@ -236,12 +218,6 @@ if (-not (Have uv)) {
     if (-not (Have uv)) { Die 'could not install uv; install it (https://docs.astral.sh/uv/) and run this installer again' }
 }
 if ($OptSource -and -not (Have git)) { Die 'git is required for --source' }
-if ($GactRef) {
-    if (-not (Have git)) { Die "git required when GACT_REF is set (source-build mode)" }
-    if (-not (Have go))  { Die "go (>= 1.26) required to build gact from source" }
-    if (-not $OptSource) { Die 'GACT_REF builds the TUI from source and needs --source' }
-}
-
 # The checkout this script runs from, when it runs from one (not from a URL).
 $Checkout = $null
 if ($PSScriptRoot) {
@@ -336,47 +312,6 @@ function Update-SourceClone([string]$Path, [string]$Ref) {
     if ($LASTEXITCODE -ne 0) { Die "could not update the submodules of '$Path' to '$Ref' (git's message is above); run this installer again" }
 }
 
-# ---------- the TUI build, beside the slow stages ---------------------
-# A source install builds the TUI with go (through bash). It runs in the background from
-# the moment the source is in place, alongside the dependency, store, managed-package
-# and clio-kit stages, at a lower CPU priority; its output goes to temporary logs,
-# printed (and kept) if it fails. The binary is built beside the installed one and moved
-# into place only when it built. Mirrors install.sh (start_tui_build / finish_tui_build).
-$GactExe = Join-Path $Prefix 'gact.exe'
-$TuiOut = Join-Path $Prefix "gact.build-$PID.exe"
-$TuiStarted = $null
-
-function Start-TuiBuild {
-    if ($GactRef) {
-        Say "Cloning gact-tui at $GactRef (source-build mode)"
-        $gactSrc = Join-Path $Prefix 'gact-tui'
-        RemoveTree $gactSrc
-        & git clone --quiet --branch $GactRef --depth 1 $GactRepo $gactSrc
-        if ($LASTEXITCODE -ne 0) { Die "could not clone gact-tui at '$GactRef' from $GactRepo (git's message is above)" }
-        $env:GACT_TUI_ROOT = $gactSrc
-    } elseif (-not ((Have go) -and (Have bash))) {
-        Warn "TUI not built: go (>= 1.26) and bash are needed for it. Install them and run this installer again for the terminal UI; the desktop app works without it."
-        return
-    }
-    $bash = (Get-Command bash -CommandType Application | Select-Object -First 1).Source
-    $stem = Join-Path ([IO.Path]::GetTempPath()) ("clio-tui-build-" + [Guid]::NewGuid().ToString('N'))
-    $script:TuiLog = "$stem.log"
-    $script:TuiErr = "$stem.err.log"
-    Say "Building the CLIO-branded TUI in the background (log: $($script:TuiLog))"
-    try {
-        $script:TuiProc = Start-Process -FilePath $bash -ArgumentList "./scripts/build_clio_tui.sh `"$TuiOut`"" `
-            -WorkingDirectory $Src -NoNewWindow -PassThru `
-            -RedirectStandardOutput $script:TuiLog -RedirectStandardError $script:TuiErr
-    } finally {
-        if ($GactRef) { Remove-Item Env:\GACT_TUI_ROOT -ErrorAction SilentlyContinue }
-    }
-    $null = $script:TuiProc.Handle  # keeps the handle, so ExitCode is readable after it exits
-    $script:TuiStarted = Get-Date
-    # The stages on the install's critical path go first; the compiler takes what they
-    # leave. Only a speed preference: a process that already exited has no priority to set.
-    try { $script:TuiProc.PriorityClass = 'BelowNormal' } catch { Warn "TUI build runs at normal priority: $($_.Exception.Message)" }
-}
-
 # Managed tools need only the locked bootstrap packages, so their preparation
 # overlaps the agent's much larger sync without racing the main virtualenv.
 function Start-OfficePrepare {
@@ -439,30 +374,6 @@ function Complete-BytecodePrepare {
     Remove-Item -LiteralPath $script:BytecodeLog, $script:BytecodeErr -Force -ErrorAction SilentlyContinue
 }
 
-function Complete-TuiBuild {
-    if (-not $script:TuiProc) { return }
-    Say 'Waiting for the TUI build'
-    $proc = $script:TuiProc
-    $proc.WaitForExit()
-    $code = $proc.ExitCode
-    $script:TuiProc = $null
-    if ($code -ne 0) {
-        Remove-Item -LiteralPath $TuiOut -Force -ErrorAction SilentlyContinue
-        Write-Host "---- TUI build output ($($script:TuiLog), $($script:TuiErr)) ----" -ForegroundColor Yellow
-        Get-Content -LiteralPath $script:TuiLog, $script:TuiErr -Tail 80 -ErrorAction SilentlyContinue | ForEach-Object { Write-Host $_ }
-        Write-Host '---- end of TUI build output ----' -ForegroundColor Yellow
-        Die "the TUI build failed (exit $code; full logs: $($script:TuiLog), $($script:TuiErr)); its cause is in the output above. Fix it (often: go >= 1.26 cannot be downloaded, or the gact-tui submodule is incomplete: git -C '$Src' submodule update --init --recursive) and run this installer again."
-    }
-    try {
-        Move-Item -LiteralPath $TuiOut -Destination $GactExe -Force
-    } catch {
-        Remove-Item -LiteralPath $TuiOut -Force -ErrorAction SilentlyContinue
-        Die "could not move the built TUI into place at ${GactExe}: $($_.Exception.Message). Close a running CLIO terminal UI, then run this installer again."
-    }
-    Remove-Item -LiteralPath $script:TuiLog, $script:TuiErr -Force -ErrorAction SilentlyContinue
-    Say "TUI built in $([int]($proc.ExitTime - $proc.StartTime).TotalSeconds) s: $GactExe"
-}
-
 # ---------- install clio-agent ----------------------------------------
 try {
 $Venv = Join-Path $Prefix 'clio-agent\.venv'
@@ -510,9 +421,7 @@ if ($OptSource) {
         $py = PythonOf (Join-Path $Src '.python-version')
         $syncArgs = @('sync', '--locked', '--python', $py, '--extra', 'argonne', '--extra', 'flowcept')
     }
-    # The TUI builds from the source now, beside the slow stages below.
     Start-OfficePrepare
-    Start-TuiBuild
     Say "Installing clio-agent deps (uv $($syncArgs -join ' '))"
     Push-Location $Src
     & uv @syncArgs
@@ -676,30 +585,9 @@ if (Have uv) {
     Warn "uv not found - skipping clio-kit MCP runtime provisioning; install uv and rerun this installer"
 }
 
-# ---------- install gact ----------------------------------------------
-if ($OptSource) {
-    Complete-TuiBuild  # started with the source, above
-} else {
-    $tag = $GactVersion
-    if ($tag -eq 'latest') {
-        if ($InstalledClioVersion -or $ClioVersion) {
-            $tag = Get-ClioReleaseTag $(if ($InstalledClioVersion) { $InstalledClioVersion } else { $ClioVersion })
-        } else {
-            Say "Resolving latest clio-agent release"
-            $rel = Invoke-RestMethod -UseBasicParsing -Uri 'https://api.github.com/repos/iowarp/clio-agent/releases/latest'
-            $tag = $rel.tag_name
-            if (-not $tag) { Die "couldn't resolve clio-agent latest release tag" }
-        }
-    }
-    # Pick the native TUI for the host CPU. Windows on ARM can run the x64
-    # binary via emulation, but ship the native arm64 build when on ARM.
-    $cpu = "$env:PROCESSOR_ARCHITECTURE $env:PROCESSOR_ARCHITEW6432"
-    if ($cpu -match 'ARM64') { $asset = 'clio-tui-windows-arm64.exe' }
-    else                     { $asset = 'clio-tui-windows-amd64.exe' }
-    $url   = "https://github.com/iowarp/clio-agent/releases/download/$tag/$asset"
-    Say "Downloading $asset from clio-agent $tag"
-    Invoke-WebRequest -UseBasicParsing -Uri $url -OutFile $GactExe
-
+# ---------- install the released Web frontend -------------------------
+if (-not $OptSource) {
+    $tag = Get-ClioReleaseTag $(if ($InstalledClioVersion) { $InstalledClioVersion } else { $ClioVersion })
     # Web UI bundle (powers `clio --web`): optional, best-effort. The release
     # ships clio-web-<version>.zip containing a clio-web-<version>/ dist dir;
     # unpack it into $Prefix\clio-agent\web, which the launcher serves
@@ -782,21 +670,19 @@ if ($OptSource) {
 Complete-BytecodePrepare
 Say "Done."
 $clioSrc = if ($OptSource) { "source: $Src" } else { "PyPI: $ClioVersion" }
-$gactSrc = if ($GactRef) { "source: $GactRef" } elseif ($OptSource) { "built from the checkout's submodule" } else { "release: $tag" }
 Write-Host ""
 Write-Host "Installed to:   $Prefix"
 Write-Host "Launcher:       $Launcher"
 Write-Host "clio-agent:     $clioSrc"
-Write-Host "gact:           $gactSrc"
+Write-Host "Frontend:       Web (release installs); Desktop is available with -Desktop"
 Write-Host ""
 Write-Host "Next steps:"
 Write-Host "  1. Make sure $BinDir is on your PATH (it usually is on Win 10/11)."
-Write-Host "  2. Run:   clio"
+Write-Host "  2. Run:   clio (Web), or clio start (headless service)"
 Write-Host "  3. Manage the server: clio status | clio restart | clio logs"
 Write-Host "  4. Tab-completion:    clio completion powershell >> `$PROFILE"
 Write-Host "  5. Uninstall:         clio uninstall   (add -Purge to drop config)"
 } finally {
     Stop-BytecodePrepare
     Stop-OfficePrepare
-    Stop-TuiBuild
 }

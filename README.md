@@ -1,130 +1,96 @@
 <p align="center">
-  <img src="branding/clio/wordmark.svg" alt="CLIO Agent — Cognitive Layer for Adaptive Universal Data & Intelligent Operations" width="320">
+  <img src="branding/clio/wordmark.svg" alt="CLIO — an AI workspace for scientific data" width="320">
 </p>
 
 <p align="center">
-  <a href="https://github.com/iowarp/clio-agent/releases"><img src="https://img.shields.io/badge/status-beta-ea7b2a.svg" alt="Beta"></a>
-  <a href="https://www.python.org/downloads/"><img src="https://img.shields.io/badge/python-3.12+-blue.svg" alt="Python 3.12+"></a>
-  <a href="https://github.com/astral-sh/uv"><img src="https://img.shields.io/badge/UV-enabled-orange.svg" alt="UV"></a>
-  <a href="https://github.com/jlowin/fastmcp"><img src="https://img.shields.io/badge/FastMCP-enabled-purple.svg" alt="FastMCP"></a>
-  <a href="https://iowarp.org"><img src="https://img.shields.io/badge/IOWarp-Intelligence%20Layer-teal.svg" alt="IOWarp"></a>
+  <a href="https://clio.iowarp.ai"><strong>Website & downloads</strong></a> ·
+  <a href="https://clio.iowarp.ai/docs/">User guide</a> ·
+  <a href="https://github.com/iowarp/clio-agent/releases/latest">Latest release</a>
 </p>
 
----
+CLIO is an **AI workspace for scientific data**, part of [IOWarp](https://iowarp.org).
+Work with files, analysis, visualizations and documents in **Desktop or your browser**.
+Connect a local model, a provider account, or a model service from your lab.
 
-> ⚠️ **Beta.** CLIO is under active development — interfaces, plugins, and on-disk
-> formats may change between releases. Pin a version for reproducibility.
+- Organize work in workspaces and conversations, with persistent ARC memory.
+- Extend CLIO with marketplace plugins, agents, tools and flows.
+- Inspect HDF5, Parquet and CSV data through MCP tools.
+- Run tools where your data lives, locally or on a remote computer.
 
-## What is CLIO Agent?
+## Get CLIO
 
-An autonomous agent for **scientific data management** — HDF5, Parquet, and CSV inspection through a FastMCP tool gateway, with a Bubbletea terminal UI ([gact](https://github.com/iowarp/gact-tui)) for interactive work. CLIO is the Intelligence Layer (CEI) of the [IOWarp](https://iowarp.org) platform.
+Start at **[clio.iowarp.ai](https://clio.iowarp.ai/#download)** for the Desktop
+installer for Windows, Apple Silicon macOS, or Linux. Choose a **bundled** installer:
+it includes the CLIO service and its runtimes. Setup prepares the tools and Office
+renderer; then open **CLIO Desktop** and choose a model.
 
-The agent runs in three tiers: a main orchestrator (planner loop over registered tools and experts), domain experts (data / analysis / visualization), and ephemeral nanoagents for parallel sub-tasks. State lives in a local-first memory layer (ARC) that all tiers read and write.
-
-- Multi-expert orchestration with capability-based routing
-- FastMCP tool gateway, HDF5 + Parquet servers out of the box
-- ARC memory with O(log N) context retrieval
-- Optimizer layer for offline tuning + online learning
-- Runtime doctor for LM / gateway / file-policy health
-- Works with LM Studio, Ollama, OpenAI, Anthropic, OpenRouter, OpenAI
-  Codex subscriptions, and the Argonne ALCF inference gateway
-
----
-
-## Quick Start
-
-One line installs `clio-agent` from PyPI, downloads the matching CLIO-branded
-TUI binary for your platform, and drops a `clio` command on your PATH.
+You can also install Desktop from a terminal:
 
 **Linux / macOS**
+
 ```sh
-curl -fsSL https://raw.githubusercontent.com/iowarp/clio-agent/main/install/install.sh | bash
-clio
+curl -fsSL https://raw.githubusercontent.com/iowarp/clio-agent/main/install/install.sh | bash -s -- --desktop
 ```
 
 **Windows (PowerShell)**
+
 ```powershell
-irm https://raw.githubusercontent.com/iowarp/clio-agent/main/install/install.ps1 | iex
-clio
+& ([scriptblock]::Create((irm https://raw.githubusercontent.com/iowarp/clio-agent/main/install/install.ps1))) -Desktop
 ```
 
-`clio` boots the server (if it isn't already up) and attaches the TUI. On first connect, pick an LM provider in the modal and you're chatting.
+See the **[installation guide](https://clio.iowarp.ai/docs/install/)** for supported
+systems, selecting a release, remote deployment and first-launch steps.
+An assistant such as Claude Code can follow the **[installation instructions for
+AI assistants](https://clio.iowarp.ai/install.md)**.
 
-The installer provisions CLIO's Python and uv runtimes. `git` and Go are used
-when you select source-build mode with `CLIO_REF` or `GACT_REF`.
+### Web and servers
 
-CLIO 0.9.5 uses standard Python 3.14 with the GIL enabled and verified DSPy,
-FastMCP, Tasks and LiteLLM versions. For a persistent backend-only install, use
-`uv tool install --python 3.14 --with dspy==3.4.0 --with fastmcp==4.1.2 --with fastmcp-tasks==4.1.2 --with mcp==2.2.0 clio-agent==0.9.5.1`.
-Reserve `uvx` / `uv tool run` for disposable checks. See
-[install/README.md](install/README.md) for the full contract.
+For a browser deployment, use the published Web image. From a clone of this repository:
 
-Beta releases require an explicit version selection; see
-[the beta installation guide](docs/INSTALL.md#beta-releases).
+```sh
+docker compose up clio-web
+# Open http://localhost:8080
+```
 
-### More ways to get CLIO
+For a local service with Web, run the install script **without** `--desktop`
+(`-Desktop` on Windows), then run `clio` or `clio web`. Use `clio start` for a
+headless service, and `clio status`, `clio stop` and `clio logs` to manage it.
+The script provisions Python and uv; a release install needs no Git or Go.
 
-The install script above is one of several download options:
+**The legacy TUI is frozen and unsupported as of 0.9.5.1.** It is not a valid way
+to install, run or verify current CLIO. New releases do not ship its binaries or
+Docker image; `clio attach` reports this status instead of running an old binary.
+Its [source and integration notes](docs/tui/README.md) remain for a future upgrade.
 
-- 🌐 **[CLIO website →](https://iowarp.github.io/clio-agent/)** — guided downloads and a tour of the product.
-- 📦 **[GitHub Releases →](https://github.com/iowarp/clio-agent/releases/latest)** — **desktop apps** (`.msi` / `.exe` for Windows, `.dmg` for macOS, `.deb` / `.AppImage` / `.rpm` for Linux), standalone `clio-tui-<os>-<arch>` binaries, and the web bundle.
-- 🐳 **Docker (no install)** — `docker run -it --rm ghcr.io/iowarp/clio-tui:latest`, or `docker compose up clio-web` for the browser UI.
-- 🖥️ **Browser UI** — `clio --web` serves the web app locally.
+### Contributors and backend-only installations
 
-Full matrix (script · docker · web · desktop · compose · source) with copy-paste commands: **[docs/INSTALL.md](docs/INSTALL.md)**.
+`--source` installs `main`; `--dev --source` installs `develop`; add `--ref <ref>`
+to select a branch, tag or commit. On Windows use `-Source`, `-Dev` and `-Ref`.
+Source mode needs Git and installs the service without building a frontend. See
+[contributor setup](docs/CONTRIBUTOR_QUICKSTART.md) for Web/Desktop development.
 
----
+CLIO 0.9.5.1 uses standard Python 3.14 with the GIL enabled. For a persistent
+backend-only installation with the verified SDK roots:
 
-## Using the `clio` command
+```sh
+uv tool install --python 3.14 --with dspy==3.4.0 --with fastmcp==4.1.2 --with fastmcp-tasks==4.1.2 --with mcp==2.2.0 clio-agent==0.9.5.1
+clio-agent serve
+```
 
-`clio` with no arguments is the one-command UX. The subcommands manage the backing server without hunting PIDs:
+Reserve `uvx` / `uv tool run` for disposable checks. The [installer reference](install/README.md)
+covers paths, version selection, lifecycle commands and uninstalling.
 
-| Command | What it does |
-|---|---|
-| `clio` | ensure the server is up, then attach the TUI |
-| `clio start` / `stop` / `restart` | server lifecycle (process-tree kill on stop) |
-| `clio status` / `ps` | PID, port, health |
-| `clio logs [N]` | tail server + TUI stderr logs |
-| `clio doctor` | check prerequisites and install layout |
-| `clio report` | diagnostics bundle for filing GitHub issues |
-| `clio completion <shell>` | tab-completion (bash / zsh / powershell) |
-| `clio uninstall` | remove CLIO (`--purge` / `-Purge` to drop config too) |
+## Documentation and contributing
 
-Override paths with `CLIO_PREFIX` / `CLIO_BIN_DIR` and the server port with `CLIO_PORT`. Full install + uninstall reference: [install/README.md](install/README.md).
+Use the **[website documentation](https://clio.iowarp.ai/docs/)** for installation,
+models, workspaces, plugins and examples. Repository references:
 
----
+- [Architecture](docs/CLIO_AGENT_ARCHITECTURE.md) and [repository documentation index](docs/README.md)
+- [Contributor quick start](docs/CONTRIBUTOR_QUICKSTART.md) and [AGENTS.md](AGENTS.md)
+- [Adding tools](docs/MCP_TOOL_INTEGRATION.md) and [plugins, agents and flows](docs/PLUGINS_AND_FLOWS.md)
+- [Roadmap](docs/design/roadmap.md)
 
-## Architecture
-
-<p align="center">
-  <img src="docs/images/architecture.png" alt="CLIO Agent architecture: user interfaces, the Intelligence Layer (CEI) with the orchestrator and tier-2 experts, tier-3 nanoagents, ARC memory, the optimizer layer, and CTE multi-tier storage" width="900">
-</p>
-
-For the design rationale (three-tier hierarchy, ARC memory, optimizer layer, IOWarp integration), see [docs/CLIO_AGENT_ARCHITECTURE.md](docs/CLIO_AGENT_ARCHITECTURE.md).
-
----
-
-## Documentation
-
-The full, organized index is in **[docs/README.md](docs/README.md)**. Common
-starting points:
-
-- **[Setup & install](docs/SETUP.md)** — release install, source build, smoke test
-- **[Architecture](docs/CLIO_AGENT_ARCHITECTURE.md)** — the three-tier design, ARC memory, and tool gateway
-- **[Contributing](docs/CONTRIBUTOR_QUICKSTART.md)** — dev environment, quality checks, and where code goes
-- **[Adding tools](docs/MCP_TOOL_INTEGRATION.md)** / **[plugins, agents and flows](docs/PLUGINS_AND_FLOWS.md)** — extend the agent
-- **[Providers](docs/providers/)** — configure an LM backend
-- **[Roadmap](docs/design/roadmap.md)** — what's next
-
----
-
-## Contributing
-
-Start with [docs/CONTRIBUTOR_QUICKSTART.md](docs/CONTRIBUTOR_QUICKSTART.md). For guidance specific to AI agents working on the codebase, see [AGENTS.md](AGENTS.md).
-
----
-
-## License + Citation
+## License and citation
 
 BSD-3-Clause.
 

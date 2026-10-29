@@ -271,6 +271,70 @@ def test_profile_cleanup_retries_transient_windows_handles(
     assert profile.attempts == 3
 
 
+@pytest.mark.parametrize("winerror", [5, 32])
+def test_publish_image_retries_only_transient_windows_handles(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, winerror: int
+) -> None:
+    """A verified image can be renamed once a briefly retained native handle closes."""
+    image, root = tmp_path / "image", tmp_path / "installed"
+    image.mkdir()
+    (image / "verified").write_text("preserved")
+    original = Path.rename
+    calls = 0
+
+    def rename(path: Path, target: Path) -> Path:
+        nonlocal calls
+        calls += 1
+        if calls < 3:
+            error = OSError("handle still open")
+            error.winerror = winerror
+            raise error
+        return original(path, target)
+
+    monkeypatch.setattr(office.platform, "system", lambda: "Windows")
+    monkeypatch.setattr(Path, "rename", rename)
+    monkeypatch.setattr(office.time, "sleep", lambda _: None)
+    office._publish_image(image, root)
+    assert calls == 3
+    assert (root / "verified").read_text() == "preserved"
+
+
+@pytest.mark.parametrize(
+    "system,winerror,attempts", [("Windows", 5, 20), ("Windows", 87, 1), ("Linux", 5, 1)]
+)
+def test_publish_image_persistent_or_unrelated_error_still_fails(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, system: str, winerror: int, attempts: int
+) -> None:
+    """No permission bypass, unbounded retry or cross-platform masking is allowed."""
+    calls = 0
+
+    def rename(path: Path, target: Path) -> Path:
+        nonlocal calls
+        calls += 1
+        error = OSError("cannot move verified image")
+        error.winerror = winerror
+        raise error
+
+    monkeypatch.setattr(office.platform, "system", lambda: system)
+    monkeypatch.setattr(Path, "rename", rename)
+    monkeypatch.setattr(office.time, "sleep", lambda _: None)
+    with pytest.raises(OSError, match="cannot move"):
+        office._publish_image(tmp_path / "image", tmp_path / "installed")
+    assert calls == attempts
+
+
+def test_publish_image_never_overwrites_an_existing_cache(tmp_path: Path) -> None:
+    """A competing/incomplete cache needs an explicit repair, never replacement."""
+    image, root = tmp_path / "image", tmp_path / "installed"
+    image.mkdir()
+    root.mkdir()
+    (root / "keep").write_text("existing")
+    with pytest.raises(DocumentError, match="Incomplete renderer cache"):
+        office._publish_image(image, root)
+    assert (root / "keep").read_text() == "existing"
+    assert image.exists()
+
+
 def test_conversion_profile_uses_allowed_temp_instead_of_nested_artifact_path(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

@@ -279,7 +279,7 @@ def test_beta_macos_exception_removes_only_desktop_requirements(tmp_path: Path) 
         == 0
     )
     required = expected_assets("v0.9.5-beta.5.1", True)
-    for name in ("clio-tui-darwin-arm64", "install.sh", "latest-lite.json"):
+    for name in ("clio-web-0.5.17.zip", "install.sh", "latest-lite.json"):
         assert find_missing([asset for asset in listing if asset != name], required)
     for name in ("CLIO.Desktop_0.7.1_x64-setup.exe.sig", "CLIO.Desktop_0.7.1_amd64.AppImage"):
         assert find_missing([asset for asset in listing if asset != name], required)

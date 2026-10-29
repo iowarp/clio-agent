@@ -274,6 +274,24 @@ def _verify_office(executable_path: Path, *, cwd: Path) -> None:
             _cleanup_profile(temporary)
 
 
+def _publish_image(image: Path, root: Path) -> None:
+    """Allow briefly retained Windows handles to close before publishing the image."""
+    for attempt in range(20):
+        if root.exists():
+            raise DocumentError(f"Incomplete renderer cache at {root}; remove it before retrying")
+        try:
+            image.rename(root)
+            return
+        except OSError as error:
+            if (
+                platform.system() != "Windows"
+                or getattr(error, "winerror", None) not in {5, 32}
+                or attempt == 19
+            ):
+                raise
+            time.sleep(0.1)
+
+
 def ensure_office(root: Path) -> str:
     """Download, verify and extract the renderer once under an owned cache root.
 
@@ -321,11 +339,7 @@ def ensure_office(root: Path) -> str:
                 if candidate is None:
                     raise DocumentError("LibreOffice image contains no supported executable")
                 _verify_office(candidate, cwd=image)
-                if root.exists():
-                    raise DocumentError(
-                        f"Incomplete renderer cache at {root}; remove it before retrying"
-                    )
-                image.rename(root)
+                _publish_image(image, root)
             except (OSError, ValueError, tarfile.TarError) as exc:
                 raise DocumentError(f"LibreOffice extraction failed: {exc}") from exc
         candidate = executable(root)

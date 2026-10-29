@@ -2,22 +2,22 @@
 # CLIO launcher + server lifecycle manager.
 #
 # `clio` with no arguments boots the clio-agent server (if not already
-# up) and attaches the gact TUI - the original one-command UX. The
-# subcommands mirror `gact agent *`: they let you manage the backing
+# up) and opens Web. The TUI is frozen and unsupported. The
+# subcommands let you manage the backing
 # server process without hunting PIDs.
 #
-#   clio                      ensure server is up, then attach the TUI
+#   clio                      ensure server is up, then open Web
 #   clio web | --web [--dev]  ensure server is up, then open the web UI in a browser.
 #                             default serves the installed bundle; --dev builds and
 #                             serves your working checkout (CLIO_WEB_SRC) instead.
 #   clio desktop | --desktop [--dev]  launch the desktop app. default runs the
 #                             installed binary (CLIO_DESKTOP_BIN); --dev runs the
 #                             Tauri dev shell from your working checkout.
-#   clio start           start the server (no TUI)
+#   clio start           start the headless server
 #   clio stop            stop the server
 #   clio restart         stop then start
 #   clio status | ps     PID / port / health
-#   clio logs [N]        tail the server + gact stderr logs
+#   clio logs [N]        tail server logs
 #   clio update          update clio-agent to the latest PyPI release (uv pip -U)
 #   clio doctor          check prerequisites and install layout
 #   clio sandbox status  show the OS write-fence (sandbox) status row
@@ -96,12 +96,6 @@ export no_proxy="127.0.0.1,localhost,::1${no_proxy:+,$no_proxy}"
 export NO_PROXY="127.0.0.1,localhost,::1${NO_PROXY:+,$NO_PROXY}"
 GACT_LOG="$CLIO_STATE/gact-stderr.log"
 SERVER_BIN="$CLIO_PREFIX/clio-agent/.venv/bin/clio-agent"
-GACT_BIN="$CLIO_PREFIX/gact"
-# The Go TUI is brand-neutral and white-labels purely from GACT_BRAND_NAME at
-# runtime (it no longer reads a brand root / brand.json — web+desktop read that
-# at build time via brand.config.local.json). This drives the splash
-# wordmark + OS window title; override by exporting GACT_BRAND_NAME yourself.
-CLIO_BRAND_NAME="${GACT_BRAND_NAME:-CLIO}"
 WEB_DIR="$CLIO_PREFIX/clio-agent/web"
 CLIO_VENV="$CLIO_PREFIX/clio-agent/.venv"
 UPDATE_STAMP="$CLIO_CACHE/.update-checked"
@@ -305,7 +299,7 @@ doctor() {
   echo "CLIO doctor"
   echo "  prefix:       $CLIO_PREFIX"
   printf "  server bin:   "; if [[ -x "$SERVER_BIN" ]]; then echo "ok"; else echo "MISSING"; ok=1; fi
-  printf "  gact bin:     "; if [[ -x "$GACT_BIN" ]]; then echo "ok"; else echo "MISSING"; ok=1; fi
+  echo "  frontend:     Web / Desktop (legacy TUI frozen and unsupported)"
   printf "  curl:         "; if command -v curl >/dev/null 2>&1; then echo "ok"; else echo "MISSING"; ok=1; fi
   printf "  port :%s:  " "$CLIO_PORT"; if health; then echo "server healthy"; else echo "free / no server"; fi
   printf "  launcher:     "; if [[ -e "$CLIO_BIN_DIR/clio" ]]; then echo "$CLIO_BIN_DIR/clio"; else echo "not in $CLIO_BIN_DIR"; fi
@@ -320,11 +314,7 @@ report() {
   echo "os:         $(uname -srm)"
   echo "prefix:     $CLIO_PREFIX"
   echo "port:       $CLIO_PORT"
-  if [[ -x "$GACT_BIN" ]]; then
-    echo "gact:       $("$GACT_BIN" version 2>/dev/null | head -n1)"
-  else
-    echo "gact:       (binary missing)"
-  fi
+  echo "frontend:   Web / Desktop; legacy TUI frozen and unsupported"
   if [[ -f "$CLIO_PREFIX/clio-agent/pyproject.toml" ]]; then
     echo "clio-agent: $(grep -m1 '^version' "$CLIO_PREFIX/clio-agent/pyproject.toml" 2>/dev/null || true)"
   fi
@@ -340,7 +330,7 @@ report() {
 }
 
 completion() {
-  local cmds="web start stop restart status ps logs sandbox doctor report completion uninstall attach help"
+  local cmds="web start stop restart status ps logs sandbox doctor report completion uninstall help"
   case "${1:-}" in
     bash)
       cat <<EOF
@@ -377,33 +367,13 @@ usage() {
 main() {
   local cmd="${1:-}"
   case "$cmd" in
-    ""|attach)
+    attach|tui|--tui)
+      err "The TUI is frozen and unsupported in CLIO 0.9.5.1. Use CLIO Desktop or clio web."
+      return 2
+      ;;
+    ""|web|--web)
       shift || true
       update_check
-      start_server
-      # Lifecycle: if THIS invocation started the server, tie its lifetime to the
-      # TUI — stop the server (and its MCP children) when the TUI exits, so closing
-      # the TUI closes the clio it launched. If a server was ALREADY running
-      # (someone ran `clio start` — i.e. deliberately detached/shared), leave it
-      # untouched and just attach.
-      # stdout stays on the terminal so the TUI renders; gact stderr is captured to
-      # a log so Go panics survive for bug reports.
-      if [[ "${SERVER_WAS_STARTED:-0}" = 1 ]]; then
-        trap 'exit 130' INT TERM
-        trap 'stop_server' EXIT
-        env \
-          GACT_BACKEND="http://127.0.0.1:$CLIO_PORT" \
-          GACT_BRAND_NAME="$CLIO_BRAND_NAME" \
-          "$GACT_BIN" "$@" 2>"$GACT_LOG" || true
-      else
-        exec env \
-          GACT_BACKEND="http://127.0.0.1:$CLIO_PORT" \
-          GACT_BRAND_NAME="$CLIO_BRAND_NAME" \
-          "$GACT_BIN" "$@" 2>"$GACT_LOG"
-      fi
-      ;;
-    web|--web)
-      shift || true
       local web_dev=0 arg
       for arg in "$@"; do [[ "$arg" == "--dev" ]] && web_dev=1; done
       if (( web_dev )); then

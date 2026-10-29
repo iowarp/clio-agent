@@ -37,7 +37,9 @@ lives under [archive/](archive/README.md).
 
 - [providers/](providers/README.md) — LM provider configuration and how to add a provider.
 
-## TUI / GACT integration
+## Legacy TUI (frozen and unsupported)
+
+Use Desktop or Web for current CLIO. These notes describe retained source for a future upgrade; they are not installation or verification instructions.
 
 - [tui/README.md](tui/README.md) — the gact-tui integration docs index.
 - [tui/REAL_GAPS.md](tui/REAL_GAPS.md) — the authoritative TUI gap tracker.
