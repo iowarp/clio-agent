@@ -163,6 +163,27 @@ def test_private_marketplace_export_and_contextual_upload(client: TestClient) ->
         assert not any("oauth" in path or path.endswith("mcp.yaml") for path in files)
 
 
+def test_agent_only_collection_can_be_downloaded_for_github(client: TestClient) -> None:
+    saved = client.post(
+        "/v1/agents/user",
+        json={
+            "id": "dememory",
+            "name": "Dememory",
+            "extends": "clio/standard",
+            "remove": ["memory"],
+        },
+    )
+    assert saved.status_code == 201, saved.text
+    exported = client.get("/v1/plugins/local/export")
+    assert exported.status_code == 200, exported.text
+    with zipfile.ZipFile(io.BytesIO(exported.content)) as archive:
+        assert "ai.iowarp.clio/marketplace.json" in archive.namelist()
+        assert any(
+            name.startswith("agents/") and name.endswith(".py") for name in archive.namelist()
+        )
+        assert "user-agents/dememory.json" in archive.namelist()
+
+
 def test_upload_portable_skill_and_reject_duplicate_name(client: TestClient) -> None:
     raw = io.BytesIO()
     with zipfile.ZipFile(raw, "w") as archive:

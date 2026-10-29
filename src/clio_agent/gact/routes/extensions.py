@@ -5,9 +5,7 @@ from __future__ import annotations
 import asyncio
 import base64
 import binascii
-import io
 import json
-import zipfile
 from typing import Any
 
 import httpx
@@ -23,6 +21,7 @@ from clio_agent.plugins.local import (
     archive_files,
     create_local,
 )
+from clio_agent.plugins.local_export import LocalExportError, export_local_marketplace
 from clio_agent.plugins.store import StoreError
 
 
@@ -112,31 +111,14 @@ def register_extension_routes(app: FastAPI) -> None:
         """Export portable source files for an explicit, user-managed GitHub backup."""
         service = plugin_service(app)
 
-        def archive() -> bytes:
-            root = service.store.root / "local" / PRIVATE_MARKETPLACE
-            with service.store.lock:
-                if not root.is_dir():
-                    raise HTTPException(404, "Create a local skill or plugin first")
-                output = io.BytesIO()
-                size = 0
-                with zipfile.ZipFile(output, "w", compression=zipfile.ZIP_DEFLATED) as zipped:
-                    for path in sorted(root.rglob("*")):
-                        if path.is_symlink() or not path.resolve().is_relative_to(root.resolve()):
-                            raise HTTPException(
-                                409, "The local marketplace contains an external link"
-                            )
-                        if path.is_file():
-                            size += path.stat().st_size
-                            if size > 16 * MAX_BYTES:
-                                raise HTTPException(
-                                    413,
-                                    "Use the marketplace folder to back up this larger collection",
-                                )
-                            zipped.write(path, path.relative_to(root).as_posix())
-                return output.getvalue()
-
+        try:
+            content = await asyncio.to_thread(export_local_marketplace, service)
+        except LocalExportError as exc:
+            raise HTTPException(exc.status, str(exc)) from None
+        except (ValueError, LookupError, OSError) as exc:
+            raise HTTPException(409, f"The local collection could not be exported: {exc}") from None
         return Response(
-            await asyncio.to_thread(archive),
+            content,
             media_type="application/zip",
             headers={"Content-Disposition": 'attachment; filename="private-local-marketplace.zip"'},
         )
