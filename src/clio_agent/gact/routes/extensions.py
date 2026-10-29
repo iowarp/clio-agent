@@ -49,6 +49,39 @@ def register_extension_routes(app: FastAPI) -> None:
     async def local(request: Request) -> dict[str, Any]:
         return await install(await json_body(request, route="Create local extension"))
 
+    @app.get("/v1/plugins/local")
+    async def local_library() -> dict[str, Any]:
+        """Locate the private collection and read saved agents without installing sources."""
+        store = plugin_service(app).store
+
+        def inventory() -> dict[str, Any]:
+            with store.lock:
+                root = store.root.resolve()
+                agents_directory = root / "user-agents"
+                return {
+                    "root": str(root),
+                    "agents_directory": str(agents_directory),
+                    "plugins_directory": str(root / "local" / PRIVATE_MARKETPLACE / "plugins"),
+                    "agents": [
+                        {
+                            "ref": ref,
+                            "path": str(agents_directory / f"{agent.id}.json"),
+                            "definition": agent.to_dict(),
+                        }
+                        for ref, agent in store.user_agents().items()
+                        # Never report a derived path outside the agent directory.
+                        if (agents_directory / f"{agent.id}.json").resolve().parent
+                        == agents_directory
+                    ],
+                }
+
+        try:
+            return await asyncio.to_thread(inventory)
+        except OSError:
+            raise HTTPException(
+                409, "The agent host could not read the private collection"
+            ) from None
+
     @app.post("/v1/plugins/upload", status_code=201)
     async def upload(request: Request, name: str, kind: str = "") -> dict[str, Any]:
         if kind not in {"", "skill", "plugin"}:
