@@ -906,7 +906,7 @@ def step_spotter_vllm():
     configuration = {
         "model": model,
         "model_revision": env("MODEL_REVISION"),
-        "param.tensor_parallel_size": "1",
+        "param.tensor_parallel_size": env("SPOTTER_TP", "1"),
         "param.dtype": "bfloat16",
         "param.gpu_memory_utilization": env("SPOTTER_GPU_UTIL", "0.9"),
         "param.max_num_seqs": env("SPOTTER_MAX_NUM_SEQS", "4"),
@@ -923,6 +923,8 @@ def step_spotter_vllm():
             held.get("model") == model
             and held.get("param.cuda_devices") == configuration["param.cuda_devices"]
             and held.get("param.max_model_len") == configuration["param.max_model_len"]
+            and held.get("param.tensor_parallel_size")
+            == configuration["param.tensor_parallel_size"]
         )
 
     row, steps = ensure_service(
