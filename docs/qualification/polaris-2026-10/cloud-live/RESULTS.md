@@ -150,3 +150,21 @@ UI defects observed in gact-tui (not fixed here):
 - **The native variant with managed databases will refuse on Polaris.** `native_monitoring_hook.mongo_platform` only lists Ubuntu 20.04, 22.04 and 24.04, Debian 12 and RHEL 8. Polaris compute runs SLES 15 (HPE Cray OS), so the install fails with "No verified managed MongoDB binary for this Linux distribution; choose site databases". Use Apptainer, or `database_mode: site`.
 - The download workarounds used here (GitHub archive blocked, Docker Hub 429) are specific to this cloud egress. On Polaris, set `http(s)_proxy` to the ALCF proxy.
 - `provenance.agentic.query_default` stays `native` unless it is set. Set it to `flowcept` if SPOTTER should query Flowcept, for example to read attention rows.
+
+## 8. Attention replay bundle (Polaris job 7795459, OPAL chain B)
+
+Captures are not in git. The bundle is on Eagle:
+
+- Path: `/lus/eagle/projects/GenesisHackathonOct26/jcernuda/clio-polaris-2026-10/exports/attention-replay-7795459/`
+- Size: 2,596,339,905 bytes (captures 2.4 GB). Not yet zipped.
+- Session: `chain_B` = `sess_2480c090acbb` (workspace `ws_f8315452c320`), 5 of 6 rounds correct.
+- Contents: the session export, `sess_2480c090acbb.semantic.jsonl`, all 41 Flowcept
+  `decode_attention` documents, 41 byte-exact SafeTensors captures in their
+  `<workflow_id>/<request id>_g<group>` layout, `tokenizer.json`, `tokenizer_config.json`,
+  `chat_template.jinja`, and `metadata.json` (commits clio-agent 8d4f2130, gact-tui f333d67d,
+  marketplace 85a12152; `ibm-granite/granite-4.2-8b` at a7042144125c...).
+- Descriptor check: 6 of 6 descriptors of the session's model calls resolve to a copied
+  capture with matching byte count and sha256; no mismatches. The other 35 captures belong
+  to other sessions on that node (smokes, SPOTTER); later bundles copy only the collected
+  sessions' captures.
+- Collector: `scripts/qualification/polaris/collect_attention_replay.py --job <job> --session chain_B=<sid>`.
