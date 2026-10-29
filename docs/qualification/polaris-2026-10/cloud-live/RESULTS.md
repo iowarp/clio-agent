@@ -164,7 +164,7 @@ Captures are not in git. The bundle is on Eagle:
   `chat_template.jinja`, and `metadata.json` (commits clio-agent 8d4f2130, gact-tui f333d67d,
   marketplace 85a12152; `ibm-granite/granite-4.2-8b` at a7042144125c...).
 - Descriptor check: 6 of 6 descriptors of the session's model calls resolve to a copied
-  capture with matching byte count and sha256; no mismatches. The other 35 captures belong
-  to other sessions on that node (smokes, SPOTTER); later bundles copy only the collected
-  sessions' captures.
+  capture with matching byte count and sha256; no mismatches. The other 35 captures do not
+  match this session's model calls (not yet attributed; this job also ran the smokes);
+  later bundles copy only the collected sessions' captures.
 - Collector: `scripts/qualification/polaris/collect_attention_replay.py --job <job> --session chain_B=<sid>`.
