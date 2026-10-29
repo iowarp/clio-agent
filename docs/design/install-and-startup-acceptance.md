@@ -388,6 +388,24 @@ the fallback resolved the actual current private log. Repeat resolved it through
 the running app. [Bounded measurements and artifact identities](evidence/windows-stable-095-2026-10-28/matrix.json)
 retain both timings, backend checks, cleanup results and screenshot hashes.
 
+### Official v0.9.5 bundle verification (2026-10-28)
+
+The completed GitHub-built Windows bundle was also tested in a fresh private
+profile before publishing the GitHub release. The 532,200,590-byte NSIS asset
+`CLIO.Desktop_0.9.5_x64-setup-bundled.exe` has SHA-256
+`fe78087714ad1c5ad1b0484df85560771f3177c70c4b7319a749da1979bcb810`.
+Silent installation took 142.027 s and exited 0. The workspace was usable at
+50.0 s, but full managed-package verification failed at 82.4 s: the private
+LibreOffice `--version` probe exceeded its 30-second deadline. This is a failed
+setup qualification; the earlier local-build matrix does not override it.
+
+The same unchanged native verifier subsequently passed in about 2.5 s directly,
+through the desktop launcher, and with concurrent version probes in a new
+profile. The cold-start failure is intermittent. It is recorded on [#1887](https://github.com/iowarp/clio-agent/issues/1887).
+GitHub publication was cancelled while the release was still a draft. PyPI and
+container artifacts for 0.9.5 had already published, so the tag and those artifacts
+remain unchanged; the bounded Windows recovery is prepared as 0.9.5.1.
+
 ## The reference store
 
 The agent and desktop rows run on a generated long-lived store, not an empty one:

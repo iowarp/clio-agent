@@ -147,6 +147,82 @@ def test_renderer_probe_uses_and_cleans_an_exclusive_profile_on_failure(
     assert all(not profile.parent.exists() for profile in profiles)
 
 
+@pytest.mark.parametrize("system,expected_attempts", [("Windows", 2), ("Linux", 1), ("Darwin", 1)])
+def test_renderer_probe_timeout_has_one_windows_recovery(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, system: str, expected_attempts: int
+) -> None:
+    """Only a native Windows timeout can retry, after the first profile is retired."""
+    from urllib.parse import unquote, urlparse
+
+    profiles: list[Path] = []
+
+    def probe(command: list[str], **kwargs: Any) -> str:
+        path = unquote(urlparse(command[1].split("=", 1)[1]).path)
+        if path.startswith("/") and len(path) > 2 and path[2] == ":":
+            path = path[1:]
+        profile = Path(path)
+        assert profile.parent.is_dir()
+        assert all(not previous.parent.exists() for previous in profiles)
+        assert kwargs["timeout"] == 30
+        profiles.append(profile)
+        if len(profiles) == 1:
+            raise DocumentError("soffice.com exceeded 30 seconds") from subprocess.TimeoutExpired(
+                command, 30
+            )
+        return "LibreOffice 26.2.6"
+
+    monkeypatch.setattr(office.platform, "system", lambda: system)
+    monkeypatch.setattr(office, "run", probe)
+    if system == "Windows":
+        office._verify_office(tmp_path / "soffice.com", cwd=tmp_path)
+    else:
+        with pytest.raises(DocumentError, match="exceeded 30 seconds"):
+            office._verify_office(tmp_path / "soffice.com", cwd=tmp_path)
+    assert len(profiles) == expected_attempts
+    assert len(set(profiles)) == expected_attempts
+    assert all(not profile.parent.exists() for profile in profiles)
+
+
+def test_renderer_probe_persistent_windows_timeout_still_fails(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    """A second timeout never becomes a successful installation or an endless retry."""
+    calls: list[list[str]] = []
+
+    def timeout(command: list[str], **kwargs: Any) -> str:
+        assert kwargs["timeout"] == 30
+        calls.append(command)
+        raise DocumentError("soffice.com exceeded 30 seconds") from subprocess.TimeoutExpired(
+            command, 30
+        )
+
+    monkeypatch.setattr(office.platform, "system", lambda: "Windows")
+    monkeypatch.setattr(office, "run", timeout)
+    with pytest.raises(DocumentError, match="exceeded 30 seconds") as caught:
+        office._verify_office(tmp_path / "soffice.com", cwd=tmp_path)
+    assert isinstance(caught.value.__cause__, subprocess.TimeoutExpired)
+    assert len(calls) == 2
+    assert calls[0][1] != calls[1][1]
+    assert caplog.text.count("reason=office_probe_timeout_retry") == 1
+
+
+def test_renderer_probe_windows_non_timeout_failure_is_not_retried(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Recovery must not hide an executable failure or treat it as a cold-start timeout."""
+    calls: list[list[str]] = []
+
+    def fail(command: list[str], **kwargs: Any) -> str:
+        calls.append(command)
+        raise DocumentError("soffice.com exited 1: invalid installation")
+
+    monkeypatch.setattr(office.platform, "system", lambda: "Windows")
+    monkeypatch.setattr(office, "run", fail)
+    with pytest.raises(DocumentError, match="invalid installation"):
+        office._verify_office(tmp_path / "soffice.com", cwd=tmp_path)
+    assert len(calls) == 1
+
+
 def test_debian_archive_parser_reads_real_data_member() -> None:
     payload = b"real tar payload"
     header = (

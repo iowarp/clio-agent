@@ -20,10 +20,10 @@ import pytest
 import yaml
 
 ROOT = Path(__file__).resolve().parents[2]
-EXPECTED_VERSION = "0.9.5"
+EXPECTED_VERSION = "0.9.5.1"
 #: The release the install docs name: the latest stable one. A beta changes the
 #: package version only; users opt into it explicitly.
-DOCUMENTED_VERSION = "0.9.5"
+DOCUMENTED_VERSION = "0.9.5.1"
 EXPECTED_DSPY = "dspy==3.4.0"
 EXPECTED_FASTMCP = "fastmcp==4.1.2"
 EXPECTED_FASTMCP_SLIM = "fastmcp-slim==4.1.2"

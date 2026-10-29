@@ -55,7 +55,7 @@ when you select source-build mode with `CLIO_REF` or `GACT_REF`.
 
 CLIO 0.9.5 uses standard Python 3.14 with the GIL enabled and verified DSPy,
 FastMCP, Tasks and LiteLLM versions. For a persistent backend-only install, use
-`uv tool install --python 3.14 --with dspy==3.4.0 --with fastmcp==4.1.2 --with fastmcp-tasks==4.1.2 --with mcp==2.2.0 clio-agent==0.9.5`.
+`uv tool install --python 3.14 --with dspy==3.4.0 --with fastmcp==4.1.2 --with fastmcp-tasks==4.1.2 --with mcp==2.2.0 clio-agent==0.9.5.1`.
 Reserve `uvx` / `uv tool run` for disposable checks. See
 [install/README.md](install/README.md) for the full contract.
 

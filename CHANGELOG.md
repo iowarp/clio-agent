@@ -6,6 +6,14 @@ TUI/HTTP surface aren't tracked here.
 
 ## Unreleased
 
+## [0.9.5.1] - 2026-10-28
+
+### Fixed
+
+- Recover once from a Windows Office verification timeout with a fresh private
+  profile, preserving the 30-second probe deadline and installation failure
+  when the retry cannot verify the renderer.
+
 ## [0.9.5] - 2026-10-28
 
 ### Added

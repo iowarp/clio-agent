@@ -63,7 +63,7 @@ If you only need the long-running `clio-agent` backend, install it as a persiste
 tool rather than using the ephemeral `uvx` / `uv tool run` environment:
 
 ```sh
-uv tool install --python 3.14 --with dspy==3.4.0 --with fastmcp==4.1.2 --with fastmcp-tasks==4.1.2 --with mcp==2.2.0 clio-agent==0.9.5
+uv tool install --python 3.14 --with dspy==3.4.0 --with fastmcp==4.1.2 --with fastmcp-tasks==4.1.2 --with mcp==2.2.0 clio-agent==0.9.5.1
 clio-agent serve
 ```
 
@@ -119,7 +119,7 @@ $u = 'https://raw.githubusercontent.com/iowarp/clio-agent/main/install/install.p
 **Pins** (deployments and CI): `--version <pypi version>` for a release,
 `--ref <branch, tag or commit>` for source. The older spellings still work:
 `CLIO_VERSION=<v>` is `--version <v>`, `CLIO_REF=<ref>` is `--source --ref <ref>`.
-For this release, `CLIO_VERSION=0.9.5 bash install/install.sh` selects the stable
+For this release, `CLIO_VERSION=0.9.5.1 bash install/install.sh` selects the stable
 0.9.5 frontend and backend.
 `GACT_REF` builds the TUI from another gact-tui ref (source only); `GACT_VERSION`
 remains a legacy escape hatch for an alternate TUI release asset, and
