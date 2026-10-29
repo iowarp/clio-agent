@@ -153,18 +153,17 @@ UI defects observed in gact-tui (not fixed here):
 
 ## 8. Attention replay bundle (Polaris job 7795459, OPAL chain B)
 
-Captures are not in git. The bundle is on Eagle:
+Captures are not in git. The bundle is one zip on Eagle, holding this run only:
 
-- Path: `/lus/eagle/projects/GenesisHackathonOct26/jcernuda/clio-polaris-2026-10/exports/attention-replay-7795459/`
-- Size: 2,596,339,905 bytes (captures 2.4 GB). Not yet zipped.
+- Zip: `/lus/eagle/projects/GenesisHackathonOct26/jcernuda/clio-polaris-2026-10/exports/attention-replay-7795459-chainB.zip`
+  (611,259,391 bytes; unpacked 1,082,187,742 bytes).
 - Session: `chain_B` = `sess_2480c090acbb` (workspace `ws_f8315452c320`), 5 of 6 rounds correct.
-- Contents: the session export, `sess_2480c090acbb.semantic.jsonl`, all 41 Flowcept
-  `decode_attention` documents, 41 byte-exact SafeTensors captures in their
+- Contents: the session export, `sess_2480c090acbb.semantic.jsonl`, the session's 6 Flowcept
+  `decode_attention` documents, its 6 byte-exact SafeTensors captures in their
   `<workflow_id>/<request id>_g<group>` layout, `tokenizer.json`, `tokenizer_config.json`,
   `chat_template.jinja`, and `metadata.json` (commits clio-agent 8d4f2130, gact-tui f333d67d,
   marketplace 85a12152; `ibm-granite/granite-4.2-8b` at a7042144125c...).
-- Descriptor check: 6 of 6 descriptors of the session's model calls resolve to a copied
-  capture with matching byte count and sha256; no mismatches. The other 35 captures do not
-  match this session's model calls (not yet attributed; this job also ran the smokes);
-  later bundles copy only the collected sessions' captures.
-- Collector: `scripts/qualification/polaris/collect_attention_replay.py --job <job> --session chain_B=<sid>`.
+- Descriptor check: 6 of 6 descriptors of the session's model calls resolve to a capture with
+  matching byte count and sha256; no mismatches.
+- The job's 35 other documents and captures (not this session's) are left out.
+- Collector: `scripts/qualification/polaris/collect_attention_replay.py --job <job> --name <run> --session chain_B=<sid>`.
