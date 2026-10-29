@@ -107,10 +107,14 @@ def main() -> None:
     # 2. Model-call journals (CLIO's semantic_traces, or provenance.agentic.jsonl.path).
     provenance = _provenance_config()
     jsonl_path = ((provenance.get("agentic") or {}).get("jsonl") or {}).get("path")
-    roots = [ROOT / "state"] + ([Path(jsonl_path).parent] if jsonl_path else [])
+    # Named directories only: a recursive search of state/ crawls every node's service venvs.
+    roots = [ROOT / "state" / "state" / "traces" / "semantic_traces"]
+    roots += [ROOT / "state" / "traces" / "semantic_traces"]
+    roots += [Path(jsonl_path).parent] if jsonl_path else []
     journals: dict[str, str] = {}
     for sid in sessions.values():
-        hits = sorted(hit for root in roots for hit in root.rglob(f"{sid}.semantic.jsonl"))
+        hits = [root / f"{sid}.semantic.jsonl" for root in roots]
+        hits = [hit for hit in hits if hit.is_file()]
         if hits:
             shutil.copy2(hits[0], out / "journal" / hits[0].name)
             journals[sid] = str(hits[0])
