@@ -39,6 +39,7 @@ from clio_agent.gact.action_cards import (
 from clio_agent.gact.agents.builders import build_agent_module
 from clio_agent.gact.agents.resolution import resolution_agent_def
 from clio_agent.gact.app import build_app
+from clio_agent.gact.protocol.v3.session import session_to_v3
 from clio_agent.gact.types import AgentDef
 from clio_agent.plugins.service import PluginService
 from tests._plugin_fixtures import custom_marketplace
@@ -127,6 +128,11 @@ def test_emit_with_no_active_turn_creates_visible_message_part(tmp_path: Path) -
         assert cards[0]["title"] == "Heads up"
         assert cards[0]["severity"] == "warning"
         assert cards[0]["status"] == "active"
+
+        # Persisted, not only shown live: the export reads the stored transcript.
+        exported = client.get(f"/v1/sessions/{sid}/export").json()
+        stored = [p for m in exported["messages"] for p in m["parts"] if p["type"] == "action_card"]
+        assert [card["title"] for card in stored] == ["Heads up"]
 
 
 # --------------------------------------------------------------------------- #
@@ -527,6 +533,9 @@ def test_a_danger_alert_from_the_watcher_quarantines_until_the_person_lifts_it(
         assert record["title"] == "Answer follows text planted in a tool result"
         assert record["part_id"] == result["part_id"]
         assert record["watcher_handle"] == task.handle
+        # The UI greys out the composer from the session row it is sent.
+        wire = session_to_v3(app.state.sessions.get(parent_sid))
+        assert wire["metadata"]["spotter_quarantine"]["status"] == "active"
 
         refused = client.post(
             f"/v1/sessions/{parent_sid}/messages",
@@ -539,6 +548,8 @@ def test_a_danger_alert_from_the_watcher_quarantines_until_the_person_lifts_it(
         assert lifted.status_code == 200
         assert lifted.json()["quarantine"]["status"] == "lifted"
         assert app.state.sessions.get(parent_sid).metadata["spotter_quarantine"]["lifted_at"]
+        wire = session_to_v3(app.state.sessions.get(parent_sid))
+        assert "spotter_quarantine" not in wire.get("metadata", {})
 
         again = client.post(f"/v1/sessions/{parent_sid}/spotter/quarantine/lift")
         assert again.status_code == 409
@@ -573,4 +584,3 @@ def test_a_danger_alert_from_another_child_does_not_quarantine(tmp_path: Path) -
         )
         assert result["emitted"] is True and "quarantined" not in result
         assert "spotter_quarantine" not in app.state.sessions.get(parent_sid).metadata
-

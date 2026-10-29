@@ -11,7 +11,7 @@ Writes ``$ROOT/exports/attention-replay-<job>/``:
 - ``sessions/<sid>.export.json``      the session export (``GET /v1/sessions/<sid>/export``)
 - ``journal/<sid>.semantic.jsonl``    each session's model-call journal
 - ``flowcept/decode_attention.json``  every Flowcept ``decode_attention`` task (all, unfiltered)
-- ``captures/<workflow_id>/<request id>_g<group>.safetensors``  byte-exact capture files
+- ``captures/<workflow_id>/<request id>_g<group>.safetensors``  the sessions' captures, byte-exact
 - ``tokenizer/``                      tokenizer.json, tokenizer_config.json, chat_template.jinja
 - ``metadata.json``                   commits, model, job, session map, and the descriptor check
 
@@ -117,10 +117,31 @@ def main() -> None:
     tasks = _decode_attention_tasks(settings_path)
     (out / "flowcept" / "decode_attention.json").write_text(json.dumps(tasks, indent=1))
 
-    # 4. Capture files, byte-exact, in their <workflow_id>/<request id>_g<group> layout.
+    # 4. Capture files of the collected sessions, byte-exact, in their
+    #    <workflow_id>/<request id>_g<group> layout.
     files_dir = Path(provenance["attention"]["files_dir"])
+    response_ids: dict[str, str] = {}
+    for sid in sessions.values():
+        journal = out / "journal" / f"{sid}.semantic.jsonl"
+        if not journal.is_file():
+            continue
+        for line in journal.read_text().splitlines():
+            event = json.loads(line) if line.strip() else {}
+            rid = str((event.get("payload") or {}).get("response_id") or "")
+            if event.get("event_type") == "lm.call" and rid:
+                response_ids[rid] = sid
+    owned: list[tuple[dict[str, Any], str]] = []
+    for task in tasks:
+        request_id = str((task.get("used") or {}).get("request_id") or "")
+        sid = next((s for rid, s in response_ids.items() if request_id.startswith(rid)), "")
+        if sid:
+            owned.append((task, sid))
     copied = 0
-    for source in files_dir.rglob("*.safetensors"):
+    for task, _ in owned:
+        uri = (task.get("attention_stats") or {}).get("uri") or ""
+        source = Path(unquote(urlparse(uri).path)) if uri else None
+        if source is None or not source.is_file():
+            continue
         target = out / "captures" / source.relative_to(files_dir)
         target.parent.mkdir(parents=True, exist_ok=True)
         if not target.exists() or target.stat().st_size != source.stat().st_size:
@@ -137,22 +158,8 @@ def main() -> None:
             shutil.copy2(snapshot / name, out / "tokenizer" / name)
 
     # The check: descriptors of the collected sessions' model calls vs the copied captures.
-    response_ids: dict[str, str] = {}
-    for sid in sessions.values():
-        journal = out / "journal" / f"{sid}.semantic.jsonl"
-        if not journal.is_file():
-            continue
-        for line in journal.read_text().splitlines():
-            event = json.loads(line) if line.strip() else {}
-            rid = str((event.get("payload") or {}).get("response_id") or "")
-            if event.get("event_type") == "lm.call" and rid:
-                response_ids[rid] = sid
     checks: list[dict[str, Any]] = []
-    for task in tasks:
-        request_id = str((task.get("used") or {}).get("request_id") or "")
-        sid = next((s for rid, s in response_ids.items() if request_id.startswith(rid)), "")
-        if not sid:
-            continue
+    for task, sid in owned:
         stats = task.get("attention_stats") or {}
         uri = stats.get("uri") or ""
         row: dict[str, Any] = {"session": sid, "task_id": task.get("task_id"), "uri": uri}

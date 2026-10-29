@@ -30,10 +30,12 @@ author having to remember to declare it.
 from __future__ import annotations
 
 import logging
+import time
 import uuid
 from typing import TYPE_CHECKING, Any, Optional
 
 from clio_agent.arc.task_types import TaskSnapshot
+from clio_agent.gact.events import Event
 from clio_agent.gact.parts import Part
 from clio_agent.gact.task_access import TaskAccess
 from clio_agent.runtime import trace
@@ -135,7 +137,6 @@ def emit_action_card_part(app: "FastAPI", session_id: str, part: Part) -> bool:
     """
 
     from clio_agent.gact.tool_observer import (  # noqa: PLC0415
-        _append_live_assistant_part,
         _mirror_transcript_state,
         _session_turn_transcript,
     )
@@ -166,9 +167,26 @@ def emit_action_card_part(app: "FastAPI", session_id: str, part: Part) -> bool:
         _mirror_transcript_state(app, session_id, transcript)
         return True
 
-    # No active turn ledger: the legacy live-parts fallback always succeeds
-    # (there is no frozen state to race against off-turn).
-    _append_live_assistant_part(app, session_id, part)
+    # No active turn ledger: the card is its own assistant message, written to the
+    # transcript first and published after (a watcher often concludes after the turn
+    # it reviewed has ended; the legacy live-parts row was never persisted).
+    from clio_agent.gact.runtime.globals import _iso_from_epoch  # noqa: PLC0415
+    from clio_agent.gact.session_store import _append_session_message  # noqa: PLC0415
+    from clio_agent.gact.types import Message  # noqa: PLC0415
+
+    now = _iso_from_epoch(time.time())
+    message = Message(
+        id=f"msg_card_{part.id}",
+        session_id=session_id,
+        role="assistant",
+        created_at=now,
+        updated_at=now,
+        parts=[part],
+    )
+    _append_session_message(app, session_id, message)
+    app.state.bus.publish(
+        Event(type="message.created", session_id=session_id, payload=message.to_wire())
+    )
     return True
 
 

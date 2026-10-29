@@ -172,6 +172,12 @@ def run_locked(
             raise ValueError(
                 "Start with a fresh parent session so unrelated answers cannot enter the chain"
             )
+    gate = os.environ.get("OPAL_START_GATE", "")
+    if gate and not receipt["turns"]:
+        # A recording arranges the view on the armed session before the first round.
+        print(f"Waiting for {gate} before round 1", flush=True)
+        while not Path(gate).exists():
+            time.sleep(1)
     for index, prompt in enumerate(prompts):
         if index == len(receipt["turns"]):
             key = str(uuid4())
