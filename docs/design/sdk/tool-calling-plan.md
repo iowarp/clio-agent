@@ -147,7 +147,15 @@ The shape follows what Claude Code ships and what the Anthropic, OpenAI and MCP 
 
 **Observability.** `Part` gains `parent_call_id`; `run_code` binds its call id in a `ContextVar`, dispatch copies the context into each nested call, and the observer emits it in `tool.call.started` and the v3 projection (`gact/protocol/v3/event.py`). gact-tui nests child rows under the `run_code` row, each with tool, redacted args, duration, status, result size and a spilled flag. ARC records only the `run_code` call and its bounded observation.
 
-**Permissions.** Every nested call goes through the permission gate with its own annotations. A call that needs to ask pauses the script and raises the ordinary permission question; the script resumes on the answer. Read-only sessions and plan mode filter the stub set with the same visibility rules as direct tools and spawn the kernel read-only.
+**Permissions.** Running a script is itself a tool call, gated like `shell_bash`: `run_code` is one non-read call, so it is approved before it runs, with the code shown, in every mode except `bypass`. That approval covers what the code does directly (`open()`, `h5py.File()`, subprocesses) inside the `wrap_confined` fence, as a shell approval covers its command. Every nested tool call still goes through the permission gate with its own annotations: explicit deny policies deny it (raised inside the script), plan-mode restrictions apply, and it is audited and shown under the `run_code` row. Nested reads never ask. Whether a nested non-read call asks again depends on the approval mode:
+
+| Approval mode | The script | Nested non-read calls |
+| --- | --- | --- |
+| `bypass` | Runs | Run |
+| `auto-edits`, `ai-review`, `spotter-ai`, `spotter-watcher` | Approved once | Covered by the script's approval |
+| `ask` | Approved once | Each asks |
+
+The script's approval is a grant scoped to that `run_code` call; at the prompt boundary the gate allows a nested call when the mode covers it and the grant exists, and otherwise asks as usual. In `ask` mode, a nested call that asks pauses the script until the answer, and the time waiting does not count against `code.call_timeout_s`. Only one question per script is open at a time (other calls that need an answer wait behind it), the question shows the script it came from, and it offers "Allow for the rest of this script", which turns the grant on for the rest of that call. Approval resumes the call; denial raises in the script. Stop cancels the open question and the kernel call. Read-only sessions and plan mode filter the stub set with the same visibility rules as direct tools and spawn the kernel read-only.
 
 **Teaching.** Fragment `code.run` (about 120 words) with one worked example: gather a batch of reads or queries, filter in Python, print a short summary. It says when not to use it: a single call or a short dependent sequence is cheaper as direct calls.
 
@@ -185,7 +193,7 @@ Take these and record each in the ledger.
 | First request and deferred servers | #1911's listing applies to every declared server, deferred ones included |
 | Kernel scope | One per `(session, react scope)`; forks get a fresh one |
 | Kernel idle reap | 30 minutes |
-| Permission asks inside a script | Paused script, ordinary question, resume on answer |
+| Permissions for a script | `run_code` is approved once like `shell_bash`; nested non-read calls are covered by that approval in every mode except `ask`, where each asks one at a time and may be allowed for the rest of the script |
 | Nested-call budget | 500 per `run_code` call, 8 concurrent per server |
 | Vendor-hosted PTC | Not used |
 | Plan storage | `session.metadata['plan']`, replacing `todos` |
@@ -265,7 +273,9 @@ Run focused tests and `ruff` on touched paths while working. Then run these agai
 | T5 | A session with a large MCP server connected (cloud: synthetic, about 90 tools; local: HA-MCP) | Its schemas are not in the step's tool list, but its entry and tool names are; a plain request about a light leads to `search_tools`, then a direct call; no `prefix_mismatch` reset |
 | T6 | Same as T5 on an open model (local phase) | Same outcome through the text path |
 | T7 | B2 after Phase 4 | The agent uses `run_code` with gathered calls, the answer is correct, model steps are a fraction of baseline, nested calls appear under the `run_code` row |
-| T8 | A script calls a write tool in a session that asks for writes | The script pauses, the question appears, approval resumes it, denial raises in the script |
+| T8a | `auto-edits`: a script that calls a write tool | One question for the script, showing its code; the nested write runs without another; a nested call to a tool with an explicit deny policy raises in the script |
+| T8b | `ask`: a script that makes three nested writes with `asyncio.gather` | The script asks once; then one write question at a time, each showing the script; approval resumes the call, denial raises in the script; waiting does not trip `code.call_timeout_s` |
+| T8c | `ask`: the person picks "Allow for the rest of this script" on the first nested write | The remaining nested writes run without asking; the next `run_code` call asks again |
 | T9 | `run_code` in plan mode | Write stubs are absent; the kernel is read-only |
 | T10 | A script loops on a tool | It stops at the nested-call budget with a typed error in the observation |
 | T11 | Cancel a turn during a long script | The kernel call is cancelled and the scope's kernel stays usable |
