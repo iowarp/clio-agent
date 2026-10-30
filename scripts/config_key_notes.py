@@ -612,8 +612,9 @@ KEY_NOTES: dict[str, str] = {
     "limits.agent_task_output_digest_chars": (
         "Character bound above which a completed spawned child's full output is digested "
         "(excerpt + a durable session/message reference) instead of inlined verbatim into the "
-        "parent's wait_agent_tasks result; raise to inline larger child answers, lower to bound "
-        "coordinator context growth sooner."
+        "parent's wait_agent_tasks result, and above which get_task_result saves a result to "
+        "a file in the session's spill folder instead of returning it whole; raise to inline "
+        "larger child answers, lower to bound coordinator context growth sooner."
     ),
     "limits.context_inline_bytes": (
         "Byte cap per attached file inlined into context injection; raise to inline larger "

@@ -895,7 +895,7 @@ def main() -> None:
     parser.add_argument(
         "--version",
         action="version",
-        version=f"%(prog)s {__version__}",
+        version=f"clio-agent {__version__}",  # not %(prog)s: 3.14 derives it from __main__
         help="Show the installed clio-agent version and exit",
     )
     parser.add_argument(

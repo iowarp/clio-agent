@@ -244,9 +244,10 @@ providers.model_catalog_ttl_s: 86400.0
 # CLIO_AGENT_TASK_OUTPUT_DIGEST_CHARS  (int)  <- src/clio_agent/gact/agents/agent_task_output_digest.py
 # Character bound above which a completed spawned child's full output is
 # digested (excerpt + a durable session/message reference) instead of
-# inlined verbatim into the parent's wait_agent_tasks result; raise to
-# inline larger child answers, lower to bound coordinator context growth
-# sooner.
+# inlined verbatim into the parent's wait_agent_tasks result, and above
+# which get_task_result saves a result to a file in the session's spill
+# folder instead of returning it whole; raise to inline larger child
+# answers, lower to bound coordinator context growth sooner.
 limits.agent_task_output_digest_chars: 8000
 
 # CLIO_CTX_MAX_BYTES  (int)  <- src/clio_agent/gact/runtime/constants.py

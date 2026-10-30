@@ -5,7 +5,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any, Self
 
-from pydantic import BaseModel, Field, model_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 
 
 class Workspace(BaseModel):
@@ -31,6 +31,12 @@ class CreateWorkspaceRequest(BaseModel):
     root_path: str = ""
     storage_root: str = Field(default="", description="Deprecated; storage is Agent-managed.")
     metadata: dict[str, Any] = Field(default_factory=dict)
+
+    @field_validator("root_path")
+    @classmethod
+    def strip_root(cls, value: str) -> str:
+        """Trim surrounding whitespace, as PATCH does, so one folder has one spelling."""
+        return value.strip()
 
     @model_validator(mode="after")
     def normalize_legacy_storage(self) -> Self:

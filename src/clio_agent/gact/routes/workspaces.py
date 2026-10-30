@@ -40,7 +40,11 @@ from clio_agent.gact.routes.workspace_file_listing import (
 )
 from clio_agent.gact.routes.workspace_file_read import readable_workspace_file
 from clio_agent.gact.routes.workspace_grant_delete import register_workspace_grant_delete_route
-from clio_agent.gact.routes.workspace_root_materialization import materialize_workspace_root
+from clio_agent.gact.routes.workspace_root_materialization import (
+    materialize_workspace_root,
+    refuse_taken_root,
+    workspace_root_conflict,
+)
 from clio_agent.gact.routes.workspace_warmup import register_workspace_warmup_route
 from clio_agent.gact.runtime.workspace_root_change import (
     rebind_workspace_root_grants,
@@ -53,6 +57,7 @@ from clio_agent.gact.types import (
     ListWorkspacesResponse,
     Workspace,
 )
+from clio_agent.gact.workspace_roots import WorkspaceRootConflict
 from clio_agent.runtime import trace
 
 if TYPE_CHECKING:
@@ -285,13 +290,17 @@ def register_workspaces_routes(app: FastAPI, deps: "GactDeps") -> None:
     ) -> Workspace | JSONResponse:
         """SPEC §6.1 — create a workspace pinned to ``root_path``."""
 
+        refuse_taken_root(app.state.workspaces, req.root_path)
         materialize_workspace_root(req.root_path)
-        ws = app.state.workspaces.create(
-            name=req.name,
-            root_path=req.root_path,
-            storage_root=req.storage_root,
-            metadata=req.metadata,
-        )
+        try:
+            ws = app.state.workspaces.create(
+                name=req.name,
+                root_path=req.root_path,
+                storage_root=req.storage_root,
+                metadata=req.metadata,
+            )
+        except WorkspaceRootConflict as exc:
+            raise workspace_root_conflict(exc) from exc
         # B5 #979.2: a new workspace pins a write-root boundary — previously a silent mutation
         # (WorkspaceStore has no bus). Emit at the ROUTE layer (which has ``app``), keeping the
         # store leaf-pure. ``grantor=user`` (a direct user action, never a clio decision, ⚑).
@@ -364,22 +373,26 @@ def register_workspaces_routes(app: FastAPI, deps: "GactDeps") -> None:
         # event below records a grant over it).
         if new_root is not None and new_root != prior_root:
             require_idle_workspace(app, wid)
+            refuse_taken_root(app.state.workspaces, new_root, current=prior)
             materialize_workspace_root(new_root)
         # Route the mutation through the store so it serialises under the
         # WorkspaceStore lock (no torn write / flush racing a concurrent
         # create) and bumps ``updated_at`` — never mutate the live object
         # returned by ``get()`` outside the lock.
-        ws = app.state.workspaces.update(
-            wid,
-            name=name.strip() if isinstance(name, str) and name.strip() else None,
-            display_name=(
-                display_name.strip()
-                if isinstance(display_name, str) and display_name.strip()
-                else None
-            ),
-            root_path=new_root,
-            metadata_patch=metadata if isinstance(metadata, dict) else None,
-        )
+        try:
+            ws = app.state.workspaces.update(
+                wid,
+                name=name.strip() if isinstance(name, str) and name.strip() else None,
+                display_name=(
+                    display_name.strip()
+                    if isinstance(display_name, str) and display_name.strip()
+                    else None
+                ),
+                root_path=new_root,
+                metadata_patch=metadata if isinstance(metadata, dict) else None,
+            )
+        except WorkspaceRootConflict as exc:
+            raise workspace_root_conflict(exc) from exc
         if ws is None:
             raise HTTPException(
                 status_code=404,

@@ -45,6 +45,7 @@ from clio_agent.gact.artifacts.records import (
     Mechanism,
 )
 from clio_agent.gact.artifacts.registry import ArtifactRegistry, get_registry
+from clio_agent.gact.artifacts.registry_index import produced_by
 from clio_agent.gact.artifacts.wire import fetch_url_for, mime_for
 from clio_agent.gact.artifacts.wire import version_uri as _version_uri
 from clio_agent.gact.runtime.retention import enforce_list_bound
@@ -374,14 +375,7 @@ def register_artifacts_routes(app: FastAPI, deps: "GactDeps") -> None:
         # only the matching ones) — simplest honest semantics per the route's existing
         # convention (versions are never sliced elsewhere in this listing).
         allowed_session_ids = {sid, *child_ids}
-        records = [
-            record
-            for record in records
-            if any(
-                str((version.producer or {}).get("session_id") or "") in allowed_session_ids
-                for version in record.versions
-            )
-        ]
+        records = [record for record in records if produced_by(record, allowed_session_ids)]
         page, next_cursor = _paginate_records(records, limit=_clamp_limit(limit), before=before)
         _audit(
             app,

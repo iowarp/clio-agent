@@ -24,7 +24,12 @@ class LedgerReadError(OSError):
     caller instead of silently installing an empty transcript as truth — which
     would make ``GET /messages`` serve ``[]`` for a session whose full ledger is
     intact on disk (#889 no-silent-fallback; design ``unified-arc-highway.md`` §3.3).
+
+    ``cause`` names a clio-core blob failure when there is one (see
+    :mod:`clio_agent.gact.transcript_unreadable`); empty for any other read failure.
     """
+
+    cause: str = ""
 
 
 def retained_message_position(timestamps: Iterable[str], created_at: str) -> int:

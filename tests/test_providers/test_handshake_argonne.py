@@ -20,6 +20,7 @@ from clio_agent.providers.handshake.base import HandshakeContext
 from clio_agent.providers.handshake.model import (
     AuthState,
     ConnectivityState,
+    HandshakeReport,
 )
 
 FIXTURES = Path(__file__).parent / "fixtures" / "handshake"
@@ -294,6 +295,28 @@ async def test_passive_no_stored_sign_in_carries_no_error() -> None:
 
     assert result.auth is AuthState.MISSING
     assert result.error is None
+
+
+def test_signed_out_models_wire_says_why_it_is_empty() -> None:
+    """The picker must learn WHY a signed-out ALCF cluster lists no models.
+
+    ``/v1/providers/argonne_metis/models`` used to answer
+    ``{"models": [], "source": "unavailable", "error": null}``, so the TUI had
+    nothing to select and no reason to show.
+    """
+    report = HandshakeReport(
+        provider_id="argonne_metis",
+        provider_kind="argonne",
+        connectivity=ConnectivityState.SKIPPED,
+        auth=AuthState.MISSING,
+        api_base="https://inference-api.alcf.anl.gov/resource_server/metis/api/v1",
+        models_source="unavailable",
+    )
+    wire = report.models_wire()
+
+    assert wire["models"] == []
+    assert wire["auth"] == "missing"
+    assert wire["error"] == "not signed in: no credential is available for argonne_metis"
 
 
 @pytest.mark.asyncio

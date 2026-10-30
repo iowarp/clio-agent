@@ -60,6 +60,7 @@ from clio_agent.gact.runtime.globals import (
     _new_part_id,
 )
 from clio_agent.gact.tap_step_verdicts import resolve_tap_step_verdict
+from clio_agent.gact.transcript_drops import report_dropped_empty_part
 from clio_agent.gact.types import Message, Part
 from clio_agent.runtime.stream_audit import stream_audit
 
@@ -185,6 +186,9 @@ class TurnTranscript:
         self._open_part: Optional[Part] = None
         self._open_agent: str = ""
         self._open_field: str = ""
+        # Whether the open part has been announced: on its first non-whitespace
+        # chunk, so a whitespace-only part is never seen live (gact-tui#368).
+        self._open_announced: bool = False
         self._once_keys: set[str] = set()
         # (agent_id, field) -> closed non-empty final texts, for the identity
         # checks that replace finalize's content comparisons (design §3.1).
@@ -438,8 +442,9 @@ class TurnTranscript:
 
         Opens a new part (type ``thinking`` for ``provider_thinking:*`` fields,
         else ``text``) when ``(agent_id, field)`` changes — closing the prior
-        part — publishes ``message.part.added`` on open and
-        ``message.part.delta`` per chunk (design §4 rows 2-3).
+        part — and publishes ``message.part.added`` on its first non-whitespace
+        chunk (held whitespace leads that delta, so deltas still sum to the stored
+        text) and ``message.part.delta`` per chunk (design §4 rows 2-3; gact-tui#368).
         """
 
         if not chunk:
@@ -467,12 +472,22 @@ class TurnTranscript:
                     },
                 )
                 self._reasoning_clock.start(part)
-                self._parts.append(part)
                 self._buffers[part.id] = []
                 self._open_part = part
                 self._open_agent = agent_id
                 self._open_field = field
+                self._open_announced = False
                 self._current_stream_part_id = part.id
+            self._buffers[part.id].append(chunk)
+            self._streamed.setdefault((agent_id, field), []).append(chunk)
+            self._raw_stream.append(chunk)
+            if not self._open_announced:
+                if not chunk.strip():
+                    return
+                # First real content: join the ledger (reload sees it), announce, send all held.
+                self._parts.append(part)
+                self._open_announced = True
+                chunk = "".join(self._buffers[part.id])
                 self._publisher.publish(
                     "message.part.added",
                     {
@@ -482,9 +497,6 @@ class TurnTranscript:
                         "part": part.to_wire(),
                     },
                 )
-            self._buffers[part.id].append(chunk)
-            self._streamed.setdefault((agent_id, field), []).append(chunk)
-            self._raw_stream.append(chunk)
             self._publisher.publish(
                 "message.part.delta",
                 {
@@ -783,20 +795,8 @@ class TurnTranscript:
                 if candidate is part:
                     del self._parts[index]
                     break
-            (logger.warning if part.type == "thinking" else logger.info)(  # gact-tui#362
-                "turn_transcript dropped_empty_part session=%s turn=%s part=%s type=%s",
-                self.session_id,
-                self.turn_id,
-                part.id,
-                part.type,
-            )
-            stream_audit(
-                "transcript.dropped_empty_part",
-                session_id=self.session_id,
-                turn_id=self.turn_id,
-                part_id=part.id,
-                part_type=part.type,
-                chars=len(buffered),
+            report_dropped_empty_part(
+                session_id=self.session_id, turn_id=self.turn_id, part=part, chars=len(buffered)
             )
             return
         # Keep alias views of this part current; text is verbatim (#881).

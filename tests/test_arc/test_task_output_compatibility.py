@@ -170,6 +170,7 @@ async def test_legacy_getter_preserves_authorized_result_and_durable_collection(
         reread = await tool.func(task_id=child.handle)
         assert reread["result"] == body and reread.notification_ids == ()
         monkeypatch.setenv("CLIO_TOOL_RESULT_CHARS", "8")
+        monkeypatch.setenv("CLIO_AGENT_TASK_OUTPUT_DIGEST_CHARS", "8")
         bounded = await tool.func(task_id=child.handle)
         assert bounded["result"]["truncated"] is True and len(bounded["result"]["preview"]) == 8
         assert bounded["result_reference"] == reread["result_reference"]

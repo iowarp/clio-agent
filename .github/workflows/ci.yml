@@ -32,6 +32,13 @@ jobs:
         run: uv run --no-project --with pytest --with pytest-asyncio --with pytest-timeout --managed-python --python 3.14 python -m pytest --confcutdir=tests/test_native_services tests/test_native_services -q -rs
 
   filesystem-contract:
+    # The contract checker is private and needs CLIO_NAMESPACES_READ_TOKEN,
+    # which GitHub does not give to pull requests from forks. Skip it there
+    # instead of failing every fork PR; it runs again when the change is pushed
+    # to a branch in this repository. A skipped job counts as passing.
+    if: >-
+      github.event_name != 'pull_request' ||
+      github.event.pull_request.head.repo.full_name == github.repository
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
