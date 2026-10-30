@@ -23,7 +23,7 @@ Decisions use the prefix `TD`, baseline tasks `B` and qualification scenarios `T
 | TD13 | No whole-server collapse behind an enabling tool; name lists are the only deferral level. | Planning review 2026-10-30 | | done |
 | TD14 | One kernel per `(session, react scope)`; a fork gets a fresh one. | Plan defaults | | open |
 | TD15 | An idle kernel is reaped after 30 minutes. | Plan defaults | | open |
-| TD16 | A nested call that needs a permission answer pauses the script, asks the ordinary question and resumes on the answer. | Plan defaults | | open |
+| TD16 | Running a script is a tool call gated like `shell_bash`: `run_code` is approved once, with its code shown, except in `bypass`, and that covers its direct I/O inside the fence. Nested non-read calls are covered by the script's approval in `auto-edits`, `ai-review`, `spotter-ai` and `spotter-watcher` (the reviewer modes approve once); in `ask` each asks, one question at a time, showing the script, with "Allow for the rest of this script". Explicit deny policies, plan-mode restrictions and audit apply to every nested call. Replaces the draft's "pause and ask for every nested call" and the speed doc's "no write stubs unless the mode allows them without asking". | Planning review 2026-10-30 | | open |
 | TD17 | 500 nested calls per `run_code` call, 8 concurrent per server. | Plan defaults | | open |
 | TD18 | Vendor-hosted programmatic tool calling is not used. | Plan defaults | | open |
 | TD19 | The session plan is stored on `session.metadata['plan']`, replacing `todos`. | Plan defaults | | open |
@@ -61,7 +61,9 @@ Recorded per phase on the `claude_code` engine. Columns follow Phase 0 step 1.
 | T5 | Large MCP server deferred (cloud: synthetic, about 90 tools) | | open |
 | T6 | T5 on an open model | | local phase |
 | T7 | B2 after Phase 4 | | open |
-| T8 | Permission pause inside a script | | open |
+| T8a | `auto-edits`: one approval covers the script's nested write | | open |
+| T8b | `ask`: nested writes ask one at a time, showing the script | | open |
+| T8c | `ask`: "Allow for the rest of this script" | | open |
 | T9 | `run_code` in plan mode | | open |
 | T10 | Nested-call budget | | open |
 | T11 | Cancel during a long script | | open |
