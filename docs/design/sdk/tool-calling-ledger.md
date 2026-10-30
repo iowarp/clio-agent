@@ -65,7 +65,7 @@ Three runs per task per configuration (TD23). Each cell holds the median with th
 | `run_code` | P5 to P7, H1 | | |
 | Session plan | H1 to H3 | | |
 
-## Overheads (Phase 0 step 2)
+## Overheads (Phase 0 step 3)
 
 | Overhead | Measured | Above baseline noise | Fixed in |
 | --- | --- | --- | --- |
