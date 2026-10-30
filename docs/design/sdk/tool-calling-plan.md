@@ -27,7 +27,7 @@ This plan is the contract for the five workstreams. The megachange design docume
 | `plugin-change-delivery.md` | How tool lists change mid-session without breaking the cached prefix |
 | `runtime/sandbox.py` and `sandboxing-campaign-2026-07.md` | Confinement; the kernel uses it, does not redefine it |
 
-Base: `develop` at `9a365758` in clio-agent (the merge of #1911, which lists every declared MCP server's tools before the first model request), with the matching gact-tui pin and `clio-agent-marketplace` `develop`. Delegation, fork, the science log, long-term memory and the model fleet have landed there. This plan's decisions use the prefix `TD`; its baseline tasks use `B` and its qualification scenarios use `T`.
+Base: `develop` at `9a365758` in clio-agent (the merge of #1911, which lists every declared MCP server's tools before the first model request), with the matching gact-tui pin and `clio-agent-marketplace` `develop`. Delegation, fork, the science log, long-term memory and the model fleet have landed there. This plan's decisions use the prefix `TD`; its evaluation tasks use `P` (performance) and `H` (long-horizon), and its qualification scenarios use `T`.
 
 ## Two phases of qualification
 
@@ -38,7 +38,7 @@ This plan is implemented and qualified in two passes.
 
 | Item | Cloud phase | Local phase |
 | --- | --- | --- |
-| Baselines B1 to B3 | `claude_code` engine; B1 also on Claude Code itself | Open model |
+| Evaluation tasks P1 to P10, H1 to H3 | `claude_code` engine; P1 to P4 also on Claude Code itself | Open model |
 | Native tool search (Anthropic `defer_loading`, OpenAI `tool_search`) | Implemented; request shape covered by tests | Live |
 | Large deferred MCP server (T5) | A synthetic MCP server with about 90 tools | Real HA-MCP |
 | T6, T16 | Recorded as local phase | Run |
@@ -201,24 +201,53 @@ Take these and record each in the ledger.
 | Runtime note on open threads at stop | Off; decided again from qualification evidence |
 | Plan mode | Keeps its gate, writes the session plan |
 
+## Evaluation
+
+The campaign's goal is long, fast execution: cheap, wide steps, and an agent that keeps going coherently over hundreds of them. The evaluation measures those two things, run length and performance, against the base and after every phase. Correctness is recorded where it can be graded mechanically, but it is not an acceptance gate in this plan; prompts are tuned for correctness later. The qualification scenarios (Phase 6) are separate: they show that each mechanism works, and many of them name tools, so they are not evidence of the agent's choices.
+
+**Tasks.** Every task is a plain request with no tools or steps named, run on a frozen fixture checked into `scripts/eval/tool_calling/fixtures/`, never on the live checkout, which this plan changes.
+
+| ID | Suite | Task |
+| --- | --- | --- |
+| P1 | Performance | Locate a function and every caller in a frozen copy of a source tree |
+| P2 | Performance | Find a fact that sits deep in a 5,000-line file |
+| P3 | Performance | "Review this package and list the five riskiest issues with file and line" on a frozen package with seeded bugs |
+| P4 | Performance | "Survey this repository's three subsystems" on the frozen tree |
+| P5 | Performance | "Across all HDF5 files in this folder, which datasets have NaNs and how many?" on 20 files |
+| P6 | Performance | P5 on 200 files |
+| P7 | Performance | P5 on 2,000 files |
+| P8 | Performance | A request that needs one tool of a synthetic MCP server with about 90 tools, beside distractor servers |
+| P9 | Performance | A second P8 request whose wording shares no words with the tool's name |
+| P10 | Performance | A control request that needs no deferred tool |
+| H1 | Long-horizon | Diagnose a seeded regression in a fixture repository, with no goal set |
+| H2 | Long-horizon | "Why is this I/O path slower than it was?" on a fixture with a seeded slowdown, with no goal set |
+| H3 | Long-horizon | H1 with the compaction threshold lowered so the run compacts at least once |
+
+**Performance metrics, per run and per step:** model steps; calls per step; prompt tokens per step, uncached and cached (`turn_lm_ledger`); output tokens; wall time; TTFT and decode time; batch wall time against the slowest call; step overhead outside model and tools; `prefix_mismatch` and `first_call` resets; and the share of the subscription's 5-hour and 7-day windows the run used (the `claude_code` `rate_limit_event`). For P8 to P10 also: `search_tools` calls, and how often the agent concludes it lacks a tool it has.
+
+**Long-horizon metrics:** steps and wall time until the agent stops on its own; per-step latency and prompt tokens against step number (a long run should stay flat); compactions, and whether the plan was recited verbatim after each and findings recorded before it were cited after it; threads open at the stop and how each ended (closed or dropped with a reason, or left open); and how often goal or stop hooks re-drove the agent.
+
+**Completion guard and correctness.** A run counts only if it ended with a final answer, not an error, a cancellation or an empty reply, so that "faster" never means "gave up". Correctness is recorded where an answer key grades it mechanically (P1, P2, P3 by seeded issue, P5 to P8, H1 and H2 by root cause) and reported beside the numbers, without a pass threshold. No LLM judge is used.
+
+**Protocol.**
+- Each task runs three times per configuration on the `claude_code` engine: the main agent on `claude-sonnet-5-5` and the fleet `explore` role on `claude-haiku-5-5` (TD22). The runner is `scripts/eval/tool_calling/`, built on the agent-test harness (`tests/test_real_cases/clio_sut.py`) with a `claude_code` cell.
+- Configurations: the base; Claude Code itself on the same model for P1 to P4 (the speed doc's reference); after Phase 1 (P1 to P4); after Phase 2 (P1 to P4); after Phase 3 (all, since disclosure changes every request); after Phase 4 (P5 to P7 and H1); after Phase 5 (all). Then ablations, one feature off at a time on the tasks it touches: deferral, `run_code`, the session plan, the fast explorer. Phase 1's tools replace the old ones and cannot be switched off; they are judged against the base.
+- The pass for timing runs one task at a time; other runs may go three at a time, since concurrency changes wall time but not steps or tokens.
+- Phase 0 measures each task's share of the usage windows and confirms the schedule fits them before Phase 1 starts.
+
+**Targets.** After the base is measured and before Phase 1 starts, the ledger records a target per workstream on the tasks it touches, for example steps and prompt tokens per step on P1 to P4 against the base and against Claude Code, P5 to P7 cost growing much more slowly than file count after Phase 4, prompt tokens per step on P8 to P10 after Phase 3 with no rise in "lacks a tool" conclusions, and on H1 to H3 a flat per-step cost, no re-drives and coherent plans across compaction. Run length on Claude is recorded, not targeted: strong models already run long, and the length gains are measured on open models in the local phase.
+
 ## Phase 0: baseline and decisions
 
 No production code changes in this phase.
 
-1. Run the baseline tasks (B1 to B3 below) on the base on the `claude_code` engine, and record per step: model steps, calls per step, prompt and cached tokens (`turn_lm_ledger`), TTFT and decode time, batch wall time against the slowest call, step overhead outside model and tools, and `prefix_mismatch` and `first_call` resets. Run B1 on Claude Code with the same model for comparison. The open-model baselines are taken in the local phase.
-2. Time `list_tools` per call, direct stdio per-call spawn, sequential segment writes in `step_done`, and per-call `asyncio.Runner`. Record which exceed baseline noise; only those are fixed.
-3. Run `sandbox_conformance.py` on the cloud host and record which fence level a child process gets, since the kernel inherits it.
-4. List every caller of `write_todos`, `todos` metadata, the plan file, `return_raw`, `read_file`'s dict shape and `TOOL_USE_NOTE`, for the deletions.
-5. Fill in `tool-calling-ledger.md`: decisions TD1 onward, the baseline numbers and the scenarios below.
-6. Commit, push, open draft PRs, and continue.
-
-Baseline tasks, each a plain request with no tools or steps named:
-
-| ID | Task |
-| --- | --- |
-| B1 | "Review `src/clio_agent/tools` and list the five riskiest issues with file and line" |
-| B2 | "Across all HDF5 files in this folder, which datasets have NaNs and how many?" on a fixture of 200 small files |
-| B3 | A deep diagnosis question on a seeded regression in a fixture repository, with no goal set |
+1. Build the fixtures with their answer keys, the synthetic MCP server and the runner (Evaluation, above).
+2. Run every task on the base and Claude Code on P1 to P4, and record the metrics and each task's usage-window share in the ledger. The open-model baselines are taken in the local phase.
+3. Time `list_tools` per call, direct stdio per-call spawn, sequential segment writes in `step_done`, and per-call `asyncio.Runner`. Record which exceed baseline noise; only those are fixed.
+4. Run `sandbox_conformance.py` on the cloud host and record which fence level a child process gets, since the kernel inherits it.
+5. List every caller of `write_todos`, `todos` metadata, the plan file, `return_raw`, `read_file`'s dict shape and `TOOL_USE_NOTE`, for the deletions.
+6. Fill in `tool-calling-ledger.md`: decisions TD1 onward, the base numbers, the targets and the scenarios below.
+7. Commit, push, open draft PRs, and continue.
 
 ## Phase 1: exploration primitives
 
@@ -266,13 +295,13 @@ Run focused tests and `ruff` on touched paths while working. Then run these agai
 
 | ID | Scenario | Passes when |
 | --- | --- | --- |
-| T1 | B1 after Phases 1 to 3 | Fewer model steps and fewer prompt tokens per step than the B1 baseline, and no `sed` through the shell to page a file |
+| T1 | P3 after Phases 1 to 3 | No `sed` through the shell to page a file; ranged reads and files-mode search are used |
 | T2 | Read a 5,000-line file | Ranged reads with line numbers; a spilled result is continued with the named call |
 | T3 | Find a symbol in the repository | Files-mode search returns paths; the agent reads ranges, not pages of context |
 | T4 | "Survey this repository's three subsystems" | One `spawn_agents_parallel(..., wait=True)` of `explore` children on the fleet `explore` model, reports in the same observation, `model_choice` recorded |
 | T5 | A session with a large MCP server connected (cloud: synthetic, about 90 tools; local: HA-MCP) | Its schemas are not in the step's tool list, but its entry and tool names are; a plain request about a light leads to `search_tools`, then a direct call; no `prefix_mismatch` reset |
 | T6 | Same as T5 on an open model (local phase) | Same outcome through the text path |
-| T7 | B2 after Phase 4 | The agent uses `run_code` with gathered calls, the answer is correct, model steps are a fraction of baseline, nested calls appear under the `run_code` row |
+| T7 | P6 after Phase 4 | The agent uses `run_code` with gathered calls, and nested calls appear under the `run_code` row |
 | T8a | `auto-edits`: a script that calls a write tool | One question for the script, showing its code; the nested write runs without another; a nested call to a tool with an explicit deny policy raises in the script |
 | T8b | `ask`: a script that makes three nested writes with `asyncio.gather` | The script asks once; then one write question at a time, each showing the script; approval resumes the call, denial raises in the script; waiting does not trip `code.call_timeout_s` |
 | T8c | `ask`: the person picks "Allow for the rest of this script" on the first nested write | The remaining nested writes run without asking; the next `run_code` call asks again |
@@ -281,9 +310,9 @@ Run focused tests and `ruff` on touched paths while working. Then run these agai
 | T11 | Cancel a turn during a long script | The kernel call is cancelled and the scope's kernel stays usable |
 | T12 | Kernel state across calls | A variable set in one call is visible in the next; a fork starts clean |
 | T13 | An MCP Apps view | Still renders through the structured-value lane |
-| T14 | B3 after Phase 5, frontier model | The agent writes an objective and threads, closes or drops every thread with a reason, and its final answer covers its own objective |
+| T14 | H1 after Phase 5 | The agent writes an objective and threads, and every thread at its stop is closed or dropped with a reason |
 | T15 | A run that compacts mid-turn | The plan is recited on the next step verbatim, and findings recorded before compaction are cited after it |
-| T16 | B3 on an open model, before and after (local phase) | Steps to a self-chosen stop and open threads at stop recorded for both; the result is reported whether or not it improved |
+| T16 | H1 on an open model, before and after (local phase) | Steps to a self-chosen stop and open threads at stop recorded for both; the result is reported whether or not it improved |
 | T17 | Plan mode | The approved plan is the session plan, and execution continues on it without a separate file |
 | T18 | Plan panel at both viewport sizes | Objective, threads and findings render and update live; a human edit arrives as steering; no console errors |
 | T19 | A broad query that contains an exact deferred tool name (Codex #21503) | `search_tools` returns that tool first |
@@ -298,7 +327,7 @@ The cloud session cannot qualify the Tauri desktop, Windows-only paths, HPC logi
 1. Every phase is implemented, and the old `read_file` shape, `TOOL_USE_NOTE`, `write_todos`, the plan file path, the `return_raw` lane, the full `core.tasks` fragment and the parked disclosure paragraph are gone.
 2. Focused tests pass, and `ruff check` and `ruff format --check` are clean on touched paths.
 3. Every cloud-phase scenario passes against a freshly restarted stack, each shown with commands, handles, numbers and screenshots read; local-phase rows say so.
-4. The ledger holds the baseline and the after numbers for B1 to B3 per phase.
+4. The ledger holds the evaluation numbers for every configuration, the targets set after the base, and whether each was met.
 5. The branches are pushed in clio-agent, gact-tui and clio-agent-marketplace, the submodule pins point at the pushed commits, and the draft PRs carry a summary and the evidence.
 
 ## Working conventions
