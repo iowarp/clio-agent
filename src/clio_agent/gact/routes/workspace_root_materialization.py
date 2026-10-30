@@ -19,7 +19,6 @@ from fastapi import HTTPException
 
 from clio_agent.gact.types import ErrorEnvelope, ErrorInfo
 
-
 #: Unicode categories refused in a root: controls (newline, tab) and invisible
 #: format characters (zero-width spaces, bidirectional overrides, the BOM).
 _REFUSED_CATEGORIES = frozenset({"Cc", "Cf"})
