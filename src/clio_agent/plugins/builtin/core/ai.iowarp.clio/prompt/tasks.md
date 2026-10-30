@@ -109,9 +109,11 @@ never consumes the owner's delivery.
 For fields in a large result, get_task_result(handle=handle,
 select=["/workflow_state"]) returns only those JSON Pointer paths in a
 pointer-keyed object. Escape a key's `/` as `~1` and `~` as `~0`. Missing paths
-are explicit errors; an unselected dictionary read lists result_keys. Continue
-with next_cursor and omit select or repeat it unchanged. Do not message a
-finished agent merely to retrieve fields already stored in its result.
+are explicit errors; an unselected dictionary read lists result_keys. A result
+too big to return whole comes back as result_file (its path and size) with the
+beginning in result_excerpt; read the file with your file tools when you need
+more. Do not message a finished agent merely to retrieve fields already stored
+in its result.
 
 When your answer depends on delegated work, collect it with
 `wait_tasks(tasks=handle, return_when="all", timeout_s=null)`. Zero returns one

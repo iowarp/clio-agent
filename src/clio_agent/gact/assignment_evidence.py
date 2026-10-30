@@ -9,7 +9,6 @@ from clio_agent import conf
 from clio_agent.arc.task_types import AssignmentDetails, AssignmentEvidence, TaskSnapshot
 from clio_agent.gact.task_access import TaskAccess, TaskCaller
 from clio_agent.gact.task_history import TaskHistory
-from clio_agent.gact.task_result_content import result_cursor
 
 
 def _pin(history: TaskHistory, caller: TaskCaller, handle: str) -> AssignmentEvidence:
@@ -121,15 +120,8 @@ def render_delegation(history: TaskHistory, handle: str, payload: dict[str, Any]
                 "result_reference": pin.result.model_dump(mode="json"),
                 "partial": pin.partial or truncated,
                 "quoted_result": encoded[:allowance] if truncated else encoded,
-                "read_result": {
-                    "tool": "get_task_result",
-                    "arguments": {
-                        "handle": pin.handle,
-                        "cursor": result_cursor(
-                            task.owner.session_id, pin.handle, pin.result, "shared_evidence"
-                        ),
-                    },
-                },
+                # A result too big to return whole comes back as a file (#1844).
+                "read_result": {"tool": "get_task_result", "arguments": {"handle": pin.handle}},
             },
             ensure_ascii=False,
         )

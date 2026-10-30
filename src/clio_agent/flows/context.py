@@ -677,14 +677,14 @@ class FlowContext:
             )
         await self._settle(invocation, "completed")
         value = outcome.get("result")
-        if outcome.get("next_cursor"):
+        if outcome.get("next_cursor") or outcome.get("result_file"):
             value = await self.app.state.task_history.io.run(self._full_result, handle)
         model = await self.app.state.task_history.io.run(child_model, self.app, handle)
         forks = [row for row in (waited.get("outcomes") or [])[1:] if row.get("fork_of")]
         return CallResult(value, handle=handle, target=name, kind=kind, model=model, forks=forks)
 
     def _full_result(self, handle: str) -> Any:
-        """A paged result's whole content (the wait already authorized reading it)."""
+        """A paged or file-saved result's whole content (the wait authorized reading it)."""
 
         history = self.app.state.task_history
         with history.serialized():
