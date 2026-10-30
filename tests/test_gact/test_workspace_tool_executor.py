@@ -116,3 +116,30 @@ def test_blank_workspace_root_falls_back_to_default(monkeypatch) -> None:
 
     with tool_workspace_context("   "):
         assert agent._active_tool_executor() is agent.tool_executor
+
+
+def test_workspace_gateway_reads_that_workspace_mcp_yaml(tmp_path, monkeypatch) -> None:
+    """#1300: a workspace's mcp.yaml reaches its gateway when the server runs elsewhere."""
+    workspace = tmp_path / "workspace"
+    shared = workspace / ".clio-agent" / "shared"
+    shared.mkdir(parents=True)
+    (shared / "mcp.yaml").write_text(
+        "mcp_servers:\n  ws_only:\n    command: [ws-only-server]\n", encoding="utf-8"
+    )
+    elsewhere = tmp_path / "server-cwd"
+    elsewhere.mkdir()
+    monkeypatch.chdir(elsewhere)
+    monkeypatch.setenv("HOME", str(tmp_path / "home"))
+    agent = _bare_agent()
+    monkeypatch.setattr(agent, "_discover_plugin_servers", lambda server_set="": {})
+    seen: dict[str, object] = {}
+
+    def fake_build_gateway(specs, *, cwd=None):
+        seen.update(specs=dict(specs), cwd=cwd)
+        return "gateway"
+
+    monkeypatch.setattr("clio_agent.agent.build_gateway", fake_build_gateway)
+
+    assert agent._build_tool_gateway(cwd=str(workspace)) == "gateway"
+    assert "ws_only" in seen["specs"]
+    assert seen["cwd"] == str(workspace)

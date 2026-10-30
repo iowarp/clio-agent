@@ -465,7 +465,7 @@ def unreadable_mcp_yaml_snapshot() -> list[dict[str, str]]:
 def load_mcp_servers(
     *,
     home: Path | None = None,
-    cwd: Path | None = None,
+    cwd: str | Path | None = None,
     plugin_servers: Mapping[str, Mapping[str, Any]] = (),  # type: ignore[assignment]
     env: Mapping[str, str] | None = None,
 ) -> dict[str, MCPServerSpec]:
