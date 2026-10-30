@@ -9,6 +9,13 @@ import { Aside, Steps } from '@astrojs/starlight/components';
 
 This tutorial deploys CLIO to a remote computer over SSH from the CLIO desktop app.
 
+<Aside title="Before you start">
+On an HPC cluster, CLIO runs on a compute node, not the login node. Allocate a compute
+node first, the way your center describes (for example an interactive job), and note its
+hostname: this tutorial uses `notch351`. The allocation must last as long as you want to
+work with CLIO there.
+</Aside>
+
 <Steps>
 
 1. ### Step 1: Open the deploy dialog
@@ -130,13 +137,13 @@ This tutorial deploys CLIO to a remote computer over SSH from the CLIO desktop a
 
 12. ### Step 12: Wait for the deployment to finish
 
-    CLIO marks each stage with a checkmark when it finishes, and shows how long it took. **Checking for a running CLIO** confirms that the remote agent port is free. **Installing CLIO** installs CLIO on the remote computer from PyPI.
+    CLIO marks each stage with a checkmark when it finishes, and shows how long it took. **Checking for a running CLIO** looks at the remote agent port. If CLIO is already running there, the deployment reuses it and marks **Installing CLIO** and **Starting CLIO** as not needed. If another program holds the port, the deployment stops and says so; choose a different port in step 9. Otherwise **Installing CLIO** installs CLIO on the remote computer from PyPI.
 
     ![The deployment stages, with the first four complete and Installing CLIO in progress, highlighted](../../../../assets/tutorials/remote-deployment/12-deploy-stages.png)
 
 13. ### Step 13: Start working on the remote computer
 
-    When **Connecting to CLIO** finishes, CLIO opens a workspace on the remote computer. The service selector at the top of the sidebar shows **CLIO** with a green status dot and the SSH route you deployed to, so you can confirm which computer you are working on.
+    When **Connecting to CLIO** finishes, CLIO opens a workspace on the remote computer. The service selector at the top of the sidebar shows **CLIO** with a green status dot (point at it to read **Ready**) and the SSH route you deployed to, so you can confirm which computer you are working on.
 
     ![A new conversation in the default workspace, with the service selector showing the remote connection highlighted](../../../../assets/tutorials/remote-deployment/13-connected-workspace.png)
 
