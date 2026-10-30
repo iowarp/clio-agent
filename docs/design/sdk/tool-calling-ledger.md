@@ -2,14 +2,14 @@
 
 Rows follow [tool-calling-plan.md](tool-calling-plan.md). Status values are the ones [acceptance-ledger.md](acceptance-ledger.md) defines (`passed (live)`, `tests only`, `static`, `done`, `open`, `blocked`), plus `local phase` for a row the plan assigns to the local qualification pass (open models, a real HA-MCP server, native tool search live, the Tauri desktop, Windows and HPC).
 
-Decisions use the prefix `TD`, baseline tasks `B` and qualification scenarios `T`.
+Decisions use the prefix `TD`, evaluation tasks `P` (performance) and `H` (long-horizon), and qualification scenarios `T`.
 
 ## Decisions
 
 | ID | Decision | Source | Evidence | Status |
 | --- | --- | --- | --- | --- |
 | TD1 | Qualification runs in two passes: a cloud phase on Claude only (`claude_code`, text tool engine), then a local phase for open models, HA-MCP, live native tool search, Tauri, Windows and HPC. | Planning review 2026-10-30 | Plan section "Two phases of qualification" | done |
-| TD2 | Decisions are `TD`, baselines `B`, scenarios `T`; the draft plan used `T` for both decisions and scenarios. | Planning review 2026-10-30 | This ledger | done |
+| TD2 | Decisions are `TD`, evaluation tasks `P` and `H`, scenarios `T`; the draft plan used `T` for both decisions and scenarios, and `B` for three single-run baselines. | Planning review 2026-10-30 | This ledger | done |
 | TD3 | `fs_read_file` reads `offset=1`, `limit=2000` lines by default. | Plan defaults | | open |
 | TD4 | `fs_search_text` defaults to `mode="files"`. | Plan defaults | | open |
 | TD5 | `explore` runs on the fleet `explore` role, the caller's model when unset. | Plan defaults | | open |
@@ -29,17 +29,41 @@ Decisions use the prefix `TD`, baseline tasks `B` and qualification scenarios `T
 | TD19 | The session plan is stored on `session.metadata['plan']`, replacing `todos`. | Plan defaults | | open |
 | TD20 | One plan per session; children report and the parent records findings. | Plan defaults | | open |
 | TD21 | Plan mode keeps its approval gate and writes the session plan. | Plan defaults | | open |
+| TD22 | Evaluation runs the main agent on `claude-sonnet-5-5` and the fleet `explore` role on `claude-haiku-5-5`, through the `claude_code` engine; Claude Code itself on the same model is the reference for P1 to P4. | Planning review 2026-10-30 | | open |
+| TD23 | The evaluation measures run length and performance. Correctness is recorded where an answer key grades it mechanically but is not an acceptance gate; prompts are tuned for correctness later. A run counts only if it ended with a final answer. No LLM judge. Each task runs three times per configuration. | Planning review 2026-10-30 | | done |
 
-## Baselines
+## Evaluation
 
-Recorded per phase on the `claude_code` engine. Columns follow Phase 0 step 1.
+Three runs per task per configuration (TD23). Each cell holds the median with the range of the three runs, plus the session handles. Targets are written here after the base and before Phase 1.
 
-| Task | Phase | Model steps | Calls per step | Prompt tokens per step | Cached tokens per step | TTFT / decode | Batch wall vs slowest call | Step overhead | Prefix resets | Handle |
-| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
-| B1 | Base | | | | | | | | | |
-| B1 | Base, Claude Code | | | | | | | | | |
-| B2 | Base | | | | | | | | | |
-| B3 | Base | | | | | | | | | |
+### Usage per task (Phase 0)
+
+| Task | 5-hour window share per run | 7-day window share per run | Median wall time |
+| --- | --- | --- | --- |
+| P1 to P10, H1 to H3 | | | |
+
+### Performance
+
+| Task | Configuration | Steps | Calls per step | Prompt tokens per step (uncached / cached) | Output tokens | Wall time | TTFT / decode | Batch wall vs slowest call | Step overhead | Prefix resets | Correct (where graded) | Handles |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| P1 to P10 | Base | | | | | | | | | | | |
+| P1 to P4 | Claude Code | | | | | | | | | | | |
+
+### Long-horizon
+
+| Task | Configuration | Steps to self-stop | Wall time | Per-step latency and prompt tokens over the run | Compactions; plan recited; findings carried | Threads open at stop and how each ended | Re-drives | Correct root cause | Handles |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| H1 to H3 | Base | | | | | | | | |
+
+### Targets
+
+| Workstream | Tasks | Target | Met |
+| --- | --- | --- | --- |
+| Exploration primitives | P1 to P4 | | |
+| Fast explorer | P1 to P4 | | |
+| Tool disclosure | P1 to P10 | | |
+| `run_code` | P5 to P7, H1 | | |
+| Session plan | H1 to H3 | | |
 
 ## Overheads (Phase 0 step 2)
 
@@ -54,13 +78,13 @@ Recorded per phase on the `claude_code` engine. Columns follow Phase 0 step 1.
 
 | ID | Scenario | Evidence | Status |
 | --- | --- | --- | --- |
-| T1 | B1 after Phases 1 to 3 | | open |
+| T1 | P3 after Phases 1 to 3: no shell paging | | open |
 | T2 | Read a 5,000-line file | | open |
 | T3 | Find a symbol in the repository | | open |
 | T4 | Survey three subsystems with `explore` children | | open |
 | T5 | Large MCP server deferred (cloud: synthetic, about 90 tools) | | open |
 | T6 | T5 on an open model | | local phase |
-| T7 | B2 after Phase 4 | | open |
+| T7 | P6 after Phase 4: `run_code` with nested rows | | open |
 | T8a | `auto-edits`: one approval covers the script's nested write | | open |
 | T8b | `ask`: nested writes ask one at a time, showing the script | | open |
 | T8c | `ask`: "Allow for the rest of this script" | | open |
@@ -69,9 +93,9 @@ Recorded per phase on the `claude_code` engine. Columns follow Phase 0 step 1.
 | T11 | Cancel during a long script | | open |
 | T12 | Kernel state across calls; fork starts clean | | open |
 | T13 | MCP Apps through the structured-value lane | | open |
-| T14 | B3 after Phase 5, frontier model | | open |
+| T14 | H1 after Phase 5: objective, threads, every thread ended with a reason | | open |
 | T15 | Plan recited verbatim after compaction | | open |
-| T16 | B3 on an open model, before and after | | local phase |
+| T16 | H1 on an open model, before and after | | local phase |
 | T17 | Plan mode writes the session plan | | open |
 | T18 | Plan panel at both viewport sizes | | open |
 | T19 | Exact name inside a broad query returns first | | open |
