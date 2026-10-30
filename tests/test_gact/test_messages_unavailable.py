@@ -160,3 +160,20 @@ def test_paged_read_is_typed_and_a_corrupt_transcript_is_not_retryable(
     assert error["error"] == "messages_unavailable"
     assert error["recoverable"] is False
     assert error["details"]["cause"] == TRANSCRIPT_CORRUPT
+
+
+def test_a_session_with_a_corrupt_transcript_can_still_be_deleted(tmp_path: Path) -> None:
+    """The UI offers removal for ``transcript_corrupt``; deleting must not read the ledger."""
+    app, client, sid = _session_with_stored_transcript(tmp_path)
+
+    def _corrupt(session_id: str) -> None:
+        with typed_transcript_read(session_id):
+            raise BlobFrameError("sess_x~m~0", 80, 10)
+
+    app.state.messages._materialize = _corrupt
+    assert client.get(f"/v1/sessions/{sid}/messages").status_code == 503
+
+    response = client.delete(f"/v1/sessions/{sid}")
+
+    assert response.status_code == 204
+    assert app.state.sessions.get(sid) is None
