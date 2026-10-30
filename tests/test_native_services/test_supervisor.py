@@ -47,6 +47,15 @@ HTTPServer(('127.0.0.1', int(os.environ['OWNED_PORT'])), Handler).serve_forever(
 """
 
 
+def _written_pid(path: Path) -> int | None:
+    """The pid another process wrote to ``path``, or None until the whole number is there."""
+    try:
+        text = path.read_text(encoding="utf-8").strip()
+    except OSError:
+        return None
+    return int(text) if text.isdigit() else None
+
+
 def wait_for(predicate: Any, timeout: float = 15) -> None:
     """Wait for the actual process/endpoint transition, never a fixed startup sleep."""
     deadline = time.monotonic() + timeout
@@ -183,12 +192,16 @@ def test_server_exit_reaps_descendant_holding_the_output_pipe(service: Any) -> N
     # A Windows venv may insert an interpreter redirector. Wait for the real
     # descendant to start and publish its own PID before its server exits, so
     # the test exercises an inherited output pipe rather than launcher startup.
+    # Each pid file is written whole and renamed into place, so it never exists empty:
+    # the launcher and the test both read it as soon as it appears.
     (root / "launch.py").write_text(
-        "import subprocess,sys,time\nfrom pathlib import Path\n"
+        "import os,subprocess,sys,time\nfrom pathlib import Path\n"
         "child=subprocess.Popen([sys.executable,'-c',"
         '"import os,time; from pathlib import Path; '
-        "Path('owned-child.pid').write_text(str(os.getpid())); time.sleep(90)\"])\n"
-        "Path('owned-launcher.pid').write_text(str(child.pid))\n"
+        "Path('owned-child.tmp').write_text(str(os.getpid())); "
+        "os.replace('owned-child.tmp','owned-child.pid'); time.sleep(90)\"])\n"
+        "Path('owned-launcher.tmp').write_text(str(child.pid))\n"
+        "os.replace('owned-launcher.tmp','owned-launcher.pid')\n"
         "deadline=time.monotonic()+10\n"
         "while not Path('owned-child.pid').is_file():\n"
         "    if time.monotonic() >= deadline: raise RuntimeError('Descendant never started')\n"
@@ -196,9 +209,12 @@ def test_server_exit_reaps_descendant_holding_the_output_pipe(service: Any) -> N
         encoding="utf-8",
     )
     node_service.control(request)
-    wait_for(lambda: (root / "owned-child.pid").is_file())
-    child = int((root / "owned-child.pid").read_text())
-    launcher = int((root / "owned-launcher.pid").read_text())
+    # A pid file exists before its writer has filled it; wait for the number itself.
+    wait_for(
+        lambda: _written_pid(root / "owned-child.pid") and _written_pid(root / "owned-launcher.pid")
+    )
+    child = _written_pid(root / "owned-child.pid")
+    launcher = _written_pid(root / "owned-launcher.pid")
     try:
         wait_for(lambda: node_service.read_receipt(root)["phase"] == "stopped")
     except pytest.fail.Exception:
