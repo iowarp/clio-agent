@@ -1,6 +1,6 @@
 # HDF5 deep references: `@run.h5::/entry/data`
 
-Status: proposed (Oct 30), queued after the current plan.
+Status: implemented (Oct 30): clio-agent `gact/context_reference_hdf5.py` and gact-tui `composer-hdf5-references.ts`.
 
 ## Goal
 

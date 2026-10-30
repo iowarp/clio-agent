@@ -403,29 +403,38 @@ def test_post_messages_never_hashes_a_referenced_file_on_the_loop_thread(
     assert loop_ident not in hashing_threads
 
 
-def test_oversized_workspace_file_is_refused_with_a_typed_limit(tmp_path) -> None:
-    from clio_agent.gact.context_reference_domain import ContextReferenceError
-    from clio_agent.gact.context_references import authorize_context_reference_parts_sync
+def test_a_file_over_the_digest_ceiling_is_pinned_by_stat_not_refused(tmp_path) -> None:
+    """A huge file is referenceable; its revision is its stat, and the record says so."""
+    from clio_agent.gact.context_references import (
+        _stat_revision,
+        authorize_context_reference_parts_sync,
+    )
     from clio_agent.gact.types import Part
 
     set_config("gact.context_references.max_hashable_bytes", 8)
     app = build_app(sessions_path=tmp_path / "sessions.json")
-    workspace_id, sid = _workspace_session(app, tmp_path, name="big")
-    (tmp_path / "big" / "large.txt").write_text("x" * 64, encoding="utf-8")
+    _workspace_id, sid = _workspace_session(app, tmp_path, name="big")
+    large = tmp_path / "big" / "large.bin"
+    large.write_bytes(b"x" * 64)
     session = app.state.sessions.get(sid)
-    assert session.workspace_id == workspace_id
 
-    with pytest.raises(Exception) as refused:  # noqa: PT011 - HTTPException envelope
-        authorize_context_reference_parts_sync(
-            app,
-            session,
-            [Part(type="context_ref", ref_kind="workspace_file", ref_id="large.txt")],
-        )
-    detail = getattr(refused.value, "detail", {})
-    assert not isinstance(refused.value, ContextReferenceError)
-    assert detail["error"]["error"] == "context_ref_too_large"
-    assert detail["error"]["details"]["max_bytes"] == 8
-    assert detail["error"]["details"]["size_bytes"] == 64
+    [resolved] = authorize_context_reference_parts_sync(
+        app,
+        session,
+        [
+            Part(
+                type="context_ref",
+                ref_kind="workspace_file",
+                ref_id="large.bin",
+                revision=_stat_revision(large),
+            )
+        ],
+    )
+
+    delivery = resolved.metadata["context_reference"]["delivery"]
+    assert resolved.revision == _stat_revision(large)
+    assert delivery["revision_basis"] == "stat"
+    assert "sha256" not in delivery
 
 
 def test_queue_promotion_authorizes_referenced_parts_exactly_once(tmp_path, monkeypatch) -> None:

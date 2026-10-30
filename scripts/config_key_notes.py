@@ -444,8 +444,8 @@ KEY_NOTES: dict[str, str] = {
         "browse more of a large workspace at a glance."
     ),
     "gact.context_references.max_hashable_bytes": (
-        "Byte ceiling on a workspace file that may be attached as a context reference; admission "
-        "digests the whole file, so a larger one is refused with a typed context_ref_too_large."
+        "Largest workspace file a context reference pins by sha256 digest (which reads every "
+        "byte); a larger file is pinned by its stat revision (mtime + size) instead."
     ),
     "gact.context_references.search_limit": (
         "Total rows one reference search returns for a typed query; raise for very large "

@@ -276,3 +276,56 @@ def _paths(walk: _Walk, path: str) -> list[str]:
     # Link names only: listing never follows a link, so nothing leaves the file.
     group.id.links.visit(lambda name: names.append(hdf_path_join(path, name.decode())))
     return names
+
+
+#: Attributes a reference summary carries, and how long one text value may be.
+SUMMARY_ATTRIBUTES = 20
+SUMMARY_TEXT_CHARS = 200
+
+
+def object_summary(target: Path, roots: Roots, locator: str) -> dict[str, Any]:
+    """What one object in ``target`` is, for an ``@file.h5::/path`` reference.
+
+    Kind, shape and dtype (or child count for a group) plus up to
+    :data:`SUMMARY_ATTRIBUTES` short attributes such as ``NX_class`` and ``units``.
+    No data is read; the agent reads values with the hdf5 tools.
+    """
+
+    try:
+        with open_view(target, roots) as walk:
+            entity = _resolved(walk, locator)._h5py_entity
+            summary: dict[str, Any] = {"path": locator}
+            if isinstance(entity, h5py.Dataset):
+                summary.update(
+                    kind="dataset", shape=list(entity.shape or ()), dtype=str(entity.dtype)
+                )
+            elif isinstance(entity, h5py.Group):
+                summary.update(kind="group", children=len(entity))
+            else:
+                summary["kind"] = "datatype"
+            summary["attributes"] = _short_attributes(entity.attrs)
+            return summary
+    except NotFoundError as exc:
+        raise Hdf5ViewError(404, "hdf5_path_not_found", str(exc)) from exc
+
+
+def _short_attributes(attrs: h5py.AttributeManager) -> dict[str, Any]:
+    out: dict[str, Any] = {}
+    for name in list(attrs.keys())[:SUMMARY_ATTRIBUTES]:
+        try:
+            value = attrs[name]
+        except (OSError, TypeError, ValueError):  # an unreadable attribute type
+            out[name] = "<unreadable>"
+            continue
+        if isinstance(value, bytes):
+            value = value.decode("utf-8", "replace")
+        elif isinstance(value, np.ndarray):
+            value = value.tolist() if value.size <= 8 else f"<array {list(value.shape)}>"
+        elif isinstance(value, np.generic):
+            value = value.item()
+        if isinstance(value, bytes):
+            value = value.decode("utf-8", "replace")
+        if isinstance(value, str) and len(value) > SUMMARY_TEXT_CHARS:
+            value = value[: SUMMARY_TEXT_CHARS - 1] + "…"
+        out[name] = value if isinstance(value, (str, int, float, bool, list)) else str(value)
+    return out

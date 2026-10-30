@@ -547,9 +547,9 @@ compaction.keep.last_turns: 0
 gact.context_references.browse_limit_per_kind: 20
 
 # CLIO_CONTEXT_REFERENCE_MAX_HASHABLE_BYTES  (int)  <- src/clio_agent/gact/context_references.py
-# Byte ceiling on a workspace file that may be attached as a context
-# reference; admission digests the whole file, so a larger one is refused
-# with a typed context_ref_too_large.
+# Largest workspace file a context reference pins by sha256 digest (which
+# reads every byte); a larger file is pinned by its stat revision (mtime +
+# size) instead.
 gact.context_references.max_hashable_bytes: 67108864
 
 # CLIO_CONTEXT_REFERENCE_SEARCH_LIMIT  (int)  <- src/clio_agent/gact/context_reference_search.py
