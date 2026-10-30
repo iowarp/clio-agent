@@ -8,15 +8,20 @@ gact decomposition (iowarp/clio-agent#714, #767) has landed. It walks
 * A file **not** in :data:`RATCHET_BASELINE` may not exceed
   :data:`DEFAULT_MAX_LINES` -- a brand-new god-file fails the check.
 * A file **in** :data:`RATCHET_BASELINE` (the known-oversized modules still
-  awaiting decomposition) may not exceed its *recorded* line count -- it can
-  shrink but never grow past where it is today.
+  awaiting decomposition) must match its *recorded* line count exactly:
+
+  - Grow past it ("regressed") -- fails.
+  - Sit below it ("padded") -- fails. A baseline above the real count is
+    headroom a later commit could spend without review, and it is how a single
+    commit can grow a file and raise its baseline together (#1203).
+  - Point at a file that no longer exists ("stale") -- fails, so nothing can
+    later appear at that path and inherit the old allowance.
 
 The baseline may only ratchet DOWN (house precedent:
-``check_silent_fallbacks.py::BASELINE_TOTAL``). When a file is brought under
-the cap, or merely shrinks, the check reports the ratchet-down and the same PR
-that shrank it updates :data:`RATCHET_BASELINE` (lowering the number, or
-removing the entry once the file is under ``DEFAULT_MAX_LINES``). Ratchet-down
-reports are advisory: they do not fail the build.
+``check_silent_fallbacks.py::BASELINE_TOTAL``), and every entry must be live and
+exact. The PR that shrinks a baselined file lowers its entry to the new count
+(or removes it once the file is under ``DEFAULT_MAX_LINES``); the check fails
+until it does. Same semantics as clio-kit's port of this script (kit#364).
 
 Run as part of CI (blocking) and locally::
 
@@ -38,8 +43,9 @@ DEFAULT_MAX_LINES = 800
 # Per-file ratchet baseline: the known-oversized modules at their current line
 # counts, recorded so they cannot regrow. These are the files awaiting further
 # decomposition (iowarp/clio-agent#714, #767). This mapping may only ratchet
-# DOWN -- when a file shrinks, lower its number here (or drop the entry once it
-# falls under DEFAULT_MAX_LINES) in the same change. Paths are relative to the
+# DOWN, and each entry must equal the file's real line count -- when a file
+# shrinks, lower its number here (or drop the entry once it falls under
+# DEFAULT_MAX_LINES) in the same change, or the check fails. Paths are relative to the
 # repository root and use forward slashes.
 RATCHET_BASELINE: dict[str, int] = {
     # #948 S4b: ClioAgent.agent.py dropped from its 2798-line baseline to ~723
@@ -445,7 +451,7 @@ RATCHET_BASELINE: dict[str, int] = {
     # Ratchet down 2469 -> 2467 (naming reversal): removed the now-unneeded
     # codex->chatgpt boot migration call (the provider id never changed).
     # Ratchet down 2435 -> 2419: the transcript-store boot moved to gact/transcript_file.py.
-    "src/clio_agent/gact/app.py": 1823,
+    "src/clio_agent/gact/app.py": 1820,
     # #971 GAP A (S5 live gate): the artifact mint funnel was at the 800 cap; +24
     # adds the designation-by-RESULT channel (ndp_stage_resource writes an
     # intermediate whose path rides only ``local_path`` in the result — the arg
@@ -1087,28 +1093,12 @@ SRC_ROOT = "src/clio_agent"
 
 
 class Failure(NamedTuple):
-    """A file that breaks the ratchet (fails the check)."""
+    """A file or baseline entry that breaks the ratchet (fails the check)."""
 
     rel: str
-    count: int
-    kind: str  # "new" (non-baselined over cap) or "regressed" (over recorded)
+    count: int | None  # None only for "stale": the file does not exist
+    kind: str  # "new" | "regressed" | "padded" | "stale"
     limit: int  # the cap it broke (DEFAULT_MAX_LINES or the recorded baseline)
-
-
-class RatchetDown(NamedTuple):
-    """A baselined file that shrank -- advisory, not a failure."""
-
-    rel: str
-    count: int
-    baseline: int
-    under_cap: bool  # True once count <= max_lines (drop the entry entirely)
-
-
-class Result(NamedTuple):
-    """Outcome of a scan: failures fail the build, ratchet_downs are advisory."""
-
-    failures: list[Failure]
-    ratchet_downs: list[RatchetDown]
 
 
 def _repo_root() -> Path:
@@ -1128,7 +1118,7 @@ def check_file_size(
     rel_to: Path | None = None,
     max_lines: int = DEFAULT_MAX_LINES,
     baseline: dict[str, int] | None = None,
-) -> Result:
+) -> list[Failure]:
     """Evaluate the per-file line-count ratchet under ``scan_root``.
 
     Args:
@@ -1136,21 +1126,23 @@ def check_file_size(
         rel_to: Base directory used to compute the forward-slash relative path
             that keys into ``baseline``. Defaults to ``scan_root``.
         max_lines: Cap applied to files not present in ``baseline``.
-        baseline: Per-file recorded line counts. Defaults to
+        baseline: Per-file exact recorded line counts. Defaults to
             :data:`RATCHET_BASELINE`.
 
     Returns:
-        A :class:`Result` splitting build-failing offenders from advisory
-        ratchet-down reports.
+        Every offense: a non-baselined file over the cap, a baselined file whose
+        count differs from its entry in either direction, or an entry whose
+        file no longer exists. Empty means the ratchet holds.
     """
     if baseline is None:
         baseline = RATCHET_BASELINE
     base = rel_to if rel_to is not None else scan_root
 
     failures: list[Failure] = []
-    ratchet_downs: list[RatchetDown] = []
+    seen: set[str] = set()
     for path in sorted(scan_root.rglob("*.py")):
         rel = path.relative_to(base).as_posix()
+        seen.add(rel)
         count = _count_lines(path)
         recorded = baseline.get(rel)
         if recorded is None:
@@ -1160,39 +1152,49 @@ def check_file_size(
         if count > recorded:
             failures.append(Failure(rel, count, "regressed", recorded))
         elif count < recorded:
-            ratchet_downs.append(RatchetDown(rel, count, recorded, under_cap=count <= max_lines))
-    return Result(failures=failures, ratchet_downs=ratchet_downs)
+            failures.append(Failure(rel, count, "padded", recorded))
+    for rel, recorded in baseline.items():
+        if rel not in seen:
+            failures.append(Failure(rel, None, "stale", recorded))
+    return failures
 
 
-def _print_report(result: Result, max_lines: int) -> None:
-    """Print the ratchet report (failures then advisory ratchet-downs)."""
-    for entry in result.ratchet_downs:
-        if entry.under_cap:
-            print(
-                f"OK (ratchet down): {entry.rel} is now {entry.count} lines "
-                f"(<= {max_lines}) -- remove it from RATCHET_BASELINE in "
-                "scripts/check_file_size.py."
-            )
-        else:
-            print(
-                f"OK (ratchet down): {entry.rel} shrank {entry.baseline} -> "
-                f"{entry.count} -- lower its RATCHET_BASELINE entry to "
-                f"{entry.count} in scripts/check_file_size.py."
-            )
+def _describe(entry: Failure, max_lines: int) -> str:
+    """One report line naming the offense and the edit that fixes it."""
+    if entry.kind == "new":
+        return f"{entry.rel}:{entry.count} (new file exceeds cap {entry.limit})"
+    if entry.kind == "regressed":
+        return f"{entry.rel}:{entry.count} (regressed past recorded baseline {entry.limit})"
+    if entry.kind == "stale":
+        return (
+            f"{entry.rel} (baselined at {entry.limit} lines but the file no longer "
+            "exists -- remove its RATCHET_BASELINE entry)"
+        )
+    assert entry.count is not None
+    fix = (
+        "remove its RATCHET_BASELINE entry"
+        if entry.count <= max_lines
+        else f"lower its RATCHET_BASELINE entry to {entry.count}"
+    )
+    return (
+        f"{entry.rel}:{entry.count} (baseline claims {entry.limit} but the file has "
+        f"{entry.count} lines -- {fix})"
+    )
 
-    if not result.failures:
+
+def _print_report(failures: list[Failure], max_lines: int) -> None:
+    """Print the ratchet report."""
+    if not failures:
         print(
-            f"OK: no file under {SRC_ROOT} exceeds its ratchet baseline "
-            f"(cap {max_lines} for new files)."
+            f"OK: every file under {SRC_ROOT} is within the cap ({max_lines}) or "
+            "exactly at its ratchet baseline."
         )
         return
 
-    print(f"FAIL: {len(result.failures)} file(s) break the size ratchet (#714, #774):")
-    for entry in result.failures:
-        if entry.kind == "new":
-            print(f"  {entry.rel}:{entry.count} (new file exceeds cap {entry.limit})")
-        else:
-            print(f"  {entry.rel}:{entry.count} (regressed past recorded baseline {entry.limit})")
+    print(f"FAIL: {len(failures)} entry(ies) break the size ratchet (#714, #774, #1203):")
+    for entry in failures:
+        print(f"  {_describe(entry, max_lines)}")
+    print("Baselines live in RATCHET_BASELINE in scripts/check_file_size.py.")
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -1207,13 +1209,13 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
 
     repo_root = _repo_root()
-    result = check_file_size(
+    failures = check_file_size(
         repo_root / SRC_ROOT,
         rel_to=repo_root,
         max_lines=args.max,
     )
-    _print_report(result, args.max)
-    return 1 if result.failures else 0
+    _print_report(failures, args.max)
+    return 1 if failures else 0
 
 
 if __name__ == "__main__":
