@@ -33,9 +33,9 @@ def attach_always_load_tools(
         for tool in tool_executor.to_dspy_tools()
     }
     cold = {namespace: declared_specs[namespace] for namespace in sorted(namespaces - listed)}
-    # One optional service never holds the turn: a cold one prepares in the background
-    # and joins the agent's tools once listed; a failure is a typed reason.
-    _preparing, failures = prepare_for_turn(tool_executor, cold)
+    # Only missing definitions wait. Execution startup continues independently when
+    # a valid cached listing is already present, including for non-uv launchers.
+    failures = prepare_for_turn(tool_executor, cold)
     for namespace, reason in failures.items():
         mount_failures[namespace] = reason
         logger.warning("always_load_mcp_mount_failed namespace=%s reason=%s", namespace, reason)

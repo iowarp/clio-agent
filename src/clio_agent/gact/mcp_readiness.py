@@ -60,10 +60,9 @@ def namespaces_requiring_preparation(
 ) -> set[str]:
     """Return declared namespaces whose requested tools are not listed yet.
 
-    The first model call needs only the listing (a cached one counts); a server
-    connects when a call needs it, or earlier when the session's warm-up reaches it
-    (:mod:`clio_agent.gact.session_warmup`). So a turn never waits on a connection
-    it has not used yet.
+    The first model call needs the listing (a valid cached one counts). The
+    session warm-up starts execution in parallel. Without known schemas, the turn
+    joins that connection and its live listing before composing the request.
     """
 
     del tool_executor

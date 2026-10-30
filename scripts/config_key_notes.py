@@ -1259,10 +1259,6 @@ KEY_NOTES: dict[str, str] = {
         "background when the session is created or opened or its agent changes, so the first "
         "message does not wait for them; set false to start servers only when a turn needs them."
     ),
-    "tools.mcp.turn_prepare_grace_s": (
-        "Seconds a turn waits for its agent's MCP servers that are still preparing; after it the "
-        "turn goes on and their tools join when ready (the agent can call wait_for_tools)."
-    ),
     "tools.mcp.spawn_diet": (
         "Enables the learned direct-interpreter spawn shortcut for clio-kit servers (skips ~90MB "
         "wrapper overhead); disable if it misbehaves."

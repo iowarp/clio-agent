@@ -22,6 +22,19 @@ from clio_agent.gact import session_warmup
 from clio_agent.gact.app import build_app
 
 
+@pytest.fixture(autouse=True)
+def _isolate_preparation_state() -> Any:
+    """A prior failed fake server must not affect another test's ready fleet."""
+    from clio_agent.tools import mcp_prepare
+
+    namespaces = ("geo", "ndp", "plot", "web", "user_only")
+    for namespace in namespaces:
+        mcp_prepare.forget(namespace)
+    yield
+    for namespace in namespaces:
+        mcp_prepare.forget(namespace)
+
+
 class _Executor:
     def __init__(self, specs: dict[str, Any]) -> None:
         self._clio_namespace_specs = specs

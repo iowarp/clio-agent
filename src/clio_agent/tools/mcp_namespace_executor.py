@@ -59,8 +59,9 @@ class AsyncNamespacePreparationMixin:
     def merge_namespace_tools(self, namespace: str, tools: Mapping[str, Any]) -> None:
         """Merge freshly mounted definitions into the live flat tool table.
 
-        New names bump :attr:`tools_revision`, so an agent already running picks up a
-        server that finished preparing after its turn began (``live_tool_refresh``).
+        New names bump :attr:`tools_revision`, so a connected server's later tool-list
+        changes reach its agent (``live_tool_refresh``). Initial definitions are joined
+        before the first model request.
         """
 
         del namespace

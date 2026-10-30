@@ -1367,12 +1367,6 @@ tools.mcp.spawn_diet: true
 # chain is relearned; lower to pick up upstream env changes sooner.
 tools.mcp.spawn_diet_ttl_h: 24.0
 
-# CLIO_MCP_TURN_PREPARE_GRACE_S  (float)  <- src/clio_agent/gact/mcp_background_prepare.py
-# Seconds a turn waits for its agent's MCP servers that are still preparing;
-# after it the turn goes on and their tools join when ready (the agent can
-# call wait_for_tools).
-tools.mcp.turn_prepare_grace_s: 2.0
-
 # CLIO_MCP_WORKSPACE_MAX_RESIDENT  (int)  <- src/clio_agent/tools/reaper.py
 # LRU cap on how many per-workspace MCP tool-executor fleets stay resident
 # at once; raise to keep more workspaces warm.
