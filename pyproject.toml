@@ -81,6 +81,9 @@ dependencies = [
     "packaging>=24.0",
     "requests>=2.31.0",
     "h5py>=3.10.0",
+    # The workspace file viewer's HDF5 data route (gact/hdf5_view.py): metadata and
+    # bounded slices, so a large file is never read whole.
+    "h5grove>=4.0.0",
     "pyarrow>=14.0.0",
     # Artifact table-query LTTB downsampling (gact/artifacts/lttb.py). Already present
     # transitively (matplotlib/pyarrow); declared now that first-party code imports it.

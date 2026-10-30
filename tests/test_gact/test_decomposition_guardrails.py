@@ -214,7 +214,9 @@ from clio_agent.gact.app import build_app
 # /v1/studies/{study}/table-query, the live study sources views read (Addendum B).
 # 422 -> 423: POST /v1/sessions/{sid}/mcp/{namespace}/reconnect, conversation MCP preparation.
 # 423 -> 424: GET /v1/plugins/local, private local folders and saved agent definitions.
-EXPECTED_ROUTE_METHOD_PAIRS = 424
+# 424 -> 431: the HDF5 viewer's h5grove data route (#1834), routes/workspace_h5grove.py:
+# GET+HEAD on its root plus GET meta, attr, data, stats and paths.
+EXPECTED_ROUTE_METHOD_PAIRS = 431
 
 # app.py is build_app + lifecycle + re-export shims only. The ceiling is
 # the current size (~2892 lines) plus ~300 lines of headroom so ordinary
