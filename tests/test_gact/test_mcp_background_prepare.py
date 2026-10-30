@@ -1,9 +1,4 @@
-"""Background preparation and ``wait_for_tools`` (B3).
-
-A turn never waits for a server it may not use: preparation runs in the background,
-every caller joins the one in flight, a finished preparation never keeps showing
-``preparing``, and an agent whose server is still starting can wait for it.
-"""
+"""Single-flight preparation and the first-request tool-definition barrier."""
 
 from __future__ import annotations
 
@@ -13,7 +8,6 @@ from typing import Any
 import pytest
 
 from clio_agent.gact import mcp_background_prepare as background
-from clio_agent.gact.agents import wait_for_tools
 from clio_agent.tools import mcp_prepare
 
 _BACKSTOP_S = 30.0
@@ -71,61 +65,73 @@ def test_a_failure_is_settled_typed_and_the_next_call_starts_fresh(
     assert len(attempts) == 2
 
 
-def test_a_turn_waits_only_for_the_grace_period(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_a_turn_joins_all_missing_definitions(monkeypatch: pytest.MonkeyPatch) -> None:
     release = threading.Event()
+    entered = threading.Event()
+    returned = threading.Event()
+    results: list[dict[str, str]] = []
+    # The previous zero-grace path returned without schemas. This setting must no
+    # longer allow a first model request to omit a server that is still listing.
+    monkeypatch.setenv("CLIO_MCP_TURN_PREPARE_GRACE_S", "0")
 
     def mount(executor: Any, namespace: str, spec: Any) -> dict[str, Any]:
         if namespace == "geo":
+            entered.set()
             release.wait(_BACKSTOP_S)
         return {}
 
     monkeypatch.setattr("clio_agent.gact.mcp_readiness.mount_namespace_for_session", mount)
+
+    def resolve() -> None:
+        results.append(background.prepare_for_turn(object(), {"geo": object(), "ndp": object()}))
+        returned.set()
+
+    worker = threading.Thread(target=resolve)
+    worker.start()
     try:
-        preparing, failures = background.prepare_for_turn(
-            object(), {"geo": object(), "ndp": object()}, grace_s=0.05
-        )
+        assert entered.wait(_BACKSTOP_S)
+        assert not returned.wait(0.1), "unknown schemas must settle before the request"
     finally:
         release.set()
-    assert preparing == {"geo"}
-    assert failures == {}
+        worker.join(_BACKSTOP_S)
+    assert not worker.is_alive()
+    assert results == [{}]
 
 
-def test_wait_for_tools_is_offered_for_servers_still_preparing() -> None:
-    mcp_prepare.record("geo", mcp_prepare.PREPARING, mcp_prepare.PHASE_LAUNCH)
-    mcp_prepare.record("ndp", mcp_prepare.READY, mcp_prepare.PHASE_LAUNCH)
+def test_missing_definitions_return_a_settled_failure(monkeypatch: pytest.MonkeyPatch) -> None:
+    def mount(executor: Any, namespace: str, spec: Any) -> dict[str, Any]:
+        raise FileNotFoundError("launcher")
 
-    waiting = wait_for_tools.preparing_namespaces({"geo", "ndp"}, {})
-    assert waiting == ["geo"]
-    # A namespace whose tools already reached the agent is not waited for.
-    assert wait_for_tools.preparing_namespaces({"geo"}, {"geo_x": object()}) == []
-
-    tool = wait_for_tools.build_wait_for_tools_tool(waiting)
-    assert tool.name == wait_for_tools.WAIT_FOR_TOOLS
-    assert "geo" in tool.desc
-
-
-def test_wait_for_tools_reports_each_servers_outcome() -> None:
-    mcp_prepare.record("geo", mcp_prepare.PREPARING, mcp_prepare.PHASE_LAUNCH)
-    mcp_prepare.record(
-        "ndp", mcp_prepare.FAILED, mcp_prepare.PHASE_PROVISION, reason="r", detail="why"
-    )
-    timer = threading.Timer(
-        0.05,
-        mcp_prepare.record,
-        args=("geo", mcp_prepare.READY, mcp_prepare.PHASE_LAUNCH),
-        kwargs={"tool_count": 3},
-    )
-    timer.start()
-    try:
-        result = wait_for_tools.wait_for_servers(["geo", "ndp"], _BACKSTOP_S)
-    finally:
-        timer.cancel()
-    assert result["servers"]["geo"]["state"] == "ready"
-    assert result["servers"]["geo"]["tool_count"] == 3
-    assert "next step" in result["servers"]["geo"]["note"]
-    assert result["servers"]["ndp"] == {
-        "state": "failed",
-        "phase": "provision",
-        "reason": "r",
-        "detail": "why",
+    monkeypatch.setattr("clio_agent.gact.mcp_readiness.mount_namespace_for_session", mount)
+    assert background.prepare_for_turn(object(), {"geo": object()}) == {
+        "geo": mcp_prepare.LAUNCHER_MISSING
     }
+    assert background.prepare_for_turn(object(), {}) == {}
+
+
+def test_stop_interrupts_the_wait_without_cancelling_shared_startup(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from clio_agent.errors import CancellationError
+    from clio_agent.runtime.cancellation import cancellation_checker
+
+    entered = threading.Event()
+    release = threading.Event()
+
+    def mount(executor: Any, namespace: str, spec: Any) -> dict[str, Any]:
+        entered.set()
+        assert release.wait(_BACKSTOP_S)
+        return {"geo_x": object()}
+
+    monkeypatch.setattr("clio_agent.gact.mcp_readiness.mount_namespace_for_session", mount)
+    executor = object()
+    spec = object()
+    warmup = background.prepare_in_background(executor, "geo", spec)
+    try:
+        assert entered.wait(_BACKSTOP_S)
+        with cancellation_checker(lambda: True), pytest.raises(CancellationError):
+            background.prepare_for_turn(executor, {"geo": spec})
+        assert not warmup.done() and not warmup.cancelled()
+    finally:
+        release.set()
+        assert set(warmup.result(_BACKSTOP_S)) == {"geo_x"}

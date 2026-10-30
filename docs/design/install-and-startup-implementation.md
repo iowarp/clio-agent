@@ -225,8 +225,16 @@ The same model is in the design document; it is repeated here so this plan reads
   - `GET /v1/sessions/{sid}/messages` (newest page) starts the warm-up; a request made while
     the agent is still starting runs when it is ready. Boot lists stdio servers from the cache
     only (`mcp_namespace_not_prepared_at_boot`).
-  - A turn waits at most `tools.mcp.turn_prepare_grace_s` (2 s); a server still preparing is
-    offered through `wait_for_tools` and joins the agent's tools at its next step.
+  - A turn uses valid cached definitions immediately while execution starts in parallel.
+    Missing definitions join the conversation's preparation and real `tools/list` before
+    the initial model request; the old two-second grace and `wait_for_tools` fallback are
+    removed. A server cannot be silently omitted just because startup is slow. Genuine
+    `tools/list_changed` notifications still refresh tools from connected servers.
+    This boundary uses the declared transport for any stdio launcher, HTTP or legacy SSE.
+    HTTP/OAuth listings are read over the authenticated live connection, not persisted in
+    the stdio cache or shared between accounts. Saved sign-in, refresh and logout keep
+    their existing transport and credential owners; opening a conversation never opens
+    an interactive sign-in flow.
   - `GET /v1/mcp/servers?session_id=` rows carry `status` `preparing`/`failed`, `reason` and a
     `preparation` block; `POST /v1/sessions/{sid}/mcp/{namespace}/reconnect` restarts one.
   - Still for clio-kit: `mcp-server --prepare <name>` (build the locked environment and exit 0)

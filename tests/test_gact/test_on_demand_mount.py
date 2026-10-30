@@ -1,12 +1,4 @@
-"""Plugin MCP namespaces at the agent-tool resolve seam (#1237 Gap 2a, B3).
-
-A resolved agent's plugins declare MCP servers; each server is a gateway namespace
-that contributes ALL of its tools. A namespace whose server is not listed yet is never
-a hard failure at resolve time: the resolve starts (or joins) the server's preparation
-in the background and waits only the short grace period. A server still preparing
-after that is left out without a failure -- its tools reach the agent once listed --
-and a failed preparation is a typed reason for this resolve only, never cached.
-"""
+"""Plugin MCP definitions are known before building the initial model request."""
 
 from __future__ import annotations
 
@@ -91,7 +83,7 @@ def _resolve(executor: _FakeExecutor, namespaces: list[str]) -> tuple[dict[str, 
     return _gateway_and_namespace_tools(executor, [], namespaces)
 
 
-class TestResolveDoesNotWaitForUnusedServers:
+class TestResolveObtainsInitialDefinitions:
     def test_a_listed_namespace_needs_no_start_before_the_first_model_call(self) -> None:
         executor = _FakeExecutor(
             declared_specs={"geo": _spec("geo")}, preloaded={"geo_geocode": _FakeTool("g")}
@@ -104,7 +96,61 @@ class TestResolveDoesNotWaitForUnusedServers:
         assert executor.started == []
         assert executor.prepared_namespaces == set()
 
-    def test_a_cold_namespace_prepared_within_the_grace_is_used(self) -> None:
+    def test_cached_definitions_are_used_while_execution_starts(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from clio_agent.gact.mcp_background_prepare import prepare_in_background
+
+        entered = threading.Event()
+        release = threading.Event()
+        executor = _FakeExecutor(
+            declared_specs={"geo": _spec("geo")}, preloaded={"geo_geocode": _FakeTool("g")}
+        )
+
+        def connect(namespace: str) -> None:
+            entered.set()
+            assert release.wait(_OVERLAP_BACKSTOP_S)
+            executor.prepared_namespaces.add(namespace)
+
+        monkeypatch.setattr(executor, "prepare_namespace", connect)
+        warmup = prepare_in_background(executor, "geo", executor._clio_namespace_specs["geo"])
+        try:
+            assert entered.wait(_OVERLAP_BACKSTOP_S)
+            available, failures = _resolve(executor, ["geo"])
+            assert set(available) == {"geo_geocode"}
+            assert failures == {}
+            assert not warmup.done(), "known definitions must not wait for execution startup"
+        finally:
+            release.set()
+            warmup.result(_OVERLAP_BACKSTOP_S)
+        assert executor.started == [], "a cache hit never starts a separate listing process"
+        assert executor.prepared_namespaces == {"geo"}
+
+    @pytest.mark.parametrize(
+        "spec",
+        [
+            MCPServerSpec(name="geo", transport="stdio", command="node", args=("server.js",)),
+            MCPServerSpec(name="geo", transport="stdio", command="npx", args=("-y", "server")),
+            MCPServerSpec(name="geo", transport="stdio", command="native-mcp"),
+            MCPServerSpec(name="geo", transport="http", url="https://example.test/mcp"),
+            MCPServerSpec(
+                name="geo", transport="http", url="https://example.test/sse", legacy_sse=True
+            ),
+        ],
+        ids=["node", "npx", "native", "http", "sse"],
+    )
+    def test_initial_listing_uses_the_declared_transport(self, spec: MCPServerSpec) -> None:
+        executor = _FakeExecutor(
+            declared_specs={"geo": spec},
+            preloaded={},
+            listing=lambda ns: [_FakeTool("geocode")],
+        )
+        tools, failures = _resolve(executor, ["geo"])
+        assert set(tools) == {"geo_geocode"}
+        assert failures == {}
+        assert executor.started == ["geo"]
+
+    def test_a_cold_namespace_is_listed_before_resolve_returns(self) -> None:
         executor = _FakeExecutor(
             declared_specs={"geo": _spec("geo")},
             preloaded={},
@@ -118,35 +164,45 @@ class TestResolveDoesNotWaitForUnusedServers:
         assert "geo_geocode" in executor._mcp_tools, "the merge must reach the LIVE table"
         assert executor.started == ["geo"], "one start serves the connection and the listing"
 
-    def test_a_server_still_preparing_does_not_hold_the_turn(
+    def test_a_cold_namespace_joins_warmup_before_the_first_request(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """The turn goes on without it: no tools yet, no failure, state ``preparing``.
+        from clio_agent.gact.mcp_background_prepare import prepare_in_background
 
-        **Sabotage:** wait for the preparation instead -> the resolve blocks until the
-        backstop and the release below never matters.
-        """
-        monkeypatch.setattr(
-            "clio_agent.gact.mcp_background_prepare.turn_prepare_grace_s", lambda: 0.05
-        )
+        monkeypatch.setenv("CLIO_MCP_TURN_PREPARE_GRACE_S", "0")
         release = threading.Event()
+        entered = threading.Event()
+        returned = threading.Event()
+        results: list[tuple[dict[str, Any], dict]] = []
 
         def slow(namespace: str) -> list[Any]:
+            entered.set()
             release.wait(timeout=_OVERLAP_BACKSTOP_S)
             return [_FakeTool("geocode")]
 
         executor = _FakeExecutor(declared_specs={"geo": _spec("geo")}, preloaded={}, listing=slow)
-        try:
-            available, mount_failures = _resolve(executor, ["geo"])
+        warmup = prepare_in_background(executor, "geo", executor._clio_namespace_specs["geo"])
 
-            assert available == {}
-            assert mount_failures == {}
+        def resolve() -> None:
+            results.append(_resolve(executor, ["geo"]))
+            returned.set()
+
+        worker = threading.Thread(target=resolve)
+        worker.start()
+        try:
+            assert entered.wait(_OVERLAP_BACKSTOP_S)
+            assert not returned.wait(0.1), "the first request must include the MCP schemas"
             assert mcp_prepare.is_preparing("geo")
         finally:
             release.set()
-        rows = mcp_prepare.wait_for_namespaces(["geo"], _OVERLAP_BACKSTOP_S)
-        assert rows["geo"] is not None and rows["geo"]["state"] == mcp_prepare.READY
+            worker.join(_OVERLAP_BACKSTOP_S)
+            warmup.result(_OVERLAP_BACKSTOP_S)
+        assert not worker.is_alive()
+        available, mount_failures = results[0]
+        assert set(available) == {"geo_geocode"}
+        assert mount_failures == {}
         assert "geo_geocode" in executor._mcp_tools
+        assert executor.started == ["geo"], "the turn must join the conversation's one start"
 
     def test_cold_namespaces_prepare_at_the_same_time(self) -> None:
         """Both cold servers start at once: each start is still in flight when the
