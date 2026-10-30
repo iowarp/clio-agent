@@ -48,7 +48,7 @@ def _make_transcript() -> tuple[TurnTranscript, RecordingPublisher]:
 
 def test_whitespace_only_thinking_drop_logs_warning(caplog: Any) -> None:
     transcript, publisher = _make_transcript()
-    with caplog.at_level(logging.INFO, logger="clio_agent.gact.transcript"):
+    with caplog.at_level(logging.INFO, logger="clio_agent.gact.transcript_drops"):
         transcript.append_text_delta("main", "provider_thinking:openai", "   \n")
         transcript.append_text_delta("main", "provider_thinking:openai", "  \t")
         transcript.close_open_text()
@@ -72,7 +72,7 @@ def test_whitespace_only_text_drop_stays_info(caplog: Any) -> None:
     real answer) must not start spamming WARNING."""
 
     transcript, publisher = _make_transcript()
-    with caplog.at_level(logging.INFO, logger="clio_agent.gact.transcript"):
+    with caplog.at_level(logging.INFO, logger="clio_agent.gact.transcript_drops"):
         transcript.append_text_delta("main", "answer", "   \n")
         transcript.close_open_text()
 
@@ -93,7 +93,7 @@ def test_whitespace_only_thinking_drop_audit_row_carries_part_type(
 
     audits: list[tuple[str, dict[str, Any]]] = []
     monkeypatch.setattr(
-        "clio_agent.gact.transcript.stream_audit",
+        "clio_agent.gact.transcript_drops.stream_audit",
         lambda stage, **fields: audits.append((stage, fields)),
     )
     transcript, _publisher = _make_transcript()
