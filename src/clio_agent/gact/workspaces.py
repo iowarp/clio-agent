@@ -329,6 +329,14 @@ class WorkspaceStore:
                 return ws
         return None
 
+    def root_owner(
+        self, root_path: str, *, connection_id: str = "local", exclude: str = ""
+    ) -> Optional[Workspace]:
+        """The workspace already pinning ``root_path``'s folder, if any."""
+
+        with self._lock:
+            return self._root_owner_locked(root_path, connection_id=connection_id, exclude=exclude)
+
     # ---- public API --------------------------------------------------
 
     def create(
@@ -414,7 +422,9 @@ class WorkspaceStore:
             ws = self._workspaces.get(wid)
             if ws is None:
                 return None
-            if root_path is not None:
+            # Only a real move is checked: a rename resends the current root, and a
+            # legacy duplicate must stay editable.
+            if root_path is not None and not same_root(ws.root_path, root_path):
                 existing = self._root_owner_locked(
                     root_path, connection_id=ws.connection_id, exclude=wid
                 )

@@ -18,12 +18,13 @@ from __future__ import annotations
 
 import unicodedata
 from pathlib import Path
+from typing import Any
 
 from fastapi import HTTPException
 
 from clio_agent.gact.types import ErrorEnvelope, ErrorInfo
-from clio_agent.gact.workspace_roots import WorkspaceRootConflict
-from clio_agent.gact.workspaces import workspace_display_name
+from clio_agent.gact.workspace_roots import WorkspaceRootConflict, same_root
+from clio_agent.gact.workspaces import Workspace, workspace_display_name
 
 #: Unicode categories refused in a root: controls (newline, tab) and invisible
 #: format characters (zero-width spaces, bidirectional overrides, the BOM).
@@ -133,4 +134,34 @@ def workspace_root_conflict(exc: WorkspaceRootConflict) -> HTTPException:
     )
 
 
-__all__ = ["materialize_workspace_root", "workspace_root_conflict"]
+def refuse_taken_root(store: Any, root_path: str, *, current: Workspace | None = None) -> None:
+    """Refuse a root another workspace pins before anything is created on disk.
+
+    The store checks again under its lock when it writes; this earlier check keeps
+    a refused create or move from leaving a new folder behind.
+
+    Args:
+        store: The app's ``WorkspaceStore``.
+        root_path: The requested root.
+        current: The workspace being moved, if any; its own folder is never a conflict.
+
+    Raises:
+        HTTPException: 400 ``invalid_request`` for a control or format character;
+            409 ``workspace_root_conflict`` naming the owning workspace.
+    """
+
+    if not root_path:
+        return
+    _reject_control_characters(root_path)  # first: a NUL byte cannot even be resolved
+    if current is not None and same_root(current.root_path, root_path):
+        return
+    existing = store.root_owner(
+        root_path,
+        connection_id=current.connection_id if current is not None else "local",
+        exclude=current.id if current is not None else "",
+    )
+    if existing is not None:
+        raise workspace_root_conflict(WorkspaceRootConflict(root_path, existing))
+
+
+__all__ = ["materialize_workspace_root", "refuse_taken_root", "workspace_root_conflict"]
