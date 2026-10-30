@@ -380,7 +380,12 @@ def install_transcript_error_handler(app: "FastAPI") -> None:
     from fastapi.responses import JSONResponse  # noqa: PLC0415
 
     from clio_agent.arc.lane_generations import LaneReplaceError  # noqa: PLC0415
+    from clio_agent.gact.transcript_unreadable import (  # noqa: PLC0415
+        install_unreadable_transcript_handler,
+    )
     from clio_agent.gact.types import ErrorEnvelope, ErrorInfo  # noqa: PLC0415
+
+    install_unreadable_transcript_handler(app)  # LedgerReadError -> 503 (#1172)
 
     @app.exception_handler(TranscriptNotReadyError)
     async def _transcript_not_ready(_request: object, exc: TranscriptNotReadyError) -> JSONResponse:

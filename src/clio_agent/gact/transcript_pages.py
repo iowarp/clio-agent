@@ -40,6 +40,7 @@ from clio_agent.gact.part_atoms import (
     reproduce_message_wire,
     retracted_part_ids,
 )
+from clio_agent.gact.transcript_unreadable import typed_transcript_read
 from clio_agent.gact.types import Message
 from clio_agent.runtime.stream_audit import stream_audit
 
@@ -199,7 +200,8 @@ def read_message_page(
     """The page from the resident copy or the lane; ``None`` means page the full ledger.
 
     Runs off the event loop (it may wait for the lane lock and read clio-core).
-    Raises :class:`PageCursorNotFound` for an unknown ``before``.
+    Raises :class:`PageCursorNotFound` for an unknown ``before``, and
+    :class:`~clio_agent.gact.messages.LedgerReadError` for an unreadable lane.
     """
 
     from clio_agent.gact.transcript_file import _canonical_log_arc  # noqa: PLC0415
@@ -218,9 +220,10 @@ def read_message_page(
         )
         return None
     arc = _canonical_log_arc(app, session_id)  # typed not-ready errors while attaching
-    page = read_lane_page(
-        arc, session_id, limit=limit, before=before, include_system=include_system
-    )
+    with typed_transcript_read(session_id):  # #1172: an unreadable lane is a typed 503
+        page = read_lane_page(
+            arc, session_id, limit=limit, before=before, include_system=include_system
+        )
     history = getattr(app.state, "task_history", None)
     if history is not None:
         from clio_agent.gact.session_store import project_committed_feedback  # noqa: PLC0415
