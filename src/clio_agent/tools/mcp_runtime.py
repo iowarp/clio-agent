@@ -477,8 +477,8 @@ def make_mcp_client(
             push-forwarding. ``None`` (the default) leaves the whole advertisement
             SDK-derived.
         client_cls: Injection seam for the client class. Defaults to
-            ``TaskAwareClient``; tests substitute a fake to inspect the
-            construction without spawning a real backend.
+            ``fastmcp.Client`` (``TaskAwareClient`` needs an acceptor, so task owners
+            build it directly); tests substitute a fake to inspect construction.
         server_id: #1201 -- when non-empty, the constructed client is
             instrumented (:func:`clio_agent.tools.mcp_connection_era.
             instrument_client_era`) so its connect-time protocol era is
@@ -522,6 +522,9 @@ def make_mcp_client(
     # Resolve once for SDK clients. Custom client adapters retain responsibility
     # for their own target interpretation. Extensions must hold the same transport
     # as the SDK, including its server-session identity, rather than a URL string.
+    # Importing fastmcp_tasks registers FastMCP's internal tasks client extension;
+    # without it the tasks ad depends on some other module having imported it (#1841).
+    import fastmcp_tasks  # noqa: F401, PLC0415
     from fastmcp import Client
     from fastmcp.client.transports import infer_transport
 
