@@ -10,7 +10,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from clio_agent.gact.app import build_app
-from tests.test_gact.test_post_messages import FakeClioAgent, SlowClioAgent
+from tests.test_gact.test_post_messages import BlockingClioAgent, FakeClioAgent, SlowClioAgent
 
 pytestmark = pytest.mark.usefixtures("host_agent_executor")
 
@@ -179,7 +179,9 @@ def test_queue_routes_keep_future_messages_out_of_transcript_until_promoted(
 
 
 def test_queue_head_starts_automatically_when_active_turn_becomes_idle(tmp_path: Path) -> None:
-    agent = SlowClioAgent(delay_s=0.15)
+    """Release a known active turn after its successor is durably queued."""
+    # Hold the state transition explicitly; a 150 ms sleep can end before enqueue on CI.
+    agent = BlockingClioAgent(timeout_s=15.0)
     app = build_app(
         sessions_path=tmp_path / "sessions.json",
         agent=agent,
@@ -192,23 +194,34 @@ def test_queue_head_starts_automatically_when_active_turn_becomes_idle(tmp_path:
         )
         assert started.status_code == 202, started.text
         assert started.json()["task_handle"]
-        queued = client.post(
-            f"/v1/sessions/{sid}/queued-messages",
-            json={
-                "text": "next turn",
-                "client_message_id": "msg_auto_queue_next",
-                "idempotency_key": "auto-queue-next",
-            },
-        )
-        assert queued.status_code == 201, queued.text
+        try:
+            assert agent.entered.wait(timeout=10.0), "The first turn never reached the model"
+            queued = client.post(
+                f"/v1/sessions/{sid}/queued-messages",
+                json={
+                    "text": "next turn",
+                    "client_message_id": "msg_auto_queue_next",
+                    "idempotency_key": "auto-queue-next",
+                },
+            )
+            assert queued.status_code == 201, queued.text
+            assert len(agent.calls) == 1
+            pending = client.get(f"/v1/sessions/{sid}/queued-messages").json()["queued_messages"]
+            assert [row["id"] for row in pending] == [queued.json()["id"]]
+        finally:
+            agent.release.set()
 
-        deadline = time.monotonic() + 4
+        # This bounds asynchronous integration work, not a startup performance target.
+        deadline = time.monotonic() + 10
         while time.monotonic() < deadline:
             rows = client.get(f"/v1/sessions/{sid}/queued-messages").json()["queued_messages"]
             if not rows and len(agent.calls) >= 2:
                 break
             time.sleep(0.02)
 
+        assert len(agent.calls) == 2, (
+            f"Queued input never ran: calls={agent.calls!r}, queue={rows!r}"
+        )
         assert agent.calls[0][0] == "first turn"
         # Earlier turns reach the model through its projection, never the question.
         assert agent.calls[1][0] == "next turn"
