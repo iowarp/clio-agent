@@ -679,19 +679,26 @@ def test_default_workspace_setting_never_repoints_an_existing_ws_default(
 
 
 @pytest.mark.parametrize(
-    ("character", "code_point"), [("\n", "U+000A"), ("\t", "U+0009"), ("\x00", "U+0000")]
+    ("character", "code_point"),
+    [
+        ("\n", "U+000A"),
+        ("\t", "U+0009"),
+        ("\x00", "U+0000"),
+        ("\u200b", "U+200B"),
+        ("\u202e", "U+202E"),
+    ],
 )
 def test_create_workspace_rejects_control_character_root(
     tmp_path: Path, character: str, code_point: str
 ) -> None:
-    """#1193: a control character in the root is a typed 422; nothing persists or is made."""
+    """#1193: a control or format character in the root is a typed 400; nothing is made."""
     c = _client(tmp_path)
     before = {w["id"] for w in c.get("/v1/workspaces").json()["workspaces"]}
     root = f"{tmp_path / 'clio-runs'}{character}dp"
 
     response = c.post("/v1/workspaces", json={"name": "poisoned", "root_path": root})
 
-    assert response.status_code == 422
+    assert response.status_code == 400
     envelope = response.json()["error"]
     assert envelope["error"] == "invalid_request"
     assert envelope["details"] == {
@@ -714,6 +721,18 @@ def test_patch_workspace_rejects_control_character_root(tmp_path: Path) -> None:
 
     response = c.patch(f"/v1/workspaces/{wid}", json={"root_path": f"{tmp_path}/a\nb"})
 
-    assert response.status_code == 422
+    assert response.status_code == 400
     assert response.json()["error"]["details"]["character"] == "U+000A"
     assert c.get(f"/v1/workspaces/{wid}").json()["root_path"] == str(original)
+
+
+def test_create_workspace_strips_root_whitespace(tmp_path: Path) -> None:
+    """POST trims surrounding whitespace from the root, as PATCH already does."""
+    c = _client(tmp_path)
+    root = tmp_path / "trimmed"
+
+    response = c.post("/v1/workspaces", json={"name": "trimmed", "root_path": f"  {root} \n"})
+
+    assert response.status_code == 201
+    assert response.json()["root_path"] == str(root)
+    assert root.is_dir()

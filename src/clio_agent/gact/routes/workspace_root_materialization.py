@@ -20,20 +20,26 @@ from fastapi import HTTPException
 from clio_agent.gact.types import ErrorEnvelope, ErrorInfo
 
 
+#: Unicode categories refused in a root: controls (newline, tab) and invisible
+#: format characters (zero-width spaces, bidirectional overrides, the BOM).
+_REFUSED_CATEGORIES = frozenset({"Cc", "Cf"})
+
+
 def _reject_control_characters(root_path: str) -> None:
-    """Refuse a root containing a control character with a typed 422.
+    """Refuse a root containing a control or format character with a typed 400.
 
     A newline or tab in a root is almost always client-side escape mangling, and
-    POSIX will happily create the mangled directory. Every later consumer (MCP
-    fleet cwd, artifact writes) then fails with an error that does not mention
-    the root (#1193).
+    POSIX will happily create the mangled directory; an invisible format
+    character makes two roots look identical. Every later consumer (MCP fleet
+    cwd, artifact writes) then fails with an error that does not mention the
+    root (#1193). Same status and error code as the mkdir failure below.
     """
 
     for index, char in enumerate(root_path):
-        if unicodedata.category(char) == "Cc":
+        if unicodedata.category(char) in _REFUSED_CATEGORIES:
             code_point = f"U+{ord(char):04X}"
             raise HTTPException(
-                status_code=422,
+                status_code=400,
                 detail=ErrorEnvelope(
                     error=ErrorInfo(
                         error="invalid_request",
@@ -60,10 +66,10 @@ def materialize_workspace_root(root_path: str) -> None:
             no-op -- a workspace may legitimately pin nothing.
 
     Raises:
-        HTTPException: 422 ``invalid_request`` naming the code point and index
-            when ``root_path`` contains a control character; 400
-            ``invalid_request`` carrying the offending ``root_path`` and the OS
-            ``reason`` when the directory cannot be created.
+        HTTPException: 400 ``invalid_request`` naming the code point and index
+            when ``root_path`` contains a control or format character, or
+            carrying the offending ``root_path`` and the OS ``reason`` when the
+            directory cannot be created.
     """
 
     if not root_path:
