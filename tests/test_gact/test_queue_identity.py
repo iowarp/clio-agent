@@ -324,7 +324,8 @@ def test_queue_reference_preflight_cannot_commit_after_its_workspace_changes(
     root.mkdir()
     (root / "input.txt").write_text("private original workspace", encoding="utf-8")
     app.state.workspaces.update("ws_default", root_path=str(root))
-    target = app.state.workspaces.create(name="replacement", root_path=str(tmp_path / "other"))
+    # The scope change: the workspace moves to a folder no other workspace pins (#1771).
+    moved = tmp_path / "other"
     endpoint = f"/v1/sessions/{sid}/queued-messages"
     before: list[dict[str, Any]] = []
     body: dict[str, Any] = {
@@ -349,7 +350,7 @@ def test_queue_reference_preflight_cannot_commit_after_its_workspace_changes(
             assert removed.status_code == 204, removed.text
             pending_after_deletion = app.state.task_history.pending_mail(sid)
         else:
-            app.state.workspaces.update("ws_default", root_path=target.root_path)
+            app.state.workspaces.update("ws_default", root_path=str(moved))
         return canonical
 
     monkeypatch.setattr(

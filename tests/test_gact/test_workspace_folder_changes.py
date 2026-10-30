@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import dataclasses
 from collections.abc import Iterator
 from pathlib import Path
 from unittest.mock import Mock
@@ -14,10 +13,11 @@ from clio_agent.gact.app import build_app
 from clio_agent.gact.runtime import grants
 from clio_agent.gact.runtime.globals import _gact_app_context, _tool_session_context
 from clio_agent.gact.types import Message, Part
-from clio_agent.gact.workspaces import Workspace, WorkspaceStore
+from clio_agent.gact.workspaces import WorkspaceStore
 from clio_agent.runtime import sandbox_roots
 from clio_agent.tools.execution import get_active_tool_workspace_root, tool_workspace_context
 from clio_agent.tools.file_policy import FileAccessPolicy, FilePolicyError
+from tests._workspace_rows import legacy_duplicate
 
 
 @pytest.fixture(autouse=True)
@@ -155,29 +155,12 @@ def test_additional_folder_survives_reload_and_revocation_denies_access(tmp_path
     )
 
 
-def _legacy_duplicate(app, original: Workspace, name: str) -> Workspace:  # noqa: ANN001
-    """A second workspace on the same folder, as stores written before #1771 hold it.
-
-    ``create`` now refuses a taken folder, but such rows still load, so the grant
-    bookkeeping for a shared folder still has to hold.
-    """
-
-    store = app.state.workspaces
-    duplicate = dataclasses.replace(
-        original, id=f"ws_{name}", name=name, display_name=name, config=dict(original.config)
-    )
-    with store._lock:
-        store._workspaces[duplicate.id] = duplicate
-        store._flush()
-    return duplicate
-
-
 def test_repointing_does_not_revoke_another_workspace_grant(tmp_path: Path) -> None:
     app = build_app(sessions_path=tmp_path / "sessions.json")
     client = TestClient(app)
     root = tmp_path / "shared-primary"
     first = app.state.workspaces.create(name="first", root_path=str(root))
-    second = _legacy_duplicate(app, first, "second")
+    second = legacy_duplicate(app, first, "second")
     shared = tmp_path / "shared-extra"
     only_first = tmp_path / "first-extra"
     grants.apply_root_grant(app, first.id, str(shared))
@@ -264,7 +247,7 @@ def test_revocation_keeps_another_workspace_owner_at_the_same_primary(tmp_path: 
     app = build_app(sessions_path=tmp_path / "sessions.json")
     primary, additional = tmp_path / "primary", tmp_path / "additional"
     first = app.state.workspaces.create(name="first", root_path=str(primary))
-    second = _legacy_duplicate(app, first, "second")
+    second = legacy_duplicate(app, first, "second")
     grants.apply_root_grant(app, first.id, str(additional))
     grants.apply_root_grant(app, second.id, str(additional))
     response = TestClient(app).delete(
@@ -297,7 +280,7 @@ def test_renaming_a_legacy_duplicate_resends_its_root_without_conflict(tmp_path:
     app = build_app(sessions_path=tmp_path / "sessions.json")
     root = tmp_path / "shared"
     first = app.state.workspaces.create(name="first", root_path=str(root))
-    second = _legacy_duplicate(app, first, "second")
+    second = legacy_duplicate(app, first, "second")
 
     response = TestClient(app).patch(
         f"/v1/workspaces/{second.id}", json={"name": "renamed", "root_path": str(root)}

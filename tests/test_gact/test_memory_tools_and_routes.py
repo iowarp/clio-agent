@@ -205,7 +205,7 @@ def test_memory_off_withholds_the_tools_and_the_snapshot(client: TestClient) -> 
 
 def test_a_workspace_without_account_memory_sees_only_its_project(client: TestClient) -> None:
     app = client.app
-    workspace = app.state.workspaces.create(name="lab", root_path=str(Path.cwd()))
+    workspace = app.state.workspaces.create(name="lab")
     resp = client.put(f"/v1/workspaces/{workspace.id}/memory", json={"use_account_memory": False})
     assert resp.json() == {"use_account_memory": False}
     session = app.state.sessions.create(workspace_id=workspace.id, title="t")
@@ -281,7 +281,7 @@ def test_manual_memory_creation_is_user_authored_and_logged_without_a_model(
     assert any(row["state"] == "failed" for row in manual_rows)
     assert "background" in runs and runs["next_cursor"] is None
 
-    workspace = client.app.state.workspaces.create(name="memory-project", root_path=str(Path.cwd()))
+    workspace = client.app.state.workspaces.create(name="memory-project")
     project = client.post(
         "/v1/memory/documents",
         json={
