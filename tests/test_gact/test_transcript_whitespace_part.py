@@ -88,3 +88,18 @@ def test_whitespace_thinking_before_a_tool_call_leaves_no_trace() -> None:
     assert part.type == "thinking" and part.text == "Real reasoning"
     added = publisher.of_type("message.part.added")
     assert [payload["part"]["id"] for _, payload in added] == [part.id]
+
+
+def test_reload_shows_only_parts_live_clients_were_told_about() -> None:
+    """A mid-stream reload reads ``live_parts_alias``; it must match the live stream."""
+    transcript, publisher = make_transcript()
+    alias = transcript.live_parts_alias()
+    transcript.append_text_delta("main", "provider_thinking:anthropic", " \n")
+
+    assert alias == []
+    assert publisher.of_type("message.part.added") == []
+
+    transcript.append_text_delta("main", "provider_thinking:anthropic", "Checking the data.")
+
+    ((_, added),) = publisher.of_type("message.part.added")
+    assert [part.id for part in alias] == [added["part"]["id"]]

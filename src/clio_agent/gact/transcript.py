@@ -472,7 +472,6 @@ class TurnTranscript:
                     },
                 )
                 self._reasoning_clock.start(part)
-                self._parts.append(part)
                 self._buffers[part.id] = []
                 self._open_part = part
                 self._open_agent = agent_id
@@ -485,7 +484,8 @@ class TurnTranscript:
             if not self._open_announced:
                 if not chunk.strip():
                     return
-                # First real content: announce, then send everything held so far.
+                # First real content: join the ledger (reload sees it), announce, send all held.
+                self._parts.append(part)
                 self._open_announced = True
                 chunk = "".join(self._buffers[part.id])
                 self._publisher.publish(
