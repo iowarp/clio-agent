@@ -36,9 +36,11 @@ from h5grove.content import (
     DatatypeContent,
     ExternalLinkContent,
     GroupContent,
+    ResolvedEntityContent,
     SoftLinkContent,
 )
-from h5grove.utils import parse_slice
+from h5grove.encoders import encode
+from h5grove.utils import NotFoundError, QueryArgumentError, hdf_path_join, parse_slice
 
 MAX_LINK_HOPS = 32
 
@@ -221,3 +223,56 @@ def check_readable(dataset: h5py.Dataset, selection: str | None, roots: Roots, m
                 "hdf5_virtual_source_outside_workspace",
                 f"{dataset.name} reads from a file outside the workspace",
             )
+
+
+def respond(
+    target: Path, roots: Roots, endpoint: str, params: dict[str, Any], max_bytes: int
+) -> tuple[bytes, dict[str, str]]:
+    """Answer one h5grove ``endpoint`` for ``target``: the encoded body and its headers."""
+
+    path = params.get("path") or "/"
+    try:
+        with open_view(target, roots) as walk:
+            if endpoint == "meta":
+                return _encoded(walk.content(path).metadata(), "json")
+            if endpoint == "attr":
+                return _encoded(_resolved(walk, path).attributes(params.get("attr_keys")), "json")
+            if endpoint == "paths":
+                return _encoded(_paths(walk, path), "json")
+            selection = params.get("selection")
+            content = _resolved(walk, path)
+            if not isinstance(content, DatasetContent):
+                raise Hdf5ViewError(422, "hdf5_not_a_dataset", f"{path} is not a dataset")
+            check_readable(content._h5py_entity, selection, roots, max_bytes)
+            if endpoint == "stats":
+                return _encoded(content.data_stats(selection), "json")
+            data = content.data(selection, params.get("flatten", False), params.get("dtype"))
+            return _encoded(data, params.get("format", "json"))
+    except NotFoundError as exc:
+        raise Hdf5ViewError(404, "hdf5_path_not_found", str(exc)) from exc
+    except (QueryArgumentError, ValueError, TypeError) as exc:
+        raise Hdf5ViewError(422, "hdf5_invalid_query", str(exc)) from exc
+
+
+def _encoded(content: Any, encoding: str | None) -> tuple[bytes, dict[str, str]]:
+    encoded = encode(content, encoding)
+    return encoded.content, dict(encoded.headers)
+
+
+def _resolved(walk: _Walk, path: str) -> ResolvedEntityContent:
+    content = walk.content(path)
+    if not isinstance(content, ResolvedEntityContent):
+        raise Hdf5ViewError(
+            403, "hdf5_link_outside_workspace", f"{path} is a link that cannot be followed"
+        )
+    return content
+
+
+def _paths(walk: _Walk, path: str) -> list[str]:
+    group = _resolved(walk, path)._h5py_entity
+    if not isinstance(group, h5py.Group):
+        raise Hdf5ViewError(422, "hdf5_not_a_group", f"{path} is not a group")
+    names = [path]
+    # Link names only: listing never follows a link, so nothing leaves the file.
+    group.id.links.visit(lambda name: names.append(hdf_path_join(path, name.decode())))
+    return names
