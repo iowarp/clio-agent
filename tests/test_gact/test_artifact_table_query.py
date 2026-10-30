@@ -1625,7 +1625,9 @@ def test_build_app_survives_a_racing_dspy_import_in_a_fresh_process(tmp_path: Pa
         "app = build_app(sessions_path=None, arc=arc)\n"
         "t.join(timeout=30)\n"
         "client = TestClient(app)\n"
-        "ws = client.post('/v1/workspaces', json={'name': 'race', 'root_path': str(__import__('pathlib').Path.cwd())}).json()['id']\n"
+        "made = client.post('/v1/workspaces', json={'name': 'race', 'root_path': str(__import__('pathlib').Path.cwd())})\n"
+        # ws_default already pins the cwd; one workspace per folder, so use it.
+        "ws = made.json()['error']['details']['workspace_id'] if made.status_code == 409 else made.json()['id']\n"
         "sid = client.post('/v1/sessions', json={'workspace_id': ws}).json()['id']\n"
         "import tempfile, os\n"
         "fd, path = tempfile.mkstemp(suffix='.csv', dir=os.getcwd())\n"

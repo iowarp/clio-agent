@@ -85,17 +85,20 @@ def test_workspace_exposes_default_and_configured_storage_root(tmp_path: Path) -
     assert not custom.exists()
     assert list(project.iterdir()) == []
 
+    # A workspace per folder (gact-tui#219), so the legacy client gets its own.
+    legacy_project = tmp_path / "legacy-project"
+    legacy_project.mkdir()
     legacy = c.post(
         "/v1/workspaces",
         json={
             "name": "legacy-client",
-            "root_path": str(project),
-            "storage_root": str(project / ".clio"),
+            "root_path": str(legacy_project),
+            "storage_root": str(legacy_project / ".clio"),
         },
     )
     assert legacy.status_code == 201
-    assert legacy.json()["storage_root"] == str(workspace_state_dir(project))
-    assert list(project.iterdir()) == []
+    assert legacy.json()["storage_root"] == str(workspace_state_dir(legacy_project))
+    assert list(legacy_project.iterdir()) == []
 
 
 # The per-workspace session/message mirror was DELETED in #771 (reader-less,
