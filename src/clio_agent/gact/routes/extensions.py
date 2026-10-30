@@ -5,9 +5,7 @@ from __future__ import annotations
 import asyncio
 import base64
 import binascii
-import io
 import json
-import zipfile
 from typing import Any
 
 import httpx
@@ -23,6 +21,7 @@ from clio_agent.plugins.local import (
     archive_files,
     create_local,
 )
+from clio_agent.plugins.local_export import LocalExportError, export_local_marketplace
 from clio_agent.plugins.store import StoreError
 
 
@@ -48,6 +47,39 @@ def register_extension_routes(app: FastAPI) -> None:
     @app.post("/v1/plugins/local", status_code=201)
     async def local(request: Request) -> dict[str, Any]:
         return await install(await json_body(request, route="Create local extension"))
+
+    @app.get("/v1/plugins/local")
+    async def local_library() -> dict[str, Any]:
+        """Locate the private collection and read saved agents without installing sources."""
+        store = plugin_service(app).store
+
+        def inventory() -> dict[str, Any]:
+            with store.lock:
+                root = store.root.resolve()
+                agents_directory = root / "user-agents"
+                return {
+                    "root": str(root),
+                    "agents_directory": str(agents_directory),
+                    "plugins_directory": str(root / "local" / PRIVATE_MARKETPLACE / "plugins"),
+                    "agents": [
+                        {
+                            "ref": ref,
+                            "path": str(agents_directory / f"{agent.id}.json"),
+                            "definition": agent.to_dict(),
+                        }
+                        for ref, agent in store.user_agents().items()
+                        # Never report a derived path outside the agent directory.
+                        if (agents_directory / f"{agent.id}.json").resolve().parent
+                        == agents_directory
+                    ],
+                }
+
+        try:
+            return await asyncio.to_thread(inventory)
+        except OSError:
+            raise HTTPException(
+                409, "The agent host could not read the private collection"
+            ) from None
 
     @app.post("/v1/plugins/upload", status_code=201)
     async def upload(request: Request, name: str, kind: str = "") -> dict[str, Any]:
@@ -79,31 +111,14 @@ def register_extension_routes(app: FastAPI) -> None:
         """Export portable source files for an explicit, user-managed GitHub backup."""
         service = plugin_service(app)
 
-        def archive() -> bytes:
-            root = service.store.root / "local" / PRIVATE_MARKETPLACE
-            with service.store.lock:
-                if not root.is_dir():
-                    raise HTTPException(404, "Create a local skill or plugin first")
-                output = io.BytesIO()
-                size = 0
-                with zipfile.ZipFile(output, "w", compression=zipfile.ZIP_DEFLATED) as zipped:
-                    for path in sorted(root.rglob("*")):
-                        if path.is_symlink() or not path.resolve().is_relative_to(root.resolve()):
-                            raise HTTPException(
-                                409, "The local marketplace contains an external link"
-                            )
-                        if path.is_file():
-                            size += path.stat().st_size
-                            if size > 16 * MAX_BYTES:
-                                raise HTTPException(
-                                    413,
-                                    "Use the marketplace folder to back up this larger collection",
-                                )
-                            zipped.write(path, path.relative_to(root).as_posix())
-                return output.getvalue()
-
+        try:
+            content = await asyncio.to_thread(export_local_marketplace, service)
+        except LocalExportError as exc:
+            raise HTTPException(exc.status, str(exc)) from None
+        except (ValueError, LookupError, OSError) as exc:
+            raise HTTPException(409, f"The local collection could not be exported: {exc}") from None
         return Response(
-            await asyncio.to_thread(archive),
+            content,
             media_type="application/zip",
             headers={"Content-Disposition": 'attachment; filename="private-local-marketplace.zip"'},
         )
