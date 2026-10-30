@@ -6,6 +6,17 @@ TUI/HTTP surface aren't tracked here.
 
 ## Unreleased
 
+### Added
+
+- The workspace file viewer opens HDF5 files: `GET /v1/workspaces/{wid}/h5grove/`
+  `meta`, `attr`, `data`, `stats` and `paths` serve h5grove's API from clio-agent
+  itself (new dependency `h5grove`), advertised as `x_clio_hdf5_viewer`. Files
+  resolve as `/files/read` does, without its whole-file size cap; each slice is
+  bounded instead (`413 hdf5_selection_too_large`). External links, soft links and
+  virtual datasets are followed only into the workspace
+  (`403 hdf5_link_outside_workspace`, `hdf5_virtual_source_outside_workspace`)
+  (#1834).
+
 ### Changed
 
 - `get_task_result` returns a result too big to inline as a file: `result` is
