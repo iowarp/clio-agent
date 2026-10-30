@@ -521,7 +521,8 @@ RATCHET_BASELINE: dict[str, int] = {
     # merge DECISION itself is a one-line call into the owner module
     # ``artifacts/dedup_enrichment.py`` (``merged_annotation``) — only the
     # threading landed here. Ratchets back with the #714 decomposition.
-    "src/clio_agent/gact/routes/artifacts.py": 903,  # Shared artifact hashing helper reused
+    # #1199: the session-scoping predicate moved to artifacts/registry_index.py (903 -> 897).
+    "src/clio_agent/gact/routes/artifacts.py": 897,  # Shared artifact hashing helper reused
     # merge(main->develop): +2 blueprints, +63 catalog, +54 mcp integrating main's
     # #956 MCP-apps runtime tool exposure (runtime MCP tools surfaced in the GACT
     # catalog + reconnect/streamable-http route growth). Part of the #947 MCP-apps
