@@ -31,6 +31,7 @@ from __future__ import annotations
 import asyncio
 import json
 import re
+from datetime import datetime, timedelta, timezone
 from typing import Any
 
 from clio_agent.flows import limits
@@ -43,7 +44,15 @@ from clio_agent.flows.outcomes import (
     FlowTargetUnknown,
 )
 from clio_agent.flows.values import CallResult
+from clio_agent.flows.workflow_fold import (
+    STALL_PREDICATE_UNSATISFIED,
+    STALL_STEP_TIMEOUT,
+    STALL_TIMEOUT_REQUIRES_TASK,
+    deadline_cancelled,
+    fold_workflow_state,
+)
 from clio_agent.sdk import Flow, Step, Workflow, WorkflowError
+from clio_agent.sdk.workflow import evaluate_when_state
 
 _EDIT_TOOLS = ("workflow_add_step", "workflow_cancel_step")
 
@@ -151,6 +160,7 @@ class _WorkflowRun:
     def __init__(self, ctx: Any, workflow: Workflow, spec: dict[str, Any]) -> None:
         self.ctx = ctx
         self.task = spec.get("task", "")
+        self.max_concurrency = workflow.max_concurrency
         self.steps: dict[str, Step] = {step.id: step for step in workflow.steps}
         self.editors = {str(e) for e in spec.get("editors") or ()}
         self.asked = (_bound(spec.get("max_added_steps")), _bound(spec.get("max_edit_rounds")))
@@ -175,13 +185,60 @@ class _WorkflowRun:
         self.forks: dict[str, dict[str, Any]] = {}
 
     # ------------------------------------------------------------ helpers
-    def _ready(self) -> list[Step]:
+    def _eligible(self) -> list[Step]:
         return [
             step
             for step_id, step in self.steps.items()
             if self.status[step_id] == "pending"
             and all(self.status.get(dep) == "completed" for dep in step.after)
         ]
+
+    def _dependency_state(self, step: Step) -> dict[str, Any]:
+        """The fold of this step's dependencies, in definition order.
+
+        The gate reads only those steps. An unrelated sibling that finishes first
+        must not change whether this step starts: replay settles calls in
+        definition order, and a live run does not.
+        """
+
+        wanted = set(step.after)
+        ordered = [
+            self.results[step_id]
+            for step_id in self.steps
+            if step_id in wanted and step_id in self.results
+        ]
+        state, _, _ = fold_workflow_state(ordered)
+        return state
+
+    def _ready(self) -> list[Step]:
+        return [
+            step
+            for step in self._eligible()
+            if evaluate_when_state(step.predicates, self._dependency_state(step)).satisfied
+        ]
+
+    def _predicate_wait(self) -> tuple[Step, Any] | None:
+        for step in self._eligible():
+            gate = evaluate_when_state(step.predicates, self._dependency_state(step))
+            if not gate.satisfied:
+                return step, gate
+        return None
+
+    async def _fold_state(self, *, record: bool) -> None:
+        """Replace the run's merged state from completed steps, in definition order."""
+
+        ordered: list[Any] = []
+        indexes: list[int] = []
+        for index, step_id in enumerate(self.steps):
+            if self.status.get(step_id) == "completed" and step_id in self.results:
+                ordered.append(self.results[step_id])
+                indexes.append(index)
+        state, _, conflicts = fold_workflow_state(ordered, indexes)
+        self.ctx.workflow_state = state
+        self.ctx.conflicts = conflicts
+        if record:
+            for conflict in conflicts:
+                await self.ctx.record_event({"event": "workflow_state_conflict", **conflict})
 
     def _blocked(self) -> list[str]:
         """Pending steps that can never run: a dependency failed or was cancelled."""
@@ -282,24 +339,47 @@ class _WorkflowRun:
                 for step_id in blocked:
                     self.status[step_id] = "cancelled"
                     await self.ctx.record_event({"event": "step_skipped", "step": step_id})
+            cap = self.max_concurrency
             for step in self._ready():
+                if cap and len(running) >= cap:
+                    break
                 self.status[step.id] = "running"
                 running[asyncio.ensure_future(self._run_step(step))] = step.id
             if not running:
+                waiting = self._predicate_wait()
+                if waiting is not None:
+                    step, gate = waiting
+                    await self._fold_state(record=True)
+                    raise FlowStall(
+                        STALL_PREDICATE_UNSATISFIED,
+                        f"workflow step {step.id!r} is waiting on a state predicate that does not hold",
+                        step=step.id,
+                        predicate=gate.predicate,
+                        observed=gate.observed,
+                    )
                 break
             done, _ = await asyncio.wait(running, return_when=asyncio.FIRST_COMPLETED)
             for future in sorted(done, key=lambda f: list(self.steps).index(running[f])):
                 step_id = running.pop(future)
                 await self._settle(step_id, future)
+        await self._fold_state(record=True)
         failed = [n for n, s in self.status.items() if s == "failed"]
         await self._publish()
         if self.cancelled and not failed:
             raise self.cancelled[0]
         if failed:
             step_id = failed[0]
+            recorded = self.errors.get(step_id, {})
+            stall = recorded.get("stall") or "step_failed"
+            if stall == STALL_STEP_TIMEOUT:
+                message = f"workflow step {step_id!r} reached its deadline"
+            elif stall == "step_failed":
+                message = f"workflow step {step_id!r} failed and no editor repaired it"
+            else:
+                message = str(recorded.get("message") or f"workflow step {step_id!r} stalled")
             raise FlowStall(
-                "step_failed",
-                f"workflow step {step_id!r} failed and no editor repaired it",
+                stall,
+                message,
                 step=step_id,
                 observed={"error": self.errors.get(step_id), "workflow": self.summary()},
                 handle=self.handles.get(step_id, ""),
@@ -335,6 +415,7 @@ class _WorkflowRun:
             **(
                 {"workflow_state": dict(self.ctx.workflow_state)} if self.ctx.workflow_state else {}
             ),
+            **({"conflicts": list(self.ctx.conflicts)} if self.ctx.conflicts else {}),
         }
 
     async def _run_step(self, step: Step) -> Any:
@@ -363,6 +444,22 @@ class _WorkflowRun:
             )
         target = Flow(step.target, **step.options) if step.options else step.target
         call = self.ctx.call(target, payload, key=f"step:{step.id}", model=step.model)
+        if step.timeout_s > 0:
+            # A tool call never becomes an assignment, so a deadline on it would
+            # not cancel anything. Say so instead of storing a deadline nobody reads.
+            if getattr(call, "kind", "") == "tool":
+                raise FlowStall(
+                    STALL_TIMEOUT_REQUIRES_TASK,
+                    f"workflow step {step.id!r} sets timeout_s on tool {step.target!r}, "
+                    "which has no assignment to cancel",
+                    step=step.id,
+                    observed={"target": step.target},
+                )
+            # The first acceptance stores this on the child. Replay reattaches that
+            # child and does not write a new deadline over it.
+            call.execution_deadline = (
+                datetime.now(timezone.utc) + timedelta(seconds=step.timeout_s)
+            ).isoformat()
         call.label = step.id
         call.workflow_step = {"run": self.ctx.run_id, "step": step.id}
         if self.folder:
@@ -382,6 +479,25 @@ class _WorkflowRun:
         except FlowCheckpointLimit:
             raise  # The run cannot record more work: it ends, it does not fail a step.
         except CallCancelled as outcome:
+            # A deadline is the step's own limit, so the editors may repair it. A
+            # cancellation that arrives sooner ends the run cancelled.
+            if outcome.handle and await self.ctx.app.state.task_history.io.run(
+                deadline_cancelled, self.ctx.app.state.task_history, outcome.handle
+            ):
+                self.status[step_id] = "failed"
+                self.handles[step_id] = outcome.handle
+                self.errors[step_id] = {**outcome.to_dict(), "stall": STALL_STEP_TIMEOUT}
+                await self.ctx.record_event(
+                    {
+                        "event": "step_failed",
+                        "step": step_id,
+                        "stall": STALL_STEP_TIMEOUT,
+                        "handle": outcome.handle,
+                    }
+                )
+                await self._publish()
+                await self._offer_stall(step_id, outcome)
+                return
             # A cancelled task is not a failure an editor could repair: the step is
             # cancelled, its dependents are skipped, and the run ends cancelled.
             self.status[step_id] = "cancelled"
@@ -405,7 +521,7 @@ class _WorkflowRun:
         self.status[step_id] = "completed"
         self.results[step_id] = result
         self.handles[step_id] = getattr(result, "handle", "")
-        await self.ctx.merge_results([result])
+        await self._fold_state(record=False)
         await self.ctx.record_event(
             {"event": "step_completed", "step": step_id, "handle": self.handles[step_id]}
         )
@@ -454,7 +570,7 @@ class _WorkflowRun:
             if self._rounds_spent():
                 return
             stall = {
-                "stall": "step_failed",
+                "stall": self.errors.get(step_id, {}).get("stall") or "step_failed",
                 "step": step_id,
                 "target": target or self.steps[step_id].target,
                 "error": outcome.to_dict(),
@@ -584,6 +700,9 @@ class _WorkflowRun:
                         [step_id if a == repairing else a for a in other.after],
                         other.description,
                         other.options,
+                        other.model,
+                        when_state=other.when_state or None,
+                        timeout_s=other.timeout_s,
                     )
             self.status[repairing] = "repaired"
         # `approved` records that the person was asked and said yes, so a client can show it.
