@@ -201,7 +201,7 @@ The session holds two kinds of working state with different jobs, as Claude Code
 
 Long-term memory is neither: it holds what a future session needs (`long-term-memory-plan.md`) and never progress. The science log stays the user-facing record of a study.
 
-**The plan is a CLIO-held document.** It is the Markdown file plan mode already writes under CLIO's state folder (`Agent state/workspaces/<hash>/plans/`), its path recorded on `session.metadata['plan_file']`, as today (no new store). Its status is recorded beside the path: `draft` while in plan mode, `approved` after `plan_exit` is approved, then `done` or `abandoned` when the agent says so. A fork copies the plan file. Children do not get plan tools; a parent's plan can name the child handles working on a thread, and the parent records what their reports establish.
+**The plan is a CLIO-held document.** It is the Markdown file plan mode already writes under CLIO's state folder (`Agent state/workspaces/<hash>/plans/`), its path recorded on `session.metadata['plan_file']`, as today (no new store). Its status is recorded beside the path: `draft` while in plan mode, `approved` after `plan_exit` is approved, then `done` or `abandoned` when the agent says so. A fork copies the plan file. The root session owns its plan, and subagents and workflows work on it: a thread can name the child handles or the workflow run working on it, children report back as ordinary observations, and the parent records what they establish. A `planner` child proposes; the parent decides what enters the plan. A workflow's steps stay in its own run view, which the plan links. No child writes its parent's plan. A child gets the plan tools only when its agent definition includes them, for a long-running role such as a deep-research subagent; it then keeps its own plan in its own session, which survives its compactions and shows under its task on the rail. The default roles (`explore`, `review`, `planner`) do not, and since fragments follow tools, they are never told about plans. Todos stay per session, so any child can keep its own step list.
 
 **Tools.**
 - `plan_enter(reason)` enters plan mode. It replaces the `planning` skill's entry effect; the guidance the skill carried moves into the plan-mode reminder, which already exists. Plan mode keeps its read-only lock and its approval gate.
@@ -254,7 +254,7 @@ Take these and record each in the ledger.
 | Nested-call budget | 500 per `run_code` call, 8 concurrent per server |
 | Vendor-hosted PTC | Not used |
 | Plan storage | The plan-mode Markdown file under CLIO's state folder, path and status on `session.metadata`; todos stay on `session.metadata['todos']` |
-| Plan per agent or per tree | Per root session, copied by a fork; children have no plan tools and report, the parent records |
+| Plan per agent or per tree | The root session's plan, worked on by subagents and workflows, which report while the parent records; a child keeps its own plan only when its agent definition includes the plan tools (long-running roles); the default roles do not |
 | Runtime note on open threads at stop | Off; decided again from qualification evidence |
 | Plan mode | Entered with `plan_enter`, keeps its read-only lock and approval gate; `plan_update` works in and out of plan mode |
 
