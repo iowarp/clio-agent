@@ -9,7 +9,7 @@ It turns two design documents into one contract: "CLIO exploration speed: findin
 3. **A fast explorer.** The `explore` role runs on a fast model with read tools and a lean prompt, and the parent can spawn a batch and get the reports back in the same call.
 4. **Progressive tool disclosure.** Large tool sets are deferred: the prompt names each deferred server and its tools, and `search_tools` loads their schemas.
 5. **Programmatic tool calling.** One native `run_code` tool backed by a persistent, confined Python kernel whose tool stubs call back through the agent's existing tool path.
-6. **The session plan.** `write_todos` is replaced by a plan the agent owns and rewrites as it works, kept visible at every step and through compaction.
+6. **The session plan.** The plan made in plan mode becomes the session's living plan: the agent keeps editing it as it works, CLIO keeps it and re-injects it after compaction, and the rail shows it. Todos stay a separate, near-term step list.
 
 Each workstream's presentation in the web UI ships in the same phase as its producer change (Design: presentation).
 
@@ -189,23 +189,38 @@ The script's approval is a grant scoped to that `run_code` call; at the prompt b
 
 ## Design: the session plan
 
-**The tool.** `write_todos` is deleted and replaced by `session_plan` in the core plugin. The plan holds an `objective` (the question in the agent's words and what an answer must contain), `threads` (id, text, status `open`, `active`, `closed` or `dropped`, a reason when closed or dropped, optional task handles working on it), `findings` (id, claim, references: `call:` refs, paths and lines, task handles), and `next` (the few steps intended now). The tool takes keyed operations (set objective, add, update or close a thread, add a finding, set next) and a whole rewrite. It is stored on `session.metadata['plan']`, replacing `todos`, so no store is added.
+The session holds two kinds of working state with different jobs, as Claude Code, Codex, Gemini CLI and Manus also separate them (sources in the ledger):
 
-**Recitation.** The plan is injected as a CLIO addition whenever it changed since the last step and always on the first step after a compaction, so one long turn never loses it. The recitation carries elapsed time and spend against any session limits.
+| | The plan | Todos |
+| --- | --- | --- |
+| Holds | Intent and understanding: the objective, the approach, lines of inquiry with how each ended, and what has been learned | The next few concrete steps, one in progress |
+| Changes when | Understanding or direction changes | Every few steps |
+| Tools | `plan_enter`, `plan_update`, `plan_exit` | `write_todos` |
+| Survives compaction | Re-injected from the plan file | Re-injected from `session.metadata['todos']` |
+| On the rail | Plan section | Todos section |
 
-**Compaction.** The compaction prompt is told the plan exists and is kept verbatim, so the summary carries only the narrative. The plan addition is excluded from what compaction summarizes.
+Long-term memory is neither: it holds what a future session needs (`long-term-memory-plan.md`) and never progress. The science log stays the user-facing record of a study.
 
-**Staleness.** After `plan.stale_steps` (default 25) steps without a plan operation, a one-line reminder that the plan exists is added. The stall monitor counts plan operations as progress and runs in every session, not only playbook ones.
+**The plan is a CLIO-held document.** It is the Markdown file plan mode already writes under CLIO's state folder (`Agent state/workspaces/<hash>/plans/`), its path recorded on `session.metadata['plan_file']`, as today (no new store). Its status is recorded beside the path: `draft` while in plan mode, `approved` after `plan_exit` is approved, then `done` or `abandoned` when the agent says so. A fork copies the plan file. Children do not get plan tools; a parent's plan can name the child handles working on a thread, and the parent records what their reports establish.
 
-**Plan mode.** The `planning` skill keeps its approval gate but writes the session plan instead of a separate plan file; `plan_exit` approves the current plan. The plan-file path code is deleted.
+**Tools.**
+- `plan_enter(reason)` enters plan mode. It replaces the `planning` skill's entry effect; the guidance the skill carried moves into the plan-mode reminder, which already exists. Plan mode keeps its read-only lock and its approval gate.
+- `plan_update(content=None, old=None, new=None, status=None)` writes the whole plan or replaces one exact passage, and can set the status to `done` or `abandoned`. It works in plan mode and outside it, so the agent replans at any step without a mode switch. It replaces the plan-mode ACL carve-out that let `fs_write_file` and `fs_edit_file` reach the plans folder.
+- `plan_exit(summary, ...)` asks for approval, as today. After approval, execution starts by writing todos from the plan.
 
-**Delegation and goal.** A thread can name child handles; their reports arrive as ordinary observations and the parent records findings. The goal judge reads the objective, threads and findings instead of the transcript; goal and stop hooks remain the backstop.
+**What the plan contains.** A structure hint, not a schema, merging today's epistemic ledger with the long-horizon design: **Objective** (the question, what an answer must contain, what counts as done); **Approach**; **Threads**, each open, active, closed or dropped, with a one-line reason when closed or dropped (the decision log), and the child handles working on it; **Findings**, each a claim with its references (`call:` refs, paths and lines, handles), a correction marking the old finding superseded rather than deleting it. When a plan already exists, the agent first judges whether it still applies (the existing re-entry note).
 
-**Stopping.** The runtime does not comment on open threads when the agent stops (TD12). Whether agents stop with open threads is measured in qualification, and that evidence decides whether to revisit.
+**Re-injection.** While a plan is `draft` or `approved`, CLIO injects it verbatim on the first step after a compaction and when a session resumes, with one line: if this plan is relevant to the current work and not finished, continue on it, and update it with `plan_update` when your understanding or direction changes. The model judges relevance; CLIO only says the plan exists and shows it (rule 4). A human edit from the rail is injected the same way, marked as the person's. The plan is not recited every step, since the agent's own `plan_update` calls are already in its context. After `plan.stale_steps` (default 25) steps without a `plan_update` or `write_todos`, a one-line note says the plan exists. The stall monitor counts both as progress and runs in every session, not only playbook ones.
 
-**Fragment `core.plan`** (about 80 words): write the objective and threads first, rewrite the plan when a finding changes direction, make checking your claims the last thread, and stop when every thread is closed or dropped with a reason.
+**Todos.** `write_todos` stays as the near-term step list: whole-list replace, imperative items, at most one in progress. Its description loses the handcuffs (Design: the prompt foundation). It is recited at turn start when it changed, as today, and re-injected after compaction.
 
-**UI.** A live plan panel in gact-tui beside the task list: objective, threads with status icons and reasons on hover, findings with reference links. Edits made there arrive as steering attributed to the human.
+**Compaction.** The compaction prompt asks for a handoff to whoever resumes (narrative, data and file state, constraints, open questions) and is told that the plan and the todos are re-injected verbatim, so it does not restate them. Their injections are excluded from what compaction summarizes.
+
+**Goal and stopping.** The goal judge reads the plan and the todos beside the transcript tail; goal and stop hooks remain the backstop. The runtime does not comment on open threads or todos when the agent stops (TD12); whether agents stop with open threads is measured, and that evidence decides whether to revisit.
+
+**Fragment `core.plan`** (about 80 words): for long or open-ended work, enter plan mode or write the plan first; keep the objective and threads current; rewrite the plan when a finding changes direction; make checking your claims the last thread; stop when every thread is closed or dropped with a reason; use todos for the next concrete steps.
+
+**UI.** The Work rail gets a Plan section that renders the plan with its status in words and updates when `plan_update` runs. The person can edit it there; the edit is saved to the plan file and reaches the agent as steering attributed to them. The Todos section stays.
 
 ## Design: presentation
 
@@ -217,7 +232,7 @@ What the person sees is part of each workstream, not a later pass. The work exte
 | 3 | The blocking spawn emits wait-style report blocks, one per child | One report-tabs component shared by `wait_tasks` and the blocking spawn: tabs named by child, status in text, the `model_choice` model shown; an interrupted batch is not a failed child |
 | 4 | `deferred` and the server description in the resolution schema; a `search_tools` presenter (query and count; matched tools with server and description, exact names first; schemas in technical details) | The agent composition view splits each server's tools into listed and deferred and shows `tools_deferral_unavailable` as text; the plugin-change chip names newly reachable tools |
 | 5 | `parent_call_id` on `Part`, the event projection and `part_to_v3_block`; the `run_code` presenter (script as a Python block, live output, final value, "14 calls, 1 failed"); permission payloads carry the script; an `allow_script` action | `parent_call_id` in `packages/core` with a children-by-parent selector; the turn model attaches children to their parent; a nested-rows module under the `run_code` row with a "Show all" control; evidence and call counts group nested calls; the permission prompt shows the script and offers "For the rest of this script" (today an unknown action renders as a disabled button, so producer and UI ship together); "Script paused, waiting for you" on the row |
-| 6 | The work-state schema carries the plan; a work event on each `session_plan` change | A Plan section in the Work rail beside the task list (objective, threads with status in words and their reasons reachable by keyboard, findings linking their references), updated live instead of the current 5-second poll; edits go through the steering route, attributed to the human |
+| 6 | The work state carries the plan text, path and status; a work event on each `plan_update`, `plan_exit` approval and `write_todos`; presenters for `plan_enter`, `plan_update` (the changed passage) and `plan_exit` | A Plan section in the Work rail above the Todos section, rendering the plan's Markdown with its status in words and links for its references, updated on the work event instead of the current 5-second poll; an Edit action that saves the plan and sends the change as steering attributed to the person |
 
 Every item ships with producer tests, frontend fixtures with large, empty, partial, failed and interrupted results, and a `scripts/cloud/checks/` step file for `ui_check.mjs`, run at 1440 by 900 and 390 by 844 with every screenshot read. The link in `docs/tool-result-presentation.md` to a gact-tui section that does not exist is pointed at the guide's own "Adding or changing a tool" section.
 
@@ -238,10 +253,10 @@ Take these and record each in the ledger.
 | Permissions for a script | `run_code` is approved once like `shell_bash`; nested non-read calls are covered by that approval in every mode except `ask`, where each asks one at a time and may be allowed for the rest of the script |
 | Nested-call budget | 500 per `run_code` call, 8 concurrent per server |
 | Vendor-hosted PTC | Not used |
-| Plan storage | `session.metadata['plan']`, replacing `todos` |
-| Plan per agent or per tree | Per session; children report, the parent records |
+| Plan storage | The plan-mode Markdown file under CLIO's state folder, path and status on `session.metadata`; todos stay on `session.metadata['todos']` |
+| Plan per agent or per tree | Per root session, copied by a fork; children have no plan tools and report, the parent records |
 | Runtime note on open threads at stop | Off; decided again from qualification evidence |
-| Plan mode | Keeps its gate, writes the session plan |
+| Plan mode | Entered with `plan_enter`, keeps its read-only lock and approval gate; `plan_update` works in and out of plan mode |
 
 ## Evaluation
 
@@ -269,13 +284,13 @@ The campaign's goal is long, fast execution: cheap, wide steps, and an agent tha
 
 **Prompt size:** system text, injections and tool schemas for the root agent and each subagent, from the exact dump; it needs no live run and is recorded per phase.
 
-**Long-horizon metrics:** steps and wall time until the agent stops on its own; per-step latency and prompt tokens against step number (a long run should stay flat); compactions, and whether the plan was recited verbatim after each and findings recorded before it were cited after it; threads open at the stop and how each ended (closed or dropped with a reason, or left open); and how often goal or stop hooks re-drove the agent.
+**Long-horizon metrics:** steps and wall time until the agent stops on its own; per-step latency and prompt tokens against step number (a long run should stay flat); compactions, and whether the plan and todos were re-injected verbatim after each and findings recorded before it were cited after it; `plan_update` and `write_todos` calls over the run; threads and todos open at the stop and how each thread ended (closed or dropped with a reason, or left open), read from the plan's Threads section when it follows the structure; and how often goal or stop hooks re-drove the agent.
 
 **Completion guard and correctness.** A run counts only if it ended with a final answer, not an error, a cancellation or an empty reply, so that "faster" never means "gave up". Correctness is recorded where an answer key grades it mechanically (P1, P2, P3 by seeded issue, P5 to P8, H1 and H2 by root cause) and reported beside the numbers, without a pass threshold. No LLM judge is used.
 
 **Protocol.**
 - Each task runs three times per configuration on the `claude_code` engine: the main agent on `claude-sonnet-5-5` and the fleet `explore` role on `claude-haiku-5-5` (TD22). The runner is `scripts/eval/tool_calling/`, built on the agent-test harness (`tests/test_real_cases/clio_sut.py`) with a `claude_code` cell.
-- Configurations: the base; Claude Code itself on the same model for P1 to P4 (the speed doc's reference); after Phase 1 (all, since the prompt changes every request); after Phase 2 (P1 to P4); after Phase 3 (P1 to P4); after Phase 4 (all, since disclosure changes every request); after Phase 5 (P5 to P7 and H1); after Phase 6 (all). Then ablations, one feature off at a time on the tasks it touches: deferral, `run_code`, the session plan, the fast explorer. Phases 1 and 2 replace the old prompt and tools, which cannot be switched back on; they are judged against the base.
+- Configurations: the base; Claude Code itself on the same model for P1 to P4 (the speed doc's reference); after Phase 1 (all, since the prompt changes every request); after Phase 2 (P1 to P4); after Phase 3 (P1 to P4); after Phase 4 (all, since disclosure changes every request); after Phase 5 (P5 to P7 and H1); after Phase 6 (all). Then ablations, one feature off at a time on the tasks it touches: deferral, `run_code`, the fast explorer, and on H1 to H3 the working state three ways (no plan or todo tools, todos only, plan and todos), since newer models may track multi-step work without them. Phases 1 and 2 replace the old prompt and tools, which cannot be switched back on; they are judged against the base.
 - The pass for timing runs one task at a time; other runs may go three at a time, since concurrency changes wall time but not steps or tokens.
 - Phase 0 measures each task's share of the usage windows and confirms the schedule fits them before Phase 1 starts.
 
@@ -289,7 +304,7 @@ No production code changes in this phase.
 2. Run every task on the base and Claude Code on P1 to P4, and record the metrics and each task's usage-window share in the ledger. The open-model baselines are taken in the local phase.
 3. Time `list_tools` per call, direct stdio per-call spawn, sequential segment writes in `step_done`, and per-call `asyncio.Runner`. Record which exceed baseline noise; only those are fixed.
 4. Run `sandbox_conformance.py` on the cloud host and record which fence level a child process gets, since the kernel inherits it.
-5. List every caller of `write_todos`, `todos` metadata, the plan file, `return_raw`, `read_file`'s dict shape and `TOOL_USE_NOTE`, for the deletions.
+5. List every caller of the `planning` skill's entry effect, the plan-mode ACL carve-out for the plans folder, `return_raw`, `read_file`'s dict shape and `TOOL_USE_NOTE`, for the deletions.
 6. Fill in `tool-calling-ledger.md`: decisions TD1 onward, the base numbers, the targets and the scenarios below.
 7. Commit, push, open draft PRs, and continue.
 
@@ -338,10 +353,10 @@ No production code changes in this phase.
 
 ## Phase 6: the session plan
 
-1. Write `session_plan` and its storage; delete `write_todos` and `todos` metadata.
-2. Per-step recitation, post-compaction recitation, the compaction prompt change, staleness, and stall monitoring for every session.
-3. Move plan mode onto the session plan and delete the plan file path.
-4. Point the goal judge at the plan; add `core.plan`.
+1. Add `plan_enter` and `plan_update`; record the plan status; delete the `planning` skill's entry effect and the plans-folder ACL carve-out; copy the plan file on fork.
+2. Re-inject the plan after compaction and on resume while it is `draft` or `approved`; re-inject todos after compaction; the compaction prompt change; the staleness note; stall monitoring for every session.
+3. Rewrite the plan-mode structure hint (objective, approach, threads, findings) and the `write_todos` description.
+4. Point the goal judge at the plan and todos; add `core.plan`.
 5. The Phase 6 presentation.
 
 Verify each UI change as the megachange plan describes: restart the stack, run `node scripts/cloud/ui_check.mjs` with a `--steps` script at 1440 by 900 and 390 by 844, read every screenshot, and check that `consoleErrors` and `failedRequests` are empty.
@@ -367,11 +382,11 @@ Run focused tests and `ruff` on touched paths while working. Then run these agai
 | T11 | Cancel a turn during a long script | The kernel call is cancelled and the scope's kernel stays usable |
 | T12 | Kernel state across calls | A variable set in one call is visible in the next; a fork starts clean |
 | T13 | An MCP Apps view | Still renders through the structured-value lane |
-| T14 | H1 after Phase 6 | The agent writes an objective and threads, and every thread at its stop is closed or dropped with a reason |
-| T15 | A run that compacts mid-turn | The plan is recited on the next step verbatim, and findings recorded before compaction are cited after it |
+| T14 | H1 after Phase 6 | The agent writes a plan with an objective and threads, keeps it current with `plan_update`, and every thread at its stop is closed or dropped with a reason |
+| T15 | A run with an approved plan that compacts mid-turn | The plan and todos are re-injected verbatim on the next step, and findings recorded before compaction are cited after it |
 | T16 | H1 on an open model, before and after (local phase) | Steps to a self-chosen stop and open threads at stop recorded for both; the result is reported whether or not it improved |
-| T17 | Plan mode | The approved plan is the session plan, and execution continues on it without a separate file |
-| T18 | Plan panel at both viewport sizes | Objective, threads and findings render and update live; a human edit arrives as steering; no console errors |
+| T17 | Plan mode | `plan_enter`, a written plan and `plan_exit` approval; execution starts by writing todos and later replans with `plan_update` without re-entering plan mode |
+| T18 | Plan and Todos sections at both viewport sizes | The plan renders with its status and updates on `plan_update`; a person's edit is saved and arrives as steering; todos render separately; no console errors |
 | T19 | A broad query that contains an exact deferred tool name (Codex #21503) | `search_tools` returns that tool first |
 | T20 | A deferred server adds a tool mid-session (Codex #33266) | `search_tools` and `tools.search` find the new tool; the model learns its name through the plugin-change note; no `prefix_mismatch` reset |
 | T21 | A script calls a deferred tool with no prior `search_tools` (Codex #32101) | The stub exists and the call succeeds through the instrumented path |
@@ -381,7 +396,7 @@ The cloud session cannot qualify the Tauri desktop, Windows-only paths, HPC logi
 
 ## Done
 
-1. Every phase is implemented, and the old `read_file` shape, `TOOL_USE_NOTE`, `write_todos`, the plan file path, the `return_raw` lane, the full `core.tasks` fragment and the parked disclosure paragraph are gone.
+1. Every phase is implemented, and the old `read_file` shape, `TOOL_USE_NOTE`, the `planning` skill's entry effect, the plans-folder ACL carve-out, the `return_raw` lane, the full `core.tasks` fragment and the parked disclosure paragraph are gone.
 2. Focused tests pass, and `ruff check` and `ruff format --check` are clean on touched paths.
 3. Every cloud-phase scenario passes against a freshly restarted stack, each shown with commands, handles, numbers and screenshots read; local-phase rows say so.
 4. The ledger holds the evaluation numbers for every configuration, the targets set after the base, and whether each was met.

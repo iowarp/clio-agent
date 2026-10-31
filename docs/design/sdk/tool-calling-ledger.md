@@ -26,9 +26,9 @@ Decisions use the prefix `TD`, evaluation tasks `P` (performance) and `H` (long-
 | TD16 | Running a script is a tool call gated like `shell_bash`: `run_code` is approved once, with its code shown, except in `bypass`, and that covers its direct I/O inside the fence. Nested non-read calls are covered by the script's approval in `auto-edits`, `ai-review`, `spotter-ai` and `spotter-watcher` (the reviewer modes approve once); in `ask` each asks, one question at a time, showing the script, with "Allow for the rest of this script". Explicit deny policies, plan-mode restrictions and audit apply to every nested call. Replaces the draft's "pause and ask for every nested call" and the speed doc's "no write stubs unless the mode allows them without asking". | Planning review 2026-10-30 | | open |
 | TD17 | 500 nested calls per `run_code` call, 8 concurrent per server. | Plan defaults | | open |
 | TD18 | Vendor-hosted programmatic tool calling is not used. | Plan defaults | | open |
-| TD19 | The session plan is stored on `session.metadata['plan']`, replacing `todos`. | Plan defaults | | open |
-| TD20 | One plan per session; children report and the parent records findings. | Plan defaults | | open |
-| TD21 | Plan mode keeps its approval gate and writes the session plan. | Plan defaults | | open |
+| TD19 | The plan and todos are separate. The plan is the plan-mode Markdown file under CLIO's state folder, its path and status (`draft`, `approved`, `done`, `abandoned`) on `session.metadata`, made with `plan_enter`, `plan_update` and `plan_exit`; `plan_update` works in and out of plan mode. Todos stay `write_todos` on `session.metadata['todos']`. Replaces the draft's single `session_plan` record that deleted `write_todos` and the plan file. | Owner direction 2026-10-31; plan, todo and memory research | | open |
+| TD20 | One plan per root session, copied by a fork; children have no plan tools; a thread can name child handles and the parent records what their reports establish. | Planning review 2026-10-31 | | open |
+| TD21 | While a plan is `draft` or `approved`, it is re-injected verbatim after compaction and on resume with a note that the model judges its relevance; it is not recited every step. Todos are re-injected after compaction too. | Owner direction 2026-10-31 | | open |
 | TD22 | Evaluation runs the main agent on `claude-sonnet-5-5` and the fleet `explore` role on `claude-haiku-5-5`, through the `claude_code` engine; Claude Code itself on the same model is the reference for P1 to P4. | Planning review 2026-10-30 | Confirmed by the owner 2026-10-31 | done |
 | TD24 | The 150-token fragment budget stays a warning for third-party plugins. Core and default-marketplace fragments have no per-fragment cap; each agent's total prompt is measured per phase and targeted after the base. | Planning review 2026-10-31 | | done |
 | TD25 | A fragment's `when` gate is evaluated against the agent's final tool list (after effect gating, session posture and allowlists), so a role never receives text about tools it cannot call. Replaces the draft's "a subagent names the fragments it drops". | Planning review 2026-10-31 | | open |
@@ -105,11 +105,11 @@ Three runs per task per configuration (TD23). Each cell holds the median with th
 | T11 | Cancel during a long script | | open |
 | T12 | Kernel state across calls; fork starts clean | | open |
 | T13 | MCP Apps through the structured-value lane | | open |
-| T14 | H1 after Phase 6: objective, threads, every thread ended with a reason | | open |
-| T15 | Plan recited verbatim after compaction | | open |
+| T14 | H1 after Phase 6: plan kept current, every thread ended with a reason | | open |
+| T15 | Plan and todos re-injected verbatim after compaction | | open |
 | T16 | H1 on an open model, before and after | | local phase |
-| T17 | Plan mode writes the session plan | | open |
-| T18 | Plan panel at both viewport sizes | | open |
+| T17 | `plan_enter`, approval, todos, replan with `plan_update` | | open |
+| T18 | Plan and Todos sections at both viewport sizes | | open |
 | T19 | Exact name inside a broad query returns first | | open |
 | T20 | Deferred server adds a tool mid-session | | open |
 | T21 | Script calls a deferred tool without `search_tools` | | open |
@@ -125,3 +125,14 @@ Read from source on 2026-10-30 for the prompt foundation:
 - Gemini CLI: `packages/core/src/prompts/snippets.ts`, `agents/codebase-investigator.ts` in https://github.com/google-gemini/gemini-cli
 - Claude Code prompts as mirrored in https://github.com/Piebald-AI/claude-code-system-prompts (Explore, Plan and general-purpose subagents, TodoWrite, subagent-writing guidance, parallel tool calls, context management)
 - Anthropic: https://platform.claude.com/docs/en/build-with-claude/prompt-engineering/claude-prompting-best-practices, https://platform.claude.com/docs/en/build-with-claude/prompt-engineering/prompting-claude-fable-5-1, https://platform.claude.com/docs/en/agents-and-tools/tool-use/tool-search-tool
+
+## Plan, todo and memory research sources
+
+Read on 2026-10-31 for the session plan:
+
+- Claude Code: [what survives compaction](https://code.claude.com/docs/en/context-window#what-survives-compaction), [task tool availability](https://code.claude.com/docs/en/tools-reference#task-tool-availability), [memory](https://code.claude.com/docs/en/memory), and the plan-file and tasks-vs-memory reminders in https://github.com/Piebald-AI/claude-code-system-prompts
+- Anthropic: [effective harnesses for long-running agents](https://www.anthropic.com/engineering/effective-harnesses-for-long-running-agents), [effective context engineering](https://www.anthropic.com/engineering/effective-context-engineering-for-ai-agents), [memory tool](https://platform.claude.com/docs/en/agents-and-tools/tool-use/memory-tool)
+- OpenAI: Codex [`update_plan`](https://github.com/openai/codex/blob/main/codex-rs/core/src/tools/handlers/plan_spec.rs) and [goal continuation](https://github.com/openai/codex/blob/main/codex-rs/ext/goal/templates/goals/continuation.md); [ExecPlans](https://developers.openai.com/cookbook/articles/codex_exec_plans)
+- [Manus: context engineering lessons](https://manus.im/blog/Context-Engineering-for-AI-Agents-Lessons-from-Building-Manus)
+- Gemini CLI: [tracker](https://github.com/google-gemini/gemini-cli/blob/main/docs/tools/tracker.md), [plan mode](https://github.com/google-gemini/gemini-cli/blob/main/docs/cli/plan-mode.md)
+- OpenHands: [task_tracker](https://github.com/OpenHands/software-agent-sdk/blob/main/openhands-tools/openhands/tools/task_tracker/definition.py)
