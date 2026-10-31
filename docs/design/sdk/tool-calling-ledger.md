@@ -15,7 +15,7 @@ Decisions use the prefix `TD`, evaluation tasks `P` (performance) and `H` (long-
 | TD5 | `explore` runs on the fleet `explore` role, the caller's model when unset. | Plan defaults | | open |
 | TD6 | A deferred server's prompt entry is its name, its MCP `instructions` (otherwise the plugin's declared `description`) and its tool names, with no docstrings or schemas. `plugin check` warns when a deferrable server has neither description. This matches Claude Code; the Anthropic API shows nothing, OpenAI shows a namespace description, Codex shows only `tool_search`. | Planning review 2026-10-30 | Research notes in the plan's disclosure section | open |
 | TD7 | A server is deferred when its plugin sets `defer: true`, or, when the plugin does not say, when its schemas exceed `tools.defer_share` (5%) of the context window. Replaces the draft's fixed category list. Published thresholds: Anthropic 10 tools or 10k tokens, Claude Code 10% of context, MCP client guidance 1-5%. | Planning review 2026-10-30 | | open |
-| TD8 | #1911's listing before the first request applies to every declared server, deferred ones included: the prompt entry needs the real tool names. The cost is paid only without a valid cached listing. | Planning review 2026-10-30 | `tests/test_gact/test_mcp_initial_request.py` (Phase 3 extends it with a deferred server) | open |
+| TD8 | #1911's listing before the first request applies to every declared server, deferred ones included: the prompt entry needs the real tool names. The cost is paid only without a valid cached listing. | Planning review 2026-10-30 | `tests/test_gact/test_mcp_initial_request.py` (Phase 4 extends it with a deferred server) | open |
 | TD9 | `search_tools` takes `select:a,b`, keywords (BM25) and `+term rest`. Names are tokenized on `_` and `__`; an exact name in a query is always returned first. Loaded tools stay callable until compaction, then join the tool list as introduced tools do. | Planning review 2026-10-30 (Codex #21503, #56973) | | open |
 | TD10 | When `search_tools` cannot be offered, deferred tools are listed in full and the trace records `tools_deferral_unavailable`. Inside `run_code`, deferred tools always have stubs. | Planning review 2026-10-30 (Codex #33608, #32101) | | open |
 | TD11 | `tools/list_changed` from a deferred server updates the catalog and kernel stubs, never the listed tools; new names reach the model through the plugin-change note. | Planning review 2026-10-30 (Codex #33266) | | open |
@@ -29,7 +29,11 @@ Decisions use the prefix `TD`, evaluation tasks `P` (performance) and `H` (long-
 | TD19 | The session plan is stored on `session.metadata['plan']`, replacing `todos`. | Plan defaults | | open |
 | TD20 | One plan per session; children report and the parent records findings. | Plan defaults | | open |
 | TD21 | Plan mode keeps its approval gate and writes the session plan. | Plan defaults | | open |
-| TD22 | Evaluation runs the main agent on `claude-sonnet-5-5` and the fleet `explore` role on `claude-haiku-5-5`, through the `claude_code` engine; Claude Code itself on the same model is the reference for P1 to P4. | Planning review 2026-10-30 | | open |
+| TD22 | Evaluation runs the main agent on `claude-sonnet-5-5` and the fleet `explore` role on `claude-haiku-5-5`, through the `claude_code` engine; Claude Code itself on the same model is the reference for P1 to P4. | Planning review 2026-10-30 | Confirmed by the owner 2026-10-31 | done |
+| TD24 | The 150-token fragment budget stays a warning for third-party plugins. Core and default-marketplace fragments have no per-fragment cap; each agent's total prompt is measured per phase and targeted after the base. | Planning review 2026-10-31 | | done |
+| TD25 | A fragment's `when` gate is evaluated against the agent's final tool list (after effect gating, session posture and allowlists), so a role never receives text about tools it cannot call. Replaces the draft's "a subagent names the fragments it drops". | Planning review 2026-10-31 | | open |
+| TD26 | The prompt foundation is its own phase (Phase 1), measured on its own before the tool workstreams. At the base the standard agent sends about 3,800 words of system text and about 20k tokens of tool schemas; `core.tasks` is about 2.8k tokens; `explore` composes 2,488 words, 76 of them its own. Measured by resolving `standard` in an isolated plugin store; the exact dump in Phase 1 replaces this measurement. | Planning review 2026-10-31 | | open |
+| TD27 | Each workstream's presentation ships in the same phase as its producer change, extending the shared contract and readers (Design: presentation). | Planning review 2026-10-31 | | done |
 | TD23 | The evaluation measures run length and performance. Correctness is recorded where an answer key grades it mechanically but is not an acceptance gate; prompts are tuned for correctness later. A run counts only if it ended with a final answer. No LLM judge. Each task runs three times per configuration. | Planning review 2026-10-30 | | done |
 
 ## Evaluation
@@ -41,6 +45,13 @@ Three runs per task per configuration (TD23). Each cell holds the median with th
 | Task | 5-hour window share per run | 7-day window share per run | Median wall time |
 | --- | --- | --- | --- |
 | P1 to P10, H1 to H3 | | | |
+
+### Prompt size
+
+| Agent | Phase | System text (words) | Tool schemas (tokens) | Injections per step | Total before the user message (tokens) |
+| --- | --- | --- | --- | --- | --- |
+| Root (`standard`) | Base | about 3,830 | about 20k | | about 26-27k |
+| `explore` child | Base | about 3,330 | about 6-7k | | about 12k |
 
 ### Performance
 
@@ -59,6 +70,7 @@ Three runs per task per configuration (TD23). Each cell holds the median with th
 
 | Workstream | Tasks | Target | Met |
 | --- | --- | --- | --- |
+| Prompt foundation | Prompt size (root, `explore`); P1 to P10, H1 to H3 | | |
 | Exploration primitives | P1 to P4 | | |
 | Fast explorer | P1 to P4 | | |
 | Tool disclosure | P1 to P10 | | |
@@ -78,13 +90,13 @@ Three runs per task per configuration (TD23). Each cell holds the median with th
 
 | ID | Scenario | Evidence | Status |
 | --- | --- | --- | --- |
-| T1 | P3 after Phases 1 to 3: no shell paging | | open |
+| T1 | P3 after Phases 2 to 4: no shell paging | | open |
 | T2 | Read a 5,000-line file | | open |
 | T3 | Find a symbol in the repository | | open |
 | T4 | Survey three subsystems with `explore` children | | open |
 | T5 | Large MCP server deferred (cloud: synthetic, about 90 tools) | | open |
 | T6 | T5 on an open model | | local phase |
-| T7 | P6 after Phase 4: `run_code` with nested rows | | open |
+| T7 | P6 after Phase 5: `run_code` with nested rows | | open |
 | T8a | `auto-edits`: one approval covers the script's nested write | | open |
 | T8b | `ask`: nested writes ask one at a time, showing the script | | open |
 | T8c | `ask`: "Allow for the rest of this script" | | open |
@@ -93,7 +105,7 @@ Three runs per task per configuration (TD23). Each cell holds the median with th
 | T11 | Cancel during a long script | | open |
 | T12 | Kernel state across calls; fork starts clean | | open |
 | T13 | MCP Apps through the structured-value lane | | open |
-| T14 | H1 after Phase 5: objective, threads, every thread ended with a reason | | open |
+| T14 | H1 after Phase 6: objective, threads, every thread ended with a reason | | open |
 | T15 | Plan recited verbatim after compaction | | open |
 | T16 | H1 on an open model, before and after | | local phase |
 | T17 | Plan mode writes the session plan | | open |
@@ -102,3 +114,14 @@ Three runs per task per configuration (TD23). Each cell holds the median with th
 | T20 | Deferred server adds a tool mid-session | | open |
 | T21 | Script calls a deferred tool without `search_tools` | | open |
 | T22 | Configuration without `search_tools` lists deferred tools | | open |
+
+## Prompt research sources
+
+Read from source on 2026-10-30 for the prompt foundation:
+
+- OpenAI Codex CLI: `codex-rs/core/gpt_5_2_prompt.md`, `gpt-5.2-codex_prompt.md`, `templates/agents/orchestrator.md`, `templates/search_tool/tool_description.md`, `code-mode-protocol/src/description.rs`, `prompts/templates/review/rubric.md`, `prompts/templates/compact/prompt.md`, `ext/goal/templates/goals/continuation.md` in https://github.com/openai/codex
+- OpenAI prompting guides for GPT-5, 5.1, 5.2 and Codex: https://github.com/openai/openai-cookbook/tree/main/examples/gpt-5
+- opencode: `session/runner/prompt/system.txt`, `plugin/system-prompt/gpt.txt`, `plugin/agent.ts`, `tool/todowrite.txt` in https://github.com/sst/opencode
+- Gemini CLI: `packages/core/src/prompts/snippets.ts`, `agents/codebase-investigator.ts` in https://github.com/google-gemini/gemini-cli
+- Claude Code prompts as mirrored in https://github.com/Piebald-AI/claude-code-system-prompts (Explore, Plan and general-purpose subagents, TodoWrite, subagent-writing guidance, parallel tool calls, context management)
+- Anthropic: https://platform.claude.com/docs/en/build-with-claude/prompt-engineering/claude-prompting-best-practices, https://platform.claude.com/docs/en/build-with-claude/prompt-engineering/prompting-claude-fable-5-1, https://platform.claude.com/docs/en/agents-and-tools/tool-use/tool-search-tool

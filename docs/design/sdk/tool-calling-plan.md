@@ -2,13 +2,16 @@
 
 This plan covers item (c) of the CLIO 1.0 release, programmatic tool calling, together with the work that decides whether it pays off: the exploration primitives it calls, progressive tool disclosure, step cost, and long-horizon operation. It comes before the RLM plan because RLM is a defined case of `run_code`, in the same way that debate is a defined case of a workflow. RLM, the in-app browser and any later code-driven feature run in the kernel this plan builds.
 
-It turns two design documents into one contract: "CLIO exploration speed: findings for the PTC and tool disclosure campaign" and "Long-horizon exploration in CLIO: an evolving session plan" (both 2026-10-29), plus the `run_code` design from the programmatic tool calling write-up of 2026-10-22. The plan has five workstreams, each building on the ones before it:
+It turns two design documents into one contract: "CLIO exploration speed: findings for the PTC and tool disclosure campaign" and "Long-horizon exploration in CLIO: an evolving session plan" (both 2026-10-29), plus the `run_code` design from the programmatic tool calling write-up of 2026-10-22. The plan has six workstreams, each building on the ones before it:
 
-1. **Exploration primitives.** Ranged reads with line numbers, a files-only search mode, a glob tool, and spill files the agent can page through.
-2. **A fast explorer.** The `explore` role runs on a fast model with read tools and a lean prompt, and the parent can spawn a batch and get the reports back in the same call.
-3. **Progressive tool disclosure.** Large tool sets are deferred: the prompt names each deferred server and its tools, and `search_tools` loads their schemas. The task protocol fragment moves into a skill.
-4. **Programmatic tool calling.** One native `run_code` tool backed by a persistent, confined Python kernel whose tool stubs call back through the agent's existing tool path.
-5. **The session plan.** `write_todos` is replaced by a plan the agent owns and rewrites as it works, kept visible at every step and through compaction.
+1. **The prompt foundation.** The base agent's and the subagents' prompts are measured, scoped to the tools each agent actually has, and rewritten to explain how to work: parallel steps, exploration, persistence, delegation. Everything else builds on them.
+2. **Exploration primitives.** Ranged reads with line numbers, a files-only search mode, a glob tool, and spill files the agent can page through.
+3. **A fast explorer.** The `explore` role runs on a fast model with read tools and a lean prompt, and the parent can spawn a batch and get the reports back in the same call.
+4. **Progressive tool disclosure.** Large tool sets are deferred: the prompt names each deferred server and its tools, and `search_tools` loads their schemas.
+5. **Programmatic tool calling.** One native `run_code` tool backed by a persistent, confined Python kernel whose tool stubs call back through the agent's existing tool path.
+6. **The session plan.** `write_todos` is replaced by a plan the agent owns and rewrites as it works, kept visible at every step and through compaction.
+
+Each workstream's presentation in the web UI ships in the same phase as its producer change (Design: presentation).
 
 The work runs to completion without stopping for review. The human reviews the finished branches.
 
@@ -18,7 +21,7 @@ This plan is the contract for the five workstreams. The megachange design docume
 
 | Document | Governs |
 | --- | --- |
-| This plan | Exploration tools, the explorer role, tool disclosure, `run_code` and its kernel, the session plan |
+| This plan | The base agent and subagent prompts, exploration tools, the explorer role, tool disclosure, `run_code` and its kernel, the session plan, and their presentation |
 | [tool-calling-ledger.md](tool-calling-ledger.md) | This plan's decisions, baselines and acceptance evidence |
 | `plugins-and-composition.md` | Plugins, the composed prompt, fragments |
 | `agent-sdk.md` | `Agent`, `Subagent`, `Plugin`, `plugin check` |
@@ -46,13 +49,14 @@ This plan is implemented and qualified in two passes.
 
 ## Rules
 
-The megachange rules carry over unchanged: delete and replace, the task layer is the only execution authority, the model decides, no silent fallback, one mechanism per concept, no fifth store, the repository rules in `AGENTS.md`, and evidence over claims. Five more apply here:
+The megachange rules carry over unchanged: delete and replace, the task layer is the only execution authority, the model decides, no silent fallback, one mechanism per concept, no fifth store, the repository rules in `AGENTS.md`, and evidence over claims. Six more apply here:
 
 1. **One execution path for tools.** A call from a script, a direct call and a call from a child all run through the same instrumented dispatch: permission gate, file policy, hooks, MCP v2 tasks, cancellation, the observer and presentation. The kernel never gets a second path, an MCP client or credentials.
 2. **The cached prefix stays stable.** Nothing in this plan changes the system text or the tool list in the middle of a conversation except through the mechanisms in `plugin-change-delivery.md`. `run_code` has one fixed schema for the life of the process.
 3. **Provider independent.** Everything works on every provider, including open models and the `claude_code` text engine. Provider-native tool search is used where it exists as an optimization of the same behavior, never as the only path. Vendor-hosted programmatic tool calling (Anthropic's and OpenAI's) is not used.
 4. **Surface reality, never decide.** The runtime may show the agent structured state the agent wrote (its plan, its budget, a spilled file's path). It does not decide that work is unfinished, route calls, or pick tools for the agent.
 5. **Measure before and after.** Every workstream is judged against the Phase 0 baseline on the same tasks, not against expectations.
+6. **Prompts explain, they do not handcuff.** Prompt text tells the model how to work and what state means. It does not add "exactly once" or "never" rules to suppress a failure seen in one run; that failure is fixed at its cause (`.claude/CLAUDE.md`, principle 3). A prompt change is judged by the evaluation like a code change.
 
 ## Out of scope
 
@@ -85,6 +89,32 @@ What exists at the base, verified against `9a365758`, so nothing is rebuilt and 
 - **Planning state.** `write_todos` (`gact/todos.py`) stores a whole-list checklist on `session.metadata['todos']` and is recited at turn start when it changed. Plan mode (`gact/plan_mode.py`) authors a separate plan file and blocks writes; the `planning` skill (704 words) enters it. The stall monitor (`gact/replanning.py`) only runs with an execution playbook. Stop hooks (`gact/hooks/stop_loop.py`) can block a stop. Goal (`gact/goal.py`) re-drives from an independent judge. Compaction (`gact/compaction.py`) never mentions todos.
 - **Parked design.** `docs/design/agent-loop-rebuild-2026-09.md` (line 701) proposes a category index plus stable `tool_info`/`call_tool` tools for disclosure. This plan supersedes it.
 
+## Design: the prompt foundation
+
+Every other workstream depends on what the base agent and its subagents are told. Measured at the base (TD26), the standard agent sends about 3,800 words of system text and about 20k tokens of tool schemas before the user's message. `core.tasks` alone is about 2.8k tokens of task-protocol detail sent to every agent and every child, and it names a `finish/submit` argument the default agent does not have. Subagents inherit the parent's whole prompt: `explore`'s composed prompt is 2,488 words, 76 of them its own, and tells it to delegate, prefer workflows and edit files, none of which it can do. Nothing says to make independent calls together (only a one-off injected note does), how to explore, when to stop, to verify before finishing, that compaction exists, or when and how to delegate. Several rules are handcuffs. This workstream treats the prompts as a product: read in full, measured, and changed against the evaluation. The public agents' prompts it draws on are listed in the ledger.
+
+**Seeing the exact prompt.** `clio-agent plugin resolve <agent> --exact [--subagent <role>] [--provider <name>]` prints what the model receives: the system text with the workspace and skills suffix, the injections a step can carry, and the tool schemas as the provider sends them (JSON, or the `claude_code` engine's text rendering). `GET /v1/sessions/{sid}/agent` gains the same view. Prompt sizes for the root agent and each subagent are recorded per phase. The 150-token fragment budget stays a warning for third-party plugins; core and default-marketplace fragments are judged by each agent's total instead (TD24).
+
+**Fragments follow the tools.** A fragment's `when` gate is evaluated against the agent's final tool list, after effect gating, session posture and allowlists, not against the resolved plugin set. A role that cannot spawn, write or run workflows no longer receives the text describing them (TD25).
+
+**The base agent.** Short sections that explain rather than constrain:
+- **Working:** make independent calls together in one step and dependent ones in sequence; an extra turn costs more than a wider step.
+- **Exploring:** search first, then read the ranges you need; stop gathering once you can name what to act on, with at most one further round.
+- **Persisting and stopping:** keep going until the objective is met with evidence; uncertain or indirect evidence is not done; verify before finishing; the context is compacted automatically, so never wrap up early to save it.
+- **Delegating:** delegate parallel independent work, high-volume reading and speculative research, and do small, exact work directly; brief a child like a capable colleague who has just walked in, with the question rather than your conclusion; do not repeat its searches yourself; check what comes back; wait for running children before finishing.
+
+`core.tasks` shrinks to three sentences (what a handle is, `wait_tasks` collects, results over the digest limit arrive as files); the rest moves to a `task-protocol` skill in the core plugin, and the stale `finish/submit` reference goes. The handcuffs go: `write_todos`'s "exactly ONE per step", `TURN_REMINDER`'s list of fence mistakes seen in past runs, `load_skill`'s "Call BEFORE", and the rendering fragment's negation of a removed rule. Narrow fragments (`shell.gh-releases`, `shell.prefer-gh`, `pdf.usage`) gain `when` gates. The skills listing keeps a name and a one-line description per skill. The largest tool descriptions (`create_artifact`, `shell_bash`, `connected_data_connect`, `run_workflow`, `raise_alert_card`) keep their usage rules and lose repetition and long examples, which move to skills.
+
+**The engine reminder.** `TOOL_USE_NOTE` is deleted. `TURN_REMINDER`, sent with each `claude_code` request, keeps only the fence syntax the engine needs and adds the batching nudge Anthropic recommends after each round of tool results: "First privately list what you need next; then request every item that doesn't depend on another's result in this one response."
+
+**Subagent prompts.** Each role has its own prompt of at most about 300 words and receives only the fragments its tools need:
+- `explore`: a fast, read-only searcher. Sweep wide with glob and files-mode search in parallel, read narrow ranges, follow references, and match depth to the thoroughness the caller states in the assignment (`quick`, `medium` or `thorough`). Return conclusions with absolute paths and line numbers, not file contents. It cannot spawn.
+- `planner`: understand, explore, then design; return the steps and the three to five files or datasets the work turns on.
+- `review`: report discrete, actionable issues the change introduced, each with its location, impact and confidence, and an overall verdict.
+- `delegation.child`: the report is the only thing the parent reads, so it carries the answer and its evidence.
+
+**Compaction.** The compaction prompt asks for a handoff to another model that will resume the work: goal, constraints, what is known, the state of files and data, and the next step. The session plan is kept verbatim beside it (Design: the session plan).
+
 ## Design: exploration primitives
 
 `run_code` scripts call these same tools, so their shape matters twice.
@@ -99,7 +129,7 @@ What exists at the base, verified against `9a365758`, so nothing is rebuilt and 
 
 **Native tool bounding.** Native tool results pass through `bounded_model_tool_result` like MCP results do, with the same spill. `run_code` relies on this.
 
-**Fragment `workspace.explore`** (about 60 words): locate with glob or files-mode search, read the ranges you need, cite paths and lines, and make independent reads in one step. `TOOL_USE_NOTE` is folded into it and deleted. `TURN_REMINDER` is rewritten so that parallel independent calls get the same weight as waiting for dependent ones.
+**Fragment `workspace.explore`** (about 60 words): locate with glob or files-mode search, read the ranges you need, cite paths and lines, and make independent reads in one step. It names the tools this workstream adds; the general working and exploring guidance is in `core` (the prompt foundation).
 
 **Overheads.** `ExternalTasks._call` caches the tool list per connection era (the executor's `tools_revision`) instead of listing before each call. The direct stdio route keeps its connection for the session if Phase 0 shows per-call spawning costs more than baseline noise.
 
@@ -107,7 +137,7 @@ What exists at the base, verified against `9a365758`, so nothing is rebuilt and 
 
 **Model.** `explore` declares `Prefers(model=<fleet fast role>)` through the existing fleet: the fleet gains an `explore` role (beside the memory roles) picked once in Fleet settings, defaulting to the caller's model when unset. `model_choice` records the choice as for any child.
 
-**Tools and prompt.** A subagent can name the fragments it drops. `explore` drops `core.tasks` and the delegation spawn tools; effect gating already refuses writes. Its prompt becomes a strategy prompt (about 150 words): sweep wide with glob and files-mode search, read narrow ranges, follow references, and return conclusions with paths and lines rather than file contents.
+**Tools and prompt.** The role's prompt and its tool-scoped fragments come from the prompt foundation; effect gating already refuses writes, and the spawn tools are withheld so it cannot spawn.
 
 **Blocking batch.** `spawn_agents_parallel` gains `wait: bool = False`. With `wait=True` it returns each child's report (or its `result_file` when over the digest limit) in the same observation, after the last child finishes or the call is cancelled. It is a mechanism, so it does not route anything.
 
@@ -126,8 +156,6 @@ The shape follows what Claude Code ships and what the Anthropic, OpenAI and MCP 
 **Reachability.** If an agent's configuration cannot offer `search_tools` (a tool allowlist without it, or a provider path that drops it), its deferred tools are listed in full instead, and the trace records `tools_deferral_unavailable`. Inside `run_code`, deferred tools have stubs like any other tool, and `tools.search` reads the same catalog, so a script never needs `search_tools` first.
 
 **Tool list changes.** A `tools/list_changed` from a deferred server updates the catalog and the kernel stubs, never the listed tools. A new tool name reaches the model through the plugin-change note, so the prefix stays intact. A change from a listed server behaves as today.
-
-**`core.tasks` into a skill.** The fragment shrinks to three sentences (what a handle is, `wait_tasks` collects, results over the digest limit arrive as files). The rest moves to a `task-protocol` skill in the core plugin, loaded on demand.
 
 **The parked proposal.** The `tool_info`/`call_tool` paragraph in `agent-loop-rebuild-2026-09.md` is deleted with a pointer to this plan.
 
@@ -179,6 +207,20 @@ The script's approval is a grant scoped to that `run_code` call; at the prompt b
 
 **UI.** A live plan panel in gact-tui beside the task list: objective, threads with status icons and reasons on hover, findings with reference links. Edits made there arrive as steering attributed to the human.
 
+## Design: presentation
+
+What the person sees is part of each workstream, not a later pass. The work extends the shared producer contract and the GACT readers (`docs/tool-result-presentation.md`); no tool gets its own viewer. The UI rules in gact-tui apply: status is never only a colour, dot or icon; JSON and producer identifiers are technical detail; updates stream at display-frame cadence and honour reduced motion. `web/src/components/clio/tool-invocation.tsx` is at 526 of its 800 lines, so new pieces go in their own modules.
+
+| Phase | Producer and contract | Web |
+| --- | --- | --- |
+| 2 | Rewrite the `read_file` presenter for ranges (the new result has no `content` key, so today's presenter would fall back to generic output); `start_line` on code blocks; a line on file links; search presenters for `files`, `content` and `count`; a `glob` presenter; spilled results and `result_file` link the file and show the continuation call | `CodeBlock` numbers from `start_line`; `presentation-link.tsx` passes the line to `onOpenFileReference`; mode, pattern and glob in row metadata |
+| 3 | The blocking spawn emits wait-style report blocks, one per child | One report-tabs component shared by `wait_tasks` and the blocking spawn: tabs named by child, status in text, the `model_choice` model shown; an interrupted batch is not a failed child |
+| 4 | `deferred` and the server description in the resolution schema; a `search_tools` presenter (query and count; matched tools with server and description, exact names first; schemas in technical details) | The agent composition view splits each server's tools into listed and deferred and shows `tools_deferral_unavailable` as text; the plugin-change chip names newly reachable tools |
+| 5 | `parent_call_id` on `Part`, the event projection and `part_to_v3_block`; the `run_code` presenter (script as a Python block, live output, final value, "14 calls, 1 failed"); permission payloads carry the script; an `allow_script` action | `parent_call_id` in `packages/core` with a children-by-parent selector; the turn model attaches children to their parent; a nested-rows module under the `run_code` row with a "Show all" control; evidence and call counts group nested calls; the permission prompt shows the script and offers "For the rest of this script" (today an unknown action renders as a disabled button, so producer and UI ship together); "Script paused, waiting for you" on the row |
+| 6 | The work-state schema carries the plan; a work event on each `session_plan` change | A Plan section in the Work rail beside the task list (objective, threads with status in words and their reasons reachable by keyboard, findings linking their references), updated live instead of the current 5-second poll; edits go through the steering route, attributed to the human |
+
+Every item ships with producer tests, frontend fixtures with large, empty, partial, failed and interrupted results, and a `scripts/cloud/checks/` step file for `ui_check.mjs`, run at 1440 by 900 and 390 by 844 with every screenshot read. The link in `docs/tool-result-presentation.md` to a gact-tui section that does not exist is pointed at the guide's own "Adding or changing a tool" section.
+
 ## Defaults for the open questions
 
 Take these and record each in the ledger.
@@ -203,7 +245,7 @@ Take these and record each in the ledger.
 
 ## Evaluation
 
-The campaign's goal is long, fast execution: cheap, wide steps, and an agent that keeps going coherently over hundreds of them. The evaluation measures those two things, run length and performance, against the base and after every phase. Correctness is recorded where it can be graded mechanically, but it is not an acceptance gate in this plan; prompts are tuned for correctness later. The qualification scenarios (Phase 6) are separate: they show that each mechanism works, and many of them name tools, so they are not evidence of the agent's choices.
+The campaign's goal is long, fast execution: cheap, wide steps, and an agent that keeps going coherently over hundreds of them. The evaluation measures those two things, run length and performance, against the base and after every phase. Correctness is recorded where it can be graded mechanically, but it is not an acceptance gate in this plan; prompts are tuned for correctness later. The qualification scenarios (Phase 7) are separate: they show that each mechanism works, and many of them name tools, so they are not evidence of the agent's choices.
 
 **Tasks.** Every task is a plain request with no tools or steps named, run on a frozen fixture checked into `scripts/eval/tool_calling/fixtures/`, never on the live checkout, which this plan changes.
 
@@ -225,17 +267,19 @@ The campaign's goal is long, fast execution: cheap, wide steps, and an agent tha
 
 **Performance metrics, per run and per step:** model steps; calls per step; prompt tokens per step, uncached and cached (`turn_lm_ledger`); output tokens; wall time; TTFT and decode time; batch wall time against the slowest call; step overhead outside model and tools; `prefix_mismatch` and `first_call` resets; and the share of the subscription's 5-hour and 7-day windows the run used (the `claude_code` `rate_limit_event`). For P8 to P10 also: `search_tools` calls, and how often the agent concludes it lacks a tool it has.
 
+**Prompt size:** system text, injections and tool schemas for the root agent and each subagent, from the exact dump; it needs no live run and is recorded per phase.
+
 **Long-horizon metrics:** steps and wall time until the agent stops on its own; per-step latency and prompt tokens against step number (a long run should stay flat); compactions, and whether the plan was recited verbatim after each and findings recorded before it were cited after it; threads open at the stop and how each ended (closed or dropped with a reason, or left open); and how often goal or stop hooks re-drove the agent.
 
 **Completion guard and correctness.** A run counts only if it ended with a final answer, not an error, a cancellation or an empty reply, so that "faster" never means "gave up". Correctness is recorded where an answer key grades it mechanically (P1, P2, P3 by seeded issue, P5 to P8, H1 and H2 by root cause) and reported beside the numbers, without a pass threshold. No LLM judge is used.
 
 **Protocol.**
 - Each task runs three times per configuration on the `claude_code` engine: the main agent on `claude-sonnet-5-5` and the fleet `explore` role on `claude-haiku-5-5` (TD22). The runner is `scripts/eval/tool_calling/`, built on the agent-test harness (`tests/test_real_cases/clio_sut.py`) with a `claude_code` cell.
-- Configurations: the base; Claude Code itself on the same model for P1 to P4 (the speed doc's reference); after Phase 1 (P1 to P4); after Phase 2 (P1 to P4); after Phase 3 (all, since disclosure changes every request); after Phase 4 (P5 to P7 and H1); after Phase 5 (all). Then ablations, one feature off at a time on the tasks it touches: deferral, `run_code`, the session plan, the fast explorer. Phase 1's tools replace the old ones and cannot be switched off; they are judged against the base.
+- Configurations: the base; Claude Code itself on the same model for P1 to P4 (the speed doc's reference); after Phase 1 (all, since the prompt changes every request); after Phase 2 (P1 to P4); after Phase 3 (P1 to P4); after Phase 4 (all, since disclosure changes every request); after Phase 5 (P5 to P7 and H1); after Phase 6 (all). Then ablations, one feature off at a time on the tasks it touches: deferral, `run_code`, the session plan, the fast explorer. Phases 1 and 2 replace the old prompt and tools, which cannot be switched back on; they are judged against the base.
 - The pass for timing runs one task at a time; other runs may go three at a time, since concurrency changes wall time but not steps or tokens.
 - Phase 0 measures each task's share of the usage windows and confirms the schedule fits them before Phase 1 starts.
 
-**Targets.** After the base is measured and before Phase 1 starts, the ledger records a target per workstream on the tasks it touches, for example steps and prompt tokens per step on P1 to P4 against the base and against Claude Code, P5 to P7 cost growing much more slowly than file count after Phase 4, prompt tokens per step on P8 to P10 after Phase 3 with no rise in "lacks a tool" conclusions, and on H1 to H3 a flat per-step cost, no re-drives and coherent plans across compaction. Run length on Claude is recorded, not targeted: strong models already run long, and the length gains are measured on open models in the local phase.
+**Targets.** After the base is measured and before Phase 1 starts, the ledger records a target per workstream on the tasks it touches, for example the root agent's and the `explore` child's prompt size after Phase 1, steps and prompt tokens per step on P1 to P4 against the base and against Claude Code, P5 to P7 cost growing much more slowly than file count after Phase 5, prompt tokens per step on P8 to P10 after Phase 4 with no rise in "lacks a tool" conclusions, and on H1 to H3 a flat per-step cost, no re-drives and coherent plans across compaction. Run length on Claude is recorded, not targeted: strong models already run long, and the length gains are measured on open models in the local phase.
 
 ## Phase 0: baseline and decisions
 
@@ -249,59 +293,72 @@ No production code changes in this phase.
 6. Fill in `tool-calling-ledger.md`: decisions TD1 onward, the base numbers, the targets and the scenarios below.
 7. Commit, push, open draft PRs, and continue.
 
-## Phase 1: exploration primitives
+## Phase 1: the prompt foundation
+
+1. Add the exact prompt dump to the CLI and the session agent route; record the root agent's and each subagent's prompt size.
+2. Evaluate fragment `when` gates against the final tool list.
+3. Rewrite the base agent's sections; move `core.tasks` into the `task-protocol` skill; remove the handcuffs; gate the narrow fragments; trim the skills listing; trim the largest tool descriptions.
+4. Delete `TOOL_USE_NOTE`; rewrite `TURN_REMINDER`.
+5. Write the `explore`, `planner` and `review` prompts in the marketplace `delegation` plugin; rewrite `delegation.child`.
+6. Read the exact dumps for the root agent and each role in full, then run the evaluation's "after Phase 1" configuration.
+
+## Phase 2: exploration primitives
 
 1. Replace `read_file`, add ranged reads and the text block; update spill notes and `result_file` to name the continuation call.
 2. Back `search_text` with ripgrep and add the modes and regex; add `fs_glob`.
 3. Bound native tool results.
-4. Add `workspace.explore`, delete `TOOL_USE_NOTE`, rewrite `TURN_REMINDER`.
+4. Add `workspace.explore`.
 5. Cache tool lists per connection era; fix the other overheads Phase 0 flagged.
+6. The Phase 2 presentation (Design: presentation).
 
-## Phase 2: the fast explorer
+## Phase 3: the fast explorer
 
-1. Add the `explore` fleet role and `Prefers` on the role; let a subagent drop fragments and tools.
-2. Rewrite the explore prompt and add the `delegation.parent` sentence.
+1. Add the `explore` fleet role and `Prefers` on the role.
+2. Add the `delegation.parent` sentence on fanning a broad survey out to `explore` children.
 3. Add `wait=True` to `spawn_agents_parallel`.
+4. The Phase 3 presentation.
 
-## Phase 3: tool disclosure
+## Phase 4: tool disclosure
 
 1. Add `defer` and the server `description` to the namespace schema and `plugin check`; add the size rule and `tools.defer_share`.
 2. Write `gact/tool_catalog.py`, the deferred-server prompt entry and `search_tools` with its three query forms and exact-name-first ranking; wire the text path and the Anthropic and OpenAI native paths.
 3. List deferred tools directly when `search_tools` cannot be offered; route `tools/list_changed` from deferred servers to the catalog and the plugin-change note.
-4. Move `core.tasks` into the `task-protocol` skill; delete the parked `tool_info`/`call_tool` paragraph.
+4. Delete the parked `tool_info`/`call_tool` paragraph.
 5. Extend `tests/test_gact/test_mcp_initial_request.py` with a deferred server: its entry and tool names are in the first request and its schemas are not.
+6. The Phase 4 presentation.
 
-## Phase 4: `run_code`
+## Phase 5: `run_code`
 
 1. Write `gact/code_mode/` and the kernel runtime; spawn through `wrap_confined`; registry, reaping and cancellation.
 2. Stubs from schemas, deferred tools included, the binding registry with `tools`, in-kernel catalog access.
 3. Dispatch through the instrumented path; replace `return_raw` with the structured-value lane and move MCP Apps onto it.
-4. `parent_call_id` on `Part`, the observer and the v3 projection; nested rows in gact-tui.
+4. `parent_call_id` on `Part`, the observer and the v3 projection.
 5. Bounds, budgets, permission behavior, read-only filtering, and the `code.run` fragment.
+6. The Phase 5 presentation.
 
-## Phase 5: the session plan
+## Phase 6: the session plan
 
 1. Write `session_plan` and its storage; delete `write_todos` and `todos` metadata.
 2. Per-step recitation, post-compaction recitation, the compaction prompt change, staleness, and stall monitoring for every session.
 3. Move plan mode onto the session plan and delete the plan file path.
 4. Point the goal judge at the plan; add `core.plan`.
-5. The plan panel in gact-tui.
+5. The Phase 6 presentation.
 
 Verify each UI change as the megachange plan describes: restart the stack, run `node scripts/cloud/ui_check.mjs` with a `--steps` script at 1440 by 900 and 390 by 844, read every screenshot, and check that `consoleErrors` and `failedRequests` are empty.
 
-## Phase 6: qualification
+## Phase 7: qualification
 
 Run focused tests and `ruff` on touched paths while working. Then run these against a freshly restarted stack (`claude_code` provider unless stated) and record each in the ledger with commands, handles, numbers and the screenshots read.
 
 | ID | Scenario | Passes when |
 | --- | --- | --- |
-| T1 | P3 after Phases 1 to 3 | No `sed` through the shell to page a file; ranged reads and files-mode search are used |
+| T1 | P3 after Phases 2 to 4 | No `sed` through the shell to page a file; ranged reads and files-mode search are used |
 | T2 | Read a 5,000-line file | Ranged reads with line numbers; a spilled result is continued with the named call |
 | T3 | Find a symbol in the repository | Files-mode search returns paths; the agent reads ranges, not pages of context |
 | T4 | "Survey this repository's three subsystems" | One `spawn_agents_parallel(..., wait=True)` of `explore` children on the fleet `explore` model, reports in the same observation, `model_choice` recorded |
 | T5 | A session with a large MCP server connected (cloud: synthetic, about 90 tools; local: HA-MCP) | Its schemas are not in the step's tool list, but its entry and tool names are; a plain request about a light leads to `search_tools`, then a direct call; no `prefix_mismatch` reset |
 | T6 | Same as T5 on an open model (local phase) | Same outcome through the text path |
-| T7 | P6 after Phase 4 | The agent uses `run_code` with gathered calls, and nested calls appear under the `run_code` row |
+| T7 | P6 after Phase 5 | The agent uses `run_code` with gathered calls, and nested calls appear under the `run_code` row |
 | T8a | `auto-edits`: a script that calls a write tool | One question for the script, showing its code; the nested write runs without another; a nested call to a tool with an explicit deny policy raises in the script |
 | T8b | `ask`: a script that makes three nested writes with `asyncio.gather` | The script asks once; then one write question at a time, each showing the script; approval resumes the call, denial raises in the script; waiting does not trip `code.call_timeout_s` |
 | T8c | `ask`: the person picks "Allow for the rest of this script" on the first nested write | The remaining nested writes run without asking; the next `run_code` call asks again |
@@ -310,7 +367,7 @@ Run focused tests and `ruff` on touched paths while working. Then run these agai
 | T11 | Cancel a turn during a long script | The kernel call is cancelled and the scope's kernel stays usable |
 | T12 | Kernel state across calls | A variable set in one call is visible in the next; a fork starts clean |
 | T13 | An MCP Apps view | Still renders through the structured-value lane |
-| T14 | H1 after Phase 5 | The agent writes an objective and threads, and every thread at its stop is closed or dropped with a reason |
+| T14 | H1 after Phase 6 | The agent writes an objective and threads, and every thread at its stop is closed or dropped with a reason |
 | T15 | A run that compacts mid-turn | The plan is recited on the next step verbatim, and findings recorded before compaction are cited after it |
 | T16 | H1 on an open model, before and after (local phase) | Steps to a self-chosen stop and open threads at stop recorded for both; the result is reported whether or not it improved |
 | T17 | Plan mode | The approved plan is the session plan, and execution continues on it without a separate file |
