@@ -34,6 +34,9 @@ _AFTER_PATH = re.compile(
     re.IGNORECASE,
 )
 _CELL_NUMBER = re.compile(r"^\s*`?L?(\d+)(?:\s*(?:-|–)\s*L?(\d+))?`?\s*$")
+#: ":139" after a located path on the same line: another line of that file
+#: ("`prompts.py:118`, `:139` and `:197`").
+_MORE_LINES = re.compile(r"(?:(?<=\s)|(?<=,)|(?<=`))`?:(\d+)(?:\s*(?:-|–)\s*(\d+))?")
 
 
 def locations(text: str) -> list[tuple[str, int, int]]:
@@ -42,12 +45,16 @@ def locations(text: str) -> list[tuple[str, int, int]]:
     for line in text.splitlines():
         paths = list(_PATH.finditer(line))
         hits_in_line = 0
-        for match in paths:
+        for index, match in enumerate(paths):
             after = _AFTER_PATH.match(line[match.end() :])
             if after:
                 first = int(after.group(1))
                 found.append((match.group(0), first, int(after.group(2) or first)))
                 hits_in_line += 1
+                end = paths[index + 1].start() if index + 1 < len(paths) else len(line)
+                for more in _MORE_LINES.finditer(line, match.end() + after.end(), end):
+                    first = int(more.group(1))
+                    found.append((match.group(0), first, int(more.group(2) or first)))
         if paths and not hits_in_line and "|" in line:
             cells = line.split("|")
             for cell in cells:
@@ -146,6 +153,8 @@ def grade_p4(answer: dict[str, Any], text: str) -> dict[str, Any]:
 _LIST_LINE = re.compile(r"^\s*(?:[-*+]|\d+[.)]|\|)")
 #: "REC-00001 to REC-00200": the bounds of what was read, not ids in the answer.
 _ID_RANGE = re.compile(r"(REC-\d{5})\s*(?:to|through|-|–|—)\s*(REC-\d{5})")
+#: "REC-00003 (0.57)": an id shown with a positive reading is a mention, not an answer.
+_POSITIVE_READING = re.compile(r"(REC-\d{5})\s*\(\s*(?=\d)[\d.]+")
 #: "REC-00002, 00005, 00017": a list that writes the prefix once; each number is an id.
 _ID_LIST = re.compile(r"REC-\d{5}(?:\s*,\s*(?:and\s+)?\d{5}\b)+")
 
@@ -167,6 +176,9 @@ def _claimed_ids(text: str) -> tuple[set[str], set[str]]:
         for bounds in _ID_RANGE.findall(line):
             mentioned |= set(bounds)
         line = _ID_RANGE.sub("", line)
+        for shown in _POSITIVE_READING.findall(line):
+            mentioned.add(shown)
+        line = _POSITIVE_READING.sub("", line)
         line = _expand_id_lists(line)
         ids = set(re.findall(r"REC-\d{5}", line))
         if not ids:
