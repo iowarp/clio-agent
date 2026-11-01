@@ -68,7 +68,8 @@ async def test_tool_rules_ride_the_system_prompt(monkeypatch: pytest.MonkeyPatch
     await fake.drive(request)
 
     system = _system(sdk.clients[0].options)
-    assert system.startswith("You are clio.\n\n# How you act")
+    # Stable tool text first, the system prompt (ending in per-session facts) last.
+    assert system.startswith("# How you act") and system.endswith("You are clio.")
     assert "- search: Search." in system
     assert "# How you act" not in sdk.queries()[0][0]
 
