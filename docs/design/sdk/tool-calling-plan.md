@@ -217,7 +217,8 @@ Each session gets its own folder, `<scratch root>/<machine name>/<session id>`:
 
 - `paths.scratch_root` (`CLIO_SCRATCH_ROOT`), default `<user state dir>/scratch`; the machine name keeps sessions on different hosts apart when the root is on a shared file system (NFS on HPC), from `socket.gethostname()` unless `paths.machine_name` (`CLIO_MACHINE_NAME`) sets it.
 - A child session gets its own folder; nothing is shared by default.
-- It is created when the session first needs it, is in the session's write roots, is the shell's and the `run_code` kernel's `TMPDIR`, and is named in the runtime context next to the workspace ("Scratch folder for this session: ..."). The platform temp dir leaves the write roots unless `paths.allow_system_temp` is on.
+- It is created when the session first needs it, is in the session's write roots, and is the shell's and the `run_code` kernel's `TMPDIR`. The platform temp dir leaves the write roots unless `paths.allow_system_temp` is on.
+- The runtime context (`gact/agents/composition.py`, built per session next to the workspace root) tells the agent both facts: "Machine: <name>" and "Scratch folder for this session: <path>. Use it for temporary files (extracted copies, intermediate results); it is yours alone and is removed after the session." Knowing the machine matters on HPC, where paths, schedulers and local disks depend on the node. Both lines are per session, as the workspace line already is, so the shared prompt prefix is unchanged.
 - It is removed when the session is deleted, and kept `paths.scratch_retention_days` (default 7) after the session's last activity otherwise, by the existing reaper pattern; removal is recorded with a typed reason.
 
 ## Design: configurable values
