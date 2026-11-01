@@ -16,6 +16,7 @@ __all__ = [
     "PLAN_STALE_SOURCE",
     "WORKING_STATE_SOURCES",
     "note_stale_plan",
+    "offer_person_edit",
     "reinject_after_compaction",
     "working_state_injections",
 ]
@@ -76,15 +77,33 @@ def working_state_injections(
 ) -> list[tuple[str, str]]:
     """``(source, text)`` for the plan-mode reminder, the plan and the todos (non-empty)."""
     from clio_agent.gact.plan_mode import plan_mode_reminder  # noqa: PLC0415
-    from clio_agent.gact.session_plan import PLAN_SOURCE, plan_injection  # noqa: PLC0415
+    from clio_agent.gact.session_plan import (  # noqa: PLC0415
+        PLAN_SOURCE,
+        plan_injection,
+        take_person_edit,  # noqa: PLC0415
+    )
     from clio_agent.gact.todos import todo_recitation  # noqa: PLC0415
 
+    plan = take_person_edit(app, session_id) or plan_injection(app, session_id, session)
     blocks = (
         ("plan_mode", plan_mode_reminder(app, session_id, session, force_full=force_full)),
-        (PLAN_SOURCE, plan_injection(app, session_id, session)),
+        (PLAN_SOURCE, plan),
         ("todos", todo_recitation(app, session_id, session)),
     )
     return [(source, text) for source, text in blocks if text]
+
+
+def offer_person_edit(recorder: Any) -> None:
+    """Before a step: a plan the person just edited reaches the agent now, mid-turn too."""
+    from clio_agent.gact import context as _ctx  # noqa: PLC0415
+    from clio_agent.gact.session_plan import PLAN_SOURCE, take_person_edit  # noqa: PLC0415
+
+    app, session_id = _ctx.active_app(), _ctx.active_session_id() or ""
+    if app is None or not session_id:
+        return
+    text = take_person_edit(app, session_id)
+    if text:
+        recorder.injections([(PLAN_SOURCE, text)])
 
 
 def reinject_after_compaction(recorder: Any) -> None:

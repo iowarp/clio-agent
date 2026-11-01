@@ -24,10 +24,13 @@ from clio_agent import conf
 __all__ = [
     "ACTIVE_STATUSES",
     "PLAN_SOURCE",
+    "PERSON_EDIT_KEY",
     "PLAN_STATUS_KEY",
     "PlanError",
     "build_plan_enter_tool",
     "build_plan_update_tool",
+    "mark_person_edit",
+    "take_person_edit",
     "plan_injection",
     "plan_state",
     "rail_plan",
@@ -35,6 +38,8 @@ __all__ = [
 ]
 
 PLAN_STATUS_KEY = "plan_status"
+#: The person edited the plan on the Work rail; it is offered to the agent at its next step.
+PERSON_EDIT_KEY = "plan_person_edit"
 #: Injection source of the plan offered as working state.
 PLAN_SOURCE = "plan"
 #: Statuses in which the plan is offered as working state.
@@ -87,13 +92,17 @@ def plan_injection(app: Any, session_id: str, session: Any) -> str:
     """The plan as working state, while it is ``draft`` or ``approved`` outside plan mode.
 
     In plan mode the plan-mode reminder already names the file. The model judges whether
-    the plan still applies; CLIO only says it exists and shows it.
+    the plan still applies; CLIO only says it exists and shows it. A plan the person edited
+    on the Work rail is offered in any mode, once, marked as theirs.
     """
     del app, session_id
-    if str(getattr(session, "mode", "") or "") == "plan":
-        return ""
     state = plan_state(session)
-    if state["status"] not in ACTIVE_STATUSES or not state["exists"]:
+    person_edit = bool((getattr(session, "metadata", None) or {}).get(PERSON_EDIT_KEY))
+    if not state["exists"]:
+        return ""
+    if not person_edit and (
+        str(getattr(session, "mode", "") or "") == "plan" or state["status"] not in ACTIVE_STATUSES
+    ):
         return ""
     text = state["text"].strip()
     limit = _injection_chars()
@@ -102,12 +111,34 @@ def plan_injection(app: Any, session_id: str, session: Any) -> str:
             text[:limit] + f"\n\n[The plan continues; read it whole at {state['path']} with "
             "fs_read_file.]"
         )
+    if person_edit:
+        return (
+            f"## The plan, as the person edited it ({state['path']})\n\n"
+            "The person changed the plan on the Work rail. Treat their changes as their "
+            "direction: continue from this version.\n\n"
+            f"{text}"
+        )
     return (
         f"## The plan ({state['status']}, {state['path']})\n\n"
         "If this plan is relevant to the current work and not finished, continue on it, and "
         "update it with plan_update when your understanding or direction changes.\n\n"
         f"{text}"
     )
+
+
+def mark_person_edit(app: Any, session_id: str) -> None:
+    """The person saved an edit of the plan: offer it to the agent at its next step."""
+    app.state.sessions.update(session_id, metadata_patch={PERSON_EDIT_KEY: True})
+
+
+def take_person_edit(app: Any, session_id: str) -> str:
+    """The person's edited plan to offer now (``""`` when there is none), then clear the mark."""
+    session = app.state.sessions.get(session_id)
+    if session is None or not (session.metadata or {}).get(PERSON_EDIT_KEY):
+        return ""
+    text = plan_injection(app, session_id, session)
+    app.state.sessions.update(session_id, metadata_patch={PERSON_EDIT_KEY: False})
+    return text
 
 
 def _session(app: Any, session_id: str) -> Any:

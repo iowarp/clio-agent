@@ -51,7 +51,12 @@ def register_schedules_routes(app: FastAPI, deps: "GactDeps") -> None:
     """
 
     from clio_agent.gact.routes.work_controls import register_work_controls_routes
-    from clio_agent.gact.session_plan import PlanError, rail_plan, update_plan
+    from clio_agent.gact.session_plan import (
+        PlanError,
+        mark_person_edit,
+        rail_plan,
+        update_plan,
+    )
 
     register_work_controls_routes(app)
 
@@ -95,8 +100,8 @@ def register_schedules_routes(app: FastAPI, deps: "GactDeps") -> None:
     async def save_session_plan(sid: str, request: Request) -> dict[str, Any]:
         """Save the person's edit of the session plan (the Work rail's Edit).
 
-        The person's message that tells the agent about the edit is sent separately, through
-        the ordinary message route, so it is theirs and arrives as steering mid-turn.
+        The edited plan reaches the agent at its next step, mid-turn too, marked as the
+        person's edit (working state, :func:`working_state.offer_person_edit`).
         """
         session = app.state.sessions.get(sid)
         if session is None:
@@ -109,6 +114,7 @@ def register_schedules_routes(app: FastAPI, deps: "GactDeps") -> None:
             await join_off_loop(update_plan, app, sid, content=content)
         except PlanError as exc:
             raise HTTPException(status_code=422, detail=str(exc)) from exc
+        await join_off_loop(mark_person_edit, app, sid)
         return {"plan": rail_plan(app.state.sessions.get(sid))}
 
     @app.get("/v1/sessions/{sid}/schedules")

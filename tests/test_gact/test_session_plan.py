@@ -190,3 +190,20 @@ def test_the_person_can_save_an_edited_plan(app_session: Any) -> None:
     assert "check the config first" in saved.json()["plan"]["text"]
     assert client.put(f"/v1/sessions/{sid}/plan", json={"content": "  "}).status_code == 422
     assert client.put("/v1/sessions/sess_missing/plan", json={"content": "x"}).status_code == 404
+    # The agent gets the edit at its next step, marked as the person's, once.
+    from clio_agent.gact import context as ctx
+    from clio_agent.gact.working_state import offer_person_edit
+
+    offered: list[list[tuple[str, str]]] = []
+    tokens = [ctx.set_app(app), ctx.set_session_id(sid)]
+    try:
+        offer_person_edit(SimpleNamespace(injections=offered.append))
+        offer_person_edit(SimpleNamespace(injections=offered.append))
+    finally:
+        for token in reversed(tokens):
+            ctx.reset(token)
+    [[(source, text)]] = offered
+    assert source == "plan" and text.startswith("## The plan, as the person edited it")
+    assert "check the config first" in text
+    # Afterwards the plan is ordinary working state again.
+    assert plan_injection(app, sid, _session(app, sid)).startswith("## The plan (approved")
