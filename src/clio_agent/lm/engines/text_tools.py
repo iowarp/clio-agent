@@ -322,14 +322,15 @@ def _orphaned_call_block(reply: str, available_tools: Collection[str]) -> bool:
 
     Ordinary JSON answers and fenced examples stay answers. Only a whole call list
     or single call object for this request's tools followed by an unmatched closing fence is rejected,
-    including the live reply whose opening fence became ``_tool_calls``.
+    including live replies whose opening fence became ``_tool_calls`` or lost its
+    backticks (``tool_calls``).
     """
     raw = reply.strip()
     if not available_tools or not raw.endswith("\n```") or "```" in raw[:-3]:
         return False
     body = raw[:-3]
-    if body.startswith("_tool_calls\n"):
-        body = body.removeprefix("_tool_calls\n")
+    for opener in ("_tool_calls\n", "tool_calls\n"):
+        body = body.removeprefix(opener)
     try:
         calls = json.loads(body)
     except ValueError:

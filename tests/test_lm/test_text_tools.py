@@ -229,9 +229,11 @@ def test_bracket_tags_around_anything_but_a_whole_call_remain_answers(
     assert (split.text, split.calls) == (raw.strip(), [])
 
 
-def test_corrupted_tool_fence_is_a_protocol_error_without_submitting_work() -> None:
-    """The live Haiku reply replaced its opening fence with an underscore."""
-    raw = '_tool_calls\n[{"name":"spawn_agent_task","arguments":{"agent":"worker"}}]\n```'
+@pytest.mark.parametrize("opener", ["_tool_calls", "tool_calls"])
+def test_corrupted_tool_fence_is_a_protocol_error_without_submitting_work(opener: str) -> None:
+    """Live replies lost the opening fence's backticks: Haiku wrote ``_tool_calls``, and
+    Sonnet (H3, 2026-11-01) wrote ``tool_calls`` and then ended the turn on it."""
+    raw = opener + '\n[{"name":"spawn_agent_task","arguments":{"agent":"worker"}}]\n```'
     split = split_reply(raw, call_prefix="t", available_tools={"spawn_agent_task"})
     [call] = split.calls
     assert call.name == INVALID_TOOL_CALL
