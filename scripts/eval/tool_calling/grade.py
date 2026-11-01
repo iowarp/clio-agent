@@ -144,15 +144,21 @@ def grade_p4(answer: dict[str, Any], text: str) -> dict[str, Any]:
 
 
 _LIST_LINE = re.compile(r"^\s*(?:[-*+]|\d+[.)]|\|)")
+#: "REC-00001 to REC-00200": the bounds of what was read, not ids in the answer.
+_ID_RANGE = re.compile(r"(REC-\d{5})\s*(?:to|through|-|–|—)\s*(REC-\d{5})")
 
 
 def _claimed_ids(text: str) -> tuple[set[str], set[str]]:
     """``(claimed, mentioned)`` record ids: an id is part of the answer when it is in a list
     item or table row, on a line with a negative number, or listed with other ids; a lone
-    id in a prose aside ("REC-00001 is in kPa") is only mentioned."""
+    id in a prose aside ("REC-00001 is in kPa") or the bound of a range ("REC-00001 to
+    REC-00200") is only mentioned."""
     claimed: set[str] = set()
     mentioned: set[str] = set()
     for line in text.splitlines():
+        for bounds in _ID_RANGE.findall(line):
+            mentioned |= set(bounds)
+        line = _ID_RANGE.sub("", line)
         ids = set(re.findall(r"REC-\d{5}", line))
         if not ids:
             continue
