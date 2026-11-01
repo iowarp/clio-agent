@@ -144,6 +144,25 @@ class TestCallers:
         assert settings.TOOL_PERMISSION_DENY in settings.call_refusal(program, "records_get")
         assert "records_get" not in program.tools["run_code"].desc
 
+    def test_a_blocked_tools_flags_stay_known_to_the_tools_page(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from clio_agent.gact.agents.tool_instrumentation import READ_ONLY_ATTR
+        from clio_agent.gact.runtime.app_state import per_app_dict
+
+        monkeypatch.setenv("CLIO_TOOLS_PERMISSIONS", json.dumps({"records_get": "deny"}))
+        conf.reload()
+        program = _program()
+        setattr(program.tools["records_get"].func, READ_ONLY_ATTR, True)
+        app = SimpleNamespace(state=SimpleNamespace())
+        token = _ctx.set_app(app)
+        try:
+            apply_disclosure(program, _RESOLUTION)
+        finally:
+            _ctx.reset(token)
+        assert "records_get" not in program.tools
+        assert per_app_dict("tool_facts", app=app)["records_get"]["read_only"] is True
+
 
 @pytest.fixture
 def workspace(tmp_path: Path) -> Iterator[Path]:

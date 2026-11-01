@@ -154,6 +154,7 @@ def apply_tool_settings(program: Any, resolution: Any) -> frozenset[str]:
     from clio_agent.runtime import trace  # noqa: PLC0415
 
     tools: dict[str, Any] = getattr(program, "tools", {}) or {}
+    _remember_facts(tools)  # before blocking: the tools page still shows a blocked tool's flags
     blocked: dict[str, str] = dict(getattr(program, "_clio_blocked", {}) or {})
     for name in list(tools):
         if declared_permission(name, resolution).value == "deny" or _person_denies(name):
@@ -171,7 +172,6 @@ def apply_tool_settings(program: Any, resolution: Any) -> frozenset[str]:
         logger.info("%s tools=%s", TOOL_CALLERS_CODE_UNAVAILABLE, sorted(code_only))
         object.__setattr__(program, "_clio_callers_fallback", TOOL_CALLERS_CODE_UNAVAILABLE)
         code_only = frozenset()
-    _remember_facts(tools)
     object.__setattr__(program, "_clio_blocked", blocked)
     object.__setattr__(program, "_clio_code_only", code_only)
     object.__setattr__(program, "_clio_direct_only", direct_only)
