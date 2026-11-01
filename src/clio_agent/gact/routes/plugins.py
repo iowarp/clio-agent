@@ -37,6 +37,7 @@ from clio_agent.gact.agents.resolution import (
 )
 from clio_agent.gact.routes._body import json_body
 from clio_agent.gact.types import ErrorEnvelope, ErrorInfo
+from clio_agent.lm import sent_prompt
 from clio_agent.plugins.check import check
 from clio_agent.plugins.compose import prompt_text_without
 from clio_agent.plugins.inspection import inspect_plugin_files
@@ -381,7 +382,7 @@ def register_plugin_routes(app: FastAPI, deps: "GactDeps") -> None:
         return sess
 
     @app.get("/v1/sessions/{sid}/agent")
-    async def get_session_agent(sid: str) -> dict[str, Any]:
+    async def get_session_agent(sid: str, exact: bool = False) -> dict[str, Any]:
         sess = _session_or_404(sid)
         resolution = await _call(session_resolution, app, sid)
         metadata = sess.metadata if isinstance(sess.metadata, Mapping) else {}
@@ -395,7 +396,7 @@ def register_plugin_routes(app: FastAPI, deps: "GactDeps") -> None:
         )
         view["prompt"] = {**view["prompt"], "text": text}
         view["session_scope"] = "delegated" if delegated else "root"
-        return {
+        body = {
             "session_id": sid,
             "delta": session_delta(app, sid).to_dict(),
             "subagent": bool(metadata.get(SUBAGENT_KEY)),
@@ -403,6 +404,16 @@ def register_plugin_routes(app: FastAPI, deps: "GactDeps") -> None:
             "withheld_tools": [{"name": k, "reason": v} for k, v in withheld.items()],
             "prompt_basis": await _call(prompt_basis.basis_view, app, sid, resolution),
         }
+        if exact:
+            # What the model was last sent in this session, as the provider saw it.
+            body["exact"] = sent_prompt.exact_view(
+                sid,
+                tool_plugins={row["name"]: row.get("plugin", "") for row in resolution.tools},
+                server_plugins={
+                    name: str(row.get("plugin", "")) for name, row in resolution.mcp_servers.items()
+                },
+            )
+        return body
 
     @app.patch("/v1/sessions/{sid}/agent")
     async def patch_session_agent(sid: str, request: Request) -> dict[str, Any]:

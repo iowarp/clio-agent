@@ -135,3 +135,46 @@ def test_factory_lms_carry_the_trace() -> None:
 )
 def test_response_id_falls_back_to_the_stream_end_frame(outputs: Any, expected: str) -> None:
     assert call_trace._response_id(outputs) == expected
+
+
+def test_every_record_carries_its_start_and_duration(emitted: list[dict[str, Any]]) -> None:
+    lm, _ = scripted_lm([calls(("search", {"q": "x"}))], callbacks=[LMCallTrace()])
+    lm(_request(lm, Message.user("q")))
+    [record] = emitted
+    assert record["started_at"] and record["duration_ms"] >= 0
+    # Nothing streamed through the agent loop's tap, so there is no first piece to time.
+    assert "ttft_ms" not in record
+
+
+def test_time_to_first_token_comes_from_the_first_streamed_piece() -> None:
+    from clio_agent.lm import call_timing
+
+    clock = call_timing.start()
+    call_timing.first_piece()
+    call_timing.first_piece()  # later pieces do not move the first one
+    fields = call_timing.finish(clock)
+    assert 0 <= fields["ttft_ms"] <= fields["duration_ms"]
+    # The first piece belongs to that call only.
+    assert "ttft_ms" not in call_timing.finish(call_timing.start())
+
+
+def test_the_record_carries_the_prompt_shape_and_the_session_keeps_the_request(
+    emitted: list[dict[str, Any]], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from dspy.lm15 import FunctionTool
+
+    from clio_agent.lm import call_timing, sent_prompt
+
+    monkeypatch.setattr(call_timing, "_session_id", lambda: "sess_shape")
+    lm, _ = scripted_lm([calls(("search", {"q": "x"}))], callbacks=[LMCallTrace()])
+    tool = FunctionTool("search", "Find things.", {"type": "object", "properties": {}})
+    lm(Request(model=lm.model, system="sys", messages=(Message.user("q"),), tools=(tool,)))
+
+    [record] = emitted
+    assert record["prompt_shape"]["system_chars"] == 3
+    [[name, chars]] = record["prompt_shape"]["tools"]
+    assert name == "search" and chars > 0
+    view = sent_prompt.exact_view("sess_shape", tool_plugins={"search": "web"})
+    assert view is not None and view["system"] == "sys"
+    assert view["sizes"]["per_plugin"] == {"web": chars}
+    assert view["rendered_system"] is None  # only the claude_code engine renders tools as text
