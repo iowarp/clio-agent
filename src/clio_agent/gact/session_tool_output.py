@@ -1,11 +1,13 @@
-"""Delete a deleted session's spilled tool output (#1487).
+"""Delete a deleted session's spilled tool output (#1487) and scratch folder (TD56).
 
 The shell tool spills oversize output to
 ``<workspace root>/.clio/tool-output/<session_id>/``
 (:mod:`clio_agent.tools.servers.shell_spill_store`). The session owns those
 files, so the session-delete route calls :func:`delete_session_tool_output`
 next to the other per-session cleanups. Retention is tied to the session's
-life, never a timer or a TTL.
+life, never a timer or a TTL. The same call removes the session's own scratch folder
+(:func:`clio_agent.runtime.session_scratch.remove_session_scratch`); a scratch folder
+left behind by a session that was never deleted is swept after its retention.
 """
 
 from __future__ import annotations
@@ -13,6 +15,7 @@ from __future__ import annotations
 import logging
 from typing import Any
 
+from clio_agent.runtime.session_scratch import WHY_SESSION_DELETED, remove_session_scratch
 from clio_agent.tools.servers.shell_spill_store import delete_session_spills
 
 logger = logging.getLogger(__name__)
@@ -22,7 +25,7 @@ NO_WORKSPACE_ROOT_REASON = "tool_output_cleanup_no_workspace_root"
 
 
 def delete_session_tool_output(app: Any, workspace_id: str, session_id: str) -> int:
-    """Remove ``session_id``'s spill folder from its workspace; return files removed.
+    """Remove ``session_id``'s spill folder and scratch folder; return spilled files removed.
 
     Args:
         app: The GACT app (its ``state.workspaces`` resolves the workspace root).
@@ -33,6 +36,7 @@ def delete_session_tool_output(app: Any, workspace_id: str, session_id: str) -> 
         The number of spilled files removed (0 when there were none).
     """
 
+    remove_session_scratch(session_id, why=WHY_SESSION_DELETED)  # needs no workspace
     workspaces = getattr(app.state, "workspaces", None)
     workspace = workspaces.get(workspace_id) if workspaces is not None and workspace_id else None
     root = str(getattr(workspace, "root_path", "") or "")

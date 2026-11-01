@@ -75,10 +75,16 @@ def publish_environment(workspace: Path, runtime: dict[str, Any], cache: Path) -
         _ENVIRONMENTS[workspace.resolve()] = environment
 
 
-def shell_environment(workspace: Path) -> dict[str, str]:
-    """Return only this process's verified workspace binding, never workspace input."""
+def shell_environment(workspace: Path, *, session_id: str | None = None) -> dict[str, str]:
+    """Return only this process's verified workspace binding, never workspace input.
+
+    ``TMPDIR``/``TEMP``/``TMP`` point at the session's own scratch folder (TD56) when a
+    session owns the call (``session_id``, else the active one); ``UV_CACHE_DIR`` and
+    ``CLIO_DOCUMENT_SCRATCH`` stay on the workspace scratch.
+    """
     with _LOCK:
         environment = dict(_ENVIRONMENTS.get(workspace.resolve(), {}))
+    environment.update(_session_temp(session_id))
     path = environment.get("PATH", os.environ.get("PATH", ""))
     if shutil.which("gh", path=path):
         return environment
@@ -91,6 +97,17 @@ def shell_environment(workspace: Path) -> dict[str, str]:
             part for part in (directory, prefix) if part
         )
     return environment
+
+
+def _session_temp(session_id: str | None) -> dict[str, str]:
+    """The temp-dir variables for the session's scratch folder, empty off-session."""
+    from clio_agent.runtime import session_scratch  # noqa: PLC0415
+
+    sid = session_scratch.active_session() if session_id is None else session_id
+    folder = session_scratch.session_scratch_dir(sid) if sid else None
+    if folder is None:
+        return {}
+    return {key: str(folder) for key in ("TMPDIR", "TEMP", "TMP")}
 
 
 def posix_command(command: str, environment: dict[str, str]) -> str:

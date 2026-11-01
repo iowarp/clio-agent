@@ -288,6 +288,9 @@ def start(app: "FastAPI") -> None:
     from clio_agent.gact.routes.system import collect_health_report  # noqa: PLC0415
 
     health_boot.start_boot_collection(app, collect_health_report)
+    from clio_agent.gact import session_scratch_sweep  # noqa: PLC0415
+
+    session_scratch_sweep.start(app)  # stale per-session scratch folders (TD56)
     if getattr(app.state, "arc", None) is not None:
         return
 

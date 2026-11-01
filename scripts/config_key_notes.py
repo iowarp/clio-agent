@@ -789,11 +789,19 @@ KEY_NOTES: dict[str, str] = {
         "Sets the OpenAI-standard top-p sampling parameter; tune for reasoning models needing "
         "fuller sampling than the temp-0 default."
     ),
+    "paths.allow_system_temp": (
+        "Keeps the platform temp dir (/tmp) in every session's write roots; turn off to confine "
+        "temporary files to each session's own scratch folder (paths.scratch_root)."
+    ),
     "paths.default_workspace": (
         "Absolute directory a fresh install's default workspace (ws_default) is rooted at, "
         "created if missing; unset uses the server's working directory at first start. It only "
         "seeds: an existing ws_default keeps its root (repoint it with PATCH "
         "/v1/workspaces/ws_default or the Workspaces page)."
+    ),
+    "paths.machine_name": (
+        "Name of this host as a folder segment under paths.scratch_root (default: the hostname); "
+        "set when several nodes share the root over NFS and their hostnames collide."
     ),
     "paths.model_catalog": (
         "Overrides the file path for the discovered-model catalog cache; set to relocate it off "
@@ -802,6 +810,14 @@ KEY_NOTES: dict[str, str] = {
     "paths.model_db": (
         "Overrides the file path for the writable per-model limits DB (context/output limit "
         "cache); set to relocate off the default data dir."
+    ),
+    "paths.scratch_retention_days": (
+        "Days a session's scratch folder is kept after the session's last activity before the "
+        "server-start sweep removes it; a deleted session's folder goes at once."
+    ),
+    "paths.scratch_root": (
+        "Root of the per-session scratch folders (<root>/<machine>/<session id>, each the "
+        "session's TMPDIR); default Agent state/scratch. Point at fast local disk on HPC."
     ),
     "paths.sessions": (
         "Full override path for the sessions.json registry file; unset defaults to "

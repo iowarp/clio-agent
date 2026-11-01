@@ -6,7 +6,7 @@ owns the single source of writable territory: the base is the ADVISORY
 :attr:`clio_agent.tools.file_policy.FileAccessPolicy.allowed_roots` (the same source the
 tool-boundary check reads), so the OS fence territory can never be narrower than what
 file_policy already permits — anti-drift by construction (owner decision #974.6). The
-fence then ADDS the caches a spawned launcher needs (tempdir + clio + tool caches) so
+fence then ADDS the caches a spawned launcher needs (tempdir unless ``paths.allow_system_temp`` is off + clio + tool caches) so
 confinement never false-positives on a legitimate ``uv``/``npm`` cache write.
 """
 
@@ -193,8 +193,10 @@ def effective_write_roots(
     ``from_env``); ``workspace_root`` includes an explicit root (shell computes it per
     invocation). Returns a deduped, order-stable tuple (advisory roots first).
     """
-    import tempfile  # noqa: PLC0415 - cheap, only on this path
-
+    from clio_agent.runtime.session_scratch import (  # noqa: PLC0415 - avoid cycle
+        active_scratch_dir,
+        system_temp_roots,
+    )
     from clio_agent.tools.file_policy import FileAccessPolicy  # noqa: PLC0415 - avoid cycle
 
     if policy is None:
@@ -202,6 +204,11 @@ def effective_write_roots(
             FileAccessPolicy.from_mapping(env) if env is not None else FileAccessPolicy.from_env()
         )
     roots: list[Path] = list(policy.allowed_roots)
+    scratch = active_scratch_dir()
+    if profile == PROFILE_FLEET and scratch is not None:
+        # The fleet is shared by every session of the workspace: one session's own scratch
+        # folder (TD56), which the advisory policy carries for that session, stays out.
+        roots = [root for root in roots if root != scratch]
 
     def _add(path: Path) -> None:
         resolved = path.expanduser()
@@ -216,7 +223,10 @@ def effective_write_roots(
         roots = list(narrowed)
         from clio_agent import paths  # noqa: PLC0415 - avoid import cycle at module load
 
-        _add(Path(tempfile.gettempdir()))
+        if scratch is not None:
+            _add(scratch)  # the session's own scratch folder (TD56), whatever policy is given
+        for temp in system_temp_roots():
+            _add(temp)
         _add(paths.user_cache_dir())
         _add(paths.user_config_dir())
         return tuple(roots)
@@ -227,7 +237,8 @@ def effective_write_roots(
     # NEXT spawn — union the live registry so the fence territory widens without a restart.
     for granted in granted_write_roots(workspace_root):
         _add(granted)
-    _add(Path(tempfile.gettempdir()))
+    for temp in system_temp_roots():
+        _add(temp)
 
     from clio_agent import paths  # noqa: PLC0415 - avoid import cycle at module load
 

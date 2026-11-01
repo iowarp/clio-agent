@@ -2,7 +2,8 @@
 
 The composed prompt itself comes from the agent's plugins
 (:mod:`clio_agent.plugins.compose`). What this module adds is runtime state the
-plugins cannot know: the session's bound workspace and its write roots. It is
+plugins cannot know: the session's bound workspace, its write roots, the machine and
+the session's own scratch folder. It is
 labelled as runtime context in the prompt view, not attributed to a plugin.
 """
 
@@ -52,7 +53,26 @@ def _runtime_active_workspace_context(app: "FastAPI", *, session_id: str = "") -
         lines = [lines[0], *prompt_lines(node_folder)]
     elif allowed_roots:
         lines.append("Writes are only permitted under: " + ", ".join(allowed_roots) + ".")
-    return "\n".join(lines)
+    return "\n".join([*lines, *_session_scratch_lines(session_id)])
+
+
+def _session_scratch_lines(session_id: str) -> list[str]:
+    """The machine and the session's own scratch folder (TD56), both per session.
+
+    The folder is created here: naming it is the session's first need of it, and the file
+    tools and the kernel fence only accept a folder that exists.
+    """
+
+    from clio_agent.runtime import session_scratch  # noqa: PLC0415
+
+    lines = [f"Machine: {session_scratch.machine_name()}"]
+    if folder := session_scratch.session_scratch_dir(session_id):
+        lines.append(
+            f"Scratch folder for this session: {folder}. Use it for temporary files "
+            "(extracted copies, intermediate results); it is yours alone and is removed "
+            "after the session."
+        )
+    return lines
 
 
 def _session_write_roots(root: Any) -> list[str]:

@@ -16,12 +16,24 @@
 # ==========================================================================
 # Process identity, filesystem locations and the global runtime toggles.
 
+# CLIO_ALLOW_SYSTEM_TEMP  (bool)  <- src/clio_agent/runtime/session_scratch.py
+# Keeps the platform temp dir (/tmp) in every session's write roots; turn
+# off to confine temporary files to each session's own scratch folder
+# (paths.scratch_root).
+paths.allow_system_temp: true
+
 # CLIO_DEFAULT_WORKSPACE  (str)  <- src/clio_agent/gact/workspaces.py
 # Absolute directory a fresh install's default workspace (ws_default) is
 # rooted at, created if missing; unset uses the server's working directory
 # at first start. It only seeds: an existing ws_default keeps its root
 # (repoint it with PATCH /v1/workspaces/ws_default or the Workspaces page).
 # paths.default_workspace:  # default unset; resolved in code
+
+# CLIO_MACHINE_NAME  (str)  <- src/clio_agent/runtime/session_scratch.py
+# Name of this host as a folder segment under paths.scratch_root (default:
+# the hostname); set when several nodes share the root over NFS and their
+# hostnames collide.
+# paths.machine_name:  # computed at runtime: socket.gethostname()
 
 # CLIO_MODEL_CATALOG  (str)  <- src/clio_agent/providers/model_discovery/overlay.py
 # Overrides the file path for the discovered-model catalog cache; set to
@@ -32,6 +44,18 @@
 # Overrides the file path for the writable per-model limits DB
 # (context/output limit cache); set to relocate off the default data dir.
 # paths.model_db:  # default unset; resolved in code
+
+# CLIO_SCRATCH_RETENTION_DAYS  (float)  <- src/clio_agent/runtime/session_scratch.py
+# Days a session's scratch folder is kept after the session's last activity
+# before the server-start sweep removes it; a deleted session's folder goes
+# at once.
+paths.scratch_retention_days: 7.0
+
+# CLIO_SCRATCH_ROOT  (str)  <- src/clio_agent/runtime/session_scratch.py
+# Root of the per-session scratch folders (<root>/<machine>/<session id>,
+# each the session's TMPDIR); default Agent state/scratch. Point at fast
+# local disk on HPC.
+# paths.scratch_root:  # computed at runtime: str(paths.user_state_dir() / 'scratch')
 
 # CLIO_SESSIONS_PATH  (str)  <- src/clio_agent/gact/sessions.py
 # Full override path for the sessions.json registry file; unset defaults to

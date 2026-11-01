@@ -16,7 +16,6 @@ import json
 import os
 import re
 import sys
-import tempfile
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
@@ -58,9 +57,11 @@ def _default_allowed_roots() -> tuple[Path, ...]:
     allowed roots'. Defer evaluation so each FileAccessPolicy instance
     sees the current cwd at the moment it's constructed. The temp root is
     the platform temp dir (a literal ``/tmp`` resolved to ``<drive>:\\tmp``
-    on Windows — issue #765).
+    on Windows — issue #765), unless ``paths.allow_system_temp`` is off (TD56).
     """
-    return (Path.cwd(), Path(tempfile.gettempdir()))
+    from clio_agent.runtime.session_scratch import system_temp_roots  # noqa: PLC0415
+
+    return (Path.cwd(), *system_temp_roots())
 
 
 def _active_workspace_root() -> Path | None:
@@ -114,8 +115,20 @@ def _granted_roots_for(workspace: Path | None) -> tuple[Path, ...]:
         return ()
 
 
+def _active_scratch_root() -> Path | None:
+    """The active session's own scratch folder (TD56), ``None`` off-session or on failure."""
+    try:
+        from clio_agent.runtime.session_scratch import active_scratch_dir  # noqa: PLC0415
+
+        return active_scratch_dir()
+    except Exception as exc:  # noqa: BLE001 - policy must never fail to build
+        trace.event("FILE-POLICY", "session_scratch_root_unavailable error=%r", exc)
+        return None
+
+
 def _with_active_workspace(resolved: list[Path]) -> tuple[Path, ...]:
-    """Prepend the active workspace root + its recorded root grants (deduped) when bound."""
+    """Prepend the active workspace root, its recorded root grants and the session's
+    scratch folder (deduped) when bound."""
     workspace = _active_workspace_root()
     extra: list[Path] = []
     if workspace is not None and workspace not in resolved:
@@ -132,6 +145,9 @@ def _with_active_workspace(resolved: list[Path]) -> tuple[Path, ...]:
     for granted in _granted_roots_for(workspace):
         if granted not in resolved and granted not in extra:
             extra.append(granted)
+    scratch = _active_scratch_root()
+    if scratch is not None and scratch not in resolved and scratch not in extra:
+        extra.append(scratch)
     if extra:
         return (*extra, *resolved)
     return tuple(resolved)
