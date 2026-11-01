@@ -21,6 +21,13 @@ export default async function toolSettings(page, shot) {
   await shot("tools");
   const wide = (page.viewportSize()?.width ?? 0) >= 640;
   if (wide) {
+    await page.getByText("Permission", { exact: true }).first().hover();
+    await page.getByRole("tooltip").first().waitFor({ timeout: 5000 });
+    await shot("permission-help");
+    await page.getByText("I/O", { exact: true }).first().hover();
+    await page.getByRole("tooltip").filter({ hasText: "Who calls the tool" }).first().waitFor({ timeout: 5000 });
+    await shot("io-help");
+    await page.mouse.move(0, 0);
     await page.getByRole("combobox", { name: "Show what happens in" }).click();
     await page.getByRole("option", { name: "Workspace edits" }).click();
     await page.waitForTimeout(500);
