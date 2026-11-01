@@ -215,14 +215,17 @@ def _cancel_and_settle(ctx: RunContext, sid: str) -> None:
         ctx.client.cancel(sid)
     except Exception as exc:  # noqa: BLE001 - recorded, the run is already failed
         print(f"  cancel {sid}: {exc}")
-    wait_for_turn(
-        ctx.client,
-        sid,
-        poll_s=ctx.poll_s,
-        settle_s=ctx.poll_s,
-        timeout_s=120.0,
-        interaction_timeout_s=10.0,
-    )
+    try:
+        wait_for_turn(
+            ctx.client,
+            sid,
+            poll_s=ctx.poll_s,
+            settle_s=ctx.poll_s,
+            timeout_s=120.0,
+            interaction_timeout_s=10.0,
+        )
+    except Exception as exc:  # noqa: BLE001 - recorded, the run is already failed
+        print(f"  settle {sid} after cancel: {exc}")
 
 
 def execute_run(ctx: RunContext, spec: RunSpec) -> dict[str, Any]:
@@ -253,14 +256,20 @@ def execute_run(ctx: RunContext, spec: RunSpec) -> dict[str, Any]:
     fleet_before = ctx.client.fleet()
     started = time.time()
     ack = ctx.client.send(sid, task.prompt)
-    waited = wait_for_turn(
-        ctx.client,
-        sid,
-        poll_s=ctx.poll_s,
-        settle_s=ctx.settle_s,
-        timeout_s=ctx.timeout_s,
-        interaction_timeout_s=ctx.interaction_timeout_s,
-    )
+    try:
+        waited = wait_for_turn(
+            ctx.client,
+            sid,
+            poll_s=ctx.poll_s,
+            settle_s=ctx.settle_s,
+            timeout_s=ctx.timeout_s,
+            interaction_timeout_s=ctx.interaction_timeout_s,
+        )
+    except Exception:
+        # A failed poll (the server stopped answering) must not leave the turn running
+        # into the next run's measurements.
+        _cancel_and_settle(ctx, sid)
+        raise
     polled_end = waited.get("first_done_wall") or time.time()
     if waited["state"] != "settled":
         _cancel_and_settle(ctx, sid)

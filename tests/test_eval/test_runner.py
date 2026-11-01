@@ -319,3 +319,30 @@ def test_client_raises_typed_errors() -> None:
     with pytest.raises(GactError) as caught:
         client.create_session({})
     assert caught.value.status == 422 and "agent_unavailable" in str(caught.value)
+
+
+class _DeadServer(FakeClient):
+    def session(self, sid: str) -> dict[str, Any]:
+        raise TimeoutError("timed out")
+
+
+def test_a_run_whose_server_stops_answering_cancels_its_turn(tmp_path: Path) -> None:
+    fixtures = tmp_path / "fixtures"
+    (fixtures / "p2").mkdir(parents=True)
+    answer = {"file": "station_registry.py", "line": 1, "value": 42, "name": "X"}
+    manifest = {"tasks": {"P2": {"fixture": "p2", "answer": answer}}}
+    client = _DeadServer(["running"])
+    ctx = RunContext(
+        client=client,  # type: ignore[arg-type]
+        fixtures=fixtures,
+        manifest=manifest,
+        results=tmp_path / "results",
+        work_root=tmp_path / "work",
+        config="base",
+        poll_s=0.0,
+        settle_s=0.0,
+        fleet_settings={"roles": {}},
+    )
+    with pytest.raises(TimeoutError):
+        execute_run(ctx, RunSpec("P2", 1))
+    assert ("cancel", "sess_root") in client.calls
