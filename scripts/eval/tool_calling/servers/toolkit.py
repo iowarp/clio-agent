@@ -3,8 +3,10 @@
 A server is a list of :class:`ToolSpec` rows and a responder. Each spec becomes a
 FastMCP tool with a real typed signature (so its schema looks like a hand
 written tool), every call is appended to a JSONL call log, and the responder
-returns a plausible result from seeded, read-only state: writes report what
-they would change but never persist, so repeated runs see the same world.
+returns a plausible result from seeded state. A write lasts for the server
+process, so an agent that reads its change back sees it; CLIO starts the server
+for each session, so every run starts from the same seeded world (a run's call log
+records the server's pid, which shows that no two runs shared one).
 
 This module runs standalone inside a plugin folder, so it imports only the
 standard library, pydantic and FastMCP.
@@ -33,12 +35,17 @@ _TYPES: dict[str, type] = {"str": str, "int": int, "float": float, "bool": bool}
 
 @dataclass(frozen=True)
 class Param:
-    """One tool argument. ``kind`` is a type name, ``enum:a|b``, optionally ending ``?``."""
+    """One tool argument. ``kind`` is a type name, ``enum:a|b``, optionally ending ``?``.
+
+    ``attribute`` names the record attribute a write argument sets, when that is
+    not the argument's own name (``temperature`` sets ``target_temperature``).
+    """
 
     name: str
     kind: str
     description: str
     default: Any = REQUIRED
+    attribute: str = ""
 
 
 @dataclass(frozen=True)
@@ -51,11 +58,13 @@ class ToolSpec:
     params: tuple[Param, ...] = ()
 
 
-def p(name: str, kind: str, description: str, default: Any = REQUIRED) -> Param:
+def p(
+    name: str, kind: str, description: str, default: Any = REQUIRED, *, attribute: str = ""
+) -> Param:
     """Shorthand for :class:`Param`; an optional kind (``int?``) defaults to ``None``."""
     if kind.endswith("?") and default is REQUIRED:
         default = None
-    return Param(name, kind, description, default)
+    return Param(name, kind, description, default, attribute)
 
 
 def t(name: str, effect: str, description: str, *params: Param) -> ToolSpec:
@@ -173,7 +182,8 @@ class CollectionResponder:
 
     ``collections`` maps a prefix (``light``, ``binary_sensor``) to
     ``{record id: attributes}``; the longest prefix of a tool's name picks its
-    collection. ``extras`` answers named tools directly.
+    collection. ``extras`` answers named tools directly. A write changes the record
+    for the rest of the responder's life; the seeded ``collections`` stay as given.
     """
 
     def __init__(
@@ -182,6 +192,7 @@ class CollectionResponder:
         extras: Mapping[str, Callable[[dict[str, Any]], Any]] | None = None,
     ) -> None:
         self.collections = collections
+        self._writes: dict[tuple[str, str], dict[str, Any]] = {}
         self.extras = dict(extras or {})
         self._prefixes = sorted(collections, key=len, reverse=True)
 
@@ -192,7 +203,11 @@ class CollectionResponder:
         if spec.name in self.extras:
             return self.extras[spec.name](args)
         key = self.collection(spec.name)
-        rows = self.collections.get(key, {})
+        writes = self._writes
+        rows = {
+            rid: {**attrs, **writes.get((key, rid), {})}
+            for rid, attrs in self.collections.get(key, {}).items()
+        }
         if spec.effect == "list":
             area = args.get("area")
             items = [
@@ -212,7 +227,12 @@ class CollectionResponder:
         current = dict(rows.get(record_id, {}))
         if spec.effect == "read":
             return {"id": record_id, **current} if record_id else {"items": list(rows)}
-        changes = {k: v for k, v in args.items() if k != id_name and v is not None}
+        attributes = {param.name: param.attribute or param.name for param in spec.params}
+        changes = {
+            attributes.get(k, k): v for k, v in args.items() if k != id_name and v is not None
+        }
+        if record_id:
+            writes[(key, record_id)] = {**writes.get((key, record_id), {}), **changes}
         return {
             "ok": True,
             "id": record_id,

@@ -45,7 +45,7 @@ async def test_home_tool_has_typed_schema_and_logs_calls(tmp_path: Path) -> None
             "climate_set_temperature", {"entity_id": "climate.guest_bedroom", "temperature": 19.5}
         )
         assert result.data["ok"] is True
-        assert result.data["applied"] == {"temperature": 19.5}
+        assert result.data["applied"] == {"target_temperature": 19.5}
         missing = await client.call_tool("light_turn_off", {"entity_id": "light.nowhere"})
         assert missing.data["ok"] is False and "light.porch" in missing.data["known_ids"]
         listing = await client.call_tool("irrigation_list_zones", {})
@@ -60,12 +60,20 @@ async def test_home_tool_has_typed_schema_and_logs_calls(tmp_path: Path) -> None
     assert rows[0]["args"]["temperature"] == 19.5
 
 
-async def test_writes_do_not_persist(tmp_path: Path) -> None:
-    async with Client(run.build("synthetic-home", _env(tmp_path))) as client:
-        before = (await client.call_tool("lock_get_state", {"entity_id": "lock.front_door"})).data
-        await client.call_tool("lock_lock", {"entity_id": "lock.front_door"})
-        after = (await client.call_tool("lock_get_state", {"entity_id": "lock.front_door"})).data
-    assert before == after
+async def test_a_write_lasts_for_its_server_only(tmp_path: Path) -> None:
+    server = run.build("synthetic-home", _env(tmp_path))
+    guest = {"entity_id": "climate.guest_bedroom"}
+    async with Client(server) as client:
+        before = (await client.call_tool("climate_get_state", guest)).data
+        await client.call_tool("climate_set_temperature", {**guest, "temperature": 19.5})
+        after = (await client.call_tool("climate_get_state", guest)).data
+        listed = (await client.call_tool("climate_list", {})).data["items"]
+    assert after["target_temperature"] == 19.5 != before["target_temperature"]
+    assert after in listed
+    # CLIO starts the server per session, so the next run starts from the seeded world.
+    async with Client(run.build("synthetic-home", _env(tmp_path))) as fresh:
+        again = (await fresh.call_tool("climate_get_state", guest)).data
+    assert again == before
 
 
 async def test_records_pages_and_negative_readings(tmp_path: Path) -> None:

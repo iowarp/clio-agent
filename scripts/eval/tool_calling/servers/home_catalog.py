@@ -63,7 +63,12 @@ CLIMATE = [
         "write",
         "Set a thermostat's target temperature in degrees Celsius.",
         _eid("climate.living_room"),
-        p("temperature", "float", "Target temperature in degrees Celsius."),
+        p(
+            "temperature",
+            "float",
+            "Target temperature in degrees Celsius.",
+            attribute="target_temperature",
+        ),
         p("hvac_mode", f"{_HVAC}?", "Also switch to this mode."),
     ),
     t(

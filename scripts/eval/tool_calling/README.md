@@ -66,9 +66,10 @@ The marketplace (`ai.iowarp.clio/marketplace.json`, `plugins/<id>/plugin.json`,
 | `eval-records-20`, `-200`, `-2000` | `records` | `list_records(page=1, page_size=50)`, `get_record(record_id)` |
 
 Server names use `[a-z0-9-]` because CLIO derives a tool's namespace by
-splitting its name on the first `_`. Results come from seeded, read-only state:
-a write reports what it would change but never persists, so every run sees the
-same home. `list_records` returns ids without readings (at most 100 per page);
+splitting its name on the first `_`. Results come from seeded state. A write
+lasts for the server process, so an agent that reads its change back sees it;
+CLIO starts the server for each session, so every run starts from the same home
+(the pids in a run's call log show that no two runs shared a server). `list_records` returns ids without readings (at most 100 per page);
 only `get_record` has the reading, and about 8% are negative.
 
 Every call is appended to a JSONL log: `EVAL_CALL_LOG`, which `mcp.json` sets
