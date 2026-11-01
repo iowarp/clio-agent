@@ -620,10 +620,6 @@ KEY_NOTES: dict[str, str] = {
         "Byte cap per attached file inlined into context injection; raise to inline larger "
         "attachments, lower to bound prompt growth."
     ),
-    "limits.fs_read_bytes": (
-        "Byte cap on a single read_file tool call; raise to read larger files whole, lower to "
-        "bound memory and token cost."
-    ),
     "limits.lm_call_s": (
         "Hard ceiling (seconds) an in-flight LM call is trusted as progress before the watchdog "
         "assumes it's wedged; raise for slow long-output models."

@@ -225,6 +225,7 @@ def test_reuse_preserves_fresh_sandbox_check_and_workspace_bindings(
     monkeypatch.setattr(
         installer, "ensure_github_cli", lambda: Path(result["native_tools"]["gh"]["path"])
     )
+    monkeypatch.setattr(installer, "ensure_ripgrep", lambda: Path("/usr/bin/rg"))
     monkeypatch.setattr(installer, "prepare_existing_windows_fence", fence)
     monkeypatch.setattr(
         installer,
@@ -257,6 +258,7 @@ def test_missing_cache_repairs_with_full_preparation(
     monkeypatch.setattr(
         installer, "ensure_github_cli", lambda: Path(result["native_tools"]["gh"]["path"])
     )
+    monkeypatch.setattr(installer, "ensure_ripgrep", lambda: Path("/usr/bin/rg"))
     monkeypatch.setattr(
         installer,
         "prepare_existing_windows_fence",

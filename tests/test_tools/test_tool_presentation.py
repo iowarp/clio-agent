@@ -12,6 +12,7 @@ from clio_agent.tools.tool_presentation import (
     present_mcp_result,
     starting_presentation,
 )
+from tests._fs_results import read_result
 
 
 @pytest.mark.parametrize(
@@ -23,13 +24,15 @@ from clio_agent.tools.tool_presentation import (
     ],
 )
 def test_declared_file_header_excludes_payload(name: str, action: str) -> None:
-    original = {
+    original: dict = {
         "structuredContent": {
             "path": "D:/workspace/evidence.txt",
             "content": "private payload",
             "size_bytes": 15,
         }
     }
+    if name == "fs_read_file":
+        original = read_result("D:/workspace/evidence.txt", "private payload")
     view = present_mcp_result(name, {"filepath": "D:/workspace/evidence.txt"}, original)
     assert view["action"] == action
     assert view["subject"] == "file-link"

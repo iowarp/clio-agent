@@ -1010,7 +1010,6 @@ RATCHET_BASELINE: dict[str, int] = {
     # _tool_visible_to_model moved to the new owner module
     # tools/tool_ui_metadata.py (re-exported here), landing well under either
     # recorded value.
-    "src/clio_agent/tools/mcp_executor.py": 850,
     # AF-FOLD (PR #1298): ratcheted DOWN 817 -> 816. Credential redaction moved to
     # the owner module tools/mcp_redaction.py, which more than paid for the
     # ``declared`` pre-expansion field this file gained.

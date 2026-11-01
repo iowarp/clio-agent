@@ -541,7 +541,7 @@ class StepRecorder:
         ``thinking_incomplete``. ``refs`` carries each call's ``call:`` reference,
         which the observation keeps so the model sees it with the result.
         """
-        from clio_agent.gact.runtime.context_tokens import _arc_obs_value  # noqa: PLC0415
+        from clio_agent.gact.agents.native_result_bound import recorded_observation  # noqa: PLC0415
         from clio_agent.gact.runtime.globals import _emit_react_step_event  # noqa: PLC0415
 
         thought: dict[str, Any] = {
@@ -573,7 +573,7 @@ class StepRecorder:
             )
             observation = {
                 "call_id": call.id,
-                "text": _arc_obs_value(value),
+                "text": recorded_observation(call.name, value),
                 "is_error": is_error,
                 **({"call_ref": refs[call.id]} if refs and refs.get(call.id) else {}),
                 **({"notification_ids": notification_ids} if notification_ids else {}),

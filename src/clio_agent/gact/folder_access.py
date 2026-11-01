@@ -56,7 +56,7 @@ def requested_folders(name: str, args: Mapping[str, Any]) -> list[str]:
         value = args.get("filepath")
         if isinstance(value, str) and value:
             paths.append((value, False))
-    elif name in {"fs_list_directory", "fs_search_text"}:
+    elif name in {"fs_list_directory", "fs_search_text", "fs_glob"}:
         value = args.get("path") or "."
         if isinstance(value, str) and value:
             paths.append((value, Path(value).expanduser().is_dir()))
@@ -86,6 +86,7 @@ def requested_folders(name: str, args: Mapping[str, Any]) -> list[str]:
             "fs_read_file",
             "fs_list_directory",
             "fs_search_text",
+            "fs_glob",
             "shell_bash",
         }
         policy._check_connected_storage(path, field="path", write=not reads_source)

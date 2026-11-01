@@ -255,11 +255,6 @@ limits.agent_task_output_digest_chars: 8000
 # larger attachments, lower to bound prompt growth.
 limits.context_inline_bytes: 32768
 
-# CLIO_FS_MAX_READ_BYTES  (int)  <- src/clio_agent/tools/servers/fs_server.py
-# Byte cap on a single read_file tool call; raise to read larger files
-# whole, lower to bound memory and token cost.
-limits.fs_read_bytes: 262144
-
 # CLIO_MAX_LM_CALL_S  (float)  <- src/clio_agent/runtime/lm_activity.py
 # Hard ceiling (seconds) an in-flight LM call is trusted as progress before
 # the watchdog assumes it's wedged; raise for slow long-output models.

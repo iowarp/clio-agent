@@ -43,7 +43,7 @@ from clio_agent.sdk.versions import PluginRef, VersionRangeError, valid_plugin_i
 #: Claude Code tool name -> (CLIO tool names, the plugin that provides them).
 TOOL_MAP: dict[str, tuple[tuple[str, ...], str]] = {
     "Read": (("fs_read_file",), "workspace"),
-    "Glob": (("fs_list_directory",), "workspace"),
+    "Glob": (("fs_glob",), "workspace"),
     "Grep": (("fs_search_text",), "workspace"),
     "Edit": (("fs_edit_file",), "workspace"),
     "MultiEdit": (("fs_edit_file",), "workspace"),
@@ -58,10 +58,8 @@ TOOL_MAP: dict[str, tuple[tuple[str, ...], str]] = {
 #: Claude Code tools whose CLIO counterpart covers only part of their behavior. Each
 #: use is reported as a ``tool_mapped_lossy`` warning naming what the import loses.
 LOSSY_TOOL_MAP: dict[str, str] = {
-    "Glob": "Glob matches paths recursively by pattern; fs_list_directory lists one "
-    "folder's immediate entries (fs_search_text's file_glob narrows files by pattern)",
-    "Grep": "Grep matches regular expressions with output modes; fs_search_text "
-    "matches literal text and returns bounded line-numbered context",
+    "Grep": "Grep's multiline mode and its -A/-B split context have no fs_search_text "
+    "counterpart; its regex, glob and files/content/count modes map directly",
 }
 
 #: Claude Code hook event -> CLIO hook event. Others are reported as unmapped.

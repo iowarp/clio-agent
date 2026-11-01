@@ -380,10 +380,9 @@ def test_root_data_result_is_publicly_projected_without_private_metadata() -> No
     finally:
         set_tool_runtime_fallback(ToolRuntimeHooks())
 
-    # Finding E follow-up: a top-level pydantic BaseModel result now serializes
-    # via model_dump(mode="json") -- a real encoding path, not the historical
-    # repr-text degradation this assertion used to pin.
-    assert json.loads(result) == root.model_dump(mode="json")
+    # Text first (TD28): the server's own text block is the model's text; the
+    # structured value stays in the observer's result below.
+    assert result == f"Root({root!s})"
     completed = [row for row in telemetry if row[2] == "completed"]
     assert len(completed) == 1
     assert {key: value for key, value in completed[0][4].items() if key != "presentation"} == {

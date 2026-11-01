@@ -80,7 +80,7 @@ def bounded_model_tool_result(
             if root is None and session_id is None
             else _spill(text, root=root, session_id=session_id)
         )
-        where = f"the full result is in `{path}` for you to explore (read it in parts or search it)"
+        where = f"the full result is in `{path}`; {_continuation(path, text, max_chars)}"
     except OSError as exc:
         logger.warning(
             "tool result spill failed reason=%s chars=%d error=%r",
@@ -104,6 +104,17 @@ def bounded_model_tool_result(
     # to the model. Recording only `note` silently loses that part of the view.
     injections.note("result_spilled", projection)
     return projection
+
+
+def _continuation(path: Path, text: str, max_chars: int) -> str:
+    """How to read on from what was shown: the exact next read, or a search for JSON."""
+    if path.suffix == ".json":
+        return "it is one JSON document, so search it with fs_search_text or load it in a script"
+    shown_lines = text[:max_chars].count("\n") + 1
+    return (
+        f'read on with fs_read_file(filepath="{path}", offset={shown_lines}), '
+        "or search it with fs_search_text"
+    )
 
 
 def _spill(text: str, *, root: str | Path | None = None, session_id: str | None = None) -> Path:

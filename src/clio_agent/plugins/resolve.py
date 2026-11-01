@@ -18,9 +18,7 @@ resolution with errors raises :class:`ResolutionError` naming each one.
 
 from __future__ import annotations
 
-import hashlib
 import heapq
-import json
 from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
 from typing import Any
@@ -28,6 +26,7 @@ from typing import Any
 from clio_agent.plugins.compose import PRODUCT_MARKETPLACES, ComposedPrompt, compose
 from clio_agent.plugins.model_union import model_union
 from clio_agent.plugins.records import Diagnostic, FragmentRecord, PluginRecord, SubagentRecord
+from clio_agent.plugins.resolution_digest import resolution_digest
 from clio_agent.sdk.agent import CORE_PLUGIN, AgentSpec
 from clio_agent.sdk.versions import PluginRef, VersionRangeError
 
@@ -536,26 +535,6 @@ def _collect(builder: _Builder, entries: list[Entry]) -> dict[str, Any]:
 
 
 #: Install locations: where a store keeps a plugin is not part of what resolved.
-_LOCATION_KEYS = frozenset({"root", "path"})
-
-
-def _without_locations(value: Any) -> Any:
-    if isinstance(value, Mapping):
-        return {k: _without_locations(v) for k, v in value.items() if k not in _LOCATION_KEYS}
-    if isinstance(value, list):
-        return [_without_locations(v) for v in value]
-    return value
-
-
-def _digest(payload: Mapping[str, Any]) -> str:
-    """Content identity of a resolution: plugins, digests and prompt, not store paths."""
-
-    blob = json.dumps(
-        _without_locations(payload), sort_keys=True, separators=(",", ":"), default=str
-    )
-    return hashlib.sha256(blob.encode("utf-8")).hexdigest()
-
-
 def _finish(
     builder: _Builder,
     *,
@@ -676,7 +655,7 @@ def _finish(
     if errors:
         raise ResolutionError(errors)
     resolution.diagnostics = [row.to_dict() for row in builder.diagnostics]
-    resolution.digest = _digest(resolution.body())
+    resolution.digest = resolution_digest(resolution.body())
     return resolution
 
 

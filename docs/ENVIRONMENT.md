@@ -122,7 +122,6 @@ These resolve through `clio_agent.conf`: a value under the dotted key in `config
 | `CLIO_FLOWCEPT_PERSISTENCE_OWNER` | `provenance.agentic.flowcept.persistence_owner` | str | `client` | `src/clio_agent/gact/provenance/factory.py` |
 | `CLIO_FLOWCEPT_PRIVACY` | `provenance.agentic.flowcept.privacy` | str | `metadata` | `src/clio_agent/gact/provenance/factory.py` |
 | `CLIO_FLOWCEPT_WORKFLOW_SCOPE` | `provenance.agentic.flowcept.workflow_scope` | str | `session` | `src/clio_agent/gact/provenance/factory.py` |
-| `CLIO_FS_MAX_READ_BYTES` | `limits.fs_read_bytes` | int | `262144` | `src/clio_agent/tools/servers/fs_server.py` |
 | `CLIO_GACT_ALLOWED_HOSTS` | `gact.allowed_hosts` | str | _(unset)_ | `src/clio_agent/gact/cors.py` |
 | `CLIO_GACT_BEARER_TOKEN` | `gact.auth.bearer_token` | str | _(unset)_ | `src/clio_agent/gact/auth.py` |
 | `CLIO_GACT_CORS_ORIGINS` | `gact.cors.origins` | str | _(unset)_ | `src/clio_agent/gact/cors.py` |

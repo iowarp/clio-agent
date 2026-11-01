@@ -106,6 +106,8 @@ def save_task_result(
     }
     try:
         _write_once(path, text)
+        # The file is written line by line (indented JSON), so it pages with ranged reads.
+        saved["read_with"] = f'fs_read_file(filepath="{path}", offset=1)'
     except OSError as exc:
         saved = {**saved, "path": "", "reason": TASK_RESULT_SAVE_FAILED_REASON, "error": str(exc)}
     trace.event(

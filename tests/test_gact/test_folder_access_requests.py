@@ -112,7 +112,7 @@ def test_real_read_waits_for_human_then_runs_or_returns_refusal(
         assert result == "deny" and "user declined" in result.deny_message
         assert granted_write_roots(str(root)) == ()
     else:
-        assert result["content"] == "private research"
+        assert result["total_lines"] == 1 and result["path"] == str(source.resolve())
         assert app.state.workspaces.get(wid).config["granted_write_roots"] == [
             str(external.resolve())
         ]

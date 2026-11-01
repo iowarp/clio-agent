@@ -1,10 +1,11 @@
 """Filesystem MCP server for CLIO.
 
-Five curated tools. Three read, without executing anything; two write:
+Six curated tools. Four read, without executing anything; two write:
 
-    - read_file: pull a file's contents (capped at 256 KB).
+    - read_file: read a range of a text file's lines, numbered, sized to the result bound.
     - list_directory: discover an approved folder's immediate entries (bounded).
-    - search_text: find literal text with line-numbered context (bounded).
+    - search_text: find text with ripgrep: matching files, matching lines, or counts.
+    - glob: find files by path pattern, newest first.
     - write_file: create a file or replace its whole content (Claude Code's Write).
     - edit_file: replace an exact string in an existing file (Claude Code's Edit).
 
@@ -17,13 +18,12 @@ PreToolUse hooks run on them. GACT records each successful write as an applied
 
 from __future__ import annotations
 
-from pathlib import Path
 from typing import Annotated, Any
 
 from fastmcp import FastMCP
+from fastmcp.tools import ToolResult
 from pydantic import Field
 
-from clio_agent import conf
 from clio_agent.tools import fs_edit
 from clio_agent.tools.builtin_annotations import (
     _FILE_WRITE_ANNOTATIONS,
@@ -32,19 +32,11 @@ from clio_agent.tools.builtin_annotations import (
 from clio_agent.tools.builtin_annotations import (
     FS_TOOL_ANNOTATIONS as FS_TOOL_ANNOTATIONS,
 )
-from clio_agent.tools.file_policy import (
-    validate_non_empty_string,
-    validate_read_path,
-)
 from clio_agent.tools.fs_inspection import list_directory as _list_directory
-from clio_agent.tools.fs_inspection import search_text as _search_text
+from clio_agent.tools.fs_read import DEFAULT_LIMIT, read_text_range
+from clio_agent.tools.fs_search_rg import SearchMode, glob_files, search_files
 
 fs_server = FastMCP("fs")
-
-# 256 KB cap on direct reads — resolved file → env → default (clio_agent.conf).
-_MAX_READ_BYTES = conf.resolve(
-    "limits.fs_read_bytes", env="CLIO_FS_MAX_READ_BYTES", default=256 * 1024, cast=conf.as_int
-)
 
 # Declared MCP ToolAnnotations — the SINGLE source of truth for each built-in
 # tool's effect class (#1061). The catalog read/write tags are now a PROJECTION
@@ -72,54 +64,78 @@ def list_directory(path: str, limit: Annotated[int, Field(ge=1, le=1_000)] = 200
 def search_text(
     path: str,
     query: Annotated[str, Field(min_length=1, max_length=1_000)],
-    file_glob: str = "*",
-    limit: Annotated[int, Field(ge=1, le=200)] = 100,
-    context_lines: Annotated[int, Field(ge=0, le=50)] = 2,
+    mode: Annotated[
+        SearchMode,
+        Field(
+            description="files: matching files with counts (default); content: matching lines "
+            "with numbers; count: totals."
+        ),
+    ] = "files",
+    regex: bool = False,
+    file_glob: Annotated[
+        str, Field(description="Only search files matching this glob, e.g. *.py or src/**/*.ts.")
+    ] = "",
+    context_lines: Annotated[int, Field(ge=0, le=50)] = 0,
     case_sensitive: bool = True,
-) -> dict[str, Any]:
-    """Search literal text in an approved file or directory, with line-numbered context.
+    limit: Annotated[int, Field(ge=1, le=500)] = 100,
+) -> ToolResult:
+    """Search text in an approved file or folder (ripgrep; skips binary, Git and ignored files).
 
-    Use file_glob to narrow source files. Does not follow links, execute code or write.
-    Scan/result limits and incomplete files are explicit; no matches is not proof of absence
-    when truncated. Binary files and common dependency/Git directories are skipped.
-    context_lines supplies 0–50 lines on each side; returned text is capped at 32,000 characters.
+    Start with mode="files" to find where something is, then read the ranges you need, or
+    use mode="content" for the matching lines themselves. query is literal unless regex is
+    true. Truncation is stated in the result; no match is not proof of absence when it is.
     """
-    return _search_text(path, query, file_glob, limit, context_lines, case_sensitive)
+    return search_files(
+        path,
+        query,
+        mode=mode,
+        regex=regex,
+        file_glob=file_glob,
+        context_lines=context_lines,
+        case_sensitive=case_sensitive,
+        limit=limit,
+    )
+
+
+@fs_server.tool(annotations=_READ_FILE_ANNOTATIONS)
+def glob(
+    pattern: Annotated[
+        str, Field(min_length=1, description="A file pattern such as **/*.py or docs/*.md.")
+    ],
+    path: str,
+    limit: Annotated[int, Field(ge=1, le=1_000)] = 200,
+) -> ToolResult:
+    """Find files under an approved folder whose path matches pattern, newest first.
+
+    ** crosses folders. Skips Git and ignored files. Truncation is stated in the result.
+    """
+    return glob_files(pattern, path, limit)
 
 
 @fs_server.tool(annotations=_READ_FILE_ANNOTATIONS)
 def read_file(
     filepath: str,
+    offset: Annotated[int, Field(ge=1, description="1-based line to start from.")] = 1,
+    limit: Annotated[
+        int, Field(ge=1, le=DEFAULT_LIMIT, description="Most lines to return.")
+    ] = DEFAULT_LIMIT,
     access_reason: Annotated[
         str,
         Field(
             description="Explain why this file is needed when requesting access outside permitted folders."
         ),
     ] = "",
-) -> dict[str, Any]:
-    """Read a file's contents from disk.
+) -> ToolResult:
+    """Read a text file's lines, each prefixed with its line number.
 
-    Capped at 256 KB. Larger files return ``truncated: true`` plus
-    the head; the agent should fall back to a format-specific reader
-    for big files when one is available.
-
-    Path validated through file_policy — only files inside the
-    configured allowed roots are readable.
+    Returns whole lines from ``offset`` until ``limit`` or the result size limit, after a
+    header with the range and the file's line count; when lines remain, the header ends
+    with the offset to continue from. Read the ranges you need rather than whole large
+    files. Binary files are refused with the tool that can read them. Only files inside
+    the allowed roots are readable.
     """
 
-    validate_non_empty_string(filepath, field="filepath")
-    safe = validate_read_path(filepath)
-    p = Path(safe)
-    raw = p.read_bytes()
-    truncated = len(raw) > _MAX_READ_BYTES
-    if truncated:
-        raw = raw[:_MAX_READ_BYTES]
-    return {
-        "path": str(p),
-        "size_bytes": p.stat().st_size,
-        "content": raw.decode("utf-8", errors="replace"),
-        "truncated": truncated,
-    }
+    return read_text_range(filepath, offset, limit)
 
 
 @fs_server.tool(annotations=_FILE_WRITE_ANNOTATIONS)

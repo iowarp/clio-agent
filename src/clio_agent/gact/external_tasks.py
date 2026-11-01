@@ -63,6 +63,8 @@ class ExternalConnection:
     invocation: SubmissionContext | None = None
     rpcs: set[asyncio.Task[Any]] = field(default_factory=set)
     closing: bool = False
+    #: This connection's tool listing, read once per connected client (reset on reconnect).
+    tools: dict[str, Any] | None = None
 
 
 class ExternalTasks:
@@ -259,8 +261,11 @@ class ExternalTasks:
     ) -> Any:
         """Submit one call using its captured schema and trusted invocation identity."""
         assert host.client is not None
-        tools = await host.client.list_tools()
-        component = next((tool for tool in tools if tool.name == name), None)
+        if host.tools is None or name not in host.tools:
+            # Listed once per connected client; a name it lacked is re-listed, since a
+            # server may have added it (tools/list_changed) since the listing.
+            host.tools = {tool.name: tool for tool in await host.client.list_tools()}
+        component = host.tools.get(name)
         if component is None:
             raise ValueError("Tool is unavailable on the selected server")
         sid, invocation = context.active_session_id(), TASK_CALL.get().invocation_id or uuid4().hex

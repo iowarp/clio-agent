@@ -29,7 +29,7 @@ from clio_agent.gact.hooks.wire import (
 #: ``Write|Edit`` reads the input it was written for.
 CLAUDE_TOOL_NAMES: dict[str, str] = {
     "fs_read_file": "Read",
-    "fs_list_directory": "Glob",
+    "fs_glob": "Glob",
     "fs_search_text": "Grep",
     "fs_write_file": "Write",
     "fs_edit_file": "Edit",
@@ -44,10 +44,11 @@ CLAUDE_TOOL_NAMES: dict[str, str] = {
 CLAUDE_INPUT_KEYS: dict[str, str] = {"filepath": "file_path"}
 
 #: Per-tool argument renames on top of :data:`CLAUDE_INPUT_KEYS`. ``fs_search_text``
-#: is Grep on the wire: its literal ``query`` is Grep's ``pattern`` and its
-#: ``file_glob`` is Grep's ``glob``. (``query`` stays ``query`` for WebSearch.)
+#: is Grep on the wire: its ``query`` is Grep's ``pattern``, its ``file_glob`` Grep's
+#: ``glob`` and its ``mode`` Grep's ``output_mode``. (``query`` stays ``query`` for
+#: WebSearch.)
 CLAUDE_TOOL_INPUT_KEYS: dict[str, dict[str, str]] = {
-    "fs_search_text": {"query": "pattern", "file_glob": "glob"},
+    "fs_search_text": {"query": "pattern", "file_glob": "glob", "mode": "output_mode"},
 }
 
 _DECISIONS = {"allow": "allow", "approve": "allow", "deny": "deny", "block": "deny", "ask": "ask"}

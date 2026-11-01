@@ -23,6 +23,7 @@ from clio_agent.runtime.document_runtime import (
 )
 from clio_agent.runtime.execution_environment import publish_environment
 from clio_agent.runtime.github_cli import ensure_github_cli
+from clio_agent.runtime.ripgrep import ensure_ripgrep
 
 
 def prepare_protected_execution(
@@ -74,10 +75,17 @@ def prepare_managed_packages(
         report("GitHub command-line tool is ready.")
         return github
 
+    def prepare_ripgrep() -> Path:
+        report("Preparing and checking ripgrep for file search...")
+        ripgrep = ensure_ripgrep()
+        report("ripgrep is ready.")
+        return ripgrep
+
     with package_preparation.preparing(cache_root):
-        with ThreadPoolExecutor(max_workers=2, thread_name_prefix="clio-install") as workers:
+        with ThreadPoolExecutor(max_workers=3, thread_name_prefix="clio-install") as workers:
             office_job = workers.submit(prepare_office)
             github_job = workers.submit(prepare_github)
+            ripgrep_job = workers.submit(prepare_ripgrep)
             result = prepare_document_runtime(workspace, cache_root=cache_root, progress=report)
             if result["javascript"]["status"] != "ready":
                 raise DocumentRuntimeError(
@@ -85,6 +93,7 @@ def prepare_managed_packages(
                 )
             office = office_job.result()
             github = github_job.result()
+            ripgrep = ripgrep_job.result()
         result["native_tools"]["soffice"] = {"status": "available", "path": office}
         result["capabilities"]["office_render_recalculate"] = "available"
         result["native_tools"]["gh"] = {
@@ -92,6 +101,7 @@ def prepare_managed_packages(
             "path": str(github),
             "authentication": "clio_account",
         }
+        result["native_tools"]["rg"] = {"status": "available", "path": str(ripgrep)}
     return result
 
 

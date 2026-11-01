@@ -12,6 +12,7 @@ from clio_agent.arc.task_types import TaskSnapshot
 from clio_agent.gact.agents import tool_instrumentation
 from clio_agent.gact.agents.native_presenters import native_presentation
 from clio_agent.tools.tool_presentation import present_mcp_result
+from tests._fs_results import read_result
 
 
 def _common_task_row(
@@ -316,13 +317,7 @@ def test_wait_start_without_context_is_private_and_distinguishes_status_checks(
 
 def test_markdown_file_presents_readable_frontmatter_and_body() -> None:
     content = "---\nname: imagegen\ndescription: Create images\n---\n# Image generation\n\nRead the **procedure**."
-    result = {
-        "structuredContent": {
-            "path": r"D:\skills\SKILL.md",
-            "size_bytes": len(content),
-            "content": content,
-        }
-    }
+    result = read_result(r"D:\skills\SKILL.md", content)
     before = json.dumps(result)
     view = present_mcp_result("fs_read_file", {}, result)
     blocks = {block["id"]: block for block in view["blocks"]}
@@ -343,12 +338,11 @@ def test_markdown_file_presents_readable_frontmatter_and_body() -> None:
     ],
 )
 def test_file_format_is_declared_by_read_presenter(path: str, content: str, kind: str) -> None:
-    view = present_mcp_result(
-        "fs_read_file", {}, {"structuredContent": {"path": path, "content": content}}
-    )
+    view = present_mcp_result("fs_read_file", {}, read_result(path, content))
     block = next(block for block in view["blocks"] if block["id"] == "file")
     assert block["type"] == kind
     assert block["text"] == content
+    assert block.get("start_line") == (None if kind == "markdown" else 1)
 
 
 def test_resource_outline_exposes_the_returned_collections() -> None:
@@ -652,23 +646,16 @@ def test_web_document_identity_and_degraded_empty_search_are_visible() -> None:
 def test_file_result_has_one_portable_filename_link() -> None:
     path = r"D:\workspace\evidence.txt"
     view = present_mcp_result(
-        "fs_read_file",
-        {},
-        {
-            "structuredContent": {
-                "path": path,
-                "size_bytes": 12,
-                "content": "Evidence body",
-            }
-        },
+        "fs_read_file", {}, read_result(path, "Evidence body", start=40, total=90)
     )
-    assert view["summary"] == "12 bytes"
+    assert view["summary"] == "Lines 40–40 of 90"
     assert view["blocks"][0] == {
         "id": "file-link",
         "type": "link",
         "target": "file",
         "uri": path,
         "label": "evidence.txt",
+        "line": 40,
         "text": "",
         "language": "",
         "command": "",

@@ -47,6 +47,7 @@ _NON_CONSUMING_PATH_TOOLS = frozenset(
     {
         "fs_write_file",
         "fs_list_directory",
+        "fs_glob",
         "ndp_list_organizations",
         "ndp_search_datasets",
         "ndp_get_dataset_details",

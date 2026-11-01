@@ -8,6 +8,7 @@ follow, and where the rest is for it to explore.
 
 from __future__ import annotations
 
+import json
 import re
 from pathlib import Path
 
@@ -77,3 +78,20 @@ def test_a_failed_spill_is_told_never_silent(
     assert "reason=model_tool_result_spill_failed" in caplog.text
     assert len(result) <= 500
     assert told == [("result_spilled", result)]
+
+
+def test_the_note_names_the_read_that_continues_a_text_result(tmp_path: Path) -> None:
+    set_config("limits", {"model_tool_result_chars": 2_000})
+    rows = "\n".join(f"row-{i:05d},{'x' * 40}" for i in range(500))
+    with tool_workspace_context(str(tmp_path)), injections.collect():
+        result = bounded_model_tool_result(rows)
+    path = _spilled_path(result)
+    shown = rows[:2_000].count("\n") + 1
+    assert f'fs_read_file(filepath="{path}", offset={shown})' in result
+
+
+def test_a_json_result_is_searched_rather_than_paged(tmp_path: Path) -> None:
+    set_config("limits", {"model_tool_result_chars": 2_000})
+    with tool_workspace_context(str(tmp_path)), injections.collect():
+        result = bounded_model_tool_result(json.dumps({"rows": ["x" * 50] * 100}))
+    assert "one JSON document, so search it with fs_search_text" in result

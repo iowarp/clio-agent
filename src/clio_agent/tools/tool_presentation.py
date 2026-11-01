@@ -11,8 +11,6 @@ from dataclasses import dataclass
 from pathlib import Path, PureWindowsPath
 from typing import Any
 
-import yaml
-
 from clio_agent.tools.file_diff import unified_file_diff
 from clio_agent.tools.file_policy import validate_read_path
 from clio_agent.tools.fs_edit import PreviousContent, capture_previous_content
@@ -376,165 +374,6 @@ def _file_start(args: Mapping[str, Any]) -> dict[str, Any] | None:
     }
 
 
-def _read(args: Mapping[str, Any], result: Any, snapshot: Any) -> dict[str, Any]:
-    del args, snapshot
-    row = _structured(result)
-    if "content" not in row:
-        return standard_mcp_presentation(result)
-    path = PureWindowsPath(str(row.get("path") or ""))
-    content = str(row.get("content") or "")
-    kind = "code"
-    metadata: list[dict[str, Any]] = []
-    if path.suffix.lower() in {".md", ".markdown"}:
-        kind = "markdown"
-        # This is declared file-format presentation, not model-output repair.
-        # The unmodified source remains in the result's technical evidence.
-        lines = content.splitlines(keepends=True)
-        if lines and lines[0].strip() == "---":
-            end = next((i for i, line in enumerate(lines[1:], 1) if line.strip() == "---"), None)
-            if end is not None:
-                try:
-                    frontmatter = yaml.safe_load("".join(lines[1:end]))
-                except yaml.YAMLError:
-                    frontmatter = None
-                if isinstance(frontmatter, Mapping):
-                    identity = "\n".join(
-                        f"{key.replace('_', ' ').capitalize()}: {value}"
-                        for key, value in frontmatter.items()
-                        if isinstance(key, str) and isinstance(value, str | int | float | bool)
-                    )
-                    if identity:
-                        metadata.append({"id": "metadata", "type": "text", "text": identity})
-                    content = "".join(lines[end + 1 :]).lstrip("\r\n")
-    elif path.suffix.lower() in {".txt", ".log"}:
-        kind = "text"
-    language = _CODE_LANGUAGE_BY_NAME.get(path.name.lower()) or _CODE_LANGUAGE_BY_SUFFIX.get(
-        path.suffix.lower(), "text"
-    )
-    return {
-        "subject": "file-link",
-        "summary": f"{row.get('size_bytes', 0)} bytes",
-        "blocks": [
-            {
-                "id": "file-link",
-                "type": "link",
-                "target": "file",
-                "uri": str(row.get("path") or ""),
-                "label": path.name,
-            },
-            *metadata,
-            {
-                "id": "file",
-                "type": kind,
-                "text": content,
-                "language": language if kind == "code" else "",
-            },
-        ],
-    }
-
-
-def _inspection_start(args: Mapping[str, Any]) -> dict[str, Any]:
-    path = str(args.get("path") or "")
-    return {
-        "subject": "path",
-        "summary": str(args.get("query") or ""),
-        "blocks": [{"id": "path", "type": "link", "target": "file", "uri": path, "label": path}],
-    }
-
-
-def _directory(args: Mapping[str, Any], result: Any, snapshot: Any) -> dict[str, Any]:
-    del snapshot
-    row = _structured(result)
-    entries = row.get("entries")
-    if not isinstance(entries, list):
-        return standard_mcp_presentation(result)
-    view = _inspection_start({"path": row.get("path") or args.get("path")})
-    view["summary"] = f"{len(entries)} {'entry' if len(entries) == 1 else 'entries'}" + (
-        " (partial listing)" if row.get("truncated") else ""
-    )
-    view["blocks"].extend(
-        {
-            "id": f"entry-{i}",
-            "type": "link",
-            "target": "file",
-            "uri": str(entry.get("path") or ""),
-            "label": str(entry.get("name") or ""),
-            "detail": str(entry.get("type") or ""),
-        }
-        for i, entry in enumerate(entries)
-        if isinstance(entry, Mapping)
-    )
-    if row.get("truncated"):
-        view["blocks"].append(
-            {
-                "id": "incomplete",
-                "type": "text",
-                "severity": "warning",
-                "text": "The entry limit was reached; this listing is incomplete.",
-            }
-        )
-    return view
-
-
-def _search(args: Mapping[str, Any], result: Any, snapshot: Any) -> dict[str, Any]:
-    del snapshot
-    row = _structured(result)
-    matches = row.get("matches")
-    if not isinstance(matches, list):
-        return standard_mcp_presentation(result)
-    view = _inspection_start({"path": row.get("path") or args.get("path")})
-    count = len(matches)
-    files = row.get("files_scanned", 0)
-    view["summary"] = (
-        f"{count} {'match' if count == 1 else 'matches'}, "
-        f"{files} {'file' if files == 1 else 'files'} searched"
-    )
-    view["blocks"].append(
-        {
-            "id": "query",
-            "type": "text",
-            "label": "Search text",
-            "text": str(row.get("query") or args.get("query") or ""),
-        }
-    )
-    for i, match in enumerate(matches):
-        if not isinstance(match, Mapping):
-            continue
-        context = match.get("context")
-        text = (
-            "\n".join(
-                f"{line.get('line')}: {line.get('text', '')}"
-                for line in context
-                if isinstance(line, Mapping)
-            )
-            if isinstance(context, list)
-            else str(match.get("text") or "")
-        )
-        view["blocks"].extend(
-            [
-                {
-                    "id": f"match-{i}",
-                    "type": "link",
-                    "target": "file",
-                    "uri": str(match.get("path") or ""),
-                    "label": f"{match.get('path', '')}:{match.get('line', '')}",
-                },
-                {"id": f"context-{i}", "type": "code", "language": "text", "text": text},
-            ]
-        )
-    if row.get("truncated") or row.get("skipped"):
-        view["blocks"].append(
-            {
-                "id": "coverage",
-                "type": "text",
-                "severity": "warning",
-                "text": f"Incomplete coverage: {row.get('stop_reason') or 'files skipped or only partly read'}. "
-                f"{row.get('skipped', 0)} entries skipped; {len(row.get('incomplete_files') or [])} files partly read.",
-            }
-        )
-    return view
-
-
 def _diff(args: Mapping[str, Any], result: Any, snapshot: Any) -> dict[str, Any]:
     row = _structured(result)
     diff = str(row.get("unified_diff") or "")
@@ -713,20 +552,6 @@ def _web(args: Mapping[str, Any], result: Any, snapshot: Any) -> dict[str, Any]:
     return {"subject": "subject" if url or query else "", "summary": summary, "blocks": blocks}
 
 
-register_presentation_adapter(
-    "fs_list_directory",
-    PresentationAdapter(
-        _directory, start=_inspection_start, action="List directory", subject="path"
-    ),
-)
-register_presentation_adapter(
-    "fs_search_text",
-    PresentationAdapter(_search, start=_inspection_start, action="Search text", subject="path"),
-)
-register_presentation_adapter(
-    "fs_read_file",
-    PresentationAdapter(_read, start=_file_start, action="Read", subject="file-link"),
-)
 for _name, _action in (("fs_write_file", "Write"), ("fs_edit_file", "Edit")):
     register_presentation_adapter(
         _name,
@@ -744,3 +569,7 @@ for _name, _action in (
     ("web_fetch_events", "Conversion events"),
 ):
     register_presentation_adapter(_name, PresentationAdapter(_web, action=_action))
+
+# The file-inspection presenters (read, search, glob, list) live in their own module;
+# importing it registers them.
+from clio_agent.tools import fs_presentation as _fs_presentation  # noqa: E402,F401

@@ -19,6 +19,7 @@ TASKS_EXTENSION = "io.modelcontextprotocol/tasks"
 FS_ANNOTATIONS: dict[str, dict[str, bool]] = {
     "list_directory": {"readOnlyHint": True, "openWorldHint": False},
     "search_text": {"readOnlyHint": True, "openWorldHint": False},
+    "glob": {"readOnlyHint": True, "openWorldHint": False},
     "read_file": {"readOnlyHint": True, "openWorldHint": False},
     "write_file": {
         "readOnlyHint": False,
@@ -146,5 +147,6 @@ async def test_legacy_client_round_trips_gateway_tool(tmp_path: Path) -> None:
         result = await client.call_tool("fs_read_file", {"filepath": str(sample)})
 
         assert client.protocol_version == "2025-11-25"
-        assert result.data["content"] == "legacy"
+        assert result.data["total_lines"] == 1
+        assert result.content[0].text.endswith("1\tlegacy")
         assert result.is_error is False
