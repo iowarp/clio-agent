@@ -237,24 +237,15 @@ def build_write_todos_tool(agent_def: Any) -> Any:
     from clio_agent.gact.agents.tool_instrumentation import native_tool  # noqa: PLC0415
 
     def write_todos(todos: list) -> str:
-        """Record your todo checklist for a multi-step job (execution phase only).
+        """Keep a short checklist of the next concrete steps of a multi-step job.
 
-        Pass the COMPLETE list every call — this REPLACES the whole list (there is no per-item
-        update). Each todo is ``{"content": <str>, "status": "pending"|"in_progress"|"completed"}``.
-
-        Guidance:
-        - Always transition a todo pending -> in_progress -> completed; never jump straight from
-          pending to completed (mark it in_progress while you work it).
-        - Multiple todos may be in_progress at once (clio runs parallel subagents), but keep it
-          honest — only mark in_progress what is actually being worked.
-        - blocked work is NOT completed: leave a blocked item pending or in_progress and note the
-          blocker in its content; never mark it completed to move on.
-        - Preserve the requested outcome when revising a todo. A failed attempt does not satisfy
-          the original requirement: do not replace "render and review" with "attempt rendering"
-          and mark it completed. Keep the requirement and blocker visible unless the user waives it.
-        - Reconcile before finishing: no todo should be left pending/in_progress when the task is
-          done — the final list should reflect reality.
-        - Issue exactly ONE write_todos per step with the full list; two in one step is rejected.
+        Each call replaces the whole list; each todo is
+        ``{"content": <str>, "status": "pending"|"in_progress"|"completed"}``. It helps on
+        work with three or more steps; a simple task does not need it. Mark an item
+        in_progress while you work it and completed when it is actually done: blocked or
+        partly done work is not completed, so keep the blocker in its text, and keep the
+        requested outcome when you revise an item. Because a call replaces the list, a
+        second call in the same step would be ambiguous and is rejected.
 
         Not available in Plan mode (plan mode authors the plan file instead)."""
 

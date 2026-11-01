@@ -432,6 +432,7 @@ def test_the_curator_is_never_offered_for_delegation(client: TestClient) -> None
 def test_the_turn_path_withholds_tools_and_their_guidance(client: TestClient) -> None:
     from clio_agent.gact.agents.prompt_basis import turn_agent_def
     from clio_agent.gact.agents.resolution import session_resolution, withhold_session_tools
+    from clio_agent.plugins.compose_final import final_prompt_text
 
     app = client.app
     root = _root(app)
@@ -448,9 +449,13 @@ def test_the_turn_path_withholds_tools_and_their_guidance(client: TestClient) ->
     ):
         resolution = session_resolution(app, session.id)
         turn_def, built = turn_agent_def(app, session.id, resolution)
-        agent = withhold_session_tools(app, session.id, turn_def, resolution, built)
+        agent = withhold_session_tools(app, session.id, turn_def)
         assert kept <= set(agent.tools) and not gone & set(agent.tools)
-        assert ("create_memory" in agent.system_prompt) == ("create_memory" in kept)
+        # The builder composes the prompt for the final tools, so guidance leaves with them.
+        prompt = final_prompt_text(
+            agent.system_prompt, built.prompt, agent.tools, delegated=session is child
+        )
+        assert ("create_memory" in prompt) == ("create_memory" in kept)
 
 
 def test_a_scope_is_read_exactly_and_one_document_exports_alone(client: TestClient) -> None:

@@ -39,7 +39,7 @@ from clio_agent.gact.routes._body import json_body
 from clio_agent.gact.types import ErrorEnvelope, ErrorInfo
 from clio_agent.lm import sent_prompt
 from clio_agent.plugins.check import check
-from clio_agent.plugins.compose import prompt_text_without
+from clio_agent.plugins.compose_final import final_prompt_text
 from clio_agent.plugins.inspection import inspect_plugin_files
 from clio_agent.plugins.records import PluginRecord
 from clio_agent.plugins.resolve import Delta, Resolution, ResolutionError
@@ -391,8 +391,8 @@ def register_plugin_routes(app: FastAPI, deps: "GactDeps") -> None:
         withheld = session_withheld_tools(app, sid, view["tool_names"])
         view["tool_names"] = [name for name in view["tool_names"] if name not in withheld]
         delegated = session_is_delegated(app, sid)
-        text = prompt_text_without(
-            view["prompt"]["text"], resolution.prompt, set(withheld), delegated=delegated
+        text = final_prompt_text(
+            view["prompt"]["text"], resolution.prompt, view["tool_names"], delegated=delegated
         )
         view["prompt"] = {**view["prompt"], "text": text}
         view["session_scope"] = "delegated" if delegated else "root"

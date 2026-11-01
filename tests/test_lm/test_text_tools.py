@@ -74,7 +74,7 @@ def test_one_block_retains_every_parallel_call_in_its_original_order() -> None:
 def test_system_carries_the_rules_and_every_tool_schema() -> None:
     system = render_system("You are clio.", [SEARCH])
     assert system.startswith("You are clio.\n\n# How you act")
-    assert "NOT function calls of your own runtime" in system
+    assert "You call them by writing plain text" in system
     assert "# Available tools" in system
     assert "- search: Search the corpus." in system
     assert json.dumps(SEARCH.parameters, sort_keys=True) in system
@@ -567,10 +567,10 @@ def test_markup_around_anything_but_a_declared_tool_or_call_remains_an_answer(
     assert (split.text, split.calls) == (reply, [])
 
 
-def test_turn_reminder_requires_both_fences_without_opening_a_block() -> None:
+def test_turn_reminder_states_both_fences_and_asks_for_wide_steps() -> None:
     assert FENCE not in TURN_REMINDER
     assert "opening line" in TURN_REMINDER and "closing line" in TURN_REMINDER
-    assert "JSON list alone or XML invoke/parameter tags are not calls" in TURN_REMINDER
+    assert "every call that does not depend on another's result" in TURN_REMINDER
 
 
 def test_reply_with_a_block_splits_text_and_calls() -> None:

@@ -25,7 +25,7 @@ from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
 from typing import Any
 
-from clio_agent.plugins.compose import ComposedPrompt, compose
+from clio_agent.plugins.compose import PRODUCT_MARKETPLACES, ComposedPrompt, compose
 from clio_agent.plugins.model_union import model_union
 from clio_agent.plugins.records import Diagnostic, FragmentRecord, PluginRecord, SubagentRecord
 from clio_agent.sdk.agent import CORE_PLUGIN, AgentSpec
@@ -663,6 +663,9 @@ def _finish(
         tools=tool_names,
         plugins=plugin_ids,
         generators=generators,
+        budget_exempt=frozenset(
+            entry.record.id for entry in entries if entry.record.marketplace in PRODUCT_MARKETPLACES
+        ),
     )
     for warning in composed.warnings:
         builder.diagnostics.append(

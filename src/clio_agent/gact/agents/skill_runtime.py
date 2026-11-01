@@ -227,10 +227,10 @@ def skills_prompt_block(runtime: SkillRuntime) -> str:
         return ""
     lines = [
         "## Skills available to you",
-        "These are procedures/rubrics you are expected to FOLLOW for the tasks they cover. "
-        "Choose relevant skills from their descriptions; the user need not name them. "
-        "Call load_skill for ordinary skills before applying them. Skills marked child-task "
-        "must be run with spawn_skill_task so delegation remains explicit and observable.",
+        "Each skill is a procedure for the tasks its description covers. Choose the "
+        "relevant ones yourself (the user need not name them): load an ordinary skill with "
+        "load_skill when you use it, and run one marked child-task with spawn_skill_task, "
+        "which keeps that delegation visible.",
     ]
     from clio_agent.gact.agents.skill_effects import (  # noqa: PLC0415
         EFFECT_SPAWN_SUBAGENT,
@@ -638,8 +638,8 @@ def build_load_skill_tool(agent_def: "AgentDef", runtime: SkillRuntime) -> Any:
         title="Load skill",
         desc=(
             "Load the full procedure of one of this expert's declared skills "
-            "(see 'Skills available to you'). Call BEFORE performing the task "
-            "the skill covers. Progressive disclosure: for a generated catalog "
+            "(see 'Skills available to you') when its description covers the task, "
+            "then follow it. Progressive disclosure: for a generated catalog "
             "skill, call with no file first (its index names every component "
             "plus a compact signature); then, only if the index alone is not "
             "enough, load one or several component schemas in ONE call with "

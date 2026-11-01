@@ -181,7 +181,7 @@ async def _forward_turn_leased(state: "TurnState") -> Any:
         turn_def, build_resolution = await _run_turn_setup_off_loop(
             state, lambda: turn_agent_def(state.app, state.sid, resolution)
         )
-    turn_def = withhold_session_tools(state.app, state.sid, turn_def, resolution, build_resolution)
+    turn_def = withhold_session_tools(state.app, state.sid, turn_def)
     dynamic_agent = apply_session_tool_allowlist(state.app, turn_def, session_id=state.sid)
     state.active_agent_id = dynamic_agent.id
     _ctx.set_primary_agent_id(state.active_agent_id)

@@ -54,14 +54,13 @@ INVALID_TOOL_CALL = "clio_invalid_tool_calls"
 _TOOL_RULES = """\
 # How you act
 
-Your only way to look anything up, read or change data, or run an analysis is to call the
-tools in the Available tools list below -- there are no other capabilities. When the
-request needs information you have not observed in this conversation, call the tools
-that get it; do not answer from memory.
+You act by calling the tools in the Available tools list below. They are your only way
+to look anything up, read or change data, or run an analysis, so when the request needs
+information you have not observed in this conversation, call the tools that get it
+rather than answering from memory.
 
-These tools are NOT function calls of your own runtime: you call them by writing plain
-text in your reply. Write your message, then end it with exactly one block that lists
-every call for this step:
+You call them by writing plain text: end your message with one block that lists every
+call for this step:
 
 ```tool_calls
 [{"name": "<tool name>", "arguments": {<arguments as a JSON object>}}]
@@ -74,27 +73,20 @@ I'll check both sources.
 [{"name": "search_catalog", "arguments": {"query": "stations near Ridgecrest"}}, {"name": "read_notes", "arguments": {"path": "notes/site.md"}}]
 ```
 
-(Those two names only illustrate the format -- call only names from the Available tools
-list.) All calls in one block run at the same time; you see all their results together in
-the next message. Stop your reply immediately after the closing fence. Do not author
-new [tool results] sections or simulate later turns: only the host supplies actual
-observations. If a call needs another call's output, emit only the prerequisite now,
-then use its real result on the next step. Never invent a result or placeholder handle.
-A message that ends without a block is your final answer."""
+(Those two names only illustrate the format; the names you call come from the Available
+tools list.) All calls in one block run at the same time and their results come back
+together in the next message, so put every call that does not need another call's
+result into the same block, and make a call that needs one in a later step, once the
+real result has arrived. Results come only from the host, so stop after the closing
+fence. A message that ends without a block is your final answer."""
 
 #: Appended to every user or tool-result turn the transport sends (never to the
-#: system prompt), so the model is reminded where its tools are at each step.
+#: system prompt): the call syntax, and a nudge to make each step as wide as it can be.
 TURN_REMINDER = (
-    "(You act only through the Available tools. To call them, end your message with one "
-    "complete fenced block: an opening line of three backticks followed by tool_calls, "
-    "the JSON list on the next line, then a closing line of three backticks. Include BOTH "
-    "fences; a JSON list alone or XML invoke/parameter tags are not calls. "
-    "A JSON object wrapping a tool_calls list, XML <tool_calls> tags or [tool_calls] tags "
-    "are not calls either. "
-    "A single JSON call object also needs the complete fenced JSON list. "
-    "Underscores are not tool-call fences. "
-    "Stop after the closing fence and wait for host observations; do not simulate "
-    "tool results or later turns. Dependent calls require the preceding real result. "
+    "(To call tools, end your message with one fenced block: an opening line of three "
+    "backticks followed by tool_calls, the JSON list of calls on the next line, then a "
+    "closing line of three backticks; stop after it. First work out what you need next, "
+    "then put every call that does not depend on another's result into this one block. "
     "If no calls are needed, answer normally.)"
 )
 

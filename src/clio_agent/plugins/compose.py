@@ -31,6 +31,11 @@ SECTIONS = ("identity", "guidelines", "rendering", "capabilities", "domain")
 #: Who a fragment reaches: a root session (a person reads it), a delegated one, or both.
 SESSIONS = ("root", "delegated")
 FRAGMENT_TOKEN_BUDGET = 150
+#: Marketplaces whose plugins are part of CLIO itself (``store.BUILTIN_MARKETPLACE`` and
+#: ``service.DEFAULT_MARKETPLACE``). Their fragments are the product's own prompt and are
+#: judged by each agent's whole prompt, not by the per-fragment budget, which guides
+#: third-party authors adding to it.
+PRODUCT_MARKETPLACES = frozenset({"clio-builtin", "clio"})
 _TEMPLATE_RE = re.compile(r"\{\{\s*(agent\.(?:id|name|role)|env\.[A-Za-z_][A-Za-z0-9_]*)\s*\}\}")
 
 
@@ -89,31 +94,6 @@ class ComposedPrompt:
         }
 
 
-def prompt_text_without(
-    text: str, prompt: Mapping[str, Any], withheld: set[str], *, delegated: bool = False
-) -> str:
-    """``text`` (a prompt composed from ``prompt``) without the fragments this session
-    does not get: those whose ``when.tools`` name a tool the session was not given (a
-    tool withheld at build time takes its guidance along), and those whose
-    ``when.session`` scope excludes it (``root`` guidance is for a session a person
-    reads; ``delegated`` guidance for one another agent started). Fragments are
-    joined by a blank line.
-    """
-    excluded = "root" if delegated else "delegated"
-    for section in prompt.get("sections", []):
-        for fragment in section.get("fragments", []):
-            body = str(fragment.get("text") or "")
-            if body and (
-                withheld & set(fragment.get("when_tools") or ())
-                or fragment.get("session") == excluded
-            ):
-                parts = text.split("\n\n")
-                text = "\n\n".join(part for part in parts if part != body)
-                if body in text:  # a multi-paragraph fragment
-                    text = text.replace(f"\n\n{body}", "").replace(body, "")
-    return text
-
-
 def render_template(
     text: str, *, identity: Mapping[str, str], environ: Mapping[str, str] | None = None
 ) -> str:
@@ -155,8 +135,12 @@ def compose(
     plugins: Sequence[str],
     generators: Mapping[str, Callable[[], str]] | None = None,
     environ: Mapping[str, str] | None = None,
+    budget_exempt: frozenset[str] = frozenset(),
 ) -> ComposedPrompt:
-    """Compose the prompt. ``fragments`` are ``(plugin id, fragment)`` in resolution order."""
+    """Compose the prompt. ``fragments`` are ``(plugin id, fragment)`` in resolution order.
+
+    Plugins in ``budget_exempt`` (CLIO's own) are not held to the fragment budget.
+    """
 
     generators = dict(generators or {})
     warnings: list[str] = []
@@ -183,7 +167,7 @@ def compose(
             if generator is None:
                 warnings.append(f"{fragment.id}: no generator for {fragment.generate!r}")
             text = "\n\n".join(part for part in (text, generated) if part)
-        elif fragment.tokens > FRAGMENT_TOKEN_BUDGET:
+        elif fragment.tokens > FRAGMENT_TOKEN_BUDGET and plugin not in budget_exempt:
             warnings.append(
                 f"{fragment.id}: about {fragment.tokens} tokens, above the "
                 f"{FRAGMENT_TOKEN_BUDGET}-token fragment budget"

@@ -17,6 +17,7 @@ from typing import TYPE_CHECKING, Any, Literal, Optional, cast
 from clio_agent.gact import context as _ctx
 from clio_agent.gact.agents import skill_runtime as _skill_runtime
 from clio_agent.gact.agents import toolset_inventory
+from clio_agent.gact.agents.agent_prompt import final_agent_prompt
 from clio_agent.gact.agents.always_load_tools import attach_always_load_tools
 from clio_agent.gact.agents.composition import _runtime_active_workspace_context
 from clio_agent.gact.agents.live_tool_refresh import (
@@ -641,10 +642,9 @@ def build_agent_module(base_agent: Any, agent_def: "AgentDef", resolution: "Reso
             skills_context = (
                 skill_rt.prompt_block if self.kind == "react" else skill_rt.bodies_block
             )
+            agent_prompt = final_agent_prompt(agent_def, resolution, getattr(self, "tools", ()))
             self.system_prompt = "\n\n".join(
-                part
-                for part in (agent_def.system_prompt.strip(), workspace_context, skills_context)
-                if part
+                part for part in (agent_prompt, workspace_context, skills_context) if part
             )
 
         def forward(

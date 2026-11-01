@@ -94,15 +94,6 @@ REACT_SUBMIT_INVALID_OUTPUT = "react_submit_invalid_output"
 _log = logging.getLogger(__name__)
 
 
-#: Recorded once per agent context (an injection the user sees): a step's calls run at
-#: the same time, and each extra step is a whole model round trip.
-TOOL_USE_NOTE = (
-    "You can make several tool calls in one step; the calls of a step run at the same "
-    "time. When calls do not depend on each other's results -- loading several skills, "
-    "reading several files, independent lookups -- make them together in one step."
-)
-
-
 #: The loop running in this context (a tool reads it: ``draft_alternatives`` runs the
 #: same agent on the same task as tries).
 _ACTIVE_LOOP: contextvars.ContextVar["_Loop | None"] = contextvars.ContextVar(
@@ -366,7 +357,7 @@ class _Loop:
                 ledger.get(self.session, []) or [],
                 allow_transcript=self.scope == _ctx.run_keyed_scope(primary),
             )
-        self.recorder.injections([*self._tool_use_note(), *_ctx.turn_injections()])
+        self.recorder.injections(list(_ctx.turn_injections()))
         # The continuing flag is this forward's alone: anything it starts opens its own task.
         continue_token = _CONTINUING.set(False) if _CONTINUING.get() else None
         if continue_token is None:
@@ -411,10 +402,6 @@ class _Loop:
         refresh = getattr(self.agent, "_clio_tool_refresh", None)
         if refresh is not None and refresh(self.agent.tools):
             self.tools = self._listed_tools()
-
-    def _tool_use_note(self) -> list[tuple[str, str]]:
-        """Tell an agent with tools, once, that one step may call several at once."""
-        return [("tool_use", TOOL_USE_NOTE)] if set(self.agent.tools) - {"submit"} else []
 
     def _arrivals(self, *, human_only: bool = False) -> bool:
         """Inspect Core-pending arrivals; only the next input commit delivers them."""
