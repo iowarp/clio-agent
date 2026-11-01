@@ -27,7 +27,6 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
-import os
 import re
 import threading
 import uuid
@@ -69,6 +68,7 @@ from clio_agent.lm.engines.text_tools import (
 )
 from clio_agent.providers import claude_code_bridge as _bridge
 from clio_agent.providers.claude_code_audit import emit_call_started, emit_call_usage
+from clio_agent.providers.claude_code_cwd import session_cwd
 from clio_agent.providers.claude_code_lifecycle import DEAD_ENTRY_MARKER
 from clio_agent.providers.claude_code_multimodal import native_blocks
 from clio_agent.providers.claude_code_options import require_claude_agent_sdk, thinking_key
@@ -143,7 +143,7 @@ class AsyncClaudeCodeEngine:
     ) -> None:
         self.model = model
         self.thinking = thinking
-        self.cwd = cwd or os.getcwd()
+        self.cwd = cwd  # None: the session's workspace (claude_code_cwd)
         self.idle_timeout_s = idle_timeout_s
 
     def idle_timeout(self) -> float:
@@ -166,15 +166,18 @@ class AsyncClaudeCodeEngine:
     async def stream(self, request: Request) -> AsyncGenerator[Any, None]:
         """Run one query, yielding lm15 stream events."""
         system = render_system(request.system, request.tools)
-        key = conversation_key(self.model, self.cwd, thinking_key(self.thinking) or "")
+        cwd = self.cwd or session_cwd(_active_gact_session_id())
+        key = conversation_key(self.model, cwd, thinking_key(self.thinking) or "")
         send = _CONVERSATIONS.plan(key, request, system)
-        async for event in self._query(request, system, send):
+        async for event in self._query(request, system, send, cwd):
             yield event
 
     async def aclose(self) -> None:
         """Nothing to release: the pooled clients belong to their GACT sessions."""
 
-    async def _query(self, request: Request, system: str, send: Send) -> AsyncGenerator[Any, None]:
+    async def _query(
+        self, request: Request, system: str, send: Send, cwd: str
+    ) -> AsyncGenerator[Any, None]:
         # The one SDK import seam: installs once when absent, else a typed
         # ClaudeCodeCLIUnavailableError -- never a raw ImportError mid-call.
         await asyncio.to_thread(require_claude_agent_sdk)
@@ -215,7 +218,7 @@ class AsyncClaudeCodeEngine:
                             idle_timeout=self.idle_timeout(),
                             on_construct=_STREAM_CLIENT_POOL.bump_construct,
                             model=self.model,
-                            cwd=self.cwd,
+                            cwd=cwd,
                             thinking=self.thinking,
                             system_prompt=system,
                         )

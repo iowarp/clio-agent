@@ -19,6 +19,8 @@ this file only pins the gact-side hook that feeds it the real config.
 
 from __future__ import annotations
 
+import os
+
 from typing import TYPE_CHECKING, Any, cast
 
 import dspy
@@ -162,6 +164,8 @@ def test_resolves_model_and_system_prompt_and_calls_the_pool(
     call = calls[0]
     assert call["session_id"] == "sess-real"
     assert call["model"] == "claude-sonnet-4"
+    # Never the server's folder: the CLI tells the model its working folder.
+    assert call["cwd"] and call["cwd"] != os.getcwd()
     assert call["system_prompt"]  # a real rendered system message, not None/empty
     assert "answer" in call["system_prompt"] or "question" in call["system_prompt"]
 

@@ -42,9 +42,11 @@ connects it cold, as if pre-connect had never run. Pre-connect NEVER blocks
 its caller and NEVER competes unbounded for connect slots with a real turn:
 :func:`~clio_agent.providers.claude_code_stream_bounds.max_precede_connects`
 caps how many may be simultaneously pending. ``cwd`` is excluded from every
-mismatch check in the reconcile path (a bare-model-transport no-op; B3/B5/B6/
-B9 disable every tool/setting/hook that would ever resolve a path against
-it). A reconcile needing only a different MODEL is free (``set_model``, B13).
+mismatch check in the reconcile path: B3/B5/B6/B9 disable every tool, setting and
+hook that would resolve a path against it, but the CLI still tells the model its
+working folder, so it is the session's workspace root
+(:mod:`~clio_agent.providers.claude_code_cwd`), fixed for the session's life. A
+reconcile needing only a different MODEL is free (``set_model``, B13).
 
 **History (do not rebuild): #COPPER12 scope-keyed connections.** The prior
 design gave every ACTIVE ``stateful_scope()`` its own connection since a
