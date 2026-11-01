@@ -191,6 +191,22 @@ The script's approval is a grant scoped to that `run_code` call; at the prompt b
 
 **Teaching.** Fragment `code.run` (about 120 words) with one worked example: gather a batch of reads or queries, filter in Python, print a short summary. It says when not to use it: a single call or a short dependent sequence is cheaper as direct calls.
 
+## Design: tool I/O and default permissions
+
+Two settings on every tool, each declared by the tool's plugin with a good default and each overridable by the person per tool. Both follow Anthropic's programmatic tool calling (`allowed_callers`): a tool can be called directly, only from code, or both, and the guidance is to pick one where possible. Neither setting is a security boundary on its own: every call, nested ones included, still passes the permission gate.
+
+**I/O (`callers`).** `direct`, `code` or `both`; default `both`.
+
+- `direct`: the model calls it, scripts cannot. For tools that talk to the person or hold the agent's own state: `ask_user` and elicitation, `submit`, `write_todos`, `plan_enter`/`plan_update`/`plan_exit`, the spawn, wait and task tools, the goal and loop tools, `search_tools`, `run_code` itself, and the memory writes (`create_memory`, `update_memory`, `forget_memory`). These declarations replace the hard-coded `NOT_IN_SCRIPTS` list in `gact/code_mode/stubs.py`.
+- `code`: only scripts call it. Its schema is not in the prompt and it has no deferred entry; it exists as a kernel stub and a line in the `run_code` index. For bulk-data tools whose results are large and meant to be filtered (HDF5 reads across many files, a connected source's object listings). When the agent has no `run_code` (plan mode without enforced confinement, a role without it), a `code` tool falls back to `direct` with the typed reason `tool_callers_code_unavailable`.
+- `both`: everything else (file reads, search, web fetch).
+
+Declared with `native_tool(..., callers=)` and `tool(..., callers=)` for a plugin's own tools, and for MCP tools in `plugin.json` `extensions."ai.iowarp.clio".servers.<name>.callers` (the server's default) with `servers.<name>.tools.<tool>.callers` for one tool, beside `defer` and `description`. The tool listing and the `run_code` index say which tools are code-only; a script calling a `direct` tool gets the typed refusal it gets today.
+
+**Default permission.** `allow`, `ask` or `deny`, declared the same way (`permission=`, `servers.<name>.permission`, `servers.<name>.tools.<tool>.permission`). Undeclared, it follows the tool's annotations: read-only tools `allow`, destructive tools `ask`, others the approval mode's usual behaviour. A declared default is a policy rule at the lowest precedence: the person's own rules (from the settings page, `PUT /v1/policies`, or "allow for this session/workspace") override it, and it overrides the approval mode, so a plugin can keep `send_email` on `ask` even in `auto-edits`. `bypass` still skips questions but not `deny`. Plan-mode restrictions apply as today.
+
+**Settings page.** In gact-tui, a plugin's tools page lists its tools grouped into read-only and write tools (from the annotations), with a default per group and a per-tool override for permission (allow, ask, block) and I/O (direct, code, both), each showing the plugin's default. Permission overrides are written as the person's policy rules in the existing policy store; I/O overrides go in the plugin state the server already keeps. No new store.
+
 ## Design: the session plan
 
 The session holds two kinds of working state with different jobs, as Claude Code, Codex, Gemini CLI and Manus also separate them (sources in the ledger):
@@ -367,6 +383,15 @@ Production changes in this phase are observability only.
 5. The Phase 6 presentation.
 
 Verify each UI change as the megachange plan describes: restart the stack, run `node scripts/cloud/ui_check.mjs` with a `--steps` script at 1440 by 900 and 390 by 844, read every screenshot, and check that `consoleErrors` and `failedRequests` are empty.
+
+## Phase 6b: tool I/O and default permissions
+
+1. `callers` and `permission` on `ToolSpec`/`NativeToolRef` and in `plugin.json` server and tool entries; the loader and resolver carry them; `plugins/check.py` rejects unknown values.
+2. Core's own tools declare `direct`; `NOT_IN_SCRIPTS` is deleted; the stub table, the `run_code` index and the prompt listing follow the declarations; `code` tools leave the prompt and the deferred catalog, with the typed fallback when `run_code` is absent.
+3. Declared default permissions as lowest-precedence policy rules in the permission gate, annotation defaults when undeclared; the gate's order (deny, the person's rules, plugin default, approval mode) in one place.
+4. The settings page in gact-tui and its routes, writing policy rules and plugin state.
+5. Tests: declaration parsing and checks; the stub table, index and listing per caller; a `direct` tool refused from a script; a `code` tool absent from the prompt and callable from a script; the fallback reason; gate precedence across the modes with nested calls; the settings page in the browser at both sizes.
+6. Evaluation: the `run_code` ablation over P5-P7 and token use with and without code-only tools, as Anthropic advises measuring before turning it on broadly.
 
 ## Phase 7: qualification
 
