@@ -13,8 +13,8 @@ its text), read from the observer's completed notification
 (:data:`clio_agent.tools.tool_observation.RESULT_SINK`), or a native tool's return
 value. The model never sees nested results; it sees what the script prints.
 
-Bounds: at most ``code.max_nested_calls`` calls per script and
-``code.per_server_concurrency`` at once per server.
+Bounds: at most ``code.max_nested_calls`` calls per script, and the per-server limit
+a step's calls share (:mod:`clio_agent.gact.agents.tool_concurrency`).
 """
 
 from __future__ import annotations
@@ -24,18 +24,17 @@ import inspect
 import json
 import threading
 import time
-from collections import defaultdict
 from collections.abc import Callable, Mapping
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from typing import Any
 
 from clio_agent import conf
+from clio_agent.gact.agents.tool_concurrency import WORKERS, ServerGates
 from clio_agent.gact.code_mode.stubs import NOT_IN_SCRIPTS, tool_group
 
-__all__ = ["CallRecord", "Dispatcher", "max_nested_calls", "per_server_concurrency"]
+__all__ = ["CallRecord", "Dispatcher", "max_nested_calls"]
 
-_WORKERS = 32
 _SEARCH = "__search__"
 
 
@@ -43,16 +42,6 @@ def max_nested_calls() -> int:
     """Tool calls one script may make."""
     return conf.resolve(
         "code.max_nested_calls", env="CLIO_CODE_MAX_NESTED_CALLS", default=500, cast=conf.as_int
-    )
-
-
-def per_server_concurrency() -> int:
-    """Calls to one server a script may have running at once."""
-    return conf.resolve(
-        "code.per_server_concurrency",
-        env="CLIO_CODE_PER_SERVER_CONCURRENCY",
-        default=8,
-        cast=conf.as_int,
     )
 
 
@@ -105,11 +94,8 @@ class Dispatcher:
         self.context = context
         self.search = search
         self.budget = max_nested_calls()
-        limit = max(1, per_server_concurrency())
-        self.gates: defaultdict[str, threading.Semaphore] = defaultdict(
-            lambda: threading.Semaphore(limit)
-        )
-        self.pool = ThreadPoolExecutor(max_workers=_WORKERS, thread_name_prefix="clio-code-call")
+        self.gates = ServerGates()
+        self.pool = ThreadPoolExecutor(max_workers=WORKERS, thread_name_prefix="clio-code-call")
         self.records: list[CallRecord] = []
         self.started = 0
         self.lock = threading.Lock()
@@ -159,7 +145,7 @@ class Dispatcher:
         MODEL_CALL_SLOT.set({})  # this call's own observer id, not the script's
         RESULT_SINK.set(sink)
         started = time.monotonic()
-        with self.gates[group or tool]:
+        with self.gates(group or tool):
             try:
                 if inspect.iscoroutinefunction(getattr(target, "func", None)):
                     value = run_in_new_loop(target.acall(**args))

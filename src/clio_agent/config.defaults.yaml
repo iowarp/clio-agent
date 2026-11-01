@@ -1248,10 +1248,6 @@ code.idle_minutes: "30.0"
 # script.
 code.max_nested_calls: 500
 
-# CLIO_CODE_PER_SERVER_CONCURRENCY  (int)  <- src/clio_agent/gact/code_mode/dispatch.py
-# Tool calls to one server a run_code script may have running at once.
-code.per_server_concurrency: 8
-
 # CLIO_TOOL_FAILURE_LIMIT  (int)  <- src/clio_agent/tools/execution.py
 # Consecutive failures of one tool before CLIO blocks further calls to it
 # (the agent is warned at the limit and told why a call was blocked); 0
@@ -1433,6 +1429,11 @@ tools.mcp_cache.temp_max_age_days: 3.0
 # Extra directories `clio doctor --gc` scans for stale pytest basetemp
 # trees, beyond the system temp dir.
 # tools.mcp_cache.temp_roots:  # default unset; resolved in code
+
+# CLIO_TOOLS_PER_SERVER_CONCURRENCY  (int)  <- src/clio_agent/gact/agents/tool_concurrency.py
+# Tool calls to one server that run at once, for a step's calls and a
+# run_code script's calls alike; the others wait their turn.
+tools.per_server_concurrency: 8
 
 # CLIO_WINDOWS_SHELL_BACKEND  (str)  <- src/clio_agent/tools/servers/shell_server.py
 # Which interpreter the Windows shell tool runs commands through

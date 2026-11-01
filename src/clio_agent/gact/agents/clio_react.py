@@ -46,7 +46,6 @@ import threading
 import traceback
 import uuid
 from collections.abc import Iterable, Iterator
-from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from typing import Any
 
@@ -78,6 +77,7 @@ from clio_agent.gact.agents.clio_react_recovery import recover_stream
 from clio_agent.gact.agents.clio_react_stream_call import call_lm as _call_lm
 from clio_agent.gact.agents.clio_react_submit import active_react_scope_safe, record_submit_audit
 from clio_agent.gact.agents.clio_react_submit import submit_tool as _submit_tool
+from clio_agent.gact.agents.tool_concurrency import run_bounded
 from clio_agent.gact.injection_parts import emit_injection
 from clio_agent.lm.engines.text_tools import INVALID_TOOL_CALL
 from clio_agent.lm.request_builder import sendable_lm_kwargs
@@ -509,12 +509,13 @@ class _Loop:
         return self.recorder.read_steps()
 
     def _execute(self, calls: list[ToolCallPart]) -> list[_CallOutcome]:
-        """Run the step's calls concurrently; outcomes in call order."""
+        """Run the step's calls concurrently within the per-server bound; in call order."""
         if len(calls) == 1:
             return [self._call(calls[0])]
-        with ThreadPoolExecutor(max_workers=len(calls), thread_name_prefix="clio-tool") as pool:
-            futures = [pool.submit(contextvars.copy_context().run, self._call, c) for c in calls]
-            return [f.result() for f in futures]
+        servers = getattr(self.agent, "_clio_tool_servers", ()) or ()
+        return run_bounded(
+            calls, self._call, lambda c: c.name, servers, thread_name_prefix="clio-tool"
+        )
 
     def _call(self, call: ToolCallPart) -> _CallOutcome:
         if call.name == INVALID_TOOL_CALL:

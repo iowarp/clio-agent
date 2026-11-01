@@ -1180,9 +1180,6 @@ KEY_NOTES: dict[str, str] = {
     "code.max_nested_calls": (
         "Tool calls one run_code script may make; a call past it raises in the script."
     ),
-    "code.per_server_concurrency": (
-        "Tool calls to one server a run_code script may have running at once."
-    ),
     "plan.stale_steps": (
         "Recorded steps without plan_update or write_todos after which an active plan is "
         "mentioned to the agent in one line; 0 turns the note off."
@@ -1190,6 +1187,10 @@ KEY_NOTES: dict[str, str] = {
     "plan.injection_chars": (
         "Characters of the session plan offered back to the agent as working state; a longer "
         "plan is cut there with a pointer to its file."
+    ),
+    "tools.per_server_concurrency": (
+        "Tool calls to one server that run at once, for a step's calls and a run_code "
+        "script's calls alike; the others wait their turn."
     ),
     "tools.defer_share": (
         "Share of the model's context window (0-1) an MCP server's tool schemas may take before "
