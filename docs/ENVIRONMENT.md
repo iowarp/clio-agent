@@ -17,6 +17,7 @@ These resolve through `clio_agent.conf`: a value under the dotted key in `config
 | `CLIO_AI_REVIEW_TIMEOUT_S` | `permissions.ai_review_timeout_s` | str | `45.0` | `src/clio_agent/gact/runtime/ai_review.py` |
 | `CLIO_ALLOWED_ROOTS` | `tools.file_policy.allowed_roots` | str | `_default_allowed_roots()` _(computed)_ | `src/clio_agent/tools/file_policy.py` |
 | `CLIO_ALLOW_SYMLINKS` | `tools.file_policy.allow_symlinks` | bool | `false` | `src/clio_agent/tools/file_policy.py` |
+| `CLIO_ALLOW_SYSTEM_TEMP` | `paths.allow_system_temp` | bool | `true` | `src/clio_agent/runtime/session_scratch.py` |
 | `CLIO_API_BASE` | `runtime.api_base` | str | _(unset)_ | `src/clio_agent/runtime/status.py` |
 | `CLIO_ARC_CACHE_CAPACITY` | `arc.cache_capacity` | int | `1000` | `src/clio_agent/arc/memory.py` |
 | `CLIO_ARC_CLIO_CORE_DAEMON_RECYCLE` | `arc.clio_core.daemon_recycle_enabled` | bool | `false` | `src/clio_agent/arc/clio_core_daemon.py` |
@@ -177,6 +178,7 @@ These resolve through `clio_agent.conf`: a value under the dotted key in `config
 | `CLIO_LM_TOP_P` | `lm.top_p` | float | _(unset)_ | `src/clio_agent/config.py` |
 | `CLIO_LM_TRANSIENT_RETRIES` | `limits.lm_transient_retries` | float | `2.0` | `src/clio_agent/lm/policy.py` |
 | `CLIO_LOG_LM_RESPONSE` | `debug.lm_response` | bool | `false` | `src/clio_agent/runtime/trace.py` |
+| `CLIO_MACHINE_NAME` | `paths.machine_name` | str | `socket.gethostname()` _(computed)_ | `src/clio_agent/runtime/session_scratch.py` |
 | `CLIO_MAILBOX_MAX_PENDING_MESSAGES` | `gact.mailbox.max_pending_messages` | int | `0` | `src/clio_agent/gact/session_mail.py` |
 | `CLIO_MAX_AGENT_TASK_DEPTH` | `agent_tasks.max_depth` | int | `8` | `src/clio_agent/gact/agent_task_limits.py` |
 | `CLIO_MAX_CONCURRENT_AGENT_TASKS` | `agent_tasks.max_concurrent` | int | `3` | `src/clio_agent/gact/agent_task_limits.py` |
@@ -270,6 +272,8 @@ These resolve through `clio_agent.conf`: a value under the dotted key in `config
 | `CLIO_SCHEDULER_MAX_RETRIES` | `scheduler.max_retries` | int | `5` | `src/clio_agent/gact/scheduler.py` |
 | `CLIO_SCHEDULER_MIN_INTERVAL_S` | `scheduler.min_interval_s` | int | `60` | `src/clio_agent/gact/scheduler.py` |
 | `CLIO_SCHEDULER_TZ` | `scheduler.timezone` | str | _(unset)_ | `src/clio_agent/gact/scheduler.py` |
+| `CLIO_SCRATCH_RETENTION_DAYS` | `paths.scratch_retention_days` | float | `7.0` | `src/clio_agent/runtime/session_scratch.py` |
+| `CLIO_SCRATCH_ROOT` | `paths.scratch_root` | str | `str(paths.user_state_dir() / 'scratch')` _(computed)_ | `src/clio_agent/runtime/session_scratch.py` |
 | `CLIO_SEARCH_AUTO_INSTALL` | `search.local_searxng.auto_install` | bool | `true` | `src/clio_agent/search/settings.py` |
 | `CLIO_SEARCH_BACKEND` | `search.backend` | str | `local_searxng` | `src/clio_agent/search/settings.py` |
 | `CLIO_SEARCH_CLIO_WEB_SEARCH_URL` | `search.clio_web_search.url` | str | _(unset)_ | `src/clio_agent/search/settings.py` |

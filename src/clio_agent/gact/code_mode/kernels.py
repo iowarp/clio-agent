@@ -56,11 +56,12 @@ def idle_minutes() -> float:
     return conf.resolve("code.idle_minutes", env="CLIO_CODE_IDLE_MINUTES", default=30.0, cast=float)
 
 
-def _environment(workspace: Path) -> tuple[str, dict[str, str]]:
+def _environment(workspace: Path, session_id: str) -> tuple[str, dict[str, str]]:
     from clio_agent.paths import workspace_state_dir  # noqa: PLC0415
     from clio_agent.runtime.execution_environment import shell_environment  # noqa: PLC0415
 
-    prepared = shell_environment(workspace)
+    # The kernel belongs to one session: its TMPDIR is that session's scratch (TD56).
+    prepared = shell_environment(workspace, session_id=session_id)
     python = prepared.get("CLIO_EXECUTION_PYTHON") or ""
     if not python:
         python = sys.executable
@@ -96,7 +97,7 @@ class Kernel:
             task_spawn_options,
         )
 
-        python, env = _environment(self.workspace)
+        python, env = _environment(self.workspace, self.key[0])
         self.python = python
         confined = sandbox.wrap_confined(
             python,
