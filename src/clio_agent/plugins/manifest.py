@@ -46,6 +46,8 @@ _EXTENSION_FIELDS = (
     "defer",
     "servers",
 )
+#: What one ``servers.<name>`` entry may set.
+_SERVER_FIELDS = ("defer", "description", "callers", "permission", "tools")
 _STDIO_FIELDS = {"type", "command", "args", "env", "cwd"}
 _REMOTE_FIELDS = {"type", "url", "headers"}
 _RESERVED_ENV = {"PLUGIN_ROOT", "PLUGIN_DATA"}
@@ -146,22 +148,40 @@ def validate_manifest(
 
 
 def _check_disclosure(ext: Mapping[str, Any], plugin: str) -> None:
-    """``defer`` is a boolean; ``servers`` maps MCP server names to ``defer`` and
-    ``description`` (what the server is for, shown beside its deferred tool names)."""
+    """``defer`` is a boolean; ``servers`` maps MCP server names to ``defer``,
+    ``description`` (what the server is for, shown beside its deferred tool names),
+    ``callers`` and ``permission`` (the server's tool defaults) and ``tools`` (one MCP
+    tool's ``callers`` and ``permission``, by the server's own tool name)."""
+    from clio_agent.tools.tool_settings import check_callers, check_permission  # noqa: PLC0415
+
+    def settings(row: Mapping[str, Any], where: str) -> None:
+        try:
+            check_callers(row.get("callers"), where)
+            check_permission(row.get("permission"), where)
+        except ValueError as exc:
+            raise ManifestError(str(exc)) from exc
+
     if "defer" in ext and not isinstance(ext["defer"], bool):
         raise ManifestError(f"{plugin}: {NAMESPACE}.defer must be true or false")
     servers = ext.get("servers", {})
     if not isinstance(servers, dict):
         raise ManifestError(f"{plugin}: {NAMESPACE}.servers must map MCP server names to objects")
     for name, row in servers.items():
-        if not isinstance(row, dict) or set(row) - {"defer", "description"}:
-            raise ManifestError(
-                f"{plugin}: {NAMESPACE}.servers.{name} may set only defer and description"
-            )
+        where = f"{plugin}: {NAMESPACE}.servers.{name}"
+        if not isinstance(row, dict) or set(row) - set(_SERVER_FIELDS):
+            raise ManifestError(f"{where} may set only {', '.join(_SERVER_FIELDS)}")
         if "defer" in row and not isinstance(row["defer"], bool):
-            raise ManifestError(f"{plugin}: {NAMESPACE}.servers.{name}.defer must be a boolean")
+            raise ManifestError(f"{where}.defer must be a boolean")
         if "description" in row and not isinstance(row["description"], str):
-            raise ManifestError(f"{plugin}: {NAMESPACE}.servers.{name}.description must be text")
+            raise ManifestError(f"{where}.description must be text")
+        settings(row, where)
+        tools = row.get("tools", {})
+        if not isinstance(tools, dict):
+            raise ManifestError(f"{where}.tools must map tool names to objects")
+        for tool, entry in tools.items():
+            if not isinstance(entry, dict) or set(entry) - {"callers", "permission"}:
+                raise ManifestError(f"{where}.tools.{tool} may set only callers and permission")
+            settings(entry, f"{where}.tools.{tool}")
 
 
 def clio_extension(manifest: Mapping[str, Any], plugin: str) -> dict[str, Any]:

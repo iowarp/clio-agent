@@ -53,6 +53,10 @@ class ToolRecord:
     description: str = ""
     read_only: bool = False
     defer: bool | None = None
+    #: Declared ``direct`` / ``code`` / ``both``; None: not declared.
+    callers: str | None = None
+    #: Declared default permission ``allow`` / ``ask`` / ``deny``; None: not declared.
+    permission: str | None = None
 
 
 @dataclass(frozen=True)

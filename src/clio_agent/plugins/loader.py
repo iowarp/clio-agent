@@ -428,11 +428,19 @@ def _python_parts(root: Path, plugin: str, texts: dict[str, str]) -> _PythonPart
                             description=value.description,
                             read_only=value.read_only,
                             defer=value.defer,
+                            callers=value.callers,
+                            permission=value.permission,
                         )
                     )
                 elif folder == "tools" and isinstance(value, NativeToolRef):
                     parts.tools.append(
-                        ToolRecord(name=value.name, kind="native", defer=value.defer)
+                        ToolRecord(
+                            name=value.name,
+                            kind="native",
+                            defer=value.defer,
+                            callers=value.callers,
+                            permission=value.permission,
+                        )
                     )
                 elif folder == "hooks" and isinstance(value, HookSpec):
                     parts.hooks.append(

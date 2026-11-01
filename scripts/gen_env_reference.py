@@ -140,6 +140,7 @@ _CAST_TYPES: dict[str, str] = {
     "as_int": "int",
     "as_float": "float",
     "as_csv": "list",
+    "as_mapping": "mapping",
     "as_str": "str",
 }
 

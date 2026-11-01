@@ -12,6 +12,12 @@ Two forms are collected from each module:
 
       shell_bash = native_tool("shell_bash")
 
+Both forms take ``callers`` (``"direct"``, ``"code"`` or ``"both"``: who may call
+the tool; ``None`` keeps the tool's own default, ``both`` unless it says otherwise)
+and ``permission`` (``"allow"``, ``"ask"`` or ``"deny"``: the default permission,
+below the person's rules and above the approval mode; ``None`` follows the tool's
+annotations). An unknown value is an error when the plugin loads.
+
 Tool names are global: two resolved plugins exposing the same name is a
 resolution error naming both.
 """
@@ -21,6 +27,8 @@ from __future__ import annotations
 from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any
+
+from clio_agent.tools.tool_settings import check_callers, check_permission
 
 
 @dataclass(frozen=True)
@@ -33,6 +41,14 @@ class ToolSpec:
     read_only: bool = False
     #: True: offered by name and loaded with ``search_tools``; None: the plugin decides.
     defer: bool | None = None
+    #: Who may call it: ``direct``, ``code`` or ``both``; None: the default (``both``).
+    callers: str | None = None
+    #: Default permission: ``allow``, ``ask`` or ``deny``; None: from ``read_only``.
+    permission: str | None = None
+
+    def __post_init__(self) -> None:
+        check_callers(self.callers, f"tool {self.name!r}")
+        check_permission(self.permission, f"tool {self.name!r}")
 
     def __call__(self, *args: Any, **kwargs: Any) -> Any:
         return self.function(*args, **kwargs)
@@ -45,6 +61,14 @@ class NativeToolRef:
     name: str
     #: True: offered by name and loaded with ``search_tools``; None: the plugin decides.
     defer: bool | None = None
+    #: Who may call it; None keeps the built-in's own declaration.
+    callers: str | None = None
+    #: Default permission; None follows the built-in's annotations.
+    permission: str | None = None
+
+    def __post_init__(self) -> None:
+        check_callers(self.callers, f"native_tool {self.name!r}")
+        check_permission(self.permission, f"native_tool {self.name!r}")
 
 
 def tool(
@@ -54,10 +78,13 @@ def tool(
     description: str = "",
     read_only: bool = False,
     defer: bool | None = None,
+    callers: str | None = None,
+    permission: str | None = None,
 ) -> Any:
     """Declare a Python tool. Usable bare (``@tool``) or with options.
 
     ``defer=True`` offers it by name only until ``search_tools`` loads its schema.
+    ``callers`` and ``permission`` are the plugin's defaults (see the module docstring).
     """
 
     def wrap(fn: Callable[..., Any]) -> ToolSpec:
@@ -67,6 +94,8 @@ def tool(
             description=description or (fn.__doc__ or "").strip(),
             read_only=read_only,
             defer=defer,
+            callers=callers,
+            permission=permission,
         )
 
     if function is not None:
@@ -74,10 +103,17 @@ def tool(
     return wrap
 
 
-def native_tool(name: str, *, defer: bool | None = None) -> NativeToolRef:
+def native_tool(
+    name: str,
+    *,
+    defer: bool | None = None,
+    callers: str | None = None,
+    permission: str | None = None,
+) -> NativeToolRef:
     """Claim the CLIO built-in tool ``name`` for this plugin.
 
     ``defer=True`` offers it by name only until ``search_tools`` loads its schema.
+    ``callers`` and ``permission`` are the plugin's defaults (see the module docstring).
     """
 
-    return NativeToolRef(name=name, defer=defer)
+    return NativeToolRef(name=name, defer=defer, callers=callers, permission=permission)
