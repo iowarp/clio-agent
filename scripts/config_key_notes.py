@@ -250,6 +250,10 @@ KEY_NOTES: dict[str, str] = {
         "Retry attempts after a clio-core RPC stalls (no response) before the store is quarantined "
         "as runtime-lost; raise for a flakier daemon."
     ),
+    "arc.liveness.first_poll_s": (
+        "Seconds of the first sleep while a clio-core write is pending; later checks back off "
+        "to 10 ms. Read once per process."
+    ),
     "arc.liveness.stall_after_s": (
         "Seconds one clio-core RPC may run with no response before it's treated as a stalled "
         "zombie peer; raise for very large blob ops."

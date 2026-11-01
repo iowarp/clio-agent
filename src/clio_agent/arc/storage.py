@@ -585,13 +585,15 @@ class ClioCoreStore:
         payload = stored_body(data)
         if kind == "segments":  # #1339: live-lane audit evidence (one row per put)
             stream_audit("store.put", kind=kind, name=name, size=len(payload))
-        guarded_store_rpc(self, "put", store_put, self, kind, name, payload)
+        guarded_store_rpc(self, "put", store_put, self, kind, name, payload, inline_kind=kind)
         # Optional BM25 companion (Thread D) at <name>.text; scan()/get() skip it.
         companion = name + _SEARCH_SUFFIX
         if search_text is not None:  # padded; a shrinking one is dropped first (MD9)
             pair = [(companion, companion_body(search_text))]
             guarded_store_rpc(self, "put", drop_shrinking, self, kind, pair)
-            guarded_store_rpc(self, "put", store_put, self, kind, companion, pair[0][1])
+            guarded_store_rpc(
+                self, "put", store_put, self, kind, companion, pair[0][1], inline_kind=kind
+            )
             remember_written(self, kind, pair)
         elif may_carry_companion(kind, name):  # #1334: never for the ``_events`` family
             guarded_store_rpc(self, "put", store_delete, self, kind, companion)  # a stale one
@@ -624,7 +626,9 @@ class ClioCoreStore:
                 stale.append(record.name + _SEARCH_SUFFIX)
         if companions:  # a shrinking companion is dropped before the batch (MD9)
             guarded_store_rpc(self, "put", drop_shrinking, self, kind, companions)
-        lost = guarded_store_rpc(self, "put", store_put_many, self, kind, blobs + companions)
+        lost = guarded_store_rpc(
+            self, "put", store_put_many, self, kind, blobs + companions, inline_kind=kind
+        )
         remember_written(self, kind, [pair for pair in companions if pair[0] not in lost])
         for companion in stale:
             guarded_store_rpc(self, "put", store_delete, self, kind, companion)

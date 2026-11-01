@@ -34,6 +34,7 @@ These resolve through `clio_agent.conf`: a value under the dotted key in `config
 | `CLIO_ARC_EVENTS_CHUNK_SEGMENTS` | `arc.events_chunk_segments` | int | `512` | `src/clio_agent/arc/memory.py` |
 | `CLIO_ARC_LIVENESS_BACKOFF_INITIAL_S` | `arc.liveness.backoff_initial_s` | float | `2.0` | `src/clio_agent/arc/rpc_liveness.py` |
 | `CLIO_ARC_LIVENESS_BACKOFF_MAX_S` | `arc.liveness.backoff_max_s` | float | `15.0` | `src/clio_agent/arc/rpc_liveness.py` |
+| `CLIO_ARC_LIVENESS_FIRST_POLL_S` | `arc.liveness.first_poll_s` | float | `0.0001` | `src/clio_agent/arc/clio_core_async_ops.py` |
 | `CLIO_ARC_LIVENESS_MAX_WAIT_S` | `arc.liveness.max_wait_s` | float | `180.0` | `src/clio_agent/arc/daemon_progress.py` |
 | `CLIO_ARC_LIVENESS_RETRIES` | `arc.liveness.retries` | int | `3` | `src/clio_agent/arc/rpc_liveness.py` |
 | `CLIO_ARC_LIVENESS_STALL_AFTER_S` | `arc.liveness.stall_after_s` | float | `30.0` | `src/clio_agent/arc/rpc_liveness.py` |

@@ -22,6 +22,7 @@ Still blocking, because the binding has no GIL-free alternative (drafted upstrea
 
 from __future__ import annotations
 
+import functools
 import logging
 import threading
 import time
@@ -62,12 +63,28 @@ class ClioCoreFutureTimeout(TimeoutError):
         )
 
 
+@functools.cache
+def _first_poll_s() -> float:
+    """The first sleep while an async RPC is pending (``arc.liveness.first_poll_s``).
+
+    Read once per process: it is on every small RPC's path, and config reads are not free.
+    """
+    from clio_agent import conf  # noqa: PLC0415 - avoid import cycle at module load
+
+    return conf.resolve(
+        "arc.liveness.first_poll_s",
+        env="CLIO_ARC_LIVENESS_FIRST_POLL_S",
+        default=0.0001,
+        cast=conf.as_float,
+    )
+
+
 def _polled(future: Any) -> Callable[[float], bool]:
     """``done_within`` for a native Future: poll ``done()``, sleeping (GIL released)."""
 
     def done_within(timeout: float) -> bool:
         deadline = time.monotonic() + timeout
-        interval = min(0.001, _POLL_S)
+        interval = min(_first_poll_s(), _POLL_S)
         while not future.done():
             remaining = deadline - time.monotonic()
             if remaining <= 0:
@@ -150,6 +167,11 @@ class TagIds:
                 tag_id = self._cte.Tag(self._tag_name(kind)).GetTagId()
                 self._ids[kind] = tag_id
         return tag_id
+
+    def cached(self, kind: str) -> bool:
+        """Whether ``kind``'s id is known, so using it makes no blocking ``Tag()`` call."""
+        with self._lock:
+            return kind in self._ids
 
     def clear(self) -> None:
         """Forget every cached id (after a reconnect)."""

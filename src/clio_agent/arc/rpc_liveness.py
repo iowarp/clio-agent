@@ -308,6 +308,24 @@ def _run_with_stall_watch(
     return outcome.reason, fut.result(), None
 
 
+def _run_inline(make_call: Callable[[], Any]) -> tuple[str, Any, Optional[BaseException]]:
+    """Run a GIL-free async RPC on the caller thread; same outcome shape as the stall watch.
+
+    The native call returns a future at once and :func:`await_future` waits for it,
+    sleeping with the GIL released and watching the daemon's progress itself, so a
+    stalled daemon still ends the wait typed. Handing such a call to a pooled worker
+    only added a thread hand-off and a progress sample to every small RPC.
+    """
+    from clio_agent.arc.clio_core_async_ops import ClioCoreFutureTimeout  # noqa: PLC0415
+
+    try:
+        return "done", make_call(), None
+    except ClioCoreFutureTimeout as error:
+        return error.reason, None, None
+    except Exception as error:  # noqa: BLE001 - a real RPC error, re-raised by the caller
+        return "done", None, error
+
+
 def _stall_reason(outcome: str) -> str:
     """The quarantine reason for an unfinished wait: an unlocatable daemon is not a stall."""
     from clio_agent.arc.daemon_progress import DAEMON_PID_UNRESOLVED  # noqa: PLC0415 - cycle
@@ -325,8 +343,13 @@ def call_with_liveness(
     policy: Optional[LivenessPolicy] = None,
     on_exhausted: Optional[Callable[[str], None]] = None,
     _sleep: Callable[[float], None] = time.sleep,
+    inline: Callable[[], bool] | None = None,
 ) -> Any:
     """Run one clio-core RPC with stall (failure-to-progress) detection + recovery.
+
+    ``inline`` (checked before each attempt) says the call is a GIL-free async RPC that
+    may run on the caller thread (:func:`_run_inline`); otherwise a pooled worker runs
+    it under the stall watch, because a blocking native call holds the GIL.
 
     This wait has its own native liveness owner. It must not be attributed to
     model silence while a session confirms input or other Core records.
@@ -358,7 +381,10 @@ def call_with_liveness(
     reason = RPC_STALLED_REASON
     outcome = ""
     for attempt in range(attempts):
-        outcome, value, error = _run_with_stall_watch(make_call, policy.stall_after_s)
+        if inline is not None and inline():
+            outcome, value, error = _run_inline(make_call)
+        else:
+            outcome, value, error = _run_with_stall_watch(make_call, policy.stall_after_s)
         if outcome == "done":
             if error is not None:
                 raise error
@@ -537,7 +563,13 @@ def guard_store_op(op_name: str) -> Callable[[Callable[..., Any]], Callable[...,
     return decorator
 
 
-def guarded_store_rpc(store: Any, op_name: str, make_call: Callable[..., Any], *args: Any) -> Any:
+def guarded_store_rpc(
+    store: Any,
+    op_name: str,
+    make_call: Callable[..., Any],
+    *args: Any,
+    inline_kind: str | None = None,
+) -> Any:
     """Run ONE native store RPC through the socket gate + per-RPC stall watch.
 
     The RPC-granularity companion to :func:`guard_store_op`: a store's MULTI-RPC methods
@@ -546,18 +578,25 @@ def guarded_store_rpc(store: Any, op_name: str, make_call: Callable[..., Any], *
     ``DelBlob`` prompt, total > the window) is never misclassified as a stalled peer.
     ``*args`` are forwarded to ``make_call`` each call so a loop variable is passed as an
     argument (not captured), keeping the thunk re-runnable across a stall retry.
+
+    ``inline_kind`` marks a GIL-free async RPC on that record kind: it runs on the caller
+    thread whenever the kind's tag id is cached (resolving it is a blocking call).
     """
     if op_name in _WRITE_OPS:
         assert_store_write_off_loop(op_name)
     else:
         audit_store_read_on_loop(op_name)
     store._live()
+    tag_ids = getattr(store, "_tag_ids", None)
     return call_with_liveness(
         lambda: make_call(*args),
         op_name=op_name,
         port=store._gate.port,
         reconnect=store._reconnect,
         on_exhausted=store._gate.note_rpc_stalled,
+        inline=(lambda: tag_ids.cached(inline_kind))
+        if inline_kind is not None and tag_ids is not None
+        else None,
     )
 
 
