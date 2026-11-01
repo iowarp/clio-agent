@@ -125,7 +125,9 @@ class TestCallers:
         program = _program()
         apply_disclosure(program, _RESOLUTION)
         assert program._clio_code_only == frozenset()
-        found = settings.declared_callers("records_list", program.tools["records_list"], _RESOLUTION)
+        found = settings.declared_callers(
+            "records_list", program.tools["records_list"], _RESOLUTION
+        )
         assert found == settings.Declared("both", "configuration")
         assert settings.declared_callers(
             "ask_user", program.tools["ask_user"], _RESOLUTION
@@ -435,9 +437,12 @@ def test_the_tools_page_reads_and_writes(tmp_path: Path, monkeypatch: pytest.Mon
         ]
         assert read_config()["tools"]["callers"] == {"query_tasks": "code", "cron_list": "code"}
         assert configured_callers()["cron_list"] == "code"
-        rows = {r["name"]: r for r in client.get(
-            "/v1/settings/tools", params={"ref": "clio-builtin/core"}
-        ).json()["tools"]}
+        rows = {
+            r["name"]: r
+            for r in client.get("/v1/settings/tools", params={"ref": "clio-builtin/core"}).json()[
+                "tools"
+            ]
+        }
         assert rows["cron_list"]["permission"] == "deny"
         assert rows["cron_list"]["outcomes"]["bypass"]["direct"] == "blocked"
         assert rows["cron_list"]["rules"][0]["where"] == "everywhere"
