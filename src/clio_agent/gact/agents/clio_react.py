@@ -615,6 +615,9 @@ class _Loop:
             thinking_complete=origin[1],
             refs=refs,
         )
+        from clio_agent.gact.working_state import note_stale_plan  # noqa: PLC0415
+
+        note_stale_plan(self, [call.name for call in calls])
 
     def _stop(self, reason: str) -> dspy.Prediction:
         steps = self.max_iters if reason == "max_iters" and self.max_iters > 0 else self.step + 1

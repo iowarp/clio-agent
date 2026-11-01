@@ -434,6 +434,11 @@ fleet.usage_poll_seconds: 300
 # a longer plan is cut there with a pointer to its file.
 plan.injection_chars: 12000
 
+# CLIO_PLAN_STALE_STEPS  (int)  <- src/clio_agent/gact/working_state.py
+# Recorded steps without plan_update or write_todos after which an active
+# plan is mentioned to the agent in one line; 0 turns the note off.
+plan.stale_steps: 25
+
 # CLIO_DEFAULT_MARKETPLACE  (str)  <- src/clio_agent/plugins/service.py
 # Source of the shipped default marketplace (a folder or git URL); unset
 # uses the bundled marketplace, else the pinned default URL. Point it at a

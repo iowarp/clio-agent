@@ -51,7 +51,7 @@ def register_schedules_routes(app: FastAPI, deps: "GactDeps") -> None:
     """
 
     from clio_agent.gact.routes.work_controls import register_work_controls_routes
-    from clio_agent.gact.session_plan import rail_plan
+    from clio_agent.gact.session_plan import PlanError, rail_plan, update_plan
 
     register_work_controls_routes(app)
 
@@ -90,6 +90,26 @@ def register_schedules_routes(app: FastAPI, deps: "GactDeps") -> None:
         snapshot["schedules"] = current_schedules
         snapshot["plan"] = rail_plan(session)
         return snapshot
+
+    @app.put("/v1/sessions/{sid}/plan")
+    async def save_session_plan(sid: str, request: Request) -> dict[str, Any]:
+        """Save the person's edit of the session plan (the Work rail's Edit).
+
+        The person's message that tells the agent about the edit is sent separately, through
+        the ordinary message route, so it is theirs and arrives as steering mid-turn.
+        """
+        session = app.state.sessions.get(sid)
+        if session is None:
+            raise HTTPException(status_code=404, detail=f"session not found: {sid}")
+        body = await json_body(request, route="PUT /v1/sessions/{sid}/plan")
+        content = body.get("content")
+        if not isinstance(content, str) or not content.strip():
+            raise HTTPException(status_code=422, detail="content must be the whole plan as text")
+        try:
+            await join_off_loop(update_plan, app, sid, content=content)
+        except PlanError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+        return {"plan": rail_plan(app.state.sessions.get(sid))}
 
     @app.get("/v1/sessions/{sid}/schedules")
     async def list_schedules(sid: str) -> dict[str, Any]:

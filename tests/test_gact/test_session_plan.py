@@ -148,3 +148,45 @@ def test_presentation_of_a_replaced_passage() -> None:
     assert view["summary"] == "Plan passage replaced"
     assert [b["id"] for b in view["blocks"]] == ["plan-file", "status", "old", "new"]
     assert view["blocks"][1]["text"] == "Approved, being worked on"
+
+
+def test_a_quiet_active_plan_is_mentioned_after_the_stale_steps(
+    app_session: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from clio_agent.gact import context as ctx
+    from clio_agent.gact import working_state
+
+    app, sid, _ = app_session
+    update_plan(app, sid, content=_PLAN)
+    monkeypatch.setattr(working_state, "stale_steps", lambda: 3)
+    noted: list[list[tuple[str, str]]] = []
+    loop = SimpleNamespace(recorder=SimpleNamespace(injections=noted.append))
+    tokens = [ctx.set_app(app), ctx.set_session_id(sid)]
+    try:
+        working_state.note_stale_plan(loop, ["fs_read_file"])
+        working_state.note_stale_plan(loop, ["plan_update"])  # a plan write resets the count
+        for _ in range(2):
+            working_state.note_stale_plan(loop, ["fs_read_file"])
+        assert noted == []
+        working_state.note_stale_plan(loop, ["fs_search_text"])
+        [[(source, text)]] = noted
+        assert source == working_state.PLAN_STALE_SOURCE
+        assert "has not been updated in 3 steps" in text and "plan_update" in text
+        update_plan(app, sid, status="done")
+        for _ in range(4):
+            working_state.note_stale_plan(loop, ["fs_read_file"])
+        assert len(noted) == 1  # a closed plan is not mentioned
+    finally:
+        for token in reversed(tokens):
+            ctx.reset(token)
+
+
+def test_the_person_can_save_an_edited_plan(app_session: Any) -> None:
+    app, sid, client = app_session
+    update_plan(app, sid, content=_PLAN)
+    edited = _PLAN.replace("- bisect: open", "- bisect: drop it, check the config first")
+    saved = client.put(f"/v1/sessions/{sid}/plan", json={"content": edited})
+    assert saved.status_code == 200, saved.text
+    assert "check the config first" in saved.json()["plan"]["text"]
+    assert client.put(f"/v1/sessions/{sid}/plan", json={"content": "  "}).status_code == 422
+    assert client.put("/v1/sessions/sess_missing/plan", json={"content": "x"}).status_code == 404

@@ -219,6 +219,7 @@ These resolve through `clio_agent.conf`: a value under the dotted key in `config
 | `CLIO_OBLIGATION_CONCURRENCY` | `agent_tasks.obligation_concurrency` | int | `4` | `src/clio_agent/gact/obligations.py` |
 | `CLIO_PLAN_INJECTION_CHARS` | `plan.injection_chars` | int | `12000` | `src/clio_agent/gact/session_plan.py` |
 | `CLIO_PLAN_REVIEW_CHARS` | `limits.plan_review_chars` | int | `256000` | `src/clio_agent/gact/plan_review.py` |
+| `CLIO_PLAN_STALE_STEPS` | `plan.stale_steps` | int | `25` | `src/clio_agent/gact/working_state.py` |
 | `CLIO_PLUGIN_STORE` | `plugins.store_root` | str | _(unset)_ | `src/clio_agent/plugins/service.py` |
 | `CLIO_PROVENANCE_ATTENTION` | `provenance.attention` | str | `false` | `src/clio_agent/provenance_config.py` |
 | `CLIO_PROVENANCE_ATTENTION_FILES_DIR` | `provenance.attention.files_dir` | str | _(unset)_ | `src/clio_agent/gact/attention/files.py` |

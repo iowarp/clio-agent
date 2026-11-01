@@ -1183,6 +1183,10 @@ KEY_NOTES: dict[str, str] = {
     "code.per_server_concurrency": (
         "Tool calls to one server a run_code script may have running at once."
     ),
+    "plan.stale_steps": (
+        "Recorded steps without plan_update or write_todos after which an active plan is "
+        "mentioned to the agent in one line; 0 turns the note off."
+    ),
     "plan.injection_chars": (
         "Characters of the session plan offered back to the agent as working state; a longer "
         "plan is cut there with a pointer to its file."
