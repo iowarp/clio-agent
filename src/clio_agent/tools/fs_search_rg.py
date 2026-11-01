@@ -131,6 +131,8 @@ def search_files(
         total = sum(count for _, count in counts)
         if mode == "count":
             text = f"{total:,} matches in {len(counts):,} files under {target}"
+            if not total:
+                text += f". {SKIPPED_NOTE}"
             if timed_out:
                 text += " (search stopped at its time limit; counts are partial)"
             return _result(
@@ -146,6 +148,8 @@ def search_files(
         shown = counts[:limit]
         truncated = timed_out or len(counts) > len(shown)
         lines = [f"{len(counts):,} files match under {target} (newest first):"]
+        if not counts:
+            lines = [f"0 files match under {target}. {SKIPPED_NOTE}"]
         lines += [f"{name}  ({count})" for name, count in shown]
         if truncated:
             lines.append(_more(len(counts) - len(shown), "files", timed_out))
@@ -157,6 +161,13 @@ def search_files(
     context = max(0, min(int(context_lines), 50))
     rows, timed_out = _run(["--json", "--context", str(context), *base, "--", str(target)], cwd)
     return _content_result(rows, head, limit, timed_out)
+
+
+#: What an empty result cannot show: the files a search or glob skipped on purpose.
+SKIPPED_NOTE = (
+    "Ignored (.gitignore) and hidden files and folders are skipped; if what you want may be "
+    "in one, search that folder directly, or use fs_list_directory."
+)
 
 
 def _more(hidden: int, unit: str, timed_out: bool) -> str:
@@ -199,6 +210,8 @@ def _content_result(
         used += size
         pending_context = []
     header = f"{total:,} matching lines under {head['path']}"
+    if not total:
+        header += f". {SKIPPED_NOTE}"
     if truncated:
         header += (
             f"; showing {len(matches):,}"
@@ -219,6 +232,8 @@ def glob_files(pattern: str, path: str, limit: int = 200) -> ToolResult:
     shown = found[:limit]
     truncated = timed_out or len(found) > len(shown)
     lines = [f"{len(found):,} files match {pattern} under {root} (newest first):", *shown]
+    if not found:
+        lines = [f"0 files match {pattern} under {root}. {SKIPPED_NOTE}"]
     if truncated:
         lines.append(_more(len(found) - len(shown), "files", timed_out))
     structured = {

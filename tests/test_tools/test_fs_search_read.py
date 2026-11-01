@@ -191,3 +191,26 @@ async def test_the_gateway_offers_ranged_read_search_modes_and_glob(approved: Pa
         found = await client.call_tool("fs_glob", {"pattern": "*.md", "path": str(approved)})
     assert read.structured_content["end_line"] == 1
     assert found.structured_content["files"] == [str(approved / "README.md")]
+
+
+def test_an_empty_result_says_ignored_and_hidden_files_were_skipped(tmp_path, monkeypatch) -> None:
+    """A search started above a folder its repository ignores finds nothing there; the
+    result says what was skipped, so 'no match' is not read as 'does not exist'."""
+    import subprocess
+
+    from clio_agent.tools.fs_search_rg import SKIPPED_NOTE, glob_files, search_files
+
+    subprocess.run(["git", "init", "-q", str(tmp_path)], check=True)
+    (tmp_path / ".gitignore").write_text("runs/\n", encoding="utf-8")
+    workspace = tmp_path / "runs" / "task"
+    workspace.mkdir(parents=True)
+    (workspace / "registry.py").write_text("DRIFT_PPM = 48\n", encoding="utf-8")
+    monkeypatch.setenv("CLIO_ALLOWED_ROOTS", str(tmp_path))
+    for mode in ("files", "content", "count"):
+        result = search_files(str(tmp_path), "DRIFT_PPM", mode=mode)
+        assert SKIPPED_NOTE in result.content[0].text, mode
+    assert SKIPPED_NOTE in glob_files("**/registry.py", str(tmp_path)).content[0].text
+    # The folder itself is searchable when named, and a hit carries no note.
+    found = search_files(str(workspace), "DRIFT_PPM", mode="files")
+    assert found.structured_content["total_files"] == 1
+    assert SKIPPED_NOTE not in found.content[0].text
