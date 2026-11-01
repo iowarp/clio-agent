@@ -112,8 +112,15 @@ TURN_REMINDER = (
 
 
 def render_system(system: str | None, tools: Sequence[Any]) -> str:
-    """The system prompt followed by the tool rules and the tool list."""
-    parts = [system.strip()] if system and system.strip() else []
+    """The tool rules and the tool list, then the system prompt.
+
+    The tools come first, as in Anthropic's own request order (tools, system,
+    messages): they are the same for every session of an agent, while the system
+    prompt ends with per-session facts (the workspace, its write roots). Putting the
+    stable text first keeps the provider's prompt-cache prefix shared across sessions;
+    only the short per-session tail is new.
+    """
+    parts: list[str] = []
     functions = [t for t in tools if isinstance(t, FunctionTool)]
     if functions:
         listing = "\n".join(
@@ -125,6 +132,8 @@ def render_system(system: str | None, tools: Sequence[Any]) -> str:
         if any(t.name == "search_tools" for t in functions):
             rules += f"\n\n{_LOADED_TOOLS_RULE}"
         parts.append(f"{rules}\n\n# Available tools\n\n{listing}")
+    if system and system.strip():
+        parts.append(system.strip())
     return "\n\n".join(parts)
 
 

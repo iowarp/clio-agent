@@ -270,3 +270,24 @@ def test_system_message_is_a_byte_prefix_across_turns(
     prefix_2 = module2.program.signature.instructions + "\n\n" + module2.system_prompt
     assert prefix_2.startswith(prefix_1)
     assert prefix_1 == prefix_2  # no-compaction same-agent: exact, not just prefix
+
+
+def test_per_session_facts_end_the_system_prompt(
+    monkeypatch: pytest.MonkeyPatch, world: SimpleNamespace
+) -> None:
+    """Two sessions in different workspaces share the system prompt up to its last part.
+
+    The workspace context (root, write roots) is per session; anything after it would
+    miss the provider's prompt cache in every new session, so it comes last.
+    SABOTAGE: put ``workspace_context`` before ``skills_context`` and this fails.
+    """
+    _patch_runtime(monkeypatch)
+    tails = iter(["Active workspace root: /ws/one", "Active workspace root: /ws/two"])
+    monkeypatch.setattr(
+        builders, "_runtime_active_workspace_context", lambda app, session_id="": next(tails)
+    )
+    first = _build(world).system_prompt
+    second = _build(world).system_prompt
+    assert first.endswith("Active workspace root: /ws/one")
+    assert second.endswith("Active workspace root: /ws/two")
+    assert first.removesuffix("/ws/one") == second.removesuffix("/ws/two")

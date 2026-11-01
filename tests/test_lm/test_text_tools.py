@@ -73,7 +73,10 @@ def test_one_block_retains_every_parallel_call_in_its_original_order() -> None:
 
 def test_system_carries_the_rules_and_every_tool_schema() -> None:
     system = render_system("You are clio.", [SEARCH])
-    assert system.startswith("You are clio.\n\n# How you act")
+    # The stable tool text comes first and the (per-session) system prompt last,
+    # so sessions share the provider's prompt-cache prefix.
+    assert system.startswith("# How you act")
+    assert system.endswith("You are clio.")
     assert "You call them by writing plain text" in system
     assert "# Available tools" in system
     assert "- search: Search the corpus." in system

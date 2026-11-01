@@ -656,7 +656,8 @@ def build_agent_module(base_agent: Any, agent_def: "AgentDef", resolution: "Reso
             agent_prompt = final_agent_prompt(agent_def, resolution, getattr(self, "tools", ()))
             self.system_prompt = "\n\n".join(
                 part
-                for part in (agent_prompt, deferred_entry, workspace_context, skills_context)
+                # Per-session facts last, so the shared prefix stays cacheable.
+                for part in (agent_prompt, deferred_entry, skills_context, workspace_context)
                 if part
             )
 
