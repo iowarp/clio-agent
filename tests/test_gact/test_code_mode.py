@@ -240,3 +240,21 @@ def test_nested_calls_carry_their_parent_into_the_live_and_v3_views() -> None:
     event = Event(type="tool.call.started", session_id="s", payload=payload)
     projection = _tool_started(event, payload, None)
     assert projection.payload["parent_call_id"] == "call_run"
+
+
+def test_plan_mode_runs_scripts_only_behind_an_enforced_fence(monkeypatch: Any) -> None:
+    """The sandbox is what keeps a script read-only in plan mode; without it, refuse typed."""
+    from clio_agent.runtime import sandbox
+
+    sessions = {"plan": SimpleNamespace(mode="plan"), "edit": SimpleNamespace(mode="edit")}
+    app = SimpleNamespace(state=SimpleNamespace(sessions=SimpleNamespace(get=sessions.get)))
+    monkeypatch.setattr(sandbox, "current_state", lambda: None)
+    with pytest.raises(tool_module.CodeError) as refused:
+        tool_module._plan_mode_refusal(app, "plan")
+    assert refused.value.reason == tool_module.CODE_PLAN_MODE_UNCONFINED
+    tool_module._plan_mode_refusal(app, "edit")  # outside plan mode the fence is not required
+    enforced = sandbox.SandboxResult(
+        mechanism=sandbox.MECHANISM_LANDLOCK, active=True, reason=sandbox.REASON_FENCE_ACTIVE
+    )
+    monkeypatch.setattr(sandbox, "current_state", lambda: enforced)
+    tool_module._plan_mode_refusal(app, "plan")

@@ -613,8 +613,8 @@ def _list_declared_tools(
     from clio_agent.tools.mcp_header_mismatch import (  # noqa: PLC0415
         trace_dropped_x_mcp_header_tools,
     )
+    from clio_agent.tools.mcp_server_instructions import record_listing_facts  # noqa: PLC0415
     from clio_agent.tools.mcp_server_progress import wait_while_server_works  # noqa: PLC0415
-    from clio_agent.tools.mcp_task_routing import record_definitive_capability  # noqa: PLC0415
 
     async def _list() -> list[Any]:
         from fastmcp import Client  # noqa: PLC0415
@@ -624,7 +624,7 @@ def _list_declared_tools(
         try:
             async with client:
                 listed = await client.list_tools()
-                record_definitive_capability(spec.name, client, listed)
+                record_listing_facts(spec.name, client, listed)
                 await trace_dropped_x_mcp_header_tools(client, spec.name, listed)
                 return listed
         finally:

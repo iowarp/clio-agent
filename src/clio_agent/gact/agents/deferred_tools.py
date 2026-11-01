@@ -30,6 +30,7 @@ from typing import Any
 
 from clio_agent import conf
 from clio_agent.gact.tool_catalog import CatalogEntry, ToolCatalog
+from clio_agent.tools.mcp_server_instructions import instructions_for
 
 __all__ = [
     "SEARCH_TOOLS",
@@ -171,9 +172,12 @@ def _entry(
     ]
     for owner, entries in catalog.by_owner().items():
         server = servers.get(owner) or {}
-        # A server's own description, else its plugin's (a plugin with one server).
-        about = str(server.get("description") or "") or plugin_text.get(
-            str(server.get("plugin") or owner), ""
+        # The plugin's description of the server, else what the server says about itself
+        # when it connects (MCP instructions), else its plugin's description.
+        about = (
+            str(server.get("description") or "")
+            or instructions_for(owner, summary=True)
+            or plugin_text.get(str(server.get("plugin") or owner), "")
         )
         lines.append(f"- {owner}: {about}".rstrip(": ") if about else f"- {owner}")
         lines.append("  " + ", ".join(entry.name for entry in entries))

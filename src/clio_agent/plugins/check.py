@@ -134,8 +134,8 @@ def _undescribed_servers(record: PluginRecord) -> list[Diagnostic]:
             "warning",
             "deferred_server_undescribed",
             f"MCP server {name!r} has no description for the prompt when its tools are "
-            "deferred; set extensions.ai.iowarp.clio.servers."
-            f"{name}.description in plugin.json",
+            "deferred unless it sends MCP instructions; set extensions.ai.iowarp.clio."
+            f"servers.{name}.description in plugin.json",
             record.id,
         )
         for name in record.mcp_servers
