@@ -691,8 +691,14 @@ class ClaudeStreamClientPool:
             self._reaper.wake()
 
     def _reclaim_idle_for_slot(self) -> int:
-        """Reap idle session entries when a connect is queued behind the cap."""
-        evicted = sweep_idle_session_entries(self, ttl_s=0.0)
+        """Reap idle session entries when a connect is queued behind the cap.
+
+        Sessions without a running turn give up their connection first; only when none
+        is idle does a session between two model calls of its turn lose its own.
+        """
+        evicted = sweep_idle_session_entries(self, ttl_s=0.0) or sweep_idle_session_entries(
+            self, ttl_s=0.0, include_active=True
+        )
         for key, entry in evicted:
             reap_idle_session_entry(key, entry)
         return len(evicted)

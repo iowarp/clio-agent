@@ -26,7 +26,11 @@ from clio_agent.providers import session_lifecycle
 async def test_turn_retirement_releases_provider_once_after_worker_exit(
     outcome: str, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """A cancelled waiter cannot release provider ownership while its worker lives."""
+    """A cancelled waiter cannot release provider ownership while its worker lives.
+
+    A clean turn end keeps the connection for the session's next turn (the pool's B1
+    contract); a failed or stopped turn releases it, once, after its worker exits.
+    """
     app = SimpleNamespace(state=SimpleNamespace())
     entered, released = asyncio.Event(), asyncio.Event()
     work_release, worker_returned = threading.Event(), threading.Event()
@@ -77,12 +81,18 @@ async def test_turn_retirement_releases_provider_once_after_worker_exit(
             assert calls == [] and not stopping.done()
             work_release.set()
             await stopping
-        await asyncio.wait_for(released.wait(), 2)
+        if outcome != "normal":
+            await asyncio.wait_for(released.wait(), 2)
+        else:  # let the clean turn end before shutdown, which counts as a stop
+            for _ in range(200):
+                if not runner.busy(sid):
+                    break
+                await asyncio.sleep(0.01)
     finally:
         work_release.set()
         runner.close_admission()
         await runner.drain()
-    assert calls == [sid] and not runner.busy(sid)
+    assert calls == ([] if outcome == "normal" else [sid]) and not runner.busy(sid)
 
 
 @pytest.fixture(autouse=True)

@@ -207,9 +207,10 @@ providers.claude_code.max_precede_connects: 2.0
 providers.claude_code.stateful_capacity: 128.0
 
 # CLIO_CLAUDE_CODE_STREAM_IDLE_TTL_S  (float)  <- src/clio_agent/providers/claude_code_stream_bounds.py
-# Seconds a session's pooled Claude Code connection may sit idle before the
-# next request reaps it; lower to free idle connections sooner.
-providers.claude_code.stream_idle_ttl_s: 15.0
+# Seconds a session's pooled Claude Code connection is kept between turns,
+# so the next turn sends only new messages; a connection is never reaped
+# while its turn runs.
+providers.claude_code.stream_idle_ttl_s: 300.0
 
 # CLIO_PROVIDER_COMPONENT_INDEX_URL  (str)  <- src/clio_agent/providers/components/pypi.py
 # PyPI JSON API base the provider SDK update check reads

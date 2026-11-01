@@ -260,3 +260,49 @@ def test_reap_emits_a_typed_audit_row(monkeypatch: pytest.MonkeyPatch) -> None:
     assert reaped_rows  # SABOTAGE: skip the stream_audit call on reap -> red
     assert reaped_rows[0]["category"] == "session_idle_reap"
     assert reaped_rows[0]["provider"] == "claude_code_sdk"
+
+
+def test_an_entry_whose_turn_is_running_is_not_reaped(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Between two model calls of one turn the connection is idle only because a tool runs.
+
+    SABOTAGE: drop the ``turn_activity.active`` check in the sweep and this fails.
+    """
+    from clio_agent.providers import turn_activity
+
+    clock = _install_clock(monkeypatch)
+    pool = ClaudeStreamClientPool(reap_on_timer=False)
+    entry = pool.entry_for(session_id="sess-turn")
+    entry._mark_idle()
+    clock.advance(1000.0)
+    turn_activity.started("sess-turn")
+    try:
+        assert ccs.sweep_idle_session_entries(pool, ttl_s=15.0) == []
+        assert pool.entry_for(session_id="sess-turn") is entry
+        # A queued connect may still take it when nothing else is idle.
+        reaped = ccs.sweep_idle_session_entries(pool, ttl_s=0.0, include_active=True)
+        assert [sid for sid, _ in reaped] == ["sess-turn"]
+    finally:
+        turn_activity.ended("sess-turn")
+    assert not turn_activity.active("sess-turn")
+
+
+def test_a_slot_reclaim_takes_sessions_without_a_turn_first(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """SABOTAGE: reclaim with ``include_active=True`` first and ``sess-busy`` is lost too."""
+    from clio_agent.providers import turn_activity
+
+    clock = _install_clock(monkeypatch)
+    pool = ClaudeStreamClientPool(reap_on_timer=False)
+    for sid in ("sess-busy", "sess-done"):
+        pool.entry_for(session_id=sid)._mark_idle()
+    clock.advance(1.0)
+    monkeypatch.setattr(ccs, "reap_idle_session_entry", lambda key, entry: None)
+    turn_activity.started("sess-busy")
+    try:
+        assert pool._reclaim_idle_for_slot() == 1
+        assert "sess-busy" in pool._entries and "sess-done" not in pool._entries
+        assert pool._reclaim_idle_for_slot() == 1  # nothing else idle: the running turn's
+        assert "sess-busy" not in pool._entries
+    finally:
+        turn_activity.ended("sess-busy")

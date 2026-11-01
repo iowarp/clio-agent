@@ -947,8 +947,8 @@ KEY_NOTES: dict[str, str] = {
         "running many concurrent stateful sessions."
     ),
     "providers.claude_code.stream_idle_ttl_s": (
-        "Seconds a session's pooled Claude Code connection may sit idle before the next request "
-        "reaps it; lower to free idle connections sooner."
+        "Seconds a session's pooled Claude Code connection is kept between turns, so the next "
+        "turn sends only new messages; a connection is never reaped while its turn runs."
     ),
     "providers.native_image_url_allowlist": (
         "Comma-separated hosts whose http(s) image URLs may be handed to a provider to fetch; "
