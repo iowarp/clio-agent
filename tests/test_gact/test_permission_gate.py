@@ -1446,9 +1446,9 @@ def test_gate_denies_write_tool_in_plan_mode_via_plan_acl(tmp_path: Path) -> Non
         assert rows[0]["session_id"] == sid
 
 
-def test_gate_allows_plans_dir_md_write_in_plan_mode(tmp_path: Path) -> None:
-    """P1.1 #1063: the SOLE writable path in plan mode — a ``*.md`` write under the plans dir
-    — is allowed by the @70 carve-out (beats the @40 deny band)."""
+def test_gate_denies_plans_dir_md_write_in_plan_mode(tmp_path: Path) -> None:
+    """In plan mode no file tool writes, the plans dir included: the plan is written with
+    plan_update, which the deny message names."""
     from clio_agent.gact.runtime.grant_resolver import plans_dir
 
     app = build_app(sessions_path=tmp_path / "s.json")
@@ -1457,7 +1457,9 @@ def test_gate_allows_plans_dir_md_write_in_plan_mode(tmp_path: Path) -> None:
         gate = _make_permission_gate(app)
         target = str(plans_dir() / "2026-07-25-plan.md")
         with _tool_session_context(sid):
-            assert gate("fs_write_file", {"filepath": target}) == "allow"
+            decision = gate("fs_write_file", {"filepath": target})
+            assert decision == "deny"
+            assert "plan_update" in getattr(decision, "deny_message", str(decision))
 
 
 def test_gate_denies_write_tool_in_architect_mode(tmp_path: Path) -> None:
@@ -1495,7 +1497,6 @@ def test_gate_user_allow_policy_does_not_override_plan_mode(tmp_path: Path) -> N
 def test_plan_acl_deny_surfaces_mode_aware_message(tmp_path: Path) -> None:
     """P1.2 #1064: a plan_acl-denied write returns a ``DenyDecision`` carrying the mode-aware
     message ("Plan Mode" + the plan file path), while the audit reason stays ``policy_deny``."""
-    from clio_agent.gact.runtime.grant_resolver import plans_dir
 
     app = build_app(sessions_path=tmp_path / "s.json")
     with TestClient(app) as c:
@@ -1507,7 +1508,7 @@ def test_plan_acl_deny_surfaces_mode_aware_message(tmp_path: Path) -> None:
         assert decision == "deny"
         assert isinstance(decision, DenyDecision)
         assert "Plan Mode" in decision.deny_message
-        assert str(plans_dir()) in decision.deny_message
+        assert "plan_update" in decision.deny_message
         assert "denied by permission gate" not in decision.deny_message
         # The typed audit reason is unchanged.
         rows = list(app.state.permissions.values())

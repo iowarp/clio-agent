@@ -36,7 +36,6 @@ from clio_agent.gact.runtime.grant_resolver import plans_dir, resolve
 from clio_agent.gact.summarization_record import summarization_part
 from clio_agent.gact.types import Message, Tokens
 from clio_agent.tools.execution import tool_workspace_context
-from clio_agent.tools.file_policy import FileAccessPolicy
 
 pytestmark = pytest.mark.usefixtures("host_agent_executor")
 
@@ -167,7 +166,8 @@ def test_plan_file_path_recorded_on_first_plan_turn(tmp_path: Path) -> None:
 
 
 def test_live_turn_plan_path_matches_workspace_file_boundary(tmp_path: Path) -> None:
-    """The recorded plan is writable when a server hosts a workspace outside its checkout."""
+    """The recorded plan is writable by plan_update when a server hosts a workspace outside its
+    checkout; a file tool cannot write it in plan mode."""
 
     app, sess = _plan_session(tmp_path)
     workspace = tmp_path / "external-workspace"
@@ -175,7 +175,10 @@ def test_live_turn_plan_path_matches_workspace_file_boundary(tmp_path: Path) -> 
         plan_mode_reminder(app, sess.id, sess)
         plan_file = app.state.sessions.get(sess.id).metadata[_PLAN_FILE_METADATA_KEY]
         assert Path(plan_file).parent == (paths.workspace_state_dir(workspace) / "plans").resolve()
-        assert FileAccessPolicy.from_env().validate_write(plan_file) == Path(plan_file)
+        from clio_agent.gact.session_plan import update_plan
+
+        assert update_plan(app, sess.id, content="# Plan")["plan_file"] == plan_file
+        assert Path(plan_file).read_text(encoding="utf-8") == "# Plan\n"
         assert (
             resolve(
                 "tool",
@@ -185,7 +188,7 @@ def test_live_turn_plan_path_matches_workspace_file_boundary(tmp_path: Path) -> 
                 path=plan_file,
                 mode="plan",
             )
-            == "allow"
+            == "deny"
         )
 
 
@@ -236,12 +239,11 @@ def test_plan_file_path_is_stable_across_turns(tmp_path: Path) -> None:
     assert first == later
 
 
-def test_recorded_plan_path_is_within_plan_acl_carveout(tmp_path: Path) -> None:
-    """A write to the recorded plan path resolves ALLOW in plan mode (the @70 carve-out)."""
+def test_recorded_plan_path_is_written_by_plan_update_only(tmp_path: Path) -> None:
+    """A file-tool write to the recorded plan path is denied in plan mode: plan_update owns it."""
     app, sess = _plan_session(tmp_path)
     plan_mode_reminder(app, sess.id, sess)
     plan_file = app.state.sessions.get(sess.id).metadata[_PLAN_FILE_METADATA_KEY]
-    # No persisted user policies — ALLOW must come purely from the built-in plan-file carve-out.
     action = resolve(
         "tool",
         "fs_write_file",
@@ -250,7 +252,7 @@ def test_recorded_plan_path_is_within_plan_acl_carveout(tmp_path: Path) -> None:
         path=plan_file,
         mode="plan",
     )
-    assert action == "allow"
+    assert action == "deny"
 
 
 def test_reminder_shows_create_guidance_when_file_absent(tmp_path: Path) -> None:

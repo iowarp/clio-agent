@@ -16,7 +16,7 @@ from fastapi.testclient import TestClient
 
 import clio_agent.plugins
 from clio_agent.gact import context as _ctx
-from clio_agent.gact.agents.skill_effects import SkillEffect, parse_skill_effect
+from clio_agent.gact.agents.skill_effects import parse_skill_effect
 from clio_agent.gact.agents.skill_runtime import SkillRuntime, build_load_skill_tool
 from clio_agent.gact.app import build_app
 from clio_agent.gact.plan_mode import (
@@ -47,10 +47,12 @@ def test_planning_skill_is_discovered_in_the_core_plugin() -> None:
     assert res.skill.scope == "plugin"
 
 
-def test_planning_skill_declares_enter_mode_plan() -> None:
+def test_planning_skill_is_a_procedure_without_a_mode_effect() -> None:
+    """plan_enter is the one way into plan mode; the skill describes the procedure."""
     res = _catalog().resolve("planning")
     assert res.skill is not None
-    assert parse_skill_effect(res.skill.meta) == SkillEffect(kind="enter_mode", mode="plan")
+    assert parse_skill_effect(res.skill.meta) is None
+    assert "plan_enter" in res.skill.description
 
 
 def test_planning_skill_body_has_four_phases_and_turn_ending_contract() -> None:
@@ -62,15 +64,16 @@ def test_planning_skill_body_has_four_phases_and_turn_ending_contract() -> None:
     # Phase intents (grounding-before-asking, incremental drafting, epistemic ledger).
     assert "do not ask" in body.lower()
     assert "epistemic ledger" in body.lower()
-    # The turn-ending contract: end the turn via plan_exit (or the question tool).
+    # Entry, drafting and the turn-ending contract use the plan tools.
+    assert "plan_enter" in body and "plan_update" in body
     assert "plan_exit" in body
-    assert "END YOUR TURN" in body
+    assert "end your turn" in body.lower()
 
 
-# ---- invoking the skill via the P1.0 effect path enters plan mode ----------------------
+# ---- loading the skill leaves the mode alone; plan_enter enters plan mode ---------------
 
 
-def test_invoking_planning_skill_enters_plan_mode_and_engages_machinery(tmp_path: Path) -> None:
+def test_loading_the_planning_skill_does_not_change_the_mode(tmp_path: Path) -> None:
     app = build_app(sessions_path=tmp_path / "s.json")
     sess = app.state.sessions.create(workspace_id="ws_default", title="t", mode="edit")
     agent = AgentDef(id="standard", source="plugin", title="CLIO", skills=["planning"], metadata={})
@@ -85,12 +88,20 @@ def test_invoking_planning_skill_enters_plan_mode_and_engages_machinery(tmp_path
         _ctx.reset(tok_s)
         _ctx.reset(tok_a)
 
-    # The declared enter_mode effect fired via the runtime (not parsed from body).
-    assert app.state.sessions.get(sess.id).mode == "plan"
-    assert "skill effect" in out and "Planning" in out
-    # Mid-turn entry cannot wait for the next turn's reminder. The first tool
-    # observation must identify a writable plan path with its parent ready.
+    assert app.state.sessions.get(sess.id).mode == "edit"
+    assert "skill effect" not in out and "plan_enter" in out
+
+
+def test_plan_enter_enters_plan_mode_and_engages_machinery(tmp_path: Path) -> None:
+    """Mid-turn entry cannot wait for the next turn's reminder: plan_enter's result names the
+    plan path, with its parent ready, and the model authors the plan."""
+    from clio_agent.gact.session_plan import enter_plan
+
+    app = build_app(sessions_path=tmp_path / "s.json")
+    sess = app.state.sessions.create(workspace_id="ws_default", title="t", mode="edit")
+    out = enter_plan(app, sess.id, "an open question")
     fresh = app.state.sessions.get(sess.id)
+    assert fresh.mode == "plan"
     plan_file = recorded_plan_file(fresh)
     assert plan_file is not None
     assert PLAN_MODE_REMINDER_MARKER in out
