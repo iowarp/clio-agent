@@ -360,3 +360,30 @@ def test_the_shared_root_is_emptied_except_the_call_log(tmp_path: Path) -> None:
     assert removed == ["note.txt", "old_check"]
     assert sorted(p.name for p in root.iterdir()) == ["calls"]
     assert (root / "calls" / "eval-calls.jsonl").read_text() == "{}\n"
+
+
+def test_io_summary_counts_this_runs_puts_and_cache_tokens(tmp_path: Path) -> None:
+    from scripts.eval.tool_calling.session_run import summarize_io
+
+    log = tmp_path / "audit.jsonl"
+    rows = [
+        {"stage": "store.put", "ts": 100.0, "name": "sess_a__~events~", "size": 4096},
+        {"stage": "store.put", "ts": 101.0, "name": "r.sess_a.x", "size": 100},
+        {"stage": "store.put", "ts": 101.0, "name": "sess_other__~events~", "size": 9},
+        {"stage": "store.put", "ts": 500.0, "name": "sess_a__late", "size": 9},
+        {
+            "stage": "provider.call_usage",
+            "ts": 102.0,
+            "session_id": "sess_a",
+            "usage_cache_creation_input_tokens": 300,
+            "usage_cache_read_input_tokens": 9000,
+        },
+    ]
+    log.write_text("".join(json.dumps(r) + "\n" for r in rows))
+    assert summarize_io(log, 99.0, 110.0, {"sess_a"}) == {
+        "store_puts": 2,
+        "store_put_bytes": 4196,
+        "cache_creation_tokens": 300,
+        "cache_read_tokens": 9000,
+    }
+    assert summarize_io(None, 0.0, 1.0, {"sess_a"})["store_puts"] == 0

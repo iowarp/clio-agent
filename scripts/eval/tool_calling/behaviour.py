@@ -14,7 +14,9 @@ recorded steps, calls and model calls and reports:
   never cost a model turn;
 - **time**: model time (all model calls), tool time (the union of the agent's own
   calls, nested script calls included in their script) and the rest, which is the
-  harness: recording, hooks, scheduling between steps.
+  harness: recording, hooks, scheduling between steps;
+- **clio-core and cache**: puts and megabytes sent to clio-core, and the provider's
+  prompt-cache tokens created and read (from the stream audit, when it was on).
 
 A table per task puts the configurations side by side with the median over runs.
 """
@@ -109,6 +111,10 @@ def run_behaviour(run: dict[str, Any]) -> dict[str, Any]:
         "tool_s": tool_ms / 1000.0,
         "other_s": max(wall_ms - model_ms - tool_ms, 0.0) / 1000.0,
         "wall_s": wall_ms / 1000.0,
+        "store_puts": float((run.get("io") or {}).get("store_puts") or 0),
+        "store_mb": float((run.get("io") or {}).get("store_put_bytes") or 0) / 1e6,
+        "cache_create_k": float((run.get("io") or {}).get("cache_creation_tokens") or 0) / 1e3,
+        "cache_read_k": float((run.get("io") or {}).get("cache_read_tokens") or 0) / 1e3,
     }
 
 
@@ -127,6 +133,10 @@ _COLUMNS = (
     ("model s", "model_s", "{:.0f}"),
     ("tools s", "tool_s", "{:.0f}"),
     ("other s", "other_s", "{:.0f}"),
+    ("core puts", "store_puts", "{:.0f}"),
+    ("core MB", "store_mb", "{:.1f}"),
+    ("cache new k", "cache_create_k", "{:.1f}"),
+    ("cache read k", "cache_read_k", "{:.0f}"),
 )
 
 

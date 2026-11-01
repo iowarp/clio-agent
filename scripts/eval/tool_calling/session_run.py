@@ -212,6 +212,37 @@ def slice_stream_audit(
     return out
 
 
+def summarize_io(
+    path: Path | None, start: float, end: float, session_ids: set[str]
+) -> dict[str, int]:
+    """clio-core puts and bytes, and provider cache tokens, for this run's sessions.
+
+    ``store.put`` rows name the record, which starts with or contains the session id;
+    ``provider.call_usage`` rows carry the session id. Rows outside the run's window
+    (with 5 s of slack) are ignored.
+    """
+    out = {
+        "store_puts": 0,
+        "store_put_bytes": 0,
+        "cache_creation_tokens": 0,
+        "cache_read_tokens": 0,
+    }
+    for row in read_jsonl(path):
+        ts = float(row.get("ts") or 0.0)
+        if not start - 5 <= ts <= end + 5:
+            continue
+        stage = row.get("stage")
+        if stage == "store.put":
+            name = str(row.get("name") or "")
+            if any(sid in name for sid in session_ids):
+                out["store_puts"] += 1
+                out["store_put_bytes"] += int(row.get("size") or 0)
+        elif stage == "provider.call_usage" and row.get("session_id") in session_ids:
+            out["cache_creation_tokens"] += int(row.get("usage_cache_creation_input_tokens") or 0)
+            out["cache_read_tokens"] += int(row.get("usage_cache_read_input_tokens") or 0)
+    return out
+
+
 def slice_call_log(path: Path | None, start: float, end: float) -> list[dict[str, Any]]:
     """Synthetic-server calls in the run's time window (shared servers carry no session)."""
     return [r for r in read_jsonl(path) if start <= float(r.get("ts") or 0.0) <= end + 1]
@@ -342,6 +373,7 @@ def execute_run(ctx: RunContext, spec: RunSpec) -> dict[str, Any]:
         "fleet_settings": ctx.fleet_settings,
         "stream_audit": slice_stream_audit(ctx.stream_audit_log, started, ended, session_ids),
         "stream_audit_enabled": ctx.stream_audit_log is not None,
+        "io": summarize_io(ctx.stream_audit_log, started, ended, session_ids),
         "call_log": slice_call_log(ctx.call_log, started, ended),
     }
     target = result_path(ctx.results, ctx.config, spec.task, spec.index)
