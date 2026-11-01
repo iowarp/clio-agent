@@ -143,8 +143,28 @@ def grade_p4(answer: dict[str, Any], text: str) -> dict[str, Any]:
     return {"correct": None, "fact_recall": round(hits / total, 3) if total else None, "by": per}
 
 
+_LIST_LINE = re.compile(r"^\s*(?:[-*+]|\d+[.)]|\|)")
+
+
+def _claimed_ids(text: str) -> tuple[set[str], set[str]]:
+    """``(claimed, mentioned)`` record ids: an id is part of the answer when it is in a list
+    item or table row, on a line with a negative number, or listed with other ids; a lone
+    id in a prose aside ("REC-00001 is in kPa") is only mentioned."""
+    claimed: set[str] = set()
+    mentioned: set[str] = set()
+    for line in text.splitlines():
+        ids = set(re.findall(r"REC-\d{5}", line))
+        if not ids:
+            continue
+        if _LIST_LINE.match(line) or re.search(r"(?<![\w.])-\d", line) or len(ids) > 1:
+            claimed |= ids
+        else:
+            mentioned |= ids
+    return claimed, mentioned - claimed
+
+
 def grade_records(answer: dict[str, Any], text: str) -> dict[str, Any]:
-    ids = set(re.findall(r"REC-\d{5}", text))
+    ids, mentioned = _claimed_ids(text)
     expected = set(answer["ids"])
     numbers = {int(n) for n in re.findall(r"(?<![\d-])(\d+)(?![\d])", text.replace(",", ""))}
     count_ok = answer["count"] in numbers
@@ -154,6 +174,7 @@ def grade_records(answer: dict[str, Any], text: str) -> dict[str, Any]:
         "ids_exact": ids == expected,
         "missing": sorted(expected - ids),
         "extra": sorted(ids - expected),
+        "mentioned_only": sorted(mentioned - expected),
     }
 
 

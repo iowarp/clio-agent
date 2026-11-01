@@ -109,6 +109,19 @@ def test_records_exact_ids_and_count() -> None:
     assert not partial["count_ok"]
 
 
+def test_records_an_id_mentioned_in_an_aside_is_not_part_of_the_answer() -> None:
+    text = (
+        "**2 of the 20 records have a negative reading:**\n\n"
+        "| Record | Reading |\n|---|---|\n| REC-00002 | -86.75 |\n| REC-00015 | -84.27 |\n\n"
+        "REC-00001 is in kPa, and the same fields are available on the others."
+    )
+    result = grade("P5", RECORDS, _run(text))
+    assert result["correct"] and result["extra"] == []
+    assert result["mentioned_only"] == ["REC-00001"]
+    wrong = grade("P5", RECORDS, _run("2 negative:\n- REC-00002 (-3.1)\n- REC-00016 (-2.0)"))
+    assert not wrong["correct"] and wrong["extra"] == ["REC-00016"]
+
+
 P8 = {
     "tool": "climate_set_temperature",
     "args": {"entity_id": "climate.guest_bedroom", "temperature": 19.5},
