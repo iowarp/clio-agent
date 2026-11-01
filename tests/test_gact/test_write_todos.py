@@ -181,15 +181,15 @@ def test_non_list_payload_is_typed_error(tmp_path: Path) -> None:
 
 
 def test_guidance_present_in_tool_description() -> None:
-    """The tool description carries the transition + blocked!=completed + reconcile guidance."""
+    """The tool description explains the states, blocked != completed and whole-list replace."""
 
     tool = build_write_todos_tool(_AGENT)
     desc = tool.desc.lower()
     assert "in_progress" in desc and "pending" in desc and "completed" in desc
     assert "blocked" in desc and "not completed" in desc  # blocked != completed
-    assert "reconcile" in desc
-    # multiple in_progress explicitly permitted (parallel subagents).
-    assert "multiple todos may be in_progress" in desc
+    assert "replaces the whole list" in desc
+    # The same-step guard is explained, not decreed.
+    assert "second call in the same step would be ambiguous" in desc
 
 
 # ---- SEPARATION from plan mode ---------------------------------------------------------

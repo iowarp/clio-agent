@@ -702,14 +702,18 @@ def test_workspace_mcp_root_data_reaches_exact_gact_structured_content(tmp_path:
             and event.payload.get("part", {}).get("type") == "tool_result"
         )
 
-        expected = agent.root.model_dump(mode="json", by_alias=True)
-        model_input = json.dumps(expected, allow_nan=False)
-        assert agent.model_text.startswith(
-            f"[clio: result_spilled] This result is {len(model_input):,} characters"
+        # The model reads the server's text block (text first), so its size is the
+        # server's serialization of the same Root/data.
+        size = re.match(
+            r"\[clio: result_spilled\] This result is ([\d,]+) characters", agent.model_text
         )
+        assert size, agent.model_text[:200]
+        assert int(size.group(1).replace(",", "")) > 12_000
         spilled = re.search(r"the full result is in `([^`]+)`", agent.model_text)
         assert spilled, agent.model_text[:400]
-        assert json.loads(Path(spilled.group(1)).read_text(encoding="utf-8")) == expected
+        # The model's copy is the server's text block, spilled whole; the exact
+        # structured data travels on the wire part below.
+        assert Path(spilled.group(1)).read_text(encoding="utf-8") == f"Root({agent.root!s})"
         assert len(agent.model_text) <= 12_000
         assert tool_result["metadata"]["result"]["truncated"] is True
         # #1190: the structured copy is served at the part TOP LEVEL (the UI
@@ -727,9 +731,8 @@ def test_workspace_mcp_root_data_reaches_exact_gact_structured_content(tmp_path:
         # the exact structuredContent payload the wire part carries. The complete
         # structured copy is trace/UI-only.
         assert json.dumps(tool_result["structured_content"]) not in agent.model_text
-        # The native SDK derives data from the declared output schema, including
-        # its public alias. The bounded model preview retains that actual key.
-        assert '"schedulerNativeId"' in agent.model_text
+        # Text first: the preview is the head of the server's own text block.
+        assert "Root(" in agent.model_text
 
 
 def test_live_observer_preserves_failed_structured_tool_result_evidence(tmp_path: Path) -> None:

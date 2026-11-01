@@ -70,8 +70,8 @@ def _run(agent: ClioReAct, *steps: Reply) -> dspy.Prediction:
 
 
 def _first_result(pred: dspy.Prediction) -> Any:
-    """The first step's first tool result (messages: note, head, assistant, tool, ...)."""
-    return pred.messages[3].parts[0]
+    """The first step's first tool result (messages: head, assistant, tool, ...)."""
+    return pred.messages[2].parts[0]
 
 
 def _text(result: Any) -> str:

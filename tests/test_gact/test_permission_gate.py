@@ -10,6 +10,7 @@ Drives the bridge directly (no FastMCP server needed) and asserts:
 
 from __future__ import annotations
 
+import json
 import asyncio
 import sys
 import threading
@@ -411,7 +412,7 @@ def test_declared_mcp_mutation_blocks_before_transport_until_ui_resolution(
             assert not failures, failures
             assert calls == ["pipeline-1"], result
             assert len(transports) == 1
-            assert '"name": "jarvis_run"' in result["value"]
+            assert json.loads(result["value"])["name"] == "jarvis_run"
         finally:
             try:
                 stopping.set()

@@ -18,7 +18,7 @@ import pytest
 
 from clio_agent.arc.memory import ARCMemory
 from clio_agent.gact import context as ctx
-from clio_agent.gact.agents.clio_react import TOOL_USE_NOTE, ClioReAct
+from clio_agent.gact.agents.clio_react import ClioReAct
 from clio_agent.gact.agents.clio_react_record import ContextWriteError
 from tests._scripted_engine import Reply, calls, scripted_lm, wire
 
@@ -69,7 +69,6 @@ def _two_turns(arc: ARCMemory) -> list[Any]:
 def test_a_later_turn_sees_the_earlier_turn_as_real_messages(arc: ARCMemory) -> None:
     requests = _two_turns(arc)
     assert wire(requests[2]) == [
-        ("user", [("text", f"[clio: tool_use]\n{TOOL_USE_NOTE}")]),
         ("user", [("text", "which station moved most?")]),
         ("assistant", [("text", "Looking."), ("call", "call_0_0", "search", {"q": "ridgecrest"})]),
         ("tool", [("result", "call_0_0", "hits for ridgecrest", False)]),
@@ -111,22 +110,11 @@ def test_every_request_is_a_prefix_of_the_next_across_steps_and_turns(arc: ARCMe
         assert len(after.messages) > len(before.messages)
 
 
-def test_an_agent_with_tools_is_told_once_that_a_step_may_call_several(
-    arc: ARCMemory,
-) -> None:
-    """Owner, 2026-09-30: a step's calls run at the same time, yet agents loaded skills
-    one step each -- a model round trip apiece. CLIO says so once (an injection the
-    user sees), not in every request, and never to an agent without tools."""
+def test_no_tool_use_note_is_recorded(arc: ARCMemory) -> None:
+    """The batching guidance rides the tool rules and the per-turn reminder of the text
+    engine, not a recorded note, so the conversation carries none."""
     requests = _two_turns(arc)
-    notes = [m for m in requests[2].messages if "[clio: tool_use]" in str(m.parts)]
-    assert len(notes) == 1
-
-
-def test_an_agent_without_tools_is_not_told_about_them(arc: ARCMemory) -> None:
-    lm, engine = scripted_lm([Reply(text="hi")])
-    with _plane(arc), dspy.context(lm=lm):
-        ClioReAct("question -> answer", tools=[])(question="q")
-    assert "[clio: tool_use]" not in str(engine.requests[0].messages)
+    assert all("[clio: tool_use]" not in str(r.messages) for r in requests)
 
 
 def test_injections_are_recorded_once_before_the_user_message(arc: ARCMemory) -> None:

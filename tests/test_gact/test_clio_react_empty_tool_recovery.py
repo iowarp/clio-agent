@@ -30,7 +30,7 @@ def test_tool_free_prose_is_the_direct_answer_after_one_model_call() -> None:
     assert prediction.answer == "Ready."
     assert prediction.termination_reason == "direct_response"
     # the messages are the tool-use note and the task head, then one assistant message
-    _note, head, step = prediction.messages
+    head, step = prediction.messages
     assert (head.role, head.parts) == ("user", (TextPart(text="Reply ready. Do not call tools."),))
     assert (step.role, step.parts) == ("assistant", (TextPart(text="Ready."),))
 
