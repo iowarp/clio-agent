@@ -201,11 +201,39 @@ Two settings on every tool, each declared by the tool's plugin with a good defau
 - `code`: only scripts call it. Its schema is not in the prompt and it has no deferred entry; it exists as a kernel stub and a line in the `run_code` index. For bulk-data tools whose results are large and meant to be filtered (HDF5 reads across many files, a connected source's object listings). When the agent has no `run_code` (plan mode without enforced confinement, a role without it), a `code` tool falls back to `direct` with the typed reason `tool_callers_code_unavailable`.
 - `both`: everything else (file reads, search, web fetch).
 
-Declared with `native_tool(..., callers=)` and `tool(..., callers=)` for a plugin's own tools, and for MCP tools in `plugin.json` `extensions."ai.iowarp.clio".servers.<name>.callers` (the server's default) with `servers.<name>.tools.<tool>.callers` for one tool, beside `defer` and `description`. The tool listing and the `run_code` index say which tools are code-only; a script calling a `direct` tool gets the typed refusal it gets today.
+Declared with `native_tool(..., callers=)` and `tool(..., callers=)` for a plugin's own tools, and for MCP tools in `plugin.json` `extensions."ai.iowarp.clio".servers.<name>.callers` (the server's default) with `servers.<name>.tools.<tool>.callers` for one tool, beside `defer` and `description`. The declaration is the default only: the effective value resolves through `clio_agent.conf` as `tools.callers` (a mapping from tool name to caller, in `config.yaml` or `CLIO_TOOLS_CALLERS` as JSON), so a person or a deployment changes any tool, core's own included, without code. Core ships no fixed list. The tool listing and the `run_code` index say which tools are code-only; a script calling a `direct` tool gets the typed refusal it gets today.
 
 **Default permission.** `allow`, `ask` or `deny`, declared the same way (`permission=`, `servers.<name>.permission`, `servers.<name>.tools.<tool>.permission`). Undeclared, it follows the tool's annotations: read-only tools `allow`, destructive tools `ask`, others the approval mode's usual behaviour. A declared default is a policy rule at the lowest precedence: the person's own rules (from the settings page, `PUT /v1/policies`, or "allow for this session/workspace") override it, and it overrides the approval mode, so a plugin can keep `send_email` on `ask` even in `auto-edits`. `bypass` still skips questions but not `deny`. Plan-mode restrictions apply as today.
 
-**Settings page.** In gact-tui, a plugin's tools page lists its tools grouped into read-only and write tools (from the annotations), with a default per group and a per-tool override for permission (allow, ask, block) and I/O (direct, code, both), each showing the plugin's default. Permission overrides are written as the person's policy rules in the existing policy store; I/O overrides go in the plugin state the server already keeps. No new store.
+The declared default permission likewise resolves through `clio_agent.conf` as `tools.permissions` (tool name to `allow`, `ask` or `deny`; `CLIO_TOOLS_PERMISSIONS` as JSON).
+
+**Settings page.** In gact-tui, a plugin's tools page lists its tools grouped into read-only and write tools (from the annotations), with a default per group and a per-tool override for permission (allow, ask, block) and I/O (direct, code, both), each showing the plugin's default. The page writes `tools.permissions` and `tools.callers` in the user `config.yaml` through `user_config_document`, as the fleet settings do; "allow for this session/workspace" answers stay policy rules. No new store.
+
+## Design: per-session scratch space
+
+Agents need scratch space (an extracted older commit, a benchmark copy, intermediate files). Today every scratch place is shared: the platform temp dir by every session on the machine, `<workspace>/.tmp` (the shell's `TMPDIR`) by every session of a workspace, and an allowed root by everything; the agent is never told where its scratch is, and in the evaluation one run's extracted repository was found and reviewed by a later run.
+
+Each session gets its own folder, `<scratch root>/<machine name>/<session id>`:
+
+- `paths.scratch_root` (`CLIO_SCRATCH_ROOT`), default `<user state dir>/scratch`; the machine name keeps sessions on different hosts apart when the root is on a shared file system (NFS on HPC), from `socket.gethostname()` unless `paths.machine_name` (`CLIO_MACHINE_NAME`) sets it.
+- A child session gets its own folder; nothing is shared by default.
+- It is created when the session first needs it, is in the session's write roots, is the shell's and the `run_code` kernel's `TMPDIR`, and is named in the runtime context next to the workspace ("Scratch folder for this session: ..."). The platform temp dir leaves the write roots unless `paths.allow_system_temp` is on.
+- It is removed when the session is deleted, and kept `paths.scratch_retention_days` (default 7) after the session's last activity otherwise, by the existing reaper pattern; removal is recorded with a typed reason.
+
+## Design: configurable values
+
+Tunables and policy lists resolve through `clio_agent.conf` with a documented key (`scripts/config_key_notes.py`, the generated environment reference), not module constants. Protocol vocabularies (permission answer names, plan statuses, working-state source names) stay in code because changing them changes the protocol.
+
+| Kind | Values now in code | Key |
+| --- | --- | --- |
+| Concurrency | `tool_concurrency.WORKERS` (32) | `tools.call_workers` |
+| `run_code` | script size (`_CODE_CHARS`), kernel output (`OUTPUT_LIMIT`), kernel start timeout, poll interval, stub doc and index line lengths | `code.max_script_chars`, `code.max_output_bytes`, `code.start_timeout_s`, `code.poll_s`, `code.stub_doc_chars`, `code.index_line_chars` |
+| Policy lists | `NOT_IN_SCRIPTS`; never-deferred tools and prefixes and built-in servers; tools whose results are never bounded (`FULL_RESULT_TOOLS`); postures that cover a script's nested calls (`COVERING_POSTURES`) | `tools.callers`; `tools.never_defer`; `tools.full_result`; `code.covering_postures` |
+| Disclosure | `search_tools` default and maximum results, names listed on a miss | `tools.search_limit`, `tools.search_max`, `tools.search_miss_names` |
+| File tools | read window lines, line length, whole-file count size, ripgrep size cap, search timeout and line length | `fs.read_lines`, `fs.read_line_chars`, `fs.count_bytes`, `fs.search_max_bytes`, `fs.search_timeout_s`, `fs.search_line_chars` |
+| Results | spill excerpt minimum, server-instructions summary length, HDF5 summary limits, sent-prompt sessions kept | `tools.spill_min_chars`, `tools.instructions_chars`, `hdf5.summary_attributes`, `hdf5.summary_text_chars`, `lm.sent_prompt_sessions` |
+
+Each key keeps today's value as its default, so moving it changes no behaviour; the tests that pin the values read them through `conf`.
 
 ## Design: the session plan
 
@@ -392,6 +420,8 @@ Verify each UI change as the megachange plan describes: restart the stack, run `
 4. The settings page in gact-tui and its routes, writing policy rules and plugin state.
 5. Tests: declaration parsing and checks; the stub table, index and listing per caller; a `direct` tool refused from a script; a `code` tool absent from the prompt and callable from a script; the fallback reason; gate precedence across the modes with nested calls; the settings page in the browser at both sizes.
 6. Evaluation: the `run_code` ablation over P5-P7 and token use with and without code-only tools, as Anthropic advises measuring before turning it on broadly.
+7. Per-session scratch: the path and its keys, write roots, `TMPDIR` for the shell and the kernel, the runtime-context line, retention and removal; tests for two sessions and two machine names on one root, a child session, removal on delete and after retention. The evaluation's shared-root reset then becomes unnecessary for the current configuration.
+8. Configurable values: every value in the table above through `conf` with its key note and the regenerated environment reference.
 
 ## Phase 7: qualification
 
