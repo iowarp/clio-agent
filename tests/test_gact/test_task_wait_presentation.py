@@ -149,3 +149,24 @@ def test_wait_surfaces_failed_result_and_collection_error() -> None:
     assert shown["blocks"][2]["text"] == "Bad input"
     assert shown["blocks"][3]["text"] == "Unknown task handle"
     assert shown["blocks"][3]["severity"] == "error"
+
+
+def test_each_child_report_names_the_child_and_its_model(monkeypatch) -> None:
+    """A wait's per-child block carries the task's label and the model its session ran on,
+    so the UI can show one named tab per child."""
+    from types import SimpleNamespace
+
+    from clio_agent.gact import task_wait_presentation as presentation
+
+    task = SimpleNamespace(label="explore arc", backend=SimpleNamespace(session="sess_child"))
+    child = SimpleNamespace(model={"provider_id": "claude_code", "model_id": "claude-haiku-5-5"})
+    app = SimpleNamespace(
+        state=SimpleNamespace(
+            task_history=SimpleNamespace(task_snapshot=lambda handle: task),
+            sessions=SimpleNamespace(get=lambda sid: child if sid == "sess_child" else None),
+        )
+    )
+    monkeypatch.setattr("clio_agent.gact.context.active_app", lambda: app)
+    assert presentation._child("task_a") == {"title": "explore arc", "model": "claude-haiku-5-5"}
+    monkeypatch.setattr("clio_agent.gact.context.active_app", lambda: None)
+    assert presentation._child("task_a") == {"title": "task_a"}

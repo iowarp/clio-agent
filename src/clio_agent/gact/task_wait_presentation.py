@@ -9,6 +9,24 @@ from typing import Any
 _UNSUCCESSFUL = {"failed", "error", "cancelled", "interrupted", "denied"}
 
 
+def _child(handle: str) -> dict[str, str]:
+    """The waited task's name and, for a child agent, the model its session ran on."""
+    from clio_agent.gact.context import active_app  # noqa: PLC0415
+
+    app = active_app()
+    history = getattr(getattr(app, "state", None), "task_history", None)
+    task = history.task_snapshot(handle) if history is not None else None
+    if task is None:
+        return {"title": handle}
+    fields = {"title": str(task.label or handle)}
+    session_id = str(getattr(task.backend, "session", "") or "") if task.backend else ""
+    session = app.state.sessions.get(session_id) if session_id else None
+    model = (getattr(session, "model", None) or {}) if session is not None else {}
+    if isinstance(model, dict) and model.get("model_id"):
+        fields["model"] = str(model["model_id"])
+    return fields
+
+
 def is_wait_task_tool(name: str) -> bool:
     """Whether ``name`` is the native wait whose result is a task snapshot."""
     return name == "wait_tasks"
@@ -152,7 +170,7 @@ def wait_presentation(args: Mapping[str, Any], result: Mapping[str, Any]) -> dic
     for index, handle in enumerate(handles):
         error = next((row for row in errors if row.get("handle") == handle), None)
         row = next((row for row in rows if row.get("handle") == handle), None)
-        block: dict[str, Any] = {"id": f"wait-task-{index}", "type": "text"}
+        block: dict[str, Any] = {"id": f"wait-task-{index}", "type": "text", **_child(handle)}
         if error is not None:
             block.update(
                 label=f"{handle}: Could not collect",

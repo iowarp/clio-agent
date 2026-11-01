@@ -56,6 +56,9 @@ class PresentationBlock(BaseModel):
     media_type: str = ""
     text: str = ""
     label: str = ""
+    #: A child report's name (its task label) and the model it ran on.
+    title: str | None = None
+    model: str | None = None
     language: str = ""
     # "code": the file line number of the block's first line (a ranged read or a
     # search hit's context); "link" to a file: the line the link opens at.
