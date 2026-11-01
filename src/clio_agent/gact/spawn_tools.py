@@ -7,6 +7,7 @@ same path flows use. No agent-only wait or cancel catalog lives here.
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from typing import Any
 from uuid import uuid4
@@ -109,34 +110,42 @@ def build_spawn_runtime_tools(
     async def spawn_agents_parallel(
         spawns: list[dict[str, Any]],
         placement: str | None = None,
+        wait: bool = False,
     ) -> dict[str, Any]:
         local_placement(placement)
         maximum = limits.get("max_items", 0)
         if not spawns or maximum and len(spawns) > maximum:
             raise ValueError("Spawn batch is empty or exceeds its declared item budget")
         invocation = TASK_CALL.get().invocation_id or uuid4().hex
-        outcomes = []
-        for index, assignment in enumerate(spawns):
+
+        async def one(index: int, assignment: dict[str, Any]) -> dict[str, Any]:
             try:
-                outcomes.append(
-                    await prepare_and_spawn(
-                        assignment.get("agent") or "",
-                        assignment["task"],
-                        placement,
-                        assignment.get("input_task_ids"),
-                        assignment.get("strategy"),
-                        invocation + ":" + str(index),
-                        assignment.get("model") or "",
-                        assignment.get("name") or "",
-                    )
+                return await prepare_and_spawn(
+                    assignment.get("agent") or "",
+                    assignment["task"],
+                    placement,
+                    assignment.get("input_task_ids"),
+                    assignment.get("strategy"),
+                    invocation + ":" + str(index),
+                    assignment.get("model") or "",
+                    assignment.get("name") or "",
                 )
             except Exception as error:
                 logger.exception(
                     "Task boundary reason=group_member_control_failed error_type=%s",
                     type(error).__name__,
                 )
-                outcomes.append({"index": index, "error": str(error)})
-        return {"spawned": outcomes, "outcomes": outcomes}
+                return {"index": index, "error": str(error)}
+
+        # The children start together; each keeps its own index, handle and error.
+        outcomes = list(
+            await asyncio.gather(*(one(i, assignment) for i, assignment in enumerate(spawns)))
+        )
+        if not wait:
+            return {"spawned": outcomes, "outcomes": outcomes}
+        from clio_agent.gact.spawn_batch_wait import wait_for_batch  # noqa: PLC0415
+
+        return await wait_for_batch(outcomes)
 
     async def fork(note: str, title: str | None = None) -> dict[str, Any]:
         from clio_agent.gact.agent_fork import fork_caller  # noqa: PLC0415
@@ -219,6 +228,12 @@ def build_spawn_runtime_tools(
             "spawn_agents_parallel",
             {
                 "placement": _STRING,
+                "wait": {
+                    "type": "boolean",
+                    "default": False,
+                    "description": "true: return once every child has finished, with each "
+                    "child's report in this result (a long one saved to a file).",
+                },
                 "spawns": {
                     "type": "array",
                     "minItems": 1,
@@ -246,7 +261,7 @@ def build_spawn_runtime_tools(
                     },
                 },
             },
-            "Accept several child assignments and return their Subagent handles with independent errors. Native inference budgets apply only to model calls. Use shared observation or waiting across the returned handles.",
+            "Start several child assignments at once and return their Subagent handles with independent errors; with wait=true, return when all have finished, with each child's report. Native inference budgets apply only to model calls. Without wait, use shared observation or waiting across the returned handles.",
         )
     )
     tools.append(

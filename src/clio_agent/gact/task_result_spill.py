@@ -22,7 +22,9 @@ import json
 import os
 import re
 import tempfile
-from collections.abc import Mapping
+from collections.abc import Iterator, Mapping
+from contextlib import contextmanager
+from contextvars import ContextVar
 from pathlib import Path
 from typing import Any
 
@@ -41,10 +43,40 @@ RESULT_EXCERPT_CHARS = 2000
 _UNSAFE = re.compile(r"[^A-Za-z0-9_.-]+")
 
 
-def task_result_inline_chars() -> int:
-    """The largest result, in JSON characters, returned whole (``<= 0``: no limit)."""
+#: While several results are collected together, each one's share of the result bound.
+_SHARE: ContextVar[int] = ContextVar("clio_task_result_share", default=0)
+#: The smallest share: below it a result is mostly its file's excerpt anyway.
+_MIN_SHARE = 1500
 
-    return agent_task_output_digest_chars()
+
+def task_result_inline_chars() -> int:
+    """The largest result, in JSON characters, returned whole (``<= 0``: no limit).
+
+    Inside :func:`shared_result_bound` it is also at most that collection's share.
+    """
+
+    bound, share = agent_task_output_digest_chars(), _SHARE.get()
+    if share <= 0:
+        return bound
+    return share if bound <= 0 else min(bound, share)
+
+
+@contextmanager
+def shared_result_bound(count: int) -> Iterator[None]:
+    """Collect ``count`` results so that together they fit one tool result.
+
+    Each result returned whole gets an equal share of the model's result bound; a
+    larger one goes to its own file with an excerpt, so a batch of long reports does
+    not spill as a whole.
+    """
+    from clio_agent.tools.mcp_result_projection import model_tool_result_chars  # noqa: PLC0415
+
+    share = max(_MIN_SHARE, (model_tool_result_chars() - 1000) // max(1, count))
+    token = _SHARE.set(share if count > 1 else 0)
+    try:
+        yield
+    finally:
+        _SHARE.reset(token)
 
 
 def _workspace_root(app: Any, session_id: str) -> Path:

@@ -41,7 +41,7 @@ def test_independent_choices_persist_and_inherit_exact_caller(
     set_config("providers.private_key", "private-test-value")
     current = fleet_settings()
     assert current["judges"] == dict.fromkeys(
-        ("goals", "variants", "permissions", "memory_extract", "memory_consolidate")
+        ("goals", "variants", "permissions", "memory_extract", "memory_consolidate", "explore")
     )
     caller, adapter = object(), object()
     for role in ("goals", "variants", "permissions"):

@@ -1,5 +1,6 @@
-"""Independent, durable model choices for CLIO's judges, search assistant and the
-long-term memory background pass (``memory_extract``, ``memory_consolidate``)."""
+"""Independent, durable model choices for CLIO's judges, search assistant, the
+long-term memory background pass (``memory_extract``, ``memory_consolidate``) and the
+fast ``explore`` subagent (``Prefers(role="explore")``)."""
 
 from __future__ import annotations
 
@@ -17,13 +18,16 @@ from clio_agent.user_config_document import (
     write_document,
 )
 
-JudgeRole = Literal["goals", "variants", "permissions", "memory_extract", "memory_consolidate"]
+JudgeRole = Literal[
+    "goals", "variants", "permissions", "memory_extract", "memory_consolidate", "explore"
+]
 ROLES: tuple[JudgeRole, ...] = (
     "goals",
     "variants",
     "permissions",
     "memory_extract",
     "memory_consolidate",
+    "explore",
 )
 
 
