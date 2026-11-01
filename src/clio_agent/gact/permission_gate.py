@@ -6,11 +6,10 @@ consulted before the interactive gate, recording resolved permission audit rows,
 and building the closures the tool-execution boundary calls
 (``permission_gate`` / cancellation checker).
 
-Whether a call needs approval is decided structurally, not by tool-name
-substrings: :func:`is_read_only` (in :mod:`clio_agent.gact.runtime.grant_resolver`)
-fast-allows a provably read-only call (MCP ``readOnlyHint`` annotation OR a static
-catalog ``read`` tag); every other call proceeds to the policy match and
-interactive prompt. There is no separate plan/architect lock step: plan/architect
+Whether a call needs approval is decided structurally, not by tool-name substrings, and
+the layers' order lives in :mod:`clio_agent.gact.runtime.tool_permission_layers` (TD53).
+A provably read-only call (:func:`is_read_only`) runs unless a rule or its default denies
+or asks; every other call proceeds to the policy match and interactive prompt. There is no separate plan/architect lock step: plan/architect
 enforcement is a set of built-in ``plan_acl`` policy rows (P1.1 #1063) that
 :func:`~clio_agent.gact.runtime.grant_resolver.resolve` consults for every
 ``kind="tool"`` call whose session ``mode`` is plan-restricted — the same ONE
@@ -88,6 +87,7 @@ from clio_agent.gact.permission_delivery import (
 )
 from clio_agent.gact.permission_evidence import emit_permission_resolution, permission_identity
 from clio_agent.gact.planning import active_playbook_allowed_tools
+from clio_agent.gact.runtime import tool_permission_layers as layers
 from clio_agent.gact.runtime.globals import _resolve_tool_session
 from clio_agent.gact.runtime.grant_resolver import (
     EXTERNAL_MCP_CONTEXT_KIND,
@@ -558,6 +558,33 @@ def _ask_person(
     return "deny"
 
 
+def _layered_deny(
+    app: "FastAPI",
+    sid: str,
+    name: str,
+    args: Mapping[str, Any],
+    subject: str,
+    layered: layers.Layered,
+    mode: str,
+    plan_deny_message: str = "",
+) -> str:
+    """Record and return a deny from a person's rule or the tool's default permission."""
+    by_rule = layered.source == "rule"
+    _record_resolved_permission(
+        app,
+        session_id=sid,
+        tool_name=name,
+        args=args,
+        status="auto_denied",
+        action="deny",
+        summary=f"{subject} {name!r} blocked by "
+        + ("permission policy" if by_rule else "its default permission"),
+        reason=policy_deny_reason(mode) if by_rule else layers.REASON_DEFAULT_DENY,
+    )
+    # P1.2 #1064: a plan_acl-authored deny carries a mode-aware message for the model.
+    return DenyDecision(plan_deny_message) if plan_deny_message else "deny"
+
+
 def _make_permission_gate(app: "FastAPI"):
     """Build a callable suitable for MCPToolBridge.permission_gate.
 
@@ -573,13 +600,13 @@ def _make_permission_gate(app: "FastAPI"):
         args: Mapping[str, Any],
         context: Mapping[str, Any] | None = None,
     ) -> str:
-        # P2.3 single-fire hygiene: clear any per-call intercept stash at the very
-        # start so a read-only fast-allow (below) — or a prior call whose interceptor
-        # never ran (a policy deny after a hook allow, a circuit break) — can never
+        # P2.3 single-fire hygiene: clear any per-call intercept stash first, so no call can
         # let the NEXT tool's interceptor consume a stale synthesize/modify decision.
         from clio_agent.gact.hooks import stash_pre_tool_intercept  # noqa: PLC0415
 
         stash_pre_tool_intercept(None)
+        if layers.answered(name):  # a person approved this very call (``native_gate``)
+            return "allow"
         # #1032: reads inside permitted territory need no action approval. A provably read-only call (MCP
         # readOnlyHint annotation OR a static catalog ``read`` tag) fast-allows
         # here as the FIRST branch — before any hook or the plan/architect lock —
@@ -590,12 +617,6 @@ def _make_permission_gate(app: "FastAPI"):
         from clio_agent.gact.folder_access import request_folder_access, requested_folders
 
         folders = requested_folders(name, args)
-        if is_read_only("tool", name, args, context):
-            if folders:
-                sid, current = _resolve_tool_session(app)
-                if sid:
-                    return request_folder_access(app, sid, current, name, args, folders)
-            return "allow"
         subject = (
             "external MCP tool"
             if _is_external_mcp_permission_context(context)
@@ -605,6 +626,22 @@ def _make_permission_gate(app: "FastAPI"):
         # only a fallback for truly out-of-band tool calls.
         sid, current = _resolve_tool_session(app)
         cancelled = app.state.cancel_events.get(sid)
+        approval_mode = getattr(current, "approval_mode", "ask") if current is not None else "ask"
+        default = layers.tool_default(app, sid, name)
+        if is_read_only("tool", name, args, context):
+            # TD53: a deny from any layer, or an ask rule or default, holds for reads too.
+            path = _permission_path_from_args(args)
+            rule = layers.person_rule(app, current, sid, name, path)
+            read = layers.decide(rule, default, approval_mode=approval_mode)
+            if read.action == "deny":
+                return _layered_deny(app, sid, name, args, subject, read, "")
+            if read.action == "ask":
+                return _ask_person(
+                    app, sid, name, args, context, subject, approval_mode, "ask", cancelled
+                )
+            if folders and sid:
+                return request_folder_access(app, sid, current, name, args, folders)
+            return "allow"
         if denial := _spotter_clearance(
             app, sid, current, name, args, subject, _record_resolved_permission
         ):
@@ -680,42 +717,25 @@ def _make_permission_gate(app: "FastAPI"):
             folders = requested_folders(name, args)
         elif hook_outcome.is_synthesize:
             folders = []  # no file operation will run
-        # P1.1 #1063: the plan/architect/read-only-side lock is a set of built-in plan_acl rows the
-        # ONE resolver evaluates — the policy mode (plan, architect, or read_only for a side session)
-        # makes ``resolve`` deny every non-read tool (@40); plan keeps its ``<plans>/*.md`` carve-out
-        # (@70). Read-only calls never reach here (``is_read_only`` fast-allowed above).
+        # P1.1 #1063: the plan/architect/read-only-side lock is built-in plan_acl rows the ONE
+        # resolver evaluates; ``mode`` makes ``resolve`` deny every non-read tool there.
         mode = policy_mode(current)
         policy_action, plan_deny_message = _policy_detail_for_tool(
-            app,
-            session_id=sid,
-            session=current,
-            tool_name=name,
-            args=args,
-            mode=mode,
+            app, session_id=sid, session=current, tool_name=name, args=args, mode=mode
         )
+        # TD53: deny from any layer, then the person's rules, then the tool's default
+        # permission, then the approval mode (:mod:`.runtime.tool_permission_layers`).
+        layered = layers.decide(policy_action, default, approval_mode=approval_mode)
         # A decision only a person makes (trusting code before it runs): it asks even under
-        # bypass or ai-review, and an allow policy does not stand in for it. A deny still wins.
-        if context and context.get("always_ask") and policy_action != "deny":
-            policy_action = "ask"
-        if policy_action == "deny":
-            _record_resolved_permission(
-                app,
-                session_id=sid,
-                tool_name=name,
-                args=args,
-                status="auto_denied",
-                action="deny",
-                summary=f"{subject} {name!r} blocked by permission policy",
-                reason=policy_deny_reason(mode),
-            )
-            # P1.2 #1064: a plan_acl-authored deny carries a mode-aware message so the model
-            # sees WHY the call is blocked (Plan Mode, read-only except the plan file) instead
-            # of the generic executor string. The typed audit reason above stays ``policy_deny``;
-            # a non-plan (user-policy) deny returns an empty message and the plain "deny" string.
-            return DenyDecision(plan_deny_message) if plan_deny_message else "deny"
+        # bypass or ai-review, and an allow does not stand in for it. A deny still wins.
+        if context and context.get("always_ask") and layered.action != "deny":
+            layered = layers.Layered("ask", layered.source, layered.rule)
+        if layered.action == "deny":
+            return _layered_deny(app, sid, name, args, subject, layered, mode, plan_deny_message)
         if folders:
             return request_folder_access(app, sid, current, name, args, folders)
-        if policy_action in POLICY_ALLOWING:
+        if layered.action == "allow":
+            by_rule = layered.source == "rule"
             _record_resolved_permission(
                 app,
                 session_id=sid,
@@ -723,16 +743,14 @@ def _make_permission_gate(app: "FastAPI"):
                 args=args,
                 status="auto_approved",
                 action="allow",
-                summary=f"{subject} {name!r} allowed by permission policy",
-                reason=f"policy_{policy_action}",
+                summary=f"{subject} {name!r} allowed by "
+                + ("permission policy" if by_rule else "its default permission"),
+                reason=f"policy_{layered.rule}" if by_rule else layers.REASON_DEFAULT_ALLOW,
             )
             return "allow"
-        # #1034: consult the session's approval_mode at the PROMPT boundary. Precedence is uniform
-        # — an explicit policy (deny/allow already returned above, AND an explicit ``ask``) beats the
-        # mode. Here policy_action is only "" (no policy) or "ask" (explicit "always confirm this
-        # tool"): the mode may auto-approve ONLY the unpolicied case, so an explicit ``ask`` survives
-        # even bypass. Reads never reach here (is_read_only returned at the top).
-        approval_mode = getattr(current, "approval_mode", "ask") if current is not None else "ask"
+        # The approval mode decides only when no layer did; an ``ask`` from a rule or the
+        # tool's default survives auto-approving modes, the reviewer and script grants.
+        policy_action = "ask" if layered.action == "ask" else ""
         approval_profile = (
             str(getattr(current, "approval_profile", "") or "") if current is not None else ""
         )
@@ -741,9 +759,7 @@ def _make_permission_gate(app: "FastAPI"):
             policy_action != "ask"
             and default_decision(decision_posture, "tool", name, args) == "allow"
         ):
-            # bypass (any non-read) or auto-edits (fs write): auto-approve but STILL record a
-            # resolved audit row + permission.resolved boundary event — the OS fence is
-            # untouched (⚑ never a confinement disable), so the approval is on the record.
+            # bypass or auto-edits: auto-approve, still on the record (the OS fence is untouched).
             _record_resolved_permission(
                 app,
                 session_id=sid,
