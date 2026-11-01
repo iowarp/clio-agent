@@ -20,7 +20,6 @@ this file only pins the gact-side hook that feeds it the real config.
 from __future__ import annotations
 
 import os
-
 from typing import TYPE_CHECKING, Any, cast
 
 import dspy
