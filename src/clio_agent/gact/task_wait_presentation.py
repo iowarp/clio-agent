@@ -111,6 +111,9 @@ def wait_presentation(args: Mapping[str, Any], result: Mapping[str, Any]) -> dic
     rows = [row for row in outcomes if not row.get("error")]
     errors = [row for row in outcomes if row.get("error")]
     errors.extend(row for row in result.get("errors", []) if isinstance(row, Mapping))
+    # A batch that spawned and waited (spawn_agents_parallel wait=true) lists the
+    # children that never started by their position in the batch.
+    errors.extend(row for row in result.get("not_started", []) if isinstance(row, Mapping))
 
     def uncollected(row: Mapping[str, Any]) -> bool:
         return (
@@ -212,7 +215,11 @@ def wait_presentation(args: Mapping[str, Any], result: Mapping[str, Any]) -> dic
                     "id": f"wait-error-{index}",
                     "type": "text",
                     "severity": "error",
-                    "text": str(error.get("error") or error.get("message") or error),
+                    "text": (
+                        f"Child {int(error['index']) + 1} did not start: {error.get('error')}"
+                        if isinstance(error.get("index"), int)
+                        else str(error.get("error") or error.get("message") or error)
+                    ),
                 }
             )
     failed = sum(row.get("status") in _UNSUCCESSFUL for row in rows)

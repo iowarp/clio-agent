@@ -59,3 +59,23 @@ async def test_the_batch_waits_for_its_children_and_reports_the_ones_that_never_
     assert seen["bound"] == (12_000 - 1_000) // 2 and seen["interrupt_on_mail"] is True
     assert [row["handle"] for row in value["outcomes"]] == ["task_a", "task_b"]
     assert value["not_started"] == [{"index": 1, "error": "no such agent"}]
+
+
+def test_a_batch_that_waited_is_presented_as_one_wait() -> None:
+    from clio_agent.gact.task_wait_presentation import wait_presentation
+
+    view = wait_presentation(
+        {"spawns": [{}, {}, {}], "wait": True},
+        {
+            "pending": [],
+            "outcomes": [
+                {"handle": "task_a", "pending": False, "status": "completed", "result": "A found"},
+                {"handle": "task_b", "pending": False, "status": "completed", "result": "B found"},
+            ],
+            "not_started": [{"index": 1, "error": "no such agent"}],
+        },
+    )
+    texts = [block.get("text") for block in view["blocks"]]
+    assert "A found" in texts and "B found" in texts
+    assert "Child 2 did not start: no such agent" in texts
+    assert view["status"] == "degraded"
