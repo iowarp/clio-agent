@@ -216,7 +216,9 @@ def test_the_request_crosses_as_text_with_the_system_on_the_sdk_option(pool: Fak
     response = _run(_request(HEAD))
 
     [send] = pool.sends
-    assert send["system_prompt"].startswith("You are clio.\n\n# How you act")
+    # Stable tool text first, the system prompt (ending in per-session facts) last.
+    assert send["system_prompt"].startswith("# How you act")
+    assert send["system_prompt"].endswith("You are clio.")
     assert send["payload"] == f"[user]\nwhat?\n\n{TURN_REMINDER}"
     assert send["native_blocks"] == []
     parts = response.message.parts
