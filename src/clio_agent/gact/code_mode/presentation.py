@@ -61,11 +61,8 @@ def present(args: Mapping[str, Any], result: Any, structured: Any) -> dict[str, 
         )
     if not (row.get("output") or row.get("error") or row.get("value") is not None):
         blocks.append({"id": "silent", "type": "text", "text": "The script printed nothing."})
-    tools = [str(t) for t in row.get("call_tools") or []]
-    if tools:
-        blocks.append(
-            {"id": "tools", "type": "text", "label": "Tools called", "text": ", ".join(tools)}
-        )
+    # The calls themselves are nested rows under this one; naming them again here
+    # would repeat them as producer identifiers.
     view: dict[str, Any] = {"subject": "script", "summary": _summary(row), "blocks": blocks}
     status = _STATUS.get(str(row.get("status") or ""), "")
     return view | ({"status": status} if status else {})

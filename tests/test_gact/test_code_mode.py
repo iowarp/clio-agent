@@ -214,6 +214,8 @@ class TestPresentation:
         assert view["summary"] == "14 calls, 1 failed"
         assert view["blocks"][0]["language"] == "python"
         assert "status" not in view
+        # The calls are nested rows; the result does not list their tool identifiers.
+        assert all("records_get_record" not in str(b.get("text")) for b in view["blocks"])
 
     def test_timed_out_and_cancelled(self) -> None:
         timed = present({}, "", {"code": "x", "status": "timed_out", "error": "late", "calls": 0})
