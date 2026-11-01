@@ -11,6 +11,7 @@ from typing import Any
 import dspy
 import pytest
 
+from clio_agent.gact.agents.tool_settings import apply_tool_settings
 from clio_agent.gact.code_mode import dispatch as dispatch_module
 from clio_agent.gact.code_mode import grants, kernels
 from clio_agent.gact.code_mode import tool as tool_module
@@ -19,6 +20,7 @@ from clio_agent.gact.code_mode.stubs import index_text, stub_table, tool_group
 from clio_agent.gact.runtime.permission_actions import ALLOW_SCRIPT, allows, offered
 from clio_agent.tools.execution import tool_workspace_context
 from clio_agent.tools.tool_observation import RESULT_SINK
+from clio_agent.tools.tool_settings import CALLERS_ATTR
 
 _READINGS = {f"r{i}": (-1.5 if i % 4 == 0 else float(i)) for i in range(1, 13)}
 
@@ -50,6 +52,13 @@ def _mcp_shaped(path: str) -> str:
     return "a summary"
 
 
+def _finish(answer: str) -> str:
+    return answer
+
+
+setattr(_finish, CALLERS_ATTR, "direct")  # as core's submit declares itself
+
+
 def _agent() -> Any:
     tools = {
         "records_list_records": dspy.Tool(
@@ -59,11 +68,13 @@ def _agent() -> Any:
             _get_record, name="records_get_record", desc="One record with its reading."
         ),
         "fs_stat": dspy.Tool(_mcp_shaped, name="fs_stat", desc="Stat a file."),
-        "submit": dspy.Tool(lambda answer: answer, name="submit", desc="Finish."),
+        "submit": dspy.Tool(_finish, name="submit", desc="Finish."),
     }
-    return SimpleNamespace(
+    agent = SimpleNamespace(
         tools=tools, _clio_tool_servers=frozenset({"records", "fs"}), _clio_deferred_catalog=None
     )
+    apply_tool_settings(agent, SimpleNamespace(tools=[], mcp_servers={}))
+    return agent
 
 
 @pytest.fixture
@@ -175,8 +186,9 @@ class TestKernel:
 
 
 class TestStubs:
-    def test_groups_by_server_and_skips_control_tools(self) -> None:
-        table = stub_table(_agent().tools, ("records", "fs"))
+    def test_groups_by_server_and_skips_direct_tools(self) -> None:
+        agent = _agent()
+        table = stub_table(agent.tools, ("records", "fs"), direct_only=agent._clio_direct_only)
         assert set(table["groups"]) == {"records", "fs"}
         spec = table["groups"]["records"]["get_record"]
         assert spec["tool"] == "records_get_record"

@@ -21,6 +21,7 @@ def build_goal_wait_tool() -> Any:
     return native_tool(
         wait_for,
         name="wait_for",
+        callers="direct",
         args={
             "tasks": {
                 "anyOf": [
@@ -142,6 +143,7 @@ def build_set_goal_tool() -> Any:
     return native_tool(
         set_goal,
         name="set_goal",
+        callers="direct",
         presentation="goal_started",
         domain="autonomy",
         desc=set_goal.__doc__,

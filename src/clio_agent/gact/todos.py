@@ -269,6 +269,7 @@ def build_write_todos_tool(agent_def: Any) -> Any:
     return native_tool(
         write_todos,
         name="write_todos",
+        callers="direct",
         presentation="todos",
         domain="planning",
         desc=write_todos.__doc__,

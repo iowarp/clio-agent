@@ -106,19 +106,26 @@ def _workspace() -> Path:
     return Path(root).resolve()
 
 
-def _search(catalog: Any, tools: Mapping[str, Any]) -> Any:
+def _search(tools: Mapping[str, Any]) -> Any:
+    """``tools.search`` in a script: the tools a script can call, deferred and code-only
+    ones included."""
+    from clio_agent.gact.agents.deferred_tools import _schema  # noqa: PLC0415
     from clio_agent.gact.tool_catalog import CatalogEntry, ToolCatalog  # noqa: PLC0415
 
     def search(query: str, limit: int) -> list[dict[str, str]]:
-        source = catalog if catalog is not None and len(catalog) else None
-        if source is None:
-            from clio_agent.gact.agents.deferred_tools import _schema  # noqa: PLC0415
-
-            source = ToolCatalog(CatalogEntry(n, "", *_schema(t)) for n, t in tools.items())
+        source = ToolCatalog(CatalogEntry(n, "", *_schema(t)) for n, t in tools.items())
         found, _ = source.search(query, limit)
         return [{"name": e.name, "owner": e.owner, "description": e.description} for e in found]
 
     return search
+
+
+def _callers(agent: Any) -> tuple[frozenset[str], frozenset[str]]:
+    """``(direct_only, code_only)`` from the agent's tool settings."""
+    return (
+        frozenset(getattr(agent, "_clio_direct_only", frozenset()) or ()),
+        frozenset(getattr(agent, "_clio_code_only", frozenset()) or ()),
+    )
 
 
 def run_script(agent: Any, code: str, *, session_id: str, scope: str) -> dict[str, Any]:
@@ -143,15 +150,18 @@ def run_script(agent: Any, code: str, *, session_id: str, scope: str) -> dict[st
     finally:
         PARENT_CALL_ID.reset(parent_token)
         reset_grant(grant_token)
-    catalog = getattr(agent, "_clio_deferred_catalog", None)
-    dispatcher = Dispatcher(agent.tools, servers, context, _search(catalog, agent.tools))
+    direct_only, code_only = _callers(agent)
+    callable_tools = {n: t for n, t in agent.tools.items() if n not in direct_only}
+    dispatcher = Dispatcher(callable_tools, servers, context, _search(callable_tools))
     kernel = kernels.kernel_for(session_id, scope, _workspace())
     outcome: dict[str, Any] = {"status": "failed", "output": "", "value": None, "error": ""}
     started = time.monotonic()
     limit = call_timeout_s()
     try:
         with kernel.lock:
-            kernel.bind(stub_table(agent.tools, servers))
+            kernel.bind(
+                stub_table(agent.tools, servers, direct_only=direct_only, code_only=code_only)
+            )
             kernel.send({"type": "exec", "id": 1, "code": code})
             while True:
                 if cancellation_requested():
@@ -244,6 +254,7 @@ def build_run_code_tool() -> Any:
     )
     from clio_agent.gact.code_mode.dispatch import max_nested_calls  # noqa: PLC0415
     from clio_agent.gact.code_mode.presentation import present, starting  # noqa: PLC0415
+    from clio_agent.tools.tool_settings import self_gated  # noqa: PLC0415
 
     def run_code(code: str) -> str:
         """Run a Python script that can call this agent's tools."""
@@ -260,15 +271,20 @@ def build_run_code_tool() -> Any:
         declare_structured_content(outcome)
         return model_text(outcome)
 
-    return native_tool(
-        run_code,
-        name="run_code",
-        presentation=present,
-        presentation_start=starting,
-        domain="workflows",
-        title="Run code",
-        desc=_DESCRIPTION.format(budget=max_nested_calls()),
-        args={"code": {"type": "string", "description": "Python source; top-level await works."}},
+    return self_gated(
+        native_tool(
+            run_code,
+            name="run_code",
+            callers="direct",
+            presentation=present,
+            presentation_start=starting,
+            domain="workflows",
+            title="Run code",
+            desc=_DESCRIPTION.format(budget=max_nested_calls()),
+            args={
+                "code": {"type": "string", "description": "Python source; top-level await works."}
+            },
+        )
     )
 
 
@@ -281,6 +297,7 @@ def finalize_run_code(program: Any, servers: frozenset[str]) -> None:
     if tool is None:
         return
     object.__setattr__(program, "_clio_tool_servers", servers)
-    index = index_text(stub_table(tools, servers))
+    direct_only, code_only = _callers(program)
+    index = index_text(stub_table(tools, servers, direct_only=direct_only, code_only=code_only))
     if index and "\nTools in scripts:" not in str(tool.desc):
         tool.desc = f"{_DESCRIPTION}\n\nTools in scripts:\n{index}"

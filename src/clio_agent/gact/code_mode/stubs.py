@@ -7,9 +7,11 @@ becomes ``tools.<server>.<name>`` with the server name made a Python identifier
 and description, so ``help(tools.fs.read_file)`` explains it. Deferred tools are
 included: a script calls them without loading them first.
 
-The conversation's control tools stay out of scripts: finishing, asking the person,
-planning, todos, skills and the task and agent controls are steps of the agent, not
-data calls.
+Tools whose ``callers`` setting is ``direct`` stay out of scripts: finishing, asking
+the person, planning, todos, skills, memory writes and the task and agent controls
+declare it, because they are steps of the agent, not data calls
+(:mod:`clio_agent.gact.agents.tool_settings`). ``code`` tools are only here: the index
+marks them, since the tool list does not show them.
 """
 
 from __future__ import annotations
@@ -18,43 +20,8 @@ import re
 from collections.abc import Iterable, Mapping
 from typing import Any
 
-__all__ = ["NOT_IN_SCRIPTS", "index_text", "stub_table", "tool_group"]
+__all__ = ["index_text", "stub_table", "tool_group"]
 
-#: Tools a script cannot call.
-NOT_IN_SCRIPTS = frozenset(
-    {
-        "run_code",
-        "submit",
-        "search_tools",
-        "load_skill",
-        "write_todos",
-        "plan_enter",
-        "plan_update",
-        "plan_exit",
-        "ask_user",
-        "draft_alternatives",
-        "spawn_agent_task",
-        "spawn_agents_parallel",
-        "spawn_skill_task",
-        "fork",
-        "wait_tasks",
-        "query_tasks",
-        "observe_tasks",
-        "cancel_tasks",
-        "get_task_result",
-        "send_agent_message",
-        "pause_agent",
-        "resume_agent",
-        "restart_agent",
-        "set_goal",
-        "wait_for",
-        "set_loop",
-        "loop_wakeup",
-        "cron_create",
-        "cron_delete",
-        "raise_alert_card",
-    }
-)
 _DOC_CHARS = 1500
 _INDEX_LINE_CHARS = 320
 
@@ -85,14 +52,23 @@ def _signature(function: str, parameters: Mapping[str, Any]) -> str:
     return f"{function}({', '.join(args)})"
 
 
-def stub_table(tools: Mapping[str, Any], servers: Iterable[str]) -> dict[str, Any]:
-    """The stubs the kernel builds ``tools`` from (see ``kernel_main._Tools``)."""
+def stub_table(
+    tools: Mapping[str, Any],
+    servers: Iterable[str],
+    *,
+    direct_only: frozenset[str] = frozenset(),
+    code_only: frozenset[str] = frozenset(),
+) -> dict[str, Any]:
+    """The stubs the kernel builds ``tools`` from (see ``kernel_main._Tools``).
+
+    ``direct_only`` tools get no stub; ``code_only`` tools are marked for the index.
+    """
     from clio_agent.gact.agents.clio_react import _function_tool  # noqa: PLC0415
 
     servers = tuple(servers)
     groups: dict[str, dict[str, Any]] = {}
     for name in sorted(tools):
-        if name in NOT_IN_SCRIPTS:
+        if name in direct_only:
             continue
         spec = _function_tool(tools[name])
         group, function = tool_group(name, servers)
@@ -101,6 +77,7 @@ def stub_table(tools: Mapping[str, Any], servers: Iterable[str]) -> dict[str, An
             "function": function,
             "signature": _signature(function, spec.parameters or {}),
             "doc": str(spec.description or "")[:_DOC_CHARS],
+            "code_only": name in code_only,
         }
     return {"groups": groups}
 
@@ -120,4 +97,12 @@ def index_text(table: Mapping[str, Any]) -> str:
                 shown.append(name)
             line = f"{prefix}{{{', '.join(shown)}, +{len(names) - len(shown)} more}}"
         lines.append(f"- {line}")
+    code_only = sorted(
+        f"tools.{group}.{name}" if group else f"tools.{name}"
+        for group, functions in (table.get("groups") or {}).items()
+        for name, stub in functions.items()
+        if stub.get("code_only")
+    )
+    if code_only:
+        lines.append(f"Only in scripts (not in your tool list): {', '.join(code_only)}")
     return "\n".join(lines)

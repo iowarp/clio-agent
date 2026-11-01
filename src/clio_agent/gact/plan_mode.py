@@ -403,6 +403,7 @@ def build_plan_exit_tool(agent_def: Any) -> Any:
     return native_tool(
         plan_exit,
         name="plan_exit",
+        callers="direct",
         presentation="specialized",
         domain="planning",
         desc=plan_exit.__doc__,
