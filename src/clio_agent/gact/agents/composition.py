@@ -34,9 +34,7 @@ def _runtime_active_workspace_context(app: "FastAPI", *, session_id: str = "") -
     if root is None:
         return ""
     try:
-        from clio_agent.tools.file_policy import FileAccessPolicy  # noqa: PLC0415
-
-        allowed_roots = [str(item) for item in FileAccessPolicy.from_env().allowed_roots]
+        allowed_roots = _session_write_roots(root)
     except Exception as exc:  # noqa: BLE001 - policy env read; degrade to no roots line
         trace.event("WORKSPACE-CTX", "allowed-roots read failed (%s); omitting roots line", exc)
         allowed_roots = []
@@ -55,6 +53,28 @@ def _runtime_active_workspace_context(app: "FastAPI", *, session_id: str = "") -
     elif allowed_roots:
         lines.append("Writes are only permitted under: " + ", ".join(allowed_roots) + ".")
     return "\n".join(lines)
+
+
+def _session_write_roots(root: Any) -> list[str]:
+    """The roots this session's file tools may write, its workspace first.
+
+    Read with the workspace bound, as a tool call reads them: outside that binding the
+    policy holds only ``CLIO_ALLOWED_ROOTS`` (by default the server's working directory),
+    and naming that alone would point the agent at the server's folder instead of its
+    workspace. CLIO's own state and cache folders for the workspace are left out; the
+    agent's file tools do not write there.
+    """
+    from clio_agent import paths  # noqa: PLC0415
+    from clio_agent.tools.execution import tool_workspace_context  # noqa: PLC0415
+    from clio_agent.tools.file_policy import FileAccessPolicy  # noqa: PLC0415
+
+    with tool_workspace_context(root):
+        roots = FileAccessPolicy.from_env().allowed_roots
+    internal = {
+        paths.workspace_state_dir(root).resolve(),
+        paths.workspace_cache_dir(root).resolve(),
+    }
+    return [str(item) for item in roots if item not in internal]
 
 
 def _provider_summary(provider: Any) -> str:
