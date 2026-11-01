@@ -681,3 +681,22 @@ def test_words_that_merely_start_like_the_fence_word_are_shown() -> None:
     assert splitter.push("_tool") == ""
     assert splitter.push("_calls_are documented here\n") == "_tool_calls_are documented here"
     assert splitter.dropped_fence_words == 0
+
+
+def test_a_broken_block_calling_a_loaded_unlisted_tool_is_still_recognized() -> None:
+    """P8 (2026-11-01): after search_tools loaded the climate tools, the reply was the call
+    list and a closing fence; the loaded tool is not listed, so only the agent's whole
+    callable set lets the block be recognized instead of ending the turn as an answer."""
+    from clio_agent.lm.engines.text_tools import CALLABLE_TOOLS, callable_tools
+
+    raw = '[{"name": "home_climate_list", "arguments": {"area": "guest"}}]\n```'
+    listed = {"search_tools"}
+    assert split_reply(raw, call_prefix="t", available_tools=listed).calls == []
+    token = CALLABLE_TOOLS.set(frozenset({"search_tools", "home_climate_list"}))
+    try:
+        tools = callable_tools(listed)
+    finally:
+        CALLABLE_TOOLS.reset(token)
+    [call] = split_reply(raw, call_prefix="t", available_tools=tools).calls
+    assert call.name == INVALID_TOOL_CALL and "opening" in str(call.input["error"])
+    assert callable_tools(listed) == frozenset(listed)  # nothing leaks past the step

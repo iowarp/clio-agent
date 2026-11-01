@@ -713,3 +713,23 @@ def test_every_step_runs_on_one_persistent_loop_in_the_callers_context() -> None
     loops = {loop for loop, _ in seen}
     assert len(seen) == 2 and len(loops) == 1
     assert {session for _, session in seen} == {session_id}
+
+
+def test_the_model_call_sees_every_tool_the_agent_may_call(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A loaded deferred tool is callable unlisted; the reply parser must know it (P8)."""
+    from clio_agent.lm.engines.text_tools import CALLABLE_TOOLS
+    from tests import _scripted_engine
+
+    seen: list[frozenset[str]] = []
+    original = _scripted_engine.ScriptedEngine._next
+
+    def recording(self: Any, request: Request) -> Any:
+        seen.append(CALLABLE_TOOLS.get())
+        return original(self, request)
+
+    monkeypatch.setattr(_scripted_engine.ScriptedEngine, "_next", recording)
+    _run([Reply(text="Ready.")], [search])
+    assert seen and "search" in seen[0]
+    assert CALLABLE_TOOLS.get() == frozenset()  # reset after the step

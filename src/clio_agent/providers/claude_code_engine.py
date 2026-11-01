@@ -62,6 +62,7 @@ from clio_agent.lm.engines.text_tools import (
     TURN_REMINDER,
     ReplySplit,
     StreamSplitter,
+    callable_tools,
     render_messages,
     render_system,
     split_reply,
@@ -200,8 +201,8 @@ class AsyncClaudeCodeEngine:
             self.model,
             call_index,
             session_id,
-            available_tools=frozenset(
-                tool.name for tool in request.tools if isinstance(tool, FunctionTool)
+            available_tools=callable_tools(
+                [tool.name for tool in request.tools if isinstance(tool, FunctionTool)]
             ),
         )
         yield StreamStartEvent(model=request.model)

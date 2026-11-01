@@ -23,6 +23,7 @@ from __future__ import annotations
 import json
 import re
 from collections.abc import Collection, Iterable, Sequence
+from contextvars import ContextVar
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -37,7 +38,9 @@ from dspy.lm15 import (
 )
 
 __all__ = [
+    "CALLABLE_TOOLS",
     "INVALID_TOOL_CALL",
+    "callable_tools",
     "FENCE",
     "TURN_REMINDER",
     "StreamSplitter",
@@ -50,6 +53,16 @@ __all__ = [
 FENCE = "```tool_calls"
 #: The reserved tool name carrying a block that did not parse (its input: error, raw).
 INVALID_TOOL_CALL = "clio_invalid_tool_calls"
+#: Every tool the running agent may call, listed or not: a deferred tool that
+#: search_tools loaded is callable without being listed. Recognizing a broken call block
+#: (a call to one of these tools) needs the whole set, not only the listed tools.
+CALLABLE_TOOLS: ContextVar[frozenset[str]] = ContextVar("clio_callable_tools", default=frozenset())
+
+
+def callable_tools(listed: Collection[str]) -> frozenset[str]:
+    """``listed`` plus every tool the running agent may call unlisted."""
+    return frozenset(listed) | CALLABLE_TOOLS.get()
+
 
 _TOOL_RULES = """\
 # How you act
