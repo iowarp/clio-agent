@@ -64,33 +64,77 @@ Decisions use the prefix `TD`, evaluation tasks `P` (performance) and `H` (long-
 
 Three runs per task per configuration (TD23). Each cell holds the median with the range of the three runs, plus the session handles. Targets are written here after the base and before Phase 1.
 
-### Usage per task (Phase 0)
+### Results: base against current (2026-11-01, three passes)
+
+Base is `9a365758` plus the instrumentation commit with its pinned marketplace; current is this branch at `61d319a9` (grader fixes after it change no agent code). Both ran `claude-sonnet-5-5` through the `claude_code` provider, interleaved per task (base then current), serially, on one shared clio-core runtime with separate ARC namespaces (`eval-base`, `eval-current`), each from the empty folder `/home/user/clio-eval-roots`. Base P7 is not repeated (it stops the base server, finding 9). Window share per run reads 0.00 because the fleet reports whole percentage points; the whole evaluation moved the 7-day window from 78% to 81%. Correctness is recorded, not gated (TD23); P3 does not discriminate (both 0/3: the five riskiest real issues in the tree outrank the seeded bugs) and P4 and P10 have no mechanical key.
+
+**What the numbers say.**
+
+- **Wide data work is where current wins, and the reason is model time.** P6 (200 records): base 91 s, current 44 s in every pass. Base made about 200 direct calls, up to 150 in one step, and every result came back through the model (53 s of model time, 9,800 output tokens); current wrote two scripts that made the same calls (28 s of tool time against base's 34 s) and the model read only their summaries (14 s of model time, 1,000 output tokens). P7 (2,000 records) is out of base's reach and took current 333 s, of which 187 s is tool time: the per-call history lane (finding 11) is now the limit, not the agent.
+- **P5 (20 records) is level** (16 s against 17 s): current spends one step listing the records before its script, so code pays off from somewhere between 20 and 200 calls, as Anthropic's guidance on programmatic calling predicts.
+- **Prompts are smaller.** Cached prompt per step: P1 17k against 27k, P2 23k against 33k, P3 35k against 72k, P8 35k against 44k (the deferred home server).
+- **Lookups take one step fewer** (P1 2 against 3, P2 3 against 4) and use the file tools instead of the shell.
+- **Code reading is wider, not faster.** P3 and P4: current reads up to 6 to 8 files in one step where base chains commands in the shell (P4 base: 5 shell calls of 7.4 commands each, 10 pipes, 22 sequences; current: 1 shell call and 16 reads). Wall time is level, since model time over what was read dominates both (45 to 58 s).
+- **Deferral costs one step.** P8 and P9: current loads the climate or irrigation tools with `search_tools` first (9 to 14 s against 7 to 14 s for P8, 16 to 19 s against 13 to 16 s for P9).
+- **Current is slower on H1 and H2** (median 30 s against 24 s, 39 s against 28 s), with similar step counts and more shell calls with pipes; not yet analysed.
+- **H1 to H3 did not exercise the long horizon.** Every run finished in 4 to 8 steps and 20 to 43 s with no compaction, H3 included (automatic compaction at 25%; prompts peaked near 55k tokens, under the threshold), and no run used `plan_update` or `write_todos`. They test root-cause diagnosis on a small repository, which both configurations do (base 9/9, current 8/9). They say nothing about the session plan, working-state re-injection after compaction or long runs; that needs a task that runs for hundreds of steps, which is open.
+- **Failures in current:** P7 pass 1 stopped after 450 records (finding 13); H3 pass 1 named the function and commit but not the file. Base failed no graded task except P3.
+
+#### Usage per task
 
 | Task | 5-hour window share per run | 7-day window share per run | Median wall time |
 | --- | --- | --- | --- |
-| P1 to P10, H1 to H3 | | | |
+| P1 (base) | — | 0.00 | 15.9 [14.8-17.7] s |
+| P1 (current) | — | 0.00 | 12.0 [10.9-18.4] s |
+| P2 (base) | — | 0.00 | 13.3 [12.9-14.4] s |
+| P2 (current) | — | 0.00 | 12.1 [10.4-13.4] s |
+| P3 (base) | — | 0.00 [0.00-1.00] | 76.7 [25.5-101.9] s |
+| P3 (current) | — | 0.00 [0.00-1.00] | 58.1 [46.1-69.4] s |
+| P4 (base) | — | 0.00 | 56.3 [56.1-59.5] s |
+| P4 (current) | — | 0.00 | 56.8 [47.1-59.0] s |
+| P5 (base) | — | 0.00 | 15.8 [15.1-17.6] s |
+| P5 (current) | — | 0.00 | 17.2 [15.0-20.4] s |
+| P6 (base) | — | 0.00 | 90.9 [89.4-91.7] s |
+| P6 (current) | — | 0.00 | 43.9 [43.0-45.7] s |
+| P7 (current) | — | 0.00 | 333.1 [83.7-345.8] s |
+| P8 (base) | — | 0.00 | 9.1 [7.2-14.1] s |
+| P8 (current) | — | 0.00 | 13.8 [9.1-15.6] s |
+| P9 (base) | — | 0.00 | 14.4 [13.2-15.5] s |
+| P9 (current) | — | 0.00 | 17.5 [15.6-18.7] s |
+| P10 (base) | — | 0.00 | 10.4 [10.3-11.3] s |
+| P10 (current) | — | 0.00 | 10.6 [9.8-12.9] s |
+| H1 (base) | — | 0.00 | 24.0 [22.8-31.5] s |
+| H1 (current) | — | 0.00 | 29.8 [27.4-31.6] s |
+| H2 (base) | — | 0.00 | 27.9 [23.1-28.6] s |
+| H2 (current) | — | 0.00 | 38.9 [20.3-43.1] s |
+| H3 (base) | — | 0.00 | 29.8 [28.1-38.0] s |
+| H3 (current) | — | 0.00 | 28.2 [26.1-33.0] s |
 
-### Prompt size
-
-| Agent | Phase | System text (words) | Tool schemas (tokens) | Injections per step | Total before the user message (tokens) |
-| --- | --- | --- | --- | --- | --- |
-| Root (`standard`) | Base | about 3,830 | about 20k | | about 26-27k |
-| `explore` child | Base | about 3,330 | about 6-7k | | about 12k |
-
-### Performance
+#### Performance
 
 | Task | Configuration | Steps | Calls per step | Prompt tokens per step (uncached / cached) | Output tokens | Wall time | TTFT / decode | Batch wall vs slowest call | Step overhead | Prefix resets | Correct (where graded) | Handles |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
-| P1 to P10 | Base | | | | | | | | | | | |
-| P1 to P4 | Claude Code | | | | | | | | | | | |
+| P1 | base | 3 (3/3 valid) | 1.00 [0.67-1.00] | 3 / 27,134 [27,035-27,141] | 1,116 [923-1,355] | 15.9 [14.8-17.7] s | 2,326 [2,058-2,964] / 1,100 [408-1,135] ms | 1.00 [1.00-1.00] | 97 [89-112] ms | 0 | 3/3 | `sess_a335e166f1ca`, `sess_93b51b2184a7`, `sess_f205b4be5108` |
+| P1 | current | 2 [2-3] (3/3 valid) | 0.50 [0.50-1.00] | 3 [3-3] / 17,056 [17,056-34,713] | 954 [755-1,603] | 12.0 [10.9-18.4] s | 4,174 [3,472-4,310] / 451 [108-672] ms | 1.01 | 70 [62-118] ms | 0 | 3/3 | `sess_64ba0b229332`, `sess_80261c40253c`, `sess_6cdf8f8733f5` |
+| P2 | base | 4 [3-4] (3/3 valid) | 0.75 [0.75-1.33] | 4 [3-4] / 32,641 [32,636-40,351] | 666 [646-896] | 13.3 [12.9-14.4] s | 1,743 [861-1,784] / 539 [356-1,541] ms | 1.00 | 123 [112-129] ms | 0 | 3/3 | `sess_08837631fa20`, `sess_aabe3b306eee`, `sess_7e74c2bcfa60` |
+| P2 | current | 3 (3/3 valid) | 0.67 | 3 / 23,036 [23,036-34,591] | 614 [552-761] | 12.1 [10.4-13.4] s | 2,176 [1,884-3,728] / 2 ms | — | 105 [104-121] ms | 0 | 3/3 | `sess_227d4aa3630e`, `sess_73ef126874e2`, `sess_580cd581a954` |
+| P3 | base | 9 [4-12] (3/3 valid) | 1.25 [1.17-1.33] | 4 [4-4] / 72,356 [44,009-93,274] | 6,262 [2,452-9,666] | 76.7 [25.5-101.9] s | 3,116 [2,502-4,348] / 754 [76-2,548] ms | 1.01 [1.01-1.12] | 188 [123-209] ms | 0 | 0/3 | `sess_686b707d2e79`, `sess_e4060015af4b`, `sess_a2b3e1dc6f1a` |
+| P3 | current | 6 [4-6] (3/3 valid) | 2.67 [2.33-2.75] | 4 [4-4] / 35,404 [29,844-42,815] | 6,001 [4,603-7,448] | 58.1 [46.1-69.4] s | 2,856 [2,776-3,272] / 1,996 [1,251-2,133] ms | 1.01 [1.01-1.02] | 256 [201-291] ms | 0 | 0/3 | `sess_b98da88f544d`, `sess_f9b6a6de5324`, `sess_e8445bfd9169` |
+| P4 | base | 7 [6-7] (3/3 valid) | 1.00 [0.83-2.86] | 4 [3-4] / 50,472 [50,259-51,664] | 5,665 [4,531-5,890] | 56.3 [56.1-59.5] s | 3,340 [3,069-3,426] / 1,050 [1,023-1,120] ms | 1.00 [1.00-1.01] | 177 [171-397] ms | 0 | — | `sess_60b4b10b86f1`, `sess_40e62b5748f0`, `sess_a6002659c0ff` |
+| P4 | current | 6 [6-7] (3/3 valid) | 1.43 [1.00-4.67] | 4 / 46,478 [40,653-48,972] | 6,016 [5,573-7,838] | 56.8 [47.1-59.0] s | 3,568 [3,234-4,528] / 740 [712-1,396] ms | 1.00 [1.00-1.28] | 192 [182-302] ms | 0 | — | `sess_5668ac373a54`, `sess_619b891c086d`, `sess_c9711e721f57` |
+| P5 | base | 3 (3/3 valid) | 7.00 | 3 / 27,343 [27,341-27,349] | 1,244 [1,241-1,299] | 15.8 [15.1-17.6] s | 828 [745-1,387] / 1,929 [1,714-1,985] ms | 1.03 [1.02-1.05] | 164 [163-173] ms | 0 | 3/3 | `sess_6cc9dd8a74a6`, `sess_de1e75978492`, `sess_0fd6915ec508` |
+| P5 | current | 4 [3-5] (3/3 valid) | 6.25 [4.80-7.67] | 4 [3-4] / 28,863 [26,694-35,255] | 879 [481-903] | 17.2 [15.0-20.4] s | 2,019 [1,991-2,701] / 34 [2-338] ms | 1.00 | 87 [78-92] ms | 0 | 3/3 | `sess_e4055006d54e`, `sess_5971a011912a`, `sess_da80ee8892d6` |
+| P6 | base | 5 [4-5] (3/3 valid) | 40.40 [40.40-50.50] | 3 [3-3] / 32,960 [31,303-35,504] | 9,797 [9,505-10,240] | 90.9 [89.4-91.7] s | 3,100 [2,852-4,672] / 1,784 [782-2,031] ms | 1.03 [1.03-1.04] | 614 [602-749] ms | 0 | 3/3 | `sess_12b4711d8bf9`, `sess_389d4c50a653`, `sess_f29db6513332` |
+| P6 | current | 4 [3-4] (3/3 valid) | 51.50 [51.25-68.33] | 3 [3-3] / 26,170 [26,143-34,752] | 1,021 [949-1,532] | 43.9 [43.0-45.7] s | 2,286 [1,594-3,465] / 956 [780-1,648] ms | 1.00 | 97 [95-100] ms | 0 | 3/3 | `sess_ed15651d57c5`, `sess_b60bcdb242de`, `sess_b4241ddc1c26` |
+| P7 | current | 7 [3-8] (3/3 valid) | 257.50 [167.67-289.57] | 3 [2-3] / 30,189 [30,105-34,752] | 2,652 [994-3,632] | 333.1 [83.7-345.8] s | 2,886 [2,198-4,242] / 339 [185-842] ms | 1.02 [1.00-1.07] | 120 [52-138] ms | 0 | 2/3 | `sess_a259752c3c37`, `sess_c345b4c7c149`, `sess_37ee3fa29df0` |
+| P8 | base | 3 (3/3 valid) | 0.67 | 3 / 43,503 [43,501-65,222] | 271 [271-279] | 9.1 [7.2-14.1] s | 1,634 [1,578-1,930] / 852 [546-978] ms | — | 81 [78-93] ms | 0 | 3/3 | `sess_ab4e1c485504`, `sess_2e4af2014bf7`, `sess_5c720895379b` |
+| P8 | current | 4 [4-5] (3/3 valid) | 0.75 [0.75-0.80] | 4 [4-4] / 34,869 [32,522-43,200] | 398 [391-610] | 13.8 [9.1-15.6] s | 977 [833-1,290] / 864 [724-1,001] ms | — | 101 [87-104] ms | 0 | 3/3 | `sess_3d8fc7d45bc3`, `sess_15900f47870e`, `sess_77a84ece6f51` |
+| P9 | base | 4 (3/3 valid) | 0.75 | 4 / 49,170 [49,168-49,176] | 553 [530-562] | 14.4 [13.2-15.5] s | 2,072 [1,846-2,506] / 450 [300-731] ms | — | 98 [95-114] ms | 0 | 3/3 | `sess_10170716d684`, `sess_3cd90443b74c`, `sess_ebe97fb452b7` |
+| P9 | current | 5 (3/3 valid) | 0.80 | 4 / 34,931 [34,917-35,025] | 688 [621-694] | 17.5 [15.6-18.7] s | 2,001 [1,680-2,757] / 802 [55-832] ms | — | 110 [103-114] ms | 0 | 3/3 | `sess_eda453c160ef`, `sess_c9cf367f91be`, `sess_b52f797df968` |
+| P10 | base | 3 (3/3 valid) | 0.67 | 3 / 43,444 [43,439-43,446] | 297 [281-308] | 10.4 [10.3-11.3] s | 1,723 [1,589-1,735] / 4 [3-641] ms | — | 86 [77-119] ms | 0 | — | `sess_ddc9ccfbbbe9`, `sess_b864bad11547`, `sess_cced4571d26b` |
+| P10 | current | 3 (3/3 valid) | 0.67 | 3 / 28,397 [28,394-28,398] | 298 [283-299] | 10.6 [9.8-12.9] s | 1,509 [1,504-2,324] / 541 [3-663] ms | — | 92 [78-131] ms | 0 | — | `sess_39443f5eae76`, `sess_126b65d7ccb9`, `sess_2d5b9da28d9b` |
 
-### Long-horizon
-
-| Task | Configuration | Steps to self-stop | Wall time | Per-step latency and prompt tokens over the run | Compactions; plan recited; findings carried | Threads open at stop and how each ended | Re-drives | Correct root cause | Handles |
-| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
-| H1 to H3 | Base | | | | | | | | |
-
-### Targets
+#### Targets
 
 | Workstream | Tasks | Target | Met |
 | --- | --- | --- | --- |
