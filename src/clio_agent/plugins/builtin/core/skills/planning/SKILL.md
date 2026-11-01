@@ -45,16 +45,20 @@ steer before you commit detail to the plan.
 
 ## Phase 3 — Draft (write incrementally with plan_update)
 Write the plan with `plan_update(content=...)` and revise it as you learn
-(`old` and `new` replace one passage). Fit the structure to the task:
-- Simple change → Changes + Verification.
-- Standard task → Objective, Key Files & Context, Implementation Steps, Verification.
-- Complex / architectural → Background, Scope, Proposed Solution, Alternatives, a
-  phased Plan, Verification, Migration/Rollback.
+(`old` and `new` replace one passage). Fit the plan to the task. A small change needs
+only Changes and Verification. Larger or open-ended work:
+- **Objective**: the question, what a complete answer contains, what counts as done.
+- **Approach**: how you will get there.
+- **Threads**: each open, active, closed or dropped, with a one-line reason when it
+  ends and the handles of any children working on it.
+- **Findings**: each a claim with its references (`call:` refs, paths and lines,
+  handles); a corrected finding is marked superseded rather than deleted.
+- Checking your claims is the last thread.
 
-Keep an **epistemic ledger** in the plan under the headers `Given` / `Learned` /
-`To look up` / `To derive`, so what you know is separated from what you still must
-find out. If a plan already exists, judge whether it still fits this task before
-editing; treat a genuinely new task as a fresh plan.
+Keep what you know apart from what you still must find out: findings carry their
+references, and an unknown stays an open thread until you look it up. If a plan
+already exists, judge whether it still fits this task before editing; treat a
+genuinely new task as a fresh plan.
 
 A Mermaid diagram can clarify dependencies, a protocol or a proposed workflow
 in the plan. The active Mermaid component entry documents its supported

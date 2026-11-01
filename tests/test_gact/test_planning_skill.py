@@ -63,7 +63,9 @@ def test_planning_skill_body_has_four_phases_and_turn_ending_contract() -> None:
         assert phase in body, f"planning body missing {phase}"
     # Phase intents (grounding-before-asking, incremental drafting, epistemic ledger).
     assert "do not ask" in body.lower()
-    assert "epistemic ledger" in body.lower()
+    assert "keep what you know apart from what you still must find out" in body.lower()
+    for section in ("Objective", "Approach", "Threads", "Findings"):
+        assert section in body
     # Entry, drafting and the turn-ending contract use the plan tools.
     assert "plan_enter" in body and "plan_update" in body
     assert "plan_exit" in body

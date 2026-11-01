@@ -51,17 +51,19 @@ _GOLDEN_FULL_CREATE = (
     "edit, and file-mutating tool is blocked.\n"
     "- No plan file exists yet. Write your plan with plan_update(content=...); it is saved "
     "at /tmp/plans/x.md, the only writable path in plan mode.\n"
-    "- Structure the plan to fit the task: Simple change → Changes + Verification; Standard "
-    "task → Objective, Key Files & Context, Implementation Steps, Verification; Complex / "
-    "architectural → Background, Scope, Proposed Solution, Alternatives, a phased Plan, "
-    "Verification, Migration/Rollback.\n"
+    "- Fit the plan to the task. A small change needs only Changes and Verification. Larger or "
+    "open-ended work: Objective (the question, what a complete answer contains, what counts "
+    "as done); Approach; Threads, each open, active, closed or dropped, with a one-line reason "
+    "when it ends and the handles of any children working on it; Findings, each a claim with "
+    "its references (call: refs, paths and lines, handles), a corrected finding marked "
+    "superseded rather than deleted; checking your claims as the last thread.\n"
     "- The plan file is NOT the user's requested target or final deliverable. Never copy "
     "the requested target contents alone into the plan file; the plan must describe how "
     "the requested result will be implemented and verified after approval. Never infer "
     "a requested filename from the plan-file path or its generated slug; preserve targets "
     "from the user's request exactly.\n"
-    "- Keep an epistemic ledger of what you know vs. must find out, under the headers: "
-    "Given / Learned / To look up / To derive.\n"
+    "- Keep what you know apart from what you still must find out: findings carry their "
+    "references, and what is unknown stays an open thread until you look it up.\n"
     "- If a plan already exists, evaluate whether it is still relevant to THIS task before "
     "editing; treat a new task as a fresh plan.\n"
     "- Show the plan to the user in your response — don't just write it to disk.\n"
@@ -75,17 +77,19 @@ _GOLDEN_FULL_EDIT = (
     "edit, and file-mutating tool is blocked.\n"
     "- A plan file already exists at /tmp/plans/x.md. Update it with plan_update as you "
     "learn (old and new replace one passage).\n"
-    "- Structure the plan to fit the task: Simple change → Changes + Verification; Standard "
-    "task → Objective, Key Files & Context, Implementation Steps, Verification; Complex / "
-    "architectural → Background, Scope, Proposed Solution, Alternatives, a phased Plan, "
-    "Verification, Migration/Rollback.\n"
+    "- Fit the plan to the task. A small change needs only Changes and Verification. Larger or "
+    "open-ended work: Objective (the question, what a complete answer contains, what counts "
+    "as done); Approach; Threads, each open, active, closed or dropped, with a one-line reason "
+    "when it ends and the handles of any children working on it; Findings, each a claim with "
+    "its references (call: refs, paths and lines, handles), a corrected finding marked "
+    "superseded rather than deleted; checking your claims as the last thread.\n"
     "- The plan file is NOT the user's requested target or final deliverable. Never copy "
     "the requested target contents alone into the plan file; the plan must describe how "
     "the requested result will be implemented and verified after approval. Never infer "
     "a requested filename from the plan-file path or its generated slug; preserve targets "
     "from the user's request exactly.\n"
-    "- Keep an epistemic ledger of what you know vs. must find out, under the headers: "
-    "Given / Learned / To look up / To derive.\n"
+    "- Keep what you know apart from what you still must find out: findings carry their "
+    "references, and what is unknown stays an open thread until you look it up.\n"
     "- If a plan already exists, evaluate whether it is still relevant to THIS task before "
     "editing; treat a new task as a fresh plan.\n"
     "- Show the plan to the user in your response — don't just write it to disk.\n"
@@ -134,7 +138,7 @@ def test_plan_workflow_full_reminder_is_workflow_scaffold(tmp_path: Path) -> Non
     assert "numbered" in out.lower()
     assert "Risks & Dependencies" in out
     # The generic default structure sentence is REPLACED by the workflow one.
-    assert "Structure the plan to fit the task: Simple change" not in out
+    assert "Fit the plan to the task. A small change" not in out
     assert _USER_TEXT not in out  # the reminder is its own block, no user text glued on
 
 
@@ -144,7 +148,7 @@ def test_plan_small_full_reminder_is_lightweight(tmp_path: Path) -> None:
     assert "short and lightweight" in out
     # No workflow scaffold and no heavy default structure sentence.
     assert "Risks & Dependencies" not in out
-    assert "Structure the plan to fit the task: Simple change" not in out
+    assert "Fit the plan to the task. A small change" not in out
 
 
 def test_plan_small_full_reminder_cadence_is_sparser(tmp_path: Path) -> None:

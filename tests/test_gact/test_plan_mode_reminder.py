@@ -142,8 +142,8 @@ def test_suppression_state_lives_on_session_metadata(tmp_path: Path) -> None:
 # P1.3 #1065 — plan-file lifecycle (path + existence + create/edit guidance)   #
 # --------------------------------------------------------------------------- #
 
-_LEDGER_HEADERS = "Given / Learned / To look up / To derive"
-_STRUCTURE_HINT = "Structure the plan to fit the task"
+_LEDGER_HEADERS = "Keep what you know apart from what you still must find out"
+_STRUCTURE_HINT = "Fit the plan to the task"
 _STALENESS = "evaluate whether it is still relevant to THIS task"
 _SHOW_THE_PLAN = "Show the plan to the user"
 _CREATE_ONLY = "No plan file exists yet"

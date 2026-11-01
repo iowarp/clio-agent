@@ -50,12 +50,15 @@ _DEFAULT_FULL_INTERVAL = 10
 #: ``plan_small`` full-reminder cadence — SPARSER than the default (lightweight task, less nagging).
 _SMALL_FULL_INTERVAL = 20
 
-#: The default structure-hint bullet body — VERBATIM pre-P1.6 text (the regression-locked baseline).
+#: The default structure-hint bullet body: the session plan's shape (objective, approach,
+#: threads with how each ended, findings with references), scaled to the task.
 _STRUCTURE_HINT_DEFAULT = (
-    "Structure the plan to fit the task: Simple change → Changes + Verification; Standard "
-    "task → Objective, Key Files & Context, Implementation Steps, Verification; Complex / "
-    "architectural → Background, Scope, Proposed Solution, Alternatives, a phased Plan, "
-    "Verification, Migration/Rollback."
+    "Fit the plan to the task. A small change needs only Changes and Verification. Larger or "
+    "open-ended work: Objective (the question, what a complete answer contains, what counts "
+    "as done); Approach; Threads, each open, active, closed or dropped, with a one-line reason "
+    "when it ends and the handles of any children working on it; Findings, each a claim with "
+    "its references (call: refs, paths and lines, handles), a corrected finding marked "
+    "superseded rather than deleted; checking your claims as the last thread."
 )
 
 #: ``plan_workflow`` structure hint — an explicit, numbered, per-step-verified implementation workflow.
@@ -184,8 +187,8 @@ def plan_mode_reminder_block(
             "the requested result will be implemented and verified after approval. Never infer "
             "a requested filename from the plan-file path or its generated slug; preserve targets "
             "from the user's request exactly.",
-            "- Keep an epistemic ledger of what you know vs. must find out, under the headers: "
-            "Given / Learned / To look up / To derive.",
+            "- Keep what you know apart from what you still must find out: findings carry their "
+            "references, and what is unknown stays an open thread until you look it up.",
             "- If a plan already exists, evaluate whether it is still relevant to THIS task before "
             "editing; treat a new task as a fresh plan.",
             "- Show the plan to the user in your response — don't just write it to disk.",
