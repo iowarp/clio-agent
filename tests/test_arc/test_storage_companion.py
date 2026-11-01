@@ -256,3 +256,15 @@ def test_one_append_on_a_full_three_chunk_lane_puts_only_the_active_chunk(
     for n in (1, 2, 3):
         sibling_name = SegmentStore._record_name(sid, chunk_scope(base, n))
         assert not any(row["name"] == sibling_name for row in put_rows)
+
+
+def test_record_kinds_read_by_exact_name_never_probe_for_a_companion() -> None:
+    """Artifact index records are point lookups; a write must not probe for a companion.
+
+    SABOTAGE: drop ``artifact_index`` from ``NEVER_INDEXED_KINDS`` and this fails.
+    """
+    from clio_agent.arc.companion_policy import may_carry_companion
+
+    for kind in ("task_lookup", "task_open", "session_records", "artifact_index"):
+        assert not may_carry_companion(kind, "any-name")
+    assert may_carry_companion("memories", "any-name")

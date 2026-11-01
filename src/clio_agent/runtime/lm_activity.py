@@ -256,7 +256,6 @@ def note_lm_answer_delta(text: str, *, field: str = "answer") -> None:
                 duplicate_suppressed=False,
                 duplicate_reason="react_kind_unresolved",
                 head=text[:120],
-                full_text=text[:12000],
             )
         # #878: a `kind: react` expert's redundant EXTRACT reasoning/answer is
         # gated STRUCTURALLY on the declared module.kind (never the field name).
@@ -281,7 +280,6 @@ def note_lm_answer_delta(text: str, *, field: str = "answer") -> None:
                 duplicate_suppressed=True,
                 duplicate_reason="nonvisible_contract_field",
                 head=text[:120],
-                full_text=text[:12000],
             )
             trace.HF_ON and trace.hot(
                 "STREAM-SSE",
@@ -328,7 +326,6 @@ def note_lm_answer_delta(text: str, *, field: str = "answer") -> None:
             normalized_event="turn.text.delta",
             duplicate_suppressed=False,
             head=text[:120],
-            full_text=text[:12000],
         )
         trace.HF_ON and trace.hot(
             "STREAM-SSE",
@@ -375,7 +372,6 @@ def note_lm_provider_thinking_delta(text: str, *, provider: str = "") -> None:
             normalized_event="turn.trace.delta",
             duplicate_suppressed=False,
             head=text[:120],
-            full_text=text[:12000],
         )
         asyncio.run_coroutine_threadsafe(emit_coro(text, agent_id or None, field), loop)
     except Exception:  # noqa: BLE001,S110 - live streaming is best-effort, never break the call
