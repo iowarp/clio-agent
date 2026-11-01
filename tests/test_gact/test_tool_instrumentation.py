@@ -709,6 +709,9 @@ def test_every_core_tool_and_a_plain_tool_lands_a_tool_call_part(
             # Reads back compacted context; called with neither query nor ids on
             # purpose: a typed refusal, and the tool_call part must land anyway.
             "recall_context": {},
+            # Outside an agent loop there is no deferred catalog: it says nothing is
+            # deferred, and the tool_call part lands.
+            "search_tools": {"query": "select:cron_list"},
             # Phase 9: outside an agent loop it refuses typed
             # (draft_alternatives_refused); the tool_call part lands either way.
             "draft_alternatives": {"n": 2, "rubric": "short"},

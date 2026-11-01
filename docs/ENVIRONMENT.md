@@ -299,6 +299,8 @@ These resolve through `clio_agent.conf`: a value under the dotted key in `config
 | `CLIO_TASKS_STORAGE_CONCURRENCY` | `gact.tasks.storage.concurrency` | int | `10` | `src/clio_agent/tools/native_roots.py` |
 | `CLIO_TASKS_STORAGE_QUEUE` | `gact.tasks.storage.queue` | str | _(unset)_ | `src/clio_agent/tools/native_roots.py` |
 | `CLIO_TASKS_STORAGE_URL` | `gact.tasks.storage.url` | str | `memory://` | `src/clio_agent/tools/native_roots.py` |
+| `CLIO_TOOLS_DEFER_SHARE` | `tools.defer_share` | str | `0.05` | `src/clio_agent/gact/agents/deferred_tools.py` |
+| `CLIO_TOOLS_DEFER_TOKENS` | `tools.defer_tokens` | int | `4000` | `src/clio_agent/gact/agents/deferred_tools.py` |
 | `CLIO_TOOL_FAILURE_LIMIT` | `tools.circuit_breaker.failure_limit` | int | `3` | `src/clio_agent/tools/execution.py` |
 | `CLIO_TOOL_RESULT_CHARS` | `limits.tool_result_chars` | int | `12000` | `src/clio_agent/gact/assignment_evidence.py` |
 | `CLIO_TRANSCRIPT_FILE` | `transcript.file` | bool | `true` | `src/clio_agent/gact/transcript_file.py` |

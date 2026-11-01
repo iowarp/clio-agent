@@ -213,7 +213,7 @@
           "agent_runtime": {
             "agent_id": "standard",
             "agent_resolution": {
-              "digest": "7b43dbfc7d4d015f747848a61b3862ddd3df16da72d63ef3509a4f5ef2f1f6b5",
+              "digest": "97aab31410272e8222a7ef2b8c483b9494fef8d76cee794487465dd477b5a550",
               "flow": {
                 "id": "react",
                 "options": {}
@@ -259,6 +259,7 @@
             },
             "skills": [
               "planning",
+              "task-protocol",
               "update-models"
             ],
             "source": "plugin",
@@ -281,6 +282,7 @@
               "raise_alert_card",
               "recall_context",
               "load_skill",
+              "search_tools",
               "set_goal",
               "wait_for",
               "goal_status",

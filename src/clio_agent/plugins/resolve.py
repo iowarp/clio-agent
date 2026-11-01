@@ -444,6 +444,9 @@ def _collect(builder: _Builder, entries: list[Entry]) -> dict[str, Any]:
                     "root": record.root,
                     "description": tool.description,
                     "read_only": tool.read_only,
+                    "defer": tool.defer
+                    if tool.defer is not None
+                    else record.disclosure.get("defer"),
                 }
             )
         for name, spec in record.mcp_servers.items():
@@ -454,7 +457,14 @@ def _collect(builder: _Builder, entries: list[Entry]) -> dict[str, Any]:
                     record.id,
                 )
                 continue
-            servers[name] = {"plugin": record.id, "root": record.root, "spec": spec}
+            disclosed = (record.disclosure.get("servers") or {}).get(name) or {}
+            servers[name] = {
+                "plugin": record.id,
+                "root": record.root,
+                "spec": spec,
+                "defer": disclosed.get("defer", record.disclosure.get("defer")),
+                "description": disclosed.get("description", ""),
+            }
         for skill in record.skills:
             if skill.id in skill_owner:
                 builder.error(

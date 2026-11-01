@@ -52,6 +52,7 @@ class ToolRecord:
     attr: str = ""
     description: str = ""
     read_only: bool = False
+    defer: bool | None = None
 
 
 @dataclass(frozen=True)
@@ -163,6 +164,9 @@ class PluginRecord:
     keywords: tuple[str, ...] = ()
     #: Python parts present but not imported, because the plugin is not trusted yet.
     python_pending: bool = False
+    #: Tool disclosure from the ``ai.iowarp.clio`` extension: ``defer`` for the whole
+    #: plugin and ``servers`` (per MCP server: ``defer``, ``description``).
+    disclosure: dict[str, Any] = field(default_factory=dict)
 
     @property
     def errors(self) -> list[Diagnostic]:
@@ -227,4 +231,5 @@ class PluginRecord:
             text_digest=data.get("text_digest") or "",
             keywords=tuple(data.get("keywords") or ()),
             python_pending=bool(data.get("python_pending")),
+            disclosure=dict(data.get("disclosure") or {}),
         )

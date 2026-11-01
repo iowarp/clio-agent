@@ -696,11 +696,10 @@ Earthscope's first turn, after start-up: 176 s = model 140 s (17 serial calls, ~
 
 **Result:** turn start to first model call on a cold listing cache went from 28 s to 6.3 s (two runs: 6.39 and 6.33 s). Follow-up turns take 1–4 s.
 
-**Researched (progressive tool disclosure):**
-- Any mid-conversation tool-list change resets every stateful transport: Codex direct `prefix_mismatch`, and the Claude Code and Codex SDK sessions restart.
-- A disclosure design must therefore keep the tool list byte-identical: a category index plus stable `tool_info`/`call_tool` tools. That is the MCP client guidance too.
-- It removes the listing wait from the first call. It saves little TTFT while the cache hit rate is ~90%.
-- It waits on the owner's go-ahead.
+**Progressive tool disclosure** is designed and built under
+[the tool-calling plan](sdk/tool-calling-plan.md) (Phase 4): deferred tools stay callable
+and named in the system prompt, and `search_tools` returns their schemas in its result,
+so the tool list never changes mid-conversation.
 
 **Chain tip live run** (`feat/session-bringup` at `f0a1eaeb`, Codex direct, 2026-09-30):
 

@@ -31,6 +31,8 @@ class ToolSpec:
     function: Callable[..., Any]
     description: str = ""
     read_only: bool = False
+    #: True: offered by name and loaded with ``search_tools``; None: the plugin decides.
+    defer: bool | None = None
 
     def __call__(self, *args: Any, **kwargs: Any) -> Any:
         return self.function(*args, **kwargs)
@@ -41,6 +43,8 @@ class NativeToolRef:
     """A CLIO built-in tool claimed by the plugin that owns the capability."""
 
     name: str
+    #: True: offered by name and loaded with ``search_tools``; None: the plugin decides.
+    defer: bool | None = None
 
 
 def tool(
@@ -49,8 +53,12 @@ def tool(
     name: str = "",
     description: str = "",
     read_only: bool = False,
+    defer: bool | None = None,
 ) -> Any:
-    """Declare a Python tool. Usable bare (``@tool``) or with options."""
+    """Declare a Python tool. Usable bare (``@tool``) or with options.
+
+    ``defer=True`` offers it by name only until ``search_tools`` loads its schema.
+    """
 
     def wrap(fn: Callable[..., Any]) -> ToolSpec:
         return ToolSpec(
@@ -58,6 +66,7 @@ def tool(
             function=fn,
             description=description or (fn.__doc__ or "").strip(),
             read_only=read_only,
+            defer=defer,
         )
 
     if function is not None:
@@ -65,7 +74,10 @@ def tool(
     return wrap
 
 
-def native_tool(name: str) -> NativeToolRef:
-    """Claim the CLIO built-in tool ``name`` for this plugin."""
+def native_tool(name: str, *, defer: bool | None = None) -> NativeToolRef:
+    """Claim the CLIO built-in tool ``name`` for this plugin.
 
-    return NativeToolRef(name=name)
+    ``defer=True`` offers it by name only until ``search_tools`` loads its schema.
+    """
+
+    return NativeToolRef(name=name, defer=defer)

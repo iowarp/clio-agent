@@ -521,6 +521,16 @@ def _workflow_editor() -> dict[str, Any] | None:
     return dict(editor) if isinstance(editor, Mapping) else None
 
 
+def _deferred_tools_entry(program: Any, resolution: "Resolution", config: Any) -> str:
+    """Defer the program's large tool groups; the prompt entry naming them."""
+    from clio_agent.gact.agents.deferred_tools import apply_disclosure  # noqa: PLC0415
+    from clio_agent.gact.search_tools import listed_loaded_tools  # noqa: PLC0415
+
+    loaded = listed_loaded_tools(_ctx.active_app(), _ctx.active_session_id() or "")
+    window = _resolve_expert_context_window(config) or 0
+    return apply_disclosure(program, resolution, context_tokens=int(window), loaded=loaded)
+
+
 def build_agent_module(base_agent: Any, agent_def: "AgentDef", resolution: "Resolution") -> Any:
     """Compile a resolved plugin agent into its running DSPy module."""
 
@@ -627,6 +637,7 @@ def build_agent_module(base_agent: Any, agent_def: "AgentDef", resolution: "Reso
                 "_clio_unlisted",
                 unlisted_tool_names(agent_def.metadata, getattr(self.program, "tools", {})),
             )
+            deferred_entry = _deferred_tools_entry(self.program, resolution, self.config)
             # A spawn-requested BestOfN / Refine strategy wraps the program.
             strategy = _module_variants.session_strategy()
             if strategy is not None:
@@ -644,7 +655,9 @@ def build_agent_module(base_agent: Any, agent_def: "AgentDef", resolution: "Reso
             )
             agent_prompt = final_agent_prompt(agent_def, resolution, getattr(self, "tools", ()))
             self.system_prompt = "\n\n".join(
-                part for part in (agent_prompt, workspace_context, skills_context) if part
+                part
+                for part in (agent_prompt, deferred_entry, workspace_context, skills_context)
+                if part
             )
 
         def forward(

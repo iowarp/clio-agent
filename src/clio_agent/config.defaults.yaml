@@ -1228,6 +1228,18 @@ resources.upload_chunk_bytes: 8388608
 # turns the breaker off.
 tools.circuit_breaker.failure_limit: 3
 
+# CLIO_TOOLS_DEFER_SHARE  (str)  <- src/clio_agent/gact/agents/deferred_tools.py
+# Share of the model's context window (0-1) an MCP server's tool schemas may
+# take before its tools are deferred behind search_tools, when its plugin
+# does not say; the smaller of this and tools.defer_tokens applies.
+tools.defer_share: "0.05"
+
+# CLIO_TOOLS_DEFER_TOKENS  (int)  <- src/clio_agent/gact/agents/deferred_tools.py
+# Schema tokens an MCP server's tools may take before they are deferred
+# behind search_tools, when its plugin does not say; the smaller of this and
+# tools.defer_share of the context window applies.
+tools.defer_tokens: 4000
+
 # CLIO_ALLOW_SYMLINKS  (bool)  <- src/clio_agent/tools/file_policy.py
 # Whether tool file reads/writes may traverse symlinks; set true only if a
 # workflow legitimately relies on symlinked paths.

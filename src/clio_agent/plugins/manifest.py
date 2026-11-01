@@ -43,6 +43,8 @@ _EXTENSION_FIELDS = (
     "workflow_state",
     "catalogs",
     "connections",
+    "defer",
+    "servers",
 )
 _STDIO_FIELDS = {"type", "command", "args", "env", "cwd"}
 _REMOTE_FIELDS = {"type", "url", "headers"}
@@ -143,6 +145,25 @@ def validate_manifest(
     return cleaned, warnings
 
 
+def _check_disclosure(ext: Mapping[str, Any], plugin: str) -> None:
+    """``defer`` is a boolean; ``servers`` maps MCP server names to ``defer`` and
+    ``description`` (what the server is for, shown beside its deferred tool names)."""
+    if "defer" in ext and not isinstance(ext["defer"], bool):
+        raise ManifestError(f"{plugin}: {NAMESPACE}.defer must be true or false")
+    servers = ext.get("servers", {})
+    if not isinstance(servers, dict):
+        raise ManifestError(f"{plugin}: {NAMESPACE}.servers must map MCP server names to objects")
+    for name, row in servers.items():
+        if not isinstance(row, dict) or set(row) - {"defer", "description"}:
+            raise ManifestError(
+                f"{plugin}: {NAMESPACE}.servers.{name} may set only defer and description"
+            )
+        if "defer" in row and not isinstance(row["defer"], bool):
+            raise ManifestError(f"{plugin}: {NAMESPACE}.servers.{name}.defer must be a boolean")
+        if "description" in row and not isinstance(row["description"], str):
+            raise ManifestError(f"{plugin}: {NAMESPACE}.servers.{name}.description must be text")
+
+
 def clio_extension(manifest: Mapping[str, Any], plugin: str) -> dict[str, Any]:
     """Validate and return the ``ai.iowarp.clio`` extension object."""
 
@@ -179,6 +200,7 @@ def clio_extension(manifest: Mapping[str, Any], plugin: str) -> dict[str, Any]:
     for key in ("model", "prefers", "workflow_state"):
         if key in ext and not isinstance(ext[key], dict):
             raise ManifestError(f"{plugin}: {NAMESPACE}.{key} must be an object")
+    _check_disclosure(ext, plugin)
     if kind == "pack" and not ext.get("members"):
         raise ManifestError(f"{plugin}: a pack must list its members")
     return ext

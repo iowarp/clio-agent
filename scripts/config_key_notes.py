@@ -1160,6 +1160,16 @@ KEY_NOTES: dict[str, str] = {
         "Consecutive failures of one tool before CLIO blocks further calls to it (the agent is "
         "warned at the limit and told why a call was blocked); 0 turns the breaker off."
     ),
+    "tools.defer_share": (
+        "Share of the model's context window (0-1) an MCP server's tool schemas may take before "
+        "its tools are deferred behind search_tools, when its plugin does not say; the smaller "
+        "of this and tools.defer_tokens applies."
+    ),
+    "tools.defer_tokens": (
+        "Schema tokens an MCP server's tools may take before they are deferred behind "
+        "search_tools, when its plugin does not say; the smaller of this and tools.defer_share "
+        "of the context window applies."
+    ),
     "tools.file_policy.allow_symlinks": (
         "Whether tool file reads/writes may traverse symlinks; set true only if a workflow "
         "legitimately relies on symlinked paths."

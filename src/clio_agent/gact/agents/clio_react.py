@@ -401,6 +401,9 @@ class _Loop:
         """
         refresh = getattr(self.agent, "_clio_tool_refresh", None)
         if refresh is not None and refresh(self.agent.tools):
+            from clio_agent.gact.agents.deferred_tools import sync_deferred_catalog  # noqa: PLC0415
+
+            sync_deferred_catalog(self.agent)
             self.tools = self._listed_tools()
 
     def _arrivals(self, *, human_only: bool = False) -> bool:

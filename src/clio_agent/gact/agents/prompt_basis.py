@@ -68,8 +68,14 @@ def hold_basis(app: Any, session_id: str, previous_digest: str) -> None:
 
 
 def settle_basis(app: Any, session_id: str) -> None:
-    """The prompt catches up with the pinned resolution (apply now, or a compaction)."""
+    """The prompt catches up with the pinned resolution (apply now, or a compaction).
 
+    Tools loaded with ``search_tools`` since the last rebuild join the tool list too.
+    """
+
+    from clio_agent.gact.search_tools import promote_loaded_tools  # noqa: PLC0415
+
+    promote_loaded_tools(app, session_id)
     if _metadata(app, session_id).get(PROMPT_BASIS_KEY):
         app.state.sessions.update(session_id, metadata_patch={PROMPT_BASIS_KEY: ""})
 

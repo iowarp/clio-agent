@@ -80,6 +80,13 @@ result into the same block, and make a call that needs one in a later step, once
 real result has arrived. Results come only from the host, so stop after the closing
 fence. A message that ends without a block is your final answer."""
 
+#: Added when the agent can load deferred tools: a loaded tool is callable unlisted.
+_LOADED_TOOLS_RULE = (
+    "Some tools are named in your instructions but not listed here; search_tools loads "
+    "them. A tool whose schema a search_tools result returned is callable in the same way "
+    "as a listed one, from the step after that result."
+)
+
 #: Appended to every user or tool-result turn the transport sends (never to the
 #: system prompt): the call syntax, and a nudge to make each step as wide as it can be.
 TURN_REMINDER = (
@@ -101,7 +108,10 @@ def render_system(system: str | None, tools: Sequence[Any]) -> str:
             f"{json.dumps(t.parameters, sort_keys=True)}"
             for t in functions
         )
-        parts.append(f"{_TOOL_RULES}\n\n# Available tools\n\n{listing}")
+        rules = _TOOL_RULES
+        if any(t.name == "search_tools" for t in functions):
+            rules += f"\n\n{_LOADED_TOOLS_RULE}"
+        parts.append(f"{rules}\n\n# Available tools\n\n{listing}")
     return "\n\n".join(parts)
 
 

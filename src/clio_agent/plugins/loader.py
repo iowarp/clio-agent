@@ -427,10 +427,13 @@ def _python_parts(root: Path, plugin: str, texts: dict[str, str]) -> _PythonPart
                             attr=attr,
                             description=value.description,
                             read_only=value.read_only,
+                            defer=value.defer,
                         )
                     )
                 elif folder == "tools" and isinstance(value, NativeToolRef):
-                    parts.tools.append(ToolRecord(name=value.name, kind="native"))
+                    parts.tools.append(
+                        ToolRecord(name=value.name, kind="native", defer=value.defer)
+                    )
                 elif folder == "hooks" and isinstance(value, HookSpec):
                     parts.hooks.append(
                         HookRecord(
@@ -690,6 +693,7 @@ def load_plugin(root: Path, *, marketplace: str = "", trusted: bool) -> PluginRe
         text_digest=text_digest,
         keywords=tuple(manifest.get("keywords") or ()),
         python_pending=has_python and not trusted,
+        disclosure={key: ext[key] for key in ("defer", "servers") if key in ext},
     )
     if kind == "pack":
         content = [
