@@ -764,6 +764,8 @@ def test_every_core_tool_and_a_plain_tool_lands_a_tool_call_part(
                 except Exception:
                     pass  # only tool_call/tool_result wire evidence is under test
                 exercised.append(name)
+            # plan_enter in the table really entered plan mode; the plain tool runs in edit.
+            app.state.sessions.update(sid, mode="edit")
             row_tool()
             exercised.append("plain_native")
 
