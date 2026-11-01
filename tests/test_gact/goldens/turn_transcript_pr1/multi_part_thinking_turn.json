@@ -213,7 +213,7 @@
           "agent_runtime": {
             "agent_id": "standard",
             "agent_resolution": {
-              "digest": "97aab31410272e8222a7ef2b8c483b9494fef8d76cee794487465dd477b5a550",
+              "digest": "2053bcc389818cc75206833b61fd3ead81bd3a44a158e0aba8201b770a0bcb3b",
               "flow": {
                 "id": "react",
                 "options": {}
@@ -276,6 +276,8 @@
               "resume_agent",
               "restart_agent",
               "ask_user",
+              "plan_enter",
+              "plan_update",
               "plan_exit",
               "write_todos",
               "create_artifact",
@@ -283,6 +285,7 @@
               "recall_context",
               "load_skill",
               "search_tools",
+              "run_code",
               "set_goal",
               "wait_for",
               "goal_status",

@@ -42,7 +42,7 @@ pytestmark = pytest.mark.usefixtures("host_agent_executor")
 
 # Sentinels distinguishing the full contract from the sparse one-liner.
 _FULL_ONLY = "Turn-ending contract"
-_SPARSE_ONLY = "Keep writing your plan there"
+_SPARSE_ONLY = "Keep the plan current with plan_update"
 _USER_TEXT = "investigate the failing test"
 
 

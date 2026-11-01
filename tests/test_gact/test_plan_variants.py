@@ -49,8 +49,8 @@ _GOLDEN_FULL_CREATE = (
     "## Plan Mode active — read-only except the plan file\n\n"
     "You are in PLAN MODE. Investigate freely, but do NOT modify the system: every write, "
     "edit, and file-mutating tool is blocked.\n"
-    "- No plan file exists yet. Create your plan at /tmp/plans/x.md (write a *.md there — it "
-    "is the ONLY writable path in plan mode).\n"
+    "- No plan file exists yet. Write your plan with plan_update(content=...); it is saved "
+    "at /tmp/plans/x.md, the only writable path in plan mode.\n"
     "- Structure the plan to fit the task: Simple change → Changes + Verification; Standard "
     "task → Objective, Key Files & Context, Implementation Steps, Verification; Complex / "
     "architectural → Background, Scope, Proposed Solution, Alternatives, a phased Plan, "
@@ -73,7 +73,8 @@ _GOLDEN_FULL_EDIT = (
     "## Plan Mode active — read-only except the plan file\n\n"
     "You are in PLAN MODE. Investigate freely, but do NOT modify the system: every write, "
     "edit, and file-mutating tool is blocked.\n"
-    "- A plan file already exists at /tmp/plans/x.md. Make incremental edits to it as you learn.\n"
+    "- A plan file already exists at /tmp/plans/x.md. Update it with plan_update as you "
+    "learn (old and new replace one passage).\n"
     "- Structure the plan to fit the task: Simple change → Changes + Verification; Standard "
     "task → Objective, Key Files & Context, Implementation Steps, Verification; Complex / "
     "architectural → Background, Scope, Proposed Solution, Alternatives, a phased Plan, "
@@ -93,8 +94,8 @@ _GOLDEN_FULL_EDIT = (
 )
 
 _GOLDEN_SPARSE = (
-    "## Plan Mode active — read-only except the plan file (/tmp/plans/x.md). Keep writing "
-    "your plan there; end your turn to hand it back for approval with plan_exit rather than executing it "
+    "## Plan Mode active — read-only except the plan file (/tmp/plans/x.md). Keep the plan "
+    "current with plan_update; end your turn to hand it back for approval with plan_exit rather than executing it "
     "yourself."
 )
 
@@ -159,7 +160,7 @@ _BETWEEN_INTERVALS_DELTA = 15
 
 # Sentinels distinguishing the FULL contract from the SPARSE one-liner at the inject boundary.
 _FULL_ONLY = "Turn-ending contract"
-_SPARSE_ONLY = "Keep writing your plan there"
+_SPARSE_ONLY = "Keep the plan current with plan_update"
 
 
 def _seed_reminder_window(app: Any, sid: str, *, delta: int) -> None:

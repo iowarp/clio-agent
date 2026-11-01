@@ -91,7 +91,7 @@ def test_every_clio_addition_the_agent_sees_is_shown_to_the_user(
     seen_by_agent = _clio_messages(engine.requests[-1])
     shown = [f"[clio: {row['source']}]\n{row['text']}" for row in emitted]
     assert seen_by_agent == shown
-    assert [row["source"] for row in emitted] == ["tool_use", "todos", "plan_mode", "task_result"]
+    assert [row["source"] for row in emitted] == ["todos", "plan_mode", "task_result"]
     assert "child: done" in shown[-1]
 
 
