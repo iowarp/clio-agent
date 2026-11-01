@@ -146,6 +146,14 @@ def grade_p4(answer: dict[str, Any], text: str) -> dict[str, Any]:
 _LIST_LINE = re.compile(r"^\s*(?:[-*+]|\d+[.)]|\|)")
 #: "REC-00001 to REC-00200": the bounds of what was read, not ids in the answer.
 _ID_RANGE = re.compile(r"(REC-\d{5})\s*(?:to|through|-|–|—)\s*(REC-\d{5})")
+#: "REC-00002, 00005, 00017": a list that writes the prefix once; each number is an id.
+_ID_LIST = re.compile(r"REC-\d{5}(?:\s*,\s*(?:and\s+)?\d{5}\b)+")
+
+
+def _expand_id_lists(line: str) -> str:
+    return _ID_LIST.sub(
+        lambda m: ", ".join(f"REC-{n}" for n in re.findall(r"\d{5}", m.group(0))), line
+    )
 
 
 def _claimed_ids(text: str) -> tuple[set[str], set[str]]:
@@ -159,6 +167,7 @@ def _claimed_ids(text: str) -> tuple[set[str], set[str]]:
         for bounds in _ID_RANGE.findall(line):
             mentioned |= set(bounds)
         line = _ID_RANGE.sub("", line)
+        line = _expand_id_lists(line)
         ids = set(re.findall(r"REC-\d{5}", line))
         if not ids:
             continue

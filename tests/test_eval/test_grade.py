@@ -118,6 +118,8 @@ def test_records_an_id_mentioned_in_an_aside_is_not_part_of_the_answer() -> None
     result = grade("P5", RECORDS, _run(text))
     assert result["correct"] and result["extra"] == []
     assert result["mentioned_only"] == ["REC-00001"]
+    short = "**2 negative.** The ids: REC-00002, 00015 (each prefixed `REC-`)."
+    assert grade("P5", RECORDS, _run(short))["correct"]
     ranged = "**2 of 20 are negative**: REC-00002, REC-00015. I read REC-00001 to REC-00020."
     result = grade("P5", RECORDS, _run(ranged))
     assert result["correct"] and result["mentioned_only"] == ["REC-00001", "REC-00020"]
