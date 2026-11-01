@@ -650,7 +650,13 @@ def test_a_record_whose_turn_settled_before_the_fold_is_still_shown_live(
 
     def run(question: str, session_id: str, **_kwargs: Any) -> Any:
         lm, _engine = scripted_lm([calls(("slow", {"q": "x"}), text="wait"), Reply(text="done")])
-        tokens = [ctx.set_react_scope(SCOPE), ctx.set_react_session(session_id)]
+        # Something to fold while the step is still running: a CLIO note recorded ahead of
+        # the question (the open turn's question itself is kept verbatim).
+        tokens = [
+            ctx.set_react_scope(SCOPE),
+            ctx.set_react_session(session_id),
+            ctx.set_turn_injections([("replan", "An earlier note about the approach.")]),
+        ]
         try:
             with dspy.context(lm=lm):
                 tools = instrument_tools([dspy.Tool(slow, name="slow")])
@@ -659,45 +665,50 @@ def test_a_record_whose_turn_settled_before_the_fold_is_still_shown_live(
             for token in reversed(tokens):
                 ctx.reset(token)
 
-    install_scripted_module(monkeypatch, run, commit_input=False)
-    _patch_tokens(monkeypatch, high_on=set())
-    bus = app.state.bus
-    cursor = bus.latest_event_id(sid)
-    ack = client.post(
-        f"/v1/sessions/{sid}/messages", json={"parts": [{"type": "text", "text": "go"}]}
-    )
-    assert ack.status_code == 202, ack.text
-    assert ack.json()["task_handle"]
-    assert started.wait(120), "the turn never reached its tool"
+    # A failure before the fold must not leave the turn blocked in its tool forever.
+    try:
+        install_scripted_module(monkeypatch, run, commit_input=False)
+        _patch_tokens(monkeypatch, high_on=set())
+        bus = app.state.bus
+        cursor = bus.latest_event_id(sid)
+        ack = client.post(
+            f"/v1/sessions/{sid}/messages", json={"parts": [{"type": "text", "text": "go"}]}
+        )
+        assert ack.status_code == 202, ack.text
+        assert ack.json()["task_handle"]
+        assert started.wait(120), "the turn never reached its tool"
 
-    real_fold = app.state.arc.summarize_segments
-    settled: list[int] = []
+        real_fold = app.state.arc.summarize_segments
+        settled: list[int] = []
 
-    def fold_after_the_turn_settled(*args: Any, **kwargs: Any) -> Any:
+        def fold_after_the_turn_settled(*args: Any, **kwargs: Any) -> Any:
+            release.set()
+            assert wait_for_terminal_status(bus, sid, after_event_id=cursor) == "idle"
+            settled.append(bus.latest_event_id(sid))
+            return real_fold(*args, **kwargs)
+
+        monkeypatch.setattr(app.state.arc, "summarize_segments", fold_after_the_turn_settled)
+        r = client.post(f"/v1/sessions/{sid}/compact", params={"scope": SCOPE})
+        assert r.status_code == 200, r.text
+        assert r.json()["compactions"], r.json()
+        [done] = r.json()["compactions"]
+        assert settled, "the fold did not wait for the turn"
+
+        live_wire = _transcript(client, sid)
+        [assistant] = [m for m in live_wire if m["role"] == "assistant"]
+        assert assistant["id"] == done["message_id"]
+        assert [p["id"] for p in assistant["parts"] if _is_record(p)] == [done["part_id"]]
+        assert _reload(app, client, sid) == live_wire
+        upserts = [
+            e
+            for e in bus.session_events_since(sid, cursor=settled[0] + 1)
+            if e.type == "message.created" and e.payload.get("id") == done["message_id"]
+        ]
+        assert upserts and any(_is_record(p) for p in upserts[-1].payload["parts"])
+        seq = [e.event_type for e in _compaction_events(events)]
+        assert seq == ["compaction.started", "compaction.completed"]
+    finally:
         release.set()
-        assert wait_for_terminal_status(bus, sid, after_event_id=cursor) == "idle"
-        settled.append(bus.latest_event_id(sid))
-        return real_fold(*args, **kwargs)
-
-    monkeypatch.setattr(app.state.arc, "summarize_segments", fold_after_the_turn_settled)
-    r = client.post(f"/v1/sessions/{sid}/compact", params={"scope": SCOPE})
-    assert r.status_code == 200, r.text
-    [done] = r.json()["compactions"]
-    assert settled, "the fold did not wait for the turn"
-
-    live_wire = _transcript(client, sid)
-    [assistant] = [m for m in live_wire if m["role"] == "assistant"]
-    assert assistant["id"] == done["message_id"]
-    assert [p["id"] for p in assistant["parts"] if _is_record(p)] == [done["part_id"]]
-    assert _reload(app, client, sid) == live_wire
-    upserts = [
-        e
-        for e in bus.session_events_since(sid, cursor=settled[0] + 1)
-        if e.type == "message.created" and e.payload.get("id") == done["message_id"]
-    ]
-    assert upserts and any(_is_record(p) for p in upserts[-1].payload["parts"])
-    seq = [e.event_type for e in _compaction_events(events)]
-    assert seq == ["compaction.started", "compaction.completed"]
 
 
 def test_the_sdk_reads_the_record_and_the_notice_as_typed_parts() -> None:
