@@ -389,9 +389,9 @@ def build_shell_tool_description(facts: ShellEnvFacts, limits: ShellLimits | Non
     )
     tools = ", ".join(_POSIX_TEXT_TOOLS)
     tools_line = (
-        f"POSIX text tools ({tools}) ARE available on this host's PATH."
+        f"POSIX text tools ({tools}) are available on this host's PATH."
         if facts.posix_text_tools
-        else f"POSIX text tools ({tools}) are NOT available on this host's PATH."
+        else f"POSIX text tools ({tools}) are not available on this host's PATH."
     )
     if facts.is_windows:
         is_bash = facts.shell_label.lower().startswith("bash")
@@ -403,14 +403,14 @@ def build_shell_tool_description(facts: ShellEnvFacts, limits: ShellLimits | Non
             else "The tool invokes cmd.exe with /d /s /c. "
         )
         return (
-            f"Run ONE local shell command on a {facts.system_label} host and return "
+            f"Run one local shell command per call on a {facts.system_label} host and return "
             f"stdout, stderr, and exit code. Commands execute under {facts.shell_label} "
-            f"semantics{' (this is NOT a bash/POSIX shell)' if not is_bash else ''}. "
+            f"semantics{' (not a bash/POSIX shell)' if not is_bash else ''}. "
             f"{invocation}"
             f"{tools_line} "
-            "Do NOT assume WSL exists: do not invoke `wsl`, `wsl bash -c`, or POSIX "
-            "pipelines to reach cut/sed/awk/grep â€” on a WSL-less host they fail, and the "
-            "first `wsl` call boots a utility VM that stays resident holding gigabytes. "
+            "WSL may not exist here, so reach for neither `wsl`, `wsl bash -c` nor POSIX "
+            "pipelines for cut/sed/awk/grep: on a host without WSL they fail, and the first "
+            "`wsl` call boots a utility VM that stays resident holding gigabytes. "
             "Paths use Windows conventions (drive letters, backslashes) unless the bash "
             "backend is active. For tabular, "
             "CSV, or columnar work (column selection, filtering, joins) use the pandas "
@@ -422,7 +422,7 @@ def build_shell_tool_description(facts: ShellEnvFacts, limits: ShellLimits | Non
             f"{task_text}{limits_text}"
         )
     return (
-        f"Run ONE local shell command on a {facts.system_label} host and return stdout, "
+        f"Run one local shell command per call on a {facts.system_label} host and return stdout, "
         f"stderr, and exit code. Commands execute under {facts.shell_label}. "
         f"{tools_line} "
         "Paths use POSIX conventions (forward slashes). For large tabular, CSV, or "

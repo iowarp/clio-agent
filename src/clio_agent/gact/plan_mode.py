@@ -377,12 +377,12 @@ def build_plan_exit_tool(agent_def: Any) -> Any:
     def plan_exit(summary: str, recommendedMode: str = "", riskNotes: str = "") -> str:  # noqa: N803
         """Finish planning and hand the plan back to the user for approval to leave plan mode.
 
-        Call this ONCE, at the end of planning, when your plan file is complete. It does NOT take
-        the plan text — it reads the plan you wrote to the session's plan file. Provide a 1-2
+        Call it once, at the end of planning, when the plan is complete. It reads the plan
+        you wrote with plan_update from the session's plan file, so it takes no plan text. Provide a 1-2
         sentence ``summary``, optionally a ``recommendedMode`` (``auto`` = execute automatically,
         ``interactive`` = execute prompting per action, ``exit_only`` = leave plan mode but wait
-        before executing), and optional ``riskNotes``. This ENDS YOUR TURN: the user approves or
-        rejects out-of-band; on approval you are resumed with authorization to execute."""
+        before executing), and optional ``riskNotes``. Your turn ends here: the user approves or
+        rejects out-of-band, and on approval you are resumed with authorization to execute."""
 
         app = _ctx.active_app()
         sid = _ctx.active_session_id()

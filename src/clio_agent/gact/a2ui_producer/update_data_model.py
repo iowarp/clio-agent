@@ -30,7 +30,7 @@ def build_update_a2ui_data_model_tool() -> Any:
         the model. delete=True removes the key; value=None sets it to null.
         Use declared filter, selection or view bindings: unbound paths do not
         control a viewer. Acceptance does not establish rendered image review.
-        Saved dashboard (artifact_id): change ONE EXACT declared control path
+        Saved dashboard (artifact_id): change one exact declared control path
         from inspect_a2ui_surface.controls, not a parent of several controls.
         Pass its inspected viewer id and exact view epoch; inspect again before
         changing another control.

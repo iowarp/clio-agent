@@ -58,10 +58,10 @@ def test_shell_description_windows_warns_off_wsl_and_steers_pandas():
     assert "Windows" in text
     assert "PowerShell 5.1" in text
     assert "-NoProfile -NonInteractive -Command" in text
-    assert "Do NOT assume WSL exists" in text
+    assert "WSL may not exist here" in text
     assert "wsl" in text.lower()
     assert "pandas" in text
-    assert "NOT available" in text  # POSIX text tools absent
+    assert "are not available" in text  # POSIX text tools absent
     assert "or an approved downloaded source directory" in text
 
 
@@ -78,7 +78,7 @@ def test_shell_description_posix_has_no_wsl_and_steers_pandas():
     assert "wsl" not in text.lower()
     assert "POSIX conventions" in text
     assert "pandas" in text
-    assert "ARE available" in text  # POSIX text tools present
+    assert "are available" in text  # POSIX text tools present
     assert "or an approved downloaded source directory" in text
 
 

@@ -136,11 +136,11 @@ def build_create_artifact_tool(agent_def: "AgentDef") -> Any:
         title="Create Artifact",
         representation="chip",
         desc=(
-            "Designate a deliverable as a first-class artifact — YOU decide what is "
+            "Designate a deliverable as a first-class artifact: you decide what is "
             "worth keeping (a report, a document you wrote, a generated file). "
             "Register an existing workspace file with path=<workspace path>, OR "
             "author content in this turn and pass it as content=<text> with "
-            "name=<target path> — the file is WRITTEN AT name (workspace-relative "
+            "name=<target path>; the file is written at name (workspace-relative "
             "or absolute; directories kept, e.g. 'reports/analysis.md'), so when "
             "a specific destination is required, name must be that full path, not a "
             "bare filename. kind is one of "
@@ -151,8 +151,8 @@ def build_create_artifact_tool(agent_def: "AgentDef") -> Any:
             "appear on the final response, using the latest deliverable version per file. "
             "Do not list review/working files in the final answer unless requested. To "
             "designate several at once pass artifacts=[{name,kind,path|content,"
-            "annotation,purpose?}, ...]. OPTIONAL: cite what this deliverable was DERIVED "
-            "FROM via used=[...] (paths, artifact ids, an uploaded attachment's "
+            "annotation,purpose?}, ...]. Optionally cite what this deliverable was derived "
+            "from with used=[...] (paths, artifact ids, an uploaded attachment's "
             "res_... id or its returned working-copy path, "
             "and/or exact source URLs) so its lineage graph "
             "shows its real inputs. "

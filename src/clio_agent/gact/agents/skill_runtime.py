@@ -642,7 +642,7 @@ def build_load_skill_tool(agent_def: "AgentDef", runtime: SkillRuntime) -> Any:
             "then follow it. Progressive disclosure: for a generated catalog "
             "skill, call with no file first (its index names every component "
             "plus a compact signature); then, only if the index alone is not "
-            "enough, load one or several component schemas in ONE call with "
+            "enough, load one or several component schemas in one call with "
             "file=<bundled path> or files=[<bundled path>, ...]. For a batch, "
             "put all paths in files; an additional file is included in the same batch. Each JSON "
             "fragment (file=...#/components/<Name>) comes back with the "
@@ -661,7 +661,7 @@ def build_load_skill_tool(agent_def: "AgentDef", runtime: SkillRuntime) -> Any:
                 "type": "array",
                 "items": {"type": "string"},
                 "description": (
-                    "Optional: several bundled file paths to load in ONE call, "
+                    "Optional: several bundled file paths to load in one call, "
                     "each returned clearly separated and labelled. Any file argument "
                     "is included first; repeated paths are read only once."
                 ),

@@ -281,10 +281,10 @@ def build_raise_alert_card_tool(agent_def: Any) -> Any:
         stub_actions: Optional[list[Any]] = None,
         attention_evidence: Optional[dict[str, Any]] = None,
     ) -> dict[str, Any]:
-        """Raise a notification/action card into YOUR PARENT session's transcript.
+        """Raise a notification/action card into your parent session's transcript.
 
         Use this when you (a spawned child agent) discover something your parent
-        session's user should see WITHOUT waiting for you to finish and be waited
+        session's user should see before you finish and are waited
         on — e.g. an anomaly, a quarantine, a blocking finding. ``severity`` is
         ``info`` | ``warning`` | ``critical``. The card always carries a "Discuss"
         action that focuses your task in the parent's UI. Pass ``stub_actions`` as
@@ -298,9 +298,9 @@ def build_raise_alert_card_tool(agent_def: Any) -> Any:
         this parent's local capture before enabling "Inspect evidence". Attention
         alone does not prove an attack or authorize quarantine.
 
-        Only callable from a SPAWNED CHILD session (one with a live parent
-        AgentTask) — calling this from a top-level/unspawned session returns a
-        typed error instead of silently doing nothing.
+        It works only in a spawned child session (one with a live parent AgentTask),
+        since only such a session has a parent to show the card to; from a top-level
+        session it returns a typed error.
         """
 
         app = _ctx.active_app()
