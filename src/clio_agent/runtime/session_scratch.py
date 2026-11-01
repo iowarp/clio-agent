@@ -20,6 +20,7 @@ Each removal is recorded with a typed reason.
 
 from __future__ import annotations
 
+import functools
 import logging
 import re
 import shutil
@@ -73,16 +74,18 @@ def machine_name() -> str:
     return name
 
 
+@functools.cache
+def _default_scratch_root() -> Path:
+    """``<user state dir>/scratch``, resolved once: it is on every file-policy check."""
+
+    return paths.user_state_dir() / "scratch"
+
+
 def scratch_root() -> Path:
     """The root of every machine's scratch folders (``paths.scratch_root``)."""
 
-    raw = conf.resolve(
-        "paths.scratch_root",
-        env="CLIO_SCRATCH_ROOT",
-        default=str(paths.user_state_dir() / "scratch"),
-        cast=str,
-    )
-    return Path(str(raw)).expanduser()
+    raw = conf.resolve("paths.scratch_root", env="CLIO_SCRATCH_ROOT", default="", cast=str)
+    return Path(str(raw)).expanduser() if raw else _default_scratch_root()
 
 
 def retention_days() -> float:

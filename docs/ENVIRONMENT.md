@@ -273,7 +273,7 @@ These resolve through `clio_agent.conf`: a value under the dotted key in `config
 | `CLIO_SCHEDULER_MIN_INTERVAL_S` | `scheduler.min_interval_s` | int | `60` | `src/clio_agent/gact/scheduler.py` |
 | `CLIO_SCHEDULER_TZ` | `scheduler.timezone` | str | _(unset)_ | `src/clio_agent/gact/scheduler.py` |
 | `CLIO_SCRATCH_RETENTION_DAYS` | `paths.scratch_retention_days` | float | `7.0` | `src/clio_agent/runtime/session_scratch.py` |
-| `CLIO_SCRATCH_ROOT` | `paths.scratch_root` | str | `str(paths.user_state_dir() / 'scratch')` _(computed)_ | `src/clio_agent/runtime/session_scratch.py` |
+| `CLIO_SCRATCH_ROOT` | `paths.scratch_root` | str | _(unset)_ | `src/clio_agent/runtime/session_scratch.py` |
 | `CLIO_SEARCH_AUTO_INSTALL` | `search.local_searxng.auto_install` | bool | `true` | `src/clio_agent/search/settings.py` |
 | `CLIO_SEARCH_BACKEND` | `search.backend` | str | `local_searxng` | `src/clio_agent/search/settings.py` |
 | `CLIO_SEARCH_CLIO_WEB_SEARCH_URL` | `search.clio_web_search.url` | str | _(unset)_ | `src/clio_agent/search/settings.py` |

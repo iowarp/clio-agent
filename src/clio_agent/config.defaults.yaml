@@ -55,7 +55,7 @@ paths.scratch_retention_days: 7.0
 # Root of the per-session scratch folders (<root>/<machine>/<session id>,
 # each the session's TMPDIR); default Agent state/scratch. Point at fast
 # local disk on HPC.
-# paths.scratch_root:  # computed at runtime: str(paths.user_state_dir() / 'scratch')
+# paths.scratch_root:  # default unset; resolved in code
 
 # CLIO_SESSIONS_PATH  (str)  <- src/clio_agent/gact/sessions.py
 # Full override path for the sessions.json registry file; unset defaults to
