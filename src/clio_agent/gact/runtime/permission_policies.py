@@ -46,6 +46,7 @@ from clio_agent.gact.runtime.grant_resolver import (
     next_append_priority,
     resolve,
 )
+from clio_agent.gact.runtime.permission_actions import POLICY_ACTIONS
 
 if TYPE_CHECKING:
     from fastapi import FastAPI
@@ -53,7 +54,7 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 _PERMISSION_POLICY_SCOPES = {"session", "workspace"}
-_PERMISSION_POLICY_ACTIONS = {"allow", "allow_session", "allow_workspace", "deny", "ask"}
+_PERMISSION_POLICY_ACTIONS = set(POLICY_ACTIONS)
 
 #: The request kind on a pending-row for a deny-mode egress prompt (B5 #979.5). It rides the
 #: SAME interactive permission gate as a destructive tool call — a new request KIND, not a new

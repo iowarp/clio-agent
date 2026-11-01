@@ -87,6 +87,10 @@ These resolve through `clio_agent.conf`: a value under the dotted key in `config
 | `CLIO_CMF_SERVER_URL` | `provenance.artifacts.cmf.server_url` | str | _(unset)_ | `src/clio_agent/gact/artifacts/provenance/cmf_mode.py` |
 | `CLIO_CMF_WORKER_URL` | `provenance.artifacts.cmf.worker_url` | str | _(unset)_ | `src/clio_agent/gact/artifacts/provenance/cmf_mode.py` |
 | `CLIO_CODEX_TRANSPORT` | `lm.codex_transport` | str | _(unset)_ | `src/clio_agent/config.py` |
+| `CLIO_CODE_CALL_TIMEOUT_S` | `code.call_timeout_s` | str | `600.0` | `src/clio_agent/gact/code_mode/tool.py` |
+| `CLIO_CODE_IDLE_MINUTES` | `code.idle_minutes` | str | `30.0` | `src/clio_agent/gact/code_mode/kernels.py` |
+| `CLIO_CODE_MAX_NESTED_CALLS` | `code.max_nested_calls` | int | `500` | `src/clio_agent/gact/code_mode/dispatch.py` |
+| `CLIO_CODE_PER_SERVER_CONCURRENCY` | `code.per_server_concurrency` | int | `8` | `src/clio_agent/gact/code_mode/dispatch.py` |
 | `CLIO_COMPACTION_KEEP_HEAD` | `compaction.keep.head` | bool | `true` | `src/clio_agent/gact/compaction_policy.py` |
 | `CLIO_COMPACTION_KEEP_LAST_STEPS` | `compaction.keep.last_steps` | int | `0` | `src/clio_agent/gact/compaction_policy.py` |
 | `CLIO_COMPACTION_KEEP_LAST_TURNS` | `compaction.keep.last_turns` | int | `0` | `src/clio_agent/gact/compaction_policy.py` |
@@ -213,6 +217,7 @@ These resolve through `clio_agent.conf`: a value under the dotted key in `config
 | `CLIO_MODEL_TOOL_RESULT_CHARS` | `limits.model_tool_result_chars` | int | `12000` | `src/clio_agent/gact/session_mail.py` |
 | `CLIO_NATIVE_ARTIFACT_STORE` | `provenance.artifacts.native.storage` | str | `file` | `src/clio_agent/gact/artifacts/provenance/factory.py` |
 | `CLIO_OBLIGATION_CONCURRENCY` | `agent_tasks.obligation_concurrency` | int | `4` | `src/clio_agent/gact/obligations.py` |
+| `CLIO_PLAN_INJECTION_CHARS` | `plan.injection_chars` | int | `12000` | `src/clio_agent/gact/session_plan.py` |
 | `CLIO_PLAN_REVIEW_CHARS` | `limits.plan_review_chars` | int | `256000` | `src/clio_agent/gact/plan_review.py` |
 | `CLIO_PLUGIN_STORE` | `plugins.store_root` | str | _(unset)_ | `src/clio_agent/plugins/service.py` |
 | `CLIO_PROVENANCE_ATTENTION` | `provenance.attention` | str | `false` | `src/clio_agent/provenance_config.py` |

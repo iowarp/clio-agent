@@ -192,6 +192,9 @@ def _write_todos(app: "FastAPI", sid: str, session: Any, todos: Any) -> str:
             sid,
             metadata_patch={_TODOS_METADATA_KEY: normalized, _TODOS_WRITE_STEP_KEY: step_key},
         )
+    from clio_agent.gact.work_events import publish_work_updated  # noqa: PLC0415
+
+    publish_work_updated(app, sid, "todos")
     counts = {
         status: sum(1 for t in normalized if t["status"] == status) for status in _TODO_STATUSES
     }

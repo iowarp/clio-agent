@@ -10,8 +10,8 @@ Drives the bridge directly (no FastMCP server needed) and asserts:
 
 from __future__ import annotations
 
-import json
 import asyncio
+import json
 import sys
 import threading
 import time

@@ -712,6 +712,8 @@ def test_every_core_tool_and_a_plain_tool_lands_a_tool_call_part(
             # Outside an agent loop there is no deferred catalog: it says nothing is
             # deferred, and the tool_call part lands.
             "search_tools": {"query": "select:cron_list"},
+            # Outside an agent step it refuses typed (code_no_agent) before any kernel.
+            "run_code": {"code": "print(1)"},
             # Phase 9: outside an agent loop it refuses typed
             # (draft_alternatives_refused); the tool_call part lands either way.
             "draft_alternatives": {"n": 2, "rubric": "short"},

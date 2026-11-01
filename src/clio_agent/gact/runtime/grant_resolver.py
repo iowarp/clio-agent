@@ -38,6 +38,9 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+# The full raw action vocabulary a policy row may carry (never collapsed).
+from clio_agent.gact.runtime.permission_actions import POLICY_ACTIONS as _VALID_ACTIONS
+from clio_agent.gact.runtime.permission_actions import POLICY_ALLOWING
 from clio_agent.gact.runtime.plan_acl import (
     PLAN_ACL_ALLOW_TOOL_PRIORITY,
     PLAN_ACL_ARCHITECT_TOOLS,
@@ -77,9 +80,6 @@ _VALID_KINDS = frozenset({KIND_TOOL, KIND_DOMAIN, KIND_ROOT, KIND_PLAN_ACL, KIND
 #: treats them as interchangeable — a ``plan_acl``/``hook`` row is admissible to a ``kind="tool"``
 #: resolve (its ``modes``/``on`` axis narrows). ``domain``/``fs_root`` are kept out (B4 #1057).
 _TOOL_AXIS_KINDS = frozenset({KIND_TOOL, KIND_PLAN_ACL, KIND_HOOK})
-
-#: The full raw action vocabulary a policy row may carry (never collapsed).
-_VALID_ACTIONS = frozenset({"allow", "allow_session", "allow_workspace", "deny", "ask"})
 
 #: Restrictiveness rank for the same-priority tie-break: higher rank WINS a tie (most
 #: restrictive survives). Order (P0.1 #1059): deny > defer > ask > allow_workspace >
@@ -717,7 +717,7 @@ class GrantRecord:
         else:
             pattern = str(row.get("tool_name_pattern") or "*")
         action = str(row.get("action") or "").lower()
-        if action in {"allow", "allow_session", "allow_workspace"}:
+        if action in POLICY_ALLOWING:
             decision = "allow"
         elif action == "deny":
             decision = "deny"

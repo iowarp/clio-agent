@@ -70,6 +70,7 @@ _OBSERVER_CALL_IDS: ContextVar[str | None] = ContextVar("observer_call_id", defa
 _OBSERVER_CALL_T0: ContextVar[float | None] = ContextVar("observer_call_started", default=None)
 
 
+from clio_agent.gact.tool_call_nesting import live_call_metadata, nested_call_fields
 from clio_agent.gact.tool_event_identity import (
     _tool_call_event_key as _tool_call_event_key,
 )
@@ -553,6 +554,7 @@ def _make_tool_observer(app: "FastAPI"):
                 "telemetry_source": "live_observer",
                 **representation_fields,
                 **tool_title_fields,
+                **nested_call_fields(),
             }
             _emit_semantic_event(
                 app,
@@ -594,12 +596,7 @@ def _make_tool_observer(app: "FastAPI"):
                     step_id=thought_step_id,
                     head=raw_step_thought[:120],
                 )
-            call_metadata = {
-                "started_at": _iso_from_epoch(started_at),
-                "stream_source": "live",
-                "telemetry_source": "live_observer",
-                **({"thought_step_id": thought_step_id} if thought_step_id else {}),
-            }
+            call_metadata = live_call_metadata(_iso_from_epoch(started_at), thought_step_id)
             # Per-tool STARTED metadata via the registry (tool_instrumentation.py)
             # -- never a hardcoded tool name in this generic path.
             metadata_resolver = tool_call_metadata_resolver(name)

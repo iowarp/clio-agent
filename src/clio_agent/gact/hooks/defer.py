@@ -16,6 +16,7 @@ from typing import TYPE_CHECKING, Any
 
 from clio_agent.gact.hooks.wire import record_hook_reason
 from clio_agent.gact.permission_delivery import publish_permission_event
+from clio_agent.gact.runtime.permission_actions import allows
 from clio_agent.gact.runtime.retention import enforce_dict_bound
 
 if TYPE_CHECKING:
@@ -248,7 +249,7 @@ def park_pretool_defer(
         return decision
 
     action = str(row.get("action", "deny") or "deny")
-    if action in {"allow", "allow_session", "allow_workspace"}:
+    if allows(action):
         _stash_resolution_intercept(row)
         return "allow"
 

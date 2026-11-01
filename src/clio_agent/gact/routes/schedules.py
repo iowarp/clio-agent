@@ -51,6 +51,7 @@ def register_schedules_routes(app: FastAPI, deps: "GactDeps") -> None:
     """
 
     from clio_agent.gact.routes.work_controls import register_work_controls_routes
+    from clio_agent.gact.session_plan import rail_plan
 
     register_work_controls_routes(app)
 
@@ -87,6 +88,7 @@ def register_schedules_routes(app: FastAPI, deps: "GactDeps") -> None:
             )
         )
         snapshot["schedules"] = current_schedules
+        snapshot["plan"] = rail_plan(session)
         return snapshot
 
     @app.get("/v1/sessions/{sid}/schedules")

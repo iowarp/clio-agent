@@ -132,4 +132,27 @@ def _build_transcript(app: Any, sid: str, *, max_messages: int = 40) -> str:
                 fact = _tool_result_fact(part)
                 suffix = f": {fact}" if fact else ""
                 lines.append(f"{role} tool result: {name} {outcome}{suffix}")
-    return "\n".join(lines)[-32_000:]
+    body = "\n".join(lines)[-32_000:]
+    working = _working_state(app, sid)
+    return f"{working}\n\n{body}" if working else body
+
+
+def _working_state(app: Any, sid: str) -> str:
+    """The session's plan (with its status) and todos, ahead of the transcript tail."""
+    from clio_agent.gact.session_plan import plan_state  # noqa: PLC0415
+    from clio_agent.gact.todos import _render_checklist, recorded_todos  # noqa: PLC0415
+
+    sessions = getattr(app.state, "sessions", None)
+    session = sessions.get(sid) if sessions is not None else None
+    if session is None:
+        return ""
+    parts = []
+    plan = plan_state(session)
+    if plan["exists"]:
+        parts.append(
+            f"--- session plan ({plan['status'] or 'no status'}) ---\n{plan['text'][:6000]}"
+        )
+    todos = recorded_todos(session)
+    if todos:
+        parts.append(f"--- todos ---\n{_render_checklist(todos)}")
+    return "\n\n".join(parts)

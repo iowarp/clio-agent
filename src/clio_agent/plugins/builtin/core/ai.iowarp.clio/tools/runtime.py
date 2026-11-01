@@ -17,6 +17,8 @@ restart_agent = native_tool("restart_agent", defer=True)
 
 # Questions, planning state and artifacts.
 ask_user = native_tool("ask_user")
+plan_enter = native_tool("plan_enter")
+plan_update = native_tool("plan_update")
 plan_exit = native_tool("plan_exit")
 write_todos = native_tool("write_todos")
 create_artifact = native_tool("create_artifact")
@@ -24,6 +26,7 @@ raise_alert_card = native_tool("raise_alert_card")
 recall_context = native_tool("recall_context")
 load_skill = native_tool("load_skill")
 search_tools = native_tool("search_tools")
+run_code = native_tool("run_code")
 
 # Goals, loops and schedules.
 set_goal = native_tool("set_goal")

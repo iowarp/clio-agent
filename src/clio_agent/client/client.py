@@ -53,7 +53,7 @@ logger = logging.getLogger("clio_agent.client")
 
 DEFAULT_BASE_URL = "http://127.0.0.1:8100"
 
-PermissionAction = Literal["allow", "deny", "allow_session", "allow_workspace"]
+PermissionAction = Literal["allow", "deny", "allow_session", "allow_workspace", "allow_script"]
 
 
 def _drop_missing(payload: dict[str, Any]) -> dict[str, Any]:

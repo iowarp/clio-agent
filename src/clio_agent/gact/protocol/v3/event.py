@@ -197,6 +197,11 @@ def _tool_started(event: Event, payload: dict[str, Any], session: Any) -> _Proje
             if payload.get("presentation") is not None
             else {}
         ),
+        **(
+            {"parent_call_id": str(payload["parent_call_id"])}
+            if payload.get("parent_call_id")
+            else {}
+        ),
     }
     return _Projection("tool.upserted", projected, entity_id)
 

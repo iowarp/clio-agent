@@ -94,6 +94,7 @@ class _Unit:
     turn_id: str
     ids: list[str]
     head: bool = False  # the forward's own user question (no ``actor``)
+    source: str = ""  # an injection's source (``todos``, ``plan``, ...)
 
 
 def post_compaction_context(
@@ -114,6 +115,12 @@ def post_compaction_context(
     units = _units(live)
     turns = _turn_order(units, open_turn_id)
     kept: set[int] = set()
+    # Working state (plan mode, the plan, the todos) is never summarized: its latest
+    # copy per source stays verbatim, and the loop re-offers it after the compaction.
+    from clio_agent.gact.working_state import WORKING_STATE_SOURCES  # noqa: PLC0415
+
+    latest = {u.source: i for i, u in enumerate(units) if u.source in WORKING_STATE_SOURCES}
+    kept.update(latest.values())
     if policy.keep_head and open_turn_id:
         heads = [i for i, u in enumerate(units) if u.head and u.turn_id == open_turn_id]
         kept.update(heads[-1:])
@@ -145,7 +152,8 @@ def _units(live: Sequence[Any]) -> list[_Unit]:
         elif kind == "user":
             content = getattr(seg, "content", None)
             head = isinstance(content, Mapping) and "actor" not in content
-            units.append(_Unit("user", turn, [seg.id], head=head))
+            source = str(content.get("source") or "") if isinstance(content, Mapping) else ""
+            units.append(_Unit("user", turn, [seg.id], head=head, source=source))
         else:
             units.append(_Unit("summary", turn, [seg.id]))
     return units

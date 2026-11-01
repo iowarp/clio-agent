@@ -4,9 +4,17 @@ from __future__ import annotations
 
 import logging
 from collections.abc import Awaitable, Callable, Mapping
+from contextvars import ContextVar
 from typing import Any, Optional
 
 logger = logging.getLogger(__name__)
+
+#: The structured-value lane: when a caller binds a list here (a ``run_code`` script's
+#: nested call), each completed MCP call appends ``(error, observer_result)``, so the
+#: script gets the call's structured content while the model-facing text stays bounded.
+RESULT_SINK: ContextVar[list[tuple[str | None, Any]] | None] = ContextVar(
+    "clio_tool_result_sink", default=None
+)
 
 ToolObserver = Callable[
     [str, Mapping[str, Any], Optional[str], Optional[str], Any | None],
@@ -30,6 +38,9 @@ def notify_tool_observer(
     agent did, so it propagates typed to the caller.
     """
 
+    sink = RESULT_SINK.get() if phase == "completed" else None
+    if sink is not None:
+        sink.append((error, result))
     if observer is None:
         return None
     if result is None:

@@ -51,7 +51,6 @@ from clio_agent.gact.events import _publish_transcript_event
 from clio_agent.gact.memory.snapshot import SOURCE as MEMORY_SOURCE
 from clio_agent.gact.memory.snapshot import memory_snapshot_text
 from clio_agent.gact.part_atom_minter import open_turn_minter
-from clio_agent.gact.plan_mode import plan_mode_reminder
 from clio_agent.gact.replanning import replan_suggestion
 from clio_agent.gact.runtime import bringup_timing
 from clio_agent.gact.runtime.globals import (
@@ -59,7 +58,6 @@ from clio_agent.gact.runtime.globals import (
     _emit_semantic_event,
     _session_agent_id,
 )
-from clio_agent.gact.todos import todo_recitation
 from clio_agent.gact.turn_state import (
     PROLOGUE_COMPLETED,
     PROLOGUE_FAILED,
@@ -67,6 +65,7 @@ from clio_agent.gact.turn_state import (
     TurnCancelledDuringPrologue,
 )
 from clio_agent.gact.turn_watchdog import cancel_requested
+from clio_agent.gact.working_state import working_state_injections
 
 if TYPE_CHECKING:
     from clio_agent.gact.turn_state import TurnState
@@ -149,9 +148,8 @@ def _prepare_turn_off_loop_steps(
         )
         # Long-term memory: the session's pinned snapshot (built on its first turn).
         memory = memory_snapshot_text(state.app, state.sid, state.sess, state.turn_id)
-        # P1.2 #1064: surface plan mode to the model each turn (survives compaction; no-op otherwise).
-        reminder = plan_mode_reminder(state.app, state.sid, state.sess)
-        todos = todo_recitation(state.app, state.sid, state.sess)
+        # Working state: plan mode, the plan (draft/approved) and the todos (empty when absent).
+        working = working_state_injections(state.app, state.sid, state.sess)
         # P1.6d #1068: surface a pending stall-triggered replanning suggestion once (no-op otherwise).
         replan = replan_suggestion(state.app, state.sid, state.sess)
         # Plugin changes applied as a note, until a compaction folds them into the prompt.
@@ -162,8 +160,7 @@ def _prepare_turn_off_loop_steps(
             (source, block)
             for source, block in (
                 (MEMORY_SOURCE, memory),
-                ("plan_mode", reminder),
-                ("todos", todos),
+                *working,
                 ("replan", replan),
                 (PLUGIN_CHANGE_SOURCE, plugin_change),
             )

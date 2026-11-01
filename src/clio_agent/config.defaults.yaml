@@ -429,6 +429,11 @@ fleet.usage_poll_seconds: 300
 # conversation model.
 # goal.judge_model:  # default unset; resolved in code
 
+# CLIO_PLAN_INJECTION_CHARS  (int)  <- src/clio_agent/gact/session_plan.py
+# Characters of the session plan offered back to the agent as working state;
+# a longer plan is cut there with a pointer to its file.
+plan.injection_chars: 12000
+
 # CLIO_DEFAULT_MARKETPLACE  (str)  <- src/clio_agent/plugins/service.py
 # Source of the shipped default marketplace (a folder or git URL); unset
 # uses the bundled marketplace, else the pinned default URL. Point it at a
@@ -1221,6 +1226,26 @@ resources.upload_chunk_bytes: 8388608
 # ==========================================================================
 # File-policy sandboxing, shell execution bounds and the MCP tool fleet's
 # discovery/cache/timeouts.
+
+# CLIO_CODE_CALL_TIMEOUT_S  (str)  <- src/clio_agent/gact/code_mode/tool.py
+# Seconds one run_code script may run (time waiting for a person's answer
+# excluded); past it the kernel is stopped and the next script starts fresh.
+# 0 means no limit.
+code.call_timeout_s: "600.0"
+
+# CLIO_CODE_IDLE_MINUTES  (str)  <- src/clio_agent/gact/code_mode/kernels.py
+# Minutes a run_code kernel keeps its variables without a script before it
+# is stopped.
+code.idle_minutes: "30.0"
+
+# CLIO_CODE_MAX_NESTED_CALLS  (int)  <- src/clio_agent/gact/code_mode/dispatch.py
+# Tool calls one run_code script may make; a call past it raises in the
+# script.
+code.max_nested_calls: 500
+
+# CLIO_CODE_PER_SERVER_CONCURRENCY  (int)  <- src/clio_agent/gact/code_mode/dispatch.py
+# Tool calls to one server a run_code script may have running at once.
+code.per_server_concurrency: 8
 
 # CLIO_TOOL_FAILURE_LIMIT  (int)  <- src/clio_agent/tools/execution.py
 # Consecutive failures of one tool before CLIO blocks further calls to it

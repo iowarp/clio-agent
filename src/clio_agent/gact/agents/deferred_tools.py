@@ -60,6 +60,8 @@ _NEVER = frozenset(
     }
 )
 _NEVER_PREFIXES = ("fs_", "shell_")
+#: Built-in tool groups named like servers (``fs_read_file``), for ``run_code``'s stubs.
+_BUILTIN_SERVERS = frozenset({"fs", "shell", "web"})
 
 
 @dataclass(frozen=True)
@@ -188,7 +190,11 @@ def apply_disclosure(
     live refresh. With nothing deferred, ``search_tools`` itself is left out of the
     list: it would find nothing.
     """
+    from clio_agent.gact.code_mode.tool import finalize_run_code  # noqa: PLC0415
+
     tools: Mapping[str, Any] = getattr(program, "tools", {}) or {}
+    servers = frozenset(getattr(resolution, "mcp_servers", {}) or {}) | _BUILTIN_SERVERS
+    finalize_run_code(program, servers)
     disclosure = plan_disclosure(resolution, tools, context_tokens=context_tokens, loaded=loaded)
     unlisted = frozenset(getattr(program, "_clio_unlisted", frozenset()))
     if not disclosure.deferred and SEARCH_TOOLS in tools:

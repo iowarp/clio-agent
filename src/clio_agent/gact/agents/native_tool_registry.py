@@ -95,6 +95,7 @@ def _singles(agent_def: Any) -> dict[str, Callable[[], Any]]:
     from clio_agent.gact.action_cards import build_raise_alert_card_tool  # noqa: PLC0415
     from clio_agent.gact.artifacts.proposals import build_create_artifact_tool  # noqa: PLC0415
     from clio_agent.gact.autonomous_loop import build_loop_wakeup_tool  # noqa: PLC0415
+    from clio_agent.gact.code_mode.tool import build_run_code_tool  # noqa: PLC0415
     from clio_agent.gact.document_tools import (  # noqa: PLC0415
         build_prepare_document_runtime_tool,
         build_prepare_document_tool,
@@ -124,6 +125,10 @@ def _singles(agent_def: Any) -> dict[str, Callable[[], Any]]:
         build_clio_search_tool,
     )
     from clio_agent.gact.search_tools import build_search_tools_tool  # noqa: PLC0415
+    from clio_agent.gact.session_plan import (  # noqa: PLC0415
+        build_plan_enter_tool,
+        build_plan_update_tool,
+    )
     from clio_agent.gact.session_recall_tools import (  # noqa: PLC0415
         build_session_context_frame_tool,
         build_session_search_tool,
@@ -158,6 +163,9 @@ def _singles(agent_def: Any) -> dict[str, Callable[[], Any]]:
         "raise_alert_card": lambda: build_raise_alert_card_tool(agent_def),
         "recall_context": build_recall_context_tool,
         "search_tools": build_search_tools_tool,
+        "run_code": build_run_code_tool,
+        "plan_enter": build_plan_enter_tool,
+        "plan_update": build_plan_update_tool,
         "loop_wakeup": build_loop_wakeup_tool,
         "set_loop": build_set_loop_tool,
         "set_goal": build_set_goal_tool,
@@ -208,6 +216,9 @@ _SINGLE_NAMES = frozenset(
         "raise_alert_card",
         "recall_context",
         "search_tools",
+        "run_code",
+        "plan_enter",
+        "plan_update",
         "loop_wakeup",
         "set_loop",
         "set_goal",

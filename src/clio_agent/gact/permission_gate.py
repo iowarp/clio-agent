@@ -68,6 +68,7 @@ from clio_agent.gact import permission_timeout
 from clio_agent.gact.cancellation_check import (
     make_cancellation_checker as _make_cancellation_checker,  # noqa: F401 - compatibility export
 )
+from clio_agent.gact.code_mode import grants as script_grants
 from clio_agent.gact.folder_access import bind_folder_gate
 from clio_agent.gact.permission_context import (
     _external_mcp_permission_context as _external_mcp_permission_context,
@@ -95,6 +96,7 @@ from clio_agent.gact.runtime.grant_resolver import (
     resolve_detail,
 )
 from clio_agent.gact.runtime.grants import GRANTOR_REVIEWER, GRANTOR_USER
+from clio_agent.gact.runtime.permission_actions import POLICY_ALLOWING, STANDARD_ANSWERS, allows
 from clio_agent.gact.runtime.permission_policies import (
     _append_permission_policy_from_resolution,
     _flush_permission_policies,
@@ -343,9 +345,7 @@ def _guard_direct_destructive_action(
         status="auto_approved",
         action="allow",
         summary=summary,
-        reason="policy_allow"
-        if policy_action in {"allow", "allow_session", "allow_workspace"}
-        else reason,
+        reason="policy_allow" if policy_action in POLICY_ALLOWING else reason,
     )
 
 
@@ -415,7 +415,7 @@ def _resolve_permission(
     # P2.6: an APPROVED PreToolUse defer may carry the modify/synthesize the approval
     # decides — stashed on the row BEFORE the event wake below so the parked call reads
     # it and drives the ``tool_interceptor`` (run-with-modified-args / synthesize).
-    if intercept is not None and action in {"allow", "allow_session", "allow_workspace"}:
+    if intercept is not None and allows(action):
         if "result" in intercept:
             row["resolution_result"] = intercept.get("result")
         elif isinstance(intercept.get("input"), Mapping):
@@ -470,6 +470,92 @@ def _resolve_permission(
 
         settle_pending_tool_grants(app, row)
     return row
+
+
+def _ask_person(
+    app: "FastAPI",
+    sid: str,
+    name: str,
+    args: Mapping[str, Any],
+    context: Mapping[str, Any] | None,
+    subject: str,
+    approval_mode: str,
+    policy_action: str,
+    cancelled: Any,
+) -> str:
+    """Publish a pending permission and wait for the answer (or the AI reviewer's)."""
+    if not sid:
+        return "deny"
+    pid = f"perm_{uuid.uuid4().hex[:12]}"
+    evt = threading.Event()
+    row = {
+        "id": pid,
+        "session_id": sid,
+        **permission_identity(app, sid),
+        "tool_call": {
+            "tool_name": name,
+            "input": dict(args),
+        },
+        "summary": (
+            str(context["summary"])[:500]
+            if context and context.get("kind") == "native" and context.get("summary")
+            else f"{subject} call: {name}"
+        ),
+        "created_at": datetime.now(timezone.utc).isoformat(),
+        "status": "pending",
+    }
+    if _is_external_mcp_permission_context(context):
+        row["kind"] = _EXTERNAL_MCP_PERMISSION_CONTEXT_KIND
+    # A call from inside a run_code script shows the script and offers its grant.
+    row.update(script_grants.row_fields(list(STANDARD_ANSWERS)))
+    # #1044: the ai-review reviewer runs only when there is no explicit ``ask`` policy —
+    # an explicit ``ask`` is a deliberate "always confirm THIS tool with a HUMAN" and beats
+    # the mode (uniform with #1034: explicit policy > mode), so it must NOT be reviewer-
+    # auto-decided. When the reviewer WILL run, stamp the typed reviewer-pending reason so
+    # the ledger attributes the ask to the ai-review mode (never a silent default).
+    if approval_mode == "ai-review" and policy_action != "ask":
+        row["reason"] = REASON_AI_REVIEW_REVIEWER_PENDING
+    # A responder may act as soon as the pending row is visible.
+    app.state.permission_events[pid] = evt
+    app.state.permissions[pid] = row
+    enforce_dict_bound(app, app.state.permissions, "permissions", session_id=sid)
+    publish_permission_event(
+        app,
+        "permission.requested",
+        owner_session_id=sid,
+        payload=row,
+    )
+    # #1044: one-shot AI reviewer (ai-review approval mode only). The pending row +
+    # event are already on the ledger (auditable that a review happened, carrying the
+    # typed reviewer-pending reason). Ask the in-process reviewer; on a confident
+    # allow/deny, resolve the row now (grantor=reviewer, recorded + emitted) and
+    # return. On escalate — OR any fail-safe (no LM / reviewer error / timeout) — stamp
+    # the TYPED reason and FALL THROUGH to the existing human ``evt.wait`` below: a
+    # human decides, never a silent auto-allow. The reviewer runs NO tools and spawns
+    # nothing, so it cannot re-enter this (blocked) gate — no deadlock, no starvation.
+    if approval_mode == "ai-review" and policy_action != "ask":
+        from clio_agent.gact.runtime.ai_review import ai_review_verdict  # noqa: PLC0415
+
+        verdict, reason = ai_review_verdict(app, sid, name, args, context, subject=subject)
+        row["reason"] = reason
+        if reason.startswith("ai_review_risk_"):
+            row["risk_level"] = reason.removeprefix("ai_review_risk_")
+        if verdict in {"allow", "deny"}:
+            resolve_permission(app, pid, verdict, grantor=GRANTOR_REVIEWER)
+            return verdict
+        # escalate/no-LM/error/timeout: the row stays pending with its typed escalation
+        # reason and the call falls through to the human wait below (fail-safe).
+    # Block the bridge thread until POST /v1/permissions/{pid}
+    # sets the event (or we time out).
+    if decision := permission_timeout.wait_for_permission(
+        app, pid, row, evt, tool_name=name, cancelled=cancelled
+    ):
+        return decision
+    action = row.get("action", "deny")
+    script_grants.answered(row)
+    if allows(action):
+        return "allow"
+    return "deny"
 
 
 def _make_permission_gate(app: "FastAPI"):
@@ -629,7 +715,7 @@ def _make_permission_gate(app: "FastAPI"):
             return DenyDecision(plan_deny_message) if plan_deny_message else "deny"
         if folders:
             return request_folder_access(app, sid, current, name, args, folders)
-        if policy_action in {"allow", "allow_session", "allow_workspace"}:
+        if policy_action in POLICY_ALLOWING:
             _record_resolved_permission(
                 app,
                 session_id=sid,
@@ -677,74 +763,21 @@ def _make_permission_gate(app: "FastAPI"):
                 ),
             )
             return "allow"
-        if not sid:
-            return "deny"
-        pid = f"perm_{uuid.uuid4().hex[:12]}"
-        evt = threading.Event()
-        row = {
-            "id": pid,
-            "session_id": sid,
-            **permission_identity(app, sid),
-            "tool_call": {
-                "tool_name": name,
-                "input": dict(args),
-            },
-            "summary": (
-                str(context["summary"])[:500]
-                if context and context.get("kind") == "native" and context.get("summary")
-                else f"{subject} call: {name}"
-            ),
-            "created_at": datetime.now(timezone.utc).isoformat(),
-            "status": "pending",
-        }
-        if _is_external_mcp_permission_context(context):
-            row["kind"] = _EXTERNAL_MCP_PERMISSION_CONTEXT_KIND
-        # #1044: the ai-review reviewer runs only when there is no explicit ``ask`` policy —
-        # an explicit ``ask`` is a deliberate "always confirm THIS tool with a HUMAN" and beats
-        # the mode (uniform with #1034: explicit policy > mode), so it must NOT be reviewer-
-        # auto-decided. When the reviewer WILL run, stamp the typed reviewer-pending reason so
-        # the ledger attributes the ask to the ai-review mode (never a silent default).
-        if approval_mode == "ai-review" and policy_action != "ask":
-            row["reason"] = REASON_AI_REVIEW_REVIEWER_PENDING
-        # A responder may act as soon as the pending row is visible.
-        app.state.permission_events[pid] = evt
-        app.state.permissions[pid] = row
-        enforce_dict_bound(app, app.state.permissions, "permissions", session_id=sid)
-        publish_permission_event(
-            app,
-            "permission.requested",
-            owner_session_id=sid,
-            payload=row,
-        )
-        # #1044: one-shot AI reviewer (ai-review approval mode only). The pending row +
-        # event are already on the ledger (auditable that a review happened, carrying the
-        # typed reviewer-pending reason). Ask the in-process reviewer; on a confident
-        # allow/deny, resolve the row now (grantor=reviewer, recorded + emitted) and
-        # return. On escalate — OR any fail-safe (no LM / reviewer error / timeout) — stamp
-        # the TYPED reason and FALL THROUGH to the existing human ``evt.wait`` below: a
-        # human decides, never a silent auto-allow. The reviewer runs NO tools and spawns
-        # nothing, so it cannot re-enter this (blocked) gate — no deadlock, no starvation.
-        if approval_mode == "ai-review" and policy_action != "ask":
-            from clio_agent.gact.runtime.ai_review import ai_review_verdict  # noqa: PLC0415
-
-            verdict, reason = ai_review_verdict(app, sid, name, args, context, subject=subject)
-            row["reason"] = reason
-            if reason.startswith("ai_review_risk_"):
-                row["risk_level"] = reason.removeprefix("ai_review_risk_")
-            if verdict in {"allow", "deny"}:
-                resolve_permission(app, pid, verdict, grantor=GRANTOR_REVIEWER)
-                return verdict
-            # escalate/no-LM/error/timeout: the row stays pending with its typed escalation
-            # reason and the call falls through to the human wait below (fail-safe).
-        # Block the bridge thread until POST /v1/permissions/{pid}
-        # sets the event (or we time out).
-        if decision := permission_timeout.wait_for_permission(
-            app, pid, row, evt, tool_name=name, cancelled=cancelled
-        ):
-            return decision
-        action = row.get("action", "deny")
-        if action in {"allow", "allow_session", "allow_workspace"}:
-            return "allow"
-        return "deny"
+        with script_grants.question():
+            if policy_action != "ask" and script_grants.covers(decision_posture):
+                _record_resolved_permission(
+                    app,
+                    session_id=sid,
+                    tool_name=name,
+                    args=args,
+                    status="auto_approved",
+                    action="allow",
+                    summary=f"{subject} {name!r} covered by its script's approval",
+                    reason=script_grants.REASON_SCRIPT_GRANT,
+                )
+                return "allow"
+            return _ask_person(
+                app, sid, name, args, context, subject, approval_mode, policy_action, cancelled
+            )
 
     return bind_folder_gate(app, gate)

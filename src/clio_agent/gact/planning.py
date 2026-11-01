@@ -157,17 +157,18 @@ def plan_mode_reminder_block(
     if not full:
         return (
             PLAN_MODE_REMINDER_MARKER
-            + f" ({plan_file}). Keep writing your plan there; end your turn to hand it back "
-            "for approval with plan_exit rather than executing it yourself."
+            + f" ({plan_file}). Keep the plan current with plan_update; end your turn to hand "
+            "it back for approval with plan_exit rather than executing it yourself."
         )
     if exists:
         create_or_edit = (
-            f"A plan file already exists at {plan_file}. Make incremental edits to it as you learn."
+            f"A plan file already exists at {plan_file}. Update it with plan_update as you "
+            "learn (old and new replace one passage)."
         )
     else:
         create_or_edit = (
-            f"No plan file exists yet. Create your plan at {plan_file} (write a *.md there — it is "
-            "the ONLY writable path in plan mode)."
+            f"No plan file exists yet. Write your plan with plan_update(content=...); it is saved "
+            f"at {plan_file}, the only writable path in plan mode."
         )
     structure = (
         _playbook_structure_bullet(playbook)

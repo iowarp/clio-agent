@@ -513,9 +513,9 @@ def _project_tool(context: _TranscriptProjection, part: Mapping[str, Any], part_
         tool_name=str(part.get("tool_name") or current.get("name") or ""),
     ) or current.get("presentation")
     metadata = _mapping(part.get("metadata"))
-    timing = {
+    carried = {  # timing, and the call a nested call was made from (run_code)
         key: str(metadata.get(key) or current.get(key))
-        for key in ("started_at", "completed_at")
+        for key in ("started_at", "completed_at", "parent_call_id")
         if metadata.get(key) or current.get(key)
     }
     context.tools[tool_id] = {
@@ -537,7 +537,7 @@ def _project_tool(context: _TranscriptProjection, part: Mapping[str, Any], part_
             if part.get("duration_ms") is not None
             else current.get("duration_ms")
         ),
-        **timing,
+        **carried,
         **({"error": str(part.get("text") or "Tool failed")} if failed else {}),
         **({"error": MISSING_EXECUTION_OUTCOME} if state == "unknown" else {}),
     }

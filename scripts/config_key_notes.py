@@ -24,7 +24,17 @@ SECTIONS: list[tuple[str, tuple[str, ...], str]] = [
     ),
     (
         "Agents, workflows and scheduling",
-        ("agents", "agent_tasks", "plugins", "workflows", "goal", "scheduler", "variants", "fleet"),
+        (
+            "agents",
+            "agent_tasks",
+            "plugins",
+            "workflows",
+            "goal",
+            "plan",
+            "scheduler",
+            "variants",
+            "fleet",
+        ),
         "Installed plugins and agents, child-agent concurrency, goal judging and the cron "
         "scheduler.",
     ),
@@ -63,7 +73,7 @@ SECTIONS: list[tuple[str, tuple[str, ...], str]] = [
     ),
     (
         "Tools + MCP",
-        ("tools",),
+        ("tools", "code"),
         "File-policy sandboxing, shell execution bounds and the MCP tool fleet's "
         "discovery/cache/timeouts.",
     ),
@@ -1159,6 +1169,23 @@ KEY_NOTES: dict[str, str] = {
     "tools.circuit_breaker.failure_limit": (
         "Consecutive failures of one tool before CLIO blocks further calls to it (the agent is "
         "warned at the limit and told why a call was blocked); 0 turns the breaker off."
+    ),
+    "code.call_timeout_s": (
+        "Seconds one run_code script may run (time waiting for a person's answer excluded); "
+        "past it the kernel is stopped and the next script starts fresh. 0 means no limit."
+    ),
+    "code.idle_minutes": (
+        "Minutes a run_code kernel keeps its variables without a script before it is stopped."
+    ),
+    "code.max_nested_calls": (
+        "Tool calls one run_code script may make; a call past it raises in the script."
+    ),
+    "code.per_server_concurrency": (
+        "Tool calls to one server a run_code script may have running at once."
+    ),
+    "plan.injection_chars": (
+        "Characters of the session plan offered back to the agent as working state; a longer "
+        "plan is cut there with a pointer to its file."
     ),
     "tools.defer_share": (
         "Share of the model's context window (0-1) an MCP server's tool schemas may take before "

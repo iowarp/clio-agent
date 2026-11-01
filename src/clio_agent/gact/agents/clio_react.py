@@ -425,7 +425,12 @@ class _Loop:
         _raise_if_cancelled()
         self._arrivals()
         self._refresh_tools()
+        compacted = self.autocompact.compaction_id
         maybe_autocompact(self.autocompact)
+        if self.autocompact.compaction_id != compacted:
+            from clio_agent.gact.working_state import reinject_after_compaction  # noqa: PLC0415
+
+            reinject_after_compaction(self.recorder)
         attempt = 0
 
         def request() -> Request:
