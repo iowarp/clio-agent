@@ -43,12 +43,14 @@ _DESCRIPTION = (
     "Run Python in a persistent kernel that can call your tools: `await "
     "tools.<group>.<tool>(arg=...)` returns the tool's structured result (a dict, list or "
     "text), and `asyncio.gather` runs calls at once. Use it when a task needs many calls "
-    "whose results you filter, join or count (paging through records, reading many files, "
-    "querying several servers) and print only what matters: you see the printed output, "
-    "the value of a final expression and the call count, not the tools' results. One call "
-    "or a short dependent chain is cheaper as direct calls. Variables persist between "
-    "scripts. `tools.search('words')` finds tools; `help(tools.<group>.<tool>)` shows "
-    "arguments; a failed call raises ToolError. The script is approved before it runs."
+    "whose results you filter, join or count (paging through a listing, reading many "
+    "files, querying several servers) and print only what matters: you see the printed "
+    "output, the value of a final expression and the call count, not the tools' results. "
+    "One call or a short dependent chain is cheaper as direct calls. A script makes at most "
+    "{budget} tool calls; its variables persist into the next script, so larger work "
+    "continues there, and tasks it started stop when it ends. `tools.search('words')` "
+    "finds tools; `help(tools.<group>.<tool>)` shows arguments; a failed call raises "
+    "ToolError. The script is approved before it runs."
 )
 
 
@@ -240,6 +242,7 @@ def build_run_code_tool() -> Any:
         declare_structured_content,
         native_tool,
     )
+    from clio_agent.gact.code_mode.dispatch import max_nested_calls  # noqa: PLC0415
     from clio_agent.gact.code_mode.presentation import present, starting  # noqa: PLC0415
 
     def run_code(code: str) -> str:
@@ -264,7 +267,7 @@ def build_run_code_tool() -> Any:
         presentation_start=starting,
         domain="workflows",
         title="Run code",
-        desc=_DESCRIPTION,
+        desc=_DESCRIPTION.format(budget=max_nested_calls()),
         args={"code": {"type": "string", "description": "Python source; top-level await works."}},
     )
 

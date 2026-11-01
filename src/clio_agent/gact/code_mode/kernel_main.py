@@ -85,6 +85,12 @@ class _Host:
 
         loop.call_soon_threadsafe(settle)
 
+    def forget_settled(self) -> None:
+        """Drop pending entries whose futures a stopped task already cancelled."""
+        with self.lock:
+            for call_id in [k for k, (_, f) in self.pending.items() if f.done()]:
+                del self.pending[call_id]
+
 
 def _function(host: _Host, tool: str, spec: dict[str, Any]) -> Any:
     """One callable tool: ``await tools.fs.read_file(filepath=...)``."""
@@ -149,6 +155,21 @@ def _run(loop: asyncio.AbstractEventLoop, code_object: Any, namespace: dict[str,
     return result
 
 
+def _stop_leftovers(loop: asyncio.AbstractEventLoop) -> int:
+    """Cancel the tasks a script started and left running; how many there were.
+
+    The loop outlives the script, so a task a failed ``gather`` left behind would
+    otherwise keep calling tools during the next script, against that script's budget.
+    A script's tasks end with it; its variables persist.
+    """
+    pending = [task for task in asyncio.all_tasks(loop) if not task.done()]
+    for task in pending:
+        task.cancel()
+    if pending:
+        loop.run_until_complete(asyncio.gather(*pending, return_exceptions=True))
+    return len(pending)
+
+
 def _redirect(target: int) -> tuple[int, int]:
     sys.stdout.flush()
     sys.stderr.flush()
@@ -191,7 +212,11 @@ def _script_traceback(exc: BaseException) -> str:
 
 
 def _execute(
-    loop: asyncio.AbstractEventLoop, namespace: dict[str, Any], code: str, capture: Any
+    loop: asyncio.AbstractEventLoop,
+    namespace: dict[str, Any],
+    code: str,
+    capture: Any,
+    host: _Host | None = None,
 ) -> dict[str, Any]:
     saved = _redirect(capture.fileno())
     ok, value, error = True, None, ""
@@ -209,8 +234,17 @@ def _execute(
         ok = False
         error = _script_traceback(exc)
     finally:
+        stopped = _stop_leftovers(loop)
+        if host is not None:
+            host.forget_settled()
         _restore(saved)
-    return {"ok": ok, "output": _read_output(capture), "value": value, "error": error}
+    output = _read_output(capture)
+    if stopped:
+        output += (
+            f"\n[{stopped} task{'s' if stopped != 1 else ''} this script started "
+            f"{'were' if stopped != 1 else 'was'} still running and stopped with it.]"
+        )
+    return {"ok": ok, "output": output, "value": value, "error": error}
 
 
 def main() -> None:
@@ -245,7 +279,7 @@ def main() -> None:
             namespace["tools"] = _Tools(host, message.get("stubs") or {})
             host.send({"type": "bound"})
         elif message.get("type") == "exec":
-            done = _execute(loop, namespace, str(message.get("code") or ""), capture)
+            done = _execute(loop, namespace, str(message.get("code") or ""), capture, host)
             host.send({"type": "done", "id": message.get("id"), **done})
 
 

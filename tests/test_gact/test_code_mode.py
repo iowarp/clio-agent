@@ -138,6 +138,24 @@ class TestKernel:
         value = _run(code)["value"]
         assert value.startswith("['ok', 'ok', 'This script reached its limit")
 
+    def test_tasks_a_failed_script_left_running_stop_with_it(self, workspace: Path) -> None:
+        # A failed gather leaves its other coroutines running on the kernel's loop;
+        # they must not keep calling tools against the next script's budget.
+        code = (
+            "import asyncio\n"
+            "async def keep_reading():\n"
+            "    for _ in range(200):\n"
+            "        await tools.records.get_record(record_id='r1')\n"
+            "await asyncio.gather(keep_reading(), tools.records.get_record(record_id='nope'))"
+        )
+        failed = _run(code)
+        assert failed["status"] == "failed" and "ToolError" in failed["error"]
+        stopped = "1 task this script started was still running and stopped with it"
+        assert stopped in failed["output"]
+        after = _run("await tools.records.get_record(record_id='r2')")
+        assert after["status"] == "completed"
+        assert after["calls"] == 1
+
     def test_a_timeout_stops_the_kernel_and_the_next_script_starts_fresh(
         self, workspace: Path, monkeypatch: Any
     ) -> None:
