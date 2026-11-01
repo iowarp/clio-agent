@@ -307,6 +307,9 @@ def run_once(
         "--include-partial-messages", "--model", args.model,
         "--permission-mode", args.permission_mode, "--no-session-persistence",
     ]  # fmt: skip
+    if args.allowed_tools:
+        # Pre-approved tools, for where skipping permissions is refused (as root).
+        command += ["--allowedTools", args.allowed_tools]
     target = args.results / CONFIG / task_id / f"run-{index}.json"
     target.parent.mkdir(parents=True, exist_ok=True)
     received: list[tuple[float, dict[str, Any]]] = []
@@ -399,6 +402,11 @@ def main(argv: list[str] | None = None) -> int:
     run.add_argument("--work-root", type=Path, default=DEFAULT_WORK)
     run.add_argument("--claude", default="claude")
     run.add_argument("--permission-mode", default="bypassPermissions")
+    run.add_argument(
+        "--allowed-tools",
+        default="",
+        help="tools pre-approved with --allowedTools (comma-separated), e.g. Bash,Read,Grep,Glob",
+    )
     run.add_argument("--timeout", type=float, default=3600.0)
     run.add_argument("--stop-at", type=float, default=DEFAULT_STOP_AT)
     run.add_argument("--force", action="store_true")
