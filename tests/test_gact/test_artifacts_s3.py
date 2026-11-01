@@ -985,16 +985,13 @@ def test_content_write_policy_allow_records_audit_row(tmp_path, monkeypatch):
 # --------------------------------------------------------------------------- #
 
 
-def test_content_write_in_plan_mode_allows_designated_plan_file(tmp_path, monkeypatch):
-    """A plan-mode content write to ``<plans>/*.md`` is ALLOWED (the @70 carve-out matches).
+def test_content_write_in_plan_mode_to_the_plans_dir_is_denied_toward_plan_update(
+    tmp_path, monkeypatch
+):
+    """A plan-mode content write to ``<plans>/*.md`` is denied: plan_update writes the plan.
 
-    This is the headline defect: the gate previously consulted the resolver with
-    ``{"name", "content_bytes"}`` and NO path key, so ``_permission_path_from_args``
-    returned ``""`` and the @70 plan-file carve-out (keyed on ``path_pattern``) could
-    never match — every create_artifact write in plan mode fell to the @40 deny.
-
-    Sabotage: drop the ``"path"`` key from the consult args -> the carve-out can't
-    match -> POLICY_DENIED -> red.
+    No file-mutating tool writes in plan mode (the plans-folder carve-out is gone), and the
+    refusal names plan_update so the model knows the way to write its plan.
     """
     from clio_agent.gact.runtime import plan_acl  # noqa: PLC0415
 
@@ -1002,29 +999,62 @@ def test_content_write_in_plan_mode_allows_designated_plan_file(tmp_path, monkey
     monkeypatch.setattr(plan_acl, "plans_dir", lambda: plans.resolve())
     monkeypatch.setenv("CLIO_ALLOWED_ROOTS", str(tmp_path))
     app, sess, _ = _make_app(tmp_path, mode="plan")
-    # The live target shape: <repo>/.clio/plans/<slug>-<sid>.md via create_artifact.
     out = promote_proposal(
         app,
         sess.id,
         Proposal(name=".clio/plans/my-plan.md", kind="report", content="# Plan\n"),
         workspace_id="ws1",
     )
-    assert out.accepted and out.created
-    assert (plans / "my-plan.md").read_text(encoding="utf-8") == "# Plan\n"
-    # An audit row landed as auto_approved through the SAME resolver every write uses.
-    rows = list(app.state.permissions.values())
-    assert any(
-        r["action"] == "allow" and r["tool_call"]["tool_name"] == "create_artifact" for r in rows
+    assert out.accepted is False
+    assert out.reason == RejectionReason.POLICY_DENIED.value
+    assert "plan_update" in out.detail
+    assert not (plans / "my-plan.md").exists()
+
+
+def test_content_write_consults_policies_with_its_target_path(tmp_path, monkeypatch):
+    """The gate consults the resolver with the write's resolved path.
+
+    The headline defect this guards: the consult once carried ``{"name", "content_bytes"}``
+    and NO path key, so no path-scoped policy could ever match a create_artifact write.
+
+    Sabotage: drop the ``"path"`` key from the consult args -> the path-scoped deny cannot
+    match -> the write is accepted -> red.
+    """
+    monkeypatch.setenv("CLIO_ALLOWED_ROOTS", str(tmp_path))
+    target = (tmp_path / "secret" / "notes.md").resolve()
+    app, sess, _ = _make_app(
+        tmp_path,
+        policies=[
+            {
+                "scope": "session",
+                "tool_name_pattern": "create_artifact",
+                "path_pattern": str(target),
+                "action": "deny",
+            }
+        ],
     )
+    out = promote_proposal(
+        app,
+        sess.id,
+        Proposal(name="secret/notes.md", kind="report", content="x"),
+        workspace_id="ws1",
+    )
+    assert out.accepted is False
+    assert out.reason == RejectionReason.POLICY_DENIED.value
+    assert not target.exists()
+    elsewhere = promote_proposal(
+        app,
+        sess.id,
+        Proposal(name="report.md", kind="report", content="x"),
+        workspace_id="ws1",
+    )
+    assert elsewhere.accepted
 
 
 def test_content_write_in_plan_mode_denies_non_plan_file(tmp_path, monkeypatch):
-    """A plan-mode content write OUTSIDE the plans dir stays denied (the @40 deny holds).
+    """A plan-mode content write anywhere in the workspace is denied (the @40 deny holds).
 
-    The carve-out is scoped to ``<plans>/*.md``; any other workspace path must still be
-    refused typed POLICY_DENIED even now that the resolved path is provided.
-
-    Sabotage: widen the carve-out to match every path -> this write is allowed -> red.
+    Sabotage: add any plan-mode allow for create_artifact writes -> this write is allowed -> red.
     """
     from clio_agent.gact.runtime import plan_acl  # noqa: PLC0415
 

@@ -213,7 +213,7 @@ def _gate_content_write(
     # (c) Policy + mode consult + audit row (the same resolver the diffs/revert write and the live
     # tool gate use). Passing ``mode`` folds the built-in plan_acl rules in, so plan/architect deny
     # a content write here through the SAME path — no separate mode predicate. ``path`` carries the
-    # resolved target so path-pattern rows (the @70 plan-file carve-out; user path grants) can match
+    # resolved target so path-pattern rows (user path grants and denies) can match
     # and the audit row records the true write target.
     args: dict[str, Any] = {"name": proposal.name, "content_bytes": len(proposal.content)}
     if target is not None:

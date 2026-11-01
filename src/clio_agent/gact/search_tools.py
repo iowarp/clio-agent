@@ -149,7 +149,7 @@ def _present(args: Mapping[str, Any], result: Any, structured: Any) -> dict[str,
             {
                 "id": f"tool-{i}",
                 "type": "text",
-                "label": f"{tool.get('name')} · {tool.get('owner') or 'tool'}",
+                "label": f"{tool.get('name')} ({tool.get('owner') or 'tool'})",
                 "text": text,
             }
         )
