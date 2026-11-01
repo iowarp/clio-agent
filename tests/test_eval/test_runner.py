@@ -346,3 +346,17 @@ def test_a_run_whose_server_stops_answering_cancels_its_turn(tmp_path: Path) -> 
     with pytest.raises(TimeoutError):
         execute_run(ctx, RunSpec("P2", 1))
     assert ("cancel", "sess_root") in client.calls
+
+
+def test_the_shared_root_is_emptied_except_the_call_log(tmp_path: Path) -> None:
+    from scripts.eval.tool_calling.session_run import reset_shared_root
+
+    root = tmp_path / "roots"
+    (root / "calls").mkdir(parents=True)
+    (root / "calls" / "eval-calls.jsonl").write_text("{}\n")
+    (root / "old_check" / "pkg").mkdir(parents=True)
+    (root / "note.txt").write_text("x")
+    removed = reset_shared_root(root, root / "calls" / "eval-calls.jsonl")
+    assert removed == ["note.txt", "old_check"]
+    assert sorted(p.name for p in root.iterdir()) == ["calls"]
+    assert (root / "calls" / "eval-calls.jsonl").read_text() == "{}\n"

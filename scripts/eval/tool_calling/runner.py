@@ -186,6 +186,7 @@ def cmd_run(args: argparse.Namespace) -> int:
         interaction_timeout_s=args.interaction_timeout,
         stream_audit_log=args.stream_audit_log,
         call_log=args.call_log,
+        shared_root=args.shared_root,
         keep_export=args.keep_export,
         fleet_settings=fleet_settings,
     )
@@ -252,6 +253,12 @@ def build_parser() -> argparse.ArgumentParser:
         type=Path,
         default=os.environ.get(CALL_LOG_ENV) or None,
         help=f"the server's {CALL_LOG_ENV} (synthetic server calls); default from the env",
+    )
+    run.add_argument(
+        "--shared-root",
+        type=Path,
+        default=None,
+        help="the server's allowed root, emptied before each run (the call log's folder stays)",
     )
     run.add_argument("--keep-export", action="store_true", help="also save the raw export")
     return parser

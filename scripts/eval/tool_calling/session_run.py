@@ -60,6 +60,7 @@ class RunContext:
     interaction_timeout_s: float = 120.0
     stream_audit_log: Path | None = None
     call_log: Path | None = None
+    shared_root: Path | None = None
     keep_export: bool = False
     fleet_settings: dict[str, Any] | None = None
 
@@ -83,6 +84,26 @@ def prepare_workdir(fixtures: Path, fixture: str, target: Path) -> Path:
     target.parent.mkdir(parents=True, exist_ok=True)
     shutil.copytree(fixtures / fixture, target, symlinks=True)
     return target
+
+
+def reset_shared_root(root: Path, keep: Path | None) -> list[str]:
+    """Empty ``root`` (the server's allowed root, shared by every run) before a run.
+
+    Agents may write scratch files under every allowed root, and a later run found an
+    earlier run's scratch copy of another repository there and reviewed it. Only the
+    folder holding ``keep`` (the synthetic call log) stays. Returns what was removed.
+    """
+    kept = keep.resolve().relative_to(root.resolve()).parts[0] if keep else None
+    removed = []
+    for entry in sorted(root.iterdir()):
+        if entry.name == kept:
+            continue
+        if entry.is_dir() and not entry.is_symlink():
+            shutil.rmtree(entry)
+        else:
+            entry.unlink()
+        removed.append(entry.name)
+    return removed
 
 
 def ensure_workspace(client: GactClient, name: str, root: Path) -> dict[str, Any]:
@@ -231,6 +252,10 @@ def _cancel_and_settle(ctx: RunContext, sid: str) -> None:
 def execute_run(ctx: RunContext, spec: RunSpec) -> dict[str, Any]:
     """Run one task once and return its result (also written to disk)."""
     task = tasks.task(spec.task, ctx.manifest, h3_autocompact_pct=ctx.h3_autocompact_pct)
+    if ctx.shared_root is not None:
+        removed = reset_shared_root(ctx.shared_root, ctx.call_log)
+        if removed:
+            print(f"  emptied {ctx.shared_root}: {', '.join(removed)}")
     fixture = tasks.fixture_dir(spec.task, ctx.manifest)
     workdir = prepare_workdir(
         ctx.fixtures, fixture, ctx.work_root / ctx.config / spec.task / f"run-{spec.index}"
