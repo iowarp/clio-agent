@@ -124,3 +124,33 @@ async def test_plugin_folder_server_runs_over_stdio(tmp_path: Path) -> None:
     assert tools == ["get_record", "list_records"]
     assert result.data["record_id"] == "REC-00001"
     assert (tmp_path / "calls.jsonl").is_file()
+
+
+async def test_the_garage_announces_the_tool_it_adds(tmp_path: Path) -> None:
+    """Qualification T20 needs a server whose tool list grows mid-session: unlocking
+    the controls adds ``open_door`` and sends ``notifications/tools/list_changed``."""
+    seen: list[str] = []
+
+    async def handler(message: object) -> None:
+        seen.append(str(getattr(getattr(message, "root", message), "method", "")))
+
+    server = run.build("garage", {"EVAL_CALL_LOG": str(tmp_path / "calls.jsonl")})
+    async with Client(server, message_handler=handler) as client:
+        assert sorted(t.name for t in await client.list_tools()) == [
+            "panel",
+            "status",
+            "unlock_controls",
+        ]
+        resources = await client.list_resources()
+        assert "ui://garage/panel" in {str(r.uri) for r in resources}
+        await client.call_tool("unlock_controls", {})
+        assert "open_door" in {t.name for t in await client.list_tools()}
+        assert (await client.call_tool("open_door", {})).data == {"door": "open"}
+    assert "notifications/tools/list_changed" in seen
+
+
+def test_the_dynamic_plugin_declares_its_server_deferred(tmp_path: Path) -> None:
+    manifest = write_marketplace(tmp_path, seed=7)
+    assert manifest["plugins"]["eval-dynamic"] == ["garage"]
+    plugin = json.loads((tmp_path / "plugins" / "eval-dynamic" / "plugin.json").read_text())
+    assert plugin["extensions"]["ai.iowarp.clio"]["servers"]["garage"]["defer"] is True

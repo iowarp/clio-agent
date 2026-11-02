@@ -14,14 +14,15 @@ from typing import Any
 if __package__ in (None, ""):  # run as a file from a plugin folder
     sys.path.insert(0, str(Path(__file__).resolve().parent))
     import distractors  # type: ignore[import-not-found]
+    import garage  # type: ignore[import-not-found]
     import home  # type: ignore[import-not-found]
     import records  # type: ignore[import-not-found]
     from toolkit import CallLog, call_log_path  # type: ignore[import-not-found]
 else:
-    from . import distractors, home, records
+    from . import distractors, garage, home, records
     from .toolkit import CallLog, call_log_path
 
-SERVERS = ("synthetic-home", "synthetic-calendar", "synthetic-inventory", "records")
+SERVERS = ("synthetic-home", "synthetic-calendar", "synthetic-inventory", "records", "garage")
 
 
 def build(name: str, env: dict[str, str] | None = None) -> Any:
@@ -35,6 +36,8 @@ def build(name: str, env: dict[str, str] | None = None) -> Any:
         return distractors.build_calendar(seed, log)
     if name == "synthetic-inventory":
         return distractors.build_inventory(seed, log)
+    if name == "garage":
+        return garage.build(log)
     if name == "records":
         return records.build(int(source.get("EVAL_RECORDS_COUNT") or 20), seed, log)
     raise SystemExit(f"unknown server {name!r}; expected one of {', '.join(SERVERS)}")

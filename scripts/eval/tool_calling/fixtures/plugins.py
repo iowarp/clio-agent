@@ -32,6 +32,7 @@ SERVER_FILES = (
     "home.py",
     "distractors.py",
     "records.py",
+    "garage.py",
     "run.py",
 )
 RECORD_SIZES = (20, 200, 2000)
@@ -52,20 +53,26 @@ def _server(name: str, python: str, env: dict[str, str]) -> dict[str, Any]:
     }
 
 
-def _plugin(root: Path, name: str, description: str, servers: dict[str, Any]) -> None:
+def _plugin(
+    root: Path,
+    name: str,
+    description: str,
+    servers: dict[str, Any],
+    extensions: dict[str, Any] | None = None,
+) -> None:
     folder = root / "plugins" / name
-    _json(
-        folder / "plugin.json",
-        {
-            "$schema": PLUGIN_SCHEMA,
-            "name": name,
-            "version": "1.0.0",
-            "description": description,
-            "author": {"name": "CLIO evaluation harness"},
-            "license": "BSD-3-Clause",
-            "keywords": ["evaluation", "synthetic"],
-        },
-    )
+    manifest = {
+        "$schema": PLUGIN_SCHEMA,
+        "name": name,
+        "version": "1.0.0",
+        "description": description,
+        "author": {"name": "CLIO evaluation harness"},
+        "license": "BSD-3-Clause",
+        "keywords": ["evaluation", "synthetic"],
+    }
+    if extensions:
+        manifest["extensions"] = extensions
+    _json(folder / "plugin.json", manifest)
     _json(folder / "mcp.json", {"$schema": MCP_SCHEMA, "mcpServers": servers})
     for file in SERVER_FILES:
         target = folder / "server" / file
@@ -105,4 +112,13 @@ def write_marketplace(root: Path, *, seed: int, python: str = "python") -> dict[
             {"records": _server("records", python, {**seed_env, "EVAL_RECORDS_COUNT": str(size)})},
         )
         plugins[name] = ["records"]
+    # Qualification T20: a deferred server whose tool list grows mid-session.
+    _plugin(
+        root,
+        "eval-dynamic",
+        "A garage door controller whose door tool appears once its controls are unlocked.",
+        {"garage": _server("garage", python, seed_env)},
+        {"ai.iowarp.clio": {"servers": {"garage": {"defer": True, "description": "Garage door."}}}},
+    )
+    plugins["eval-dynamic"] = ["garage"]
     return {"name": MARKETPLACE_NAME, "plugins": plugins, "python": python, "seed": seed}
