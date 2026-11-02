@@ -820,13 +820,21 @@ def check_t15(rec: dict[str, Any]) -> tuple[str, list[str]]:
         int((s.get("events") or {}).get("compactions") or 0) for s in norm["sessions"]
     )
     plan = str((((rec.get("extra") or {}).get("work") or {}).get("plan") or {}).get("text") or "")
-    exact = _exact_text(rec)
-    head = plan.strip().splitlines()[0] if plan.strip() else ""
-    reinjected = bool(head) and json.dumps(head)[1:-1] in exact
+    # ``exact`` holds the system prompt and tools, not the messages: read the transcript
+    # for the plan offered again, verbatim, after the compaction's handoff.
+    texts = [
+        str(part.get("text") or "")
+        for export in rec["exports"].values()
+        for message in export.get("messages") or []
+        for part in message.get("parts") or []
+    ]
+    handoff = next((i for i, t in enumerate(texts) if t.startswith("## Handoff")), -1)
+    body = plan.strip()[:200]
+    reinjected = bool(body) and handoff >= 0 and any(body in t for t in texts[handoff + 1 :])
     notes = [
         f"compactions {compactions}",
         f"plan written {bool(plan)}",
-        f"plan in the last prompt sent {reinjected}",
+        f"plan offered verbatim after the compaction {reinjected}",
     ]
     return ("pass" if compactions and plan and reinjected else "fail"), notes
 
