@@ -185,13 +185,34 @@ def _sha256_file(path: Path) -> Optional[str]:
         return None
 
 
+# path -> ((size, mtime_ns), digest). Every tool call records its environment, and
+# hashing the lockfile each time was most of transform recording's file reads (P7,
+# 2026-11-02); a changed lockfile changes its stat, so it is hashed again.
+_LOCKFILE_DIGESTS: dict[Path, tuple[tuple[int, int], str]] = {}
+
+
+def _cached_sha256(path: Path) -> Optional[str]:
+    try:
+        stat = path.stat()
+    except OSError:
+        return None
+    key = (stat.st_size, stat.st_mtime_ns)
+    cached = _LOCKFILE_DIGESTS.get(path)
+    if cached is not None and cached[0] == key:
+        return cached[1]
+    digest = _sha256_file(path)
+    if digest is not None:
+        _LOCKFILE_DIGESTS[path] = (key, digest)
+    return digest
+
+
 def _lockfile_hash() -> str:
     """Return ``sha256(uv.lock)`` or ``""`` (with a typed reason logged)."""
     path = _lockfile_path()
     if path is None:
         logger.info("environment tier declared reason=lockfile_unavailable detail=no_clio_anchor")
         return ""
-    digest = _sha256_file(path)
+    digest = _cached_sha256(path)
     if digest is None:
         logger.warning("environment tier declared reason=lockfile_unreadable path=%s", path)
         return ""
