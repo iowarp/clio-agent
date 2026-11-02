@@ -39,6 +39,13 @@ class ARCStore(Protocol):
         """
         ...
 
+    def put_at(
+        self, kind: str, name: str, data: bytes, offset: int, *, search_text: Optional[str] = None
+    ) -> None:
+        """Write raw ``data`` at ``offset`` of the record (no framing; a write past the end
+        grows it, nothing shrinks it). ``search_text`` as for :meth:`put`."""
+        ...
+
     def put_many(self, kind: str, records: Sequence[PutRecord]) -> None:
         """Put independent records together (no order between them).
 
@@ -49,6 +56,11 @@ class ARCStore(Protocol):
 
     def get(self, kind: str, name: str) -> Optional[bytes]:
         """Return bytes for ``(kind, name)`` or ``None`` if absent."""
+        ...
+
+    def get_raw(self, kind: str, name: str, *, length: int = 0) -> Optional[bytes]:
+        """Return the record's stored bytes as written by :meth:`put_at` (``None`` if
+        absent), at least ``length`` of them when the store holds that many."""
         ...
 
     def exists(self, kind: str, name: str) -> bool:

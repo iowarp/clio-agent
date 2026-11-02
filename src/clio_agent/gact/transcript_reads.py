@@ -41,9 +41,10 @@ def read_transcript(app: "FastAPI", session_id: str) -> list["Message"]:
 def transcript_may_contain(app: "FastAPI", session_id: str, terms: Sequence[str]) -> bool:
     """Whether any of ``terms`` (lowercase) occurs in the session's stored messages.
 
-    Reads the message-atom chunks' committed record bytes from clio-core (one ``get``
-    per chunk, never decoded into messages, never cached) and looks for each term in
-    their lowercased text. Message text is stored verbatim, so a part whose lowercased
+    Reads the message-atom chunks' committed record bytes from clio-core (one read per
+    chunk, never decoded into messages, never cached: raw msgpack records up to the
+    chunk's end marker, so a stale tail past it never matches) and looks for each term
+    in their lowercased text. Message text is stored verbatim, so a part whose lowercased
     text contains a term makes its chunk contain it too: ``False`` means no part can
     match. ``True`` when there is no clio-core store to ask.
     """

@@ -18,13 +18,17 @@ on iowarp-core 2.3.2: every put that grows a blob adds one storage block rounded
 whole 4 KiB pages, and every later put of that blob appends the blob's whole block
 list to the ``metadata.log`` write-ahead log, which is truncated only after a full
 metadata snapshot completes and is otherwise replayed into daemon memory on start. The
-ARC lanes re-put a chunk after each append, so a 512-atom chunk of 1.4 KB
+ARC lanes then re-put a whole chunk after each append, so a 512-atom chunk of 1.4 KB
 atoms grew 512 blocks, wrote 10 MiB of metadata log (73 bytes + 80 per block per put)
 and held its data in about three times its size in pages. With size classes a growing
 record gains a block only when it crosses a class: the same 5,120 appends wrote
 8 MiB of metadata log instead of 100 MiB, and the daemon stayed at 56 MiB resident
 instead of 589 MiB. Each class is a whole number of pages and at most a quarter above
 the record's own page-rounded size, which is what clio-core allocates for it anyway.
+
+Segment-list records (every ARC scope and lane chunk) do not use this frame: they are
+append-only raw records written at an offset (:mod:`clio_agent.arc.chunk_records`),
+which grow in the same size classes. The frame stays for every other whole record.
 """
 
 from __future__ import annotations

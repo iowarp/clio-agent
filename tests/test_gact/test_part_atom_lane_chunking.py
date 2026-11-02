@@ -105,21 +105,36 @@ class CountingStore:
 
     def __init__(self) -> None:
         self._data: dict[tuple[str, str], bytes] = {}
-        self.segment_put_bytes = 0
-        self.max_segment_record = 0
         self.get_calls = 0
         self.put_names: list[str] = []
+        self.put_sizes: list[tuple[str, bytes]] = []
+
+    def _count(self, kind: str, name: str, data: bytes) -> None:
+        if kind == "segments":
+            self.put_names.append(name)
+            self.put_sizes.append((name, data))
 
     def put(
         self, kind: str, name: str, data: bytes, *, tier: str = "warm", search_text: Any = None
     ) -> None:
         self._data[(kind, name)] = data
-        if kind == "segments":
-            self.segment_put_bytes += len(data)
-            self.max_segment_record = max(self.max_segment_record, len(data))
-            self.put_names.append(name)
+        self._count(kind, name, data)
+
+    def put_at(
+        self, kind: str, name: str, data: bytes, offset: int, *, search_text: Any = None
+    ) -> None:
+        """clio-core's offset put: grows the record, never shrinks it."""
+        held = bytearray(self._data.get((kind, name), b""))
+        held.extend(bytes(max(0, offset - len(held))))
+        held[offset : offset + len(data)] = data
+        self._data[(kind, name)] = bytes(held)
+        self._count(kind, name, data)
 
     def get(self, kind: str, name: str) -> Optional[bytes]:
+        self.get_calls += 1
+        return self._data.get((kind, name))
+
+    def get_raw(self, kind: str, name: str, *, length: int = 0) -> Optional[bytes]:
         self.get_calls += 1
         return self._data.get((kind, name))
 
@@ -219,31 +234,45 @@ def test_lane_order_matches_logical_time_and_grouping_is_identical(
 # --------------------------------------------------------------------------- #
 
 
-def test_append_amplification_is_o_chunk(
+def test_append_amplification_is_o_record(
     tmp_path: Any, monkeypatch: pytest.MonkeyPatch, hermetic_conf: None
 ) -> None:
+    """Every atom append sends that atom's own chunk record and nothing earlier.
+
+    Exact accounting per put: the atom's record and the end marker (after the magic
+    bytes when the put opens a chunk), then only zero padding up to the blob's next size
+    class -- in one unbounded chunk and in 8-atom chunks alike. Re-putting the active
+    chunk (the old O(chunk) write) fails it from the second atom of a chunk on.
+    """
+    from clio_agent.arc.chunk_records import END, MAGIC, encode_records
+    from clio_agent.arc.segments import SegmentStore
+
     messages = [_message(f"m{i}", f"text payload number {i}" * 4) for i in range(64)]
-
-    monkeypatch.setenv("CLIO_ARC_MESSAGE_PART_CHUNK_SEGMENTS", "100000")
-    quadratic = CountingStore()
-    base = ARCMemory(data_dir=str(tmp_path / "base"), store=quadratic)
-    for m in messages:
-        mint_message_part_atoms(base, SID, m)
-    assert lane_scopes(base._segments, SID, MESSAGE_PART_SCOPE) == [MESSAGE_PART_SCOPE]
-    assert quadratic.max_segment_record > 0
-
-    monkeypatch.setenv("CLIO_ARC_MESSAGE_PART_CHUNK_SEGMENTS", "8")
-    store = CountingStore()
-    arc = ARCMemory(data_dir=str(tmp_path / "arc"), store=store)
-    for m in messages:
-        mint_message_part_atoms(arc, SID, m)
-
-    assert lane_scopes(arc._segments, SID, MESSAGE_PART_SCOPE) == [
-        chunk_scope(MESSAGE_PART_SCOPE, i) for i in range(1, 9)
-    ]
-    assert store.max_segment_record > 0
-    assert store.max_segment_record < quadratic.max_segment_record / 4
-    assert store.segment_put_bytes < quadratic.segment_put_bytes / 4
+    for capacity in (100000, 8):
+        monkeypatch.setenv("CLIO_ARC_MESSAGE_PART_CHUNK_SEGMENTS", str(capacity))
+        store = CountingStore()
+        arc = ARCMemory(data_dir=str(tmp_path / str(capacity)), store=store)
+        for m in messages:
+            mint_message_part_atoms(arc, SID, m)
+        base = current_base(arc._segments, SID, MESSAGE_PART_SCOPE)
+        scopes = lane_scopes(arc._segments, SID, base)
+        atoms = len(lane_segments(arc._segments, SID, base, include_tombstoned=True))
+        assert atoms >= 64 and len(scopes) == -(-atoms // capacity)
+        names = {SegmentStore._record_name(SID, scope) for scope in scopes}
+        expected = [
+            (
+                SegmentStore._record_name(SID, scope),
+                (MAGIC if index == 0 else b"") + encode_records([row]) + END,
+            )
+            for scope in scopes
+            for index, row in enumerate(
+                arc._segments.list_segments(SID, scope, include_tombstoned=True)
+            )
+        ]
+        puts = [put for put in store.put_sizes if put[0] in names]
+        assert [name for name, _data in puts] == [name for name, _head in expected]
+        for (_name, data), (_n, head) in zip(puts, expected, strict=True):
+            assert data[: len(head)] == head and not any(data[len(head) :])
 
 
 def test_one_append_re_puts_only_the_active_chunk(

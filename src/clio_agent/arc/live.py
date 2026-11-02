@@ -202,12 +202,27 @@ class _MemoryStore:
     ) -> None:
         self._data[(kind, name)] = data
 
+    def put_at(
+        self, kind: str, name: str, data: bytes, offset: int, *, search_text: Any = None
+    ) -> None:
+        """Write raw bytes at ``offset``, growing (never shrinking) the record as clio-core does."""
+        held = bytearray(self._data.get((kind, name), b""))
+        held.extend(bytes(max(0, offset - len(held))))
+        held[offset : offset + len(data)] = data
+        self._data[(kind, name)] = bytes(held)
+
     def put_many(self, kind: str, records: Any) -> None:
         """Put each record (an in-process dict cannot refuse one)."""
         for record in records:
-            self.put(kind, record.name, record.data, search_text=record.search_text)
+            if record.offset is not None:
+                self.put_at(kind, record.name, record.data, record.offset)
+            else:
+                self.put(kind, record.name, record.data, search_text=record.search_text)
 
     def get(self, kind: str, name: str) -> Optional[bytes]:
+        return self._data.get((kind, name))
+
+    def get_raw(self, kind: str, name: str, *, length: int = 0) -> Optional[bytes]:
         return self._data.get((kind, name))
 
     def exists(self, kind: str, name: str) -> bool:

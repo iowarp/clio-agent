@@ -219,8 +219,9 @@ def delete_blob(client: Any, tag_id: Any, name: str) -> bool:
     return bool(future.wait(0) == 0)
 
 
-def store_put(store: Any, kind: str, name: str, body: bytes) -> None:
-    """Write one blob of ``store`` (retried per :func:`put_blob_with_retry`), GIL-free.
+def store_put(store: Any, kind: str, name: str, body: bytes, offset: int = 0) -> None:
+    """Write one blob of ``store`` at ``offset`` (retried per :func:`put_blob_with_retry`),
+    GIL-free. A put past the blob's end grows it; nothing shrinks it.
 
     Reads ``store._client`` and the tag id at call time, so a stall-ladder retry after a
     reconnect uses the fresh client and re-resolved tag.
@@ -233,16 +234,21 @@ def store_put(store: Any, kind: str, name: str, body: bytes) -> None:
         AsyncPutTag(store._client, tag_id),
         name,
         body,
+        offset=offset,
         recover_capacity=partial(recover_capacity, store, tag_id, name, len(body)),
     )
 
 
 def store_put_many(
-    store: Any, kind: str, blobs: list[tuple[str, bytes]]
+    store: Any,
+    kind: str,
+    blobs: list[tuple[str, bytes]],
+    offsets: dict[str, int] | None = None,
 ) -> dict[str, RuntimeError]:
     """Write several blobs of ``store`` concurrently: every ``AsyncPutBlob`` is issued
-    before any is awaited, then each is awaited. A refused blob continues its own bounded
-    retry (:func:`put_blob_with_retry`). Returns ``{name: final refusal}`` of the blobs
+    before any is awaited, then each is awaited. A blob named in ``offsets`` is written at
+    that offset (0 otherwise). A refused blob continues its own bounded retry
+    (:func:`put_blob_with_retry`). Returns ``{name: final refusal}`` of the blobs
     that were lost (empty when all were written); every blob has completed by then.
 
     Raises:
@@ -258,7 +264,11 @@ def store_put_many(
     from clio_agent.arc.clio_core_growth import recover_capacity  # noqa: PLC0415
 
     tag_id = store._tag_ids.get(kind)
-    issued = [(name, data, client.AsyncPutBlob(tag_id, name, data, 0)) for name, data in blobs]
+    at = offsets or {}
+    issued = [
+        (name, data, client.AsyncPutBlob(tag_id, name, data, at.get(name, 0)))
+        for name, data in blobs
+    ]
     lost: dict[str, RuntimeError] = {}
     for name, data, future in issued:
         try:
@@ -271,6 +281,7 @@ def store_put_many(
                     AsyncPutTag(client, tag_id),
                     name,
                     data,
+                    offset=at.get(name, 0),
                     first_failure=refused,
                     recover_capacity=partial(recover_capacity, store, tag_id, name, len(data)),
                 )

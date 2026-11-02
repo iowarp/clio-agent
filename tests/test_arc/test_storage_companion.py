@@ -146,6 +146,25 @@ def test_events_family_put_is_one_native_call() -> None:
     assert [op for op, _n in cte.calls] == ["PutBlob"]
 
 
+def test_an_offset_put_is_one_raw_native_put_at_that_offset() -> None:
+    """``put_at`` (the chunk records' append) sends the bytes as they are -- no frame,
+    no base64, no padding -- at the offset, and an ``_events`` chunk probes no companion."""
+    cte = _RecordingCte()
+    store = _store(cte)
+    sent: list[tuple[str, bytes, int]] = []
+    client = store._client
+
+    class _Offsets(type(client)):  # type: ignore[misc]
+        def AsyncPutBlob(self, tag_id: int, name: str, data: Any, off: int = 0) -> Any:  # noqa: N802
+            sent.append((name, bytes(data), off))
+            return super().AsyncPutBlob(tag_id, name, data, off)
+
+    store._client = _Offsets(cte.calls)
+    store.put_at("segments", _events_name("_events/m"), b"\x00\x01raw", 4242)
+    assert sent == [(_events_name("_events/m"), b"\x00\x01raw", 4242)]
+    assert [op for op, _n in cte.calls] == ["PutBlob"]
+
+
 def test_indexed_scope_without_text_drops_any_stale_companion() -> None:
     """One async delete of the companion, whether or not it exists (a missing one is a
     no-op): the blocking ``GetBlobSize`` existence probe (GIL-held) is gone, so a stale
@@ -218,6 +237,30 @@ def test_variant_put_carries_no_store_put_audit_row(
 
     rows = audit_path.read_text().splitlines() if audit_path.exists() else []
     assert not any(json.loads(row)["stage"] == "store.put" for row in rows)
+
+
+def test_an_append_is_one_put_of_its_record_at_the_chunk_end(
+    tmp_path: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The audit row of an append into a chunk that holds records already: one
+    ``store.put`` naming the chunk, at the stored end offset, carrying one record."""
+    from clio_agent.arc.chunk_records import END, MAGIC, encode_records  # noqa: PLC0415
+
+    monkeypatch.setattr(conf, "_STORE", conf.ConfigStore(home=tmp_path, cwd=tmp_path))
+    audit_path = tmp_path / "audit.jsonl"
+    monkeypatch.setenv("CLIO_STREAM_AUDIT_LOG", str(audit_path))
+    sid = "sess-offset-audit"
+    ss = SegmentStore(_clio_core(str(tmp_path / "arc")))
+    first = ss.append(sid, "_events", "semantic_event", {"n": 1})
+    before = len(audit_path.read_text().splitlines())
+    second = ss.append(sid, "_events", "semantic_event", {"n": 2})
+    rows = [json.loads(row) for row in audit_path.read_text().splitlines()[before:]]
+    (row,) = [row for row in rows if row["stage"] == "store.put"]
+    assert row["name"] == SegmentStore._record_name(sid, "_events")
+    assert row["offset"] == len(MAGIC) + len(encode_records([first]))
+    assert row["size"] == len(encode_records([second])) + len(END)
+    cold = SegmentStore(ss._store).list_segments(sid, "_events")
+    assert [s.id for s in cold] == [first.id, second.id]
 
 
 def test_one_append_on_a_full_three_chunk_lane_puts_only_the_active_chunk(

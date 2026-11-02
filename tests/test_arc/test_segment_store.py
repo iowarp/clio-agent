@@ -8,9 +8,13 @@ render is tested with ``clio_react_record.fold_steps`` in tests/test_gact.
 
 from __future__ import annotations
 
+import struct
+import zlib
+
 import msgspec
 import pytest
 
+from clio_agent.arc.chunk_records import END, MAGIC, ChunkFormatUnsupportedError
 from clio_agent.arc.schema import Segment, decode_segment, decode_segments, encode_segments
 from clio_agent.arc.segments import SegmentReadError, SegmentStore
 from clio_agent.arc.storage import ARC_KINDS
@@ -72,10 +76,27 @@ def test_segments_kind_in_arc_kinds():
 def test_invalid_segment_scope_has_typed_read_error(tmp_path) -> None:
     store = _clio_core(str(tmp_path))
     segments = SegmentStore(store)
-    store.put("segments", segments._record_name(SID, SCOPE), msgspec.msgpack.encode(42))
+    payload = msgspec.msgpack.encode(42)  # a checksummed record that is not a Segment
+    blob = MAGIC + struct.pack("<II", len(payload), zlib.crc32(payload)) + payload + END
+    store.put_at("segments", segments._record_name(SID, SCOPE), blob, 0)
     with pytest.raises(SegmentReadError) as caught:
         segments.list_segments(SID, SCOPE)
     assert caught.value.error_type == "clio_core_segments_invalid"
+
+
+def test_a_retired_format_record_has_typed_read_error(tmp_path) -> None:
+    """A record in the old base64 frame is reported typed with its remedy, never read."""
+    store = _clio_core(str(tmp_path))
+    segments = SegmentStore(store)
+    old = Segment(
+        scope=SCOPE, kind="thought", content={}, session_id=SID, step=0, order=1.0, logical_time=1
+    )
+    store.put("segments", segments._record_name(SID, SCOPE), encode_segments([old]))
+    with pytest.raises(ChunkFormatUnsupportedError) as caught:
+        segments.list_segments(SID, SCOPE)
+    assert isinstance(caught.value, SegmentReadError)  # every unreadable-scope path reports it
+    assert caught.value.error_type == "arc_chunk_format_unsupported"
+    assert "reset the CLIO state" in caught.value.message
 
 
 def test_append_renders_in_write_order_content_preserved(tmp_path):

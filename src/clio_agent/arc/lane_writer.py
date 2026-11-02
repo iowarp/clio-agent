@@ -4,6 +4,11 @@ Mixed into :class:`~clio_agent.arc.working_set_fold.FoldingSegmentStore`. One at
 written as: the session index first when it changes (it must never list less than is
 stored), then the lane chunk and the atom's search-companion chunk together in one
 concurrent batch (``ARCStore.put_many``), so an append costs about one round trip.
+
+The lane chunk is append-only chunk records (:mod:`clio_agent.arc.chunk_records`): an
+atom is one raw put of its record at the chunk's stored end. The companion chunk is
+still re-put whole: its ``.text`` must stay ONE plain-text blob for the BM25 indexer,
+and it is bounded at ``arc.search_chunk_atoms`` (16) atoms, so that re-put is small.
 """
 
 from __future__ import annotations
@@ -12,10 +17,11 @@ import threading
 from typing import TYPE_CHECKING, Any, cast
 
 from clio_agent.arc.batch_put import BatchPutError, PutRecord
+from clio_agent.arc.chunk_records import ChunkMark, plan_write
 from clio_agent.arc.lane_chunking import chunk_for_append
 from clio_agent.arc.lane_index import INDEX_SCOPE, SessionIndex, encode_index, note_atom
 from clio_agent.arc.loop_guard import LoopThreadStoreWrite, assert_store_write_off_loop
-from clio_agent.arc.schema import Segment, encode_segments
+from clio_agent.arc.schema import Segment
 from clio_agent.arc.search_companion import SearchCompanion, SearchCompanionError
 from clio_agent.arc.segment_index import SegmentIndex
 from clio_agent.arc.segments import ArcPersistError, SegmentStore
@@ -61,8 +67,12 @@ class LaneWriter:
 
         def _segs(self, session_id: str, scope: str) -> list[Segment]: ...
 
+        def _append_mark(self, key: tuple[str, str], staged: list[Segment]) -> ChunkMark | None: ...
+
+        def _abandon_chunk(self, session_id: str, scope: str, exc: BaseException) -> None: ...
+
         def _install_committed(
-            self, session_id: str, scope: str, staged: list[Segment], nbytes: int
+            self, session_id: str, scope: str, staged: list[Segment], mark: ChunkMark
         ) -> None: ...
 
     def restore_empty(self, session_id: str, scope: str, segments: list[Segment]) -> bool:
@@ -136,23 +146,41 @@ class LaneWriter:
     def _put_batch(
         self, session_id: str, chunk: str, staged: list[Segment], atom: Segment
     ) -> SearchCompanionError | None:
-        """Put the lane chunk and the atom's companion chunk concurrently (under the
-        chunk's lock), then cache the chunk clio-core accepted (write-through). A lost
-        lane chunk leaves the cache at the committed chunk and raises typed."""
+        """Put the atom's lane record (appended at the chunk's stored end, or the whole
+        chunk on its first write) and its companion chunk concurrently (under the chunk's
+        lock), then cache the chunk clio-core accepted (write-through). A lost lane
+        record raises typed: a lost first write leaves the cache at the committed chunk,
+        a lost append also abandons the chunk (the next atom rolls to a new one)."""
         assert_store_write_off_loop("segments.put", scope=chunk)
         lane = self._record_name(session_id, chunk)
-        data = encode_segments(staged)
+        mark = self._append_mark((session_id, chunk), staged)
+        write = plan_write(staged, mark)
         late: SearchCompanionError | None = None
         try:
-            records = [PutRecord(lane, data), *self._search.stage(session_id, [atom])]
+            stage = self._search.stage(session_id, [atom])
+            records = [PutRecord(lane, write.data, offset=write.offset), *stage]
             self._store.put_many("segments", records)
         except BatchPutError as exc:
             if lane in exc.failed:
-                self._search.unstage(session_id, atom)
+                self._lane_lost(session_id, chunk, atom, mark, exc)
                 raise ArcPersistError(session_id, chunk, exc) from exc
             late = SearchCompanionError(session_id, atom.scope, exc)
         except Exception as exc:  # noqa: BLE001 - re-raised typed; the cache is unchanged
-            self._search.unstage(session_id, atom)
+            self._lane_lost(session_id, chunk, atom, mark, exc)
             raise ArcPersistError(session_id, chunk, exc) from exc
-        self._install_committed(session_id, chunk, staged, len(data))
+        self._install_committed(session_id, chunk, staged, write.committed(staged))
         return late
+
+    def _lane_lost(
+        self,
+        session_id: str,
+        chunk: str,
+        atom: Segment,
+        mark: ChunkMark | None,
+        exc: BaseException,
+    ) -> None:
+        """The atom's lane record was not stored: take it back from the companion, and
+        abandon the chunk when the lost put was an append that may still land."""
+        self._search.unstage(session_id, atom)
+        if mark is not None:
+            self._abandon_chunk(session_id, chunk, exc)

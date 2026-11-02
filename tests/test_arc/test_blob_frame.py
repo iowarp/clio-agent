@@ -31,6 +31,7 @@ from clio_agent.arc.blob_frame import (
     stored_body,
     unframe,
 )
+from clio_agent.arc.chunk_records import ChunkFormatUnsupportedError, full_body, parse_chunk
 from clio_agent.arc.clio_core_config import effective_ram_cap
 from clio_agent.arc.lane_index import (
     INDEX_SCOPE,
@@ -55,6 +56,17 @@ def test_frame_round_trips_and_ignores_a_stale_tail() -> None:
     assert unframe("r", body) == data
     assert unframe("r", body + b"QUJDREVGR0g=") == data  # an older, longer body's tail
     assert unframe("r", body.decode("ascii")) == data  # the binding may hand back str
+
+
+def test_a_chunk_record_blob_and_a_frame_are_never_mistaken_for_each_other() -> None:
+    """Segment-list chunks are raw append-only records (``arc/chunk_records.py``), every
+    other record keeps this frame: a chunk blob is not a frame (its magic byte is no
+    digit and no base64) and a framed body is not a chunk (typed, never misparsed)."""
+    chunk = full_body([])
+    with pytest.raises(BlobDecodeError):
+        unframe("chunk", chunk)
+    with pytest.raises(ChunkFormatUnsupportedError):
+        parse_chunk("record", stored_body(b"\x90"))
 
 
 def test_a_body_stored_before_the_frame_reads_whole() -> None:
