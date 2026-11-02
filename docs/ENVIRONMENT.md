@@ -125,6 +125,9 @@ These resolve through `clio_agent.conf`: a value under the dotted key in `config
 | `CLIO_DEFAULT_WORKSPACE` | `paths.default_workspace` | str | _(unset)_ | `src/clio_agent/gact/workspaces.py` |
 | `CLIO_DOCUMENT_PROCESSOR_URL` | `resources.document_processor_url` | str | _(unset)_ | `src/clio_agent/gact/composer_runtime.py` |
 | `CLIO_ENVIRONMENT` | `runtime.environment` | str | `dev` | `src/clio_agent/config.py` |
+| `CLIO_EXPLORE_NUDGE` | `delegation.explore_nudge` | bool | `true` | `src/clio_agent/gact/explore_nudge.py` |
+| `CLIO_EXPLORE_NUDGE_AFTER` | `delegation.explore_nudge_after` | int | `6` | `src/clio_agent/gact/explore_nudge.py` |
+| `CLIO_EXPLORE_NUDGE_TEXT` | `delegation.explore_nudge_text` | str | `You have made ${calls} reading calls in this turn without delegating. If the rest of this search can go to an `explore` child (it runs on ${explore_model} and returns only its findings, with paths), ${spawn_tool} may be faster and keep your context smaller. If you are close to the answer, carry on.` | `src/clio_agent/gact/explore_nudge.py` |
 | `CLIO_FLEET_DELEGATION` | `fleet.delegation` | str | `{}` _(computed)_ | `src/clio_agent/gact/fleet/guard.py` |
 | `CLIO_FLEET_JUDGES` | `fleet.judges` | str | `{}` _(computed)_ | `src/clio_agent/gact/fleet_settings.py` |
 | `CLIO_FLEET_SEARCH` | `fleet.search` | str | _(unset)_ | `src/clio_agent/gact/fleet_settings.py` |

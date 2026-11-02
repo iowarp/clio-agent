@@ -31,6 +31,7 @@ SECTIONS: list[tuple[str, tuple[str, ...], str]] = [
             "workflows",
             "goal",
             "plan",
+            "delegation",
             "scheduler",
             "variants",
             "fleet",
@@ -1201,6 +1202,17 @@ KEY_NOTES: dict[str, str] = {
     ),
     "code.max_nested_calls": (
         "Tool calls one run_code script may make; a call past it raises in the script."
+    ),
+    "delegation.explore_nudge": (
+        "Notes the explore subagent once per turn after a run of reading calls; a fact for the "
+        "agent to weigh, never a spawn. Turn off for models that already delegate well."
+    ),
+    "delegation.explore_nudge_after": (
+        "Read-only calls in a turn, with no delegation, before the explore note (0 never notes)."
+    ),
+    "delegation.explore_nudge_text": (
+        "The explore note itself: ${calls}, ${explore_model} and ${spawn_tool} are filled in; "
+        "nothing in it is run."
     ),
     "plan.stale_steps": (
         "Recorded steps without plan_update or write_todos after which an active plan is "
