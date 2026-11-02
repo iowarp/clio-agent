@@ -37,7 +37,33 @@
           "path": "README.md"
         },
         "call_id": "<call#4>",
-        "presentation": null,
+        "presentation": {
+          "action": "Read",
+          "blocks": [
+            {
+              "action_label": "",
+              "command": "",
+              "detail": "",
+              "id": "file-link",
+              "items": [],
+              "label": "README.md",
+              "language": "",
+              "media_type": "",
+              "pages": [],
+              "path": "",
+              "sha256": "",
+              "status": "",
+              "target": "file",
+              "text": "",
+              "timed_out": false,
+              "type": "link",
+              "uri": "README.md",
+              "workspace_id": ""
+            }
+          ],
+          "subject": "file-link",
+          "summary": ""
+        },
         "telemetry_source": "live_observer",
         "tool": "fs_read_file"
       },
@@ -69,6 +95,33 @@
             "stream_source": "live",
             "telemetry_source": "live_observer"
           },
+          "presentation": {
+            "action": "Read",
+            "blocks": [
+              {
+                "action_label": "",
+                "command": "",
+                "detail": "",
+                "id": "file-link",
+                "items": [],
+                "label": "README.md",
+                "language": "",
+                "media_type": "",
+                "pages": [],
+                "path": "",
+                "sha256": "",
+                "status": "",
+                "target": "file",
+                "text": "",
+                "timed_out": false,
+                "type": "link",
+                "uri": "README.md",
+                "workspace_id": ""
+              }
+            ],
+            "subject": "file-link",
+            "summary": ""
+          },
           "tool_name": "fs_read_file",
           "type": "tool_call"
         },
@@ -83,7 +136,30 @@
         "call_id": "<call#4>",
         "ok": true,
         "presentation": {
-          "blocks": [],
+          "action": "Read",
+          "blocks": [
+            {
+              "action_label": "",
+              "command": "",
+              "detail": "",
+              "id": "file-link",
+              "items": [],
+              "label": "README.md",
+              "language": "",
+              "media_type": "",
+              "pages": [],
+              "path": "",
+              "sha256": "",
+              "status": "",
+              "target": "file",
+              "text": "",
+              "timed_out": false,
+              "type": "link",
+              "uri": "README.md",
+              "workspace_id": ""
+            }
+          ],
+          "subject": "file-link",
           "summary": ""
         },
         "result": {
@@ -119,7 +195,30 @@
             "telemetry_source": "live_observer"
           },
           "presentation": {
-            "blocks": [],
+            "action": "Read",
+            "blocks": [
+              {
+                "action_label": "",
+                "command": "",
+                "detail": "",
+                "id": "file-link",
+                "items": [],
+                "label": "README.md",
+                "language": "",
+                "media_type": "",
+                "pages": [],
+                "path": "",
+                "sha256": "",
+                "status": "",
+                "target": "file",
+                "text": "",
+                "timed_out": false,
+                "type": "link",
+                "uri": "README.md",
+                "workspace_id": ""
+              }
+            ],
+            "subject": "file-link",
             "summary": ""
           },
           "tool_name": "fs_read_file",
@@ -354,6 +453,33 @@
         "stream_source": "live",
         "telemetry_source": "live_observer"
       },
+      "presentation": {
+        "action": "Read",
+        "blocks": [
+          {
+            "action_label": "",
+            "command": "",
+            "detail": "",
+            "id": "file-link",
+            "items": [],
+            "label": "README.md",
+            "language": "",
+            "media_type": "",
+            "pages": [],
+            "path": "",
+            "sha256": "",
+            "status": "",
+            "target": "file",
+            "text": "",
+            "timed_out": false,
+            "type": "link",
+            "uri": "README.md",
+            "workspace_id": ""
+          }
+        ],
+        "subject": "file-link",
+        "summary": ""
+      },
       "sequence": 1,
       "tool_name": "fs_read_file",
       "type": "tool_call"
@@ -379,7 +505,30 @@
         "telemetry_source": "live_observer"
       },
       "presentation": {
-        "blocks": [],
+        "action": "Read",
+        "blocks": [
+          {
+            "action_label": "",
+            "command": "",
+            "detail": "",
+            "id": "file-link",
+            "items": [],
+            "label": "README.md",
+            "language": "",
+            "media_type": "",
+            "pages": [],
+            "path": "",
+            "sha256": "",
+            "status": "",
+            "target": "file",
+            "text": "",
+            "timed_out": false,
+            "type": "link",
+            "uri": "README.md",
+            "workspace_id": ""
+          }
+        ],
+        "subject": "file-link",
         "summary": ""
       },
       "sequence": 2,
