@@ -51,14 +51,14 @@ def test_a_reserved_envelope_key_in_the_fields_is_refused(
 def test_a_rotated_log_is_reopened(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """Rows go through one cached handle; a removed log is recreated on the next check.
 
-    SABOTAGE: return the cached handle without re-checking the path and the row after
-    the rotation lands in the removed file.
+    SABOTAGE: return the cached handle in AppendHandles without re-checking the path,
+    and the row after the rotation lands in the removed file.
     """
     from clio_agent.runtime import stream_audit as audit
 
     audit_log = tmp_path / "audit.jsonl"
     monkeypatch.setenv("CLIO_STREAM_AUDIT_LOG", str(audit_log))
-    monkeypatch.setattr(audit, "_RECHECK_S", 0.0)
+    monkeypatch.setattr(audit._HANDLES, "recheck_s", 0.0)
     stream_audit("unit.before")
     audit_log.rename(tmp_path / "audit.1.jsonl")
     stream_audit("unit.after")

@@ -3,13 +3,12 @@
 from __future__ import annotations
 
 import json
-import threading
 import time
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-_LOCK = threading.Lock()
+from clio_agent.runtime.append_handles import AppendHandles
 
 #: Envelope keys :func:`stream_audit` writes itself. A caller field with one
 #: of these names would either collide with the ``stage`` parameter (the
@@ -72,40 +71,11 @@ def stream_audit(stage: str, /, **fields: Any) -> None:
         **fields,
     }
     try:
-        line = json.dumps(row, sort_keys=True, default=str)
-        with _LOCK:
-            handle = _handle(raw_path, now)
-            handle.write(line + "\n")
-            handle.flush()
+        _HANDLES.write(Path(raw_path).expanduser(), json.dumps(row, sort_keys=True, default=str))
     except Exception:  # noqa: BLE001 - audit-log write best-effort; skipped on failure
-        _HANDLES.pop(raw_path, None)
         return
 
 
-# One append handle per audit path. Opening, and creating the parent, per row cost about
-# a tenth of a busy server's active time (P7, 2026-11-02: one row per store put). The
-# path is re-checked once a second, so a rotated or removed log is reopened.
-_HANDLES: dict[str, tuple[Any, tuple[int, int], float]] = {}
-_RECHECK_S = 1.0
-
-
-def _handle(raw_path: str, now: float) -> Any:
-    cached = _HANDLES.get(raw_path)
-    if cached is not None:
-        handle, identity, checked = cached
-        if now - checked < _RECHECK_S:
-            return handle
-        try:
-            stat = Path(raw_path).expanduser().stat()
-            if (stat.st_dev, stat.st_ino) == identity:
-                _HANDLES[raw_path] = (handle, identity, now)
-                return handle
-        except OSError:
-            pass  # removed: reopened below
-        handle.close()
-    path = Path(raw_path).expanduser()
-    path.parent.mkdir(parents=True, exist_ok=True)
-    handle = path.open("a", encoding="utf-8")
-    stat = path.stat()
-    _HANDLES[raw_path] = (handle, (stat.st_dev, stat.st_ino), now)
-    return handle
+# One append handle per audit path (one row per store put: reopening it per row cost
+# about a tenth of a busy server's active time; :mod:`clio_agent.runtime.append_handles`).
+_HANDLES = AppendHandles()
