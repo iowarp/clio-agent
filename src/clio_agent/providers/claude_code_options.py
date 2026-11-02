@@ -16,7 +16,13 @@ import time
 from pathlib import Path
 from typing import Any
 
-__all__ = ["build_sdk_options", "require_claude_agent_sdk", "system_prompt_file", "thinking_key"]
+__all__ = [
+    "build_sdk_options",
+    "require_claude_agent_sdk",
+    "system_prompt_file",
+    "thinking_key",
+    "with_output_cap",
+]
 
 #: A system prompt file unused this long is removed when another one is written.
 _PROMPT_FILE_TTL_S = 7 * 24 * 3600
@@ -50,6 +56,24 @@ def require_claude_agent_sdk() -> Any:
         except (ImportError, ProviderDependencyInstallError) as install_exc:
             raise ClaudeCodeCLIUnavailableError(CLAUDE_CODE_INSTALL_FAILED_MESSAGE) from install_exc
     return claude_agent_sdk
+
+
+#: The Claude CLI reads its per-reply output cap from this variable.
+MAX_OUTPUT_ENV = "CLAUDE_CODE_MAX_OUTPUT_TOKENS"
+_CAP_KEY = "max_output_tokens"
+
+
+def with_output_cap(thinking: dict[str, Any] | None, max_tokens: int | None) -> Any:
+    """The SDK call config with the operator's per-reply output cap folded in.
+
+    ``lm.max_tokens`` (0 or unset: the CLI's own default) rides the same config as the
+    thinking settings, so the session-pool key, the pre-connect and reconnects all see
+    it; :func:`build_sdk_options` hands it to the CLI as ``CLAUDE_CODE_MAX_OUTPUT_TOKENS``.
+    A reply cut at the cap ends as ``max_tokens``, a typed truncation.
+    """
+    if not max_tokens or int(max_tokens) <= 0:
+        return thinking
+    return {**(thinking or {}), _CAP_KEY: int(max_tokens)}
 
 
 def thinking_key(thinking: dict[str, Any] | None) -> str | None:
@@ -141,9 +165,14 @@ def build_sdk_options(
         # dialect_wire.thinking_wire carries the SDK effort inside the
         # claude_code_thinking config so every path (and the session-pool key)
         # sees one value; the SDK takes it as its own option (CLI ``--effort``).
+        # The output cap rides the same way (with_output_cap).
         config = dict(thinking)
+        cap = config.pop(_CAP_KEY, None)
+        if cap:
+            kwargs["env"][MAX_OUTPUT_ENV] = str(cap)
         effort = config.pop("effort", None)
-        kwargs["thinking"] = config
+        if config:
+            kwargs["thinking"] = config
         if effort is not None:
             kwargs["effort"] = effort
     return ClaudeAgentOptions(**kwargs)

@@ -749,8 +749,9 @@ KEY_NOTES: dict[str, str] = {
         "only if it itself causes a load failure."
     ),
     "lm.max_tokens": (
-        "Overrides the per-reply output token cap; raise for models needing longer completions, "
-        "else the provider/handshake default applies."
+        "Overrides the per-reply output token cap (on claude_code, the CLI's "
+        "CLAUDE_CODE_MAX_OUTPUT_TOKENS); set it to bound a runaway reply, else the provider "
+        "default applies."
     ),
     "lm.min_p": (
         "Sets the min-p sampling param (via extra_body on llama.cpp/LM Studio); tune for reasoning "

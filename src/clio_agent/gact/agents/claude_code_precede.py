@@ -68,6 +68,7 @@ def precede_connect_claude_code_session(config: Any, signature: Any, *, session_
             get_effective_capabilities,  # noqa: PLC0415
         )
         from clio_agent.providers.claude_code_cwd import session_cwd  # noqa: PLC0415
+        from clio_agent.providers.claude_code_options import with_output_cap  # noqa: PLC0415
         from clio_agent.providers.claude_code_sessions import _STREAM_CLIENT_POOL  # noqa: PLC0415
 
         model = str(getattr(config, "model", "") or "") or None
@@ -80,7 +81,9 @@ def precede_connect_claude_code_session(config: Any, signature: Any, *, session_
             level=getattr(config, "thinking_level", None),
             budget_tokens=int(getattr(config, "thinking_budget", 0) or 0),
         )
-        thinking = wire.get("claude_code_thinking")
+        thinking = with_output_cap(
+            wire.get("claude_code_thinking"), int(getattr(config, "max_tokens", 0) or 0)
+        )
         system_prompt = str(dspy.ChatAdapter().format_system_message(signature) or "") or None
         _STREAM_CLIENT_POOL.precede_connect(
             session_id=session_id,

@@ -145,8 +145,9 @@ lm.guided_output: false
 lm.lmstudio_flash_attention: true
 
 # CLIO_LM_MAX_TOKENS  (int)  <- src/clio_agent/config.py
-# Overrides the per-reply output token cap; raise for models needing longer
-# completions, else the provider/handshake default applies.
+# Overrides the per-reply output token cap (on claude_code, the CLI's
+# CLAUDE_CODE_MAX_OUTPUT_TOKENS); set it to bound a runaway reply, else the
+# provider default applies.
 # lm.max_tokens:  # default unset; resolved in code
 
 # CLIO_LM_MIN_P  (float)  <- src/clio_agent/config.py

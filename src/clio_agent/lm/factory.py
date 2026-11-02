@@ -196,12 +196,13 @@ def _claude_code_lm(config: LMProviderConfig) -> Any:
         AsyncClaudeCodeEngine,
         ClaudeCodeEngine,
     )
+    from clio_agent.providers.claude_code_options import with_output_cap  # noqa: PLC0415
 
     if not config.model.strip():
         raise ValueError("No model configured for LM provider 'claude_code'")
     bare = _claude_code_bare_model(config)
     extras = build_request_kwargs(config)
-    thinking = extras.pop("claude_code_thinking", None)
+    thinking = with_output_cap(extras.pop("claude_code_thinking", None), config.max_tokens)
     generation = {k: v for k, v in extras.items() if not k.startswith("claude_code_")}
     if config.max_tokens:
         generation["max_tokens"] = config.max_tokens
