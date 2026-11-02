@@ -430,8 +430,8 @@ SCENARIOS: dict[str, Scenario] = {
             "T21",
             "A script calls a deferred tool with no search first",
             [
-                "Without calling search_tools, use run_code to call tools.climate.list() "
-                "directly and print the result."
+                "Without calling search_tools, use run_code to call "
+                "tools.synthetic_home.climate_list() directly and print the result."
             ],
             plugins=("eval-home",),
         ),
@@ -711,14 +711,16 @@ def check_t17(rec: dict[str, Any]) -> tuple[str, list[str]]:
 
 def check_t19(rec: dict[str, Any]) -> tuple[str, list[str]]:
     blob = json.dumps(rec["exports"])
-    first = re.search(r"## (\w+)  \(", blob)
+    first = re.search(r"## ([\w-]+)  \(", blob)
     name = first.group(1) if first else ""
-    return ("pass" if name == "climate_set_temperature" else "fail"), [f"first result {name!r}"]
+    # A server's tools carry its prefix (``synthetic-home_climate_set_temperature``).
+    ok = name.split("_", 1)[-1] == "climate_set_temperature" or name == "climate_set_temperature"
+    return ("pass" if ok else "fail"), [f"first result {name!r}"]
 
 
 def check_t21(rec: dict[str, Any]) -> tuple[str, list[str]]:
     names = [c["tool"] for c in _calls(rec)]
-    direct = [c for c in _calls(rec) if c["tool"].startswith("climate_")]
+    direct = [c for c in _calls(rec) if "climate_" in c["tool"]]
     ok = (
         "search_tools" not in names
         and bool(direct)
