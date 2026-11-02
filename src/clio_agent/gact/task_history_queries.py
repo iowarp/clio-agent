@@ -169,6 +169,17 @@ def session_handles(self: TaskHistory, session_id: str) -> set[str]:
         return set(state._session_tasks.get(session_id, set()))
 
 
+def invocation_handles(self: TaskHistory, session_id: str, invocation_ids: set[str]) -> set[str]:
+    """Read the session's own handles for these invocation ids from its tree's index."""
+    state = self._session_state(session_id)
+    with self._view_lock:
+        return {
+            handle
+            for invocation in invocation_ids
+            for handle in state._invocation_tasks.get((session_id, invocation), ())
+        }
+
+
 def session_tree_ids(self: TaskHistory, session_id: str, *, human_id: str = "") -> set[str]:
     """Read stable descendant addresses without enumerating their retained assignments."""
     state = self._session_state(session_id)

@@ -59,7 +59,9 @@ def own_execution_tasks(
     caller = TaskCaller(session_id, principal, human_action=True)
     access = TaskAccess(history, caller)
     result: dict[str, tuple[TaskSnapshot, ...]] = {}
-    for handle in history.session_handles(session_id):
+    # Indexed by invocation: scanning every session task per call grew with the session
+    # (P7, 2026-11-02: 2,000 tasks scanned at each of 2,000 completions).
+    for handle in history.invocation_handles(session_id, invocation_ids):
         task = history.task_snapshot(handle)
         if (
             task is None

@@ -21,6 +21,7 @@ from clio_agent.arc.memory import ARCMemory
 from clio_agent.gact import context
 from clio_agent.gact.external_read_only import skips_write_ahead
 from clio_agent.gact.external_tasks import ExternalTasks
+from clio_agent.gact.tool_execution_projection import own_execution_tasks
 from clio_agent.gact.workspaces import WorkspaceStore
 from clio_agent.tools.task_call_context import TASK_CALL, TaskCall
 from tests.test_arc.test_conversation_owner_contracts import create_environment
@@ -127,6 +128,18 @@ async def test_a_read_only_call_is_admitted_with_its_result(
     assert reader.submission is not None and reader.result is not None
     submitted = await asyncio.to_thread(history.read_content, reader.submission)
     assert submitted["tool"] == "read" and submitted["arguments"] == {"record_id": "REC-1"}
+
+    # A call's own tasks come from the invocation index, not a scan of every session
+    # task (P7: 2,000 scanned per completion). SABOTAGE: scan session_handles again.
+    def scanned(*_args: Any) -> set[str]:
+        raise AssertionError("own_execution_tasks scanned every session task")
+
+    monkeypatch.setattr(history, "session_handles", scanned)
+    sid = root.owner.session_id
+    found = await asyncio.to_thread(history.invocation_handles, sid, {"inv-read", "inv-write"})
+    assert found == {reader.handle, tasks["write"].handle}
+    # Inline calls have no backend task to join; found without listing the session.
+    assert await asyncio.to_thread(own_execution_tasks, app, sid, {"inv-read"}) == {}
 
 
 def test_only_declared_read_only_tools_without_task_support_skip_write_ahead() -> None:
