@@ -1208,6 +1208,10 @@ KEY_NOTES: dict[str, str] = {
         "Characters of the session plan offered back to the agent as working state; a longer "
         "plan is cut there with a pointer to its file."
     ),
+    "artifacts.index_page_items": (
+        "Ids per page of an artifact-index list (a session's transforms, an artifact's "
+        "uses); an append rewrites only the last page."
+    ),
     "arc.core_threads": (
         "Runtime threads of the clio-core daemon CLIO seeds; more threads give it more I/O "
         "workers, so concurrent writes stop queueing on one. Read when the daemon starts."

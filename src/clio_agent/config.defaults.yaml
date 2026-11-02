@@ -1033,6 +1033,11 @@ artifacts.hash_max_file_bytes: 67108864
 # confirm a CAS blob is intact; keep false, Windows mtimes are unreliable.
 artifacts.hash_stat_cache: false
 
+# CLIO_ARTIFACTS_INDEX_PAGE_ITEMS  (int)  <- src/clio_agent/gact/artifacts/registry_store.py
+# Ids per page of an artifact-index list (a session's transforms, an
+# artifact's uses); an append rewrites only the last page.
+artifacts.index_page_items: 256
+
 # CLIO_ARTIFACTS_INSTRUMENT_ARG_MAX_BYTES  (int)  <- src/clio_agent/gact/artifacts/transforms.py
 # Byte ceiling per tool-call arg kept in a TransformRecord's instrument args
 # before elision to a digest; raise to keep more arg detail.

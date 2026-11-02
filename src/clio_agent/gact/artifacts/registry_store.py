@@ -37,6 +37,7 @@ name)`` at once can race on the version number (reported in the design doc).
 
 from __future__ import annotations
 
+import functools
 import hashlib
 import json
 import logging
@@ -70,6 +71,25 @@ STORE_ERRORS: tuple[type[BaseException], ...] = (ClioError, RuntimeError, OSErro
 
 #: ``(session_id, event_id) -> True`` (event found) / ``False`` (absent) / ``None`` (unreadable).
 EventCheck = Callable[[str, str], Optional[bool]]
+
+
+@functools.cache
+def _page_items() -> int:
+    """Ids per page of an appended list (``artifacts.index_page_items``; see ``_append``).
+
+    Readers take pages of any length, so changing it never strands written lists.
+    """
+    from clio_agent import conf  # noqa: PLC0415 - avoid import cycle at module load
+
+    value = conf.resolve(
+        "artifacts.index_page_items",
+        env="CLIO_ARTIFACTS_INDEX_PAGE_ITEMS",
+        default=256,
+        cast=conf.as_int,
+    )
+    if value < 1:
+        raise ValueError(f"artifacts.index_page_items must be at least 1, not {value}")
+    return value
 
 
 def index_key(prefix: str, *parts: str) -> str:
@@ -170,10 +190,40 @@ class StoreBackend:
             self._cache.move_to_end(key)
         return cached
 
+    # An appended list is written in pages of _page_items() ids: ``key`` is page 0, page i
+    # is ``key~i`` and ``key~n`` holds ``{"pages": n}`` (absent: one page). Rewriting the
+    # whole list per append made a session's transform list O(n^2): on P7 every call
+    # re-encoded and put 2,000 ids (2026-11-02).
+    def _page_count(self, key: str) -> int:
+        cached = self._cache.get(key + "~n")
+        if cached is None:
+            loaded = self._read(key + "~n")
+            pages = loaded.get("pages") if isinstance(loaded, dict) else None
+            cached = {"pages": pages if isinstance(pages, int) and pages > 0 else 1}
+            self._remember(key + "~n", cached)
+        return int(cached["pages"])
+
     def _append(self, key: str, item: str) -> None:
-        items = self._list(key)
-        if item not in items:
-            self._write(key, [*items, item])
+        pages = self._page_count(key)
+        page = key if pages == 1 else f"{key}~{pages - 1}"
+        items = self._list(page)
+        if item in items:
+            return
+        if len(items) >= _page_items():
+            pages, items = pages + 1, []
+            page = f"{key}~{pages - 1}"
+            self._write(key + "~n", {"pages": pages})  # first: a lost page reads as empty
+        self._write(page, [*items, item])
+
+    def _members(self, key: str) -> list[str]:
+        """An appended list's items across its pages, first appearance kept."""
+        pages = self._page_count(key)
+        items = [
+            item
+            for index in range(pages)
+            for item in self._list(key if index == 0 else f"{key}~{index}")
+        ]
+        return list(dict.fromkeys(items))
 
     def _body(self, key: str, decode: Callable[[dict[str, Any]], dict[str, Any]]) -> Any:
         """A cached-or-loaded record body (rechecking any stale pending entries)."""
@@ -309,13 +359,13 @@ class StoreBackend:
     def workspace_records(self, workspace_id: str) -> list[ArtifactRecord]:
         """Every record in ``workspace_id``, in creation order."""
         records = (
-            self.record(workspace_id, name) for name in self._list(index_key("w", workspace_id))
+            self.record(workspace_id, name) for name in self._members(index_key("w", workspace_id))
         )
         return [record for record in records if record is not None]
 
     def all_records(self) -> list[ArtifactRecord]:
         """Every record of every workspace (introspection; walks the small workspace list)."""
-        return [r for ws in self._list(WORKSPACES_KEY) for r in self.workspace_records(ws)]
+        return [r for ws in self._members(WORKSPACES_KEY) for r in self.workspace_records(ws)]
 
     def locate(self, artifact_id: str) -> Optional[tuple[ArtifactRecord, ArtifactVersion]]:
         """The ``(record, version)`` carrying ``artifact_id``, or ``None``."""
@@ -334,7 +384,7 @@ class StoreBackend:
         """Versions whose ``producer.session_id`` is one of ``session_ids``."""
         found: list[tuple[ArtifactRecord, ArtifactVersion]] = []
         for sid in session_ids:
-            for artifact_id in self._list(index_key("p", sid)):
+            for artifact_id in self._members(index_key("p", sid)):
                 hit = self.locate(artifact_id)
                 if hit is not None and str(hit[1].producer.get("session_id") or "") == sid:
                     found.append(hit)
@@ -375,16 +425,16 @@ class StoreBackend:
 
     def session_transforms(self, session_id: str) -> list[Any]:
         """TransformRecords produced in ``session_id``, in record order."""
-        found = self._transforms(self._list(index_key("s", session_id)))
+        found = self._transforms(self._members(index_key("s", session_id)))
         return [t for t in found if t.session_id == session_id]
 
     def generating(self, artifact_id: str) -> list[Any]:
         """TransformRecords with a generated edge on ``artifact_id``, in record order."""
-        return self._transforms(self._list(index_key("g", artifact_id)))
+        return self._transforms(self._members(index_key("g", artifact_id)))
 
     def using(self, artifact_id: str) -> list[Any]:
         """TransformRecords with a used edge on ``artifact_id``, in record order."""
-        return self._transforms(self._list(index_key("u", artifact_id)))
+        return self._transforms(self._members(index_key("u", artifact_id)))
 
     def all_transforms(self) -> list[Any]:
         """Not served: no record lists every transform (query by session or artifact)."""

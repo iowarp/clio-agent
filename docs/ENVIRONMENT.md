@@ -52,6 +52,7 @@ These resolve through `clio_agent.conf`: a value under the dotted key in `config
 | `CLIO_ARC_WS_CHUNK_SEGMENTS` | `arc.ws_chunk_segments` | int | `32` | `src/clio_agent/arc/lane_writer.py` |
 | `CLIO_ARTIFACTS_EXPORT_LICENSE` | `artifacts.export_license` | str | `NOASSERTION` | `src/clio_agent/gact/artifacts/export.py` |
 | `CLIO_ARTIFACTS_HASH_MAX_FILE_BYTES` | `artifacts.hash_max_file_bytes` | int | `67108864` | `src/clio_agent/gact/artifacts/hashing.py` |
+| `CLIO_ARTIFACTS_INDEX_PAGE_ITEMS` | `artifacts.index_page_items` | int | `256` | `src/clio_agent/gact/artifacts/registry_store.py` |
 | `CLIO_ARTIFACTS_INSTRUMENT_ARG_MAX_BYTES` | `artifacts.instrument_arg_max_bytes` | int | `2048` | `src/clio_agent/gact/artifacts/transforms.py` |
 | `CLIO_ARTIFACTS_INSTRUMENT_TOTAL_MAX_BYTES` | `artifacts.instrument_total_max_bytes` | int | `16384` | `src/clio_agent/gact/artifacts/transforms.py` |
 | `CLIO_ARTIFACTS_LINEAGE_MAX_NODES` | `artifacts.lineage_max_nodes` | int | `500` | `src/clio_agent/gact/artifacts/lineage.py` |
