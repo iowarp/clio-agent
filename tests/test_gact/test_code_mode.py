@@ -52,6 +52,20 @@ def _mcp_shaped(path: str) -> str:
     return "a summary"
 
 
+def _mcp_failed(path: str) -> str:
+    """Stands in for an MCP call the server rejects: an error result with its reason."""
+    sink = RESULT_SINK.get()
+    reason = "filepath: Missing required argument"
+    if sink is not None:
+        sink.append(
+            (
+                "tool_result_is_error",
+                {"content": [{"type": "text", "text": reason}], "isError": True},
+            )
+        )
+    return reason
+
+
 def _finish(answer: str) -> str:
     return answer
 
@@ -68,6 +82,7 @@ def _agent() -> Any:
             _get_record, name="records_get_record", desc="One record with its reading."
         ),
         "fs_stat": dspy.Tool(_mcp_shaped, name="fs_stat", desc="Stat a file."),
+        "fs_touch": dspy.Tool(_mcp_failed, name="fs_touch", desc="Touch a file."),
         "submit": dspy.Tool(_finish, name="submit", desc="Finish."),
     }
     agent = SimpleNamespace(
@@ -125,6 +140,19 @@ class TestKernel:
         outcome = _run(code)
         assert "caught KeyError" in outcome["output"]
         assert outcome["failed_calls"] == 1
+
+    def test_a_failed_mcp_call_tells_the_script_why(self, workspace: Path) -> None:
+        """The script's ``ToolError`` carries the result's own text, not only its code, so
+        a script that guessed an argument name can correct itself (qualification T8b).
+        SABOTAGE: set ``error = str(sink_error)`` in ``Dispatcher._run`` and this fails."""
+        outcome = _run(
+            "try:\n    await tools.fs.touch(path='a.txt')\n"
+            "except ToolError as exc:\n    print('caught', exc)"
+        )
+        assert (
+            "caught tool_result_is_error: filepath: Missing required argument"
+            in (outcome["output"])
+        )
 
     def test_mcp_calls_return_structured_content(self, workspace: Path) -> None:
         outcome = _run("(await tools.fs.stat(path='a.txt'))['lines']")

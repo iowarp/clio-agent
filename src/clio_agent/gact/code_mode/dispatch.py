@@ -70,6 +70,26 @@ def _mcp_value(result: Any) -> tuple[bool, Any]:
     return True, "\n".join(texts)
 
 
+#: Characters of a failed result's own text the script's ``ToolError`` carries.
+_ERROR_DETAIL_CHARS = 2000
+
+
+def _error_detail(result: Any) -> str:
+    """What a failed result says about its failure: its text blocks, else its structured
+    content, bounded."""
+    if not isinstance(result, Mapping):
+        return ""
+    texts = [
+        str(block.get("text") or "")
+        for block in result.get("content") or []
+        if isinstance(block, Mapping) and block.get("type") == "text"
+    ]
+    detail = "\n".join(t for t in texts if t)
+    if not detail and result.get("structuredContent") is not None:
+        detail = json.dumps(result["structuredContent"], default=str)
+    return detail[:_ERROR_DETAIL_CHARS]
+
+
 def _native_value(value: Any) -> Any:
     if isinstance(value, str) and value[:1] in "[{":
         try:
@@ -163,7 +183,10 @@ class Dispatcher:
             sink_error, observed = sink[-1]
             found, structured = _mcp_value(observed)
             if sink_error:
-                ok, error = False, str(sink_error)
+                # The code says that it failed; the result's text says why (a validation
+                # message, the server's error), which the script needs to correct itself.
+                detail = _error_detail(observed)
+                ok, error = False, f"{sink_error}: {detail}" if detail else str(sink_error)
             elif found:
                 value = structured
         if ok and not sink:
