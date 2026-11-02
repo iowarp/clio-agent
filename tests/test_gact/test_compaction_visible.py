@@ -199,6 +199,18 @@ def _kinds(message: dict[str, Any]) -> list[str]:
     return out
 
 
+FACTS_HEAD = "[clio: session_facts]"
+
+
+def _short_session_facts(monkeypatch: pytest.MonkeyPatch) -> None:
+    """One short line of session facts, so results and messages stay small and exact."""
+    from clio_agent.gact.agents import composition
+
+    monkeypatch.setattr(
+        composition, "_runtime_active_workspace_context", lambda app, session_id="": "Root: /ws"
+    )
+
+
 def _patch_tokens(monkeypatch: pytest.MonkeyPatch, high_on: set[int]) -> _PromptTokens:
     reads = _PromptTokens(high_on)
     monkeypatch.setattr(context_tokens, "_last_prompt_tokens", reads)
@@ -209,6 +221,7 @@ def test_auto_compaction_mid_turn_shows_summary_then_question_and_reloads_the_sa
     app_env: tuple[Any, TestClient, SummarizerAgent, list[Any]], monkeypatch: pytest.MonkeyPatch
 ) -> None:
     app, client, summarizer, events = app_env
+    _short_session_facts(monkeypatch)
     sid = _session(client)
     engines: list[ScriptedEngine] = []
     _install_loop(
@@ -246,13 +259,16 @@ def test_auto_compaction_mid_turn_shows_summary_then_question_and_reloads_the_sa
     summary_text = f"[earlier context]\n{record_part.text}"
     # The request right after the fold: system + summary + the question verbatim.
     assert requests[2].system == requests[0].system
+    # The session's facts come back after the fold (a working-state injection).
+    [facts] = [m for m in _texts(requests[0].messages) if m[1][0][1].startswith(FACTS_HEAD)]
     assert _texts(requests[2].messages) == [
         ("user", [("text", summary_text)]),
+        facts,
         _texts([head])[0],
     ]
     # ... and the next one adds the new step (and nothing compacted).
-    assert _texts(requests[3].messages)[:2] == _texts(requests[2].messages)
-    assert _texts(requests[3].messages)[2:] == [
+    assert _texts(requests[3].messages)[:3] == _texts(requests[2].messages)
+    assert _texts(requests[3].messages)[3:] == [
         ("assistant", [("text", "look up q2"), ("call", "call_2_0", "search", {"q": "q2"})]),
         ("tool", [("result", "call_2_0", "HITS-q2", False)]),
     ]
@@ -446,6 +462,7 @@ def test_recall_context_returns_a_compacted_step_byte_exact(
     app_env: tuple[Any, TestClient, SummarizerAgent, list[Any]], monkeypatch: pytest.MonkeyPatch
 ) -> None:
     app, client, _summarizer, events = app_env
+    _short_session_facts(monkeypatch)
     sid = _session(client)
     engines: list[ScriptedEngine] = []
     scripts = [_three_step_turn()]

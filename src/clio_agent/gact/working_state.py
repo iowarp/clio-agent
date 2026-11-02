@@ -14,6 +14,7 @@ from typing import Any
 
 __all__ = [
     "PLAN_STALE_SOURCE",
+    "SESSION_FACTS_SOURCE",
     "WORKING_STATE_SOURCES",
     "note_stale_plan",
     "offer_person_edit",
@@ -22,7 +23,12 @@ __all__ = [
 ]
 
 #: Injection sources that are working state: re-injected, never summarized.
-WORKING_STATE_SOURCES = frozenset({"plan_mode", "plan", "todos"})
+WORKING_STATE_SOURCES = frozenset({"session_facts", "plan_mode", "plan", "todos"})
+#: The session's own facts (workspace root, write roots, machine, scratch folder). They
+#: ride the conversation, not the system prompt: the system prompt is cached as one block,
+#: and per-session text in it made every session write the whole prompt to the cache
+#: again (final evaluation, 2026-11-02: about 36k cache-creation tokens per run).
+SESSION_FACTS_SOURCE = "session_facts"
 #: The one-line note that an active plan has not been touched for a while.
 PLAN_STALE_SOURCE = "plan_stale"
 #: Calls that count as keeping the working state current.
@@ -75,7 +81,11 @@ def note_stale_plan(loop: Any, call_names: list[str]) -> None:
 def working_state_injections(
     app: Any, session_id: str, session: Any, *, force_full: bool = False
 ) -> list[tuple[str, str]]:
-    """``(source, text)`` for the plan-mode reminder, the plan and the todos (non-empty)."""
+    """``(source, text)`` for the session's facts, the plan-mode reminder, the plan and the
+    todos (non-empty)."""
+    from clio_agent.gact.agents.composition import (  # noqa: PLC0415
+        _runtime_active_workspace_context,
+    )
     from clio_agent.gact.plan_mode import plan_mode_reminder  # noqa: PLC0415
     from clio_agent.gact.session_plan import (  # noqa: PLC0415
         PLAN_SOURCE,
@@ -86,6 +96,7 @@ def working_state_injections(
 
     plan = take_person_edit(app, session_id) or plan_injection(app, session_id, session)
     blocks = (
+        (SESSION_FACTS_SOURCE, _runtime_active_workspace_context(app, session_id=session_id)),
         ("plan_mode", plan_mode_reminder(app, session_id, session, force_full=force_full)),
         (PLAN_SOURCE, plan),
         ("todos", todo_recitation(app, session_id, session)),

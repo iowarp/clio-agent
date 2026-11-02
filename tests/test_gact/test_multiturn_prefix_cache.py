@@ -272,22 +272,34 @@ def test_system_message_is_a_byte_prefix_across_turns(
     assert prefix_1 == prefix_2  # no-compaction same-agent: exact, not just prefix
 
 
-def test_per_session_facts_end_the_system_prompt(
+def test_sessions_in_different_workspaces_share_the_system_prompt(
     monkeypatch: pytest.MonkeyPatch, world: SimpleNamespace
 ) -> None:
-    """Two sessions in different workspaces share the system prompt up to its last part.
+    """Two sessions in different workspaces get the same system prompt, and each
+    session's own facts ride the conversation as the ``session_facts`` injection.
 
-    The workspace context (root, write roots) is per session; anything after it would
-    miss the provider's prompt cache in every new session, so it comes last.
-    SABOTAGE: put ``workspace_context`` before ``skills_context`` and this fails.
+    The Claude CLI caches the system prompt as one block, so any per-session text in it
+    (workspace root, scratch folder) means no cache reads across sessions.
+    SABOTAGE: add the workspace context back to ``system_prompt`` and this fails.
     """
+    from clio_agent.gact import plan_mode, session_plan, todos, working_state
+    from clio_agent.gact.agents import composition
+
     _patch_runtime(monkeypatch)
-    tails = iter(["Active workspace root: /ws/one", "Active workspace root: /ws/two"])
+    facts = iter(["Active workspace root: /ws/one", "Active workspace root: /ws/two"] * 2)
     monkeypatch.setattr(
-        builders, "_runtime_active_workspace_context", lambda app, session_id="": next(tails)
+        composition, "_runtime_active_workspace_context", lambda app, session_id="": next(facts)
     )
     first = _build(world).system_prompt
     second = _build(world).system_prompt
-    assert first.endswith("Active workspace root: /ws/one")
-    assert second.endswith("Active workspace root: /ws/two")
-    assert first.removesuffix("/ws/one") == second.removesuffix("/ws/two")
+    assert first == second
+    assert "Active workspace root" not in first
+
+    monkeypatch.setattr(plan_mode, "plan_mode_reminder", lambda *a, **k: "")
+    monkeypatch.setattr(session_plan, "take_person_edit", lambda *a, **k: "")
+    monkeypatch.setattr(session_plan, "plan_injection", lambda *a, **k: "")
+    monkeypatch.setattr(todos, "todo_recitation", lambda *a, **k: "")
+    injected = working_state.working_state_injections(None, world.sid, None)
+    assert injected[0][0] == working_state.SESSION_FACTS_SOURCE
+    assert injected[0][1].startswith("Active workspace root: /ws/")
+    assert working_state.SESSION_FACTS_SOURCE in working_state.WORKING_STATE_SOURCES

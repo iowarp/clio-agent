@@ -19,7 +19,6 @@ from clio_agent.gact.agents import skill_runtime as _skill_runtime
 from clio_agent.gact.agents import toolset_inventory
 from clio_agent.gact.agents.agent_prompt import final_agent_prompt
 from clio_agent.gact.agents.always_load_tools import attach_always_load_tools
-from clio_agent.gact.agents.composition import _runtime_active_workspace_context
 from clio_agent.gact.agents.live_tool_refresh import (
     LiveToolScope,
     live_tool_refresher,
@@ -642,23 +641,18 @@ def build_agent_module(base_agent: Any, agent_def: "AgentDef", resolution: "Reso
             strategy = _module_variants.session_strategy()
             if strategy is not None:
                 self.program = _module_variants.wrap_strategy(self.program, agent_def.id, strategy)
-            active_app = _ctx.active_app()
-            workspace_context = (
-                _runtime_active_workspace_context(active_app, session_id=_ctx.active_session_id())
-                if active_app is not None and self.kind == "react"
-                else ""
-            )
             # Progressive disclosure (#919): react agents get skill metadata and
             # load_skill; a tool-less agent gets the bodies.
             skills_context = (
                 skill_rt.prompt_block if self.kind == "react" else skill_rt.bodies_block
             )
             agent_prompt = final_agent_prompt(agent_def, resolution, getattr(self, "tools", ()))
+            # The same text for every session of this agent: the session's own facts
+            # (workspace, roots, machine, scratch) ride the conversation as the
+            # ``session_facts`` injection (gact/working_state.py), so the cached system
+            # prompt is shared across sessions.
             self.system_prompt = "\n\n".join(
-                part
-                # Per-session facts last, so the shared prefix stays cacheable.
-                for part in (agent_prompt, deferred_entry, skills_context, workspace_context)
-                if part
+                part for part in (agent_prompt, deferred_entry, skills_context) if part
             )
 
         def forward(

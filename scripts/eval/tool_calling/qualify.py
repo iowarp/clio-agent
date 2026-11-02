@@ -349,7 +349,10 @@ SCENARIOS: dict[str, Scenario] = {
                 "the task: " + tasks.task("H3", {}).prompt
             ],
             fixture_task="H1",
-            metadata=tasks.task("H3", {}).metadata,
+            # Low enough that the turn compacts mid-way (H3's 25% is never reached).
+            metadata={
+                "context_preferences": {"automatic_compaction": True, "autocompact_pct": 0.05}
+            },
             after=_exact_and_work,
             timeout_s=2400.0,
         ),
