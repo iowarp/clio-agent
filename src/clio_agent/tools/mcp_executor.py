@@ -30,9 +30,6 @@ from clio_agent.tools.mcp_namespace_executor import AsyncNamespacePreparationMix
 from clio_agent.tools.mcp_result_projection import (
     bounded_model_tool_result as _bounded_model_tool_result,
 )
-from clio_agent.tools.mcp_result_projection import (
-    model_tool_result_chars as model_tool_result_chars,
-)
 from clio_agent.tools.mcp_result_text import result_to_text as _result_to_text
 from clio_agent.tools.mcp_runtime import enter_connection, make_mcp_client
 from clio_agent.tools.mcp_task_routing import (

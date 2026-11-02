@@ -142,7 +142,8 @@ def test_a_long_plan_ends_with_todays_note(
     plan_session: Any, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """SABOTAGE: drop the ``\\n\\n`` before the note in ``session_plan`` and this fails."""
-    monkeypatch.setenv("CLIO_PLAN_INJECTION_CHARS", "11")
+    # The window's share for one result is 3 tokens: the plan is cut after 12 characters.
+    monkeypatch.setattr("clio_agent.tools.result_room.window_share_tokens", lambda: 3)
     app, sid = plan_session
     text, path = _plan(app, sid)
     assert text.endswith(

@@ -653,19 +653,15 @@ KEY_NOTES: dict[str, str] = {
         "Byte cap on one MCP content block's decoded binary payload (image/audio/resource) before "
         "it's elided; raise for larger images."
     ),
-    "limits.model_tool_result_chars": (
-        "Characters of a tool result shown to the model; a longer result is saved to the "
-        "session's tool-output folder and the agent gets this many head characters plus the "
-        "file path. Distinct from limits.tool_result_chars."
-    ),
     "limits.plan_review_chars": (
         "Character bound on saved plan content embedded in an approval record; raise for "
         "unusually large implementation plans, lower to bound review payloads."
     ),
     "limits.shell_default_output_bytes": (
         "Per-stream bytes of shell stdout/stderr returned inline when the caller specifies none; "
-        "larger output is spilled in full to .clio/tool-output/ and excerpted. Sized so the "
-        "result fits limits.tool_result_chars (#887)."
+        "larger output is spilled in full to .clio/tool-output/ and excerpted. The whole result "
+        "is also fitted to the room one result has in the model's context window "
+        "(tools.result_share)."
     ),
     "limits.shell_default_timeout_s": (
         "Seconds a shell command may run when the caller passes no timeout; 0 (default) means "
@@ -685,7 +681,8 @@ KEY_NOTES: dict[str, str] = {
     ),
     "limits.tool_result_chars": (
         "Character bound on the transcript/evidence-metadata preview of a tool result; raise to "
-        "keep more result text visible in the transcript."
+        "keep more result text visible in the transcript. Not what the model is shown "
+        "(tools.result_share)."
     ),
     "limits.transient_provider_retry_delays": (
         "Comma-separated backoff delays (seconds) between retries of a transient provider error; "
@@ -1192,10 +1189,6 @@ KEY_NOTES: dict[str, str] = {
     "code.max_nested_calls": (
         "Tool calls one run_code script may make; a call past it raises in the script."
     ),
-    "plan.injection_chars": (
-        "Characters of the session plan offered back to the agent as working state; a longer "
-        "plan is cut there with a pointer to its file."
-    ),
     "artifacts.index_page_items": (
         "Ids per page of an artifact-index list (a session's transforms, an artifact's "
         "uses); an append rewrites only the last page."
@@ -1251,6 +1244,16 @@ KEY_NOTES: dict[str, str] = {
     "tools.never_defer": (
         "Tools never deferred behind search_tools whatever a plugin declares (the core loop); "
         "an entry ending in * names a prefix, such as fs_*."
+    ),
+    "tools.result_share": (
+        "Share of the model's context window (0-1] one tool result may use before it is saved "
+        "to a file and the model gets its head; never more than the room left before "
+        "compaction. 0.125 is 25,000 tokens on a 200k window; also sizes file reads, searches, "
+        "shell output, task pages, mail per step and the offered plan."
+    ),
+    "tools.unknown_window_result_tokens": (
+        "Tokens of one tool result the model is shown when its context window is unknown (no "
+        "handshake or catalog entry); a longer result is saved to a file with its head."
     ),
     "tools.full_result": (
         "Native tools whose whole result reaches the model, never cut to the result size with "

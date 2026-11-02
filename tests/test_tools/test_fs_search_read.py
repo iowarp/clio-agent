@@ -64,7 +64,7 @@ def test_a_read_returns_numbered_lines_with_its_range(approved: Path) -> None:
 
 
 def test_a_default_read_sizes_itself_to_the_result_bound(approved: Path) -> None:
-    set_config("limits", {"model_tool_result_chars": 2_000, "tool_result_chars": 2_000})
+    set_config("tools.unknown_window_result_tokens", 500)  # 2,000 characters
     source = approved / "big.txt"
     source.write_text("\n".join(f"row {i:05d} {'x' * 40}" for i in range(5_000)), encoding="utf-8")
     result = read_text_range(str(source))
@@ -72,9 +72,34 @@ def test_a_default_read_sizes_itself_to_the_result_bound(approved: Path) -> None
     assert len(text) <= 2_000
     structured = result.structured_content
     assert structured["truncated"] and structured["total_lines"] == 5_000
-    assert text.split("\n")[0].endswith(f"continue with offset={structured['next_offset']}")
+    header = text.split("\n")[0]
+    assert f"continue with offset={structured['next_offset']}" in header
+    assert header.endswith("(one result holds about 500 tokens)")  # why it stopped
     following = read_text_range(str(source), offset=structured["next_offset"])
     assert _text(following).split("\n")[1].lstrip().startswith(str(structured["next_offset"]))
+
+
+def test_a_read_returns_the_lines_asked_for_up_to_the_window_share(
+    approved: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """With a 200k window a read holds 25,000 tokens: 2,000 lines of 50 characters come
+    back whole (the old fixed bound returned about 230). SABOTAGE: size ``budget`` in
+    ``read_text_range`` from a fixed 12,000 and the read stops early."""
+    from clio_agent.gact.runtime import context_tokens
+
+    monkeypatch.setattr("clio_agent.gact.context.active_react_context_window", lambda: 200_000)
+    monkeypatch.setattr(context_tokens, "_last_prompt_tokens", lambda: 0)
+    monkeypatch.setattr(context_tokens, "_estimate_text_tokens", lambda text: len(text) // 4)
+    source = approved / "code.py"
+    source.write_text("\n".join(f"value_{i:05d} = compute({i}, 'x' * 9)" for i in range(3_000)))
+    whole = read_text_range(str(source), limit=2_000).structured_content
+    assert (whole["start_line"], whole["end_line"], whole["next_offset"]) == (1, 2_000, 2_001)
+    header = _text(read_text_range(str(source), limit=2_000)).split("\n")[0]
+    assert header.endswith("continue with offset=2001")  # stopped by limit, not the room
+    monkeypatch.setattr("clio_agent.gact.context.active_react_context_window", lambda: 16_000)
+    small = read_text_range(str(source), limit=2_000)  # 2,000 tokens: about 140 lines
+    assert 100 < small.structured_content["end_line"] < 200
+    assert "(one result holds about 2,000 tokens)" in _text(small).split("\n")[0]
 
 
 def test_long_lines_are_cut_and_empty_and_past_end_reads_say_so(approved: Path) -> None:
@@ -149,6 +174,41 @@ def test_content_mode_returns_numbered_lines_with_context_and_glob(approved: Pat
     link = next(block for block in view["blocks"] if block["id"] == "match-0")
     code = next(block for block in view["blocks"] if block["id"] == "context-0")
     assert link["line"] == 2 and code["start_line"] == 1
+
+
+def test_a_content_search_continues_where_the_room_stopped_it(approved: Path) -> None:
+    """Matches past one result are not dropped: the header names the offset, and reading
+    on returns every match exactly once. SABOTAGE: ignore ``offset`` in
+    ``_content_result`` and the second page repeats the first."""
+    set_config("tools.unknown_window_result_tokens", 500)  # 2,000 characters
+    (approved / "log.txt").write_text(
+        "\n".join(f"step {i:04d} needle {'x' * 30}" for i in range(300)), encoding="utf-8"
+    )
+    seen: list[int] = []
+    offset, pages = 0, 0
+    while offset is not None:
+        result = search_files(str(approved), "needle", mode="content", limit=500, offset=offset)
+        structured = result.structured_content
+        assert len(_text(result)) <= 2_000
+        seen += [match["line"] for match in structured["matches"]]
+        if structured["next_offset"] is not None:
+            assert f"continue with offset={structured['next_offset']}" in _text(result)
+        offset, pages = structured["next_offset"], pages + 1
+    assert seen == list(range(1, 301)) and pages > 3
+    assert structured["total_matches"] == 300 and not structured["truncated"]
+
+
+def test_a_files_search_continues_past_its_limit(approved: Path) -> None:
+    _tree(approved)
+    first = search_files(str(approved), "callback", limit=2)
+    assert first.structured_content["next_offset"] == 2
+    assert "continue with offset=2" in _text(first)
+    rest = search_files(str(approved), "callback", limit=2, offset=2)
+    names = [f["path"] for f in first.structured_content["files"]]
+    names += [f["path"] for f in rest.structured_content["files"]]
+    assert len(set(names)) == 3 and rest.structured_content["next_offset"] is None
+    view = present_mcp_result("fs_search_text", {"offset": 0}, _observer(first))
+    assert any("more follow from offset 2" in b.get("text", "") for b in view["blocks"])
 
 
 def test_count_mode_regex_case_and_truncation(approved: Path) -> None:

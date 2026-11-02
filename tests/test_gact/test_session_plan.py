@@ -207,3 +207,34 @@ def test_the_person_can_save_an_edited_plan(app_session: Any) -> None:
     assert "check the config first" in text
     # Afterwards the plan is ordinary working state again.
     assert plan_injection(app, sid, _session(app, sid)).startswith("## The plan (approved")
+
+
+def test_the_plan_is_offered_whole_unless_past_the_window_share(
+    app_session: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The plan is the agent's own file: a 60,000-character plan is offered whole on a
+    200k window (the old fixed cut was 12,000), cut only past the window's share, and
+    whole when the window is unknown, traced. SABOTAGE: return ``text[:12_000]`` from
+    ``_cut_plan`` and the first case is cut; drop its ``trace.event`` and the last fails."""
+    from clio_agent.gact.runtime import context_tokens
+    from clio_agent.runtime import trace
+
+    app, sid, _ = app_session
+    long_plan = "# Objective\n" + "".join(
+        f"- step {i:05d}: measure and record\n" for i in range(1_800)
+    )
+    assert len(long_plan) > 50_000
+    update_plan(app, sid, content=long_plan)
+    monkeypatch.setattr(context_tokens, "_estimate_text_tokens", lambda text: len(text) // 4)
+    window = "clio_agent.gact.context.active_react_context_window"
+    monkeypatch.setattr(window, lambda: 200_000)  # share: 25,000 tokens
+    whole = plan_injection(app, sid, _session(app, sid))
+    assert "step 01799" in whole and "The plan continues" not in whole
+    monkeypatch.setattr(window, lambda: 32_000)  # share: 4,000 tokens, 16,000 characters
+    cut = plan_injection(app, sid, _session(app, sid))
+    assert "step 01799" not in cut and "[The plan continues; read it whole at" in cut
+    events: list[str] = []
+    monkeypatch.setattr(trace, "event", lambda _area, message, *args: events.append(message % args))
+    monkeypatch.setattr(window, lambda: 0)
+    assert "step 01799" in plan_injection(app, sid, _session(app, sid))
+    assert any(event.startswith("plan_window_unknown") for event in events)

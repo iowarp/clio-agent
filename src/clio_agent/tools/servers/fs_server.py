@@ -78,12 +78,17 @@ def search_text(
     context_lines: Annotated[int, Field(ge=0, le=50)] = 0,
     case_sensitive: bool = True,
     limit: Annotated[int, Field(ge=1, le=500)] = 100,
+    offset: Annotated[
+        int,
+        Field(ge=0, description="Files or matching lines to skip: the offset a result names."),
+    ] = 0,
 ) -> ToolResult:
     """Search text in an approved file or folder (ripgrep; skips binary, Git and ignored files).
 
     Start with mode="files" to find where something is, then read the ranges you need, or
     use mode="content" for the matching lines themselves. query is literal unless regex is
     true. Truncation is stated in the result; no match is not proof of absence when it is.
+    When files or matches remain, the result names the offset to continue from.
     """
     return search_files(
         path,
@@ -94,6 +99,7 @@ def search_text(
         context_lines=context_lines,
         case_sensitive=case_sensitive,
         limit=limit,
+        offset=offset,
     )
 
 
@@ -132,9 +138,9 @@ def read_file(
 ) -> ToolResult:
     """Read a text file's lines, each prefixed with its line number.
 
-    Returns whole lines from ``offset`` until ``limit`` or the result size limit, after a
-    header with the range and the file's line count; when lines remain, the header ends
-    with the offset to continue from. Read the ranges you need rather than whole large
+    Returns whole lines from ``offset`` until ``limit`` or the room one result has in your
+    context window, after a header with the range and the file's line count; when lines
+    remain, the header ends with the offset to continue from. Read the ranges you need rather than whole large
     files. Binary files are refused with the tool that can read them. Only files inside
     the allowed roots are readable.
     """

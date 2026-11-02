@@ -683,10 +683,16 @@ def test_live_observer_keeps_exact_large_mcp_structured_content(tmp_path: Path) 
         assert "structured_content" not in served_result.get("metadata", {})
 
 
-def test_workspace_mcp_root_data_reaches_exact_gact_structured_content(tmp_path: Path) -> None:
+def test_workspace_mcp_root_data_reaches_exact_gact_structured_content(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     """The wire keeps exact Root/data while the model receives a bounded projection."""
 
+    from tests._result_room import pin_result_room
+
     from .conftest import complete_turn
+
+    pin_result_room(monkeypatch, 12_000)  # the 13,000-character payload does not fit
 
     agent = _LiveWorkspaceMcpRootDataAgent(tmp_path / "workspace")
     app = build_app(sessions_path=tmp_path / "s.json", agent=agent)

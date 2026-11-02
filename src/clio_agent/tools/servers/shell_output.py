@@ -4,7 +4,7 @@ The shell tool used to keep the first ``max_output_bytes`` of each stream and
 DISCARD the rest, so a wide ``describe()`` or a long column listing lost its
 tail with no way to recover it short of re-running the command. Its default cap
 (16 KiB) was also larger than the downstream tool-result bounds
-(``limits.tool_result_chars`` / ``limits.model_tool_result_chars``, 12,000 chars
+(the transcript and model tool-result bounds, then 12,000 chars
 each), so an ordinary tabular stdout was re-wrapped by those bounders into a
 ``{preview, truncated}`` envelope whose ``preview`` was ``json.dumps(result)`` cut
 mid-string: malformed JSON-in-JSON that broke CSV content-typing (#887).
@@ -17,10 +17,14 @@ This module owns the replacement:
   ``<workspace-state>/tool-output/<session>/<call-id>.<stream>.txt``
   (location + retention: :mod:`clio_agent.tools.servers.shell_spill_store`).
 * :func:`compose_output_fields` sizes the result so its encoded JSON fits
-  :func:`shell_result_char_budget` (the tighter of the two downstream bounds):
-  neither bounder then rewraps it and ``stdout`` stays a real string. A stream
-  that does not fit inline is returned as a line-aligned head excerpt in
-  ``stdout`` plus a ``stdout_spill`` record (path, totals, tail excerpt).
+  :func:`shell_result_room`, the room one result has in the calling model's context
+  window (:mod:`clio_agent.tools.result_room`): the model lane then shows it whole
+  and ``stdout`` stays a real string. A stream that does not fit inline is
+  returned as a line-aligned head excerpt in ``stdout`` plus a ``stdout_spill``
+  record (path, totals, tail excerpt). The transcript keeps its own, smaller copy
+  in the same shape: it cuts ``stdout`` on a line boundary and marks it
+  ``stdout_truncated`` (:func:`clio_agent.gact.evidence._bounded_tool_call_result`),
+  so ``stdout`` is a real string there too (#887).
 * Every spill is a typed, logged event (:data:`SPILLED_REASON`); a spill that
   cannot be written returns :data:`SPILL_FAILED_REASON` with the excerpt — never
   a silent drop.
@@ -42,10 +46,7 @@ from typing import IO, Any, Protocol
 
 from clio_agent.platform_paths import win_extended_path
 from clio_agent.runtime import trace
-from clio_agent.tools.mcp_result_projection import (
-    model_tool_result_chars,
-    transcript_tool_result_chars,
-)
+from clio_agent.tools.result_room import ResultRoom, result_room
 
 logger = logging.getLogger(__name__)
 
@@ -69,16 +70,14 @@ COMMAND_ECHO_OMITTED_REASON = "shell_command_echo_oversize"
 _READ_CHUNK_BYTES = 4096
 
 
-def shell_result_char_budget() -> int:
-    """Encoded-character budget for one shell result.
+def shell_result_room() -> ResultRoom:
+    """The room one shell result has: the room its caller pinned, or one measured now.
 
-    The tighter of the transcript bound (``limits.tool_result_chars``) and the
-    model bound (``limits.model_tool_result_chars``), resolved per call exactly
-    as those bounders resolve them. A result at or under this size passes both
-    unchanged, which is what keeps ``stdout`` a real string (#887).
+    A result that fits it reaches the model unchanged, which is what keeps ``stdout``
+    a real string in the model lane (#887).
     """
 
-    return min(transcript_tool_result_chars(), model_tool_result_chars())
+    return result_room()
 
 
 def _decode(data: bytes) -> str:
@@ -170,7 +169,7 @@ class StreamCapture:
         """Write a stream that stayed inline to its spill file (post-hoc).
 
         Used when the per-stream cap admitted the stream but the whole result
-        would breach :func:`shell_result_char_budget`. The head buffer holds the
+        would not fit :func:`shell_result_room`. The head buffer holds the
         entire stream in that case, so the file is still complete.
         """
 
@@ -418,10 +417,9 @@ def _assemble(
     return result
 
 
-def _fits(result: Mapping[str, Any], budget: int) -> bool:
-    # ensure_ascii=True (json.dumps' default, what the model lane encodes with)
-    # is never shorter than the transcript lane's ensure_ascii=False encoding.
-    return len(json.dumps(result)) <= budget
+def _fits(result: Mapping[str, Any], budget: ResultRoom) -> bool:
+    # ensure_ascii=True: json.dumps' default, what the model lane encodes with.
+    return budget.fits(json.dumps(result))
 
 
 def _largest_fitting(
@@ -429,7 +427,7 @@ def _largest_fitting(
     captures: list[StreamCapture],
     excerpted: set[str],
     root: Path,
-    budget: int,
+    budget: ResultRoom,
 ) -> dict[str, Any] | None:
     """Binary-search the largest excerpt size whose result fits ``budget``."""
 
@@ -453,7 +451,7 @@ def compose_output_fields(
     captures: list[StreamCapture],
     *,
     root: Path,
-    budget: int,
+    budget: ResultRoom,
 ) -> dict[str, Any]:
     """Build the shell result so its encoded JSON fits ``budget``.
 
@@ -468,7 +466,7 @@ def compose_output_fields(
         base: The non-output result fields (command, cwd, exit code, ...).
         captures: The finished stdout/stderr captures.
         root: The workspace root the spill paths are made relative to.
-        budget: Encoded-character budget (:func:`shell_result_char_budget`).
+        budget: The room for the encoded result (:func:`shell_result_room`).
 
     Returns:
         The complete result dict.
@@ -532,5 +530,5 @@ __all__ = [
     "StreamCapture",
     "compose_output_fields",
     "read_process_stream",
-    "shell_result_char_budget",
+    "shell_result_room",
 ]

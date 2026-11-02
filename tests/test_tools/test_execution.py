@@ -761,8 +761,13 @@ def test_sync_mcp_tool_executor_reports_structured_tool_error_result():
     assert "Output directory does not exist" in block["text"]
 
 
-def test_oversized_structured_failure_uses_raw_result_for_error_truth(tmp_path: Path) -> None:
+def test_oversized_structured_failure_uses_raw_result_for_error_truth(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     """Model truncation must not turn a real structured failure into success."""
+    from tests._result_room import pin_result_room
+
+    pin_result_room(monkeypatch, 12_000)  # the 30,000-character result does not fit
 
     fake_client = OversizedStructuredErrorClient()
     observed: list[tuple[str, str | None]] = []

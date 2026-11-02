@@ -4,10 +4,11 @@ A read returns a header line and the requested lines, each prefixed with its 1-b
 number, as text content, plus a small structured result for programs (``run_code``
 scripts, the UI): path, the line range, the file's line count and the next offset.
 
-A read sizes itself to the model's result bound (the smaller of the model and transcript
-lanes, as the shell tool does): it returns the whole lines that fit, and when lines
-remain its header names the offset to continue from, so a default read never spills
-into a file that only this tool could page. Very long lines are cut with a marker.
+A read sizes itself to the room one result has in the model's context window
+(:mod:`clio_agent.tools.result_room`): it returns up to ``limit`` whole lines that fit,
+and when lines remain its header names the offset to continue from (and, when the room
+stopped it, how big one result may be), so a read never spills into a file that only
+this tool could page. Very long lines are cut with a marker.
 Binary files are refused with a typed error naming the tool that can read them.
 """
 
@@ -22,10 +23,7 @@ from mcp.types import TextContent
 
 from clio_agent import conf
 from clio_agent.tools.file_policy import validate_non_empty_string, validate_read_path
-from clio_agent.tools.mcp_result_projection import (
-    model_tool_result_chars,
-    transcript_tool_result_chars,
-)
+from clio_agent.tools.result_room import ResultRoom, result_room
 
 __all__ = ["count_bytes", "read_line_chars", "read_lines", "read_text_range"]
 
@@ -80,7 +78,7 @@ def _numbered(number: int, line: str, max_chars: int) -> str:
 
 
 def read_text_range(filepath: str, offset: int = 1, limit: int = 0) -> ToolResult:
-    """Read up to ``limit`` lines from line ``offset`` (1-based), sized to the result bound.
+    """Read up to ``limit`` lines from line ``offset`` (1-based), sized to the result's room.
 
     ``limit`` 0 reads up to :func:`read_lines` lines.
     """
@@ -95,7 +93,8 @@ def read_text_range(filepath: str, offset: int = 1, limit: int = 0) -> ToolResul
     size = path.stat().st_size
     offset, limit = max(1, int(offset)), max(1, int(limit or read_lines()))
     line_chars, count_limit = read_line_chars(), count_bytes()
-    budget = min(model_tool_result_chars(), transcript_tool_result_chars()) - _HEADER_RESERVE
+    room = result_room()
+    budget = room.chars - _HEADER_RESERVE
     lines: list[str] = []
     used, end, total, full = 0, offset - 1, 0, False
     counted_all = True
@@ -115,26 +114,45 @@ def read_text_range(filepath: str, offset: int = 1, limit: int = 0) -> ToolResul
             if size > count_limit:
                 counted_all = False
                 break
+    counted = total if counted_all else None
     more = total > end if counted_all else True
-    header = _header(path, size, offset, end, total if counted_all else None, more)
+    by_room = more and len(lines) < limit
+    text = "\n".join([_header(path, size, offset, end, counted, more, room, by_room), *lines])
+    # The model's tokenizer can count more than four characters a token: keep what fits.
+    while len(lines) > 1 and not room.fits(text):
+        keep = len(lines) * room.tokens // max(1, room.measure(text))
+        lines = lines[: max(1, min(len(lines) - 1, keep))]
+        end, more, by_room = offset + len(lines) - 1, True, True
+        text = "\n".join([_header(path, size, offset, end, counted, more, room, by_room), *lines])
     structured: dict[str, Any] = {
         "path": str(path),
         "size_bytes": size,
         "start_line": offset if lines else None,
         "end_line": end if lines else None,
-        "total_lines": total if counted_all else None,
+        "total_lines": counted,
         "truncated": more,
         "next_offset": end + 1 if more else None,
     }
-    text = "\n".join([header, *lines])
     return ToolResult(content=[TextContent(type="text", text=text)], structured_content=structured)
 
 
-def _header(path: Path, size: int, offset: int, end: int, total: int | None, more: bool) -> str:
+def _header(
+    path: Path,
+    size: int,
+    offset: int,
+    end: int,
+    total: int | None,
+    more: bool,
+    room: ResultRoom,
+    by_room: bool,
+) -> str:
     count = f"{total:,}" if total is not None else "an uncounted number of"
     if total == 0:
         return f"{path}  empty file ({size:,} bytes)"
     if end < offset:
         return f"{path}  offset {offset:,} is past the end; the file has {count} lines"
     head = f"{path}  lines {offset:,}-{end:,} of {count}  ({size:,} bytes)"
-    return f"{head}; continue with offset={end + 1}" if more else head
+    if not more:
+        return head
+    reason = f" (one result holds about {room.tokens:,} tokens)" if by_room else ""
+    return f"{head}; continue with offset={end + 1}{reason}"

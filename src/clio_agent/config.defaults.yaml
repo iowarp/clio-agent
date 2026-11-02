@@ -309,12 +309,6 @@ limits.lm_transient_retries: 2.0
 # (image/audio/resource) before it's elided; raise for larger images.
 limits.mcp_content_block_max_bytes: 524288
 
-# CLIO_MODEL_TOOL_RESULT_CHARS  (int)  <- src/clio_agent/gact/session_mail.py
-# Characters of a tool result shown to the model; a longer result is saved
-# to the session's tool-output folder and the agent gets this many head
-# characters plus the file path. Distinct from limits.tool_result_chars.
-limits.model_tool_result_chars: 12000
-
 # CLIO_PLAN_REVIEW_CHARS  (int)  <- src/clio_agent/gact/plan_review.py
 # Character bound on saved plan content embedded in an approval record;
 # raise for unusually large implementation plans, lower to bound review
@@ -324,8 +318,9 @@ limits.plan_review_chars: 256000
 # CLIO_SHELL_DEFAULT_OUTPUT_BYTES  (int)  <- src/clio_agent/tools/servers/shell_server.py
 # Per-stream bytes of shell stdout/stderr returned inline when the caller
 # specifies none; larger output is spilled in full to .clio/tool-output/ and
-# excerpted. Sized so the result fits limits.tool_result_chars (#887).
-limits.shell_default_output_bytes: 8192
+# excerpted. The whole result is also fitted to the room one result has in
+# the model's context window (tools.result_share).
+limits.shell_default_output_bytes: 32768
 
 # CLIO_SHELL_DEFAULT_TIMEOUT_S  (float)  <- src/clio_agent/tools/servers/shell_server.py
 # Seconds a shell command may run when the caller passes no timeout; 0
@@ -352,7 +347,8 @@ limits.shell_max_timeout_s: 0.0
 
 # CLIO_TOOL_RESULT_CHARS  (int)  <- src/clio_agent/gact/assignment_evidence.py
 # Character bound on the transcript/evidence-metadata preview of a tool
-# result; raise to keep more result text visible in the transcript.
+# result; raise to keep more result text visible in the transcript. Not what
+# the model is shown (tools.result_share).
 limits.tool_result_chars: 12000
 
 # CLIO_TRANSIENT_PROVIDER_RETRY_DELAYS  (list)  <- src/clio_agent/agent.py
@@ -450,11 +446,6 @@ fleet.usage_poll_seconds: 300
 # selection takes precedence, including an explicit null to inherit the
 # conversation model.
 # goal.judge_model:  # default unset; resolved in code
-
-# CLIO_PLAN_INJECTION_CHARS  (int)  <- src/clio_agent/gact/session_plan.py
-# Characters of the session plan offered back to the agent as working state;
-# a longer plan is cut there with a pointer to its file.
-plan.injection_chars: 12000
 
 # CLIO_DEFAULT_MARKETPLACE  (str)  <- src/clio_agent/plugins/service.py
 # Source of the shipped default marketplace (a folder or git URL); unset
@@ -1582,6 +1573,14 @@ tools.per_server_concurrency: 8
 # overrides the plugin's declared default; CLIO_TOOLS_PERMISSIONS uses JSON.
 # tools.permissions:  # computed at runtime: {}
 
+# CLIO_TOOL_RESULT_SHARE  (float)  <- src/clio_agent/tools/result_room.py
+# Share of the model's context window (0-1] one tool result may use before
+# it is saved to a file and the model gets its head; never more than the
+# room left before compaction. 0.125 is 25,000 tokens on a 200k window; also
+# sizes file reads, searches, shell output, task pages, mail per step and
+# the offered plan.
+tools.result_share: 0.125
+
 # CLIO_TOOLS_SEARCH_LIMIT  (int)  <- src/clio_agent/gact/search_tools.py
 # Tools a search_tools keyword search returns when the call names no limit.
 tools.search_limit: 5
@@ -1600,6 +1599,12 @@ tools.search_miss_names: 40
 # Which interpreter the Windows shell tool runs commands through
 # (powershell/bash/cmd); match it to your commands' shell.
 tools.shell.windows_backend: "powershell"
+
+# CLIO_UNKNOWN_WINDOW_RESULT_TOKENS  (int)  <- src/clio_agent/tools/result_room.py
+# Tokens of one tool result the model is shown when its context window is
+# unknown (no handshake or catalog entry); a longer result is saved to a
+# file with its head.
+tools.unknown_window_result_tokens: 25000
 
 # CLIO_TOOLS_WITHHELD  (list)  <- src/clio_agent/gact/agents/native_tool_registry.py
 # Built-in tools withheld from every agent (comma-separated), recorded as

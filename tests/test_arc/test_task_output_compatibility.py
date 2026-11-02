@@ -25,6 +25,7 @@ from clio_agent.gact.task_declarations import build_task_compatibility_tools, bu
 from clio_agent.gact.task_history import _encoded
 from clio_agent.gact.task_operations import TaskOperations
 from clio_agent.gact.tool_observation import CollectedTaskResult
+from tests._result_room import pin_result_room
 from tests.test_arc.test_assignment_evidence_contracts import evidence_children
 from tests.test_arc.test_conversation_owner_contracts import create_environment
 from tests.test_arc.test_task_observation_compatibility import forbidden_cancel
@@ -170,7 +171,7 @@ async def test_legacy_getter_preserves_authorized_result_and_durable_collection(
         reread = await tool.func(task_id=child.handle)
         assert reread["result"] == body and reread.notification_ids == ()
         monkeypatch.setenv("CLIO_TOOL_RESULT_CHARS", "8")
-        monkeypatch.setenv("CLIO_MODEL_TOOL_RESULT_CHARS", "8")
+        pin_result_room(monkeypatch, 8)
         monkeypatch.setattr(child_report_fit, "_measure", lambda: child_report_fit._Room(8 // 4))
         bounded = await tool.func(task_id=child.handle)
         assert bounded["result"]["truncated"] is True and len(bounded["result"]["preview"]) == 8

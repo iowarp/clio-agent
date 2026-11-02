@@ -19,8 +19,6 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
-from clio_agent import conf
-
 __all__ = [
     "ACTIVE_STATUSES",
     "PLAN_SOURCE",
@@ -42,7 +40,7 @@ PLAN_STATUS_KEY = "plan_status"
 PERSON_EDIT_KEY = "plan_person_edit"
 #: Injection source of the plan offered as working state, and its reminder.
 PLAN_SOURCE = "plan"
-#: Reminders for the person's edit of the plan and for a plan cut at the injection limit.
+#: Reminders for the person's edit of the plan and for a plan cut to the window's share.
 PLAN_PERSON_EDIT_SOURCE = "plan_person_edit"
 PLAN_TRUNCATED_SOURCE = "plan_truncated"
 #: Statuses in which the plan is offered as working state.
@@ -58,10 +56,31 @@ class PlanError(ValueError):
         self.reason = reason
 
 
-def _injection_chars() -> int:
-    return conf.resolve(
-        "plan.injection_chars", env="CLIO_PLAN_INJECTION_CHARS", default=12000, cast=conf.as_int
-    )
+#: Typed reason: the window is unknown, so the plan is offered whole.
+PLAN_WINDOW_UNKNOWN = "plan_window_unknown"
+
+
+def _cut_plan(text: str) -> str | None:
+    """The part of the plan offered, or ``None`` when it is offered whole.
+
+    The plan is the agent's own file, so the only reason to cut it is the context window:
+    like any one result it may use the window's share (``tools.result_share``,
+    :mod:`clio_agent.tools.result_room`). The room left is not used: it is measured from
+    the last prompt, which is stale at the points the plan is offered (turn start, after a
+    compaction). Unknown window: there is nothing to cut to, so it is offered whole, traced
+    as :data:`PLAN_WINDOW_UNKNOWN`.
+    """
+    from clio_agent.gact.runtime.context_tokens import _estimate_text_tokens  # noqa: PLC0415
+    from clio_agent.runtime import trace  # noqa: PLC0415
+    from clio_agent.tools.result_room import CHARS_PER_TOKEN, window_share_tokens  # noqa: PLC0415
+
+    tokens = window_share_tokens()
+    if tokens is None:
+        trace.event("TOOLS", "%s: the plan is offered whole", PLAN_WINDOW_UNKNOWN)
+        return None
+    if _estimate_text_tokens(text) <= tokens:
+        return None
+    return text[: tokens * CHARS_PER_TOKEN].rstrip()
 
 
 def plan_state(session: Any) -> dict[str, Any]:
@@ -106,10 +125,9 @@ def plan_injection(app: Any, session_id: str, session: Any) -> str:
         return ""
     where = {"app": app, "session_id": session_id}
     text = state["text"].strip()
-    limit = _injection_chars()
-    if len(text) > limit:
+    if (cut := _cut_plan(text)) is not None:
         note = reminders.render(PLAN_TRUNCATED_SOURCE, {"path": state["path"]}, **where)
-        text = text[:limit] + (f"\n\n{note}" if note else "")
+        text = cut + (f"\n\n{note}" if note else "")
     if (getattr(session, "metadata", None) or {}).get(PERSON_EDIT_KEY):
         edited = reminders.render(
             PLAN_PERSON_EDIT_SOURCE, {"path": state["path"], "plan": text}, **where

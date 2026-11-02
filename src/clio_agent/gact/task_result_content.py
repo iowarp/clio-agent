@@ -117,10 +117,11 @@ def result_page(
     if offset > len(encoded):
         raise ValueError("Result cursor offset is outside its pinned content")
     # Pages of a version-1 cursor, and of a result with nowhere to be saved, are one tool
-    # result each; a result that fits the parent's context is returned whole.
-    from clio_agent.tools.mcp_result_projection import model_tool_result_chars  # noqa: PLC0415
+    # result each (at least a character, so a page always advances); a result that fits
+    # the parent's context is returned whole.
+    from clio_agent.tools.result_room import result_room  # noqa: PLC0415
 
-    bound = model_tool_result_chars()
+    bound = max(1, result_room().chars)
     result: dict[str, Any] = {"result_reference": reference.model_dump(mode="json")}
     if selection is not None:
         result["result_selection"] = selection
@@ -130,7 +131,7 @@ def result_page(
         return {**result, "result": value, "next_cursor": None}
     if not position and save is not None:
         return {**result, **save(value, encoded)}
-    end = min(len(encoded), offset + bound) if bound > 0 else len(encoded)
+    end = min(len(encoded), offset + bound)
     result.update(
         result={"preview": encoded[offset:end], "truncated": end < len(encoded)},
         chunk_field="result.preview",

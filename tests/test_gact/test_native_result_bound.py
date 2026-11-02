@@ -11,7 +11,7 @@ from tests._config_layer import set_config
 
 
 def test_an_oversize_native_result_is_recorded_bounded(tmp_path: Path) -> None:
-    set_config("limits", {"model_tool_result_chars": 1_000})
+    set_config("tools.unknown_window_result_tokens", 250)  # 1,000 characters
     value = {"rows": [{"id": i, "text": "x" * 40} for i in range(200)]}
     with tool_workspace_context(str(tmp_path)), injections.collect() as told:
         recorded = recorded_observation("query_tasks", value)
@@ -21,7 +21,7 @@ def test_an_oversize_native_result_is_recorded_bounded(tmp_path: Path) -> None:
 
 
 def test_small_results_and_skill_procedures_are_recorded_whole(tmp_path: Path) -> None:
-    set_config("limits", {"model_tool_result_chars": 1_000})
+    set_config("tools.unknown_window_result_tokens", 250)  # 1,000 characters
     assert recorded_observation("query_tasks", {"ok": True}) == {"ok": True}
     body = "Step. " * 500
     with tool_workspace_context(str(tmp_path)):
