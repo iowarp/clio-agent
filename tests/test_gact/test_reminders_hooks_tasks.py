@@ -21,6 +21,7 @@ from clio_agent.gact.session_mail import SessionMail
 from clio_agent.gact.task_access import TaskCaller
 from clio_agent.prompts import PromptRegistry
 from clio_agent.tools import harness_notes, injections
+from tests._config_layer import set_config
 from tests.test_arc.test_human_steering_notice import STAMP, history_with_child, input_mail
 
 # --------------------------------------------------------------------------- #
@@ -121,44 +122,33 @@ def test_a_stop_hook_without_words_re_drives_with_the_hook_defer_text(
 # --------------------------------------------------------------------------- #
 
 
-def _breaker(failures: dict[str, tuple[int, str]]) -> Any:
+def _breaker(failures: dict[str, int]) -> Any:
     import threading
 
-    return SimpleNamespace(_failure_lock=threading.Lock(), _consecutive_transient_failures=failures)
+    return SimpleNamespace(_failure_lock=threading.Lock(), _consecutive_failures=failures)
 
 
-def test_circuit_breaker_notes_render_todays_text(monkeypatch: pytest.MonkeyPatch) -> None:
-    """SABOTAGE: change a word in either circuit_breaker template and this fails."""
+def test_circuit_breaker_note_renders_its_text() -> None:
+    """SABOTAGE: change a word in the circuit_breaker_warning template and this fails."""
     from clio_agent.tools.execution import SyncMCPToolExecutor
 
-    monkeypatch.setenv("CLIO_TOOL_FAILURE_LIMIT", "2")
-    state = _breaker({"t": (1, "timeout")})
+    reminders.update("circuit_breaker_warning", params={"after": 2})
+    state = _breaker({"t": 1})
     assert SyncMCPToolExecutor._record_tool_failure(state, "t", "read timeout") == (
-        "[clio: circuit_breaker] t has failed 2 times in a row. Consider an alternative "
-        "route: further calls to it will be blocked to prevent looping."
-    )
-    assert SyncMCPToolExecutor._circuit_open_message(state, "t") == (
-        "[clio: circuit_breaker] t was not run: it failed 2 times in a row (last error: "
-        "read timeout). Take an alternative route, or report what blocks you -- repeating "
-        "this call would loop."
+        "[clio: circuit_breaker] t has failed 2 times in a row. Unless something has "
+        "changed, calling it the same way again is likely to fail again."
     )
 
 
-def test_the_failure_warning_can_be_switched_off_but_not_the_refusal(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """Off, the warning is not added; the refused call still says why it was not run.
-    SABOTAGE: make ``circuit_warning_note`` ignore the switch and this fails."""
+def test_the_failure_note_can_be_switched_off() -> None:
+    """Off, no note is added; failures are still counted. SABOTAGE: make
+    ``circuit_warning_note`` ignore the switch and this fails."""
     from clio_agent.tools.execution import SyncMCPToolExecutor
 
-    monkeypatch.setenv("CLIO_TOOL_FAILURE_LIMIT", "2")
-    reminders.update("circuit_breaker_warning", active=False)
-    reminders.update("circuit_breaker_open", active=False)
-    state = _breaker({"t": (1, "timeout")})
+    reminders.update("circuit_breaker_warning", active=False, params={"after": 2})
+    state = _breaker({"t": 1})
     assert SyncMCPToolExecutor._record_tool_failure(state, "t", "read timeout") == ""
-    assert state._consecutive_transient_failures["t"][0] == 2  # still counted
-    refusal = SyncMCPToolExecutor._circuit_open_message(state, "t")
-    assert refusal is not None and refusal.startswith("[clio: circuit_breaker] t was not run")
+    assert state._consecutive_failures["t"] == 2
 
 
 def test_path_hint_renders_todays_text_and_switches_off(
@@ -344,7 +334,7 @@ def test_a_cut_notification_says_where_the_rest_is(
     arc: ARCMemory, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """SABOTAGE: drop the newline before the retained reference and this fails."""
-    monkeypatch.setenv("CLIO_MODEL_TOOL_RESULT_CHARS", "300")
+    set_config("tools.unknown_window_result_tokens", 75)  # 300 characters
     history, child = history_with_child(arc)
     content = history.write_content("parent", "x" * 1000)
     history.record_mail(

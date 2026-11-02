@@ -14,6 +14,7 @@ from clio_agent.gact import context
 from clio_agent.gact.agents.clio_react_record import StepRecorder
 from clio_agent.gact.conversations import ConversationOutcome, ConversationSegment
 from clio_agent.gact.native_work import now
+from tests._result_room import pin_result_room
 from tests.test_arc.test_conversation_owner_contracts import create_environment
 from tests.test_arc.test_task_retirement_contracts import accept, idle
 
@@ -25,7 +26,7 @@ async def test_late_eligible_input_excludes_trigger_until_a_later_committed_iter
     app, owner, root = await create_environment(arc, tmp_path)
     sid = root.owner.session_id
     processed: asyncio.Future[None] = asyncio.get_running_loop().create_future()
-    monkeypatch.setenv("CLIO_MODEL_TOOL_RESULT_CHARS", "300")
+    pin_result_room(monkeypatch, 300)
     marker = "DEFERRED-ORIGINAL-HUMAN-INPUT"
     observed: list[str] = []
     runs: list[str] = []

@@ -258,7 +258,9 @@ def _workspace_pdf(path: str, pages: str) -> tuple[Path, Path, bytes, int, bytes
     root = _workspace_root()
     requested_path = Path(path)
     candidate = requested_path if requested_path.is_absolute() else root / requested_path
-    resolved = FileAccessPolicy.from_env().validate_read(str(candidate), field="path")
+    resolved = FileAccessPolicy.from_env().validate_read(
+        str(candidate), field="path", loads_whole_file=True
+    )
     try:
         relative = resolved.relative_to(root)
     except ValueError as exc:

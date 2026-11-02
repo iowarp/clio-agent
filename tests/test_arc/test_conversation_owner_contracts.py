@@ -56,6 +56,7 @@ from clio_agent.gact.turn_runner import TurnRunner
 from clio_agent.gact.workspaces import WorkspaceStore
 from clio_agent.plugins.service import PluginService
 from clio_agent.tools.task_client import TaskSubmission, restore_native_call
+from tests._result_room import pin_result_room
 
 
 @pytest.mark.asyncio
@@ -900,7 +901,7 @@ async def test_rendered_mail_batches_count_the_initial_head_and_retain_overflow(
     from dspy.lm15 import ImagePart, TextPart
     from dspy.lm15 import Message as ModelMessage
 
-    monkeypatch.setenv("CLIO_MODEL_TOOL_RESULT_CHARS", "120")
+    pin_result_room(monkeypatch, 120)
     app, owner, root = await create_environment(arc, tmp_path)
     png = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAusB9Wl6ZQAAAABJRU5ErkJggg=="
 

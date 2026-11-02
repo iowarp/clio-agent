@@ -19,6 +19,7 @@ from clio_agent.gact.builtin_boundary import BuiltinBoundary
 from clio_agent.gact.spawn_tools import build_spawn_runtime_tools
 from clio_agent.gact.task_access import TaskCaller
 from clio_agent.gact.task_operations import TaskOperations
+from tests._result_room import pin_result_room
 from tests.test_arc.test_assignment_evidence_contracts import evidence_children
 from tests.test_arc.test_conversation_owner_contracts import create_environment
 from tests.test_arc.test_task_observation_compatibility import (
@@ -101,7 +102,7 @@ async def test_pattern_matches_logical_output_across_a_remaining_page_budget(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     _app, owner, root = await create_environment(arc, tmp_path)
-    monkeypatch.setenv("CLIO_TOOL_RESULT_CHARS", "7")
+    pin_result_room(monkeypatch, 7)
     first = await asyncio.to_thread(running_shell, owner.history, root, "first")
     second = await asyncio.to_thread(running_shell, owner.history, root, "second")
     first = await asyncio.to_thread(append_output, owner.history, first, "12345")
@@ -142,7 +143,7 @@ async def test_truncated_match_continuation_keeps_budget_and_does_not_repeat_the
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     _app, owner, root = await create_environment(arc, tmp_path)
-    monkeypatch.setenv("CLIO_TOOL_RESULT_CHARS", "7")
+    pin_result_room(monkeypatch, 7)
     task = await asyncio.to_thread(running_shell, owner.history, root, "shell")
     task = await asyncio.to_thread(append_output, owner.history, task, "BBB")
     task = await asyncio.to_thread(append_output, owner.history, task, "A" * 9)

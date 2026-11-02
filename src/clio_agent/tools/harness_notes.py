@@ -7,9 +7,8 @@ reword it on the Prompts page. The code decides when a note is due and supplies 
 data; the template is what it says. The fixed markers (``[clio: hook]`` ...) stay in
 code: the transcript and other code recognise a note by them.
 
-The hook notes and the refused-call note are required reminders (they can be reworded,
-never switched off); the failure warning can be switched off, and then no warning is
-added. A leaf module: GACT is imported only when a note is rendered.
+The hook notes are required reminders (they can be reworded, never switched off); the
+failure warning is a fact that can be switched off, and nothing is ever blocked. A leaf module: GACT is imported only when a note is rendered.
 """
 
 from __future__ import annotations
@@ -20,7 +19,7 @@ from typing import Any
 __all__ = [
     "CIRCUIT_BREAKER_MARKER",
     "HOOK_MARKER",
-    "circuit_open_note",
+    "failure_warning_after",
     "circuit_warning_note",
     "hook_note",
 ]
@@ -44,12 +43,13 @@ def hook_note(piece: str, **variables: Any) -> str:
     return _note(HOOK_MARKER, f"hook_{piece}", variables)
 
 
-def circuit_open_note(name: str, count: int, last_error: str) -> str:
-    """What the agent is told when a call is not run because the tool keeps failing."""
-    variables = {"name": name, "count": count, "last_error": last_error}
-    return _note(CIRCUIT_BREAKER_MARKER, "circuit_breaker_open", variables)
+def failure_warning_after() -> int:
+    """Failures in a row before the warning (``x_param_after``; 0 never warns)."""
+    from clio_agent.gact import reminders  # noqa: PLC0415 - tools load before gact
+
+    return reminders.param("circuit_breaker_warning", "after", 3, int)
 
 
 def circuit_warning_note(name: str, count: int) -> str:
-    """The warning at the failure limit; ``""`` when the person switched it off."""
+    """The fact at ``after`` failures in a row; ``""`` when the person switched it off."""
     return _note(CIRCUIT_BREAKER_MARKER, "circuit_breaker_warning", {"name": name, "count": count})

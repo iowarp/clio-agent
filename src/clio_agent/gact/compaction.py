@@ -90,8 +90,6 @@ def __getattr__(name: str) -> str:
 AUDIT_AUTO_FAILED = "compaction.auto_failed"
 AUDIT_AUTO_SKIPPED = "compaction.auto_skipped"
 
-_BOUNDED_CHARS = 300
-
 
 class CompactionError(Exception):
     """One typed error surface for both triggers.
@@ -151,11 +149,6 @@ def _skip(sid: str, reason: str) -> dict[str, Any]:
 # ---------------------------------------------------------------------------
 
 
-def _bounded(text: str, limit: int = _BOUNDED_CHARS) -> str:
-    text = text or ""
-    return text if len(text) <= limit else text[: limit - 3] + "..."
-
-
 def _context_file_inventory(app: Any, sid: str) -> str:
     """Render stable facts for files attached outside the message ledger."""
     registry = getattr(app.state, "context_files", {}) or {}
@@ -166,11 +159,11 @@ def _context_file_inventory(app: Any, sid: str) -> str:
         path = str(row.get("display_path") or row.get("path") or "").strip()
         if not path:
             continue
-        facts = [f"path={_bounded(path)}"]
+        facts = [f"path={path}"]
         for key in ("mode", "size", "language"):
             value = row.get(key)
             if value not in (None, ""):
-                facts.append(f"{key}={_bounded(str(value))}")
+                facts.append(f"{key}={value}")
         rows.append("- " + "; ".join(facts))
     return "\n".join(sorted(rows))
 
@@ -183,11 +176,13 @@ def _message_lines(message: Any) -> list[str]:
         if kind in ("TextPart", "ThinkingPart") and part.text.strip():
             lines.append(f"{role}: {part.text.strip()}")
         elif kind == "ToolCallPart":
-            lines.append(f"{role}: tool call: {part.name}({_bounded(str(dict(part.input)))})")
+            # Whole: what is summarized was the model's context, so it fits a window, and
+            # a summary built from cut evidence loses what the agent found.
+            lines.append(f"{role}: tool call: {part.name}({dict(part.input)})")
         elif kind == "ToolResultPart":
             status = "error" if part.is_error else "ok"
             text = "".join(getattr(p, "text", "") for p in part.content)
-            lines.append(f"TOOL: tool result: {part.name} {status}: {_bounded(text)}")
+            lines.append(f"TOOL: tool result: {part.name} {status}: {text}")
         elif kind in ("ImagePart", "DocumentPart"):
             lines.append(f"{role}: [attached {kind.removesuffix('Part').lower()}]")
     return lines

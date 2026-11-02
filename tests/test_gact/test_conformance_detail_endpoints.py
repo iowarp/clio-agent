@@ -108,7 +108,7 @@ def test_session_and_message_diffs_return_conformance_shape(
     agent.calls = [
         (
             "fs_edit_file",
-            {"filepath": str(root / "main.py"), "old_string": "old", "new_string": "new"},
+            {"path": str(root / "main.py"), "old_string": "old", "new_string": "new"},
         )
     ]
     with TestClient(build_app(sessions_path=tmp_path / "s.json", agent=agent)) as client:

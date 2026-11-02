@@ -23,6 +23,7 @@ from clio_agent.gact.native_work import now
 from clio_agent.gact.summarization_record import summarization_part
 from clio_agent.gact.task_access import TaskCaller
 from clio_agent.gact.types import Message, Part
+from tests._result_room import pin_result_room
 from tests.test_gact.task_records import (
     active_turn_fixture,
     record_assignment_fixture,
@@ -145,7 +146,7 @@ def test_transcript_pages_reconstruct_large_typed_messages(
     world = transcript_world
     world.grant()
     source = world.message("α calibration " * 900)
-    monkeypatch.setenv("CLIO_TOOL_RESULT_CHARS", "700")
+    pin_result_room(monkeypatch, 700)
     cursor, fragments = None, []
     for _ in range(100):
         result = world.observe(view="transcript", cursor=cursor, limit=1)
@@ -206,7 +207,7 @@ def test_rewritten_transcript_cursor_is_not_silently_retargeted(
     world = transcript_world
     world.grant()
     world.message("Original " * 2000)
-    monkeypatch.setenv("CLIO_TOOL_RESULT_CHARS", "700")
+    pin_result_room(monkeypatch, 700)
     first = world.observe(view="transcript")
     original = world.app.state.messages[world.target][0]
     world.app.state.messages[world.target] = [
@@ -338,7 +339,7 @@ def test_linked_artifact_pages_return_original_verified_bytes(
     version, payload = _registered_report(world, world.target)
     listed = world.observe(view="artifacts")
     assert listed["tasks"][0]["items"][0]["artifact_id"] == version.artifact_id
-    monkeypatch.setenv("CLIO_TOOL_RESULT_CHARS", "701")
+    pin_result_room(monkeypatch, 701)
     cursor, received = None, ""
     for _ in range(30):
         result = world.observe(view="artifacts", artifact_id=version.artifact_id, cursor=cursor)
@@ -415,7 +416,7 @@ def test_live_preview_keeps_the_existing_output_bound(
     """A growing model frame cannot bypass the configured content budget."""
     world = transcript_world
     world.grant()
-    monkeypatch.setenv("CLIO_TOOL_RESULT_CHARS", "128")
+    pin_result_room(monkeypatch, 128)
     world.app.state.live_assistant_message_ids = {world.target: "current_frame"}
     world.app.state.live_assistant_parts = {
         world.target: [Part(id="large_live_part", type="text", text="progress " * 1000)]
@@ -460,7 +461,7 @@ def test_multiple_live_previews_share_the_existing_output_budget(
     ).id
     peer_task = record_assignment_fixture(world.app, peer)
     TranscriptWorld(world.app, world.client, world.reader, peer, peer_task, world.root).grant()
-    monkeypatch.setenv("CLIO_TOOL_RESULT_CHARS", "128")
+    pin_result_room(monkeypatch, 128)
     world.app.state.live_assistant_message_ids = {
         world.target: "first_live_frame",
         peer: "second_live_frame",
@@ -582,7 +583,7 @@ def test_tiny_text_page_advances_over_a_complete_unicode_character(
     world = transcript_world
     world.grant()
     version, _ = _registered_report(world, world.target, payload="α next".encode())
-    monkeypatch.setenv("CLIO_TOOL_RESULT_CHARS", "1")
+    pin_result_room(monkeypatch, 1)
     result = world.observe(view="artifacts", artifact_id=version.artifact_id)
     body = result["tasks"][0]["items"][0]
     assert body["content"] == "α" and body["next_offset"] == 2
@@ -599,7 +600,7 @@ def test_binary_artifact_pages_bound_the_encoded_output(
     version, _ = _registered_report(
         world, world.target, payload=payload, name="payload.bin", kind=ArtifactKind.DATASET
     )
-    monkeypatch.setenv("CLIO_TOOL_RESULT_CHARS", "64")
+    pin_result_room(monkeypatch, 64)
     result = world.observe(view="artifacts", artifact_id=version.artifact_id)
     body = result["tasks"][0]["items"][0]
     assert body["encoding"] == "base64" and len(body["content"]) <= 64
@@ -725,10 +726,13 @@ def test_cursor_detects_changes_before_its_anchor(transcript_world: TranscriptWo
     assert "source changed" in next_page["tasks"][0]["error"]
 
 
-def test_artifact_cursor_pins_the_original_version(transcript_world: TranscriptWorld) -> None:
+def test_artifact_cursor_pins_the_original_version(
+    transcript_world: TranscriptWorld, monkeypatch: pytest.MonkeyPatch
+) -> None:
     """Continuation cannot adopt a replacement artifact digest from its current listing."""
     from clio_agent.gact.task_cursors import decode_cursor, encode_cursor
 
+    pin_result_room(monkeypatch, 12_000)  # the 20,000-byte artifact takes two pages
     world = transcript_world
     world.grant()
     version, _ = _registered_report(world, world.target, payload=b"a" * 20000)

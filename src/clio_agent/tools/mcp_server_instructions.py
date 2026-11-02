@@ -5,6 +5,11 @@ namespace from the live listing (:func:`record_listing_facts`), persists them wi
 listing cache entry, and replays them on a cache hit, so a server deferred behind
 ``search_tools`` is described in the prompt by its own words when its plugin gives no
 ``servers.<name>.description`` (:mod:`clio_agent.gact.agents.deferred_tools`).
+
+The prompt's listing uses a short form (the first paragraph, up to
+``tools.instructions_chars``) and says when it is shortened; the whole instructions
+reach the model with the server's tools when ``search_tools`` loads them
+(:func:`clio_agent.gact.search_tools.search_result`).
 """
 
 from __future__ import annotations
@@ -27,7 +32,9 @@ _BY_NAMESPACE: dict[str, str] = {}
 
 
 def instructions_chars() -> int:
-    """How much of a server's instructions a prompt entry uses (``tools.instructions_chars``).
+    """How much of a server's instructions the deferred listing shows (``tools.instructions_chars``).
+
+    A default for the listing's short form only: ``search_tools`` gives the whole text.
 
     Raises:
         ValueError: The configured length is below 2 (one character and the ellipsis).

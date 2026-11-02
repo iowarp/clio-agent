@@ -16,6 +16,7 @@ from typing import Any
 import pytest
 
 from clio_agent.gact import reminders
+from tests._result_room import pin_result_room
 
 # --------------------------------------------------------------------------- #
 # summarization, compaction_failed, compaction_skipped                        #
@@ -173,7 +174,7 @@ def test_a_call_whose_outcome_was_lost_keeps_its_required_result(
 # --------------------------------------------------------------------------- #
 # result_spilled                                                              #
 # --------------------------------------------------------------------------- #
-_TEXT = "line\n" * 50  # 250 characters, 20 lines in the first 100
+_TEXT = "line\n" * 200  # 1,000 characters; the room is 400
 
 
 def _bounded(monkeypatch: pytest.MonkeyPatch, spilled: Path | Exception) -> tuple[str, list]:
@@ -186,7 +187,7 @@ def _bounded(monkeypatch: pytest.MonkeyPatch, spilled: Path | Exception) -> tupl
         return spilled
 
     told: list[Any] = []
-    monkeypatch.setattr(projection, "model_tool_result_chars", lambda: 100)
+    pin_result_room(monkeypatch, 400)
     monkeypatch.setattr(projection, "_spill", spill)
     monkeypatch.setattr(injections, "note", lambda source, text: told.append((source, text)))
     return projection.bounded_model_tool_result(_TEXT), told
@@ -198,7 +199,7 @@ def _bounded(monkeypatch: pytest.MonkeyPatch, spilled: Path | Exception) -> tupl
         (
             Path("/w/out.txt"),
             "the full result is in `/w/out.txt`; read on with "
-            'fs_read_file(filepath="/w/out.txt", offset=21), or search it with fs_search_text',
+            'fs_read_file(path="/w/out.txt", offset={offset}), or search it with fs_search_text',
         ),
         (
             Path("/w/out.json"),
@@ -215,11 +216,14 @@ def test_a_cut_result_keeps_todays_note_and_it_cannot_be_switched_off(
     monkeypatch: pytest.MonkeyPatch, spilled: Any, where: str
 ) -> None:
     """SABOTAGE: change a word in any ``result_spilled*.md`` and its case fails."""
-    note = (
-        "[clio: result_spilled] This result is 250 characters, more than the 100 shown to "
-        f"you. The first characters follow; {where}."
-    )
     result, told = _bounded(monkeypatch, spilled)
+    head = result.split("\n\n", 1)[1]
+    assert head and len(result) <= 400
+    where = where.replace("{offset}", str(head.count("\n") + 2))
+    note = (
+        f"[clio: result_spilled] This result is 1,000 characters, more than the {len(head):,} "
+        f"shown to you. The first characters follow; {where}."
+    )
     assert result.startswith(note + "\n\n") and told == [("result_spilled", result)]
     for source in ("result_spilled", "result_spilled_read_on", "result_spilled_json"):
         reminders.update(source, active=False)

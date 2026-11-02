@@ -43,6 +43,7 @@ from clio_agent.arc.clio_core_liveness import (
     ClioCoreRuntimeLostError,
 )
 from clio_agent.arc.loop_guard import assert_store_write_off_loop, audit_store_read_on_loop
+from clio_agent.arc.native_threads import mark_native_thread, run_on_native_thread
 from clio_agent.runtime.commitment_activity import track as track_owned_wait
 
 # Store ops that WRITE: waited on from the loop thread they are a typed defect (#1334).
@@ -230,6 +231,7 @@ def _stall_watch_worker() -> None:
     abandoned by design; the future's caller has already stopped waiting.
     """
     global _pool_idle
+    mark_native_thread()  # process-lived: its clio-core resources are created once
     while True:
         with _pool_lock:
             _pool_idle += 1
@@ -315,11 +317,15 @@ def _run_inline(make_call: Callable[[], Any]) -> tuple[str, Any, Optional[BaseEx
     sleeping with the GIL released and watching the daemon's progress itself, so a
     stalled daemon still ends the wait typed. Handing such a call to a pooled worker
     only added a thread hand-off and a progress sample to every small RPC.
+
+    "Caller thread" means a process-lived one: a short-lived caller hands the call to a
+    persistent native thread (:mod:`clio_agent.arc.native_threads`), because clio-core
+    keeps an epoll + signalfd for every thread that ever entered it.
     """
     from clio_agent.arc.clio_core_async_ops import ClioCoreFutureTimeout  # noqa: PLC0415
 
     try:
-        return "done", make_call(), None
+        return "done", run_on_native_thread(make_call), None
     except ClioCoreFutureTimeout as error:
         return error.reason, None, None
     except Exception as error:  # noqa: BLE001 - a real RPC error, re-raised by the caller

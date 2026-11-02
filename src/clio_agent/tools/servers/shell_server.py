@@ -46,7 +46,7 @@ from clio_agent.tools.servers.shell_output import (
     StreamCapture,
     compose_output_fields,
     read_process_stream,
-    shell_result_char_budget,
+    shell_result_room,
 )
 from clio_agent.tools.servers.shell_spill_store import (
     SPILL_DIRNAME,
@@ -100,7 +100,6 @@ class ShellLimits:
     max_command_chars: int
     default_output_bytes: int  # per stream, inline, when the caller passes none
     max_output_bytes: int  # per stream, the most a caller may request inline
-    result_chars: int  # encoded-result budget (the tighter downstream bound)
 
 
 def resolve_shell_limits() -> ShellLimits:
@@ -113,12 +112,12 @@ def resolve_shell_limits() -> ShellLimits:
       can reject smaller commands, particularly cmd/.cmd/.bat at 8,191 characters.
       Quoting and wrapper arguments also count. Programs belong in workspace
       script files; the native launch string is checked separately.
-    * ``shell_default_output_bytes`` 8,192 per stream (was 16,384). The result
-      must fit the downstream 12,000-character tool-result bounds or it gets
-      rewrapped into a truncated JSON-in-JSON preview (#887); 16 KiB made that
-      the norm for default-sized output. Larger output spills to a file.
-    * ``shell_max_output_bytes`` 131,072: the per-call ceiling. The encoded
-      result is still held under ``result_chars``; the rest is in the spill file.
+    * ``shell_default_output_bytes`` 32,768 per stream, about the 30,000 characters
+      of output Claude Code's shell returns. Larger output spills to a file.
+    * ``shell_max_output_bytes`` 131,072: the per-call ceiling (memory holds twice
+      this per stream). Either way the encoded result is fitted to the room one
+      result has in the model's context window (:func:`shell_result_room`); the
+      rest is in the spill file.
     """
 
     return ShellLimits(
@@ -131,7 +130,7 @@ def resolve_shell_limits() -> ShellLimits:
         default_output_bytes=conf.resolve(
             "limits.shell_default_output_bytes",
             env="CLIO_SHELL_DEFAULT_OUTPUT_BYTES",
-            default=8 * 1024,
+            default=32 * 1024,
             cast=conf.as_int,
         ),
         max_output_bytes=conf.resolve(
@@ -140,7 +139,6 @@ def resolve_shell_limits() -> ShellLimits:
             default=128 * 1024,
             cast=conf.as_int,
         ),
-        result_chars=shell_result_char_budget(),
     )
 
 
@@ -351,8 +349,8 @@ def _limits_text(limits: ShellLimits) -> str:
         "shells/launchers can impose smaller bounds, even below this budget. "
         f"{SCRIPT_FILE_GUIDANCE} stdout and stderr each return inline up to "
         f"max_output_bytes (default {limits.default_output_bytes}, at most "
-        f"{limits.max_output_bytes}) and the whole result stays under "
-        f"{limits.result_chars} characters. Output beyond that is not lost: the complete "
+        f"{limits.max_output_bytes}) and the whole result fits the room one result has in "
+        "your context window. Output beyond that is not lost: the complete "
         f"stream is saved in the workspace's Agent-managed ``{SPILL_DIRNAME}/`` directory (one "
         "<id>.stdout.txt / .stderr.txt file per stream, kept until the session is "
         "deleted); `stdout` then holds a head excerpt cut on line boundaries and "
@@ -746,7 +744,7 @@ async def execute_shell(
                         "timeout_s": timeout,
                     }
                     result = compose_output_fields(
-                        base, captures, root=spill_root, budget=shell_result_char_budget()
+                        base, captures, root=spill_root, budget=shell_result_room()
                     )
         if result is None:
             raise RuntimeError("Shell exited without confirmed process-tree settlement")

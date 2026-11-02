@@ -133,7 +133,7 @@ def test_read_only_fast_allows_before_mode_lock(tmp_path: Path, mode: str) -> No
         sid = c.post("/v1/sessions", json={"title": "t", "mode": mode}).json()["id"]
         gate = _make_permission_gate(app)
         with _tool_session_context(sid):
-            assert gate("fs_read_file", {"filepath": "x"}) == "allow"
+            assert gate("fs_read_file", {"path": "x"}) == "allow"
             assert gate("fs_list_directory", {"path": "x"}) == "allow"
             assert gate("fs_search_text", {"path": "x", "query": "callback"}) == "allow"
         # And no permission row was recorded for the read (it never reached the lock/prompt).

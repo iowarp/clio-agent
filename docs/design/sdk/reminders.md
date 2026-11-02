@@ -39,12 +39,13 @@ default renders today's text byte for byte, pinned by `tests/test_gact/test_remi
 - **Switchable** (a person may turn them off): `explore_nudge`, `plan_stale`,
   `session_facts*`, `plan*`, `todos`, the optional `plan_mode_*` bullets,
   `compaction_failed`, `compaction_skipped`, the `context_recovery_*` notes, `memory*`,
-  `plugin_change_deferred_tools`, `plugin_change_footer`, `circuit_breaker_warning`,
+  `plugin_change_deferred_tools`, `plugin_change_footer`, `circuit_breaker_warning` (a fact;
+  nothing is blocked), `child_report`, `replan`,
   `path_hint`, `variant_drafting`.
 - **Required** (`x_required`, reworded but never off; the reason is shown on the page):
   `plan_mode`, `plan_mode_playbook`, `summarization*`, `context_recovery_uncertain`,
   `result_spilled*`, `media_unavailable*`, `plugin_change` and its removed/added pieces,
-  the eight `hook_*` notes, `hook_defer`, `circuit_breaker_open`, `variant_advice`, the
+  the eight `hook_*` notes, `hook_defer`, `variant_advice`, the
   `variant_drafting_*` pieces (switch the whole note instead), `mcp_elicitation`,
   `task_result*`. Only the shipped template can declare `x_required`.
 - The recorder gates every source on `clio.reminder.<source>`; a source emitted directly

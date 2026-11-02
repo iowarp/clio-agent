@@ -67,7 +67,7 @@ def human_control_cycle(
         sid,
         f"Spawn worker with exactly this assignment: {assignment!r}. Then start your own "
         f"shell_bash(command={root_command!r}, background=true, timeout_s=0, "
-        f"cwd={str(workspace)!r}) exactly once. Read fs_read_file(filepath={str(sentinel)!r}). "
+        f"cwd={str(workspace)!r}) exactly once. Read fs_read_file(path={str(sentinel)!r}). "
         f"Then shell_bash(command={boundary_command!r}, background=false, timeout_s=60, "
         f"cwd={str(workspace)!r}) exactly once. This foreground command is an operator-controlled "
         "boundary gate; it will be released after human intervention. After it returns, "
@@ -244,7 +244,7 @@ def human_control_cycle(
         call,
         proof,
         sid,
-        f"Read fs_read_file(filepath={str(sentinel)!r}), then finish. No task controls or messages.",
+        f"Read fs_read_file(path={str(sentinel)!r}), then finish. No task controls or messages.",
         "fs_read_file",
     )
     assert [

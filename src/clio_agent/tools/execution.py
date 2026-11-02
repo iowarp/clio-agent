@@ -321,22 +321,6 @@ class SyncToolExecutor(Protocol):
 ToolExecutor = SyncToolExecutor
 
 
-def tool_failure_limit() -> int:
-    """Consecutive transient failures of one tool before its calls are blocked (0: never)."""
-    from clio_agent import conf  # noqa: PLC0415
-
-    return conf.resolve(
-        "tools.circuit_breaker.failure_limit",
-        env="CLIO_TOOL_FAILURE_LIMIT",
-        default=3,
-        cast=conf.as_int,
-    )
-
-
-class RepeatedToolFailureError(RuntimeError):
-    """Raised when a tool keeps failing with transient infrastructure errors."""
-
-
 def _invoke_permission_gate(
     gate: PermissionGate,
     name: str,
@@ -383,26 +367,6 @@ def _declared_mcp_permission_context(
         "kind": "external_mcp",
         "annotations": dict(_tool_annotations(tool)),
     }
-
-
-def _is_transient_tool_error(error_text: str) -> bool:
-    """Return whether an error indicates infrastructure/service instability."""
-
-    lowered = error_text.lower()
-    transient_terms = (
-        "closedresourceerror",
-        "connectionreseterror",
-        "connectionerror",
-        "connecterror",
-        "readtimeout",
-        "timeout",
-        "timed out",
-        "temporarily unavailable",
-        "service unavailable",
-        "server disconnected",
-        "brokenpipeerror",
-    )
-    return any(term in lowered for term in transient_terms)
 
 
 def create_async_tool_executor(
@@ -511,7 +475,7 @@ class SyncMCPToolExecutor(SyncNamespacePreparationMixin):
         # invocation. Same global-fallback story.
         self._tool_observer = tool_observer
         self._failure_lock = threading.Lock()
-        self._consecutive_transient_failures: dict[str, tuple[int, str]] = {}
+        self._consecutive_failures: dict[str, int] = {}
         self._closed = False
         self._close_lock = threading.Lock()
         # Reaper instrumentation (#933): last-activity clock + in-flight count.
@@ -678,13 +642,6 @@ class SyncMCPToolExecutor(SyncNamespacePreparationMixin):
                 raise notify_refused_call(tool_observer, name, effective_args, message)
 
         raise_if_cancelled("tool_call_before")
-
-        circuit_error = self._circuit_open_message(name)
-        if circuit_error is not None:
-            notify_tool_observer(tool_observer, name, effective_args, "started", None)
-            notify_tool_observer(tool_observer, name, effective_args, "completed", circuit_error)
-            injections.note("circuit_breaker", circuit_error)
-            raise RepeatedToolFailureError(circuit_error)
 
         # P2.3: gate-stashed, single-fire PreToolUse decision. ``modify`` mutates input;
         # ``synthesize`` skips the call for a fabricated result (no PostToolUse if raw).
@@ -860,28 +817,16 @@ class SyncMCPToolExecutor(SyncNamespacePreparationMixin):
             action=f"MCP resource {uri!r}",
         )
 
-    def _circuit_open_message(self, name: str) -> str | None:
-        """What the agent is told when a call is not run because the tool keeps failing."""
-
-        limit = tool_failure_limit()
-        with self._failure_lock:
-            count, last_error = self._consecutive_transient_failures.get(name, (0, ""))
-        if limit <= 0 or count < limit:
-            return None
-        return harness_notes.circuit_open_note(name, count, last_error)
-
     def _record_tool_failure(self, name: str, error_text: str) -> str:
-        """Count a transient failure; at the limit, return the warning the agent gets."""
+        """Count a failure; at the reminder's ``after``, return the fact the agent gets.
 
-        limit = tool_failure_limit()
+        Nothing is blocked: the next call runs and returns its own result or error.
+        """
+        del error_text  # every failure counts; its wording is not classified
         with self._failure_lock:
-            if not _is_transient_tool_error(error_text):
-                self._consecutive_transient_failures.pop(name, None)
-                return ""
-            count, _last_error = self._consecutive_transient_failures.get(name, (0, ""))
-            count += 1
-            self._consecutive_transient_failures[name] = (count, error_text)
-        if limit <= 0 or count != limit:
+            count = self._consecutive_failures.get(name, 0) + 1
+            self._consecutive_failures[name] = count
+        if count != harness_notes.failure_warning_after():
             return ""
         return harness_notes.circuit_warning_note(name, count)
 
@@ -889,7 +834,7 @@ class SyncMCPToolExecutor(SyncNamespacePreparationMixin):
         """Clear repeated-failure state after a successful tool call."""
 
         with self._failure_lock:
-            self._consecutive_transient_failures.pop(name, None)
+            self._consecutive_failures.pop(name, None)
 
     def _timeout_for_tool(self, name: str) -> float:
         """Return the effective timeout for a single tool invocation."""
@@ -1019,7 +964,6 @@ __all__ = [
     "ClientFactory",
     "MCPClientProtocol",
     "MCPToolBridge",
-    "RepeatedToolFailureError",
     "SyncMCPToolExecutor",
     "SyncToolExecutor",
     "TOOL_OBSERVED_ATTR",

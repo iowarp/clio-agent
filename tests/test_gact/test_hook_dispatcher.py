@@ -664,7 +664,7 @@ def test_read_only_tool_never_gated_by_a_hook(tmp_path: Path) -> None:
     try:
         app = build_app(sessions_path=tmp_path / "s.json")
         gate = _make_permission_gate(app)
-        assert gate("fs_read_file", {"filepath": "x"}) == "allow"
+        assert gate("fs_read_file", {"path": "x"}) == "allow"
     finally:
         install_global_dispatcher(None)
 
