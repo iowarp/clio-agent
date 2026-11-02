@@ -126,3 +126,21 @@ def test_store_calls_from_new_threads_do_not_leak_runtime_descriptors(arc: ARCMe
     # 40 short-lived callers used to add a pair each (80). Now a pair belongs to a
     # process-lived worker on its first native call: bounded by the workers, not callers.
     assert _runtime_descriptors() - before <= 2 * persistent_workers()
+
+
+@pytest.mark.skipif(
+    not sys.platform.startswith("linux") or not Path("/proc/self/fd").is_dir(),
+    reason="clio-core's per-thread epoll/signalfd are observable through /proc on Linux",
+)
+def test_opening_stores_on_new_threads_does_not_leak_runtime_descriptors(arc: ARCMemory) -> None:
+    """A GACT turn opens its memory store on an AnyIO worker; workers come and go."""
+    from clio_agent.arc import rpc_liveness
+    from clio_agent.arc.storage import make_arc_store
+
+    del arc  # the attached runtime and this test's namespace
+    _on_new_thread(lambda: make_arc_store(backend="cte"))
+    before = _runtime_descriptors()
+    for _ in range(10):
+        _on_new_thread(lambda: make_arc_store(backend="cte"))
+    workers = native_thread_count() + rpc_liveness._pool_threads_started
+    assert _runtime_descriptors() - before <= 2 * workers  # was 2 per thread: 20 here
