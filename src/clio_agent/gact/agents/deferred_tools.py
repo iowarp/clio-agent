@@ -201,18 +201,24 @@ def apply_disclosure(
 ) -> str:
     """Defer the program's tools per :func:`plan_disclosure`; return the prompt entry.
 
+    The tools' settings apply first (:mod:`.tool_settings`): blocked tools leave the
+    program and ``code`` tools join ``_clio_unlisted`` without a deferred entry.
     The deferred names join ``_clio_unlisted`` (callable, left out of the tool list);
     the catalog and the deferred servers ride on the program for ``search_tools`` and
     live refresh. With nothing deferred, ``search_tools`` itself is left out of the
     list: it would find nothing.
     """
+    from clio_agent.gact.agents.tool_settings import apply_tool_settings  # noqa: PLC0415
     from clio_agent.gact.code_mode.tool import finalize_run_code  # noqa: PLC0415
 
+    code_only = apply_tool_settings(program, resolution)  # blocked tools leave here
     tools: Mapping[str, Any] = getattr(program, "tools", {}) or {}
     servers = frozenset(getattr(resolution, "mcp_servers", {}) or {}) | _BUILTIN_SERVERS
     finalize_run_code(program, servers)
-    disclosure = plan_disclosure(resolution, tools, context_tokens=context_tokens, loaded=loaded)
-    unlisted = frozenset(getattr(program, "_clio_unlisted", frozenset()))
+    # Code-only tools are kernel stubs: never listed, never in the deferred catalog.
+    offered = {name: tool for name, tool in tools.items() if name not in code_only}
+    disclosure = plan_disclosure(resolution, offered, context_tokens=context_tokens, loaded=loaded)
+    unlisted = frozenset(getattr(program, "_clio_unlisted", frozenset())) | code_only
     if not disclosure.deferred and SEARCH_TOOLS in tools:
         unlisted |= {SEARCH_TOOLS}
     object.__setattr__(program, "_clio_unlisted", unlisted | disclosure.deferred)
@@ -234,8 +240,9 @@ def sync_deferred_catalog(program: Any) -> None:
         return
     tools: Mapping[str, Any] = getattr(program, "tools", {}) or {}
     added = []
+    code_only = getattr(program, "_clio_code_only", frozenset()) or frozenset()
     for name, tool in tools.items():
-        if name.startswith(servers) and name not in catalog:
+        if name.startswith(servers) and name not in catalog and name not in code_only:
             owner = next(s[:-1] for s in servers if name.startswith(s))
             catalog.add(CatalogEntry(name, owner, *_schema(tool)))
             added.append(name)

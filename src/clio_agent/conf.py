@@ -62,6 +62,7 @@ Usage::
 
 from __future__ import annotations
 
+import json
 import logging
 import os
 import threading
@@ -152,6 +153,23 @@ def as_csv(value: Any) -> list[str]:
     if isinstance(value, (list, tuple)):
         return [str(item).strip() for item in value if str(item).strip()]
     return [part.strip() for part in str(value).split(",") if part.strip()]
+
+
+def as_mapping(value: Any) -> dict[str, Any]:
+    """Coerce a YAML mapping or an env JSON object string to ``dict``.
+
+    Raises ``ValueError`` when the value is neither a mapping nor a JSON object.
+    """
+    if isinstance(value, Mapping):
+        return dict(value)
+    if isinstance(value, str):
+        text = value.strip()
+        if not text:
+            return {}
+        loaded = json.loads(text)
+        if isinstance(loaded, dict):
+            return loaded
+    raise ValueError(f"cannot interpret {value!r} as a mapping")
 
 
 # --------------------------------------------------------------------------- #

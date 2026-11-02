@@ -31,7 +31,7 @@ from typing import Any
 
 from clio_agent import conf
 from clio_agent.gact.agents.tool_concurrency import ServerGates, call_workers
-from clio_agent.gact.code_mode.stubs import NOT_IN_SCRIPTS, tool_group
+from clio_agent.gact.code_mode.stubs import tool_group
 
 __all__ = ["CallRecord", "Dispatcher", "max_nested_calls"]
 
@@ -125,7 +125,7 @@ class Dispatcher:
         future.add_done_callback(lambda f: done(f.result()))
 
     def _refusal(self, tool: str) -> str:
-        if tool not in self.tools or tool in NOT_IN_SCRIPTS:
+        if tool not in self.tools:  # direct-only and blocked tools are not given here
             return f"No tool named {tool!r} can be called from a script; see tools.search()."
         with self.lock:
             if self.started >= self.budget:
@@ -138,6 +138,7 @@ class Dispatcher:
 
     def _run(self, tool: str, args: dict[str, Any]) -> tuple[bool, Any, str]:
         from clio_agent.gact.artifacts.observer_bridge import MODEL_CALL_SLOT  # noqa: PLC0415
+        from clio_agent.gact.runtime.tool_permission_layers import native_gate  # noqa: PLC0415
         from clio_agent.runtime.fresh_loop import run_in_new_loop  # noqa: PLC0415
         from clio_agent.tools.tool_observation import RESULT_SINK  # noqa: PLC0415
 
@@ -147,8 +148,10 @@ class Dispatcher:
         MODEL_CALL_SLOT.set({})  # this call's own observer id, not the script's
         RESULT_SINK.set(sink)
         started = time.monotonic()
-        with self.gates(group or tool):
+        with self.gates(group or tool), native_gate(target, tool, args) as refused:
             try:
+                if refused:  # a rule or the tool's default (the gate's layers)
+                    raise PermissionError(refused)
                 if inspect.iscoroutinefunction(getattr(target, "func", None)):
                     value = run_in_new_loop(target.acall(**args))
                 else:

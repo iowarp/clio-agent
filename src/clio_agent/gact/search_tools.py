@@ -245,6 +245,7 @@ def build_search_tools_tool() -> Any:
     return native_tool(
         search_tools,
         name="search_tools",
+        callers="direct",
         read_only=True,
         presentation=_present,
         presentation_start=_starting,

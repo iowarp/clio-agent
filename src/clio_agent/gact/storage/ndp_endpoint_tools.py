@@ -16,6 +16,7 @@ from clio_agent.gact.storage.ndp_endpoints import materialize_capture
 from clio_agent.gact.storage.ndp_presentations import endpoint_presentation
 from clio_agent.gact.storage.ndp_ssh_discovery import discover_ndp_ssh_urls
 from clio_agent.gact.storage.ndp_streaming_models import StreamingRuntime
+from clio_agent.tools.tool_settings import self_gated
 
 
 def _owner() -> tuple[Any, Any, Any]:
@@ -368,15 +369,17 @@ def build_ndp_endpoint_tools(*, setup_only: bool = False) -> list[Any]:
         ),
     ]
     return [
-        native_tool(
-            function,
-            name=function.__name__,
-            desc=function.__doc__,
-            args=args,
-            title=title,
-            domain="resources",
-            presentation=endpoint_presentation,
-            read_only=function is connected_data_ndp_endpoint_operations,
+        self_gated(
+            native_tool(
+                function,
+                name=function.__name__,
+                desc=function.__doc__,
+                args=args,
+                title=title,
+                domain="resources",
+                presentation=endpoint_presentation,
+                read_only=function is connected_data_ndp_endpoint_operations,
+            )
         )
         for function, title, args in specs
         if not setup_only or function is connected_data_ndp_endpoint_connect

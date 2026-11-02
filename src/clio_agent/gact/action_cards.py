@@ -393,6 +393,7 @@ def build_raise_alert_card_tool(agent_def: Any) -> Any:
     return native_tool(
         raise_alert_card,
         name="raise_alert_card",
+        callers="direct",
         presentation="specialized",
         domain="alerts",
         desc=raise_alert_card.__doc__,

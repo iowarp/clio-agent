@@ -678,6 +678,7 @@ def build_draft_alternatives_tool() -> Any:
     return native_tool(
         draft_alternatives,
         name=DRAFT_TOOL,
+        callers="direct",
         presentation="text",
         domain="interaction",
         desc=draft_alternatives.__doc__,
@@ -742,9 +743,8 @@ class UserJudgedVariant(dspy.Module):
         from clio_agent.gact.agents.clio_react import _head
         from clio_agent.gact.injection_parts import emit_injection  # noqa: PLC0415
 
-        # The parent owns the input. Candidate scopes deliberately do not collect
-        # session mail, so confirm the fixed parent input before forking any tries.
-        # This is the same recipient-input boundary used by the ordinary loop.
+        # The parent owns the input (candidate scopes do not collect session mail), so confirm
+        # the fixed parent input before forking tries, as the ordinary loop does.
         app = _ctx.active_app()
         ordinary_feedback = False
         if app is not None and _ctx.active_react_run() < 0:

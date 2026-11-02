@@ -1381,6 +1381,13 @@ hdf5.summary_text_chars: 200
 # tools.per_server_concurrency still bounds the calls to each server.
 tools.call_workers: 32
 
+# CLIO_TOOLS_CALLERS  (mapping)  <- src/clio_agent/tools/tool_settings.py
+# Who may call each tool, by tool name: direct (the model only), code
+# (run_code scripts only; the schema stays out of the prompt) or both.
+# Overrides the plugin's declaration; CLIO_TOOLS_CALLERS uses JSON. The
+# plugin tools page writes this mapping.
+# tools.callers:  # computed at runtime: {}
+
 # CLIO_TOOL_FAILURE_LIMIT  (int)  <- src/clio_agent/tools/execution.py
 # Consecutive failures of one tool before CLIO blocks further calls to it
 # (the agent is warned at the limit and told why a call was blocked); 0
@@ -1582,6 +1589,12 @@ tools.never_defer: ["search_tools", "load_skill", "submit", "run_code", "wait_ta
 # Tool calls to one server that run at once, for a step's calls and a
 # run_code script's calls alike; the others wait their turn.
 tools.per_server_concurrency: 8
+
+# CLIO_TOOLS_PERMISSIONS  (mapping)  <- src/clio_agent/tools/tool_settings.py
+# The deployment's default permission per tool name: allow, ask or deny.
+# Sits below the person's permission rules and above the approval mode, and
+# overrides the plugin's declared default; CLIO_TOOLS_PERMISSIONS uses JSON.
+# tools.permissions:  # computed at runtime: {}
 
 # CLIO_TOOLS_SEARCH_LIMIT  (int)  <- src/clio_agent/gact/search_tools.py
 # Tools a search_tools keyword search returns when the call names no limit.

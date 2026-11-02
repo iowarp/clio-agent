@@ -328,12 +328,14 @@ These resolve through `clio_agent.conf`: a value under the dotted key in `config
 | `CLIO_TASKS_STORAGE_CONCURRENCY` | `gact.tasks.storage.concurrency` | int | `10` | `src/clio_agent/tools/native_roots.py` |
 | `CLIO_TASKS_STORAGE_QUEUE` | `gact.tasks.storage.queue` | str | _(unset)_ | `src/clio_agent/tools/native_roots.py` |
 | `CLIO_TASKS_STORAGE_URL` | `gact.tasks.storage.url` | str | `memory://` | `src/clio_agent/tools/native_roots.py` |
+| `CLIO_TOOLS_CALLERS` | `tools.callers` | mapping | `{}` _(computed)_ | `src/clio_agent/tools/tool_settings.py` |
 | `CLIO_TOOLS_CALL_WORKERS` | `tools.call_workers` | int | `32` | `src/clio_agent/gact/agents/tool_concurrency.py` |
 | `CLIO_TOOLS_DEFER_SHARE` | `tools.defer_share` | str | `0.05` | `src/clio_agent/gact/agents/deferred_tools.py` |
 | `CLIO_TOOLS_DEFER_TOKENS` | `tools.defer_tokens` | int | `4000` | `src/clio_agent/gact/agents/deferred_tools.py` |
 | `CLIO_TOOLS_FULL_RESULT` | `tools.full_result` | list | `load_skill` | `src/clio_agent/gact/agents/native_result_bound.py` |
 | `CLIO_TOOLS_INSTRUCTIONS_CHARS` | `tools.instructions_chars` | int | `300` | `src/clio_agent/tools/mcp_server_instructions.py` |
 | `CLIO_TOOLS_NEVER_DEFER` | `tools.never_defer` | list | `search_tools,load_skill,submit,run_code,wait_tasks,spawn_agent_task,spawn_agents_parallel,write_todos,plan_enter,plan_update,plan_exit,fs_*,shell_*` | `src/clio_agent/gact/agents/deferred_tools.py` |
+| `CLIO_TOOLS_PERMISSIONS` | `tools.permissions` | mapping | `{}` _(computed)_ | `src/clio_agent/tools/tool_settings.py` |
 | `CLIO_TOOLS_PER_SERVER_CONCURRENCY` | `tools.per_server_concurrency` | int | `8` | `src/clio_agent/gact/agents/tool_concurrency.py` |
 | `CLIO_TOOLS_SEARCH_LIMIT` | `tools.search_limit` | int | `5` | `src/clio_agent/gact/search_tools.py` |
 | `CLIO_TOOLS_SEARCH_MAX` | `tools.search_max` | int | `20` | `src/clio_agent/gact/search_tools.py` |

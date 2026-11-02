@@ -264,6 +264,7 @@ def build_plan_enter_tool() -> Any:
     return native_tool(
         plan_enter,
         name="plan_enter",
+        callers="direct",
         presentation="text",
         domain="planning",
         title="Enter plan mode",
@@ -302,6 +303,7 @@ def build_plan_update_tool() -> Any:
     return native_tool(
         plan_update,
         name="plan_update",
+        callers="direct",
         presentation=present,
         domain="planning",
         title="Update plan",

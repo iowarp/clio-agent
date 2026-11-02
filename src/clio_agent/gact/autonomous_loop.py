@@ -689,6 +689,7 @@ def build_loop_wakeup_tool() -> Any:
     return native_tool(
         loop_wakeup,
         name="loop_wakeup",
+        callers="direct",
         presentation="loop",
         domain="autonomy",
         desc=loop_wakeup.__doc__,

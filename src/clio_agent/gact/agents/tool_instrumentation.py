@@ -66,6 +66,7 @@ from typing import Any, cast, get_args
 from clio_agent.gact.evidence import _bounded_tool_call_result
 from clio_agent.gact.types import ToolDomain
 from clio_agent.tools.execution import TOOL_OBSERVED_ATTR
+from clio_agent.tools.tool_settings import CALLERS_ATTR, check_callers
 
 logger = logging.getLogger(__name__)
 
@@ -299,6 +300,7 @@ def native_tool(
     title: str = "",
     representation: str = DEFAULT_REPRESENTATION,
     read_only: bool = False,
+    callers: str | None = None,
 ) -> Any:
     """Construct a native ``dspy.Tool`` with its DECLARED presentation.
 
@@ -316,6 +318,10 @@ def native_tool(
     schedules, or changes session state). A read-only posture (a side session)
     keeps only natives that declare it; the default is ``False``, so a tool
     that says nothing is treated as effectful, never guessed read-only.
+
+    ``callers`` is the built-in's own I/O declaration (``direct`` for tools that talk
+    to the person or hold the agent's state); a plugin's claim or ``tools.callers``
+    overrides it (:mod:`clio_agent.gact.agents.tool_settings`).
     """
 
     from clio_agent.gact.agents.native_presenters import validate_declaration
@@ -327,6 +333,8 @@ def native_tool(
     setattr(func, TITLE_ATTR, sanitize_tool_title(title))
     setattr(func, DOMAIN_ATTR, _validated_domain(domain, tool_name=name))
     setattr(func, READ_ONLY_ATTR, bool(read_only))
+    if callers is not None:
+        setattr(func, CALLERS_ATTR, check_callers(callers, f"native tool {name!r}"))
     tool = _clio_native_tool_class()(func=func, name=name, desc=desc, args=args)
     func.__dict__["_clio_builtin"] = True
     return tool
@@ -405,6 +413,7 @@ def rebuilt_tool(
         START_PRESENTER_ATTR,
         DOMAIN_ATTR,
         READ_ONLY_ATTR,
+        CALLERS_ATTR,
     ):
         value = getattr(inner_func, attr, None)
         if value is not None:

@@ -1234,6 +1234,16 @@ KEY_NOTES: dict[str, str] = {
         "its tools are deferred behind search_tools, when its plugin does not say; the smaller "
         "of this and tools.defer_tokens applies."
     ),
+    "tools.callers": (
+        "Who may call each tool, by tool name: direct (the model only), code (run_code "
+        "scripts only; the schema stays out of the prompt) or both. Overrides the plugin's "
+        "declaration; CLIO_TOOLS_CALLERS uses JSON. The plugin tools page writes this mapping."
+    ),
+    "tools.permissions": (
+        "The deployment's default permission per tool name: allow, ask or deny. Sits below "
+        "the person's permission rules and above the approval mode, and overrides the "
+        "plugin's declared default; CLIO_TOOLS_PERMISSIONS uses JSON."
+    ),
     "tools.defer_tokens": (
         "Schema tokens an MCP server's tools may take before they are deferred behind "
         "search_tools, when its plugin does not say; the smaller of this and tools.defer_share "

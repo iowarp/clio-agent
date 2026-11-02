@@ -90,6 +90,7 @@ def _tool(
         title=name.replace("_", " ").capitalize(),
         domain="tasks",
         read_only=read,
+        callers="direct",  # task, spawn and question controls are steps of the agent
     )
 
 

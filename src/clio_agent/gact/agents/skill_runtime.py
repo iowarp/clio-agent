@@ -631,6 +631,7 @@ def build_load_skill_tool(agent_def: "AgentDef", runtime: SkillRuntime) -> Any:
     return native_tool(
         load_skill,
         name="load_skill",
+        callers="direct",
         read_only=True,
         presentation=present_skill,
         presentation_start=starting_skill,
@@ -703,6 +704,7 @@ def build_spawn_skill_task_tool(agent_def: "AgentDef", runtime: SkillRuntime) ->
     return native_tool(
         spawn_skill_task,
         name="spawn_skill_task",
+        callers="direct",
         presentation="specialized",
         # The skill-effect child launcher: gated on a declared skill's own
         # frontmatter, so "skills" fits better than the generic spawn/wait/

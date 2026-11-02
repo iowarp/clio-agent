@@ -402,7 +402,9 @@ class _Loop:
         refresh = getattr(self.agent, "_clio_tool_refresh", None)
         if refresh is not None and refresh(self.agent.tools):
             from clio_agent.gact.agents.deferred_tools import sync_deferred_catalog  # noqa: PLC0415
+            from clio_agent.gact.agents.tool_settings import reapply_tool_settings  # noqa: PLC0415
 
+            reapply_tool_settings(self.agent)
             sync_deferred_catalog(self.agent)
             self.tools = self._listed_tools()
 
@@ -527,6 +529,11 @@ class _Loop:
                 f"{call.input.get('error')}. Send the calls again as one valid block.",
                 True,
             )
+        from clio_agent.gact.agents.tool_settings import call_refusal  # noqa: PLC0415
+        from clio_agent.gact.runtime.tool_permission_layers import native_gate  # noqa: PLC0415
+
+        if refusal := call_refusal(self.agent, call.name):
+            return _CallOutcome(refusal, True)
         tool = self.agent.tools.get(call.name)
         if tool is None:
             return _CallOutcome(f"Unknown tool: {call.name}", True)
@@ -536,8 +543,8 @@ class _Loop:
         slot: dict[str, str] = {}
         slot_token = MODEL_CALL_SLOT.set(slot)
         try:
-            with injections.collect() as told:
-                outcome = self._run_tool(call, tool)
+            with injections.collect() as told, native_gate(tool, call.name, call.input) as no:
+                outcome = _CallOutcome(no, True) if no else self._run_tool(call, tool)
         finally:
             MODEL_CALL_SLOT.reset(slot_token)
         if slot.get("call_id"):

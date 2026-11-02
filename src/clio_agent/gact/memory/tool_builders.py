@@ -68,6 +68,7 @@ def build_create_memory_tool() -> Any:
     return _native(
         create_memory,
         name="create_memory",
+        callers="direct",
         title="Remember",
         representation="row",
         desc="Remember a fact because the user asked you to. It is filed under its subject.",
@@ -93,6 +94,7 @@ def build_update_memory_tool() -> Any:
     return _native(
         update_memory,
         name="update_memory",
+        callers="direct",
         title="Correct memory",
         representation="row",
         desc="Replace a remembered fact with the corrected one the user gave.",
@@ -113,6 +115,7 @@ def build_forget_memory_tool() -> Any:
     return _native(
         forget_memory,
         name="forget_memory",
+        callers="direct",
         title="Forget",
         representation="row",
         desc="Forget a fact (by fact_id) or a whole document (by name) the user asked to forget.",
