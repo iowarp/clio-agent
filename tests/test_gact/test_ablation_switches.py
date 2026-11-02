@@ -28,8 +28,6 @@ def test_a_withheld_tool_is_not_built_and_says_why(monkeypatch: pytest.MonkeyPat
     """SABOTAGE: skip ``configured_withheld`` and write_todos is built."""
     agent = AgentDef(id="main", title="Main", tools=["view_image", "write_todos"])
     monkeypatch.setenv("CLIO_TOOLS_WITHHELD", "write_todos")
-    available, _gateway, withheld = build_native_tools(
-        agent, agent.tools, {}, supports_vision=True
-    )
+    available, _gateway, withheld = build_native_tools(agent, agent.tools, {}, supports_vision=True)
     assert list(available) == ["view_image"]
     assert withheld == {"write_todos": "withheld_by_config"}
