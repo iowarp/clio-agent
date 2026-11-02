@@ -247,3 +247,28 @@ def test_tool_rules_mention_loaded_tools_only_with_search(with_search: bool) -> 
     names = [SEARCH_TOOLS, "ask_user"] if with_search else ["ask_user"]
     text = render_system("prompt", [_function_tool(_tool(n)) for n in names])
     assert ("search_tools loads them" in text) is with_search
+
+
+def test_a_deferred_servers_new_tools_are_named_until_the_prompt_is_rebuilt() -> None:
+    """TD11: tools a deferred server adds mid-session reach the model through the
+    plugin-change note, and stop being named once the rebuilt prompt names them.
+    SABOTAGE: drop ``tools_line`` from ``plugin_change_note`` and the name is missing."""
+    from clio_agent.gact.agents.prompt_basis import (
+        note_deferred_tools_added,
+        plugin_change_note,
+        settle_basis,
+    )
+
+    app = SimpleNamespace(state=SimpleNamespace(sessions=_Sessions()))
+    names = [f"home_tool_{i}" for i in range(40)]
+    program = SimpleNamespace(tools=_tools(SEARCH_TOOLS, *names))
+    apply_disclosure(program, _resolution(home={}), context_tokens=10_000)
+    program.tools["home_new"] = _tool("home_new")
+    added = sync_deferred_catalog(program)
+    assert added == ["home_new"]
+    note_deferred_tools_added(app, "s", added)
+
+    note = plugin_change_note(app, "s")
+    assert "home_new" in note and "search_tools" in note
+    settle_basis(app, "s")
+    assert plugin_change_note(app, "s") == ""

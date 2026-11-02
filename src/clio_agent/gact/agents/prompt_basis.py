@@ -37,6 +37,9 @@ PROMPT_BASIS_KEY = "agent_prompt_basis"
 APPLY_MODES = ("now", "compact", "note")
 #: The injection source of the note that tells the model about a change.
 PLUGIN_CHANGE_SOURCE = "plugin_change"
+#: Tools a deferred MCP server added mid-session (``tools/list_changed``), named by the
+#: plugin-change note until the prompt is rebuilt and its deferred entry names them (TD11).
+DEFERRED_ADDED_KEY = "deferred_tools_added"
 
 
 def _metadata(app: Any, session_id: str) -> Mapping[str, Any]:
@@ -78,6 +81,25 @@ def settle_basis(app: Any, session_id: str) -> None:
     promote_loaded_tools(app, session_id)
     if _metadata(app, session_id).get(PROMPT_BASIS_KEY):
         app.state.sessions.update(session_id, metadata_patch={PROMPT_BASIS_KEY: ""})
+    if _metadata(app, session_id).get(DEFERRED_ADDED_KEY):
+        app.state.sessions.update(session_id, metadata_patch={DEFERRED_ADDED_KEY: []})
+
+
+def note_deferred_added_in_turn(session_id: str, names: Iterable[str]) -> None:
+    """:func:`note_deferred_tools_added` for the turn's app (a live refresh mid-step)."""
+    from clio_agent.gact import context  # noqa: PLC0415
+
+    app = context.active_app()
+    if app is not None and session_id:
+        note_deferred_tools_added(app, session_id, names)
+
+
+def note_deferred_tools_added(app: Any, session_id: str, names: Iterable[str]) -> None:
+    """Record tools a deferred server added, for the next plugin-change note."""
+    known = [str(n) for n in _metadata(app, session_id).get(DEFERRED_ADDED_KEY) or ()]
+    merged = sorted({*known, *names})
+    if merged != sorted(known):
+        app.state.sessions.update(session_id, metadata_patch={DEFERRED_ADDED_KEY: merged})
 
 
 def pending_change(basis: Resolution, current: Resolution) -> dict[str, Any]:
@@ -196,16 +218,24 @@ def plugin_change_note(app: Any, session_id: str) -> str:
         session_resolution,
     )
 
+    added_tools = [str(n) for n in _metadata(app, session_id).get(DEFERRED_ADDED_KEY) or ()]
+    tools_line = (
+        "Tools added since your prompt was built (load them with search_tools): "
+        + ", ".join(added_tools)
+        + "."
+        if added_tools
+        else ""
+    )
     if not _metadata(app, session_id).get(PROMPT_BASIS_KEY):
-        return ""
+        return tools_line
     try:
         current = session_resolution(app, session_id)
         basis = basis_resolution(app, session_id, current)
     except SessionAgentUnavailable:
-        return ""
+        return tools_line
     change = pending_change(basis, current)
     if not change["pending"]:
-        return ""
+        return tools_line
     lines = ["The person changed this conversation's plugins."]
     if change["removed"]:
         lines.append(
@@ -224,12 +254,17 @@ def plugin_change_note(app: Any, session_id: str) -> str:
     if skills:
         lines.append("Skills you can load now with load_skill:")
         lines += [f"- {row['id']}: {row.get('description', '')}".rstrip(": ") for row in skills]
+    if tools_line:
+        lines.append(tools_line)
     lines.append("Your system prompt will include these changes after the next compaction.")
     return "\n".join(lines)
 
 
 __all__ = [
     "APPLY_MODES",
+    "DEFERRED_ADDED_KEY",
+    "note_deferred_added_in_turn",
+    "note_deferred_tools_added",
     "PLUGIN_CHANGE_SOURCE",
     "PROMPT_BASIS_KEY",
     "basis_resolution",

@@ -244,8 +244,10 @@ def apply_disclosure(
     return disclosure.entry
 
 
-def sync_deferred_catalog(program: Any) -> None:
+def sync_deferred_catalog(program: Any) -> list[str]:
     """After a live refresh: a deferred server's new tools join the catalog, unlisted.
+
+    Returns the names added, which the plugin-change note names to the model (TD11).
 
     A tool a deferred server removed leaves the catalog; the prompt entry keeps naming
     the server's tools as they were until the prompt is rebuilt, and a search says
@@ -254,7 +256,7 @@ def sync_deferred_catalog(program: Any) -> None:
     servers = tuple(f"{s}_" for s in getattr(program, "_clio_deferred_servers", ()) or ())
     catalog: ToolCatalog | None = getattr(program, "_clio_deferred_catalog", None)
     if not servers or catalog is None:
-        return
+        return []
     tools: Mapping[str, Any] = getattr(program, "tools", {}) or {}
     added = []
     code_only = getattr(program, "_clio_code_only", frozenset()) or frozenset()
@@ -268,3 +270,4 @@ def sync_deferred_catalog(program: Any) -> None:
     if added:
         unlisted = frozenset(getattr(program, "_clio_unlisted", frozenset()))
         object.__setattr__(program, "_clio_unlisted", unlisted | set(added))
+    return added

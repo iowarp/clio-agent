@@ -402,10 +402,14 @@ class _Loop:
         refresh = getattr(self.agent, "_clio_tool_refresh", None)
         if refresh is not None and refresh(self.agent.tools):
             from clio_agent.gact.agents.deferred_tools import sync_deferred_catalog  # noqa: PLC0415
+            from clio_agent.gact.agents.prompt_basis import (
+                note_deferred_added_in_turn,  # noqa: PLC0415
+            )
             from clio_agent.gact.agents.tool_settings import reapply_tool_settings  # noqa: PLC0415
 
             reapply_tool_settings(self.agent)
-            sync_deferred_catalog(self.agent)
+            if added := sync_deferred_catalog(self.agent):  # named by the next note (TD11)
+                note_deferred_added_in_turn(self.session, added)
             self.tools = self._listed_tools()
 
     def _arrivals(self, *, human_only: bool = False) -> bool:
