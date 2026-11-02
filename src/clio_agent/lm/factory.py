@@ -97,6 +97,9 @@ def create_lm(config: LMProviderConfig) -> dspy.LM:
     Returns:
         Configured dspy.LM instance
     """
+    from clio_agent.lm.pool_liveness import install_pool_liveness  # noqa: PLC0415
+
+    install_pool_liveness()  # pooled connections stay reusable past fd 1024
     if config.provider == "codex":
         return _record_identity(_codex_direct_lm(config), config)
     if config.provider == "claude_code":
