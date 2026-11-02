@@ -112,8 +112,9 @@ def test_direct_derive_oplogger_persists_every_legit_event_and_no_split(tmp_path
     # ... and every legit event also reached the trace: no trace ⊋ _events split.
     for et in ("turn.started", "lm.call", "react.step.completed", "tool.call"):
         assert et in trace.trace
-    # arc.op reached the trace (derived) but was NEVER persisted to _events.
-    assert "arc.op" in trace.trace
+    # Highway appends log no arc.op (replay.logs_context_op): none reached the trace,
+    # and none was persisted to _events.
+    assert "arc.op" not in trace.trace
     assert "arc.op" not in persisted
 
 

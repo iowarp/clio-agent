@@ -106,8 +106,9 @@ def test_record_through_real_sink_no_recursion(tmp_path):
 
     # Terminated (no RecursionError) and produced the full projected dict.
     assert full["event_type"] == "turn.started"
-    # The op-logger fired for the persisted append (proving the write happened) ...
-    assert op_log == ["append"]
+    # A highway append is not a context op: it logs no arc.op at all
+    # (replay.logs_context_op), so the recursion cannot even start ...
+    assert op_log == []
     # ... and exactly ONE persisted semantic_event (the turn.started). arc.op is
     # DERIVED to the sink, never recorded into _events — by construction, not by skip.
     segs = arc.render_segments("s1", EVENTS_SCOPE)

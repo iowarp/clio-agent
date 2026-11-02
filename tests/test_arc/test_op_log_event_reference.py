@@ -1,9 +1,10 @@
-"""A highway event's ``arc.op`` names it; a context segment's ``arc.op`` copies it whole.
+"""Highway appends log no ``arc.op``; context appends log the full segment.
 
-A ``semantic_event`` segment holds a semantic event the trace already stores as its own
-event, and clio-core stores the segment (the highway's source of truth). Copying it into
-the ``arc.op`` too made the copies 21 of 31.6 MB of one session's trace. Context
-segments stay full dicts, because replay rebuilds the live context from them alone.
+``arc.op`` replays the live context. A highway lane (the ``_events`` chunks, the task
+lanes, message parts) is not context: clio-core holds it as the source of truth and
+the trace holds each semantic event, so its ``arc.op`` was a further copy, about 11
+trace events per MCP call (P7, 2026-11-02). Older traces may still carry reference
+entries for highway events; replay skips them.
 """
 
 from __future__ import annotations
@@ -11,7 +12,9 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
-from clio_agent.arc.replay import reconstruct_arc_segments
+import pytest
+
+from clio_agent.arc.replay import logs_context_op, reconstruct_arc_segments
 from clio_agent.arc.segments import SegmentStore
 from tests.test_arc.test_segment_store import _clio_core
 
@@ -34,31 +37,49 @@ def _logging_store(tmp_path: Path) -> tuple[SegmentStore, list[dict[str, Any]]]:
     return SegmentStore(_clio_core(str(tmp_path)), op_logger=log), events
 
 
-def test_an_event_append_logs_a_reference_not_the_event(tmp_path: Path) -> None:
-    """SABOTAGE: log ``msgspec.to_builtins`` for every kind and the body appears."""
+def test_a_highway_append_logs_no_arc_op(tmp_path: Path) -> None:
+    """SABOTAGE: drop ``logs_context_op`` from ``_finish_write`` and the event is logged."""
     store, events = _logging_store(tmp_path)
     body = {"event_id": "sev_1", "payload": {"record": "x" * 2000}}
-    seg = store.append(SID, "_events", "semantic_event", body)
-
-    [written] = events[-1]["payload"]["segments_written"]
-    assert written == {
-        "id": seg.id,
-        "kind": "semantic_event",
-        "scope": "_events",
-        "logical_time": seg.logical_time,
-        "event_id": "sev_1",
-        "stored_in": "clio-core",
-    }
-    # clio-core still holds the whole event.
-    assert store.render(SID, "_events")[0].content == body
+    store.append(SID, "_events", "semantic_event", body)
+    assert events == []
+    assert store.render(SID, "_events")[0].content == body  # clio-core holds it
 
 
-def test_context_segments_stay_full_and_replay_skips_references(tmp_path: Path) -> None:
+def test_a_context_append_is_logged_whole_and_replays(tmp_path: Path) -> None:
     store, events = _logging_store(tmp_path)
-    store.append(SID, "_events", "semantic_event", {"event_id": "sev_1"})
     user = store.append(SID, "agentA", "user", {"text": "q"})
-
     [written] = events[-1]["payload"]["segments_written"]
     assert written["content"] == {"text": "q"}
-    replayed = reconstruct_arc_segments(events)
-    assert [s.id for s in replayed] == [user.id]
+    assert [s.id for s in reconstruct_arc_segments(events)] == [user.id]
+
+
+def test_replay_skips_highway_references_from_older_traces(tmp_path: Path) -> None:
+    store, events = _logging_store(tmp_path)
+    user = store.append(SID, "agentA", "user", {"text": "q"})
+    reference = {"id": "seg_x", "kind": "semantic_event", "stored_in": "clio-core"}
+    events.append(
+        {
+            "event_id": "evt_old",
+            "event_type": "arc.op",
+            "session_id": SID,
+            "payload": {"op": "append", "scope": "_events", "segments_written": [reference]},
+        }
+    )
+    assert [s.id for s in reconstruct_arc_segments(events)] == [user.id]
+
+
+@pytest.mark.parametrize(
+    ("scope", "logged"),
+    [
+        ("_events", False),
+        ("_events/12", False),
+        ("_events/t/log", False),
+        ("_events/t/content/abc", False),
+        ("_events/m/3", False),
+        ("_events/w/span_1", True),
+        ("agentA", True),
+    ],
+)
+def test_which_scopes_are_context(scope: str, logged: bool) -> None:
+    assert logs_context_op(scope) is logged

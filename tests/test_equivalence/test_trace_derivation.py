@@ -267,11 +267,11 @@ def test_arc_op_derives_directly_never_reentering_record(tmp_path: Path) -> None
     assert [c["event_type"] for c in _read_events_contents(arc, "s1")] == ["turn.started"]
 
 
-def test_routing_arc_op_through_record_forms_the_loop(tmp_path: Path) -> None:
-    """The §2.9 violation, made visible: routing ``arc.op`` back through ``record`` re-
-    enters the op-logger (record -> append -> op-logger -> record -> …). A depth bound
-    stops a real stack overflow; the climb past 1 IS the loop-forming signal that the
-    direct raw lane prevents."""
+def test_routing_arc_op_through_record_cannot_form_the_loop(tmp_path: Path) -> None:
+    """The §2.9 loop (record -> append -> op-logger -> record -> …) needed a highway
+    append to reach the op-logger. Highway appends log no arc.op (2026-11-02), so even an
+    op-logger that routes arc.op back through ``record`` is never entered. The depth
+    bound is kept so a regression fails here instead of overflowing the stack."""
     arc = ARCMemory(data_dir=str(tmp_path / "arc"))
     sink = SemanticEventSink(
         bus=EventBus(), trace_backend=NoopSemanticTraceBackend(), live_consumers=None
@@ -288,7 +288,9 @@ def test_routing_arc_op_through_record_forms_the_loop(tmp_path: Path) -> None:
     arc.set_segment_op_logger(wrong_op_logger)
     arc.record_semantic_event(_sample_events()[0])
 
-    assert depth["n"] >= 5  # the loop FORMED — the raw-lane discipline is load-bearing
+    # A highway append logs no arc.op (replay.logs_context_op), so even a wrong
+    # op-logger is never entered from record: the loop cannot form.
+    assert depth["n"] == 0
 
 
 # --------------------------------------------------------------------------- #

@@ -34,6 +34,21 @@ ARC_OP_EVENT_TYPE = "arc.op"
 REFERENCED_KINDS = frozenset({"semantic_event"})
 
 
+def logs_context_op(scope: str) -> bool:
+    """Whether a write to ``scope`` is logged as an ``arc.op``.
+
+    ``arc.op`` replays the live context. The highway lanes (the ``_events`` chunks, the
+    task lanes and content under ``_events/t``, message parts, state ops) are not
+    context: clio-core holds them as the source of truth, and the trace already holds
+    each semantic event, so their ``arc.op`` was a fourth copy and about 11 trace events
+    per MCP call (P7, 2026-11-02). The working-set partitions (``_events/w``) are
+    context and stay logged.
+    """
+    if scope == "_events":
+        return False
+    return not scope.startswith("_events/") or scope.startswith("_events/w")
+
+
 def logged_segments(written: Iterable[Segment]) -> list[dict[str, Any]]:
     """The ``segments_written`` an ``arc.op`` carries: full dicts, references for events."""
     return [
