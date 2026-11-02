@@ -397,9 +397,13 @@ def record_transform(
     from clio_agent.gact.semantic_events import _event_id  # noqa: PLC0415
 
     # P3.1 (#1038): the CROSS-JOB contributing set — every workspace sharing this
-    # job's root_path — computed here (the caller HAS ``app``) and threaded into the
-    # detector so it keeps its acyclic position. ``None`` → same-workspace-only.
-    allowed_workspace_ids = contributing_workspace_ids(app, workspace_id)
+    # job's root_path — built here (the caller HAS ``app``) and threaded into the
+    # detector so it keeps its acyclic position. ``None`` → same-workspace-only. It
+    # resolves every workspace root, so the detector builds it only once a file is
+    # used (P7, 2026-11-02: on every call it was a third of transform recording).
+    def allowed_workspace_ids() -> set[str] | None:
+        return contributing_workspace_ids(app, workspace_id)
+
     used_scan = (
         EdgeScan(used_edges, [])
         if used_edges is not None

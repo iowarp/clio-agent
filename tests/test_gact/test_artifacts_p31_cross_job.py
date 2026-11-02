@@ -336,3 +336,29 @@ def test_lineage_recurses_across_the_cross_job_boundary(tmp_path):
     # stops at b's activity and never reaches a / activity:gen_a -> these go red.
     assert a_v.artifact_id in node_ids
     assert "activity:gen_a" in node_ids
+
+
+def test_a_call_without_a_used_file_never_resolves_workspace_roots(tmp_path, monkeypatch):
+    """The contributing set resolves every workspace root; a call that uses no file
+    (an MCP ``get_record``) must not pay for it (P7, 2026-11-02: a third of transform
+    recording). SABOTAGE: build the set eagerly in ``record_transform`` and the
+    workspace list is read."""
+    app, sess, _arc = _make_cross_app(tmp_path, ["ws1", "ws2"])
+
+    listed: list[int] = []
+    original = app.state.workspaces.list
+    # Counted, not raised: the set builder degrades a failing list() to None.
+    monkeypatch.setattr(app.state.workspaces, "list", lambda: listed.append(1) or original())
+    record = record_transform(
+        app,
+        sess["ws1"].id,
+        tool_name="records_get_record",
+        args={"record_id": "REC-00001"},
+        call_id="call_get",
+        ok=True,
+        result=None,
+        minted=[],
+        workspace_id="ws1",
+    )
+    assert record is None or not [edge for edge in record.used if edge.artifact_id]
+    assert listed == []
