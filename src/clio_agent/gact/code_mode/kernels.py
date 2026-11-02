@@ -245,6 +245,15 @@ _LOCK = threading.Lock()
 _REAPER: threading.Thread | None = None
 
 
+def _replaced_because(kernel: Kernel, workspace: Path, read_only: bool) -> str:
+    """Why a scope's kernel is not reused, for the trace (its state is lost)."""
+    if not kernel.alive():
+        return f"replaced_dead ({kernel.diagnostics()})"[:400]
+    if kernel.workspace != workspace:
+        return f"replaced_workspace_changed ({kernel.workspace} -> {workspace})"
+    return f"replaced_mode_changed (read_only={read_only})"
+
+
 def kernel_for(session_id: str, scope: str, workspace: Path, *, read_only: bool = False) -> Kernel:
     """The scope's running kernel, started when there is none (or it died).
 
@@ -262,7 +271,7 @@ def kernel_for(session_id: str, scope: str, workspace: Path, *, read_only: bool 
             kernel.last_used = time.monotonic()
             return kernel
         if kernel is not None:
-            kernel.stop("replaced")
+            kernel.stop(_replaced_because(kernel, workspace, read_only))
         kernel = Kernel(key, workspace, read_only=read_only)
         _KERNELS[key] = kernel
         _start_reaper()

@@ -257,8 +257,11 @@ def _exact_and_work(client: GactClient, sessions: list[str]) -> dict[str, Any]:
 def _edit_plan_between(client: GactClient, sid: str, index: int) -> str | None:
     """T18: the person edits the plan from the Work rail between the two turns."""
     work = client.get(f"/v1/sessions/{sid}/work")
-    plan = str(((work.get("plan") or {}).get("content")) or "")
-    edited = plan + "\n\n- Person's note: also list the hidden files.\n"
+    plan = work.get("plan") or {}
+    text = str(plan.get("text") or plan.get("content") or "")  # /work serves ``text``
+    if not text.strip():
+        raise RuntimeError("T18: the agent wrote no plan before the edit")
+    edited = text + "\n\n- Person's note: also list the hidden files.\n"
     client.request("PUT", f"/v1/sessions/{sid}/plan", {"content": edited})
     return None
 
@@ -811,9 +814,11 @@ def check_t15(rec: dict[str, Any]) -> tuple[str, list[str]]:
 def check_t18(rec: dict[str, Any]) -> tuple[str, list[str]]:
     exact = _exact_text(rec)
     work = (rec.get("extra") or {}).get("work") or {}
-    plan = str((work.get("plan") or {}).get("content") or "")
+    plan = str((work.get("plan") or {}).get("text") or "")
     todos = work.get("todos") or []
-    steered = "Person's note" in exact or "Person\\u2019s note" in exact
+    # The edit is offered once, as an injection at the next step; it stays in the history.
+    history = json.dumps(rec["exports"])
+    steered = "Person's note" in exact or "Person's note" in history.replace("\\u2019", "'")
     notes = [
         f"plan saved with the edit {'Person' in plan}",
         f"todos {len(todos)}",

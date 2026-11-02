@@ -347,6 +347,6 @@ def test_a_plan_mode_kernel_writes_only_scratch_and_temp(monkeypatch: Any, tmp_p
     try:
         with pytest.raises(RuntimeError):
             kernels.kernel_for("sess_x", "scope", workspace, read_only=True)
-        assert stopped == ["replaced"]
+        assert stopped == ["replaced_mode_changed (read_only=True)"]
     finally:
         kernels._KERNELS.pop(("sess_x", "scope"), None)
