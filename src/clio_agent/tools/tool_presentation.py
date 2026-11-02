@@ -384,7 +384,7 @@ def _diff(args: Mapping[str, Any], result: Any, snapshot: Any) -> dict[str, Any]
             # The captured before-copy preserves line endings. A text-mode read
             # here normalizes CRLF and makes unchanged Windows lines look edited.
             after = (
-                Path(validate_read_path(snapshot.path))
+                Path(validate_read_path(snapshot.path, loads_whole_file=True))
                 .read_bytes()
                 .decode("utf-8", errors="replace")
             )

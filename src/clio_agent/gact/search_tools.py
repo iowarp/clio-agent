@@ -107,6 +107,21 @@ def _signature(entry: CatalogEntry) -> str:
     return f"{entry.name}({', '.join(args)})"
 
 
+def _server_instructions(found: Iterable[CatalogEntry]) -> list[dict[str, str]]:
+    """The whole instructions of each server whose tools a search loads, once each.
+
+    The prompt's deferred listing carries only a short form; loading a server's tools
+    is when its own guidance for them matters.
+    """
+    from clio_agent.tools.mcp_server_instructions import instructions_for  # noqa: PLC0415
+
+    rows: list[dict[str, str]] = []
+    for owner in dict.fromkeys(entry.owner for entry in found):
+        if text := instructions_for(owner):
+            rows.append({"name": owner, "instructions": text})
+    return rows
+
+
 def search_result(
     catalog: ToolCatalog | None, query: str, limit: int = 0
 ) -> tuple[str, dict[str, Any]]:
@@ -129,6 +144,7 @@ def search_result(
         ],
         "missing": missing,
         "deferred_total": len(catalog),
+        "servers": _server_instructions(found),
     }
     lines: list[str] = []
     if found:
@@ -136,6 +152,8 @@ def search_result(
             f"Loaded {len(found)} tool{'s' if len(found) != 1 else ''}; "
             "call them from your next step with the arguments their schemas give."
         )
+        for server in structured["servers"]:
+            lines += ["", f"## {server['name']} server instructions", server["instructions"]]
         for entry in found:
             schema = json.dumps(entry.parameters, separators=(",", ":"), default=str)
             lines += ["", f"## {entry.name}  ({entry.owner})", entry.description.strip()]
@@ -162,6 +180,16 @@ def _present(args: Mapping[str, Any], result: Any, structured: Any) -> dict[str,
     blocks: list[dict[str, Any]] = [
         {"id": "query", "type": "text", "label": "Search", "text": query}
     ]
+    for i, server in enumerate(row.get("servers") or []):
+        if isinstance(server, Mapping) and server.get("instructions"):
+            blocks.append(
+                {
+                    "id": f"server-{i}",
+                    "type": "markdown",
+                    "label": f"{server.get('name')} instructions",
+                    "text": str(server["instructions"]),
+                }
+            )
     for i, tool in enumerate(tools):
         text = "\n".join(
             part
@@ -255,7 +283,8 @@ def build_search_tools_tool() -> Any:
             "Load tools named under 'Tools you load when needed' so you can call them. "
             "Query `select:name_a,name_b` for exact names, or keywords describing what you "
             "need (`+word more words` requires `word` in the tool name). The result gives "
-            "each tool's description and argument schema; call it from your next step. "
+            "each tool's description and argument schema, and the full instructions of the "
+            "servers they belong to; call it from your next step. "
             "Load every tool you expect to need in one search."
         ),
         args={

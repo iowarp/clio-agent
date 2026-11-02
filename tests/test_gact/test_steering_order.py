@@ -17,7 +17,7 @@ from clio_agent.gact import goal as goal_mod
 from clio_agent.gact.agents.clio_react import ClioReAct
 from clio_agent.gact.autonomy_guard import goal_redrive_is_current
 from clio_agent.gact.goal import GoalJudgement, arm_goal, dispatch_goal_at_finalize
-from clio_agent.gact.goal_evidence import _build_transcript
+from clio_agent.gact.goal_evidence import JudgeRoom, _build_transcript
 from clio_agent.gact.native_work import now
 from clio_agent.gact.task_publication import publish_task_notice
 from tests._scripted_engine import Reply, calls, scripted_lm, wire
@@ -128,10 +128,8 @@ def _steer(id: str, anchor: str, *, owner: str = "a", consumed: bool = True) -> 
     )
 
 
-def _transcript(*messages: Any, max_messages: int = 40) -> str:
-    return _build_transcript(
-        NS(state=NS(messages={"s": list(messages)})), "s", max_messages=max_messages
-    )
+def _transcript(*messages: Any, room: JudgeRoom | None = None) -> str:
+    return _build_transcript(NS(state=NS(messages={"s": list(messages)})), "s", room=room)
 
 
 def test_judge_receives_steer_between_earlier_and_later_assistant_prose() -> None:
@@ -213,10 +211,18 @@ def test_invalid_or_pending_receipts_never_hide_the_user_message(
     assert transcript.count("user: visible") == 1
 
 
-def test_truncated_owner_retains_steer_and_harness_injections_remain_algorithmic() -> None:
-    assert "user: visible" in _transcript(
-        _message("a", "assistant", _text("x", "answer")), _steer("visible", "x"), max_messages=1
+def test_a_window_that_holds_only_the_newest_entry_keeps_the_steer() -> None:
+    # Room for the steer's entry and the omission note, not for its owner's entry.
+    narrow = _transcript(
+        _message("a", "assistant", _text("x", "answer " * 40)),
+        _steer("visible", "x"),
+        room=JudgeRoom(tokens=20, window=100),
     )
+    assert "user: visible" in narrow and "answer" not in narrow
+    assert "evidence_exceeds_judge_context" in narrow
+
+
+def test_harness_injections_remain_algorithmic() -> None:
     transcript = _transcript(
         _message("auto", "user", NS(type="injection", source="goal_judgment", text="continue"))
     )

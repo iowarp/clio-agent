@@ -100,7 +100,6 @@ These resolve through `clio_agent.conf`: a value under the dotted key in `config
 | `CLIO_CODE_MAX_SCRIPT_CHARS` | `code.max_script_chars` | int | `20000` | `src/clio_agent/gact/code_mode/grants.py` |
 | `CLIO_CODE_POLL_S` | `code.poll_s` | float | `0.25` | `src/clio_agent/gact/code_mode/tool.py` |
 | `CLIO_CODE_START_TIMEOUT_S` | `code.start_timeout_s` | float | `60.0` | `src/clio_agent/gact/code_mode/kernels.py` |
-| `CLIO_CODE_STUB_DOC_CHARS` | `code.stub_doc_chars` | int | `1500` | `src/clio_agent/gact/code_mode/stubs.py` |
 | `CLIO_COMPACTION_KEEP_HEAD` | `compaction.keep.head` | bool | `true` | `src/clio_agent/gact/compaction_policy.py` |
 | `CLIO_COMPACTION_KEEP_LAST_STEPS` | `compaction.keep.last_steps` | int | `0` | `src/clio_agent/gact/compaction_policy.py` |
 | `CLIO_COMPACTION_KEEP_LAST_TURNS` | `compaction.keep.last_turns` | int | `0` | `src/clio_agent/gact/compaction_policy.py` |
@@ -276,7 +275,6 @@ These resolve through `clio_agent.conf`: a value under the dotted key in `config
 | `CLIO_RESOURCE_SEARCH_EXCERPT_CHARS` | `resources.search_excerpt_chars` | int | `500` | `src/clio_agent/gact/resource_tools.py` |
 | `CLIO_RESOURCE_SEARCH_MATCH_LIMIT` | `resources.search_match_limit` | int | `50` | `src/clio_agent/gact/resource_tools.py` |
 | `CLIO_RESOURCE_STATUS_POLL_FAILURE_THRESHOLD` | `resources.status_poll_failure_threshold` | int | `5` | `src/clio_agent/gact/resource_lifecycle.py` |
-| `CLIO_RESOURCE_STRUCTURE_NODE_MAX_BYTES` | `resources.structure_node_max_bytes` | int | `2097152` | `src/clio_agent/gact/resource_processing.py` |
 | `CLIO_RESOURCE_TEXT_PREVIEW_BYTES` | `resources.text_preview_bytes` | int | `2097152` | `src/clio_agent/gact/routes/resources.py` |
 | `CLIO_RESOURCE_TEXT_READ_CHARS` | `resources.text_read_chars` | int | `65536` | `src/clio_agent/gact/resource_tools.py` |
 | `CLIO_RESOURCE_TEXT_SCAN_BYTES` | `resources.text_scan_bytes` | int | `2097152` | `src/clio_agent/gact/resource_tools.py` |

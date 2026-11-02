@@ -230,6 +230,12 @@ class TestStubs:
         assert "submit" not in json.dumps(table)
         assert "- tools.records.{get_record, list_records}" in index_text(table)
 
+    def test_help_gives_the_whole_description(self) -> None:
+        description = "Fetch one record. " + "Field notes: units are SI. " * 200 + "END."
+        tool = dspy.Tool(_get_record, name="records_get_record", desc=description)
+        table = stub_table({"records_get_record": tool}, ("records",))
+        assert table["groups"]["records"]["get_record"]["doc"] == description
+
     def test_server_names_become_identifiers(self) -> None:
         assert tool_group("synthetic-home_climate_list", ["synthetic-home"]) == (
             "synthetic_home",

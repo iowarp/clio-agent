@@ -159,7 +159,9 @@ def build_prepare_document_tool() -> Any:
         root = _workspace()
         requested = Path(path)
         candidate = requested if requested.is_absolute() else root / requested
-        source = FileAccessPolicy.from_env().validate_read(str(candidate), field="path")
+        source = FileAccessPolicy.from_env().validate_read(
+            str(candidate), field="path", loads_whole_file=True
+        )
         if not source.is_relative_to(root):
             raise ValueError("Document must be inside the active workspace")
         if (busy := preparing_result()) is not None:

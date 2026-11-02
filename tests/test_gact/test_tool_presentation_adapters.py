@@ -408,6 +408,67 @@ def test_resource_truncation_is_not_mistaken_for_a_complete_document() -> None:
     assert result == {"resource_id": "paper", "content": "First passage", "truncated": True}
 
 
+def test_a_large_resource_read_page_says_where_the_text_continues() -> None:
+    content = "".join(f"line {n}: " + "measurement " * 12 + "\n" for n in range(600))[:65536]
+    first = {
+        "resource_id": "paper",
+        "content": content,
+        "offset": 0,
+        "next_offset": 65536,
+        "total_chars": None,
+        "total_bytes": 9_000_000,
+        "truncated": True,
+    }
+    view = native_presentation("resource", {"resource_id": "paper"}, first, None)
+    assert view["blocks"][0] == {"id": "content", "type": "text", "text": content}
+    assert view["blocks"][-1] == {
+        "id": "coverage",
+        "type": "text",
+        "text": "Characters 1–65,536 of a 9,000,000-byte text; more from character offset 65,536",
+    }
+    last = {**first, "offset": 65536, "content": "tail", "next_offset": None}
+    last["total_chars"] = 65540
+    view = native_presentation("resource", {}, last, None)
+    assert view["blocks"][-1]["text"] == "Characters 65,537–65,540 of 65,540"
+    past = {**last, "offset": 70000, "content": ""}
+    view = native_presentation("resource", {}, past, None)
+    assert view["blocks"][-1]["text"] == (
+        "No text at character offset 70,000; the text has 65,540 characters"
+    )
+
+
+def test_a_whole_resource_read_has_no_coverage_note() -> None:
+    result = {"resource_id": "paper", "content": "Body", "offset": 0, "next_offset": None}
+    view = native_presentation("resource", {}, {**result, "total_chars": 4}, None)
+    assert [block["id"] for block in view["blocks"]] == ["content"]
+
+
+def test_a_resource_search_page_names_its_matches_and_the_next_page() -> None:
+    matches = [
+        {"line": 10 + n, "char_offset": 400 * n, "text": f"hit {n} " + "context " * 50}
+        for n in range(50)
+    ]
+    matches[0]["line_chars"] = 90_000
+    result = {"resource_id": "paper", "matches": matches, "offset": 50, "next_offset": 100}
+    view = native_presentation("resource", {"query": "hit"}, result, None)
+    assert view["summary"] == "50 matches for “hit”"
+    lines = view["blocks"][0]["text"].splitlines()
+    assert lines[0].startswith("10: hit 0") and lines[0].endswith("…")
+    assert not lines[1].endswith("…") and len(lines) == 50
+    assert view["blocks"][-1]["text"] == "Matches 51–100; more from match offset 100"
+
+
+def test_a_resource_list_page_counts_every_resource() -> None:
+    rows = [
+        {"id": f"res_{n}", "name": f"survey-{n:03d}-long-instrument-name.csv"} for n in range(100)
+    ]
+    result = {"resources": rows, "offset": 0, "next_offset": 100, "total": 240}
+    view = native_presentation("resource", {}, result, None)
+    assert len([block for block in view["blocks"] if block["type"] == "link"]) == 100
+    coverage = next(block for block in view["blocks"] if block["id"] == "coverage")
+    assert coverage["text"] == "Resources 1–100 of 240; more from resource offset 100"
+
+
 def test_observation_keeps_incremental_events_in_technical_result() -> None:
     row = {
         "tasks": [

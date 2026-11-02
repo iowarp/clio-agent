@@ -41,6 +41,44 @@ def _resource_link(resource_id: str) -> dict[str, Any] | None:
     }
 
 
+def _resource_coverage(row: Mapping[str, Any]) -> str:
+    """Which page of a paged resource result this is, and where the rest continues."""
+
+    offset, next_offset = row.get("offset"), row.get("next_offset")
+    if not isinstance(offset, int):
+        # Records from before resource results were paged.
+        return "Result truncated by the resource tool" if row.get("truncated") is True else ""
+    content, matches, resources = row.get("content"), row.get("matches"), row.get("resources")
+    if isinstance(content, str):
+        total = row.get("total_chars")
+        whole = (
+            f"of {total:,}"
+            if isinstance(total, int)
+            else f"of a {row.get('total_bytes', 0):,}-byte text"
+        )
+        if offset == 0 and next_offset is None:
+            return ""
+        if not content:
+            return f"No text at character offset {offset:,}; the text has {whole[3:]} characters"
+        text = f"Characters {offset + 1:,}–{offset + len(content):,} {whole}"
+        unit = "character"
+    elif isinstance(matches, list):
+        if offset == 0 and next_offset is None:
+            return ""
+        text = f"Matches {offset + 1:,}–{offset + len(matches):,}"
+        unit = "match"
+    elif isinstance(resources, list):
+        if offset == 0 and next_offset is None:
+            return ""
+        text = f"Resources {offset + 1:,}–{offset + len(resources):,} of {row.get('total', 0):,}"
+        unit = "resource"
+    else:
+        return ""
+    if isinstance(next_offset, int):
+        text += f"; more from {unit} offset {next_offset:,}"
+    return text
+
+
 def _session_link(session_id: str) -> dict[str, Any] | None:
     """Resolve a retained session to the shared transcript-navigation link."""
 
@@ -317,6 +355,7 @@ def present_memory_family(
                     "type": "text",
                     "text": "\n".join(
                         f"{match.get('line', '')}: {match.get('text', '')}"
+                        + ("…" if match.get("line_chars") else "")
                         for match in matches
                         if isinstance(match, Mapping)
                     )
@@ -364,10 +403,9 @@ def present_memory_family(
                 )
             else:
                 blocks.append({"id": "content", "type": "text", "text": content})
-        if row.get("truncated") is True:
-            blocks.append(
-                {"id": "bounded", "type": "text", "text": "Result truncated by the resource tool"}
-            )
+        coverage = _resource_coverage(row)
+        if coverage:
+            blocks.append({"id": "coverage", "type": "text", "text": coverage})
         for index, resource in enumerate(row.get("resources", [])):
             if isinstance(resource, Mapping):
                 blocks.append(
