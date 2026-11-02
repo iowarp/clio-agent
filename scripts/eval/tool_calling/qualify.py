@@ -644,9 +644,21 @@ def check_t8a(rec: dict[str, Any]) -> tuple[str, list[str]]:
     return ("pass" if len(script_q) == 1 and not write_q and wrote and raised else "fail"), notes
 
 
+def _per_script(rec: dict[str, Any]) -> list[list[dict[str, Any]]]:
+    """The write questions asked under each script, in the order they were answered
+    (a script whose call failed is followed by the agent's corrected one)."""
+    scripts: list[list[dict[str, Any]]] = []
+    for row in rec["permissions"]:
+        if tool_of(row) == "run_code":
+            scripts.append([])
+        elif scripts:
+            scripts[-1].append(row)
+    return scripts
+
+
 def check_t8b(rec: dict[str, Any]) -> tuple[str, list[str]]:
-    script_q = _asked(rec, "run_code")
-    writes = [r for r in rec["permissions"] if tool_of(r) != "run_code"]
+    scripts = _per_script(rec)
+    writes = scripts[-1] if scripts else []
     # One question at a time: each write question was created after the previous answer.
     overlap = any(
         str(b.get("created_at") or "") < _iso(a["answered_at"])
@@ -655,23 +667,25 @@ def check_t8b(rec: dict[str, Any]) -> tuple[str, list[str]]:
     files = [f for f in rec["files"] if f.startswith("out/")]
     shows_script = all("gather" in json.dumps(w) for w in writes)
     notes = [
-        f"script questions {len(script_q)}, write questions {len(writes)} answered "
+        f"scripts {len(scripts)}; the last one's write questions {len(writes)} answered "
         f"{[w['answered'] for w in writes]}, each shows the script {shows_script}",
+        f"one at a time {not overlap}",
         f"files {files}",
     ]
-    ok = len(script_q) == 1 and len(writes) == 3 and len(files) == 2 and not overlap
+    ok = len(writes) == 3 and len(files) == 2 and not overlap and shows_script
     return ("pass" if ok else "fail"), notes
 
 
 def check_t8c(rec: dict[str, Any]) -> tuple[str, list[str]]:
-    script_q = _asked(rec, "run_code")
-    writes = [r for r in rec["permissions"] if tool_of(r) != "run_code"]
+    scripts = _per_script(rec)
     files = sorted(f for f in rec["files"] if f.startswith("out/"))
+    asked = [len(w) for w in scripts]
     notes = [
-        f"script questions {len(script_q)}, write questions {len(writes)} {[w['answered'] for w in writes]}",
+        f"write questions per script {asked} {[[w['answered'] for w in ws] for ws in scripts]}",
         f"files {files}",
     ]
-    ok = len(script_q) == 2 and len(writes) == 2 and len(files) == 4
+    # "Allow for the rest of this script" covers the script's later writes, and only it.
+    ok = len(scripts) >= 2 and all(n <= 1 for n in asked) and len(files) == 4
     return ("pass" if ok else "fail"), notes
 
 
@@ -693,9 +707,14 @@ def check_t9(rec: dict[str, Any]) -> tuple[str, list[str]]:
 def check_t10(rec: dict[str, Any]) -> tuple[str, list[str]]:
     blob = json.dumps(rec["exports"]).lower()
     typed = "budget" in blob or "max_nested_calls" in blob or "nested call" in blob
-    nested = [c for c in _calls(rec) if c["tool"] == "fs_list_directory"]
-    notes = [f"nested list calls {len(nested)}", f"typed budget error in the observation {typed}"]
-    return ("pass" if typed and len(nested) <= 500 else "fail"), notes
+    # Per script: no script makes more than the budget (the agent may split the rest).
+    per_script = [int(n) for n in re.findall(r"script \w+; (\d+) tool calls", blob)]
+    notes = [
+        f"tool calls per script {per_script}",
+        f"typed budget error in the observation {typed}",
+    ]
+    ok = typed and bool(per_script) and max(per_script) <= 500
+    return ("pass" if ok else "fail"), notes
 
 
 def check_t12(rec: dict[str, Any]) -> tuple[str, list[str]]:
