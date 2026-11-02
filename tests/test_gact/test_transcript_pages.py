@@ -90,3 +90,37 @@ def test_resident_ledger_is_paged_as_is() -> None:
     assert page.has_more and page.source == "resident"
     with pytest.raises(PageCursorNotFound):
         page_of(rows, limit=2, before="zz", include_system=True)
+
+
+def test_a_chunk_read_mid_append_serves_its_committed_messages(arc: ARCMemory) -> None:
+    """Cold chunks are read without the scope lock: a chunk caught mid-append (the new
+    record half written over the old end marker) reads to its last whole record."""
+    from clio_agent.arc.chunk_records import read_chunk  # noqa: PLC0415
+
+    segments = arc._segments
+    last = lane_scopes(segments, SID, MESSAGE_PART_SCOPE)[-1]
+    segments.release(SID)
+    name = segments._record_name(SID, last)
+    parsed = read_chunk(segments._store, "segments", name)
+    assert parsed is not None
+    half = b"\xff\x00\x00\x00\x12\x34\x56\x78" + b"partial record"  # a torn next record
+    segments._store.put_at("segments", name, half, parsed.end)
+    page = read_lane_page(arc, SID, limit=3, before=None, include_system=True)
+    assert [m.id for m in page.messages] == ["m20", "m21", "m22"]
+
+
+def test_an_old_format_chunk_is_a_typed_corrupt_transcript(arc: ARCMemory) -> None:
+    """A chunk in the retired base64 frame is reported, never read as empty."""
+    from clio_agent.gact.messages import LedgerReadError  # noqa: PLC0415
+    from clio_agent.gact.transcript_unreadable import (  # noqa: PLC0415
+        TRANSCRIPT_CORRUPT,
+        typed_transcript_read,
+    )
+
+    segments = arc._segments
+    last = lane_scopes(segments, SID, MESSAGE_PART_SCOPE)[-1]
+    segments.release(SID)
+    segments._store.put("segments", segments._record_name(SID, last), b"\x90")  # old frame
+    with pytest.raises(LedgerReadError) as caught, typed_transcript_read(SID):
+        read_lane_page(arc, SID, limit=3, before=None, include_system=True)
+    assert caught.value.cause == TRANSCRIPT_CORRUPT

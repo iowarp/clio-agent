@@ -354,12 +354,25 @@ class _CteShapedStore:
     def put(self, kind, name, data, *, tier="warm", search_text=None):
         self._blobs[(kind, name)] = data
 
+    def put_at(self, kind, name, data, offset, *, search_text=None):
+        """An offset put (chunk records): grows the blob, never shrinks it."""
+        held = bytearray(self._blobs.get((kind, name), b""))
+        held.extend(bytes(max(0, offset - len(held))))
+        held[offset : offset + len(data)] = data
+        self._blobs[(kind, name)] = bytes(held)
+
     def put_many(self, kind: str, records: Sequence[PutRecord]) -> None:
         """Implement the current store contract for session-record writes."""
         for record in records:
-            self.put(kind, record.name, record.data, search_text=record.search_text)
+            if record.offset is not None:
+                self.put_at(kind, record.name, record.data, record.offset)
+            else:
+                self.put(kind, record.name, record.data, search_text=record.search_text)
 
     def get(self, kind, name):
+        return self._blobs.get((kind, name))
+
+    def get_raw(self, kind, name, *, length=0):
         return self._blobs.get((kind, name))
 
     def exists(self, kind, name) -> bool:

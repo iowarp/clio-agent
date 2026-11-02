@@ -16,7 +16,7 @@ class StoreWorkloadProbe:
     def __init__(self, store: Any, monkeypatch: pytest.MonkeyPatch) -> None:
         self.started = time.perf_counter()
         self.operations: dict[str, dict[str, float]] = {}
-        for name in ("get", "put", "put_many"):
+        for name in ("get", "get_raw", "put", "put_at", "put_many"):
             monkeypatch.setattr(store, name, self._wrap(name, getattr(store, name)))
 
     def _wrap(self, operation: str, original: Callable[..., Any]) -> Callable[..., Any]:
@@ -32,7 +32,7 @@ class StoreWorkloadProbe:
                 f"{operation}:{group}", {"calls": 0, "bytes": 0, "seconds": 0, "max_s": 0}
             )
             stats["calls"] += 1
-            if operation == "put":
+            if operation in ("put", "put_at"):
                 stats["bytes"] += len(args[1])
             elif operation == "put_many":
                 stats["bytes"] += sum(len(row.data) for row in records)

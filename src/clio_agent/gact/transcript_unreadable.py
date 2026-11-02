@@ -8,7 +8,8 @@ existing :class:`~clio_agent.gact.messages.LedgerReadError` with one of two caus
 
 * ``storage_unreachable`` -- the store did not answer the read; retrying may work;
 * ``transcript_corrupt`` -- the stored bytes cannot be decoded even after the
-  framed-length retry; retrying will not help.
+  framed-length retry (or a message chunk is not a readable chunk record, including
+  one in the retired format, ``arc_chunk_format_unsupported``); retrying will not help.
 
 :func:`install_unreadable_transcript_handler` answers ``503 messages_unavailable``
 with that cause on every route that reads a transcript. Blob and tag names stay in
@@ -23,6 +24,7 @@ from contextlib import contextmanager
 from typing import TYPE_CHECKING
 
 from clio_agent.arc.blob_frame import CORRUPT_BLOB_ERRORS, TRANSIENT_BLOB_ERRORS
+from clio_agent.arc.segment_errors import SegmentReadError
 from clio_agent.gact.messages import LedgerReadError
 
 if TYPE_CHECKING:
@@ -59,7 +61,7 @@ def typed_transcript_read(session_id: str) -> Iterator[None]:
         yield
     except TRANSIENT_BLOB_ERRORS as exc:
         raise _unreadable(session_id, STORAGE_UNREACHABLE, exc) from exc
-    except CORRUPT_BLOB_ERRORS as exc:
+    except (*CORRUPT_BLOB_ERRORS, SegmentReadError) as exc:
         raise _unreadable(session_id, TRANSCRIPT_CORRUPT, exc) from exc
 
 

@@ -31,9 +31,18 @@ from typing import TYPE_CHECKING, Callable, Iterable, Optional, Protocol
 
 import msgspec
 
+from clio_agent.arc.chunk_records import (
+    CHUNK_APPEND_ABANDONED,
+    ChunkMark,
+    appendable,
+    plan_write,
+    read_chunk,
+)
+from clio_agent.arc.lane_chunking import seal_chunk
 from clio_agent.arc.loop_guard import LoopThreadStoreWrite, assert_store_write_off_loop
-from clio_agent.arc.schema import Segment, decode_segments, encode_segments, segment_text
+from clio_agent.arc.schema import Segment, segment_text
 from clio_agent.arc.segment_errors import ArcPersistError, SegmentReadError
+from clio_agent.runtime.stream_audit import stream_audit
 
 if TYPE_CHECKING:
     from clio_agent.arc.segment_index import SegmentIndex
@@ -100,6 +109,7 @@ class ScopeCache:
     _store: "ARCStore"
     _scopes: dict[tuple[str, str], list[Segment]]
     _loaded: set[tuple[str, str]]
+    _chunk_marks: dict[tuple[str, str], ChunkMark]  # the stored end of each cached record
     _index: "SegmentIndex"
     _registry_lock: threading.RLock
     _scope_locks: dict[tuple[str, str], threading.RLock]
@@ -135,34 +145,51 @@ class ScopeCache:
             if residency is not None:
                 residency.scope_touched(session_id)
             return self._scopes[key]
-        raw = self._store.get("segments", self._record_name(session_id, scope))
-        try:
-            segs = decode_segments(raw) if raw else []
+        try:  # an old-format record raises typed (ChunkFormatUnsupportedError)
+            parsed = read_chunk(self._store, "segments", self._record_name(session_id, scope))
         except msgspec.DecodeError as exc:
             raise SegmentReadError(session_id, scope) from exc
+        segs = parsed.segments if parsed is not None else []
         self._recover_clock(segs)
         if reads_are_transient():
             return segs
         self._scopes[key] = segs
         self._loaded.add(key)
+        if parsed is not None:  # the next append goes where the stored records end
+            self._chunk_marks[key] = ChunkMark(parsed.end, len(segs), segs, len(parsed.blob))
         self._index.bulk_load(session_id, scope, segs)  # parallel locator
-        if residency is not None and raw:
-            residency.scope_resident(session_id, scope, len(raw))
+        if residency is not None and parsed is not None:
+            residency.scope_resident(session_id, scope, parsed.end)
         logger.debug(
             "segments: cold-load session=%s scope=%s loaded=%d", session_id, scope, len(segs)
         )
         return segs
 
     def raw_scope_record(self, session_id: str, scope: str) -> Optional[bytes]:
-        """The scope's committed record bytes from clio-core (never cached, not decoded)."""
-        return self._store.get("segments", self._record_name(session_id, scope))
+        """The scope's committed record bytes from clio-core: the raw msgpack records up
+        to the end marker, never the stale tail past it (never cached, not decoded)."""
+        name = self._record_name(session_id, scope)
+        parsed = read_chunk(self._store, "segments", name, decode=False)
+        return parsed.blob[: parsed.end] if parsed is not None else None
 
     # ---- write-through -------------------------------------------------
 
-    def _put_scope(self, session_id: str, scope: str, segs: list[Segment]) -> int:
-        """Encode the scope's segments and put the record (with the live search_text
-        companion); returns the encoded size. Raises if ``encode_segments`` /
-        ``store.put`` rejects any segment, or (#1334) if the caller runs an event loop."""
+    def _put_scope(
+        self,
+        session_id: str,
+        scope: str,
+        segs: list[Segment],
+        *,
+        mark: Optional[ChunkMark] = None,
+    ) -> ChunkMark:
+        """Write the scope's segments as chunk records (with the live search_text
+        companion) and return the new stored end.
+
+        With ``mark`` (the stored end of the record ``segs`` extends) only
+        ``segs[mark.count:]`` is put, at the end offset; without it the whole record is
+        rewritten at offset 0 (an end marker stops readers before any longer stale
+        tail). Raises if a segment does not encode, ``store.put_at`` refuses, or
+        (#1334) the caller runs an event loop."""
         assert_store_write_off_loop("segments.put", scope=scope)
         # search_text: the live render flattened to plain text, so semantic discovery
         # (Thread D) can find this scope by content. A scope the ``search_indexed``
@@ -172,53 +199,88 @@ class ScopeCache:
             search_text = live_text or None
         else:
             search_text = None
-        data = encode_segments(segs)
-        self._store.put(
-            "segments", self._record_name(session_id, scope), data, search_text=search_text
+        write = plan_write(segs, mark)
+        name = self._record_name(session_id, scope)
+        self._store.put_at("segments", name, write.data, write.offset, search_text=search_text)
+        return write.committed(segs)
+
+    def _append_mark(self, key: tuple[str, str], staged: list[Segment]) -> Optional[ChunkMark]:
+        """The stored end ``staged`` can be appended at, or ``None`` (a full rewrite)."""
+        mark = self._chunk_marks.get(key)
+        return mark if appendable(mark, self._scopes.get(key), staged) else None
+
+    def _abandon_chunk(self, session_id: str, scope: str, exc: BaseException) -> None:
+        """An append failed and may still land: drop the cached copy and never append to
+        this record again in this process (the lane's next append rolls to a new chunk)."""
+        self._discard_scope(session_id, scope)
+        seal_chunk(self, session_id, scope)
+        stream_audit(
+            CHUNK_APPEND_ABANDONED, session_id=session_id, scope=scope, cause=type(exc).__name__
         )
-        return len(data)
+        logger.warning(
+            "reason=%s session=%s scope=%s cause=%s",
+            CHUNK_APPEND_ABANDONED,
+            session_id,
+            scope,
+            type(exc).__name__,
+        )
 
     def _commit_scope(self, session_id: str, scope: str, staged: list[Segment]) -> None:
         """Put ``staged`` to clio-core, THEN make it the cached copy (write-through).
 
-        A refused put raises :class:`ArcPersistError` and leaves the cache at the last
-        committed record. Called under this scope's per-scope lock."""
+        ``staged`` that only adds segments to the cached record is appended at its stored
+        end (one put of the new records); anything else rewrites the record. A refused
+        rewrite raises :class:`ArcPersistError` and leaves the cache at the last committed
+        record; a refused append also abandons the chunk (:meth:`_abandon_chunk`). Called
+        under this scope's per-scope lock."""
+        mark = self._append_mark((session_id, scope), staged)
         try:
-            nbytes = self._put_scope(session_id, scope, staged)
+            committed = self._put_scope(session_id, scope, staged, mark=mark)
         except LoopThreadStoreWrite:
             raise  # a write from the event loop is a caller bug, typed as itself
         except Exception as exc:  # noqa: BLE001 - re-raised typed; the cache is unchanged
+            if mark is not None:
+                self._abandon_chunk(session_id, scope, exc)
             raise ArcPersistError(session_id, scope, exc) from exc
-        self._install_committed(session_id, scope, staged, nbytes)
+        self._install_committed(session_id, scope, staged, committed)
 
     def _install_committed(
-        self, session_id: str, scope: str, staged: list[Segment], nbytes: int
+        self, session_id: str, scope: str, staged: list[Segment], mark: ChunkMark
     ) -> None:
-        """Make a record clio-core accepted the cached copy and report its size."""
+        """Make a record clio-core accepted the cached copy and report its stored size."""
         key = (session_id, scope)
         self._scopes[key] = staged
         self._loaded.add(key)
+        self._chunk_marks[key] = mark
         if self._residency is not None:
-            self._residency.scope_resident(session_id, scope, nbytes)
+            self._residency.scope_resident(session_id, scope, mark.end)
 
     def _persist(self, session_id: str, scope: str) -> None:
         """Put the cached list as it stands (callers that staged into it under the scope
-        lock). On failure the cached copy is discarded -- the next read reloads clio-core's
-        record -- and a typed :class:`ArcPersistError` is raised."""
-        segs = self._scopes[(session_id, scope)]
+        lock: only what follows the stored end is put). On failure the cached copy is
+        discarded -- the next read reloads clio-core's record -- and a typed
+        :class:`ArcPersistError` is raised."""
+        key = (session_id, scope)
+        segs = self._scopes[key]
+        mark = self._append_mark(key, segs)
         try:
-            nbytes = self._put_scope(session_id, scope, segs)
+            committed = self._put_scope(session_id, scope, segs, mark=mark)
         except Exception as exc:  # noqa: BLE001 - re-raised typed after the memory is discarded
-            self._discard_scope(session_id, scope)
+            if mark is not None and not isinstance(exc, LoopThreadStoreWrite):  # may land
+                self._abandon_chunk(session_id, scope, exc)
+            else:
+                self._discard_scope(session_id, scope)
             if isinstance(exc, LoopThreadStoreWrite):
                 raise
             raise ArcPersistError(session_id, scope, exc) from exc
+        self._chunk_marks[key] = committed
         if self._residency is not None:
-            self._residency.scope_resident(session_id, scope, nbytes)
+            self._residency.scope_resident(session_id, scope, committed.end)
 
     def _discard_scope(self, session_id: str, scope: str) -> None:
         """Drop the in-memory copy; the next read reloads clio-core."""
         self._scopes.pop((session_id, scope), None)
+        self._chunk_marks.pop((session_id, scope), None)
         self._loaded.discard((session_id, scope))
         self._index.drop_scope(session_id, scope)
         if self._residency is not None:
@@ -311,6 +373,7 @@ class ScopeCache:
             for k in lock_keys:
                 if self._scopes.pop(k, None) is not None:
                     released += 1
+                self._chunk_marks.pop(k, None)
                 self._loaded.discard(k)
                 self._index.drop_scope(k[0], k[1])
             self._invocation_counts.pop(session_id, None)
@@ -324,6 +387,7 @@ class ScopeCache:
         with self._locked_scopes(None) as lock_keys:
             sessions = sorted({key[0] for key in lock_keys})
             self._scopes.clear()
+            self._chunk_marks.clear()
             self._loaded.clear()
             self._index.clear()
             self._invocation_counts.clear()

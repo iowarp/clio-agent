@@ -32,6 +32,7 @@ from typing import Any, Callable, Iterable, Optional
 
 import msgspec
 
+from clio_agent.arc.chunk_records import ChunkMark
 from clio_agent.arc.context_restore import PlainContextRestore
 from clio_agent.arc.context_view import ViewSnapshot, next_generation, order_at
 from clio_agent.arc.loop_guard import assert_store_write_off_loop
@@ -180,6 +181,7 @@ class SegmentStore(ScopeCache, PlainContextRestore):
         # (``ScopeCache._commit_scope``). Touched only under that scope's lock.
         self._scopes: dict[tuple[str, str], list[Segment]] = {}
         self._loaded: set[tuple[str, str]] = set()
+        self._chunk_marks: dict[tuple[str, str], ChunkMark] = {}  # stored end per cached record
         # Per-scope B-tree locator built in parallel with the scope lists (additive;
         # NOT yet on the render/op read path — those still scan). Lets a scope's
         # segments be located in O(log N) by creation logical_time.

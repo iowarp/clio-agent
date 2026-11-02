@@ -31,8 +31,8 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 
 import pytest
 
+from clio_agent.arc.chunk_records import read_segments
 from clio_agent.arc.memory import ARCMemory
-from clio_agent.arc.schema import decode_segments
 from clio_agent.arc.segment_ids import StaleSegmentIdError
 from clio_agent.arc.segments import SegmentStore
 from clio_agent.arc.storage import ARCStore, make_arc_store
@@ -87,8 +87,7 @@ def _all_persisted_segments(store: ARCStore, session_id: str, scope: str):
     """Decode the persisted record for (session_id, scope) straight from clio-core —
     bypassing the store's in-memory copy to prove durability / no torn writes."""
     name = SegmentStore._record_name(session_id, scope)
-    raw = store.get("segments", name)
-    return decode_segments(raw) if raw else []
+    return read_segments(store, session_id, scope, name)  # the raw chunk records
 
 
 def _assert_render_ordering(live) -> None:

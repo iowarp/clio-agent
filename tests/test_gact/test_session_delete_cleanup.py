@@ -85,7 +85,7 @@ def _lane_records(app: Any, sid: str) -> list[str]:
     store = app.state.arc._segments._store
     names = []
     for scope in (MESSAGE_PART_SCOPE, STATE_MERGE_SCOPE):
-        names += [name for name, _ in store.scan("segments", _record(sid, scope))]
+        names += list(store.scan_names("segments", _record(sid, scope)))
     return sorted(names)
 
 

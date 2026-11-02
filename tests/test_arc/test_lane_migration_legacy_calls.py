@@ -36,8 +36,9 @@ from typing import Any
 import pytest
 from dspy.lm15 import TextPart, ToolCallPart, ToolResultPart
 
+from clio_agent.arc.chunk_records import full_body
 from clio_agent.arc.memory import ARCMemory
-from clio_agent.arc.schema import Segment, encode_segments
+from clio_agent.arc.schema import Segment
 from clio_agent.arc.storage import ClioCoreStore, make_arc_store
 from clio_agent.gact.agents.clio_react_record import ContextFoldError
 from clio_agent.gact.agents.context_reader import ContextReader
@@ -81,7 +82,7 @@ class _OldSession:
     def put(self) -> None:
         for scope, atoms in self.chunks.items():
             name = f"{self.sid}__{scope.replace('/', '~')}"
-            self.store.put("segments", name, encode_segments(atoms))
+            self.store.put_at("segments", name, full_body(atoms), 0)
 
 
 def _read(arc: ARCMemory, sid: str) -> list[Any]:

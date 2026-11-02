@@ -47,6 +47,11 @@ class _RefusingStore(_MemoryStore):
             raise OSError("clio-core refused the put")
         super().put(kind, name, data, **kwargs)
 
+    def put_at(self, kind: str, name: str, data: bytes, offset: int, **kwargs: Any) -> None:
+        if self.refuse:
+            raise OSError("clio-core refused the put")
+        super().put_at(kind, name, data, offset, **kwargs)
+
 
 class _QueryStore(_MemoryStore):
     """Answers name-pattern queries; listing every name fails the test."""
