@@ -130,3 +130,29 @@ def test_search_model_is_separate_and_survives_legacy_judge_updates(
     assert legacy["search"] == saved["search"]
     reset = save_fleet_settings(FleetUpdate(revision=legacy["revision"], judges={}, search=None))
     assert reset["search"] is None
+
+
+def test_the_explore_note_is_set_from_fleet_settings(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """The Fleet settings page turns the explore note on or off and sets its threshold;
+    the note reads the same keys. SABOTAGE: drop the ``delegation`` write in
+    ``save_fleet_settings`` and this fails."""
+    from clio_agent.gact.explore_nudge import nudge_settings
+
+    monkeypatch.chdir(tmp_path)
+    conf.reload()
+    current = fleet_settings()
+    assert current["explore_nudge"] == {"enabled": True, "after": 6}
+    saved = save_fleet_settings(
+        FleetUpdate(
+            revision=current["revision"],
+            judges={},
+            explore_nudge={"enabled": False, "after": 9},
+        )
+    )
+    assert saved["explore_nudge"] == {"enabled": False, "after": 9}
+    assert read_config()["delegation"] == {"explore_nudge": False, "explore_nudge_after": 9}
+    conf.reload()
+    assert nudge_settings() == {"enabled": False, "after": 9}
+    assert saved["revision"] != current["revision"]

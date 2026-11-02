@@ -23,6 +23,7 @@ from clio_agent import conf
 __all__ = [
     "EXPLORE_NUDGE_SOURCE",
     "note_reading_run",
+    "nudge_settings",
 ]
 
 #: The injection's source (the transcript shows it as harness data).
@@ -59,6 +60,11 @@ def _text() -> str:
         default=_DEFAULT_TEXT,
         cast=conf.as_str,
     )
+
+
+def nudge_settings() -> dict[str, Any]:
+    """The note's switch and threshold as the Fleet settings page shows them."""
+    return {"enabled": _enabled(), "after": _after()}
 
 
 def _read_only(name: str) -> bool:
