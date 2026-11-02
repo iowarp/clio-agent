@@ -18,6 +18,7 @@ from __future__ import annotations
 import pytest
 
 import clio_agent.arc.clio_core_liveness as clio_core_liveness
+from clio_agent.arc.clio_core_async_ops import TagIds
 from clio_agent.arc.clio_core_liveness import (
     RPC_STALLED_REASON,
     ClioCoreRuntimeLostError,
@@ -71,6 +72,27 @@ class _RecordingClioCore:
         return object()
 
 
+class _NotFound:
+    """A completed native future with GetBlobSize's "no such blob" return code."""
+
+    def done(self) -> bool:
+        return True
+
+    def wait(self, _max_sec: float = -1.0) -> int:
+        return 1
+
+
+class _RecordingClient:
+    """The async client side: a read's size probe is a GIL-free ``AsyncGetBlobSize``."""
+
+    def __init__(self, calls: list[str]) -> None:
+        self._calls = calls
+
+    def AsyncGetBlobSize(self, _tag_id, _name):  # noqa: N802 - mirrors the native API
+        self._calls.append("AsyncGetBlobSize")
+        return _NotFound()
+
+
 class _SentinelClioCore:
     """A fake native module that EXPLODES if reached — the gate must block first."""
 
@@ -90,7 +112,8 @@ def _bare_clio_core_store(cte, *, probe, ttl_s=0.0, reconnect=None) -> ClioCoreS
     """
     store = ClioCoreStore.__new__(ClioCoreStore)
     store._cte = cte
-    store._client = object()
+    store._client = _RecordingClient(getattr(cte, "calls", []))
+    store._tag_ids = TagIds(cte)
     store._config_path = ""
     store._log_level = "error"
     store._gate = LivenessGate(config_path="", probe=probe, ttl_s=ttl_s)
@@ -108,8 +131,9 @@ def test_healthy_store_op_passes_through_to_native():
     """A live probe lets the op reach the native binding (baseline behaviour)."""
     cte = _RecordingClioCore()
     store = _bare_clio_core_store(cte, probe=lambda _port: True)
-    assert store.get("conversations", "s1") is None  # native GetBlobSize == 0
-    assert cte.calls == ["Tag(conversations)", "GetBlobSize"]  # native WAS reached
+    assert store.get("conversations", "s1") is None  # native GetBlobSize: not found
+    # The kind's tag id is resolved once, then the size probe is the async RPC.
+    assert cte.calls == ["Tag(conversations)", "GetTagId", "AsyncGetBlobSize"]
 
 
 # --------------------------------------------------------------------------- #

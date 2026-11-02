@@ -532,7 +532,9 @@ def probe_rpc_health(
     return True
 
 
-def guard_store_op(op_name: str) -> Callable[[Callable[..., Any]], Callable[..., Any]]:
+def guard_store_op(
+    op_name: str, *, inline_on_kind: bool = False
+) -> Callable[[Callable[..., Any]], Callable[..., Any]]:
     """Decorate a ``ClioCoreStore`` native-op method with the liveness gate + stall guard.
 
     The wrapped store must expose ``_live()`` (the #892 socket gate: a DEAD daemon
@@ -550,12 +552,21 @@ def guard_store_op(op_name: str) -> Callable[[Callable[..., Any]], Callable[...,
             else:
                 audit_store_read_on_loop(op_name, name=str(args[1] if len(args) > 1 else ""))
             self._live()
+            tag_ids = getattr(self, "_tag_ids", None)
+            # A method made of GIL-free async RPCs on ``args[0]`` (its kind) runs on the
+            # caller thread once that kind's tag id is cached (see ``guarded_store_rpc``).
+            inline = (
+                (lambda: tag_ids.cached(args[0]))
+                if inline_on_kind and args and tag_ids is not None
+                else None
+            )
             return call_with_liveness(
                 lambda: method(self, *args, **kwargs),
                 op_name=op_name,
                 port=self._gate.port,
                 reconnect=self._reconnect,
                 on_exhausted=self._gate.note_rpc_stalled,
+                inline=inline,
             )
 
         return wrapper

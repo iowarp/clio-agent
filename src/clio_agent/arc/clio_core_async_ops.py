@@ -8,16 +8,16 @@ call on a worker thread and waits with a bound, but a worker blocked in a GIL-ho
 call keeps the watcher itself from waking, so the bound could not fire and the whole
 server (event loop, health endpoint) froze with it.
 
-The async methods that submit without holding the GIL are used instead wherever the
-binding has one (measured: ``AsyncPutBlob``, ``AsyncDelBlob``, ``AsyncTagQuery`` let the
-main thread run ~300 times in the same 3 s). The worker polls ``Future.done()`` (it
-returns at once) and sleeps in between, GIL released, so the stall watch's own bound
-fires on time and the ladder degrades typed (``rpc_stalled``) as designed.
+The async methods submit with the GIL released (``core_bindings.cc``:
+``AsyncPutBlob``, ``AsyncGetBlob``, ``AsyncGetBlobSize``, ``AsyncDelBlob``,
+``AsyncTagQuery``; measured for puts and deletes: the main thread ran ~300 times in the
+same 3 s) and are used for every put, get, size and delete. :func:`await_future` polls
+``Future.done()`` (it returns at once) and sleeps in between, GIL released, so a stall
+still ends typed (``rpc_stalled``); once a kind's tag id is cached these run inline on
+the caller thread instead of the pooled stall-watch worker.
 
-Still blocking, because the binding has no GIL-free alternative (drafted upstream):
-``Tag(name)`` (GetOrCreateTag, cached here once per kind), ``Tag.GetBlobSize`` and
-``Tag.GetBlob`` (``AsyncGetBlob`` blocks while submitting), ``Tag.GetContainedBlobs``
-(``AsyncBlobQuery`` returns no rows for these tags), and ``SemanticSearch``.
+Still blocking: ``Tag(name)`` (GetOrCreateTag, cached here once per kind),
+``Tag.GetContainedBlobs`` and ``SemanticSearch``; these keep the pooled stall watch.
 """
 
 from __future__ import annotations
@@ -38,6 +38,8 @@ _POLL_S = 0.01
 # watch (rpc_liveness) owns the typed ladder (reconnect, retry, quarantine), so on a
 # stall it must decide first; this wait only ends the abandoned worker, typed.
 _WATCH_FIRST_MARGIN_S = 1.0
+# GetBlobSize's published "no such blob" return code.
+_BLOB_NOT_FOUND = 1
 
 
 class ClioCoreFutureTimeout(TimeoutError):
@@ -217,6 +219,37 @@ def delete_blob(client: Any, tag_id: Any, name: str) -> bool:
     """Delete one blob via ``AsyncDelBlob``; ``True`` iff it existed (return code 0)."""
     future = await_future(client.AsyncDelBlob(tag_id, name), op_name="delete")
     return bool(future.wait(0) == 0)
+
+
+def store_blob_size(store: Any, kind: str, name: str) -> int:
+    """A blob's stored size (0 when missing), asked GIL-free (``AsyncGetBlobSize``).
+
+    Raises:
+        RuntimeError: The runtime refused the probe with a code other than not-found.
+    """
+    tag_id = store._tag_ids.get(kind)
+    future = await_future(store._client.AsyncGetBlobSize(tag_id, name), op_name="get")
+    code = future.wait(0)
+    if code == _BLOB_NOT_FOUND:
+        return 0
+    if code:
+        raise RuntimeError(f"GetBlobSize operation failed (return code {code})")
+    return int(future.result(0) or 0)
+
+
+def store_read(store: Any, kind: str, name: str, length: int, offset: int = 0) -> bytes:
+    """``length`` bytes of a blob from ``offset``, read GIL-free (``AsyncGetBlob``).
+
+    Raises:
+        RuntimeError: The runtime refused the read (its return code), as the blocking
+            ``Tag.GetBlob`` did.
+    """
+    tag_id = store._tag_ids.get(kind)
+    future = await_future(store._client.AsyncGetBlob(tag_id, name, length, offset), op_name="get")
+    code = future.wait(0)
+    if code:
+        raise RuntimeError(f"GetBlob operation failed (return code {code})")
+    return bytes(future.result(0))
 
 
 def store_put(store: Any, kind: str, name: str, body: bytes, offset: int = 0) -> None:

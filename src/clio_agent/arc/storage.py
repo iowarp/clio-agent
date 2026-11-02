@@ -34,7 +34,13 @@ from clio_agent.arc import clio_core_daemon_version as daemon_version
 # module (#892); blob writes ride the bounded rc=13-class retry module (#893).
 from clio_agent.arc.batch_put import BatchPutError, PutRecord  # noqa: F401 - re-exported
 from clio_agent.arc.blob_frame import BlobNameDecodeError, BlobReadError, read_framed_blob
-from clio_agent.arc.clio_core_async_ops import TagIds, store_delete, store_delete_many
+from clio_agent.arc.clio_core_async_ops import (
+    TagIds,
+    store_blob_size,
+    store_delete,
+    store_delete_many,
+    store_read,
+)
 
 # CTE config generation + capacity policy (the bounded ram hot-tier cap) live in their own
 # owner module (iowarp/clio-agent#774/#890); re-exported here so callers/tests reaching
@@ -563,31 +569,32 @@ class ClioCoreStore(ClioCoreWrites):
         """The CTE tag holding ``kind`` records in this store's namespace (pure; no RPC)."""
         return f"{self._namespace}/{kind}" if self._namespace else kind
 
-    @guard_store_op("get")
+    @guard_store_op("get", inline_on_kind=True)
     def get(self, kind: str, name: str) -> Optional[bytes]:
-        """Read a validated record, allowing one stale native size-metadata observation."""
-        tag = self._cte.Tag(self.tag(kind))
-        size = tag.GetBlobSize(name)  # 0 for a missing blob (does not raise)
+        """Read a validated record, allowing one stale native size-metadata observation.
+
+        Both RPCs are GIL-free async ones, so a read runs on the caller thread once the
+        kind's tag id is cached."""
+        size = store_blob_size(self, kind, name)  # 0 for a missing blob
         if size == 0:
             return None
-        return read_framed_blob(name, size, lambda length: tag.GetBlob(name, length, 0))
+        return read_framed_blob(name, size, lambda length: store_read(self, kind, name, length))
 
-    @guard_store_op("get")
+    @guard_store_op("get", inline_on_kind=True)
     def get_raw(self, kind: str, name: str, *, length: int = 0) -> Optional[bytes]:
         """The stored bytes as they are (no unframing): a chunk-record blob. ``length``
         reads at least that many when the size metadata lags (``chunk_records``)."""
-        tag = self._cte.Tag(self.tag(kind))
-        size = tag.GetBlobSize(name)  # 0 for a missing blob (does not raise)
+        size = store_blob_size(self, kind, name)  # 0 for a missing blob
         if size == 0:
             return None
         try:
-            return bytes(tag.GetBlob(name, max(size, length), 0))
-        except RuntimeError as exc:  # the binding's bare "GetBlob operation failed"
+            return store_read(self, kind, name, max(size, length))
+        except RuntimeError as exc:  # the runtime refused the read
             raise BlobReadError(name, exc) from exc
 
-    @guard_store_op("exists")
+    @guard_store_op("exists", inline_on_kind=True)
     def exists(self, kind: str, name: str) -> bool:
-        return self._cte.Tag(self.tag(kind)).GetBlobSize(name) > 0
+        return store_blob_size(self, kind, name) > 0
 
     def scan(self, kind: str, prefix: str = "") -> Iterator[tuple[str, bytes]]:
         for blob_name in self.scan_names(kind, prefix):
