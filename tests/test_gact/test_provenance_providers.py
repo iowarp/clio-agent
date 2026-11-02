@@ -598,7 +598,7 @@ def test_normalization_keeps_file_coordinates_without_file_content() -> None:
                 "tool": "fs_read_file",
                 "call_id": call_id,
                 "args": {
-                    "filepath": filepath,
+                    "path": filepath,
                     "new_content": "must-not-appear",
                 },
             }
@@ -608,7 +608,7 @@ def test_normalization_keeps_file_coordinates_without_file_content() -> None:
 
     spans = result["spans"]
     assert len(spans) == 2
-    assert [span["attributes"]["tool_input"]["filepath"] for span in spans] == [
+    assert [span["attributes"]["tool_input"]["path"] for span in spans] == [
         "D:/workspace/triage/api_gateway.py",
         "D:/workspace/triage/api_gateway.log",
     ]

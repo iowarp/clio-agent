@@ -79,14 +79,14 @@ def _numbered(number: int, line: str, max_chars: int) -> str:
     return f"{number:>6}\t{text}"
 
 
-def read_text_range(filepath: str, offset: int = 1, limit: int = 0) -> ToolResult:
+def read_text_range(target: str, offset: int = 1, limit: int = 0) -> ToolResult:
     """Read up to ``limit`` lines from line ``offset`` (1-based), sized to the result bound.
 
     ``limit`` 0 reads up to :func:`read_lines` lines.
     """
 
-    validate_non_empty_string(filepath, field="filepath")
-    path = Path(validate_read_path(filepath))
+    validate_non_empty_string(target, field="path")
+    path = Path(validate_read_path(target))
     if not path.is_file():
         raise ToolError(f"fs_read_not_a_file: {path} is not a file.")
     with path.open("rb") as handle:

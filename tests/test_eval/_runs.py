@@ -84,8 +84,8 @@ def export(final_text: str = "The answer is 42.", stop_reason: str = "end_turn")
     """Root: three steps (a parallel pair, one search_tools call, a final step); one child."""
     root_events = [
         lm_event("s1", start=0.0, end=2.0, ttft=400.0, usage={"input_tokens": 1000, "cache_read_tokens": 20000, "output_tokens": 100}),
-        *tool_events("call_a", "fs_read_file", "s1", 2.1, 2.6, {"kwargs": {"filepath": "a.py"}}),
-        *tool_events("call_b", "fs_read_file", "s1", 2.1, 3.1, {"filepath": "b.py"}),
+        *tool_events("call_a", "fs_read_file", "s1", 2.1, 2.6, {"kwargs": {"path": "a.py"}}),
+        *tool_events("call_b", "fs_read_file", "s1", 2.1, 3.1, {"path": "b.py"}),
         step_event("s1", 1, ["fs_read_file", "fs_read_file"]),
         lm_event("s2", start=3.5, end=5.0, ttft=300.0, usage={"input_tokens": 200, "cache_read_tokens": 21000, "output_tokens": 50}),
         *tool_events("call_c", "search_tools", "s2", 5.1, 5.3),

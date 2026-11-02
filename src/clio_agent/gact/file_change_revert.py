@@ -150,7 +150,7 @@ def revert_file_change(app: "FastAPI", session: Any, change_id: str) -> dict[str
             details={"path": row["path"], "reason": reason},
         )
     target, workspace_root = _bounded_target(app, session, str(row["path"]))
-    args = {"filepath": str(target), "revert_of": row["id"], "delete": created}
+    args = {"path": str(target), "revert_of": row["id"], "delete": created}
     _check_policy(app, session, target, args)
     current = _current_sha256(target)
     if current != row["sha256_after"]:

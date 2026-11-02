@@ -112,7 +112,7 @@ def _continuation(path: Path, text: str, max_chars: int) -> str:
         return "it is one JSON document, so search it with fs_search_text or load it in a script"
     shown_lines = text[:max_chars].count("\n") + 1
     return (
-        f'read on with fs_read_file(filepath="{path}", offset={shown_lines}), '
+        f'read on with fs_read_file(path="{path}", offset={shown_lines}), '
         "or search it with fs_search_text"
     )
 

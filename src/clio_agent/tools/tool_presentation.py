@@ -351,12 +351,12 @@ def observe_mcp_result(name: str, result: Any, args: dict[str, Any], snapshot: A
 
 def _capture_write(args: Mapping[str, Any]) -> PreviousContent | None:
     """Keep the file as it was before the write, for the person's Undo."""
-    return capture_previous_content(args.get("filepath"))
+    return capture_previous_content(args.get("path"))
 
 
 def _file_start(args: Mapping[str, Any]) -> dict[str, Any] | None:
     """Name the declared file before execution, without inventing its effects."""
-    path = str(args.get("filepath") or "")
+    path = str(args.get("path") or "")
     if not path:
         return None
     return {
@@ -397,14 +397,11 @@ def _diff(args: Mapping[str, Any], result: Any, snapshot: Any) -> dict[str, Any]
                 "id": "file-link",
                 "type": "link",
                 "target": "file",
-                "uri": str(row.get("path") or args.get("filepath") or ""),
-                "label": PureWindowsPath(str(row.get("path") or args.get("filepath") or "")).name,
+                "uri": str(row.get("path") or args.get("path") or ""),
+                "label": PureWindowsPath(str(row.get("path") or args.get("path") or "")).name,
             },
-            {
-                "id": "diff",
-                "type": "diff",
-                "text": diff,
-            },
+            # A refused write changed nothing: it has a reason, not an empty diff.
+            *([{"id": "diff", "type": "diff", "text": diff}] if diff else []),
         ],
     }
 

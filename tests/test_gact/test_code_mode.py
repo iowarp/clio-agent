@@ -55,7 +55,7 @@ def _mcp_shaped(path: str) -> str:
 def _mcp_failed(path: str) -> str:
     """Stands in for an MCP call the server rejects: an error result with its reason."""
     sink = RESULT_SINK.get()
-    reason = "filepath: Missing required argument"
+    reason = "content: Missing required argument"
     if sink is not None:
         sink.append(
             (
@@ -150,8 +150,7 @@ class TestKernel:
             "except ToolError as exc:\n    print('caught', exc)"
         )
         assert (
-            "caught tool_result_is_error: filepath: Missing required argument"
-            in (outcome["output"])
+            "caught tool_result_is_error: content: Missing required argument" in (outcome["output"])
         )
 
     def test_mcp_calls_return_structured_content(self, workspace: Path) -> None:

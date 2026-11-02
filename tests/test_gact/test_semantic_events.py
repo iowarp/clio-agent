@@ -368,7 +368,7 @@ def test_artifact_and_builtin_command_semantic_events(tmp_path: Path, monkeypatc
     (root / "result.txt").write_text("old\n", encoding="utf-8")
     monkeypatch.setenv("CLIO_ALLOWED_ROOTS", str(tmp_path))
     agent = WritingAgent()
-    agent.calls = [("fs_write_file", {"filepath": str(root / "result.txt"), "content": "new\n"})]
+    agent.calls = [("fs_write_file", {"path": str(root / "result.txt"), "content": "new\n"})]
     app = build_app(sessions_path=tmp_path / "s.json", agent=agent)
     with TestClient(app) as client:
         sid = workspace_session(client, root, approval_mode="auto-edits")

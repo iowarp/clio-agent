@@ -135,7 +135,7 @@ def test_side_session_allows_declared_read_only_tools(tmp_path: Path) -> None:
         side = _open_side(client, _parent_with_history(client, app)).json()["id"]
         gate = _make_permission_gate(app)
         with _tool_session_context(side):
-            assert gate("fs_read_file", {"filepath": "x"}) == "allow"
+            assert gate("fs_read_file", {"path": "x"}) == "allow"
             assert (
                 gate(
                     "remote.lookup",
