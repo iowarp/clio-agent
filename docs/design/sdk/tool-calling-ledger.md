@@ -357,6 +357,12 @@ Every task but P4 and H3 is faster, and no graded task lost an answer. `explore`
 
 **P4, why delegation was slower** (`sess_fd96bda1620b`): the parent spawned three `explore` children at 12 s with "Thoroughness: medium… Report concisely". Each child's last call took 30 to 39 s to write a 4.9k to 6.6k-token report (about 20 to 25k characters), finishing at 77 to 80 s. Collected together, each result's inline share is (12,000 − 1,000) / 3 = 3,666 characters, so all three were saved to files, as JSON with the report on one line; the parent spent two `run_code` calls turning them back into Markdown and five paged reads before a 4.8k-token answer (93 to 119 s). Without delegation (final2) the same survey took 6 steps and 63 s. Causes in the data flow, not in the prompt: a saved text report is not readable as text, and the child does not know how much of its report reaches the parent inline.
 
+**`explore` on a cheaper model** (config `prompt1-haiku-explore`: round 1 with the Fleet's `explore` role on Haiku, P1 to P4 and H1 to H3, three passes): no gain. P1 10.3 s, P2 11.3 s, P3 52.5 s (prompt1: 9.9, 9.5, 40.7), H1 to H3 about level; P4 130 s median (92, 130 and 727 s) against 145 s on one model, still twice final2's 63 s. Haiku children write reports as long as Sonnet's (4k to 14k output tokens), so the spill and read-back of P4 remain; the model of the children is not the lever, the delivery of their reports is.
+
+The 727 s run is not model time: an `explore` child (`sess_760dfa610c9dee702b03ad463e9ef31e`) searched one folder above its workspace (`/home/user/clio-eval-work`), which asks for permission even though the root session runs in bypass mode; nobody answered and the turn waited the full `permission_request_timeout` of 600 s (`agent.log`, `perm_2fa374de608e`). Open: whether a child should inherit its parent's approval mode, and how a child's question reaches a person who is watching only the parent.
+
+**Owner decision (2026-11-02):** the per-result share and the child-answer digest are removed. They decided for the agent how much of a report it may read, with no limit behind them; the parent then read the whole report anyway, through files. A child's report is delivered whole unless it does not fit the parent's remaining context window (a real limit), and a reminder asks the child to be clear and succinct. The same audit covers every other agent-facing limit (task #38).
+
 ## Overheads (Phase 0 step 3)
 
 | Overhead | Measured | Above baseline noise | Fixed in |
