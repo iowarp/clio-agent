@@ -2,8 +2,8 @@
 
 Standard library only: the agent's Python environment supplies numpy, h5py and the rest.
 The host (:mod:`clio_agent.gact.code_mode.kernels`) starts it as ``python -I
-kernel_main.py`` inside the shell's write fence and talks newline-delimited JSON over
-stdin and the original stdout:
+kernel_main.py <output limit>`` inside the shell's write fence and talks
+newline-delimited JSON over stdin and the original stdout:
 
 - host to kernel: ``{"type": "bind", "stubs": {...}}`` (the tools a script may call),
   ``{"type": "exec", "id": n, "code": "..."}``, and ``{"type": "result", "id": k,
@@ -34,7 +34,8 @@ import threading
 import traceback
 from typing import Any
 
-#: How much of one script's output the kernel returns (the host bounds it further).
+#: How much of one script's output the kernel returns (the host bounds it further) when
+#: the host passes no limit; the host passes ``code.max_output_bytes`` as the first argument.
 OUTPUT_LIMIT = 2_000_000
 _FLAGS = ast.PyCF_ALLOW_TOP_LEVEL_AWAIT
 
@@ -188,16 +189,16 @@ def _restore(saved: tuple[int, int]) -> None:
     os.close(saved[1])
 
 
-def _read_output(capture: Any) -> str:
+def _read_output(capture: Any, limit: int = OUTPUT_LIMIT) -> str:
     capture.flush()
     size = capture.seek(0, os.SEEK_END)
     capture.seek(0)
-    data = capture.read(OUTPUT_LIMIT)
+    data = capture.read(limit)
     capture.seek(0)
     capture.truncate()
     text = data.decode("utf-8", errors="replace")
-    if size > OUTPUT_LIMIT:
-        text += f"\n[output cut at {OUTPUT_LIMIT:,} of {size:,} bytes]"
+    if size > limit:
+        text += f"\n[output cut at {limit:,} of {size:,} bytes]"
     return text
 
 
@@ -217,6 +218,7 @@ def _execute(
     code: str,
     capture: Any,
     host: _Host | None = None,
+    output_limit: int = OUTPUT_LIMIT,
 ) -> dict[str, Any]:
     saved = _redirect(capture.fileno())
     ok, value, error = True, None, ""
@@ -238,7 +240,7 @@ def _execute(
         if host is not None:
             host.forget_settled()
         _restore(saved)
-    output = _read_output(capture)
+    output = _read_output(capture, output_limit)
     if stopped:
         output += (
             f"\n[{stopped} task{'s' if stopped != 1 else ''} this script started "
@@ -249,6 +251,7 @@ def _execute(
 
 def main() -> None:
     """Serve scripts until stdin closes."""
+    output_limit = int(sys.argv[1]) if len(sys.argv) > 1 else OUTPUT_LIMIT
     protocol = io.TextIOWrapper(os.fdopen(os.dup(1), "wb"), encoding="utf-8")
     host = _Host(protocol)
     sys.stdin.reconfigure(encoding="utf-8")  # type: ignore[attr-defined]
@@ -279,7 +282,8 @@ def main() -> None:
             namespace["tools"] = _Tools(host, message.get("stubs") or {})
             host.send({"type": "bound"})
         elif message.get("type") == "exec":
-            done = _execute(loop, namespace, str(message.get("code") or ""), capture, host)
+            code = str(message.get("code") or "")
+            done = _execute(loop, namespace, code, capture, host, output_limit)
             host.send({"type": "done", "id": message.get("id"), **done})
 
 

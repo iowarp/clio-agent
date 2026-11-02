@@ -167,6 +167,13 @@ class TestKernel:
         again = _run("'y' in globals()")
         assert again["value"] == "False"
 
+    def test_the_output_limit_reaches_the_kernel(self, workspace: Path, monkeypatch: Any) -> None:
+        # code.max_output_bytes is resolved where the kernel starts and passed to it.
+        monkeypatch.setenv("CLIO_CODE_MAX_OUTPUT_BYTES", "10")
+        outcome = _run("print('x' * 100)", scope="limited")
+        assert outcome["status"] == "completed", outcome
+        assert outcome["output"].startswith("x" * 10 + "\n[output cut at 10 of 101 bytes]")
+
     def test_closing_the_session_stops_its_kernels(self, workspace: Path) -> None:
         _run("z = 1")
         kernel = kernels._KERNELS[("s", "main")]
@@ -206,6 +213,16 @@ class TestGrants:
                 assert grants.active_grant().waiting
             grants.answered({"action": ALLOW_SCRIPT})
             assert grants.covers("ask")
+        finally:
+            grants.reset_grant(token)
+
+    def test_the_covering_modes_and_script_length_are_configured(self, monkeypatch: Any) -> None:
+        monkeypatch.setenv("CLIO_CODE_COVERING_POSTURES", "ask")
+        monkeypatch.setenv("CLIO_CODE_MAX_SCRIPT_CHARS", "3")
+        token = grants.bind_grant(grants.ScriptGrant("call_1", "print(1)"))
+        try:
+            assert grants.covers("ask") and not grants.covers("auto-edits")
+            assert grants.row_fields(["allow"])["script"]["code"] == "pri"
         finally:
             grants.reset_grant(token)
 

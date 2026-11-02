@@ -20,20 +20,15 @@ from fastmcp.exceptions import ToolError
 from fastmcp.tools import ToolResult
 from mcp.types import TextContent
 
+from clio_agent import conf
 from clio_agent.tools.file_policy import validate_non_empty_string, validate_read_path
 from clio_agent.tools.mcp_result_projection import (
     model_tool_result_chars,
     transcript_tool_result_chars,
 )
 
-__all__ = ["DEFAULT_LIMIT", "MAX_LINE_CHARS", "read_text_range"]
+__all__ = ["count_bytes", "read_line_chars", "read_lines", "read_text_range"]
 
-#: Lines a read returns at most when the bound allows (an upper bound, not a target).
-DEFAULT_LIMIT = 2000
-#: A longer line is cut, with a marker giving its full length.
-MAX_LINE_CHARS = 2000
-#: Above this size the read stops counting lines once its range is filled.
-_COUNT_ALL_BYTES = 64 * 1024 * 1024
 _SNIFF_BYTES = 8192
 _HEADER_RESERVE = 400
 
@@ -43,6 +38,28 @@ _READERS = {
     ),
     ".pdf": "view_pdf",
 }
+
+
+def _at_least_one(key: str, env: str, default: int) -> int:
+    value = conf.resolve(key, env=env, default=default, cast=conf.as_int)
+    if value < 1:
+        raise ValueError(f"{key} must be at least 1, not {value}")
+    return value
+
+
+def read_lines() -> int:
+    """Lines a read returns at most when the bound allows (an upper bound, not a target)."""
+    return _at_least_one("fs.read_lines", "CLIO_FS_READ_LINES", 2000)
+
+
+def read_line_chars() -> int:
+    """A longer line is cut, with a marker giving its full length."""
+    return _at_least_one("fs.read_line_chars", "CLIO_FS_READ_LINE_CHARS", 2000)
+
+
+def count_bytes() -> int:
+    """Above this file size a read stops counting lines once its range is filled."""
+    return _at_least_one("fs.count_bytes", "CLIO_FS_COUNT_BYTES", 64 * 1024 * 1024)
 
 
 def _binary_error(path: Path) -> ToolError:
@@ -55,15 +72,18 @@ def _binary_error(path: Path) -> ToolError:
     return ToolError(f"fs_read_binary_file: {path} is not a text file; {hint}.")
 
 
-def _numbered(number: int, line: str) -> str:
+def _numbered(number: int, line: str, max_chars: int) -> str:
     text = line.rstrip("\n").rstrip("\r")
-    if len(text) > MAX_LINE_CHARS:
-        text = f"{text[:MAX_LINE_CHARS]}… [line cut: {len(text):,} characters]"
+    if len(text) > max_chars:
+        text = f"{text[:max_chars]}… [line cut: {len(text):,} characters]"
     return f"{number:>6}\t{text}"
 
 
-def read_text_range(filepath: str, offset: int = 1, limit: int = DEFAULT_LIMIT) -> ToolResult:
-    """Read up to ``limit`` lines from line ``offset`` (1-based), sized to the result bound."""
+def read_text_range(filepath: str, offset: int = 1, limit: int = 0) -> ToolResult:
+    """Read up to ``limit`` lines from line ``offset`` (1-based), sized to the result bound.
+
+    ``limit`` 0 reads up to :func:`read_lines` lines.
+    """
 
     validate_non_empty_string(filepath, field="filepath")
     path = Path(validate_read_path(filepath))
@@ -73,7 +93,8 @@ def read_text_range(filepath: str, offset: int = 1, limit: int = DEFAULT_LIMIT) 
         if b"\x00" in handle.read(_SNIFF_BYTES):
             raise _binary_error(path)
     size = path.stat().st_size
-    offset, limit = max(1, int(offset)), max(1, int(limit))
+    offset, limit = max(1, int(offset)), max(1, int(limit or read_lines()))
+    line_chars, count_limit = read_line_chars(), count_bytes()
     budget = min(model_tool_result_chars(), transcript_tool_result_chars()) - _HEADER_RESERVE
     lines: list[str] = []
     used, end, total, full = 0, offset - 1, 0, False
@@ -84,14 +105,14 @@ def read_text_range(filepath: str, offset: int = 1, limit: int = DEFAULT_LIMIT) 
             if number < offset:
                 continue
             if not full:
-                row = _numbered(number, line)
+                row = _numbered(number, line, line_chars)
                 if len(lines) < limit and (used + len(row) + 1 <= budget or not lines):
                     lines.append(row)
                     used += len(row) + 1
                     end = number
                     continue
                 full = True
-            if size > _COUNT_ALL_BYTES:
+            if size > count_limit:
                 counted_all = False
                 break
     more = total > end if counted_all else True

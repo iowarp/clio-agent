@@ -30,7 +30,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from clio_agent import conf
-from clio_agent.gact.agents.tool_concurrency import WORKERS, ServerGates
+from clio_agent.gact.agents.tool_concurrency import ServerGates, call_workers
 from clio_agent.gact.code_mode.stubs import NOT_IN_SCRIPTS, tool_group
 
 __all__ = ["CallRecord", "Dispatcher", "max_nested_calls"]
@@ -95,7 +95,9 @@ class Dispatcher:
         self.search = search
         self.budget = max_nested_calls()
         self.gates = ServerGates()
-        self.pool = ThreadPoolExecutor(max_workers=WORKERS, thread_name_prefix="clio-code-call")
+        self.pool = ThreadPoolExecutor(
+            max_workers=call_workers(), thread_name_prefix="clio-code-call"
+        )
         self.records: list[CallRecord] = []
         self.started = 0
         self.lock = threading.Lock()

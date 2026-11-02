@@ -8,8 +8,8 @@ a step is recorded, once, so every later fold of the step sees the same bounded 
 
 Left whole:
 
-- tools whose full result is what the agent asked for (:data:`FULL_RESULT_TOOLS`:
-  a skill's procedure);
+- tools whose full result is what the agent asked for (``tools.full_result``,
+  :func:`full_result_tools`: a skill's procedure);
 - collected task results, which are already bounded per task (a result over the digest
   size arrives as a ``result_file``);
 - media results, which reach the model as images or documents, not text.
@@ -20,10 +20,24 @@ from __future__ import annotations
 import json
 from typing import Any
 
-__all__ = ["FULL_RESULT_TOOLS", "recorded_observation"]
+from clio_agent import conf
 
-#: Tools whose whole result is the point of the call.
-FULL_RESULT_TOOLS = frozenset({"load_skill"})
+__all__ = ["full_result_tools", "recorded_observation"]
+
+#: The default ``tools.full_result``.
+_FULL_RESULT_TOOLS = ("load_skill",)
+
+
+def full_result_tools() -> frozenset[str]:
+    """Tools whose whole result is the point of the call (``tools.full_result``)."""
+    return frozenset(
+        conf.resolve(
+            "tools.full_result",
+            env="CLIO_TOOLS_FULL_RESULT",
+            default=_FULL_RESULT_TOOLS,
+            cast=conf.as_csv,
+        )
+    )
 
 
 def _is_media(value: Any) -> bool:
@@ -45,7 +59,7 @@ def recorded_observation(name: str, value: Any) -> Any:
     )
 
     encoded = _arc_obs_value(value)
-    if name in FULL_RESULT_TOOLS or isinstance(value, CollectedTaskResult):
+    if name in full_result_tools() or isinstance(value, CollectedTaskResult):
         return encoded
     text = encoded if isinstance(encoded, str) else json.dumps(encoded, default=str)
     if len(text) <= model_tool_result_chars() or _is_media(value):

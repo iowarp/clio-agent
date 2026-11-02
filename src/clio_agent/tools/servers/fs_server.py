@@ -33,7 +33,7 @@ from clio_agent.tools.builtin_annotations import (
     FS_TOOL_ANNOTATIONS as FS_TOOL_ANNOTATIONS,
 )
 from clio_agent.tools.fs_inspection import list_directory as _list_directory
-from clio_agent.tools.fs_read import DEFAULT_LIMIT, read_text_range
+from clio_agent.tools.fs_read import read_lines, read_text_range
 from clio_agent.tools.fs_search_rg import SearchMode, glob_files, search_files
 
 fs_server = FastMCP("fs")
@@ -112,13 +112,17 @@ def glob(
     return glob_files(pattern, path, limit)
 
 
+#: ``fs.read_lines``, read when the server starts: the schema's default and maximum.
+_READ_LINES = read_lines()
+
+
 @fs_server.tool(annotations=_READ_FILE_ANNOTATIONS)
 def read_file(
     filepath: str,
     offset: Annotated[int, Field(ge=1, description="1-based line to start from.")] = 1,
     limit: Annotated[
-        int, Field(ge=1, le=DEFAULT_LIMIT, description="Most lines to return.")
-    ] = DEFAULT_LIMIT,
+        int, Field(ge=1, le=_READ_LINES, description="Most lines to return.")
+    ] = _READ_LINES,
     access_reason: Annotated[
         str,
         Field(

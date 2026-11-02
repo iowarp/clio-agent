@@ -3,9 +3,9 @@
 A kernel is started on a script's first call in its scope and kept for the next, so
 variables and imports persist. It runs the execution runtime's Python
 (``CLIO_EXECUTION_PYTHON``, published when the workspace's execution runtime is
-prepared) as ``python -I kernel_main.py``, composed by :func:`sandbox.wrap_confined`
-with the shell's profile and write roots and the shell's environment scrub (no CLIO
-tokens or plugin secrets). Without a prepared runtime it runs the server's own Python
+prepared) as ``python -I kernel_main.py <code.max_output_bytes>``, composed by
+:func:`sandbox.wrap_confined` with the shell's profile and write roots and the shell's
+environment scrub (no CLIO tokens or plugin secrets). Without a prepared runtime it runs the server's own Python
 and the trace says so (``code_kernel_server_python``).
 
 Each kernel owns a fresh process group (Job on Windows), so stopping it stops what the
@@ -44,7 +44,6 @@ __all__ = [
 #: Typed trace reason: no prepared execution runtime; the kernel runs the server's Python.
 KERNEL_SERVER_PYTHON = "code_kernel_server_python"
 _MAIN = Path(__file__).with_name("kernel_main.py")
-_START_TIMEOUT_S = 60.0
 
 
 class KernelError(RuntimeError):
@@ -54,6 +53,40 @@ class KernelError(RuntimeError):
 def idle_minutes() -> float:
     """Minutes a kernel waits for its next script before it is stopped."""
     return conf.resolve("code.idle_minutes", env="CLIO_CODE_IDLE_MINUTES", default=30.0, cast=float)
+
+
+def start_timeout_s() -> float:
+    """Seconds a kernel has to start, or to take its tools, before it counts as failed.
+
+    Raises:
+        ValueError: The configured timeout is not positive.
+    """
+    value = conf.resolve(
+        "code.start_timeout_s", env="CLIO_CODE_START_TIMEOUT_S", default=60.0, cast=conf.as_float
+    )
+    if not value > 0:
+        raise ValueError(f"code.start_timeout_s must be positive, not {value}")
+    return value
+
+
+def max_output_bytes() -> int:
+    """Bytes of one script's printed output the kernel returns (``code.max_output_bytes``).
+
+    Resolved here and passed to the kernel as its first argument: the kernel is
+    standard library only and does not read CLIO's configuration.
+
+    Raises:
+        ValueError: The configured size is below 1.
+    """
+    value = conf.resolve(
+        "code.max_output_bytes",
+        env="CLIO_CODE_MAX_OUTPUT_BYTES",
+        default=2_000_000,
+        cast=conf.as_int,
+    )
+    if value < 1:
+        raise ValueError(f"code.max_output_bytes must be at least 1, not {value}")
+    return value
 
 
 def _environment(workspace: Path, session_id: str) -> tuple[str, dict[str, str]]:
@@ -101,7 +134,7 @@ class Kernel:
         self.python = python
         confined = sandbox.wrap_confined(
             python,
-            ["-I", str(_MAIN)],
+            ["-I", str(_MAIN), str(max_output_bytes())],
             write_roots=sandbox.effective_write_roots(
                 sandbox.PROFILE_SHELL, workspace_root=str(self.workspace)
             ),
@@ -122,7 +155,7 @@ class Kernel:
         self.tree = TaskProcessTree(self.process.pid)
         threading.Thread(target=self._read, name="code-kernel-out", daemon=True).start()
         threading.Thread(target=self._drain, name="code-kernel-err", daemon=True).start()
-        ready = self.receive(_START_TIMEOUT_S)
+        ready = self.receive(start_timeout_s())
         if not ready or ready.get("type") != "ready":
             self.stop("start_failed")
             raise KernelError(f"the Python kernel did not start: {self.diagnostics()}")
@@ -174,7 +207,7 @@ class Kernel:
         if digest == self.bound_digest:
             return
         self.send({"type": "bind", "stubs": table})
-        answer = self.receive(_START_TIMEOUT_S)
+        answer = self.receive(start_timeout_s())
         if not answer or answer.get("type") != "bound":
             raise KernelError(f"the Python kernel did not take its tools: {self.diagnostics()}")
         self.bound_digest = digest

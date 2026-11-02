@@ -137,6 +137,15 @@ class TestPlan:
         plan = plan_disclosure(_resolution(fs={"defer": True}, shell={"defer": True}), tools)
         assert plan.deferred == frozenset()
 
+    def test_the_never_deferred_names_and_prefixes_are_configured(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("CLIO_TOOLS_NEVER_DEFER", "cron_*, fs_read_file")
+        tools = _tools(SEARCH_TOOLS, "fs_read_file", "shell_bash", "cron_list")
+        resolution = _resolution(fs={"defer": True}, shell={"defer": True})
+        plan = plan_disclosure(resolution, tools)
+        assert plan.deferred == {"shell_bash"}
+
     def test_loaded_tools_stay_listed(self) -> None:
         tools = _tools(SEARCH_TOOLS, "cron_list")
         plan = plan_disclosure(_resolution(), tools, loaded=frozenset({"cron_list"}))
@@ -184,6 +193,17 @@ class TestSearchResult:
         text, structured = search_result(_catalog(), "weather radar")
         assert structured["tools"] == []
         assert "home_lock_set" in text and "select:name" in text
+
+    def test_the_search_bounds_are_configured(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv("CLIO_TOOLS_SEARCH_LIMIT", "1")
+        monkeypatch.setenv("CLIO_TOOLS_SEARCH_MAX", "2")
+        monkeypatch.setenv("CLIO_TOOLS_SEARCH_MISS_NAMES", "1")
+        _, default = search_result(_catalog(), "light lock calendar inventory")
+        assert len(default["tools"]) == 1
+        _, capped = search_result(_catalog(), "light lock calendar inventory", 10)
+        assert len(capped["tools"]) == 2
+        text, _ = search_result(_catalog(), "weather radar")
+        assert "calendar_event_create and 4 more" in text
 
     def test_no_catalog(self) -> None:
         text, structured = search_result(None, "anything")

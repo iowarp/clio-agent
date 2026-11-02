@@ -6,8 +6,8 @@ reads never ask, deny policies and plan mode still deny. For a nested non-read c
 would ask, the approval mode decides (the plan's table):
 
 - ``bypass``: the call runs (the gate already allows it);
-- ``auto-edits``, ``ai-review``, ``spotter-ai``, ``spotter-watcher``: the script's
-  approval covers it;
+- ``auto-edits``, ``ai-review``, ``spotter-ai``, ``spotter-watcher`` (the default
+  ``code.covering_postures``): the script's approval covers it;
 - ``ask``: it asks, one question per script at a time, showing the script; the answer
   "Allow for the rest of this script" (``allow_script``) covers the rest of that call.
 
@@ -27,14 +27,17 @@ from contextvars import ContextVar
 from dataclasses import dataclass, field
 from typing import Any
 
+from clio_agent import conf
+
 __all__ = [
     "ALLOW_SCRIPT",
-    "COVERING_POSTURES",
     "REASON_SCRIPT_GRANT",
     "ScriptGrant",
     "active_grant",
     "bind_grant",
+    "covering_postures",
     "covers",
+    "max_script_chars",
     "question",
     "reset_grant",
     "row_fields",
@@ -44,10 +47,34 @@ __all__ = [
 ALLOW_SCRIPT = "allow_script"
 #: Typed audit reason for a nested call the script's approval covered.
 REASON_SCRIPT_GRANT = "run_code_script_grant"
-#: Approval postures in which the script's approval covers its nested non-read calls.
-COVERING_POSTURES = frozenset({"auto-edits", "ai-review", "spotter-ai", "spotter-watcher"})
-#: How much of the script a permission question carries.
-_CODE_CHARS = 20_000
+#: The default ``code.covering_postures``.
+_COVERING_POSTURES = ("auto-edits", "ai-review", "spotter-ai", "spotter-watcher")
+
+
+def covering_postures() -> frozenset[str]:
+    """Approval postures in which the script's approval covers its nested non-read calls."""
+    return frozenset(
+        conf.resolve(
+            "code.covering_postures",
+            env="CLIO_CODE_COVERING_POSTURES",
+            default=_COVERING_POSTURES,
+            cast=conf.as_csv,
+        )
+    )
+
+
+def max_script_chars() -> int:
+    """How much of the script a permission question carries (``code.max_script_chars``).
+
+    Raises:
+        ValueError: The configured length is below 1.
+    """
+    value = conf.resolve(
+        "code.max_script_chars", env="CLIO_CODE_MAX_SCRIPT_CHARS", default=20_000, cast=conf.as_int
+    )
+    if value < 1:
+        raise ValueError(f"code.max_script_chars must be at least 1, not {value}")
+    return value
 
 
 @dataclass
@@ -87,7 +114,7 @@ def reset_grant(token: Any) -> None:
 def covers(posture: str) -> bool:
     """Whether a nested call that would ask runs under the script's approval."""
     grant = _ACTIVE.get()
-    return grant is not None and (grant.covered or posture in COVERING_POSTURES)
+    return grant is not None and (grant.covered or posture in covering_postures())
 
 
 def row_fields(actions: list[str]) -> dict[str, Any]:
@@ -96,7 +123,7 @@ def row_fields(actions: list[str]) -> dict[str, Any]:
     if grant is None:
         return {}
     return {
-        "script": {"call_id": grant.call_id, "code": grant.code[:_CODE_CHARS]},
+        "script": {"call_id": grant.call_id, "code": grant.code[: max_script_chars()]},
         "actions": [*actions, ALLOW_SCRIPT],
     }
 

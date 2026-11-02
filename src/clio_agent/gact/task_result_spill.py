@@ -28,6 +28,7 @@ from contextvars import ContextVar
 from pathlib import Path
 from typing import Any
 
+from clio_agent import conf
 from clio_agent.gact.agents.agent_task_output_digest import agent_task_output_digest_chars
 from clio_agent.runtime import trace
 from clio_agent.tools.servers.shell_spill_store import spill_directory, spill_root
@@ -45,8 +46,22 @@ _UNSAFE = re.compile(r"[^A-Za-z0-9_.-]+")
 
 #: While several results are collected together, each one's share of the result bound.
 _SHARE: ContextVar[int] = ContextVar("clio_task_result_share", default=0)
-#: The smallest share: below it a result is mostly its file's excerpt anyway.
-_MIN_SHARE = 1500
+
+
+def spill_min_chars() -> int:
+    """The smallest share of a collection's bound (``tools.spill_min_chars``).
+
+    Below it a result returned with its file is mostly the file's excerpt anyway.
+
+    Raises:
+        ValueError: The configured share is below 1.
+    """
+    value = conf.resolve(
+        "tools.spill_min_chars", env="CLIO_TOOLS_SPILL_MIN_CHARS", default=1500, cast=conf.as_int
+    )
+    if value < 1:
+        raise ValueError(f"tools.spill_min_chars must be at least 1, not {value}")
+    return value
 
 
 def task_result_inline_chars() -> int:
@@ -71,7 +86,7 @@ def shared_result_bound(count: int) -> Iterator[None]:
     """
     from clio_agent.tools.mcp_result_projection import model_tool_result_chars  # noqa: PLC0415
 
-    share = max(_MIN_SHARE, (model_tool_result_chars() - 1000) // max(1, count))
+    share = max(spill_min_chars(), (model_tool_result_chars() - 1000) // max(1, count))
     token = _SHARE.set(share if count > 1 else 0)
     try:
         yield

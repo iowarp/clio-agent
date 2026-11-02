@@ -13,12 +13,34 @@ import threading
 from collections.abc import Sequence
 from typing import Any
 
-__all__ = ["instructions_for", "record_instructions", "record_listing_facts"]
+from clio_agent import conf
+
+__all__ = [
+    "instructions_chars",
+    "instructions_for",
+    "record_instructions",
+    "record_listing_facts",
+]
 
 _LOCK = threading.Lock()
 _BY_NAMESPACE: dict[str, str] = {}
-#: How much of a server's instructions a prompt entry uses.
-_SUMMARY_CHARS = 300
+
+
+def instructions_chars() -> int:
+    """How much of a server's instructions a prompt entry uses (``tools.instructions_chars``).
+
+    Raises:
+        ValueError: The configured length is below 2 (one character and the ellipsis).
+    """
+    value = conf.resolve(
+        "tools.instructions_chars",
+        env="CLIO_TOOLS_INSTRUCTIONS_CHARS",
+        default=300,
+        cast=conf.as_int,
+    )
+    if value < 2:
+        raise ValueError(f"tools.instructions_chars must be at least 2, not {value}")
+    return value
 
 
 def record_instructions(namespace: str, instructions: str | None) -> None:
@@ -38,7 +60,8 @@ def instructions_for(namespace: str, *, summary: bool = False) -> str:
     if not summary or not text:
         return text
     first = text.split("\n\n", 1)[0].strip()
-    return first if len(first) <= _SUMMARY_CHARS else first[: _SUMMARY_CHARS - 1].rstrip() + "…"
+    limit = instructions_chars()
+    return first if len(first) <= limit else first[: limit - 1].rstrip() + "…"
 
 
 def record_listing_facts(namespace: str, client: Any, tools: Sequence[Any]) -> None:

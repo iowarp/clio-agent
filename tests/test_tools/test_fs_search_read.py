@@ -11,7 +11,7 @@ from fastmcp import Client
 from fastmcp.exceptions import ToolError
 
 from clio_agent.tools.file_policy import FilePolicyError
-from clio_agent.tools.fs_read import MAX_LINE_CHARS, read_text_range
+from clio_agent.tools.fs_read import read_line_chars, read_text_range
 from clio_agent.tools.fs_search_rg import glob_files, search_files
 from clio_agent.tools.gateway import build_gateway
 from clio_agent.tools.mcp_result_text import result_to_text
@@ -79,7 +79,7 @@ def test_a_default_read_sizes_itself_to_the_result_bound(approved: Path) -> None
 
 def test_long_lines_are_cut_and_empty_and_past_end_reads_say_so(approved: Path) -> None:
     long = approved / "long.txt"
-    long.write_text("a" * (MAX_LINE_CHARS + 50), encoding="utf-8")
+    long.write_text("a" * (read_line_chars() + 50), encoding="utf-8")
     assert "line cut" in _text(read_text_range(str(long)))
     empty = approved / "empty.txt"
     empty.write_text("", encoding="utf-8")
@@ -87,6 +87,16 @@ def test_long_lines_are_cut_and_empty_and_past_end_reads_say_so(approved: Path) 
     short = approved / "short.txt"
     short.write_text("one\ntwo\n", encoding="utf-8")
     assert "past the end; the file has 2 lines" in _text(read_text_range(str(short), offset=9))
+
+
+def test_the_read_window_and_line_length_are_configured(approved: Path) -> None:
+    set_config("fs.read_lines", 2)
+    set_config("fs.read_line_chars", 5)
+    source = approved / "rows.txt"
+    source.write_text("abcdefgh\nsecond\nthird\n", encoding="utf-8")
+    result = read_text_range(str(source))
+    assert result.structured_content["end_line"] == 2
+    assert "abcde… [line cut: 8 characters]" in _text(result)
 
 
 def test_binary_files_name_the_reader(approved: Path) -> None:

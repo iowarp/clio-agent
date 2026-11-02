@@ -17,11 +17,22 @@ from collections import OrderedDict
 from collections.abc import Mapping
 from typing import Any
 
-__all__ = ["exact_view", "remember", "shape"]
+from clio_agent import conf
 
-_MAX_SESSIONS = 64
+__all__ = ["exact_view", "remember", "sent_prompt_sessions", "shape"]
+
 _LOCK = threading.Lock()
 _LAST: OrderedDict[str, dict[str, Any]] = OrderedDict()
+
+
+def sent_prompt_sessions() -> int:
+    """Sessions whose last sent request is kept (``lm.sent_prompt_sessions``, at least 1)."""
+    value = conf.resolve(
+        "lm.sent_prompt_sessions", env="CLIO_LM_SENT_PROMPT_SESSIONS", default=64, cast=conf.as_int
+    )
+    if value < 1:
+        raise ValueError(f"lm.sent_prompt_sessions must be at least 1, not {value}")
+    return value
 
 
 def _tool_rows(request: Any) -> list[dict[str, Any]]:
@@ -62,10 +73,11 @@ def remember(session_id: str, model: str, request: Any) -> None:
         "system": getattr(request, "system", None) or "",
         "tools": _tool_rows(request),
     }
+    kept = sent_prompt_sessions()
     with _LOCK:
         _LAST[session_id] = entry
         _LAST.move_to_end(session_id)
-        while len(_LAST) > _MAX_SESSIONS:
+        while len(_LAST) > kept:
             _LAST.popitem(last=False)
 
 

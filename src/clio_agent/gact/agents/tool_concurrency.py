@@ -6,8 +6,8 @@ calls in one step, the threads' cancellation polls and the MCP replies they wait
 contended for the same locks and event loop until the server stopped answering
 (base P7, 2026-11-01). Both paths therefore share one bound: at most
 ``tools.per_server_concurrency`` calls to one server at a time, from a pool of
-:data:`WORKERS` threads. Calls that wait for a slot keep their order; outcomes are
-returned in call order.
+``tools.call_workers`` threads (:func:`call_workers`). Calls that wait for a slot keep
+their order; outcomes are returned in call order.
 """
 
 from __future__ import annotations
@@ -21,10 +21,7 @@ from typing import TypeVar
 
 from clio_agent import conf
 
-__all__ = ["WORKERS", "ServerGates", "per_server_concurrency", "run_bounded"]
-
-#: Threads one step or one script runs its calls on.
-WORKERS = 32
+__all__ = ["ServerGates", "call_workers", "per_server_concurrency", "run_bounded"]
 
 _C = TypeVar("_C")
 _R = TypeVar("_R")
@@ -39,6 +36,20 @@ def per_server_concurrency() -> int:
         cast=conf.as_int,
     )
     return max(1, value)
+
+
+def call_workers() -> int:
+    """Threads one step or one script runs its calls on (``tools.call_workers``).
+
+    Raises:
+        ValueError: The configured count is below 1.
+    """
+    value = conf.resolve(
+        "tools.call_workers", env="CLIO_TOOLS_CALL_WORKERS", default=32, cast=conf.as_int
+    )
+    if value < 1:
+        raise ValueError(f"tools.call_workers must be at least 1, not {value}")
+    return value
 
 
 class ServerGates:
@@ -83,7 +94,7 @@ def run_bounded(
         with gates(server_of(tool_name(call), servers)):
             return run(call)
 
-    workers = min(len(calls), WORKERS)
+    workers = min(len(calls), call_workers())
     with ThreadPoolExecutor(max_workers=workers, thread_name_prefix=thread_name_prefix) as pool:
         futures = [pool.submit(contextvars.copy_context().run, gated, call) for call in calls]
         return [future.result() for future in futures]

@@ -24,7 +24,7 @@ from pathlib import Path
 
 import httpx
 
-from clio_agent import paths
+from clio_agent import conf, paths
 
 __all__ = [
     "RIPGREP_MISSING",
@@ -32,6 +32,7 @@ __all__ = [
     "RipgrepMissing",
     "ensure_ripgrep",
     "installed_ripgrep",
+    "max_bytes",
     "ripgrep_executable",
 ]
 
@@ -62,7 +63,23 @@ ASSETS = {
 #: Typed reason when no ripgrep can be found or installed.
 RIPGREP_MISSING = "ripgrep_missing"
 _LOCK = threading.RLock()
-_MAX_BYTES = 32 * 1024 * 1024
+
+
+def max_bytes() -> int:
+    """Largest ripgrep download, and executable in it, CLIO accepts (``fs.search_max_bytes``).
+
+    Raises:
+        ValueError: The configured size is below 1.
+    """
+    value = conf.resolve(
+        "fs.search_max_bytes",
+        env="CLIO_FS_SEARCH_MAX_BYTES",
+        default=32 * 1024 * 1024,
+        cast=conf.as_int,
+    )
+    if value < 1:
+        raise ValueError(f"fs.search_max_bytes must be at least 1, not {value}")
+    return value
 
 
 class RipgrepMissing(RuntimeError):
@@ -74,15 +91,16 @@ class RipgrepMissing(RuntimeError):
 def _binary(archive: bytes, name: str) -> bytes:
     """Read only the expected executable; never extract archive paths or links."""
     expected = "rg.exe" if name.endswith(".zip") else "rg"
+    limit = max_bytes()
     if name.endswith(".zip"):
         with zipfile.ZipFile(io.BytesIO(archive)) as package:
             members = [m for m in package.infolist() if m.filename.endswith("/" + expected)]
-            if len(members) != 1 or members[0].file_size > _MAX_BYTES:
+            if len(members) != 1 or members[0].file_size > limit:
                 raise ValueError("ripgrep archive has no unique bounded executable")
             return package.read(members[0])
     with tarfile.open(fileobj=io.BytesIO(archive), mode="r:gz") as package:
         found = [m for m in package.getmembers() if m.name.endswith("/rg") and m.isfile()]
-        if len(found) != 1 or found[0].size > _MAX_BYTES:
+        if len(found) != 1 or found[0].size > limit:
             raise ValueError("ripgrep archive has no unique bounded executable")
         stream = package.extractfile(found[0])
         if stream is None:
@@ -137,13 +155,13 @@ def ensure_ripgrep(*, cache_root: Path | None = None) -> Path:
         root.mkdir(parents=True, exist_ok=True, mode=0o700)
         name = f"ripgrep-{VERSION}-{suffix}"
         url = f"https://github.com/BurntSushi/ripgrep/releases/download/{VERSION}/{name}"
-        chunks = bytearray()
+        chunks, limit = bytearray(), max_bytes()
         with httpx.Client(follow_redirects=True, timeout=120) as client:
             with client.stream("GET", url) as response:
                 response.raise_for_status()
                 for chunk in response.iter_bytes():
                     chunks.extend(chunk)
-                    if len(chunks) > _MAX_BYTES:
+                    if len(chunks) > limit:
                         raise ValueError("ripgrep download exceeds its size limit")
         if hashlib.sha256(chunks).hexdigest() != digest:
             raise ValueError("ripgrep download failed its pinned SHA-256 check")

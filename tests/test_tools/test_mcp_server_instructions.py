@@ -70,3 +70,9 @@ def test_a_deferred_server_without_a_description_is_described_by_its_instruction
     )
     entry = plan_disclosure(resolution, tools).entry
     assert "- home: Controls the lights and locks of one house." in entry
+
+
+def test_the_summary_length_is_configured(monkeypatch: pytest.MonkeyPatch) -> None:
+    record_instructions("home", _INSTRUCTIONS)
+    monkeypatch.setenv("CLIO_TOOLS_INSTRUCTIONS_CHARS", "9")
+    assert instructions_for("home", summary=True) == "Controls…"

@@ -45,7 +45,7 @@ def test_calls_to_one_server_run_within_the_limit_and_keep_their_order(
 
 
 def test_no_more_threads_than_the_pool(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(tool_concurrency, "WORKERS", 4)
+    monkeypatch.setenv("CLIO_TOOLS_CALL_WORKERS", "4")
     names: set[str] = set()
 
     def run(call: int) -> int:
@@ -56,6 +56,14 @@ def test_no_more_threads_than_the_pool(monkeypatch: pytest.MonkeyPatch) -> None:
         list(range(50))
     )
     assert len(names) <= 4
+
+
+def test_the_pool_size_is_configured(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("CLIO_TOOLS_CALL_WORKERS", raising=False)
+    assert tool_concurrency.call_workers() == 32
+    monkeypatch.setenv("CLIO_TOOLS_CALL_WORKERS", "0")
+    with pytest.raises(ValueError, match="tools.call_workers"):
+        tool_concurrency.call_workers()
 
 
 def test_calls_run_in_a_copy_of_the_callers_context() -> None:

@@ -21,6 +21,7 @@ import json
 from collections.abc import Iterable, Mapping
 from typing import Any
 
+from clio_agent import conf
 from clio_agent.gact.tool_catalog import CatalogEntry, ToolCatalog
 from clio_agent.runtime import trace
 
@@ -29,14 +30,35 @@ __all__ = [
     "build_search_tools_tool",
     "listed_loaded_tools",
     "promote_loaded_tools",
+    "search_limit",
+    "search_max",
+    "search_miss_names",
     "search_result",
 ]
 
 LOADED_TOOLS_KEY = "loaded_tools"
-_DEFAULT_LIMIT = 5
-_MAX_LIMIT = 20
-#: How many deferred names a miss lists (the prompt entry names them all).
-_MISS_NAMES = 40
+
+
+def _at_least(key: str, env: str, default: int, floor: int) -> int:
+    value = conf.resolve(key, env=env, default=default, cast=conf.as_int)
+    if value < floor:
+        raise ValueError(f"{key} must be at least {floor}, not {value}")
+    return value
+
+
+def search_limit() -> int:
+    """Tools a keyword search returns when the call names no limit."""
+    return _at_least("tools.search_limit", "CLIO_TOOLS_SEARCH_LIMIT", 5, 1)
+
+
+def search_max() -> int:
+    """The most tools one keyword search returns, whatever limit the call names."""
+    return _at_least("tools.search_max", "CLIO_TOOLS_SEARCH_MAX", 20, 1)
+
+
+def search_miss_names() -> int:
+    """How many deferred names a miss lists (the prompt entry names them all)."""
+    return _at_least("tools.search_miss_names", "CLIO_TOOLS_SEARCH_MISS_NAMES", 40, 0)
 
 
 def _metadata(app: Any, session_id: str) -> Mapping[str, Any]:
@@ -86,10 +108,10 @@ def _signature(entry: CatalogEntry) -> str:
 
 
 def search_result(
-    catalog: ToolCatalog | None, query: str, limit: int = _DEFAULT_LIMIT
+    catalog: ToolCatalog | None, query: str, limit: int = 0
 ) -> tuple[str, dict[str, Any]]:
-    """The model's text and the structured result of one search."""
-    limit = max(1, min(int(limit or _DEFAULT_LIMIT), _MAX_LIMIT))
+    """The model's text and the structured result of one search (``limit`` 0: the default)."""
+    limit = max(1, min(int(limit or search_limit()), search_max()))
     if catalog is None or not len(catalog):
         text = "Nothing is deferred for this agent: every tool it has is already in its tool list."
         return text, {"query": query, "tools": [], "missing": [], "deferred_total": 0}
@@ -122,8 +144,9 @@ def search_result(
         lines += ["", f"No deferred tool is named {', '.join(missing)}."]
     if not found:
         names = catalog.names()
-        shown = ", ".join(names[:_MISS_NAMES])
-        more = f" and {len(names) - _MISS_NAMES} more" if len(names) > _MISS_NAMES else ""
+        listed = search_miss_names()
+        shown = ", ".join(names[:listed])
+        more = f" and {len(names) - listed} more" if len(names) > listed else ""
         lines.append(
             f'No deferred tool matches "{query}". The deferred tools are: {shown}{more}. '
             "Search again by exact name (select:name) or other keywords."
@@ -200,7 +223,7 @@ def build_search_tools_tool() -> Any:
         native_tool,
     )
 
-    def search_tools(query: str, limit: int = _DEFAULT_LIMIT) -> str:
+    def search_tools(query: str, limit: int = 0) -> str:
         """Load the schemas of deferred tools by exact name or keywords."""
         loop = active_loop()
         catalog = getattr(getattr(loop, "agent", None), "_clio_deferred_catalog", None)
@@ -242,7 +265,7 @@ def build_search_tools_tool() -> Any:
             "limit": {
                 "type": "integer",
                 "description": f"Most tools to return for a keyword search (default "
-                f"{_DEFAULT_LIMIT}, at most {_MAX_LIMIT}).",
+                f"{search_limit()}, at most {search_max()}).",
             },
         },
     )

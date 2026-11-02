@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from types import SimpleNamespace
 from typing import Any
 
 import dspy
@@ -178,3 +179,16 @@ def test_the_record_carries_the_prompt_shape_and_the_session_keeps_the_request(
     assert view is not None and view["system"] == "sys"
     assert view["sizes"]["per_plugin"] == {"web": chars}
     assert view["rendered_system"] is None  # only the claude_code engine renders tools as text
+
+
+def test_the_sessions_kept_for_the_exact_view_are_configured(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from clio_agent.lm import sent_prompt
+
+    monkeypatch.setenv("CLIO_LM_SENT_PROMPT_SESSIONS", "1")
+    monkeypatch.setattr(sent_prompt, "_LAST", type(sent_prompt._LAST)())
+    request = SimpleNamespace(system="s", tools=[])
+    sent_prompt.remember("sess_a", "m", request)
+    sent_prompt.remember("sess_b", "m", request)
+    assert list(sent_prompt._LAST) == ["sess_b"]

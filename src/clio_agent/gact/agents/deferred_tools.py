@@ -37,6 +37,7 @@ __all__ = [
     "TOOLS_DEFERRAL_UNAVAILABLE",
     "Disclosure",
     "apply_disclosure",
+    "never_defer",
     "plan_disclosure",
     "sync_deferred_catalog",
 ]
@@ -44,23 +45,23 @@ __all__ = [
 SEARCH_TOOLS = "search_tools"
 #: Typed trace reason: deferral was declared but the agent cannot call search_tools.
 TOOLS_DEFERRAL_UNAVAILABLE = "tools_deferral_unavailable"
-#: The core loop: never deferred whatever a plugin declares.
-_NEVER = frozenset(
-    {
-        SEARCH_TOOLS,
-        "load_skill",
-        "submit",
-        "run_code",
-        "wait_tasks",
-        "spawn_agent_task",
-        "spawn_agents_parallel",
-        "write_todos",
-        "plan_enter",
-        "plan_update",
-        "plan_exit",
-    }
+#: The default ``tools.never_defer``: the core loop, never deferred whatever a plugin
+#: declares. An entry ending in ``*`` names a prefix.
+_NEVER_DEFER = (
+    SEARCH_TOOLS,
+    "load_skill",
+    "submit",
+    "run_code",
+    "wait_tasks",
+    "spawn_agent_task",
+    "spawn_agents_parallel",
+    "write_todos",
+    "plan_enter",
+    "plan_update",
+    "plan_exit",
+    "fs_*",
+    "shell_*",
 )
-_NEVER_PREFIXES = ("fs_", "shell_")
 #: Built-in tool groups named like servers (``fs_read_file``), for ``run_code``'s stubs.
 _BUILTIN_SERVERS = frozenset({"fs", "shell", "web"})
 
@@ -74,6 +75,16 @@ class Disclosure:
     entry: str = ""
     #: MCP servers deferred whole: a tool they add later is deferred too.
     deferred_servers: frozenset[str] = frozenset()
+
+
+def never_defer() -> tuple[frozenset[str], tuple[str, ...]]:
+    """``(names, prefixes)`` never deferred (``tools.never_defer``; ``x_*`` is a prefix)."""
+    entries = conf.resolve(
+        "tools.never_defer", env="CLIO_TOOLS_NEVER_DEFER", default=_NEVER_DEFER, cast=conf.as_csv
+    )
+    names = frozenset(entry for entry in entries if not entry.endswith("*"))
+    prefixes = tuple(entry[:-1] for entry in entries if entry.endswith("*") and entry[:-1])
+    return names, prefixes
 
 
 def _share() -> float:
@@ -131,10 +142,11 @@ def plan_disclosure(
                 deferred_servers.add(owner)
             continue
         deferred.update(name for name in names if rows.get(name, {}).get("defer") is True)
+    never, never_prefixes = never_defer()
     deferred = {
         name
         for name in deferred - loaded
-        if name not in _NEVER and not name.startswith(_NEVER_PREFIXES)
+        if name not in never and not name.startswith(never_prefixes)
     }
     if not deferred:
         return Disclosure()

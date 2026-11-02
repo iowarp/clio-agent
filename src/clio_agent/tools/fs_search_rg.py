@@ -24,6 +24,7 @@ from fastmcp.exceptions import ToolError
 from fastmcp.tools import ToolResult
 from mcp.types import TextContent
 
+from clio_agent import conf
 from clio_agent.runtime.ripgrep import RipgrepMissing, ripgrep_executable
 from clio_agent.tools.file_policy import FileAccessPolicy, validate_non_empty_string
 from clio_agent.tools.mcp_result_projection import (
@@ -34,8 +35,34 @@ from clio_agent.tools.mcp_result_projection import (
 __all__ = ["SearchMode", "glob_files", "search_files"]
 
 SearchMode = Literal["files", "content", "count"]
-_TIMEOUT_S = 30.0
-_LINE_CHARS = 500
+
+
+def search_timeout_s() -> float:
+    """Seconds one ripgrep run may take; a slower search returns what it found so far.
+
+    Raises:
+        ValueError: The configured timeout is not positive.
+    """
+    value = conf.resolve(
+        "fs.search_timeout_s", env="CLIO_FS_SEARCH_TIMEOUT_S", default=30.0, cast=conf.as_float
+    )
+    if not value > 0:
+        raise ValueError(f"fs.search_timeout_s must be positive, not {value}")
+    return value
+
+
+def search_line_chars() -> int:
+    """Characters of one matching line a content search returns.
+
+    Raises:
+        ValueError: The configured length is below 1.
+    """
+    value = conf.resolve(
+        "fs.search_line_chars", env="CLIO_FS_SEARCH_LINE_CHARS", default=500, cast=conf.as_int
+    )
+    if value < 1:
+        raise ValueError(f"fs.search_line_chars must be at least 1, not {value}")
+    return value
 
 
 def _budget() -> int:
@@ -66,7 +93,7 @@ def _run(arguments: list[str], cwd: Path) -> tuple[list[str], bool]:
             text=True,
             encoding="utf-8",
             errors="replace",
-            timeout=_TIMEOUT_S,
+            timeout=search_timeout_s(),
             check=False,
         )
     except subprocess.TimeoutExpired as exc:
@@ -182,6 +209,7 @@ def _content_result(
     matches: list[dict[str, Any]] = []
     lines: list[str] = []
     used, budget, truncated, total = 0, _budget(), timed_out, 0
+    line_chars = search_line_chars()
     pending_context: list[dict[str, Any]] = []
     for row in rows:
         try:
@@ -193,7 +221,7 @@ def _content_result(
             continue
         name = (data.get("path") or {}).get("text", "")
         number = data.get("line_number")
-        text = ((data.get("lines") or {}).get("text") or "").rstrip("\n")[:_LINE_CHARS]
+        text = ((data.get("lines") or {}).get("text") or "").rstrip("\n")[:line_chars]
         if kind == "context":
             pending_context.append({"path": name, "line": number, "text": text})
             continue

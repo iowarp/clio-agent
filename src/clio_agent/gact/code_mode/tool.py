@@ -33,12 +33,12 @@ __all__ = [
     "build_run_code_tool",
     "call_timeout_s",
     "finalize_run_code",
+    "poll_s",
     "run_script",
 ]
 
 #: Typed refusal: plan mode, and the sandbox does not enforce the write fence.
 CODE_PLAN_MODE_UNCONFINED = "code_plan_mode_unconfined"
-_POLL_S = 0.25
 _DESCRIPTION = (
     "Run Python in a persistent kernel that can call your tools: `await "
     "tools.<group>.<tool>(arg=...)` returns the tool's structured result (a dict, list or "
@@ -52,6 +52,18 @@ _DESCRIPTION = (
     "finds tools; `help(tools.<group>.<tool>)` shows arguments; a failed call raises "
     "ToolError. The script is approved before it runs."
 )
+
+
+def poll_s() -> float:
+    """Seconds between checks for cancellation and timeout while a script runs.
+
+    Raises:
+        ValueError: The configured interval is not positive.
+    """
+    value = conf.resolve("code.poll_s", env="CLIO_CODE_POLL_S", default=0.25, cast=conf.as_float)
+    if not value > 0:
+        raise ValueError(f"code.poll_s must be positive, not {value}")
+    return value
 
 
 def call_timeout_s() -> float:
@@ -148,7 +160,7 @@ def run_script(agent: Any, code: str, *, session_id: str, scope: str) -> dict[st
     kernel = kernels.kernel_for(session_id, scope, _workspace())
     outcome: dict[str, Any] = {"status": "failed", "output": "", "value": None, "error": ""}
     started = time.monotonic()
-    limit = call_timeout_s()
+    limit, poll = call_timeout_s(), poll_s()
     try:
         with kernel.lock:
             kernel.bind(stub_table(agent.tools, servers))
@@ -168,7 +180,7 @@ def run_script(agent: Any, code: str, *, session_id: str, scope: str) -> dict[st
                     )
                     break
                 try:
-                    message = kernel.receive(_POLL_S)
+                    message = kernel.receive(poll)
                 except queue.Empty:
                     continue
                 if message is None:

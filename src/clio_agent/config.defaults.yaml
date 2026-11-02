@@ -169,6 +169,11 @@ lm.lmstudio_flash_attention: true
 # codex, claude_code); change to switch which provider clio talks to.
 lm.provider: "lm_studio"
 
+# CLIO_LM_SENT_PROMPT_SESSIONS  (int)  <- src/clio_agent/lm/sent_prompt.py
+# Sessions whose last request to the model is kept in memory for the exact
+# prompt view; the least recently active is dropped first.
+lm.sent_prompt_sessions: 64
+
 # CLIO_LM_STOP_SEQUENCES  (str)  <- src/clio_agent/lm/request_builder.py
 # ||-joined override for the DSPy trajectory-regurgitation stop sequences,
 # sent whenever the endpoint's effective parameter set accepts `stop`;
@@ -1276,8 +1281,9 @@ resources.upload_chunk_bytes: 8388608
 # ==========================================================================
 # Tools + MCP
 # ==========================================================================
-# File-policy sandboxing, shell execution bounds and the MCP tool fleet's
-# discovery/cache/timeouts.
+# File-policy sandboxing, the file tools' read and search bounds, shell and
+# run_code execution bounds, HDF5 reference summaries and the MCP tool
+# fleet's discovery/cache/timeouts.
 
 # CLIO_CODE_CALL_TIMEOUT_S  (str)  <- src/clio_agent/gact/code_mode/tool.py
 # Seconds one run_code script may run (time waiting for a person's answer
@@ -1285,15 +1291,95 @@ resources.upload_chunk_bytes: 8388608
 # 0 means no limit.
 code.call_timeout_s: "600.0"
 
+# CLIO_CODE_COVERING_POSTURES  (list)  <- src/clio_agent/gact/code_mode/grants.py
+# Approval modes in which approving a run_code script also covers the non-
+# read tool calls it makes; in other modes each such call asks.
+code.covering_postures: ["auto-edits", "ai-review", "spotter-ai", "spotter-watcher"]
+
 # CLIO_CODE_IDLE_MINUTES  (str)  <- src/clio_agent/gact/code_mode/kernels.py
 # Minutes a run_code kernel keeps its variables without a script before it
 # is stopped.
 code.idle_minutes: "30.0"
 
+# CLIO_CODE_INDEX_LINE_CHARS  (int)  <- src/clio_agent/gact/code_mode/stubs.py
+# Longest line of the tools index in run_code's description; a server with
+# more tools is listed in part with a count of the rest.
+code.index_line_chars: 320
+
 # CLIO_CODE_MAX_NESTED_CALLS  (int)  <- src/clio_agent/gact/code_mode/dispatch.py
 # Tool calls one run_code script may make; a call past it raises in the
 # script.
 code.max_nested_calls: 500
+
+# CLIO_CODE_MAX_OUTPUT_BYTES  (int)  <- src/clio_agent/gact/code_mode/kernels.py
+# Bytes of one run_code script's printed output the kernel returns; the rest
+# is cut with a note. Read when a kernel starts.
+code.max_output_bytes: 2000000
+
+# CLIO_CODE_MAX_SCRIPT_CHARS  (int)  <- src/clio_agent/gact/code_mode/grants.py
+# Characters of a run_code script that a permission question shows the
+# person.
+code.max_script_chars: 20000
+
+# CLIO_CODE_POLL_S  (float)  <- src/clio_agent/gact/code_mode/tool.py
+# Seconds between checks for cancellation and the time limit while a
+# run_code script runs.
+code.poll_s: 0.25
+
+# CLIO_CODE_START_TIMEOUT_S  (float)  <- src/clio_agent/gact/code_mode/kernels.py
+# Seconds a run_code kernel has to start, or to take its tools, before it
+# counts as failed.
+code.start_timeout_s: 60.0
+
+# CLIO_CODE_STUB_DOC_CHARS  (int)  <- src/clio_agent/gact/code_mode/stubs.py
+# Characters of a tool's description kept in its run_code stub, which
+# help(tools.<group>.<tool>) shows.
+code.stub_doc_chars: 1500
+
+# CLIO_FS_COUNT_BYTES  (int)  <- src/clio_agent/tools/fs_read.py
+# File size above which fs_read_file stops counting lines once its range is
+# filled, so a read of a huge file does not scan all of it.
+fs.count_bytes: 67108864
+
+# CLIO_FS_READ_LINE_CHARS  (int)  <- src/clio_agent/tools/fs_read.py
+# Characters of one line fs_read_file returns; a longer line is cut with a
+# marker giving its full length.
+fs.read_line_chars: 2000
+
+# CLIO_FS_READ_LINES  (int)  <- src/clio_agent/tools/fs_read.py
+# Most lines one fs_read_file call returns, and its default; a read also
+# stops at the result size and names the offset to continue from. Read when
+# the fs server starts.
+fs.read_lines: 2000
+
+# CLIO_FS_SEARCH_LINE_CHARS  (int)  <- src/clio_agent/tools/fs_search_rg.py
+# Characters of one matching line a content search returns.
+fs.search_line_chars: 500
+
+# CLIO_FS_SEARCH_MAX_BYTES  (int)  <- src/clio_agent/runtime/ripgrep.py
+# Largest ripgrep download, and executable in it, CLIO accepts when it
+# installs its managed ripgrep for the file search tools.
+fs.search_max_bytes: 33554432
+
+# CLIO_FS_SEARCH_TIMEOUT_S  (float)  <- src/clio_agent/tools/fs_search_rg.py
+# Seconds one file search or glob may run; a slower one returns what it
+# found, marked partial.
+fs.search_timeout_s: 30.0
+
+# CLIO_HDF5_SUMMARY_ATTRIBUTES  (int)  <- src/clio_agent/gact/hdf5_view.py
+# Attributes an @file.h5::/path reference summary carries, such as NX_class
+# and units.
+hdf5.summary_attributes: 20
+
+# CLIO_HDF5_SUMMARY_TEXT_CHARS  (int)  <- src/clio_agent/gact/hdf5_view.py
+# Characters of one text attribute in an HDF5 reference summary; a longer
+# value is cut.
+hdf5.summary_text_chars: 200
+
+# CLIO_TOOLS_CALL_WORKERS  (int)  <- src/clio_agent/gact/agents/tool_concurrency.py
+# Threads one step's tool calls, or one run_code script's calls, run on;
+# tools.per_server_concurrency still bounds the calls to each server.
+tools.call_workers: 32
 
 # CLIO_TOOL_FAILURE_LIMIT  (int)  <- src/clio_agent/tools/execution.py
 # Consecutive failures of one tool before CLIO blocks further calls to it
@@ -1327,6 +1413,16 @@ tools.file_policy.allow_symlinks: false
 # Byte-size cap (accepts K/M/G/T suffixes) on a file a read/write tool call
 # may touch; raise to allow larger files.
 tools.file_policy.max_file_size_bytes: "1073741824"
+
+# CLIO_TOOLS_FULL_RESULT  (list)  <- src/clio_agent/gact/agents/native_result_bound.py
+# Native tools whose whole result reaches the model, never cut to the result
+# size with the rest saved to a file; a skill's procedure is the default.
+tools.full_result: ["load_skill"]
+
+# CLIO_TOOLS_INSTRUCTIONS_CHARS  (int)  <- src/clio_agent/tools/mcp_server_instructions.py
+# Characters of an MCP server's own instructions used to describe a deferred
+# server in the prompt, when its plugin gives no description.
+tools.instructions_chars: 300
 
 # CLIO_MCP_CALL_TIMEOUT_S  (float)  <- src/clio_agent/tools/execution.py
 # Runaway backstop seconds for one synchronous MCP tool call before it's
@@ -1477,15 +1573,40 @@ tools.mcp_cache.temp_max_age_days: 3.0
 # trees, beyond the system temp dir.
 # tools.mcp_cache.temp_roots:  # default unset; resolved in code
 
+# CLIO_TOOLS_NEVER_DEFER  (list)  <- src/clio_agent/gact/agents/deferred_tools.py
+# Tools never deferred behind search_tools whatever a plugin declares (the
+# core loop); an entry ending in * names a prefix, such as fs_*.
+tools.never_defer: ["search_tools", "load_skill", "submit", "run_code", "wait_tasks", "spawn_agent_task", "spawn_agents_parallel", "write_todos", "plan_enter", "plan_update", "plan_exit", "fs_*", "shell_*"]
+
 # CLIO_TOOLS_PER_SERVER_CONCURRENCY  (int)  <- src/clio_agent/gact/agents/tool_concurrency.py
 # Tool calls to one server that run at once, for a step's calls and a
 # run_code script's calls alike; the others wait their turn.
 tools.per_server_concurrency: 8
 
+# CLIO_TOOLS_SEARCH_LIMIT  (int)  <- src/clio_agent/gact/search_tools.py
+# Tools a search_tools keyword search returns when the call names no limit.
+tools.search_limit: 5
+
+# CLIO_TOOLS_SEARCH_MAX  (int)  <- src/clio_agent/gact/search_tools.py
+# The most tools one search_tools keyword search returns, whatever limit the
+# call names.
+tools.search_max: 20
+
+# CLIO_TOOLS_SEARCH_MISS_NAMES  (int)  <- src/clio_agent/gact/search_tools.py
+# Deferred tool names a search_tools miss lists so the agent can search
+# again by name; the prompt entry names them all.
+tools.search_miss_names: 40
+
 # CLIO_WINDOWS_SHELL_BACKEND  (str)  <- src/clio_agent/tools/servers/shell_server.py
 # Which interpreter the Windows shell tool runs commands through
 # (powershell/bash/cmd); match it to your commands' shell.
 tools.shell.windows_backend: "powershell"
+
+# CLIO_TOOLS_SPILL_MIN_CHARS  (int)  <- src/clio_agent/gact/task_result_spill.py
+# Smallest share, in characters, of the result bound each of several
+# collected task results gets; a larger result goes to its own file with an
+# excerpt.
+tools.spill_min_chars: 1500
 
 # CLIO_TOOLS_WRITE_AHEAD  (str)  <- src/clio_agent/gact/external_read_only.py
 # Which MCP calls record their submission before they are sent:

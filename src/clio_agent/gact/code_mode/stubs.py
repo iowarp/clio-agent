@@ -18,6 +18,8 @@ import re
 from collections.abc import Iterable, Mapping
 from typing import Any
 
+from clio_agent import conf
+
 __all__ = ["NOT_IN_SCRIPTS", "index_text", "stub_table", "tool_group"]
 
 #: Tools a script cannot call.
@@ -55,8 +57,26 @@ NOT_IN_SCRIPTS = frozenset(
         "raise_alert_card",
     }
 )
-_DOC_CHARS = 1500
-_INDEX_LINE_CHARS = 320
+
+
+def _doc_chars() -> int:
+    """Characters of a tool's description kept in its stub's docstring (at least 1)."""
+    value = conf.resolve(
+        "code.stub_doc_chars", env="CLIO_CODE_STUB_DOC_CHARS", default=1500, cast=conf.as_int
+    )
+    if value < 1:
+        raise ValueError(f"code.stub_doc_chars must be at least 1, not {value}")
+    return value
+
+
+def _index_line_chars() -> int:
+    """Longest line of the ``tools`` index in ``run_code``'s description (at least 40)."""
+    value = conf.resolve(
+        "code.index_line_chars", env="CLIO_CODE_INDEX_LINE_CHARS", default=320, cast=conf.as_int
+    )
+    if value < 40:
+        raise ValueError(f"code.index_line_chars must be at least 40, not {value}")
+    return value
 
 
 def _identifier(text: str) -> str:
@@ -90,6 +110,7 @@ def stub_table(tools: Mapping[str, Any], servers: Iterable[str]) -> dict[str, An
     from clio_agent.gact.agents.clio_react import _function_tool  # noqa: PLC0415
 
     servers = tuple(servers)
+    doc_chars = _doc_chars()
     groups: dict[str, dict[str, Any]] = {}
     for name in sorted(tools):
         if name in NOT_IN_SCRIPTS:
@@ -100,7 +121,7 @@ def stub_table(tools: Mapping[str, Any], servers: Iterable[str]) -> dict[str, An
             "tool": name,
             "function": function,
             "signature": _signature(function, spec.parameters or {}),
-            "doc": str(spec.description or "")[:_DOC_CHARS],
+            "doc": str(spec.description or "")[:doc_chars],
         }
     return {"groups": groups}
 
@@ -108,14 +129,15 @@ def stub_table(tools: Mapping[str, Any], servers: Iterable[str]) -> dict[str, An
 def index_text(table: Mapping[str, Any]) -> str:
     """One line per group: what ``tools`` holds, for the tool description."""
     lines = []
+    line_chars = _index_line_chars()
     for group, functions in sorted((table.get("groups") or {}).items()):
         prefix = f"tools.{group}." if group else "tools."
         names = sorted(functions)
         line = f"{prefix}{{{', '.join(names)}}}"
-        if len(line) > _INDEX_LINE_CHARS:
+        if len(line) > line_chars:
             shown: list[str] = []
             for name in names:
-                if len(prefix) + len(", ".join([*shown, name])) > _INDEX_LINE_CHARS - 20:
+                if len(prefix) + len(", ".join([*shown, name])) > line_chars - 20:
                     break
                 shown.append(name)
             line = f"{prefix}{{{', '.join(shown)}, +{len(names) - len(shown)} more}}"

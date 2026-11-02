@@ -73,8 +73,9 @@ SECTIONS: list[tuple[str, tuple[str, ...], str]] = [
     ),
     (
         "Tools + MCP",
-        ("tools", "code"),
-        "File-policy sandboxing, shell execution bounds and the MCP tool fleet's "
+        ("tools", "code", "fs", "hdf5"),
+        "File-policy sandboxing, the file tools' read and search bounds, shell and run_code "
+        "execution bounds, HDF5 reference summaries and the MCP tool fleet's "
         "discovery/cache/timeouts.",
     ),
     (
@@ -1237,6 +1238,92 @@ KEY_NOTES: dict[str, str] = {
         "Schema tokens an MCP server's tools may take before they are deferred behind "
         "search_tools, when its plugin does not say; the smaller of this and tools.defer_share "
         "of the context window applies."
+    ),
+    "tools.call_workers": (
+        "Threads one step's tool calls, or one run_code script's calls, run on; "
+        "tools.per_server_concurrency still bounds the calls to each server."
+    ),
+    "tools.never_defer": (
+        "Tools never deferred behind search_tools whatever a plugin declares (the core loop); "
+        "an entry ending in * names a prefix, such as fs_*."
+    ),
+    "tools.full_result": (
+        "Native tools whose whole result reaches the model, never cut to the result size with "
+        "the rest saved to a file; a skill's procedure is the default."
+    ),
+    "tools.search_limit": (
+        "Tools a search_tools keyword search returns when the call names no limit."
+    ),
+    "tools.search_max": (
+        "The most tools one search_tools keyword search returns, whatever limit the call names."
+    ),
+    "tools.search_miss_names": (
+        "Deferred tool names a search_tools miss lists so the agent can search again by name; "
+        "the prompt entry names them all."
+    ),
+    "tools.spill_min_chars": (
+        "Smallest share, in characters, of the result bound each of several collected task "
+        "results gets; a larger result goes to its own file with an excerpt."
+    ),
+    "tools.instructions_chars": (
+        "Characters of an MCP server's own instructions used to describe a deferred server in "
+        "the prompt, when its plugin gives no description."
+    ),
+    "code.max_script_chars": (
+        "Characters of a run_code script that a permission question shows the person."
+    ),
+    "code.max_output_bytes": (
+        "Bytes of one run_code script's printed output the kernel returns; the rest is cut "
+        "with a note. Read when a kernel starts."
+    ),
+    "code.start_timeout_s": (
+        "Seconds a run_code kernel has to start, or to take its tools, before it counts as failed."
+    ),
+    "code.poll_s": (
+        "Seconds between checks for cancellation and the time limit while a run_code script runs."
+    ),
+    "code.stub_doc_chars": (
+        "Characters of a tool's description kept in its run_code stub, which "
+        "help(tools.<group>.<tool>) shows."
+    ),
+    "code.index_line_chars": (
+        "Longest line of the tools index in run_code's description; a server with more tools "
+        "is listed in part with a count of the rest."
+    ),
+    "code.covering_postures": (
+        "Approval modes in which approving a run_code script also covers the non-read tool "
+        "calls it makes; in other modes each such call asks."
+    ),
+    "fs.read_lines": (
+        "Most lines one fs_read_file call returns, and its default; a read also stops at the "
+        "result size and names the offset to continue from. Read when the fs server starts."
+    ),
+    "fs.read_line_chars": (
+        "Characters of one line fs_read_file returns; a longer line is cut with a marker "
+        "giving its full length."
+    ),
+    "fs.count_bytes": (
+        "File size above which fs_read_file stops counting lines once its range is filled, so "
+        "a read of a huge file does not scan all of it."
+    ),
+    "fs.search_max_bytes": (
+        "Largest ripgrep download, and executable in it, CLIO accepts when it installs its "
+        "managed ripgrep for the file search tools."
+    ),
+    "fs.search_timeout_s": (
+        "Seconds one file search or glob may run; a slower one returns what it found, marked "
+        "partial."
+    ),
+    "fs.search_line_chars": ("Characters of one matching line a content search returns."),
+    "hdf5.summary_attributes": (
+        "Attributes an @file.h5::/path reference summary carries, such as NX_class and units."
+    ),
+    "hdf5.summary_text_chars": (
+        "Characters of one text attribute in an HDF5 reference summary; a longer value is cut."
+    ),
+    "lm.sent_prompt_sessions": (
+        "Sessions whose last request to the model is kept in memory for the exact prompt "
+        "view; the least recently active is dropped first."
     ),
     "tools.file_policy.allow_symlinks": (
         "Whether tool file reads/writes may traverse symlinks; set true only if a workflow "
