@@ -150,6 +150,22 @@ Base is `9a365758` plus the instrumentation commit with its pinned marketplace; 
 | `run_code` | P5 to P7, H1 | | |
 | Session plan | H1 to H3 | | |
 
+## ARC performance (2026-11-01 to 2026-11-02)
+
+The evaluation showed CLIO's own bookkeeping on clio-core, not the model, limiting MCP-heavy tasks. The work and every measurement are in `docs/design/arc-performance-review-2026-11.md`; the headline numbers:
+
+| Measure | Before | After |
+| --- | --- | --- |
+| One event append (`arc_bench`) | 5.05 ms, 520 KB | 0.51 ms, 4.3 KB |
+| Task-history writes of one MCP call | 41.5 ms, 190 KB, 15 store calls | 13.4 ms, 24 KB |
+| Small guarded read | 1.21 ms | 0.57 ms |
+| P6 wall / tool time (one run) | 44 s / 28 s | 26 s / 13 s |
+| P7 wall / tool time (one run) | 333 s / 303 s | 155 s / 126 s |
+| P7 bytes sent to clio-core | 13,840 MB | 90 MB |
+| P7 gap between calls, first to last quarter | 59 to 66 ms, growing | 52 to 55 ms, flat |
+
+What remains is Python CPU spread over about 11 records per MCP call (the server is GIL-bound during a call burst). The next steps, in order: group commit, a per-turn writer for highway-only events, writing each task event once (`(a)4`, W7, `(a)5` in the review). Per-session ordering (W4) helps several sessions on one server, not one busy session. The changes made only on Linux and what to check on Windows are listed in `docs/design/windows-verification-log-2026-11.md`.
+
 ## Overheads (Phase 0 step 3)
 
 | Overhead | Measured | Above baseline noise | Fixed in |
