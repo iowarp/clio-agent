@@ -312,6 +312,7 @@ These resolve through `clio_agent.conf`: a value under the dotted key in `config
 | `CLIO_TOOLS_DEFER_SHARE` | `tools.defer_share` | str | `0.05` | `src/clio_agent/gact/agents/deferred_tools.py` |
 | `CLIO_TOOLS_DEFER_TOKENS` | `tools.defer_tokens` | int | `4000` | `src/clio_agent/gact/agents/deferred_tools.py` |
 | `CLIO_TOOLS_PER_SERVER_CONCURRENCY` | `tools.per_server_concurrency` | int | `8` | `src/clio_agent/gact/agents/tool_concurrency.py` |
+| `CLIO_TOOLS_WRITE_AHEAD` | `tools.write_ahead` | str | `non_read_only` | `src/clio_agent/gact/external_read_only.py` |
 | `CLIO_TOOL_FAILURE_LIMIT` | `tools.circuit_breaker.failure_limit` | int | `3` | `src/clio_agent/tools/execution.py` |
 | `CLIO_TOOL_RESULT_CHARS` | `limits.tool_result_chars` | int | `12000` | `src/clio_agent/gact/assignment_evidence.py` |
 | `CLIO_TRANSCRIPT_FILE` | `transcript.file` | bool | `true` | `src/clio_agent/gact/transcript_file.py` |

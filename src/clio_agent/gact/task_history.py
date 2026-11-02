@@ -70,6 +70,14 @@ def owns_output_reference(handle: str, reference: CoreReference) -> bool:
     return any(reference.scope == prefix + suffix for prefix in _OUTPUT_SCOPES)
 
 
+def content_reference(session_id: str, value: object, scope: str = CONTENT_SCOPE) -> CoreReference:
+    """The content-addressed reference ``value`` has (or will have once written)."""
+    digest = hashlib.sha256(_encoded(_JSON_VALUE.validate_python(value, strict=True))).hexdigest()
+    return CoreReference(
+        session_id=session_id, scope=scope + digest, content_id=digest, sha256=digest
+    )
+
+
 class MailboxFull(ValueError):
     """Retryable refusal of new peer mail under an explicit pending-only limit."""
 
@@ -134,14 +142,8 @@ class TaskHistory:
     def _write_content(self, session_id: str, value: object, scope: str) -> CoreReference:
         assert_store_write_off_loop("task.content")
         value = _JSON_VALUE.validate_python(value, strict=True)
-        digest = hashlib.sha256(_encoded(value)).hexdigest()
-        content_id = digest
-        reference = CoreReference(
-            session_id=session_id,
-            scope=scope + content_id,
-            content_id=content_id,
-            sha256=digest,
-        )
+        reference = content_reference(session_id, value, scope)
+        content_id = digest = reference.content_id
         with self._writing():
             existing = self.arc.list_segments(session_id, reference.scope)
             if existing:

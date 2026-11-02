@@ -1470,6 +1470,12 @@ tools.per_server_concurrency: 8
 # (powershell/bash/cmd); match it to your commands' shell.
 tools.shell.windows_backend: "powershell"
 
+# CLIO_TOOLS_WRITE_AHEAD  (str)  <- src/clio_agent/gact/external_read_only.py
+# Which MCP calls record their submission before they are sent:
+# non_read_only (read-only tools are sent at once and recorded with their
+# result) or all.
+tools.write_ahead: "non_read_only"
+
 # ==========================================================================
 # Web search
 # ==========================================================================
