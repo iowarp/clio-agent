@@ -32,7 +32,7 @@ import sys
 import tempfile
 import threading
 import traceback
-from typing import Any
+from typing import Any, cast
 
 #: How much of one script's output the kernel returns (the host bounds it further) when
 #: the host passes no limit; the host passes ``code.max_output_bytes`` as the first argument.
@@ -143,7 +143,7 @@ def _compile(code: str) -> tuple[Any, Any]:
     tree = ast.parse(code, "<script>", "exec")
     last = None
     if tree.body and isinstance(tree.body[-1], ast.Expr):
-        last = ast.Expression(tree.body.pop().value)
+        last = ast.Expression(cast(ast.Expr, tree.body.pop()).value)
     body = compile(tree, "<script>", "exec", flags=_FLAGS)
     tail = compile(last, "<script>", "eval", flags=_FLAGS) if last is not None else None
     return body, tail
@@ -254,9 +254,9 @@ def main() -> None:
     output_limit = int(sys.argv[1]) if len(sys.argv) > 1 else OUTPUT_LIMIT
     protocol = io.TextIOWrapper(os.fdopen(os.dup(1), "wb"), encoding="utf-8")
     host = _Host(protocol)
-    sys.stdin.reconfigure(encoding="utf-8")  # type: ignore[attr-defined]
-    sys.stdout.reconfigure(line_buffering=True)  # type: ignore[attr-defined]
-    sys.stderr.reconfigure(line_buffering=True)  # type: ignore[attr-defined]
+    sys.stdin.reconfigure(encoding="utf-8")  # type: ignore[union-attr]
+    sys.stdout.reconfigure(line_buffering=True)  # type: ignore[union-attr]
+    sys.stderr.reconfigure(line_buffering=True)  # type: ignore[union-attr]
     work: queue.Queue[dict[str, Any] | None] = queue.Queue()
 
     def read() -> None:

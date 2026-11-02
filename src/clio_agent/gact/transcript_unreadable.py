@@ -27,6 +27,9 @@ from clio_agent.arc.blob_frame import CORRUPT_BLOB_ERRORS, TRANSIENT_BLOB_ERRORS
 from clio_agent.arc.segment_errors import SegmentReadError
 from clio_agent.gact.messages import LedgerReadError
 
+#: Stored bytes that cannot become the record, or a segment that cannot be read.
+_CORRUPT_ERRORS: tuple[type[Exception], ...] = (*CORRUPT_BLOB_ERRORS, SegmentReadError)
+
 if TYPE_CHECKING:
     from fastapi import FastAPI
 
@@ -61,7 +64,7 @@ def typed_transcript_read(session_id: str) -> Iterator[None]:
         yield
     except TRANSIENT_BLOB_ERRORS as exc:
         raise _unreadable(session_id, STORAGE_UNREACHABLE, exc) from exc
-    except (*CORRUPT_BLOB_ERRORS, SegmentReadError) as exc:
+    except _CORRUPT_ERRORS as exc:
         raise _unreadable(session_id, TRANSCRIPT_CORRUPT, exc) from exc
 
 

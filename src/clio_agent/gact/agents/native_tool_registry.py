@@ -334,7 +334,9 @@ def configured_withheld() -> frozenset[str]:
     from clio_agent import conf  # noqa: PLC0415
 
     return frozenset(
-        conf.resolve("tools.withheld", env="CLIO_TOOLS_WITHHELD", default="", cast=conf.as_csv)
+        conf.resolve(
+            "tools.withheld", env="CLIO_TOOLS_WITHHELD", default=list[str](), cast=conf.as_csv
+        )
     )
 
 

@@ -143,9 +143,9 @@ def _search(args: Mapping[str, Any], result: Any, snapshot: Any) -> dict[str, An
         total, files = int(row.get("total_matches") or 0), int(row.get("total_files") or 0)
         view["summary"] = f"{total:,} matches in {files:,} files"
     elif mode == "files":
-        files = row.get("files") if isinstance(row.get("files"), list) else []
+        listed = row.get("files")
         view["summary"] = f"{int(row.get('total_files') or 0):,} files"
-        view["blocks"] += _file_links(files, counts=True)
+        view["blocks"] += _file_links(listed if isinstance(listed, list) else [], counts=True)
     else:
         matches = [m for m in row.get("matches") or [] if isinstance(m, Mapping)]
         view["summary"] = f"{int(row.get('total_matches') or 0):,} matching lines"

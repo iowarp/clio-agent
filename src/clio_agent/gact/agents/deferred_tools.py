@@ -80,7 +80,10 @@ class Disclosure:
 def never_defer() -> tuple[frozenset[str], tuple[str, ...]]:
     """``(names, prefixes)`` never deferred (``tools.never_defer``; ``x_*`` is a prefix)."""
     entries = conf.resolve(
-        "tools.never_defer", env="CLIO_TOOLS_NEVER_DEFER", default=_NEVER_DEFER, cast=conf.as_csv
+        "tools.never_defer",
+        env="CLIO_TOOLS_NEVER_DEFER",
+        default=list(_NEVER_DEFER),
+        cast=conf.as_csv,
     )
     names = frozenset(entry for entry in entries if not entry.endswith("*"))
     prefixes = tuple(entry[:-1] for entry in entries if entry.endswith("*") and entry[:-1])

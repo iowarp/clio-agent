@@ -34,7 +34,7 @@ def full_result_tools() -> frozenset[str]:
         conf.resolve(
             "tools.full_result",
             env="CLIO_TOOLS_FULL_RESULT",
-            default=_FULL_RESULT_TOOLS,
+            default=list(_FULL_RESULT_TOOLS),
             cast=conf.as_csv,
         )
     )

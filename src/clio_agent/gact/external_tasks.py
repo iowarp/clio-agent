@@ -445,7 +445,7 @@ class ExternalTasks:
         if lazy is not None and (lazy.recorded or not accepted):
             self._lazy.pop(handle, None)  # admitted, or about to be with its result
         if not accepted:
-            write = partial(self._inline_result, handle, reply)
+            write: Callable[[], Any] = partial(self._inline_result, handle, reply)
             if lazy is not None:
                 write = lazy.settled(
                     partial(confirm, partial(self._inline_updates, reply=reply)), write

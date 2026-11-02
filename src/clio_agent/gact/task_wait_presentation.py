@@ -20,7 +20,7 @@ def _child(handle: str) -> dict[str, str]:
         return {"title": handle}
     fields = {"title": str(task.label or handle)}
     session_id = str(getattr(task.backend, "session", "") or "") if task.backend else ""
-    session = app.state.sessions.get(session_id) if session_id else None
+    session = app.state.sessions.get(session_id) if session_id and app is not None else None
     model = (getattr(session, "model", None) or {}) if session is not None else {}
     if isinstance(model, dict) and model.get("model_id"):
         fields["model"] = str(model["model_id"])

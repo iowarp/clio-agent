@@ -109,7 +109,10 @@ def configured_callers() -> dict[str, str]:
     """``tools.callers``: tool name to ``direct``, ``code`` or ``both``."""
     raw = _read(
         lambda: conf.resolve(
-            "tools.callers", env="CLIO_TOOLS_CALLERS", default={}, cast=conf.as_mapping
+            "tools.callers",
+            env="CLIO_TOOLS_CALLERS",
+            default=dict[str, Any](),
+            cast=conf.as_mapping,
         ),
         "tools.callers",
     )
@@ -120,7 +123,10 @@ def configured_permissions() -> dict[str, str]:
     """``tools.permissions``: the deployment's default permission per tool name."""
     raw = _read(
         lambda: conf.resolve(
-            "tools.permissions", env="CLIO_TOOLS_PERMISSIONS", default={}, cast=conf.as_mapping
+            "tools.permissions",
+            env="CLIO_TOOLS_PERMISSIONS",
+            default=dict[str, Any](),
+            cast=conf.as_mapping,
         ),
         "tools.permissions",
     )

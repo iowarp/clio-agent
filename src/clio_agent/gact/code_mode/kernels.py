@@ -62,7 +62,10 @@ _SPAWNER = concurrent.futures.ThreadPoolExecutor(max_workers=1, thread_name_pref
 
 def _spawn(argv: list[str], **kwargs: Any) -> "subprocess.Popen[bytes]":
     """``subprocess.Popen(argv, **kwargs)`` started from the long-lived spawner thread."""
-    return _SPAWNER.submit(subprocess.Popen, argv, **kwargs).result()
+    started: "subprocess.Popen[bytes]" = _SPAWNER.submit(
+        lambda: subprocess.Popen(argv, **kwargs)  # noqa: S603 - the confined kernel argv
+    ).result()
+    return started
 
 
 def idle_minutes() -> float:

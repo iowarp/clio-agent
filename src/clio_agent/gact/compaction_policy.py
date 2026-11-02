@@ -119,8 +119,8 @@ def post_compaction_context(
     # copy per source stays verbatim, and the loop re-offers it after the compaction.
     from clio_agent.gact.working_state import WORKING_STATE_SOURCES  # noqa: PLC0415
 
-    latest = {u.source: i for i, u in enumerate(units) if u.source in WORKING_STATE_SOURCES}
-    kept.update(latest.values())
+    newest_state = {u.source: i for i, u in enumerate(units) if u.source in WORKING_STATE_SOURCES}
+    kept.update(newest_state.values())
     if policy.keep_head and open_turn_id:
         heads = [i for i, u in enumerate(units) if u.head and u.turn_id == open_turn_id]
         kept.update(heads[-1:])

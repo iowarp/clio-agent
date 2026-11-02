@@ -106,7 +106,7 @@ _CURSORS: "WeakKeyDictionary[SegmentStore, dict[tuple[str, str], _LaneCursor]]" 
 # lock: taken under a scope lock (sealing) or under ``_CURSORS_LOCK`` (the roll check),
 # never while acquiring either, so it adds no lock-order edge.
 _SEALED_LOCK = threading.Lock()
-_SEALED: "WeakKeyDictionary[SegmentStore, set[tuple[str, str]]]" = WeakKeyDictionary()
+_SEALED: "WeakKeyDictionary[object, set[tuple[str, str]]]" = WeakKeyDictionary()
 
 
 # --------------------------------------------------------------------------- #
@@ -360,7 +360,7 @@ def _sealed(store: "SegmentStore", session_id: str, base: str, index: int) -> bo
         return (session_id, chunk_scope(base, index)) in _SEALED.get(store, ())
 
 
-def seal_chunk(store: "SegmentStore", session_id: str, scope: str) -> None:
+def seal_chunk(store: object, session_id: str, scope: str) -> None:
     """Never append to ``scope`` again in this process: its last append failed and may
     still land, so the lane's next append rolls to a fresh chunk (module docstring).
 

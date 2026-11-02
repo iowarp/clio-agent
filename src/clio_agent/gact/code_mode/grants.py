@@ -57,7 +57,7 @@ def covering_postures() -> frozenset[str]:
         conf.resolve(
             "code.covering_postures",
             env="CLIO_CODE_COVERING_POSTURES",
-            default=_COVERING_POSTURES,
+            default=list(_COVERING_POSTURES),
             cast=conf.as_csv,
         )
     )

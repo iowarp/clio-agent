@@ -126,7 +126,8 @@ class Dispatcher:
         """Start one call; ``reply`` gets the kernel's ``result`` message when it ends."""
         call_id = message.get("id")
         tool = str(message.get("tool") or "")
-        args = message.get("args") if isinstance(message.get("args"), Mapping) else {}
+        raw_args = message.get("args")
+        args: Mapping[str, Any] = raw_args if isinstance(raw_args, Mapping) else {}
         if tool == _SEARCH:
             query = str(args.get("query") or "")
             reply({"type": "result", "id": call_id, "ok": True, "value": self.search(query, 5)})

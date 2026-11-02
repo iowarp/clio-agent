@@ -125,7 +125,7 @@ def _pinned(app: Any, session_id: str) -> Any | None:
     if not digest:
         return None
     try:
-        return pinned_resolution(app, digest, str(metadata.get(AGENT_REF_KEY) or ""))
+        return pinned_resolution(app, digest, str((metadata or {}).get(AGENT_REF_KEY) or ""))
     except SessionAgentUnavailable as exc:
         logger.warning("%s session=%s reason=%s", TOOL_DEFAULT_UNRESOLVED, session_id, exc)
         return None
