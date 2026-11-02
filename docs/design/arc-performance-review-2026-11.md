@@ -143,8 +143,44 @@ Each event becomes its own blob in a per-session bucket, named so that one query
 
 Measure each step on P5-P7 and P1 with `scripts/eval/tool_calling` (wall, tool and model time from `behaviour.py`; puts and bytes from the stream audit), and record the results in the tool-calling ledger.
 
+## Measured after (a)1, (a)6 and (a)12 (2026-11-02)
+
+`arc_bench` (shared daemon, namespace `bench-*`):
+
+| Measure | Before | After |
+| --- | --- | --- |
+| One event append | 5.05 ms, 520 KB | 0.51 ms, 4.3 KB |
+| Task-history writes of one MCP call | 41.5 ms, 190 KB, 15 store calls | 13.4 ms, 24 KB |
+| Eight such calls at once (`CoreIO`) | 448 ms | 216 ms |
+| Small guarded read | 1.21 ms (p90 2.21) | 0.57 ms (p90 0.76) |
+
+End to end, one run each on the current build (config `arc-w3`, namespace `eval-current-w3`), against the three earlier `current` runs:
+
+| Task | Wall s | Tool s | Bytes sent to clio-core | Core puts |
+| --- | --- | --- | --- | --- |
+| P6 before | 44 | 28 | 1,438 MB | 2,758 |
+| P6 after | 29 | 14 | 12.7 MB | 2,755 |
+| P7 before | 333 | 303 | 13,840 MB | 25,048 |
+| P7 after | 185 | 159 | 107 MB | 26,494 |
+
+Bytes fell by more than 100×, and tool time roughly halved. The number of puts did not change: this work made each write smaller and cheaper, not fewer.
+
+**What limits P7 now: one call at a time at admission.**
+
+- The model's script sends `get_record` in `asyncio.gather` batches of 100, and CLIO keeps up to 9 calls in flight (`tools.per_server_concurrency` 8).
+- But the records server sees them strictly one after another: in 2,079 calls, only one gap was under 5 ms, and the median gap was 40 ms (p90 197 ms).
+- In the trace, `task.submission` records are a median 46 ms apart. Each call waits for its write-ahead submission to be confirmed through the single history writer before it is sent.
+- Each call writes about 13 records (11 `arc.op`, two `task.observed`, the submission, `tool.call.started` and `.completed`, `artifact.transform.recorded`). That is about 46 ms in the live server, against 13.4 ms for the task-history part alone in the benchmark.
+- 13 pauses longer than 0.5 s add 45 s; those are model steps.
+
+Ordering per session or tree ((a)2) does not help this case: all 2,021 calls belong to one session and one tree. What helps, in order:
+
+1. (b)1: no write-ahead record for read-only calls. `get_record` is sent at once, and its one terminal record goes through the ordered writer.
+2. (a)4: group commit, so nine queued records to one lane become one put.
+3. (a)8: fold the submission and accepted observation into one record.
+
 ## Measurement notes
 
 - Micro-benchmarks ran against the live daemon in namespaces `bench-arc-a` and `bench-arc-b`, and every record they wrote was deleted. The scripts are in the session scratchpad and are not part of the repository.
 - Byte counts come from the stream audit (`CLIO_STREAM_AUDIT_LOG`) of the evaluation sessions.
-- Not yet measured: the gain from more daemon threads under concurrent writers, and the end-to-end effect of each change on P6/P7. Those come with the implementation.
+- Not yet measured: the gain from more daemon threads under concurrent writers.
