@@ -363,6 +363,28 @@ The 727 s run is not model time: an `explore` child (`sess_760dfa610c9dee702b03a
 
 **Owner decision (2026-11-02):** the per-result share and the child-answer digest are removed. They decided for the agent how much of a report it may read, with no limit behind them; the parent then read the whole report anyway, through files. A child's report is delivered whole unless it does not fit the parent's remaining context window (a real limit), and a reminder asks the child to be clear and succinct. The same audit covers every other agent-facing limit (task #38).
 
+**After the caps removals** (config `caps1`, `2642d460`, three passes, all tasks; median wall time):
+
+| Task | final2 | prompt1 | caps1 | Claude Code |
+| --- | --- | --- | --- | --- |
+| P1 | 10.7 s | 9.9 s | 10.3 s | 4.5 s |
+| P2 | 12.9 s | 9.5 s | 11.6 s | 6.3 s |
+| P3 | 54.4 s | 40.7 s | 40.0 s | 30.4 s |
+| P4 | 63.5 s | 144.6 s | 102.4 s (71 to 141) | 42.5 s |
+| P5 | 12.4 s | 12.2 s | 10.6 s | |
+| P6 | 26.3 s | 27.6 s | 26.9 s | |
+| P7 | 185.6 s, 2/3 | 171.9 s, 3/3 | 187.1 s, 3/3 | |
+| P8 | 9.9 s | 7.4 s | 13.0 s (7.6 to 18.2) | |
+| P9 | 12.9 s | 11.6 s | 9.2 s | |
+| P10 | 9.4 s | 7.8 s | 7.7 s | |
+| H1 | 27.5 s | 19.2 s | 23.8 s | |
+| H2 | 27.9 s | 18.9 s | 23.6 s | |
+| H3 | 24.1 s | 26.5 s | 24.4 s | |
+
+No graded answer was lost. On P4 the read-back is gone: the parent received the three reports whole and answered in three or four model calls (`sess_ef2696723f8f`), and the children's reports were shorter (2.7k to 4.4k output tokens in run 1, against 4.9k to 6.6k). What remains is the children's own depth, which varies from run to run (run 2, `sess_ce6c83f39c21`: 24 to 73 tool calls and 11k to 13k output tokens per child, done at 90 to 108 s), and the parent's 4k to 5k-token answer. On one model a three-area survey is not faster split than done by one agent (63 s), and Claude Code does not delegate this task at all (4 steps, 42 s).
+
+Open for the owner (round 2): the round-1 steering makes CLIO delegate surveys that Claude Code answers itself. The levers that stay within the rules are facts the agent can weigh, not rules: the `explore` role's model and its usual cost (a child spends about 15 s before its first finding and writes its report as a final step), shown where it chooses to delegate; and the explore note (`clio.reminder.explore_nudge`), which can now be reworded or switched off on the Reminders page. The P4 trace says the decision itself, not CLIO's delivery, is now the cost.
+
 ## Agent-facing caps (2026-11-02)
 
 Owner direction: a limit on what the agent may see or do needs a real limit behind it (the model's context window, memory, an OS or provider limit) or must be a default the agent can override per call; a fixed number that decides for the agent is removed (`.claude/CLAUDE.md`, principles 1 to 3). An audit of every agent-facing limit (108 keys in `config.defaults.yaml` plus constants and text slices; report kept with the evaluation notes) found one root: `limits.model_tool_result_chars = 12000`, about 3k tokens and a quarter of Claude Code's MCP default, under almost every model-facing bound and clamped further in five places to the transcript-preview bound.
