@@ -60,7 +60,7 @@ def lifecycle_cycle(
         call,
         sid,
         f"Call spawn_agent_task(agent='worker', task={assignment!r}) exactly once. "
-        f"Then fs_read_file(filepath={str(sentinel)!r}) and finish. Leave its work running. "
+        f"Then fs_read_file(path={str(sentinel)!r}) and finish. Leave its work running. "
         "When a completion wakes you, report it without new work, reply or restart.",
     )
     child = evidence.require(
@@ -129,7 +129,7 @@ def lifecycle_cycle(
         call,
         proof,
         sid,
-        f"Call resume_agent(target={handle!r}), then fs_read_file(filepath={str(sentinel)!r}) and finish. "
+        f"Call resume_agent(target={handle!r}), then fs_read_file(path={str(sentinel)!r}) and finish. "
         "Do not start new tasks. Report any automatically supplied completion without replying.",
         "resume_agent",
     )

@@ -278,9 +278,9 @@ class FileAccessPolicy:
             "write_mode": "explicit output paths under allowed roots",
         }
 
-    def validate_read(self, filepath: str, *, field: str = "filepath") -> Path:
+    def validate_read(self, path: str, *, field: str = "path") -> Path:
         """Validate a read-only file path and return its resolved path."""
-        resolved = self._validate_read_location(filepath, field=field)
+        resolved = self._validate_read_location(path, field=field)
         if not resolved.is_file():
             raise self._error(
                 code="not_a_file",
@@ -314,9 +314,9 @@ class FileAccessPolicy:
             )
         return resolved
 
-    def _validate_read_location(self, filepath: str, *, field: str) -> Path:
+    def _validate_read_location(self, path: str, *, field: str) -> Path:
         """Resolve one approved existing read target before checking its entry type."""
-        raw_path = _coerce_path(filepath, field=field)
+        raw_path = _coerce_path(path, field=field)
         self._check_connected_storage(raw_path, field=field)
         if not self.allow_symlinks and _has_symlink(raw_path):
             raise self._error(
@@ -364,13 +364,13 @@ class FileAccessPolicy:
 
     def validate_write(
         self,
-        filepath: str,
+        path: str,
         *,
         field: str = "output_path",
         create_parent: bool = False,
     ) -> Path:
         """Validate an explicit output path and return its resolved path."""
-        raw_path = _coerce_path(filepath, field=field)
+        raw_path = _coerce_path(path, field=field)
         self._check_connected_storage(raw_path, field=field, write=True)
         parent = raw_path.parent
         if not self.allow_symlinks and (_has_symlink(parent) or raw_path.is_symlink()):
@@ -462,20 +462,20 @@ class FileAccessPolicy:
         )
 
 
-def validate_read_path(filepath: str, *, field: str = "filepath") -> Path:
+def validate_read_path(path: str, *, field: str = "path") -> Path:
     """Validate a read path with policy loaded from the environment."""
-    return FileAccessPolicy.from_env().validate_read(filepath, field=field)
+    return FileAccessPolicy.from_env().validate_read(path, field=field)
 
 
 def validate_write_path(
-    filepath: str,
+    path: str,
     *,
     field: str = "output_path",
     create_parent: bool = False,
 ) -> Path:
     """Validate a write path with policy loaded from the environment."""
     return FileAccessPolicy.from_env().validate_write(
-        filepath,
+        path,
         field=field,
         create_parent=create_parent,
     )
@@ -527,16 +527,16 @@ def validate_non_empty_string(value: str, *, field: str) -> None:
     )
 
 
-def _coerce_path(filepath: str, *, field: str) -> Path:
-    if not isinstance(filepath, str) or not filepath.strip():
+def _coerce_path(raw: str, *, field: str) -> Path:
+    if not isinstance(raw, str) or not raw.strip():
         raise FilePolicyError(
             code="invalid_argument",
             message=f"{field} must be a non-empty string path.",
             field=field,
             next_action=f"Provide a non-empty {field}.",
-            details={"received": filepath},
+            details={"received": raw},
         )
-    path = Path(filepath).expanduser()
+    path = Path(raw).expanduser()
     if not path.is_absolute():
         # Pin a relative fs_read/fs_write/fs_edit path to the active session's
         # workspace root (when a tool call has one bound) rather than the OS

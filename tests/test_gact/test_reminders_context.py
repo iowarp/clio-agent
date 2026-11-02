@@ -198,7 +198,7 @@ def _bounded(monkeypatch: pytest.MonkeyPatch, spilled: Path | Exception) -> tupl
         (
             Path("/w/out.txt"),
             "the full result is in `/w/out.txt`; read on with "
-            'fs_read_file(filepath="/w/out.txt", offset=21), or search it with fs_search_text',
+            'fs_read_file(path="/w/out.txt", offset=21), or search it with fs_search_text',
         ),
         (
             Path("/w/out.json"),

@@ -137,7 +137,7 @@ def test_invariant_reads_never_gated_in_any_mode(tmp_path: Path, mode: str) -> N
             sid = c.post("/v1/sessions", json={"title": "t", "mode": mode}).json()["id"]
             gate = _make_permission_gate(app)
             with _tool_session_context(sid):
-                assert gate("fs_read_file", {"filepath": "x"}) == "allow"
+                assert gate("fs_read_file", {"path": "x"}) == "allow"
                 # A non-read write tool is gated (hook deny in edit; plan/architect lock).
                 assert gate("hdf5_write", {"path": "/tmp/x"}) == "deny"
     finally:

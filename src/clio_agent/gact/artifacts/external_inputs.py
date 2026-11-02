@@ -14,8 +14,8 @@ logger = logging.getLogger(__name__)
 # External paths are weaker evidence than contained, hashed workspace inputs.
 # Only arguments whose exact tool contract consumes file bytes belong here.
 _EXTERNAL_FILE_INPUT_ARGS: dict[str, frozenset[str]] = {
-    "fs_read_file": frozenset({"filepath"}),
-    "fs_edit_file": frozenset({"filepath"}),
+    "fs_read_file": frozenset({"path"}),
+    "fs_edit_file": frozenset({"path"}),
     "pandas_load_data": frozenset({"file_path"}),
     "pandas_statistical_summary": frozenset({"file_path"}),
     "pandas_correlation_analysis": frozenset({"file_path"}),

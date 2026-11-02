@@ -120,7 +120,7 @@ def test_a_long_report_is_saved_as_readable_text(request: pytest.FixtureRequest)
 
     text = Path(saved["text_files"]["answer"])
     assert text.suffix == ".md" and text.read_text(encoding="utf-8") == report
-    assert saved["read_with"] == f'fs_read_file(filepath="{text}", offset=1)'
+    assert saved["read_with"] == f'fs_read_file(path="{text}", offset=1)'
     assert json.loads(Path(saved["path"]).read_text(encoding="utf-8"))["answer"] == report
 
 

@@ -118,7 +118,7 @@ _READ_LINES = read_lines()
 
 @fs_server.tool(annotations=_READ_FILE_ANNOTATIONS)
 def read_file(
-    filepath: str,
+    path: str,
     offset: Annotated[int, Field(ge=1, description="1-based line to start from.")] = 1,
     limit: Annotated[
         int, Field(ge=1, le=_READ_LINES, description="Most lines to return.")
@@ -139,12 +139,12 @@ def read_file(
     the allowed roots are readable.
     """
 
-    return read_text_range(filepath, offset, limit)
+    return read_text_range(path, offset, limit)
 
 
 @fs_server.tool(annotations=_FILE_WRITE_ANNOTATIONS)
 def write_file(
-    filepath: str,
+    path: str,
     content: str,
     access_reason: Annotated[
         str, Field(description="Explain why this write needs access outside permitted folders.")
@@ -158,12 +158,12 @@ def write_file(
     The change is listed in the person's diff panel, where they can undo it.
     """
 
-    return fs_edit.write_file(filepath, content)
+    return fs_edit.write_file(path, content)
 
 
 @fs_server.tool(annotations=_FILE_WRITE_ANNOTATIONS)
 def edit_file(
-    filepath: str,
+    path: str,
     old_string: str,
     new_string: str,
     replace_all: bool = False,
@@ -180,7 +180,7 @@ def edit_file(
     ``unified_diff`` of the change, its line counts, and the sha256 before and after.
     """
 
-    return fs_edit.edit_file(filepath, old_string, new_string, replace_all)
+    return fs_edit.edit_file(path, old_string, new_string, replace_all)
 
 
 __all__ = ["FS_TOOL_ANNOTATIONS", "fs_server"]

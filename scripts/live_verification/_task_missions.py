@@ -58,7 +58,7 @@ def folder_input(proof: Path, kind: str, *, file_count: int | None = None) -> di
 
 def mission(kind: str, workspace: Path, *, source: dict[str, Any] | None = None) -> str:
     """Name actual tools and require independent work before any explicit wait."""
-    read = f"fs_read_file(filepath={(workspace / 'sentinel.txt').as_posix()!r})"
+    read = f"fs_read_file(path={(workspace / 'sentinel.txt').as_posix()!r})"
     if kind in {"Shell", "Subagent"}:
         command = shell_input(workspace)
         execution = (

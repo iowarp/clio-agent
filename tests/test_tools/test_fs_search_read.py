@@ -196,7 +196,7 @@ async def test_the_gateway_offers_ranged_read_search_modes_and_glob(approved: Pa
         assert tools["fs_search_text"].input_schema["properties"]["mode"]["default"] == "files"
         assert "offset" in tools["fs_read_file"].input_schema["properties"]
         read = await client.call_tool(
-            "fs_read_file", {"filepath": str(approved / "src" / "a.py"), "limit": 1}
+            "fs_read_file", {"path": str(approved / "src" / "a.py"), "limit": 1}
         )
         found = await client.call_tool("fs_glob", {"pattern": "*.md", "path": str(approved)})
     assert read.structured_content["end_line"] == 1

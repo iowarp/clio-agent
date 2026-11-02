@@ -87,7 +87,7 @@ def test_the_note_names_the_read_that_continues_a_text_result(tmp_path: Path) ->
         result = bounded_model_tool_result(rows)
     path = _spilled_path(result)
     shown = rows[:2_000].count("\n") + 1
-    assert f'fs_read_file(filepath="{path}", offset={shown})' in result
+    assert f'fs_read_file(path="{path}", offset={shown})' in result
 
 
 def test_a_json_result_is_searched_rather_than_paged(tmp_path: Path) -> None:

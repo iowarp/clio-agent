@@ -93,7 +93,7 @@ def test_validate_read_rejects_outside_allowed_roots(tmp_path):
 
     assert result["error"]["type"] == "file_policy"
     assert result["error"]["code"] == "outside_allowed_roots"
-    assert result["error"]["field"] == "filepath"
+    assert result["error"]["field"] == "path"
 
 
 def test_validate_read_rejects_large_file(tmp_path):

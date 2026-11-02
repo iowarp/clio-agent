@@ -118,7 +118,7 @@ def save_task_result(
             saved["text_files"] = texts
         # A report reads as written from its own text file; JSON is written line by line.
         first = next(iter(texts.values()), str(path))
-        saved["read_with"] = f'fs_read_file(filepath="{first}", offset=1)'
+        saved["read_with"] = f'fs_read_file(path="{first}", offset=1)'
     except OSError as exc:
         saved = {**saved, "path": "", "reason": TASK_RESULT_SAVE_FAILED_REASON, "error": str(exc)}
     trace.event(
