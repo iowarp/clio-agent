@@ -130,12 +130,19 @@ def wait_answering(
     return "timed_out"
 
 
-def run_scenario(client: GactClient, sc: Scenario, manifest: dict[str, Any]) -> dict[str, Any]:
-    workdir = DEFAULT_WORK / "qualify" / sc.id
+def run_scenario(
+    client: GactClient,
+    sc: Scenario,
+    manifest: dict[str, Any],
+    *,
+    fixtures: Path = DEFAULT_FIXTURES,
+    work_root: Path = DEFAULT_WORK,
+) -> dict[str, Any]:
+    workdir = work_root / "qualify" / sc.id
     if workdir.exists():
         shutil.rmtree(workdir)
     if sc.fixture_task:
-        prepare_workdir(DEFAULT_FIXTURES, tasks.fixture_dir(sc.fixture_task, manifest), workdir)
+        prepare_workdir(fixtures, tasks.fixture_dir(sc.fixture_task, manifest), workdir)
     workdir.mkdir(parents=True, exist_ok=True)
     for rel, text in sc.files.items():
         target = workdir / rel
@@ -867,16 +874,20 @@ def main(argv: list[str] | None = None) -> int:
     sub = parser.add_subparsers(dest="cmd", required=True)
     run = sub.add_parser("run")
     run.add_argument("--ids", default=",".join(SCENARIOS))
+    run.add_argument("--fixtures", type=Path, default=DEFAULT_FIXTURES)
+    run.add_argument("--work-root", type=Path, default=DEFAULT_WORK)
     chk = sub.add_parser("check")
     chk.add_argument("--ids", default="")
     args = parser.parse_args(argv)
     if args.cmd == "run":
         client = GactClient(args.base_url)
-        manifest = load_manifest(DEFAULT_FIXTURES)
+        manifest = load_manifest(args.fixtures)
         for tid in [i for i in args.ids.split(",") if i]:
             sc = SCENARIOS[tid]
             started = time.time()
-            rec = run_scenario(client, sc, manifest)
+            rec = run_scenario(
+                client, sc, manifest, fixtures=args.fixtures, work_root=args.work_root
+            )
             print(
                 f"{tid}: {rec['states']} in {time.time() - started:.0f}s, sessions {rec['sessions']}"
             )
