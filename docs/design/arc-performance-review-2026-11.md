@@ -179,6 +179,46 @@ Ordering per session or tree ((a)2) does not help this case: all 2,021 calls bel
 2. (a)4: group commit, so nine queued records to one lane become one put.
 3. (a)8: fold the submission and accepted observation into one record.
 
+## Measured after the read-only path and the profile fixes (2026-11-02)
+
+One P6 and one P7 run per build, current branch, fresh namespace each. Run-to-run spread on P7 is about ±15 s.
+
+| Build | P6 wall s | P7 wall s | P7 tool s | P7 puts | P7 MB |
+| --- | --- | --- | --- | --- | --- |
+| After append, guard and reads (`arc-w3`) | 29 | 185 | 159 | 26,494 | 107 |
+| Read-only calls skip write-ahead (`arc-w6`) | 34 | 218 | 186 | 26,516 | 105 |
+| Store probe uses its TTL, audit handle kept open (`arc-ttl`) | 30 | 210 | 177 | 26,495 | 118 |
+| Busy daemon polled before sampling, 8 daemon threads (`arc-w10`) | 30 | 202 | — | — | — |
+| Cross-job workspace set built lazily (`arc-tx`) | 31 | 197 | 170 | 26,383 | 103 |
+| Read-only inline call settles in one snapshot (`arc-fold`) | 29 | 193 | 160 | 22,470 | 90 |
+
+What the profiles showed:
+
+- **The server is GIL-bound during a call burst.**
+  - Server CPU was about 106% and the daemon's about 136% while P6's 202 calls ran.
+  - P7 runs at about 13 calls a second, a median 71-83 ms apart. That is Python CPU per call, not waiting.
+  - The idle daemon still uses about 60% of a core: it busy-polls.
+- **Removed (each confirmed by a GIL-holder profile from `py-spy record --gil`):**
+  - **The store's liveness probe.** It opened a TCP connection to the daemon on every store op, under the gate lock: a literal `ttl_s=0.0` overrode `arc.clio_core.liveness_ttl_s`. It was on 17 of 81 active stacks.
+  - **The stream audit.** It reopened its file and recreated the directory on every row: about 10% of active time, in every evaluation run.
+  - **The daemon progress sample after a 1 ms miss.** It located the pidfile and read `/proc` on most puts while the daemon was busy: 21 of 91.
+  - **The cross-job workspace set.** `realpath` was run on every registered workspace root, on every tool call: a third of transform recording.
+  - **A running snapshot followed at once by a completed one** for read-only inline calls: about 4,000 puts per P7 run.
+- **What is left is spread across layers** (211 samples of the GIL holder over 591 calls):
+  - task-history writes for admission and result: 28%;
+  - the tool observer's `tool.call.*` and transform events: 21%;
+  - the trace writer thread: 9%;
+  - the MCP transport: 6%;
+  - the rest is the run_code dispatch and the event loop.
+
+Each record still costs a semantic event, a lane append, a highway append and an `arc.op` trace event. P7 tool time is about 160 s against well under 1 s in the server itself. Closing that gap needs the structural items, in this order:
+
+1. **(a)4 group commit and one put per lane per step.** Fewer appends.
+2. **(a)9 and W7: a per-turn ordered writer for highway-only events.** `tool.call.*`, `artifact.*` and nested `run_code` records would be written off the call path and flushed before the next model request.
+3. **Write each task event once ((a)5).**
+
+The idle daemon's busy-poll is a clio-core matter (upstream).
+
 ## Measurement notes
 
 - Micro-benchmarks ran against the live daemon in namespaces `bench-arc-a` and `bench-arc-b`, and every record they wrote was deleted. The scripts are in the session scratchpad and are not part of the repository.
