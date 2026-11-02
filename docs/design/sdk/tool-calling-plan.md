@@ -373,6 +373,8 @@ Production changes in this phase are observability only.
 5. Write the `explore`, `planner` and `review` prompts in the marketplace `delegation` plugin; move the Delegating section into `delegation.parent`; rewrite `delegation.child`.
 6. Read the exact dumps for the root agent and each role in full, then run the evaluation's "after Phase 1" configuration.
 
+Status (2026-11-02): steps 1, 2, 4, 5 and 6 done; step 3 partly (the skills listing and the largest tool descriptions are not trimmed). Step 6 became a loop, recorded in the ledger ("Prompt audit"): round 1 changed the prompt against the evaluation's evidence (config `prompt1`); its P4 regression traced to fixed caps on child reports, not to the prompt, which led to the agent-facing caps audit and its removals (config `caps1`). Every text CLIO injects is now a Markdown reminder template (`docs/design/sdk/reminders.md`).
+
 ## Phase 2: exploration primitives
 
 1. Replace `read_file`, add ranged, self-sized reads and the text block; make MCP model input text first; update spill notes and `result_file` to name the continuation call.
