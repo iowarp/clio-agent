@@ -14,6 +14,7 @@ from collections.abc import Mapping
 from dataclasses import asdict, is_dataclass
 from typing import TYPE_CHECKING, Any
 
+from clio_agent.gact import reminders
 from clio_agent.runtime import trace
 
 if TYPE_CHECKING:
@@ -24,7 +25,9 @@ def _runtime_active_workspace_context(app: "FastAPI", *, session_id: str = "") -
     """Surface the session's workspace scope to the agent.
 
     Workspace facts tell the agent where generated artifacts belong. They change
-    no permissions and force no paths: the file policy validates access.
+    no permissions and force no paths: the file policy validates access. The text is
+    the reminder ``clio.reminder.session_facts`` followed by its ``session_facts_*``
+    pieces (``prompt_packs/builtin/reminders/``); the code decides which pieces apply.
     """
 
     if app is None:
@@ -39,24 +42,26 @@ def _runtime_active_workspace_context(app: "FastAPI", *, session_id: str = "") -
     except Exception as exc:  # noqa: BLE001 - policy env read; degrade to no roots line
         trace.event("WORKSPACE-CTX", "allowed-roots read failed (%s); omitting roots line", exc)
         allowed_roots = []
-    lines = [
-        f"Active workspace root: {root}",
-        (
-            "Write generated artifacts (files, charts, exports) inside the "
-            "active workspace root using absolute paths so they stay with the "
-            "session. Read inputs from wherever the user points you."
-        ),
-    ]
-    from clio_agent.gact.node_folders import prompt_lines, session_node_folder  # noqa: PLC0415
+    from clio_agent.gact.node_folders import session_node_folder  # noqa: PLC0415
 
+    def fact(piece: str, variables: dict[str, Any]) -> str | None:
+        return reminders.render(f"session_facts{piece}", variables, app=app, session_id=session_id)
+
+    tail = _session_scratch_lines(app, session_id)
+    head = fact("", {"root": root})
+    if head is None:  # switched off by the person: no session facts at all
+        return ""
+    lines: list[str | None] = [head]
     if node_folder := session_node_folder(app, session_id):
-        lines = [lines[0], *prompt_lines(node_folder)]
-    elif allowed_roots:
-        lines.append("Writes are only permitted under: " + ", ".join(allowed_roots) + ".")
-    return "\n".join([*lines, *_session_scratch_lines(session_id)])
+        lines.append(fact("_node_folder", {"folder": node_folder}))
+    else:
+        lines.append(fact("_workspace", {}))
+        if allowed_roots:
+            lines.append(fact("_write_roots", {"roots": ", ".join(allowed_roots)}))
+    return "\n".join(line for line in [*lines, *tail] if line)
 
 
-def _session_scratch_lines(session_id: str) -> list[str]:
+def _session_scratch_lines(app: Any, session_id: str) -> list[str | None]:
     """The machine and the session's own scratch folder (TD56), both per session.
 
     The folder is created here: naming it is the session's first need of it, and the file
@@ -65,13 +70,11 @@ def _session_scratch_lines(session_id: str) -> list[str]:
 
     from clio_agent.runtime import session_scratch  # noqa: PLC0415
 
-    lines = [f"Machine: {session_scratch.machine_name()}"]
+    where = {"app": app, "session_id": session_id}
+    machine = {"machine": session_scratch.machine_name()}
+    lines = [reminders.render("session_facts_machine", machine, **where)]
     if folder := session_scratch.session_scratch_dir(session_id):
-        lines.append(
-            f"Scratch folder for this session: {folder}. Use it for temporary files "
-            "(extracted copies, intermediate results); it is yours alone and is removed "
-            "after the session."
-        )
+        lines.append(reminders.render("session_facts_scratch", {"folder": folder}, **where))
     return lines
 
 

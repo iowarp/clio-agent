@@ -22,7 +22,7 @@ from clio_agent.errors import ClioError
 from clio_agent.runtime import commitment_activity
 from clio_agent.runtime.stream_audit import stream_audit
 from clio_agent.tools import foreground_cancellation as foreground_cancel
-from clio_agent.tools import injections, task_descriptions, tool_presentation
+from clio_agent.tools import harness_notes, injections, task_descriptions, tool_presentation
 from clio_agent.tools import task_call_context as task_calls
 from clio_agent.tools.mcp_executor import (
     SYNC_TOOL_RESULT_GRACE_SECONDS,
@@ -698,10 +698,8 @@ class SyncMCPToolExecutor(SyncNamespacePreparationMixin):
             and intercept.modified_args is not None
         ):
             effective_args = dict(intercept.modified_args)
-            hook_note = (
-                "[clio: hook] A PreToolUse hook changed this call's arguments to "
-                f"{json.dumps(effective_args, default=str)}."
-            )
+            arguments = json.dumps(effective_args, default=str)
+            hook_note = harness_notes.hook_note("arguments_changed", arguments=arguments)
             injections.note("hook", hook_note)
         elif intercept is not None and intercept.kind == "synthesize":
             notify_tool_observer(tool_observer, name, effective_args, "started", None)
@@ -711,9 +709,7 @@ class SyncMCPToolExecutor(SyncNamespacePreparationMixin):
             self._record_tool_success(name)
             if return_raw:
                 return intercept.result  # MCP Apps bridge is not model-facing: no PostToolUse
-            synthesized = (
-                "[clio: hook] A PreToolUse hook answered this call without running the tool."
-            )
+            synthesized = harness_notes.hook_note("tool_answered")
             injections.note("hook", synthesized)
             observation = assemble_model_observation(
                 hooks.post_tool,
@@ -872,11 +868,7 @@ class SyncMCPToolExecutor(SyncNamespacePreparationMixin):
             count, last_error = self._consecutive_transient_failures.get(name, (0, ""))
         if limit <= 0 or count < limit:
             return None
-        return (
-            f"[clio: circuit_breaker] {name} was not run: it failed {count} times in a row "
-            f"(last error: {last_error}). Take an alternative route, or report what "
-            "blocks you -- repeating this call would loop."
-        )
+        return harness_notes.circuit_open_note(name, count, last_error)
 
     def _record_tool_failure(self, name: str, error_text: str) -> str:
         """Count a transient failure; at the limit, return the warning the agent gets."""
@@ -891,10 +883,7 @@ class SyncMCPToolExecutor(SyncNamespacePreparationMixin):
             self._consecutive_transient_failures[name] = (count, error_text)
         if limit <= 0 or count != limit:
             return ""
-        return (
-            f"[clio: circuit_breaker] {name} has failed {count} times in a row. Consider an "
-            "alternative route: further calls to it will be blocked to prevent looping."
-        )
+        return harness_notes.circuit_warning_note(name, count)
 
     def _record_tool_success(self, name: str) -> None:
         """Clear repeated-failure state after a successful tool call."""

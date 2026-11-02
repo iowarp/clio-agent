@@ -213,13 +213,23 @@ def _mark_selected(app: Any, run: VariantRun, index: int) -> TryRecord:
 
 
 def _drafting_note(run: VariantRun) -> str:
-    who = "you pick one" if run.judge == "user" else "the best is selected against the rubric"
+    """The ``variant_drafting`` reminder for ``run`` (``""`` when switched off): its
+    ``what``, ``capped`` and ``who`` are the ``variant_drafting_*`` pieces."""
+    from clio_agent.gact import reminders  # noqa: PLC0415
+
+    def piece(name: str, **variables: Any) -> str:
+        return reminders.render(f"variant_drafting_{name}", variables) or ""
+
+    who = piece("user") if run.judge == "user" else piece("judged")
     if run.strategy == "refine":
-        what = f"one draft at a time, refined up to {run.n} drafts"
+        what = piece("refine", n=run.n)
     else:
-        what = f"{run.n} alternatives in parallel"
-    capped = f" ({run.n_requested} asked, capped at {run.n})" if run.n_requested > run.n else ""
-    return f"Drafting {what}{capped}; {who}. Rubric: {run.rubric}"
+        what = piece("parallel", n=run.n)
+    capped = ""
+    if run.n_requested > run.n:
+        capped = " " + piece("capped", requested=run.n_requested, n=run.n)
+    variables = {"what": what, "capped": capped, "who": who, "rubric": run.rubric}
+    return reminders.render("variant_drafting", variables) or ""
 
 
 def _commit(app: Any, run: VariantRun, index: int) -> TryRecord:

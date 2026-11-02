@@ -102,16 +102,11 @@ def test_an_override_with_an_undeclared_placeholder_falls_back_to_the_builtin() 
 
 def test_a_required_reminder_cannot_be_switched_off() -> None:
     """A source that carries data the agent needs can be reworded, never dropped."""
-    registry = PromptRegistry()
-    assert registry.write_root is not None
-    registry.save(
-        "clio.reminder.carrier",
-        text="Result: {{text}}",
-        metadata={"kind": "reminder", "variables": "text", "required": "carries a result"},
-    )
-    reminders.update("carrier", active=False)
-    assert reminders.active("carrier")
-    assert reminders.render("carrier", {"text": "42"}) == "Result: 42"
+    shipped = next(row for row in _shipped() if row.metadata.get("required"))
+    source = shipped.id.removeprefix(reminders.REMINDER_PREFIX)
+    reminders.update(source, active=False)
+    assert reminders.active(source)
+    assert reminders.reminder(source).required  # type: ignore[union-attr]
 
 
 def test_the_recorder_drops_a_switched_off_source() -> None:
@@ -140,3 +135,19 @@ def test_the_prompt_preview_renders_a_reminder_with_sample_values() -> None:
     )
     assert rendered is not None and rendered.validation_errors == []
     assert "(plan.md)" in rendered.text and "in 3 steps" in rendered.text
+
+
+def test_an_override_cannot_clear_required() -> None:
+    """``x_required`` is read from the shipped template only. SABOTAGE: read it from the
+    resolved (overridden) metadata and the emptied copy switches the reminder off."""
+    shipped = next(row for row in _shipped() if row.metadata.get("required"))
+    source = shipped.id.removeprefix(reminders.REMINDER_PREFIX)
+    reminders.update(source, active=False)
+    path = _override(source)
+    text = path.read_text(encoding="utf-8")
+    text = re.sub(r"(?m)^x_required:.*$", 'x_required: ""', text)
+    path.write_text(text, encoding="utf-8")
+    stamp = path.stat().st_mtime_ns + 1_000_000
+    os.utime(path, ns=(stamp, stamp))
+    assert 'x_required: ""' in path.read_text(encoding="utf-8")
+    assert reminders.active(source)

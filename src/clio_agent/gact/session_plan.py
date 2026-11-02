@@ -40,8 +40,11 @@ __all__ = [
 PLAN_STATUS_KEY = "plan_status"
 #: The person edited the plan on the Work rail; it is offered to the agent at its next step.
 PERSON_EDIT_KEY = "plan_person_edit"
-#: Injection source of the plan offered as working state.
+#: Injection source of the plan offered as working state, and its reminder.
 PLAN_SOURCE = "plan"
+#: Reminders for the person's edit of the plan and for a plan cut at the injection limit.
+PLAN_PERSON_EDIT_SOURCE = "plan_person_edit"
+PLAN_TRUNCATED_SOURCE = "plan_truncated"
 #: Statuses in which the plan is offered as working state.
 ACTIVE_STATUSES = frozenset({"draft", "approved"})
 _SETTABLE = frozenset({"done", "abandoned"})
@@ -93,37 +96,30 @@ def plan_injection(app: Any, session_id: str, session: Any) -> str:
 
     In plan mode the plan-mode reminder already names the file. The model judges whether
     the plan still applies; CLIO only says it exists and shows it. A plan the person edited
-    on the Work rail is offered in any mode, once, marked as theirs.
+    on the Work rail is offered in any mode, once, marked as theirs. The wording is the
+    reminders ``plan``, ``plan_person_edit`` and ``plan_truncated``.
     """
-    del app, session_id
+    from clio_agent.gact import reminders  # noqa: PLC0415
+
     state = plan_state(session)
-    person_edit = bool((getattr(session, "metadata", None) or {}).get(PERSON_EDIT_KEY))
     if not state["exists"]:
         return ""
-    if not person_edit and (
-        str(getattr(session, "mode", "") or "") == "plan" or state["status"] not in ACTIVE_STATUSES
-    ):
-        return ""
+    where = {"app": app, "session_id": session_id}
     text = state["text"].strip()
     limit = _injection_chars()
     if len(text) > limit:
-        text = (
-            text[:limit] + f"\n\n[The plan continues; read it whole at {state['path']} with "
-            "fs_read_file.]"
+        note = reminders.render(PLAN_TRUNCATED_SOURCE, {"path": state["path"]}, **where)
+        text = text[:limit] + (f"\n\n{note}" if note else "")
+    if (getattr(session, "metadata", None) or {}).get(PERSON_EDIT_KEY):
+        edited = reminders.render(
+            PLAN_PERSON_EDIT_SOURCE, {"path": state["path"], "plan": text}, **where
         )
-    if person_edit:
-        return (
-            f"## The plan, as the person edited it ({state['path']})\n\n"
-            "The person changed the plan on the Work rail. Treat their changes as their "
-            "direction: continue from this version.\n\n"
-            f"{text}"
-        )
-    return (
-        f"## The plan ({state['status']}, {state['path']})\n\n"
-        "If this plan is relevant to the current work and not finished, continue on it, and "
-        "update it with plan_update when your understanding or direction changes.\n\n"
-        f"{text}"
-    )
+        if edited is not None:  # switched off: the plan is offered as usual below
+            return edited
+    if str(getattr(session, "mode", "") or "") == "plan" or state["status"] not in ACTIVE_STATUSES:
+        return ""
+    variables = {"status": state["status"], "path": state["path"], "plan": text}
+    return reminders.render(PLAN_SOURCE, variables, **where) or ""
 
 
 def mark_person_edit(app: Any, session_id: str) -> None:

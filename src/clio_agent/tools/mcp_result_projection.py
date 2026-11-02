@@ -13,12 +13,23 @@ from __future__ import annotations
 
 import logging
 import uuid
+from collections.abc import Mapping
 from pathlib import Path
 
 logger = logging.getLogger(__name__)
 
 #: Typed reason logged when an oversize result could not be written to its file.
 MODEL_TOOL_RESULT_SPILL_FAILED_REASON = "model_tool_result_spill_failed"
+#: The injection source, and the fixed marker that opens a cut result's note.
+RESULT_SPILLED_SOURCE = "result_spilled"
+RESULT_SPILLED_MARKER = f"[clio: {RESULT_SPILLED_SOURCE}]"
+
+
+def _say(piece: str, variables: Mapping[str, object]) -> str:
+    """A piece of the note (a ``result_spilled*`` reminder; required, so never off)."""
+    from clio_agent.gact import reminders  # noqa: PLC0415
+
+    return reminders.render(piece, variables) or ""
 
 
 def model_tool_result_chars() -> int:
@@ -68,7 +79,8 @@ def bounded_model_tool_result(
     :func:`model_tool_result_chars`, the full result is written to the session's
     tool-output folder (the shell tool's spill folder, removed with the session) and
     the agent is told: how big it is, that the first characters follow, and where the
-    rest is for it to explore. The raw evidence itself is never rewritten.
+    rest is for it to explore (the reminder ``clio.reminder.result_spilled`` and its
+    ``where`` pieces). The raw evidence itself is never rewritten.
     """
 
     max_chars = model_tool_result_chars()
@@ -80,7 +92,7 @@ def bounded_model_tool_result(
             if root is None and session_id is None
             else _spill(text, root=root, session_id=session_id)
         )
-        where = f"the full result is in `{path}`; {_continuation(path, text, max_chars)}"
+        where = _continuation(path, text, max_chars)
     except OSError as exc:
         logger.warning(
             "tool result spill failed reason=%s chars=%d error=%r",
@@ -88,11 +100,9 @@ def bounded_model_tool_result(
             len(text),
             exc,
         )
-        where = f"the full result could not be saved ({exc}), so the rest is not available"
-    note = (
-        f"[clio: result_spilled] This result is {len(text):,} characters, more than the "
-        f"{max_chars:,} shown to you. The first characters follow; {where}."
-    )
+        where = _say("result_spilled_unsaved", {"error": exc})
+    frame = {"chars": f"{len(text):,}", "shown": f"{max_chars:,}", "where": where}
+    note = f"{RESULT_SPILLED_MARKER} {_say(RESULT_SPILLED_SOURCE, frame)}"
     from clio_agent.tools import injections  # noqa: PLC0415
 
     head = text[: max(0, max_chars - len(note) - 2)]
@@ -102,19 +112,16 @@ def bounded_model_tool_result(
     projection = f"{note}\n\n{head}"
     # Details must include the head promised by the notice, exactly as returned
     # to the model. Recording only `note` silently loses that part of the view.
-    injections.note("result_spilled", projection)
+    injections.note(RESULT_SPILLED_SOURCE, projection)
     return projection
 
 
 def _continuation(path: Path, text: str, max_chars: int) -> str:
-    """How to read on from what was shown: the exact next read, or a search for JSON."""
+    """Where the rest is and how to read on: the exact next read, or a search for JSON."""
     if path.suffix == ".json":
-        return "it is one JSON document, so search it with fs_search_text or load it in a script"
+        return _say("result_spilled_json", {"path": path})
     shown_lines = text[:max_chars].count("\n") + 1
-    return (
-        f'read on with fs_read_file(filepath="{path}", offset={shown_lines}), '
-        "or search it with fs_search_text"
-    )
+    return _say("result_spilled_read_on", {"path": path, "offset": shown_lines})
 
 
 def _spill(text: str, *, root: str | Path | None = None, session_id: str | None = None) -> Path:

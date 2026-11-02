@@ -38,16 +38,19 @@ from typing import Any, Literal, cast
 from clio_agent.arc import history_mode
 from clio_agent.errors import ClioError
 from clio_agent.gact import context as _ctx
+from clio_agent.gact import reminders
 from clio_agent.gact.compaction_policy import keep_policy, post_compaction_context
 from clio_agent.gact.conversation_projection import model_context_messages
 from clio_agent.gact.delegation import _compact_exact_evidence_index
 from clio_agent.gact.runtime.context_tokens import _estimate_text_tokens
 from clio_agent.gact.runtime.globals import _active_semantic_turn_id, _emit_semantic_event
 from clio_agent.gact.summarization_record import (
+    COMPACTION_FAILED_SOURCE,
+    COMPACTION_SKIPPED_SOURCE,
     failure_notice_part,
-    recall_line,
     skipped_notice_part,
     summarization_part,
+    summary_text,
 )
 from clio_agent.gact.types import ErrorEnvelope, ErrorInfo
 from clio_agent.runtime.stream_audit import stream_audit
@@ -73,11 +76,15 @@ SKIP_NO_TOKEN_COUNT = "no_token_count"
 #: threshold, so another one would summarize little more than the summary again.
 SKIP_ABOVE_THRESHOLD_AFTER_COMPACTION = "above_threshold_after_compaction"
 
-#: The plain-language ``notice`` of that skip, written once per forward.
-ABOVE_THRESHOLD_NOTICE = (
-    "Context is still near the limit after summarizing; continuing without "
-    "summarizing again this turn."
-)
+
+def __getattr__(name: str) -> str:
+    """``ABOVE_THRESHOLD_NOTICE``: the wording of that skip's ``notice`` (written once per
+    forward), now the reminder ``clio.reminder.compaction_skipped``."""
+    if name == "ABOVE_THRESHOLD_NOTICE":
+        found = reminders.reminder(COMPACTION_SKIPPED_SOURCE)
+        return found.text if found is not None else ""
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+
 
 #: Audit reasons (``stream_audit`` stage names double as the reason).
 AUDIT_AUTO_FAILED = "compaction.auto_failed"
@@ -370,14 +377,20 @@ def _failed(app: Any, sid: str, base: dict[str, Any], exc: CompactionError) -> N
     in the same event and raised typed with both causes."""
     from clio_agent.gact.compaction_record import write_notice  # noqa: PLC0415
 
+    error = {"code": exc.error, "message": exc.message}
+    text = reminders.render(
+        COMPACTION_FAILED_SOURCE, {"error": exc.message}, app=app, session_id=sid
+    )
+    if text is None:  # switched off (traced): the event alone records the failure
+        _event(app, sid, "failed", base["turn_id"], {**base, "error": error, "part_id": ""})
+        return
     notice = failure_notice_part(
-        f"Summarizing the context failed, so it was left as it was. {exc.message}",
+        text,
         code=exc.error,
         compaction_id=base["compaction_id"],
         trigger=base["trigger"],
         agent_id=base["scope"],
     )
-    error = {"code": exc.error, "message": exc.message}
     try:
         message_id, part_id = write_notice(app, sid, notice)
     except Exception as notice_exc:  # noqa: BLE001 - reported failed, raised typed below
@@ -412,7 +425,7 @@ def _summarize_record_fold(
     )
     summary = _summary(app, sid, plan.transcript, focus)
     search_enabled = context_search_available(app.state.arc)
-    text = f"{summary}\n\n{recall_line(base['compaction_id'], search_enabled=search_enabled)}"
+    text = summary_text(summary, base["compaction_id"], search_enabled=search_enabled)
     part = summarization_part(
         text,
         trigger=trigger,
@@ -651,8 +664,11 @@ def _notice_above_threshold(app: Any, sid: str, scope: str, compaction_id: str) 
     never told). A notice that cannot be written fails the turn typed."""
     from clio_agent.gact.compaction_record import write_notice  # noqa: PLC0415
 
+    text = reminders.render(COMPACTION_SKIPPED_SOURCE, {}, app=app, session_id=sid)
+    if text is None:  # switched off (traced): the audit still records each skip
+        return
     notice = skipped_notice_part(
-        ABOVE_THRESHOLD_NOTICE,
+        text,
         code=SKIP_ABOVE_THRESHOLD_AFTER_COMPACTION,
         compaction_id=compaction_id,
         agent_id=scope,

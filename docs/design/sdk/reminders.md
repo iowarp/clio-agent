@@ -1,6 +1,7 @@
 # Reminders: every injection as a Markdown template
 
-Status: design, 2026-11-02. Tracks the owner's direction: every piece of text CLIO adds to
+Status: implemented, 2026-11-02 (every source below renders from a template; the
+trigger system is still to come). Tracks the owner's direction: every piece of text CLIO adds to
 what an agent sees is a Markdown template that a person can switch off, edit and preview in
 the UI; a trigger system comes later.
 
@@ -27,6 +28,30 @@ today; most build their text in Python:
 
 Claude Code keeps the same kind of text as files (`system-reminder-*.md` in the
 Piebald-AI mirror), each with declared variables and conditionals filled in by the harness.
+
+### As built
+
+69 templates under `src/clio_agent/prompt_packs/builtin/reminders/`, named
+`<source>` or `<source>_<piece>` when the text is built from conditional pieces (one
+template per piece; the code decides which apply, the template is the wording). Every
+default renders today's text byte for byte, pinned by `tests/test_gact/test_reminders*.py`.
+
+- **Switchable** (a person may turn them off): `explore_nudge`, `plan_stale`,
+  `session_facts*`, `plan*`, `todos`, the optional `plan_mode_*` bullets,
+  `compaction_failed`, `compaction_skipped`, the `context_recovery_*` notes, `memory*`,
+  `plugin_change_deferred_tools`, `plugin_change_footer`, `circuit_breaker_warning`,
+  `path_hint`, `variant_drafting`.
+- **Required** (`x_required`, reworded but never off; the reason is shown on the page):
+  `plan_mode`, `plan_mode_playbook`, `summarization*`, `context_recovery_uncertain`,
+  `result_spilled*`, `media_unavailable*`, `plugin_change` and its removed/added pieces,
+  the eight `hook_*` notes, `hook_defer`, `circuit_breaker_open`, `variant_advice`, the
+  `variant_drafting_*` pieces (switch the whole note instead), `mcp_elicitation`,
+  `task_result*`. Only the shipped template can declare `x_required`.
+- The recorder gates every source on `clio.reminder.<source>`; a source emitted directly
+  is gated where its text is built, so the transcript and the model never disagree.
+- Not migrated, on purpose: `answer_hook` (a hook's own text, shown to the person only)
+  and the approval-card prompts (person-facing).
+- Wording built once per session: the memory snapshot (an edit reaches new sessions).
 
 ## The template
 

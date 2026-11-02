@@ -14,6 +14,10 @@ never changes within the session the agent loop writes it once and re-records it
 a compaction removed it (memory ledger MD7). A fork copies its parent's snapshot, so
 it sees memory as of the fork. A write in the session shows in its tool result; the
 next session's snapshot includes it. Delegated children get no snapshot; they search.
+
+Its wording is the reminder ``clio.reminder.memory`` (the line under the marker) and its
+pieces ``memory_index``, ``memory_omitted`` and ``memory_empty``, read when the snapshot
+is built. Switched off, no turn carries it (and a session that has none builds none).
 """
 
 from __future__ import annotations
@@ -21,6 +25,7 @@ from __future__ import annotations
 from typing import Any
 
 from clio_agent.arc.memory_document import SINGLETON_CATEGORIES, MemoryDocument
+from clio_agent.gact import reminders
 from clio_agent.gact.memory.policy import session_policy, setting
 from clio_agent.gact.memory.service import MemoryService, StoredDocument
 from clio_agent.gact.memory.usage import UsageCounters, document_subject
@@ -42,20 +47,32 @@ def _scope_label(scope: str) -> str:
     return _SCOPE_LABEL.get(scope, "This workspace")
 
 
-def _document_lines(stored: StoredDocument) -> list[str]:
+def _document_lines(stored: StoredDocument, empty: str | None) -> list[str]:
     document: MemoryDocument = stored.document
     title = f"### {_scope_label(stored.name.scope)} {document.category} ({stored.name})"
     lines = [title]
     lines.extend(f"- {fact.text} (fact {fact.id})" for fact in document.live_facts)
-    if not document.live_facts:
-        lines.append("- (nothing yet)")
+    if not document.live_facts and empty:
+        lines.append(empty)
     return lines
 
 
 def build_snapshot(
-    service: MemoryService, usage: UsageCounters, scopes: tuple[str, ...]
+    service: MemoryService,
+    usage: UsageCounters,
+    scopes: tuple[str, ...],
+    *,
+    app: Any = None,
+    session_id: str = "",
 ) -> dict[str, Any]:
-    """Assemble the snapshot of ``scopes``: ``{"text", "loaded", "indexed", "omitted"}``."""
+    """Assemble the snapshot of ``scopes``: ``{"text", "loaded", "indexed", "omitted"}``.
+
+    ``app`` and ``session_id`` pick the reminders' wording as that session sees it.
+    """
+
+    def say(piece: str, **variables: Any) -> str | None:
+        return reminders.render(piece, variables, app=app, session_id=session_id)
+
     documents = service.documents(scopes)
     # A profile or preferences document with no live facts (the profile can hold only
     # the forgotten list) adds nothing to the prompt and is not credited as used.
@@ -68,14 +85,11 @@ def build_snapshot(
     others.sort(
         key=lambda stored: usage.get(document_subject(str(stored.name))).last_read, reverse=True
     )
-    lines = [
-        MARKER,
-        "What you remember about the user, their projects and how they work. Search and read "
-        "the indexed documents with memory_search and memory_read when they bear on the work.",
-    ]
+    lines = [MARKER, *filter(None, [say(SOURCE)])]
+    empty = say("memory_empty") if any(not s.document.live_facts for s in loaded) else None
     for stored in loaded:
         lines.append("")
-        lines.extend(_document_lines(stored))
+        lines.extend(_document_lines(stored, empty))
     cap = int(setting("memory.index_max_tokens", 2000))
     index: list[str] = []
     used = 0
@@ -87,10 +101,10 @@ def build_snapshot(
         used += _tokens(line)
     omitted = len(others) - len(index)
     if index or omitted:
-        lines.extend(["", f"### Index ({len(others)} documents)"])
+        lines.extend(["", *filter(None, [say("memory_index", count=len(others))])])
         lines.extend(index)
         if omitted:
-            lines.append(f"- {omitted} more not listed; find them with memory_search.")
+            lines.extend(filter(None, [say("memory_omitted", omitted=omitted)]))
     return {
         # Nothing remembered yet: no addition at all (the tools' fragment covers how to
         # start), rather than an empty section on every turn.
@@ -123,7 +137,9 @@ def session_snapshot(app: Any, session: Any) -> dict[str, Any] | None:
 
     service = memory_service(app)
     usage = memory_usage(app)
-    snapshot = build_snapshot(service, usage, session_policy(app, session).scopes)
+    snapshot = build_snapshot(
+        service, usage, session_policy(app, session).scopes, app=app, session_id=session.id
+    )
     app.state.sessions.update(session.id, metadata_patch={SNAPSHOT: snapshot})
     for name in snapshot["loaded"]:
         usage.note(f"snapshot:{session.id}", document_subject(name), "loaded")
@@ -136,11 +152,14 @@ def memory_snapshot_text(app: Any, sid: str, session: Any, turn_id: str) -> str:
 
     Runs in the turn prologue, off the loop. When memory cannot be read (History mode,
     clio-core unavailable) the turn still runs, and the typed reason is recorded as a
-    ``memory.snapshot.unavailable`` semantic event on the turn.
+    ``memory.snapshot.unavailable`` semantic event on the turn. Switched off (the
+    reminder ``clio.reminder.memory``, traced), there is no addition.
     """
     from clio_agent.errors import ClioError  # noqa: PLC0415
     from clio_agent.gact.runtime.globals import _emit_semantic_event  # noqa: PLC0415
 
+    if not reminders.active(SOURCE, app=app, session_id=sid):
+        return ""
     try:
         current = app.state.sessions.get(sid) or session
         snapshot = session_snapshot(app, current)

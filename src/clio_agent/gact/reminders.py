@@ -107,7 +107,11 @@ def _resolve(registry: Any, source: str) -> Reminder | None:
         for key, value in meta.items()
         if key.startswith("param_")
     }
-    required = str(meta.get("required") or "").strip()
+    # Only the shipped template decides that a reminder carries data the agent needs: an
+    # override may reword it, never clear ``x_required`` to switch it off.
+    builtin = registry._builtins().get(f"{REMINDER_PREFIX}{source}")
+    required = str((builtin.metadata if builtin is not None else {}).get("required") or "")
+    required = required.strip()
     return Reminder(
         source=source,
         text=resolved.text,
