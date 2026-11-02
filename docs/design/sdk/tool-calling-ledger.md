@@ -285,6 +285,56 @@ The plan's prompt foundation has two halves: the rewrite from the research (done
 4. **Change** the prompt against that evidence under the repository's rules (no handcuffs, fix causes, `.claude/CLAUDE.md` principles 1 to 3; `docs/tool-result-presentation.md` for tool descriptions).
 5. **Re-evaluate**: before is config `final2` (all fixes of 2026-11-02); after is the same tasks, three passes, same harness. Record both here and update the Targets.
 
+### Prompt audit (2026-11-02)
+
+**Measured** (exact request of final2 P1, `GET /v1/sessions/{sid}/agent?exact=true`): 20.9k characters of system text (about 3,300 words), of which the core guidance and capability fragments are 13.7k, the deferred-tool entry 0.9k and the skills listing 6.3k; and 72.5k characters of schemas for 67 listed tools. By plugin: core 24.7k, connected-data 6.7k, workspace 6.5k, delegation 5.7k, shell 5.4k, orchestration 5.3k, visuals 4.9k, memory 4.1k, web 3.7k, document-runtime 2.4k, fleet 1.8k, pdf 0.9k. The Claude Code reference ran with 5 tools (`--allowed-tools Bash,Read,Grep,Glob,Task`).
+
+**Against the plan's prompt foundation**
+
+| Item (plan, Design: the prompt foundation) | State | Note |
+| --- | --- | --- |
+| Fragments composed for the final tools (TD25) | done (`f1039fdb`) | a read-only child no longer hears about delegating or workflows |
+| Working, Exploring, Persisting sections in core | done | `core.guidelines` |
+| `core.tasks` to a few sentences, `task-protocol` skill | done | 1,554 to 170 words |
+| Handcuffs removed, `TOOL_USE_NOTE` deleted, `TURN_REMINDER` rewritten | done | |
+| Role prompts (`explore`, `planner`, `review`, `delegation.child`) | done (marketplace `74fbf24`) | `explore` close to Claude Code's Explore |
+| Narrow fragments gated | partly | gh fragments gated on the shell; rendering scoped to root |
+| Skills listing one line per skill | not done | 6.3k characters, several sentences per skill |
+| Largest tool descriptions trimmed | not done | `create_artifact` 2.7k + 1.6k schema, `shell_bash` 2.8k, `raise_alert_card` 1.2k |
+| Prompt sizes per role recorded per phase | not done | this section starts it |
+| Changed against the evaluation (Phase 1 step 6) | not done | this section |
+
+**Delegation steering against Claude Code** (user review, 2026-11-02; Claude Code's Explore and Agent tool texts in Piebald-AI/claude-code-system-prompts)
+
+| Mechanism | Claude Code | CLIO before |
+| --- | --- | --- |
+| Agent description written as a trigger | "when answering means sweeping many files… you only need the conclusion"; boundary; breadth knob | capability wording, no trigger, no negative case |
+| Roster injected verbatim next to the delegation tool | yes | yes (inside the spawn tools' `agent` parameter) |
+| Policy and its reason on the delegation tool | parallel work, context economy, when not to | mechanics only; policy in `delegation.parent` mid-prompt |
+| Search tools point open-ended searches at the agent | Grep/Glob | none |
+| Workflow prescribes explorers | plan mode launches Explore agents in parallel | planning skill: "can help… a small task does not need them" |
+| Explore returns conclusions, not contents | yes | yes |
+
+**Behaviour evidence** (final, final2, ablations, qualification; 199 runs)
+
+| Evidence | Handles | Cause | Change |
+| --- | --- | --- | --- |
+| `explore` never used, survey included (T4); 0 children on P1-P4 | T4 `sess_ce94b90123be`; all P1-P4 | no trigger in its description, policy away from the tool | round 1 (`0268edb5`, marketplace `9032908`) and the explore note (`cd4a88c3`) |
+| P2 searches, then reads the line the search showed | final P2 runs | Exploring guidance said "search, then read" | round 1 (`0268edb5`) |
+| `_clio_task_description` required on 10 tools | exact dump | recording rebuild dropped the MCP input contract | fixed `d7d98a2a` |
+| 15 of 67 listed tools used in 199 runs | all runs | everything listed | proposal: defer niche groups (owner decision) |
+| `raise_alert_card` listed to root sessions, where it cannot work | exact dump | no per-session tool scope | proposal |
+| `path` guessed for `filepath` (T8b, T8c) | qualify | inconsistent fs argument names | suggested task (rename) |
+| Plan never used on H1-H3 (T14) | final H1-H3 | tasks too short | none: right call on short tasks |
+
+**Round 1** (`0268edb5`, marketplace `9032908`, with the explore note `cd4a88c3` on at its default of 6 reading calls):
+- `explore`'s description is a trigger: use when sweeping many files, folders or naming conventions, or when you do not know where something lives, and only the conclusion is needed; it locates and reads excerpts and does not review; for a lookup whose file you know, do it yourself.
+- `spawn_agent_task` carries the delegation policy and its reason (what you read stays in your context; a child returns only its report); `spawn_agents_parallel` names the one-explore-child-per-area survey.
+- `delegation.parent`: a search that will take several rounds goes to an `explore` child.
+- `core.guidelines`: a search result that already shows the line or value is evidence to answer from.
+- `planning`: the investigation phase starts one `explore` child per area in a single parallel call when the work spans several areas.
+- Not in round 1, proposed: defer the niche tool groups (15 of 67 listed tools were used in 199 runs), withhold `raise_alert_card` from root sessions, trim the largest tool descriptions and the skills listing (Phase 1 step 3), `$(command)` variables in reminder templates (owner decision).
+
 ## Overheads (Phase 0 step 3)
 
 | Overhead | Measured | Above baseline noise | Fixed in |
