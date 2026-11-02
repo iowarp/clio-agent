@@ -42,9 +42,11 @@ def _empty_folder() -> Path:
 
 def session_cwd(session_id: str) -> str:
     """The CLI's working folder for ``session_id``: its workspace root, else an empty one."""
+    from clio_agent.gact.transcript_file import TranscriptNotReadyError  # noqa: PLC0415
+
     try:
         root = _workspace_root(session_id)
-    except Exception as exc:  # noqa: BLE001 - resolution failure falls to the empty folder
+    except (TranscriptNotReadyError, OSError) as exc:  # store attaching, or the folder unreadable
         trace.event("CLAUDE-CODE", "%s session=%s error=%s", NO_WORKSPACE_REASON, session_id, exc)
         root = None
     if root is not None:

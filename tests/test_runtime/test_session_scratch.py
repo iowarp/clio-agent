@@ -300,7 +300,9 @@ def test_the_boot_sweep_reads_last_activity_from_the_session_store(root: Path) -
 
     class Unready:
         def get(self, _sid: str) -> Any:
-            raise RuntimeError("clio-core did not attach")
+            from clio_agent.gact.session_records import SessionRecordsNotReadyError
+
+            raise SessionRecordsNotReadyError("clio-core did not attach")
 
     assert session_scratch_sweep.sweep_sessions(Unready()) == []
     assert (root / "node-a" / "sess_created").is_dir()

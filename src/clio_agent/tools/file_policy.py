@@ -121,7 +121,7 @@ def _active_scratch_root() -> Path | None:
         from clio_agent.runtime.session_scratch import active_scratch_dir  # noqa: PLC0415
 
         return active_scratch_dir()
-    except Exception as exc:  # noqa: BLE001 - policy must never fail to build
+    except OSError as exc:  # resolving the folder's path failed: no scratch root
         trace.event("FILE-POLICY", "session_scratch_root_unavailable error=%r", exc)
         return None
 

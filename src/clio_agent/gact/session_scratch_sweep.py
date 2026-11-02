@@ -17,6 +17,7 @@ import logging
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Any
 
+from clio_agent.gact.transcript_file import TranscriptNotReadyError
 from clio_agent.runtime import session_scratch, trace
 
 if TYPE_CHECKING:
@@ -70,7 +71,7 @@ def sweep_sessions(sessions: Any) -> list[str]:
 
     try:
         return session_scratch.sweep(lambda sid: last_activity(sessions, sid))
-    except Exception as exc:  # noqa: BLE001 - reported with a typed reason, retried next boot
+    except (TranscriptNotReadyError, OSError) as exc:  # typed reason; retried next boot
         logger.warning("session scratch sweep stopped reason=%s error=%r", SWEEP_FAILED_REASON, exc)
         trace.event("SCRATCH", "%s error=%r", SWEEP_FAILED_REASON, exc)
         return []

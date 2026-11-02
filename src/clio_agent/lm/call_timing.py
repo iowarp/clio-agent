@@ -35,12 +35,10 @@ class CallClock:
 
 
 def _session_id() -> str:
-    try:
-        from clio_agent.gact.context import active_session_id  # noqa: PLC0415
+    """The active session, ``""`` off-turn (the CLI and the optimizer have none)."""
+    from clio_agent.gact.context import active_session_id  # noqa: PLC0415
 
-        return active_session_id() or ""
-    except Exception:  # noqa: BLE001 - off-turn callers (CLI, optimizer) have no session
-        return ""
+    return active_session_id() or ""
 
 
 def start() -> CallClock:
