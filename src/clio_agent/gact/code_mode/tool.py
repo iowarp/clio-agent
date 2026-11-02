@@ -9,8 +9,9 @@ plus how many tool calls it made.
 Running a script is one non-read call, approved before it runs with the code shown
 (``run_code`` asks the permission gate itself, as native tools that act do). Its nested
 calls are decided by the gate under the script's grant (:mod:`.grants`). In plan mode
-it runs only where the sandbox enforces the write fence (the fence is the only thing
-keeping a script from writing), else it refuses with ``code_plan_mode_unconfined``.
+it runs only where the sandbox enforces the write fence, in a kernel that may write only
+the session's scratch folder and temp (its nested calls still meet the plan ACL), else
+it refuses with ``code_plan_mode_unconfined``.
 
 A script that runs past ``code.call_timeout_s`` (waiting for a person's answer does
 not count), or is cancelled, stops its kernel: the next script starts a fresh one.
@@ -92,15 +93,17 @@ def _approve(app: Any, code: str) -> None:
         raise PermissionError("The script was not approved, so it did not run.")
 
 
-def _plan_mode_refusal(app: Any, session_id: str) -> None:
+def _plan_mode_refusal(app: Any, session_id: str) -> bool:
+    """Whether the session is in plan mode (the script then runs read-only); refuses when
+    plan mode has no enforced fence."""
     from clio_agent.runtime import sandbox  # noqa: PLC0415
 
     session = app.state.sessions.get(session_id)
     if str(getattr(session, "mode", "") or "") != "plan":
-        return
+        return False
     state = sandbox.current_state()
     if state is not None and state.active and state.mechanism != sandbox.MECHANISM_NONE:
-        return
+        return True
     raise CodeError(
         "run_code is not available in Plan mode here: this host's sandbox does not enforce "
         "the write fence, so nothing would keep a script read-only. Use the read tools.",
@@ -140,8 +143,10 @@ def _callers(agent: Any) -> tuple[frozenset[str], frozenset[str]]:
     )
 
 
-def run_script(agent: Any, code: str, *, session_id: str, scope: str) -> dict[str, Any]:
-    """Run ``code`` in the scope's kernel; the structured outcome."""
+def run_script(
+    agent: Any, code: str, *, session_id: str, scope: str, read_only: bool = False
+) -> dict[str, Any]:
+    """Run ``code`` in the scope's kernel (a read-only one in plan mode); the outcome."""
     from clio_agent.agent import cancellation_requested  # noqa: PLC0415
     from clio_agent.gact.artifacts.observer_bridge import current_call_id  # noqa: PLC0415
     from clio_agent.gact.code_mode import kernels  # noqa: PLC0415
@@ -165,7 +170,7 @@ def run_script(agent: Any, code: str, *, session_id: str, scope: str) -> dict[st
     direct_only, code_only = _callers(agent)
     callable_tools = {n: t for n, t in agent.tools.items() if n not in direct_only}
     dispatcher = Dispatcher(callable_tools, servers, context, _search(callable_tools))
-    kernel = kernels.kernel_for(session_id, scope, _workspace())
+    kernel = kernels.kernel_for(session_id, scope, _workspace(), read_only=read_only)
     outcome: dict[str, Any] = {"status": "failed", "output": "", "value": None, "error": ""}
     started = time.monotonic()
     limit, poll = call_timeout_s(), poll_s()
@@ -276,10 +281,12 @@ def build_run_code_tool() -> Any:
             raise CodeError("run_code runs inside an agent step.", "code_no_agent")
         if not str(code or "").strip():
             raise CodeError("code is empty.", "code_empty")
-        _plan_mode_refusal(app, session_id)
+        read_only = _plan_mode_refusal(app, session_id)
         _approve(app, code)
         scope = _ctx.run_keyed_scope(_ctx.active_react_scope() or "")
-        outcome = run_script(loop.agent, code, session_id=session_id, scope=scope)
+        outcome = run_script(
+            loop.agent, code, session_id=session_id, scope=scope, read_only=read_only
+        )
         declare_structured_content(outcome)
         return model_text(outcome)
 

@@ -171,6 +171,21 @@ def _platform_tool_cache_dirs() -> list[Path]:
     return dirs
 
 
+def read_only_write_roots() -> tuple[Path, ...]:
+    """The writable territory of a read-only child (a plan-mode ``run_code`` kernel): the
+    session's own scratch folder (TD56) and the system temp folders, never the workspace,
+    the allowed roots or CLIO's own state."""
+    from clio_agent.runtime.session_scratch import (  # noqa: PLC0415 - avoid cycle
+        active_scratch_dir,
+        system_temp_roots,
+    )
+
+    scratch = active_scratch_dir()
+    roots = [scratch] if scratch is not None else []
+    roots.extend(temp for temp in system_temp_roots() if temp not in roots)
+    return tuple(roots)
+
+
 def effective_write_roots(
     profile: Profile,
     *,
@@ -265,6 +280,7 @@ __all__ = [
     "clear_write_root_grants",
     "effective_write_roots",
     "granted_write_roots",
+    "read_only_write_roots",
     "register_write_root_grant",
     "revoke_write_root_grant",
 ]

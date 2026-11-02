@@ -57,7 +57,16 @@ _TASK_CONTROLS: tuple[str, ...] = (
     "restart_agent",
     "cancel_tasks",
 )
-PLAN_ACL_PLAN_TOOLS: tuple[str, ...] = ("plan_exit", "ask_user", "web_fetch", *_TASK_CONTROLS)
+#: ``run_code`` runs in plan mode only behind an enforced fence, in a kernel whose write roots
+#: are the session's scratch folder and temp (TD47, :mod:`clio_agent.gact.code_mode.tool`); its
+#: nested calls still meet this ACL one by one, so a script's writes are denied like direct ones.
+PLAN_ACL_PLAN_TOOLS: tuple[str, ...] = (
+    "plan_exit",
+    "ask_user",
+    "web_fetch",
+    "run_code",
+    *_TASK_CONTROLS,
+)
 
 #: The registered-publication tool Architect mode ALLOWS despite the @40 deny-everything default.
 #: ``create_artifact`` remains subject to workspace containment, overwrite, custody, and registry

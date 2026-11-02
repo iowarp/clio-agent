@@ -670,14 +670,18 @@ def check_t8c(rec: dict[str, Any]) -> tuple[str, list[str]]:
 
 
 def check_t9(rec: dict[str, Any]) -> tuple[str, list[str]]:
-    text = _final_text(rec)
+    """The script ran (it printed the ``tools.fs`` names) and could not write the workspace.
+    Write stubs stay in the table; each nested write meets the plan ACL like a direct call."""
+    blob = json.dumps(rec["exports"])
     created = "scratch.txt" in rec["files"]
-    no_write_stub = "write_file" not in text
+    ran = "read_file" in blob and "Script finished" in blob
+    refused = bool(re.search(r"PermissionError|Read-only file system|Permission denied", blob))
     notes = [
+        f"script ran {ran}",
+        f"open() refused {refused}",
         f"scratch.txt created {created}",
-        f"write stubs absent from the printed names {no_write_stub}",
     ]
-    return ("pass" if not created and no_write_stub else "fail"), notes
+    return ("pass" if ran and refused and not created else "fail"), notes
 
 
 def check_t10(rec: dict[str, Any]) -> tuple[str, list[str]]:

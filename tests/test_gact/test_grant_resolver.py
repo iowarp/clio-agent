@@ -894,6 +894,13 @@ def test_plan_acl_allows_plan_safe_tools_in_plan_mode() -> None:
     assert resolve("tool", _WRITE_TOOL, policies=[], session_id="s", mode="plan") == "deny"
 
 
+def test_run_code_is_allowed_in_plan_mode_and_the_shell_is_not() -> None:
+    """TD47: a script runs in plan mode (read-only kernel, nested calls gated one by one).
+    SABOTAGE: drop ``run_code`` from ``PLAN_ACL_PLAN_TOOLS`` and this fails."""
+    assert resolve("tool", "run_code", policies=[], session_id="s", mode="plan") == "allow"
+    assert resolve("tool", "shell_bash", policies=[], session_id="s", mode="plan") == "deny"
+
+
 @pytest.mark.parametrize("mode", ["plan", "architect"])
 def test_skill_delegation_preserves_explicit_denial_and_child_write_restrictions(mode: str) -> None:
     assert resolve("tool", "spawn_skill_task", policies=[], session_id="s", mode=mode) == "allow"

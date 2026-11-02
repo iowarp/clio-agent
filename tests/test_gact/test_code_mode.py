@@ -307,3 +307,46 @@ def test_plan_mode_runs_scripts_only_behind_an_enforced_fence(monkeypatch: Any) 
     )
     monkeypatch.setattr(sandbox, "current_state", lambda: enforced)
     tool_module._plan_mode_refusal(app, "plan")
+
+
+def test_a_plan_mode_kernel_writes_only_scratch_and_temp(monkeypatch: Any, tmp_path: Path) -> None:
+    """In plan mode the kernel's write roots leave out the workspace, and a kernel from the
+    other mode is replaced rather than reused.
+    SABOTAGE: start every kernel with ``effective_write_roots`` (ignore ``read_only``), or
+    drop the ``read_only`` comparison in ``kernel_for``, and this fails."""
+    from clio_agent.gact.code_mode import kernels
+    from clio_agent.runtime import sandbox, sandbox_roots, session_scratch
+
+    scratch = tmp_path / "scratch"
+    monkeypatch.setattr(session_scratch, "active_scratch_dir", lambda: scratch)
+    monkeypatch.setattr(session_scratch, "system_temp_roots", lambda: (tmp_path / "tmp",))
+    assert sandbox_roots.read_only_write_roots() == (scratch, tmp_path / "tmp")
+
+    seen: list[tuple[Path, ...]] = []
+
+    def fake_wrap(command: str, args: list[str], **kwargs: Any) -> Any:
+        seen.append(tuple(kwargs["write_roots"]))
+        raise RuntimeError("stop before spawning")
+
+    monkeypatch.setattr(sandbox, "wrap_confined", fake_wrap)
+    workspace = tmp_path / "ws"
+    workspace.mkdir()
+    for read_only in (True, False):
+        with pytest.raises(RuntimeError):
+            kernels.kernel_for("sess_plan", "scope", workspace, read_only=read_only)
+    kernels.close_session("sess_plan")
+    plan_roots, edit_roots = seen
+    assert workspace not in plan_roots and set(plan_roots) == {scratch, tmp_path / "tmp"}
+    assert workspace in edit_roots
+
+    stopped: list[str] = []
+    old = kernels.Kernel(("sess_x", "scope"), workspace, read_only=False)
+    monkeypatch.setattr(old, "alive", lambda: True)
+    monkeypatch.setattr(old, "stop", lambda reason: stopped.append(reason))
+    kernels._KERNELS[("sess_x", "scope")] = old
+    try:
+        with pytest.raises(RuntimeError):
+            kernels.kernel_for("sess_x", "scope", workspace, read_only=True)
+        assert stopped == ["replaced"]
+    finally:
+        kernels._KERNELS.pop(("sess_x", "scope"), None)

@@ -110,9 +110,11 @@ def _environment(workspace: Path, session_id: str) -> tuple[str, dict[str, str]]
 class Kernel:
     """One kernel process and its protocol channel."""
 
-    def __init__(self, key: tuple[str, str], workspace: Path) -> None:
+    def __init__(self, key: tuple[str, str], workspace: Path, *, read_only: bool = False) -> None:
         self.key = key
         self.workspace = workspace
+        #: Plan mode: the kernel may write only its scratch folder and temp.
+        self.read_only = read_only
         self.messages: queue.Queue[dict[str, Any] | None] = queue.Queue()
         self.stderr: collections.deque[str] = collections.deque(maxlen=200)
         self.bound_digest = ""
@@ -125,6 +127,7 @@ class Kernel:
 
     def start(self) -> None:
         from clio_agent.runtime import sandbox  # noqa: PLC0415
+        from clio_agent.runtime.sandbox_roots import read_only_write_roots  # noqa: PLC0415
         from clio_agent.runtime.task_process_tree import (  # noqa: PLC0415
             TaskProcessTree,
             task_spawn_options,
@@ -135,8 +138,12 @@ class Kernel:
         confined = sandbox.wrap_confined(
             python,
             ["-I", str(_MAIN), str(max_output_bytes())],
-            write_roots=sandbox.effective_write_roots(
-                sandbox.PROFILE_SHELL, workspace_root=str(self.workspace)
+            write_roots=(
+                read_only_write_roots()
+                if self.read_only
+                else sandbox.effective_write_roots(
+                    sandbox.PROFILE_SHELL, workspace_root=str(self.workspace)
+                )
             ),
             net_policy=sandbox.NET_ALLOW_RECORD,
             profile=sandbox.PROFILE_SHELL,
@@ -238,17 +245,25 @@ _LOCK = threading.Lock()
 _REAPER: threading.Thread | None = None
 
 
-def kernel_for(session_id: str, scope: str, workspace: Path) -> Kernel:
-    """The scope's running kernel, started when there is none (or it died)."""
+def kernel_for(session_id: str, scope: str, workspace: Path, *, read_only: bool = False) -> Kernel:
+    """The scope's running kernel, started when there is none (or it died).
+
+    A kernel started in the other mode is replaced: a plan-mode script never runs in a
+    kernel that can write the workspace, and its variables do not carry across."""
     key = (session_id, scope)
     with _LOCK:
         kernel = _KERNELS.get(key)
-        if kernel is not None and kernel.alive() and kernel.workspace == workspace:
+        if (
+            kernel is not None
+            and kernel.alive()
+            and kernel.workspace == workspace
+            and kernel.read_only == read_only
+        ):
             kernel.last_used = time.monotonic()
             return kernel
         if kernel is not None:
             kernel.stop("replaced")
-        kernel = Kernel(key, workspace)
+        kernel = Kernel(key, workspace, read_only=read_only)
         _KERNELS[key] = kernel
         _start_reaper()
     kernel.start()
