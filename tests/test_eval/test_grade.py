@@ -140,6 +140,15 @@ def test_records_an_id_mentioned_in_an_aside_is_not_part_of_the_answer() -> None
     assert not wrong["correct"] and wrong["extra"] == ["REC-00016"]
 
 
+def test_records_a_bare_list_after_the_stated_prefix_is_the_answer() -> None:
+    """P7 final run 1 wrote the prefix once, then the numbers on their own line.
+    SABOTAGE: drop ``prefix_stated`` from ``_expand_id_lists`` and this fails."""
+    text = "**2 negative.**\n\nThe 2 record IDs are below, each prefixed `REC-`:\n\n00002, 00015"
+    assert grade("P7", RECORDS, _run(text))["correct"]
+    # Without the stated prefix, a line of numbers is not a list of record ids.
+    assert not grade("P7", RECORDS, _run("**2 negative.**\n\n00002, 00015"))["correct"]
+
+
 P8 = {
     "tool": "climate_set_temperature",
     "args": {"entity_id": "climate.guest_bedroom", "temperature": 19.5},

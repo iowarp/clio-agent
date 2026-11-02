@@ -159,7 +159,15 @@ _POSITIVE_READING = re.compile(r"(REC-\d{5})\s*\(\s*(?=\d)[\d.]+")
 _ID_LIST = re.compile(r"REC-\d{5}(?:\s*,\s*(?:and\s+)?\d{5}\b)+")
 
 
-def _expand_id_lists(line: str) -> str:
+#: "00002, 00005, 00017" on its own line, after "each prefixed `REC-`": the prefix is
+#: stated once for the whole list.
+_BARE_ID_LIST = re.compile(r"^\s*\d{5}(?:\s*,\s*(?:and\s+)?\d{5})+\s*[.,;]?\s*$")
+_PREFIX_STATED = re.compile(r"prefix(?:ed)?\W+(?:with\s+)?`?REC-`?|`?REC-`?\s+prefix", re.I)
+
+
+def _expand_id_lists(line: str, *, prefix_stated: bool = False) -> str:
+    if prefix_stated and _BARE_ID_LIST.match(line):
+        return ", ".join(f"REC-{n}" for n in re.findall(r"\d{5}", line))
     return _ID_LIST.sub(
         lambda m: ", ".join(f"REC-{n}" for n in re.findall(r"\d{5}", m.group(0))), line
     )
@@ -172,6 +180,7 @@ def _claimed_ids(text: str) -> tuple[set[str], set[str]]:
     REC-00200") is only mentioned."""
     claimed: set[str] = set()
     mentioned: set[str] = set()
+    prefix_stated = bool(_PREFIX_STATED.search(text))
     for line in text.splitlines():
         for bounds in _ID_RANGE.findall(line):
             mentioned |= set(bounds)
@@ -179,7 +188,7 @@ def _claimed_ids(text: str) -> tuple[set[str], set[str]]:
         for shown in _POSITIVE_READING.findall(line):
             mentioned.add(shown)
         line = _POSITIVE_READING.sub("", line)
-        line = _expand_id_lists(line)
+        line = _expand_id_lists(line, prefix_stated=prefix_stated)
         ids = set(re.findall(r"REC-\d{5}", line))
         if not ids:
             continue
