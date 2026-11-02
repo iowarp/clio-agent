@@ -4,8 +4,10 @@ A deleted session's scratch folder goes with it
 (:func:`clio_agent.gact.session_tool_output.delete_session_tool_output`). This sweep
 removes the rest: this machine's folders whose session no longer exists, or whose
 session's last activity (``last_interaction_at``, else ``created_at``) is older than
-``paths.scratch_retention_days``. It runs on a worker thread, because session reads wait
-for the clio-core attach; a failure is logged with a typed reason and removes nothing more.
+``paths.scratch_retention_days``. It waits for the session store on the server loop
+(cancelled with the server) and then runs on a worker thread: a worker blocked on the
+clio-core attach held the server's shutdown, which joins its threads. A failure is logged
+with a typed reason and removes nothing more.
 """
 
 from __future__ import annotations
@@ -24,6 +26,11 @@ logger = logging.getLogger(__name__)
 
 #: Typed reason: the boot sweep stopped (the session store was not readable).
 SWEEP_FAILED_REASON = "session_scratch_sweep_failed"
+#: Typed reason: the session store did not attach in time; nothing was swept this boot.
+STORE_NOT_READY_REASON = "session_scratch_store_not_ready"
+#: Seconds the sweep waits for the session store, and how often it looks.
+_READY_WAIT_S = 300.0
+_READY_POLL_S = 0.5
 #: Typed reason: a session's activity timestamp is unreadable; its folder is kept.
 ACTIVITY_UNREADABLE_REASON = "session_scratch_activity_unreadable"
 
@@ -69,15 +76,35 @@ def sweep_sessions(sessions: Any) -> list[str]:
         return []
 
 
+async def sweep_when_readable(sessions: Any) -> list[str]:
+    """Wait on the loop until the session store can be read, then sweep on a worker."""
+
+    waited = 0.0
+    while not getattr(sessions, "readable", True):
+        if waited >= _READY_WAIT_S:
+            trace.event("SCRATCH", "%s waited_s=%.0f", STORE_NOT_READY_REASON, waited)
+            return []
+        await asyncio.sleep(_READY_POLL_S)
+        waited += _READY_POLL_S
+    return await asyncio.to_thread(sweep_sessions, sessions)
+
+
 def start(app: "FastAPI") -> None:
-    """Run the sweep once on a worker thread (the real server's boot)."""
+    """Run the sweep once (the real server's boot)."""
 
     sessions = getattr(app.state, "sessions", None)
     if sessions is None:
         return
     app.state.session_scratch_sweep = asyncio.get_running_loop().create_task(
-        asyncio.to_thread(sweep_sessions, sessions), name="clio-session-scratch-sweep"
+        sweep_when_readable(sessions), name="clio-session-scratch-sweep"
     )
 
 
-__all__ = ["ACTIVITY_UNREADABLE_REASON", "SWEEP_FAILED_REASON", "last_activity", "start"]
+__all__ = [
+    "ACTIVITY_UNREADABLE_REASON",
+    "STORE_NOT_READY_REASON",
+    "SWEEP_FAILED_REASON",
+    "last_activity",
+    "start",
+    "sweep_when_readable",
+]

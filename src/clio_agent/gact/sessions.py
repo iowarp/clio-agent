@@ -334,6 +334,8 @@ class SessionStore:
         """A clio-core store will be bound: reads wait for it (a server's boot)."""
         self._records.expect_store()
 
+    readable = property(lambda self: self._records.readable)  # a read returns without waiting
+
     def flush(self, timeout: float = 120.0) -> bool:
         """Wait until every session write has landed in the store."""
         return self._records.flush(timeout)

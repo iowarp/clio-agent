@@ -321,6 +321,11 @@ class SessionRecords:
         """Whether the records live in a clio-core store (not only in memory)."""
         return self._bound.is_set()
 
+    @property
+    def readable(self) -> bool:
+        """Whether a read returns now instead of waiting for the store to attach."""
+        return not self._expected or self._bound.is_set()
+
     def expect_store(self) -> None:
         """Announce that a clio-core store will be bound: reads wait for it."""
         self._expected = True

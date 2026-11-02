@@ -306,6 +306,42 @@ def test_the_boot_sweep_reads_last_activity_from_the_session_store(root: Path) -
     assert (root / "node-a" / "sess_created").is_dir()
 
 
+def test_the_boot_sweep_waits_for_the_store_on_the_loop(
+    root: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Until the store can be read the sweep waits on the server loop, starts no worker,
+    and is cancelled with the server: a worker blocked on the clio-core attach held the
+    shutdown (a startup test hung 180 s under load).
+    SABOTAGE: run ``sweep_sessions`` on a worker straight away and this fails."""
+    import asyncio
+
+    threads: list[str] = []
+    monkeypatch.setattr(
+        session_scratch_sweep, "sweep_sessions", lambda sessions: threads.append("ran") or []
+    )
+    monkeypatch.setattr(session_scratch_sweep, "_READY_POLL_S", 0.01)
+
+    class Attaching:
+        readable = False
+
+    async def scenario() -> None:
+        store = Attaching()
+        task = asyncio.create_task(session_scratch_sweep.sweep_when_readable(store))
+        await asyncio.sleep(0.05)
+        assert threads == [] and not task.done()
+        store.readable = True
+        assert await asyncio.wait_for(task, 1.0) == []
+        assert threads == ["ran"]
+        waiting = asyncio.create_task(session_scratch_sweep.sweep_when_readable(Attaching()))
+        await asyncio.sleep(0.03)
+        waiting.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await waiting
+        assert threads == ["ran"]
+
+    asyncio.run(scenario())
+
+
 @pytest.mark.parametrize("sid", ["../escape", "a/b", ".hidden", "", "x" * 200])
 def test_an_unsafe_session_id_names_no_folder(root: Path, workspace: Path, sid: str) -> None:
     assert session_scratch.session_scratch_dir(sid) is None
