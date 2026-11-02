@@ -133,6 +133,9 @@ class AsyncClaudeCodeEngine:
     supports_function_calling = True
     supports_reasoning = True
     tool_protocol = "text_block"
+    #: Anthropic usage semantics: ``input_tokens`` excludes the cached prompt (read and
+    #: written), so the prompt's size is their sum (``context_tokens``).
+    input_tokens_exclude_cache = True
 
     def __init__(
         self,

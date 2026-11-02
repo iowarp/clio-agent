@@ -819,9 +819,7 @@ def check_t15(rec: dict[str, Any]) -> tuple[str, list[str]]:
     compactions = sum(
         int((s.get("events") or {}).get("compactions") or 0) for s in norm["sessions"]
     )
-    plan = str(
-        (((rec.get("extra") or {}).get("work") or {}).get("plan") or {}).get("content") or ""
-    )
+    plan = str((((rec.get("extra") or {}).get("work") or {}).get("plan") or {}).get("text") or "")
     exact = _exact_text(rec)
     head = plan.strip().splitlines()[0] if plan.strip() else ""
     reinjected = bool(head) and json.dumps(head)[1:-1] in exact
