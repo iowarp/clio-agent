@@ -37,7 +37,7 @@ from tests.turn_signals import TURN_SIGNAL_BACKSTOP_S, wait_for_terminal_status
 # Default sessions run their plugin agent (clio/standard); route it to each
 # test's ``build_app(agent=...)`` host fake (agent=None ingress paths return their
 # structured 503 before any module is built, so they are unaffected).
-pytestmark = pytest.mark.usefixtures("host_agent_executor")
+pytestmark = pytest.mark.usefixtures("host_agent_executor", "no_session_facts")
 
 
 REVIEWER_AGENT = """
