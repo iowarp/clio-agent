@@ -19,8 +19,11 @@ reason, never dropped silently.
 
 from __future__ import annotations
 
-from collections.abc import Callable, Iterable
+from collections.abc import Callable, Iterable, Sequence
 from typing import Any
+
+#: ``tools.withheld`` unset: nothing is withheld.
+_NONE: Sequence[str] = ()
 
 from clio_agent.gact.agents import toolset_inventory
 from clio_agent.gact.science_log.tools import SCIENCE_LOG_TOOLS
@@ -334,9 +337,7 @@ def configured_withheld() -> frozenset[str]:
     from clio_agent import conf  # noqa: PLC0415
 
     return frozenset(
-        conf.resolve(
-            "tools.withheld", env="CLIO_TOOLS_WITHHELD", default=list[str](), cast=conf.as_csv
-        )
+        conf.resolve("tools.withheld", env="CLIO_TOOLS_WITHHELD", default=_NONE, cast=conf.as_csv)
     )
 
 

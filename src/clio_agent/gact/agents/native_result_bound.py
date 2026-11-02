@@ -18,6 +18,7 @@ Left whole:
 from __future__ import annotations
 
 import json
+from collections.abc import Sequence
 from typing import Any
 
 from clio_agent import conf
@@ -25,7 +26,7 @@ from clio_agent import conf
 __all__ = ["full_result_tools", "recorded_observation"]
 
 #: The default ``tools.full_result``.
-_FULL_RESULT_TOOLS = ("load_skill",)
+_FULL_RESULT_TOOLS: Sequence[str] = ("load_skill",)
 
 
 def full_result_tools() -> frozenset[str]:
@@ -34,7 +35,7 @@ def full_result_tools() -> frozenset[str]:
         conf.resolve(
             "tools.full_result",
             env="CLIO_TOOLS_FULL_RESULT",
-            default=list(_FULL_RESULT_TOOLS),
+            default=_FULL_RESULT_TOOLS,
             cast=conf.as_csv,
         )
     )

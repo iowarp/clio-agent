@@ -22,7 +22,7 @@ from __future__ import annotations
 import contextlib
 import threading
 import time
-from collections.abc import Iterator, Mapping
+from collections.abc import Iterator, Mapping, Sequence
 from contextvars import ContextVar
 from dataclasses import dataclass, field
 from typing import Any
@@ -48,7 +48,7 @@ ALLOW_SCRIPT = "allow_script"
 #: Typed audit reason for a nested call the script's approval covered.
 REASON_SCRIPT_GRANT = "run_code_script_grant"
 #: The default ``code.covering_postures``.
-_COVERING_POSTURES = ("auto-edits", "ai-review", "spotter-ai", "spotter-watcher")
+_COVERING_POSTURES: Sequence[str] = ("auto-edits", "ai-review", "spotter-ai", "spotter-watcher")
 
 
 def covering_postures() -> frozenset[str]:
@@ -57,7 +57,7 @@ def covering_postures() -> frozenset[str]:
         conf.resolve(
             "code.covering_postures",
             env="CLIO_CODE_COVERING_POSTURES",
-            default=list(_COVERING_POSTURES),
+            default=_COVERING_POSTURES,
             cast=conf.as_csv,
         )
     )

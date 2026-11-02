@@ -24,7 +24,7 @@ loader and the gate can all share it.
 from __future__ import annotations
 
 import logging
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from typing import Any
 
 from clio_agent import conf
@@ -97,7 +97,7 @@ def _valid(raw: Mapping[str, Any], allowed: tuple[str, ...], key: str) -> dict[s
     return out
 
 
-def _read(read: Any, key: str) -> Mapping[str, Any]:
+def _read(read: Callable[[], Mapping[str, Any]], key: str) -> Mapping[str, Any]:
     try:
         return read()
     except ValueError as exc:
@@ -111,7 +111,7 @@ def configured_callers() -> dict[str, str]:
         lambda: conf.resolve(
             "tools.callers",
             env="CLIO_TOOLS_CALLERS",
-            default=dict[str, Any](),
+            default={},
             cast=conf.as_mapping,
         ),
         "tools.callers",
@@ -125,7 +125,7 @@ def configured_permissions() -> dict[str, str]:
         lambda: conf.resolve(
             "tools.permissions",
             env="CLIO_TOOLS_PERMISSIONS",
-            default=dict[str, Any](),
+            default={},
             cast=conf.as_mapping,
         ),
         "tools.permissions",
