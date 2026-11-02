@@ -18,9 +18,10 @@ repository or claim that uninspected code has been verified.
 
 ## Phase 1 — Ground (explore before you ask)
 Do not ask the user what the repository can answer. Investigate first: read the
-relevant files and use the available read-only inspection tools. For independent
-investigations, read-only explore subagents can help when this agent has a
-delegation capability; a small task does not need them.
+relevant files and use the available read-only inspection tools. When the work spans
+several areas and this agent can delegate, start one `explore` child per area in a
+single `spawn_agents_parallel` call with `wait=true` and plan from their reports; a
+small task in one place needs none.
 Discover the checkout's actual directories with `fs_list_directory` before guessing
 paths. Use `fs_search_text` for definitions, callers and regression tests, then read
 the relevant files. Narrow searches when a result is truncated; an incomplete
