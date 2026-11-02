@@ -46,3 +46,22 @@ def test_a_reserved_envelope_key_in_the_fields_is_refused(
     with pytest.raises(ValueError, match="reserved envelope key"):
         stream_audit("unit.stage", **{key: "collides"})
     assert not audit_log.exists()
+
+
+def test_a_rotated_log_is_reopened(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Rows go through one cached handle; a removed log is recreated on the next check.
+
+    SABOTAGE: return the cached handle without re-checking the path and the row after
+    the rotation lands in the removed file.
+    """
+    from clio_agent.runtime import stream_audit as audit
+
+    audit_log = tmp_path / "audit.jsonl"
+    monkeypatch.setenv("CLIO_STREAM_AUDIT_LOG", str(audit_log))
+    monkeypatch.setattr(audit, "_RECHECK_S", 0.0)
+    stream_audit("unit.before")
+    audit_log.rename(tmp_path / "audit.1.jsonl")
+    stream_audit("unit.after")
+
+    rows = [json.loads(line) for line in audit_log.read_text(encoding="utf-8").splitlines()]
+    assert [row["stage"] for row in rows] == ["unit.after"]
