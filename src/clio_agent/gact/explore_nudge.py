@@ -1,70 +1,50 @@
 """A note, not a decision: after a run of reading calls, say that ``explore`` exists.
 
 Claude Code steers open-ended searching toward its Explore agent with reminders in the
-conversation; a model not trained on CLIO's harness has no such habit. After
-``delegation.explore_nudge_after`` read-only calls in a turn with no delegation, the loop
-adds one injection naming the ``explore`` subagent and the model it runs on. Nothing is
-spawned: the agent decides, and the note comes at most once per turn.
+conversation; a model not trained on CLIO's harness has no such habit. After a number of
+read-only calls in a turn with no delegation, the loop adds one injection naming the
+``explore`` subagent and the model it runs on. Nothing is spawned: the agent decides, and
+the note comes at most once per turn.
 
-Configuration (``conf``): ``delegation.explore_nudge`` turns it on or off;
-``delegation.explore_nudge_after`` is the number of read-only calls (0 never notes);
-``delegation.explore_nudge_text`` is the note itself, a template whose ``${calls}``,
-``${explore_model}`` and ``${spawn_tool}`` are filled in (unknown names stay as written;
-nothing in it is run).
+The note is the reminder ``clio.reminder.explore_nudge``
+(``prompt_packs/builtin/reminders/explore_nudge.md``): its switch, its wording and its
+threshold (``x_param_after``; 0 never notes) are edited on the Reminders page, and the
+Fleet page's switch writes the same reminder (:mod:`clio_agent.gact.reminders`).
 """
 
 from __future__ import annotations
 
-from string import Template
 from typing import Any
 
-from clio_agent import conf
+from clio_agent.gact import reminders
 
 __all__ = [
     "EXPLORE_NUDGE_SOURCE",
     "note_reading_run",
     "nudge_settings",
+    "save_nudge_settings",
 ]
 
 #: The injection's source (the transcript shows it as harness data).
 EXPLORE_NUDGE_SOURCE = "explore_nudge"
 #: Calls that delegate: a run of reading ends when the agent hands work to a child.
 _DELEGATING = frozenset({"spawn_agent_task", "spawn_agents_parallel", "spawn_skill_task", "fork"})
-_DEFAULT_TEXT = (
-    "You have made ${calls} reading calls in this turn without delegating. If the rest of "
-    "this search can go to an `explore` child (it runs on ${explore_model} and returns only "
-    "its findings, with paths), ${spawn_tool} may be faster and keep your context smaller. "
-    "If you are close to the answer, carry on."
-)
+_DEFAULT_AFTER = 6
 
 
-def _enabled() -> bool:
-    return conf.resolve(
-        "delegation.explore_nudge", env="CLIO_EXPLORE_NUDGE", default=True, cast=conf.as_bool
-    )
+def _after(**where: Any) -> int:
+    return reminders.param(EXPLORE_NUDGE_SOURCE, "after", _DEFAULT_AFTER, int, **where)
 
 
-def _after() -> int:
-    return conf.resolve(
-        "delegation.explore_nudge_after",
-        env="CLIO_EXPLORE_NUDGE_AFTER",
-        default=6,
-        cast=conf.as_int,
-    )
-
-
-def _text() -> str:
-    return conf.resolve(
-        "delegation.explore_nudge_text",
-        env="CLIO_EXPLORE_NUDGE_TEXT",
-        default=_DEFAULT_TEXT,
-        cast=conf.as_str,
-    )
-
-
-def nudge_settings() -> dict[str, Any]:
+def nudge_settings(app: Any = None) -> dict[str, Any]:
     """The note's switch and threshold as the Fleet settings page shows them."""
-    return {"enabled": _enabled(), "after": _after()}
+    found = reminders.reminder(EXPLORE_NUDGE_SOURCE, app=app)
+    return {"enabled": bool(found and found.active), "after": _after(app=app)}
+
+
+def save_nudge_settings(enabled: bool, after: int, app: Any = None) -> None:
+    """The Fleet page's switch and threshold, saved into the reminder itself."""
+    reminders.update(EXPLORE_NUDGE_SOURCE, active=enabled, params={"after": after}, app=app)
 
 
 def _read_only(name: str) -> bool:
@@ -114,14 +94,18 @@ def note_reading_run(loop: Any, call_names: list[str]) -> None:
     reads = sum(1 for name in call_names if _read_only(name))
     count = getattr(loop, "_clio_reading_calls", 0) + reads
     loop._clio_reading_calls = count
-    after = _after()
-    if after <= 0 or count < after or not _enabled():
+    after = getattr(loop, "_clio_explore_after", None)
+    if after is None:  # read once per turn: the loop lives for one turn
+        after = loop._clio_explore_after = _after()
+    if after <= 0 or count < after:
         return
     spawn = _can_explore(loop)
     if not spawn:
         return
     loop._clio_explore_noted = True
-    text = Template(_text()).safe_substitute(
-        calls=count, explore_model=_explore_model(), spawn_tool=f"`{spawn}`"
+    text = reminders.render(
+        EXPLORE_NUDGE_SOURCE,
+        {"calls": count, "explore_model": _explore_model(), "spawn_tool": f"`{spawn}`"},
     )
-    loop.recorder.injections([(EXPLORE_NUDGE_SOURCE, text)])
+    if text:
+        loop.recorder.injections([(EXPLORE_NUDGE_SOURCE, text)])

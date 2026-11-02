@@ -36,16 +36,15 @@ _WORKING_STATE_WRITES = frozenset({"plan_update", "write_todos", "plan_enter", "
 
 
 def stale_steps() -> int:
-    """Steps without plan_update or write_todos before the plan is mentioned (0: never)."""
-    from clio_agent import conf  # noqa: PLC0415
+    """Steps without plan_update or write_todos before the plan is mentioned (0: never):
+    the ``steps`` setting of the reminder ``clio.reminder.plan_stale``."""
+    from clio_agent.gact import reminders  # noqa: PLC0415
 
-    return conf.resolve(
-        "plan.stale_steps", env="CLIO_PLAN_STALE_STEPS", default=25, cast=conf.as_int
-    )
+    return reminders.param(PLAN_STALE_SOURCE, "steps", 25, int)
 
 
 def note_stale_plan(loop: Any, call_names: list[str]) -> None:
-    """Count a recorded step; after ``plan.stale_steps`` quiet ones, say the plan exists.
+    """Count a recorded step; after the reminder's ``steps`` quiet ones, say the plan exists.
 
     A fact, not a decision: the agent judges whether the plan needs updating. The count
     restarts after each note and whenever the step wrote the plan or the todos.
@@ -56,8 +55,12 @@ def note_stale_plan(loop: Any, call_names: list[str]) -> None:
     if _WORKING_STATE_WRITES & set(call_names):
         loop._clio_plan_quiet_steps = 0
         return
+    from clio_agent.gact import reminders  # noqa: PLC0415
+
     quiet = getattr(loop, "_clio_plan_quiet_steps", 0) + 1
-    limit = stale_steps()
+    limit = getattr(loop, "_clio_plan_stale_limit", None)
+    if limit is None:  # read once per turn: the loop lives for one turn
+        limit = loop._clio_plan_stale_limit = stale_steps()
     loop._clio_plan_quiet_steps = quiet
     if limit <= 0 or quiet < limit:
         return
@@ -67,15 +70,9 @@ def note_stale_plan(loop: Any, call_names: list[str]) -> None:
     if state.get("status") not in ACTIVE_STATUSES or not state.get("exists"):
         return
     loop._clio_plan_quiet_steps = 0
-    loop.recorder.injections(
-        [
-            (
-                PLAN_STALE_SOURCE,
-                f"The plan ({state['path']}) has not been updated in {quiet} steps. If your "
-                "understanding or direction has changed, update it with plan_update.",
-            )
-        ]
-    )
+    text = reminders.render(PLAN_STALE_SOURCE, {"path": state["path"], "steps": quiet})
+    if text:
+        loop.recorder.injections([(PLAN_STALE_SOURCE, text)])
 
 
 def working_state_injections(

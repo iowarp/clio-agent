@@ -58,7 +58,7 @@ class JudgeModel(BaseModel):
 
 class ExploreNudge(BaseModel):
     """The explore note (:mod:`clio_agent.gact.explore_nudge`): on or off, and after how
-    many reading calls."""
+    many reading calls. Stored in the reminder ``clio.reminder.explore_nudge``."""
 
     model_config = ConfigDict(extra="forbid")
     enabled: bool
@@ -75,8 +75,9 @@ class FleetUpdate(BaseModel):
     explore_nudge: ExploreNudge | None = None
 
 
-def fleet_settings() -> dict[str, Any]:
-    """Read effective choices without exposing credentials."""
+def fleet_settings(app: Any = None) -> dict[str, Any]:
+    """Read effective choices without exposing credentials (``app``: whose prompt store
+    holds the explore reminder; the user's own when omitted)."""
     raw = _judge_choices()
     judges = {
         role: JudgeModel.model_validate(value).model_dump() if value is not None else None
@@ -92,7 +93,7 @@ def fleet_settings() -> dict[str, Any]:
     search = JudgeModel.model_validate(search_raw).model_dump() if search_raw else None
     from clio_agent.gact.explore_nudge import nudge_settings  # noqa: PLC0415
 
-    nudge = nudge_settings()
+    nudge = nudge_settings(app)
     revision = hashlib.sha256(
         json.dumps(
             {"judges": judges, "search": search, "explore_nudge": nudge}, sort_keys=True
@@ -101,13 +102,13 @@ def fleet_settings() -> dict[str, Any]:
     return {"revision": revision, "judges": judges, "search": search, "explore_nudge": nudge}
 
 
-def save_fleet_settings(update: FleetUpdate) -> dict[str, Any]:
+def save_fleet_settings(update: FleetUpdate, app: Any = None) -> dict[str, Any]:
     """Save only the changed roles under the shared configuration lock."""
     from clio_agent.providers.catalog import get_provider
 
     with USER_CONFIG_LOCK:
         conf.reload()
-        if update.revision != fleet_settings()["revision"]:
+        if update.revision != fleet_settings(app)["revision"]:
             raise ValueError("Fleet settings changed; reload before saving")
         for choice in [*update.judges.values(), update.search]:
             if choice and (not choice.model_id.strip() or get_provider(choice.provider_id) is None):
@@ -126,14 +127,13 @@ def save_fleet_settings(update: FleetUpdate) -> dict[str, Any]:
         if "search" in update.model_fields_set:
             fleet["search"] = update.search.model_dump() if update.search else None
         document["fleet"] = fleet
-        if update.explore_nudge is not None:
-            delegation = dict(document.get("delegation") or {})
-            delegation["explore_nudge"] = update.explore_nudge.enabled
-            delegation["explore_nudge_after"] = update.explore_nudge.after
-            document["delegation"] = delegation
         write_document(path, document)
+        if update.explore_nudge is not None:
+            from clio_agent.gact.explore_nudge import save_nudge_settings  # noqa: PLC0415
+
+            save_nudge_settings(update.explore_nudge.enabled, update.explore_nudge.after, app)
         conf.reload()
-        return fleet_settings()
+        return fleet_settings(app)
 
 
 def judge_route(role: JudgeRole, caller: Any, adapter: Any = None) -> tuple[Any, Any]:

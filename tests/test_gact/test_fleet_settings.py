@@ -136,8 +136,9 @@ def test_the_explore_note_is_set_from_fleet_settings(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
     """The Fleet settings page turns the explore note on or off and sets its threshold;
-    the note reads the same keys. SABOTAGE: drop the ``delegation`` write in
-    ``save_fleet_settings`` and this fails."""
+    both are stored in the note's reminder, which the loop reads. SABOTAGE: drop the
+    ``save_nudge_settings`` call in ``save_fleet_settings`` and this fails."""
+    from clio_agent import paths
     from clio_agent.gact.explore_nudge import nudge_settings
 
     monkeypatch.chdir(tmp_path)
@@ -152,7 +153,10 @@ def test_the_explore_note_is_set_from_fleet_settings(
         )
     )
     assert saved["explore_nudge"] == {"enabled": False, "after": 9}
-    assert read_config()["delegation"] == {"explore_nudge": False, "explore_nudge_after": 9}
-    conf.reload()
+    assert "delegation" not in read_config()
+    stored = (paths.user_config_dir() / "prompts").glob("clio.reminder.explore_nudge--*.md")
+    text = next(stored).read_text(encoding="utf-8")
+    assert "x_active: false" in text and "x_param_after: 9" in text
+    assert "{{explore_model}}" in text  # the wording is kept
     assert nudge_settings() == {"enabled": False, "after": 9}
     assert saved["revision"] != current["revision"]

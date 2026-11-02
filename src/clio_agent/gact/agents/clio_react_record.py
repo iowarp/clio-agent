@@ -459,7 +459,16 @@ class StepRecorder:
                     emit_injection(source, str(value.get("text", "")), agent_id=self.expert_id)
 
     def injections(self, injections: Sequence[tuple[str, str]]) -> None:
-        """Record changed CLIO additions; retain identical existing context for prefix reuse."""
+        """Record changed CLIO additions; retain identical existing context for prefix reuse.
+
+        A source whose reminder is switched off is not recorded (traced
+        ``reminder_inactive``; :mod:`clio_agent.gact.reminders`).
+        """
+        from clio_agent.gact.reminders import active  # noqa: PLC0415
+
+        injections = [
+            (src, text) for src, text in injections if active(src, session_id=self.session)
+        ]
         if self.arc is None or not injections:
             return
         latest: dict[str, str] = {}

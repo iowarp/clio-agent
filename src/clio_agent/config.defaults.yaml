@@ -427,22 +427,6 @@ agents.react_extract.after_steps: 3
 # strict one-call-per-step contract.
 agents.react_extract.enabled: true
 
-# CLIO_EXPLORE_NUDGE  (bool)  <- src/clio_agent/gact/explore_nudge.py
-# Notes the explore subagent once per turn after a run of reading calls; a
-# fact for the agent to weigh, never a spawn. Turn off for models that
-# already delegate well.
-delegation.explore_nudge: true
-
-# CLIO_EXPLORE_NUDGE_AFTER  (int)  <- src/clio_agent/gact/explore_nudge.py
-# Read-only calls in a turn, with no delegation, before the explore note (0
-# never notes).
-delegation.explore_nudge_after: 6
-
-# CLIO_EXPLORE_NUDGE_TEXT  (str)  <- src/clio_agent/gact/explore_nudge.py
-# The explore note itself: ${calls}, ${explore_model} and ${spawn_tool} are
-# filled in; nothing in it is run.
-delegation.explore_nudge_text: "You have made ${calls} reading calls in this turn without delegating. If the rest of this search can go to an `explore` child (it runs on ${explore_model} and returns only its findings, with paths), ${spawn_tool} may be faster and keep your context smaller. If you are close to the answer, carry on."
-
 # CLIO_FLEET_DELEGATION  (str)  <- src/clio_agent/gact/fleet/guard.py
 # Per account id, whether the agent may run delegated work on it without
 # asking. Unset accounts follow their billing: subscriptions and free
@@ -480,11 +464,6 @@ fleet.usage_poll_seconds: 300
 # Characters of the session plan offered back to the agent as working state;
 # a longer plan is cut there with a pointer to its file.
 plan.injection_chars: 12000
-
-# CLIO_PLAN_STALE_STEPS  (int)  <- src/clio_agent/gact/working_state.py
-# Recorded steps without plan_update or write_todos after which an active
-# plan is mentioned to the agent in one line; 0 turns the note off.
-plan.stale_steps: 25
 
 # CLIO_DEFAULT_MARKETPLACE  (str)  <- src/clio_agent/plugins/service.py
 # Source of the shipped default marketplace (a folder or git URL); unset
