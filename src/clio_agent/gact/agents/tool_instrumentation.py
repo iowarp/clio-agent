@@ -422,7 +422,16 @@ def rebuilt_tool(
 
     native = _clio_native_tool_class()
     if not isinstance(inner_tool, native):
-        return dspy.Tool(func=func, name=name, desc=desc, args=args)
+        contract = getattr(inner_tool, "_input_contract", None)
+        if not contract:
+            return dspy.Tool(func=func, name=name, desc=desc, args=args)
+        # An MCP tool keeps its server's input schema: a plain rebuild would mark every
+        # argument without a default required (CLIO's optional call label included).
+        from clio_agent.tools.dspy_mcp_tool import MCPBoundTool  # noqa: PLC0415
+
+        bound = MCPBoundTool(func=func, name=name, desc=desc, args=args)
+        bound._input_contract = contract
+        return bound
     # The replacement validates the call before the inner tool sees it, so it
     # takes the inner signature and class: null for a defaulted argument means
     # the default, and an invalid call is recorded as one.
