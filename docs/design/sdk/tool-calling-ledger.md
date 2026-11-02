@@ -363,6 +363,21 @@ The 727 s run is not model time: an `explore` child (`sess_760dfa610c9dee702b03a
 
 **Owner decision (2026-11-02):** the per-result share and the child-answer digest are removed. They decided for the agent how much of a report it may read, with no limit behind them; the parent then read the whole report anyway, through files. A child's report is delivered whole unless it does not fit the parent's remaining context window (a real limit), and a reminder asks the child to be clear and succinct. The same audit covers every other agent-facing limit (task #38).
 
+## Agent-facing caps (2026-11-02)
+
+Owner direction: a limit on what the agent may see or do needs a real limit behind it (the model's context window, memory, an OS or provider limit) or must be a default the agent can override per call; a fixed number that decides for the agent is removed (`.claude/CLAUDE.md`, principles 1 to 3). An audit of every agent-facing limit (108 keys in `config.defaults.yaml` plus constants and text slices; report kept with the evaluation notes) found one root: `limits.model_tool_result_chars = 12000`, about 3k tokens and a quarter of Claude Code's MCP default, under almost every model-facing bound and clamped further in five places to the transcript-preview bound.
+
+| Cap | Effect found | Change |
+| --- | --- | --- |
+| Per-result share of collected child reports, 8,000-character answer bound | three reports of about 22k characters each spilled; the parent read them back in 7 steps (P4) | removed (`46631af9`); a report is whole unless it does not fit the parent's room (window to the compaction threshold, less the prompt it carries); a saved report is readable Markdown; children are told their answer goes whole to the parent and to be succinct (reminder `child_report`) |
+| Tool circuit breaker | after three errors whose text matched "timeout"-like words, the tool was refused for the executor's life; three slow MCP calls disabled a data service | refusal removed (`46631af9`); any run of failures adds one switchable fact |
+| Compaction summarizer input | every tool call and result cut to 300 characters, so evidence was lost to the summary | whole (`46631af9`) |
+| Permission reviewer input | only the first 2,000 characters of a call's arguments were reviewed | whole (`46631af9`); an input too large fails the review, which escalates to the person |
+| `limits.model_tool_result_chars` and the clamps to `limits.tool_result_chars` | fs_read_file returned about 270 of its advertised 2,000 lines; shell's output-bytes argument was moot; search dropped matches | in progress: bound from the context window, transcript preview decoupled (#887 kept) |
+| Goal judge evidence, resource tools, 1 GiB refusal on streaming readers, MCP server instructions (300), run_code `help()` (1,500) | the judge re-drove completed phases (noted in its code); resource text past 64 KiB unreachable | in progress |
+
+Kept: defaults the agent can override per call (read lines, search and recall limits), real limits (Windows command line, provider attachment and PDF limits, A2UI sizes), runaway guards (spawn depth, child concurrency, variants, run_code call count, stop-hook loops) and person-facing previews.
+
 ## Overheads (Phase 0 step 3)
 
 | Overhead | Measured | Above baseline noise | Fixed in |
