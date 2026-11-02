@@ -32,15 +32,9 @@ from clio_agent.arc import clio_core_daemon_version as daemon_version
 
 # Daemon port-resolution + socket-liveness helpers live in the liveness owner
 # module (#892); blob writes ride the bounded rc=13-class retry module (#893).
-from clio_agent.arc.batch_put import BatchPutError, PutRecord
-from clio_agent.arc.blob_frame import BlobNameDecodeError, read_framed_blob, stored_body
-from clio_agent.arc.clio_core_async_ops import (
-    TagIds,
-    store_delete,
-    store_delete_many,
-    store_put,
-    store_put_many,
-)
+from clio_agent.arc.batch_put import BatchPutError, PutRecord  # noqa: F401 - re-exported
+from clio_agent.arc.blob_frame import BlobNameDecodeError, BlobReadError, read_framed_blob
+from clio_agent.arc.clio_core_async_ops import TagIds, store_delete, store_delete_many
 
 # CTE config generation + capacity policy (the bounded ram hot-tier cap) live in their own
 # owner module (iowarp/clio-agent#774/#890); re-exported here so callers/tests reaching
@@ -67,13 +61,8 @@ from clio_agent.arc.clio_core_liveness import (  # noqa: F401 - re-exported for 
     _resolve_runtime_port,
     _runtime_alive,
 )
-from clio_agent.arc.companion_policy import may_carry_companion
-from clio_agent.arc.companion_write import (
-    companion_body,
-    companion_sizes,
-    drop_shrinking,
-    remember_written,
-)
+from clio_agent.arc.clio_core_writes import SEARCH_SUFFIX, ClioCoreWrites
+from clio_agent.arc.companion_write import companion_sizes
 from clio_agent.arc.pid_identity import pid_alive as _pid_alive
 from clio_agent.arc.pid_identity import pidfile_live_pid
 from clio_agent.arc.pid_identity import proc_create_time as _proc_create_time
@@ -106,7 +95,6 @@ from clio_agent.arc.runtime_stop import (  # noqa: F401 - re-exported for caller
 )
 from clio_agent.arc.runtime_stop import stop_runtime_daemon as _stop_runtime_daemon
 from clio_agent.arc.store_protocol import ARCStore  # noqa: F401 - the seam callers import
-from clio_agent.runtime.stream_audit import stream_audit
 
 logger = logging.getLogger(__name__)
 
@@ -127,7 +115,7 @@ ARC_KINDS: tuple[str, ...] = (
 
 # Suffix for the optional plain-text companion blob (BM25 discovery, Thread D) a
 # backend may store next to a record. NOT a record: scan()/get() skip it.
-_SEARCH_SUFFIX = ".text"
+_SEARCH_SUFFIX = SEARCH_SUFFIX
 
 
 @contextlib.contextmanager
@@ -384,11 +372,12 @@ def _wait_for_daemon_start(port: int, state: Path) -> None:
     )
 
 
-class ClioCoreStore:
+class ClioCoreStore(ClioCoreWrites):
     """ARCStore backed by a **shared** clio-core runtime (connect-or-spawn).
 
-    Maps ``(kind, name)`` -> ``(CTE tag, CTE blob)``. msgpack payloads are base64-wrapped
-    because CTE's ``GetBlob`` UTF-8-decodes in the C++ binding and raises on non-UTF-8 bytes.
+    Maps ``(kind, name)`` -> ``(CTE tag, CTE blob)``. A whole record (``put``/``get``) is
+    framed and base64-wrapped (:mod:`clio_agent.arc.blob_frame`); a segment-list chunk
+    (``put_at``/``get_raw``) is raw append-only records (:mod:`clio_agent.arc.chunk_records`).
 
     A standalone host-global daemon serves process clients on the configured RPC
     port. Default durability is a DRAM hot tier spilling to a file cold tier;
@@ -570,69 +559,6 @@ class ClioCoreStore:
 
     # ---- ARCStore Protocol ----
 
-    def put(
-        self,
-        kind: str,
-        name: str,
-        data: bytes,
-        *,
-        tier: str = "warm",
-        search_text: Optional[str] = None,
-    ) -> None:
-        # Bound each async RPC individually, with the GIL released while awaiting it.
-        # base64-wrap: CTE GetBlob UTF-8-decodes, so store ascii-safe bytes; framed with
-        # its length and padded to a size class so a growing record adds few blocks.
-        payload = stored_body(data)
-        if kind == "segments":  # #1339: live-lane audit evidence (one row per put)
-            stream_audit("store.put", kind=kind, name=name, size=len(payload))
-        guarded_store_rpc(self, "put", store_put, self, kind, name, payload)
-        # Optional BM25 companion (Thread D) at <name>.text; scan()/get() skip it.
-        companion = name + _SEARCH_SUFFIX
-        if search_text is not None:  # padded; a shrinking one is dropped first (MD9)
-            pair = [(companion, companion_body(search_text))]
-            guarded_store_rpc(self, "put", drop_shrinking, self, kind, pair)
-            guarded_store_rpc(self, "put", store_put, self, kind, companion, pair[0][1])
-            remember_written(self, kind, pair)
-        elif may_carry_companion(kind, name):  # #1334: never for the ``_events`` family
-            guarded_store_rpc(self, "put", store_delete, self, kind, companion)  # a stale one
-            companion_sizes(self).forget(kind, companion)
-        # ``tier`` is advisory: the default single DRAM tier makes ReorganizeBlob a no-op.
-
-    def put_many(self, kind: str, records: Sequence[PutRecord]) -> None:
-        """Put independent records concurrently on the async path (one stall-guarded
-        batch: every ``AsyncPutBlob`` -- bodies and search companions -- is issued, then
-        all are awaited). A stale-companion probe runs only for a record that can carry
-        one and has no text.
-
-        Raises:
-            BatchPutError: Some blob was lost after its bounded retry; the others of the
-                batch were written (named in the error).
-        """
-        blobs: list[tuple[str, bytes]] = []
-        companions: list[tuple[str, bytes]] = []
-        stale: list[str] = []
-        for record in records:
-            payload = stored_body(record.data)
-            if kind == "segments":  # #1339: live-lane audit evidence (one row per put)
-                stream_audit("store.put", kind=kind, name=record.name, size=len(payload))
-            blobs.append((record.name, payload))
-            if record.search_text is not None:
-                companions.append(
-                    (record.name + _SEARCH_SUFFIX, companion_body(record.search_text))
-                )
-            elif may_carry_companion(kind, record.name):
-                stale.append(record.name + _SEARCH_SUFFIX)
-        if companions:  # a shrinking companion is dropped before the batch (MD9)
-            guarded_store_rpc(self, "put", drop_shrinking, self, kind, companions)
-        lost = guarded_store_rpc(self, "put", store_put_many, self, kind, blobs + companions)
-        remember_written(self, kind, [pair for pair in companions if pair[0] not in lost])
-        for companion in stale:
-            guarded_store_rpc(self, "put", store_delete, self, kind, companion)
-            companion_sizes(self).forget(kind, companion)
-        if lost:
-            written = [name for name, _ in blobs + companions if name not in lost]
-            raise BatchPutError(kind, written, dict(lost))
-
     def tag(self, kind: str) -> str:
         """The CTE tag holding ``kind`` records in this store's namespace (pure; no RPC)."""
         return f"{self._namespace}/{kind}" if self._namespace else kind
@@ -645,6 +571,19 @@ class ClioCoreStore:
         if size == 0:
             return None
         return read_framed_blob(name, size, lambda length: tag.GetBlob(name, length, 0))
+
+    @guard_store_op("get")
+    def get_raw(self, kind: str, name: str, *, length: int = 0) -> Optional[bytes]:
+        """The stored bytes as they are (no unframing): a chunk-record blob. ``length``
+        reads at least that many when the size metadata lags (``chunk_records``)."""
+        tag = self._cte.Tag(self.tag(kind))
+        size = tag.GetBlobSize(name)  # 0 for a missing blob (does not raise)
+        if size == 0:
+            return None
+        try:
+            return bytes(tag.GetBlob(name, max(size, length), 0))
+        except RuntimeError as exc:  # the binding's bare "GetBlob operation failed"
+            raise BlobReadError(name, exc) from exc
 
     @guard_store_op("exists")
     def exists(self, kind: str, name: str) -> bool:
