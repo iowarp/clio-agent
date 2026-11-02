@@ -1221,6 +1221,14 @@ KEY_NOTES: dict[str, str] = {
         "How long a pending clio-core call is polled before the daemon's progress is first "
         "measured; a stall is still decided a whole stall window after that."
     ),
+    "tools.deferral": (
+        "Whether tools may be deferred behind search_tools; off lists every tool (the "
+        "deferral ablation), recorded as tools_deferral_off in the trace."
+    ),
+    "tools.withheld": (
+        "Built-in tools withheld from every agent (comma-separated), recorded as "
+        "withheld_by_config; used for ablations such as run_code or the plan and todo tools."
+    ),
     "tools.write_ahead": (
         "Which MCP calls record their submission before they are sent: non_read_only "
         "(read-only tools are sent at once and recorded with their result) or all."

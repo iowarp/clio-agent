@@ -329,6 +329,15 @@ def _pick(tools: Iterable[Any], wanted: set[str]) -> dict[str, Any]:
     return {tool.name: tool for tool in tools if tool.name in wanted}
 
 
+def configured_withheld() -> frozenset[str]:
+    """Native tools withheld from every agent (``tools.withheld``; empty by default)."""
+    from clio_agent import conf  # noqa: PLC0415
+
+    return frozenset(
+        conf.resolve("tools.withheld", env="CLIO_TOOLS_WITHHELD", default="", cast=conf.as_csv)
+    )
+
+
 def build_native_tools(
     agent_def: Any,
     requested: Iterable[str],
@@ -364,6 +373,8 @@ def build_native_tools(
 
     for name, reason in withheld_memory_tools(wanted).items():
         withheld.setdefault(name, reason)  # memory off, a read-only session, recall off
+    for name in wanted & configured_withheld():  # tools.withheld, e.g. an ablation
+        withheld.setdefault(name, "withheld_by_config")
     wanted -= set(withheld)
     available: dict[str, Any] = {}
     if wanted & TASK_TOOL_NAMES:

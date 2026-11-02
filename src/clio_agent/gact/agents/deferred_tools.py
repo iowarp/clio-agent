@@ -87,6 +87,18 @@ def never_defer() -> tuple[frozenset[str], tuple[str, ...]]:
     return names, prefixes
 
 
+#: The trace reason when ``tools.deferral`` is off and every tool is listed.
+TOOLS_DEFERRAL_OFF = "tools_deferral_off"
+
+
+def deferral_enabled() -> bool:
+    """Whether tools may be deferred behind ``search_tools`` (``tools.deferral``, default on;
+    off lists every tool, for the deferral ablation)."""
+    return conf.resolve(
+        "tools.deferral", env="CLIO_TOOLS_DEFERRAL", default=True, cast=conf.as_bool
+    )
+
+
 def _share() -> float:
     return conf.resolve("tools.defer_share", env="CLIO_TOOLS_DEFER_SHARE", default=0.05, cast=float)
 
@@ -119,6 +131,11 @@ def plan_disclosure(
     loaded: frozenset[str] = frozenset(),
 ) -> Disclosure:
     """Plan the deferred split for an agent whose final tools are ``tools``."""
+    if not deferral_enabled():
+        from clio_agent.runtime import trace  # noqa: PLC0415
+
+        trace.event("TOOLS", "%s listed=%d", TOOLS_DEFERRAL_OFF, len(tools))
+        return Disclosure()
     servers: Mapping[str, Mapping[str, Any]] = getattr(resolution, "mcp_servers", {}) or {}
     rows = {row["name"]: row for row in getattr(resolution, "tools", []) or []}
     plugin_of = {name: str(row.get("plugin") or "") for name, row in rows.items()}

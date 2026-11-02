@@ -1406,6 +1406,11 @@ tools.defer_share: "0.05"
 # tools.defer_share of the context window applies.
 tools.defer_tokens: 4000
 
+# CLIO_TOOLS_DEFERRAL  (bool)  <- src/clio_agent/gact/agents/deferred_tools.py
+# Whether tools may be deferred behind search_tools; off lists every tool
+# (the deferral ablation), recorded as tools_deferral_off in the trace.
+tools.deferral: true
+
 # CLIO_ALLOW_SYMLINKS  (bool)  <- src/clio_agent/tools/file_policy.py
 # Whether tool file reads/writes may traverse symlinks; set true only if a
 # workflow legitimately relies on symlinked paths.
@@ -1620,6 +1625,12 @@ tools.shell.windows_backend: "powershell"
 # collected task results gets; a larger result goes to its own file with an
 # excerpt.
 tools.spill_min_chars: 1500
+
+# CLIO_TOOLS_WITHHELD  (list)  <- src/clio_agent/gact/agents/native_tool_registry.py
+# Built-in tools withheld from every agent (comma-separated), recorded as
+# withheld_by_config; used for ablations such as run_code or the plan and
+# todo tools.
+# tools.withheld:  # default unset; resolved in code
 
 # CLIO_TOOLS_WRITE_AHEAD  (str)  <- src/clio_agent/gact/external_read_only.py
 # Which MCP calls record their submission before they are sent:

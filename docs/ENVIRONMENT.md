@@ -330,6 +330,7 @@ These resolve through `clio_agent.conf`: a value under the dotted key in `config
 | `CLIO_TASKS_STORAGE_URL` | `gact.tasks.storage.url` | str | `memory://` | `src/clio_agent/tools/native_roots.py` |
 | `CLIO_TOOLS_CALLERS` | `tools.callers` | mapping | `{}` _(computed)_ | `src/clio_agent/tools/tool_settings.py` |
 | `CLIO_TOOLS_CALL_WORKERS` | `tools.call_workers` | int | `32` | `src/clio_agent/gact/agents/tool_concurrency.py` |
+| `CLIO_TOOLS_DEFERRAL` | `tools.deferral` | bool | `true` | `src/clio_agent/gact/agents/deferred_tools.py` |
 | `CLIO_TOOLS_DEFER_SHARE` | `tools.defer_share` | str | `0.05` | `src/clio_agent/gact/agents/deferred_tools.py` |
 | `CLIO_TOOLS_DEFER_TOKENS` | `tools.defer_tokens` | int | `4000` | `src/clio_agent/gact/agents/deferred_tools.py` |
 | `CLIO_TOOLS_FULL_RESULT` | `tools.full_result` | list | `load_skill` | `src/clio_agent/gact/agents/native_result_bound.py` |
@@ -341,6 +342,7 @@ These resolve through `clio_agent.conf`: a value under the dotted key in `config
 | `CLIO_TOOLS_SEARCH_MAX` | `tools.search_max` | int | `20` | `src/clio_agent/gact/search_tools.py` |
 | `CLIO_TOOLS_SEARCH_MISS_NAMES` | `tools.search_miss_names` | int | `40` | `src/clio_agent/gact/search_tools.py` |
 | `CLIO_TOOLS_SPILL_MIN_CHARS` | `tools.spill_min_chars` | int | `1500` | `src/clio_agent/gact/task_result_spill.py` |
+| `CLIO_TOOLS_WITHHELD` | `tools.withheld` | list | _(unset)_ | `src/clio_agent/gact/agents/native_tool_registry.py` |
 | `CLIO_TOOLS_WRITE_AHEAD` | `tools.write_ahead` | str | `non_read_only` | `src/clio_agent/gact/external_read_only.py` |
 | `CLIO_TOOL_FAILURE_LIMIT` | `tools.circuit_breaker.failure_limit` | int | `3` | `src/clio_agent/tools/execution.py` |
 | `CLIO_TOOL_RESULT_CHARS` | `limits.tool_result_chars` | int | `12000` | `src/clio_agent/gact/assignment_evidence.py` |
