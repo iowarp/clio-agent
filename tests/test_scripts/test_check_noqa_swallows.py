@@ -82,3 +82,40 @@ def test_lower_baseline_only_lowers(tmp_path: Path) -> None:
     assert main(["--path", str(tree), "--baseline", str(path), "--lower-baseline"]) == 1
 
     assert json.loads(path.read_text(encoding="utf-8")) == {"a.py": 2, "b.py": 2}
+
+
+_FORWARDING = (
+    "def probe(fut, fn):\n"
+    "    try:\n"
+    "        fut.set_result(fn())\n"
+    "    except BaseException as exc:  # noqa: BLE001 - forwards: to the caller's future\n"
+    "        fut.set_exception(exc)\n"
+)
+_LOGS_ONLY = (
+    "import logging\n"
+    "def probe(fn):\n"
+    "    try:\n"
+    "        fn()\n"
+    "    except Exception as exc:  # noqa: BLE001 - forwards: (it does not, it logs)\n"
+    "        logging.getLogger().warning('failed %r', exc)\n"
+)
+_UNDECLARED = (
+    "def probe(fut, fn):\n"
+    "    try:\n"
+    "        fut.set_result(fn())\n"
+    "    except BaseException as exc:  # noqa: BLE001 - reported to the caller\n"
+    "        fut.set_exception(exc)\n"
+)
+
+
+def test_a_declared_forwarding_handler_is_not_a_swallow(tmp_path: Path) -> None:
+    """Handing the exception on is not hiding it; a marker on a handler that only logs,
+    or forwarding without the marker, still counts.
+    SABOTAGE: return ``set()`` from ``forwarding_lines`` and the first case fails."""
+    tree = tmp_path / "src"
+    tree.mkdir()
+    (tree / "fwd.py").write_text(_FORWARDING, encoding="utf-8")
+    (tree / "logs.py").write_text(_LOGS_ONLY, encoding="utf-8")
+    (tree / "plain.py").write_text(_UNDECLARED, encoding="utf-8")
+
+    assert count_hidden_by_file(tree) == {"logs.py": 1, "plain.py": 1}

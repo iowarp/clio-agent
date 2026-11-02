@@ -178,7 +178,7 @@ class Dispatcher:
                 else:
                     value = target(**args)
                 ok, error = True, ""
-            except Exception as exc:  # noqa: BLE001 - the script receives the error
+            except Exception as exc:  # noqa: BLE001 - forwards: to the script as ToolError
                 value, ok, error = None, False, f"{type(exc).__name__}: {exc}"
         if ok and sink:
             sink_error, observed = sink[-1]

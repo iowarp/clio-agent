@@ -240,7 +240,7 @@ def _stall_watch_worker() -> None:
             continue
         try:
             fut.set_result(fn())
-        except BaseException as exc:  # noqa: BLE001 - reported to the caller via the future
+        except BaseException as exc:  # noqa: BLE001 - forwards: to the caller's future
             fut.set_exception(exc)
 
 

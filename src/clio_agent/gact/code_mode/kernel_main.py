@@ -232,7 +232,7 @@ def _execute(
                 namespace["_"] = result
     except SystemExit as exc:
         ok, error = False, f"SystemExit({exc.code!r}): the kernel keeps running"
-    except BaseException as exc:  # noqa: BLE001 - every script failure is the agent's to read
+    except BaseException as exc:  # noqa: BLE001 - forwards: the traceback to the agent
         ok = False
         error = _script_traceback(exc)
     finally:
