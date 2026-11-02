@@ -467,7 +467,7 @@ def test_upload_offset_limit_preview_search_and_workspace_isolation(tmp_path: Pa
             f"/v1/workspaces/{first_workspace}/resources/{created['id']}/search",
             params={"q": "ELL"},
         ).json()
-        assert search["matches"] == [{"line": 1, "text": "hello"}]
+        assert search["matches"] == [{"line": 1, "char_offset": 0, "text": "hello"}]
         assert (
             client.get(f"/v1/workspaces/{second_workspace}/resources/{created['id']}").status_code
             == 404
@@ -747,7 +747,7 @@ def test_structured_processor_preserves_named_derivatives_and_bounded_nodes(
             "structured",
             "markdown",
         )
-        assert searched["matches"] == [{"line": 1, "text": "# Structured"}]
+        assert searched["matches"] == [{"line": 1, "char_offset": 0, "text": "# Structured"}]
         outline = read_workspace_resource_structure(app, workspace_id, str(resource["id"]))
         assert outline["collections"] == {"texts": 1, "tables": 1}
         structured_node = read_workspace_resource_structure(
@@ -1627,33 +1627,76 @@ def test_bounded_resource_read_returns_original_text_without_custody_path(
     "content",
     [b"time,east,north\n" + b"1,2,3\n" * 100, ("Name,Value\n" + "café,地球\n" * 100).encode()],
 )
-def test_large_text_returns_a_bounded_utf8_preview(
+def test_large_text_is_reachable_page_by_page_and_searchable_whole(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, content: bytes
 ) -> None:
-    """A CSV preview does not scan the full file or invent its character count."""
+    """A text above the scan size is read in pages to its end and searched whole.
+
+    The page size is the per-call default; the result names where the text continues,
+    and a call's ``limit`` returns more. A large text never has its character count
+    invented: it is reported once a page reaches the end.
+    """
     from clio_agent.gact import resource_tools
 
     monkeypatch.setattr(resource_tools, "text_scan_max_bytes", lambda: 97)
     monkeypatch.setattr(resource_tools, "text_read_max_chars", lambda: 30)
+    text = content.decode()
     app = build_app(sessions_path=tmp_path / "sessions.json", agent=FakeClioAgent(answer="unused"))
     with TestClient(app) as client:
         workspace_id = _workspace(client, tmp_path / "workspace")
-        resource = _upload(
-            client, workspace_id, name="large.csv", content=content, media_type="text/csv"
+        resource_id = str(
+            _upload(client, workspace_id, name="large.csv", content=content, media_type="text/csv")[
+                "id"
+            ]
         )
 
-        def no_full_read(path: Path) -> str:
-            raise AssertionError("Oversized previews must not read the whole text")
+        first = read_workspace_resource_text(app, workspace_id, resource_id)
+        assert first["content"] == text[:30] and first["offset"] == 0
+        assert first["total_chars"] is None and first["total_bytes"] == len(content)
+        assert first["truncated"] and first["next_offset"] == 30
+        pages, offset = [first["content"]], first["next_offset"]
+        while offset is not None:
+            page = read_workspace_resource_text(app, workspace_id, resource_id, offset=offset)
+            pages.append(page["content"])
+            offset = page["next_offset"]
+        assert "".join(pages) == text and page["total_chars"] == len(text)
+        whole = read_workspace_resource_text(app, workspace_id, resource_id, limit=len(text))
+        assert whole["content"] == text and not whole["truncated"]
 
-        monkeypatch.setattr(resource_tools, "_read_text", no_full_read)
-        result = read_workspace_resource_text(app, workspace_id, str(resource["id"]))
-        assert result["content"] == content.decode()[:30]
-        assert result["total_chars"] is None and result["total_bytes"] == len(content)
-        assert result["preview"] and result["truncated"]
-        with pytest.raises(resource_tools.ResourceQueryError, match="bounded search limit"):
-            resource_tools.search_workspace_resource(
-                app, workspace_id, str(resource["id"]), "Value"
-            )
+        last_line = text.splitlines()[-1]
+        searched = resource_tools.search_workspace_resource(
+            app, workspace_id, resource_id, last_line, limit=500
+        )
+        assert len(searched["matches"]) == 100 and searched["next_offset"] is None
+        match = searched["matches"][-1]
+        at = read_workspace_resource_text(
+            app, workspace_id, resource_id, offset=match["char_offset"], limit=len(last_line)
+        )
+        assert at["content"] == last_line
+        page = resource_tools.search_workspace_resource(
+            app, workspace_id, resource_id, last_line, offset=10, limit=5
+        )
+        assert [row["line"] for row in page["matches"]] == [12, 13, 14, 15, 16]
+        assert page["next_offset"] == 15 and page["truncated"]
+        with pytest.raises(resource_tools.ResourceQueryError) as refused:
+            read_workspace_resource_text(app, workspace_id, resource_id, offset=-1)
+        assert refused.value.code == "invalid_request"
+
+
+def test_the_search_route_pages_matches(tmp_path: Path) -> None:
+    app = build_app(sessions_path=tmp_path / "sessions.json", agent=FakeClioAgent(answer="unused"))
+    with TestClient(app) as client:
+        workspace_id = _workspace(client, tmp_path / "workspace")
+        content = b"".join(b"hit %d\n" % n for n in range(10))
+        resource = _upload(
+            client, workspace_id, name="hits.txt", content=content, media_type="text/plain"
+        )
+        page = client.get(
+            f"/v1/workspaces/{workspace_id}/resources/{resource['id']}/search",
+            params={"q": "hit", "offset": 4, "limit": 3},
+        ).json()
+    assert [row["text"] for row in page["matches"]] == ["hit 4", "hit 5", "hit 6"]
+    assert page["next_offset"] == 7
 
 
 # ---------------------------------------------------------------------------

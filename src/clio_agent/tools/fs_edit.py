@@ -89,7 +89,7 @@ def write_file(filepath: str, content: str) -> dict[str, Any]:
     if path.is_dir():
         return _error("not_a_file", f"{path} is a folder, not a file", str(path))
     before = (
-        Path(validate_read_path(str(path), field="filepath")).read_bytes()
+        Path(validate_read_path(str(path), field="filepath", loads_whole_file=True)).read_bytes()
         if path.exists()
         else None
     )
@@ -113,7 +113,9 @@ def edit_file(
         )
     if not path.is_file():
         return _error("not_a_file", f"{path} is not a file", str(path))
-    before = Path(validate_read_path(str(path), field="filepath")).read_bytes()
+    before = Path(
+        validate_read_path(str(path), field="filepath", loads_whole_file=True)
+    ).read_bytes()
     try:
         text = before.decode("utf-8")
     except UnicodeDecodeError:
@@ -182,6 +184,7 @@ def capture_previous_content(filepath: Any) -> PreviousContent | None:
     if not path.exists():
         return PreviousContent(str(path), existed=False)
     try:
+        # Streams a digest above the capture size, so no whole-file size limit applies.
         source = Path(validate_read_path(str(path), field="filepath"))
         if source.stat().st_size > UNDO_CAPTURE_MAX_BYTES:
             with source.open("rb") as handle:

@@ -997,8 +997,8 @@ KEY_NOTES: dict[str, str] = {
         "uploaded resources; unset leaves resources served as originals."
     ),
     "resources.list_max_records": (
-        "Resource rows one workspace listing returns before it reports truncation; raise for "
-        "workspaces holding many uploads, lower to keep tool results small."
+        "Resource rows one workspace listing returns when the call gives no limit; the result's "
+        "next_offset pages through the rest."
     ),
     "resources.max_bytes": (
         "Byte ceiling on a single uploaded workspace resource; raise for large scientific inputs, "
@@ -1057,32 +1057,29 @@ KEY_NOTES: dict[str, str] = {
         "resources.max_bytes at 1 MiB/s (floor 60s) so a raised ceiling is not cut off mid-body."
     ),
     "resources.search_excerpt_chars": (
-        "Characters of each matching line returned by a bounded resource search; raise for more "
-        "context per hit, lower to shrink tool output."
+        "Characters of the excerpt around each resource search hit; a longer line reports its "
+        "length and the excerpt's char_offset, so workspace_resource_read reaches the rest."
     ),
     "resources.search_match_limit": (
-        "Matches one bounded resource search returns before reporting truncation; raise for "
-        "broader sweeps, lower to keep tool results small."
+        "Matches one resource search returns when the call gives no limit; the result's "
+        "next_offset pages through the rest."
     ),
     "resources.status_poll_failure_threshold": (
         "Consecutive failed converter status polls tolerated before the resource is marked failed "
         "with converter_status_unavailable; lower to give up on a vanished converter sooner."
-    ),
-    "resources.structure_node_max_bytes": (
-        "Byte ceiling on ONE structured node (a page, table, picture or text block) served from a "
-        "derived view; raise for documents with very large single nodes."
     ),
     "resources.text_preview_bytes": (
         "Byte ceiling on a text resource served inline through the preview route; raise to "
         "preview larger documents in a client."
     ),
     "resources.text_read_chars": (
-        "Characters returned by one bounded resource text read before truncation; raise to hand "
-        "the model more of a document per call."
+        "Characters one resource text read returns when the call gives no limit; offset and "
+        "next_offset reach the rest of the text."
     ),
     "resources.text_scan_bytes": (
-        "Byte ceiling on text CLIO will linearly scan for a resource search or direct read; raise "
-        "for larger plain-text inputs, lower to bound per-call CPU."
+        "Text size up to which a resource read scans to the end to report total_chars; larger "
+        "texts are still read and searched whole, and report total_chars once a page reaches "
+        "the end. Lower to bound per-read CPU."
     ),
     "resources.upload_chunk_bytes": (
         "Largest single resumable-upload chunk the server accepts, enforced while the body "
@@ -1268,7 +1265,8 @@ KEY_NOTES: dict[str, str] = {
     ),
     "tools.instructions_chars": (
         "Characters of an MCP server's own instructions used to describe a deferred server in "
-        "the prompt, when its plugin gives no description."
+        "the prompt's listing, when its plugin gives no description; a shortened entry says "
+        "so, and search_tools returns the whole instructions with the server's tools."
     ),
     "code.max_script_chars": (
         "Characters of a run_code script that a permission question shows the person."
@@ -1282,10 +1280,6 @@ KEY_NOTES: dict[str, str] = {
     ),
     "code.poll_s": (
         "Seconds between checks for cancellation and the time limit while a run_code script runs."
-    ),
-    "code.stub_doc_chars": (
-        "Characters of a tool's description kept in its run_code stub, which "
-        "help(tools.<group>.<tool>) shows."
     ),
     "code.index_line_chars": (
         "Longest line of the tools index in run_code's description; a server with more tools "
@@ -1335,8 +1329,9 @@ KEY_NOTES: dict[str, str] = {
         "temp dir); add a root to grant access."
     ),
     "tools.file_policy.max_file_size_bytes": (
-        "Byte-size cap (accepts K/M/G/T suffixes) on a file a read/write tool call may touch; "
-        "raise to allow larger files."
+        "Byte-size cap (accepts K/M/G/T suffixes) on a file a tool loads whole into memory "
+        "(edits, diff capture, image/PDF/document viewers); streaming readers (fs_read_file "
+        "ranges, fs_search) are exempt. Raise to allow larger whole-file loads."
     ),
     "tools.mcp.call_timeout_s": (
         "Runaway backstop seconds for one synchronous MCP tool call before it's abandoned; not the "

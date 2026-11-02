@@ -1,8 +1,11 @@
-"""Bounded operations over workspace-owned resources — the single owner.
+"""Operations over workspace-owned resources — the single owner.
 
 These functions expose resource identity, searchable text, structured document
-outlines, and individual structured nodes without revealing custody paths or
-returning unbounded original bytes. They are deliberately read-only: upload,
+outlines, and individual structured nodes without revealing custody paths. Every
+part of a resource is reachable: listings, text reads and searches are paged
+(``offset``/``limit``, each result naming the ``next_offset`` that continues it),
+and text is decoded as a stream (:mod:`clio_agent.gact.resource_text`), so no file
+size is refused. They are deliberately read-only: upload,
 deletion, and provider delivery remain user-authorized HTTP/message operations.
 
 **One implementation per operation.** The HTTP routes
@@ -15,14 +18,13 @@ state the route happily served. The readiness gate is
 refresh failed still has usable derivatives, and refusing them because the
 newest attempt failed loses work that is sitting on disk.
 
-Bounds are configuration (``resources.*``), and one key feeds both surfaces of
-the same semantic bound.
+Page sizes are configuration (``resources.*``): a call's default, which the
+caller may change per call, never a wall. One key feeds both surfaces.
 """
 
 from __future__ import annotations
 
 import asyncio
-import codecs
 import math
 import time
 from pathlib import Path
@@ -34,6 +36,7 @@ from clio_agent.gact.resource_lifecycle import refresh_processing
 from clio_agent.gact.resource_materialization import materialize_once
 from clio_agent.gact.resource_processing import resource_processing_task_id
 from clio_agent.gact.resource_processing_bounds import processing_poll_interval_s
+from clio_agent.gact.resource_text import read_text_page, search_text
 from clio_agent.runtime.fresh_loop import run_in_new_loop
 
 if TYPE_CHECKING:
@@ -57,7 +60,11 @@ class ResourceQueryError(ValueError):
 
 
 def text_scan_max_bytes() -> int:
-    """Byte ceiling on text CLIO will linearly scan (search and direct read)."""
+    """Text size up to which a read scans to the end to report ``total_chars``.
+
+    Larger texts are still read whole, page by page; their character count is
+    reported once a page reaches the end (``total_bytes`` is always known).
+    """
 
     return conf.resolve(
         "resources.text_scan_bytes",
@@ -68,7 +75,7 @@ def text_scan_max_bytes() -> int:
 
 
 def text_read_max_chars() -> int:
-    """Character ceiling on one direct text read response."""
+    """Characters one text read returns when the call gives no ``limit``."""
 
     return conf.resolve(
         "resources.text_read_chars",
@@ -79,7 +86,7 @@ def text_read_max_chars() -> int:
 
 
 def search_match_limit() -> int:
-    """Matches returned by one bounded resource search before truncation."""
+    """Matches one resource search returns when the call gives no ``limit``."""
 
     return conf.resolve(
         "resources.search_match_limit",
@@ -90,7 +97,7 @@ def search_match_limit() -> int:
 
 
 def search_excerpt_chars() -> int:
-    """Characters of each matching line returned by a bounded resource search."""
+    """Characters of the excerpt each search match returns around its hit."""
 
     return conf.resolve(
         "resources.search_excerpt_chars",
@@ -101,7 +108,7 @@ def search_excerpt_chars() -> int:
 
 
 def list_max_records() -> int:
-    """Resource rows one workspace listing returns before reporting truncation."""
+    """Resource rows one workspace listing returns when the call gives no ``limit``."""
 
     return conf.resolve(
         "resources.list_max_records",
@@ -122,39 +129,53 @@ def _record(app: "FastAPI", workspace_id: str, resource_id: str) -> ResourceReco
     return record
 
 
-def _read_text(path: Path) -> str:
-    """Read bounded UTF-8 text, typing a decode failure instead of raising 500.
+def _not_decodable(exc: UnicodeDecodeError) -> ResourceQueryError:
+    """Type a decode failure instead of raising 500.
 
     The custody MIME sniff only sees the first 8 KiB, so a file that looks like
     text can still carry an invalid byte later on. That is a typed refusal
     (``resource_not_decodable``), not a server error.
     """
 
-    try:
-        return path.read_text(encoding="utf-8")
-    except UnicodeDecodeError as exc:
+    return ResourceQueryError(
+        "resource_not_decodable",
+        "resource is not valid UTF-8 text beyond its detected prefix",
+        detail=str(exc),
+    )
+
+
+def _page(offset: int, limit: int, default: int) -> tuple[int, int]:
+    """Validate a page request; ``limit`` 0 means the configured default."""
+
+    if offset < 0 or limit < 0:
         raise ResourceQueryError(
-            "resource_not_decodable",
-            "resource is not valid UTF-8 text beyond its detected prefix",
-            detail=str(exc),
-        ) from exc
+            "invalid_request", "offset and limit must be zero or greater", offset=offset
+        )
+    return offset, limit or max(1, default)
 
 
-def list_workspace_resources(app: "FastAPI", workspace_id: str) -> dict[str, Any]:
-    """Return bounded metadata for resources owned by one workspace.
+def list_workspace_resources(
+    app: "FastAPI", workspace_id: str, offset: int = 0, limit: int = 0
+) -> dict[str, Any]:
+    """Return one page of metadata for resources owned by one workspace, newest first.
 
     A ready-touch point: unlike the HTTP GET routes, this is the agent's own
-    read of its resources, so it retries any resource still ``pending`` or
-    ``failed`` materialization (a legacy record, or one whose earlier attempt
+    read of its resources, so it retries any listed resource still ``pending``
+    or ``failed`` materialization (a legacy record, or one whose earlier attempt
     failed) via :func:`materialize_once`, which never raises per-row.
     """
 
-    rows = [materialize_once(app, row) for row in app.state.resource_store.list(workspace_id)]
-    limit = max(1, list_max_records())
+    offset, limit = _page(offset, limit, list_max_records())
+    rows = app.state.resource_store.list(workspace_id)
+    page = [materialize_once(app, row) for row in rows[offset : offset + limit]]
+    next_offset = offset + limit if len(rows) > offset + limit else None
     return {
         "workspace_id": workspace_id,
-        "resources": [row.to_wire() for row in rows[:limit]],
-        "truncated": len(rows) > limit,
+        "resources": [row.to_wire() for row in page],
+        "offset": offset,
+        "total": len(rows),
+        "next_offset": next_offset,
+        "truncated": next_offset is not None,
     }
 
 
@@ -254,28 +275,6 @@ async def wait_for_workspace_resource_processing(
         await asyncio.sleep(min(processing_poll_interval_s(), remaining))
 
 
-def _search_path(path: Path, query: str) -> tuple[list[dict[str, Any]], bool]:
-    scan_bytes = text_scan_max_bytes()
-    if path.stat().st_size > scan_bytes:
-        raise ResourceQueryError(
-            "search_input_too_large",
-            "text representation exceeds the bounded search limit; use structured nodes",
-            max_scan_bytes=scan_bytes,
-        )
-    needle = query.strip().casefold()
-    if not needle:
-        raise ResourceQueryError("invalid_request", "search query cannot be empty")
-    match_limit = search_match_limit()
-    excerpt_chars = search_excerpt_chars()
-    matches: list[dict[str, Any]] = []
-    for line_number, line in enumerate(_read_text(path).splitlines(), start=1):
-        if needle in line.casefold():
-            matches.append({"line": line_number, "text": line[:excerpt_chars]})
-        if len(matches) >= match_limit:
-            return matches, True
-    return matches, False
-
-
 def _text_path(app: "FastAPI", record: ResourceRecord, derivative_id: str) -> tuple[Path, str]:
     """Resolve the textual original or one named textual derivative to a path."""
 
@@ -314,19 +313,40 @@ def search_workspace_resource(
     resource_id: str,
     query: str,
     derivative_id: str = "",
+    offset: int = 0,
+    limit: int = 0,
 ) -> dict[str, Any]:
-    """Search bounded original text or one named textual derivative."""
+    """Search original text or one named textual derivative, one page of matches.
 
+    ``offset`` skips earlier matches (a previous ``next_offset``); ``limit`` 0 uses
+    ``resources.search_match_limit``. The whole text is searched as a stream.
+    """
+
+    offset, limit = _page(offset, limit, search_match_limit())
+    needle = query.strip().casefold()
+    if not needle:
+        raise ResourceQueryError("invalid_request", "search query cannot be empty")
     record = _record(app, workspace_id, resource_id)
     path, representation = _text_path(app, record, derivative_id)
-    matches, truncated = _search_path(path, query)
+    try:
+        matches, next_offset = search_text(
+            path,
+            needle,
+            offset=offset,
+            limit=limit,
+            excerpt_chars=max(1, search_excerpt_chars()),
+        )
+    except UnicodeDecodeError as exc:
+        raise _not_decodable(exc) from exc
     return {
         "resource_id": resource_id,
         "revision": record.revision,
         "representation": representation,
         "query": query,
         "matches": matches,
-        "truncated": truncated,
+        "offset": offset,
+        "next_offset": next_offset,
+        "truncated": next_offset is not None,
     }
 
 
@@ -335,50 +355,37 @@ def read_workspace_resource_text(
     workspace_id: str,
     resource_id: str,
     derivative_id: str = "",
+    offset: int = 0,
+    limit: int = 0,
 ) -> dict[str, Any]:
-    """Read bounded text, returning a prefix for files above the scan ceiling.
+    """Read ``limit`` characters of text from character ``offset``.
 
-    A preview never scans the whole oversized input. Its total character count
-    is unknown (None); total_bytes and truncated describe the remaining data.
+    ``limit`` 0 uses ``resources.text_read_chars``. ``next_offset`` continues the
+    read (``None`` at the end). ``total_chars`` is known for texts up to
+    ``resources.text_scan_bytes`` and whenever the page reaches the end; otherwise
+    it is ``None`` and ``total_bytes`` gives the size.
     """
 
+    offset, limit = _page(offset, limit, text_read_max_chars())
     record = _record(app, workspace_id, resource_id)
     path, representation = _text_path(app, record, derivative_id)
-    scan_bytes = text_scan_max_bytes()
     size = path.stat().st_size
-    read_chars = text_read_max_chars()
-    if size > scan_bytes:
-        # Four bytes per UTF-8 code point, plus one boundary code point. Never
-        # exceed the configured scan ceiling or split a multibyte character.
-        budget = max(1, min(scan_bytes, max(1, read_chars) * 4 + 4))
-        with path.open("rb") as stream:
-            prefix = stream.read(budget)
-        try:
-            content = codecs.getincrementaldecoder("utf-8")().decode(prefix, final=False)
-        except UnicodeDecodeError as exc:
-            raise ResourceQueryError(
-                "resource_not_decodable",
-                "resource preview is not valid UTF-8 text",
-                detail=str(exc),
-            ) from exc
-        return {
-            "resource_id": resource_id,
-            "revision": record.revision,
-            "representation": representation,
-            "content": content[:read_chars],
-            "total_chars": None,
-            "total_bytes": size,
-            "truncated": True,
-            "preview": True,
-        }
-    content = _read_text(path)
+    try:
+        page = read_text_page(
+            path, offset=offset, limit=limit, count_total=size <= text_scan_max_bytes()
+        )
+    except UnicodeDecodeError as exc:
+        raise _not_decodable(exc) from exc
     return {
         "resource_id": resource_id,
         "revision": record.revision,
         "representation": representation,
-        "content": content[:read_chars],
-        "total_chars": len(content),
-        "truncated": len(content) > read_chars,
+        "content": page.content,
+        "offset": offset,
+        "next_offset": page.next_offset,
+        "total_chars": page.total_chars,
+        "total_bytes": size,
+        "truncated": page.next_offset is not None,
     }
 
 
@@ -389,7 +396,7 @@ def read_workspace_resource_structure(
     collection: str = "",
     index: int = -1,
 ) -> dict[str, Any]:
-    """Return the structure outline or one bounded structured node.
+    """Return the structure outline or one whole structured node.
 
     The gate is ``derivatives_available``, matching the HTTP sibling: a resource
     whose conversion completed and whose LATEST refresh failed or was cancelled
@@ -425,7 +432,7 @@ def read_workspace_resource_structure(
             index=index,
         ) from exc
     except ValueError as exc:
-        raise ResourceQueryError("structure_node_too_large", str(exc)) from exc
+        raise ResourceQueryError("structure_invalid", str(exc)) from exc
     return {
         "resource_id": resource_id,
         "revision": record.revision,
@@ -452,9 +459,9 @@ def build_resource_tools(agent_def: "AgentDef") -> list[Any]:
             raise ValueError("workspace resource tool called outside an active session")
         return app, _session_workspace_id(app, session_id)
 
-    def resource_list() -> dict[str, Any]:
+    def resource_list(offset: int = 0, limit: int = 0) -> dict[str, Any]:
         app, workspace_id = active()
-        return list_workspace_resources(app, workspace_id)
+        return list_workspace_resources(app, workspace_id, offset, limit)
 
     def resource_inspect(resource_id: str) -> dict[str, Any]:
         app, workspace_id = active()
@@ -471,13 +478,21 @@ def build_resource_tools(agent_def: "AgentDef") -> list[Any]:
             "waited_ms": max(0, round((time.perf_counter() - started) * 1000)),
         }
 
-    def resource_search(resource_id: str, query: str, derivative_id: str = "") -> dict[str, Any]:
+    def resource_search(
+        resource_id: str, query: str, derivative_id: str = "", offset: int = 0, limit: int = 0
+    ) -> dict[str, Any]:
         app, workspace_id = active()
-        return search_workspace_resource(app, workspace_id, resource_id, query, derivative_id)
+        return search_workspace_resource(
+            app, workspace_id, resource_id, query, derivative_id, offset, limit
+        )
 
-    def resource_read(resource_id: str, derivative_id: str = "") -> dict[str, Any]:
+    def resource_read(
+        resource_id: str, derivative_id: str = "", offset: int = 0, limit: int = 0
+    ) -> dict[str, Any]:
         app, workspace_id = active()
-        return read_workspace_resource_text(app, workspace_id, resource_id, derivative_id)
+        return read_workspace_resource_text(
+            app, workspace_id, resource_id, derivative_id, offset, limit
+        )
 
     def resource_structure(
         resource_id: str, collection: str = "", index: int = -1
@@ -494,10 +509,23 @@ def build_resource_tools(agent_def: "AgentDef") -> list[Any]:
             title="List resources",
             representation="row",
             desc=(
-                "List uploaded resources owned by this workspace. Returns immutable resource "
-                "IDs, revisions, server-detected media types, hashes, sizes, and readiness."
+                "List uploaded resources owned by this workspace, newest first. Returns "
+                "immutable resource IDs, revisions, server-detected media types, hashes, sizes, "
+                "and readiness, one page at a time: total counts every resource, and "
+                "next_offset (null on the last page) continues the listing."
             ),
-            args={},
+            args={
+                "offset": {
+                    "type": "integer",
+                    "description": "Resources to skip; pass a previous next_offset. Default 0.",
+                },
+                "limit": {
+                    "type": "integer",
+                    "description": (
+                        f"Resources to return; omit for the default ({list_max_records()})."
+                    ),
+                },
+            },
             read_only=True,
         ),
         native_tool(
@@ -547,17 +575,32 @@ def build_resource_tools(agent_def: "AgentDef") -> list[Any]:
             title="Read resource",
             representation="row",
             desc=(
-                "Read a bounded textual upload or named Docling textual derivative. Use this "
-                "for immutable source or conversion text; the resource's workspace_path is the "
-                "separate working copy for filesystem tools. Large text files return a UTF-8 "
-                "prefix preview with truncated=true and total_chars=null; analyze downloaded "
-                "data with filesystem or scientific tools instead of treating the preview as complete."
+                "Read a textual upload or named Docling textual derivative, any part of it. "
+                "Use this for immutable source or conversion text; the resource's "
+                "workspace_path is the separate working copy for filesystem tools. A read "
+                "returns limit characters from a zero-based character offset; when more "
+                "follows, truncated is true and next_offset continues the read. total_chars "
+                "is null when the text is large and the page has not reached its end; "
+                "total_bytes always gives the size."
             ),
             args={
                 "resource_id": {"type": "string", "description": "Immutable resource id."},
                 "derivative_id": {
                     "type": "string",
                     "description": "Optional named textual derivative; omit for original text.",
+                },
+                "offset": {
+                    "type": "integer",
+                    "description": (
+                        "Zero-based character offset to start at: a previous next_offset or "
+                        "a search match's char_offset. Default 0."
+                    ),
+                },
+                "limit": {
+                    "type": "integer",
+                    "description": (
+                        f"Characters to return; omit for the default ({text_read_max_chars()})."
+                    ),
                 },
             },
             read_only=True,
@@ -570,8 +613,12 @@ def build_resource_tools(agent_def: "AgentDef") -> list[Any]:
             title="Search resource",
             representation="row",
             desc=(
-                "Search bounded original text or a named Docling textual derivative. Use "
-                "workspace_resource_inspect first to discover derivative IDs."
+                "Search the whole original text or a named Docling textual derivative, line by "
+                "line. Each match gives its line number, an excerpt around the hit, and the "
+                "excerpt's char_offset for workspace_resource_read; line_chars appears when "
+                "the line is longer than its excerpt. next_offset (null when there are no "
+                "more) fetches further matches. Use workspace_resource_inspect first to "
+                "discover derivative IDs."
             ),
             args={
                 "resource_id": {"type": "string", "description": "Immutable resource id."},
@@ -579,6 +626,16 @@ def build_resource_tools(agent_def: "AgentDef") -> list[Any]:
                 "derivative_id": {
                     "type": "string",
                     "description": "Optional named textual derivative; omit for original text.",
+                },
+                "offset": {
+                    "type": "integer",
+                    "description": "Matches to skip; pass a previous next_offset. Default 0.",
+                },
+                "limit": {
+                    "type": "integer",
+                    "description": (
+                        f"Matches to return; omit for the default ({search_match_limit()})."
+                    ),
                 },
             },
             read_only=True,
@@ -591,8 +648,8 @@ def build_resource_tools(agent_def: "AgentDef") -> list[Any]:
             title="Inspect structure",
             representation="row",
             desc=(
-                "Read the bounded Docling outline for an uploaded document, or one exact page, "
-                "table, figure, or text node by collection and zero-based index."
+                "Read the Docling outline for an uploaded document, or one exact page, "
+                "table, figure, or text node, whole, by collection and zero-based index."
             ),
             args={
                 "resource_id": {"type": "string", "description": "Immutable resource id."},

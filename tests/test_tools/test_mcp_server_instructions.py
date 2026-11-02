@@ -76,3 +76,42 @@ def test_the_summary_length_is_configured(monkeypatch: pytest.MonkeyPatch) -> No
     record_instructions("home", _INSTRUCTIONS)
     monkeypatch.setenv("CLIO_TOOLS_INSTRUCTIONS_CHARS", "9")
     assert instructions_for("home", summary=True) == "Controls…"
+
+
+def _deferred_entry() -> str:
+    tools = {
+        name: dspy.Tool(lambda: "ok", name=name, desc="A tool.")
+        for name in (SEARCH_TOOLS, "home_light_set")
+    }
+    resolution = SimpleNamespace(mcp_servers={"home": {"defer": True}}, tools=[], plugins=[])
+    return plan_disclosure(resolution, tools).entry
+
+
+def test_a_shortened_listing_says_where_the_full_instructions_are() -> None:
+    record_instructions("home", _INSTRUCTIONS)
+    assert "(Its full instructions come with its tools from search_tools.)" in _deferred_entry()
+    record_instructions("home", "Controls the lights and locks of one house.")
+    assert "search_tools.)" not in _deferred_entry()
+
+
+def test_loading_a_servers_tools_returns_its_whole_instructions_once() -> None:
+    from clio_agent.gact.search_tools import _present, search_result
+    from clio_agent.gact.tool_catalog import CatalogEntry, ToolCatalog
+
+    long_instructions = _INSTRUCTIONS + "\n\n" + ("Lights take an entity id. " * 300).strip()
+    record_instructions("home", long_instructions)
+    catalog = ToolCatalog(
+        [
+            CatalogEntry("home_light_set", "home", "Turn a light on or off."),
+            CatalogEntry("home_lock_set", "home", "Lock a door."),
+            CatalogEntry("calendar_event_create", "calendar", "Create an event."),
+        ]
+    )
+    text, structured = search_result(catalog, "select:home_light_set,home_lock_set")
+    assert structured["servers"] == [{"name": "home", "instructions": long_instructions}]
+    assert text.count("## home server instructions") == 1 and long_instructions in text
+    view = _present({"query": "select:home_light_set"}, text, structured)
+    server_block = next(block for block in view["blocks"] if block["id"] == "server-0")
+    assert server_block["text"] == long_instructions
+    _, other = search_result(catalog, "select:calendar_event_create")
+    assert other["servers"] == []

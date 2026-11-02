@@ -278,8 +278,16 @@ class FileAccessPolicy:
             "write_mode": "explicit output paths under allowed roots",
         }
 
-    def validate_read(self, filepath: str, *, field: str = "filepath") -> Path:
-        """Validate a read-only file path and return its resolved path."""
+    def validate_read(
+        self, filepath: str, *, field: str = "filepath", loads_whole_file: bool = False
+    ) -> Path:
+        """Validate a read-only file path and return its resolved path.
+
+        ``max_file_size_bytes`` guards memory, so it applies only to a caller that
+        loads the whole file (``loads_whole_file=True``: an edit, a diff capture, an
+        image or document viewer). A reader that streams the file (ranged reads,
+        search) holds only what it returns and may read a file of any size.
+        """
         resolved = self._validate_read_location(filepath, field=field)
         if not resolved.is_file():
             raise self._error(
@@ -289,14 +297,24 @@ class FileAccessPolicy:
                 path=str(resolved),
                 next_action="Provide a regular file path.",
             )
+        if not loads_whole_file:
+            return resolved
         size = resolved.stat().st_size
         if size > self.max_file_size_bytes:
             raise self._error(
                 code="file_too_large",
-                message=f"File size {size} exceeds policy limit {self.max_file_size_bytes}: {resolved}",
+                message=(
+                    f"File size {size} exceeds the limit {self.max_file_size_bytes} for "
+                    f"loading a whole file into memory: {resolved}"
+                ),
                 field=field,
                 path=str(resolved),
-                next_action="Raise CLIO_MAX_FILE_SIZE_BYTES or use a smaller file sample.",
+                next_action=(
+                    "fs_read_file reads any part of it (offset and limit) and fs_search "
+                    "searches it; neither has this limit. To change or convert it, stream it "
+                    "with a script through the shell. An operator can raise "
+                    "tools.file_policy.max_file_size_bytes (CLIO_MAX_FILE_SIZE_BYTES)."
+                ),
                 details={"size_bytes": size, "max_file_size_bytes": self.max_file_size_bytes},
             )
         return resolved
@@ -462,9 +480,17 @@ class FileAccessPolicy:
         )
 
 
-def validate_read_path(filepath: str, *, field: str = "filepath") -> Path:
-    """Validate a read path with policy loaded from the environment."""
-    return FileAccessPolicy.from_env().validate_read(filepath, field=field)
+def validate_read_path(
+    filepath: str, *, field: str = "filepath", loads_whole_file: bool = False
+) -> Path:
+    """Validate a read path with policy loaded from the environment.
+
+    Pass ``loads_whole_file=True`` when the caller holds the whole file in memory
+    (see :meth:`FileAccessPolicy.validate_read`).
+    """
+    return FileAccessPolicy.from_env().validate_read(
+        filepath, field=field, loads_whole_file=loads_whole_file
+    )
 
 
 def validate_write_path(

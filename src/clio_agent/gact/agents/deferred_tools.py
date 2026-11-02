@@ -188,6 +188,18 @@ def plan_disclosure(
     )
 
 
+def _instructions_summary(owner: str) -> str:
+    """The listing's short form of a server's instructions, saying where the rest is.
+
+    ``search_tools`` returns a server's full instructions with its tools
+    (:func:`clio_agent.gact.search_tools.search_result`).
+    """
+    summary = instructions_for(owner, summary=True)
+    if summary and summary != instructions_for(owner):
+        summary += " (Its full instructions come with its tools from search_tools.)"
+    return summary
+
+
 def _entry(
     catalog: ToolCatalog, servers: Mapping[str, Mapping[str, Any]], plugin_text: Mapping[str, str]
 ) -> str:
@@ -205,7 +217,7 @@ def _entry(
         # when it connects (MCP instructions), else its plugin's description.
         about = (
             str(server.get("description") or "")
-            or instructions_for(owner, summary=True)
+            or _instructions_summary(owner)
             or plugin_text.get(str(server.get("plugin") or owner), "")
         )
         lines.append(f"- {owner}: {about}".rstrip(": ") if about else f"- {owner}")

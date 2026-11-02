@@ -96,13 +96,13 @@ def test_validate_read_rejects_outside_allowed_roots(tmp_path):
     assert result["error"]["field"] == "filepath"
 
 
-def test_validate_read_rejects_large_file(tmp_path):
+def test_validate_read_rejects_large_file_loaded_whole(tmp_path):
     data_file = tmp_path / "large.parquet"
     data_file.write_bytes(b"0123456789")
     policy = FileAccessPolicy(allowed_roots=(tmp_path,), max_file_size_bytes=4)
 
     try:
-        policy.validate_read(str(data_file))
+        policy.validate_read(str(data_file), loads_whole_file=True)
     except FilePolicyError as exc:
         result = exc.to_result()
     else:
@@ -201,3 +201,65 @@ def test_default_allowed_roots_use_platform_tempdir(monkeypatch):
     assert Path(tempfile.gettempdir()) in roots
     for root in roots:
         assert root in (Path.cwd(), Path(tempfile.gettempdir()))
+
+
+def test_streaming_reads_have_no_size_limit_and_whole_file_loads_are_told_what_to_do(tmp_path):
+    """The size limit guards memory: only a caller that loads the whole file meets it.
+
+    fs_read_file and fs_search stream the file, so they validate without the flag.
+    """
+    data_file = tmp_path / "large.log"
+    data_file.write_bytes(b"0123456789")
+    policy = FileAccessPolicy(allowed_roots=(tmp_path,), max_file_size_bytes=4)
+
+    assert policy.validate_read(str(data_file)) == data_file.resolve()
+    try:
+        policy.validate_read(str(data_file), loads_whole_file=True)
+    except FilePolicyError as exc:
+        result = exc.to_result()
+    else:
+        raise AssertionError("Expected FilePolicyError")
+    assert result["error"]["code"] == "file_too_large"
+    assert "fs_read_file" in result["error"]["next_action"]
+    assert "fs_search" in result["error"]["next_action"]
+
+
+def test_the_streaming_file_tools_read_and_search_a_file_over_the_size_limit(tmp_path, monkeypatch):
+    from clio_agent.tools.fs_read import read_text_range
+    from clio_agent.tools.fs_search_rg import _target
+
+    data_file = tmp_path / "huge.csv"
+    data_file.write_text("t,value\n" + "1,2\n" * 50 + "needle,3\n", encoding="utf-8")
+    monkeypatch.setenv("CLIO_ALLOWED_ROOTS", str(tmp_path))
+    monkeypatch.setenv("CLIO_MAX_FILE_SIZE_BYTES", "16")
+    conf.reload()
+    try:
+        assert _target(str(data_file)) == data_file.resolve()
+        assert "needle,3" in str(read_text_range(str(data_file), offset=51, limit=5))
+        try:
+            file_policy.validate_read_path(str(data_file), loads_whole_file=True)
+        except FilePolicyError as exc:
+            assert exc.to_result()["error"]["code"] == "file_too_large"
+        else:
+            raise AssertionError("A whole-file load must still meet the limit")
+    finally:
+        conf.reload()
+
+
+def test_an_edit_still_meets_the_whole_file_limit(tmp_path, monkeypatch):
+    from clio_agent.tools.fs_edit import edit_file
+
+    data_file = tmp_path / "big.txt"
+    data_file.write_text("alpha beta gamma delta\n", encoding="utf-8")
+    monkeypatch.setenv("CLIO_ALLOWED_ROOTS", str(tmp_path))
+    monkeypatch.setenv("CLIO_MAX_FILE_SIZE_BYTES", "8")
+    conf.reload()
+    try:
+        edit_file(str(data_file), "beta", "BETA")
+    except FilePolicyError as exc:
+        assert exc.code == "file_too_large"
+    else:
+        raise AssertionError("An edit loads the whole file and must meet the limit")
+    finally:
+        conf.reload()
+    assert data_file.read_text(encoding="utf-8") == "alpha beta gamma delta\n"
