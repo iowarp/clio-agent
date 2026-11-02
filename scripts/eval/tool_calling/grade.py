@@ -157,8 +157,9 @@ _ID_RANGE = re.compile(r"(REC-\d{5})\s*(?:to|through|-|–|—)\s*(REC-\d{5})")
 _LABELLED_LIST = re.compile(
     r"(REC-\d{5})\s*[-–—]\s*(\d{5})\W*:\W*(\d{5}(?:\s*,\s*(?:and\s+)?\d{5})*)"
 )
-#: "REC-00003 (0.57)": an id shown with a positive reading is a mention, not an answer.
-_POSITIVE_READING = re.compile(r"(REC-\d{5})\s*\(\s*(?=\d)[\d.]+")
+#: "REC-00003 (0.57)" or "REC-00108 at 0.78": an id shown with a positive reading is a
+#: mention, not an answer.
+_POSITIVE_READING = re.compile(r"(REC-\d{5})\s*(?:\(|\bat\b)\s*(?=\d)[\d.]+")
 #: "REC-00002, 00005, 00017": a list that writes the prefix once; each number is an id.
 _ID_LIST = re.compile(r"REC-\d{5}(?:\s*,\s*(?:and\s+)?\d{5}\b)+")
 

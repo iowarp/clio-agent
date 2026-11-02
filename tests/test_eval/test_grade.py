@@ -131,6 +131,8 @@ def test_records_an_id_mentioned_in_an_aside_is_not_part_of_the_answer() -> None
     aside = "- Closest to zero, both positive: REC-00003 (0.57) and REC-00063 (0.56)."
     near = grade("P5", RECORDS, _run("2 negative: REC-00002, REC-00015.\n" + aside))
     assert near["correct"] and near["mentioned_only"] == ["REC-00003", "REC-00063"]
+    at = "2 negative: REC-00002, REC-00015. Small positives such as REC-00108 at 0.78 are not."
+    assert grade("P5", RECORDS, _run(at))["mentioned_only"] == ["REC-00108"]
     short = "**2 negative.** The ids: REC-00002, 00015 (each prefixed `REC-`)."
     assert grade("P5", RECORDS, _run(short))["correct"]
     ranged = "**2 of 20 are negative**: REC-00002, REC-00015. I read REC-00001 to REC-00020."
