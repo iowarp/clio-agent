@@ -307,27 +307,29 @@ class ExternalTasks:
             backend=host.backend,
         )
 
-        def confirm() -> Any:
+        def confirm(settle: Callable[[str], dict[str, Any]] | None = None) -> Any:
+            # ``settle`` (a read-only call's inline outcome) makes the first snapshot
+            # the terminal one: nothing could observe the task before it was recorded.
             with self.history.serialized():
                 self.app.state.conversations.require_admission(assignment)
                 content = self.history.record_submission(submission)
-                self.history.record_snapshot(
-                    TaskSnapshot(
-                        handle=handle,
-                        kind="MCP",
-                        owner=submission.owner,
-                        description=description,
-                        description_missing=False,
-                        label=name,
-                        tool=name,
-                        invocation_id=invocation,
-                        created_at=stamp,
-                        updated_at=stamp,
-                        submission=content,
-                        supported_actions=("observe", "wait", "cancel"),
-                    ),
-                    observation_id=uuid4().hex,
+                snapshot = TaskSnapshot(
+                    handle=handle,
+                    kind="MCP",
+                    owner=submission.owner,
+                    description=description,
+                    description_missing=False,
+                    label=name,
+                    tool=name,
+                    invocation_id=invocation,
+                    created_at=stamp,
+                    updated_at=stamp,
+                    submission=content,
+                    supported_actions=("observe", "wait", "cancel"),
                 )
+                if settle is not None:
+                    snapshot = snapshot.model_copy(update=settle(sid))
+                self.history.record_snapshot(snapshot, observation_id=uuid4().hex)
                 return content
 
         if self._closing:
@@ -443,9 +445,14 @@ class ExternalTasks:
         if lazy is not None and (lazy.recorded or not accepted):
             self._lazy.pop(handle, None)  # admitted, or about to be with its result
         if not accepted:
+            write = partial(self._inline_result, handle, reply)
+            if lazy is not None:
+                write = lazy.settled(
+                    partial(confirm, partial(self._inline_updates, reply=reply)), write
+                )
             await self._record_or_defer(
                 "external-inline:" + handle,
-                admitted(partial(self._inline_result, handle, reply)),
+                write,
                 retire=lambda: self._retire_connection(host),
             )
         if stopped:
@@ -663,26 +670,30 @@ class ExternalTasks:
                 observation_id=uuid4().hex,
             )
 
+    def _inline_updates(self, session_id: str, *, reply: Any) -> dict[str, Any]:
+        """Confirm an inline reply's content; the snapshot fields that settle the call."""
+        value = {
+            "content": [part.model_dump(mode="json") for part in reply.content],
+            "structuredContent": reply.structured_content,
+            "isError": reply.is_error,
+        }
+        result = self.history.write_content(session_id, value)
+        return {
+            "status": "failed" if reply.is_error else "completed",
+            "raw_status": "inline",
+            "activity": "",
+            "terminal_at": now(),
+            "updated_at": now(),
+            "settlement": "external_acknowledged",
+            "result": result,
+            "backend_observation": result,
+            "supported_actions": ("get_result",),
+        }
+
     def _inline_result(self, handle: str, reply: Any) -> None:
         with self.history.serialized():
             current = self.history.task_snapshot(handle)
-            value = {
-                "content": [part.model_dump(mode="json") for part in reply.content],
-                "structuredContent": reply.structured_content,
-                "isError": reply.is_error,
-            }
-            result = self.history.write_content(current.owner.session_id, value)
-            updates = {
-                "status": "failed" if reply.is_error else "completed",
-                "raw_status": "inline",
-                "activity": "",
-                "terminal_at": now(),
-                "updated_at": now(),
-                "settlement": "external_acknowledged",
-                "result": result,
-                "backend_observation": result,
-                "supported_actions": ("get_result",),
-            }
+            updates = self._inline_updates(current.owner.session_id, reply=reply)
             # An actual inline result settles this invocation, even if cancellation
             # was requested while it ran. It is not a remote cleanup receipt.
             observed = current.model_copy(update=updates)

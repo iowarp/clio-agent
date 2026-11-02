@@ -88,6 +88,14 @@ async def test_a_read_only_call_is_admitted_with_its_result(
     app, root = await _environment(arc, tmp_path)
     history = app.state.task_history
     seen: dict[str, set[str]] = {}
+    snapshots: list[str] = []
+    original = history.record_snapshot
+
+    def counted(snapshot: Any, **kwargs: Any) -> Any:
+        snapshots.append(snapshot.tool)
+        return original(snapshot, **kwargs)
+
+    monkeypatch.setattr(history, "record_snapshot", counted)
     external = ExternalTasks(app)
     client = Client(_server(seen, history))
     try:
@@ -111,6 +119,9 @@ async def test_a_read_only_call_is_admitted_with_its_result(
     assert tasks["write"].handle in seen["write"]
     # A read is sent first under the default; with "all" it is write-ahead too.
     assert (reader.handle in seen["read"]) is (mode == "all")
+    # Sent first, its one snapshot is the settled one; write-ahead records running too.
+    # SABOTAGE: drop ``lazy.settled`` in ``_call`` and the default records two.
+    assert snapshots.count("read") == (1 if mode == "non_read_only" else 2)
     # Recorded afterwards exactly as a write-ahead call is: submission, then result.
     assert reader.status == "completed" and reader.raw_status == "inline"
     assert reader.submission is not None and reader.result is not None
