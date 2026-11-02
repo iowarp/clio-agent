@@ -133,9 +133,12 @@ def wait_answering(
                 )
             time.sleep(1.0)
             continue
-        if status in INTERACTION:
+        # A pending question can sit under a ``running`` session (the status does not
+        # change while the gate waits), so the pending list is read on every poll.
+        pending = _pending(client, sid)
+        if status in INTERACTION or pending:
             stable.clear()
-            for row in _pending(client, sid):
+            for row in pending:
                 if any(r.get("id") == row.get("id") for r in seen):
                     continue
                 action = answer(row, seen)
