@@ -865,6 +865,12 @@ arc.clio_core_write_retry.first_delay_s: 0.2
 # when clio-core is bound to a non-default port.
 # arc.core_port:  # computed at runtime: str(_DEFAULT_CTE_CORE_PORT)
 
+# CLIO_ARC_CORE_THREADS  (int)  <- src/clio_agent/arc/clio_core_threads.py
+# Runtime threads of the clio-core daemon CLIO seeds; more threads give it
+# more I/O workers, so concurrent writes stop queueing on one. Read when the
+# daemon starts.
+arc.core_threads: 8
+
 # CLIO_ARC_CTE_AUTO_EXPAND  (bool)  <- src/clio_agent/arc/clio_core_growth.py
 # Allow bounded live capacity additions when CLIO's generated file store is
 # full; disable to retain a fixed capacity. Explicit file_capacity settings
@@ -922,6 +928,12 @@ arc.liveness.max_wait_s: 180.0
 # Retry attempts after a clio-core RPC stalls (no response) before the store
 # is quarantined as runtime-lost; raise for a flakier daemon.
 arc.liveness.retries: 3
+
+# CLIO_ARC_LIVENESS_SAMPLE_AFTER_S  (float)  <- src/clio_agent/arc/clio_core_async_ops.py
+# How long a pending clio-core call is polled before the daemon's progress
+# is first measured; a stall is still decided a whole stall window after
+# that.
+arc.liveness.sample_after_s: 0.1
 
 # CLIO_ARC_LIVENESS_STALL_AFTER_S  (float)  <- src/clio_agent/arc/rpc_liveness.py
 # Seconds one clio-core RPC may run with no response before it's treated as

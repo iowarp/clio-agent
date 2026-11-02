@@ -27,6 +27,7 @@ These resolve through `clio_agent.conf`: a value under the dotted key in `config
 | `CLIO_ARC_CLIO_CORE_WRITE_RETRY_ATTEMPTS` | `arc.clio_core_write_retry.attempts` | int | `3` | `src/clio_agent/arc/clio_core_retry.py` |
 | `CLIO_ARC_CLIO_CORE_WRITE_RETRY_BACKOFF_FACTOR` | `arc.clio_core_write_retry.backoff_factor` | float | `3.0` | `src/clio_agent/arc/clio_core_retry.py` |
 | `CLIO_ARC_CLIO_CORE_WRITE_RETRY_FIRST_DELAY_S` | `arc.clio_core_write_retry.first_delay_s` | float | `0.2` | `src/clio_agent/arc/clio_core_retry.py` |
+| `CLIO_ARC_CORE_THREADS` | `arc.core_threads` | int | `8` | `src/clio_agent/arc/clio_core_threads.py` |
 | `CLIO_ARC_CTE_AUTO_EXPAND` | `arc.cte.auto_expand` | bool | `true` | `src/clio_agent/arc/clio_core_growth.py` |
 | `CLIO_ARC_CTE_DIR` | `arc.cte.dir` | str | _(unset)_ | `src/clio_agent/arc/clio_core_config.py` |
 | `CLIO_ARC_CTE_DISK_WARN_FRACTION` | `arc.cte.disk_warn_fraction` | float | `0.5` | `src/clio_agent/arc/clio_core_config.py` |
@@ -38,6 +39,7 @@ These resolve through `clio_agent.conf`: a value under the dotted key in `config
 | `CLIO_ARC_LIVENESS_FIRST_POLL_S` | `arc.liveness.first_poll_s` | float | `0.0001` | `src/clio_agent/arc/clio_core_async_ops.py` |
 | `CLIO_ARC_LIVENESS_MAX_WAIT_S` | `arc.liveness.max_wait_s` | float | `180.0` | `src/clio_agent/arc/daemon_progress.py` |
 | `CLIO_ARC_LIVENESS_RETRIES` | `arc.liveness.retries` | int | `3` | `src/clio_agent/arc/rpc_liveness.py` |
+| `CLIO_ARC_LIVENESS_SAMPLE_AFTER_S` | `arc.liveness.sample_after_s` | float | `0.1` | `src/clio_agent/arc/clio_core_async_ops.py` |
 | `CLIO_ARC_LIVENESS_STALL_AFTER_S` | `arc.liveness.stall_after_s` | float | `30.0` | `src/clio_agent/arc/rpc_liveness.py` |
 | `CLIO_ARC_LIVENESS_STOP_NO_PROGRESS_S` | `arc.liveness.stop_no_progress_s` | float | `15.0` | `src/clio_agent/arc/runtime_stop.py` |
 | `CLIO_ARC_LSM_COMPACTION_THRESHOLD` | `arc.lsm_compaction_threshold` | int | `5` | `src/clio_agent/arc/memory.py` |

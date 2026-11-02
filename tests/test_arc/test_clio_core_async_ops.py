@@ -112,6 +112,36 @@ def test_fast_native_reply_needs_no_daemon_discovery_or_configuration_reads(
     assert 0 < clock[0] <= 0.001
 
 
+def test_a_reply_within_the_sample_window_takes_no_progress_sample(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A put a busy daemon answers in 30 ms is polled, not measured.
+
+    The baseline sample (pidfile and ``/proc`` reads) was taken after a 1 ms miss, so it
+    ran on most puts while the daemon was busy (P7, 2026-11-02). SABOTAGE: poll for
+    1 ms before sampling again and ``daemon_work`` is called.
+    """
+    from clio_agent.arc import daemon_progress
+
+    clock = [0.0]
+
+    def sleep(seconds: float) -> None:
+        clock[0] += seconds
+
+    def unexpected() -> Any:
+        pytest.fail("A reply inside the sample window measured the daemon's progress")
+
+    monkeypatch.setattr(ops, "time", SimpleNamespace(monotonic=lambda: clock[0], sleep=sleep))
+    monkeypatch.setattr(daemon_progress, "daemon_work", unexpected)
+    ops._sample_after_s.cache_clear()
+    monkeypatch.setenv("CLIO_ARC_LIVENESS_SAMPLE_AFTER_S", "0.1")
+    try:
+        future = SimpleNamespace(done=lambda: clock[0] >= 0.03)
+        assert ops.await_future(future, op_name="put") is future
+    finally:
+        ops._sample_after_s.cache_clear()
+
+
 def test_clear_submits_independent_deletes_before_waiting(monkeypatch: pytest.MonkeyPatch) -> None:
     """Large cleanup must not pay one round trip before submitting the next deletion."""
     client = _Client()

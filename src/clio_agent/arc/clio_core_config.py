@@ -56,6 +56,7 @@ from clio_agent.arc import clio_core_indexer as _indexer
 from clio_agent.arc.clio_core_host_migration import (
     migrate_legacy_cte_store,
 )
+from clio_agent.arc.clio_core_threads import core_threads, ensure_seeded_threads
 
 logger = logging.getLogger(__name__)
 
@@ -142,7 +143,7 @@ _DEFAULT_CTE_CONFIG_TEMPLATE = """\
 networking:
   port: {core_port}
 runtime:
-  num_threads: 4
+  num_threads: {core_threads}
   conf_dir: "{conf_dir}"
 compose:
   - mod_name: clio_bdev
@@ -358,6 +359,7 @@ def default_cte_config_path() -> str:
         _durability.ensure_seeded_config_durable(cfg)  # a pre-durability seed, upgraded once
         _indexer.ensure_seeded_config_indexed(cfg, cte_dir / "indexer_index.log")  # pre-#905
         _seeded_capacity_fits(cfg, _default_cte_file_capacity(cte_dir))  # a pre-sizing seed
+        ensure_seeded_threads(cfg)  # a seed from before arc.core_threads
     else:
         budget = _default_cte_ram_capacity()
         if parse_capacity_bytes(budget) <= 0:
@@ -365,6 +367,7 @@ def default_cte_config_path() -> str:
         cfg.write_text(
             _DEFAULT_CTE_CONFIG_TEMPLATE.format(
                 core_port=_default_cte_core_port(),
+                core_threads=core_threads(),
                 conf_dir=_cte_yaml_path(cte_dir / "conf"),
                 file_tier=_cte_yaml_path(cte_dir / "storage.bin"),
                 file_capacity=_default_cte_file_capacity(cte_dir),

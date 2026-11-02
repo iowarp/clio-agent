@@ -36,6 +36,7 @@ def test_a_clio_core_init_failure_is_a_typed_error_not_local_files(
     config.write_text(
         clio_core_config._DEFAULT_CTE_CONFIG_TEMPLATE.format(
             core_port=9413,
+            core_threads=4,
             conf_dir="C:/x/conf",
             file_tier="C:/x/storage.bin",
             file_capacity="50GB",

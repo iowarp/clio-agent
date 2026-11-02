@@ -215,6 +215,7 @@ def test_memory_budget_is_the_arena_and_data_is_disk_only() -> None:
 
     rendered = _DEFAULT_CTE_CONFIG_TEMPLATE.format(
         core_port=9413,
+        core_threads=4,
         conf_dir="c",
         file_tier="f",
         file_capacity="50GB",

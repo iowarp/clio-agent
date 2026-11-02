@@ -1208,6 +1208,14 @@ KEY_NOTES: dict[str, str] = {
         "Characters of the session plan offered back to the agent as working state; a longer "
         "plan is cut there with a pointer to its file."
     ),
+    "arc.core_threads": (
+        "Runtime threads of the clio-core daemon CLIO seeds; more threads give it more I/O "
+        "workers, so concurrent writes stop queueing on one. Read when the daemon starts."
+    ),
+    "arc.liveness.sample_after_s": (
+        "How long a pending clio-core call is polled before the daemon's progress is first "
+        "measured; a stall is still decided a whole stall window after that."
+    ),
     "tools.write_ahead": (
         "Which MCP calls record their submission before they are sent: non_read_only "
         "(read-only tools are sent at once and recorded with their result) or all."

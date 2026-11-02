@@ -26,6 +26,7 @@ _VOLATILE_SEED = clio_core_config._DEFAULT_CTE_CONFIG_TEMPLATE.replace(
     '        persistence_level: "temporary"\n', ""
 ).format(
     core_port=9413,
+    core_threads=4,
     conf_dir="C:/x/conf",
     file_tier="C:/x/storage.bin",
     file_capacity="50GB",

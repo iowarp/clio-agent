@@ -81,6 +81,25 @@ def _first_poll_s() -> float:
     )
 
 
+@functools.cache
+def _sample_after_s() -> float:
+    """How long a pending RPC is polled before the daemon's progress is first sampled.
+
+    ``arc.liveness.sample_after_s``. Locating the daemon and reading its CPU and I/O
+    counters costs pidfile and ``/proc`` reads; taken after a 1 ms miss it ran on most
+    puts while the daemon was busy (P7, 2026-11-02). A stall is still decided a whole
+    ``arc.liveness.stall_after_s`` window after this baseline.
+    """
+    from clio_agent import conf  # noqa: PLC0415 - avoid import cycle at module load
+
+    return conf.resolve(
+        "arc.liveness.sample_after_s",
+        env="CLIO_ARC_LIVENESS_SAMPLE_AFTER_S",
+        default=0.1,
+        cast=conf.as_float,
+    )
+
+
 def _polled(future: Any) -> Callable[[float], bool]:
     """``done_within`` for a native Future: poll ``done()``, sleeping (GIL released)."""
 
@@ -120,12 +139,12 @@ def await_future(future: Any, *, op_name: str, ceiling_s: float | None = None) -
     """
     if future.done():  # the common case: no bound to resolve (config reads are not free)
         return future
-    # A native submission can finish just after the first check. Give that
-    # normal reply one millisecond before resolving configuration and sampling
-    # daemon processes for every tiny write. Pending work still enters the same
-    # health/progress policy; this is no execution deadline or alternate backend.
+    # A native submission usually finishes within milliseconds, also while the daemon
+    # is busy. Poll that long before resolving configuration and sampling daemon
+    # processes. Pending work still enters the same health/progress policy; this is no
+    # execution deadline or alternate backend.
     polled = _polled(future)
-    if polled(0.001):
+    if polled(_sample_after_s()):
         return future
     from clio_agent.arc.daemon_progress import (  # noqa: PLC0415 - cycle
         max_wait_s,

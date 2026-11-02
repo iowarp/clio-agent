@@ -73,6 +73,7 @@ def test_probe_disk_only_default_is_ready(tmp_path):
     cfg.write_text(
         clio_core_config._DEFAULT_CTE_CONFIG_TEMPLATE.format(
             core_port=9413,
+            core_threads=4,
             conf_dir="c",
             file_tier="f",
             file_capacity="50GB",
@@ -291,6 +292,7 @@ def test_search_row_is_red_with_a_remedy_when_no_indexer_is_composed(tmp_path):
 
     rendered = clio_core_config._DEFAULT_CTE_CONFIG_TEMPLATE.format(
         core_port=9413,
+        core_threads=4,
         conf_dir="c",
         file_tier="f",
         file_capacity="50GB",
