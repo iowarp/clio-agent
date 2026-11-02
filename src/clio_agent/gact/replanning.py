@@ -289,18 +289,12 @@ def _emit_stall_event(
         trace.event("REPLAN", "%s emit failed for %s: %s", event_type, sid, exc)
 
 
-def _suggestion_block() -> str:
-    """Compose the typed replanning-suggestion notice (a SUGGESTION — never a mode flip)."""
+def _suggestion_block(app: Any = None, sid: str = "") -> str:
+    """The replanning suggestion (the reminder ``clio.reminder.replan``; a SUGGESTION, never
+    a mode flip). ``""`` when the person switched it off."""
+    from clio_agent.gact import reminders  # noqa: PLC0415
 
-    return (
-        REPLAN_SUGGESTION_MARKER + "\n\n"
-        "Your recent turns have shown little measurable progress — no plan-step or checklist "
-        "advancement, and/or the same tool call repeated across turns. Consider whether the current "
-        "approach is working.\n"
-        "- If it is NOT, you MAY re-enter plan mode to replan (invoke the `planning` skill) and "
-        "revise your approach. This is your decision — nothing is forced.\n"
-        "- If you ARE making progress, disregard this notice and continue."
-    )
+    return reminders.render("replan", {}, app=app, session_id=sid) or ""
 
 
 def replan_suggestion(app: "FastAPI", sid: str, session: Any) -> str:
@@ -319,4 +313,4 @@ def replan_suggestion(app: "FastAPI", sid: str, session: Any) -> str:
     if not isinstance(pending, Mapping) or not pending.get("pending"):
         return ""
     app.state.sessions.update(sid, metadata_patch={REPLAN_SUGGESTION_KEY: {}})
-    return _suggestion_block()
+    return _suggestion_block(app, sid)

@@ -12,7 +12,6 @@ These resolve through `clio_agent.conf`: a value under the dotted key in `config
 | --- | --- | --- | --- | --- |
 | `CLIO_A2UI_MAX_MESSAGE_BYTES` | `a2ui.max_message_bytes` | int | `262144` | `src/clio_agent/gact/a2ui.py` |
 | `CLIO_A2UI_MAX_STRING_CHARS` | `a2ui.max_string_chars` | int | `16384` | `src/clio_agent/gact/a2ui.py` |
-| `CLIO_AGENT_TASK_OUTPUT_DIGEST_CHARS` | `limits.agent_task_output_digest_chars` | int | `8000` | `src/clio_agent/gact/agents/agent_task_output_digest.py` |
 | `CLIO_AI_REVIEW_MODEL` | `permissions.ai_review_model` | str | _(unset)_ | `src/clio_agent/gact/runtime/ai_review.py` |
 | `CLIO_AI_REVIEW_TIMEOUT_S` | `permissions.ai_review_timeout_s` | str | `45.0` | `src/clio_agent/gact/runtime/ai_review.py` |
 | `CLIO_ALLOWED_ROOTS` | `tools.file_policy.allowed_roots` | str | `_default_allowed_roots()` _(computed)_ | `src/clio_agent/tools/file_policy.py` |
@@ -340,10 +339,8 @@ These resolve through `clio_agent.conf`: a value under the dotted key in `config
 | `CLIO_TOOLS_SEARCH_LIMIT` | `tools.search_limit` | int | `5` | `src/clio_agent/gact/search_tools.py` |
 | `CLIO_TOOLS_SEARCH_MAX` | `tools.search_max` | int | `20` | `src/clio_agent/gact/search_tools.py` |
 | `CLIO_TOOLS_SEARCH_MISS_NAMES` | `tools.search_miss_names` | int | `40` | `src/clio_agent/gact/search_tools.py` |
-| `CLIO_TOOLS_SPILL_MIN_CHARS` | `tools.spill_min_chars` | int | `1500` | `src/clio_agent/gact/task_result_spill.py` |
 | `CLIO_TOOLS_WITHHELD` | `tools.withheld` | list | _(unset)_ | `src/clio_agent/gact/agents/native_tool_registry.py` |
 | `CLIO_TOOLS_WRITE_AHEAD` | `tools.write_ahead` | str | `non_read_only` | `src/clio_agent/gact/external_read_only.py` |
-| `CLIO_TOOL_FAILURE_LIMIT` | `tools.circuit_breaker.failure_limit` | int | `3` | `src/clio_agent/tools/execution.py` |
 | `CLIO_TOOL_RESULT_CHARS` | `limits.tool_result_chars` | int | `12000` | `src/clio_agent/gact/assignment_evidence.py` |
 | `CLIO_TRANSCRIPT_FILE` | `transcript.file` | bool | `true` | `src/clio_agent/gact/transcript_file.py` |
 | `CLIO_TRANSIENT_PROVIDER_RETRY_DELAYS` | `limits.transient_provider_retry_delays` | list | _(unset)_ | `src/clio_agent/agent.py` |

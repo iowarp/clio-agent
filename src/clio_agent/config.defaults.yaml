@@ -272,15 +272,6 @@ providers.model_catalog_ttl_s: 86400.0
 # Per-call byte/character/time bounds and bounded-retry budgets across the
 # tool and LM paths.
 
-# CLIO_AGENT_TASK_OUTPUT_DIGEST_CHARS  (int)  <- src/clio_agent/gact/agents/agent_task_output_digest.py
-# Character bound above which a completed spawned child's full output is
-# digested (excerpt + a durable session/message reference) instead of
-# inlined verbatim into the parent's wait_agent_tasks result, and above
-# which get_task_result saves a result to a file in the session's spill
-# folder instead of returning it whole; raise to inline larger child
-# answers, lower to bound coordinator context growth sooner.
-limits.agent_task_output_digest_chars: 8000
-
 # CLIO_CTX_MAX_BYTES  (int)  <- src/clio_agent/gact/runtime/constants.py
 # Byte cap per attached file inlined into context injection; raise to inline
 # larger attachments, lower to bound prompt growth.
@@ -1384,12 +1375,6 @@ tools.call_workers: 32
 # plugin tools page writes this mapping.
 # tools.callers:  # computed at runtime: {}
 
-# CLIO_TOOL_FAILURE_LIMIT  (int)  <- src/clio_agent/tools/execution.py
-# Consecutive failures of one tool before CLIO blocks further calls to it
-# (the agent is warned at the limit and told why a call was blocked); 0
-# turns the breaker off.
-tools.circuit_breaker.failure_limit: 3
-
 # CLIO_TOOLS_DEFER_SHARE  (str)  <- src/clio_agent/gact/agents/deferred_tools.py
 # Share of the model's context window (0-1) an MCP server's tool schemas may
 # take before its tools are deferred behind search_tools, when its plugin
@@ -1615,12 +1600,6 @@ tools.search_miss_names: 40
 # Which interpreter the Windows shell tool runs commands through
 # (powershell/bash/cmd); match it to your commands' shell.
 tools.shell.windows_backend: "powershell"
-
-# CLIO_TOOLS_SPILL_MIN_CHARS  (int)  <- src/clio_agent/gact/task_result_spill.py
-# Smallest share, in characters, of the result bound each of several
-# collected task results gets; a larger result goes to its own file with an
-# excerpt.
-tools.spill_min_chars: 1500
 
 # CLIO_TOOLS_WITHHELD  (list)  <- src/clio_agent/gact/agents/native_tool_registry.py
 # Built-in tools withheld from every agent (comma-separated), recorded as

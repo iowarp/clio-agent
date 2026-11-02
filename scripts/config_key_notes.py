@@ -625,13 +625,6 @@ KEY_NOTES: dict[str, str] = {
         "Override path for the trusted hook-fingerprint store; set to relocate where hook trust "
         "decisions persist."
     ),
-    "limits.agent_task_output_digest_chars": (
-        "Character bound above which a completed spawned child's full output is digested "
-        "(excerpt + a durable session/message reference) instead of inlined verbatim into the "
-        "parent's wait_agent_tasks result, and above which get_task_result saves a result to "
-        "a file in the session's spill folder instead of returning it whole; raise to inline "
-        "larger child answers, lower to bound coordinator context growth sooner."
-    ),
     "limits.context_inline_bytes": (
         "Byte cap per attached file inlined into context injection; raise to inline larger "
         "attachments, lower to bound prompt growth."
@@ -1189,10 +1182,6 @@ KEY_NOTES: dict[str, str] = {
         "Release manifest the server reads to report the latest CLIO release to clients; point "
         "at a mirror or a fork's releases feed."
     ),
-    "tools.circuit_breaker.failure_limit": (
-        "Consecutive failures of one tool before CLIO blocks further calls to it (the agent is "
-        "warned at the limit and told why a call was blocked); 0 turns the breaker off."
-    ),
     "code.call_timeout_s": (
         "Seconds one run_code script may run (time waiting for a person's answer excluded); "
         "past it the kernel is stopped and the next script starts fresh. 0 means no limit."
@@ -1276,10 +1265,6 @@ KEY_NOTES: dict[str, str] = {
     "tools.search_miss_names": (
         "Deferred tool names a search_tools miss lists so the agent can search again by name; "
         "the prompt entry names them all."
-    ),
-    "tools.spill_min_chars": (
-        "Smallest share, in characters, of the result bound each of several collected task "
-        "results gets; a larger result goes to its own file with an excerpt."
     ),
     "tools.instructions_chars": (
         "Characters of an MCP server's own instructions used to describe a deferred server in "

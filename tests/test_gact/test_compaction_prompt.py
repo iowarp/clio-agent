@@ -204,3 +204,19 @@ def test_the_default_template_ships_in_the_wheel() -> None:
     assert tracked.returncode == 0, f"{rel} is not tracked"
     packaged = resources.files("clio_agent.prompt_packs.builtin") / "compaction.md"
     assert packaged.is_file()
+
+
+def test_the_summarizer_sees_tool_evidence_whole() -> None:
+    """A long tool result reaches the summarizer as it was in the context. SABOTAGE: cut
+    the result text in ``_message_lines`` and this fails."""
+    from types import SimpleNamespace
+
+    from clio_agent.gact import compaction
+
+    result = "row " * 2_000
+    part = SimpleNamespace(
+        name="fs_read_file", is_error=False, content=[SimpleNamespace(text=result)]
+    )
+    message = SimpleNamespace(role="tool", parts=[type("ToolResultPart", (), vars(part))()])
+    [line] = compaction._message_lines(message)
+    assert line.endswith(result)

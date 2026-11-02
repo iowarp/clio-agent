@@ -518,8 +518,9 @@ def test_run_reviewer_unknown_decision_escalates(monkeypatch) -> None:
     assert key == "escalate"
 
 
-def test_bounded_args_summary_truncates() -> None:
-    big = {"blob": "z" * 5000}
+def test_the_reviewer_reads_every_argument() -> None:
+    """A dangerous tail after a long harmless head is still reviewed. SABOTAGE: cut the
+    summary at a fixed length and the tail is lost."""
+    big = {"command": "echo " + "z" * 5000 + "; rm -rf /important"}
     summary = _bounded_args_summary(big)
-    assert summary.endswith("...(truncated)")
-    assert len(summary) <= ai_review_mod._ARGS_SUMMARY_MAX_CHARS + len("...(truncated)")
+    assert summary.endswith("rm -rf /important'")

@@ -1,9 +1,8 @@
-"""A subagent result too big to hand back whole is saved to a file (#1844).
+"""A subagent result that cannot fit its parent's context is saved to a file (#1844).
 
-``get_task_result`` returns a result whole when its JSON fits
-:func:`task_result_inline_chars` (``limits.agent_task_output_digest_chars``, the
-same bound that decides when a child's answer is inlined into its parent's wait).
-A larger result is written once, exactly, to the reading session's spill folder,
+A result is returned whole when it fits the parent's remaining context
+(:func:`clio_agent.gact.child_report_fit.report_fits`; there is no fixed size). A
+result that does not is written once, exactly, to the reading session's spill folder,
 the one oversize shell output uses (:mod:`clio_agent.tools.servers.shell_spill_store`),
 so deleting the session deletes it. The caller gets the file's path and size and a
 head excerpt instead of the content: the parent's context is not flooded, the model
@@ -11,8 +10,10 @@ can read the file with its file tools, and the user gets an "Open full result" l
 (:func:`saved_result_block`).
 
 A string result is saved as text; any other result as indented JSON whose parse
-equals the result. The file name carries the handle and a digest of the content,
-so reading the same result again reuses the file.
+equals the result, and each long multi-line text field in it (a child's report) is
+also saved beside it as its own text file, so the report reads as written instead of
+as one escaped JSON line. The file name carries the handle and a digest of the
+content, so reading the same result again reuses the file.
 """
 
 from __future__ import annotations
@@ -22,14 +23,10 @@ import json
 import os
 import re
 import tempfile
-from collections.abc import Iterator, Mapping
-from contextlib import contextmanager
-from contextvars import ContextVar
+from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
 
-from clio_agent import conf
-from clio_agent.gact.agents.agent_task_output_digest import agent_task_output_digest_chars
 from clio_agent.runtime import trace
 from clio_agent.tools.servers.shell_spill_store import spill_directory, spill_root
 from clio_agent.tools.shell_spill_presentation import format_size
@@ -42,56 +39,6 @@ TASK_RESULT_SAVE_FAILED_REASON = "task_result_save_failed"
 RESULT_EXCERPT_CHARS = 2000
 
 _UNSAFE = re.compile(r"[^A-Za-z0-9_.-]+")
-
-
-#: While several results are collected together, each one's share of the result bound.
-_SHARE: ContextVar[int] = ContextVar("clio_task_result_share", default=0)
-
-
-def spill_min_chars() -> int:
-    """The smallest share of a collection's bound (``tools.spill_min_chars``).
-
-    Below it a result returned with its file is mostly the file's excerpt anyway.
-
-    Raises:
-        ValueError: The configured share is below 1.
-    """
-    value = conf.resolve(
-        "tools.spill_min_chars", env="CLIO_TOOLS_SPILL_MIN_CHARS", default=1500, cast=conf.as_int
-    )
-    if value < 1:
-        raise ValueError(f"tools.spill_min_chars must be at least 1, not {value}")
-    return value
-
-
-def task_result_inline_chars() -> int:
-    """The largest result, in JSON characters, returned whole (``<= 0``: no limit).
-
-    Inside :func:`shared_result_bound` it is also at most that collection's share.
-    """
-
-    bound, share = agent_task_output_digest_chars(), _SHARE.get()
-    if share <= 0:
-        return bound
-    return share if bound <= 0 else min(bound, share)
-
-
-@contextmanager
-def shared_result_bound(count: int) -> Iterator[None]:
-    """Collect ``count`` results so that together they fit one tool result.
-
-    Each result returned whole gets an equal share of the model's result bound; a
-    larger one goes to its own file with an excerpt, so a batch of long reports does
-    not spill as a whole.
-    """
-    from clio_agent.tools.mcp_result_projection import model_tool_result_chars  # noqa: PLC0415
-
-    share = max(spill_min_chars(), (model_tool_result_chars() - 1000) // max(1, count))
-    token = _SHARE.set(share if count > 1 else 0)
-    try:
-        yield
-    finally:
-        _SHARE.reset(token)
 
 
 def _workspace_root(app: Any, session_id: str) -> Path:
@@ -116,6 +63,19 @@ def _write_once(path: Path, text: str) -> None:
     except BaseException:
         Path(temporary).unlink(missing_ok=True)
         raise
+
+
+def _text_fields(path: Path, value: Any) -> dict[str, str]:
+    """Write each long multi-line text field of a mapping result beside its JSON file."""
+    if not isinstance(value, Mapping):
+        return {}
+    texts: dict[str, str] = {}
+    for key, field in value.items():
+        if isinstance(field, str) and "\n" in field and len(field) > RESULT_EXCERPT_CHARS:
+            target = path.with_name(f"{path.stem}.{_UNSAFE.sub('_', str(key))[:32]}.md")
+            _write_once(target, field)
+            texts[str(key)] = str(target)
+    return texts
 
 
 def save_task_result(
@@ -153,8 +113,12 @@ def save_task_result(
     }
     try:
         _write_once(path, text)
-        # The file is written line by line (indented JSON), so it pages with ranged reads.
-        saved["read_with"] = f'fs_read_file(filepath="{path}", offset=1)'
+        texts = _text_fields(path, value)
+        if texts:
+            saved["text_files"] = texts
+        # A report reads as written from its own text file; JSON is written line by line.
+        first = next(iter(texts.values()), str(path))
+        saved["read_with"] = f'fs_read_file(filepath="{first}", offset=1)'
     except OSError as exc:
         saved = {**saved, "path": "", "reason": TASK_RESULT_SAVE_FAILED_REASON, "error": str(exc)}
     trace.event(
@@ -200,5 +164,4 @@ __all__ = [
     "TASK_RESULT_SAVE_FAILED_REASON",
     "save_task_result",
     "saved_result_block",
-    "task_result_inline_chars",
 ]

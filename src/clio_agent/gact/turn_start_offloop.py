@@ -42,6 +42,7 @@ import logging
 from typing import TYPE_CHECKING, Any, Callable
 
 from clio_agent.gact.agents.prompt_basis import PLUGIN_CHANGE_SOURCE, plugin_change_note
+from clio_agent.gact.child_report_fit import CHILD_REPORT_SOURCE, child_report_note
 from clio_agent.gact.enrichment import (
     _context_file_turn_provenance,
     _record_context_frame,
@@ -154,6 +155,8 @@ def _prepare_turn_off_loop_steps(
         replan = replan_suggestion(state.app, state.sid, state.sess)
         # Plugin changes applied as a note, until a compaction folds them into the prompt.
         plugin_change = plugin_change_note(state.app, state.sid)
+        # A session another agent started: its answer goes to that agent, whole.
+        child_report = child_report_note(state.app, state.sid, state.sess)
         # CLIO's own additions: recorded by the agent loop as messages of their own,
         # ahead of the user's message, never glued into the user's text.
         state.injections = [
@@ -163,6 +166,7 @@ def _prepare_turn_off_loop_steps(
                 *working,
                 ("replan", replan),
                 (PLUGIN_CHANGE_SOURCE, plugin_change),
+                (CHILD_REPORT_SOURCE, child_report),
             )
             if block
         ]
