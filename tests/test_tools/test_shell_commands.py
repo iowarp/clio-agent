@@ -9,6 +9,7 @@ from pathlib import Path
 
 import pytest
 
+from clio_agent.tools.result_room import ResultRoom
 from clio_agent.tools.servers.shell_commands import (
     is_command_length_exception,
     is_command_length_output,
@@ -74,8 +75,9 @@ def test_completed_output_retains_diagnostics_and_bounds_recovery_metadata(
     captures[1].feed(b"The command line is too long.\r\n")
     for capture in captures:
         capture.finish()
+    room = ResultRoom(tokens=1_750, chars=7_000, reason="pinned")
     result = compose_output_fields(
-        {"command": "x" * 11_671, "exit_code": exit_code}, captures, root=tmp_path, budget=7000
+        {"command": "x" * 11_671, "exit_code": exit_code}, captures, root=tmp_path, budget=room
     )
     if exit_code == 1:
         assert result["error"]["code"] == "command_too_long"
@@ -87,4 +89,4 @@ def test_completed_output_retains_diagnostics_and_bounds_recovery_metadata(
     assert "The command line is too long." in result["stderr"] or (
         "The command line is too long." in Path(result["stderr_spill"]["path"]).read_text()
     )
-    assert len(json.dumps(result)) <= 7000
+    assert room.fits(json.dumps(result))

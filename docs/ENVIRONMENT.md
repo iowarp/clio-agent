@@ -234,10 +234,8 @@ These resolve through `clio_agent.conf`: a value under the dotted key in `config
 | `CLIO_MODEL_CATALOG` | `paths.model_catalog` | str | _(unset)_ | `src/clio_agent/providers/model_discovery/overlay.py` |
 | `CLIO_MODEL_CATALOG_TTL_S` | `providers.model_catalog_ttl_s` | float | `86400.0` | `src/clio_agent/providers/model_discovery/overlay.py` |
 | `CLIO_MODEL_DB` | `paths.model_db` | str | _(unset)_ | `src/clio_agent/providers/handshake/sources/db.py` |
-| `CLIO_MODEL_TOOL_RESULT_CHARS` | `limits.model_tool_result_chars` | int | `12000` | `src/clio_agent/gact/session_mail.py` |
 | `CLIO_NATIVE_ARTIFACT_STORE` | `provenance.artifacts.native.storage` | str | `file` | `src/clio_agent/gact/artifacts/provenance/factory.py` |
 | `CLIO_OBLIGATION_CONCURRENCY` | `agent_tasks.obligation_concurrency` | int | `4` | `src/clio_agent/gact/obligations.py` |
-| `CLIO_PLAN_INJECTION_CHARS` | `plan.injection_chars` | int | `12000` | `src/clio_agent/gact/session_plan.py` |
 | `CLIO_PLAN_REVIEW_CHARS` | `limits.plan_review_chars` | int | `256000` | `src/clio_agent/gact/plan_review.py` |
 | `CLIO_PLUGIN_STORE` | `plugins.store_root` | str | _(unset)_ | `src/clio_agent/plugins/service.py` |
 | `CLIO_PROVENANCE_ATTENTION` | `provenance.attention` | str | `false` | `src/clio_agent/provenance_config.py` |
@@ -308,7 +306,7 @@ These resolve through `clio_agent.conf`: a value under the dotted key in `config
 | `CLIO_SERVER_CONF` | `arc.server_conf` | str | _(unset)_ | `src/clio_agent/arc/clio_core_liveness.py` |
 | `CLIO_SESSIONS_CACHE_RECORDS` | `sessions.cache_records` | int | `1024` | `src/clio_agent/gact/session_records.py` |
 | `CLIO_SESSIONS_PATH` | `paths.sessions` | str | _(unset)_ | `src/clio_agent/gact/sessions.py` |
-| `CLIO_SHELL_DEFAULT_OUTPUT_BYTES` | `limits.shell_default_output_bytes` | int | `8192` | `src/clio_agent/tools/servers/shell_server.py` |
+| `CLIO_SHELL_DEFAULT_OUTPUT_BYTES` | `limits.shell_default_output_bytes` | int | `32768` | `src/clio_agent/tools/servers/shell_server.py` |
 | `CLIO_SHELL_DEFAULT_TIMEOUT_S` | `limits.shell_default_timeout_s` | float | `0.0` | `src/clio_agent/tools/servers/shell_server.py` |
 | `CLIO_SHELL_MAX_COMMAND_CHARS` | `limits.shell_max_command_chars` | int | `16000` | `src/clio_agent/tools/servers/shell_server.py` |
 | `CLIO_SHELL_MAX_OUTPUT_BYTES` | `limits.shell_max_output_bytes` | int | `131072` | `src/clio_agent/tools/servers/shell_server.py` |
@@ -342,8 +340,10 @@ These resolve through `clio_agent.conf`: a value under the dotted key in `config
 | `CLIO_TOOLS_WITHHELD` | `tools.withheld` | list | _(unset)_ | `src/clio_agent/gact/agents/native_tool_registry.py` |
 | `CLIO_TOOLS_WRITE_AHEAD` | `tools.write_ahead` | str | `non_read_only` | `src/clio_agent/gact/external_read_only.py` |
 | `CLIO_TOOL_RESULT_CHARS` | `limits.tool_result_chars` | int | `12000` | `src/clio_agent/gact/assignment_evidence.py` |
+| `CLIO_TOOL_RESULT_SHARE` | `tools.result_share` | float | `0.125` | `src/clio_agent/tools/result_room.py` |
 | `CLIO_TRANSCRIPT_FILE` | `transcript.file` | bool | `true` | `src/clio_agent/gact/transcript_file.py` |
 | `CLIO_TRANSIENT_PROVIDER_RETRY_DELAYS` | `limits.transient_provider_retry_delays` | list | _(unset)_ | `src/clio_agent/agent.py` |
+| `CLIO_UNKNOWN_WINDOW_RESULT_TOKENS` | `tools.unknown_window_result_tokens` | int | `25000` | `src/clio_agent/tools/result_room.py` |
 | `CLIO_VARIANTS_MAX_N` | `variants.max_n` | int | `8` | `src/clio_agent/gact/agents/variant_drafts.py` |
 | `CLIO_VIEW_PDF_MAX_PAGES` | `limits.view_pdf_max_pages` | int | `100` | `src/clio_agent/gact/view_pdf_tool.py` |
 | `CLIO_VIEW_PDF_SOURCE_MAX_BYTES` | `limits.view_pdf_source_max_bytes` | int | `536870912` | `src/clio_agent/gact/view_pdf_tool.py` |

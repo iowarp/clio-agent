@@ -21,6 +21,7 @@ from clio_agent.gact.session_mail import SessionMail
 from clio_agent.gact.task_access import TaskCaller
 from clio_agent.prompts import PromptRegistry
 from clio_agent.tools import harness_notes, injections
+from tests._config_layer import set_config
 from tests.test_arc.test_human_steering_notice import STAMP, history_with_child, input_mail
 
 # --------------------------------------------------------------------------- #
@@ -333,7 +334,7 @@ def test_a_cut_notification_says_where_the_rest_is(
     arc: ARCMemory, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """SABOTAGE: drop the newline before the retained reference and this fails."""
-    monkeypatch.setenv("CLIO_MODEL_TOOL_RESULT_CHARS", "300")
+    set_config("tools.unknown_window_result_tokens", 75)  # 300 characters
     history, child = history_with_child(arc)
     content = history.write_content("parent", "x" * 1000)
     history.record_mail(

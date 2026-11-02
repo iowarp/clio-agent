@@ -9,11 +9,11 @@ from typing import Any
 
 from fastapi import HTTPException
 
-from clio_agent import conf
 from clio_agent.arc.task_types import TaskSnapshot
 from clio_agent.gact.task_access import TaskAccess, TaskCaller
 from clio_agent.gact.task_cursors import decode_cursor, encode_cursor
 from clio_agent.gact.tool_observation import CollectedTaskResult
+from clio_agent.tools.result_room import result_room
 
 CONTEXT_VIEWS = frozenset({"transcript", "summary", "artifacts"})
 
@@ -367,11 +367,11 @@ def read_task_context(
         key not in handles or not isinstance(value, dict) for key, value in positions.items()
     ):
         raise ValueError("Task context cursor positions are invalid")
-    bound = conf.resolve(
-        "limits.tool_result_chars", env="CLIO_TOOL_RESULT_CHARS", default=12000, cast=conf.as_int
-    )
+    # A page is one result in the reading model's context (at least a character, so a
+    # cursor always advances); the transcript preview bound is not the model's.
+    bound = max(1, result_room().chars)
     pages, readable, more = [], [], False
-    remaining = bound if bound > 0 else None
+    remaining: int | None = bound
     for handle in handles:
         try:
             task = TaskAccess(app.state.task_history, caller).require(handle, "read")

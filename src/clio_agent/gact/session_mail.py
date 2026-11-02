@@ -38,6 +38,15 @@ def _framing(source: str, variables: Mapping[str, Any], session_id: str) -> str:
     return render_reminder(source, variables, session_id=session_id) or ""
 
 
+def _budget() -> int:
+    """Characters of mail one step delivers: the room one result has in the model's
+    context window (``tools.result_share``, :mod:`clio_agent.tools.result_room`); the
+    rest stays pending for the next step."""
+    from clio_agent.tools.result_room import result_room  # noqa: PLC0415
+
+    return result_room().chars
+
+
 class MailText(str):
     """A context injection carrying stable Core notification identities."""
 
@@ -82,12 +91,7 @@ class SessionMail:
                     apply_retry_supersession(self.history, item)
             items: list[MailItem] = []
             injections: list[tuple[str, MailText]] = []
-            budget = conf.resolve(
-                "limits.model_tool_result_chars",
-                env="CLIO_MODEL_TOOL_RESULT_CHARS",
-                default=12000,
-                cast=conf.as_int,
-            )
+            budget = _budget()
             used = 0
             for item in self.history.pending_mail(caller.session_id):
                 if item.delivery != "eligible" or not self.eligible(caller.session_id, item):
@@ -150,7 +154,7 @@ class SessionMail:
                     "task_result", {**head, "notification": item.id}, caller.session_id
                 )
                 text = f"{header}\n{rendered}"
-                if budget > 0 and used + len(text) > budget:
+                if used + len(text) > budget:
                     if injections:
                         break
                     if item.kind not in ATOMIC_INPUT_KINDS:
@@ -193,12 +197,7 @@ class SessionMail:
         Explicit collections already recorded as tool observations remain
         independent of newly rendered mailbox input.
         """
-        budget = conf.resolve(
-            "limits.model_tool_result_chars",
-            env="CLIO_MODEL_TOOL_RESULT_CHARS",
-            default=12000,
-            cast=conf.as_int,
-        )
+        budget = _budget()
         items: list[MailItem] = []
         used, rendered_count, full = 0, 0, False
         for item in staged.items:
@@ -213,7 +212,7 @@ class SessionMail:
             cost = len(str(value.get("text", ""))) + sum(
                 len(str(media.get("data", ""))) for media in value.get("media", ())
             )
-            if budget > 0 and used + cost > budget:
+            if used + cost > budget:
                 if rendered_count or item.kind not in ATOMIC_INPUT_KINDS:
                     full = True
                     continue

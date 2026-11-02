@@ -14,6 +14,7 @@ from clio_agent.gact.native_work import now
 from clio_agent.gact.result_selection import result_keys, select_fields, validate_selection
 from clio_agent.gact.task_access import TaskAccessDenied, TaskCaller
 from clio_agent.gact.task_result_content import result_cursor
+from tests._result_room import pin_result_room
 from tests.test_gact.test_flow_tool_evidence import _tool
 from tests.test_gact.test_permission_evidence import world as world
 
@@ -63,7 +64,7 @@ def test_rest_reads_only_metadata_then_preserves_selected_unicode_paging(
     from clio_agent.gact import child_report_fit
 
     monkeypatch.setattr(child_report_fit, "_measure", lambda: child_report_fit._Room(2))
-    monkeypatch.setenv("CLIO_MODEL_TOOL_RESULT_CHARS", "21")  # version-1 cursor page size
+    pin_result_room(monkeypatch, 21)  # version-1 cursor page size
     page = client.get(path, params=[("select", pointer)]).json()
     # Too big for the parent's room: the selection is saved to a file, not paged (#1844).
     assert page["result_selection"] == [pointer] and page["next_cursor"] is None

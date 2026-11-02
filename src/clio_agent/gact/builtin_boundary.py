@@ -290,6 +290,7 @@ class BuiltinBoundary:
         from clio_agent.gact.native_work import SUBMISSION_ARGUMENT
         from clio_agent.gact.permission_gate import _invoke_permission_gate
         from clio_agent.gact.tool_dispatch import run_owned_callable
+        from clio_agent.tools.result_room import result_room, room_limits
         from clio_agent.tools.task_call_context import safe_description
 
         public = dict(arguments)
@@ -426,7 +427,8 @@ class BuiltinBoundary:
             # An isolated workflow node's shell writes only its folder (node_folders.py).
             confinement=node_confinement(self.app, sid),
             attribution=attribution,
-            execution_limits={},
+            # The room the caller's model has for this result; the work runs apart from it.
+            execution_limits=room_limits(captured.run(result_room)),
             description=description,
             background=bool(public.get("background", False)) if kind == "Shell" else True,
         )

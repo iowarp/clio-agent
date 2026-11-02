@@ -176,7 +176,13 @@ def _search(args: Mapping[str, Any], result: Any, snapshot: Any) -> dict[str, An
                     "start_line": first,
                 },
             ]
-    if row.get("truncated"):
+    following = row.get("next_offset")
+    if isinstance(following, int):
+        shown = f"Showing results {int(args.get('offset') or 0) + 1:,}-{following:,}"
+        view["blocks"].append(
+            _warning("coverage", f"{shown}; more follow from offset {following:,}.")
+        )
+    elif row.get("truncated"):
         view["blocks"].append(
             _warning(
                 "coverage", "Results are incomplete; narrow the folder or glob to see the rest."
