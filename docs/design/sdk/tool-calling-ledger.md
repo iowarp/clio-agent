@@ -77,7 +77,7 @@ Base is `9a365758` plus the instrumentation commit with its pinned marketplace; 
 
 - **Wide data work is where current wins, and the reason is model time.** P6 (200 records): base 91 s, current 44 s in every pass. Base made about 200 direct calls, up to 150 in one step, and every result came back through the model (53 s of model time, 9,800 output tokens); current wrote two scripts that made the same calls (28 s of tool time against base's 34 s) and the model read only their summaries (14 s of model time, 1,000 output tokens). P7 (2,000 records) is out of base's reach and took current 333 s, of which 187 s is tool time: the per-call history lane (finding 11) is now the limit, not the agent.
 - **P5 (20 records) is level** (16 s against 17 s): current spends one step listing the records before its script, so code pays off from somewhere between 20 and 200 calls, as Anthropic's guidance on programmatic calling predicts.
-- **Prompts are smaller.** Cached prompt per step: P1 17k against 27k, P2 23k against 33k, P3 35k against 72k, P8 35k against 44k (the deferred home server).
+- **Prompts are smaller.** Cached prompt per step: P1 17k against 27k, P2 23k against 33k, P3 35k against 72k, P8 35k against 44k (the deferred home server). **Correction (2026-11-02):** these figures are the median of cache *reads* per step; a call that wrote its prompt to the cache counted as almost nothing, and base read its prompt from the previous session's cache while current wrote it (finding 17). Counting reads and writes, the mean prompt per call is P1 42k against 35k, P2 45k against 35k, P3 86k against 47k, P4 62k against 52k, P8 to P10 65k against 43k: smaller, by less than stated here.
 - **Lookups take one step fewer** (P1 2 against 3, P2 3 against 4) and use the file tools instead of the shell.
 - **Code reading is wider, not faster.** P3 and P4: current reads up to 6 to 8 files in one step where base chains commands in the shell (P4 base: 5 shell calls of 7.4 commands each, 10 pipes, 22 sequences; current: 1 shell call and 16 reads). Wall time is level, since model time over what was read dominates both (45 to 58 s).
 - **Deferral costs one step.** P8 and P9: current loads the climate or irrigation tools with `search_tools` first (9 to 14 s against 7 to 14 s for P8, 16 to 19 s against 13 to 16 s for P9).
@@ -166,7 +166,7 @@ Medians of three runs (wall time; model and tool time from `behaviour.py`; bytes
 - **The ARC work did what it was for.** P6 went from 44 s to 31 s (tool time 28 s to 14 s), and P7 from 333 s to 191 s (tool time 303 s to 139 s), with 3/3 correct (the grader first read P7 run 1 as wrong; it wrote the `REC-` prefix once, fixed in `15e548e9`). Bytes sent to clio-core fell 10 to 160 times on every task. Tool time on the short tasks is 0 to 5 s in all three configurations.
 - **Model time rose instead, and most of it is one regression in this branch.** Final's first call in every session read 0 cached prompt tokens; base's often read about 40,000 from the session before (P1 and H1 runs 2 and 3), and current's read 0 in seven of nine sampled sessions. The system prompt ended with per-session lines (the workspace root and write roots, since the scratch folder also the session id), and the Claude CLI caches the system prompt as one block, so every session paid about 36,000 tokens of cache creation, and first-token times were longer (final's median 2.6 to 5.8 s on P1 to P4 against base's 1.8 to 3.4 s; the samples are noisy). Current had the same cost from the per-run workspace root. Fixed in `ac9a3c1f` (finding 17); the ablation runs, made after the fix, read 33,179 cached tokens on their first call, and P5's cache creation per run fell from about 40,000 tokens to 6,100.
 - **Deferral still costs one step** (P8 and P9), and P8's model time in final (22 s against 8 s in current) is mostly first-token time, not more output.
-- **Against Claude Code**, CLIO takes one step more on P1 and P2 and one or two more on P3 and P4. Its prompt per step is close on P1 and P2 (17k and 23k tokens against 16k) and twice as large on P3 and P4 (48k and 41k against 23k and 20k). Claude Code's wall time is a third to a half of CLIO's on P1 to P3, mostly first-token time and fewer steps. P3 grades 0/3 for both (the seeded bugs are outranked by real issues in the tree, as before).
+- **Against Claude Code**, CLIO takes one step more on P1 and P2 and one or two more on P3 and P4. Its mean prompt per call (cache reads and writes counted) is 35k on P1 and P2, 59k on P3 and 53k on P4, against at least 15k, 15k, 23k and 20k for Claude Code (its transcripts report no cache writes, so its figures are lower bounds). Claude Code's wall time is a third to a half of CLIO's on P1 to P3, mostly first-token time and fewer steps. P3 grades 0/3 for both (the seeded bugs are outranked by real issues in the tree, as before).
 - **One runaway reply:** P10 run 2's first step produced 128,092 output tokens of empty code fences before its real call (548 s, the rest of the run is normal). This is the model, not CLIO, but CLIO did not let an operator bound it: `lm.max_tokens` never reached the Claude CLI. It does now (`64594208`, finding 18); there is still no default cap, as for every provider.
 - **Finding 13 did not recur:** every final P7 run continued after the 500-call limit in a later script.
 
@@ -219,15 +219,43 @@ Medians of three runs (wall time; model and tool time from `behaviour.py`; bytes
 | H2 | final | 5 [4-6] (3/3 valid) | 36.6 [34.2-74.5] s | latency 3,282→10,286 ms, prompt 2→50,590 ; latency 3,294→18,524 ms, prompt 2→46,360 ; latency 5,324→7,902 ms, prompt 2→54,939 | 0 compactions; plan_update 0, write_todos 0; recital: see trace | see trace | 0 | 3/3 | `sess_3084c4e5fba8`, `sess_ba0dca0330b9`, `sess_d02c430db0bc` |
 | H3 | final | 5 [5-6] (3/3 valid) | 48.1 [39.3-62.4] s | latency 4,430→10,224 ms, prompt 2→46,069 ; latency 3,661→9,218 ms, prompt 2→59,405 ; latency 7,419→19,375 ms, prompt 2→68,044 | 0 compactions; plan_update 0, write_todos 0; recital: see trace | see trace | 0 | 3/3 | `sess_fbf284a74e45`, `sess_24ef41fab64c`, `sess_78626644e802` |
 
+### Ablations (2026-11-02, three passes each)
+
+One feature off at a time, on the tasks it touches (`.cloud-run/ablations.sh`), with the final configuration otherwise unchanged: `tools.withheld` or `tools.deferral` set for the whole server, its own ARC namespace (`eval-abl-<name>`), `claude-sonnet-5-5` on `claude_code`, serially. All 48 runs ended with a final answer.
+
+**One confound:** the ablations ran after the cache fix (`ac9a3c1f`, finding 17) and the final runs before it. An ablation session's first call read about 33,000 cached tokens where a final session's wrote them, so wall and model times favour the ablations by the first-token time of one fresh prompt per session. Steps, calls, output tokens, prompt size and correctness are not affected.
+
+| Ablation | Task | Final: steps, calls, output tokens, wall, correct | Ablated: steps, calls, output tokens, wall, correct |
+| --- | --- | --- | --- |
+| `run_code` withheld | P5 (20 records) | 3, 21, 1.2k, 17.7 s, 3/3 | 3, 21, 1.2k, 18.6 s, 3/3 |
+| | P6 (200) | 4, 3 (2 scripts), 1.3k, 31.2 s, 3/3 | 4, 202, 9.7k, 77.0 s, 2/3 |
+| | P7 (2,000) | 9, 8 (7 scripts), 2.9k, 191 s, 3/3 | 34, 2,006, 96.8k, 408 s, 2/3 |
+| Deferral off | P8 | 4, 3, 417, 24.3 s, 3/3 | 3, 3, 358, 14.2 s, 3/3 |
+| | P9 | 5, 4, 602, 21.4 s, 3/3 | 4, 3, 546, 25.3 s, 3/3 |
+| | P10 | 3, 2, 338, 14.8 s, no key | 3, 2, 329, 15.5 s, no key |
+| Explorer withheld (`spawn_*`, `fork`) | P1 | 2, 1, 767, 14.3 s, 3/3 | 2, 1, 876, 17.3 s, 3/3 |
+| | P2 | 3, 4, 908, 16.4 s, 3/3 | 3, 3, 845, 16.9 s, 3/3 |
+| | P3 | 6, 15, 6.2k, 68.4 s, 0/3 | 6, 18, 5.8k, 59.7 s, 0/3 |
+| | P4 | 6, 27, 7.0k, 61.1 s, no key | 8, 13, 7.8k, 75.7 s, no key |
+| Plan and todos withheld | H1 to H3 | 4 to 5 steps, 30 to 48 s, 9/9 | 4 steps, 29 to 41 s, 9/9 |
+| Plan withheld, todos kept | H1 to H3 | 4 to 5 steps, 30 to 48 s, 9/9 | 4 steps, 27 to 43 s, 9/9 |
+
+**What the ablations say.**
+
+- **`run_code` is the feature that pays.** Without it P6 takes 2.5 times as long and 7 times the output tokens, and P7 makes 2,006 direct calls over 34 steps (97k output tokens, 408 s) against 8 calls in 7 scripts. The server no longer freezes on such steps (finding 9's fix held at 2,000 direct calls). Correctness drops too: P6 run 1 named two wrong ids. P7 run 2 split the work over 10 to 20 helper sessions that "read the values by eye", then gave the right count with no ids. P5 does not differ because final P5 did not use `run_code` either: at 20 records the agent calls directly.
+- **Deferral saves prompt, not time, on these tasks.** With every tool listed the mean prompt per call is 64k tokens against 43k deferred, and P8 and P9 save the `search_tools` step. Time is level or better without deferral (P8 14 s against 24 s, partly the cache confound), and correctness is the same. Deferral is a context-budget feature; its value grows with the number of servers, which three synthetic servers do not show.
+- **The explorer is not used on P1 to P4.** No final run on these tasks spawned a child (0 child sessions in all 12), so withholding the spawn tools changes nothing material: the same steps on P1 to P3, with P4 two steps longer and 15 s slower in one comparison of three runs. The explorer's value has to be shown on a task too wide for one context, which this suite does not contain (see T4).
+- **The session plan is not used on H1 to H3.** No final run called `plan_update` or `write_todos`, so withholding them changes nothing (9/9 correct either way). These tasks are too short to test it (T14); the mechanism is verified by T15, T17 and T18, and its value on a long task is still unmeasured.
+
 ### Targets
 
 The plan asked for targets after the base and before Phase 1; they were not written then. The targets below are the plan's own examples (section "Targets"), judged against the final runs, so they are a check, not a prediction.
 
 | Workstream | Tasks | Target | Met |
 | --- | --- | --- | --- |
-| Prompt foundation | Prompt size (root); P1 to P10, H1 to H3 | Smaller root prompt per step than base | Yes: cached prompt per step P1 27k to 17k, P2 33k to 23k, P8 44k to 33k, P10 43k to 28k tokens. The `explore` child's own size was not measured separately. |
-| Exploration primitives, fast explorer | P1 to P4 | Fewer steps and prompt tokens per step than base, toward Claude Code | Partly: steps P1 3 to 2 (CC 2), P2 4 to 3 (CC 2), P3 9 to 6 (CC 5), P4 7 to 6 (CC 4); prompt per step P3 72k to 48k and P4 50k to 41k, still twice Claude Code's (23k, 20k). Wall time is not lower than base (model time dominates; see finding 17). |
-| Tool disclosure | P8 to P10 | Fewer prompt tokens per step, no rise in "lacks a tool" answers | Yes, at one extra step: prompt per step 44k to 33k (P8), 49k to 35k (P9), 43k to 28k (P10); P8 and P9 3/3 correct, no run concluded a tool was missing. |
+| Prompt foundation | Prompt size (root); P1 to P10, H1 to H3 | Smaller root prompt per step than base | Yes: mean prompt per call (cache reads and writes) P1 42k to 35k, P2 45k to 35k, P8 to P10 65k to 43k; H1 to H3 about level (47k to 44k). The `explore` child's own size was not measured separately. |
+| Exploration primitives, fast explorer | P1 to P4 | Fewer steps and prompt tokens per step than base, toward Claude Code | Partly: steps P1 3 to 2 (CC 2), P2 4 to 3 (CC 2), P3 9 to 6 (CC 5), P4 7 to 6 (CC 4); mean prompt per call P3 86k to 59k and P4 62k to 53k, still more than twice Claude Code's (at least 23k and 20k). Wall time is not lower than base (model time dominates; see finding 17). |
+| Tool disclosure | P8 to P10 | Fewer prompt tokens per step, no rise in "lacks a tool" answers | Yes, at one extra step on P8 and P9: mean prompt per call 65k (base) and 64k (deferral off) against 43k with deferral; P8 and P9 3/3 correct either way, no run concluded a tool was missing. |
 | `run_code` | P5 to P7, H1 | Cost grows much more slowly than the number of records | Yes for model cost: output tokens 1.2k, 1.3k and 2.9k for 20, 200 and 2,000 records (base: 9.8k at 200, and froze at 2,000). Wall time grows with tool time (2, 14 and 139 s), which is the server's own per-call cost plus CLIO's history writes. |
 | Session plan | H1 to H3 | Flat per-step cost, no re-drives, coherent plan across compaction | Not tested on H1 to H3: 0 re-drives and 9/9 correct, but no run compacted (finding 22: compaction could not fire on `claude_code`) or used `plan_update` / `write_todos` (the tasks finish in 4 to 6 steps). After the fix, T15 compacted mid-turn and offered the plan again verbatim. |
 
