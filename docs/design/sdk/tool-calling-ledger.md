@@ -335,6 +335,28 @@ The plan's prompt foundation has two halves: the rewrite from the research (done
 - `planning`: the investigation phase starts one `explore` child per area in a single parallel call when the work spans several areas.
 - Not in round 1, proposed: defer the niche tool groups (15 of 67 listed tools were used in 199 runs), withhold `raise_alert_card` from root sessions, trim the largest tool descriptions and the skills listing (Phase 1 step 3), `$(command)` variables in reminder templates (owner decision).
 
+**Round 1 results** (config `prompt1`, three passes, 2026-11-02, against `final2`; median wall time, correct where graded):
+
+| Task | final2 | prompt1 | Claude Code | Note |
+| --- | --- | --- | --- | --- |
+| P1 | 10.7 s, 3/3 | 9.9 s, 3/3 | 4.5 s | |
+| P2 | 12.9 s, 3/3 | 9.5 s, 3/3 | 6.3 s | answers from the search result |
+| P3 | 54.4 s, 0/3 | 40.7 s, 0/3 | 30.4 s, 0/3 | seeded bugs still missed by every configuration |
+| P4 | 63.5 s | 144.6 s | 42.5 s | delegates to three `explore` children; see round 2 |
+| P5 | 12.4 s, 3/3 | 12.2 s, 3/3 | | |
+| P6 | 26.3 s, 3/3 | 27.6 s, 3/3 | | |
+| P7 | 185.6 s, 2/3 | 171.9 s, 3/3 | | |
+| P8 | 9.9 s, 3/3 | 7.4 s, 3/3 | | |
+| P9 | 12.9 s, 3/3 | 11.6 s, 3/3 | | |
+| P10 | 9.4 s | 7.8 s | | |
+| H1 | 27.5 s | 19.2 s | | |
+| H2 | 27.9 s | 18.9 s | | |
+| H3 | 24.1 s | 26.5 s | | |
+
+Every task but P4 and H3 is faster, and no graded task lost an answer. `explore` is now used where the trigger fits (P4, all three runs) and nowhere else.
+
+**P4, why delegation was slower** (`sess_fd96bda1620b`): the parent spawned three `explore` children at 12 s with "Thoroughness: medium… Report concisely". Each child's last call took 30 to 39 s to write a 4.9k to 6.6k-token report (about 20 to 25k characters), finishing at 77 to 80 s. Collected together, each result's inline share is (12,000 − 1,000) / 3 = 3,666 characters, so all three were saved to files, as JSON with the report on one line; the parent spent two `run_code` calls turning them back into Markdown and five paged reads before a 4.8k-token answer (93 to 119 s). Without delegation (final2) the same survey took 6 steps and 63 s. Causes in the data flow, not in the prompt: a saved text report is not readable as text, and the child does not know how much of its report reaches the parent inline.
+
 ## Overheads (Phase 0 step 3)
 
 | Overhead | Measured | Above baseline noise | Fixed in |
