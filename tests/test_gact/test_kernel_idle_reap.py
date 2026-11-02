@@ -36,3 +36,31 @@ def test_idle_kernels_are_stopped_and_busy_or_recent_ones_kept(
     assert reaped == [old]
     assert stopped == [(("s1", "main"), "idle")]
     assert set(kernels._KERNELS) == {("s2", "main"), ("s3", "main")}
+
+
+def test_a_kernel_outlives_the_thread_that_started_it(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The ``pdeathsig`` wrapper kills a child when its starting *thread* exits; kernels
+    start on a long-lived thread, so a kernel started in one turn serves the next (T12).
+    SABOTAGE: make ``_spawn`` call ``subprocess.Popen`` directly and this fails."""
+    import shutil
+    import threading
+    import time
+
+    from clio_agent.gact.code_mode import kernels
+
+    if shutil.which("setpriv") is None:
+        pytest.skip("setpriv (pdeathsig) is POSIX-only")
+    monkeypatch.setenv("CLIO_ALLOWED_ROOTS", str(tmp_path))
+    started: list[Any] = []
+    turn = threading.Thread(target=lambda: started.append(kernels.kernel_for("s", "k", tmp_path)))
+    turn.start()
+    turn.join()
+    try:
+        (kernel,) = started
+        time.sleep(1.0)
+        assert kernel.alive(), f"the kernel died with its thread: {kernel.diagnostics()}"
+        assert kernels.kernel_for("s", "k", tmp_path) is kernel
+    finally:
+        kernels.close_session("s")

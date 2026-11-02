@@ -13,12 +13,18 @@ script started. Kernels end when their scope's session closes
 (:func:`close_session`), after ``code.idle_minutes`` without a script (the reaper),
 when a script is cancelled or times out (the state is gone; the next script starts a
 new kernel), and at process exit.
+
+Kernels are started from one long-lived thread (:func:`_spawn`): the ``pdeathsig``
+wrapper kills a child when the *thread* that started it exits, and a script's first call
+runs on a turn's worker thread, so a kernel started there was killed (SIGKILL) at the end
+of its turn and the next turn's script lost its variables (qualification T12).
 """
 
 from __future__ import annotations
 
 import atexit
 import collections
+import concurrent.futures
 import json
 import os
 import queue
@@ -48,6 +54,15 @@ _MAIN = Path(__file__).with_name("kernel_main.py")
 
 class KernelError(RuntimeError):
     """The kernel could not start, or stopped answering."""
+
+
+#: One thread that lives as long as the server and starts every kernel (see the module doc).
+_SPAWNER = concurrent.futures.ThreadPoolExecutor(max_workers=1, thread_name_prefix="code-spawn")
+
+
+def _spawn(argv: list[str], **kwargs: Any) -> "subprocess.Popen[bytes]":
+    """``subprocess.Popen(argv, **kwargs)`` started from the long-lived spawner thread."""
+    return _SPAWNER.submit(subprocess.Popen, argv, **kwargs).result()
 
 
 def idle_minutes() -> float:
@@ -150,7 +165,7 @@ class Kernel:
             pdeathsig=True,
             cwd=self.workspace,
         )
-        self.process = subprocess.Popen(  # noqa: S603 - the confined, resolved kernel argv
+        self.process = _spawn(  # the confined, resolved kernel argv
             [confined.command, *confined.args],
             cwd=str(self.workspace),
             env={**env, **confined.env_overlay},

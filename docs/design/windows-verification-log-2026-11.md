@@ -72,6 +72,19 @@ How to use it:
   - Deleting the session removes the folder.
   - A server restart after `paths.scratch_retention_days` sweeps old ones.
 
+## 7. `run_code` kernels start from one long-lived thread
+
+- **Change** (`gact/code_mode/kernels.py`, `_spawn`): kernels are started from a single spawner thread instead of the turn's worker thread.
+- **Why:** on Linux the `setpriv --pdeathsig SIGKILL` wrapper killed a kernel when the thread that started it exited, which is the end of the turn that ran the first script. The next turn's script then lost its variables (qualification T12; the trace said `replaced_dead (exit code -9)`).
+- **Windows:** there is no pdeathsig. The kernel's lifetime is its Job Object (`runtime/task_process_tree.py`), which belongs to the process, not a thread, so the bug should not occur there. The spawner thread is harmless on Windows.
+- **What to check:** in one session, ask the agent to set `x = 42` with `run_code`, then in a second message ask it to print `x` with `run_code`. It must print 42, and the trace must not show `kernel stopped ... reason=replaced_dead`.
+
+## 8. Plan mode runs `run_code` in a read-only kernel
+
+- **Change** (`gact/code_mode/kernels.py`, `runtime/sandbox_roots.py::read_only_write_roots`): in plan mode the kernel's write roots are the session's scratch folder and the temp folders only.
+- **Windows:** the fence there is the AppContainer/ACL backend (`clio sandbox setup`). `run_code` refuses in plan mode when no fence is active (`code_plan_mode_unconfined`).
+- **What to check:** with the fence provisioned, a plan-mode session asked to "try to create scratch.txt in the workspace with open() inside run_code" must get an access-denied error and leave no file. Without the fence it must get the `code_plan_mode_unconfined` refusal.
+
 ## Not platform-specific (no Windows check needed)
 
 - Append-only chunk records.
