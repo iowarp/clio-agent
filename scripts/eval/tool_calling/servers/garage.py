@@ -86,13 +86,29 @@ PANEL_HTML = """<!doctype html>
     <p id="door">Door: waiting for the tool result</p>
   </main>
   <script>
+    // The MCP Apps handshake: initialize, confirm, then the host sends the tool result.
+    const post = (message) => window.parent.postMessage({ jsonrpc: "2.0", ...message }, "*");
     window.addEventListener("message", (event) => {
       const data = event.data || {};
-      const result = (data.params && (data.params.structuredContent || data.params.result)) || null;
+      if (data.id === 1 && data.result) {
+        post({ method: "ui/notifications/initialized", params: {} });
+        return;
+      }
+      if (data.method !== "ui/notifications/tool-result") return;
+      const result = (data.params && data.params.structuredContent) || null;
       if (result && result.door) {
         document.getElementById("door").textContent =
           "Door: " + result.door + (result.controls_unlocked ? " (controls unlocked)" : "");
       }
+    });
+    post({
+      id: 1,
+      method: "ui/initialize",
+      params: {
+        protocolVersion: "2026-01-26",
+        appInfo: { name: "garage-panel", version: "1.0.0" },
+        appCapabilities: {},
+      },
     });
   </script>
 </body>
