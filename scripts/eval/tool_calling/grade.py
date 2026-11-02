@@ -153,6 +153,10 @@ def grade_p4(answer: dict[str, Any], text: str) -> dict[str, Any]:
 _LIST_LINE = re.compile(r"^\s*(?:[-*+]|\d+[.)]|\|)")
 #: "REC-00001 to REC-00200": the bounds of what was read, not ids in the answer.
 _ID_RANGE = re.compile(r"(REC-\d{5})\s*(?:to|through|-|–|—)\s*(REC-\d{5})")
+#: "**REC-01401–01600:** 01420, 01425": a range label whose list carries no prefix.
+_LABELLED_LIST = re.compile(
+    r"(REC-\d{5})\s*[-–—]\s*(\d{5})\W*:\W*(\d{5}(?:\s*,\s*(?:and\s+)?\d{5})*)"
+)
 #: "REC-00003 (0.57)": an id shown with a positive reading is a mention, not an answer.
 _POSITIVE_READING = re.compile(r"(REC-\d{5})\s*\(\s*(?=\d)[\d.]+")
 #: "REC-00002, 00005, 00017": a list that writes the prefix once; each number is an id.
@@ -182,6 +186,10 @@ def _claimed_ids(text: str) -> tuple[set[str], set[str]]:
     mentioned: set[str] = set()
     prefix_stated = bool(_PREFIX_STATED.search(text))
     for line in text.splitlines():
+        if labelled := _LABELLED_LIST.search(line):
+            mentioned |= {labelled.group(1), f"REC-{labelled.group(2)}"}
+            claimed |= {f"REC-{n}" for n in re.findall(r"\d{5}", labelled.group(3))}
+            line = line[: labelled.start()] + line[labelled.end() :]
         for bounds in _ID_RANGE.findall(line):
             mentioned |= set(bounds)
         line = _ID_RANGE.sub("", line)

@@ -140,6 +140,15 @@ def test_records_an_id_mentioned_in_an_aside_is_not_part_of_the_answer() -> None
     assert not wrong["correct"] and wrong["extra"] == ["REC-00016"]
 
 
+def test_records_a_list_under_a_range_label_is_the_answer() -> None:
+    """P7 no-run-code run 3 grouped ids under range labels without repeating the prefix.
+    SABOTAGE: drop the ``_LABELLED_LIST`` branch in ``_claimed_ids`` and this fails."""
+    text = "**2 negative.**\n\n- **REC-00001–00020:** 00002, 00015\n"
+    result = grade("P7", RECORDS, _run(text))
+    assert result["correct"], result
+    assert result["mentioned_only"] == ["REC-00001", "REC-00020"]
+
+
 def test_records_a_bare_list_after_the_stated_prefix_is_the_answer() -> None:
     """P7 final run 1 wrote the prefix once, then the numbers on their own line.
     SABOTAGE: drop ``prefix_stated`` from ``_expand_id_lists`` and this fails."""
