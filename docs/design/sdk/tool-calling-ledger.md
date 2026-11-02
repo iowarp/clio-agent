@@ -139,16 +139,97 @@ Base is `9a365758` plus the instrumentation commit with its pinned marketplace; 
 | P10 | base | 3 (3/3 valid) | 0.67 | 3 / 43,444 [43,439-43,446] | 297 [281-308] | 10.4 [10.3-11.3] s | 1,723 [1,589-1,735] / 4 [3-641] ms | — | 86 [77-119] ms | 0 | — | `sess_ddc9ccfbbbe9`, `sess_b864bad11547`, `sess_cced4571d26b` |
 | P10 | current | 3 (3/3 valid) | 0.67 | 3 / 28,397 [28,394-28,398] | 298 [283-299] | 10.6 [9.8-12.9] s | 1,509 [1,504-2,324] / 541 [3-663] ms | — | 92 [78-131] ms | 0 | — | `sess_39443f5eae76`, `sess_126b65d7ccb9`, `sess_2d5b9da28d9b` |
 
-#### Targets
+### Results: final, after the ARC work, with the Claude Code reference (2026-11-02, three passes)
+
+Final is this branch at `3b3fe4d7`: current plus the ARC performance work, TD55, the ablation switches and the scratch folder. It ran like current: `claude-sonnet-5-5` through `claude_code`, serially, namespace `eval-final`, from the empty shared root. The Claude Code reference is the Claude Code CLI itself, run on P1-P4 against the same fixtures (`claude_code_ref`, `--allowed-tools Bash,Read,Grep,Glob,Task`, default permission mode, a scrubbed environment and its own home). It reports no ARC counters. All 39 final runs and 12 reference runs ended with a final answer.
+
+Medians of three runs (wall time; model and tool time from `behaviour.py`; bytes sent to clio-core from the stream audit):
+
+| Task | Base wall | Current wall | Final wall | Claude Code wall | Final steps (base, CC) | Final model / tool s | Final MB to clio-core (current) |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| P1 | 14.8 s | 12.0 s | 14.3 s | 4.5 s | 2 (3, 2) | 11 / 2 | 0.5 (4.8) |
+| P2 | 13.7 s | 12.1 s | 16.4 s | 6.3 s | 3 (4, 2) | 13 / 2 | 0.8 (7.8) |
+| P3 | 76.7 s | 58.1 s | 68.4 s | 30.4 s | 6 (9, 5) | 63 / 3 | 5.3 (107) |
+| P4 | 56.3 s | 56.8 s | 61.1 s | 42.5 s | 6 (7, 4) | 55 / 4 | 5.4 (139) |
+| P5 | 15.8 s | 17.2 s | 17.7 s | | 3 (3) | 15 / 2 | 1.8 (79) |
+| P6 | 90.9 s | 43.9 s | 31.2 s | | 4 (5) | 16 / 14 | 11 (1,438) |
+| P7 | froze | 333.1 s | 191.2 s | | 9 | 51 / 139 | 84 (13,840) |
+| P8 | 9.1 s | 13.8 s | 24.3 s | | 4 (3) | 22 / 0 | 0.8 (13) |
+| P9 | 14.4 s | 17.5 s | 21.4 s | | 5 (4) | 20 / 0 | 0.9 (18) |
+| P10 | 10.4 s | 10.6 s | 14.8 s | | 3 (3) | 11 / 2 | 0.6 (8.6) |
+| H1 | 22.8 s | 29.8 s | 39.4 s | | 4 (4) | 34 / 4 | 2.2 (95) |
+| H2 | 33.3 s | 38.9 s | 36.6 s | | 5 (5) | 30 / 5 | 2.4 (51) |
+| H3 | 24.3 s | 28.2 s | 48.1 s | | 5 (4) | 41 / 5 | 2.8 (92) |
+
+**What the numbers say.**
+
+- **The ARC work did what it was for.** P6 went from 44 s to 31 s (tool time 28 s to 14 s), and P7 from 333 s to 191 s (tool time 303 s to 139 s), with 3/3 correct (the grader first read P7 run 1 as wrong; it wrote the `REC-` prefix once, fixed in `15e548e9`). Bytes sent to clio-core fell 10 to 160 times on every task. Tool time on the short tasks is 0 to 5 s in all three configurations.
+- **Model time rose instead, and most of it is one regression in this branch.** Final's first call in every session read 0 cached prompt tokens; base's often read about 40,000 from the session before (P1 and H1 runs 2 and 3), and current's read 0 in seven of nine sampled sessions. The system prompt ended with per-session lines (the workspace root and write roots, since the scratch folder also the session id), and the Claude CLI caches the system prompt as one block, so every session paid about 36,000 tokens of cache creation, and first-token times were longer (final's median 2.6 to 5.8 s on P1 to P4 against base's 1.8 to 3.4 s; the samples are noisy). Current had the same cost from the per-run workspace root. Fixed in `ac9a3c1f` (finding 17); the ablation runs, made after the fix, read 33,179 cached tokens on their first call, and P5's cache creation per run fell from about 40,000 tokens to 6,100.
+- **Deferral still costs one step** (P8 and P9), and P8's model time in final (22 s against 8 s in current) is mostly first-token time, not more output.
+- **Against Claude Code**, CLIO takes one step more on P1 and P2 and one or two more on P3 and P4. Its prompt per step is close on P1 and P2 (17k and 23k tokens against 16k) and twice as large on P3 and P4 (48k and 41k against 23k and 20k). Claude Code's wall time is a third to a half of CLIO's on P1 to P3, mostly first-token time and fewer steps. P3 grades 0/3 for both (the seeded bugs are outranked by real issues in the tree, as before).
+- **One runaway reply:** P10 run 2's first step produced 128,092 output tokens of empty code fences before its real call (548 s, the rest of the run is normal). This is the model, not CLIO, but CLIO did not let an operator bound it: `lm.max_tokens` never reached the Claude CLI. It does now (`64594208`, finding 18); there is still no default cap, as for every provider.
+- **Finding 13 did not recur:** every final P7 run continued after the 500-call limit in a later script.
+
+#### Final and reference: usage per task
+
+| Task | 5-hour window share per run | 7-day window share per run | Median wall time |
+| --- | --- | --- | --- |
+| P1 (claude-code) | — | 1.00 | 4.5 [4.4-5.4] s |
+| P1 (final) | — | 0.00 | 14.3 [11.9-16.9] s |
+| P2 (claude-code) | — | — | 6.3 [5.0-6.4] s |
+| P2 (final) | — | 0.00 | 16.4 [16.2-20.8] s |
+| P3 (claude-code) | — | — | 30.4 [26.5-30.9] s |
+| P3 (final) | — | 0.00 | 68.4 [57.6-89.7] s |
+| P4 (claude-code) | — | — | 42.5 [32.6-70.1] s |
+| P4 (final) | — | 0.00 | 61.1 [60.7-65.7] s |
+| P5 (final) | — | 0.00 | 17.7 [16.1-19.3] s |
+| P6 (final) | — | 0.00 [0.00-1.00] | 31.2 [30.9-36.1] s |
+| P7 (final) | — | 0.00 | 191.2 [177.0-228.8] s |
+| P8 (final) | — | 0.00 | 24.3 [18.2-26.8] s |
+| P9 (final) | — | 0.00 | 21.4 [19.8-21.7] s |
+| P10 (final) | — | 0.00 | 14.8 [10.7-557.5] s |
+| H1 (final) | — | 0.00 | 39.4 [33.3-45.5] s |
+| H2 (final) | — | 0.00 | 36.6 [34.2-74.5] s |
+| H3 (final) | — | 0.00 | 48.1 [39.3-62.4] s |
+
+#### Final and reference: performance
+
+| Task | Configuration | Steps | Calls per step | Prompt tokens per step (uncached / cached) | Output tokens | Wall time | TTFT / decode | Batch wall vs slowest call | Step overhead | Prefix resets | Correct (where graded) | Handles |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| P1 | claude-code | 2 (3/3 valid) | 0.50 | 2 / 15,696 | 395 [337-450] | 4.5 [4.4-5.4] s | 1,833 [1,440-1,851] / 402 [334-1,251] ms | — | 0 [0-0] ms | — | 3/3 | `99089d20-9c0b-4374-9f41-9b54ee37336c`, `c2163bb3-6ccc-4ddc-b1bf-60e83f6a53d0`, `e205ccf3-a0ae-44e9-afe6-5133778ca5f6` |
+| P1 | final | 2 (3/3 valid) | 0.50 | 3 / 17,114 [17,112-17,114] | 767 [765-797] | 14.3 [11.9-16.9] s | 4,716 [4,436-6,660] / 213 [210-546] ms | — | 44 [44-54] ms | 0 | 3/3 | `sess_3f7d0742452e`, `sess_c97d9a22d32e`, `sess_6b7dbb5e424d` |
+| P2 | claude-code | 2 (3/3 valid) | 0.50 | 2 / 15,694 | 451 [443-471] | 6.3 [5.0-6.4] s | 1,937 [1,811-2,526] / 644 [547-1,320] ms | — | 0 [0-0] ms | — | 3/3 | `dcd89ecf-c3c5-49ee-ac79-f49740c71659`, `031aa7a8-343c-4a9d-b018-c4c5219f2b0a`, `45fd705d-95e6-4a74-b613-a47bae5747ba` |
+| P2 | final | 3 (3/3 valid) | 1.33 [0.67-1.67] | 3 / 23,240 [23,175-23,244] | 908 [842-1,071] | 16.4 [16.2-20.8] s | 4,592 [4,110-5,158] / 94 [73-392] ms | 1.00 [1.00-1.00] | 89 [82-98] ms | 0 | 3/3 | `sess_51e497d8a9c6`, `sess_7c7a0510e15f`, `sess_37ec48db8ddb` |
+| P3 | claude-code | 5 (3/3 valid) | 1.20 [0.80-1.80] | 2 / 23,464 [22,969-25,688] | 3,459 [2,932-3,522] | 30.4 [26.5-30.9] s | 1,772 [1,584-1,955] / 1,494 [1,297-1,636] ms | 26.94 [12.14-41.75] | 0 [0-0] ms | — | 0/3 | `289e64fd-a20a-4ca2-adaf-8af3ddcb1f9e`, `02eab143-da05-46e5-a766-cab9b9e34052`, `ac8b381c-8ffd-45b4-9b31-414ecbfd838f` |
+| P3 | final | 6 [5-7] (3/3 valid) | 2.80 [2.50-2.86] | 4 [4-4] / 47,676 [38,204-48,468] | 6,211 [4,751-7,630] | 68.4 [57.6-89.7] s | 5,780 [4,664-6,381] / 1,320 [960-2,672] ms | 1.02 [1.02-1.03] | 156 [128-212] ms | 0 | 0/3 | `sess_227ca7a37e87`, `sess_195d0db26a37`, `sess_cbe4c25f7f05` |
+| P4 | claude-code | 4 [3-4] (3/3 valid) | 0.75 [0.67-0.75] | 2 / 20,119 [18,075-20,298] | 3,941 [3,549-4,697] | 42.5 [32.6-70.1] s | 3,446 [1,651-4,996] / 1,528 [1,516-1,761] ms | — | 0 ms | — | — | `e42e7101-053b-43fc-8870-c50e7164275f`, `22846d0a-9c13-4d8d-befe-b73325e9ba70`, `cadd1a19-3d5a-4d1a-8d6f-a938f7a58513` |
+| P4 | final | 6 [5-7] (3/3 valid) | 5.33 [1.57-5.40] | 4 [4-4] / 40,912 [37,946-45,897] | 7,018 [6,823-7,259] | 61.1 [60.7-65.7] s | 4,946 [4,405-5,560] / 2,246 [895-2,546] ms | 1.14 [1.01-1.19] | 181 [111-224] ms | 0 | — | `sess_427f1d327410`, `sess_57f2ae280031`, `sess_fde787ececb9` |
+| P5 | final | 3 (3/3 valid) | 7.00 | 3 / 23,620 [23,617-23,620] | 1,218 [1,184-1,323] | 17.7 [16.1-19.3] s | 2,634 [2,463-3,254] / 1,498 [1,415-1,881] ms | 2.50 [2.48-2.60] | 160 [151-169] ms | 0 | 3/3 | `sess_c464d94cfb4d`, `sess_c7ac89c60a1f`, `sess_4ab884409693` |
+| P6 | final | 4 (3/3 valid) | 51.25 [50.75-51.50] | 4 / 28,676 [28,613-28,756] | 1,327 [1,141-1,542] | 31.2 [30.9-36.1] s | 3,009 [2,969-3,472] / 494 [476-1,792] ms | 1.00 | 84 [70-106] ms | 0 | 3/3 | `sess_8b19ad44c247`, `sess_5fce5f2b5724`, `sess_aa7fc179043b` |
+| P7 | final | 9 [7-9] (3/3 valid) | 225.56 [225.44-289.57] | 4 [4-4] / 34,769 [32,692-36,276] | 2,940 [2,676-3,370] | 191.2 [177.0-228.8] s | 4,107 [4,018-6,940] / 1,008 [107-1,201] ms | 1.00 | 101 [94-108] ms | 0 | 3/3 | `sess_b18eec7724cc`, `sess_be7b955af449`, `sess_0c5459b2d781` |
+| P8 | final | 4 [4-5] (3/3 valid) | 0.75 [0.60-0.75] | 4 [4-4] / 32,610 [32,600-35,040] | 417 [363-654] | 24.3 [18.2-26.8] s | 3,531 [2,802-4,811] / 514 [450-536] ms | — | 114 [90-131] ms | 0 | 3/3 | `sess_a0434504bb86`, `sess_34360c103cd2`, `sess_73f6036e9b7d` |
+| P9 | final | 5 [4-5] (3/3 valid) | 0.80 [0.75-0.80] | 4 [4-4] / 35,135 [32,870-35,148] | 602 [491-695] | 21.4 [19.8-21.7] s | 3,546 [2,274-5,093] / 51 [20-852] ms | — | 104 [75-118] ms | 0 | 3/3 | `sess_27f493b906cf`, `sess_41aa8d5dcd8a`, `sess_bf07021a7cb9` |
+| P10 | final | 3 (3/3 valid) | 0.67 | 3 [3-5] / 28,476 [28,475-104,580] | 338 [312-128,290] | 14.8 [10.7-557.5] s | 2,625 [1,531-3,512] / 646 [641-882] ms | — | 61 [59-61] ms | 0 | — | `sess_547efa5543a2`, `sess_340a1dc481fb`, `sess_15ecae4e4091` |
+
+#### Final: long-horizon
+
+| Task | Configuration | Steps to self-stop | Wall time | Per-step latency and prompt tokens over the run | Compactions; plan recited; findings carried | Threads open at stop and how each ended | Re-drives | Correct root cause | Handles |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| H1 | final | 4 [4-5] (3/3 valid) | 39.4 [33.3-45.5] s | latency 7,869→5,345 ms, prompt 2→59,709 ; latency 8,064→8,709 ms, prompt 2→46,833 ; latency 5,690→9,236 ms, prompt 2→45,501 | 0 compactions; plan_update 0, write_todos 0; recital: see trace | see trace | 0 | 3/3 | `sess_eb648bd4715d`, `sess_08b55c94d589`, `sess_10b7b1f8821c` |
+| H2 | final | 5 [4-6] (3/3 valid) | 36.6 [34.2-74.5] s | latency 3,282→10,286 ms, prompt 2→50,590 ; latency 3,294→18,524 ms, prompt 2→46,360 ; latency 5,324→7,902 ms, prompt 2→54,939 | 0 compactions; plan_update 0, write_todos 0; recital: see trace | see trace | 0 | 3/3 | `sess_3084c4e5fba8`, `sess_ba0dca0330b9`, `sess_d02c430db0bc` |
+| H3 | final | 5 [5-6] (3/3 valid) | 48.1 [39.3-62.4] s | latency 4,430→10,224 ms, prompt 2→46,069 ; latency 3,661→9,218 ms, prompt 2→59,405 ; latency 7,419→19,375 ms, prompt 2→68,044 | 0 compactions; plan_update 0, write_todos 0; recital: see trace | see trace | 0 | 3/3 | `sess_fbf284a74e45`, `sess_24ef41fab64c`, `sess_78626644e802` |
+
+### Targets
+
+The plan asked for targets after the base and before Phase 1; they were not written then. The targets below are the plan's own examples (section "Targets"), judged against the final runs, so they are a check, not a prediction.
 
 | Workstream | Tasks | Target | Met |
 | --- | --- | --- | --- |
-| Prompt foundation | Prompt size (root, `explore`); P1 to P10, H1 to H3 | | |
-| Exploration primitives | P1 to P4 | | |
-| Fast explorer | P1 to P4 | | |
-| Tool disclosure | P1 to P10 | | |
-| `run_code` | P5 to P7, H1 | | |
-| Session plan | H1 to H3 | | |
+| Prompt foundation | Prompt size (root); P1 to P10, H1 to H3 | Smaller root prompt per step than base | Yes: cached prompt per step P1 27k to 17k, P2 33k to 23k, P8 44k to 33k, P10 43k to 28k tokens. The `explore` child's own size was not measured separately. |
+| Exploration primitives, fast explorer | P1 to P4 | Fewer steps and prompt tokens per step than base, toward Claude Code | Partly: steps P1 3 to 2 (CC 2), P2 4 to 3 (CC 2), P3 9 to 6 (CC 5), P4 7 to 6 (CC 4); prompt per step P3 72k to 48k and P4 50k to 41k, still twice Claude Code's (23k, 20k). Wall time is not lower than base (model time dominates; see finding 17). |
+| Tool disclosure | P8 to P10 | Fewer prompt tokens per step, no rise in "lacks a tool" answers | Yes, at one extra step: prompt per step 44k to 33k (P8), 49k to 35k (P9), 43k to 28k (P10); P8 and P9 3/3 correct, no run concluded a tool was missing. |
+| `run_code` | P5 to P7, H1 | Cost grows much more slowly than the number of records | Yes for model cost: output tokens 1.2k, 1.3k and 2.9k for 20, 200 and 2,000 records (base: 9.8k at 200, and froze at 2,000). Wall time grows with tool time (2, 14 and 139 s), which is the server's own per-call cost plus CLIO's history writes. |
+| Session plan | H1 to H3 | Flat per-step cost, no re-drives, coherent plan across compaction | Not tested: 0 re-drives and 9/9 correct, but no run compacted or used `plan_update` / `write_todos` (the tasks finish in 4 to 6 steps). Compaction with a plan is checked by T15. |
 
 ## ARC performance (2026-11-01 to 2026-11-02)
 
@@ -258,4 +339,6 @@ Read on 2026-10-31 for the session plan:
   14. **A broken call block that called a loaded tool ended the turn.** Current P8 pass 2: after `search_tools` loaded the climate tools, the reply was the call list and a closing fence, with no opening fence at all. The broken-block detectors check calls against the tools they know, which were only the listed ones; a loaded deferred tool is callable without being listed, so the block read as the final answer (graded wrong, no climate call made). The loop now gives the reply parser the agent's whole callable set for each model call (`CALLABLE_TOOLS`, set and reset around the call), and the block is reported as a missing opening fence (`61d319a9`, both halves sabotage-checked). This and entry 12 are the same model behaviour in a later step: the opening fence is dropped (`tool_calls` without backticks, or nothing before the list); recognizing it is format-only correction and nothing is executed from it. Current P8 pass 2, and both P4 pass-3 runs (their timing overlapped a local test run), are set aside and rerun.
   15. **Runs shared scratch files through the allowed root.** Both servers' only allowed root is `/home/user/clio-eval-roots`, and an agent may write anywhere under its allowed roots. Base H2 pass 1 extracted an older commit into `old_check` there for a timing comparison, and later base runs, whose prompt calls that root their working folder (finding 1), found it: base P3 pass 2 reviewed `old_check`'s package (the H2 repository) instead of its own task's tree (its 25 s outlier), and base H2 pass 3 listed it. Current runs never searched the root. The runner now empties the shared root before each run, keeping only the call-log folder (`--shared-root`, `dbea09b4`). The 12 base runs that touched the root after `old_check` appeared (P1, P2 passes 2-3; P3 pass 2; H1, H2 passes 2-3; H3 passes 1-3) are set aside and rerun; base H2 pass 1 and current H2 pass 2 used scratch folders they made themselves and stand.
   16. **The CLIO servers' Claude CLI children inherit this implementing session's Claude Code environment.** Both servers were started from this session's shell, so `CLAUDE_CODE_SESSION_ID`, the remote-session variables and `CLAUDE_CODE_CHILD_SESSION=1` reached every CLI the `claude_code` provider started (their transcripts are filed under this session's id). Base and current are equal in this, and CLIO starts the CLI with its own system prompt and no setting sources; the Claude Code reference (P1-P4) instead runs with a scrubbed environment and an empty home folder (`.cloud-run/claude-ref.sh`), so it is Claude Code with its defaults.
+  17. **Per-session text in the system prompt defeated the prompt cache across sessions (fixed, `ac9a3c1f`).** The system prompt ended with the session's workspace root and write roots, and, once the scratch folder landed, a path holding the session id. The Claude CLI caches the system prompt as one block, so no session read the cache another had written: every final session's first call read 0 cached tokens and created about 36,000. The session's facts now ride the conversation as the `session_facts` working-state injection (recorded when they change, never summarized, offered again after a compaction), and the system prompt is the same for every session of an agent. Pinned by `test_sessions_in_different_workspaces_share_the_system_prompt`; measured live in the ablation runs (first call reads 33,179 cached tokens; P5 cache creation per run about 40,000 to 6,100).
+  18. **A runaway reply, and an output cap that did not reach the CLI (cap fixed, `64594208`).** Final P10 run 2: the first step streamed 128,092 output tokens of empty code fences and then a valid call (548 s; the answer that followed was correct, but the visible reply carries the fences). CLIO does not judge the model's text (no heuristics in core), so the remedy is the operator's per-reply cap: `lm.max_tokens` was accepted for `claude_code` and silently dropped. It now reaches the CLI as `CLAUDE_CODE_MAX_OUTPUT_TOKENS` and a reply cut at the cap ends as the typed `LMOutputTruncatedError`. No default cap is set, as for every provider. Seen once in 39 final runs.
 - **Phase 6b, tool I/O and default permissions (TD52-TD55):** `callers` and `permission` on `tool()`/`native_tool()`, `plugin.json` `servers.<name>` and `servers.<name>.tools.<tool>` (checked by the manifest, so `plugin check` rejects unknown values), carried by the loader and resolver; a CLIO built-in declares its own `callers` where it is constructed (`native_tool(..., callers="direct")` for the question, plan, todo, task, spawn, goal, loop, schedule, skill, search, `run_code` and memory-write tools, and `submit`), which replaces `NOT_IN_SCRIPTS`. `tools.callers` and `tools.permissions` resolve through `conf` (new `conf.as_mapping`) with key notes and the regenerated environment reference. `gact/agents/tool_settings.py` applies them when an agent's tools are final: blocked tools leave the program (`tool_permission_deny`), `code` tools leave the listing and the deferred catalog and are marked in the `run_code` index, and fall back to `direct` with `tool_callers_code_unavailable` without `run_code`. The gate's order lives in `gact/runtime/tool_permission_layers.py` (deny from any layer, the person's rules, the plugin or deployment default, the approval mode), used for reads, non-reads and nested script calls; CLIO's built-ins and plugins' Python tools, which do not reach the gate in their call path, get the same layers at the call (`native_gate`), so a rule or default applies to them and nothing changes without one. Behaviour change: a person's `deny` or `ask` rule on a read-only tool now holds (before, reads fast-allowed ahead of every rule). The tools page (`GET`/`PUT /v1/settings/tools`, `POST /v1/settings/tools/rules/remove`, `gact/tool_settings_page.py`) writes the person's permission as policy rules and their I/O choice as `tools.callers` in `config.yaml`; gact-tui shows it as a plugin's Tools tab (`plugin-tool-settings.tsx`). UI checks (`scripts/cloud/checks/tool_settings.mjs`) at 1440×900 and 390×844 on the core plugin, before and after a live turn (`claude_code`, haiku, "Say hello in one word.", which built the agent and so the built-ins' flags and `direct` declarations): groups with counts, the per-mode notes, outcomes in words, the menus, and at phone width the list and detail screens; every screenshot read, no console errors or failed requests (the phone pass first caught an effect that returned a value as its cleanup, fixed before the final run). Tests: `tests/test_plugins/test_tool_settings_declarations.py`, `tests/test_gact/test_tool_settings.py` (gate precedence across modes with real gate calls, nested calls, the native layer, the page routes), each sabotage-checked; gact-tui `plugin-tool-settings.test.tsx`. Open: a built-in's read-only flag and own `callers` are read from the tool as built, so before an agent has loaded the plugin the page says they are not known yet; built-ins that ask the gate themselves are marked `self_gated` for the page's outcome text (`run_code`, `make_plugin`, connecting and indexing sources, NDP endpoint operations), and a built-in that asks for itself without that mark would be shown as running without a question. No live model run: the prompt changes only by the `run_code` index (the memory writes now have no stub; a code-only tool gets an "Only in scripts" line), and a plain-request run is owed with the Phase 7 scenarios.
