@@ -1,0 +1,36 @@
+"""The default read-only roles (``explore``, ``review``, ``planner``) never get the plan tools (TD20).
+
+A role runs as a read-only session (``effects="read"``;
+``tests/test_plugins/test_resolve.py::test_a_role_derives_the_callers_plugins_and_runs_read_only``),
+whose posture keeps only native tools declared read-only. The plan and todo tools write
+working state, so they are built undeclared and the posture withholds them.
+"""
+
+from __future__ import annotations
+
+import pytest
+
+from clio_agent.gact.agents import session_tool_posture
+from clio_agent.gact.agents.native_tool_registry import build_native_tools
+from clio_agent.gact.types import AgentDef
+
+PLAN_TOOLS = ["plan_enter", "plan_update", "plan_exit", "write_todos"]
+
+
+def test_a_read_only_session_is_given_no_plan_or_todo_tools(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """SABOTAGE: keep every tool in the posture filter and the plan tools reach the role."""
+    agent = AgentDef(id="explore", title="Explore", tools=[*PLAN_TOOLS, "view_image"])
+    available, _gateway, _withheld = build_native_tools(
+        agent, agent.tools, {}, supports_vision=True
+    )
+    assert set(PLAN_TOOLS) <= set(available)  # they exist for a writing agent
+
+    from clio_agent.gact import side_sessions
+
+    monkeypatch.setattr(side_sessions, "is_read_only_side_session", lambda session: True)
+    monkeypatch.setattr(session_tool_posture, "_active_session", lambda: object())
+    kept = session_tool_posture.restrict_tools_to_session_posture(available.values())
+    names = {getattr(tool, "name", "") for tool in kept}
+    assert not names & set(PLAN_TOOLS)

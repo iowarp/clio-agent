@@ -282,19 +282,23 @@ def close_all() -> None:
         kernel.stop("shutdown")
 
 
+def reap_idle() -> list[Any]:
+    """Stop every kernel idle for longer than ``code.idle_minutes`` and not running."""
+    limit = idle_minutes() * 60
+    now = time.monotonic()
+    with _LOCK:
+        idle = [k for k in _KERNELS.values() if now - k.last_used > limit and not k.lock.locked()]
+        for kernel in idle:
+            del _KERNELS[kernel.key]
+    for kernel in idle:
+        kernel.stop("idle")
+    return idle
+
+
 def _reap() -> None:
     while True:
         time.sleep(60)
-        limit = idle_minutes() * 60
-        now = time.monotonic()
-        with _LOCK:
-            idle = [
-                k for k in _KERNELS.values() if now - k.last_used > limit and not k.lock.locked()
-            ]
-            for kernel in idle:
-                del _KERNELS[kernel.key]
-        for kernel in idle:
-            kernel.stop("idle")
+        reap_idle()
 
 
 def _start_reaper() -> None:
