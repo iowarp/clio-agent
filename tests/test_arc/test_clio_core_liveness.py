@@ -466,3 +466,21 @@ def test_arc_memory_propagates_quarantine_loudly_without_fallback(tmp_path):
     assert format_error_response(exc.value)["error"] == "arc_runtime_lost"
     assert arc._store is store  # no silent LocalFS fallback
     assert store._gate.quarantined is True
+
+
+def test_the_store_trusts_a_probe_for_the_configured_ttl(monkeypatch) -> None:
+    """The store gate honors ``arc.clio_core.liveness_ttl_s``.
+
+    It was built with a literal ``ttl_s=0.0``, so every store op opened a TCP
+    connection to the daemon under the gate lock (P7, 2026-11-02: about a fifth of the
+    server's active time). SABOTAGE: restore ``ttl_s=0.0`` in ``ClioCoreStore`` and the
+    TTL reads 0.
+    """
+    import uuid
+
+    from clio_agent.arc.storage import make_arc_store
+
+    monkeypatch.setenv("CLIO_ARC_CLIO_CORE_LIVENESS_TTL_S", "7.5")
+    store = make_arc_store(backend="cte", namespace=f"ttl-{uuid.uuid4().hex[:10]}")
+    assert isinstance(store, ClioCoreStore)
+    assert store._gate.status()["ttl_s"] == 7.5

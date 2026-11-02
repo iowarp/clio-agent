@@ -431,10 +431,12 @@ class ClioCoreStore(ClioCoreWrites):
         # Daemon loss/replacement still requires process restart. A stalled but
         # verified identical daemon may recover through a GIL-free RPC on this
         # existing client; that path must not rebuild its native binding.
+        # The socket probe is trusted for ``arc.clio_core.liveness_ttl_s``: probing on
+        # every op opened a TCP connection per store call under the gate lock (P7:
+        # about a fifth of the server's active time, 2026-11-02).
         self._gate = LivenessGate(
             config_path=config_path,
             log_level=log_level,
-            ttl_s=0.0,
             auto_recover=False,
             attached_identity=type(self)._attached_runtime_identity,
         )
