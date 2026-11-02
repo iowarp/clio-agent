@@ -512,7 +512,8 @@ def _emit_arc_op(
 
     Returns the emitted event dict; its ``event_id`` is stamped onto the written
     segments' ``trace_ref`` (and re-derived identically on replay). ``segments_written``
-    carry FULL segment dicts so replay can reconstruct ARC without prior state;
+    carry FULL segment dicts so replay can reconstruct ARC without prior state (a
+    highway ``semantic_event`` is a reference: see ``arc.replay.logged_segments``);
     ``content`` / ``args`` / ``text`` are in ``SENSITIVE_KEYS`` so SSE redacts them
     while the durable trace keeps them FULL. ``detail_level="off"`` => durable-only
     (these are high-volume, per-segment).

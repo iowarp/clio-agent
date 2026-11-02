@@ -36,6 +36,7 @@ from clio_agent.arc.chunk_records import ChunkMark
 from clio_agent.arc.context_restore import PlainContextRestore
 from clio_agent.arc.context_view import ViewSnapshot, next_generation, order_at
 from clio_agent.arc.loop_guard import assert_store_write_off_loop
+from clio_agent.arc.replay import logged_segments
 from clio_agent.arc.schema import WORKING_SET_KINDS, Segment, SegmentKind, segment_text
 from clio_agent.arc.segment_cache import _SCOPE_SEP as _SCOPE_SEP
 from clio_agent.arc.segment_cache import _SLASH_SUB as _SLASH_SUB
@@ -607,7 +608,7 @@ class SegmentStore(ScopeCache, PlainContextRestore):
                     logical_time=lt,
                     step=step,
                     position=position,
-                    segments_written=[msgspec.to_builtins(s) for s in written],
+                    segments_written=logged_segments(written),
                     segments_tombstoned=list(tombstoned or []),
                     derived_from=list(derived_from or []),
                 )
