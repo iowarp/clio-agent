@@ -79,6 +79,9 @@ class Scenario:
     during: Callable[[GactClient, str, float], None] | None = None
     after: Callable[[GactClient, list[str]], dict[str, Any]] | None = None  # extra evidence
     timeout_s: float = 900.0
+    # The value given to a question the turn asks the person (a plan_exit approval is
+    # ``auto``); None leaves it open and records the turn as ``waiting_user``.
+    question_answer: str | None = None
 
 
 # ---------------------------------------------------------------- live driving
@@ -109,13 +112,27 @@ def wait_answering(
     seen: list[dict[str, Any]],
     timeout_s: float,
     during: Callable[[GactClient, str, float], None] | None = None,
+    question_answer: str | None = None,
 ) -> str:
-    """Poll the turn to its end, answering permission questions as they come."""
+    """Poll the turn to its end, answering permission questions as they come, and a
+    question to the person with ``question_answer`` (else the turn ends ``waiting_user``)."""
     start, stable = time.monotonic(), []
     while time.monotonic() - start < timeout_s:
         if during is not None:
             during(client, sid, time.monotonic() - start)
-        status = str(client.session(sid).get("status") or "")
+        session = client.session(sid)
+        status = str(session.get("status") or "")
+        question = str((session.get("metadata") or {}).get("pending_user_question_id") or "")
+        if status == "waiting_user" and question and not _pending(client, sid):
+            if question_answer is None:
+                return "waiting_user"
+            if not any(r.get("id") == question for r in seen):
+                seen.append({"id": question, "answered": question_answer, "kind": "question"})
+                client.post(
+                    f"/v1/sessions/{sid}/questions/{question}/answer", {"value": question_answer}
+                )
+            time.sleep(1.0)
+            continue
         if status in INTERACTION:
             stable.clear()
             for row in _pending(client, sid):
@@ -183,7 +200,11 @@ def run_scenario(
         target = sessions[-1]
         client.send(target, prompt)
         during = sc.during if index == 0 else None
-        states.append(wait_answering(client, target, sc.answer, seen, sc.timeout_s, during))
+        states.append(
+            wait_answering(
+                client, target, sc.answer, seen, sc.timeout_s, during, sc.question_answer
+            )
+        )
     exports = {s: client.export(s) for s in sessions}
     record = {
         "id": sc.id,
@@ -316,9 +337,10 @@ SCENARIOS: dict[str, Scenario] = {
             "T9",
             "run_code in plan mode",
             [
-                "Use run_code to print the names under tools.fs, then, in the same script, try "
-                "to create scratch.txt in the workspace with Python's open() and print what "
-                "happened."
+                "This is a read-only check of what plan mode allows, so run it now rather than "
+                "planning it: use run_code to print the names under tools.fs, then, in the same "
+                "script, try to create scratch.txt in the workspace with Python's open() inside "
+                "try/except and print what happened."
             ],
             mode="plan",
         ),
@@ -415,6 +437,7 @@ SCENARIOS: dict[str, Scenario] = {
                 "that it is done."
             ],
             fixture_task="P2",
+            question_answer="auto",
         ),
         Scenario(
             "T19",
@@ -698,10 +721,13 @@ def check_t14() -> tuple[str, list[str]]:
 def check_t17(rec: dict[str, Any]) -> tuple[str, list[str]]:
     names = [c["tool"] for c in _calls(rec)]
     order = [n for n in names if n in ("plan_enter", "plan_exit", "write_todos", "plan_update")]
+    # Enter, write the plan, ask to exit; after approval, todos and a plan revision.
     ok = (
-        order[:2] == ["plan_enter", "plan_exit"]
-        and "write_todos" in order
-        and "plan_update" in order
+        "plan_enter" in order
+        and "plan_exit" in order
+        and order.index("plan_enter") < order.index("plan_exit")
+        and "write_todos" in order[order.index("plan_exit") :]
+        and "plan_update" in order[order.index("plan_exit") :]
     )
     return ("pass" if ok and "NOTES.md" in rec["files"] else "fail"), [
         f"order {order}",
