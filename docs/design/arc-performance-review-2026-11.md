@@ -191,6 +191,18 @@ One P6 and one P7 run per build, current branch, fresh namespace each. Run-to-ru
 | Busy daemon polled before sampling, 8 daemon threads (`arc-w10`) | 30 | 202 | — | — | — |
 | Cross-job workspace set built lazily (`arc-tx`) | 31 | 197 | 170 | 26,383 | 103 |
 | Read-only inline call settles in one snapshot (`arc-fold`) | 29 | 193 | 160 | 22,470 | 90 |
+| A call's tasks found by invocation index, not a session scan (`arc-idx`) | 27 | 166 | 140 | 22,449 | 90 |
+| Lockfile hashed once per state, not per call (`arc-lock`) | — | 161 | — | — | — |
+| Artifact-index lists appended a page at a time (`arc-page`) | 26 | 155 | 127 | 22,449 | 90 |
+| A tool result's call found by index, not a turn scan (`arc-seal`) | 26 | 155 | 126 | 22,457 | 90 |
+
+Three of these were quadratic in the session's length:
+
+- `own_execution_tasks` read every session task at each completion.
+- `add_transform` rewrote the session's whole transform list per call.
+- `append_part` scanned every part of the turn per result.
+
+With them gone, the median gap between calls is flat across the run: 52, 54, 55 and 53 ms by quarter, against 59 to 66 ms before. From the first evaluation to now, P7 went from 333 s to 155 s and its tool time from 303 s to 126 s.
 
 What the profiles showed:
 
