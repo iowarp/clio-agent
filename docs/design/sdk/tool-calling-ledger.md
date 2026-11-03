@@ -247,6 +247,36 @@ One feature off at a time, on the tasks it touches (`.cloud-run/ablations.sh`), 
 - **The explorer is not used on P1 to P4.** No final run on these tasks spawned a child (0 child sessions in all 12), so withholding the spawn tools changes nothing material: the same steps on P1 to P3, with P4 two steps longer and 15 s slower in one comparison of three runs. The explorer's value has to be shown on a task too wide for one context, which this suite does not contain (see T4).
 - **The session plan is not used on H1 to H3.** No final run called `plan_update` or `write_todos`, so withholding them changes nothing (9/9 correct either way). These tasks are too short to test it (T14); the mechanism is verified by T15, T17 and T18, and its value on a long task is still unmeasured.
 
+### Results: head1, after the clio-core follow-up (2026-11-03, three passes)
+
+`head1` is this branch at about `26db1680`: `final2` plus the highway writer, the registry-lock fix, task events written once, the compaction floor, the prompt trims (skills listing and tool descriptions), H4/H5, and H3/H5 compaction at 0.05 (the `lm.call` delta and the Stop-span change landed after it started). Same harness and model (`claude-sonnet-5-5` on `claude_code`), serially, namespace `eval-head1`. All 45 runs ended with a final answer. Medians of three runs from `behaviour.py`; `final2` is the previous full configuration (2026-11-02).
+
+| Task | final2 wall / model / tool / other s | head1 wall / model / tool / other s | clio-core puts, final2 to head1 | Correct final2, head1 |
+| --- | --- | --- | --- | --- |
+| P1 | 11 / 7 / 2 / 2 | 12 / 8 / 2 / 2 | 86 to 73 | 3/3, 3/3 |
+| P2 | 13 / 8 / 3 / 2 | 18 / 13 / 2 / 2 | 132 to 109 | 3/3, 3/3 |
+| P3 | 54 / 40 / 8 / 3 | 51 / 44 / 3 / 4 | 335 to 244 | 0/3, 0/3 |
+| P4 | 63 / 50 / 9 / 4 | 59 / 52 / 4 / 2 | 452 to 208 | no key |
+| P5 | 12 / 9 / 2 / 2 | 14 / 10 / 1 / 2 | 404 to 208 | 3/3, 2/3 (see 3) |
+| P6 | 26 / 8 / 15 / 2 | 36 / 25 / 7 / 4 | 2,333 to 953 | 3/3, 3/3 |
+| P7 | 186 / 23 / 156 / 4 | 127 / 32 / 71 / 23 | 21,665 to 7,214 | 2/3, 3/3 |
+| P8 | 10 / 7 / 1 / 2 | 12 / 8 / 0 / 3 | 140 to 118 | 3/3, 3/3 |
+| P9 | 13 / 9 / 1 / 2 | 17 / 15 / 0 / 2 | 171 to 142 | 3/3, 3/3 |
+| P10 | 9 / 4 / 3 / 2 | 12 / 8 / 2 / 2 | 115 to 95 | no key |
+| H1 | 28 / 19 / 6 / 2 | 30 / 21 / 7 / 2 | 329 to 259 | 3/3, 3/3 |
+| H2 | 28 / 17 / 13 / 2 | 26 / 16 / 8 / 2 | 303 to 227 | 2/3, 3/3 |
+| H3 | 24 / 17 / 5 / 2 | 29 / 22 / 6 / 2 | 314 to 209 | 3/3, 3/3 |
+| H4 | | 92 / 78 / 11 / 3 (9 steps) | 323 | 2/3 |
+| H5 | | 120 / 103 / 13 / 4 (8 steps) | 357 | 3/3 |
+
+**What the numbers say.**
+
+1. **The clio-core work shows where tools dominate.** P7's tool time fell from 156 s to 71 s and its wall time from 186 s to 127 s, with 3/3 correct; puts fell by two thirds (21,665 to 7,214) and by 20-60% on every other task. P6's tool time halved (15 s to 7 s). On the short tasks wall time is model time, which varies between days (P2, P9 and P10's model time rose by 4-6 s with no change in steps or calls).
+2. **P7's "other" time rose from 4 s to 23 s.** That is CLIO's time outside model and tools: the highway writer's backlog drained at the barrier before the next model request, after a 2,000-call script. Tool plus other time is still 94 s against 160 s; the drain is Python work on the same interpreter as the calls (the GIL), so it follows the per-call CPU work, not the store.
+3. **Grading.** P5 run 1 is correct on reading: the answer names REC-00016 and REC-00017 only in a note that the listing was cut after REC-00016, and the grader counts named ids. H4 run 3 was first graded as flagging the decoy: its "Checked and fine" section explained the interval, but its merged progress notes named the chamber and "issues"; the grader now flags the decoy only when no passage about the interval explains it (`9eca3d67`). H4 run 2 missed the growth effect (it did not compare conditions); runs 1 and 3 found all five problems.
+4. **Compaction on the long task.** H5 compacted in all three runs, twice in run 1 (the floor rule from finding 4 below), and all three answers were correct: coherence across compaction on a plain request, which no earlier configuration could show. H3 still never compacts at 0.05: it peaks at about 46k of a 1M window.
+5. **Prompt trims.** The skills listing (6,179 to 4,599 characters) and the four largest tool descriptions (7,106 to 2,092) changed no task's steps or correctness; no run concluded a tool was missing, and P8/P9 still find their deferred tools.
+
 ### Lighthouse: the long export investigation, H4 and H5 (2026-11-03, one run each)
 
 H4 is the OPAL-shaped task the suite lacked: a plain request to investigate a 140-file, 291 MB growth-chamber export broadly, with five seeded problems and a documented decoy (`scripts/eval/tool_calling/fixtures/export_h4.py`, graded by `grade_export.py`). H5 is H4 with the compaction threshold lowered. Each ran once on the head (`claude-sonnet-5-5` on `claude_code`, config `h4-probe`/`h5-probe2`). These are single runs read for what they show, not a measurement.
