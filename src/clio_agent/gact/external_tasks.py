@@ -30,8 +30,10 @@ from clio_agent.arc.task_types import (
 from clio_agent.gact import context, external_task_connections, external_task_inputs
 from clio_agent.gact.external_read_only import LazyAdmission, skips_write_ahead
 from clio_agent.gact.native_work import now
+from clio_agent.gact.read_only_outcomes import ReadOnlyOutcomes
 from clio_agent.gact.task_access import TaskAccessDenied, TaskCaller
 from clio_agent.gact.task_history import RecordingUnconfirmed, content_reference
+from clio_agent.gact.task_index_records import minted_names
 from clio_agent.gact.task_publication import publish_task_notice
 from clio_agent.tools.caller_scope import caller_meta
 from clio_agent.tools.mcp_runtime import enter_connection
@@ -78,8 +80,10 @@ class ExternalTasks:
         self._opening: dict[tuple[str, str, str], asyncio.Task[ExternalConnection]] = {}
         self._retiring: set[asyncio.Task[None]] = set()
         self._closing = False
-        # Read-only calls sent before their admission is written (external_read_only).
+        # Read-only calls sent before their admission is written (external_read_only),
+        # and their records, written behind their replies (read_only_outcomes).
         self._lazy: dict[str, LazyAdmission] = {}
+        self.outcomes = ReadOnlyOutcomes(self.history, self.recovery)
 
     connection = external_task_connections.connection
     _retire_connection = external_task_connections.retire_connection
@@ -307,11 +311,17 @@ class ExternalTasks:
             backend=host.backend,
         )
 
-        def confirm(settle: Callable[[str], dict[str, Any]] | None = None) -> Any:
+        def confirm(
+            settle: Callable[[str], dict[str, Any]] | None = None, observation: str = ""
+        ) -> Any:
             # ``settle`` (a read-only call's inline outcome) makes the first snapshot
             # the terminal one: nothing could observe the task before it was recorded.
+            # Admission was checked before that call was sent; its record is history.
+            # ``observation`` and ``settle`` are fixed when that record is queued, so a
+            # retry re-derives the same events (task_event_reconcile).
             with self.history.serialized():
-                self.app.state.conversations.require_admission(assignment)
+                if settle is None:
+                    self.app.state.conversations.require_admission(assignment)
                 content = self.history.record_submission(submission)
                 snapshot = TaskSnapshot(
                     handle=handle,
@@ -329,7 +339,7 @@ class ExternalTasks:
                 )
                 if settle is not None:
                     snapshot = snapshot.model_copy(update=settle(sid))
-                self.history.record_snapshot(snapshot, observation_id=uuid4().hex)
+                self.history.record_snapshot(snapshot, observation_id=observation or uuid4().hex)
                 return content
 
         if self._closing:
@@ -444,15 +454,24 @@ class ExternalTasks:
         )
         if lazy is not None and (lazy.recorded or not accepted):
             self._lazy.pop(handle, None)  # admitted, or about to be with its result
-        if not accepted:
-            write: Callable[[], Any] = partial(self._inline_result, handle, reply)
-            if lazy is not None:
-                write = lazy.settled(
-                    partial(confirm, partial(self._inline_updates, reply=reply)), write
-                )
+        if not accepted and lazy is not None and not lazy.recorded:
+            # Nothing was recorded before the reply (and nothing can be now): its admission,
+            # already settled, is its one record, written behind it (read_only_outcomes).
+            self.outcomes.record(
+                "external-inline:" + handle,
+                partial(confirm, partial(self._inline_updates, reply=reply, at=now()), uuid4().hex),
+                minted=minted_names(handle, reference),
+                creates=lambda: (
+                    (sid, content_reference(sid, description).scope),
+                    (sid, content_reference(sid, self._inline_value(reply)).scope),
+                ),
+                minted_scopes=((sid, content.scope),),  # it embeds the minted reference
+                recorded=partial(self._recorded_behind, host),
+            )
+        elif not accepted:
             await self._record_or_defer(
                 "external-inline:" + handle,
-                write,
+                partial(self._inline_result, handle, reply),
                 retire=lambda: self._retire_connection(host),
             )
         if stopped:
@@ -551,6 +570,11 @@ class ExternalTasks:
         driver = asyncio.create_task(result())
         host.drivers[call.task.task_id] = driver
         driver.add_done_callback(lambda finished: self._schedule_retirement(host, call))
+
+    def _recorded_behind(self, host: ExternalConnection) -> None:
+        """A record written behind its reply landed; the connection may retire now."""
+        if not self._closing:
+            self._schedule_retirement(host)
 
     def _rpc_retired(self, host: ExternalConnection, rpc: asyncio.Task[Any]) -> None:
         host.rpcs.discard(rpc)
@@ -670,20 +694,25 @@ class ExternalTasks:
                 observation_id=uuid4().hex,
             )
 
-    def _inline_updates(self, session_id: str, *, reply: Any) -> dict[str, Any]:
-        """Confirm an inline reply's content; the snapshot fields that settle the call."""
-        value = {
+    @staticmethod
+    def _inline_value(reply: Any) -> dict[str, Any]:
+        """The recorded content of an inline reply."""
+        return {
             "content": [part.model_dump(mode="json") for part in reply.content],
             "structuredContent": reply.structured_content,
             "isError": reply.is_error,
         }
-        result = self.history.write_content(session_id, value)
+
+    def _inline_updates(self, session_id: str, *, reply: Any, at: str = "") -> dict[str, Any]:
+        """Confirm an inline reply's content; the snapshot fields that settle the call
+        (at ``at``, or now)."""
+        result = self.history.write_content(session_id, self._inline_value(reply))
         return {
             "status": "failed" if reply.is_error else "completed",
             "raw_status": "inline",
             "activity": "",
-            "terminal_at": now(),
-            "updated_at": now(),
+            "terminal_at": at or now(),
+            "updated_at": at or now(),
             "settlement": "external_acknowledged",
             "result": result,
             "backend_observation": result,
@@ -750,4 +779,6 @@ class ExternalTasks:
 
     async def close(self) -> None:
         """Retire observation without claiming surviving external jobs were cancelled."""
+        await self.outcomes.recorded()  # replies already returned; their records land
         await external_task_connections.close_connections(self)
+        await self.outcomes.recorded()  # calls that answered while closing

@@ -259,6 +259,25 @@ def store_blob_size(store: Any, kind: str, name: str) -> int:
     return int(future.result(0) or 0)
 
 
+def store_blob_sizes(store: Any, kind: str, names: Sequence[str]) -> dict[str, int]:
+    """Stored sizes of several blobs (0 when missing): every ``AsyncGetBlobSize`` is
+    issued before any is awaited, so the probe costs about one round trip.
+
+    Raises:
+        RuntimeError: The runtime refused a probe with a code other than not-found.
+    """
+    tag_id = store._tag_ids.get(kind)
+    issued = [(name, store._client.AsyncGetBlobSize(tag_id, name)) for name in names]
+    sizes: dict[str, int] = {}
+    for name, pending in issued:
+        future = await_future(pending, op_name="get")
+        code = future.wait(0)
+        if code and code != _BLOB_NOT_FOUND:
+            raise RuntimeError(f"GetBlobSize operation failed (return code {code})")
+        sizes[name] = 0 if code else int(future.result(0) or 0)
+    return sizes
+
+
 def store_read(store: Any, kind: str, name: str, length: int, offset: int = 0) -> bytes:
     """``length`` bytes of a blob from ``offset``, read GIL-free (``AsyncGetBlob``).
 

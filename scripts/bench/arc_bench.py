@@ -57,7 +57,7 @@ def _time(fn: Callable[[], Any], n: int) -> list[float]:
 class _Counting:
     """Counts store calls and the bytes ``put`` / ``put_at`` send, by method and kind."""
 
-    METHODS = ("put", "put_at", "put_many", "get", "get_raw", "delete", "exists")
+    METHODS = ("put", "put_at", "put_many", "get", "get_raw", "delete", "exists", "sizes")
 
     def __init__(self, store: Any) -> None:
         self.store = store

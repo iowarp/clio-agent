@@ -121,7 +121,8 @@ async def test_a_read_only_call_is_admitted_with_its_result(
     # A read is sent first under the default; with "all" it is write-ahead too.
     assert (reader.handle in seen["read"]) is (mode == "all")
     # Sent first, its one snapshot is the settled one; write-ahead records running too.
-    # SABOTAGE: drop ``lazy.settled`` in ``_call`` and the default records two.
+    # SABOTAGE: write it as ``lazy.then(partial(self._inline_result, ...))`` in ``_call``
+    # and the default records two.
     assert snapshots.count("read") == (1 if mode == "non_read_only" else 2)
     # Recorded afterwards exactly as a write-ahead call is: submission, then result.
     assert reader.status == "completed" and reader.raw_status == "inline"

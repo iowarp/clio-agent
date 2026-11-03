@@ -231,6 +231,35 @@ Each record still costs a semantic event, a lane append, a highway append and an
 
 The idle daemon's busy-poll is a clio-core matter (upstream).
 
+## Read-only records behind the reply, group-committed (2026-11-03)
+
+A py-spy profile of P7 showed the one history-writer thread (`clio-core-io_0`) spending 98% of its active samples in a read-only call's settled admission (`LazyAdmission.settled` -> `ExternalTasks._call.confirm`): about 13 clio-core round trips per call, one at a time, while the thread was CPU-active only 12% of the time. And `_call` awaited that record before returning, so each call held its slot until it was confirmed.
+
+What changed:
+
+- **The reply no longer waits for the record** (`gact/read_only_outcomes.py`). A read-only call with nothing recorded before its reply queues its one record (admission already settled) on the history writer and returns. The writer is FIFO, so every later operation on it sees the record. Readers that do not go through the writer wait for the queue first: the task tools (`query_tasks`, `observe_tasks`), turn retirement and shutdown. A failed record is logged `read_only_outcome_deferred` and handed to `CoreRecovery`. A retry that fails for any reason but a recording hold is logged `read_only_outcome_unrecorded` and dropped. Write calls keep write-ahead unchanged.
+- **Group commit** (`gact/core_io.py` `submit_batch`, `gact/task_history_group.py`, `arc/segment_group.py`). Records queued while the writer is busy run in one writer turn. Their segment appends are staged and put once per scope: task content first, then the task-event lane, then `_events`, each rank one `put_many`. Index rows go in one `put_many` before them. Projections, highway events, UI hints and closing deletes run after the flush. A scope another thread appended to meanwhile (the shared `_events` log) is rebased.
+- **No reads for what cannot exist yet.** The call's freshly minted handle and reference are not looked up (`TaskIndex.assume_absent`). Its content records are probed in one pipelined `sizes` call per group, and the submission content, which embeds the minted reference, is not probed at all.
+
+`scripts/bench/mcp_burst_bench.py` (200 read-only calls, 8 in flight, a 2 ms handler, the shared daemon, machine load 10-12 on 4 cores, two interleaved runs each):
+
+| Measure | Before | After |
+| --- | --- | --- |
+| Calls answered per second | 10.7-11.1 | 249-332 |
+| Median call latency | 607-692 ms | 15-19 ms |
+| Writer time per call | 89-93 ms | 6.4-7.5 ms |
+| Store RPC calls per call | 13 (8 puts, 5 gets) | 0.08-0.10 (a group: 1 probe, 1 index `put_many`, 3 segment `put_many`) |
+| Records settled after the last reply | 0 ms (each call waited) | 741 ms |
+
+All 200 calls recorded, end to end in 1.3-1.6 s against 18-19 s before. The remaining writer time is clio-core processing the blobs themselves (about 4 per call: two content records, two index rows) and Python work per record.
+
+Recovery (follow-up, tested in `tests/test_arc/test_read_only_outcome_recovery.py` and `tests/test_gact/test_interrupted_tool_calls.py`):
+
+- **Partial landing.** A group whose `_events` put failed after its lane put landed was retried as if nothing had landed. The retry minted a new observation id and completion time. With the index built, the lane refused the changed outcome, the record was logged `read_only_outcome_unrecorded` although task readers showed it, and `_events` (export, trace, provenance) never got it. Before the build, the lane got a second submission and a second settled snapshot. Now the record's observation id and settle time are fixed when it is queued, and the retry runs under `task_event_reconcile.reconciled`: each task event is written only to the record that lacks it (typed `task_event_reconciled`; a different body under the same identity is `task_event_identity_conflict`).
+- **Crash window.** A record still in the queue is lost with the process: no task, index row or task event survives, and nothing is resubmitted. The turn's `tool.call.started` can then be the call's only record (a `tool_call` part is sealed only at its result). Turn recovery (`restart_interruptions`) now gives the interrupted turn's closing row a `tool_call` part for each call that started with no recorded completion, typed `tool_outcome_unrecorded` (`gact/interrupted_tool_calls.py`), so the transcript reports its outcome as unknown instead of leaving it out.
+
+Not used: clio-core's deferred puts (`AsyncPutBlobDefer`). They batch small puts into one native task, but small writes may wait in client-side sieve pages, a put has no confirmation of its own (only a sticky process-wide `DeferErrorCount` and the process-wide drain `AwaitPutsUntilSpace(0)`), and a failure cannot be attributed to a blob. Group commit needs both a per-record confirmation before it reports a record durable and per-blob failures to abandon a chunk.
+
 ## Measurement notes
 
 - Micro-benchmarks ran against the live daemon in namespaces `bench-arc-a` and `bench-arc-b`, and every record they wrote was deleted. The scripts are in the session scratchpad and are not part of the repository.

@@ -12,7 +12,6 @@ must run off the application event loop.
 from __future__ import annotations
 
 import hashlib
-import logging
 import threading
 from collections.abc import Callable, Iterator
 from contextlib import contextmanager
@@ -37,6 +36,8 @@ from clio_agent.arc.task_types import (
 from clio_agent.errors import ClioError
 from clio_agent.gact import (
     task_event_lane,
+    task_event_reconcile,
+    task_history_group,
     task_history_projection,
     task_history_queries,
     task_index_build,
@@ -55,7 +56,6 @@ CONTENT_SCOPE = "_events/t/content/"
 OUTPUT_SCOPE = "_events/t/output/"
 _CONTENT_SCOPES = (CONTENT_SCOPE, "_task_content/")
 _OUTPUT_SCOPES = (OUTPUT_SCOPE, "_task_output/")
-logger = logging.getLogger(__name__)
 _JSON_VALUE: TypeAdapter[JsonValue] = TypeAdapter(JsonValue)
 
 
@@ -237,13 +237,9 @@ class TaskHistory:
             )
             self._project(state, "task.observed", stored)
             task_index_writes.close_task(self, previous, snapshot)
-            if self.observation_committed is not None:
-                try:
-                    self.observation_committed(snapshot)
-                except Exception:
-                    logger.exception(
-                        "Task UI hint failed after confirmed observation handle=%s", snapshot.handle
-                    )
+            task_history_group.after_commit(
+                self, lambda: task_history_group.observation_hint(self, snapshot)
+            )
 
     def record_mail(self, item: MailItem, *, max_pending_messages: int = 0) -> MailItem:
         """Accept durable session mail; only pending peer messages count toward a cap."""
@@ -275,7 +271,8 @@ class TaskHistory:
             if existing is not None:
                 if self.read_content(existing) != context.model_dump(mode="json"):
                     raise ValueError("Submission reference cannot be reused")
-                return existing
+                if not task_event_reconcile.active(self):  # a retry completes its events
+                    return existing
             state = self._session_state(context.owner.session_id)
             content = self.write_content(context.owner.session_id, context.model_dump(mode="json"))
             payload = {"reference": context.reference, "content": content.model_dump(mode="json")}
@@ -590,6 +587,7 @@ class TaskHistory:
     reconcile_open = task_index_writes.reconcile_open
     release_session_tree = task_index_writes.release_session_tree
     complete_index_build = task_index_build.complete_index_build
+    run_grouped = task_history_group.run_grouped
 
     def latest_assignment(self, session_id: str) -> TaskSnapshot | None:
         """Resolve a stable session's latest finite assignment from its passive Core index."""
@@ -782,8 +780,11 @@ class TaskHistory:
             with self._view_lock:
                 task_history_projection._project(state, event_type, payload, snapshot=snapshot)
 
-        self.confirm_write(project)
-        task_history_queries.notify_projected(self, state, event_type, payload)
+        def commit() -> None:  # in a group, once its records are confirmed
+            self.confirm_write(project)
+            task_history_queries.notify_projected(self, state, event_type, payload)
+
+        task_history_group.after_commit(self, commit)
 
     def context_inputs(self, session_id: str, scope: str) -> dict[str, RecipientInput]:
         """Read proven model inputs for one fixed Core context scope."""

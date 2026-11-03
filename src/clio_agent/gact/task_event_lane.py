@@ -24,8 +24,9 @@ in the same clio-core segment store; tree loads read only that lane.
 from __future__ import annotations
 
 import time
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from datetime import UTC, datetime
+from functools import partial
 from typing import TYPE_CHECKING, Any
 
 import msgspec
@@ -33,6 +34,8 @@ import msgspec
 from clio_agent.arc import lane_chunking
 from clio_agent.arc.live import EVENTS_SCOPE, build_event_content
 from clio_agent.arc.loop_guard import assert_store_write_off_loop
+from clio_agent.gact import task_event_reconcile
+from clio_agent.gact.task_history_group import after_commit, in_group
 from clio_agent.gact.task_index_records import LOOKUP_KIND
 
 if TYPE_CHECKING:
@@ -99,7 +102,15 @@ def append_lane(
     )
 
 
-def record(arc: ARCMemory, event: Any, *, lane: dict[str, Any] | None = None) -> Any:
+def record(
+    arc: ARCMemory,
+    event: Any,
+    *,
+    lane: dict[str, Any] | None = None,
+    highway: Callable[[Callable[[], Any]], None] | None = None,
+    to_lane: bool = True,
+    to_log: bool = True,
+) -> Any:
     """Confirm a task event in its lane, then in the canonical log and highway.
 
     Args:
@@ -107,13 +118,19 @@ def record(arc: ARCMemory, event: Any, *, lane: dict[str, Any] | None = None) ->
         event: The task layer's ``SemanticEvent``.
         lane: Read annotations stored with the lane copy only (under ``LANE_KEY`` in
             its payload), never in the canonical log.
+        highway: Inside a writer group, where the highway emission goes (it runs once
+            the group's records are confirmed, :mod:`clio_agent.gact.task_history_group`).
+        to_lane: Append to the lane (a retry skips a lane that already holds the event,
+            :mod:`clio_agent.gact.task_event_reconcile`).
+        to_log: Append to the canonical log and emit the highway event (likewise).
 
     Returns:
-        What :meth:`ARCMemory.record_semantic_event` returns (the highway projection).
+        What :meth:`ARCMemory.record_semantic_event` returns (the highway projection);
+        ``None`` when the emission was handed to ``highway``.
     """
     session_id = str(getattr(event, "session_id", "") or "")
     content = build_event_content(event)
-    if session_id and content is not None and content["event_type"] in TASK_EVENTS:
+    if to_lane and session_id and content is not None and content["event_type"] in TASK_EVENTS:
         if lane:
             content["payload"] = {**content["payload"], LANE_KEY: lane}
         append_lane(
@@ -123,7 +140,15 @@ def record(arc: ARCMemory, event: Any, *, lane: dict[str, Any] | None = None) ->
             turn_id=str(getattr(event, "turn_id", "") or ""),
             expert_span_id=str(getattr(event, "expert_span_id", "") or ""),
         )
-    return arc.record_semantic_event(event)
+    if not to_log:
+        return None
+    if highway is None:
+        return arc.record_semantic_event(event)
+    arc.on_semantic_event(event)  # the ``_events`` append half of record_semantic_event
+    sink = arc._highway_sink
+    if sink is not None:
+        highway(lambda: sink(event))
+    return None
 
 
 def record_event(
@@ -147,7 +172,15 @@ def record_event(
         span_id=identity,
         payload={"schema_version": 1, "observation_id": identity, "record": payload},
     )
-    history.confirm_write(lambda: record(history.arc, event, lane=lane))
+    highway = partial(after_commit, history) if in_group(history) else None
+    to_lane = to_log = True
+    if task_event_reconcile.active(history):  # a retry: only where the first try did not land
+        to_lane, to_log = task_event_reconcile.missing(history, event)
+    history.confirm_write(
+        lambda: record(
+            history.arc, event, lane=lane, highway=highway, to_lane=to_lane, to_log=to_log
+        )
+    )
 
 
 def session_task_events(arc: ARCMemory, session_id: str) -> Iterator[tuple[str, dict[str, Any]]]:

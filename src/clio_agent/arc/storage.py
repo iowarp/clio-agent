@@ -37,6 +37,7 @@ from clio_agent.arc.blob_frame import BlobNameDecodeError, BlobReadError, read_f
 from clio_agent.arc.clio_core_async_ops import (
     TagIds,
     store_blob_size,
+    store_blob_sizes,
     store_delete,
     store_delete_many,
     store_read,
@@ -599,6 +600,11 @@ class ClioCoreStore(ClioCoreWrites):
     @guard_store_op("exists", inline_on_kind=True)
     def exists(self, kind: str, name: str) -> bool:
         return store_blob_size(self, kind, name) > 0
+
+    @guard_store_op("exists", inline_on_kind=True)
+    def sizes(self, kind: str, names: Sequence[str]) -> dict[str, int]:
+        """Stored sizes of several records (0 when absent), asked together."""
+        return store_blob_sizes(self, kind, names)
 
     def scan(self, kind: str, prefix: str = "") -> Iterator[tuple[str, bytes]]:
         for blob_name in self.scan_names(kind, prefix):

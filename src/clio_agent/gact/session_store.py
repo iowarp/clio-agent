@@ -210,8 +210,17 @@ def _interrupted_assistant_row(
     only overlays the restart's ``stop_reason``/``error_info``, so the streamed
     text survives. Only a session whose lane has no such message (the crash hit
     before the first part ever sealed) falls back to the empty synthetic row.
+
+    Either row also gets a ``tool_call`` part for each call of the turn that started
+    and whose outcome was never recorded (typed ``tool_outcome_unrecorded``), so the
+    transcript reports it as unknown rather than leaving it out
+    (:mod:`clio_agent.gact.interrupted_tool_calls`).
     """
 
+    from clio_agent.gact.interrupted_tool_calls import (  # noqa: PLC0415 - lazy: keep leaf
+        unrecorded_tool_calls,
+        with_unrecorded_calls,
+    )
     from clio_agent.gact.runtime.globals import _iso_from_epoch, _new_message_id  # noqa: PLC0415
     from clio_agent.gact.transcript_projection import (  # noqa: PLC0415 - lazy: keep leaf
         assemble_session_messages,
@@ -236,7 +245,8 @@ def _interrupted_assistant_row(
     )
 
     arc = getattr(app.state, "arc", None)
-    if arc is not None and getattr(arc, "_segments", None) is not None:
+    recorded = arc is not None and getattr(arc, "_segments", None) is not None
+    if recorded:
         try:
             lane_has_atoms = has_atoms(arc, session_id)
         except OSError:
@@ -249,7 +259,7 @@ def _interrupted_assistant_row(
                 and trailing.role == "assistant"
                 and trailing.stop_reason == "incomplete"
             ):
-                return trailing.model_copy(
+                return with_unrecorded_calls(arc, session_id, turn_id, trailing).model_copy(
                     update={"stop_reason": "error", "error_info": error_info}
                 )
 
@@ -264,6 +274,7 @@ def _interrupted_assistant_row(
         updated_at=_iso_from_epoch(now),
         stop_reason="error",
         error_info=error_info,
+        parts=unrecorded_tool_calls(arc, session_id, turn_id, ()) if recorded else [],
     )
 
 

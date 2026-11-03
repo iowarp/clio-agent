@@ -67,6 +67,10 @@ class ARCStore(Protocol):
         """Return whether a record exists for ``(kind, name)``."""
         ...
 
+    def sizes(self, kind: str, names: Sequence[str]) -> dict[str, int]:
+        """Stored sizes of several records (0 when absent), asked together."""
+        ...
+
     def scan(self, kind: str, prefix: str = "") -> Iterator[tuple[str, bytes]]:
         """Yield ``(name, data)`` for every record in ``kind`` whose name
         starts with ``prefix`` (``""`` = all). Order is unspecified."""

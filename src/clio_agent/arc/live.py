@@ -228,6 +228,9 @@ class _MemoryStore:
     def exists(self, kind: str, name: str) -> bool:
         return (kind, name) in self._data
 
+    def sizes(self, kind: str, names: Any) -> dict[str, int]:
+        return {name: len(self._data.get((kind, name), b"")) for name in names}
+
     def scan(self, kind: str, prefix: str = "") -> Iterator[tuple[str, bytes]]:
         for (k, name), data in list(self._data.items()):
             if k == kind and name.startswith(prefix):
