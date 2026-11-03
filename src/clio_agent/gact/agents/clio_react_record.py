@@ -563,17 +563,13 @@ class StepRecorder:
         rows: list[dict[str, Any]] = []
         for call in calls:
             value, is_error = results.get(call.id, ("", False))
-            from clio_agent.gact.tool_observation import CollectedTaskResult
+            from clio_agent.gact.tool_observation import COLLECTED, CollectedText
 
-            notification_ids = (
-                list(value.notification_ids) if isinstance(value, CollectedTaskResult) else []
-            )
-            read_handles = (
-                list(value.read_handles) if isinstance(value, CollectedTaskResult) else []
-            )
-            observe_handles = (
-                list(value.observe_handles) if isinstance(value, CollectedTaskResult) else []
-            )
+            notification_ids = list(value.notification_ids) if isinstance(value, COLLECTED) else []
+            read_handles = list(value.read_handles) if isinstance(value, COLLECTED) else []
+            observe_handles = list(value.observe_handles) if isinstance(value, COLLECTED) else []
+            collect = not isinstance(value, COLLECTED) or value.collect
+            value = str(value) if isinstance(value, CollectedText) else value  # stored as text
             self._write(
                 "tool_call",
                 {"id": call.id, "name": call.name, "args": dict(call.input)},
@@ -588,11 +584,7 @@ class StepRecorder:
                 **({"notification_ids": notification_ids} if notification_ids else {}),
                 **({"task_read_handles": read_handles} if read_handles else {}),
                 **({"task_observe_handles": observe_handles} if observe_handles else {}),
-                **(
-                    {"task_collection": False}
-                    if isinstance(value, CollectedTaskResult) and not value.collect
-                    else {}
-                ),
+                **({"task_collection": False} if not collect else {}),
             }
             observation_id = self._write("observation", observation, step, span)
             if notification_ids or read_handles or observe_handles:
