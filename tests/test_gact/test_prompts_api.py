@@ -57,24 +57,24 @@ def test_capabilities_advertise_prompt_registry(client: TestClient) -> None:
 
 
 def test_builtin_prompts_are_listed_and_resolvable(client: TestClient) -> None:
-    """The built-ins are the reminders and templates, used verbatim (the chat, planner,
+    """The built-ins are the reminders, used verbatim (the chat, planner,
     answer and expert prompts that nothing read were removed)."""
     listed = client.get("/v1/prompts")
 
     assert listed.status_code == 200
     prompts = {row["id"]: row for row in listed.json()["prompts"]}
-    assert "clio.compaction" in prompts and "clio.reminder.child_report" in prompts
+    assert "clio.reminder.child_report" in prompts and "clio.compaction" not in prompts
     assert not {"clio.example", "clio.main.planner", "clio.main.answer"} & set(prompts)
 
-    resolved = client.get("/v1/prompts/clio.compaction").json()["prompt"]
-    assert resolved["id"] == "clio.compaction"
+    resolved = client.get("/v1/prompts/clio.reminder.child_report").json()["prompt"]
+    assert resolved["id"] == "clio.reminder.child_report"
     assert resolved["profile"] == "default"
-    assert resolved["text"].startswith("The context window is nearly full")
+    assert resolved["text"].startswith("Your final answer is passed as written")
     assert resolved["scope"] == "builtin"
     assert resolved["source_path"] == (
-        "package://clio_agent.prompt_packs.builtin/templates/clio.compaction.md"
+        "package://clio_agent.prompt_packs.builtin/reminders/child_report.md"
     )
-    assert resolved["metadata"]["kind"] == "template"
+    assert resolved["metadata"]["kind"] == "reminder"
 
 
 _RENDER_ME = """Agents:
@@ -148,7 +148,7 @@ def test_prompt_validate_and_reload_endpoints(client: TestClient) -> None:
     reload_resp = client.post("/v1/prompts/reload", json={})
 
     assert reload_resp.status_code == 200, reload_resp.text
-    assert "clio.compaction" in reload_resp.json()["reload"]["prompt_ids"]
+    assert "clio.reminder.child_report" in reload_resp.json()["reload"]["prompt_ids"]
     assert reload_resp.json()["reload"]["prompt_count"] >= 1
 
 
@@ -195,28 +195,28 @@ def test_session_prompt_override_does_not_leak_to_other_sessions(tmp_path: Path)
         sid_a = c.post("/v1/sessions", json={"title": "A"}).json()["id"]
         sid_b = c.post("/v1/sessions", json={"title": "B"}).json()["id"]
         saved = c.put(
-            "/v1/prompts/clio.compaction",
+            "/v1/prompts/clio.reminder.child_report",
             json={
                 "scope": "session",
                 "session_id": sid_a,
                 "profile": "default",
-                "text": "Session A compaction prompt.",
+                "text": "Session A child report.",
             },
         )
         assert saved.status_code == 200, saved.text
 
         prompt_a = c.get(
-            "/v1/prompts/clio.compaction",
+            "/v1/prompts/clio.reminder.child_report",
             params={"session_id": sid_a},
         ).json()["prompt"]
         prompt_b = c.get(
-            "/v1/prompts/clio.compaction",
+            "/v1/prompts/clio.reminder.child_report",
             params={"session_id": sid_b},
         ).json()["prompt"]
 
-    assert prompt_a["text"] == "Session A compaction prompt."
+    assert prompt_a["text"] == "Session A child report."
     assert prompt_a["scope"] == "session"
-    assert "Session A compaction prompt." not in prompt_b["text"]
+    assert "Session A child report." not in prompt_b["text"]
 
 
 def test_workspace_prompt_override_uses_workspace_root(tmp_path: Path) -> None:

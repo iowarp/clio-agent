@@ -404,8 +404,8 @@ KEY_NOTES: dict[str, str] = {
         "lower to compact earlier, raise to accumulate more."
     ),
     "compaction.prompt_file": (
-        "Removed: the compaction prompt is the registry prompt clio.compaction, edited on "
-        "the Prompts page. Still set, compaction fails typed so the old file is not ignored."
+        "Removed: the compaction prompt is part of CLIO core (gact/compaction_prompt.md). "
+        "Still set, compaction fails typed so the old file is not ignored."
     ),
     "compaction.keep.head": (
         "Whether a compaction keeps the current user question verbatim after the summary "

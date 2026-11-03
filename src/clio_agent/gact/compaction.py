@@ -476,7 +476,7 @@ def _summary(app: Any, sid: str, plan: _ScopePlan, focus: str, summarize: Summar
         render_compaction_prompt,
     )
 
-    try:  # the session's copy of clio.compaction, read at every compaction (no fallback)
+    try:  # the core template, read at every compaction
         prompt = render_compaction_prompt(
             focus=focus, files=_context_file_inventory(app, sid), app=app, session_id=sid
         )

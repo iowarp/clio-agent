@@ -30,7 +30,6 @@ from clio_agent.runtime import trace
 
 __all__ = [
     "REMINDER_INACTIVE",
-    "registry_for",
     "REMINDER_PREFIX",
     "Reminder",
     "active",
@@ -63,12 +62,6 @@ class Reminder:
     params: dict[str, str] = field(default_factory=dict)
     scope: str = "builtin"
     required: str = ""
-
-
-def registry_for(app: Any, session_id: str = "") -> Any:
-    """The prompt registry ``session_id`` sees (its session and workspace copies first)."""
-    app, session_id = _context(app, session_id)
-    return _registry(app, session_id)
 
 
 def _registry(app: Any, session_id: str, write_scope: str = "global") -> Any:

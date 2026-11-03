@@ -1,21 +1,10 @@
-"""The compaction prompt is the registry prompt ``clio.compaction`` (no code change).
+"""The compaction prompt is part of CLIO core (``gact/compaction_prompt.md``).
 
 On a real app over real clio-core, through ``POST /v1/sessions/{sid}/compact``: the
-shipped template is used when nothing overrides it; a session's own copy (saved as the
-Prompts page saves it) is used instead, for that session only (the summarizer's last
-message is exactly its rendering, after the scope's own context); the placeholders are
-filled; an edit applies at the next compaction; an invalid template, or the removed
-``compaction.prompt_file`` setting still set, fails the compaction typed
-(``compaction.failed`` + a notice, nothing folded) and is a ``misconfigured`` doctor row
--- never a fallback to the shipped text.
-
-SABOTAGE (run manually, each turns the named test red):
-
-* ``compaction_prompt.load_prompt_template``: resolve without the session
-  (``registry_for(app, "")``) -> ``test_a_sessions_copy_is_its_prompt``.
-* ``compaction_prompt.load_prompt_template``: drop the unknown-placeholder check ->
-  ``test_an_invalid_template_or_the_removed_setting_fails_typed_and_folds_nothing``.
-* cache the template on first read -> ``test_an_edit_applies_at_the_next_compaction``.
+summarizer's last message is exactly the core template's rendering, after the scope's
+own context; the placeholders are filled; the removed ``compaction.prompt_file``
+setting still set fails the compaction typed (``compaction.failed`` + a notice, nothing
+folded) and is a ``misconfigured`` doctor row -- never ignored.
 """
 
 from __future__ import annotations
@@ -38,19 +27,11 @@ from .test_compaction import _SCOPE, _CapturingAgent, _seed, _text_message
 from .test_post_messages import _create_session
 
 REPO = Path(__file__).resolve().parents[2]
-PACKAGED = (
-    REPO / "src" / "clio_agent" / "prompt_packs" / "builtin" / "templates" / "clio.compaction.md"
-)
-
-
-def _save(app: Any, sid: str, text: str) -> None:
-    """Save the session's own copy, as the Prompts page saves it."""
-    registry = app.state.prompt_registry_for_request(session_id=sid, write_scope="session")
-    registry.save(PROMPT_ID, text=text, metadata={"kind": "template", "variables": "focus, files"})
+PACKAGED = REPO / "src" / "clio_agent" / "gact" / "compaction_prompt.md"
 
 
 def _shipped_body() -> str:
-    return PACKAGED.read_text(encoding="utf-8").split("---\n", 2)[2]
+    return PACKAGED.read_text(encoding="utf-8")
 
 
 def _compact(
@@ -59,7 +40,6 @@ def _compact(
     *,
     focus: str = "",
     files: dict[str, Any] | None = None,
-    override: str | None = None,
 ) -> tuple[Any, list[str], list[Any], str]:
     """One manual compaction on a fresh session; ``(response, prompts, events, sid)``."""
     agent = _CapturingAgent()
@@ -72,66 +52,42 @@ def _compact(
         _seed(client, sid, [_text_message(f"msg_{i}", sid, t) for i, t in enumerate(texts)])
         if files:
             app.state.context_files[sid] = files
-        if override is not None:
-            _save(app, sid, override)
         response = client.post(f"/v1/sessions/{sid}/compact", json={"focus": focus})
         response.app_state = app  # type: ignore[attr-defined]
     return response, agent.prompts, events, sid
 
 
-def test_the_shipped_template_is_the_prompt_when_nothing_overrides_it(
+def test_the_core_template_is_the_prompt(
     tmp_path: Path,
 ) -> None:
     response, prompts, _events, _sid = _compact(tmp_path, ["DEFAULT-ROW"])
     assert response.status_code == 200, response.text
     [(history, prompt)] = [split_seen(p) for p in prompts]
     assert history == "USER: DEFAULT-ROW"  # the scope's own context, then the prompt
-    expected = _shipped_body().replace("{{focus}}", "").replace("{{files}}", "").strip()
+    expected = _shipped_body().replace("{{focus}}", "").replace("{{files}}", "").strip()  # noqa: E501
     assert prompt == expected
     assert prompt.startswith("The context window is nearly full")
 
 
-def test_a_sessions_copy_is_its_prompt(tmp_path: Path) -> None:
-    response, prompts, _events, _sid = _compact(
-        tmp_path, ["CUSTOM-ROW"], override="RESEARCH RULES {literal}{{focus}}"
-    )
-    assert response.status_code == 200, response.text
-    assert [split_seen(p) for p in prompts] == [("USER: CUSTOM-ROW", "RESEARCH RULES {literal}")]
-    # Another session still sees the shipped template.
-    _response, others, _e, _s = _compact(tmp_path / "other", ["ROW"])
-    assert split_seen(others[0])[1].startswith("The context window is nearly full")
-
-
 def test_focus_and_files_fill_their_placeholders(tmp_path: Path) -> None:
     files = {"a.csv": {"path": "a.csv", "display_path": "data/a.csv", "mode": "read"}}
-    response, prompts, _events, _sid = _compact(
-        tmp_path, ["ROW"], focus="units", files=files, override="R{{focus}}{{ files }}"
-    )
+    response, prompts, _events, _sid = _compact(tmp_path, ["ROW"], focus="units", files=files)
     assert response.status_code == 200, response.text
-    assert [split_seen(p)[1] for p in prompts] == [
-        "R\n\nFocus the summary on: units"
+    [prompt] = [split_seen(p)[1] for p in prompts]
+    assert prompt.endswith(
+        "\n\nFocus the summary on: units"
         "\n\n--- attached session files ---\n- path=data/a.csv; mode=read\n--- end files ---"
-    ]
+    )
 
 
-@pytest.mark.parametrize(
-    ("override", "removed", "problem"),
-    [
-        ("rules {{focus}} and {{model}}", None, "unknown render placeholder: model"),
-        ("rules over {{transcript}}", None, "unknown render placeholder: transcript"),
-        (None, "/old/compaction.md", "compaction.prompt_file (CLIO_COMPACTION_PROMPT_FILE) was"),
-    ],
-)
-def test_an_invalid_template_or_the_removed_setting_fails_typed_and_folds_nothing(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-    override: str | None,
-    removed: str | None,
-    problem: str,
+def test_the_removed_setting_fails_typed_and_folds_nothing(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    if removed is not None:
-        monkeypatch.setenv("CLIO_COMPACTION_PROMPT_FILE", removed)
-    response, prompts, events, sid = _compact(tmp_path, ["ROW"], override=override)
+    """SABOTAGE: drop the ``_removed_setting`` check in ``load_prompt_template`` and the
+    compaction runs with the old setting silently ignored."""
+    problem = "compaction.prompt_file (CLIO_COMPACTION_PROMPT_FILE) was"
+    monkeypatch.setenv("CLIO_COMPACTION_PROMPT_FILE", "/old/compaction.md")
+    response, prompts, events, sid = _compact(tmp_path, ["ROW"])
 
     assert response.status_code == 500, response.text
     error = response.json()["error"]
@@ -147,20 +103,6 @@ def test_an_invalid_template_or_the_removed_setting_fails_typed_and_folds_nothin
     [notice] = [p for m in app.state.messages[sid] for p in m.parts if p.type == "notice"]
     assert (notice.code, notice.source) == ("compaction_prompt_invalid", "compaction_failed")
     assert PROMPT_ID in notice.text
-
-
-def test_an_edit_applies_at_the_next_compaction(tmp_path: Path) -> None:
-    agent = _CapturingAgent()
-    app = build_app(sessions_path=tmp_path / "s.json", agent=agent)
-    with TestClient(app) as client:
-        sid = _create_session(client)
-        _save(app, sid, "FIRST rules")
-        _seed(client, sid, [_text_message("msg_a", sid, "A")])
-        assert client.post(f"/v1/sessions/{sid}/compact", json={}).status_code == 200
-        _save(app, sid, "SECOND rules")
-        app.state.arc.append_segment(sid, _SCOPE, "user", {"text": "B"}, turn_id="t2")
-        assert client.post(f"/v1/sessions/{sid}/compact", json={}).status_code == 200
-    assert [split_seen(p)[1] for p in agent.prompts] == ["FIRST rules", "SECOND rules"]
 
 
 def test_the_doctor_row_validates_the_prompt(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -209,9 +151,7 @@ def test_the_default_template_ships_in_the_wheel() -> None:
         ["git", "ls-files", "--error-unmatch", rel], cwd=REPO, check=False, capture_output=True
     )
     assert tracked.returncode == 0, f"{rel} is not tracked"
-    packaged = (
-        resources.files("clio_agent.prompt_packs.builtin") / "templates" / "clio.compaction.md"
-    )
+    packaged = resources.files("clio_agent.gact") / "compaction_prompt.md"
     assert packaged.is_file()
 
 

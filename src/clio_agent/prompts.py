@@ -110,22 +110,21 @@ def default_prompt_sources(
 def builtin_prompt_definitions() -> dict[str, PromptDefinition]:
     """Return built-in CLIO prompt definitions loaded from package data.
 
-    The built-ins are the reminders (``reminders/*.md``) and the templates
-    (``templates/*.md``, such as ``clio.compaction``), each used verbatim. The former
+    The built-ins are the reminders (``reminders/*.md``), used verbatim. The former
     chat, planner, answer and expert prompts, with the behaviour profiles and
     per-family requirements appended to them, were removed with the chat module and
     the planner loop that read them: they were editable but had no effect.
     """
     rows: dict[str, PromptDefinition] = {}
     root = resources.files("clio_agent.prompt_packs.builtin")
-    for folder_name in ("reminders", "templates"):
+    for folder_name in ("reminders",):
         rows.update(_builtin_verbatim(root, folder_name))
     return rows
 
 
 def _builtin_verbatim(root: Any, folder_name: str) -> dict[str, PromptDefinition]:
-    """Templates used verbatim (``reminders/*.md``, ``templates/*.md``): each is exactly
-    what the agent is told, so the behaviour profiles are not appended to it."""
+    """Templates used verbatim (``reminders/*.md``): each is exactly what the agent is
+    told."""
     folder = root / folder_name
     if not folder.is_dir():
         return {}
@@ -529,11 +528,11 @@ def _is_frontmatter_scalar(value: Any) -> bool:
 
 
 def declared_variables(meta: dict[str, Any]) -> frozenset[str]:
-    """A reminder's or template's declared variables (``x_variables``, comma-separated): the only
+    """A reminder's declared variables (``x_variables``, comma-separated): the only
     placeholders its body may use (docs/design/sdk/reminders.md). ``meta`` is the raw
     frontmatter (``x_`` keys) or a definition's metadata (prefix stripped)."""
     kind = meta.get("x_kind", meta.get("kind"))
-    if str(kind or "").strip() not in {"reminder", "template"}:
+    if str(kind or "").strip() != "reminder":
         return frozenset()
     raw = meta.get("x_variables", meta.get("variables")) or ""
     items = raw if isinstance(raw, list) else str(raw).split(",")
