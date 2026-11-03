@@ -327,6 +327,22 @@ Finding 2 (context, not steps, limits run length) traced to four causes, each fi
 
 "Final answer" runs have not been graded yet. H5 now compacts three times in one run and stays under 66k; the checkpoints quote the request and keep the ranked findings with their sources (read in full for `cmp1`).
 
+### New environments: H6 to H8 (2026-11-03, one run each, `claude-sonnet-5-5` on `claude_code`)
+
+The per-run report now records each run's context, compactions (before and after, checkpoint cache read, checkpoint text), children, injections, spill reads and clio-core time (`behaviour.py`, `collect.py`, `runtime/io_audit.py`).
+
+| Task | What it tests | Wall | Steps | Prompt max | Compactions | Children | Graded |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| H6 | H4 with the person's constraints (C3 excluded, heights in cm, a problem table), a change 60 s in (bring C3 back), compaction at 0.05 | 158 s | 10 | 88k | 2 (53k → 47k, 84k → 43k; checkpoint 91-100% cached) | 0 | correct: 5/5 findings, every constraint, the change honoured |
+| H7 | one QC failure traced through about 340 prose records, each hop named only in the previous document, two in-spec distractors | 40 s | 8 | 57k | 0 | 0 | correct: the recalled lamp lot, distractors cleared, every hop named |
+| H8 | twelve QC failures with six kinds of separate cause, 531 files | 140 s | 7 | 57k | 0 | 0 | correct: 12/12 batches |
+
+**What they show.**
+
+10. **Alignment holds across compactions on this model.** H6 kept every constraint from the first message and honoured the changed one across two compactions; the checkpoints quote the request (compaction review).
+11. **A strong model collapses depth and breadth into scripts.** H7 (one deep chain) took 8 steps; H8 (twelve chains) took 7, with one shell loop joining every failed batch to the registry, the logs and the notices. No synthetic task so far makes `claude-sonnet-5-5` run long or delegate. The OPAL run's 18-25 minutes is not reproduced. Remaining candidates: the model (a weaker or open model takes many more steps), the filesystem (HPC latency), and real data's irregularity. Open models and HPC are not reachable from the cloud session. `claude-haiku-5-5` is, so H8 runs on it next.
+12. **Tool time can dominate a short run.** H8 spent 65 of 140 s in four shell calls (grep loops over 531 files), more than model time (61 s).
+
 ### Targets
 
 The plan asked for targets after the base and before Phase 1; they were not written then. The targets below are the plan's own examples (section "Targets"), judged against the final runs, so they are a check, not a prediction.
