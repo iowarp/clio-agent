@@ -24,6 +24,18 @@ class QuietBus:
         return 0.0
 
 
+async def _entered_or_ended(entered: threading.Event, work: asyncio.Task[Any]) -> None:
+    """Wait until the storage read is inside its native wait, with no wall-clock budget.
+
+    Starting a worker thread on a loaded runner can take over a second. A read that
+    ends without entering the wait fails here at once; a real hang is the per-test hang
+    guard's (tests/_hang_guard.py).
+    """
+    while not entered.is_set():
+        assert not work.done(), "the storage read ended before entering its native wait"
+        await asyncio.sleep(0.01)
+
+
 @pytest.mark.asyncio
 @pytest.mark.parametrize("same_session", [True, False])
 async def test_storage_wait_is_scoped_and_ends_before_provider_silence(
@@ -63,7 +75,7 @@ async def test_storage_wait_is_scoped_and_ends_before_provider_silence(
 
     storage = asyncio.create_task(asyncio.to_thread(storage_read))
     try:
-        assert await asyncio.to_thread(entered.wait, 1)
+        await _entered_or_ended(entered, storage)
         watched = asyncio.create_task(await_turn_work(state, asyncio.shield(storage)))
         if same_session:
             await asyncio.sleep(0.25)
