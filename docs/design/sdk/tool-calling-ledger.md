@@ -277,6 +277,18 @@ One feature off at a time, on the tasks it touches (`.cloud-run/ablations.sh`), 
 4. **Compaction on the long task.** H5 compacted in all three runs, twice in run 1 (the floor rule from finding 4 below), and all three answers were correct: coherence across compaction on a plain request, which no earlier configuration could show. H3 still never compacts at 0.05: it peaks at about 46k of a 1M window.
 5. **Prompt trims.** The skills listing (6,179 to 4,599 characters) and the four largest tool descriptions (7,106 to 2,092) changed no task's steps or correctness; no run concluded a tool was missing, and P8/P9 still find their deferred tools.
 
+### H4 against base and the Claude Code reference (2026-11-03, three runs each)
+
+H4 on the base checkout (port 8788, its own home and marketplace, namespace `eval-base`) and on the Claude Code CLI (`claude_code_ref`, `--allowed-tools Bash,Read,Grep,Glob,Task`, default permission mode, a scrubbed environment, run outside this repository so it inherits no project instructions; a first attempt inside `.cloud-run/` read this repository's `CLAUDE.md` and was discarded). Medians from `behaviour.py`:
+
+| Configuration | Wall | Steps | Calls | Model / tool / other s | MB to clio-core | Cached prompt tokens read | Correct |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| base | 121 s | 10 | 10 | 82 / 22 / 8 | 389 | 800k | 3/3 |
+| head1 | 92 s | 9 | 13 | 78 / 11 / 3 | 5.7 | 471k | 2/3 |
+| Claude Code | 79 s | 9 | 9 | 70 / 10 / 0 | — | — | 2/3 (run 3 missed the clock offset) |
+
+On the long task CLIO is now within about 15% of Claude Code's wall time (on P1 to P3 it took two to three times as long), with the same number of steps; its tool time halved against base, it sends 1/70 of the bytes, and it reads about 40% fewer cached prompt tokens. Every configuration finds four or five of the five problems on most runs; head1 run 2 and Claude Code run 3 each missed one.
+
 ### Lighthouse: the long export investigation, H4 and H5 (2026-11-03, one run each)
 
 H4 is the OPAL-shaped task the suite lacked: a plain request to investigate a 140-file, 291 MB growth-chamber export broadly, with five seeded problems and a documented decoy (`scripts/eval/tool_calling/fixtures/export_h4.py`, graded by `grade_export.py`). H5 is H4 with the compaction threshold lowered. Each ran once on the head (`claude-sonnet-5-5` on `claude_code`, config `h4-probe`/`h5-probe2`). These are single runs read for what they show, not a measurement.
