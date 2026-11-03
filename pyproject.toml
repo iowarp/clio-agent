@@ -111,7 +111,7 @@ dependencies = [
     # Windows IPC/memory and storage correctness fixes.
     # 2.3.2 adds capacity queries and stable async target registration required
     # for bounded automatic recovery of full managed conversation storage.
-    "iowarp-core~=2.3.2",
+    "iowarp-core~=2.4.0",
     # Cross-platform process lifecycle for the shared clio-core runtime daemon
     # (connect-or-spawn + last-one-out release). clio-core deploys identically on
     # Linux/macOS/Windows (per upstream), so only the host-side primitives differ:
