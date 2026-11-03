@@ -42,6 +42,9 @@ def test_gather_runs_children_as_tasks_and_checkpoints_them(flow_app: TestClient
     assert len(calls) == 3 and {c["status"] for c in calls} == {"completed"}
     history = flow_app.app.state.task_history
     owner = history.latest_assignment(sid)
+    # The answer is delivered before the owning turn settles; compare the projection
+    # with the snapshots once the owner has its terminal time, as both then read it.
+    wait_until(lambda: history.task_snapshot(owner.handle).terminal_at)
     for row in calls:
         child = history.task_snapshot(row["handle"])
         assert child.kind == "Subagent" and child.owner.parent_handle == owner.handle
