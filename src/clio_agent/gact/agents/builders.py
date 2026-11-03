@@ -10,6 +10,7 @@ agent's flow runs the program; ``react`` (from ``core``) is the default.
 
 from __future__ import annotations
 
+import contextlib
 import logging
 from collections.abc import Mapping
 from typing import TYPE_CHECKING, Any, Literal, Optional, cast
@@ -530,6 +531,16 @@ def _deferred_tools_entry(program: Any, resolution: "Resolution", config: Any) -
     return apply_disclosure(program, resolution, context_tokens=int(window), loaded=loaded)
 
 
+def _build_phase(name: str) -> Any:
+    """A nested bring-up phase of the module build (``gact/runtime/bringup_timing``)."""
+    from clio_agent.gact.runtime import bringup_timing  # noqa: PLC0415
+
+    app, sid = _ctx.active_app(), _ctx.active_session_id()
+    if app is None or not sid:
+        return contextlib.nullcontext()
+    return bringup_timing.timer_for_session(app, sid).phase(name)
+
+
 def build_agent_module(base_agent: Any, agent_def: "AgentDef", resolution: "Resolution") -> Any:
     """Compile a resolved plugin agent into its running DSPy module."""
 
@@ -554,26 +565,29 @@ def build_agent_module(base_agent: Any, agent_def: "AgentDef", resolution: "Reso
             self.kind = "react" if agent_def.module.get("kind", "react") == "react" else "predict"
             # Per-agent provider identity as data; the credential is resolved fresh
             # per forward() via ``self._resolved_spec.materialize``.
-            self._resolved_spec = _dynamic_agent_lm_config(base_agent, agent_def)
-            self._cred_resolver = CredentialResolver()
-            self.config = self._resolved_spec.materialize(self._cred_resolver)
+            with _build_phase("build.lm"):
+                self._resolved_spec = _dynamic_agent_lm_config(base_agent, agent_def)
+                self._cred_resolver = CredentialResolver()
+                self.config = self._resolved_spec.materialize(self._cred_resolver)
             self._provider_config = self.config
             self.signature = _agent_signature(agent_def, include_images=True, include_files=True)
             self.tools: list[Any] = []
-            skill_rt = _skill_runtime.skill_runtime_for_agent(
-                _ctx.active_app(), agent_def, session_id=_ctx.active_session_id()
-            )
+            with _build_phase("build.skills"):
+                skill_rt = _skill_runtime.skill_runtime_for_agent(
+                    _ctx.active_app(), agent_def, session_id=_ctx.active_session_id()
+                )
             live = LiveToolScope()
             if self.kind == "react":
                 sources = cast(dict[str, str], {})
-                tools = _agent_tools(
-                    base_agent,
-                    agent_def,
-                    resolution,
-                    sources,
-                    **declared_native_capabilities(self.config),
-                    live=live,
-                )
+                with _build_phase("build.tools"):
+                    tools = _agent_tools(
+                        base_agent,
+                        agent_def,
+                        resolution,
+                        sources,
+                        **declared_native_capabilities(self.config),
+                        live=live,
+                    )
                 claimed = {row["name"] for row in resolution.tools if row["kind"] == "native"}
                 if claimed & {"spawn_agent_task", "spawn_agents_parallel", "fork"}:
                     spawn_tools = [
@@ -622,10 +636,12 @@ def build_agent_module(base_agent: Any, agent_def: "AgentDef", resolution: "Reso
                 # THE assembly seam: every tool is observed by definition.
                 tools = instrument_tools(tools)
                 self.tools = tools
-                toolset_inventory.emit_agent_toolset_recorded(agent_def, tools, sources)
-                self.program = ClioReAct(
-                    self.signature, tools=tools, max_iters=_tool_user_agent_max_iters(agent_def)
-                )
+                with _build_phase("build.inventory"):
+                    toolset_inventory.emit_agent_toolset_recorded(agent_def, tools, sources)
+                with _build_phase("build.program"):
+                    self.program = ClioReAct(
+                        self.signature, tools=tools, max_iters=_tool_user_agent_max_iters(agent_def)
+                    )
             else:
                 # An agent stripped to zero tools (tool_allowlist == []) answers directly.
                 self.program = ClioReAct(self.signature, tools=[])
@@ -636,7 +652,8 @@ def build_agent_module(base_agent: Any, agent_def: "AgentDef", resolution: "Reso
                 "_clio_unlisted",
                 unlisted_tool_names(agent_def.metadata, getattr(self.program, "tools", {})),
             )
-            deferred_entry = _deferred_tools_entry(self.program, resolution, self.config)
+            with _build_phase("build.deferred"):
+                deferred_entry = _deferred_tools_entry(self.program, resolution, self.config)
             # A spawn-requested BestOfN / Refine strategy wraps the program.
             strategy = _module_variants.session_strategy()
             if strategy is not None:
@@ -646,7 +663,8 @@ def build_agent_module(base_agent: Any, agent_def: "AgentDef", resolution: "Reso
             skills_context = (
                 skill_rt.prompt_block if self.kind == "react" else skill_rt.bodies_block
             )
-            agent_prompt = final_agent_prompt(agent_def, resolution, getattr(self, "tools", ()))
+            with _build_phase("build.prompt"):
+                agent_prompt = final_agent_prompt(agent_def, resolution, getattr(self, "tools", ()))
             # The same text for every session of this agent: the session's own facts
             # (workspace, roots, machine, scratch) ride the conversation as the
             # ``session_facts`` injection (gact/working_state.py), so the cached system
