@@ -116,7 +116,7 @@ def test_plan_runs_skips_existing_results(tmp_path: Path) -> None:
 
 
 def test_task_selection_and_prompts() -> None:
-    assert tasks.select("P1,P3-P5,H*") == ["P1", "P3", "P4", "P5", "H1", "H2", "H3"]
+    assert tasks.select("P1,P3-P5,H*") == ["P1", "P3", "P4", "P5", "H1", "H2", "H3", "H4", "H5"]
     assert tasks.select("all") == list(tasks.ALL_TASKS)
     with pytest.raises(KeyError):
         tasks.select("P42")
@@ -126,9 +126,21 @@ def test_task_selection_and_prompts() -> None:
     assert p6.agent_delta() == {"add": ["clio-eval/eval-records-200"], "remove": []}
     h3 = tasks.task("H3", manifest, h3_autocompact_pct=0.2)
     assert h3.metadata["context_preferences"]["autocompact_pct"] == 0.2
-    for task_id in ("P3", "P5", "P8", "P9", "P10", "H1", "H2"):
+    h5 = tasks.task("H5", manifest, h3_autocompact_pct=0.2)
+    assert h5.prompt == tasks.task("H4", manifest).prompt
+    assert h5.metadata == h3.metadata and not tasks.task("H4", manifest).metadata
+    for task_id in ("P3", "P5", "P8", "P9", "P10", "H1", "H2", "H4"):
         prompt = tasks.task(task_id, manifest).prompt.lower()
         assert not any(word in prompt for word in ("search_tools", "run_code", "fs_", "tool"))
+
+
+def test_h4_prompt_names_no_file_step_or_finding() -> None:
+    prompt = tasks.task("H4", {}).prompt.lower()
+    for word in (
+        "readme", "manifest", ".csv", ".h5", "parquet", "hdf5", ".json", "log", "script",
+        "calibrat", "unit", "duplicate", "clock", "far-red", "dark", "chamber", "run_",
+    ):  # fmt: skip
+        assert word not in prompt, word
 
 
 def test_p9_prompt_shares_no_word_with_its_tool() -> None:

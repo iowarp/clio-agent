@@ -25,6 +25,7 @@ def _generate(out: Path, repo: Path, seed: int = 3) -> dict[str, Any]:
         tree_path="src/pkg",
         p3_package="tools",
         p4_subsystems=("alpha", "beta", "gamma"),
+        h4_scale=360,
     )
 
 
@@ -164,6 +165,19 @@ def test_h2_history_has_the_slowdown(generated) -> None:
     assert "def read_record_at" in reader and "CHUNK_RECORDS" not in reader
     shown = _git(out / "h2", "show", answer["introducing_commit"], "--stat")
     assert "recstream/reader.py" in shown
+
+
+def test_h4_and_h5_share_the_export(generated) -> None:
+    out, manifest = generated
+    h4, h5 = manifest["tasks"]["H4"], manifest["tasks"]["H5"]
+    assert h4 == h5 and h4["fixture"] == "h4-export"
+    answer = h4["answer"]
+    assert answer["scale"] == 360 and answer["run_folders"] == 25
+    assert [a["id"] for a in answer["anomalies"]] == ["calibration", "unit", "duplicate", "clock"]
+    exported = [k for k in manifest["files"] if k.startswith("h4-export/")]
+    assert len(exported) == 140
+    for finding in answer["anomalies"]:
+        assert (out / "h4-export" / finding["path"] / "run.json").is_file()
 
 
 def test_marketplace_is_a_valid_agent_plugins_marketplace(generated) -> None:

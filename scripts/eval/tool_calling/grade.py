@@ -9,6 +9,8 @@
 - P5 to P7: the exact negative ids and their count.
 - P8, P9: the expected tool called with the expected arguments.
 - H1, H2 (and H3): the root-cause file and function are named.
+- H4 (and H5): each seeded finding of the export investigation, found or not, and
+  whether the decoy was reported as a fault (``grade_export``).
 
 Locations are read from the final answer: ``path.py:12``, ``path.py:12-15``,
 ``path.py line 12``, ``path.py (lines 12-15)``, ``path.py#L12``, and table
@@ -24,6 +26,7 @@ import sys
 from pathlib import Path
 from typing import Any
 
+from scripts.eval.tool_calling.grade_export import grade_export
 from scripts.eval.tool_calling.paths import DEFAULT_FIXTURES, manifest_path
 
 LINE_TOLERANCE = 1
@@ -284,6 +287,8 @@ def grade(task: str, answer: dict[str, Any], run: dict[str, Any]) -> dict[str, A
         result = grade_tool_call(answer, run)
     elif task in ("H1", "H2", "H3"):
         result = grade_root_cause(answer, text)
+    elif task in ("H4", "H5"):
+        result = grade_export(answer, text)
     elif task == "P10":
         servers = tuple(answer.get("deferred_servers") or ())
         calls = [c for s in run.get("sessions") or [] for c in s.get("tool_calls") or []]
