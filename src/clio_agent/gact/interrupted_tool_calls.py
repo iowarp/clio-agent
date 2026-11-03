@@ -1,7 +1,9 @@
 """Tool calls a restart interrupted before their outcome was recorded (turn recovery).
 
-A tool call's start is recorded at once: a ``tool.call.started`` event on the
-session's ``_events`` log. Its transcript ``tool_call`` part is sealed only when its
+A tool call's start is recorded as a ``tool.call.started`` event on the session's
+``_events`` log, behind the call (:mod:`clio_agent.gact.highway_writer`: within one
+writer group, before the next model request; a start still queued when the process
+stops is lost with it, and that call is not reported). Its transcript ``tool_call`` part is sealed only when its
 result arrives (#1337), and a read-only MCP call's task record is written behind its
 reply (:mod:`clio_agent.gact.read_only_outcomes`). So a process that stops while a call
 runs, or just after it answered, can leave that start as the call's only record: no

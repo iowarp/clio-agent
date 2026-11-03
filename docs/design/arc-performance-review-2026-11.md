@@ -278,7 +278,7 @@ Measured on live P7 runs (2,000 read-only `get_record` calls gathered by a `run_
 
 **Next levers, in order:** a direct client for an external stdio server instead of the in-process gateway proxy hop; the observer's remaining per-call work (edge detection resolving paths, environment capture, the transcript parts); the two thread hops for an in-memory read. Free-threaded clio-core wheels (`cp314t`, not in 2.4.0) would let these threads run in parallel instead.
 
-**Crash window.** A queued highway event is lost with the process, like a queued read-only outcome: the writer records continuously, so the window is one group (tens of milliseconds), not a step. Recovery that finds no `tool.call.started` for a call that the transcript shows as started still types it `tool_outcome_unrecorded`; a call with neither record is not reported.
+**Crash window.** A queued highway event is lost with the process, like a queued read-only outcome. The writer records continuously, so the window is one group (tens of milliseconds), not a step. Turn recovery (`gact/interrupted_tool_calls.py`) reports an interrupted call from its recorded `tool.call.started`; a call whose start was still queued when the process stopped has no record and is not reported. Before this change the window was the start's own synchronous append.
 
 ## Measurement notes
 
