@@ -105,3 +105,27 @@ second switch.
 4. Later: declarative triggers in the frontmatter, evaluated by the loop, so a person can
    add a reminder without code. `$(command)` values are an open owner decision (user
    configuration only, sandboxed, run once per session).
+
+## Later: event triggers (owner note, 2026-11-03)
+
+Model: Claude Code's own harness. Attaching a repository returns a tool result that carries
+that path's guidance (clone with a long timeout, what a 429 means, never delete a live
+half-clone, pushes will be refused and why), and registering the clone makes the next turn
+carry the repository's CLAUDE.md, skills and plugins as a reminder. Guidance arrives with
+the event that makes it relevant, not in the base prompt. Three triggers to start with,
+each a template whose frontmatter names its event:
+
+- **On a tool result** (`x_trigger: tool_result <tool>`): the template is appended to that
+  tool's result, so a tool's situational guidance (what to do next, what will be refused)
+  costs nothing until the tool runs and is editable on the Reminders page. Today's ad hoc
+  cases move here: the spilled-result note, path hints, the failure fact.
+- **On a folder attach** (`x_trigger: folder_attached`): when a session gains a folder (a
+  workspace attach, a mount, a child working elsewhere), that folder's `AGENTS.md` /
+  `CLAUDE.md` arrives at the next step, as `session_facts` does. Today only the main
+  workspace's files are read, at composition.
+- **On a capability change** (`x_trigger: capability_changed`): a tool, server or plugin
+  that becomes available or unavailable is stated as a fact at the next step
+  (`plugin_change` today), with what the agent can do instead.
+
+The rule stays: a triggered reminder states facts and conditions, never a ban on the model
+in general.
