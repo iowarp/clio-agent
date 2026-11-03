@@ -14,6 +14,7 @@ Nothing goes in `iowarp/clio-agent`. The clio-core team decides how to solve eac
 | 2 | Expose the existing native write and read primitives to Python | — | not filed |
 | 3 | Document, or make awaitable, when a deferred put is durable | — | not filed |
 | 4 | The idle daemon uses most of a core | — | not filed |
+| 5 | Build the macOS wheels for macOS 14 again | — | not filed |
 
 The numbers match the sections below. The parent issue lists them by priority: 3, 2, 1, 4.
 
@@ -30,6 +31,7 @@ Sub-issues, in priority order:
 2. Python bindings for the existing native put-replace, `TruncateBlob`, multi-get, multi-put and `DelTag`
 3. Scope `BlobQuery`/`GetContainedBlobs` to the tag (blocks one blob per event)
 4. Idle daemon CPU (busy-poll)
+5. macOS 14 wheels (2.4.0 publishes macOS 15 wheels only, so CLIO Desktop's floor moved to macOS 15 with it)
 
 Already in 2.4.0 and useful to CLIO: conditional writes in Python (`AsyncPutBlobIfAbsent`, `AsyncPutBlobIfVersion`, `AsyncGetBlobVersioned`), which give a compare-and-swap primitive for several agent processes sharing a session.
 
@@ -103,3 +105,14 @@ This matters for CLIO because it runs a local daemon per user on desktops and la
 **Acceptance.** An idle daemon stays under a few percent of one core.
 
 ---
+
+## clio-core issue 5: Build the macOS wheels for macOS 14 again
+
+**Problem.** iowarp-core 2.4.0 publishes its macOS wheels as `macosx_15_0_arm64` (cp312, cp313, cp314); 2.3.2 published `macosx_14_0_arm64`. CLIO requires 2.4.0, so CLIO Desktop's floor moved from macOS 14 to macOS 15 with it (installer, bundle build and release checks), and macOS 14 users can no longer install it.
+
+**Ask.** Build the macOS wheels with `MACOSX_DEPLOYMENT_TARGET=14.0` (as 2.3.2 did), unless 2.4 needs a macOS 15 API; if it does, please say which, so CLIO can state why its floor is macOS 15.
+
+**Acceptance.** A 2.4.x release has `macosx_14_0_arm64` wheels for cp312, cp313 and cp314; CLIO then moves its floor back to macOS 14 (`install/install.sh`, `scripts/check_bundle_matches_lock.py`, the bundle workflows).
+
+---
+
