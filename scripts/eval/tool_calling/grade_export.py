@@ -274,3 +274,46 @@ def grade_h6(answer: dict[str, Any], text: str) -> dict[str, Any]:
         "constraints": constraints,
         "correct": result["correct"] and all(constraints.values()),
     }
+
+
+_BLAME = re.compile(r"\b(?:caused|cause of|due to|because of|responsible|root cause)\b", re.I)
+_CLEARED = re.compile(
+    r"\b(?:within|not (?:the )?cause|ruled out|no samples affected|unrelated|normal)\b", re.I
+)
+
+
+def grade_trail(answer: dict[str, Any], text: str) -> dict[str, Any]:
+    """H7: the cause is the recalled lamp lot (its drift lowers the 340 nm readings).
+
+    ``correct`` needs a passage naming the lot (or the notice) with a cause term, and no
+    passage blaming a distractor (the freezer alarm, the pipette) without clearing it.
+    The chain's hops named anywhere are recorded, not graded.
+    """
+    rows = passages(text)
+    cause = any(
+        (answer["lot"] in r or answer["notice"] in r)
+        and any(t in r.lower() for t in answer["cause_terms"])
+        for r in rows
+    )
+    blamed = sorted(
+        name
+        for name, terms in answer["distractors"].items()
+        if any(
+            any(t.lower() in r.lower() for t in terms)
+            and _BLAME.search(r)
+            and not _CLEARED.search(r)
+            for r in rows
+        )
+    )
+    hops = {
+        "instrument": answer["instrument"] in text,
+        "service_day": answer["service_day"] in text,
+        "lot": answer["lot"] in text,
+        "notice": answer["notice"] in text,
+    }
+    return {
+        "correct": cause and not blamed,
+        "cause_found": cause,
+        "distractors_blamed": blamed,
+        "hops": hops,
+    }

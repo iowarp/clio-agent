@@ -128,10 +128,19 @@ _STATIC: dict[str, Task] = {
 }
 #: Tasks that rerun another with the compaction threshold lowered, so they compact.
 _COMPACTING = {"H3": _H1, "H5": _H4}
-_FILLED = {"P1": _p1, "P2": _p2, "P4": _p4}
+
+
+def _h7(answer: dict[str, Any]) -> str:
+    return (
+        f"Batch {answer['batch']} failed QC. These are the lab's records; find out why it "
+        "failed and what should be done."
+    )
+
+
+_FILLED = {"P1": _p1, "P2": _p2, "P4": _p4, "H7": _h7}
 ALL_TASKS = (
     "P1", "P2", "P3", "P4", "P5", "P6", "P7", "P8", "P9", "P10", "H1", "H2", "H3", "H4", "H5",
-    "H6",
+    "H6", "H7",
 )  # fmt: skip
 #: Tasks the Claude Code reference runs.
 REFERENCE_TASKS = ("P1", "P2", "P3", "P4")
@@ -146,7 +155,8 @@ def task(
     """
     if task_id in _FILLED:
         answer = manifest["tasks"][task_id]["answer"]
-        return Task(task_id, "performance", _FILLED[task_id](answer))
+        suite = "long-horizon" if task_id.startswith("H") else "performance"
+        return Task(task_id, suite, _FILLED[task_id](answer))
     if task_id in _COMPACTING:
         return Task(
             task_id,

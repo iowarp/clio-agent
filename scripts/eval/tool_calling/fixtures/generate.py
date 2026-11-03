@@ -11,7 +11,8 @@ there::
     home/         an almost empty folder                 P5 to P10
     h1/           the ledgerlite repository              H1, H3
     h2/           the recstream repository               H2
-    h4-export/    a growth-chamber data export, 140 files, about 300 MB   H4, H5
+    h4-export/    a growth-chamber data export, 140 files, about 300 MB   H4, H5, H6
+    h7-trail/     a lab's records, a QC failure to trace (about 350 files)  H7
     marketplace/  the clio-eval plugins                  P5 to P10
     manifest.json sha256 per file (git internals excepted) and the answer keys
 
@@ -27,7 +28,7 @@ import sys
 from pathlib import Path
 from typing import Any
 
-from scripts.eval.tool_calling.fixtures import export_h4, repos, seed_bugs, source_tree
+from scripts.eval.tool_calling.fixtures import export_h4, repos, seed_bugs, source_tree, trail_h7
 from scripts.eval.tool_calling.fixtures.common import (
     archive_tree,
     derive_rng,
@@ -130,6 +131,8 @@ def generate(
     tasks["H4"] = {"fixture": export_h4.FIXTURE, "answer": h4}
     tasks["H5"] = {"fixture": export_h4.FIXTURE, "answer": h4}
     tasks["H6"] = {"fixture": export_h4.FIXTURE, "answer": h4}
+    h7 = trail_h7.write_trail(out / trail_h7.FIXTURE, seed)
+    tasks["H7"] = {"fixture": trail_h7.FIXTURE, "answer": h7}
 
     market = write_marketplace(out / MARKETPLACE_DIR, seed=seed, python=python)
     manifest = {
