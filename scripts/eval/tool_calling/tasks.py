@@ -14,8 +14,11 @@ from typing import Any
 from scripts.eval.tool_calling.paths import MARKETPLACE_NAME
 
 STANDARD_AGENT = "clio/standard"
-#: Lowered compaction threshold for H3 and H5 (fraction of the context window).
-H3_AUTOCOMPACT_PCT = 0.25
+#: Lowered compaction threshold for H3 and H5 (fraction of the context window). The
+#: evaluation model's window is 1,000,000 tokens on ``claude_code``, so 0.25 (250k) was
+#: never reached: H3 peaked near 70k and H5 near 142k, and neither compacted. 0.05 is
+#: about 50k, which H1 and H4 pass within a few steps (2026-11-03).
+H3_AUTOCOMPACT_PCT = 0.05
 
 
 @dataclass(frozen=True)

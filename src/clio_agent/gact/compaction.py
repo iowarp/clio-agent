@@ -65,6 +65,7 @@ __all__ = [
     "AutoCompactionGuard",
     "CompactionError",
     "compact_session_context",
+    "compaction_limit",
     "maybe_autocompact",
 ]
 
@@ -566,22 +567,40 @@ class AutoCompactionGuard:
     """One ReAct forward's auto-compaction state (the loop owns one per forward).
 
     After an auto compaction the next step's model call measures what is left (system
-    prompt, tools, summary, the question kept verbatim). When that is still over the
-    threshold, compacting again cannot get under it: every later step would summarize
-    the summary and restart a stateful provider's session. So the guard stops auto
-    compaction for the rest of the forward; manual compaction is unaffected.
+    prompt, tools, summary, the recent steps kept verbatim). When that is still over the
+    threshold, compacting at the threshold again cannot get under it: every later step
+    would summarize the summary and restart a stateful provider's session. So that
+    measurement becomes the forward's floor, and the next auto compaction waits until
+    the context fills the threshold's share of the room left above the floor
+    (:func:`compaction_limit`). Stopping auto compaction instead let a long turn grow
+    past one compaction until the window ran out (H5, 2026-11-03: 58k after the
+    compaction, then 159k with no second one). Manual compaction is unaffected.
 
     Attributes:
         compaction_id: The last auto compaction of this forward (``""``: none yet).
         awaiting_measurement: That compaction's result is not measured yet (the next
             step boundary reads the first model call made after it).
-        above_threshold: The measured context stayed over the threshold after it; the
-            forward does not auto-compact again.
+        floor: Prompt tokens measured right after that compaction when they were still
+            over the threshold (``0``: it got under, the plain threshold applies).
+        noticed: The person was told once that the context stayed over the threshold.
     """
 
     compaction_id: str = ""
     awaiting_measurement: bool = False
-    above_threshold: bool = False
+    floor: int = 0
+    noticed: bool = False
+
+
+def compaction_limit(window: int, threshold: float, floor: int) -> float:
+    """Prompt tokens at which auto compaction runs: the threshold, or above ``floor``.
+
+    With no floor it is ``threshold * window``. With one (what compaction left was
+    already over that), it is ``floor + threshold * (window - floor)``: the threshold
+    applied to the room still free above what compaction cannot remove.
+    """
+    if floor <= 0:
+        return threshold * window
+    return floor + threshold * max(window - floor, 0)
 
 
 def maybe_autocompact(guard: AutoCompactionGuard) -> None:
@@ -596,10 +615,10 @@ def maybe_autocompact(guard: AutoCompactionGuard) -> None:
     unfolded. With no measured count yet in this binding, the previous turn's durable
     per-scope usage stands in (subscription providers bind a fresh LM per turn).
     History mode has no compaction; no active app is an audited skip. When the first
-    measurement after an auto compaction is still over the threshold, every later
-    crossing in the forward is an audited skip
-    (:data:`SKIP_ABOVE_THRESHOLD_AFTER_COMPACTION`) and the first one writes a
-    ``notice`` saying so.
+    measurement after an auto compaction is still over the threshold, it becomes the
+    forward's floor (:class:`AutoCompactionGuard`): the next auto compaction runs at
+    :func:`compaction_limit`, each crossing below that is an audited skip
+    (:data:`SKIP_ABOVE_THRESHOLD_AFTER_COMPACTION`), and a ``notice`` says so once.
     """
     from clio_agent.gact.agents.clio_react_record import arc_scope  # noqa: PLC0415
     from clio_agent.gact.runtime.context_tokens import (  # noqa: PLC0415
@@ -624,25 +643,27 @@ def maybe_autocompact(guard: AutoCompactionGuard) -> None:
     if not window or not last:
         stream_audit(AUDIT_AUTO_SKIPPED, reason=SKIP_NO_TOKEN_COUNT, session_id=session)
         return
-    over = (last / window) >= threshold
     if guard.awaiting_measurement:
         guard.awaiting_measurement = False
-        guard.above_threshold = over
-        if over:
+        guard.floor = last if last >= threshold * window else 0
+        if guard.floor and not guard.noticed:
+            guard.noticed = True
             _notice_above_threshold(app, session, scope, guard.compaction_id)
-    if not over:
-        return
-    if guard.above_threshold:
-        stream_audit(
-            AUDIT_AUTO_SKIPPED,
-            reason=SKIP_ABOVE_THRESHOLD_AFTER_COMPACTION,
-            session_id=session,
-            scope=scope,
-            prompt_tokens=last,
-            context_window=window,
-            threshold=threshold,
-            compaction_id=guard.compaction_id,
-        )
+    limit = compaction_limit(window, threshold, guard.floor)
+    if last < limit:
+        if guard.floor and last >= threshold * window:
+            stream_audit(
+                AUDIT_AUTO_SKIPPED,
+                reason=SKIP_ABOVE_THRESHOLD_AFTER_COMPACTION,
+                session_id=session,
+                scope=scope,
+                prompt_tokens=last,
+                context_window=window,
+                threshold=threshold,
+                floor=guard.floor,
+                next_at=int(limit),
+                compaction_id=guard.compaction_id,
+            )
         return
     try:
         result = compact_session_context(app, session, trigger="auto", scope=scope)
@@ -655,8 +676,9 @@ def maybe_autocompact(guard: AutoCompactionGuard) -> None:
 
 
 def _notice_above_threshold(app: Any, sid: str, scope: str, compaction_id: str) -> None:
-    """Record, once per forward, that auto compaction stops (a ``notice`` the model is
-    never told). A notice that cannot be written fails the turn typed."""
+    """Record, once per forward, that the next auto compaction waits above the floor (a
+    ``notice`` the model is never told). A notice that cannot be written fails the turn
+    typed."""
     from clio_agent.gact.compaction_record import write_notice  # noqa: PLC0415
 
     text = reminders.render(COMPACTION_SKIPPED_SOURCE, {}, app=app, session_id=sid)
@@ -674,7 +696,7 @@ def _notice_above_threshold(app: Any, sid: str, scope: str, compaction_id: str) 
         error = CompactionError(
             500,
             "compaction_skip_unrecorded",
-            f"auto compaction stopped but its notice could not be written: {exc!r}",
+            f"auto compaction waits above its floor but its notice could not be written: {exc!r}",
             {"compaction_id": compaction_id, "scope": scope},
             recoverable=False,
         )

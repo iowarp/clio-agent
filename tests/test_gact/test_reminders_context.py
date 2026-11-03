@@ -88,8 +88,8 @@ def test_a_skipped_compaction_notice_keeps_its_text_and_can_be_switched_off(
     from clio_agent.gact import compaction
 
     today = (
-        "Context is still near the limit after summarizing; continuing without "
-        "summarizing again this turn."
+        "Context is still over the summarizing threshold after summarizing; the next "
+        "summary waits until more of the remaining room is used."
     )
     notices, _ = _compaction_seams(monkeypatch)
     assert compaction.ABOVE_THRESHOLD_NOTICE == today  # the constant still reads it

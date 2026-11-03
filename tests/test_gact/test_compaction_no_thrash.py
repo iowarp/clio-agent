@@ -170,3 +170,51 @@ def test_a_compaction_that_gets_under_the_threshold_leaves_auto_compaction_on(
     assert not [a for a in audits if a.get("reason") == "above_threshold_after_compaction"]
     [assistant] = [m for m in _transcript(client, sid) if m["role"] == "assistant"]
     assert "notice" not in _kinds(assistant)
+
+
+class _Sizes:
+    """``_last_prompt_tokens`` reads by boundary (read ``i`` is the step-``i`` boundary)."""
+
+    def __init__(self, sizes: dict[int, int]) -> None:
+        self.sizes = sizes
+        self.reads = 0
+
+    def __call__(self) -> int:
+        read, self.reads = self.reads, self.reads + 1
+        return self.sizes.get(read, 10)
+
+
+def test_a_context_that_regrows_above_its_floor_compacts_again(
+    env: tuple[Any, TestClient, SummarizerAgent, list[Any], list[dict[str, Any]]],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """What one compaction leaves is over the threshold, then the turn keeps growing.
+
+    Found live (H5, 2026-11-03): one compaction left 58k against a 50k threshold, auto
+    compaction stopped for the turn, and the context grew to 159k; on a smaller window
+    the turn would have run out of room. The post-compaction size is now a floor and
+    the next compaction runs when the context fills the threshold's share of the room
+    left above it (window 1000, threshold 0.85, floor 950: at 992.5).
+
+    SABOTAGE: return ``threshold * window`` from ``compaction_limit`` regardless of the
+    floor and the turn compacts at every boundary from the floor on (4, not 2); or keep
+    the old permanent stop (``if guard.floor: return``) and the second compaction never
+    runs (1, not 2).
+    """
+    from clio_agent.gact.runtime import context_tokens
+
+    app, client, summarizer, events, audits = env
+    sid = client.post("/v1/sessions", json={"title": "regrow-floor"}).json()["id"]
+    engines: list[ScriptedEngine] = []
+    _install_loop(monkeypatch, engines, [_search_turn(5)])
+    monkeypatch.setattr(
+        context_tokens, "_last_prompt_tokens", _Sizes({1: 950, 2: 950, 3: 970, 4: 995})
+    )
+    _turn(client, sid, "which stations are near LA?")
+    assert compaction.compaction_limit(1000, 0.85, 950) == pytest.approx(992.5)
+    assert len(_completed(events)) == 2
+    assert len(summarizer.prompts) == 2
+    skips = [a for a in audits if a.get("reason") == "above_threshold_after_compaction"]
+    assert [(a["prompt_tokens"], a["floor"]) for a in skips] == [(950, 950), (970, 950)]
+    [assistant] = [m for m in _transcript(client, sid) if m["role"] == "assistant"]
+    assert _kinds(assistant).count("notice") == 1
