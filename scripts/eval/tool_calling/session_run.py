@@ -14,7 +14,10 @@ REST sequence (all ``/v1``):
    ``stop_reason``, wait ``settle_s`` and check again; the turn has ended when
    nothing changed (a goal or stop hook may start another turn in between).
    ``waiting_permission``/``waiting_user`` longer than ``interaction_timeout_s``,
-   or the overall ``timeout_s``, cancels the session (``POST .../cancel``).
+   or the overall ``timeout_s``, cancels the session (``POST .../cancel``). A
+   permission question raised while the turn runs (a child's does not change the
+   root's status) is declined after ``decline_questions_after_s``, as a person who
+   says no would; each is recorded in the result's ``declined_permissions``.
 5. ``GET /fleet`` (after) and ``GET /sessions/{sid}/export`` (messages, full
    semantic events and every descendant session).
 """
@@ -58,6 +61,7 @@ class RunContext:
     settle_s: float = 6.0
     timeout_s: float = 3600.0
     interaction_timeout_s: float = 120.0
+    decline_questions_after_s: float = 10.0
     stream_audit_log: Path | None = None
     call_log: Path | None = None
     shared_root: Path | None = None
@@ -120,6 +124,31 @@ def _newest_assistant(messages: list[dict[str, Any]]) -> dict[str, Any] | None:
     return max(rows, key=lambda m: str(m.get("created_at") or "")) if rows else None
 
 
+def _decline_waiting(
+    client: GactClient, seen: dict[str, float], now: float, after_s: float
+) -> list[dict[str, Any]]:
+    """Answer ``deny`` to each pending question that has waited ``after_s``."""
+    declined = []
+    for row in client.pending_permissions():
+        pid = str(row.get("id") or "")
+        if not pid:
+            continue
+        first = seen.setdefault(pid, now)
+        if now - first < after_s:
+            continue
+        client.respond_permission(pid, "deny")
+        seen.pop(pid, None)
+        declined.append(
+            {
+                "id": pid,
+                "session_id": row.get("session_id"),
+                "tool": row.get("tool") or row.get("tool_name"),
+                "waited_s": round(now - first, 1),
+            }
+        )
+    return declined
+
+
 def wait_for_turn(
     client: GactClient,
     sid: str,
@@ -128,14 +157,18 @@ def wait_for_turn(
     settle_s: float,
     timeout_s: float,
     interaction_timeout_s: float,
+    decline_after_s: float | None = None,
     clock: Callable[[], float] = time.monotonic,
     sleep: Callable[[float], None] = time.sleep,
 ) -> dict[str, Any]:
     """Poll until the session's work has ended; never busy-loops.
 
     Returns ``{"state": "settled" | "timed_out" | <interaction status>,
-    "status", "polls", "first_done_wall"}``; ``first_done_wall`` is the wall
-    time (epoch seconds) of the first poll that saw the end, before settling.
+    "status", "polls", "first_done_wall", "declined"}``; ``first_done_wall`` is the
+    wall time (epoch seconds) of the first poll that saw the end, before settling.
+    With ``decline_after_s``, a pending permission question (runs are serial, so any
+    is this run's, a child's included) is answered ``deny`` once it has waited that
+    long; ``declined`` lists them.
     """
     start = clock()
     polls = 0
@@ -143,19 +176,23 @@ def wait_for_turn(
     first_done_wall: float | None = None
     interaction_since: float | None = None
     status = ""
+    seen: dict[str, float] = {}
+    declined: list[dict[str, Any]] = []
     while True:
         if clock() - start > timeout_s:
-            return {"state": "timed_out", "status": status, "polls": polls}
+            return {"state": "timed_out", "status": status, "polls": polls, "declined": declined}
         session = client.session(sid)
         polls += 1
         status = str(session.get("status") or "")
+        if decline_after_s is not None and status in ACTIVE:
+            declined += _decline_waiting(client, seen, clock(), decline_after_s)
         if status in ACTIVE:
             marker, first_done_wall, interaction_since = None, None, None
         elif status in INTERACTION:
             marker = first_done_wall = None
             interaction_since = interaction_since if interaction_since is not None else clock()
             if clock() - interaction_since > interaction_timeout_s:
-                return {"state": status, "status": status, "polls": polls}
+                return {"state": status, "status": status, "polls": polls, "declined": declined}
         else:
             interaction_since = None
             newest = _newest_assistant(client.messages(sid, limit=5))
@@ -171,6 +208,7 @@ def wait_for_turn(
                         "status": status,
                         "polls": polls,
                         "first_done_wall": first_done_wall,
+                        "declined": declined,
                     }
                 marker, first_done_wall = now, time.time()
                 sleep(settle_s)
@@ -320,6 +358,7 @@ def execute_run(ctx: RunContext, spec: RunSpec) -> dict[str, Any]:
             settle_s=ctx.settle_s,
             timeout_s=ctx.timeout_s,
             interaction_timeout_s=ctx.interaction_timeout_s,
+            decline_after_s=ctx.decline_questions_after_s,
         )
     except Exception:
         # A failed poll (the server stopped answering) must not leave the turn running
@@ -364,6 +403,7 @@ def execute_run(ctx: RunContext, spec: RunSpec) -> dict[str, Any]:
         "wall_s_source": "activity" if ended is activity else "poll",
         "wall_s_polled": round(polled_end - started, 3),
         "wait": waited,
+        "declined_permissions": waited.get("declined", []),
         "outcome": norm["outcome"],
         "sessions": norm["sessions"],
         "recording": {"root": norm["recording"], "children": norm["child_recordings"]},

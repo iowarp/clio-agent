@@ -19,6 +19,11 @@ hits = [f["number"] for f in full if "test_export" in f["body"]]
 print(len(hits), "issues:", hits[:50])
 ```
 
+The kernel is ordinary Python that can read your workspace, so a script can also
+open and parse many files itself (pathlib, ast, json, csv), for example every
+module's docstring under a folder, in one process; a shell loop that starts a
+program per file does the same work far more slowly.
+
 The field names here are illustrative; when you do not know a tool's result shape,
 print one result first. Variables persist between scripts, so work larger than one
 script's call limit continues in the next.

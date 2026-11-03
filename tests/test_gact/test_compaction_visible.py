@@ -79,6 +79,15 @@ LOW_PROMPT_TOKENS = 10
 SUMMARY = "SUMMARY: searched q0 and q1; hits HITS-q0, HITS-q1."
 
 
+@pytest.fixture(autouse=True)
+def _fixed_result_room(monkeypatch: pytest.MonkeyPatch) -> None:
+    """These tests script ``_last_prompt_tokens`` by read count for compaction's own
+    measurements; sizing each tool result reads it too, so its room is pinned here."""
+    from tests._result_room import pin_result_room
+
+    pin_result_room(monkeypatch, 100_000)
+
+
 class SummarizerAgent:
     """The app's LM agent: only its summarizer call is used (scripted, recorded)."""
 

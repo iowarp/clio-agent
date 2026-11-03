@@ -27,14 +27,18 @@ from clio_agent.tools.mcp_results import call_tool_result_to_observer
 from clio_agent.tools.result_errors import structured_tool_result_error
 from clio_agent.tools.servers.fs_server import fs_server
 from clio_agent.tools.tool_presentation import present_mcp_result, starting_presentation
+from tests._config_layer import set_config
 
 FS_TOOLS = ("list_directory", "search_text", "glob", "read_file", "write_file", "edit_file")
 LONG_NAME = "station-quality-summary-with-a-deliberately-long-unbroken-name.md"
 
 
 @pytest.fixture
-def root(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
-    monkeypatch.setenv("CLIO_ALLOWED_ROOTS", str(tmp_path))
+def root(tmp_path: Path) -> Path:
+    # The config file layer shadows the environment (tests/_config_layer.py), so the
+    # allowed roots are set there: otherwise a launch whose roots include the checkout
+    # (which holds the pytest runtime) makes "elsewhere" allowed.
+    set_config("tools.file_policy.allowed_roots", [str(tmp_path)])
     return tmp_path
 
 

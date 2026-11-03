@@ -165,6 +165,14 @@ class FakeClient:
             "updated_at": "t",
         }
         self.calls: list[tuple[str, Any]] = []
+        self.pending: list[dict[str, Any]] = []
+
+    def pending_permissions(self) -> list[dict[str, Any]]:
+        return list(self.pending)
+
+    def respond_permission(self, pid: str, action: str) -> None:
+        self.calls.append(("permission", (pid, action)))
+        self.pending = [row for row in self.pending if row["id"] != pid]
 
     def session(self, sid: str) -> dict[str, Any]:
         status = self.statuses[min(self.polls, len(self.statuses) - 1)]
@@ -227,6 +235,20 @@ def test_wait_gives_up_on_a_pending_question_and_on_timeout() -> None:
     assert _wait(FakeClient(["running", "waiting_user"]), clock)["state"] == "waiting_user"
     assert clock.now <= 40.0
     assert _wait(FakeClient(["running"]), _Clock(), timeout_s=10.0)["state"] == "timed_out"
+
+
+def test_a_childs_question_is_declined_after_the_wait_not_left_to_time_out() -> None:
+    """A child waiting on a permission question leaves the root "running"; the run
+    answers it ``deny`` after the wait, as a person who says no would, and records it.
+    SABOTAGE: drop the ``_decline_waiting`` call and nothing is answered."""
+    clock = _Clock()
+    client = FakeClient(["running"] * 8 + ["idle", "idle"])
+    client.pending = [{"id": "perm_1", "session_id": "sess_child", "tool": "fs_search_text"}]
+    result = _wait(client, clock, decline_after_s=5.0)
+    assert ("permission", ("perm_1", "deny")) in client.calls
+    [row] = result["declined"]
+    assert row["id"] == "perm_1" and row["session_id"] == "sess_child" and row["waited_s"] >= 5.0
+    assert result["state"] == "settled"
 
 
 # ----------------------------------------------------------------- a full run
