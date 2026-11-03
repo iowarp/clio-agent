@@ -89,6 +89,17 @@ How to use it:
 
 The file search and glob tools run `rg`: CLIO's verified private copy, else one on the PATH, else a download of the pinned 14.1.1 release (`runtime/ripgrep.py`); `install.ps1` fetches it ahead of time through `clio_agent.runtime.document_install`. Pinned assets cover Windows x64 (`x86_64-pc-windows-msvc.zip`, `rg.exe`); **Windows on ARM is not pinned**, so there the tools use an `rg` on the PATH or fail with the typed `ripgrep_missing`. Check: on a fresh Windows x64 install, `fs_search_text` works before any manual `rg` install; on Windows ARM, whether pinning the `aarch64-pc-windows-msvc` asset is needed.
 
+## 10. Compaction continues the agent's own request (Codex on Windows, 2026-11-03)
+
+- **Change:** the automatic compaction's summary is the loop's next request plus the compaction prompt, on the loop's own model (`gact/compaction_summarizer.py`, `docs/design/compaction-review-2026-11.md`). A provider that keeps the conversation (Codex direct over its WebSocket, `claude_code`) is sent only the new messages; the same `prompt_cache_key` routes it to the same cache.
+- **Why Windows matters:** the Windows runs use Codex, the other stateful engine; the cloud sessions only exercise `claude_code`. The Codex conversation chain, its reset after the fold (`ops_reset`) and its cache accounting are unmeasured there.
+- **What to check, on a session with compaction at a low threshold (`compaction` 5% of the window, as H5):**
+  - the compaction's `lm.call` reports `cache_read_tokens` close to the previous step's, not near 0;
+  - the first step after the fold opens a new conversation typed `ops_reset` (the `provider.stateful` audit row), not `prefix_mismatch`;
+  - a failed compaction (for example the prompt file made invalid) leaves the next step on a typed `prefix_mismatch` full send, never a delta over the compaction exchange;
+  - the summary has the eight sections and quotes the request.
+- **Tests:** `tests/test_gact/test_compaction_summarizer.py`, `tests/test_stateful_delta_wiring.py`.
+
 ## Not platform-specific (no Windows check needed)
 
 - Append-only chunk records.

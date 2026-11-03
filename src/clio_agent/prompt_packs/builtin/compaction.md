@@ -1,15 +1,31 @@
-Create an evidence-preserving compact memory for the following CLIO conversation transcript. This becomes the next model-context checkpoint, so preserve concrete scientific evidence, not just a high-level story.
+The context window is nearly full, so the work so far is being compacted. Write the checkpoint that replaces the history above: the work continues from it with no other memory of that history. Reply with the checkpoint as text; no tool runs in this reply.
 
-Rules:
-- Keep exact file paths, dataset names, column names, variable names, units, dimensions, counts, statistics, artifact paths, and error messages when they appear in the transcript.
-- Preserve which findings came from which source, grouped by file/provider or workflow stage.
-- Preserve unresolved gaps, failed inspections, missing dependencies, and next checks.
-- If evidence is missing or a source was not inspected, say that explicitly. Do not fill gaps with plausible details.
-- Do not invent dataset names, columns, statistics, compression settings, or readiness conclusions that are not supported by the transcript.
-- Prefer concise structured bullets over prose. Keep the summary compact, but do not omit identifiers needed for a later expert to continue the work.
-- Write it as a handoff to whoever resumes: what was being done and why, the state of data and files, constraints the person set, and open questions.
-- The session plan and the todo checklist are given back verbatim after this summary, so do not restate them; record what happened against them.{focus}{files}
+What comes back verbatim after your checkpoint, so you need not restate it: the system instructions, the messages the person typed (the newest ones, as many as fit), the newest step of work, and the session plan, todo checklist and session facts when they exist. Record what happened against them instead. If the history starts with an earlier checkpoint, update it with what happened since rather than summarizing it again.
 
---- transcript ---
-{transcript}
---- end ---
+Use these sections, in this order, each a short list of bullets (write "none" when a section has nothing):
+
+## Objective
+What the person asked for, quoted from their messages, with the latest request last.
+
+## Requirements and constraints
+Every limit, preference, unit, exclusion or shape of answer the person set, quoted, and whether a later message changed it.
+
+## Progress and state
+What has been done, what is in progress, and the state of data, files and running work.
+
+## Findings and evidence
+- Keep exact file paths, dataset names, column names, variable names, units, dimensions, counts, statistics, artifact paths and error messages when they appear in the history.
+- Say which source each finding came from, grouped by file, provider or workflow stage.
+- If evidence is missing or a source was not inspected, say so. Do not fill gaps with plausible details or invent names, columns, statistics or conclusions the history does not support.
+
+## Decisions and ruled out
+Choices made and why; approaches tried that failed or were rejected, and why.
+
+## Files and artifacts
+Files read, written or created, and artifacts produced, with paths.
+
+## Open threads
+Unresolved questions, failed inspections, missing dependencies and checks not yet made.
+
+## Next step
+The next action toward the latest request, with a short quote of that request.{focus}{files}

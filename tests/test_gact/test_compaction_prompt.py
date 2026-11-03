@@ -2,8 +2,9 @@
 
 On a real app over real clio-core, through ``POST /v1/sessions/{sid}/compact``: the
 packaged default is used when nothing is configured; a configured file is used
-instead (the summarizer LM's prompt is exactly its rendering); the placeholders are
-filled; an edit applies at the next compaction; a missing or invalid file fails the
+instead (the summarizer's last message is exactly its rendering, after the scope's own
+context); the placeholders are filled; a template written for the removed
+``{transcript}`` placeholder is refused; an edit applies at the next compaction; a missing or invalid file fails the
 compaction typed (``compaction.failed`` + a notice, nothing folded) and is a
 ``misconfigured`` doctor row -- never a fallback to the default.
 
@@ -32,6 +33,10 @@ from fastapi.testclient import TestClient
 from clio_agent.compaction_prompt import probe_compaction_prompt, render_compaction_prompt
 from clio_agent.gact.app import build_app
 from clio_agent.runtime.status import IntegrationState
+from tests._compaction_summary import (
+    keep_open_request_only,
+    split_seen,
+)
 
 from .test_compaction import _SCOPE, _CapturingAgent, _seed, _text_message
 from .test_post_messages import _create_session
@@ -65,48 +70,48 @@ def test_the_packaged_default_is_the_prompt_when_nothing_is_configured(
     monkeypatch.delenv("CLIO_COMPACTION_PROMPT_FILE", raising=False)
     response, prompts, _events, _sid = _compact(tmp_path, ["DEFAULT-ROW"])
     assert response.status_code == 200, response.text
-    [prompt] = prompts
+    [(history, prompt)] = [split_seen(p) for p in prompts]
     template = PACKAGED.read_text(encoding="utf-8")
-    assert prompt == template.format_map(
-        {"transcript": "USER: DEFAULT-ROW", "focus": "", "files": ""}
-    )
-    assert prompt.startswith("Create an evidence-preserving compact memory")
+    assert history == "USER: DEFAULT-ROW"  # the scope's own context, then the prompt
+    assert prompt == template.format_map({"focus": "", "files": ""})
+    assert prompt.startswith("The context window is nearly full")
 
 
 def test_a_configured_file_is_the_prompt(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     custom = tmp_path / "my_prompt.md"
-    custom.write_text("RESEARCH RULES {{literal}}\n{transcript}\nEND", encoding="utf-8")
+    custom.write_text("RESEARCH RULES {{literal}}\nEND", encoding="utf-8")
     monkeypatch.setenv("CLIO_COMPACTION_PROMPT_FILE", str(custom))
     response, prompts, _events, _sid = _compact(tmp_path, ["CUSTOM-ROW"])
     assert response.status_code == 200, response.text
-    assert prompts == ["RESEARCH RULES {literal}\nUSER: CUSTOM-ROW\nEND"]
+    assert [split_seen(p) for p in prompts] == [
+        ("USER: CUSTOM-ROW", "RESEARCH RULES {literal}\nEND")
+    ]
 
 
 def test_focus_and_files_fill_their_placeholders(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     custom = tmp_path / "p.md"
-    custom.write_text("R{focus}{files}\n<<{transcript}>>", encoding="utf-8")
+    custom.write_text("R{focus}{files}", encoding="utf-8")
     monkeypatch.setenv("CLIO_COMPACTION_PROMPT_FILE", str(custom))
     files = {"a.csv": {"path": "a.csv", "display_path": "data/a.csv", "mode": "read"}}
     response, prompts, _events, _sid = _compact(tmp_path, ["ROW"], focus="units", files=files)
     assert response.status_code == 200, response.text
-    assert prompts == [
+    assert [split_seen(p)[1] for p in prompts] == [
         "R\n\nFocus the summary on: units"
         "\n\n--- attached session files ---\n- path=data/a.csv; mode=read\n--- end files ---"
-        "\n<<USER: ROW>>"
     ]
-    assert render_compaction_prompt("T") == "R\n<<T>>"  # empty sections render nothing
+    assert render_compaction_prompt() == "R"  # empty sections render nothing
 
 
 @pytest.mark.parametrize(
     ("content", "problem"),
     [
         (None, "the file does not exist"),
-        ("rules {transcript} and {model}", "unknown placeholder {model}"),
-        ("rules with no transcript", "no {transcript} placeholder"),
-        ("rules {transcript} {", "invalid template"),
-        ("rules {transcript!r}", "unknown placeholder {transcript}"),
+        ("rules {focus} and {model}", "unknown placeholder {model}"),
+        ("rules over {transcript}", "unknown placeholder {transcript}"),  # the old template
+        ("rules {focus} {", "invalid template"),
+        ("rules {focus!r}", "unknown placeholder {focus}"),
     ],
 )
 def test_a_missing_or_invalid_file_fails_typed_and_folds_nothing(
@@ -138,7 +143,7 @@ def test_an_edit_applies_at_the_next_compaction(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     custom = tmp_path / "p.md"
-    custom.write_text("FIRST {transcript}", encoding="utf-8")
+    custom.write_text("FIRST rules", encoding="utf-8")
     monkeypatch.setenv("CLIO_COMPACTION_PROMPT_FILE", str(custom))
     agent = _CapturingAgent()
     app = build_app(sessions_path=tmp_path / "s.json", agent=agent)
@@ -146,10 +151,10 @@ def test_an_edit_applies_at_the_next_compaction(
         sid = _create_session(client)
         _seed(client, sid, [_text_message("msg_a", sid, "A")])
         assert client.post(f"/v1/sessions/{sid}/compact", json={}).status_code == 200
-        custom.write_text("SECOND {transcript}", encoding="utf-8")
+        custom.write_text("SECOND rules", encoding="utf-8")
         app.state.arc.append_segment(sid, _SCOPE, "user", {"text": "B"}, turn_id="t2")
         assert client.post(f"/v1/sessions/{sid}/compact", json={}).status_code == 200
-    assert [p.split(" ", 1)[0] for p in agent.prompts] == ["FIRST", "SECOND"]
+    assert [split_seen(p)[1] for p in agent.prompts] == ["FIRST rules", "SECOND rules"]
 
 
 def test_the_doctor_row_validates_the_configured_file(
@@ -206,9 +211,9 @@ def test_the_default_template_ships_in_the_wheel() -> None:
     assert packaged.is_file()
 
 
-def test_the_summarizer_sees_tool_evidence_whole() -> None:
-    """A long tool result reaches the summarizer as it was in the context. SABOTAGE: cut
-    the result text in ``_message_lines`` and this fails."""
+def test_the_exact_evidence_index_reads_tool_evidence_whole() -> None:
+    """A long tool result reaches the code-computed evidence index as it was in the
+    context. SABOTAGE: cut the result text in ``_message_lines`` and this fails."""
     from types import SimpleNamespace
 
     from clio_agent.gact import compaction
@@ -220,3 +225,9 @@ def test_the_summarizer_sees_tool_evidence_whole() -> None:
     message = SimpleNamespace(role="tool", parts=[type("ToolResultPart", (), vars(part))()])
     [line] = compaction._message_lines(message)
     assert line.endswith(result)
+
+
+@pytest.fixture(autouse=True)
+def _open_request_only(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The keep rule these mechanics tests were written for (see the helper)."""
+    keep_open_request_only(monkeypatch)

@@ -3,7 +3,7 @@
 Every test drives the real :class:`ClioReAct` loop inside a real gact turn
 (``POST /v1/sessions/{sid}/messages``) on real clio-core, with one scripted engine that
 records every request the loop sends. The summarizer LM is the app agent's
-``_run_chat_agent`` (scripted here: it is a separate LM call, not the loop).
+the summarizer model (scripted here: it is a separate LM call, not the loop).
 
 What is pinned:
 
@@ -63,6 +63,11 @@ from clio_agent.gact.protocol.v3.event import event_to_v3
 from clio_agent.gact.protocol.v3.message import part_to_v3_block
 from clio_agent.gact.recall_context_tool import build_recall_context_tool
 from clio_agent.gact.summarization_record import as_summarization
+from tests._compaction_summary import (
+    keep_open_request_only,
+    request_text,
+    summary_lm,
+)
 from tests._harness import install_scripted_module
 from tests._scripted_engine import Reply, ScriptedEngine, calls, scripted_lm, summarize
 from tests.turn_signals import post_turn_and_wait
@@ -91,7 +96,11 @@ class SummarizerAgent:
     def forward(self, question: str, session_id: str) -> Any:  # pragma: no cover - unused
         raise AssertionError("the turn runs the scripted ClioReAct module")
 
-    def _run_chat_agent(self, prompt: str, _session_id: str) -> str:
+    @property
+    def _main_lm(self) -> Any:
+        return summary_lm(self.checkpoint)
+
+    def checkpoint(self, prompt: str) -> str:
         self.prompts.append(prompt)
         return self.summary
 
@@ -124,7 +133,12 @@ def _install_loop(
     """Every turn runs a real ClioReAct over the next script (requests recorded)."""
 
     def run(question: str, session_id: str, **_kwargs: Any) -> Any:
-        lm, engine = scripted_lm(scripts.pop(0))
+        # The loop's own model answers the compaction request (it continues the loop's
+        # request); the app's summarizer fake writes the checkpoint it returns.
+        summarizer = ctx.active_app().state.agent
+        lm, engine = scripted_lm(
+            scripts.pop(0), compaction=lambda req: summarizer.checkpoint(request_text(req))
+        )
         engines.append(engine)
         tokens = [
             ctx.set_react_scope(SCOPE),
@@ -628,7 +642,9 @@ def test_keeping_the_last_two_turns_keeps_them_verbatim_after_the_summary(
     assert "question 0" not in rest and "answer 0" not in rest
     for n in (1, 2):  # the last two turns, verbatim
         assert f"question {n}" in rest and f"answer {n}" in texts[1:]
-    assert "question 0" in summarizer.prompts[0] and "question 1" not in summarizer.prompts[0]
+    # The summarizer reads the whole context (it continues the loop's request), kept
+    # turns included; the prompt says what comes back verbatim.
+    assert "question 0" in summarizer.prompts[0] and "question 1" in summarizer.prompts[0]
     kept = [m for m in _texts(before.messages) if "question 1" in str(m)]
     assert kept and kept[0] in _texts(after.messages)
     assert any("question 3" in str(m) for m in _texts(after.messages)[-3:])
@@ -652,7 +668,8 @@ def test_the_summary_renders_first_even_when_the_oldest_context_is_kept(
     after = _texts(engines[2].requests[1].messages)
     flat = [text for _role, parts in after for _k, text, *_ in parts]
     assert flat[0].startswith("[earlier context]\n")
-    assert "HITS-q2" in summarizer.prompts[0] and "question 0" not in summarizer.prompts[0]
+    # The whole context, the kept oldest turn included (see above).
+    assert "HITS-q2" in summarizer.prompts[0] and "question 0" in summarizer.prompts[0]
     assert any("question 0" in t for t in flat[1:]) and "answer 1" in flat
     assert "question 2" in flat[-1]
 
@@ -762,3 +779,9 @@ def test_the_sdk_reads_the_record_and_the_notice_as_typed_parts() -> None:
         "manual",
     )
     assert not (parsed.model_extra or {})
+
+
+@pytest.fixture(autouse=True)
+def _open_request_only(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The keep rule these mechanics tests were written for (see the helper)."""
+    keep_open_request_only(monkeypatch)

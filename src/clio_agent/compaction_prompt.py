@@ -4,19 +4,21 @@ The prompt the summarizer LM gets is read from ``compaction.prompt_file``
 (``CLIO_COMPACTION_PROMPT_FILE``) at EVERY compaction, so an edit applies without a
 restart. Unset, it is the packaged default ``prompt_packs/builtin/compaction.md``.
 
-The template is formatted with exactly three placeholders:
+The rendered prompt is the last user message of a request that otherwise is the agent's
+own context (:mod:`clio_agent.gact.compaction_summarizer`), so the model already sees
+the history it replaces; the template only says what to write. Its placeholders:
 
-* ``{transcript}`` (required) -- what the summary replaces, one line per message part;
 * ``{focus}`` -- ``""``, or a paragraph ``"\\n\\nFocus the summary on: <text>"`` when the
   user asked for a focus (manual compaction);
 * ``{files}`` -- ``""``, or the block ``"\\n\\n--- attached session files ---\\n...\\n---
   end files ---"`` listing the session's attached files.
 
-``{focus}`` and ``{files}`` carry their own leading blank line, so a template that puts
-them right after the rules renders no empty section. Any other ``{...}`` is an error;
-write a literal brace as ``{{`` or ``}}``. A configured file that is missing,
-unreadable or invalid is a typed :class:`CompactionPromptError` naming the path and
-the problem -- never a fallback to the packaged default.
+Both carry their own leading blank line, so a template that puts them at its end
+renders no empty section. Any other ``{...}`` is an error (a template written for the
+old ``{transcript}`` placeholder fails loudly); write a literal brace as ``{{`` or
+``}}``. A configured file that is missing, unreadable or invalid is a typed
+:class:`CompactionPromptError` naming the path and the problem -- never a fallback to
+the packaged default.
 """
 
 from __future__ import annotations
@@ -41,8 +43,8 @@ __all__ = [
     "render_compaction_prompt",
 ]
 
-#: The placeholders a template may use (``transcript`` is required).
-PLACEHOLDERS = frozenset({"transcript", "focus", "files"})
+#: The placeholders a template may use.
+PLACEHOLDERS = frozenset({"focus", "files"})
 
 
 class CompactionPromptError(ClioError):
@@ -82,16 +84,13 @@ def _validate(path: Path, template: str) -> None:
         parsed = list(string.Formatter().parse(template))
     except ValueError as exc:  # unbalanced braces
         raise CompactionPromptError(path, f"invalid template: {exc}") from exc
-    names = {name for _text, name, _spec, _conv in parsed if name is not None}
     for _text, name, spec, conversion in parsed:
         if name is not None and (name not in PLACEHOLDERS or spec or conversion):
             raise CompactionPromptError(
                 path,
-                f"unknown placeholder {{{name}}}; use {{transcript}}, {{focus}}, {{files}} "
-                "(write a literal brace as {{ or }})",
+                f"unknown placeholder {{{name}}}; use {{focus}} or {{files}} "
+                "(the model reads the history itself; write a literal brace as {{ or }})",
             )
-    if "transcript" not in names:
-        raise CompactionPromptError(path, "the template has no {transcript} placeholder")
 
 
 def load_prompt_template() -> tuple[Path, str]:
@@ -111,11 +110,10 @@ def load_prompt_template() -> tuple[Path, str]:
     return path, template
 
 
-def render_compaction_prompt(transcript: str, *, focus: str = "", files: str = "") -> str:
-    """The summarizer prompt for ``transcript`` from the configured template.
+def render_compaction_prompt(*, focus: str = "", files: str = "") -> str:
+    """The compaction prompt from the configured template.
 
     Args:
-        transcript: The rendered lines the summary replaces.
         focus: The user's focus instructions, or ``""``.
         files: The attached-file inventory lines, or ``""``.
 
@@ -124,7 +122,6 @@ def render_compaction_prompt(transcript: str, *, focus: str = "", files: str = "
     """
     _path, template = load_prompt_template()
     values = {
-        "transcript": transcript,
         "focus": f"\n\nFocus the summary on: {focus}" if focus else "",
         "files": f"\n\n--- attached session files ---\n{files}\n--- end files ---" if files else "",
     }

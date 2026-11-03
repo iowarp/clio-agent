@@ -11,7 +11,7 @@ ARC segments. So the fake app here needs the full seam the operation touches
 (``messages``/``agent``/``sessions.update``/``bus``/``memory_events``), not just
 ``arc``/``sessions.get`` -- see :func:`_full_plane_context` below.
 
-``_last_prompt_tokens`` and the fake agent's ``_run_chat_agent`` are patched so the
+``_last_prompt_tokens`` and the fake agent's model (``_main_lm``) are patched so the
 trigger is deterministic and no real LM call is made; ``ctx.set_react_window``
 (unpatched) still drives the window denominator exactly as before.
 """
@@ -30,9 +30,14 @@ import clio_agent.gact.app as app
 import clio_agent.gact.runtime.context_tokens as context_tokens
 from clio_agent.arc.memory import ARCMemory
 from clio_agent.gact import context as ctx
-from clio_agent.gact.compaction import AutoCompactionGuard, maybe_autocompact
+from clio_agent.gact.compaction import maybe_autocompact
 from clio_agent.gact.sessions import Session
 from clio_agent.gact.types import Message, Part, Tokens
+from tests._compaction_summary import (
+    auto_guard,
+    keep_open_request_only,
+    summary_lm,
+)
 from tests._turn_ledger import turn_with_calls
 
 SID, SCOPE = "s1", "agentA"
@@ -100,7 +105,11 @@ class _FakeAgent:
         self.summary = summary
         self.prompts: list[str] = []
 
-    def _run_chat_agent(self, question: str, _session_id: str) -> str:
+    @property
+    def _main_lm(self) -> Any:
+        return summary_lm(self.checkpoint)
+
+    def checkpoint(self, question: str) -> str:
         self.prompts.append(question)
         return self.summary
 
@@ -177,7 +186,7 @@ def test_fires_over_threshold(arc, monkeypatch):
     _patch_prompt_tokens(monkeypatch, prompt_tokens=900)  # 900/1000 = 0.90 >= 0.85 default
     _populate(arc)
     with _full_plane_context(arc, session=SID, scope=SCOPE, window=1000):
-        maybe_autocompact(AutoCompactionGuard())
+        maybe_autocompact(auto_guard())
     # collapsed to a single summary segment
     assert _view(arc) == [("summary", "COMPACT_SUMMARY")]
 
@@ -187,7 +196,7 @@ def test_does_not_fire_under_threshold(arc, monkeypatch):
     _populate(arc)
     before = _view(arc)
     with _full_plane_context(arc, session=SID, scope=SCOPE, window=1000):
-        maybe_autocompact(AutoCompactionGuard())
+        maybe_autocompact(auto_guard())
     assert _view(arc) == before  # untouched
 
 
@@ -209,7 +218,7 @@ def test_session_can_disable_automatic_compaction(arc, monkeypatch):
         window=1000,
         session_metadata=metadata,
     ):
-        maybe_autocompact(AutoCompactionGuard())
+        maybe_autocompact(auto_guard())
 
     assert _view(arc) == before
 
@@ -232,7 +241,7 @@ def test_session_threshold_overrides_deployment_default(arc, monkeypatch):
         window=1000,
         session_metadata=metadata,
     ):
-        maybe_autocompact(AutoCompactionGuard())
+        maybe_autocompact(auto_guard())
 
     assert _view(arc) == [("summary", "COMPACT_SUMMARY")]
 
@@ -242,7 +251,7 @@ def test_threshold_is_env_configurable(arc, monkeypatch):
     _patch_prompt_tokens(monkeypatch, prompt_tokens=600)  # 0.60 >= 0.50 (would NOT fire at 0.85)
     _populate(arc)
     with _full_plane_context(arc, session=SID, scope=SCOPE, window=1000):
-        maybe_autocompact(AutoCompactionGuard())
+        maybe_autocompact(auto_guard())
     assert _view(arc) == [("summary", "COMPACT_SUMMARY")]
 
 
@@ -251,7 +260,7 @@ def test_disabled_when_window_unknown(arc, monkeypatch):
     _populate(arc)
     before = _view(arc)
     with _full_plane_context(arc, session=SID, scope=SCOPE, window=0):
-        maybe_autocompact(AutoCompactionGuard())
+        maybe_autocompact(auto_guard())
     assert _view(arc) == before  # auto-compaction off
 
 
@@ -266,7 +275,7 @@ def test_an_empty_summary_fails_typed_and_folds_nothing(arc, monkeypatch):
     before = _view(arc)
     with _full_plane_context(arc, session=SID, scope=SCOPE, window=1000, summary="  "):
         with pytest.raises(AutoCompactionFailedError) as err:
-            maybe_autocompact(AutoCompactionGuard())
+            maybe_autocompact(auto_guard())
     assert err.value.details["compaction_error"] == "empty_summary"
     assert _view(arc) == before
 
@@ -285,7 +294,7 @@ def test_no_token_count_is_audited_never_silent(arc, monkeypatch):
     _patch_prompt_tokens(monkeypatch, prompt_tokens=0)
     _populate(arc)
     with _full_plane_context(arc, session=SID, scope=SCOPE, window=1000):
-        maybe_autocompact(AutoCompactionGuard())
+        maybe_autocompact(auto_guard())
     assert [r["reason"] for r in rows if r["stage"] == "compaction.auto_skipped"] == [
         "no_token_count"
     ]
@@ -347,10 +356,10 @@ def test_per_expert_independent(arc, monkeypatch):
     _populate(arc, scope="agentA/cold")
     # hot: window 1000 -> 0.90 fires
     with _full_plane_context(arc, session=SID, scope="agentA/hot", window=1000):
-        maybe_autocompact(AutoCompactionGuard())
+        maybe_autocompact(auto_guard())
     # cold: window 100000 -> 0.009 does not fire
     with _full_plane_context(arc, session=SID, scope="agentA/cold", window=100000):
-        maybe_autocompact(AutoCompactionGuard())
+        maybe_autocompact(auto_guard())
     assert _view(arc, "agentA/hot") == [("summary", "COMPACT_SUMMARY")]
     assert _view(arc, "agentA/cold") == [  # untouched
         ("thought", "T0"),
@@ -374,7 +383,7 @@ def test_an_estimated_usage_is_not_taken_for_a_real_count(arc, monkeypatch):
     with _full_plane_context(
         arc, session=SID, scope=SCOPE, window=1000, session_metadata=estimated
     ):
-        maybe_autocompact(AutoCompactionGuard())
+        maybe_autocompact(auto_guard())
     assert _view(arc) == before
     assert [r["reason"] for r in rows if r["stage"] == "compaction.auto_skipped"] == [
         "no_token_count"
@@ -395,12 +404,18 @@ def test_a_models_working_context_is_the_compaction_window(arc, monkeypatch):
     before = _view(arc)
     window = context_tokens._resolve_expert_context_window(cfg)
     with _full_plane_context(arc, session=SID, scope=SCOPE, window=window):
-        maybe_autocompact(AutoCompactionGuard())
+        maybe_autocompact(auto_guard())
     assert _view(arc) == before  # 90k of the served 400k: no compaction
 
     save_working_context("openai", "gpt-5", 100_000)
     window = context_tokens._resolve_expert_context_window(cfg)
     assert window == 100_000
     with _full_plane_context(arc, session=SID, scope=SCOPE, window=window):
-        maybe_autocompact(AutoCompactionGuard())
+        maybe_autocompact(auto_guard())
     assert _view(arc) == [("summary", "COMPACT_SUMMARY")]  # 90k of 100k crosses 0.85
+
+
+@pytest.fixture(autouse=True)
+def _open_request_only(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The keep rule these mechanics tests were written for (see the helper)."""
+    keep_open_request_only(monkeypatch)

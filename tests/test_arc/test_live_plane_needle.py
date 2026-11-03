@@ -26,8 +26,13 @@ from dspy.lm15 import Request
 import clio_agent.gact.app as app
 from clio_agent.gact import context as ctx
 from clio_agent.gact.agents.clio_react import _call_lm
-from clio_agent.gact.compaction import AutoCompactionGuard, maybe_autocompact
+from clio_agent.gact.compaction import maybe_autocompact
 from clio_agent.gact.types import Message, Part, Tokens
+from tests._compaction_summary import (
+    auto_guard,
+    keep_open_request_only,
+    summary_lm,
+)
 
 from .conftest import live_plane_context, probe_live_context, response_text
 
@@ -85,7 +90,11 @@ class _RealSummaryAgent:
     def __init__(self, lm: Any) -> None:
         self._lm = lm
 
-    def _run_chat_agent(self, question: str, _session_id: str) -> str:
+    @property
+    def _main_lm(self) -> Any:
+        return summary_lm(self.checkpoint)
+
+    def checkpoint(self, question: str) -> str:
         request = Request(model=self._lm.model, messages=(LMMessage.user(question),))
         return response_text(_call_lm(self._lm, request))
 
@@ -203,7 +212,7 @@ def test_real_auto_compaction_on_alcf(arc):
             assert real_pt > 0, "ALCF prompt_tokens readback is 0 (token_counter fallback broken)"
             # window so the real prompt lands at ~90% — over the 0.85 default threshold
             ctx.set_react_context_window(int(real_pt / 0.90))
-            maybe_autocompact(AutoCompactionGuard())
+            maybe_autocompact(auto_guard())
 
     after = arc.render_segments(SID, SCOPE)
     assert len(after) == 1 and after[0].kind == "summary", "did not collapse to one summary"
@@ -217,3 +226,9 @@ def test_real_auto_compaction_on_alcf(arc):
         if s.status == "tombstoned"
     ]
     assert len(tombstoned) == 5
+
+
+@pytest.fixture(autouse=True)
+def _open_request_only(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The keep rule these mechanics tests were written for (see the helper)."""
+    keep_open_request_only(monkeypatch)

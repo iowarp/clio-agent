@@ -18,7 +18,6 @@ Usage:
     >>> stats = agent.get_arc_stats()
 """
 
-import json
 import threading
 import time
 from contextlib import contextmanager
@@ -56,7 +55,6 @@ from clio_agent.runtime.cancellation import (  # noqa: F401
     cancellation_requested,
 )
 from clio_agent.search.web_mcp_default import load_agent_mcp_servers, with_web_placeholders
-from clio_agent.signatures.main_agent_sig import ChatAgentSignature
 from clio_agent.tools.catalog import (
     set_active_catalog,
     tool_owner,
@@ -83,12 +81,10 @@ class ClioAgent(dspy.Module):
 
     ClioAgent is the process-level resource host. It binds the provider LM
     surface (``rebind_lms``), builds the tool gateway + per-workspace executors,
-    owns the ARC memory plane and the agent
-    registry, and exposes the chat-synthesis helper used by the session-compact
-    summarizer. It no longer runs a Tier-1 planner loop.
+    owns the ARC memory plane and the agent registry. It no longer runs a Tier-1
+    planner loop.
 
     Attributes:
-        chat_agent: DSPy Predict with ChatAgentSignature (chat synthesis)
         arc: ARC Memory instance (None in the loud History mode)
         _tool_definitions: preloaded tool defs from the boot listing pass
             (#932); None -> executors fall back to eager list_tools
@@ -198,12 +194,6 @@ class ClioAgent(dspy.Module):
 
         # Bind the LM surface (``_main_lm`` / ``_dspy_adapter``).
         self.rebind_lms(self._provider_config)
-
-        # Chat Agent: Predict for conversational responses. This keeps the
-        # structured output surface smaller than ChainOfThought, which is more
-        # reliable with local OpenAI-compatible backends. Reused by the
-        # session-compaction summarizer (routes/sessions.py).
-        self.chat_agent = dspy.Predict(ChatAgentSignature)
 
         # Shared MCP executor: one explicit sync boundary for CLI/API thread calls.
         # The tool gateway is built from the universal in-process built-ins
@@ -634,72 +624,6 @@ class ClioAgent(dspy.Module):
             return RESTART_NO_RESIDENT
         return reaper.request_restart(root)
 
-    def _run_chat_agent(
-        self,
-        question: str,
-        session_context: str,
-        *,
-        images: list[Any] | None = None,
-        files: list[Any] | None = None,
-        lm: Any = None,
-    ) -> str:
-        """Generate a tool-free reply (on ``lm`` when given), also used by session compaction."""
-        self._raise_if_cancelled("chat_before")
-        chat_context = self._chat_session_context(session_context)
-        image_inputs = list(images or [])
-        file_inputs = list(files or [])
-        from clio_agent.lm.hooked_lm import wrap_lm_with_hooks  # noqa: PLC0415 - P2.4 hooks
-
-        chat_lm = wrap_lm_with_hooks(lm or self._main_lm)  # pass-through with no model hook
-        try:
-            with dspy.context(lm=chat_lm, adapter=self._dspy_adapter):
-                result = self.chat_agent(
-                    question=question,
-                    images=image_inputs,
-                    files=file_inputs,
-                    session_context=chat_context,
-                )
-        except Exception as chat_error:
-            if self.verbose:
-                print(f"[ClioAgent] ChatAgent failed: {chat_error}")
-            raise
-        self._raise_if_cancelled("chat_after")
-        return self._coerce_text(getattr(result, "answer", None))
-
-    @classmethod
-    def _chat_session_context(cls, session_context: str) -> str:
-        """Return ARC session context suitable for conversational answers.
-
-        Chat answers are plain LM synthesis, not a tool execution surface. Keep
-        prior conversation, data, analysis, and routing context, but remove the
-        global tool catalog so chat does not claim direct ownership of tools
-        that are actually routed through planner-selected experts.
-        """
-        return cls._strip_context_sections(session_context, {"Available Tools"})
-
-    @staticmethod
-    def _strip_context_sections(session_context: str, excluded: set[str]) -> str:
-        """Remove named bracketed sections from compiled ARC context."""
-        text = session_context.strip()
-        if not text:
-            return "No prior context"
-
-        output: list[str] = []
-        skipping = False
-        for line in text.splitlines():
-            stripped = line.strip()
-            if stripped.startswith("[") and stripped.endswith("]"):
-                section_name = stripped[1:-1].strip()
-                skipping = section_name in excluded
-                if not skipping:
-                    output.append(line)
-                continue
-            if not skipping:
-                output.append(line)
-
-        cleaned = "\n".join(output).strip()
-        return cleaned or "No prior context"
-
     def _call_with_transient_provider_retries(
         self,
         label: str,
@@ -831,36 +755,6 @@ class ClioAgent(dspy.Module):
         if caps is None or not caps.parent_id:
             return None
         return caps.parent_id
-
-    @staticmethod
-    def _coerce_text(value: Any) -> str:
-        """Convert model/tool outputs to stable text without noisy serializers."""
-        if value is None:
-            return ""
-        if isinstance(value, str):
-            return value
-        if isinstance(value, (int, float, bool)):
-            return str(value)
-        if isinstance(value, (list, dict)):
-            try:
-                return json.dumps(value, ensure_ascii=False)
-            except Exception:  # noqa: BLE001 - value->JSON coercion falls back to str(); never fatal
-                return str(value)
-
-        # Pydantic v2 models: avoid warning-emitting serialization paths.
-        if hasattr(value, "model_dump"):
-            try:
-                dumped = value.model_dump(mode="json", warnings="none")
-                return json.dumps(dumped, ensure_ascii=False)
-            except Exception:  # noqa: BLE001,S110 - value coercion cascade; falls through to the next strategy
-                pass
-
-        # Common chat/message object shape from LM backends.
-        content = getattr(value, "content", None)
-        if isinstance(content, str):
-            return content
-
-        return str(value)
 
     @staticmethod
     def _arc_for_mode(arc: ARCMemory | None, *, data_dir: str) -> ARCMemory | None:

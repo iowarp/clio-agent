@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import asyncio
 import threading
-from collections.abc import AsyncIterator, Iterator, Sequence
+from collections.abc import AsyncIterator, Callable, Iterator, Sequence
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -46,18 +46,49 @@ def calls(*pairs: tuple[str, dict[str, Any]], text: str = "", thinking: str = ""
     return Reply(text=text, calls=pairs, thinking=thinking)
 
 
+#: The packaged compaction prompt's opening words: a request ending in it is the
+#: compaction summarizer's, which continues the loop's own request.
+COMPACTION_PROMPT_START = "The context window is nearly full"
+
+
+def is_compaction_request(request: Request) -> bool:
+    """Whether ``request`` is the compaction summarizer's (its last message the prompt)."""
+    last = request.messages[-1] if request.messages else None
+    text = "".join(getattr(p, "text", "") for p in last.parts) if last is not None else ""
+    return last is not None and last.role == "user" and text.startswith(COMPACTION_PROMPT_START)
+
+
 class ScriptedEngine:
-    """Sync engine: replies from the script in order; records every request."""
+    """Sync engine: replies from the script in order; records every request.
+
+    With ``compaction``, a compaction summarizer request is answered by
+    ``compaction(request)`` and recorded on :attr:`compaction_requests` instead (the
+    script and :attr:`requests` hold the agent's steps only).
+    """
 
     supports_function_calling = True
     supports_reasoning = True
 
-    def __init__(self, script: Sequence[Reply]) -> None:
+    def __init__(
+        self, script: Sequence[Reply], compaction: Callable[[Request], str] | None = None
+    ) -> None:
         self.script = list(script)
         self.requests: list[Request] = []
+        self.compaction = compaction
+        self.compaction_requests: list[Request] = []
         self._lock = threading.Lock()
 
     def _next(self, request: Request) -> Response:
+        if self.compaction is not None and is_compaction_request(request):
+            with self._lock:
+                self.compaction_requests.append(request)
+            return Response(
+                id=f"resp_compaction_{len(self.compaction_requests)}",
+                model=request.model,
+                message=Message.assistant([TextPart(text=self.compaction(request))]),
+                finish_reason="stop",
+                usage=Usage(input_tokens=10, output_tokens=5),
+            )
         with self._lock:
             index = len(self.requests)
             self.requests.append(request)
@@ -116,9 +147,11 @@ class AsyncScriptedEngine:
         """Nothing to release."""
 
 
-def scripted_lm(script: Sequence[Reply], **kwargs: Any) -> tuple[dspy.LM, ScriptedEngine]:
+def scripted_lm(
+    script: Sequence[Reply], compaction: Callable[[Request], str] | None = None, **kwargs: Any
+) -> tuple[dspy.LM, ScriptedEngine]:
     """A ``dspy.LM`` over the script, and the engine that records its requests."""
-    engine = ScriptedEngine(script)
+    engine = ScriptedEngine(script, compaction)
     lm = dspy.LM(
         MODEL,
         engine=engine,

@@ -40,6 +40,7 @@ from clio_agent.errors import ClioError
 from clio_agent.gact import context as _ctx
 from clio_agent.gact import reminders
 from clio_agent.gact.compaction_policy import keep_policy, post_compaction_context
+from clio_agent.gact.compaction_summarizer import Summarize
 from clio_agent.gact.conversation_projection import model_context_messages
 from clio_agent.gact.delegation import _compact_exact_evidence_index
 from clio_agent.gact.runtime.context_tokens import _estimate_text_tokens
@@ -235,7 +236,7 @@ def _plan(app: Any, sid: str, scope: str, open_turn: str) -> _ScopePlan | None:
     live = list(app.state.arc.render_working_set(sid, scope))
     decision = post_compaction_context(live, open_turn_id=open_turn, policy=keep_policy())
     replaced = [s for s in live if s.id in set(decision.summarize)]
-    if not replaced or (len(replaced) == 1 and replaced[0].kind == "summary"):
+    if not replaced or all(s.kind == "summary" for s in replaced):
         return None
     try:
         from clio_agent.gact.agents.context_reader import model_context_segments
@@ -249,6 +250,8 @@ def _plan(app: Any, sid: str, scope: str, open_turn: str) -> _ScopePlan | None:
     if not lines:
         return None
     kept = frozenset(s.turn_id for s in live if s.id in set(decision.keep))
+    # The summarizer reads the agent's own context; these lines feed the exact-evidence
+    # index computed by code and the pre-compact hook's size.
     return _ScopePlan(scope, decision.summarize, kept, "\n".join(lines))
 
 
@@ -271,6 +274,7 @@ def compact_session_context(
     trigger: Literal["manual", "auto"],
     focus: str = "",
     scope: str = "",
+    summarize: Summarize | None = None,
 ) -> dict[str, Any]:
     """Compact ``sid``'s agent context. Blocking, off-loop only (store RPCs, LM calls).
 
@@ -281,6 +285,9 @@ def compact_session_context(
         focus: Optional user-supplied focus instructions (manual only).
         scope: The agent scope to compact; ``""`` means the running scope inside a
             turn, else every agent scope of the session (one compaction each).
+        summarize: The running loop's summarizer (the auto trigger), which continues
+            the loop's own request; ``None`` reads each scope's context once and asks
+            the session's model (:mod:`clio_agent.gact.compaction_summarizer`).
 
     Returns:
         ``{session_id, compacted, compactions: [...]}``, one entry per compacted scope
@@ -321,7 +328,7 @@ def compact_session_context(
         if trigger == "manual":
             settle_basis(app, sid)
         return _skip(sid, skipped)
-    done = [_compact_scope(app, sid, plan, trigger, focus, open_turn) for plan in plans]
+    done = [_compact_scope(app, sid, plan, trigger, focus, open_turn, summarize) for plan in plans]
     # The cache restarts here anyway: plugin changes held as a note join the prompt.
     settle_basis(app, sid)
     return {"session_id": sid, "compacted": True, "compactions": done}
@@ -343,7 +350,13 @@ def _event(app: Any, sid: str, kind: str, turn_id: str, payload: dict[str, Any])
 
 
 def _compact_scope(
-    app: Any, sid: str, plan: _ScopePlan, trigger: str, focus: str, open_turn: str
+    app: Any,
+    sid: str,
+    plan: _ScopePlan,
+    trigger: str,
+    focus: str,
+    open_turn: str,
+    summarize: Summarize | None,
 ) -> dict[str, Any]:
     """Compact one scope: started, summary, record, fold, completed (or failed)."""
     base = {
@@ -355,7 +368,7 @@ def _compact_scope(
     }
     _event(app, sid, "started", open_turn, base)
     try:
-        result = _summarize_record_fold(app, sid, plan, trigger, focus, base)
+        result = _summarize_record_fold(app, sid, plan, trigger, focus, base, summarize)
     except CompactionError as exc:
         _failed(app, sid, base, exc)
         raise
@@ -403,7 +416,13 @@ def _failed(app: Any, sid: str, base: dict[str, Any], exc: CompactionError) -> N
 
 
 def _summarize_record_fold(
-    app: Any, sid: str, plan: _ScopePlan, trigger: str, focus: str, base: dict[str, Any]
+    app: Any,
+    sid: str,
+    plan: _ScopePlan,
+    trigger: str,
+    focus: str,
+    base: dict[str, Any],
+    summarize: Summarize | None,
 ) -> dict[str, Any]:
     from clio_agent.gact.compaction_record import RecordWriteError, write_record  # noqa: PLC0415
     from clio_agent.gact.hooks import dispatch_pre_compact  # noqa: PLC0415
@@ -419,7 +438,7 @@ def _summarize_record_fold(
             "trigger": trigger,
         },
     )
-    summary = _summary(app, sid, plan.transcript, focus)
+    summary = _summary(app, sid, plan, focus, summarize)
     search_enabled = context_search_available(app.state.arc)
     text = summary_text(summary, base["compaction_id"], search_enabled=search_enabled)
     part = summarization_part(
@@ -446,7 +465,7 @@ def _summarize_record_fold(
     }
 
 
-def _summary(app: Any, sid: str, transcript: str, focus: str) -> str:
+def _summary(app: Any, sid: str, plan: _ScopePlan, focus: str, summarize: Summarize | None) -> str:
     agent = getattr(app.state, "agent", None)
     if agent is None:
         raise CompactionError(
@@ -458,28 +477,13 @@ def _summary(app: Any, sid: str, transcript: str, focus: str) -> str:
     )
 
     try:  # read from the configured file at every compaction (no restart, no fallback)
-        prompt = render_compaction_prompt(
-            transcript, focus=focus, files=_context_file_inventory(app, sid)
-        )
+        prompt = render_compaction_prompt(focus=focus, files=_context_file_inventory(app, sid))
     except CompactionPromptError as exc:
         raise CompactionError(500, exc.reason, str(exc), dict(exc.details or {})) from exc
-
-    from clio_agent.gact.compaction_lm import pinned_summary_lm  # noqa: PLC0415
-    from clio_agent.providers.stateful_common import outside_stateful_scope  # noqa: PLC0415
-
-    try:  # a pinned session is summarised by its own model (F011c)
-        summary_lm = pinned_summary_lm(app, sid)
-    except Exception as exc:  # noqa: BLE001 - re-raised typed, never another model
-        raise CompactionError(
-            502, "pinned_model_unresolved", f"session model could not be resolved: {exc!r}"
-        ) from exc
+    ask = summarize or _scope_summarize(app, sid, plan.scope, agent)
 
     def _call() -> str:
-        # Not a step of the agent's conversation (auto compaction runs inside its
-        # forward): never continue or replace the agent's kept provider conversation.
-        with outside_stateful_scope():
-            pinned = {"lm": summary_lm} if summary_lm is not None else {}
-            return str(agent._run_chat_agent(prompt, "", **pinned) or "")
+        return ask(prompt)
 
     retry_call = getattr(agent, "_call_with_transient_provider_retries", None)
     try:
@@ -494,8 +498,30 @@ def _summary(app: Any, sid: str, transcript: str, focus: str) -> str:
         raise CompactionError(
             502, "empty_summary", "the summary LM returned no text; nothing was compacted"
         )
-    evidence_index = _compact_exact_evidence_index(transcript)
+    evidence_index = _compact_exact_evidence_index(plan.transcript)
     return summary.strip() + (f"\n\n{evidence_index}" if evidence_index else "")
+
+
+def _scope_summarize(app: Any, sid: str, scope: str, agent: Any) -> Summarize:
+    """The summarizer outside a loop, on the session's pinned model or the host's."""
+    from clio_agent.gact.compaction_lm import pinned_summary_lm  # noqa: PLC0415
+    from clio_agent.gact.compaction_summarizer import scope_summarizer  # noqa: PLC0415
+    from clio_agent.providers.stateful_common import outside_stateful_scope  # noqa: PLC0415
+
+    try:  # a pinned session is summarised by its own model (F011c)
+        summary_lm = pinned_summary_lm(app, sid)
+    except Exception as exc:  # noqa: BLE001 - re-raised typed, never another model
+        raise CompactionError(
+            502, "pinned_model_unresolved", f"session model could not be resolved: {exc!r}"
+        ) from exc
+    ask = scope_summarizer(app, sid, scope, summary_lm or agent._main_lm)
+
+    def summarize(prompt: str) -> str:
+        # Not a step of any agent's conversation: never continue or replace one.
+        with outside_stateful_scope():
+            return ask(prompt)
+
+    return summarize
 
 
 def _fold(
@@ -583,8 +609,11 @@ class AutoCompactionGuard:
         floor: Prompt tokens measured right after that compaction when they were still
             over the threshold (``0``: it got under, the plain threshold applies).
         noticed: The person was told once that the context stayed over the threshold.
+        summarize: Writes the checkpoint as a continuation of the loop's own request
+            (:func:`~clio_agent.gact.compaction_summarizer.loop_summarizer`).
     """
 
+    summarize: Summarize
     compaction_id: str = ""
     awaiting_measurement: bool = False
     floor: int = 0
@@ -666,7 +695,9 @@ def maybe_autocompact(guard: AutoCompactionGuard) -> None:
             )
         return
     try:
-        result = compact_session_context(app, session, trigger="auto", scope=scope)
+        result = compact_session_context(
+            app, session, trigger="auto", scope=scope, summarize=guard.summarize
+        )
     except CompactionError as exc:
         stream_audit(AUDIT_AUTO_FAILED, session_id=session, error=exc.error, message=exc.message)
         raise AutoCompactionFailedError(exc, session) from exc

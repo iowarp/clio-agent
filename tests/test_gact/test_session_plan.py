@@ -21,6 +21,7 @@ from clio_agent.gact.session_plan import (
 )
 from clio_agent.gact.session_plan_presentation import present
 from clio_agent.gact.working_state import working_state_injections
+from tests._compaction_summary import keep_open_request_only
 
 pytestmark = pytest.mark.usefixtures("host_agent_executor")
 
@@ -136,7 +137,9 @@ def test_compaction_keeps_the_latest_working_state_verbatim() -> None:
         _segment("q2", "user", "t2", {"text": "go on"}),
     ]
     decision = post_compaction_context(
-        live, open_turn_id="t2", policy=KeepPolicy(keep_head=True, keep_last_turns=0)
+        live,
+        open_turn_id="t2",
+        policy=KeepPolicy(keep_head=True, keep_last_turns=0, keep_last_steps=0, keep_user_chars=0),
     )
     assert {"todo2", "plan", "q2"} <= set(decision.keep)
     assert {"todo1", "q1", "th1"} <= set(decision.summarize)
@@ -238,3 +241,9 @@ def test_the_plan_is_offered_whole_unless_past_the_window_share(
     monkeypatch.setattr(window, lambda: 0)
     assert "step 01799" in plan_injection(app, sid, _session(app, sid))
     assert any(event.startswith("plan_window_unknown") for event in events)
+
+
+@pytest.fixture(autouse=True)
+def _open_request_only(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The keep rule these mechanics tests were written for (see the helper)."""
+    keep_open_request_only(monkeypatch)

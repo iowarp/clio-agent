@@ -28,17 +28,23 @@ All four come from H5 (the export investigation with compaction at 5% of a 1M wi
 | Artifact trail computed by code (Cline; Factory's weakest dimension for every method) | Partly: the exact-evidence index and context-file inventory |
 | Proactive threshold, reactive path on overflow, thrash bound | Threshold and floor rule; overflow fails the turn typed |
 
-## Changes
+## Changes (built on `claude/compaction-handoff`)
 
 Each is a mechanism or a fact given to the model, not a behavioural rule in a prompt (`.claude/CLAUDE.md` principles 1 to 3).
 
-1. **A dedicated summarizer call.** A plain request with its own system text (a handoff writer, no tools), the session's pinned model, outside the stateful provider scope as today; not the chat module.
-2. **The summarizer sees every user message.** Every message the person typed in the session, verbatim and marked, including the open turn's request that stays in context after the summary; it is told which of them stay verbatim so it does not restate them, and that their limits apply only if quoted.
-3. **Sections.** The prompt asks for: Objective (the request in the person's words); Requirements and constraints (quoted); Progress and state; Findings and evidence (the existing evidence rules); Decisions and ruled-out paths; Files and artifacts; Open threads; Next step, anchored to the latest request with a quote. Missing sections are recorded in the compaction event, not enforced.
-4. **Every typed user message stays verbatim.** The keep policy keeps all of the person's messages (newest first within a budget, `compaction.keep.user_tokens`), not only the open turn's request.
-5. **A recent tail stays verbatim.** The newest steps of the open turn up to `compaction.keep.tail_tokens` (default a share of the threshold), so the floor rule (`b919ae60`) still holds.
-6. **Anchored update.** A later compaction gives the summarizer the previous checkpoint as "the checkpoint so far" and the newer history, and asks for the updated checkpoint, instead of folding the old summary as transcript.
-7. **Re-injection stays as built** (plan while draft or approved, todos, session facts, the goal when one is set); the summarizer is told so.
+1. **The summarizer continues the agent's own request** (`gact/compaction_summarizer.py`). The automatic trigger sends the loop's next request (same model, system, tools, config and messages) with the compaction prompt as one more user message. This fixes two findings at once:
+   - It sees what the agent sees: the request, every typed message, the plan, the todos and an earlier checkpoint at the head. "The question is not visible" cannot happen.
+   - It hits the cache. On the H5 compactions the summarizer read 0 and 789 cached tokens against 33k to 158k on the agent steps around it. Now a provider that keeps the conversation (`claude_code`, Codex) is sent only the new messages (`lm/engines/conversations.py`), and a prefix cache (OpenAI, vLLM, LM Studio, and the Anthropic Messages API, whose agent steps had no cache marks at all and now mark the history) serves the rest.
+   - Tools and config stay unchanged, because changing either invalidates a cached prefix. The prompt says the reply is text and runs no tools.
+   - The manual trigger between turns has no conversation to continue, so it reads the scope's context once and sends it with the prompt on the session's model.
+2. **The legacy chat module is deleted:** `ClioAgent.chat_agent`, `_run_chat_agent` with its old persona and unused image and file fields, and the dead `signatures/` package. Nothing else used them.
+3. **Sections.** The prompt asks for: Objective (quoted); Requirements and constraints (quoted, with later changes); Progress and state; Findings and evidence (the evidence rules as before); Decisions and ruled out; Files and artifacts; Open threads; Next step, quoting the latest request. It says what returns verbatim and to update an earlier checkpoint rather than summarize it again (anchored update, change 6 of the first draft, falls out of change 1). A prompt file written for the removed `{transcript}` placeholder fails loudly.
+4. **Every typed message stays verbatim.** The keep rule keeps the person's own messages (requests and steers), newest first, within `compaction.keep.user_chars` (default 80000 characters, about 20k tokens, Codex's budget).
+5. **The newest step stays verbatim** (`compaction.keep.last_steps` default 1): the output the agent was using.
+6. **Re-injection stays as built** (plan while draft or approved, todos, session facts); the prompt says so.
+7. **Measurement:** `lm.call` records `cache_write_tokens` as well as `cache_read_tokens`, so each compaction's cache use is visible per call.
+
+Still to measure live: the summarizer's cache read on `claude_code` (H5), Codex on Windows (`windows-verification-log-2026-11.md` §10), and alignment over several compactions (H6 below).
 
 ## Measuring alignment
 

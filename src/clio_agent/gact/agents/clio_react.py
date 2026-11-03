@@ -241,16 +241,23 @@ def _media_part(item: Any) -> ImagePart | DocumentPart:
 
 
 def _with_cache_key(config: Config, lm: Any) -> Config:
-    """Route this conversation's calls to one prompt cache, where the LM takes a key.
+    """Ask the provider to cache this conversation's growing prefix.
 
     ``prompt_cache_key`` (OpenAI Responses, Codex direct) is a routing hint: calls
     with the same key and prefix land on the same cache. The key is the
     conversation (GACT session + agent scope), so parallel agents never share one.
     Only an LM that declares ``_clio_prompt_cache_key`` gets it -- lm15 raises for a
-    provider without the field.
+    provider without the field. The Anthropic Messages API caches only what a block
+    mark covers, so an LM that declares ``_clio_cache_history`` marks the last message
+    of every request (``prefix="history"``): each step, and the compaction summarizer
+    that continues it, reads the prefix the previous step wrote.
     """
     from clio_agent.gact import context as _ctx  # noqa: PLC0415
 
+    if getattr(lm, "_clio_cache_history", False):
+        config = dataclasses.replace(
+            config, cache=dataclasses.replace(config.cache or CacheConfig(), prefix="history")
+        )
     session = _ctx.active_session_id()
     scope = _ctx.run_keyed_scope(_ctx.active_react_scope())
     if not getattr(lm, "_clio_prompt_cache_key", False) or not session or not scope:
@@ -337,9 +344,12 @@ class _Loop:
         self.variant_outcome: Any = None
         self.variant_claim = threading.Lock()
         from clio_agent.gact.compaction import AutoCompactionGuard  # noqa: PLC0415
+        from clio_agent.gact.compaction_summarizer import loop_summarizer  # noqa: PLC0415
 
-        # Auto compaction stops for this forward once one leaves it over the threshold.
-        self.autocompact = AutoCompactionGuard()
+        # The checkpoint continues this loop's own request, so it reuses the cached prefix.
+        self.autocompact = AutoCompactionGuard(
+            summarize=loop_summarizer(lambda: self.lm, self._next_request)
+        )
 
     def run(self) -> dspy.Prediction:
         from clio_agent.gact import context as _ctx  # noqa: PLC0415
@@ -447,13 +457,7 @@ class _Loop:
             flush_session(active_app(), self.recorder.session)  # last step's records first
             self.recorder.commit_input(self.step, attempt=attempt)
             attempt += 1
-            return Request(
-                model=self.lm.model,
-                system=self.system,
-                messages=tuple(_place_tool_media(self._context(), self.tool_media)),
-                tools=self.tools,
-                config=self.config,
-            )
+            return self._next_request()
 
         callable_token = CALLABLE_TOOLS.set(frozenset(self.agent.tools))
         try:
@@ -519,6 +523,16 @@ class _Loop:
 
     def _context(self) -> list[Message]:
         return self.recorder.read_steps()
+
+    def _next_request(self) -> Request:
+        """The request for the context as it stands (commits and records nothing)."""
+        return Request(
+            model=self.lm.model,
+            system=self.system,
+            messages=tuple(_place_tool_media(self._context(), self.tool_media)),
+            tools=self.tools,
+            config=self.config,
+        )
 
     def _execute(self, calls: list[ToolCallPart]) -> list[_CallOutcome]:
         """Run the step's calls concurrently within the per-server bound; in call order."""

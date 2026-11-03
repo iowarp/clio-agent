@@ -339,7 +339,6 @@ src/clio_agent/
 ├── harness.py                # RunTrace, RouteDecision, tool-result normalization
 ├── conversation_manager.py   # Session conversation state
 ├── errors.py                 # Structured error types
-├── signatures/               # DSPy signatures (main agent)
 ├── experts/                  # native_tools.py — native expert tool surface
 ├── prompt_packs/             # Built-in prompt packs
 ├── agent_blueprints/         # Built-in agent blueprints

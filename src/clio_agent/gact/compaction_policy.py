@@ -8,9 +8,12 @@ recallable); it only changes the agent's context view. After it the model sees
 :func:`post_compaction_context` decides, for one agent scope's live segments, which ids
 the summary replaces and which stay verbatim. The summary always renders first, ahead
 of everything kept (``compaction.compact_session_context`` places it at position 0).
-The default keeps only the current user question (``keep_head``): system + summary +
-the question verbatim + new steps. Change the rule here, or tune it without code via
-the ``compaction.keep.*`` config keys (:func:`keep_policy`).
+The default keeps every message the person typed (newest first, within
+``compaction.keep.user_chars``) and the newest step of the running turn, so the request,
+its limits and the output the agent was using stay verbatim: system + summary + those +
+new steps. Every other harness reviewed keeps the user's messages or a recent tail
+(``docs/design/compaction-review-2026-11.md``). Change the rule here, or tune it without
+code via the ``compaction.keep.*`` config keys (:func:`keep_policy`).
 """
 
 from __future__ import annotations
@@ -42,11 +45,14 @@ class KeepPolicy:
             turns: the last N turns).
         keep_last_steps: Keep the last N ReAct steps of the latest turn (the open one
             mid-turn).
+        keep_user_chars: Keep every message the person typed, newest first, while their
+            rendered size stays within this many characters (0: only ``keep_head``).
     """
 
     keep_head: bool = True
     keep_last_turns: int = 0
-    keep_last_steps: int = 0
+    keep_last_steps: int = 1
+    keep_user_chars: int = 80_000
 
 
 @dataclass(frozen=True)
@@ -80,7 +86,13 @@ def keep_policy() -> KeepPolicy:
         keep_last_steps=conf.resolve(
             "compaction.keep.last_steps",
             env="CLIO_COMPACTION_KEEP_LAST_STEPS",
-            default=0,
+            default=1,
+            cast=conf.as_int,
+        ),
+        keep_user_chars=conf.resolve(
+            "compaction.keep.user_chars",
+            env="CLIO_COMPACTION_KEEP_USER_CHARS",
+            default=80_000,
             cast=conf.as_int,
         ),
     )
@@ -95,6 +107,8 @@ class _Unit:
     ids: list[str]
     head: bool = False  # the forward's own user question (no ``actor``)
     source: str = ""  # an injection's source (``todos``, ``plan``, ...)
+    chars: int = 0  # the message's stored size (the typed-message budget counts it)
+    typed: bool = False  # a message the requester wrote (a question or a steer)
 
 
 def post_compaction_context(
@@ -133,6 +147,13 @@ def post_compaction_context(
         latest = open_turn_id or (turns[-1] if turns else "")
         steps = [i for i, u in enumerate(units) if u.kind == "step" and u.turn_id == latest]
         kept.update(steps[-policy.keep_last_steps :])
+    typed = [i for i, u in enumerate(units) if u.typed]
+    budget = policy.keep_user_chars
+    for i in reversed(typed):  # newest first, while the budget lasts
+        budget -= units[i].chars
+        if budget < 0:
+            break
+        kept.add(i)
     summarize = [sid for i, u in enumerate(units) if i not in kept for sid in u.ids]
     keep = [sid for i, u in enumerate(units) if i in kept for sid in u.ids]
     return PostCompactionContext(summarize=tuple(summarize), keep=tuple(keep))
@@ -148,12 +169,32 @@ def _units(live: Sequence[Any]) -> list[_Unit]:
         elif kind in _STEP_KINDS:
             units.append(_Unit("step", turn, [seg.id]))
         elif kind == "recipient_input" and seg.content.get("rendered_content"):
-            units.append(_Unit("user", turn, [seg.id], head=bool(seg.content.get("human_input"))))
+            units.append(
+                _Unit(
+                    "user",
+                    turn,
+                    [seg.id],
+                    head=bool(seg.content.get("human_input")),
+                    chars=len(str(seg.content.get("rendered_content"))),
+                    typed=bool(seg.content.get("human_input")),
+                )
+            )
         elif kind == "user":
             content = getattr(seg, "content", None)
             head = isinstance(content, Mapping) and "actor" not in content
             source = str(content.get("source") or "") if isinstance(content, Mapping) else ""
-            units.append(_Unit("user", turn, [seg.id], head=head, source=source))
+            steer = isinstance(content, Mapping) and content.get("actor") == "user"
+            units.append(
+                _Unit(
+                    "user",
+                    turn,
+                    [seg.id],
+                    head=head,
+                    source=source,
+                    chars=len(str(content)),
+                    typed=head or steer,
+                )
+            )
         else:
             units.append(_Unit("summary", turn, [seg.id]))
     return units

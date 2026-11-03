@@ -679,6 +679,39 @@ def test_the_loop_places_media_by_the_lms_tag(monkeypatch: pytest.MonkeyPatch) -
     assert engine.requests[1].messages[-1].parts[-1] == image
 
 
+def test_an_lm_that_caches_by_marks_asks_for_the_history_every_step() -> None:
+    """The Anthropic Messages API caches only what a block mark covers: every request
+    asks for the growing history (the summarizer, which continues the request, reads
+    it too). An LM without the tag sends no cache config. SABOTAGE: drop the
+    ``_clio_cache_history`` branch in ``_with_cache_key`` and this fails."""
+
+    def search(q: str) -> str:
+        """Search."""
+        return "hit"
+
+    for tagged in (True, False):
+        lm, engine = scripted_lm([calls(("search", {"q": "x"})), Reply(text="ok")])
+        if tagged:
+            lm._clio_cache_history = True  # type: ignore[attr-defined]
+        with dspy.context(lm=lm):
+            ClioReAct("question -> answer", tools=[search])(question="q")
+        caches = [request.config.cache for request in engine.requests]
+        if tagged:
+            assert [c.prefix if c else None for c in caches] == ["history", "history"]
+        else:
+            assert caches == [None, None]
+
+
+def test_only_the_anthropic_messages_api_is_tagged_to_mark_history() -> None:
+    from clio_agent.config import LMProviderConfig
+    from clio_agent.lm.factory import create_lm
+
+    anthropic = create_lm(LMProviderConfig(provider="anthropic", model="claude-x", api_key="k"))
+    openai = create_lm(LMProviderConfig(provider="openai", model="gpt-x", api_key="k"))
+    assert anthropic._clio_cache_history is True  # type: ignore[attr-defined]
+    assert openai._clio_cache_history is False  # type: ignore[attr-defined]
+
+
 # --------------------------------------------------------------------------- #
 # the persistent LM loop                                                      #
 # --------------------------------------------------------------------------- #

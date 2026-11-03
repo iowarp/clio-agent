@@ -4,10 +4,8 @@ Tests for clio_agent.agent module.
 Tests ClioAgent Router + ChatAgent + Expert dispatch architecture.
 """
 
-from contextlib import contextmanager
 from unittest.mock import patch
 
-import dspy
 import pytest
 
 from clio_agent.agent import ClioAgent
@@ -33,33 +31,14 @@ class TestClioAgent:
         finally:
             agent.shutdown()
 
-    def test_run_chat_agent_single_shot_synthesis(self):
-        """_run_chat_agent is plain single-shot LM synthesis (no tool loop).
-
-        The session-compaction summarizer (routes/sessions.py) depends on this
-        host helper folding a prompt into text via one chat_agent call.
-        """
+    def test_has_no_chat_module(self):
+        """The legacy chat module is gone: compaction asks the agent's own model."""
         agent = ClioAgent()
         try:
-            calls: list[dict[str, object]] = []
-
-            def fake_chat_agent(**kwargs: object):
-                calls.append(kwargs)
-                return dspy.Prediction(answer="compact summary")
-
-            agent.chat_agent = fake_chat_agent
-            result = agent._run_chat_agent("summarise this transcript", "")
-            assert result == "compact summary"
-            # Single-shot: exactly one predictor call, no tool loop.
-            assert len(calls) == 1
+            assert not hasattr(agent, "chat_agent")
+            assert not hasattr(agent, "_run_chat_agent")
         finally:
             agent.shutdown()
-
-    def test_has_chat_agent(self):
-        """Test ClioAgent has chat_agent component."""
-        agent = ClioAgent()
-        assert hasattr(agent, "chat_agent")
-        agent.shutdown()
 
     def test_does_not_have_native_domain_experts(self):
         """Test ClioAgent does not expose native domain expert components."""
@@ -177,32 +156,6 @@ class TestClioAgent:
 
         try:
             assert agent._main_lm.model == "openai/ibm/granite-4-h-tiny"
-            assert agent._dspy_adapter.use_json_adapter_fallback is False
-        finally:
-            agent.shutdown()
-
-    def test_chat_context_pins_provider_adapter(self, tmp_path, monkeypatch):
-        """Chat synthesis must use the agent-owned adapter, not DSPy's default."""
-        monkeypatch.setenv("CLIO_LM_PROVIDER", "lm_studio")
-        monkeypatch.setenv("CLIO_LM_API_BASE", "http://127.0.0.1:1234/v1")
-        monkeypatch.setenv("CLIO_LM_MODEL", "ibm/granite-4-h-tiny")
-
-        agent = ClioAgent(data_dir=str(tmp_path / "clio"))
-        calls: list[dict[str, object]] = []
-
-        @contextmanager
-        def fake_context(**kwargs: object):
-            calls.append(kwargs)
-            yield
-
-        try:
-            agent.chat_agent = lambda **_: dspy.Prediction(answer="ok")
-            with patch("clio_agent.agent.dspy.context", side_effect=fake_context):
-                answer = agent._run_chat_agent("hi", "")
-
-            assert answer == "ok"
-            assert calls[0]["lm"] is agent._main_lm
-            assert calls[0]["adapter"] is agent._dspy_adapter
             assert agent._dspy_adapter.use_json_adapter_fallback is False
         finally:
             agent.shutdown()

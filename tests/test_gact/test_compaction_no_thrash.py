@@ -30,6 +30,7 @@ import clio_agent.gact.compaction as compaction
 from clio_agent.arc.memory import ARCMemory
 from clio_agent.gact.app import build_app
 from clio_agent.gact.protocol.v3.message import part_to_v3_block
+from tests._compaction_summary import keep_open_request_only
 from tests._scripted_engine import Reply, ScriptedEngine, calls
 from tests.test_gact.test_compaction_visible import (
     SCOPE,
@@ -218,3 +219,9 @@ def test_a_context_that_regrows_above_its_floor_compacts_again(
     assert [(a["prompt_tokens"], a["floor"]) for a in skips] == [(950, 950), (970, 950)]
     [assistant] = [m for m in _transcript(client, sid) if m["role"] == "assistant"]
     assert _kinds(assistant).count("notice") == 1
+
+
+@pytest.fixture(autouse=True)
+def _open_request_only(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The keep rule these mechanics tests were written for (see the helper)."""
+    keep_open_request_only(monkeypatch)

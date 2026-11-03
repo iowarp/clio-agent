@@ -25,11 +25,16 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any, Callable
 
+import pytest
 from fastapi.testclient import TestClient
 
 from clio_agent.gact.a2ui_capabilities import client_capabilities, remember_client_capabilities
 from clio_agent.gact.a2ui_catalogs.builtin import workspace_catalog_id
 from clio_agent.gact.app import build_app
+from tests._compaction_summary import (
+    keep_open_request_only,
+    summary_lm,
+)
 from tests.test_gact.input_capture import capture_inputs
 
 HEADERS = {"X-GACT-Version": "0.3", "X-A2UI-Version": "0.9.1"}
@@ -46,7 +51,11 @@ class _CapturingAgent:
         self._summaries = list(summaries or [])
         self._default = "a summary"
 
-    def _run_chat_agent(self, question: str, _session_id: str) -> str:
+    @property
+    def _main_lm(self) -> Any:
+        return summary_lm(self.checkpoint)
+
+    def checkpoint(self, question: str) -> str:
         self.prompts.append(question)
         if self._summaries:
             return self._summaries.pop(0)
@@ -220,3 +229,9 @@ def test_capabilities_action_and_surface_survive_a_full_server_restart(
         surface_final = app2.state.a2ui_store.get(sid, "surface_1")
         assert surface_final is not None
         assert len(surface_final.actions) == 1, "no second action record was minted"
+
+
+@pytest.fixture(autouse=True)
+def _open_request_only(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The keep rule these mechanics tests were written for (see the helper)."""
+    keep_open_request_only(monkeypatch)

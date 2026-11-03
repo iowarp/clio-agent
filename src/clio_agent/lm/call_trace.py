@@ -220,7 +220,13 @@ def _usage(usage: Any) -> dict[str, Any] | None:
         return None
     return {
         name: getattr(usage, name)
-        for name in ("input_tokens", "output_tokens", "cache_read_tokens", "reasoning_tokens")
+        for name in (
+            "input_tokens",
+            "output_tokens",
+            "cache_read_tokens",
+            "cache_write_tokens",
+            "reasoning_tokens",
+        )
         if getattr(usage, name, None) is not None
     }
 

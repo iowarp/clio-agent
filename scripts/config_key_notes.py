@@ -417,7 +417,12 @@ KEY_NOTES: dict[str, str] = {
     ),
     "compaction.keep.last_steps": (
         "ReAct steps of the latest turn a compaction keeps verbatim after the summary "
-        "(0 = none); raise to keep the newest steps exact."
+        "(default 1: the output the agent was using; 0 = none); raise to keep more."
+    ),
+    "compaction.keep.user_chars": (
+        "Characters of the person's own messages (requests and steers) a compaction keeps "
+        "verbatim, newest first (default 80000, about 20k tokens; 0 = only the open turn's "
+        "request)."
     ),
     "debug.level": (
         'Log verbosity ("off"/"low"/"med"/"high", default "low"); raise to "high" for '

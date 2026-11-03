@@ -36,6 +36,11 @@ from clio_agent.providers.stateful_common import (
     note_prefix_reset_for_active_scope,
     stateful_scope,
 )
+from tests._compaction_summary import (
+    auto_guard,
+    keep_open_request_only,
+    summary_lm,
+)
 from tests._scripted_engine import AsyncScriptedEngine, Reply, ScriptedEngine, calls
 
 
@@ -187,14 +192,18 @@ def test_maybe_autocompact_wires_ops_reset_through_the_loop(
     from clio_agent.gact import context as _ctx
     from clio_agent.gact.agents import clio_react_record
     from clio_agent.gact.app import build_app
-    from clio_agent.gact.compaction import AutoCompactionGuard, maybe_autocompact
+    from clio_agent.gact.compaction import maybe_autocompact
     from clio_agent.gact.runtime import context_tokens as _ctok
     from clio_agent.gact.types import Message, Part
 
     class _CapturingAgent:
         """Minimal compact agent (matches test_compaction.py's ``_CapturingAgent``)."""
 
-        def _run_chat_agent(self, question: str, _session_id: str) -> str:
+        @property
+        def _main_lm(self) -> Any:
+            return summary_lm(self.checkpoint)
+
+        def checkpoint(self, question: str) -> str:
             summary_scopes.append(active_stateful_scope())
             return "auto summary"
 
@@ -255,11 +264,13 @@ def test_maybe_autocompact_wires_ops_reset_through_the_loop(
         _prime("s")
         app_token = _ctx.set_app(app)
         try:
-            maybe_autocompact(AutoCompactionGuard())
+            maybe_autocompact(auto_guard())
         finally:
             _ctx.reset(app_token)
         assert len(summarize_calls) == 1  # the op really fired
-        assert summary_scopes == [None], "the summary call ran outside the agent's scope"
+        # The auto summary continues the agent's own kept conversation (its cached
+        # prefix); the fold then resets that conversation typed.
+        assert summary_scopes == ["s"], "the auto summary left the agent's conversation"
         assert active_stateful_scope() == "s", "the forward's scope is restored"
         send = registry.plan(_key("s"), _r("q", "a", "b"), "sys")
         assert (send.handle, send.reason) == (None, "ops_reset")
@@ -401,3 +412,9 @@ def test_stream_pool_entry_survives_a_stateful_scope_exit() -> None:
     still_here = _STREAM_CLIENT_POOL.entry_for(session_id="sess-persist")
     assert still_here is held  # NOT torn down by the forward's own scope exit
     _STREAM_CLIENT_POOL.release("sess-persist")
+
+
+@pytest.fixture(autouse=True)
+def _open_request_only(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The keep rule these mechanics tests were written for (see the helper)."""
+    keep_open_request_only(monkeypatch)
