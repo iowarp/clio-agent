@@ -45,7 +45,6 @@ import re
 import sys
 import threading
 from collections.abc import Iterator
-from contextlib import contextmanager
 from pathlib import Path
 from typing import Any
 
@@ -54,7 +53,6 @@ import pytest
 from dspy.lm15 import Message as LMMessage
 from fastapi.testclient import TestClient
 
-import clio_agent.gact.compaction as compaction
 import clio_agent.gact.runtime.context_tokens as context_tokens
 from clio_agent.arc.memory import ARCMemory
 from clio_agent.gact import context as ctx
@@ -70,12 +68,7 @@ from tests._scripted_engine import Reply, ScriptedEngine, calls, scripted_lm, su
 from tests.turn_signals import post_turn_and_wait
 
 SCOPE = "standard"  # the session agent: its react scope and primary agent id
-# A realistic window: tool results are sized to the room it leaves (tools.result_room),
-# so a toy window would spill the very results these tests compare byte for byte.
-WINDOW = 100_000
-#: The measured prompt at a check that crosses the 0.85 threshold, and at any other read.
-HIGH_PROMPT_TOKENS = int(WINDOW * 0.95)
-LOW_PROMPT_TOKENS = 10
+WINDOW = 1000
 SUMMARY = "SUMMARY: searched q0 and q1; hits HITS-q0, HITS-q1."
 
 
@@ -104,35 +97,17 @@ class SummarizerAgent:
 
 
 class _PromptTokens:
-    """The measured prompt size: over the threshold only at the chosen compaction checks.
-
-    Check ``n`` is the ``n``-th call of the loop's auto-compaction check (counted from 0).
-    Only that check reads the crossing size; every other reader (sizing a tool result or a
-    child report to the room left) reads the ordinary small one. So those readers neither
-    shift which check crosses the threshold nor see a full context these tests never build.
-    """
+    """``_last_prompt_tokens`` reads: over the threshold only on the chosen reads."""
 
     def __init__(self, high_on: set[int]) -> None:
         self.high_on = high_on
-        self.reads = 0  # compaction checks so far
+        self.reads = 0
         self._lock = threading.Lock()
-        self._checking = threading.local()
-
-    @contextmanager
-    def check(self) -> Iterator[None]:
-        """One auto-compaction check: the measurement it reads."""
-        with self._lock:
-            index, self.reads = self.reads, self.reads + 1
-        self._checking.index = index
-        try:
-            yield
-        finally:
-            self._checking.index = None
 
     def __call__(self) -> int:
-        index = getattr(self._checking, "index", None)
-        crossing = index is not None and index in self.high_on
-        return HIGH_PROMPT_TOKENS if crossing else LOW_PROMPT_TOKENS
+        with self._lock:
+            read, self.reads = self.reads, self.reads + 1
+        return 950 if read in self.high_on else 10
 
 
 def _search(q: str) -> str:
@@ -248,13 +223,6 @@ def _short_session_facts(monkeypatch: pytest.MonkeyPatch) -> None:
 def _patch_tokens(monkeypatch: pytest.MonkeyPatch, high_on: set[int]) -> _PromptTokens:
     reads = _PromptTokens(high_on)
     monkeypatch.setattr(context_tokens, "_last_prompt_tokens", reads)
-    check = compaction.maybe_autocompact
-
-    def counted(guard: Any) -> None:
-        with reads.check():
-            check(guard)
-
-    monkeypatch.setattr(compaction, "maybe_autocompact", counted)
     return reads
 
 
