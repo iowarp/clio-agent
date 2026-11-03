@@ -67,11 +67,9 @@ class Provider:
     supports_live_catalog: bool = True
     strip_openai_prefix: bool = True
     parse_retry_capability: Literal["bounded", "single_attempt"] = "bounded"
-    #: The model family this provider offers for fast, cheap subagent work (Claude
-    #: Code runs its Explore agent on Haiku). An unset fleet role that defaults to the
-    #: fast model (``fleet.explore_default``) runs on the first available model of the
-    #: caller's account whose id contains it, in catalog order (newest first). ``""``:
-    #: none, so the role inherits the caller's model.
+    #: The model family this provider offers for fast, cheap work (Claude Code runs its
+    #: Explore agent on Haiku). A fact the agent reads: ``list_models`` marks this
+    #: family's models ``fast``; CLIO never picks a model by it. ``""``: none declared.
     fast_model_family: str = ""
     configuration_fields: tuple[ProviderConfigurationField, ...] = ()
     supports_runtime_sizing: bool = False

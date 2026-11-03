@@ -196,7 +196,9 @@ def build_spawn_runtime_tools(
         "description": (
             "The model the child runs on: account/model or a model id from list_models. "
             "Empty: the child's own preference, else your model. A model that cannot run "
-            "the child is refused with the reason."
+            "the child is refused with the reason. If you use explore or another search "
+            "child, prefer a fast, cheap model for performance and speed (list_models "
+            "marks them fast)."
         ),
     }
     tools = [
