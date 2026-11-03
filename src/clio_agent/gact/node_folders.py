@@ -155,19 +155,6 @@ def child_node_metadata(
     return {}
 
 
-def prompt_lines(folder: str) -> list[str]:
-    """What a node's prompt says about its folder."""
-
-    return [
-        f"Your node folder: {folder}",
-        (
-            "This session is one node of an isolated workflow run. Your shell starts in "
-            "your node folder, and relative output paths land there. You may write only "
-            "inside it; you may read the whole workspace."
-        ),
-    ]
-
-
 __all__ = [
     "FOLDER_COPY_KEY",
     "ISOLATION_UNCONFINED",
@@ -175,7 +162,6 @@ __all__ = [
     "child_node_metadata",
     "isolation_refusal",
     "node_confinement",
-    "prompt_lines",
     "run_folder",
     "session_node_folder",
     "step_folder",

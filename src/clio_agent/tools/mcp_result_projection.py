@@ -1,11 +1,12 @@
 """Bounded model-lane projection of complete MCP results.
 
-This bounds the text that enters the MODEL's context. It is deliberately a
-DIFFERENT knob from ``limits.tool_result_chars``
+This bounds the text that enters the MODEL's context, to the room one result has in
+the calling model's context window (:mod:`clio_agent.tools.result_room`). It is
+deliberately a DIFFERENT bound from ``limits.tool_result_chars``
 (:func:`clio_agent.gact.evidence._bounded_tool_call_result`), which bounds the
 preview stored in assistant metadata and shipped to the transcript UI: the two
 lanes have different consumers and different failure modes (context budget vs
-transcript payload size), so each owns exactly one key and neither can silently
+transcript payload size), so each owns its own bound and neither can silently
 redirect the other. The raw evidence itself is never rewritten by either.
 """
 
@@ -13,30 +14,25 @@ from __future__ import annotations
 
 import logging
 import uuid
+from collections.abc import Mapping
 from pathlib import Path
+
+from clio_agent.tools.result_room import ResultRoom, result_room
 
 logger = logging.getLogger(__name__)
 
 #: Typed reason logged when an oversize result could not be written to its file.
 MODEL_TOOL_RESULT_SPILL_FAILED_REASON = "model_tool_result_spill_failed"
+#: The injection source, and the fixed marker that opens a cut result's note.
+RESULT_SPILLED_SOURCE = "result_spilled"
+RESULT_SPILLED_MARKER = f"[clio: {RESULT_SPILLED_SOURCE}]"
 
 
-def model_tool_result_chars() -> int:
-    """Characters of one MCP tool result the model is shown before the rest goes to a file.
+def _say(piece: str, variables: Mapping[str, object]) -> str:
+    """A piece of the note (a ``result_spilled*`` reminder; required, so never off)."""
+    from clio_agent.gact import reminders  # noqa: PLC0415
 
-    Config: ``limits.model_tool_result_chars`` /
-    ``CLIO_MODEL_TOOL_RESULT_CHARS`` (default 12000). Lower it to protect a
-    small context window from one verbose tool; raise it when a model has room.
-    """
-
-    from clio_agent import conf  # noqa: PLC0415
-
-    return conf.resolve(
-        "limits.model_tool_result_chars",
-        env="CLIO_MODEL_TOOL_RESULT_CHARS",
-        default=12_000,
-        cast=conf.as_int,
-    )
+    return reminders.render(piece, variables) or ""
 
 
 def transcript_tool_result_chars() -> int:
@@ -45,8 +41,8 @@ def transcript_tool_result_chars() -> int:
     Config: ``limits.tool_result_chars`` / ``CLIO_TOOL_RESULT_CHARS`` (default
     12000). Consumed by :func:`clio_agent.gact.evidence._bounded_tool_call_result`;
     resolved here, beside its model-lane sibling, so a tool that must size its own
-    result to survive BOTH lanes unchanged (the shell tool, #887) reads the same
-    single source instead of re-declaring the key.
+    result's transcript copy (the shell tool, #887) reads the same single source
+    instead of re-declaring the key.
     """
 
     from clio_agent import conf  # noqa: PLC0415
@@ -60,27 +56,34 @@ def transcript_tool_result_chars() -> int:
 
 
 def bounded_model_tool_result(
-    text: str, *, root: str | Path | None = None, session_id: str | None = None
+    text: str,
+    *,
+    root: str | Path | None = None,
+    session_id: str | None = None,
+    room: ResultRoom | None = None,
 ) -> str:
     """The model-facing text of one tool result: whole, or its head plus a file for the rest.
 
-    The harness does not decide what the agent needs from a big result. Over
-    :func:`model_tool_result_chars`, the full result is written to the session's
-    tool-output folder (the shell tool's spill folder, removed with the session) and
-    the agent is told: how big it is, that the first characters follow, and where the
-    rest is for it to explore. The raw evidence itself is never rewritten.
+    The harness does not decide what the agent needs from a big result. When it does not
+    fit the result's room (``room``, else :func:`~clio_agent.tools.result_room.result_room`),
+    the full result is written to the session's tool-output folder (the shell tool's spill
+    folder, removed with the session) and the agent is told: how big it is, that the first
+    characters follow, and where the rest is for it to explore (the reminder
+    ``clio.reminder.result_spilled`` and its ``where`` pieces). The raw evidence itself is
+    never rewritten.
     """
 
-    max_chars = model_tool_result_chars()
-    if len(text) <= max_chars:
+    room = room or result_room()
+    if room.fits(text):
         return text
+    path: Path | None = None
+    unsaved = ""
     try:
         path = (
             _spill(text)
             if root is None and session_id is None
             else _spill(text, root=root, session_id=session_id)
         )
-        where = f"the full result is in `{path}`; {_continuation(path, text, max_chars)}"
     except OSError as exc:
         logger.warning(
             "tool result spill failed reason=%s chars=%d error=%r",
@@ -88,33 +91,35 @@ def bounded_model_tool_result(
             len(text),
             exc,
         )
-        where = f"the full result could not be saved ({exc}), so the rest is not available"
-    note = (
-        f"[clio: result_spilled] This result is {len(text):,} characters, more than the "
-        f"{max_chars:,} shown to you. The first characters follow; {where}."
-    )
+        unsaved = _say("result_spilled_unsaved", {"error": exc})
+
+    def note(head: str, whole: bool) -> str:
+        where = unsaved if path is None else _continuation(path, head, whole)
+        frame = {"chars": f"{len(text):,}", "shown": f"{len(head):,}", "where": where}
+        return f"{RESULT_SPILLED_MARKER} {_say(RESULT_SPILLED_SOURCE, frame)}"
+
+    # Reserve the longest note (every count at its largest), then cut the head to fit.
+    head = text[: max(0, room.chars - len(note(text, True)) - 2)]
+    cut = head.rfind("\n")
+    whole = cut > len(head) // 2
+    if whole:
+        head = head[:cut]  # end on a whole line when one is near
+    projection = f"{note(head, whole)}\n\n{head}"
     from clio_agent.tools import injections  # noqa: PLC0415
 
-    head = text[: max(0, max_chars - len(note) - 2)]
-    cut = head.rfind("\n")
-    if cut > len(head) // 2:
-        head = head[:cut]  # end on a whole line when one is near
-    projection = f"{note}\n\n{head}"
     # Details must include the head promised by the notice, exactly as returned
     # to the model. Recording only `note` silently loses that part of the view.
-    injections.note("result_spilled", projection)
+    injections.note(RESULT_SPILLED_SOURCE, projection)
     return projection
 
 
-def _continuation(path: Path, text: str, max_chars: int) -> str:
-    """How to read on from what was shown: the exact next read, or a search for JSON."""
+def _continuation(path: Path, head: str, whole: bool) -> str:
+    """Where the rest is and how to read on: the exact next read, or a search for JSON."""
     if path.suffix == ".json":
-        return "it is one JSON document, so search it with fs_search_text or load it in a script"
-    shown_lines = text[:max_chars].count("\n") + 1
-    return (
-        f'read on with fs_read_file(filepath="{path}", offset={shown_lines}), '
-        "or search it with fs_search_text"
-    )
+        return _say("result_spilled_json", {"path": path})
+    # The line after the head's last whole line (a last line cut short is read again).
+    offset = head.count("\n") + (2 if whole else 1)
+    return _say("result_spilled_read_on", {"path": path, "offset": offset})
 
 
 def _spill(text: str, *, root: str | Path | None = None, session_id: str | None = None) -> Path:

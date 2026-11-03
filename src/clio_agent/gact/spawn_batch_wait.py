@@ -2,10 +2,9 @@
 
 The children were spawned together; this waits for all of them through the task
 layer's own wait (the one ``wait_tasks`` uses), so cancellation, Stop, mail
-interruptions and uncertain members behave exactly as they do there. Each report
-gets an equal share of the result bound (:func:`clio_agent.gact.task_result_spill.
-shared_result_bound`): a longer one is saved to its own file with an excerpt, so a
-batch of long reports never spills as a whole. Children that failed to start are
+interruptions and uncertain members behave exactly as they do there. Every report is
+returned whole while the batch fits the parent's context (:mod:`clio_agent.gact.
+child_report_fit`); one that does not is saved to its own file. Children that failed to start are
 reported beside the reports, by their index.
 """
 
@@ -18,8 +17,8 @@ __all__ = ["wait_for_batch"]
 
 async def wait_for_batch(outcomes: list[dict[str, Any]]) -> Any:
     """Wait for every spawned child in ``outcomes``; return the collected reports."""
+    from clio_agent.gact.child_report_fit import report_room  # noqa: PLC0415
     from clio_agent.gact.task_declarations import _runtime  # noqa: PLC0415
-    from clio_agent.gact.task_result_spill import shared_result_bound  # noqa: PLC0415
     from clio_agent.gact.task_tool_collection import collected  # noqa: PLC0415
 
     handles = [str(row["handle"]) for row in outcomes if row.get("handle")]
@@ -27,7 +26,7 @@ async def wait_for_batch(outcomes: list[dict[str, Any]]) -> Any:
     if not handles:
         return {"spawned": outcomes, "outcomes": outcomes}
     app, caller = _runtime()
-    with shared_result_bound(len(handles)):
+    with report_room():
         value = await app.state.task_operations.wait(
             caller, handles, "all", None, interrupt_on_mail=True
         )

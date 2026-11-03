@@ -46,7 +46,7 @@ def _start(call: Any, root: Path, sid: str, tool: str, submission: str) -> dict[
         call,
         sid,
         submission + " Submit this operation exactly once. Immediately query_tasks(kind='MCP'), "
-        f"then fs_read_file(filepath={str(sentinel)!r}), then query_tasks(kind='MCP') again. "
+        f"then fs_read_file(path={str(sentinel)!r}), then query_tasks(kind='MCP') again. "
         "Then wait_tasks on its handle with timeout_s=0.1 and observe_tasks on that handle. "
         "Report actual observations and finish this turn without collecting a terminal "
         "result or waiting again. The operator will supply human input if requested. "

@@ -84,7 +84,7 @@ def test_ai_review_allow_resolves_with_reviewer_grantor(tmp_path: Path, monkeypa
         sid = _ai_review_session(app, c)
         gate = _make_permission_gate(app)
         with _tool_session_context(sid):
-            assert gate(_FS_WRITE, {"filepath": "x", "content": "y"}) == "allow"
+            assert gate(_FS_WRITE, {"path": "x", "content": "y"}) == "allow"
         rows = list(app.state.permissions.values())
         assert len(rows) == 1
         row = rows[0]
@@ -108,7 +108,7 @@ def test_ai_review_allow_emits_resolved_with_grantor(tmp_path: Path, monkeypatch
         app.state.bus.publish = lambda evt: (captured.append(evt), orig(evt))[1]
         gate = _make_permission_gate(app)
         with _tool_session_context(sid):
-            assert gate(_FS_WRITE, {"filepath": "x", "content": "y"}) == "allow"
+            assert gate(_FS_WRITE, {"path": "x", "content": "y"}) == "allow"
         resolved = [
             e
             for e in captured
@@ -133,7 +133,7 @@ def test_ai_review_deny_resolves_denied_with_reviewer_grantor(tmp_path: Path, mo
         sid = _ai_review_session(app, c)
         gate = _make_permission_gate(app)
         with _tool_session_context(sid):
-            assert gate(_FS_WRITE, {"filepath": "x", "content": "y"}) == "deny"
+            assert gate(_FS_WRITE, {"path": "x", "content": "y"}) == "deny"
         rows = list(app.state.permissions.values())
         assert len(rows) == 1
         row = rows[0]
@@ -169,7 +169,7 @@ def test_ai_review_escalate_falls_to_human_wait(tmp_path: Path, monkeypatch, rea
 
         def fire() -> None:
             with _tool_session_context(sid):
-                result["decision"] = gate(_FS_WRITE, {"filepath": "x", "content": "y"})
+                result["decision"] = gate(_FS_WRITE, {"path": "x", "content": "y"})
 
         thread = threading.Thread(target=fire)
         thread.start()
@@ -205,7 +205,7 @@ def test_read_bypasses_reviewer_entirely(tmp_path: Path, monkeypatch) -> None:
         sid = _ai_review_session(app, c)
         gate = _make_permission_gate(app)
         with _tool_session_context(sid):
-            assert gate("fs_read_file", {"filepath": "x"}) == "allow"
+            assert gate("fs_read_file", {"path": "x"}) == "allow"
         spy.assert_not_called()
         assert app.state.permissions == {}
 
@@ -221,7 +221,7 @@ def test_plan_lock_beats_ai_review(tmp_path: Path, monkeypatch, locked_mode: str
         sid = _ai_review_session(app, c, mode=locked_mode)
         gate = _make_permission_gate(app)
         with _tool_session_context(sid):
-            assert gate(_FS_WRITE, {"filepath": "x", "content": "y"}) == "deny"
+            assert gate(_FS_WRITE, {"path": "x", "content": "y"}) == "deny"
         spy.assert_not_called()
         row = _wait_for_row(app)
         assert row["status"] == "auto_denied"
@@ -251,7 +251,7 @@ def test_explicit_deny_policy_beats_ai_review(tmp_path: Path, monkeypatch) -> No
         assert resp.status_code == 200
         gate = _make_permission_gate(app)
         with _tool_session_context(sid):
-            assert gate(_FS_WRITE, {"filepath": "x", "content": "y"}) == "deny"
+            assert gate(_FS_WRITE, {"path": "x", "content": "y"}) == "deny"
         spy.assert_not_called()
         rows = list(app.state.permissions.values())
         assert len(rows) == 1
@@ -294,7 +294,7 @@ def test_explicit_ask_policy_beats_ai_review_escalates_to_human(
 
         def fire() -> None:
             with _tool_session_context(sid):
-                result["decision"] = gate(_FS_WRITE, {"filepath": "x", "content": "y"})
+                result["decision"] = gate(_FS_WRITE, {"path": "x", "content": "y"})
 
         thread = threading.Thread(target=fire)
         thread.start()
@@ -358,7 +358,7 @@ def test_verdict_no_lm_escalates(monkeypatch) -> None:
     monkeypatch.setattr(ai_review_mod, "_resolve_reviewer_lm", lambda app: (None, None))
     app = Mock()
     app.state.sessions.get.return_value = None
-    verdict, reason = ai_review_verdict(app, "sess_x", _FS_WRITE, {"filepath": "x"}, None)
+    verdict, reason = ai_review_verdict(app, "sess_x", _FS_WRITE, {"path": "x"}, None)
     assert verdict == "escalate"
     assert reason == REASON_AI_REVIEW_NO_LM
 
@@ -518,8 +518,9 @@ def test_run_reviewer_unknown_decision_escalates(monkeypatch) -> None:
     assert key == "escalate"
 
 
-def test_bounded_args_summary_truncates() -> None:
-    big = {"blob": "z" * 5000}
+def test_the_reviewer_reads_every_argument() -> None:
+    """A dangerous tail after a long harmless head is still reviewed. SABOTAGE: cut the
+    summary at a fixed length and the tail is lost."""
+    big = {"command": "echo " + "z" * 5000 + "; rm -rf /important"}
     summary = _bounded_args_summary(big)
-    assert summary.endswith("...(truncated)")
-    assert len(summary) <= ai_review_mod._ARGS_SUMMARY_MAX_CHARS + len("...(truncated)")
+    assert summary.endswith("rm -rf /important'")

@@ -205,6 +205,7 @@ def builtin_prompt_definitions() -> dict[str, PromptDefinition]:
             rows[parsed.id].description = parsed.description
             rows[parsed.id].source_path = parsed.source_path
             rows[parsed.id].metadata.update(parsed.metadata)
+        rows.update(_builtin_reminders(root))
     except Exception as exc:  # pragma: no cover - defensive import guard  # noqa: BLE001 - import failure surfaced as an error prompt to the user
         text = (
             "CLIO built-in prompt files could not be imported. Check packaged "
@@ -214,6 +215,26 @@ def builtin_prompt_definitions() -> dict[str, PromptDefinition]:
         rows["clio.chat"].enabled = False
         rows["clio.chat"].validation_errors.append(text)
 
+    return rows
+
+
+def _builtin_reminders(root: Any) -> dict[str, PromptDefinition]:
+    """Reminder templates (``reminders/*.md``), used verbatim: a reminder is what the
+    agent is told, so the behaviour profiles are not appended to it."""
+    folder = root / "reminders"
+    if not folder.is_dir():
+        return {}
+    rows: dict[str, PromptDefinition] = {}
+    for path in sorted(folder.iterdir(), key=lambda item: item.name):
+        if not path.name.endswith(".md"):
+            continue
+        parsed = parse_prompt_text(
+            path.read_text(encoding="utf-8"),
+            scope="builtin",
+            source_path=f"package://clio_agent.prompt_packs.builtin/reminders/{path.name}",
+            fallback_id=path.name.removesuffix(".md"),
+        )
+        rows[parsed.id] = parsed
     return rows
 
 
@@ -324,7 +345,9 @@ class PromptRegistry:
         resolved = self.resolve(prompt_id, profile=profile)
         if resolved is None:
             return None
-        rendered_text, used, errors = render_prompt_text(resolved.text, context or {})
+        rendered_text, used, errors = render_prompt_text(
+            resolved.text, context or {}, declared_variables(resolved.metadata)
+        )
         metadata = dict(resolved.metadata)
         metadata["render"] = {
             "placeholders_used": used,
@@ -447,7 +470,7 @@ def parse_prompt_text(
         profile_name = "default"
     if not body.strip():
         errors.append("prompt body is empty")
-    placeholder_errors = _placeholder_validation_errors(body)
+    placeholder_errors = _placeholder_validation_errors(body, declared_variables(meta))
     errors.extend(placeholder_errors)
     title = str(meta.get("title") or prompt_id).strip()
     description = str(meta.get("description") or "").strip()
@@ -633,24 +656,36 @@ def _is_frontmatter_scalar(value: Any) -> bool:
     return isinstance(value, (str, int, float, bool))
 
 
-def _placeholder_validation_errors(text: str) -> list[str]:
-    unknown = sorted(
-        {
-            name
-            for name in _RENDER_PLACEHOLDER_RE.findall(text)
-            if name not in _ALLOWED_RENDER_PLACEHOLDERS
-        }
-    )
+def declared_variables(meta: dict[str, Any]) -> frozenset[str]:
+    """A reminder's declared variables (``x_variables``, comma-separated): the only
+    placeholders its body may use (docs/design/sdk/reminders.md). ``meta`` is the raw
+    frontmatter (``x_`` keys) or a definition's metadata (prefix stripped)."""
+    kind = meta.get("x_kind", meta.get("kind"))
+    if str(kind or "").strip() != "reminder":
+        return frozenset()
+    raw = meta.get("x_variables", meta.get("variables")) or ""
+    items = raw if isinstance(raw, list) else str(raw).split(",")
+    return frozenset(str(item).strip() for item in items if str(item).strip())
+
+
+def _placeholder_validation_errors(text: str, declared: frozenset[str] = frozenset()) -> list[str]:
+    allowed = declared or _ALLOWED_RENDER_PLACEHOLDERS
+    unknown = sorted({name for name in _RENDER_PLACEHOLDER_RE.findall(text) if name not in allowed})
     return [f"unknown render placeholder: {name}" for name in unknown]
 
 
-def render_prompt_text(text: str, context: dict[str, str]) -> tuple[str, list[str], list[str]]:
+def render_prompt_text(
+    text: str, context: dict[str, str], declared: frozenset[str] = frozenset()
+) -> tuple[str, list[str], list[str]]:
+    """Fill ``{{name}}`` placeholders; ``declared`` replaces the system-prompt allowlist
+    (a reminder's own variables)."""
     used: list[str] = []
     errors: list[str] = []
+    allowed = declared or _ALLOWED_RENDER_PLACEHOLDERS
 
     def replace(match: re.Match[str]) -> str:
         name = match.group(1)
-        if name not in _ALLOWED_RENDER_PLACEHOLDERS:
+        if name not in allowed:
             errors.append(f"unknown render placeholder: {name}")
             return match.group(0)
         used.append(name)

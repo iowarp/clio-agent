@@ -272,15 +272,6 @@ providers.model_catalog_ttl_s: 86400.0
 # Per-call byte/character/time bounds and bounded-retry budgets across the
 # tool and LM paths.
 
-# CLIO_AGENT_TASK_OUTPUT_DIGEST_CHARS  (int)  <- src/clio_agent/gact/agents/agent_task_output_digest.py
-# Character bound above which a completed spawned child's full output is
-# digested (excerpt + a durable session/message reference) instead of
-# inlined verbatim into the parent's wait_agent_tasks result, and above
-# which get_task_result saves a result to a file in the session's spill
-# folder instead of returning it whole; raise to inline larger child
-# answers, lower to bound coordinator context growth sooner.
-limits.agent_task_output_digest_chars: 8000
-
 # CLIO_CTX_MAX_BYTES  (int)  <- src/clio_agent/gact/runtime/constants.py
 # Byte cap per attached file inlined into context injection; raise to inline
 # larger attachments, lower to bound prompt growth.
@@ -318,12 +309,6 @@ limits.lm_transient_retries: 2.0
 # (image/audio/resource) before it's elided; raise for larger images.
 limits.mcp_content_block_max_bytes: 524288
 
-# CLIO_MODEL_TOOL_RESULT_CHARS  (int)  <- src/clio_agent/gact/session_mail.py
-# Characters of a tool result shown to the model; a longer result is saved
-# to the session's tool-output folder and the agent gets this many head
-# characters plus the file path. Distinct from limits.tool_result_chars.
-limits.model_tool_result_chars: 12000
-
 # CLIO_PLAN_REVIEW_CHARS  (int)  <- src/clio_agent/gact/plan_review.py
 # Character bound on saved plan content embedded in an approval record;
 # raise for unusually large implementation plans, lower to bound review
@@ -333,8 +318,9 @@ limits.plan_review_chars: 256000
 # CLIO_SHELL_DEFAULT_OUTPUT_BYTES  (int)  <- src/clio_agent/tools/servers/shell_server.py
 # Per-stream bytes of shell stdout/stderr returned inline when the caller
 # specifies none; larger output is spilled in full to .clio/tool-output/ and
-# excerpted. Sized so the result fits limits.tool_result_chars (#887).
-limits.shell_default_output_bytes: 8192
+# excerpted. The whole result is also fitted to the room one result has in
+# the model's context window (tools.result_share).
+limits.shell_default_output_bytes: 32768
 
 # CLIO_SHELL_DEFAULT_TIMEOUT_S  (float)  <- src/clio_agent/tools/servers/shell_server.py
 # Seconds a shell command may run when the caller passes no timeout; 0
@@ -361,7 +347,8 @@ limits.shell_max_timeout_s: 0.0
 
 # CLIO_TOOL_RESULT_CHARS  (int)  <- src/clio_agent/gact/assignment_evidence.py
 # Character bound on the transcript/evidence-metadata preview of a tool
-# result; raise to keep more result text visible in the transcript.
+# result; raise to keep more result text visible in the transcript. Not what
+# the model is shown (tools.result_share).
 limits.tool_result_chars: 12000
 
 # CLIO_TRANSIENT_PROVIDER_RETRY_DELAYS  (list)  <- src/clio_agent/agent.py
@@ -459,16 +446,6 @@ fleet.usage_poll_seconds: 300
 # selection takes precedence, including an explicit null to inherit the
 # conversation model.
 # goal.judge_model:  # default unset; resolved in code
-
-# CLIO_PLAN_INJECTION_CHARS  (int)  <- src/clio_agent/gact/session_plan.py
-# Characters of the session plan offered back to the agent as working state;
-# a longer plan is cut there with a pointer to its file.
-plan.injection_chars: 12000
-
-# CLIO_PLAN_STALE_STEPS  (int)  <- src/clio_agent/gact/working_state.py
-# Recorded steps without plan_update or write_todos after which an active
-# plan is mentioned to the agent in one line; 0 turns the note off.
-plan.stale_steps: 25
 
 # CLIO_DEFAULT_MARKETPLACE  (str)  <- src/clio_agent/plugins/service.py
 # Source of the shipped default marketplace (a folder or git URL); unset
@@ -1155,9 +1132,8 @@ resources.derivative_name_max_chars: 48
 # resources.document_processor_url:  # default unset; resolved in code
 
 # CLIO_RESOURCE_LIST_MAX_RECORDS  (int)  <- src/clio_agent/gact/resource_tools.py
-# Resource rows one workspace listing returns before it reports truncation;
-# raise for workspaces holding many uploads, lower to keep tool results
-# small.
+# Resource rows one workspace listing returns when the call gives no limit;
+# the result's next_offset pages through the rest.
 resources.list_max_records: 100
 
 # CLIO_RESOURCE_MAX_BYTES  (int)  <- src/clio_agent/gact/composer_runtime.py
@@ -1236,13 +1212,14 @@ resources.processor_status_timeout_s: 30.0
 resources.processor_write_timeout_s: 0.0
 
 # CLIO_RESOURCE_SEARCH_EXCERPT_CHARS  (int)  <- src/clio_agent/gact/resource_tools.py
-# Characters of each matching line returned by a bounded resource search;
-# raise for more context per hit, lower to shrink tool output.
+# Characters of the excerpt around each resource search hit; a longer line
+# reports its length and the excerpt's char_offset, so
+# workspace_resource_read reaches the rest.
 resources.search_excerpt_chars: 500
 
 # CLIO_RESOURCE_SEARCH_MATCH_LIMIT  (int)  <- src/clio_agent/gact/resource_tools.py
-# Matches one bounded resource search returns before reporting truncation;
-# raise for broader sweeps, lower to keep tool results small.
+# Matches one resource search returns when the call gives no limit; the
+# result's next_offset pages through the rest.
 resources.search_match_limit: 50
 
 # CLIO_RESOURCE_STATUS_POLL_FAILURE_THRESHOLD  (int)  <- src/clio_agent/gact/resource_lifecycle.py
@@ -1251,26 +1228,20 @@ resources.search_match_limit: 50
 # vanished converter sooner.
 resources.status_poll_failure_threshold: 5
 
-# CLIO_RESOURCE_STRUCTURE_NODE_MAX_BYTES  (int)  <- src/clio_agent/gact/resource_processing.py
-# Byte ceiling on ONE structured node (a page, table, picture or text block)
-# served from a derived view; raise for documents with very large single
-# nodes.
-resources.structure_node_max_bytes: 2097152
-
 # CLIO_RESOURCE_TEXT_PREVIEW_BYTES  (int)  <- src/clio_agent/gact/routes/resources.py
 # Byte ceiling on a text resource served inline through the preview route;
 # raise to preview larger documents in a client.
 resources.text_preview_bytes: 2097152
 
 # CLIO_RESOURCE_TEXT_READ_CHARS  (int)  <- src/clio_agent/gact/resource_tools.py
-# Characters returned by one bounded resource text read before truncation;
-# raise to hand the model more of a document per call.
+# Characters one resource text read returns when the call gives no limit;
+# offset and next_offset reach the rest of the text.
 resources.text_read_chars: 65536
 
 # CLIO_RESOURCE_TEXT_SCAN_BYTES  (int)  <- src/clio_agent/gact/resource_tools.py
-# Byte ceiling on text CLIO will linearly scan for a resource search or
-# direct read; raise for larger plain-text inputs, lower to bound per-call
-# CPU.
+# Text size up to which a resource read scans to the end to report
+# total_chars; larger texts are still read and searched whole, and report
+# total_chars once a page reaches the end. Lower to bound per-read CPU.
 resources.text_scan_bytes: 2097152
 
 # CLIO_RESOURCE_UPLOAD_CHUNK_BYTES  (int)  <- src/clio_agent/gact/routes/resources.py
@@ -1332,11 +1303,6 @@ code.poll_s: 0.25
 # counts as failed.
 code.start_timeout_s: 60.0
 
-# CLIO_CODE_STUB_DOC_CHARS  (int)  <- src/clio_agent/gact/code_mode/stubs.py
-# Characters of a tool's description kept in its run_code stub, which
-# help(tools.<group>.<tool>) shows.
-code.stub_doc_chars: 1500
-
 # CLIO_FS_COUNT_BYTES  (int)  <- src/clio_agent/tools/fs_read.py
 # File size above which fs_read_file stops counting lines once its range is
 # filled, so a read of a huge file does not scan all of it.
@@ -1389,12 +1355,6 @@ tools.call_workers: 32
 # plugin tools page writes this mapping.
 # tools.callers:  # computed at runtime: {}
 
-# CLIO_TOOL_FAILURE_LIMIT  (int)  <- src/clio_agent/tools/execution.py
-# Consecutive failures of one tool before CLIO blocks further calls to it
-# (the agent is warned at the limit and told why a call was blocked); 0
-# turns the breaker off.
-tools.circuit_breaker.failure_limit: 3
-
 # CLIO_TOOLS_DEFER_SHARE  (str)  <- src/clio_agent/gact/agents/deferred_tools.py
 # Share of the model's context window (0-1) an MCP server's tool schemas may
 # take before its tools are deferred behind search_tools, when its plugin
@@ -1423,8 +1383,10 @@ tools.file_policy.allow_symlinks: false
 # tools.file_policy.allowed_roots:  # computed at runtime: _default_allowed_roots()
 
 # CLIO_MAX_FILE_SIZE_BYTES  (str)  <- src/clio_agent/tools/file_policy.py
-# Byte-size cap (accepts K/M/G/T suffixes) on a file a read/write tool call
-# may touch; raise to allow larger files.
+# Byte-size cap (accepts K/M/G/T suffixes) on a file a tool loads whole into
+# memory (edits, diff capture, image/PDF/document viewers); streaming
+# readers (fs_read_file ranges, fs_search) are exempt. Raise to allow larger
+# whole-file loads.
 tools.file_policy.max_file_size_bytes: "1073741824"
 
 # CLIO_TOOLS_FULL_RESULT  (list)  <- src/clio_agent/gact/agents/native_result_bound.py
@@ -1434,7 +1396,9 @@ tools.full_result: ["load_skill"]
 
 # CLIO_TOOLS_INSTRUCTIONS_CHARS  (int)  <- src/clio_agent/tools/mcp_server_instructions.py
 # Characters of an MCP server's own instructions used to describe a deferred
-# server in the prompt, when its plugin gives no description.
+# server in the prompt's listing, when its plugin gives no description; a
+# shortened entry says so, and search_tools returns the whole instructions
+# with the server's tools.
 tools.instructions_chars: 300
 
 # CLIO_MCP_CALL_TIMEOUT_S  (float)  <- src/clio_agent/tools/execution.py
@@ -1602,6 +1566,14 @@ tools.per_server_concurrency: 8
 # overrides the plugin's declared default; CLIO_TOOLS_PERMISSIONS uses JSON.
 # tools.permissions:  # computed at runtime: {}
 
+# CLIO_TOOL_RESULT_SHARE  (float)  <- src/clio_agent/tools/result_room.py
+# Share of the model's context window (0-1] one tool result may use before
+# it is saved to a file and the model gets its head; never more than the
+# room left before compaction. 0.125 is 25,000 tokens on a 200k window; also
+# sizes file reads, searches, shell output, task pages, mail per step and
+# the offered plan.
+tools.result_share: 0.125
+
 # CLIO_TOOLS_SEARCH_LIMIT  (int)  <- src/clio_agent/gact/search_tools.py
 # Tools a search_tools keyword search returns when the call names no limit.
 tools.search_limit: 5
@@ -1621,11 +1593,11 @@ tools.search_miss_names: 40
 # (powershell/bash/cmd); match it to your commands' shell.
 tools.shell.windows_backend: "powershell"
 
-# CLIO_TOOLS_SPILL_MIN_CHARS  (int)  <- src/clio_agent/gact/task_result_spill.py
-# Smallest share, in characters, of the result bound each of several
-# collected task results gets; a larger result goes to its own file with an
-# excerpt.
-tools.spill_min_chars: 1500
+# CLIO_UNKNOWN_WINDOW_RESULT_TOKENS  (int)  <- src/clio_agent/tools/result_room.py
+# Tokens of one tool result the model is shown when its context window is
+# unknown (no handshake or catalog entry); a longer result is saved to a
+# file with its head.
+tools.unknown_window_result_tokens: 25000
 
 # CLIO_TOOLS_WITHHELD  (list)  <- src/clio_agent/gact/agents/native_tool_registry.py
 # Built-in tools withheld from every agent (comma-separated), recorded as

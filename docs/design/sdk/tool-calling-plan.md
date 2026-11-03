@@ -121,7 +121,7 @@ Every other workstream depends on what the base agent and its subagents are told
 
 `run_code` scripts call these same tools, so their shape matters twice.
 
-**`fs_read_file`.** New signature `read_file(filepath, offset=1, limit=2000, access_reason="")`, lines 1-based. It returns a TEXT content block: a header line `path  lines a-b of N  (size)`, then the lines prefixed with their numbers. It sizes itself to the model result bound (`limits.model_tool_result_chars`): it returns the whole lines that fit, and when it stops early the header ends `continue with offset=b+1`, so a default read never spills into a file that only `read_file` could page; `limit` is an upper bound. Very long lines are cut with a marker. Binary files return a typed error naming the format-specific reader if one exists. The structured result (path, range, total lines, truncated) goes in `structuredContent` for scripts. The old whole-file dict shape is deleted.
+**`fs_read_file`.** New signature `read_file(path, offset=1, limit=2000, access_reason="")`, lines 1-based. It returns a TEXT content block: a header line `path  lines a-b of N  (size)`, then the lines prefixed with their numbers. It sizes itself to the model result bound (`limits.model_tool_result_chars`): it returns the whole lines that fit, and when it stops early the header ends `continue with offset=b+1`, so a default read never spills into a file that only `read_file` could page; `limit` is an upper bound. Very long lines are cut with a marker. Binary files return a typed error naming the format-specific reader if one exists. The structured result (path, range, total lines, truncated) goes in `structuredContent` for scripts. The old whole-file dict shape is deleted.
 
 **Text first for the model.** For every MCP result, the model gets the text content blocks when there are any, and the JSON of `structuredContent` only when there is no text; `structuredContent` stays for the UI and for `run_code` scripts (TD28). This matches Gemini CLI and opencode, whose read tool has the same shape; Claude Code and Codex drop the text because the MCP specification expects it to repeat the JSON, so servers that follow the specification see no change.
 
@@ -372,6 +372,8 @@ Production changes in this phase are observability only.
 4. Delete `TOOL_USE_NOTE`; rewrite `TURN_REMINDER`.
 5. Write the `explore`, `planner` and `review` prompts in the marketplace `delegation` plugin; move the Delegating section into `delegation.parent`; rewrite `delegation.child`.
 6. Read the exact dumps for the root agent and each role in full, then run the evaluation's "after Phase 1" configuration.
+
+Status (2026-11-02): steps 1, 2, 4, 5 and 6 done; step 3 partly (the skills listing and the largest tool descriptions are not trimmed). Step 6 became a loop, recorded in the ledger ("Prompt audit"): round 1 changed the prompt against the evaluation's evidence (config `prompt1`); its P4 regression traced to fixed caps on child reports, not to the prompt, which led to the agent-facing caps audit and its removals (config `caps1`). Every text CLIO injects is now a Markdown reminder template (`docs/design/sdk/reminders.md`).
 
 ## Phase 2: exploration primitives
 

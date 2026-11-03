@@ -301,7 +301,7 @@ class RuntimeProbe:
             name="file_policy",
             state=IntegrationState.READY,
             summary=(
-                f"Local file access allows roots [{roots}], max file size "
+                f"Local file access allows roots [{roots}], max whole-file load (not streamed) "
                 f"{_format_bytes(policy.max_file_size_bytes)}, symlinks {symlink_summary}."
             ),
             config_source=f"{config_source}; {max_source}; {symlink_source}",

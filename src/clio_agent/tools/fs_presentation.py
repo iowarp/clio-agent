@@ -76,10 +76,15 @@ def _frontmatter(content: str) -> tuple[list[dict[str, Any]], str]:
 
 
 def _read(args: Mapping[str, Any], result: Any, snapshot: Any) -> dict[str, Any]:
-    del args, snapshot
+    del snapshot
     row = _structured(result)
     if "total_lines" not in row:
-        return standard_mcp_presentation(result)
+        # A refused read keeps the file it was asked for beside the reason.
+        view = standard_mcp_presentation(result)
+        named = _file_start(args)
+        if named is None:
+            return view
+        return {**view, "subject": "file-link", "blocks": [*named["blocks"], *view["blocks"]]}
     raw_path = str(row.get("path") or "")
     path = PureWindowsPath(raw_path)
     start, end, total = row.get("start_line"), row.get("end_line"), row.get("total_lines")
@@ -171,7 +176,13 @@ def _search(args: Mapping[str, Any], result: Any, snapshot: Any) -> dict[str, An
                     "start_line": first,
                 },
             ]
-    if row.get("truncated"):
+    following = row.get("next_offset")
+    if isinstance(following, int):
+        shown = f"Showing results {int(args.get('offset') or 0) + 1:,}-{following:,}"
+        view["blocks"].append(
+            _warning("coverage", f"{shown}; more follow from offset {following:,}.")
+        )
+    elif row.get("truncated"):
         view["blocks"].append(
             _warning(
                 "coverage", "Results are incomplete; narrow the folder or glob to see the rest."

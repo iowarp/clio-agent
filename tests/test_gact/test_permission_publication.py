@@ -71,7 +71,7 @@ def test_immediate_permission_answer_wakes_the_original_gate(
                     sid,
                     session,
                     "fs_read_file",
-                    {"filepath": str(folder / "data.txt")},
+                    {"path": str(folder / "data.txt")},
                     [str(folder)],
                 )
             elif family == "network":
@@ -161,7 +161,7 @@ def test_cancelled_permission_keeps_original_token_after_session_map_removal(
                     sid,
                     session,
                     "fs_read_file",
-                    {"filepath": str(folder / "data.txt")},
+                    {"path": str(folder / "data.txt")},
                     [str(folder)],
                 )
             elif family == "pretool_defer":

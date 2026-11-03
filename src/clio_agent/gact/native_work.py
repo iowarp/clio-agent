@@ -25,6 +25,7 @@ from clio_agent.gact import context as gact_context
 from clio_agent.gact.core_recovery import CoreRecovery
 from clio_agent.gact.task_history import TaskHistory
 from clio_agent.tools.execution import tool_workspace_context
+from clio_agent.tools.result_room import pinned_room, room_from_limits
 
 SUBMISSION_ARGUMENT = "_clio_submission"
 SubmissionAuthorizer = Callable[[SubmissionContext], None]
@@ -122,8 +123,14 @@ class NativeWork:
             token = gact_context.set_session_id(submission.owner.session_id)
             # An isolated workflow node's shell starts in, and writes only, its folder.
             node = str(submission.confinement.get("write_root") or "")
+            # Its result is sized to the room its caller's model had when it was called.
+            room = room_from_limits(submission.execution_limits)
             try:
-                with tool_workspace_context(submission.workspace), tool_write_root_context(node):
+                with (
+                    tool_workspace_context(submission.workspace),
+                    tool_write_root_context(node),
+                    pinned_room(room),
+                ):
                     return await body(submission, evidence)
             finally:
                 gact_context.reset(token)

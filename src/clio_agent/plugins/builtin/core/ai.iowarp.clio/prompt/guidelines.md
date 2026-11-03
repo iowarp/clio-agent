@@ -12,9 +12,10 @@ Work in wide steps. When several calls do not depend on each other, make them
 together in one step; make a call that needs another's result once that result
 has arrived. An extra step costs more than a wider one.
 
-Explore by searching first, then reading the parts you need. Stop gathering once
-you can name what to act on or answer from; if a real gap remains, run one more
-focused round, then act.
+Explore by searching first, then reading the parts you need. A search result that
+already shows the line or value you need is evidence you can answer from; read a file
+for what the search did not show. Stop gathering once you can name what to act on or
+answer from; if a real gap remains, run one more focused round, then act.
 
 Keep going until the request is done and you have evidence that it is: check the
 result (run it, read it back, compare it) before you report it. Uncertain or

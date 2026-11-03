@@ -71,7 +71,7 @@ def question_mission(workspace: Path, mode: str) -> str:
         "Wait for successful acceptance before making other calls. Omit optional arguments "
         "rather than inventing null values. Retain its Question handle. "
         "Immediately query_tasks(kind='Question'), then call "
-        f"fs_read_file(filepath={(workspace / 'sentinel.txt').as_posix()!r}). "
+        f"fs_read_file(path={(workspace / 'sentinel.txt').as_posix()!r}). "
         "Query_tasks(kind='Question') again to prove that the question is still pending "
         "after your independent read. If submission needed a retry, perform the independent "
         "file read again after you receive the accepted handle. "

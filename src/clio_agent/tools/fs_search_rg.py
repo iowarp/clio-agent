@@ -11,6 +11,11 @@ Search modes:
 - ``files`` (the default): the files that match, newest first, with match counts;
 - ``content``: matching lines with their numbers and ``context_lines`` around them;
 - ``count``: total matches and files.
+
+``files`` and ``content`` results continue: ``offset`` skips the files or matching lines
+already seen. A content result holds up to ``limit`` matches that fit the room one result
+has in the model's context window (:mod:`clio_agent.tools.result_room`); when matches
+remain, its header names the offset to continue from, so no match is dropped unseen.
 """
 
 from __future__ import annotations
@@ -27,10 +32,7 @@ from mcp.types import TextContent
 from clio_agent import conf
 from clio_agent.runtime.ripgrep import RipgrepMissing, ripgrep_executable
 from clio_agent.tools.file_policy import FileAccessPolicy, validate_non_empty_string
-from clio_agent.tools.mcp_result_projection import (
-    model_tool_result_chars,
-    transcript_tool_result_chars,
-)
+from clio_agent.tools.result_room import ResultRoom, result_room
 
 __all__ = ["SearchMode", "glob_files", "search_files"]
 
@@ -65,8 +67,8 @@ def search_line_chars() -> int:
     return value
 
 
-def _budget() -> int:
-    return min(model_tool_result_chars(), transcript_tool_result_chars()) - 400
+#: Characters kept for a content result's header.
+_HEADER_RESERVE = 400
 
 
 def _target(path: str) -> Path:
@@ -139,9 +141,11 @@ def search_files(
     context_lines: int = 0,
     case_sensitive: bool = True,
     limit: int = 100,
+    offset: int = 0,
 ) -> ToolResult:
     """Search ``query`` under ``path``; see the module docstring for the modes."""
     validate_non_empty_string(query, field="query")
+    offset = max(0, int(offset))
     target = _target(path)
     cwd = target if target.is_dir() else target.parent
     base = _query_arguments(query, regex, case_sensitive, file_glob)
@@ -172,22 +176,23 @@ def search_files(
                 },
             )
         counts.sort(key=lambda item: _mtime(item[0]), reverse=True)
-        shown = counts[:limit]
-        truncated = timed_out or len(counts) > len(shown)
+        shown = counts[offset : offset + limit]
+        following = offset + len(shown)
+        truncated = timed_out or len(counts) > following
         lines = [f"{len(counts):,} files match under {target} (newest first):"]
         if not counts:
             lines = [f"0 files match under {target}. {SKIPPED_NOTE}"]
+        elif offset:
+            lines[0] = lines[0][:-1] + f"; from file {offset + 1:,}:"
         lines += [f"{name}  ({count})" for name, count in shown]
         if truncated:
-            lines.append(_more(len(counts) - len(shown), "files", timed_out))
+            lines.append(_more(len(counts) - following, "files", timed_out, following))
         files = [{"path": name, "matches": count} for name, count in shown]
-        return _result(
-            "\n".join(lines),
-            {**head, "files": files, "total_files": len(counts), "truncated": truncated},
-        )
+        structured = {**head, "files": files, "total_files": len(counts), "truncated": truncated}
+        return _result("\n".join(lines), {**structured, **_next(truncated, following)})
     context = max(0, min(int(context_lines), 50))
     rows, timed_out = _run(["--json", "--context", str(context), *base, "--", str(target)], cwd)
-    return _content_result(rows, head, limit, timed_out)
+    return _content_result(rows, head, limit, timed_out, offset)
 
 
 #: What an empty result cannot show: the files a search or glob skipped on purpose.
@@ -197,20 +202,25 @@ SKIPPED_NOTE = (
 )
 
 
-def _more(hidden: int, unit: str, timed_out: bool) -> str:
+def _more(hidden: int, unit: str, timed_out: bool, following: int | None = None) -> str:
     if timed_out:
         return "(search stopped at its time limit; results are partial)"
-    return f"(+{hidden:,} more {unit}; narrow the path or glob, or raise limit)"
+    if following is None:
+        return f"(+{hidden:,} more {unit}; narrow the path or glob, or raise limit)"
+    return f"(+{hidden:,} more {unit}; continue with offset={following}, or narrow the search)"
+
+
+def _next(truncated: bool, following: int) -> dict[str, int | None]:
+    return {"next_offset": following if truncated else None}
 
 
 def _content_result(
-    rows: list[str], head: dict[str, Any], limit: int, timed_out: bool
+    rows: list[str], head: dict[str, Any], limit: int, timed_out: bool, offset: int = 0
 ) -> ToolResult:
-    matches: list[dict[str, Any]] = []
-    lines: list[str] = []
-    used, budget, truncated, total = 0, _budget(), timed_out, 0
-    line_chars = search_line_chars()
+    room = result_room()
+    found: list[tuple[dict[str, Any], list[str]]] = []
     pending_context: list[dict[str, Any]] = []
+    line_chars, total = search_line_chars(), 0
     for row in rows:
         try:
             event = json.loads(row)
@@ -221,34 +231,61 @@ def _content_result(
             continue
         name = (data.get("path") or {}).get("text", "")
         number = data.get("line_number")
-        text = ((data.get("lines") or {}).get("text") or "").rstrip("\n")[:line_chars]
+        text = ((data.get("lines") or {}).get("text") or "").rstrip("\n")
+        if len(text) > line_chars:
+            text = f"{text[:line_chars]}… [line cut: {len(text):,} characters]"
         if kind == "context":
             pending_context.append({"path": name, "line": number, "text": text})
             continue
         total += 1
-        rendered = [f"{c['path']}-{c['line']}- {c['text']}" for c in pending_context]
-        rendered.append(f"{name}:{number}: {text}")
-        size = sum(len(r) + 1 for r in rendered)
-        if len(matches) >= limit or (matches and used + size > budget):
-            truncated = True
-            pending_context = []
-            continue
-        matches.append({"path": name, "line": number, "text": text, "context": pending_context})
-        lines += rendered
-        used += size
+        if total > offset and len(found) < limit:
+            rendered = [f"{c['path']}-{c['line']}- {c['text']}" for c in pending_context]
+            rendered.append(f"{name}:{number}: {text}")
+            match = {"path": name, "line": number, "text": text, "context": pending_context}
+            found.append((match, rendered))
         pending_context = []
+    shown, used, budget = 0, 0, room.chars - _HEADER_RESERVE
+    for _, rendered in found:
+        size = sum(len(r) + 1 for r in rendered)
+        if shown and used + size > budget:
+            break
+        shown, used = shown + 1, used + size
+    by_room = shown < len(found)
+    text = _content_text(found, shown, head, total, offset, timed_out, room, by_room)
+    # The model's tokenizer can count more than four characters a token: keep what fits.
+    while shown > 1 and not room.fits(text):
+        keep = shown * room.tokens // max(1, room.measure(text))
+        shown, by_room = max(1, min(shown - 1, keep)), True
+        text = _content_text(found, shown, head, total, offset, timed_out, room, by_room)
+    matches = [match for match, _ in found[:shown]]
+    truncated = timed_out or total > offset + shown
+    structured = {**head, "matches": matches, "total_matches": total, "truncated": truncated}
+    return _result(text, {**structured, **_next(total > offset + shown, offset + shown)})
+
+
+def _content_text(
+    found: list[tuple[dict[str, Any], list[str]]],
+    shown: int,
+    head: dict[str, Any],
+    total: int,
+    offset: int,
+    timed_out: bool,
+    room: ResultRoom,
+    by_room: bool,
+) -> str:
     header = f"{total:,} matching lines under {head['path']}"
     if not total:
         header += f". {SKIPPED_NOTE}"
-    if truncated:
-        header += (
-            f"; showing {len(matches):,}"
-            if not timed_out
-            else " (search stopped at its time limit)"
-        )
-    text = "\n".join([header, *lines])
-    structured = {**head, "matches": matches, "total_matches": total, "truncated": truncated}
-    return _result(text, structured)
+    following = offset + shown
+    if offset or following < total:
+        header += f"; showing {offset + 1:,}-{following:,}" if shown else "; showing none"
+    if following < total:
+        header += f"; continue with offset={following}"
+        if by_room:
+            header += f" (one result holds about {room.tokens:,} tokens)"
+    if timed_out:
+        header += " (search stopped at its time limit; matches are partial)"
+    return "\n".join([header, *(line for _, rendered in found[:shown] for line in rendered)])
 
 
 def glob_files(pattern: str, path: str, limit: int = 200) -> ToolResult:

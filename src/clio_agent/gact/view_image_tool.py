@@ -65,7 +65,9 @@ def _workspace_image(path: str) -> tuple[Path, Path, bytes, str]:
     root = _workspace_root()
     requested = Path(path)
     candidate = requested if requested.is_absolute() else root / requested
-    resolved = FileAccessPolicy.from_env().validate_read(str(candidate), field="path")
+    resolved = FileAccessPolicy.from_env().validate_read(
+        str(candidate), field="path", loads_whole_file=True
+    )
     try:
         relative = resolved.relative_to(root)
     except ValueError as exc:

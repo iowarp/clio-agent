@@ -17,6 +17,7 @@ from clio_agent.gact.task_cursors import decode_cursor, encode_cursor
 from clio_agent.gact.task_declarations import build_task_compatibility_tools
 from clio_agent.gact.task_history import TaskHistory
 from clio_agent.gact.task_operations import TaskOperations
+from tests._result_room import pin_result_room
 from tests.test_arc.test_conversation_owner_contracts import create_environment
 
 
@@ -76,7 +77,7 @@ async def test_output_pages_preserve_omitted_rows_bytes_and_new_output(
 ) -> None:
     app, owner, root = await create_environment(arc, tmp_path)
     history = owner.history
-    monkeypatch.setenv("CLIO_TOOL_RESULT_CHARS", "7")
+    pin_result_room(monkeypatch, 7)
     first = await asyncio.to_thread(running_shell, history, root, "shell_first")
     second = await asyncio.to_thread(running_shell, history, root, "shell_second")
     first = await asyncio.to_thread(append_output, history, first, "abcdefghijklmno")
@@ -145,7 +146,7 @@ async def test_output_cursors_cannot_read_another_tasks_content(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     _app, owner, root = await create_environment(arc, tmp_path)
-    monkeypatch.setenv("CLIO_TOOL_RESULT_CHARS", "4")
+    pin_result_room(monkeypatch, 4)
     first = await asyncio.to_thread(running_shell, owner.history, root, "shell_first")
     second = await asyncio.to_thread(running_shell, owner.history, root, "shell_second")
     first = await asyncio.to_thread(append_output, owner.history, first, "first private output")

@@ -7,8 +7,10 @@ malformed JSON-in-JSON preview (#887). These tests pin the replacement:
 
 * over-budget output spills IN FULL to ``<workspace>/.clio/tool-output/`` and the
   result carries a line-aligned head excerpt, a tail, the path, and totals;
-* the result always fits both downstream bounds, so neither bounder rewraps it
-  and ``stdout`` stays a real string (CSV keeps its shape, on Windows too);
+* the result fits the room one result has in the model's context window, so the
+  model lane shows it whole, and the transcript copy cuts ``stdout`` itself on a
+  line boundary, so ``stdout`` stays a real string in both (CSV keeps its shape,
+  on Windows too);
 * an over-long command is refused with an actionable "write a file, run it";
 * the model-facing description is generated from the effective limits.
 """
@@ -31,7 +33,7 @@ from clio_agent.tools.servers.shell_output import (
     SPILL_FAILED_REASON,
     SPILLED_REASON,
     StreamCapture,
-    shell_result_char_budget,
+    shell_result_room,
 )
 from clio_agent.tools.servers.shell_server import (
     ShellEnvFacts,
@@ -115,8 +117,8 @@ async def test_big_output_spills_in_full_with_head_tail_and_totals(workspace: Pa
     assert spill["tail"].splitlines() == expected[lines - spill["tail_lines"] :]
     assert spill["tail_lines"] > 0
 
-    # The result fits both downstream bounds, so nothing rewraps it.
-    assert len(json.dumps(data)) <= shell_result_char_budget()
+    # The result fits the model's room, so the model lane shows it unchanged.
+    assert shell_result_room().fits(json.dumps(data))
     assert "stderr_spill" not in data
 
 
@@ -155,18 +157,20 @@ async def test_small_output_stays_inline_and_writes_no_file(workspace: Path) -> 
 
 @pytest.mark.asyncio
 async def test_output_under_cap_but_over_result_bound_still_spills(workspace: Path) -> None:
-    """A stream under max_output_bytes whose RESULT would breach the downstream
-    bound spills too — the bound, not the per-stream cap, decides fit."""
+    """A stream under max_output_bytes whose RESULT would not fit the model's room
+    spills too: the room, not the per-stream cap, decides fit. The transcript bound
+    (``limits.tool_result_chars``) does not shrink what the model gets."""
 
-    set_config("limits", {"tool_result_chars": 2_000, "model_tool_result_chars": 4_000})
+    set_config("tools.unknown_window_result_tokens", 500)  # 2,000 characters
+    set_config("limits.tool_result_chars", 100)
     script = workspace / "mid.py"
     script.write_text("for i in range(400):\n    print(f'line {i:04d}')\n", encoding="utf-8")
     data = await _run(workspace, {"command": _python(script), "timeout_s": 30})
 
-    assert shell_result_char_budget() == 2_000
+    assert shell_result_room().chars == 2_000
     assert data["stdout_spill"]["status"] == "spilled"
     assert data["stdout_spill"]["total_lines"] == 400
-    assert len(json.dumps(data)) <= 2_000
+    assert len(json.dumps(data)) <= 2_003 and len(json.dumps(data)) > 1_000
 
 
 @pytest.mark.asyncio
@@ -198,12 +202,20 @@ async def test_spill_write_failure_returns_typed_reason_with_excerpt(workspace: 
 
 @pytest.mark.asyncio
 async def test_csv_stdout_survives_both_downstream_bounders_unwrapped(workspace: Path) -> None:
-    """#887: a CSV larger than the old cap used to come back as a truncated,
-    malformed JSON preview. Now the shell result is sized to fit both bounds, so
-    neither bounder rewraps it and ``stdout`` is still parseable CSV."""
+    """#887: a CSV larger than the transcript bound used to come back as a truncated,
+    malformed JSON preview. Now the model lane gets the whole CSV (it fits the room),
+    and the transcript copy keeps the result's shape: ``stdout`` is a real string, cut
+    on a line boundary, still parseable CSV, marked ``stdout_truncated``. SABOTAGE:
+    make ``_stream_paths`` return ``[]`` and the transcript copy is the envelope."""
+
+    from mcp.types import CallToolResult, TextContent
 
     from clio_agent.gact.evidence import _bounded_tool_call_result
-    from clio_agent.tools.mcp_result_projection import bounded_model_tool_result
+    from clio_agent.tools.mcp_result_projection import (
+        bounded_model_tool_result,
+        transcript_tool_result_chars,
+    )
+    from clio_agent.tools.mcp_results import call_tool_result_to_observer
 
     header = 'station,lat,lon,"name",value'
     rows = [header] + [
@@ -215,18 +227,31 @@ async def test_csv_stdout_survives_both_downstream_bounders_unwrapped(workspace:
     command = f'type "{data_csv}"' if os.name == "nt" else f"cat '{data_csv}'"
     data = await _run(workspace, {"command": command, "timeout_s": 30})
 
-    # Transcript lane: unchanged (no {preview, truncated} envelope).
-    assert _bounded_tool_call_result(data) is data
-    # Model lane: unchanged text that still decodes to the same dict.
+    # Model lane: the whole CSV, unchanged text that still decodes to the same dict.
+    assert data["stdout_truncated"] is False
+    assert data["stdout"].replace("\r\n", "\n").splitlines() == rows
     encoded = json.dumps(data)
+    assert len(encoded) > transcript_tool_result_chars()
     assert bounded_model_tool_result(encoded) == encoded
 
-    parsed = list(csv.reader(io.StringIO(data["stdout"])))
-    assert parsed[0] == ["station", "lat", "lon", "name", "value"]
-    assert len(parsed) > 1
-    assert all(len(row) == 5 for row in parsed)  # line-aligned: no torn row
-    spill_text = Path(data["stdout_spill"]["path"]).read_text(encoding="utf-8")
-    assert spill_text.replace("\r\n", "\n").splitlines() == rows
+    # Transcript lane, as the observer records it: the same shape, a shorter stdout.
+    observed = call_tool_result_to_observer(
+        CallToolResult(content=[TextContent(type="text", text=encoded)], structuredContent=data)
+    )
+    for value, row in ((data, lambda v: v), (observed, lambda v: v["structuredContent"])):
+        bounded = _bounded_tool_call_result(value)
+        assert "preview" not in bounded  # no {preview, truncated} envelope
+        copy = row(bounded)
+        assert isinstance(copy["stdout"], str) and copy["stdout_truncated"] is True
+        assert copy["stdout_original_chars"] == len(data["stdout"])
+        assert copy["exit_code"] == 0 and copy["command"] == command
+        parsed = list(csv.reader(io.StringIO(copy["stdout"])))
+        assert parsed[0] == ["station", "lat", "lon", "name", "value"]
+        assert len(parsed) > 1 and all(len(r) == 5 for r in parsed)  # no torn row
+        assert len(json.dumps(bounded, ensure_ascii=False, sort_keys=True)) <= (
+            transcript_tool_result_chars()
+        )
+        assert _bounded_tool_call_result(bounded) == bounded  # idempotent
 
 
 # --------------------------------------------------------------------------- #
@@ -266,7 +291,7 @@ async def test_native_command_length_failure_preserves_output_and_explains_recov
     assert result["error"]["details"]["bound"] == "native_shell"
     assert "small shell calls" in result["error"]["details"]["next_action"]
     assert "here-string" in result["error"]["message"]
-    assert len(json.dumps(result)) <= shell_result_char_budget()
+    assert shell_result_room().fits(json.dumps(result))
 
 
 def test_default_command_cap_fits_a_heredoc_analysis_script() -> None:
@@ -290,15 +315,12 @@ def test_limits_resolve_from_config_keys() -> None:
             "shell_max_command_chars": 12_345,
             "shell_default_output_bytes": 2_222,
             "shell_max_output_bytes": 33_333,
-            "tool_result_chars": 7_000,
-            "model_tool_result_chars": 9_000,
         },
     )
     limits = resolve_shell_limits()
     assert limits.max_command_chars == 12_345
     assert limits.default_output_bytes == 2_222
     assert limits.max_output_bytes == 33_333
-    assert limits.result_chars == 7_000
 
 
 @pytest.mark.parametrize("is_windows", [True, False])
@@ -313,11 +335,11 @@ def test_description_states_effective_limits_and_spill(is_windows: bool) -> None
         max_command_chars=12_345,
         default_output_bytes=2_222,
         max_output_bytes=33_333,
-        result_chars=7_000,
     )
     text = build_shell_tool_description(facts, limits)
-    for number in ("12345", "2222", "33333", "7000"):
+    for number in ("12345", "2222", "33333"):
         assert number in text
+    assert "room one result has in your context window" in text
     assert "Agent-managed ``tool-output/``" in text
     assert "stdout_spill" in text
     assert "write" in text.lower() and "file" in text.lower()

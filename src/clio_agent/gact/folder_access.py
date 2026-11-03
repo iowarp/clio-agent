@@ -53,7 +53,7 @@ def requested_folders(name: str, args: Mapping[str, Any]) -> list[str]:
     """Return denied folders for declared built-in path arguments, without reading files."""
     paths: list[tuple[str, bool]] = []
     if name in {"fs_read_file", "fs_write_file", "fs_edit_file"}:
-        value = args.get("filepath")
+        value = args.get("path")
         if isinstance(value, str) and value:
             paths.append((value, False))
     elif name in {"fs_list_directory", "fs_search_text", "fs_glob"}:
@@ -155,8 +155,8 @@ def request_folder_access(
             "workspace_id": wid,
             "operation": name,
             "command": str(args.get("command") or ""),
-            "paths": [str(args["filepath"])]
-            if "filepath" in args
+            "paths": [str(args["path"])]
+            if "path" in args
             else list(args.get("access_paths") or []),
             "cwd": str(args.get("cwd") or getattr(session, "workspace_root", "") or ""),
             "reason": str(

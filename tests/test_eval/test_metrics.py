@@ -38,7 +38,7 @@ def test_normalize_export_pairs_tool_calls_and_unwraps_args() -> None:
     assert root["session_id"] == "sess_root" and root["attribution"] == "root"
     assert child["parent_session_id"] == "sess_root" and child["depth"] == 1
     calls = {c["id"]: c for c in root["tool_calls"]}
-    assert calls["call_a"]["args"] == {"filepath": "a.py"}
+    assert calls["call_a"]["args"] == {"path": "a.py"}
     assert calls["call_a"]["duration_ms"] == pytest.approx(500.0)
     assert calls["call_b"]["step_id"] == "s1" and calls["call_b"]["ok"] is True
     assert [c["step_id"] for c in root["lm_calls"]] == ["s1", "s2", "s3"]

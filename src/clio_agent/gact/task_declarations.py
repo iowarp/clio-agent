@@ -11,9 +11,9 @@ from uuid import uuid4
 from clio_agent.arc.task_types import QuestionDefinition, TaskOwner
 from clio_agent.gact import context
 from clio_agent.gact.agents.tool_instrumentation import native_tool
+from clio_agent.gact.child_report_fit import report_room
 from clio_agent.gact.off_loop import join_off_loop
 from clio_agent.gact.task_access import TaskAccess
-from clio_agent.gact.task_result_spill import shared_result_bound
 from clio_agent.gact.task_tool_collection import collected as _collected
 from clio_agent.gact.tool_observation import CollectedTaskResult
 from clio_agent.tools.task_call_context import TASK_CALL
@@ -163,7 +163,7 @@ def build_task_tools() -> list[Any]:
         interrupt_on_mail: bool = True,
     ) -> dict[str, Any]:
         app, caller = _runtime()
-        with shared_result_bound(1 if isinstance(tasks, str) else len(tasks)):
+        with report_room():
             value = await app.state.task_operations.wait(
                 caller, tasks, return_when, timeout_s, interrupt_on_mail=interrupt_on_mail
             )
@@ -177,10 +177,11 @@ def build_task_tools() -> list[Any]:
         handle: str, cursor: str | None = None, select: list[str] | None = None
     ) -> dict[str, Any]:
         app, caller = _runtime()
-        value = await app.state.task_history.io.run(
-            app.state.task_operations.result, caller, handle, cursor, select
-        )
-        return await app.state.task_history.io.run(_collected, app, caller, value)
+        with report_room():
+            value = await app.state.task_history.io.run(
+                app.state.task_operations.result, caller, handle, cursor, select
+            )
+            return await app.state.task_history.io.run(_collected, app, caller, value)
 
     async def send_agent_message(
         target: str, message: str, reply_to: str | None = None

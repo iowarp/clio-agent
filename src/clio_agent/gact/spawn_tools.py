@@ -219,7 +219,7 @@ def build_spawn_runtime_tools(
                 "strategy": strategy_schema,
                 "model": model_schema,
             },
-            "Delegate a task, written self-contained, to a child agent and immediately receive its Subagent handle; the child reports back. Optional strategy selects best_of_n/refine with n, rubric, threshold and lm/user judge. Continue work, observe_tasks, or wait_tasks. Child results wake eligible idle parents. Pause holds only the child model; cancel_tasks includes its descendant work.",
+            "Delegate a task, written self-contained, to a child agent and immediately receive its Subagent handle; the child reports back. Delegate work that can run in parallel and reading you need only the conclusion of: what you read yourself stays in your context for the rest of the task, while a child returns only its report. Do a lookup whose file you already know yourself. Optional strategy selects best_of_n/refine with n, rubric, threshold and lm/user judge. Continue work, observe_tasks, or wait_tasks. Child results wake eligible idle parents. Pause holds only the child model; cancel_tasks includes its descendant work.",
         )
     ]
     tools.append(
@@ -261,7 +261,7 @@ def build_spawn_runtime_tools(
                     },
                 },
             },
-            "Start several child assignments at once and return their Subagent handles with independent errors; with wait=true, return when all have finished, with each child's report. Native inference budgets apply only to model calls. Without wait, use shared observation or waiting across the returned handles.",
+            "Start several child assignments at once, such as one explore child per area of a survey, and return their Subagent handles with independent errors; with wait=true, return when all have finished, with each child's report. Native inference budgets apply only to model calls. Without wait, use shared observation or waiting across the returned handles.",
         )
     )
     tools.append(

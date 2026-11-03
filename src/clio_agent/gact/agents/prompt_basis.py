@@ -16,7 +16,9 @@ A change can reach the model three ways (``PATCH /v1/sessions/{sid}/agent``
   the change: removed plugins stay in the prompt and the model is asked not to use
   them; an added plugin's instructions travel in the note, its skills load now, and
   its tools are introduced there (name, arguments, description) and run if called,
-  though the request's tool list keeps only what the cached prompt had.
+  though the request's tool list keeps only what the cached prompt had. The note's
+  wording is the reminder ``clio.reminder.plugin_change`` and its ``plugin_change_*``
+  pieces.
 
 Hooks always follow the pinned resolution. The tools that run, the skills
 ``load_skill`` accepts and the MCP servers a session mounts are the union of both,
@@ -40,6 +42,13 @@ PLUGIN_CHANGE_SOURCE = "plugin_change"
 #: Tools a deferred MCP server added mid-session (``tools/list_changed``), named by the
 #: plugin-change note until the prompt is rebuilt and its deferred entry names them (TD11).
 DEFERRED_ADDED_KEY = "deferred_tools_added"
+
+
+def _say(piece: str, app: Any = None, session_id: str = "", **variables: Any) -> str | None:
+    """One piece of the change note (``None``: the person switched that piece off)."""
+    from clio_agent.gact import reminders  # noqa: PLC0415
+
+    return reminders.render(piece, variables, app=app, session_id=session_id)
 
 
 def _metadata(app: Any, session_id: str) -> Mapping[str, Any]:
@@ -191,12 +200,9 @@ def with_tool_introductions(
             for name, spec in (getattr(tool, "args", None) or {}).items()
         )
         lines.append(f"- {tool.name}({args}): {str(getattr(tool, 'desc', '') or '').strip()}")
-    if not lines:
+    section = _say("plugin_change_tool_introductions", tools="\n".join(lines)) if lines else None
+    if not section:
         return injections
-    section = (
-        "New tools you can call now, though they are not in your tool list until the next "
-        "compaction:\n" + "\n".join(lines)
-    )
     return [
         (source, f"{text}\n{section}" if source == PLUGIN_CHANGE_SOURCE else text)
         for source, text in injections
@@ -219,10 +225,9 @@ def plugin_change_note(app: Any, session_id: str) -> str:
     )
 
     added_tools = [str(n) for n in _metadata(app, session_id).get(DEFERRED_ADDED_KEY) or ()]
+    where = {"app": app, "session_id": session_id}
     tools_line = (
-        "Tools added since your prompt was built (load them with search_tools): "
-        + ", ".join(added_tools)
-        + "."
+        _say("plugin_change_deferred_tools", **where, tools=", ".join(added_tools)) or ""
         if added_tools
         else ""
     )
@@ -236,14 +241,11 @@ def plugin_change_note(app: Any, session_id: str) -> str:
     change = pending_change(basis, current)
     if not change["pending"]:
         return tools_line
-    lines = ["The person changed this conversation's plugins."]
+    lines: list[str | None] = [_say(PLUGIN_CHANGE_SOURCE, **where)]
     if change["removed"]:
-        lines.append(
-            f"Removed: {', '.join(change['removed'])}. Do not use their tools or follow "
-            "their instructions, even though they still appear above."
-        )
+        lines.append(_say("plugin_change_removed", **where, plugins=", ".join(change["removed"])))
     for plugin_id in change["added"]:
-        lines.append(f"Added: {plugin_id}.")
+        lines.append(_say("plugin_change_added", **where, plugin=plugin_id))
         lines += [
             fragment["text"].strip()
             for section in current.prompt.get("sections") or ()
@@ -252,12 +254,10 @@ def plugin_change_note(app: Any, session_id: str) -> str:
         ]
     skills = [row for row in current.skills if row["id"] in set(change["skills_now"])]
     if skills:
-        lines.append("Skills you can load now with load_skill:")
+        lines.append(_say("plugin_change_skills", **where))
         lines += [f"- {row['id']}: {row.get('description', '')}".rstrip(": ") for row in skills]
-    if tools_line:
-        lines.append(tools_line)
-    lines.append("Your system prompt will include these changes after the next compaction.")
-    return "\n".join(lines)
+    lines += [tools_line, _say("plugin_change_footer", **where)]
+    return "\n".join(line for line in lines if line)
 
 
 __all__ = [

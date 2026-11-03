@@ -16,11 +16,11 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from clio_agent import conf
 from clio_agent.errors import CancellationError
+from clio_agent.gact import reminders
 from clio_agent.gact.artifacts.designation import ground_output_paths
 from clio_agent.tools import foreground_cancellation as foreground_cancel
 from clio_agent.tools.execution import (
     MCPToolBridge,
-    RepeatedToolFailureError,
     SyncMCPToolExecutor,
     ToolRuntimeHooks,
     _ground_output_paths,
@@ -87,10 +87,8 @@ class ProgressClient(FakeClient):
 class FailingClient(FakeClient):
     """Fake client that raises configured errors from call_tool.
 
-    ``ndp_search_datasets`` carries a ``readOnlyHint`` so a timed-out search is
-    treated as a retry-safe transient failure (the circuit-breaker path) rather
-    than an uncertain mutation. ``fake_echo`` stays unannotated for the callers
-    that exercise non-transient (argument) errors.
+    ``ndp_search_datasets`` carries a ``readOnlyHint`` so a timed-out search is a
+    plain failure rather than an uncertain mutation. ``fake_echo`` stays unannotated.
     """
 
     def __init__(self, errors: list[BaseException | None]):
@@ -763,8 +761,13 @@ def test_sync_mcp_tool_executor_reports_structured_tool_error_result():
     assert "Output directory does not exist" in block["text"]
 
 
-def test_oversized_structured_failure_uses_raw_result_for_error_truth(tmp_path: Path) -> None:
+def test_oversized_structured_failure_uses_raw_result_for_error_truth(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     """Model truncation must not turn a real structured failure into success."""
+    from tests._result_room import pin_result_room
+
+    pin_result_room(monkeypatch, 12_000)  # the 30,000-character result does not fit
 
     fake_client = OversizedStructuredErrorClient()
     observed: list[tuple[str, str | None]] = []
@@ -793,20 +796,13 @@ def _search(executor: SyncMCPToolExecutor, term: str) -> Any:
     return executor.call_tool("ndp_search_datasets", {"search_terms": [term]})
 
 
-def test_the_breaker_warns_at_the_limit_then_blocks_and_says_why() -> None:
-    """The harness guides: the failure that reaches the limit tells the agent to take
-    another route; a later call is not run and the agent is told why."""
-    fake_client = FailingClient([TimeoutError("t1"), TimeoutError("t2"), TimeoutError("t3")])
+def test_a_tool_that_keeps_failing_gets_a_fact_and_is_never_blocked() -> None:
+    """The failure that reaches ``after`` carries one note; every later call still runs
+    and returns its own error. SABOTAGE: restore a refusal before the call and the
+    fourth call never reaches the tool."""
+    fake_client = FailingClient([TimeoutError(f"t{i}") for i in range(5)])
     executor = SyncMCPToolExecutor(object(), timeout=1.0, client_factory=lambda _: fake_client)
-    observed: list[tuple[str, dict[str, Any], str | None, str | None]] = []
     try:
-        set_tool_runtime_fallback(
-            ToolRuntimeHooks(
-                tool_observer=lambda name, args, phase, error: observed.append(
-                    (name, dict(args), phase, error)
-                )
-            )
-        )
         for term in ("A", "B"):
             with pytest.raises(TimeoutError) as err:
                 _search(executor, term)
@@ -815,34 +811,39 @@ def test_the_breaker_warns_at_the_limit_then_blocks_and_says_why() -> None:
             _search(executor, "C")
         [warning] = err.value.__notes__
         assert warning.startswith("[clio: circuit_breaker] ndp_search_datasets has failed 3")
-        assert "alternative route" in warning
-        with pytest.raises(RepeatedToolFailureError) as blocked:
-            _search(executor, "D")
+        for term in ("D", "E"):
+            with pytest.raises(TimeoutError) as err:
+                _search(executor, term)
+            assert not getattr(err.value, "__notes__", [])
     finally:
-        set_tool_runtime_fallback(ToolRuntimeHooks())
         executor.close()
-
-    assert fake_client.calls == 3, "the blocked call never reached the tool"
-    assert str(blocked.value).startswith("[clio: circuit_breaker] ndp_search_datasets was not run")
-    assert "(last error: " in str(blocked.value)
-    assert observed[-2:] == [
-        ("ndp_search_datasets", {"search_terms": ["D"]}, "started", None),
-        ("ndp_search_datasets", {"search_terms": ["D"]}, "completed", str(blocked.value)),
-    ]
+    assert fake_client.calls == 5
 
 
-def test_the_breaker_limit_is_configurable_and_zero_turns_it_off() -> None:
-    set_config("tools.circuit_breaker.failure_limit", 0)
-    fake_client = FailingClient([TimeoutError(f"t{i}") for i in range(5)])
+def test_any_failure_counts_and_after_zero_never_notes() -> None:
+    """The error's wording is not classified. SABOTAGE: count only "timeout"-like
+    errors and the argument errors below never reach the note."""
+    fake_client = FailingClient([ValueError("missing required argument")] * 3)
     executor = SyncMCPToolExecutor(object(), timeout=1.0, client_factory=lambda _: fake_client)
     try:
-        for i in range(5):
+        for _ in range(2):
+            with pytest.raises(ValueError):
+                executor.call_tool("fake_echo", {"bad": "x"})
+        with pytest.raises(ValueError) as err:
+            executor.call_tool("fake_echo", {"bad": "x"})
+        assert err.value.__notes__[0].startswith("[clio: circuit_breaker] fake_echo has failed 3")
+    finally:
+        executor.close()
+    reminders.update("circuit_breaker_warning", params={"after": 0})
+    fake_client = FailingClient([TimeoutError(f"t{i}") for i in range(4)])
+    executor = SyncMCPToolExecutor(object(), timeout=1.0, client_factory=lambda _: fake_client)
+    try:
+        for i in range(4):
             with pytest.raises(TimeoutError) as err:
                 _search(executor, str(i))
             assert not getattr(err.value, "__notes__", [])
     finally:
         executor.close()
-    assert fake_client.calls == 5
 
 
 def test_sync_mcp_tool_executor_does_not_bound_non_transient_errors():
@@ -873,8 +874,8 @@ def test_sync_mcp_tool_executor_does_not_bound_non_transient_errors():
     assert '"value": "fixed"' in result
 
 
-def test_sync_mcp_tool_executor_clears_transient_failure_count_after_success():
-    """A successful call should reset the transient failure circuit."""
+def test_sync_mcp_tool_executor_clears_failure_count_after_success():
+    """A successful call resets the count of failures in a row."""
     fake_client = FailingClient(
         [
             TimeoutError("first timeout"),

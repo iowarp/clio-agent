@@ -13,14 +13,23 @@ from dspy.lm15 import DocumentPart, Request, TextPart, ToolResultPart
 FILE_PREPARATION_REFUSAL = (
     "this input file format requires preparation that is not supported by rustponsesapi"
 )
-FILE_RECOVERY_NOTE = (
-    "CLIO: The connected Codex backend rejected native document input because its file "
-    "preparation is unsupported. The document's contents were NOT read. Do not repeat "
-    "view_pdf for this document. Use its workspace path from the question or tool call "
-    "with prepare_document(action='inspect') for bounded extracted text. If visual "
-    "evidence is needed, render the relevant pages and inspect them with view_image "
-    "when available. Continue other work and state any remaining evidence limitation."
-)
+#: The injection source of the note that stands in for a refused document.
+MEDIA_UNAVAILABLE_SOURCE = "media_unavailable"
+
+
+def file_recovery_note() -> str:
+    """The note that replaces a refused document: the reminder
+    ``clio.reminder.media_unavailable`` (required, so never switched off)."""
+    from clio_agent.gact import reminders  # noqa: PLC0415
+
+    return reminders.render(MEDIA_UNAVAILABLE_SOURCE, {}) or ""
+
+
+def __getattr__(name: str) -> str:
+    """``FILE_RECOVERY_NOTE``: the note as this session words it (:func:`file_recovery_note`)."""
+    if name == "FILE_RECOVERY_NOTE":
+        return file_recovery_note()
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
 
 
 class FilePreparationUnsupportedError(Exception):
@@ -85,10 +94,11 @@ class DocumentInputRecovery:
             rejected = frozenset(self._rejected)
         if not rejected:
             return request
+        note = file_recovery_note()
 
         def replace_document(part: Any) -> Any:
             if isinstance(part, DocumentPart) and _fingerprint(part) in rejected:
-                return TextPart(text=FILE_RECOVERY_NOTE)
+                return TextPart(text=note)
             if isinstance(part, ToolResultPart):
                 content = tuple(replace_document(item) for item in part.content)
                 return dataclasses.replace(part, content=content)
@@ -105,4 +115,4 @@ def report_file_recovery() -> None:
     """Expose the same recovery note in the live transcript when a session exists."""
     from clio_agent.gact.injection_parts import emit_injection  # noqa: PLC0415
 
-    emit_injection("media_unavailable", FILE_RECOVERY_NOTE)
+    emit_injection(MEDIA_UNAVAILABLE_SOURCE, file_recovery_note())

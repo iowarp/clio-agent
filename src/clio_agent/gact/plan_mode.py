@@ -29,7 +29,9 @@ path.
 
 The block is SERVER grounding prepended to the turn input — never user text, never model output
 — so it carries a stable, greppable marker (:data:`PLAN_MODE_REMINDER_MARKER`, the #881 marker
-discipline). ``turn.py`` calls :func:`plan_mode_reminder` from its enrichment step.
+discipline). ``turn.py`` calls :func:`plan_mode_reminder` from its enrichment step. Its wording is
+the reminder ``clio.reminder.plan_mode`` and its ``plan_mode_*`` pieces
+(``prompt_packs/builtin/reminders/``); this module decides when the full contract is due.
 """
 
 from __future__ import annotations
@@ -267,7 +269,13 @@ def plan_mode_reminder(app: "FastAPI", sid: str, session: Any, *, force_full: bo
             guidance.full_interval,
         )
     return _plan_mode_reminder_block(
-        full=full, plan_file=plan_file, exists=exists, guidance=guidance, playbook=playbook
+        full=full,
+        plan_file=plan_file,
+        exists=exists,
+        guidance=guidance,
+        playbook=playbook,
+        app=app,
+        session_id=sid,
     )
 
 

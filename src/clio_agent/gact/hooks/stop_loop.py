@@ -278,6 +278,7 @@ def run_stop_hooks(
     # a pending approval + flip the session to waiting_user; on approve the session
     # releases, on deny it re-drives one more turn (see gact/hooks/defer.py).
     if outcome.is_defer:
+        from clio_agent.gact import reminders  # noqa: PLC0415
         from clio_agent.gact.hooks.defer import suspend_turn_defer  # noqa: PLC0415
 
         feedback = (outcome.reason or "").strip()
@@ -292,8 +293,8 @@ def run_stop_hooks(
             sid=session_id,
             hook_event=STOP,
             reason=outcome.reason or "A Stop hook deferred completion for approval.",
-            resume_text=feedback
-            or "A Stop hook reported the task is not complete; continue working.",
+            # The hook's own words, else the reminder ``hook_defer`` (required).
+            resume_text=feedback or reminders.render("hook_defer", {}) or "",
             prev_status="running",
             completion=completion,
         )

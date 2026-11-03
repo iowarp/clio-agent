@@ -50,35 +50,12 @@ _DEFAULT_FULL_INTERVAL = 10
 #: ``plan_small`` full-reminder cadence — SPARSER than the default (lightweight task, less nagging).
 _SMALL_FULL_INTERVAL = 20
 
-#: The default structure-hint bullet body: the session plan's shape (objective, approach,
-#: threads with how each ended, findings with references), scaled to the task.
-_STRUCTURE_HINT_DEFAULT = (
-    "Fit the plan to the task. A small change needs only Changes and Verification. Larger or "
-    "open-ended work: Objective (the question, what a complete answer contains, what counts "
-    "as done); Approach; Threads, each open, active, closed or dropped, with a one-line reason "
-    "when it ends and the handles of any children working on it; Findings, each a claim with "
-    "its references (call: refs, paths and lines, handles), a corrected finding marked "
-    "superseded rather than deleted; checking your claims as the last thread."
-)
-
-#: ``plan_workflow`` structure hint — an explicit, numbered, per-step-verified implementation workflow.
-_STRUCTURE_HINT_WORKFLOW = (
-    "Structure the plan as an explicit, numbered implementation workflow: number every step in "
-    "order, give each step its own concrete verification, and make cross-step ordering and "
-    "dependencies explicit."
-)
-
-#: ``plan_small`` structure hint — short and lightweight, minimal scaffolding.
-_STRUCTURE_HINT_SMALL = (
-    "Keep the plan short and lightweight — a brief Changes list plus a one-line Verification; do "
-    "not build heavy scaffolding for a small task."
-)
-
-#: ``plan_workflow`` extra FULL-reminder bullet — the added Risks & Dependencies plan section.
-_WORKFLOW_RISK_BULLET = (
-    "Add a Risks & Dependencies section to the plan: the risks, external/ordering dependencies, "
-    "and a rollback or mitigation for each."
-)
+#: The reminders (``prompt_packs/builtin/reminders/``) whose text forms the structure bullet
+#: per variant, and the ``plan_workflow`` extra bullet (its Risks & Dependencies section).
+_STRUCTURE_DEFAULT = "plan_mode_structure"
+_STRUCTURE_WORKFLOW = "plan_mode_structure_workflow"
+_STRUCTURE_SMALL = "plan_mode_structure_small"
+_WORKFLOW_RISKS = "plan_mode_workflow_risks"
 
 
 @dataclass(frozen=True)
@@ -87,44 +64,48 @@ class PlanVariantGuidance:
 
     Attributes:
         variant: The resolved variant tag (``""`` for the default/no-variant posture).
-        structure_hint: The body of the FULL reminder's "structure the plan" bullet.
-        extra_full_bullets: Additional FULL-reminder bullet bodies (e.g. the workflow variant's
-            Risks & Dependencies section); empty for the default and small variants.
+        structure_source: The reminder holding the FULL reminder's "structure the plan" bullet.
+        extra_sources: Reminders for additional FULL-reminder bullets (e.g. the workflow
+            variant's Risks & Dependencies section); empty for the default and small variants.
         full_interval: Turns between FULL reminder re-injects for this variant (small = sparser).
     """
 
     variant: str
-    structure_hint: str
-    extra_full_bullets: tuple[str, ...]
+    structure_source: str
+    extra_sources: tuple[str, ...]
     full_interval: int
 
 
 #: The default (no-variant) guidance — its pieces reproduce the pre-P1.6 reminder byte-for-byte.
 DEFAULT_PLAN_VARIANT_GUIDANCE = PlanVariantGuidance(
     variant="",
-    structure_hint=_STRUCTURE_HINT_DEFAULT,
-    extra_full_bullets=(),
+    structure_source=_STRUCTURE_DEFAULT,
+    extra_sources=(),
     full_interval=_DEFAULT_FULL_INTERVAL,
 )
 
 _GUIDANCE_BY_VARIANT: dict[str, PlanVariantGuidance] = {
     PLAN_VARIANT_WORKFLOW: PlanVariantGuidance(
         variant=PLAN_VARIANT_WORKFLOW,
-        structure_hint=_STRUCTURE_HINT_WORKFLOW,
-        extra_full_bullets=(_WORKFLOW_RISK_BULLET,),
+        structure_source=_STRUCTURE_WORKFLOW,
+        extra_sources=(_WORKFLOW_RISKS,),
         full_interval=_DEFAULT_FULL_INTERVAL,
     ),
     PLAN_VARIANT_SMALL: PlanVariantGuidance(
         variant=PLAN_VARIANT_SMALL,
-        structure_hint=_STRUCTURE_HINT_SMALL,
-        extra_full_bullets=(),
+        structure_source=_STRUCTURE_SMALL,
+        extra_sources=(),
         full_interval=_SMALL_FULL_INTERVAL,
     ),
 }
 
 
-#: Marker heading the plan-mode reminder block (stable + greppable; #881 discipline).
+#: The heading the built-in ``plan_mode`` reminders open with (stable + greppable; #881
+#: discipline). The wording is the templates': a person's edit of it changes the heading.
 PLAN_MODE_REMINDER_MARKER = "## Plan Mode active — read-only except the plan file"
+#: The plan-mode reminder (the full contract) and its one-line form between full ones.
+PLAN_MODE_SOURCE = "plan_mode"
+PLAN_MODE_SHORT_SOURCE = "plan_mode_short"
 
 
 def plan_mode_reminder_block(
@@ -134,74 +115,52 @@ def plan_mode_reminder_block(
     exists: bool,
     guidance: PlanVariantGuidance | None = None,
     playbook: "Playbook | None" = None,
+    app: Any = None,
+    session_id: str = "",
 ) -> str:
     """Compose the plan-mode reminder block (full contract or sparse one-liner).
 
-    The FULL block carries the create-vs-edit branch (keyed on ``exists``), an adaptive-structure
-    hint, the epistemic-ledger headers, the re-entry staleness note, the show-the-plan rule, the
-    read-only restriction, and the turn-ending contract. The SPARSE block is a single line naming
-    the restriction + the recorded plan path, so most turns cost almost nothing (do not bloat
-    context). ``plan_file`` is the deterministic per-session path recorded on ``session.metadata``.
+    The wording is the reminders ``plan_mode`` (the full contract), ``plan_mode_short`` (the
+    one line) and the ``plan_mode_*`` pieces; this function decides which pieces apply. The
+    FULL block opens with the create-vs-edit bullet (keyed on ``exists``) and the structure
+    bullet, then the contract's fixed bullets. The SPARSE block is a single line naming the
+    restriction + the recorded plan path, so most turns cost almost nothing (do not bloat
+    context). ``plan_file`` is the deterministic per-session path recorded on
+    ``session.metadata``; ``app`` and ``session_id`` select the session's reminders.
 
-    ``guidance`` shapes the FULL block per plan VARIANT (P1.6a #1068): its ``structure_hint``
-    replaces the structure bullet body and its ``extra_full_bullets`` are appended right after it
-    (e.g. the ``plan_workflow`` Risks & Dependencies section). The default guidance carries the
-    pre-P1.6 pieces verbatim, so a variant-less session's block is byte-for-byte unchanged.
+    ``guidance`` shapes the FULL block per plan VARIANT (P1.6a #1068): its
+    ``structure_source`` supplies the structure bullet and its ``extra_sources`` are appended
+    right after it (e.g. the ``plan_workflow`` Risks & Dependencies section). The default
+    guidance reproduces the pre-P1.6 block byte-for-byte.
 
     ``playbook`` (P1.6b #1068) is the ACTIVE operator playbook (or ``None``). When present its
     ordered, named steps REPLACE the structure bullet as the REQUIRED plan skeleton — the model
     fills the skeleton in rather than inventing structure. This wins over the variant's
-    ``structure_hint`` (documented precedence: an operator-supplied skeleton is more specific than
-    a variant's generic structure posture); the variant's ``extra_full_bullets`` and reminder
+    structure (documented precedence: an operator-supplied skeleton is more specific than
+    a variant's generic structure posture); the variant's extra bullets and reminder
     cadence still compose. ``None`` leaves the block byte-for-byte unchanged.
     """
+    from clio_agent.gact import reminders  # noqa: PLC0415
 
+    where = {"app": app, "session_id": session_id}
     guide = guidance if guidance is not None else DEFAULT_PLAN_VARIANT_GUIDANCE
     if not full:
-        return (
-            PLAN_MODE_REMINDER_MARKER
-            + f" ({plan_file}). Keep the plan current with plan_update; end your turn to hand "
-            "it back for approval with plan_exit rather than executing it yourself."
-        )
-    if exists:
-        create_or_edit = (
-            f"A plan file already exists at {plan_file}. Update it with plan_update as you "
-            "learn (old and new replace one passage)."
-        )
-    else:
-        create_or_edit = (
-            f"No plan file exists yet. Write your plan with plan_update(content=...); it is saved "
-            f"at {plan_file}, the only writable path in plan mode."
-        )
-    structure = (
-        _playbook_structure_bullet(playbook)
+        return reminders.render(PLAN_MODE_SHORT_SOURCE, {"path": plan_file}, **where) or ""
+
+    def bullet(source: str, variables: dict[str, str] | None = None) -> str:
+        text = reminders.render(source, variables or {}, **where)
+        return f"- {text}" if text else ""
+
+    file_note = "plan_mode_file_exists" if exists else "plan_mode_file_new"
+    bullets = [
+        bullet(file_note, {"path": plan_file}),
+        _playbook_structure_bullet(playbook, **where)
         if playbook is not None
-        else f"- {guide.structure_hint}"
-    )
-    bullets = [f"- {create_or_edit}", structure]
-    bullets.extend(f"- {extra}" for extra in guide.extra_full_bullets)
-    bullets.extend(
-        (
-            "- The plan file is NOT the user's requested target or final deliverable. Never copy "
-            "the requested target contents alone into the plan file; the plan must describe how "
-            "the requested result will be implemented and verified after approval. Never infer "
-            "a requested filename from the plan-file path or its generated slug; preserve targets "
-            "from the user's request exactly.",
-            "- Keep what you know apart from what you still must find out: findings carry their "
-            "references, and what is unknown stays an open thread until you look it up.",
-            "- If a plan already exists, evaluate whether it is still relevant to THIS task before "
-            "editing; treat a new task as a fresh plan.",
-            "- Show the plan to the user in your response — don't just write it to disk.",
-            "- Turn-ending contract: when the plan is complete, call plan_exit to hand the saved "
-            "plan back for approval, then END YOUR TURN — do NOT try to execute the plan while in "
-            "plan mode.",
-        )
-    )
-    return (
-        PLAN_MODE_REMINDER_MARKER + "\n\n"
-        "You are in PLAN MODE. Investigate freely, but do NOT modify the system: every write, "
-        "edit, and file-mutating tool is blocked.\n" + "\n".join(bullets)
-    )
+        else bullet(guide.structure_source),
+        *(bullet(source) for source in guide.extra_sources),
+    ]
+    first = "\n".join(line for line in bullets if line)
+    return reminders.render(PLAN_MODE_SOURCE, {"file_and_structure": first}, **where) or ""
 
 
 def recorded_plan_variant(session: Any) -> str:
@@ -776,14 +735,13 @@ def playbook_from_saved_plan(content: str, *, name: str = "") -> Playbook:
     return Playbook(name=str(name or "").strip(), steps=steps)
 
 
-def _playbook_structure_bullet(playbook: Playbook) -> str:
-    """Render the FULL-reminder bullet that presents the playbook skeleton as required structure."""
+def _playbook_structure_bullet(playbook: Playbook, *, app: Any, session_id: str) -> str:
+    """The FULL-reminder bullet presenting the playbook skeleton as required structure (the
+    reminder ``plan_mode_playbook``; each step's line is data)."""
+    from clio_agent.gact import reminders  # noqa: PLC0415
 
     label = f' "{playbook.name}"' if playbook.name else ""
-    lines = [
-        f"- Follow the operator playbook{label} as the REQUIRED plan structure — author one plan "
-        "section per numbered step below, in order; do not substitute your own top-level structure:"
-    ]
+    lines = []
     for index, step in enumerate(playbook.steps, start=1):
         parts = [f"  {index}. {step.name}"]
         if step.guidance:
@@ -791,4 +749,10 @@ def _playbook_structure_bullet(playbook: Playbook) -> str:
         if step.tools_allowed:
             parts.append(f" (tools_allowed: {', '.join(step.tools_allowed)})")
         lines.append("".join(parts))
-    return "\n".join(lines)
+    text = reminders.render(
+        "plan_mode_playbook",
+        {"label": label, "steps": "\n".join(lines)},
+        app=app,
+        session_id=session_id,
+    )
+    return f"- {text}" if text else ""

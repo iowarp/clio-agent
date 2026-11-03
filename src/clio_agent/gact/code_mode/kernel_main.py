@@ -94,7 +94,7 @@ class _Host:
 
 
 def _function(host: _Host, tool: str, spec: dict[str, Any]) -> Any:
-    """One callable tool: ``await tools.fs.read_file(filepath=...)``."""
+    """One callable tool: ``await tools.fs.read_file(path=...)``."""
 
     async def stub(**kwargs: Any) -> Any:
         return await host.call(tool, kwargs)

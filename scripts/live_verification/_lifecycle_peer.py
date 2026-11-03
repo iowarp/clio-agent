@@ -59,7 +59,7 @@ def peer_cycle(call: Any, proof: Path, wid: str, agent: str) -> dict[str, Any]:
         f"This session's discovery marker is {marker}. Start exactly one "
         f"shell_bash(command={command!r},background=true,timeout_s=0,cwd={str(workspace)!r}). "
         "Then wait_tasks on its handle without a timeout. After the wait, read "
-        f"fs_read_file(filepath={str(workspace / 'sentinel.txt')!r}), report any agent messages, and finish. "
+        f"fs_read_file(path={str(workspace / 'sentinel.txt')!r}), report any agent messages, and finish. "
         "The human authorizes a single reply to the exact source session of each qualification "
         "message, scope='workspace', user_intent='human requested peer messaging qualification', "
         "reply_to=its message_id, retaining correlation_id. Say ACK plus its text. Never reply to an ACK. "

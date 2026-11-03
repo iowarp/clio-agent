@@ -48,7 +48,11 @@ _TODOS_WRITE_STEP_KEY = "todos_write_step"
 #: stays ``pending``/``in_progress`` (never ``completed``) — see the tool guidance.
 _TODO_STATUSES: tuple[str, ...] = ("pending", "in_progress", "completed")
 
-#: Marker heading the recited checklist block (stable + greppable; #881 marker discipline).
+#: Injection source of the recited checklist, and its reminder ``clio.reminder.todos``.
+TODOS_SOURCE = "todos"
+
+#: The heading the built-in ``todos`` reminder opens with (stable + greppable; #881 marker
+#: discipline). The wording is the template's: a person's edit of it changes the heading.
 TODO_RECITATION_MARKER = "## Todo checklist (your current task list — reconcile before finishing)"
 
 #: Compact status glyphs for the recited checklist.
@@ -298,13 +302,15 @@ def todo_recitation(app: "FastAPI", sid: str, session: Any) -> str:
     """The current todo checklist as this turn's CLIO addition during EXECUTION (recitation).
 
     Empty in PLAN mode (the checklist is never recited while planning) and when no todos
-    are recorded. Otherwise a compact, marked block; the agent loop records it as its own
-    message, again only when the list changed (never the system prompt).
+    are recorded. Otherwise a compact, marked block (the reminder ``todos``); the agent loop
+    records it as its own message, again only when the list changed (never the system prompt).
     """
+    from clio_agent.gact import reminders  # noqa: PLC0415
 
     if str(getattr(session, "mode", "") or "") == "plan":
         return ""
     todos = recorded_todos(session)
     if not todos:
         return ""
-    return TODO_RECITATION_MARKER + "\n\n" + _render_checklist(todos)
+    checklist = {"checklist": _render_checklist(todos)}
+    return reminders.render(TODOS_SOURCE, checklist, app=app, session_id=sid) or ""

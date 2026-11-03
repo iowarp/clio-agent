@@ -1,7 +1,8 @@
 """Native tool results get the same result bound as MCP results.
 
 An MCP result is bounded where it is produced (:func:`clio_agent.tools.mcp_result_projection.
-bounded_model_tool_result`): over the model's result size, the full text goes to the
+bounded_model_tool_result`): past the room one result has in the model's context window
+(:mod:`clio_agent.tools.result_room`), the full text goes to the
 session's tool-output folder and the agent sees the head and how to read on. Native
 tools returned whole until now. :func:`recorded_observation` applies the same rule when
 a step is recorded, once, so every later fold of the step sees the same bounded text.
@@ -10,8 +11,9 @@ Left whole:
 
 - tools whose full result is what the agent asked for (``tools.full_result``,
   :func:`full_result_tools`: a skill's procedure);
-- collected task results, which are already bounded per task (a result over the digest
-  size arrives as a ``result_file``);
+- collected task results, which are already fitted to the parent's room
+  (:mod:`clio_agent.gact.child_report_fit`; a report that does not fit arrives as a
+  ``result_file``);
 - media results, which reach the model as images or documents, not text.
 """
 
@@ -56,13 +58,14 @@ def recorded_observation(name: str, value: Any) -> Any:
     from clio_agent.gact.tool_observation import CollectedTaskResult  # noqa: PLC0415
     from clio_agent.tools.mcp_result_projection import (  # noqa: PLC0415
         bounded_model_tool_result,
-        model_tool_result_chars,
     )
+    from clio_agent.tools.result_room import result_room  # noqa: PLC0415
 
     encoded = _arc_obs_value(value)
     if name in full_result_tools() or isinstance(value, CollectedTaskResult):
         return encoded
     text = encoded if isinstance(encoded, str) else json.dumps(encoded, default=str)
-    if len(text) <= model_tool_result_chars() or _is_media(value):
+    room = result_room()
+    if room.fits(text) or _is_media(value):
         return encoded
-    return bounded_model_tool_result(text)
+    return bounded_model_tool_result(text, room=room)

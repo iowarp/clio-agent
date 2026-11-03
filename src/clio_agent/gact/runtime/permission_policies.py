@@ -77,7 +77,7 @@ def _permission_host_from_args(args: Mapping[str, Any]) -> str:
 def _permission_path_from_args(args: Mapping[str, Any]) -> str:
     """Return the first file path a tool call targets, for policy path matching."""
 
-    for key in ("filepath", "path", "output_path", "target_path"):
+    for key in ("path", "output_path", "target_path"):
         value = args.get(key)
         if isinstance(value, str) and value:
             return value

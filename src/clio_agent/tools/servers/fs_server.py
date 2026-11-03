@@ -78,12 +78,17 @@ def search_text(
     context_lines: Annotated[int, Field(ge=0, le=50)] = 0,
     case_sensitive: bool = True,
     limit: Annotated[int, Field(ge=1, le=500)] = 100,
+    offset: Annotated[
+        int,
+        Field(ge=0, description="Files or matching lines to skip: the offset a result names."),
+    ] = 0,
 ) -> ToolResult:
     """Search text in an approved file or folder (ripgrep; skips binary, Git and ignored files).
 
     Start with mode="files" to find where something is, then read the ranges you need, or
     use mode="content" for the matching lines themselves. query is literal unless regex is
     true. Truncation is stated in the result; no match is not proof of absence when it is.
+    When files or matches remain, the result names the offset to continue from.
     """
     return search_files(
         path,
@@ -94,6 +99,7 @@ def search_text(
         context_lines=context_lines,
         case_sensitive=case_sensitive,
         limit=limit,
+        offset=offset,
     )
 
 
@@ -118,7 +124,7 @@ _READ_LINES = read_lines()
 
 @fs_server.tool(annotations=_READ_FILE_ANNOTATIONS)
 def read_file(
-    filepath: str,
+    path: str,
     offset: Annotated[int, Field(ge=1, description="1-based line to start from.")] = 1,
     limit: Annotated[
         int, Field(ge=1, le=_READ_LINES, description="Most lines to return.")
@@ -132,19 +138,19 @@ def read_file(
 ) -> ToolResult:
     """Read a text file's lines, each prefixed with its line number.
 
-    Returns whole lines from ``offset`` until ``limit`` or the result size limit, after a
-    header with the range and the file's line count; when lines remain, the header ends
-    with the offset to continue from. Read the ranges you need rather than whole large
+    Returns whole lines from ``offset`` until ``limit`` or the room one result has in your
+    context window, after a header with the range and the file's line count; when lines
+    remain, the header ends with the offset to continue from. Read the ranges you need rather than whole large
     files. Binary files are refused with the tool that can read them. Only files inside
     the allowed roots are readable.
     """
 
-    return read_text_range(filepath, offset, limit)
+    return read_text_range(path, offset, limit)
 
 
 @fs_server.tool(annotations=_FILE_WRITE_ANNOTATIONS)
 def write_file(
-    filepath: str,
+    path: str,
     content: str,
     access_reason: Annotated[
         str, Field(description="Explain why this write needs access outside permitted folders.")
@@ -158,12 +164,12 @@ def write_file(
     The change is listed in the person's diff panel, where they can undo it.
     """
 
-    return fs_edit.write_file(filepath, content)
+    return fs_edit.write_file(path, content)
 
 
 @fs_server.tool(annotations=_FILE_WRITE_ANNOTATIONS)
 def edit_file(
-    filepath: str,
+    path: str,
     old_string: str,
     new_string: str,
     replace_all: bool = False,
@@ -180,7 +186,7 @@ def edit_file(
     ``unified_diff`` of the change, its line counts, and the sha256 before and after.
     """
 
-    return fs_edit.edit_file(filepath, old_string, new_string, replace_all)
+    return fs_edit.edit_file(path, old_string, new_string, replace_all)
 
 
 __all__ = ["FS_TOOL_ANNOTATIONS", "fs_server"]

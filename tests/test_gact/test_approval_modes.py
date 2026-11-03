@@ -145,7 +145,7 @@ def test_default_decision_spotter_ai_behaves_exactly_like_ask() -> None:
     auto-approval axis of its own — pinned EXPLICITLY in default_decision, not by
     fall-through accident (see the branch's docstring/comment)."""
 
-    for name, args in ((_FS_WRITE, {"filepath": "x", "content": "y"}), (_UNCLASSIFIED, {})):
+    for name, args in ((_FS_WRITE, {"path": "x", "content": "y"}), (_UNCLASSIFIED, {})):
         assert default_decision("spotter-ai", "tool", name, args) == default_decision(
             "ask", "tool", name, args
         )
@@ -170,7 +170,7 @@ def test_reads_never_gated_in_any_mode(tmp_path: Path, mode: str) -> None:
         app.state.sessions.update(sid, approval_mode=mode)
         gate = _make_permission_gate(app)
         with _tool_session_context(sid):
-            assert gate("fs_read_file", {"filepath": "x"}) == "allow"
+            assert gate("fs_read_file", {"path": "x"}) == "allow"
         # A fast-allowed read never registers a permission row in any mode.
         assert app.state.permissions == {}
 
@@ -192,7 +192,7 @@ def test_plan_lock_beats_bypass(tmp_path: Path, locked_mode: str) -> None:
         ).json()["id"]
         gate = _make_permission_gate(app)
         with _tool_session_context(sid):
-            assert gate(_FS_WRITE, {"filepath": "x", "content": "y"}) == "deny"
+            assert gate(_FS_WRITE, {"path": "x", "content": "y"}) == "deny"
         row = _wait_for_row(app)
         assert row["status"] == "auto_denied"
 
@@ -229,7 +229,7 @@ def test_explicit_deny_policy_beats_relaxed_mode(tmp_path: Path, mode: str) -> N
         assert resp.status_code == 200
         gate = _make_permission_gate(app)
         with _tool_session_context(sid):
-            assert gate(_FS_WRITE, {"filepath": "x", "content": "y"}) == "deny"
+            assert gate(_FS_WRITE, {"path": "x", "content": "y"}) == "deny"
         rows = list(app.state.permissions.values())
         assert len(rows) == 1
         assert rows[0]["reason"] == "policy_deny"
@@ -257,7 +257,7 @@ def test_explicit_allow_policy_beats_ask(tmp_path: Path) -> None:
         assert resp.status_code == 200
         gate = _make_permission_gate(app)
         with _tool_session_context(sid):
-            assert gate(_FS_WRITE, {"filepath": "x", "content": "y"}) == "allow"
+            assert gate(_FS_WRITE, {"path": "x", "content": "y"}) == "allow"
         rows = list(app.state.permissions.values())
         assert len(rows) == 1
         assert rows[0]["reason"] == "policy_allow"
@@ -291,7 +291,7 @@ def test_explicit_ask_policy_survives_bypass(tmp_path: Path) -> None:
 
         def fire() -> None:
             with _tool_session_context(sid):
-                result["decision"] = gate(_FS_WRITE, {"filepath": "x", "content": "y"})
+                result["decision"] = gate(_FS_WRITE, {"path": "x", "content": "y"})
 
         thread = threading.Thread(target=fire)
         thread.start()
@@ -325,7 +325,7 @@ def test_bypass_allows_and_records(tmp_path: Path) -> None:
 
         gate = _make_permission_gate(app)
         with _tool_session_context(sid):
-            assert gate(_FS_WRITE, {"filepath": "x", "content": "y"}) == "allow"
+            assert gate(_FS_WRITE, {"path": "x", "content": "y"}) == "allow"
 
         rows = list(app.state.permissions.values())
         assert len(rows) == 1
@@ -351,7 +351,7 @@ def test_auto_edits_allows_fs_write_and_records(tmp_path: Path) -> None:
         ]
         gate = _make_permission_gate(app)
         with _tool_session_context(sid):
-            assert gate(_FS_WRITE, {"filepath": "x", "content": "y"}) == "allow"
+            assert gate(_FS_WRITE, {"path": "x", "content": "y"}) == "allow"
         rows = list(app.state.permissions.values())
         assert len(rows) == 1
         assert rows[0]["reason"] == REASON_APPROVAL_AUTO_EDITS
@@ -414,7 +414,7 @@ def test_ai_review_escalate_prompts_and_human_resolves(tmp_path: Path, monkeypat
 
         def fire() -> None:
             with _tool_session_context(sid):
-                result["decision"] = gate(_FS_WRITE, {"filepath": "x", "content": "y"})
+                result["decision"] = gate(_FS_WRITE, {"path": "x", "content": "y"})
 
         thread = threading.Thread(target=fire)
         thread.start()

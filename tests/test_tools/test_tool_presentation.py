@@ -33,7 +33,7 @@ def test_declared_file_header_excludes_payload(name: str, action: str) -> None:
     }
     if name == "fs_read_file":
         original = read_result("D:/workspace/evidence.txt", "private payload")
-    view = present_mcp_result(name, {"filepath": "D:/workspace/evidence.txt"}, original)
+    view = present_mcp_result(name, {"path": "D:/workspace/evidence.txt"}, original)
     assert view["action"] == action
     assert view["subject"] == "file-link"
     subject = next(block for block in view["blocks"] if block["id"] == view["subject"])
@@ -42,7 +42,7 @@ def test_declared_file_header_excludes_payload(name: str, action: str) -> None:
     assert "private payload" not in str(subject)
     assert "presentation" not in original
     running = starting_presentation(
-        name, {"filepath": "D:/workspace/evidence.txt", "content": "payload"}
+        name, {"path": "D:/workspace/evidence.txt", "content": "payload"}
     )
     assert running is not None and running["action"] == action
     assert running["subject"] == "file-link"
@@ -86,9 +86,9 @@ def test_shell_presentation_uses_the_process_exit_status() -> None:
 
 
 def test_missing_declared_file_subject_does_not_invent_a_header() -> None:
-    assert starting_presentation("fs_read_file", {"path": "README.md"}) is None
+    assert starting_presentation("fs_read_file", {"offset": 1}) is None
     original = {"ok": True, "text": "readme contents"}
-    assert present_mcp_result("fs_read_file", {"path": "README.md"}, original) == {
+    assert present_mcp_result("fs_read_file", {"offset": 1}, original) == {
         "summary": "",
         "blocks": [],
     }
@@ -218,7 +218,7 @@ def test_file_write_diff_is_added_only_to_observer_result(tmp_path) -> None:
     target.write_text("FIRST", encoding="utf-8")
     os.environ["CLIO_ALLOWED_ROOTS"] = str(tmp_path)
     try:
-        args = {"filepath": str(target), "content": "SECOND"}
+        args = {"path": str(target), "content": "SECOND"}
         snapshot = capture_tool_presentation("fs_write_file", args)
     finally:
         os.environ.pop("CLIO_ALLOWED_ROOTS", None)
@@ -247,7 +247,7 @@ def test_file_diff_exposes_trailing_newline_change(
     target = tmp_path / "newline.txt"
     target.write_text(before, encoding="utf-8", newline="")
     monkeypatch.setenv("CLIO_ALLOWED_ROOTS", str(tmp_path))
-    args = {"filepath": str(target), "content": after}
+    args = {"path": str(target), "content": after}
     snapshot = capture_tool_presentation("fs_write_file", args)
     target.write_text(after, encoding="utf-8", newline="")
     original = {"content": [], "structuredContent": {"path": str(target), "ok": True}}
@@ -271,7 +271,7 @@ def test_diff_preview_uses_one_context_line_not_a_ten_line_quota(
     before = newline.join(f"line {index}" for index in range(20)) + newline
     target.write_text(before, encoding="utf-8", newline="")
     monkeypatch.setenv("CLIO_ALLOWED_ROOTS", str(tmp_path))
-    args = {"filepath": str(target)}
+    args = {"path": str(target)}
     snapshot = capture_tool_presentation("fs_edit_file", args)
     target.write_text(
         before.replace(f"line 10{newline}", f"edited{newline}"), encoding="utf-8", newline=""

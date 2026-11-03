@@ -4,7 +4,7 @@ A tool named ``<server>_<name>`` (``fs_read_file``, ``synthetic-home_climate_lis
 becomes ``tools.<server>.<name>`` with the server name made a Python identifier
 (``tools.synthetic_home.climate_list``); a tool without a server prefix is
 ``tools.<name>``. Each stub's docstring is the tool's signature (from its JSON schema)
-and description, so ``help(tools.fs.read_file)`` explains it. Deferred tools are
+and its whole description, so ``help(tools.fs.read_file)`` explains it. Deferred tools are
 included: a script calls them without loading them first.
 
 Tools whose ``callers`` setting is ``direct`` stay out of scripts: finishing, asking
@@ -23,16 +23,6 @@ from typing import Any
 from clio_agent import conf
 
 __all__ = ["index_text", "stub_table", "tool_group"]
-
-
-def _doc_chars() -> int:
-    """Characters of a tool's description kept in its stub's docstring (at least 1)."""
-    value = conf.resolve(
-        "code.stub_doc_chars", env="CLIO_CODE_STUB_DOC_CHARS", default=1500, cast=conf.as_int
-    )
-    if value < 1:
-        raise ValueError(f"code.stub_doc_chars must be at least 1, not {value}")
-    return value
 
 
 def _index_line_chars() -> int:
@@ -85,7 +75,6 @@ def stub_table(
     from clio_agent.gact.agents.clio_react import _function_tool  # noqa: PLC0415
 
     servers = tuple(servers)
-    doc_chars = _doc_chars()
     groups: dict[str, dict[str, Any]] = {}
     for name in sorted(tools):
         if name in direct_only:
@@ -96,7 +85,8 @@ def stub_table(
             "tool": name,
             "function": function,
             "signature": _signature(function, spec.parameters or {}),
-            "doc": str(spec.description or "")[:doc_chars],
+            # Whole: help() is read on request, never placed in the prompt.
+            "doc": str(spec.description or ""),
             "code_only": name in code_only,
         }
     return {"groups": groups}

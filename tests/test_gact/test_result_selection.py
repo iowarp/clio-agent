@@ -14,6 +14,7 @@ from clio_agent.gact.native_work import now
 from clio_agent.gact.result_selection import result_keys, select_fields, validate_selection
 from clio_agent.gact.task_access import TaskAccessDenied, TaskCaller
 from clio_agent.gact.task_result_content import result_cursor
+from tests._result_room import pin_result_room
 from tests.test_gact.test_flow_tool_evidence import _tool
 from tests.test_gact.test_permission_evidence import world as world
 
@@ -60,9 +61,12 @@ def test_rest_reads_only_metadata_then_preserves_selected_unicode_paging(
     assert page["result"] == {pointer: metadata} and page["next_cursor"] is None
     assert "irrelevant" not in json.dumps(page)
     assert app.state.task_history.read_content(task.result) == body
-    monkeypatch.setenv("CLIO_AGENT_TASK_OUTPUT_DIGEST_CHARS", "21")
+    from clio_agent.gact import child_report_fit
+
+    monkeypatch.setattr(child_report_fit, "_measure", lambda: child_report_fit._Room(2))
+    pin_result_room(monkeypatch, 21)  # version-1 cursor page size
     page = client.get(path, params=[("select", pointer)]).json()
-    # Too big for the bound: the selection is saved to a file, not paged (#1844).
+    # Too big for the parent's room: the selection is saved to a file, not paged (#1844).
     assert page["result_selection"] == [pointer] and page["next_cursor"] is None
     saved = Path(page["result_file"]["path"])
     assert json.loads(saved.read_text(encoding="utf-8")) == {pointer: metadata}

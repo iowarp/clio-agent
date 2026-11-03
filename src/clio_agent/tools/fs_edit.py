@@ -80,57 +80,57 @@ def _write_change(path: Path, before: bytes | None, after: str) -> dict[str, Any
     }
 
 
-def write_file(filepath: str, content: str) -> dict[str, Any]:
-    """Create ``filepath`` or replace its whole content with ``content``."""
+def write_file(path: str, content: str) -> dict[str, Any]:
+    """Create the file at ``path`` or replace its whole content with ``content``."""
 
-    validate_non_empty_string(filepath, field="filepath")
+    validate_non_empty_string(path, field="path")
     # A new file's missing parent folders are created inside the allowed roots.
-    path = Path(validate_write_path(filepath, field="filepath", create_parent=True))
-    if path.is_dir():
-        return _error("not_a_file", f"{path} is a folder, not a file", str(path))
+    target = Path(validate_write_path(path, field="path", create_parent=True))
+    if target.is_dir():
+        return _error("not_a_file", f"{target} is a folder, not a file", str(target))
     before = (
-        Path(validate_read_path(str(path), field="filepath")).read_bytes()
-        if path.exists()
+        Path(validate_read_path(str(target), field="path", loads_whole_file=True)).read_bytes()
+        if target.exists()
         else None
     )
     body = content if isinstance(content, str) else str(content)
-    return _write_change(path, before, body)
+    return _write_change(target, before, body)
 
 
 def edit_file(
-    filepath: str, old_string: str, new_string: str, replace_all: bool = False
+    path: str, old_string: str, new_string: str, replace_all: bool = False
 ) -> dict[str, Any]:
     """Replace ``old_string`` with ``new_string`` in an existing text file, exactly."""
 
-    validate_non_empty_string(filepath, field="filepath")
-    path = Path(validate_write_path(filepath, field="filepath"))
-    if not path.exists():
+    validate_non_empty_string(path, field="path")
+    target = Path(validate_write_path(path, field="path"))
+    if not target.exists():
         return _error(
             "file_not_found",
-            f"{path} does not exist; fs_edit_file changes an existing file "
+            f"{target} does not exist; fs_edit_file changes an existing file "
             "(fs_write_file creates one)",
-            str(path),
+            str(target),
         )
-    if not path.is_file():
-        return _error("not_a_file", f"{path} is not a file", str(path))
-    before = Path(validate_read_path(str(path), field="filepath")).read_bytes()
+    if not target.is_file():
+        return _error("not_a_file", f"{target} is not a file", str(target))
+    before = Path(validate_read_path(str(target), field="path", loads_whole_file=True)).read_bytes()
     try:
         text = before.decode("utf-8")
     except UnicodeDecodeError:
-        return _error("file_not_text", f"{path} is not UTF-8 text", str(path))
+        return _error("file_not_text", f"{target} is not UTF-8 text", str(target))
     if not old_string:
-        return _error("old_string_empty", "old_string must not be empty", str(path))
+        return _error("old_string_empty", "old_string must not be empty", str(target))
     if old_string == new_string:
-        return _error("no_change", "old_string and new_string are identical", str(path))
+        return _error("no_change", "old_string and new_string are identical", str(target))
     count = text.count(old_string)
     if count == 0:
-        return _error("old_string_not_found", f"old_string was not found in {path}", str(path))
+        return _error("old_string_not_found", f"old_string was not found in {target}", str(target))
     if count > 1 and not replace_all:
         return _error(
             "old_string_not_unique",
-            f"old_string occurs {count} times in {path}; include more surrounding text to "
+            f"old_string occurs {count} times in {target}; include more surrounding text to "
             "make it unique, or set replace_all to replace every occurrence",
-            str(path),
+            str(target),
             occurrences=count,
         )
     after = (
@@ -138,7 +138,7 @@ def edit_file(
         if replace_all
         else text.replace(old_string, new_string, 1)
     )
-    return {**_write_change(path, before, after), "replacements": count if replace_all else 1}
+    return {**_write_change(target, before, after), "replacements": count if replace_all else 1}
 
 
 @dataclass(frozen=True)
@@ -159,41 +159,42 @@ class PreviousContent:
     reason: str = ""
 
 
-def capture_previous_content(filepath: Any) -> PreviousContent | None:
+def capture_previous_content(path: Any) -> PreviousContent | None:
     """Read the file a write tool is about to change, bounded for Undo.
 
     Returns ``None`` when the path does not pass the write policy: the tool call will
     be refused for the same reason, so there is nothing to undo.
     """
 
-    if not isinstance(filepath, str) or not filepath.strip():
+    if not isinstance(path, str) or not path.strip():
         return None
     try:
-        path = Path(validate_write_path(filepath, field="filepath"))
+        target = Path(validate_write_path(path, field="path"))
     except FilePolicyError as exc:
         # A missing parent folder: the write creates it, so no file existed there.
         # Any other refusal means the call is refused too, or a folder grant is still
         # pending; the recorder then names the change ``previous_content_not_captured``.
         return (
-            PreviousContent(str(exc.path or filepath), existed=False)
+            PreviousContent(str(exc.path or path), existed=False)
             if (exc.code == "parent_not_found")
             else None
         )
-    if not path.exists():
-        return PreviousContent(str(path), existed=False)
+    if not target.exists():
+        return PreviousContent(str(target), existed=False)
     try:
-        source = Path(validate_read_path(str(path), field="filepath"))
+        # Streams a digest above the capture size, so no whole-file size limit applies.
+        source = Path(validate_read_path(str(target), field="path"))
         if source.stat().st_size > UNDO_CAPTURE_MAX_BYTES:
             with source.open("rb") as handle:
                 digest = hashlib.file_digest(handle, "sha256").hexdigest()
-            return PreviousContent(str(path), True, digest, None, UNDO_PREVIOUS_TOO_LARGE)
+            return PreviousContent(str(target), True, digest, None, UNDO_PREVIOUS_TOO_LARGE)
         data = source.read_bytes()
     except (OSError, ValueError):
-        return PreviousContent(str(path), True, "", None, UNDO_PREVIOUS_UNREADABLE)
+        return PreviousContent(str(target), True, "", None, UNDO_PREVIOUS_UNREADABLE)
     try:
-        return PreviousContent(str(path), True, _sha256(data), data.decode("utf-8"))
+        return PreviousContent(str(target), True, _sha256(data), data.decode("utf-8"))
     except UnicodeDecodeError:
-        return PreviousContent(str(path), True, _sha256(data), None, UNDO_PREVIOUS_NOT_TEXT)
+        return PreviousContent(str(target), True, _sha256(data), None, UNDO_PREVIOUS_NOT_TEXT)
 
 
 __all__ = [

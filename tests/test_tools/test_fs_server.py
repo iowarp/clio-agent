@@ -184,9 +184,7 @@ def test_write_diff_has_exact_line_spacing(
     expected = "--- a/spacing.py\n+++ b/spacing.py\n" + body
     assert result["unified_diff"] == expected
     assert target.read_bytes() == after.encode()
-    view = present_mcp_result(
-        "fs_write_file", {"filepath": str(target)}, {"structuredContent": result}
-    )
+    view = present_mcp_result("fs_write_file", {"path": str(target)}, {"structuredContent": result})
     assert next(block["text"] for block in view["blocks"] if block["type"] == "diff") == expected
     assert result["unified_diff"] == expected
 
@@ -280,7 +278,7 @@ def test_gateway_write_respects_late_fallback_permission_gate(
         )
         executor.call_tool(
             "fs_write_file",
-            {"filepath": str(target), "content": "allowed\n"},
+            {"path": str(target), "content": "allowed\n"},
         )
         assert target.read_text(encoding="utf-8") == "allowed\n"
 
@@ -290,7 +288,7 @@ def test_gateway_write_respects_late_fallback_permission_gate(
         with pytest.raises(PermissionError, match="denied"):
             executor.call_tool(
                 "fs_edit_file",
-                {"filepath": str(target), "old_string": "allowed", "new_string": "denied"},
+                {"path": str(target), "old_string": "allowed", "new_string": "denied"},
             )
 
         assert target.read_text(encoding="utf-8") == "allowed\n"

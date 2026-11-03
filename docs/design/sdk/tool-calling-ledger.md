@@ -285,6 +285,123 @@ The plan's prompt foundation has two halves: the rewrite from the research (done
 4. **Change** the prompt against that evidence under the repository's rules (no handcuffs, fix causes, `.claude/CLAUDE.md` principles 1 to 3; `docs/tool-result-presentation.md` for tool descriptions).
 5. **Re-evaluate**: before is config `final2` (all fixes of 2026-11-02); after is the same tasks, three passes, same harness. Record both here and update the Targets.
 
+### Prompt audit (2026-11-02)
+
+**Measured** (exact request of final2 P1, `GET /v1/sessions/{sid}/agent?exact=true`): 20.9k characters of system text (about 3,300 words), of which the core guidance and capability fragments are 13.7k, the deferred-tool entry 0.9k and the skills listing 6.3k; and 72.5k characters of schemas for 67 listed tools. By plugin: core 24.7k, connected-data 6.7k, workspace 6.5k, delegation 5.7k, shell 5.4k, orchestration 5.3k, visuals 4.9k, memory 4.1k, web 3.7k, document-runtime 2.4k, fleet 1.8k, pdf 0.9k. The Claude Code reference ran with 5 tools (`--allowed-tools Bash,Read,Grep,Glob,Task`).
+
+**Against the plan's prompt foundation**
+
+| Item (plan, Design: the prompt foundation) | State | Note |
+| --- | --- | --- |
+| Fragments composed for the final tools (TD25) | done (`f1039fdb`) | a read-only child no longer hears about delegating or workflows |
+| Working, Exploring, Persisting sections in core | done | `core.guidelines` |
+| `core.tasks` to a few sentences, `task-protocol` skill | done | 1,554 to 170 words |
+| Handcuffs removed, `TOOL_USE_NOTE` deleted, `TURN_REMINDER` rewritten | done | |
+| Role prompts (`explore`, `planner`, `review`, `delegation.child`) | done (marketplace `74fbf24`) | `explore` close to Claude Code's Explore |
+| Narrow fragments gated | partly | gh fragments gated on the shell; rendering scoped to root |
+| Skills listing one line per skill | not done | 6.3k characters, several sentences per skill |
+| Largest tool descriptions trimmed | not done | `create_artifact` 2.7k + 1.6k schema, `shell_bash` 2.8k, `raise_alert_card` 1.2k |
+| Prompt sizes per role recorded per phase | not done | this section starts it |
+| Changed against the evaluation (Phase 1 step 6) | not done | this section |
+
+**Delegation steering against Claude Code** (user review, 2026-11-02; Claude Code's Explore and Agent tool texts in Piebald-AI/claude-code-system-prompts)
+
+| Mechanism | Claude Code | CLIO before |
+| --- | --- | --- |
+| Agent description written as a trigger | "when answering means sweeping many files… you only need the conclusion"; boundary; breadth knob | capability wording, no trigger, no negative case |
+| Roster injected verbatim next to the delegation tool | yes | yes (inside the spawn tools' `agent` parameter) |
+| Policy and its reason on the delegation tool | parallel work, context economy, when not to | mechanics only; policy in `delegation.parent` mid-prompt |
+| Search tools point open-ended searches at the agent | Grep/Glob | none |
+| Workflow prescribes explorers | plan mode launches Explore agents in parallel | planning skill: "can help… a small task does not need them" |
+| Explore returns conclusions, not contents | yes | yes |
+
+**Behaviour evidence** (final, final2, ablations, qualification; 199 runs)
+
+| Evidence | Handles | Cause | Change |
+| --- | --- | --- | --- |
+| `explore` never used, survey included (T4); 0 children on P1-P4 | T4 `sess_ce94b90123be`; all P1-P4 | no trigger in its description, policy away from the tool | round 1 (`0268edb5`, marketplace `9032908`) and the explore note (`cd4a88c3`) |
+| P2 searches, then reads the line the search showed | final P2 runs | Exploring guidance said "search, then read" | round 1 (`0268edb5`) |
+| `_clio_task_description` required on 10 tools | exact dump | recording rebuild dropped the MCP input contract | fixed `d7d98a2a` |
+| 15 of 67 listed tools used in 199 runs | all runs | everything listed | proposal: defer niche groups (owner decision) |
+| `raise_alert_card` listed to root sessions, where it cannot work | exact dump | no per-session tool scope | proposal |
+| `path` guessed for `filepath` (T8b, T8c) | qualify | inconsistent fs argument names | suggested task (rename) |
+| Plan never used on H1-H3 (T14) | final H1-H3 | tasks too short | none: right call on short tasks |
+
+**Round 1** (`0268edb5`, marketplace `9032908`, with the explore note `cd4a88c3` on at its default of 6 reading calls):
+- `explore`'s description is a trigger: use when sweeping many files, folders or naming conventions, or when you do not know where something lives, and only the conclusion is needed; it locates and reads excerpts and does not review; for a lookup whose file you know, do it yourself.
+- `spawn_agent_task` carries the delegation policy and its reason (what you read stays in your context; a child returns only its report); `spawn_agents_parallel` names the one-explore-child-per-area survey.
+- `delegation.parent`: a search that will take several rounds goes to an `explore` child.
+- `core.guidelines`: a search result that already shows the line or value is evidence to answer from.
+- `planning`: the investigation phase starts one `explore` child per area in a single parallel call when the work spans several areas.
+- Not in round 1, proposed: defer the niche tool groups (15 of 67 listed tools were used in 199 runs), withhold `raise_alert_card` from root sessions, trim the largest tool descriptions and the skills listing (Phase 1 step 3), `$(command)` variables in reminder templates (owner decision).
+
+**Round 1 results** (config `prompt1`, three passes, 2026-11-02, against `final2`; median wall time, correct where graded):
+
+| Task | final2 | prompt1 | Claude Code | Note |
+| --- | --- | --- | --- | --- |
+| P1 | 10.7 s, 3/3 | 9.9 s, 3/3 | 4.5 s | |
+| P2 | 12.9 s, 3/3 | 9.5 s, 3/3 | 6.3 s | answers from the search result |
+| P3 | 54.4 s, 0/3 | 40.7 s, 0/3 | 30.4 s, 0/3 | seeded bugs still missed by every configuration |
+| P4 | 63.5 s | 144.6 s | 42.5 s | delegates to three `explore` children; see round 2 |
+| P5 | 12.4 s, 3/3 | 12.2 s, 3/3 | | |
+| P6 | 26.3 s, 3/3 | 27.6 s, 3/3 | | |
+| P7 | 185.6 s, 2/3 | 171.9 s, 3/3 | | |
+| P8 | 9.9 s, 3/3 | 7.4 s, 3/3 | | |
+| P9 | 12.9 s, 3/3 | 11.6 s, 3/3 | | |
+| P10 | 9.4 s | 7.8 s | | |
+| H1 | 27.5 s | 19.2 s | | |
+| H2 | 27.9 s | 18.9 s | | |
+| H3 | 24.1 s | 26.5 s | | |
+
+Every task but P4 and H3 is faster, and no graded task lost an answer. `explore` is now used where the trigger fits (P4, all three runs) and nowhere else.
+
+**P4, why delegation was slower** (`sess_fd96bda1620b`): the parent spawned three `explore` children at 12 s with "Thoroughness: medium… Report concisely". Each child's last call took 30 to 39 s to write a 4.9k to 6.6k-token report (about 20 to 25k characters), finishing at 77 to 80 s. Collected together, each result's inline share is (12,000 − 1,000) / 3 = 3,666 characters, so all three were saved to files, as JSON with the report on one line; the parent spent two `run_code` calls turning them back into Markdown and five paged reads before a 4.8k-token answer (93 to 119 s). Without delegation (final2) the same survey took 6 steps and 63 s. Causes in the data flow, not in the prompt: a saved text report is not readable as text, and the child does not know how much of its report reaches the parent inline.
+
+**`explore` on a cheaper model** (config `prompt1-haiku-explore`: round 1 with the Fleet's `explore` role on Haiku, P1 to P4 and H1 to H3, three passes): no gain. P1 10.3 s, P2 11.3 s, P3 52.5 s (prompt1: 9.9, 9.5, 40.7), H1 to H3 about level; P4 130 s median (92, 130 and 727 s) against 145 s on one model, still twice final2's 63 s. Haiku children write reports as long as Sonnet's (4k to 14k output tokens), so the spill and read-back of P4 remain; the model of the children is not the lever, the delivery of their reports is.
+
+The 727 s run is not model time: an `explore` child (`sess_760dfa610c9dee702b03ad463e9ef31e`) searched one folder above its workspace (`/home/user/clio-eval-work`), which asks for permission even though the root session runs in bypass mode; nobody answered and the turn waited the full `permission_request_timeout` of 600 s (`agent.log`, `perm_2fa374de608e`). Open: whether a child should inherit its parent's approval mode, and how a child's question reaches a person who is watching only the parent.
+
+**Owner decision (2026-11-02):** the per-result share and the child-answer digest are removed. They decided for the agent how much of a report it may read, with no limit behind them; the parent then read the whole report anyway, through files. A child's report is delivered whole unless it does not fit the parent's remaining context window (a real limit), and a reminder asks the child to be clear and succinct. The same audit covers every other agent-facing limit (task #38).
+
+**After the caps removals** (config `caps1`, `2642d460`, three passes, all tasks; median wall time):
+
+| Task | final2 | prompt1 | caps1 | Claude Code |
+| --- | --- | --- | --- | --- |
+| P1 | 10.7 s | 9.9 s | 10.3 s | 4.5 s |
+| P2 | 12.9 s | 9.5 s | 11.6 s | 6.3 s |
+| P3 | 54.4 s | 40.7 s | 40.0 s | 30.4 s |
+| P4 | 63.5 s | 144.6 s | 102.4 s (71 to 141) | 42.5 s |
+| P5 | 12.4 s | 12.2 s | 10.6 s | |
+| P6 | 26.3 s | 27.6 s | 26.9 s | |
+| P7 | 185.6 s, 2/3 | 171.9 s, 3/3 | 187.1 s, 3/3 | |
+| P8 | 9.9 s | 7.4 s | 13.0 s (7.6 to 18.2) | |
+| P9 | 12.9 s | 11.6 s | 9.2 s | |
+| P10 | 9.4 s | 7.8 s | 7.7 s | |
+| H1 | 27.5 s | 19.2 s | 23.8 s | |
+| H2 | 27.9 s | 18.9 s | 23.6 s | |
+| H3 | 24.1 s | 26.5 s | 24.4 s | |
+
+No graded answer was lost. On P4 the read-back is gone: the parent received the three reports whole and answered in three or four model calls (`sess_ef2696723f8f`), and the children's reports were shorter (2.7k to 4.4k output tokens in run 1, against 4.9k to 6.6k). What remains is the children's own depth, which varies from run to run (run 2, `sess_ce6c83f39c21`: 24 to 73 tool calls and 11k to 13k output tokens per child, done at 90 to 108 s), and the parent's 4k to 5k-token answer. On one model a three-area survey is not faster split than done by one agent (63 s), and Claude Code does not delegate this task at all (4 steps, 42 s).
+
+Open for the owner (round 2): the round-1 steering makes CLIO delegate surveys that Claude Code answers itself. The levers that stay within the rules are facts the agent can weigh, not rules: the `explore` role's model and its usual cost (a child spends about 15 s before its first finding and writes its report as a final step), shown where it chooses to delegate; and the explore note (`clio.reminder.explore_nudge`), which can now be reworded or switched off on the Reminders page. The P4 trace says the decision itself, not CLIO's delivery, is now the cost.
+
+## Agent-facing caps (2026-11-02)
+
+Owner direction: a limit on what the agent may see or do needs a real limit behind it (the model's context window, memory, an OS or provider limit) or must be a default the agent can override per call; a fixed number that decides for the agent is removed (`.claude/CLAUDE.md`, principles 1 to 3). An audit of every agent-facing limit (108 keys in `config.defaults.yaml` plus constants and text slices; report kept with the evaluation notes) found one root: `limits.model_tool_result_chars = 12000`, about 3k tokens and a quarter of Claude Code's MCP default, under almost every model-facing bound and clamped further in five places to the transcript-preview bound.
+
+| Cap | Effect found | Change |
+| --- | --- | --- |
+| Per-result share of collected child reports, 8,000-character answer bound | three reports of about 22k characters each spilled; the parent read them back in 7 steps (P4) | removed (`46631af9`); a report is whole unless it does not fit the parent's room (window to the compaction threshold, less the prompt it carries); a saved report is readable Markdown; children are told their answer goes whole to the parent and to be succinct (reminder `child_report`) |
+| Tool circuit breaker | after three errors whose text matched "timeout"-like words, the tool was refused for the executor's life; three slow MCP calls disabled a data service | refusal removed (`46631af9`); any run of failures adds one switchable fact |
+| Compaction summarizer input | every tool call and result cut to 300 characters, so evidence was lost to the summary | whole (`46631af9`) |
+| Permission reviewer input | only the first 2,000 characters of a call's arguments were reviewed | whole (`46631af9`); an input too large fails the review, which escalates to the person |
+| `limits.model_tool_result_chars` and the clamps to `limits.tool_result_chars` | fs_read_file returned about 270 of its advertised 2,000 lines; shell's output-bytes argument was moot; search dropped matches | `c4b018d7`: one result is whole when it fits min(`tools.result_share` × window, room left), 25k tokens on a 200k window (Claude Code's MCP size); unknown window: 25k tokens, traced `tool_result_window_unknown`; the transcript preview bounds its own copy and a shell stream stays a string (#887); fs_read_file returns its `limit` lines up to that, search pages with `offset`, shell output defaults to 32 KiB per stream; mail and the plan use the same room |
+| Goal judge evidence, resource tools, 1 GiB refusal on streaming readers, MCP server instructions (300), run_code `help()` (1,500) | the judge re-drove completed phases (noted in its code); resource text past 64 KiB unreachable | `5955bf61`: the judge reads the evidence whole up to its own window (newest first beyond it, said in its input; credentials still redacted); resource read, search and list take offset and limit; only callers that load a whole file meet the 1 GiB limit; `search_tools` returns a server's full instructions; `help()` shows the whole description |
+
+Merged with the parallel sessions' work (`2642d460`): the file tools' target argument is `path` everywhere (`claude/vibrant-johnson-gskxcf`) and clio-core threads are bounded so descriptors stop leaking (`claude/relaxed-albattani-np48nf`).
+
+Kept: defaults the agent can override per call (read lines, search and recall limits), real limits (Windows command line, provider attachment and PDF limits, A2UI sizes), runaway guards (spawn depth, child concurrency, variants, run_code call count, stop-hook loops) and person-facing previews.
+
 ## Overheads (Phase 0 step 3)
 
 | Overhead | Measured | Above baseline noise | Fixed in |
@@ -308,7 +425,7 @@ Run on 2026-11-02 against a second server (port 8789, its own home and ARC names
 | T6 | T5 on an open model |  | local phase |
 | T7 | P6 after Phase 5: `run_code` with nested rows | Final P6 ×3 (plain request: evidence of the agent's choices): 1 to 2 scripts gathering 200 nested `get_record` calls. The nested rows were read in the UI at 1440 and 390 on `sess_bbf3a8c941d7` (T10's 600 calls), `t7-*` screenshots | pass |
 | T8a | `auto-edits`: one approval covers the script's nested write | `sess_49c26924ee5a` (tool-directed prompt: mechanism verified, not evidence of agent judgement): one script question showing the code, the nested write covered, the denied shell call raised in the script | pass |
-| T8b | `ask`: nested writes ask one at a time, showing the script | `sess_98b11a0fcd41` (tool-directed prompt: mechanism verified, not evidence of agent judgement): three write questions one at a time, each showing the script; allow, allow, deny; the denied one raised `PermissionError` in the script. No file was written because the agent passed `path=` where `write_file` takes `filepath` (finding 21; the rename is a separate task) | mechanism pass; files not written |
+| T8b | `ask`: nested writes ask one at a time, showing the script | `sess_98b11a0fcd41` (tool-directed prompt: mechanism verified, not evidence of agent judgement): three write questions one at a time, each showing the script; allow, allow, deny; the denied one raised `PermissionError` in the script. No file was written because the agent passed `path=` where `write_file` took `filepath` (finding 21; the file tools now take `path`, finding 26) | mechanism pass; files not written |
 | T8c | `ask`: "Allow for the rest of this script" | `sess_593af85db845` (tool-directed prompt: mechanism verified, not evidence of agent judgement): one write question per script, `allow_script` covered the script's later writes, 4 files | pass |
 | T9 | `run_code` in plan mode | `sess_212e623c1176` (tool-directed prompt: mechanism verified, not evidence of agent judgement): the script ran, printed the `tools.fs` names, and `open('scratch.txt', 'w')` got `Permission denied`; no file. Write stubs stay in the table and each nested write meets the plan ACL like a direct call (the plan said absent). Needed finding 19 | pass |
 | T10 | Nested-call budget | `sess_bbf3a8c941d7` (tool-directed prompt: mechanism verified, not evidence of agent judgement): the first script stopped at 500 calls with the typed `code.max_nested_calls` error in its output; the agent ran the last 100 in a second script | pass |
@@ -383,9 +500,10 @@ Read on 2026-10-31 for the session plan:
   18. **A runaway reply, and an output cap that did not reach the CLI (cap fixed, `64594208`).** Final P10 run 2: the first step streamed 128,092 output tokens of empty code fences and then a valid call (548 s; the answer that followed was correct, but the visible reply carries the fences). CLIO does not judge the model's text (no heuristics in core), so the remedy is the operator's per-reply cap: `lm.max_tokens` was accepted for `claude_code` and silently dropped. It now reaches the CLI as `CLAUDE_CODE_MAX_OUTPUT_TOKENS` and a reply cut at the cap ends as the typed `LMOutputTruncatedError`. No default cap is set, as for every provider. Seen once in 39 final runs.
   19. **`run_code` was denied in plan mode, and would have written the workspace (fixed, `5d19f71b`).** TD47 meant scripts to run in plan mode behind an enforced fence, but the plan ACL denied `run_code` before that check (T9: "The script was not approved"). Had it run, its kernel would have had the shell's write roots, including the workspace. Now the plan ACL allows `run_code`; in plan mode the kernel writes only the session's scratch folder and temp (`sandbox_roots.read_only_write_roots`); and a kernel from the other mode is replaced. Nested calls still meet the ACL one by one.
   20. **Kernels died at the end of the turn that started them (fixed, `53b8313c`).** The `setpriv --pdeathsig SIGKILL` wrapper kills a child when the thread that started it exits. A script's first call runs on a turn's worker thread, so a variable set in one turn was gone in the next (T12, trace `replaced_dead (exit code -9)` after `448cb7ef` made the replacement say why). Kernels now start from one long-lived thread. A plain `Popen` from a thread did not reproduce it; the kernel's spawn options did, and the test drives the real kernel path.
-  21. **A failed nested call told the script only that it failed (fixed, `2168c580`).** The script's `ToolError` carried `tool_result_is_error` without the server's text, so a script that passed `path=` to `write_file` (which takes `filepath`, while `list_directory`, `search_text` and `glob` take `path`) could not correct itself (T8b, T8c). The error now carries the result's text. The inconsistent argument names are a separate task.
+  21. **A failed nested call told the script only that it failed (fixed, `2168c580`).** The script's `ToolError` carried `tool_result_is_error` without the server's text, so a script that passed `path=` to `write_file` (which takes `filepath`, while `list_directory`, `search_text` and `glob` take `path`) could not correct itself (T8b, T8c). The error now carries the result's text. The inconsistent argument names are fixed by finding 26.
   22. **Automatic compaction never fired on `claude_code` (fixed, `d5ded988`).** The window was read from the last call's `prompt_tokens`. The Claude CLI reports Anthropic usage, where input excludes the cached prompt, and DSPy folds the cache back only for providers named `anthropic`. A step that read 64k tokens from the cache counted as 4. This, not the 25% threshold, is why H1 to H3 never compacted. The engine now declares its usage semantics (`input_tokens_exclude_cache`) and the window counts cached reads and writes. T15 then compacted mid-turn and offered the plan again verbatim.
   23. **Observed, not fixed: a session's status stays `running` while a permission question waits.** Nothing sets `waiting_permission`, so a client that watches the status alone misses the question; the qualification driver now reads the pending list on every poll. The UI shows questions from their own events, so it is not affected.
   24. **Observed, not fixed: updating a marketplace leaves a workspace's running MCP server on the old snapshot.** After `update_marketplace`, a new session in the same workspace reused the garage server started from the previous snapshot until the CLIO server restarted.
   25. **Open, needs the owner: three catches exceed the swallow ratchet (`scripts/check_noqa_swallows.py`, enforced in CI).** `gact/code_mode/dispatch.py` (a nested call's exception goes to the script as `ToolError`), `gact/code_mode/kernel_main.py` (a script's exception becomes its traceback for the agent) and `arc/rpc_liveness.py` (the stall-watch worker hands an RPC's exception to the waiting caller's future) each catch any exception and pass it on; none swallows. Ruff's BLE001 accepts only a re-raise or an error-level log with the traceback, which would log every failed tool call as an error. The three other branch additions now catch only what they expect (`1e7722e5`). The choice is the owner's: record these three in the baseline as forwarding, or restructure them (the kernel could run every script as an asyncio task and read `task.exception()`; the RPC pool must keep its daemon threads, because a hung native call must not block exit).
+  26. **The file tools named their target `filepath` while the listing and search tools named theirs `path` (fixed).** In T8b and T8c the agent's scripts called `tools.fs.write_file(path=..., content=...)`, matching `list_directory`, `search_text` and `glob` and the usual name, and every write failed validation (`filepath: Missing required argument; path: Unexpected keyword argument`); T8c recovered only after `help(tools.fs.write_file)`. `read_file`, `write_file` and `edit_file` now take `path`, with no alias (pre-release). Every consumer reads `path`: the presenters and Undo capture, folder-access requests, permission path patterns, external-input and provenance fields, the Claude Code hook wire (`path` is Read/Write/Edit's `file_path`; Glob and Grep keep `path`), the `fs_read_file(path=...)` hints in spilled results, and the GACT readers. Errors name the argument the model sent (`path must be a non-empty string path.`). Showcase: `tests/test_tools/test_fs_path_argument.py` drives the real server and the observer's completion path (small, large and empty reads, created, overwritten and edited files, a refused edit and a refused read, the running row); it found that a refused edit carried an empty diff and a refused read lost its file name, both fixed; the GACT browser showcase (`external/gact-tui/web/e2e/fs-file-tools.spec.ts`, recorded from this producer) found the action label stacking one letter per line beside a long filename at phone width, also fixed. Recorded sessions keep their stored presentation, so their transcript rows still render with the file link, content and diff. Execution provenance reads `tool_input` from the recorded arguments at query time and now keeps only `path`, so for calls recorded with `filepath` the Activity row reads `Read` without the filename and a child session's file no longer appears in Evidence; the parent's own file rows come from the stored presentation and remain. A rerun of T8b and T8c is still to be recorded.
 - **Phase 6b, tool I/O and default permissions (TD52-TD55):** `callers` and `permission` on `tool()`/`native_tool()`, `plugin.json` `servers.<name>` and `servers.<name>.tools.<tool>` (checked by the manifest, so `plugin check` rejects unknown values), carried by the loader and resolver; a CLIO built-in declares its own `callers` where it is constructed (`native_tool(..., callers="direct")` for the question, plan, todo, task, spawn, goal, loop, schedule, skill, search, `run_code` and memory-write tools, and `submit`), which replaces `NOT_IN_SCRIPTS`. `tools.callers` and `tools.permissions` resolve through `conf` (new `conf.as_mapping`) with key notes and the regenerated environment reference. `gact/agents/tool_settings.py` applies them when an agent's tools are final: blocked tools leave the program (`tool_permission_deny`), `code` tools leave the listing and the deferred catalog and are marked in the `run_code` index, and fall back to `direct` with `tool_callers_code_unavailable` without `run_code`. The gate's order lives in `gact/runtime/tool_permission_layers.py` (deny from any layer, the person's rules, the plugin or deployment default, the approval mode), used for reads, non-reads and nested script calls; CLIO's built-ins and plugins' Python tools, which do not reach the gate in their call path, get the same layers at the call (`native_gate`), so a rule or default applies to them and nothing changes without one. Behaviour change: a person's `deny` or `ask` rule on a read-only tool now holds (before, reads fast-allowed ahead of every rule). The tools page (`GET`/`PUT /v1/settings/tools`, `POST /v1/settings/tools/rules/remove`, `gact/tool_settings_page.py`) writes the person's permission as policy rules and their I/O choice as `tools.callers` in `config.yaml`; gact-tui shows it as a plugin's Tools tab (`plugin-tool-settings.tsx`). UI checks (`scripts/cloud/checks/tool_settings.mjs`) at 1440×900 and 390×844 on the core plugin, before and after a live turn (`claude_code`, haiku, "Say hello in one word.", which built the agent and so the built-ins' flags and `direct` declarations): groups with counts, the per-mode notes, outcomes in words, the menus, and at phone width the list and detail screens; every screenshot read, no console errors or failed requests (the phone pass first caught an effect that returned a value as its cleanup, fixed before the final run). Tests: `tests/test_plugins/test_tool_settings_declarations.py`, `tests/test_gact/test_tool_settings.py` (gate precedence across modes with real gate calls, nested calls, the native layer, the page routes), each sabotage-checked; gact-tui `plugin-tool-settings.test.tsx`. Open: a built-in's read-only flag and own `callers` are read from the tool as built, so before an agent has loaded the plugin the page says they are not known yet; built-ins that ask the gate themselves are marked `self_gated` for the page's outcome text (`run_code`, `make_plugin`, connecting and indexing sources, NDP endpoint operations), and a built-in that asks for itself without that mark would be shown as running without a question. No live model run: the prompt changes only by the `run_code` index (the memory writes now have no stub; a code-only tool gets an "Only in scripts" line), and a plain-request run is owed with the Phase 7 scenarios.

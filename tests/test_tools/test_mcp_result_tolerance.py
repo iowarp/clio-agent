@@ -17,6 +17,7 @@ from pydantic import BaseModel
 from clio_agent.tools.execution import SyncMCPToolExecutor, tool_workspace_context
 from clio_agent.tools.mcp_executor import AsyncMCPToolExecutor
 from clio_agent.tools.mcp_results import call_tool_result_to_observer
+from tests._config_layer import set_config
 
 
 class _FakeJarvisRunResult(BaseModel):
@@ -325,10 +326,10 @@ def test_model_lane_bounds_a_tabular_result_with_head_and_spill_file(
     """A huge tabular result cannot multiply across every later ReAct prompt."""
 
     from clio_agent.tools.mcp_executor import _result_to_text
-    from clio_agent.tools.mcp_result_projection import (
-        bounded_model_tool_result,
-        model_tool_result_chars,
-    )
+    from clio_agent.tools.mcp_result_projection import bounded_model_tool_result
+    from clio_agent.tools.result_room import result_room
+
+    set_config("tools.unknown_window_result_tokens", 3_000)  # 12,000 characters
 
     payload = {
         "summary": {"rows": 1101, "status": "success"},
@@ -342,7 +343,7 @@ def test_model_lane_bounds_a_tabular_result_with_head_and_spill_file(
     full = json.dumps(payload)
     # ``_result_to_text`` itself returns the full text; the caller bounds it.
     assert _result_to_text(payload) == full
-    assert len(text) <= model_tool_result_chars()
+    assert len(text) <= result_room().chars
     assert text.startswith(f"[clio: result_spilled] This result is {len(full):,} characters")
     assert '"rows": 1101' in text
     # The tail is not in the prompt; it is in the file, exactly as produced.
@@ -358,10 +359,10 @@ def test_model_lane_bounds_a_quote_dense_tabular_result(tmp_path: Path) -> None:
     """
 
     from clio_agent.tools.mcp_executor import _result_to_text
-    from clio_agent.tools.mcp_result_projection import (
-        bounded_model_tool_result,
-        model_tool_result_chars,
-    )
+    from clio_agent.tools.mcp_result_projection import bounded_model_tool_result
+    from clio_agent.tools.result_room import result_room
+
+    set_config("tools.unknown_window_result_tokens", 3_000)  # 12,000 characters
 
     payload = {
         "summary": {"rows": 4000, "status": "success"},
@@ -375,7 +376,7 @@ def test_model_lane_bounds_a_quote_dense_tabular_result(tmp_path: Path) -> None:
     with tool_workspace_context(str(tmp_path)):
         text = bounded_model_tool_result(_result_to_text(payload))
 
-    assert len(text) <= model_tool_result_chars()
+    assert len(text) <= result_room().chars
     assert _spilled_text(text) == json.dumps(payload)
 
 
@@ -383,34 +384,34 @@ def test_model_lane_bounds_an_escape_dense_result(tmp_path: Path) -> None:
     """Control characters do not inflate the model-lane result past the bound."""
 
     from clio_agent.tools.mcp_executor import _result_to_text
-    from clio_agent.tools.mcp_result_projection import (
-        bounded_model_tool_result,
-        model_tool_result_chars,
-    )
+    from clio_agent.tools.mcp_result_projection import bounded_model_tool_result
+    from clio_agent.tools.result_room import result_room
+
+    set_config("tools.unknown_window_result_tokens", 3_000)  # 12,000 characters
 
     source = "\x07" * 40_000
     with tool_workspace_context(str(tmp_path)):
         text = bounded_model_tool_result(_result_to_text(source))
 
-    assert len(text) <= model_tool_result_chars()
+    assert len(text) <= result_room().chars
     assert text.split("\n\n", 1)[1]  # a non-empty head is shown
     assert _spilled_text(text) == source
 
 
 def test_model_lane_never_returns_more_than_the_bound(tmp_path: Path) -> None:
-    """Just over the cap at high quote density, the result stays within the bound."""
+    """Just over the room at high quote density, the result stays within the bound."""
 
     from clio_agent.tools.mcp_executor import _result_to_text
-    from clio_agent.tools.mcp_result_projection import (
-        bounded_model_tool_result,
-        model_tool_result_chars,
-    )
+    from clio_agent.tools.mcp_result_projection import bounded_model_tool_result
+    from clio_agent.tools.result_room import result_room
 
-    source = '"' * (model_tool_result_chars() + 1)
+    set_config("tools.unknown_window_result_tokens", 3_000)  # 12,000 characters
+
+    source = '"' * (result_room().chars + 4)  # one token over
     with tool_workspace_context(str(tmp_path)):
         text = bounded_model_tool_result(_result_to_text(source))
 
-    assert len(text) <= model_tool_result_chars()
+    assert len(text) <= result_room().chars
     assert _spilled_text(text) == source
 
 

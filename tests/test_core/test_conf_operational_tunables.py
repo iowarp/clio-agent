@@ -301,32 +301,33 @@ def test_conversation_stop_has_no_automatic_retirement_deadline() -> None:
 
 
 def test_model_tool_result_bound_is_configurable(tmp_path: Path) -> None:
-    """``limits.model_tool_result_chars`` bounds the MODEL lane, not the evidence lane."""
+    """``tools.unknown_window_result_tokens`` sizes the MODEL lane when the window is
+    unknown; it is not the evidence lane's bound."""
 
     from clio_agent.tools.execution import tool_workspace_context
-    from clio_agent.tools.mcp_result_projection import (
-        bounded_model_tool_result,
-        model_tool_result_chars,
-    )
+    from clio_agent.tools.mcp_result_projection import bounded_model_tool_result
+    from clio_agent.tools.result_room import result_room
 
-    set_config("limits", {"model_tool_result_chars": 900})
-    assert model_tool_result_chars() == 900
+    set_config("tools.unknown_window_result_tokens", 225)
+    assert result_room().chars == 900
 
     with tool_workspace_context(str(tmp_path)):
         bounded = bounded_model_tool_result("x" * 5_000)
     assert len(bounded) <= 900
     assert bounded.startswith("[clio: result_spilled] This result is 5,000 characters")
-    assert "more than the 900 shown to you" in bounded
+    head = bounded.split("\n\n", 1)[1]
+    assert f"more than the {len(head):,} shown to you" in bounded
 
 
 def test_model_and_evidence_tool_result_bounds_are_independent() -> None:
     """The two lanes hold distinct keys: neither can silently redirect the other."""
 
     from clio_agent.gact.evidence import _bounded_tool_call_result
-    from clio_agent.tools.mcp_result_projection import model_tool_result_chars
+    from clio_agent.tools.result_room import result_room
 
-    set_config("limits", {"model_tool_result_chars": 900, "tool_result_chars": 40})
-    assert model_tool_result_chars() == 900
+    set_config("tools.unknown_window_result_tokens", 225)
+    set_config("limits", {"tool_result_chars": 40})
+    assert result_room().chars == 900
 
     bounded = _bounded_tool_call_result("y" * 5_000)
     assert bounded["truncated"] is True
