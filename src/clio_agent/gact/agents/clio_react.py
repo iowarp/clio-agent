@@ -560,14 +560,22 @@ class _Loop:
             return _CallOutcome(f"Unknown tool: {call.name}", True)
         from clio_agent.gact.artifacts.observer_bridge import MODEL_CALL_SLOT  # noqa: PLC0415
         from clio_agent.gact.science_log.lineage import call_reference  # noqa: PLC0415
+        from clio_agent.gact.tool_observation import (  # noqa: PLC0415
+            INLINE_COLLECTION,
+            collected_observation,
+        )
 
         slot: dict[str, str] = {}
-        slot_token = MODEL_CALL_SLOT.set(slot)
+        slot_token, carried = MODEL_CALL_SLOT.set(slot), []
+        carried_token = INLINE_COLLECTION.set(carried)  # task outcomes the reply carries
         try:
             with injections.collect() as told, native_gate(tool, call.name, call.input) as no:
                 outcome = _CallOutcome(no, True) if no else self._run_tool(call, tool)
         finally:
+            INLINE_COLLECTION.reset(carried_token)
             MODEL_CALL_SLOT.reset(slot_token)
+        if not outcome.is_error:
+            outcome.value = collected_observation(outcome.value, carried)
         if slot.get("call_id"):
             outcome.call_ref = call_reference(self.recorder.session, slot["call_id"])
         # What the harness told the agent about this call is shown to the user too.

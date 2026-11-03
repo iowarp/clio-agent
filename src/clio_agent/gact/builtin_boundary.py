@@ -31,7 +31,11 @@ from clio_agent.gact.agents.tool_instrumentation import (
     pop_declared_structured_content,
 )
 from clio_agent.gact.node_folders import node_confinement
-from clio_agent.gact.tool_observation import CollectedTaskResult, PresentedToolResult
+from clio_agent.gact.tool_observation import (
+    CollectedTaskResult,
+    PresentedToolResult,
+    note_inline_collection,
+)
 from clio_agent.tools.task_call_context import TASK_CALL, permission_snapshot
 
 _PRESENTATION_META = "io.iowarp.clio/presentation"
@@ -437,12 +441,25 @@ class BuiltinBoundary:
             and not public.get("background", False)
             and value.get("pending") is False
         ):
-            from clio_agent.gact.task_declarations import _collected
-
-            return await self.app.state.task_history.io.run(
-                _collected, self.app, self.app.state.conversations.caller(sid), value
-            )
+            return await self.collect_inline(sid, value, captured)
         return value
+
+    async def collect_inline(
+        self, sid: str, value: dict[str, Any], captured: contextvars.Context
+    ) -> CollectedTaskResult:
+        """A finished foreground task's reply: collect its outcome notice for the caller.
+
+        The reply reaches the model as MCP text, so the collected value is also noted for
+        the calling model step (:func:`note_inline_collection`): the step records the
+        notice as delivered and the result is not given to the model a second time.
+        """
+        from clio_agent.gact.task_declarations import _collected
+
+        collected = await self.app.state.task_history.io.run(
+            _collected, self.app, self.app.state.conversations.caller(sid), value
+        )
+        captured.run(note_inline_collection, collected)
+        return collected
 
     @staticmethod
     def bind(tool: Any) -> Any:
