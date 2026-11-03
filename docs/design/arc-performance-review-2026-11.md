@@ -260,6 +260,26 @@ Recovery (follow-up, tested in `tests/test_arc/test_read_only_outcome_recovery.p
 
 Not used: clio-core's deferred puts (`AsyncPutBlobDefer`). They batch small puts into one native task, but small writes may wait in client-side sieve pages, a put has no confirmation of its own (only a sticky process-wide `DeferErrorCount` and the process-wide drain `AwaitPutsUntilSpace(0)`), and a failure cannot be attributed to a blob. Group commit needs both a per-record confirmation before it reports a record durable and per-blob failures to abandon a chunk.
 
+## Highway records behind the call, and where a call's time goes now (2026-11-03)
+
+Measured on live P7 runs (2,000 read-only `get_record` calls gathered by a `run_code` script, 20 in flight in the script, `tools.per_server_concurrency` 8), with py-spy and temporary stage timestamps. One run per row, so the runs vary (the agent sometimes fetches 2,400 records).
+
+| Change | Median gap between call starts | Burst time | Median call (start to completion) | Wall |
+| --- | --- | --- | --- | --- |
+| Before (`e88e53ea`) | 36 ms | 115 s | (not measured) | 144 s |
+| Write territory resolved only when needed (`636e3270`), highway writer (`6807b2e0`) | 40 ms | 125 s (2,480 calls) | 350 ms | 175 s |
+| Registry lock never held across a round trip (`c20f9b73`) | 8.6 ms | 62.5 s | 212 ms | 123 s |
+
+- **The write territory** (`FileAccessPolicy.from_env`, `effective_write_roots`) was built twice per call, every root resolved through the filesystem: about 15% of the server's CPU in the burst, for calls with no output path. It is now built only when a call has an output path or a write denial.
+- **The highway writer** (`gact/highway_writer.py`) records `tool.call.*`, `routing.decision`, `artifact.transform.recorded` and `lm.call` on one writer thread in groups, then projects them; a session's other events wait for what it queued, and the ReAct loop and the turn flush before each model request and at turn end. Alone it did not change P7, because the call path was waiting on a lock, not on those puts.
+- **The artifact registry lock** was held across a store read (always a miss for a call id minted moments before) and two puts; waiting for it was most of a call's own time inside the per-server gate. A live transform now reads only the cache for its fresh id and queues its index puts on the same writer, ahead of the event that confirms them.
+
+**Where a call's time goes now.** The server process is at about 100% of one core during the burst (the records server about 11%): it is GIL-bound, so every handoff queues for the interpreter, and a call's latency is the Python work of all calls in flight. Stage timestamps inside `ExternalTasks.call`: 12 ms to read the assignment and 17 ms more for the admission check (two `asyncio.to_thread` hops), then 43 ms from submission to the server's handler and 43 ms back. The GIL-holder profile: the server's event loop 32% (of which the in-process gateway, a FastMCP proxy server in front of the stdio server, about 40%, and the MCP client about 15%), the tool-call path 25% (the observer 15%), the group-commit writer 8%, the highway writer 7%. Each call crosses two MCP hops inside one interpreter (the session's client to the in-process gateway, the gateway's proxy client to the stdio server). Lowering the interpreter's switch interval to 0.5 ms made it worse (median MCP round trip 127 to 192 ms).
+
+**Next levers, in order:** a direct client for an external stdio server instead of the in-process gateway proxy hop; the observer's remaining per-call work (edge detection resolving paths, environment capture, the transcript parts); the two thread hops for an in-memory read. Free-threaded clio-core wheels (`cp314t`, not in 2.4.0) would let these threads run in parallel instead.
+
+**Crash window.** A queued highway event is lost with the process, like a queued read-only outcome: the writer records continuously, so the window is one group (tens of milliseconds), not a step. Recovery that finds no `tool.call.started` for a call that the transcript shows as started still types it `tool_outcome_unrecorded`; a call with neither record is not reported.
+
 ## Measurement notes
 
 - Micro-benchmarks ran against the live daemon in namespaces `bench-arc-a` and `bench-arc-b`, and every record they wrote was deleted. The scripts are in the session scratchpad and are not part of the repository.
