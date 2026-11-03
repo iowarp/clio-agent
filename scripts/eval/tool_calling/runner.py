@@ -226,7 +226,12 @@ def build_parser() -> argparse.ArgumentParser:
         p.add_argument("--n", type=int, default=3, help="runs per task")
         p.add_argument("--results", type=Path, default=DEFAULT_RESULTS)
         p.add_argument("--force", action="store_true", help="rerun runs that have a result")
-        p.add_argument("--h3-autocompact-pct", type=float, default=tasks.H3_AUTOCOMPACT_PCT)
+        p.add_argument(
+            "--h3-autocompact-pct",
+            type=float,
+            default=tasks.H3_AUTOCOMPACT_PCT,
+            help="automatic compaction threshold for H3 and H5 (fraction of the window)",
+        )
     run = sub.choices["run"]
     run.add_argument("--work-root", type=Path, default=DEFAULT_WORK)
     run.add_argument("--provider", default="claude_code")

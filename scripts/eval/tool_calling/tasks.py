@@ -14,7 +14,7 @@ from typing import Any
 from scripts.eval.tool_calling.paths import MARKETPLACE_NAME
 
 STANDARD_AGENT = "clio/standard"
-#: Lowered compaction threshold for H3 (fraction of the context window).
+#: Lowered compaction threshold for H3 and H5 (fraction of the context window).
 H3_AUTOCOMPACT_PCT = 0.25
 
 
@@ -26,7 +26,7 @@ class Task:
     suite: str  # "performance" or "long-horizon"
     prompt: str
     plugins: tuple[str, ...] = ()
-    #: Extra session metadata (H3's compaction threshold).
+    #: Extra session metadata (H3's and H5's compaction threshold).
     metadata: dict[str, Any] = field(default_factory=dict)
 
     def agent_delta(self) -> dict[str, list[str]]:
@@ -63,6 +63,12 @@ _H2 = (
     "Reading records with this package has become much slower than it used to be. "
     "Why is this I/O path slower than it was?"
 )
+#: A broad investigation of a data export, the shape of a real one over 139 files and
+#: 1.24 GB; it names no file, tool, step or finding.
+_H4 = (
+    "This folder is an export of experimental data. Investigate it broadly: what was "
+    "done, what the data shows, and whether anything is wrong with it."
+)
 
 #: Static prompts; P1, P2 and P4 are filled from the manifest's answer keys.
 _STATIC: dict[str, Task] = {
@@ -84,9 +90,14 @@ _STATIC: dict[str, Task] = {
     ),
     "H1": Task("H1", "long-horizon", _H1),
     "H2": Task("H2", "long-horizon", _H2),
+    "H4": Task("H4", "long-horizon", _H4),
 }
+#: Tasks that rerun another with the compaction threshold lowered, so they compact.
+_COMPACTING = {"H3": _H1, "H5": _H4}
 _FILLED = {"P1": _p1, "P2": _p2, "P4": _p4}
-ALL_TASKS = ("P1", "P2", "P3", "P4", "P5", "P6", "P7", "P8", "P9", "P10", "H1", "H2", "H3")
+ALL_TASKS = (
+    "P1", "P2", "P3", "P4", "P5", "P6", "P7", "P8", "P9", "P10", "H1", "H2", "H3", "H4", "H5",
+)  # fmt: skip
 #: Tasks the Claude Code reference runs.
 REFERENCE_TASKS = ("P1", "P2", "P3", "P4")
 
@@ -94,15 +105,18 @@ REFERENCE_TASKS = ("P1", "P2", "P3", "P4")
 def task(
     task_id: str, manifest: dict[str, Any], *, h3_autocompact_pct: float = H3_AUTOCOMPACT_PCT
 ) -> Task:
-    """The task ``task_id`` with its prompt filled from ``manifest``."""
+    """The task ``task_id`` with its prompt filled from ``manifest``.
+
+    H3 and H5 are H1 and H4 with automatic compaction at ``h3_autocompact_pct``.
+    """
     if task_id in _FILLED:
         answer = manifest["tasks"][task_id]["answer"]
         return Task(task_id, "performance", _FILLED[task_id](answer))
-    if task_id == "H3":
+    if task_id in _COMPACTING:
         return Task(
-            "H3",
+            task_id,
             "long-horizon",
-            _H1,
+            _COMPACTING[task_id],
             metadata={
                 "context_preferences": {
                     "automatic_compaction": True,

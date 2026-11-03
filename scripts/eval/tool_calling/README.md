@@ -11,12 +11,13 @@ key exists, and renders the ledger's Evaluation tables. It imports nothing from
 | --- | --- |
 | `fixtures/generate.py` | Writes every fixture, the `clio-eval` marketplace and `manifest.json` |
 | `servers/` | The synthetic MCP servers the marketplace's plugins start |
-| `tasks.py` | The thirteen task prompts and their session setup |
+| `tasks.py` | The fifteen task prompts and their session setup |
 | `runner.py` | `setup`, `plan` and `run` against a server |
 | `session_run.py` | One run: workdir, workspace, session, wait, collect |
 | `collect.py` | Session export to the normalized run shape |
 | `metrics.py` | Per-run metrics |
 | `grade.py` | Answer-key grading (no LLM judge) |
+| `grade_export.py` | H4 and H5 grading: each seeded finding of the export, and the decoy |
 | `claude_code_ref.py` | The Claude Code reference on P1 to P4 |
 | `summarize.py` | Median and range per task and configuration, as Markdown tables |
 
@@ -30,7 +31,8 @@ uv run --frozen --no-sync python -m scripts.eval.tool_calling.fixtures.generate
 ```
 
 Options: `--seed` (default 7), `--base` (default `32d7cbc6`, the plan's base),
-`--out` (default `.cloud-run/eval-fixtures/`). It replaces the output folder.
+`--out` (default `.cloud-run/eval-fixtures/`), `--h4-scale` (default 1; thins the H4
+export's sampling by a divisor of 360, for quick local runs). It replaces the output folder.
 The same seed and base always give a byte-identical `manifest.json`, which
 holds a sha256 per file (git internals excepted; repository fixtures record
 their commit SHAs instead) and one answer key per task.
@@ -43,6 +45,7 @@ their commit SHAs instead) and one answer key per task.
 | `home/` | P5 to P10 | A README; the data lives behind the synthetic servers |
 | `h1/` | H1, H3 | `ledgerlite`, a git repo whose fourth commit breaks the report tests |
 | `h2/` | H2 | `recstream`, a git repo whose fourth commit makes reads reopen the file per record |
+| `h4-export/` | H4, H5 | Growth-chamber trial PFR-26: 25 run folders, 140 files, about 300 MB (HDF5, Parquet, CSV, JSON, logs) |
 | `marketplace/` | P5 to P10 | The `clio-eval` plugins |
 
 Answer keys: P1 a uniquely named function with its definition and every call
@@ -52,7 +55,11 @@ site (found with `ast`); P2 the line and value; P3 file, line range, category
 module names and up to two entry points for each of `arc`, `plugins` and
 `providers`; P5 to P7 the negative record ids and their count; P8 and P9 the
 tool and arguments; H1 to H3 the root-cause file, function and introducing
-commit. Generation checks that the H1 tests pass before the regression and
+commit; H4 and H5 four seeded data problems (a failed analyser zero check, heights
+in cm in one run, a run exported twice, an environment logger an hour off UTC),
+the far-red elongation effect computed from the files, a decoy (a planned dark
+interval that looks like a lighting fault) and, recorded only, the index's
+phantom and missing runs. Generation checks that the H1 tests pass before the regression and
 fail at HEAD, and that the H2 tests pass at HEAD.
 
 ## 2. The synthetic servers and plugins
@@ -149,9 +156,9 @@ role (`claude-haiku-5-5`) is a server setting; each result records
 `bypass` (`--approval-mode`) so no run waits on a person; a run that still
 waits for a question or permission longer than `--interaction-timeout` is
 cancelled and fails the completion guard. `--session-metadata '{...}'` merges
-extra session metadata, for ablations. H3 sets
+extra session metadata, for ablations. H3 and H5 (H1 and H4 again) set
 `context_preferences.autocompact_pct` to `--h3-autocompact-pct` (default 0.25)
-so it compacts at least once.
+so they compact at least once.
 
 **Usage guard.** Before each run the runner reads `GET /v1/fleet`
 (`accounts[].usage.windows[]`: `name`, `used_percent` from 0 to 100,

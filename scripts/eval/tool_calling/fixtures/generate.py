@@ -11,6 +11,7 @@ there::
     home/         an almost empty folder                 P5 to P10
     h1/           the ledgerlite repository              H1, H3
     h2/           the recstream repository               H2
+    h4-export/    a growth-chamber data export, 140 files, about 300 MB   H4, H5
     marketplace/  the clio-eval plugins                  P5 to P10
     manifest.json sha256 per file (git internals excepted) and the answer keys
 
@@ -26,7 +27,7 @@ import sys
 from pathlib import Path
 from typing import Any
 
-from scripts.eval.tool_calling.fixtures import repos, seed_bugs, source_tree
+from scripts.eval.tool_calling.fixtures import export_h4, repos, seed_bugs, source_tree
 from scripts.eval.tool_calling.fixtures.common import (
     archive_tree,
     derive_rng,
@@ -44,7 +45,7 @@ from scripts.eval.tool_calling.paths import (
 from scripts.eval.tool_calling.servers.records import negative_answer
 
 SCHEMA = "clio.eval.tool_calling.fixtures.v1"
-GENERATOR_VERSION = 1
+GENERATOR_VERSION = 2
 DEFAULT_BASE = "32d7cbc6"
 DEFAULT_SEED = 7
 
@@ -65,8 +66,12 @@ def generate(
     p3_package: str = "tools",
     p4_subsystems: tuple[str, ...] = source_tree.P4_SUBSYSTEMS,
     python: str = "python",
+    h4_scale: int = 1,
 ) -> dict[str, Any]:
-    """Write all fixtures under ``out``; return the manifest (also written)."""
+    """Write all fixtures under ``out``; return the manifest (also written).
+
+    ``h4_scale`` thins the H4 export's sampling (1 is the full 300 MB; tests use 360).
+    """
     reset_dir(out)
     tasks: dict[str, Any] = {}
 
@@ -121,6 +126,9 @@ def generate(
     tasks["H1"] = {"fixture": "h1", "answer": repos.build_h1(out / "h1", scratch)}
     tasks["H2"] = {"fixture": "h2", "answer": repos.build_h2(out / "h2", scratch)}
     tasks["H3"] = {"fixture": "h1", "answer": tasks["H1"]["answer"]}
+    h4 = export_h4.write_export(out / export_h4.FIXTURE, seed, scale=h4_scale)
+    tasks["H4"] = {"fixture": export_h4.FIXTURE, "answer": h4}
+    tasks["H5"] = {"fixture": export_h4.FIXTURE, "answer": h4}
 
     market = write_marketplace(out / MARKETPLACE_DIR, seed=seed, python=python)
     manifest = {
@@ -149,6 +157,12 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument(
         "--python", default="python", help="bare command the plugins start servers with"
     )
+    parser.add_argument(
+        "--h4-scale",
+        type=int,
+        default=1,
+        help="thin the H4 export's sampling by this factor (a divisor of 360; 1 is full size)",
+    )
     args = parser.parse_args(argv)
     manifest = generate(
         args.out.resolve(),
@@ -159,6 +173,7 @@ def main(argv: list[str] | None = None) -> int:
         p3_package=args.p3_package,
         p4_subsystems=tuple(s for s in args.p4_subsystems.split(",") if s),
         python=args.python,
+        h4_scale=args.h4_scale,
     )
     print(
         f"wrote {len(manifest['files'])} files and {len(manifest['tasks'])} answer keys to "
