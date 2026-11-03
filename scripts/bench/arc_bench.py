@@ -59,8 +59,15 @@ class _Counting:
     method and kind."""
 
     METHODS = (
-        "put", "put_at", "put_if_absent", "put_many",
-        "get", "get_raw", "delete", "exists", "sizes",
+        "put",
+        "put_at",
+        "put_if_absent",
+        "put_many",
+        "get",
+        "get_raw",
+        "delete",
+        "exists",
+        "sizes",
     )
 
     def __init__(self, store: Any) -> None:
