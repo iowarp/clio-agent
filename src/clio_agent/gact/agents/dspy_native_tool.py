@@ -1,15 +1,76 @@
-"""Lazy-loadable DSPy tool subclass used by CLIO native tools."""
+"""Lazy-loadable DSPy tool subclass used by CLIO native tools.
+
+Every turn builds its agent's tools afresh, and each tool (and its recording
+wrapper) used to re-derive its argument schemas: one pydantic ``TypeAdapter`` and
+JSON schema per argument, about 3 ms a tool and 0.2 to 0.35 s of every turn's
+start for about 80 native tools (chain runs, 2026-11). The derivation depends only
+on the function's code, signature, docstring, the globals its hints resolve in and
+the argument descriptions, so it is kept per that key (:func:`_parsed`).
+"""
 
 from __future__ import annotations
 
 import copy
 import inspect
+import threading
 from collections.abc import Callable
-from typing import Any
+from types import SimpleNamespace
+from typing import Any, NamedTuple
 
 import dspy
 from jsonschema import Draft202012Validator
 from referencing import Registry
+
+
+class _Parsed(NamedTuple):
+    name: str
+    desc: str
+    args: dict[str, Any]
+    arg_types: dict[str, Any]
+    has_kwargs: bool
+
+
+#: Parsed schemas by key; cleared whole when it outgrows the bound (keys of
+#: defaults that print an address never repeat).
+_PARSED: dict[tuple[Any, ...], _Parsed] = {}
+_PARSED_LIMIT = 4096
+_PARSED_LOCK = threading.Lock()
+
+
+def _parse_key(func: Callable[..., Any], arg_desc: dict[str, str] | None) -> tuple[Any, ...] | None:
+    """Everything ``dspy.Tool._parse_function`` reads from ``func``; ``None`` when the
+    callable has no code object to key on (it is then parsed every time)."""
+    target = func if inspect.isfunction(func) or inspect.ismethod(func) else func.__call__
+    code = getattr(target, "__code__", None)
+    if code is None:
+        return None
+    return (
+        code,
+        getattr(func, "__name__", type(func).__name__),
+        getattr(func, "__doc__", None),
+        getattr(target, "__doc__", None),
+        str(inspect.signature(target)),
+        id(getattr(target, "__globals__", None)),
+        tuple(sorted(arg_desc.items())) if arg_desc else (),
+    )
+
+
+def _parsed(func: Callable[..., Any], arg_desc: dict[str, str] | None) -> _Parsed | None:
+    key = _parse_key(func, arg_desc)
+    if key is None:
+        return None
+    with _PARSED_LOCK:
+        hit = _PARSED.get(key)
+    if hit is None:
+        # ``_parse_function`` only reads and sets these attributes.
+        shell = SimpleNamespace(name=None, desc=None, args=None, arg_types=None)
+        dspy.Tool._parse_function(shell, func, arg_desc)
+        hit = _Parsed(shell.name, shell.desc, shell.args, shell.arg_types, shell.has_kwargs)
+        with _PARSED_LOCK:
+            if len(_PARSED) >= _PARSED_LIMIT:
+                _PARSED.clear()
+            _PARSED[key] = hit
+    return hit
 
 
 class ClioNativeTool(dspy.Tool):
@@ -41,6 +102,20 @@ class ClioNativeTool(dspy.Tool):
                         if annotation in schema:
                             args[arg_name][annotation] = schema.pop(annotation)
         super().__init__(func, name, desc, args, arg_types, arg_desc)
+
+    def _parse_function(
+        self, func: Callable[..., Any], arg_desc: dict[str, str] | None = None
+    ) -> None:
+        """``dspy.Tool._parse_function``, derived once per function shape (module doc)."""
+        hit = _parsed(func, arg_desc)
+        if hit is None:
+            super()._parse_function(func, arg_desc)
+            return
+        self.name = self.name or hit.name
+        self.desc = self.desc or hit.desc
+        self.args = self.args if self.args is not None else copy.deepcopy(hit.args)
+        self.arg_types = self.arg_types if self.arg_types is not None else dict(hit.arg_types)
+        self.has_kwargs = hit.has_kwargs
 
     def _validate_and_parse_args(self, **kwargs: Any) -> Any:
         """The call's arguments, validated; a failed call is recorded with its reason.
