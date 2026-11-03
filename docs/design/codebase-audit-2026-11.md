@@ -116,3 +116,7 @@ Action, per group: write down what it owns. Where two modules model the same thi
 4. #737 (item 2).
 
 The reminders and injection code are being rebuilt separately and are out of scope here.
+
+## Observed after the merge (2026-11-03)
+
+- `tests/test_providers/test_claude_code_b1_tuning.py::test_cancel_before_the_query_starts_abandons_without_ever_connecting` failed once under a loaded parallel run (1 of 1,920; it passed 3 of 3 alone). Under load, a cancel before the query starts surfaced as a bare `asyncio.CancelledError` instead of the typed `StreamAbandonedError`. This is a race in the cancel/abandon path, which the conversation rebuild did not change. It belongs with the per-entry thread and loop removal (item 1, not done): the race crosses that loop boundary.
