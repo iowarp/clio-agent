@@ -28,7 +28,7 @@ import dspy
 import pytest
 from dspy.lm15 import Message, ServerError
 
-from clio_agent.providers import claude_code_engine, claude_code_sessions
+from clio_agent.providers import claude_code_conversation, claude_code_sessions
 from clio_agent.providers.claude_code_engine import AsyncClaudeCodeEngine, ClaudeCodeEngine
 from clio_agent.providers.claude_code_sessions import _reset_sessions_for_tests
 from tests import _fake_claude_sdk as fake
@@ -38,10 +38,10 @@ from tests import _fake_claude_sdk as fake
 def _clean_pool() -> Any:
     """Every test starts and ends with an empty client pool and conversation registry."""
     _reset_sessions_for_tests()
-    claude_code_engine._CONVERSATIONS.clear_for_tests()
+    claude_code_conversation.forward_resets().clear_for_tests()
     yield
     _reset_sessions_for_tests()
-    claude_code_engine._CONVERSATIONS.clear_for_tests()
+    claude_code_conversation.forward_resets().clear_for_tests()
 
 
 async def _drain(prompt: str) -> None:

@@ -52,12 +52,11 @@ reconcile needing only a different MODEL is free (``set_model``, B13).
 design gave every ACTIVE ``stateful_scope()`` its own connection since a
 spawned child was not yet a first-class GACT session; #948 made every
 declared child real, so session-id keying gives the same isolation without a
-second bookkeeping layer. Kept SDK conversations (the engine's stateful delta,
-:mod:`clio_agent.providers.claude_code_engine`) are independent of which physical
-client a query rides on, so every dropped client is announced
-(:func:`on_client_dropped`): the engine resets that session's conversations typed
-(``session_evicted``) and never ships a delta to a fresh subprocess with no memory of
-the dropped prefix.
+second bookkeeping layer. The kept conversation lives on the entry that holds it
+(:mod:`~clio_agent.providers.claude_code_conversation`): one client holds one
+conversation, so a dropped or replaced client takes its conversation with it and the
+next kept call is a typed full send (``session_evicted``), never a delta to a fresh
+subprocess with no memory of the dropped prefix.
 """
 
 from __future__ import annotations
@@ -68,7 +67,7 @@ import contextlib
 import logging
 import threading
 import time
-from collections.abc import AsyncGenerator, Callable
+from collections.abc import AsyncGenerator
 from typing import Any
 
 from clio_agent.providers.claude_code_cancel import (
@@ -163,24 +162,6 @@ def _active_gact_session_id() -> str:
         return ""
 
 
-#: Called with the GACT session id whenever a connected client is dropped (reconnect,
-#: dead transport, idle reap, teardown): every SDK conversation that client held is gone.
-_CLIENT_DROPPED: list[Callable[[str], None]] = []
-
-
-def on_client_dropped(listener: Callable[[str], None]) -> None:
-    """Register ``listener`` for dropped clients (the Claude Code engine resets them)."""
-    _CLIENT_DROPPED.append(listener)
-
-
-def _notify_client_dropped(gact_session_id: str) -> None:
-    for listener in list(_CLIENT_DROPPED):
-        try:
-            listener(gact_session_id)
-        except Exception:  # noqa: BLE001 - a listener must never break teardown
-            logger.warning("claude client-dropped listener failed", exc_info=True)
-
-
 # --------------------------------------------------------------------------- #
 # One pooled ``ClaudeSDKClient`` per GACT session, hosted on a private
 # daemon-thread event loop so it is independent of whichever loop the caller runs
@@ -228,24 +209,21 @@ class _StreamClientEntry:
         self._thinking: dict[str, Any] | None = None
         self._thinking_key: str | None = None
         self._system_prompt: str | None = None
-        self._bound_session = ""  # the GACT session the connected client serves
-        self._drop_announced = False  # this client's loss was already announced
         self._holds_history = False  # the connected CLI holds a conversation (/clear first)
+        #: The kept conversation this client holds (``claude_code_conversation``), and a
+        #: typed reason the next kept call must start over with.
+        self.conversation: Any = None
+        self.pending_reset: str | None = None
 
     @property
     def dead(self) -> bool:
         return self._dead
 
-    def announce_dropped(self) -> None:
-        """Announce, once per connected client, that its SDK conversations are gone.
-
-        Called synchronously wherever the entry is taken out of service (so no delta
-        is planned against it after that point), and by the disconnect itself.
-        """
-        if self._drop_announced or not self._bound_session:
-            return
-        self._drop_announced = True
-        _notify_client_dropped(self._bound_session)
+    def forget_conversation(self) -> None:
+        """The client is gone or going: the conversation it held goes with it (typed)."""
+        if self.conversation is not None:
+            self.conversation = None
+            self.pending_reset = "session_evicted"
 
     def _ensure_loop(self) -> None:
         with self._lock:
@@ -332,8 +310,6 @@ class _StreamClientEntry:
                 self._connect_slots.release()
             raise
         self._client = client
-        self._bound_session = gact_session_id
-        self._drop_announced = False
         self._holds_history = False  # a new CLI process starts empty
         self._model, self._cwd = model, cwd
         self._thinking, self._thinking_key = thinking, thinking_key_
@@ -451,7 +427,7 @@ class _StreamClientEntry:
         client, self._client = self._client, None
         if client is None:
             return
-        self.announce_dropped()
+        self.forget_conversation()
         try:
             await client.disconnect()
         except Exception:  # noqa: BLE001 - best-effort teardown; never block the caller
@@ -585,7 +561,7 @@ class _StreamClientEntry:
                 # Close the admission race before asynchronous disconnect. The
                 # caller can request the next model iteration immediately.
                 self._dead = True
-                self.announce_dropped()
+                self.forget_conversation()
                 with contextlib.suppress(Exception):
                     asyncio.run_coroutine_threadsafe(self._mark_dead_and_reset(), self._loop)
             await fut.retire()
@@ -651,12 +627,17 @@ class ClaudeStreamClientPool:
         with self._guard:
             self._precede_pending.discard(key)
             entry = self._entries.get(key)
+            dead_reason = ""
             if entry is not None and entry.dead:
                 del self._entries[key]
+                dead_reason = entry.pending_reset or "session_evicted"
                 entry = None
                 replaced_dead_entry = True
             if entry is None:
                 entry = self.new_entry()
+                # The dead client took its conversation with it; its typed reason
+                # (provider_error after a failed query) carries over.
+                entry.pending_reset = dead_reason or None
                 self._entries[key] = entry
         self.wake_reaper()
         if replaced_dead_entry:

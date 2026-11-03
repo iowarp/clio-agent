@@ -289,7 +289,7 @@ def reap_idle_session_entry(session_id: str, entry: "_StreamClientEntry") -> Non
     )
 
     model = entry._model or ""  # noqa: SLF001
-    entry.announce_dropped()
+    entry.forget_conversation()
     entry.close_nonblocking()
     if stream_audit_enabled():
         stream_audit(

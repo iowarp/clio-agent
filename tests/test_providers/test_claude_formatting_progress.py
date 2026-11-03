@@ -186,12 +186,11 @@ async def test_abandoned_stream_is_dead_before_deferred_disconnect(
     release = threading.Event()
     caller_loop = asyncio.get_running_loop()
     reset_entered = asyncio.Event()
-    drops: list[str] = []
     original_reset = entry._mark_dead_and_reset
 
     async def connect(*_args: Any, **_kwargs: Any) -> IdleClient:
         entry._client = IdleClient()
-        entry._bound_session = "formatting-test"
+        entry.conversation = "held"  # what a kept call records
         return entry._client
 
     async def relay(_client: Any, _query: Any, **kwargs: Any) -> None:
@@ -206,7 +205,6 @@ async def test_abandoned_stream_is_dead_before_deferred_disconnect(
     monkeypatch.setattr(entry, "_ensure_client", connect)
     monkeypatch.setattr(entry, "_mark_dead_and_reset", deferred_reset)
     monkeypatch.setattr(sessions, "relay_with_idle_bound", relay)
-    monkeypatch.setattr(sessions, "_notify_client_dropped", drops.append)
     stream = entry.stream(
         payload="request",
         native_blocks=[],
@@ -221,7 +219,8 @@ async def test_abandoned_stream_is_dead_before_deferred_disconnect(
         await asyncio.wait_for(reset_entered.wait(), 5)
         assert not closing.done()
         assert entry.dead
-        assert drops == ["formatting-test"]
+        # The conversation went with the abandoned client before its disconnect ran.
+        assert (entry.conversation, entry.pending_reset) == (None, "session_evicted")
         assert pool.entry_for(session_id="formatting-test") is not entry
     finally:
         release.set()

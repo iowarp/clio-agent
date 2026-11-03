@@ -20,7 +20,7 @@ from typing import Any
 
 import pytest
 
-from clio_agent.providers import claude_code_engine
+from clio_agent.providers import claude_code_conversation
 from clio_agent.providers.claude_code_audit import (
     emit_call_started,
     emit_call_usage,
@@ -34,10 +34,10 @@ from tests import _fake_claude_sdk as fake
 def _clean_stream_pool() -> Any:
     """Each test gets a fresh client pool and conversation registry."""
     _reset_sessions_for_tests()
-    claude_code_engine._CONVERSATIONS.clear_for_tests()
+    claude_code_conversation.forward_resets().clear_for_tests()
     yield
     _reset_sessions_for_tests()
-    claude_code_engine._CONVERSATIONS.clear_for_tests()
+    claude_code_conversation.forward_resets().clear_for_tests()
 
 
 def _read_rows(path: Path) -> list[dict[str, Any]]:

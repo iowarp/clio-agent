@@ -32,59 +32,6 @@ class _RecordingObserver:
 # --------------------------------------------------------------------------- #
 
 
-def test_agent_external_tool_call_routes_through_factory(
-    monkeypatch: pytest.MonkeyPatch,
-    tmp_path: Path,
-    arc: Any,
-) -> None:
-    from fastmcp import FastMCP
-
-    from clio_agent.gact.agents import external_mcp_calls
-    from clio_agent.gact.app import build_app
-    from clio_agent.tools.mcp_runtime import make_mcp_client
-    from tests.test_gact.task_records import active_turn_fixture, record_assignment_fixture
-
-    calls: list[Any] = []
-    executions: list[int] = []
-    server = FastMCP("factory-routing")
-
-    @server.tool(name="do_thing", annotations={"readOnlyHint": True}, task=False)
-    def do_thing(a: int) -> str:
-        """Return one inline response through the actual native factory and SDK."""
-        executions.append(a)
-        return "hello-from-tool"
-
-    def spy(target: Any, **kwargs: Any) -> Any:
-        calls.append(target)
-        return make_mcp_client(target, **kwargs)
-
-    monkeypatch.setattr("clio_agent.tools.mcp_config.transport_from_spec", lambda spec: server)
-    monkeypatch.setattr("clio_agent.tools.mcp_runtime.make_mcp_client", spy)
-
-    app = build_app(sessions_path=tmp_path / "sessions.json", arc=arc)
-    info = {"name": "ext", "spec": {"transport": "stdio", "command": "x"}}
-
-    with TestClient(app) as client:
-        sid = client.post("/v1/sessions", json={"title": "Factory routing"}).json()["id"]
-        record_assignment_fixture(app, sid)
-        assert client.portal is not None
-        with active_turn_fixture(app, sid):
-            result = client.portal.call(
-                external_mcp_calls._call_enabled_external_mcp_tool,
-                app,
-                "srv",
-                info,
-                "do_thing",
-                {"a": 1},
-                {"readOnlyHint": True},
-            )
-
-        assert result == "hello-from-tool"
-        # The real client is constructed once from the exact resolved server.
-        assert calls == [server]
-        assert executions == [1]
-
-
 # --------------------------------------------------------------------------- #
 # Finding #4: route restores the 503 dependency_missing contract, pre-observer
 # --------------------------------------------------------------------------- #

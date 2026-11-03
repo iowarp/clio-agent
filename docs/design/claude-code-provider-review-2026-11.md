@@ -41,4 +41,4 @@ What makes it large:
 - **What the per-entry loop isolates today.** Read the history of `#COPPER12`, `#993` and `#901` for the reason it was introduced, before removing it.
 - **The tests that pin cross-loop behaviour** (`test_claude_code_b1_tuning.py`, `test_claude_code_connect_wait.py`, `test_claude_code_session_lifecycle.py`) must be read for what they protect, not ported line by line.
 
-This is a proposal; nothing here is built.
+Status (2026-11-03): the one-model-of-a-conversation part is built (`ee78181c`, `providers/claude_code_conversation.py`); the per-entry thread and loop removal is not.

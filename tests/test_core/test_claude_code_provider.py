@@ -21,7 +21,7 @@ from typing import Any
 
 import pytest
 
-from clio_agent.providers import claude_code_engine
+from clio_agent.providers import claude_code_conversation
 from clio_agent.providers.claude_code_engine import AsyncClaudeCodeEngine
 from clio_agent.providers.claude_code_sessions import _reset_sessions_for_tests
 from tests import _fake_claude_sdk as fake
@@ -31,10 +31,10 @@ from tests import _fake_claude_sdk as fake
 def _clean_pool() -> Any:
     """Each test starts with a clean client pool and conversation registry."""
     _reset_sessions_for_tests()
-    claude_code_engine._CONVERSATIONS.clear_for_tests()
+    claude_code_conversation.forward_resets().clear_for_tests()
     yield
     _reset_sessions_for_tests()
-    claude_code_engine._CONVERSATIONS.clear_for_tests()
+    claude_code_conversation.forward_resets().clear_for_tests()
 
 
 async def test_the_engine_translates_sdk_stream_events(monkeypatch: pytest.MonkeyPatch) -> None:

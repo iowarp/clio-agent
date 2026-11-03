@@ -32,7 +32,7 @@ from typing import Any
 import pytest
 from dspy.lm15 import Message, Request
 
-from clio_agent.providers import claude_code_engine
+from clio_agent.providers import claude_code_conversation
 from clio_agent.providers import claude_code_sessions as ccs
 from clio_agent.providers import claude_code_stream_bounds as csb
 from clio_agent.providers.claude_code_sessions import ClaudeStreamClientPool
@@ -54,9 +54,9 @@ class _FakeClock:
 @pytest.fixture(autouse=True)
 def _clean_state() -> Any:
     """Every test starts and ends with a clean Claude Code conversation registry."""
-    claude_code_engine._CONVERSATIONS.clear_for_tests()
+    claude_code_conversation.forward_resets().clear_for_tests()
     yield
-    claude_code_engine._CONVERSATIONS.clear_for_tests()
+    claude_code_conversation.forward_resets().clear_for_tests()
 
 
 def _install_clock(monkeypatch: pytest.MonkeyPatch) -> _FakeClock:
@@ -208,22 +208,20 @@ def test_reap_forces_the_next_stateful_send_to_a_full_resend(
     a brand-new subprocess that never saw the prefix -- a silent conversation-coherence
     bug, not merely a slower reconnect.
 
-    SABOTAGE: drop ``entry.announce_dropped()`` from ``reap_idle_session_entry`` (the
-    async disconnect announces too late: after the next plan) -> this goes red.
+    The conversation lives on the entry, so the reaped entry takes it along and the
+    session's next entry holds none: the next call is a full send.
+    SABOTAGE: make ``reap_idle_session_entry`` keep the entry in the pool -> a delta.
     """
     monkeypatch.setattr(csb, "session_idle_ttl_s", lambda: 15.0)
     monkeypatch.setattr(ccs, "stream_audit_enabled", lambda: False)  # audit is a side channel here
     clock = _install_clock(monkeypatch)
     pool = ClaudeStreamClientPool(reap_on_timer=False)
 
-    registry = claude_code_engine._CONVERSATIONS
-    key = ("gact-sess-1", "main#react", "haiku", "/w", "")
-    first = Request(model="claude_code/haiku", messages=(Message.user("a"),))
-    registry.opened(key, "sdk-session-1", first, "sys")
+    from clio_agent.providers.claude_code_conversation import HeldConversation, plan
 
+    identity = ("haiku", "/w", "")
     entry = pool.entry_for(session_id="gact-sess-1")
-    # The entry is connected for this GACT session (what a real connect records).
-    entry._bound_session = "gact-sess-1"
+    entry.conversation = HeldConversation(identity, "sdk-session-1", "sys", (Message.user("a"),))
     entry._mark_idle()
     clock.advance(20.0)
 
@@ -235,8 +233,10 @@ def test_reap_forces_the_next_stateful_send_to_a_full_resend(
         model="claude_code/haiku",
         messages=(Message.user("a"), Message.assistant("ok"), Message.user("b")),
     )
-    send = registry.plan(key, extended, "sys")
-    assert (send.handle, send.reason) == (None, "session_evicted")
+    fresh = pool.entry_for(session_id="gact-sess-1")
+    assert fresh is not entry and entry.conversation is None
+    send = plan(fresh, extended, "sys", identity, kept=True)
+    assert send.handle is None  # a full send to the fresh subprocess, never a delta
 
 
 def test_reap_emits_a_typed_audit_row(monkeypatch: pytest.MonkeyPatch) -> None:
