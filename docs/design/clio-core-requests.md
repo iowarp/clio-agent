@@ -14,6 +14,7 @@ Nothing goes in `iowarp/clio-agent`. The clio-core team decides how to solve eac
 | 2 | Expose the existing native write and read primitives to Python | — | not filed |
 | 3 | Document, or make awaitable, when a deferred put is durable | — | not filed |
 | 4 | The idle daemon uses most of a core | — | not filed |
+| 5 | Build the macOS wheels for macOS 14 again | — | not filed |
 
 The numbers match the sections below. The parent issue lists them by priority: 3, 2, 1, 4.
 
@@ -30,6 +31,7 @@ Sub-issues, in priority order:
 2. Python bindings for the existing native put-replace, `TruncateBlob`, multi-get, multi-put and `DelTag`
 3. Scope `BlobQuery`/`GetContainedBlobs` to the tag (blocks one blob per event)
 4. Idle daemon CPU (busy-poll)
+5. macOS 14 wheels (2.4.0 targets macOS 15 only; CLIO's pin stays on 2.3.2 until then)
 
 Already in 2.4.0 and useful to CLIO: conditional writes in Python (`AsyncPutBlobIfAbsent`, `AsyncPutBlobIfVersion`, `AsyncGetBlobVersioned`), which give a compare-and-swap primitive for several agent processes sharing a session.
 
@@ -38,7 +40,7 @@ Not in 2.4.0: free-threaded (`cp314t`) wheels. The bindings release the GIL duri
 CLIO's references:
 - `docs/design/arc-performance-review-2026-11.md` (sections "Changes needed in clio-core", "Measured after").
 - `docs/design/sdk/tool-calling-ledger.md` ("ARC performance").
-- Pin: `pyproject.toml` `iowarp-core~=2.3.2`. 2.4.0 is to be benchmarked against it (`scripts/bench/arc_bench.py` and P7) before the pin moves.
+- Pin: `pyproject.toml` `iowarp-core~=2.3.2`. 2.4.0 was benchmarked neutral against it and pinned, then reverted because its macOS wheels need macOS 15 (issue 5).
 
 ---
 
@@ -101,5 +103,15 @@ This matters for CLIO because it runs a local daemon per user on desktops and la
 **Ask.** Please look at this on 2.4.0. The new scheduler ("schedule by predicted worker hold time; one elastic pool", `efd9349b`) may already change it. When there's no work, workers should back off to a blocking wait (futex/epoll) rather than spin.
 
 **Acceptance.** An idle daemon stays under a few percent of one core.
+
+---
+
+## clio-core issue 5: Build the macOS wheels for macOS 14 again
+
+**Problem.** iowarp-core 2.4.0 publishes its macOS wheels as `macosx_15_0_arm64` (cp312, cp313, cp314); 2.3.2 published `macosx_14_0_arm64`. A macOS 14 machine finds no 2.4.0 wheel it can install, so CLIO cannot move its pin: its bundle check (`tests/test_scripts/test_check_bundle_matches_lock.py`) requires a wheel for macOS 14 arm64 on Python 3.12, 3.13 and 3.14.
+
+**Ask.** Build the macOS wheels with `MACOSX_DEPLOYMENT_TARGET=14.0` (as 2.3.2 did), unless 2.4 needs a macOS 15 API; if it does, please say which, so CLIO can decide on its own support floor.
+
+**Acceptance.** A 2.4.x release has `macosx_14_0_arm64` wheels for cp312, cp313 and cp314.
 
 ---
