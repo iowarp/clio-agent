@@ -35,6 +35,7 @@ from __future__ import annotations
 import contextvars
 import logging
 import threading
+import time
 from collections import deque
 from collections.abc import Callable
 from dataclasses import dataclass, field
@@ -313,4 +314,8 @@ def flush_session(app: Any, session_id: str, timeout: float | None = None) -> No
     """Barrier: return once ``session_id``'s queued highway events are recorded."""
     writer = getattr(getattr(app, "state", None), "highway_writer", None)
     if writer is not None and session_id:
+        from clio_agent.runtime import io_audit  # noqa: PLC0415
+
+        started = time.perf_counter()
         writer.flush(session_id, timeout=timeout)
+        io_audit.barrier(session_id, time.perf_counter() - started)

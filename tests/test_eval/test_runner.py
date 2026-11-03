@@ -416,7 +416,11 @@ def test_io_summary_counts_this_runs_puts_and_cache_tokens(tmp_path: Path) -> No
         },
     ]
     log.write_text("".join(json.dumps(r) + "\n" for r in rows))
-    assert summarize_io(log, 99.0, 110.0, {"sess_a"}) == {
+    io = summarize_io(log, 99.0, 110.0, {"sess_a"})
+    assert {
+        k: io[k]
+        for k in ("store_puts", "store_put_bytes", "cache_creation_tokens", "cache_read_tokens")
+    } == {
         "store_puts": 2,
         "store_put_bytes": 4196,
         "cache_creation_tokens": 300,
@@ -446,3 +450,22 @@ def test_a_follow_up_is_sent_mid_run_and_the_run_waits_for_it() -> None:
     assert [text for kind, text in client.calls if kind == "send"] == ["Change of plan."]
     assert [s["text"] for s in result["sent"]] == ["Change of plan."]
     assert result["sent"][0]["after_s"] >= 30.0
+
+
+def test_summarize_io_sums_clio_core_time_for_the_run(tmp_path: Path) -> None:
+    from scripts.eval.tool_calling.session_run import summarize_io
+
+    log = tmp_path / "audit.jsonl"
+    rows = [
+        {"stage": "store.rpc", "ts": 10.0, "op": "put", "ms": 4.0},
+        {"stage": "store.rpc", "ts": 11.0, "op": "get", "ms": 9.0},
+        {"stage": "core_io.job", "ts": 12.0, "wait_ms": 30.0, "run_ms": 5.0},
+        {"stage": "highway.flush", "ts": 13.0, "session_id": "s1", "ms": 7.0},
+        {"stage": "highway.flush", "ts": 13.0, "session_id": "other", "ms": 99.0},
+        {"stage": "store.rpc", "ts": 500.0, "op": "put", "ms": 50.0},  # another run
+    ]
+    log.write_text("\n".join(json.dumps(r) for r in rows))
+    io = summarize_io(log, 9.0, 20.0, {"s1"})
+    assert (io["rpc_count"], io["rpc_ms"], io["rpc_max_ms"]) == (2, 13.0, 9.0)
+    assert (io["writer_jobs"], io["writer_wait_ms"], io["writer_run_ms"]) == (1, 30.0, 5.0)
+    assert (io["barrier_ms"], io["barrier_max_ms"]) == (7.0, 7.0)

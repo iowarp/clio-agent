@@ -11,11 +11,14 @@ from __future__ import annotations
 import asyncio
 import contextvars
 import threading
+import time
 import weakref
 from collections.abc import Callable
 from concurrent.futures import Future, ThreadPoolExecutor
 from functools import partial
 from typing import Any, Generic, TypeVar
+
+from clio_agent.runtime import io_audit
 
 T = TypeVar("T")
 I = TypeVar("I")  # noqa: E741 - a batch item
@@ -24,6 +27,20 @@ I = TypeVar("I")  # noqa: E741 - a batch item
 def _remember_thread(threads: list[threading.Thread], started: threading.Event) -> None:
     threads.append(threading.current_thread())
     started.set()
+
+
+def _timed(operation: Callable[[], T], queued: float) -> Callable[[], T]:
+    """``operation``, reporting its queue wait and run time (``runtime.io_audit``)."""
+
+    def run() -> T:
+        started = time.perf_counter()
+        try:
+            return operation()
+        finally:
+            label = getattr(operation, "__qualname__", "") or type(operation).__name__
+            io_audit.job(label, started - queued, time.perf_counter() - started)
+
+    return run
 
 
 class _Batch(Generic[I]):
@@ -101,7 +118,7 @@ class CoreIO:
             self._finalizer = weakref.finalize(self, self._executor.shutdown, wait=False)
         executor = self._executor
         context = contextvars.copy_context()
-        future = executor.submit(context.run, operation)
+        future = executor.submit(context.run, _timed(operation, time.perf_counter()))
         self._submitted = True
         return future
 

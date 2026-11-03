@@ -17,6 +17,9 @@ recorded steps, calls and model calls and reports:
   harness: recording, hooks, scheduling between steps;
 - **clio-core and cache**: puts and megabytes sent to clio-core, and the provider's
   prompt-cache tokens created and read (from the stream audit, when it was on);
+- **clio-core time**: total and longest store call, the history writer's queue wait
+  (longest too) and run time, and waits at the highway barrier
+  (``runtime.io_audit``), so a run shows where it waited on storage;
 - **context**: the root agent's prompt at its first and largest model call;
 - **compaction**: how many ran, the context before and after each (median shrink),
   and the share of the checkpoint call's input read from the cache;
@@ -123,7 +126,21 @@ def run_behaviour(run: dict[str, Any]) -> dict[str, Any]:
         "store_mb": float((run.get("io") or {}).get("store_put_bytes") or 0) / 1e6,
         "cache_create_k": float((run.get("io") or {}).get("cache_creation_tokens") or 0) / 1e3,
         "cache_read_k": float((run.get("io") or {}).get("cache_read_tokens") or 0) / 1e3,
+        **_core_time(run.get("io") or {}),
         **{k: v for k, v in semantics.items() if not isinstance(v, (dict, list))},
+    }
+
+
+def _core_time(io: dict[str, Any]) -> dict[str, float]:
+    """clio-core and I/O time of a run: store calls, the history writer, the barrier."""
+    return {
+        "rpc_s": float(io.get("rpc_ms") or 0.0) / 1e3,
+        "rpc_max_ms": float(io.get("rpc_max_ms") or 0.0),
+        "writer_wait_s": float(io.get("writer_wait_ms") or 0.0) / 1e3,
+        "writer_wait_max_ms": float(io.get("writer_wait_max_ms") or 0.0),
+        "writer_run_s": float(io.get("writer_run_ms") or 0.0) / 1e3,
+        "barrier_s": float(io.get("barrier_ms") or 0.0) / 1e3,
+        "barrier_max_ms": float(io.get("barrier_max_ms") or 0.0),
     }
 
 
@@ -185,6 +202,13 @@ _COLUMNS = (
     ("core MB", "store_mb", "{:.1f}"),
     ("cache new k", "cache_create_k", "{:.1f}"),
     ("cache read k", "cache_read_k", "{:.0f}"),
+    ("core rpc s", "rpc_s", "{:.1f}"),
+    ("core rpc max ms", "rpc_max_ms", "{:.0f}"),
+    ("writer wait s", "writer_wait_s", "{:.1f}"),
+    ("writer wait max ms", "writer_wait_max_ms", "{:.0f}"),
+    ("writer run s", "writer_run_s", "{:.1f}"),
+    ("barrier s", "barrier_s", "{:.1f}"),
+    ("barrier max ms", "barrier_max_ms", "{:.0f}"),
     ("prompt first k", "prompt_first_k", "{:.0f}"),
     ("prompt max k", "prompt_max_k", "{:.0f}"),
     ("compactions", "compactions", "{:.0f}"),

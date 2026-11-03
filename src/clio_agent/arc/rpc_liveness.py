@@ -605,6 +605,23 @@ def guarded_store_rpc(
         audit_store_read_on_loop(op_name)
     store._live()
     tag_ids = getattr(store, "_tag_ids", None)
+    from clio_agent.runtime import io_audit  # noqa: PLC0415
+
+    started = time.perf_counter()
+    try:
+        return _call_store_rpc(store, op_name, make_call, args, inline_kind, tag_ids)
+    finally:
+        io_audit.rpc(op_name, inline_kind or "", time.perf_counter() - started)
+
+
+def _call_store_rpc(
+    store: Any,
+    op_name: str,
+    make_call: Callable[..., Any],
+    args: tuple[Any, ...],
+    inline_kind: str | None,
+    tag_ids: Any,
+) -> Any:
     return call_with_liveness(
         lambda: make_call(*args),
         op_name=op_name,

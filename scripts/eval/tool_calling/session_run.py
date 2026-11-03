@@ -274,18 +274,29 @@ def slice_stream_audit(
 
 def summarize_io(
     path: Path | None, start: float, end: float, session_ids: set[str]
-) -> dict[str, int]:
-    """clio-core puts and bytes, and provider cache tokens, for this run's sessions.
+) -> dict[str, Any]:
+    """clio-core puts, bytes and time, and provider cache tokens, for this run's sessions.
 
     ``store.put`` rows name the record, which starts with or contains the session id;
-    ``provider.call_usage`` rows carry the session id. Rows outside the run's window
-    (with 5 s of slack) are ignored.
+    ``provider.call_usage`` and ``highway.flush`` rows carry the session id. The timed
+    clio-core rows (``store.rpc``, ``core_io.job``: ``runtime.io_audit``) carry no
+    session, so they count by the run's window: exact for serial runs, shared when runs
+    overlap. Rows outside the window (with 5 s of slack) are ignored.
     """
-    out = {
+    out: dict[str, Any] = {
         "store_puts": 0,
         "store_put_bytes": 0,
         "cache_creation_tokens": 0,
         "cache_read_tokens": 0,
+        "rpc_count": 0,
+        "rpc_ms": 0.0,
+        "rpc_max_ms": 0.0,
+        "writer_jobs": 0,
+        "writer_wait_ms": 0.0,
+        "writer_wait_max_ms": 0.0,
+        "writer_run_ms": 0.0,
+        "barrier_ms": 0.0,
+        "barrier_max_ms": 0.0,
     }
     for row in read_jsonl(path):
         ts = float(row.get("ts") or 0.0)
@@ -300,6 +311,21 @@ def summarize_io(
         elif stage == "provider.call_usage" and row.get("session_id") in session_ids:
             out["cache_creation_tokens"] += int(row.get("usage_cache_creation_input_tokens") or 0)
             out["cache_read_tokens"] += int(row.get("usage_cache_read_input_tokens") or 0)
+        elif stage == "store.rpc":
+            ms = float(row.get("ms") or 0.0)
+            out["rpc_count"] += 1
+            out["rpc_ms"] += ms
+            out["rpc_max_ms"] = max(out["rpc_max_ms"], ms)
+        elif stage == "core_io.job":
+            wait = float(row.get("wait_ms") or 0.0)
+            out["writer_jobs"] += 1
+            out["writer_wait_ms"] += wait
+            out["writer_wait_max_ms"] = max(out["writer_wait_max_ms"], wait)
+            out["writer_run_ms"] += float(row.get("run_ms") or 0.0)
+        elif stage == "highway.flush" and row.get("session_id") in session_ids:
+            ms = float(row.get("ms") or 0.0)
+            out["barrier_ms"] += ms
+            out["barrier_max_ms"] = max(out["barrier_max_ms"], ms)
     return out
 
 
