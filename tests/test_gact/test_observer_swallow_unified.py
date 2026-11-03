@@ -1,5 +1,5 @@
-"""Slice 5 (#772): the hand-rolled observer swallows in ``routes/mcp.py`` and
-``agents/external_mcp_calls.py`` are unified onto ``notify_tool_observer``.
+"""Slice 5 (#772): the hand-rolled observer swallow in ``routes/mcp.py`` is unified
+onto ``notify_tool_observer`` (``agents/external_mcp_calls.py`` was deleted as unused).
 
 The observer records the call in clio-core (the transcript and the UI read it
 from there). An observer that cannot record is NOT swallowed -- clio-core would
@@ -122,11 +122,6 @@ class _RecordingObserver:
 
 def _patch_transport(monkeypatch: pytest.MonkeyPatch, module: str) -> None:
     monkeypatch.setattr(f"{module}.transport_from_spec", lambda spec: object(), raising=True)
-
-
-# --------------------------------------------------------------------------- #
-# agents/external_mcp_calls.py :: _call_enabled_external_mcp_tool
-# --------------------------------------------------------------------------- #
 
 
 # --------------------------------------------------------------------------- #

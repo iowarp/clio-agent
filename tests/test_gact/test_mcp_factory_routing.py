@@ -1,10 +1,8 @@
 """Execution-path routing through the single MCP client factory (#1106).
 
-Covers the two gact execution sites the factory now owns:
+Covers the gact execution site the factory owns (the agent-side caller,
+``agents/external_mcp_calls``, was deleted as unused):
 
-* ``agents/external_mcp_calls._call_enabled_external_mcp_tool`` -- the agent's
-  external tool call (a real ``call_tool``, not introspection) must construct
-  its client through ``make_mcp_client``.
 * ``routes/mcp.call_external_mcp_tool`` -- a missing local dependency must read
   as ``503 dependency_missing`` and must NOT fire after the tool-start observer
   event (never a post-start ``502`` upstream fault).
