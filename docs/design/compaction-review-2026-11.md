@@ -44,7 +44,29 @@ Each is a mechanism or a fact given to the model, not a behavioural rule in a pr
 6. **Re-injection stays as built** (plan while draft or approved, todos, session facts); the prompt says so.
 7. **Measurement:** `lm.call` records `cache_write_tokens` as well as `cache_read_tokens`, so each compaction's cache use is visible per call.
 
-Still to measure live: the summarizer's cache read on `claude_code` (H5), Codex on Windows (`windows-verification-log-2026-11.md` §10), and alignment over several compactions (H6 below).
+8. **A new `claude_code` conversation starts from an empty CLI** (`providers/claude_code_clear.py`, found by the first live run below). One `ClaudeSDKClient` holds one conversation whatever the query's `session_id`: a probe query under `conv-b` recalled a word given under `conv-a`, reading its tokens from the cache. Every full send the registry planned (after a compaction, a prefix mismatch, an eviction) was appended to the history the CLI held, so compaction never shrank the model's context unless a different system prompt forced a reconnect. That is what the old summarizer's chat persona did, by accident. Now `/clear` (no model call; the system prompt stays cached) runs before a full send on a client that holds a conversation. One-shot calls run on the session's side client.
+
+## Live results (H5, `claude-sonnet-5-5` on `claude_code`, 2026-11-03)
+
+| Run | Summarizer: cached / total input | Context before → after each fold |
+| --- | --- | --- |
+| head1 (old summarizer) | 0 and 789 cached | 33k → 33k (reset only by the persona's reconnect) |
+| cmp1 (new summarizer, no `/clear`) | 51,286 / 69,269; 159,942 / 177,393 | 69k → 114k; 177k → 264k (the old history stayed in the CLI) |
+| cmp2 (with `/clear`) | 51,223 / 67,977; 395,627 / 403,522; 109,006 / 116,387 | 68k → 72k; 404k → 54k; 116k → 52k |
+
+Both cmp runs answered correctly. cmp2 compacted three times in one run.
+
+- **The checkpoints are good** (cmp1, read in full):
+  - the objective is quoted;
+  - progress is split into done and not done;
+  - the findings are ranked with their sources (for example run_0112's uncorrected +2.48 zero offset, from the exact instrument.log line and the dark-mean A_net);
+  - the second checkpoint updates the first.
+- **Redundancy:** "Requirements and constraints" restates the system instructions (workspace root, `python -I`), which return verbatim anyway. H6 tests constraints from the person.
+- **What a fold cannot shrink:**
+  - The first cmp2 fold kept a 35k newest step, so the context did not shrink.
+  - One `shell_bash` result of 247 KB then wrote 323k tokens in one step. It reached the model twice, in the raw MCP task envelope: the duplicate task_result bug (next fix).
+
+Still to measure: Codex on Windows (`windows-verification-log-2026-11.md` §10), and alignment over several compactions with constraints from the person (H6 below).
 
 ## Measuring alignment
 
