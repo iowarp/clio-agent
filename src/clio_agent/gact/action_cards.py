@@ -281,26 +281,12 @@ def build_raise_alert_card_tool(agent_def: Any) -> Any:
         stub_actions: Optional[list[Any]] = None,
         attention_evidence: Optional[dict[str, Any]] = None,
     ) -> dict[str, Any]:
-        """Raise a notification/action card into your parent session's transcript.
+        """Raise a notification card into your parent session's transcript.
 
-        Use this when you (a spawned child agent) discover something your parent
-        session's user should see before you finish and are waited
-        on — e.g. an anomaly, a quarantine, a blocking finding. ``severity`` is
-        ``info`` | ``warning`` | ``critical``. The card always carries a "Discuss"
-        action that focuses your task in the parent's UI. Pass ``stub_actions`` as
-        ``[{"id", "label", "reason"}, ...]`` for future actions you want the UI to
-        show but not yet wire (rendered disabled, with ``reason`` as the tooltip);
-        bare strings (``["address", "remove"]``) work too as a shorthand.
-
-        For an attention finding, pass ``attention_evidence`` copied from the
-        inspection: response_id, capture_sha256, steps, resolved profile,
-        profile_revision, and uncertainty. CLIO verifies the receipt against
-        this parent's local capture before enabling "Inspect evidence". Attention
-        alone does not prove an attack or authorize quarantine.
-
-        It works only in a spawned child session (one with a live parent AgentTask),
-        since only such a session has a parent to show the card to; from a top-level
-        session it returns a typed error.
+        Use it, as a spawned child agent, for something your parent's user should
+        see before you finish: an anomaly, a quarantine, a blocking finding. A session
+        without a live parent assignment gets a typed error. For an attention finding,
+        attention_evidence lets CLIO verify the receipt against the parent's capture.
         """
 
         app = _ctx.active_app()

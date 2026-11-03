@@ -206,7 +206,7 @@ def test_producer_roots_receive_shared_loadable_guidance(
     assert any(skill.startswith("a2ui-catalog-") for skill in declared)
     assert VISUAL_SKILLS <= set(declared)
     prompt = skills_prompt_block(runtime)
-    assert "Review matching pixels at the user's viewing size" in prompt
+    assert "at the user's viewing size" in prompt
     tool = build_load_skill_tool(agent, runtime)
     assert "Surface acceptance alone" in tool.func(skill_id="create-dashboard")
     design = tool.func(skill_id="create-dashboard", file="references/report-design.md")

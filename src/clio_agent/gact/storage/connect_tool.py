@@ -258,7 +258,12 @@ def build_connected_data_connect_tool() -> Any:
         native_tool(
             _native_connect,
             name="connected_data_connect",
-            desc="Connect and index an approved source folder. Returns an Indexing task handle immediately; files are downloaded only by connected_data_download. Use observe_tasks/wait_tasks or continue independent work; completion wakes an idle agent. cancel_tasks cancels explicitly. Stop leaves accepted indexing running. Existing links return their status; a sign-in requirement returns its connection status directly.",
+            desc=(
+                "Connect and index an approved source folder. Returns an Indexing task handle "
+                "immediately (the task-protocol skill covers handles); files are downloaded "
+                "only by connected_data_download. Existing links return their status; a "
+                "sign-in requirement returns its connection status directly."
+            ),
             args={
                 "provider": {
                     "type": "string",

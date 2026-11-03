@@ -16,7 +16,11 @@ from clio_agent.gact import context
 from clio_agent.gact.agents.resolution import session_agent_def
 from clio_agent.gact.agents.tool_instrumentation import pop_declared_structured_content
 from clio_agent.gact.app import build_app
-from clio_agent.gact.artifacts.designation_tool import build_create_artifact_tool
+from clio_agent.gact.artifacts.designation_tool import (
+    PREVIEW_FAILED_NOTE,
+    PREVIEW_NOTE,
+    build_create_artifact_tool,
+)
 from clio_agent.gact.documents import renditions
 from clio_agent.gact.documents.profiles import document_format
 from clio_agent.runtime.document_stack.process import _windows_dacl_protected
@@ -83,6 +87,8 @@ def test_batch_preview_overrides_remain_bound_to_their_source_after_a_rejected_i
         preview = result["pdf_previews"][0]
         expected = result["artifacts"][preview_index]["artifact_id"]
         assert preview["source_artifact_id"] == expected
+        # Whether to publish the PDF is said with the preview, not in the tool description.
+        assert preview["note"] == PREVIEW_NOTE
         manifest = client.get(f"/v1/artifacts/{expected}/document").json()
         assert manifest["pdf_rendition_artifact_id"] == preview["artifact_id"]
         assert [source.read_bytes() for source in sources] == [b"first.docx", b"last.docx"]
@@ -166,6 +172,7 @@ def test_unavailable_workspace_scratch_keeps_the_accepted_source_artifact(tmp_pa
             context.reset(app_token)
         assert result["created"] == 1
         assert result["pdf_previews"][0]["error"]
+        assert result["pdf_previews"][0]["note"] == PREVIEW_FAILED_NOTE
         original_id = result["artifacts"][0]["artifact_id"]
         assert (
             client.get(f"/v1/artifacts/{original_id}/document/content").content

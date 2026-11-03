@@ -65,6 +65,13 @@ class ProgressReporter(Protocol):
 SPILLED_REASON = "shell_output_spilled"
 #: Typed reason when the spill file could not be created or written.
 SPILL_FAILED_REASON = "shell_output_spill_failed"
+#: Said in each spill record: the situation in which the model needs to know how to go on.
+SPILL_NOTE = (
+    "The complete {stream} is saved at path, kept until the session is deleted; {stream} "
+    "holds its first head_lines lines and tail its last tail_lines. Read or search that "
+    "file for the rest rather than re-running the command."
+)
+SPILL_FAILED_NOTE = "The complete {stream} could not be saved (error); only these excerpts remain."
 #: Typed reason when the command echo is dropped so the output can fit.
 COMMAND_ECHO_OMITTED_REASON = "shell_command_echo_oversize"
 _READ_CHUNK_BYTES = 4096
@@ -393,6 +400,8 @@ def _spill_record(capture: StreamCapture, root: Path, excerpt_chars: int) -> dic
         tail=tail,
         tail_lines=len(tail.splitlines()),
     )
+    note = SPILL_NOTE if capture.spill_status == "spilled" else SPILL_FAILED_NOTE
+    record["note"] = note.format(stream=capture.stream)
     return {"head": head, "record": record}
 
 
@@ -526,7 +535,9 @@ def compose_output_fields(
 __all__ = [
     "COMMAND_ECHO_OMITTED_REASON",
     "SPILLED_REASON",
+    "SPILL_FAILED_NOTE",
     "SPILL_FAILED_REASON",
+    "SPILL_NOTE",
     "StreamCapture",
     "compose_output_fields",
     "read_process_stream",

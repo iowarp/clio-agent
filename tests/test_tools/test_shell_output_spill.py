@@ -29,6 +29,7 @@ from fastmcp import Client
 
 from clio_agent import conf
 from clio_agent.tools.execution import tool_workspace_context
+from clio_agent.tools.servers.shell_commands import SCRIPT_FILE_GUIDANCE
 from clio_agent.tools.servers.shell_output import (
     SPILL_FAILED_REASON,
     SPILLED_REASON,
@@ -116,6 +117,9 @@ async def test_big_output_spills_in_full_with_head_tail_and_totals(workspace: Pa
     # Tail excerpt: whole trailing lines ending at the real end.
     assert spill["tail"].splitlines() == expected[lines - spill["tail_lines"] :]
     assert spill["tail_lines"] > 0
+    # How to go on is said here, where the output was cut, not in the tool description.
+    assert "complete stdout is saved at path" in spill["note"]
+    assert "Read or search that file for the rest" in spill["note"]
 
     # The result fits the model's room, so the model lane shows it unchanged.
     assert shell_result_room().fits(json.dumps(data))
@@ -190,6 +194,10 @@ async def test_spill_write_failure_returns_typed_reason_with_excerpt(workspace: 
     assert spill["reason"] == SPILL_FAILED_REASON
     assert spill["error"]
     assert "path" not in spill
+    assert (
+        spill["note"]
+        == "The complete stdout could not be saved (error); only these excerpts remain."
+    )
     assert spill["total_lines"] == 5000
     assert data["stdout"].startswith("r00000\n")
     assert spill["tail"].rstrip().endswith("r04999")
@@ -271,7 +279,9 @@ async def test_over_long_command_gets_actionable_write_a_file_message(workspace:
     assert "write" in error["message"].lower() and "file" in error["message"].lower()
     assert error["details"]["max_chars"] == limits.max_command_chars
     assert error["details"]["received_chars"] == len(command)
-    assert error["details"]["next_action"]
+    # The launcher-limit recipe, no longer in the tool description, arrives here.
+    assert SCRIPT_FILE_GUIDANCE in error["message"]
+    assert error["details"]["next_action"] == SCRIPT_FILE_GUIDANCE
 
 
 @pytest.mark.asyncio
@@ -340,9 +350,11 @@ def test_description_states_effective_limits_and_spill(is_windows: bool) -> None
     for number in ("12345", "2222", "33333"):
         assert number in text
     assert "room one result has in your context window" in text
-    assert "Agent-managed ``tool-output/``" in text
-    assert "stdout_spill" in text
-    assert "write" in text.lower() and "file" in text.lower()
+    assert "saved to a file the result names" in text
+    # The spill explanation and the launcher recipe are said where they arise: in the
+    # spill record's note and in the command_too_long error, not in every request.
+    assert "tool-output" not in text and "Read or search" not in text
+    assert SCRIPT_FILE_GUIDANCE not in text
 
 
 @pytest.mark.asyncio
@@ -356,7 +368,7 @@ async def test_listed_tool_description_matches_the_effective_config() -> None:
     description = tools["bash"].description or ""
     assert str(limits.max_command_chars) in description
     assert str(limits.default_output_bytes) in description
-    assert "Agent-managed ``tool-output/``" in description
+    assert "saved to a file the result names" in description
 
 
 # --------------------------------------------------------------------------- #
