@@ -1,7 +1,13 @@
 """Read-only MCP call burst through ``ExternalTasks`` against the running clio-core daemon.
 
 ``uv run --frozen --no-sync python -m scripts.bench.mcp_burst_bench [--calls N]
-[--concurrency C] [--namespace bench-...] [--json PATH]``
+[--concurrency C] [--sessions K] [--namespace bench-...] [--json PATH]``
+
+With ``--sessions K`` the calls are spread over K sessions that share the one history
+writer, each with its own connection and in-flight bound: the shape of several agents
+working at once. The report adds each session's p90 latency and the process's CPU over
+wall time (near 1.0: the interpreter lock is the limit; well under it with latency
+rising: waiting on clio-core).
 
 Reproduces the P7 shape (a script gathering many ``get_record`` calls to a local MCP
 server whose own handler takes milliseconds) without a model or a turn: ``--calls``
@@ -67,8 +73,11 @@ class _TimedIO:
         setattr(io, name, submit)
 
 
-def _environment(arc: Any, work: Path) -> tuple[Any, str]:
-    """A session with an active root assignment and a workspace (store work, off-loop)."""
+def _environment(arc: Any, work: Path, n_sessions: int = 1) -> tuple[Any, list[str]]:
+    """Sessions with an active root assignment each and a workspace (store work, off-loop).
+
+    They share one task history, so one history writer, as every session of a server does.
+    """
     from clio_agent.arc.task_types import TaskOwner, TaskSnapshot
     from clio_agent.gact.native_work import now
     from clio_agent.gact.sessions import SessionStore
@@ -78,25 +87,28 @@ def _environment(arc: Any, work: Path) -> tuple[Any, str]:
     sessions = SessionStore(path=work / "sessions.json", store=arc._store)
     workspaces = WorkspaceStore(path=work / "workspaces.json")
     workspace = workspaces.create(name="bench", root_path=str(work))
-    session = sessions.create(workspace_id=workspace.id, agent={"id": "main"})
     history, stamp = TaskHistory(arc), now()
     history.index_build_pending = False
-    history.record_snapshot(
-        TaskSnapshot(
-            handle="task_root_" + uuid.uuid4().hex[:8],
-            kind="Session",
-            tool="conversation",
-            owner=TaskOwner(human_id="bench", session_id=session.id, assignment_id="root"),
-            label="Bench",
-            description="Burst bench assignment",
-            description_missing=False,
-            invocation_id="bench-assignment",
-            created_at=stamp,
-            updated_at=stamp,
-            status="active",
-        ),
-        observation_id=uuid.uuid4().hex,
-    )
+    sids = []
+    for _ in range(n_sessions):
+        session = sessions.create(workspace_id=workspace.id, agent={"id": "main"})
+        sids.append(session.id)
+        history.record_snapshot(
+            TaskSnapshot(
+                handle="task_root_" + uuid.uuid4().hex[:8],
+                kind="Session",
+                tool="conversation",
+                owner=TaskOwner(human_id="bench", session_id=session.id, assignment_id="root"),
+                label="Bench",
+                description="Burst bench assignment",
+                description_missing=False,
+                invocation_id=f"bench-assignment-{session.id}",
+                created_at=stamp,
+                updated_at=stamp,
+                status="active",
+            ),
+            observation_id=uuid.uuid4().hex,
+        )
     state = SimpleNamespace(
         sessions=sessions,
         workspaces=workspaces,
@@ -106,7 +118,7 @@ def _environment(arc: Any, work: Path) -> tuple[Any, str]:
         # Admission control is the conversation engine's; the bench measures the writer.
         conversations=SimpleNamespace(require_admission=lambda _task: None),
     )
-    return SimpleNamespace(state=state), session.id
+    return SimpleNamespace(state=state), sids
 
 
 def _server(handler_ms: float) -> Any:
@@ -124,7 +136,13 @@ def _server(handler_ms: float) -> Any:
 
 
 async def _burst(
-    arc: Any, work: Path, counter: _Counting, calls: int, concurrency: int, handler_ms: float
+    arc: Any,
+    work: Path,
+    counter: _Counting,
+    calls: int,
+    concurrency: int,
+    handler_ms: float,
+    n_sessions: int = 1,
 ) -> dict[str, Any]:
     from fastmcp import Client
 
@@ -133,17 +151,21 @@ async def _burst(
     from clio_agent.gact.external_tasks import ExternalTasks
     from clio_agent.tools.task_call_context import TASK_CALL, TaskCall
 
-    app, sid = await asyncio.to_thread(_environment, arc, work)
+    app, sids = await asyncio.to_thread(_environment, arc, work, n_sessions)
     history = app.state.task_history
     app.state.task_recovery = CoreRecovery(history)
     timed = _TimedIO(history.io)
     external = ExternalTasks(app)
-    client = Client(_server(handler_ms))
-    gate = asyncio.Semaphore(concurrency)
+    # Each session has its own connection and in-flight bound, as on a server.
+    clients = [Client(_server(handler_ms)) for _ in sids]
+    gates = [asyncio.Semaphore(concurrency) for _ in sids]
     latencies: list[float] = []
+    per_session: dict[str, list[float]] = {sid: [] for sid in sids}
 
     async def one(index: int) -> None:
-        async with gate:
+        slot = index % len(sids)
+        sid, client = sids[slot], clients[slot]
+        async with gates[slot]:
             tokens = (context.set_app(app), context.set_session_id(sid))
             call = TASK_CALL.set(TaskCall(invocation_id=f"inv-{index}"))
             start = time.perf_counter()
@@ -156,29 +178,35 @@ async def _burst(
                 for token in reversed(tokens):
                     context.reset(token)
             latencies.append((time.perf_counter() - start) * 1e3)
+            per_session[sid].append(latencies[-1])
             if reply.is_error:
                 raise RuntimeError(f"call {index} failed: {reply}")
 
-    await one(-1)  # open the connection and warm the session's chunks
+    for warm in range(len(sids)):  # open each connection and warm each session's chunks
+        await one(-(warm + 1))  # negative indices: one per slot, never a measured id
     await history.io.run(lambda: None)
     counter.reset()
     timed.busy, timed.jobs = 0.0, 0
     latencies.clear()
+    for rows in per_session.values():
+        rows.clear()
+    cpu_start = time.process_time()
     start = time.perf_counter()
     await asyncio.gather(*(one(index) for index in range(calls)))
     replied = time.perf_counter() - start
     await history.io.run(lambda: None)  # the writer is FIFO: every queued record is in
     settled = time.perf_counter() - start
+    cpu = time.process_time() - cpu_start
     store_calls = dict(counter.calls)
     busy = timed.busy
     await external.close()
     await app.state.task_recovery.drain()
 
     def recorded() -> int:
-        handles = history.task_handles(session_id=sid)
         return sum(
             1
-            for handle in handles
+            for sid in sids
+            for handle in history.task_handles(session_id=sid)
             if (task := history.task_snapshot(handle)) is not None
             and task.kind == "MCP"
             and task.terminal_at is not None
@@ -204,7 +232,16 @@ async def _burst(
         "writer_ms_per_call": round(busy * 1e3 / calls, 2),
         "writer_jobs_per_call": round(timed.jobs / calls, 2),
         "store_calls": by_method,
-        "terminal_tasks_recorded": settled_tasks - 1,  # less the warm-up call
+        "terminal_tasks_recorded": settled_tasks - len(sids),  # less the warm-up calls
+        "sessions": len(sids),
+        # Process CPU over wall time: near 1.0 means one core busy (the interpreter lock);
+        # well under it with high latency means waiting on clio-core.
+        "process_cpu_per_wall": round(cpu / settled, 2),
+        "session_p90_ms": sorted(
+            round(sorted(rows)[max(int(len(rows) * 0.9) - 1, 0)], 1)
+            for rows in per_session.values()
+            if rows
+        ),
     }
 
 
@@ -214,6 +251,9 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--calls", type=int, default=200)
     parser.add_argument("--concurrency", type=int, default=8)
     parser.add_argument("--handler-ms", type=float, default=2.0)
+    parser.add_argument(
+        "--sessions", type=int, default=1, help="sessions sharing the one history writer"
+    )
     parser.add_argument("--json", default="", help="also write the results to this file")
     args = parser.parse_args(argv)
     if not args.namespace.startswith("bench"):
@@ -230,7 +270,7 @@ def main(argv: list[str] | None = None) -> int:
     try:
         arc = ARCMemory(data_dir=str(work), store=store)
         results["burst"] = asyncio.run(
-            _burst(arc, work, counter, args.calls, args.concurrency, args.handler_ms)
+            _burst(arc, work, counter, args.calls, args.concurrency, args.handler_ms, args.sessions)
         )
     except Exception as exc:  # noqa: BLE001 - report, then still clean up
         results["error"] = f"{type(exc).__name__}: {exc}"
