@@ -124,6 +124,21 @@ class TestKernel:
         text = tool_module.model_text(outcome)
         assert "negative:" in text and "Value: 3" in text and "15 tool calls" in text
 
+    def test_a_script_reads_and_parses_workspace_files_itself(self, workspace: Path) -> None:
+        """The kernel is ordinary Python that reads the workspace: one script parses many
+        files in one process (what the run_code description tells the agent)."""
+        pkg = workspace / "pkg"
+        pkg.mkdir()
+        for i in range(30):
+            (pkg / f"m{i}.py").write_text(f'"""Module {i}."""\n', encoding="utf-8")
+        result = _run(
+            "import ast, pathlib\n"
+            f"root = pathlib.Path({str(pkg)!r})\n"
+            "docs = {p.stem: ast.get_docstring(ast.parse(p.read_text())) for p in root.glob('*.py')}\n"
+            "print(len(docs), docs['m7'])\n"
+        )
+        assert "30 Module 7." in str(result)
+
     def test_state_persists_between_scripts_in_a_scope_only(self, workspace: Path) -> None:
         assert _run("x = 41")["status"] == "completed"
         assert _run("x + 1")["value"] == "42"

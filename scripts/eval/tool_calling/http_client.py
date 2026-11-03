@@ -131,6 +131,14 @@ class GactClient:
     def create_session(self, body: dict[str, Any]) -> dict[str, Any]:
         return self.post("/v1/sessions", body)
 
+    def pending_permissions(self) -> list[dict[str, Any]]:
+        """Every unanswered permission question (a child's included)."""
+        body = self.get("/v1/permissions", status="pending", limit=500) or {}
+        return list(body.get("permissions") or [])
+
+    def respond_permission(self, pid: str, action: str) -> Any:
+        return self.post(f"/v1/permissions/{quote(pid)}", {"action": action})
+
     def session(self, sid: str) -> dict[str, Any]:
         return self.get(f"/v1/sessions/{quote(sid)}")
 

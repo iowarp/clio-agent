@@ -47,6 +47,8 @@ _DESCRIPTION = (
     "whose results you filter, join or count (paging through a listing, reading many "
     "files, querying several servers) and print only what matters: you see the printed "
     "output, the value of a final expression and the call count, not the tools' results. "
+    "The kernel is ordinary Python that can read your workspace, so a script can also open "
+    "and parse many files itself (pathlib, ast, json, csv) in one process. "
     "One call or a short dependent chain is cheaper as direct calls. A script makes at most "
     "{budget} tool calls; its variables persist into the next script, so larger work "
     "continues there, and tasks it started stop when it ends. `tools.search('words')` "
