@@ -179,12 +179,12 @@ def search_files(
         shown = counts[offset : offset + limit]
         following = offset + len(shown)
         truncated = timed_out or len(counts) > following
-        lines = [f"{len(counts):,} files match under {target} (newest first):"]
+        lines = [f"{len(counts):,} files match under {cwd} (newest first; {RELATIVE_NOTE}):"]
         if not counts:
             lines = [f"0 files match under {target}. {SKIPPED_NOTE}"]
         elif offset:
             lines[0] = lines[0][:-1] + f"; from file {offset + 1:,}:"
-        lines += [f"{name}  ({count})" for name, count in shown]
+        lines += [f"{_shown(name, cwd)}  ({count})" for name, count in shown]
         if truncated:
             lines.append(_more(len(counts) - following, "files", timed_out, following))
         files = [{"path": name, "matches": count} for name, count in shown]
@@ -193,6 +193,23 @@ def search_files(
     context = max(0, min(int(context_lines), 50))
     rows, timed_out = _run(["--json", "--context", str(context), *base, "--", str(target)], cwd)
     return _content_result(rows, head, limit, timed_out, offset)
+
+
+#: Said once in a header: the paths below it are written relative to the searched folder.
+RELATIVE_NOTE = "paths below are relative to it"
+
+
+def _shown(name: str, base: Path) -> str:
+    """``name`` relative to ``base`` for the model's text, where it lies under it.
+
+    A listing repeated the searched folder's absolute path on every line: a glob of
+    434 files under a deep workspace was 42k characters, 32k of them that prefix
+    (X1, 2026-11). The structured result keeps absolute paths.
+    """
+    try:
+        return str(Path(name).relative_to(base))
+    except ValueError:
+        return name
 
 
 #: What an empty result cannot show: the files a search or glob skipped on purpose.
@@ -218,6 +235,8 @@ def _content_result(
     rows: list[str], head: dict[str, Any], limit: int, timed_out: bool, offset: int = 0
 ) -> ToolResult:
     room = result_room()
+    searched = Path(head["path"])
+    base = searched if searched.is_dir() else searched.parent
     found: list[tuple[dict[str, Any], list[str]]] = []
     pending_context: list[dict[str, Any]] = []
     line_chars, total = search_line_chars(), 0
@@ -239,8 +258,10 @@ def _content_result(
             continue
         total += 1
         if total > offset and len(found) < limit:
-            rendered = [f"{c['path']}-{c['line']}- {c['text']}" for c in pending_context]
-            rendered.append(f"{name}:{number}: {text}")
+            rendered = [
+                f"{_shown(c['path'], base)}-{c['line']}- {c['text']}" for c in pending_context
+            ]
+            rendered.append(f"{_shown(name, base)}:{number}: {text}")
             match = {"path": name, "line": number, "text": text, "context": pending_context}
             found.append((match, rendered))
         pending_context = []
@@ -273,7 +294,11 @@ def _content_text(
     room: ResultRoom,
     by_room: bool,
 ) -> str:
-    header = f"{total:,} matching lines under {head['path']}"
+    searched = Path(head["path"])
+    base = searched if searched.is_dir() else searched.parent
+    header = f"{total:,} matching lines under {base}"
+    if total:
+        header += f" ({RELATIVE_NOTE})"
     if not total:
         header += f". {SKIPPED_NOTE}"
     following = offset + shown
@@ -296,7 +321,10 @@ def glob_files(pattern: str, path: str, limit: int = 200) -> ToolResult:
     found = sorted(rows, key=_mtime, reverse=True)
     shown = found[:limit]
     truncated = timed_out or len(found) > len(shown)
-    lines = [f"{len(found):,} files match {pattern} under {root} (newest first):", *shown]
+    lines = [
+        f"{len(found):,} files match {pattern} under {root} (newest first; {RELATIVE_NOTE}):",
+        *(_shown(name, root) for name in shown),
+    ]
     if not found:
         lines = [f"0 files match {pattern} under {root}. {SKIPPED_NOTE}"]
     if truncated:
