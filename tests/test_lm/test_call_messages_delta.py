@@ -61,8 +61,9 @@ def test_a_rewritten_head_and_an_interleaved_chain_are_recorded_whole_or_apart()
 
 
 def test_a_missing_earlier_record_makes_its_dependents_unavailable_never_wrong() -> None:
-    """SABOTAGE: drop the ``len(known[0]) < count`` check in ``rebuild`` and the record
-    after the gap is rebuilt on a prefix the reader does not hold."""
+    """SABOTAGE: drop both the ``len(known[0]) < count`` check and the digest comparison
+    in ``rebuild`` and the record after the gap is rebuilt on a prefix the reader does
+    not hold (either check alone refuses it)."""
     session = f"sess_{uuid.uuid4().hex[:8]}"
     requests = _turn(4)
     records = [_record(session, request) for request in requests]
