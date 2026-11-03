@@ -85,6 +85,10 @@ How to use it:
 - **Windows:** the fence there is the AppContainer/ACL backend (`clio sandbox setup`). `run_code` refuses in plan mode when no fence is active (`code_plan_mode_unconfined`).
 - **What to check:** with the fence provisioned, a plan-mode session asked to "try to create scratch.txt in the workspace with open() inside run_code" must get an access-denied error and leave no file. Without the fence it must get the `code_plan_mode_unconfined` refusal.
 
+## 9. ripgrep on Windows (2026-11-03)
+
+The file search and glob tools run `rg`: CLIO's verified private copy, else one on the PATH, else a download of the pinned 14.1.1 release (`runtime/ripgrep.py`); `install.ps1` fetches it ahead of time through `clio_agent.runtime.document_install`. Pinned assets cover Windows x64 (`x86_64-pc-windows-msvc.zip`, `rg.exe`); **Windows on ARM is not pinned**, so there the tools use an `rg` on the PATH or fail with the typed `ripgrep_missing`. Check: on a fresh Windows x64 install, `fs_search_text` works before any manual `rg` install; on Windows ARM, whether pinning the `aarch64-pc-windows-msvc` asset is needed.
+
 ## Not platform-specific (no Windows check needed)
 
 - Append-only chunk records.
