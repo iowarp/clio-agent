@@ -1,8 +1,9 @@
 """Shared plumbing of the stateful engines (Codex direct sockets, Claude Code sessions).
 
-The conversation logic itself lives in
-:class:`clio_agent.lm.engines.conversations.ConversationRegistry` (typed messages, one
-kept provider conversation per agent scope). This module holds what every engine and
+Each engine keeps its conversations where they live (Codex in its direct engine,
+Claude Code on the pooled client that holds it:
+:mod:`clio_agent.providers.claude_code_conversation`); the shared keying and delta rule
+is :mod:`clio_agent.lm.engines.conversations`. This module holds what every engine and
 the agent loop share:
 
 * the typed reset-reason catalog (:data:`STATEFUL_RESET_REASONS`) -- a restart is a

@@ -12,8 +12,8 @@ SABOTAGE (each turns the named test red):
   ``test_a_full_send_after_a_reset_starts_from_an_empty_cli``.
 * ``AsyncClaudeCodeEngine._query``: use the session's own key for one-shot calls ->
   ``test_a_one_shot_call_never_touches_the_agents_conversation``.
-* ``AsyncClaudeCodeEngine._query``: drop the ``reset_session`` before ``opened`` ->
-  ``test_opening_a_conversation_resets_the_sessions_others_typed``.
+* ``claude_code_conversation.plan``: drop the identity comparison ->
+  ``test_switching_model_starts_the_one_conversation_over_on_a_clear_cli``.
 """
 
 from __future__ import annotations
@@ -24,7 +24,7 @@ import pytest
 from dspy.lm15 import Message, Request, TextPart, ToolCallPart, ToolResultPart
 
 from clio_agent.gact import context as gact_context
-from clio_agent.providers import claude_code_engine
+from clio_agent.providers import claude_code_conversation
 from clio_agent.providers import stateful_common as st
 from clio_agent.providers.claude_code_clear import side_key
 from clio_agent.providers.claude_code_sessions import _STREAM_CLIENT_POOL, _reset_sessions_for_tests
@@ -41,10 +41,10 @@ STEP = (
 
 @pytest.fixture(autouse=True)
 def _clean_state() -> Any:
-    claude_code_engine._CONVERSATIONS.clear_for_tests()
+    claude_code_conversation.forward_resets().clear_for_tests()
     _reset_sessions_for_tests()
     yield
-    claude_code_engine._CONVERSATIONS.clear_for_tests()
+    claude_code_conversation.forward_resets().clear_for_tests()
     _reset_sessions_for_tests()
 
 
@@ -82,8 +82,7 @@ async def test_a_full_send_after_a_reset_starts_from_an_empty_cli(
     sdk = fake.install(monkeypatch)
     await fake.drive(_request(HEAD))
     await fake.drive(_request(HEAD, *STEP))
-    key = claude_code_engine.conversation_key("haiku", "/w", "")
-    claude_code_engine._CONVERSATIONS.reset(key, "ops_reset")
+    claude_code_conversation.reset(_STREAM_CLIENT_POOL.entry_for(session_id="sess-a"), "ops_reset")
     compacted = _request(Message.user("[earlier context] a summary"), HEAD)
     await fake.drive(compacted)
 
@@ -109,23 +108,32 @@ async def test_a_one_shot_call_never_touches_the_agents_conversation(
     assert side.clears == 1 and len(side.held) == 1  # each one-shot starts empty
 
 
-async def test_opening_a_conversation_resets_the_sessions_others_typed(
+async def test_switching_model_starts_the_one_conversation_over_on_a_clear_cli(
     monkeypatch: pytest.MonkeyPatch, loop_scope: None
 ) -> None:
-    """Two conversations of one session (another model) share its client: opening one
-    clears the CLI, so the other must resend in full, typed."""
-    fake.install(monkeypatch)
-    await fake.drive(_request(HEAD))
-    other = claude_code_engine.conversation_key("sonnet", "/w", "")
-    await fake.drive(Request(model="claude_code/sonnet", messages=(HEAD,)))
+    """One client holds one conversation: another model's call starts it over (typed),
+    on the same warm process, from an empty CLI. Switching back starts over again.
 
-    first = claude_code_engine.conversation_key("haiku", "/w", "")
-    plan = claude_code_engine._CONVERSATIONS.plan(first, _request(HEAD, *STEP), "")
-    assert (plan.handle, plan.reason) == (None, "conversation_cleared")
-    kept = claude_code_engine._CONVERSATIONS.plan(
-        other, Request(model="claude_code/sonnet", messages=(HEAD, *STEP)), ""
+    SABOTAGE: drop the identity comparison in ``claude_code_conversation.plan`` -> the
+    sonnet call is planned as a delta of the haiku conversation -> red.
+    """
+    sdk = fake.install(monkeypatch)
+    audit: list[dict[str, Any]] = []
+    monkeypatch.setattr(
+        "clio_agent.runtime.stream_audit.stream_audit",
+        lambda stage, **row: audit.append({"stage": stage, **row}),
     )
-    assert kept.handle is not None
+    monkeypatch.setattr("clio_agent.runtime.stream_audit.stream_audit_enabled", lambda: True)
+    await fake.drive(_request(HEAD))
+    await fake.drive(Request(model="claude_code/sonnet", messages=(HEAD, *STEP)))
+
+    [client] = sdk.clients
+    assert client.clears == 1 and len(client.held) == 1
+    rows = [r for r in audit if r["stage"] == "provider.stateful"]
+    assert [(r["stateful_mode"], r.get("reason")) for r in rows] == [
+        ("full", "first_call"),
+        ("full", "prefix_mismatch"),
+    ]
 
 
 def test_releasing_a_session_closes_its_side_client() -> None:

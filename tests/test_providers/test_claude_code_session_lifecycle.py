@@ -130,36 +130,31 @@ def test_release_session_resources_forces_the_next_stateful_send_to_a_full_resen
     shipped to a fresh subprocess that never saw the prefix -- a silent
     conversation-coherence bug, not merely a reconnect.
 
-    SABOTAGE: drop ``entry.announce_dropped()`` from
-    ``release_session_resources_nonblocking`` (the non-blocking close announces too
-    late) -> the next ``plan()`` is a delta, and this goes red.
+    The conversation lives on the entry: the released entry takes it along.
+    SABOTAGE: drop ``entry.forget_conversation()`` from
+    ``release_session_resources_nonblocking`` -> a holder of the released entry still
+    plans a delta, and this goes red.
     """
     from dspy.lm15 import Message, Request
 
-    from clio_agent.providers import claude_code_engine
+    from clio_agent.providers.claude_code_conversation import HeldConversation, plan
 
-    registry = claude_code_engine._CONVERSATIONS
-    registry.clear_for_tests()
-    try:
-        pool = ccs.ClaudeStreamClientPool(max_concurrent=2)
-        key = ("sess-1", "main#react", "m", "/w", "")
-        registry.opened(
-            key, "sdk-session-1", Request(model="claude_code/m", messages=(Message.user("a"),)), "s"
-        )
+    identity = ("m", "/w", "")
+    pool = ccs.ClaudeStreamClientPool(max_concurrent=2)
+    entry = pool.entry_for(session_id="sess-1")
+    entry.conversation = HeldConversation(identity, "sdk-session-1", "s", (Message.user("a"),))
 
-        entry = pool.entry_for(session_id="sess-1")
-        entry._bound_session = "sess-1"  # what a real connect records
+    pool.release_session_resources("sess-1")
 
-        pool.release_session_resources("sess-1")
-
-        extended = Request(
-            model="claude_code/m",
-            messages=(Message.user("a"), Message.assistant("ok"), Message.user("b")),
-        )
-        send = registry.plan(key, extended, "s")
-        assert (send.handle, send.reason) == (None, "session_evicted")
-    finally:
-        registry.clear_for_tests()
+    extended = Request(
+        model="claude_code/m",
+        messages=(Message.user("a"), Message.assistant("ok"), Message.user("b")),
+    )
+    send = plan(entry, extended, "s", identity, kept=True)
+    assert (send.handle, send.reason) == (None, "session_evicted")
+    assert (
+        plan(pool.entry_for(session_id="sess-1"), extended, "s", identity, kept=True).handle is None
+    )
 
 
 def test_release_session_resources_emits_a_typed_row_distinct_from_idle_reaped(

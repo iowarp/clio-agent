@@ -18,7 +18,7 @@ import pytest
 
 from clio_agent.config import LMProviderConfig, load_config_from_env
 from clio_agent.lm.request_builder import build_request_kwargs
-from clio_agent.providers import claude_code_engine
+from clio_agent.providers import claude_code_conversation
 from clio_agent.providers.capabilities import invalidation
 from clio_agent.providers.capabilities.accessor import clear_cache
 from clio_agent.providers.capabilities.records import (
@@ -134,7 +134,7 @@ def test_the_thinking_config_reaches_the_sdk_client_options(monkeypatch) -> None
     from tests import _fake_claude_sdk as fake
 
     _reset_sessions_for_tests()
-    claude_code_engine._CONVERSATIONS.clear_for_tests()
+    claude_code_conversation.forward_resets().clear_for_tests()
     try:
         sdk = fake.install(monkeypatch)
         config = LMProviderConfig(provider="claude_code", model="claude-sonnet-4-6")
@@ -150,7 +150,7 @@ def test_the_thinking_config_reaches_the_sdk_client_options(monkeypatch) -> None
         assert options["effort"] == thinking["effort"] == "medium"
     finally:
         _reset_sessions_for_tests()
-        claude_code_engine._CONVERSATIONS.clear_for_tests()
+        claude_code_conversation.forward_resets().clear_for_tests()
 
 
 def test_lm_max_tokens_caps_the_claude_cli_reply(monkeypatch) -> None:
@@ -168,7 +168,7 @@ def test_lm_max_tokens_caps_the_claude_cli_reply(monkeypatch) -> None:
 
     for max_tokens, expected in ((16000, "16000"), (0, None)):
         _reset_sessions_for_tests()
-        claude_code_engine._CONVERSATIONS.clear_for_tests()
+        claude_code_conversation.forward_resets().clear_for_tests()
         try:
             sdk = fake.install(monkeypatch)
             config = LMProviderConfig(
@@ -182,7 +182,7 @@ def test_lm_max_tokens_caps_the_claude_cli_reply(monkeypatch) -> None:
             assert "max_output_tokens" not in (options.get("thinking") or {})
         finally:
             _reset_sessions_for_tests()
-            claude_code_engine._CONVERSATIONS.clear_for_tests()
+            claude_code_conversation.forward_resets().clear_for_tests()
 
 
 def test_the_output_cap_alone_sends_no_thinking_config() -> None:

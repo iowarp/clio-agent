@@ -18,10 +18,12 @@ SABOTAGE (each turns the named test red):
 
 from __future__ import annotations
 
+from types import SimpleNamespace
+
 from dspy.lm15 import Config, FunctionTool, Message, Request
 
 from clio_agent.gact.compaction_summarizer import loop_summarizer
-from clio_agent.lm.engines.conversations import ConversationRegistry
+from clio_agent.providers import claude_code_conversation
 from tests._compaction_summary import SummaryLM, request_text, split_seen
 
 _TOOL = FunctionTool(name="search", description="find", parameters={"type": "object"})
@@ -59,11 +61,11 @@ def test_the_request_is_the_loops_next_request_plus_the_prompt() -> None:
 
 
 def test_a_kept_conversation_is_continued_with_only_the_new_messages() -> None:
-    """The registry the stateful engines share: the agent's last request was answered
-    ("searching"), then a tool result arrived; the summarizer's request continues that
-    conversation, sending only the tool result and the prompt."""
-    registry = ConversationRegistry(lambda: 8)
-    key = ("sess", "scope", "m")
+    """The conversation a Claude Code client holds: the agent's last request was
+    answered ("searching"), then a tool result arrived; the summarizer's request
+    continues that conversation, sending only the tool result and the prompt."""
+    entry = SimpleNamespace(conversation=None, pending_reset=None)
+    identity = ("m", "/w", "")
     first = Request(
         model="m",
         system="you are the agent",
@@ -71,13 +73,16 @@ def test_a_kept_conversation_is_continued_with_only_the_new_messages() -> None:
         tools=(_TOOL,),
         config=Config(max_tokens=123),
     )
-    assert registry.plan(key, first, first.system or "").reason == "first_call"
-    registry.opened(key, "conversation-1", first, first.system or "")
+    opened = claude_code_conversation.plan(entry, first, "you are the agent", identity, kept=True)
+    assert opened.reason == "first_call"
+    claude_code_conversation.record_sent(
+        entry, opened, "conversation-1", first, "you are the agent"
+    )
 
     lm = SummaryLM(lambda seen: "CHECKPOINT")
     loop_summarizer(lambda: lm, _base)("write the checkpoint")
     [sent] = lm.requests
-    plan = registry.plan(key, sent, sent.system or "")
+    plan = claude_code_conversation.plan(entry, sent, "you are the agent", identity, kept=True)
     assert (plan.handle, plan.reason) == ("conversation-1", None)
     texts = [_text(m) for m in plan.messages]
     assert texts == ["HITS-1", "write the checkpoint"]

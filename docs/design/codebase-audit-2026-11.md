@@ -30,6 +30,14 @@ Old code stays and looks alive. New code grows on a wrong model, and the bugs th
 
 See `claude-code-provider-review-2026-11.md`.
 
+## 1b. One history writer for every session (rebuild; owned by the main thread)
+
+**What it owns.** Every session's history writes go through one store-I/O writer (`gact/core_io.py`), behind global locks: the task history (`gact/task_history*.py`), the task index revision (`gact/task_index*.py`) and the artifact registry. Their callers are the admission paths in `gact/external_tasks.py` and `native_*`.
+
+**What the measurements say.** Under parallel sessions it is the bottleneck. In the burst bench with `--sessions`, p90 per-call latency goes from 26 ms at one session to 750 ms at eight, with CPU at only 0.4-0.5 and the writer at 13-20 ms per call. The earlier dismissal ("GIL-bound, the writer is not the limit") rested on one session's burst.
+
+**Action.** Per-session (per-tree) ordering in place of the single writer (A4). The main thread is rebuilding it; this audit does not change these files.
+
 ## 2. Four materializations of the same history (#737; merge, later and large)
 
 **What is duplicated.** One session's history lives in:
@@ -95,7 +103,7 @@ Action, per group: write down what it owns. Where two modules model the same thi
 
 ## Order
 
-1. The Claude Code provider rebuild (item 1).
+1. The Claude Code provider rebuild (item 1); the history writer (item 1b, main thread).
 2. The dead modules (item 3).
 3. The cap clusters (item 4), by group.
 4. #737 (item 2).

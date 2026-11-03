@@ -964,10 +964,6 @@ KEY_NOTES: dict[str, str] = {
         "Max session-open Claude Code SDK pre-connects (B2) pending at once; 0 disables "
         "session-open pre-connect entirely, raise for more sessions starting at once."
     ),
-    "providers.claude_code.stateful_capacity": (
-        "Max live Claude Code stateful-session entries before LRU eviction; raise on a host "
-        "running many concurrent stateful sessions."
-    ),
     "providers.claude_code.stream_idle_ttl_s": (
         "Seconds a session's pooled Claude Code connection is kept between turns, so the next "
         "turn sends only new messages; a connection is never reaped while its turn runs."

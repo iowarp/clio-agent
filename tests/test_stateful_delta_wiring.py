@@ -24,13 +24,14 @@ These lock the three fixes whose *wiring* (not the shared detector, proved in
 
 from __future__ import annotations
 
+from types import SimpleNamespace
 from typing import Any
 
 import dspy
 import pytest
 from dspy.lm15 import Message, Request
 
-from clio_agent.providers import claude_code_engine
+from clio_agent.providers import claude_code_conversation
 from clio_agent.providers.stateful_common import (
     active_stateful_scope,
     note_prefix_reset_for_active_scope,
@@ -52,16 +53,23 @@ def _r(*texts: str) -> Request:
     return Request(model="claude_code/m", messages=messages)
 
 
-def _key(scope: str) -> tuple[str, ...]:
-    """A conversation key (session, scope, model, cwd, thinking) -- the engine's shape."""
-    return ("sess", scope, "m", "/w", "")
+IDENTITY = ("m", "/w", "")
 
 
-def _prime(scope: str) -> None:
+def _entry() -> Any:
+    """A pooled client's conversation state (what the planner reads and writes)."""
+    return SimpleNamespace(conversation=None, pending_reset=None)
+
+
+def _plan(entry: Any, request: Request) -> Any:
+    return claude_code_conversation.plan(entry, request, "sys", IDENTITY, kept=True)
+
+
+def _prime(entry: Any) -> None:
     """Record a kept conversation the scope's forward drove (call 1 = full/first_call)."""
-    registry = claude_code_engine._CONVERSATIONS
-    assert registry.plan(_key(scope), _r("q"), "sys").reason == "first_call"
-    registry.opened(_key(scope), "sid-1", _r("q"), "sys")
+    send = _plan(entry, _r("q"))
+    assert send.reason == "first_call"
+    claude_code_conversation.record_sent(entry, send, "sid-1", _r("q"), "sys")
 
 
 # --------------------------------------------------------------------------- #
@@ -146,14 +154,13 @@ def test_note_prefix_reset_flags_claude_sdk_registry() -> None:
     so the hook must reach every registered conversation registry. Its next plan over
     a would-be-valid extension is then a typed ``ops_reset`` full send.
     """
-    registry = claude_code_engine._CONVERSATIONS
-    registry.clear_for_tests()
+    entry = _entry()
     with stateful_scope("s"):
-        _prime("s")
+        _prime(entry)
         assert note_prefix_reset_for_active_scope("ops_reset") is True
-        send = registry.plan(_key("s"), _r("q", "a", "b"), "sys")
+        send = _plan(entry, _r("q", "a", "b"))
         assert (send.handle, send.reason) == (None, "ops_reset")
-    registry.clear_for_tests()
+    claude_code_conversation.forward_resets().clear_for_tests()
 
 
 def test_note_prefix_reset_is_noop_off_scope() -> None:
@@ -258,10 +265,9 @@ def test_maybe_autocompact_wires_ops_reset_through_the_loop(
 
     arc.summarize_segments = _spy_summarize  # type: ignore[method-assign]
 
-    registry = claude_code_engine._CONVERSATIONS
-    registry.clear_for_tests()
+    entry = _entry()
     with stateful_scope("s"):
-        _prime("s")
+        _prime(entry)
         app_token = _ctx.set_app(app)
         try:
             maybe_autocompact(auto_guard())
@@ -272,9 +278,9 @@ def test_maybe_autocompact_wires_ops_reset_through_the_loop(
         # prefix); the fold then resets that conversation typed.
         assert summary_scopes == ["s"], "the auto summary left the agent's conversation"
         assert active_stateful_scope() == "s", "the forward's scope is restored"
-        send = registry.plan(_key("s"), _r("q", "a", "b"), "sys")
+        send = _plan(entry, _r("q", "a", "b"))
         assert (send.handle, send.reason) == (None, "ops_reset")
-    registry.clear_for_tests()
+    claude_code_conversation.forward_resets().clear_for_tests()
 
 
 # --------------------------------------------------------------------------- #
@@ -349,17 +355,16 @@ def test_tier1_shaped_forward_deltas_on_call_two() -> None:
 
     The mechanism the T3 binding unlocks: bound stateful scope + an append-only growing
     message list => the second send carries only what the provider has not seen.
-    Pinned on the real Claude Code engine registry.
+    Pinned on the real Claude Code conversation planner.
     """
-    registry = claude_code_engine._CONVERSATIONS
-    registry.clear_for_tests()
+    entry = _entry()
     with stateful_scope("tier1"):
-        _prime("tier1")
+        _prime(entry)
         # Call 2: the provider's reply, then one appended user message.
-        send = registry.plan(_key("tier1"), _r("q", "a", "b"), "sys")
+        send = _plan(entry, _r("q", "a", "b"))
         assert send.handle == "sid-1"
         assert send.messages == (Message.user("b"),)  # only the appended tail is sent
-    registry.clear_for_tests()
+    claude_code_conversation.forward_resets().clear_for_tests()
 
 
 # --------------------------------------------------------------------------- #
@@ -368,7 +373,7 @@ def test_tier1_shaped_forward_deltas_on_call_two() -> None:
 # must NOT close the pool's connection — B1's whole point is that the SAME
 # client survives across every turn (every forward) of one session. The
 # kept conversations' correctness (the AGENT-COPPER12 cross-conversation defect
-# this used to guard) lives in the engine's conversation registry: see
+# this used to guard) lives on the pooled entry (claude_code_conversation): see
 # test_claude_code_stateful.py / this file's T3 above.
 # --------------------------------------------------------------------------- #
 def test_stream_pool_isolates_by_gact_session_not_scope() -> None:

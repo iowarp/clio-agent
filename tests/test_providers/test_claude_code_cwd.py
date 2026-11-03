@@ -51,7 +51,9 @@ def test_the_engine_queries_from_the_session_folder(
 ) -> None:
     seen: list[str] = []
 
-    async def _query(self: Any, request: Any, system: str, send: Any, cwd: str) -> Any:
+    async def _query(
+        self: Any, request: Any, system: str, cwd: str, identity: Any, kept: bool
+    ) -> Any:
         seen.append(cwd)
         if False:
             yield None
@@ -59,7 +61,6 @@ def test_the_engine_queries_from_the_session_folder(
     monkeypatch.setattr(engine_module, "session_cwd", lambda session_id: str(tmp_path))
     monkeypatch.setattr(engine_module.AsyncClaudeCodeEngine, "_query", _query)
     monkeypatch.setattr(engine_module, "render_system", lambda system, tools: "")
-    monkeypatch.setattr(engine_module._CONVERSATIONS, "plan", lambda key, request, system: None)
 
     async def _drain() -> None:
         engine = engine_module.AsyncClaudeCodeEngine("claude-haiku-5-5")
