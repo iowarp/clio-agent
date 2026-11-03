@@ -30,6 +30,7 @@ from collections.abc import Callable, Sequence
 from functools import partial
 from typing import Any
 
+from clio_agent.arc.native_threads import run_on_native_thread
 from clio_agent.arc.rpc_liveness import resolve_liveness_policy
 
 # ``Future.done()`` returns at once; the sleep between checks releases the GIL.
@@ -185,7 +186,9 @@ class TagIds:
         with self._lock:
             tag_id = self._ids.get(kind)
             if tag_id is None:
-                tag_id = self._cte.Tag(self._tag_name(kind)).GetTagId()
+                name = self._tag_name(kind)
+                # A process-lived thread enters the runtime (arc.native_threads).
+                tag_id = run_on_native_thread(lambda: self._cte.Tag(name).GetTagId())
                 self._ids[kind] = tag_id
         return tag_id
 

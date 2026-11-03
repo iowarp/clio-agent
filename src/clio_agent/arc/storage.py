@@ -69,6 +69,7 @@ from clio_agent.arc.clio_core_liveness import (  # noqa: F401 - re-exported for 
 )
 from clio_agent.arc.clio_core_writes import SEARCH_SUFFIX, ClioCoreWrites
 from clio_agent.arc.companion_write import companion_sizes
+from clio_agent.arc.native_threads import run_on_native_thread
 from clio_agent.arc.pid_identity import pid_alive as _pid_alive
 from clio_agent.arc.pid_identity import pidfile_live_pid
 from clio_agent.arc.pid_identity import proc_create_time as _proc_create_time
@@ -412,7 +413,8 @@ class ClioCoreStore(ClioCoreWrites):
         import clio_cte_core_ext as cte  # noqa: PLC0415
 
         self._cte = cte
-        self._client = cte.get_cte_client()
+        # Built on a process-lived thread: the runtime keeps per-thread resources.
+        self._client = run_on_native_thread(cte.get_cte_client)
         type(self)._instances.add(self)
         # Records of one namespace live under ``<namespace>/<kind>`` tags; the default
         # (empty) namespace keeps the bare ``<kind>`` tags every deployment already has.

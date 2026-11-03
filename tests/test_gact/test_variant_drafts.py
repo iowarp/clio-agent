@@ -391,6 +391,7 @@ def test_tries_stream_to_their_tabs_and_project_to_v3(world: World) -> None:
     finally:
         loop.call_soon_threadsafe(loop.stop)
         pump.join()
+        loop.close()  # the test's own loop: release its selector
     assert pred.answer == "Draft B"
 
     # the drafts never stream into the turn's answer lane, each streams into its tab
