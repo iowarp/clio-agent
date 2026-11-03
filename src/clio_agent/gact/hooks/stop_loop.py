@@ -373,7 +373,9 @@ def dispatch_stop_at_finalize(
             summary="Stop hook dispatch started.",
             actor={"hook": "Stop"},
             subject={"message_id": assistant_msg_id},
-            payload={"assistant": dict(assistant_payload)},
+            # The message is recorded in the transcript; the span names it. Embedding it
+            # copied a whole turn into the event (13.2 MB in one P7 journal, 2026-11-03).
+            payload={"assistant_parts": len(assistant_payload.get("parts") or [])},
         )
         result = run_stop_hooks(
             app,
