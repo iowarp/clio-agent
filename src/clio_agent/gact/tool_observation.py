@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from contextvars import ContextVar
 from dataclasses import dataclass
 from typing import Any
@@ -76,7 +77,36 @@ def note_inline_collection(value: Any) -> None:
 
 
 def collected_observation(value: Any, carried: list[CollectedTaskResult]) -> Any:
-    """``value`` marked with the outcomes its reply carried, when it is plain text."""
+    """``value`` marked with the outcomes its reply carried, when it is plain text.
+
+    The model reads the finished tool's own result (:func:`reply_content`), not the task
+    envelope around it.
+    """
     if not carried or isinstance(value, COLLECTED) or not isinstance(value, str):
         return value
-    return CollectedText(value, carried)
+    return CollectedText(reply_content(value), carried)
+
+
+def reply_content(text: str) -> str:
+    """The finished tool's own result text inside a foreground task reply.
+
+    The reply nests three JSON layers: CLIO's task reply (handle, status, pending), the
+    MCP task record (server info, task id, timestamps, TTL, poll interval) and the
+    tool's result, whose text is JSON-escaped once per layer (a stdout newline reached
+    the model as ``\\\\n``). A finished call needs none of the envelope, so the model reads
+    the tool's content text, as an inline call returns it. Format only: a reply that is
+    not this shape, or whose content is not all text, is returned unchanged.
+    """
+    try:
+        reply = json.loads(text)
+    except ValueError:
+        return text
+    task = reply.get("result") if isinstance(reply, dict) else None
+    result = task.get("result") if isinstance(task, dict) else None
+    content = result.get("content") if isinstance(result, dict) else None
+    if not isinstance(content, list) or not content:
+        return text
+    texts = [c.get("text") for c in content if isinstance(c, dict) and c.get("type") == "text"]
+    if len(texts) != len(content) or not all(isinstance(t, str) for t in texts):
+        return text
+    return "\n".join(texts)
