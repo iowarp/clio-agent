@@ -47,7 +47,7 @@ def _runtime_active_workspace_context(app: "FastAPI", *, session_id: str = "") -
     def fact(piece: str, variables: dict[str, Any]) -> str | None:
         return injections.render(f"session_facts{piece}", variables, app=app, session_id=session_id)
 
-    tail = _session_scratch_lines(app, session_id)
+    tail = [*_inventory_lines(app, session_id, fact), *_session_scratch_lines(app, session_id)]
     head = fact("", {"root": root})
     if head is None:  # switched off by the person: no session facts at all
         return ""
@@ -59,6 +59,22 @@ def _runtime_active_workspace_context(app: "FastAPI", *, session_id: str = "") -
         if allowed_roots:
             lines.append(fact("_write_roots", {"roots": ", ".join(allowed_roots)}))
     return "\n".join(line for line in [*lines, *tail] if line)
+
+
+def _inventory_lines(app: Any, session_id: str, fact: Any) -> list[str | None]:
+    """Connected sources and uploaded resources, each only when there is one."""
+    from clio_agent.gact.agents import session_inventory  # noqa: PLC0415
+
+    sessions = getattr(getattr(app, "state", None), "sessions", None)
+    session = sessions.get(session_id) if sessions is not None and session_id else None
+    workspace_id = str(getattr(session, "workspace_id", "") or "")
+    lines: list[str | None] = []
+    if sources := session_inventory.source_facts(app, workspace_id):
+        lines.append(fact("_sources", {"sources": sources}))
+    resources, total = session_inventory.resource_facts(app, workspace_id)
+    if total:
+        lines.append(fact("_resources", {"resources": resources, "total": total}))
+    return lines
 
 
 def _session_scratch_lines(app: Any, session_id: str) -> list[str | None]:

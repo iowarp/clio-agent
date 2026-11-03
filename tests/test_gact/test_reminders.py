@@ -13,9 +13,8 @@ import pytest
 
 from clio_agent import injections, paths
 from clio_agent.injections.declarations import core_dir
+from clio_agent.injections.template import names_used
 from clio_agent.prompts import PromptRegistry, parse_prompt_text
-
-_PLACEHOLDER = re.compile(r"\{\{\s*([A-Za-z0-9_.-]+)\s*\}\}")
 
 
 def _shipped() -> list[Any]:
@@ -46,7 +45,7 @@ def test_every_shipped_reminder_is_a_valid_declared_template() -> None:
         assert row.validation_errors == [], (row.id, row.validation_errors)
         assert row.metadata.get("trigger"), row.id
         declared = {name.strip() for name in str(row.metadata.get("variables", "")).split(",")}
-        used = set(_PLACEHOLDER.findall(row.profiles["default"].text))
+        used = set(names_used(row.profiles["default"].text, row.id))
         assert used == declared - {""}, row.id
         assert row.id in listed
 
