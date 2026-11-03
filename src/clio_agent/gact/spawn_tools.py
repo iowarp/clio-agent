@@ -219,7 +219,7 @@ def build_spawn_runtime_tools(
                 "strategy": strategy_schema,
                 "model": model_schema,
             },
-            "Delegate a task, written self-contained, to a child agent and immediately receive its Subagent handle; the child reports back. Delegate work that can run in parallel and reading you need only the conclusion of: what you read yourself stays in your context for the rest of the task, while a child returns only its report. Do a lookup whose file you already know yourself. Optional strategy selects best_of_n/refine with n, rubric, threshold and lm/user judge. Continue work, observe_tasks, or wait_tasks. Child results wake eligible idle parents. Pause holds only the child model; cancel_tasks includes its descendant work.",
+            "Delegate a task, written self-contained, to a child agent and immediately receive its Subagent handle; the child reports back. Delegate work that can run in parallel and reading you need only the conclusion of: what you read yourself stays in your context for the rest of the task, while a child returns only its report. A child also costs time of its own: it starts fresh, works on its own model (named in the result), and ends by writing its report, which you then read and answer from; a search you can finish in a few wide steps, or with one run_code script, is usually faster done yourself. Do a lookup whose file you already know yourself. Optional strategy selects best_of_n/refine with n, rubric, threshold and lm/user judge. Continue work, observe_tasks, or wait_tasks. Child results wake eligible idle parents. Pause holds only the child model; cancel_tasks includes its descendant work.",
         )
     ]
     tools.append(
@@ -232,7 +232,7 @@ def build_spawn_runtime_tools(
                     "type": "boolean",
                     "default": False,
                     "description": "true: return once every child has finished, with each "
-                    "child's report in this result (a long one saved to a file).",
+                    "child's report in this result, whole (saved to a file only if it would not fit your context).",
                 },
                 "spawns": {
                     "type": "array",

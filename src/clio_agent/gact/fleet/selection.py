@@ -227,7 +227,9 @@ def choose_model(
         )
         return _choice(explicit, entry, candidate, reasons)
     for preference in prefers_chain:
-        ref = str(preference.get("model") or "") or _role_model(preference, reasons)
+        ref = str(preference.get("model") or "") or _role_model(
+            preference, reasons, entries, caller_account
+        )
         if not ref:
             continue
         provider = str(preference.get("provider") or "")
@@ -281,22 +283,53 @@ def choose_model(
     return _choice("", entry, candidate, reasons)
 
 
-def _role_model(preference: dict[str, Any], reasons: list[str]) -> str:
+def _role_model(
+    preference: dict[str, Any],
+    reasons: list[str],
+    entries: list[FleetEntry],
+    caller_account: str,
+) -> str:
     """The ``account/model`` a preference's fleet role names, or "" when it names none.
 
-    An unset role is recorded and the selection goes on to the next preference, and
-    finally to the caller's model.
+    An unset role whose default is the fast model (:func:`role_default`) runs on the
+    caller's account's fast model when the account offers one; otherwise the unset role
+    is recorded and the selection goes on to the next preference, and finally to the
+    caller's model.
     """
     role = str(preference.get("role") or "")
     if not role:
         return ""
-    from clio_agent.gact.fleet_settings import ROLES, fleet_settings  # noqa: PLC0415
+    from clio_agent.gact.fleet_settings import ROLES, fleet_settings, role_default  # noqa: PLC0415
 
     choice = fleet_settings()["judges"].get(role) if role in ROLES else None
-    if not choice:
-        reasons.append(f"fleet role {role} is not set; the caller's model runs")
+    if choice:
+        return f"{choice['provider_id']}/{choice['model_id']}"
+    if role_default(role) == "fast":
+        fast = _fast_model(entries, caller_account)
+        if fast:
+            reasons.append(f"fleet role {role} is not set; the account's fast model {fast} runs")
+            return fast
+    reasons.append(f"fleet role {role} is not set; the caller's model runs")
+    return ""
+
+
+def _fast_model(entries: list[FleetEntry], account: str) -> str:
+    """The caller account's fast model (its provider's ``fast_model_family``), or "".
+
+    The first available model of that family in catalog order, which lists the newest
+    first. The choice is still checked against the target's requirements.
+    """
+    from clio_agent.providers.catalog import get_provider  # noqa: PLC0415
+
+    provider = get_provider(account) if account else None
+    family = getattr(provider, "fast_model_family", "") if provider is not None else ""
+    if not family:
         return ""
-    return f"{choice['provider_id']}/{choice['model_id']}"
+    entry = next(
+        (e for e in entries if e.account == account and e.available and family in e.model),
+        None,
+    )
+    return entry.ref if entry is not None else ""
 
 
 def _choice(asked: str, entry: FleetEntry, candidate: Candidate, reasons: list[str]) -> ModelChoice:

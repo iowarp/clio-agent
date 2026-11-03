@@ -586,6 +586,10 @@ KEY_NOTES: dict[str, str] = {
         "null to inherit the conversation model, or a provider_id/model_id mapping; the "
         "CLIO_FLEET_JUDGES environment value uses JSON. Settings Fleet writes this mapping."
     ),
+    "fleet.explore_default": (
+        "What the explore subagent runs on when its Fleet role is unset: fast (the caller's "
+        "account's fast model, e.g. Haiku for Claude Code) or inherit (the caller's model)."
+    ),
     "fleet.search": (
         "Provider and model for the read-only CLIO Search assistant, as a provider_id/model_id "
         "mapping. Null inherits the current conversation model, then service defaults. "

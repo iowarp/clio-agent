@@ -54,14 +54,36 @@ def _read_only(name: str) -> bool:
 
 
 def _explore_model() -> str:
-    """The model the fleet runs ``explore`` on, or ``your model`` when it inherits."""
-    from clio_agent.gact.fleet_settings import fleet_settings  # noqa: PLC0415
+    """The model ``explore`` runs on: the fleet role's model, else (by default) the
+    account's fast model, else ``your model`` when it inherits the caller's."""
+    from clio_agent.gact.fleet_settings import fleet_settings, role_default  # noqa: PLC0415
 
     try:
         choice = (fleet_settings().get("judges") or {}).get("explore")
+        default = role_default("explore")
     except ValueError:  # an invalid fleet setting is reported where it is edited
         return "your model"
-    return str(choice.get("model_id") or "your model") if choice else "your model"
+    if choice:
+        return str(choice.get("model_id") or "your model")
+    if default == "fast":
+        fast = _fast_model_ref()
+        if fast:
+            return fast.split("/", 1)[-1]
+    return "your model"
+
+
+def _fast_model_ref() -> str:
+    """The session's account's fast model (``account/model``), or "" when it has none."""
+    from clio_agent.gact import context as _ctx  # noqa: PLC0415
+    from clio_agent.gact.fleet.child_model import caller_model, fleet_entries  # noqa: PLC0415
+    from clio_agent.gact.fleet.selection import _fast_model  # noqa: PLC0415
+
+    app, session_id = _ctx.active_app(), _ctx.active_session_id() or ""
+    session = app.state.sessions.get(session_id) if app is not None and session_id else None
+    if session is None:
+        return ""
+    account = caller_model(app, session).get("provider_id", "")
+    return _fast_model(fleet_entries(app, needed=False), account)
 
 
 def _can_explore(loop: Any) -> str:

@@ -168,9 +168,41 @@ def test_a_fleet_role_preference_runs_the_role_model_and_says_so(
     assert "from subagent:explore, fleet role explore" in choice.reasons
 
     monkeypatch.setattr(fleet_settings, "fleet_settings", lambda: settings(None))
+    monkeypatch.setenv("CLIO_FLEET_EXPLORE_DEFAULT", "inherit")
     unset = _choose(prefers_chain=[{"source": "subagent:explore", "role": "explore"}])
     assert unset.source == "inherited" and unset.ran["model_id"] == "claude-opus-5-5"
     assert "fleet role explore is not set; the caller's model runs" in unset.reasons
+
+
+def test_an_unset_explore_role_runs_the_accounts_fast_model_by_default(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Claude Code runs its Explore agent on Haiku; an unset explore role here runs on
+    the caller's account's fast model (its provider's fast_model_family), still checked
+    against the child's requirements. SABOTAGE: drop the fast branch in _role_model and
+    the child inherits Opus."""
+    from clio_agent.gact import fleet_settings
+
+    monkeypatch.setattr(
+        fleet_settings,
+        "fleet_settings",
+        lambda: {"revision": "r", "judges": {"explore": None}, "search": None},
+    )
+    choice = _choose(prefers_chain=[{"source": "subagent:explore", "role": "explore"}])
+    assert choice.ran == {"provider_id": "claude_code", "model_id": "claude-haiku-5-5"}
+    assert (
+        "fleet role explore is not set; the account's fast model claude_code/claude-haiku-5-5 runs"
+        in choice.reasons
+    )
+    # Only explore defaults to the fast model; another unset role inherits.
+    other = _choose(prefers_chain=[{"source": "x", "role": "goals"}])
+    assert other.source == "inherited"
+    # A caller on an account whose provider declares no fast family inherits.
+    local = _choose(
+        prefers_chain=[{"source": "subagent:explore", "role": "explore"}],
+        inherited={"provider_id": "vllm", "model_id": "qwen-text"},
+    )
+    assert local.ran == {"provider_id": "vllm", "model_id": "qwen-text"}
 
 
 def test_a_role_is_a_known_preference_field() -> None:

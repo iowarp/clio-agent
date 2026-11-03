@@ -421,6 +421,12 @@ agents.react_extract.enabled: true
 # CLIO_FLEET_DELEGATION accepts JSON. Settings Usage writes this mapping.
 # fleet.delegation:  # computed at runtime: {}
 
+# CLIO_FLEET_EXPLORE_DEFAULT  (str)  <- src/clio_agent/gact/fleet_settings.py
+# What the explore subagent runs on when its Fleet role is unset: fast (the
+# caller's account's fast model, e.g. Haiku for Claude Code) or inherit (the
+# caller's model).
+fleet.explore_default: "fast"
+
 # CLIO_FLEET_JUDGES  (str)  <- src/clio_agent/gact/fleet_settings.py
 # Independent judge choices keyed by goals, variants and permissions. Each
 # value is null to inherit the conversation model, or a provider_id/model_id

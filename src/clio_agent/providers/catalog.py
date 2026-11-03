@@ -129,6 +129,7 @@ PROVIDERS: tuple[Provider, ...] = (
     ),
     Provider(
         id="anthropic",
+        fast_model_family="haiku",
         label="Anthropic API",
         description="Direct Anthropic API. Requires an ANTHROPIC_API_KEY.",
         provider_kind="anthropic",
@@ -294,6 +295,7 @@ PROVIDERS: tuple[Provider, ...] = (
     ),
     Provider(
         id="claude_code",
+        fast_model_family="haiku",
         billing="subscription",
         label="Claude Code",
         description=(

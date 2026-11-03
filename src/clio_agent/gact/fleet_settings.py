@@ -136,6 +136,29 @@ def save_fleet_settings(update: FleetUpdate, app: Any = None) -> dict[str, Any]:
         return fleet_settings(app)
 
 
+#: Fleet roles whose unset default is the account's fast model, not the caller's model.
+FAST_DEFAULT_ROLES: tuple[JudgeRole, ...] = ("explore",)
+
+
+def role_default(role: str) -> str:
+    """What an unset fleet role runs on: ``fast`` (the caller's account's fast model,
+    for :data:`FAST_DEFAULT_ROLES`) or ``inherit`` (the caller's model).
+
+    ``fleet.explore_default`` (``fast`` or ``inherit``) sets it for ``explore``.
+
+    Raises:
+        ValueError: The configured value is not ``fast`` or ``inherit``.
+    """
+    if role not in FAST_DEFAULT_ROLES:
+        return "inherit"
+    value = conf.resolve(
+        "fleet.explore_default", env="CLIO_FLEET_EXPLORE_DEFAULT", default="fast", cast=conf.as_str
+    )
+    if value not in ("fast", "inherit"):
+        raise ValueError(f"fleet.explore_default must be fast or inherit, not {value!r}")
+    return value
+
+
 def judge_route(role: JudgeRole, caller: Any, adapter: Any = None) -> tuple[Any, Any]:
     """Resolve a judge using its own provider credentials; inherit the exact caller by default."""
     raw = fleet_settings()["judges"][role]
