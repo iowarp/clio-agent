@@ -205,7 +205,8 @@ def builtin_prompt_definitions() -> dict[str, PromptDefinition]:
             rows[parsed.id].description = parsed.description
             rows[parsed.id].source_path = parsed.source_path
             rows[parsed.id].metadata.update(parsed.metadata)
-        rows.update(_builtin_reminders(root))
+        rows.update(_builtin_verbatim(root, "reminders"))
+        rows.update(_builtin_verbatim(root, "templates"))
     except Exception as exc:  # pragma: no cover - defensive import guard  # noqa: BLE001 - import failure surfaced as an error prompt to the user
         text = (
             "CLIO built-in prompt files could not be imported. Check packaged "
@@ -218,10 +219,10 @@ def builtin_prompt_definitions() -> dict[str, PromptDefinition]:
     return rows
 
 
-def _builtin_reminders(root: Any) -> dict[str, PromptDefinition]:
-    """Reminder templates (``reminders/*.md``), used verbatim: a reminder is what the
-    agent is told, so the behaviour profiles are not appended to it."""
-    folder = root / "reminders"
+def _builtin_verbatim(root: Any, folder_name: str) -> dict[str, PromptDefinition]:
+    """Templates used verbatim (``reminders/*.md``, ``templates/*.md``): each is exactly
+    what the agent is told, so the behaviour profiles are not appended to it."""
+    folder = root / folder_name
     if not folder.is_dir():
         return {}
     rows: dict[str, PromptDefinition] = {}
@@ -231,7 +232,7 @@ def _builtin_reminders(root: Any) -> dict[str, PromptDefinition]:
         parsed = parse_prompt_text(
             path.read_text(encoding="utf-8"),
             scope="builtin",
-            source_path=f"package://clio_agent.prompt_packs.builtin/reminders/{path.name}",
+            source_path=f"package://clio_agent.prompt_packs.builtin/{folder_name}/{path.name}",
             fallback_id=path.name.removesuffix(".md"),
         )
         rows[parsed.id] = parsed
@@ -657,11 +658,11 @@ def _is_frontmatter_scalar(value: Any) -> bool:
 
 
 def declared_variables(meta: dict[str, Any]) -> frozenset[str]:
-    """A reminder's declared variables (``x_variables``, comma-separated): the only
+    """A reminder's or template's declared variables (``x_variables``, comma-separated): the only
     placeholders its body may use (docs/design/sdk/reminders.md). ``meta`` is the raw
     frontmatter (``x_`` keys) or a definition's metadata (prefix stripped)."""
     kind = meta.get("x_kind", meta.get("kind"))
-    if str(kind or "").strip() != "reminder":
+    if str(kind or "").strip() not in {"reminder", "template"}:
         return frozenset()
     raw = meta.get("x_variables", meta.get("variables")) or ""
     items = raw if isinstance(raw, list) else str(raw).split(",")

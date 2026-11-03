@@ -1,3 +1,10 @@
+---
+id: clio.compaction
+title: Compaction checkpoint
+description: What the model is asked to write when the context window fills; sent as the last message of the agent's own request, so editing it never costs the cached prefix.
+x_kind: template
+x_variables: focus, files
+---
 The context window is nearly full, so the work so far is being compacted. Write the checkpoint that replaces the history above: the work continues from it with no other memory of that history. Reply with the checkpoint as text; no tool runs in this reply.
 
 What comes back verbatim after your checkpoint, so you need not restate it: the system instructions, the messages the person typed (the newest ones, as many as fit), the newest step of work, and the session plan, todo checklist and session facts when they exist. Record what happened against them instead. If the history starts with an earlier checkpoint, update it with what happened since rather than summarizing it again.
@@ -28,4 +35,4 @@ Files read, written or created, and artifacts produced, with paths.
 Unresolved questions, failed inspections, missing dependencies and checks not yet made.
 
 ## Next step
-The next action toward the latest request, with a short quote of that request.{focus}{files}
+The next action toward the latest request, with a short quote of that request.{{focus}}{{files}}
