@@ -7,11 +7,18 @@ from typing import TYPE_CHECKING, Any, Optional
 from clio_agent.gact.artifacts.proposals import (
     parse_proposals,
     promote_proposals,
-    proposals_per_turn,
 )
 
 if TYPE_CHECKING:
     from clio_agent.gact.types import AgentDef
+
+#: Said with each PDF preview, where the question of what to publish arises.
+PREVIEW_NOTE = (
+    "A version-bound PDF preview of the source for the viewer, kept in its lineage. The "
+    "source file is the deliverable: name it, and register or list this PDF only when a "
+    "PDF deliverable was asked for."
+)
+PREVIEW_FAILED_NOTE = "No preview was made; the source artifact is registered unchanged."
 
 
 def build_create_artifact_tool(agent_def: "AgentDef") -> Any:
@@ -111,7 +118,13 @@ def build_create_artifact_tool(agent_def: "AgentDef") -> Any:
                 try:
                     rendered = render_pdf(app, sid, record, version)
                 except RenditionError as exc:
-                    previews.append({"source_artifact_id": version.artifact_id, "error": str(exc)})
+                    previews.append(
+                        {
+                            "source_artifact_id": version.artifact_id,
+                            "error": str(exc),
+                            "note": PREVIEW_FAILED_NOTE,
+                        }
+                    )
                 else:
                     previews.append(
                         {
@@ -121,6 +134,7 @@ def build_create_artifact_tool(agent_def: "AgentDef") -> Any:
                             "sha256": rendered.version.sha256,
                             "converter": rendered.converter,
                             "path": str(rendered.workspace_path),
+                            "note": PREVIEW_NOTE,
                         }
                     )
             result["pdf_previews"] = previews
@@ -136,48 +150,16 @@ def build_create_artifact_tool(agent_def: "AgentDef") -> Any:
         title="Create Artifact",
         representation="chip",
         desc=(
-            "Designate a deliverable as a first-class artifact: you decide what is "
-            "worth keeping (a report, a document you wrote, a generated file). "
-            "Register an existing workspace file with path=<workspace path>, OR "
-            "author content in this turn and pass it as content=<text> with "
-            "name=<target path>; the file is written at name (workspace-relative "
-            "or absolute; directories kept, e.g. 'reports/analysis.md'), so when "
-            "a specific destination is required, name must be that full path, not a "
-            "bare filename. kind is one of "
-            "dataset|image|report|script|config|model|ui_payload|other. Put your "
-            "intent (why it matters) in annotation. Set purpose=deliverable for requested "
-            "outputs, purpose=verification for review images/PDFs, or purpose=intermediate "
-            "for working files. All remain in Observability and lineage; only deliverables "
-            "appear on the final response, using the latest deliverable version per file. "
-            "Do not list review/working files in the final answer unless requested. To "
-            "designate several at once pass artifacts=[{name,kind,path|content,"
-            "annotation,purpose?}, ...]. Optionally cite what this deliverable was derived "
-            "from with used=[...] (paths, artifact ids, an uploaded attachment's "
-            "res_... id or its returned working-copy path, "
-            "and/or exact source URLs) so its lineage graph "
-            "shows its real inputs. "
-            "Word, PowerPoint and Excel deliverables automatically get a version-bound "
-            "PDF preview for the Clio viewer, retained in lineage rather than shown "
-            "as another deliverable. Publish and name the requested editable file. "
-            "Do not separately register or list review PDFs unless the user asked "
-            "for a PDF deliverable. Set pdf_preview=false to omit it, or "
-            "pdf_preview=true to request a preview for another supported document format. "
-            "In a batch, each item's pdf_preview overrides the call's default. "
-            "A missing converter is reported in pdf_previews without discarding the source. "
-            "Accepted outputs appear as artifact cards in Clio. Name them in your final "
-            "response; do not make Markdown links using local paths or artifact:// URIs. "
-            "Returns each accepted record or a typed rejection reason "
-            "(path_missing, escapes_root, over_cap, invalid_kind, missing_input) you "
-            "can correct and retry. Inspect every batch item's accepted flag; a partial "
-            "batch may contain rejections. "
-            f"This turn can register {proposals_per_turn()} distinct outputs, including "
-            "intermediate and verification files. Each result's promotion_budget gives "
-            "limit, used and remaining slots. Keep working scripts as ordinary workspace "
-            "files unless they need artifact identity; prioritize requested deliverables "
-            "and group related companion files in a retained package when appropriate. "
-            "revisions of outputs already promoted in this turn reuse their slot. "
-            "Nothing is auto-registered; the artifact exists "
-            "only because you called this."
+            "Designate an output you decide is worth keeping (a report, a document you "
+            "wrote, a generated file) as an artifact. Register an existing workspace file "
+            "with path, or write content to name, which is the target path, not a label. "
+            "Only purpose=deliverable outputs appear on the final response; every purpose "
+            "stays in lineage. Accepted outputs appear as artifact cards: name them in your "
+            "final answer rather than linking local paths or artifact:// URIs. Each item "
+            "returns its record or a typed rejection (path_missing, escapes_root, over_cap, "
+            "invalid_kind, missing_input) you can correct and retry; check every batch "
+            "item's accepted flag. promotion_budget gives this turn's remaining slots. "
+            "Nothing is registered unless you call this."
         ),
         args={
             "purpose": {
@@ -189,13 +171,14 @@ def build_create_artifact_tool(agent_def: "AgentDef") -> Any:
             "pdf_preview": {
                 "type": ["boolean", "null"],
                 "default": None,
-                "description": "Office previews are automatic; false omits them, true requests any supported preview.",
+                "description": "Word, Excel, PowerPoint and OpenDocument files get a PDF preview for the viewer automatically, kept in lineage rather than as a deliverable; false omits it, true requests one for another supported format.",
             },
             "name": {
                 "type": "string",
                 "description": (
                     "Target path the inline content is written to (workspace-relative "
-                    "or absolute; directories kept); required for inline content."
+                    "or absolute; directories kept, e.g. 'reports/analysis.md'); when a "
+                    "destination is required, the full path. Required for inline content."
                 ),
             },
             "kind": {
@@ -216,15 +199,16 @@ def build_create_artifact_tool(agent_def: "AgentDef") -> Any:
             },
             "artifacts": {
                 "type": "array",
-                "description": "Batch: {name,kind,path|content,annotation,pdf_preview?} proposals. Each item's boolean pdf_preview overrides the call default; omitted or null inherits it.",
+                "description": "Batch: {name,kind,path|content,annotation,purpose?,pdf_preview?} proposals. Each item's boolean pdf_preview overrides the call default; omitted or null inherits it.",
             },
             "used": {
                 "type": "array",
                 "description": (
-                    "OPTIONAL: workspace paths, artifact ids, an uploaded attachment's "
-                    "res_... id, and/or exact HTTP(S) source URLs this deliverable was "
-                    "derived from. URLs are assertion-class evidence; "
-                    "unresolved file or artifact refs are typed, never silently dropped."
+                    "Optional inputs this deliverable was derived from, shown in its "
+                    "lineage: workspace paths, artifact ids, an uploaded attachment's res_... "
+                    "id or its working-copy path, and/or exact HTTP(S) source URLs. URLs are "
+                    "assertion-class evidence; unresolved file or artifact refs are typed, "
+                    "never silently dropped."
                 ),
             },
         },

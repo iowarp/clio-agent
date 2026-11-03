@@ -1,7 +1,7 @@
 ---
 name: task-protocol
 title: The task layer in detail
-description: Use when you need the details of handles and tasks beyond starting and collecting work - reading another session's transcript or summary, messaging an agent, pausing, cancelling or restarting work, uncertain or interrupted tasks, selecting fields from a large result, or how Stop and background work interact.
+description: Use for the task layer beyond starting and collecting work - other sessions' transcripts, messaging, pausing, cancelling or restarting agents, uncertain tasks, large results, Stop and background work.
 ---
 
 # The task layer

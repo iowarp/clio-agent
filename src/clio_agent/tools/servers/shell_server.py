@@ -33,7 +33,6 @@ from clio_agent.tools.builtin_annotations import (
 )
 from clio_agent.tools.file_policy import FileAccessPolicy, FilePolicyError
 from clio_agent.tools.servers.shell_commands import (
-    SCRIPT_FILE_GUIDANCE,
     command_length_error,
     is_command_length_exception,
     windows_launch_error,
@@ -49,7 +48,6 @@ from clio_agent.tools.servers.shell_output import (
     shell_result_room,
 )
 from clio_agent.tools.servers.shell_spill_store import (
-    SPILL_DIRNAME,
     active_session_id,
     new_call_id,
     spill_directory,
@@ -342,20 +340,19 @@ def _detect_shell_env() -> ShellEnvFacts:
 
 
 def _limits_text(limits: ShellLimits) -> str:
-    """Model-facing statement of the effective limits and the spill behaviour."""
+    """Model-facing statement of the effective limits (#1487).
+
+    How to continue after a spill is said in the spill record itself
+    (:data:`~clio_agent.tools.servers.shell_output.SPILL_NOTE`), and how to work
+    around a launcher limit in the ``command_too_long`` error, where each arises.
+    """
 
     return (
-        f"Limits: CLIO accepts up to {limits.max_command_chars} command characters, but native "
-        "shells/launchers can impose smaller bounds, even below this budget. "
-        f"{SCRIPT_FILE_GUIDANCE} stdout and stderr each return inline up to "
-        f"max_output_bytes (default {limits.default_output_bytes}, at most "
-        f"{limits.max_output_bytes}) and the whole result fits the room one result has in "
-        "your context window. Output beyond that is not lost: the complete "
-        f"stream is saved in the workspace's Agent-managed ``{SPILL_DIRNAME}/`` directory (one "
-        "<id>.stdout.txt / .stderr.txt file per stream, kept until the session is "
-        "deleted); `stdout` then holds a head excerpt cut on line boundaries and "
-        "`stdout_spill` gives the file path, total_bytes, total_lines, and a tail excerpt. "
-        "Read or grep that file instead of re-running the command."
+        f"stdout and stderr each return inline up to max_output_bytes (default "
+        f"{limits.default_output_bytes}, at most {limits.max_output_bytes}) within the room one "
+        "result has in your context window; the complete stream of a longer output is saved to "
+        f"a file the result names. CLIO accepts up to {limits.max_command_chars} command "
+        "characters; native shells and launchers can impose smaller limits."
     )
 
 
@@ -364,26 +361,17 @@ def build_shell_tool_description(facts: ShellEnvFacts, limits: ShellLimits | Non
 
     Pure function of its inputs so the per-platform content is unit-pinnable
     (#898): the Windows text carries an explicit 'do NOT assume WSL exists' and
-    the POSIX text does not; both steer tabular/CSV work to the pandas MCP tool.
-    The limits sentence is generated from ``limits`` (default: the effective
-    :data:`_SHELL_LIMITS`), never hand-written numbers (#1487).
+    the POSIX text does not. The limits sentence is generated from ``limits``
+    (default: the effective :data:`_SHELL_LIMITS`), never hand-written numbers
+    (#1487). Situational guidance lives where its situation arises: background
+    task mechanics in the core ``task-protocol`` skill, the working directory,
+    timeout and access rules on their arguments, the launcher-limit recipe in the
+    ``command_too_long`` error and the spill explanation in the spill record.
     """
     limits_text = _limits_text(limits or _SHELL_LIMITS)
     task_text = (
-        "For remote commands, use ssh_execute when available with the shared SSH profile "
-        "or jump route. Direct ssh in this local shell may be blocked by its network fence; "
-        "approval/bypass does not disable that fence. "
-        "For files outside permitted folders, declare access_paths and access_reason so CLIO "
-        "asks the user before execution. Include source and destination for moves. "
-        "Already approved downloaded source inputs can be read at their returned paths "
-        "without access_paths. Those paths stay read-only; save derivatives in the workspace. "
-        "By default background=false waits for command completion. Set background=true to "
-        "return a durable Shell task handle as soon as the command starts, before completion. "
-        "Continue independent work; use query_tasks, observe_tasks, wait_tasks, get_task_result "
-        "or cancel_tasks with the handle. Results arrive at the next model iteration or wake "
-        "you when idle. Conversation Stop leaves accepted background work running. A positive "
-        "timeout_s remains an execution limit. Set timeout_s=0 for no per-command deadline; "
-        "omitting it uses the configured default. An operator ceiling may still apply. "
+        "background=true returns a Shell task handle as soon as the command starts; the "
+        "task-protocol skill covers handles, Stop and cancellation. "
     )
     tools = ", ".join(_POSIX_TEXT_TOOLS)
     tools_line = (
@@ -410,25 +398,14 @@ def build_shell_tool_description(facts: ShellEnvFacts, limits: ShellLimits | Non
             "pipelines for cut/sed/awk/grep: on a host without WSL they fail, and the first "
             "`wsl` call boots a utility VM that stays resident holding gigabytes. "
             "Paths use Windows conventions (drive letters, backslashes) unless the bash "
-            "backend is active. For tabular, "
-            "CSV, or columnar work (column selection, filtering, joins) use the pandas "
-            "MCP tool when available instead of shell text pipelines — it is portable and "
-            "spawns no VM. The working directory must be inside CLIO_ALLOWED_ROOTS "
-            "or an approved downloaded source directory. "
-            "A command can retrieve public HTTPS data when network policy permits; "
-            "inspect its returned status and output before concluding access failed. "
+            "backend is active. "
             f"{task_text}{limits_text}"
         )
     return (
         f"Run one local shell command per call on a {facts.system_label} host and return stdout, "
         f"stderr, and exit code. Commands execute under {facts.shell_label}. "
         f"{tools_line} "
-        "Paths use POSIX conventions (forward slashes). For large tabular, CSV, or "
-        "columnar work (column selection, filtering, joins) prefer the pandas MCP tool "
-        "when available over ad-hoc text pipelines. The working directory must be inside "
-        "CLIO_ALLOWED_ROOTS or an approved downloaded source directory. "
-        "A command can retrieve public HTTPS data when network policy permits; "
-        "inspect its returned status and output before concluding access failed. "
+        "Paths use POSIX conventions (forward slashes). "
         f"{task_text}{limits_text}"
     )
 
@@ -458,8 +435,18 @@ def _log_shell_phase(
 async def bash(
     ctx: Context,
     command: str,
-    cwd: str | None = None,
-    timeout_s: float = _DEFAULT_TIMEOUT_S,
+    cwd: Annotated[
+        str | None,
+        Field(
+            description="Working directory, inside CLIO_ALLOWED_ROOTS or an approved downloaded source directory."
+        ),
+    ] = None,
+    timeout_s: Annotated[
+        float,
+        Field(
+            description="Seconds before the command is stopped; 0 means no per-command deadline. Omitted uses the configured default; an operator ceiling may still apply."
+        ),
+    ] = _DEFAULT_TIMEOUT_S,
     max_output_bytes: int = _SHELL_LIMITS.default_output_bytes,
     background: Annotated[
         bool,
@@ -470,7 +457,7 @@ async def bash(
     access_paths: Annotated[
         list[str] | None,
         Field(
-            description="Files or folders needing additional permission. Already approved downloaded source paths do not need this for reads and remain read-only. CLIO asks for folder access before running. Include both source and destination for a move."
+            description="Files or folders outside permitted folders; CLIO asks the user before running. Include both source and destination for a move. Already approved downloaded source paths need none for reads and stay read-only; save derivatives in the workspace."
         ),
     ] = None,
     access_reason: Annotated[

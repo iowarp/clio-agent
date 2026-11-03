@@ -318,6 +318,8 @@ def test_over_cap_boundary(tmp_path, monkeypatch):
     # Sabotage: increment the counter on dedup too, or check >cap not >=cap -> shifts.
     assert outs[2].accepted is False
     assert outs[2].reason == RejectionReason.OVER_CAP.value
+    # What to do about the cap is said when it is hit, not in the tool description.
+    assert "reuses its slot" in outs[2].detail and "companion files" in outs[2].detail
     assert P.proposal_count(app, sess.id, "t1") == 2
 
 
@@ -1319,6 +1321,23 @@ def test_create_artifact_tool_doc_states_name_is_target_path():
     doc = str(getattr(tool, "desc", "") or getattr(tool, "__doc__", "") or "")
     lowered = doc.lower()
     assert "target path" in lowered and "content" in lowered
+    assert "target path" in tool.args["name"]["description"].lower()
+
+
+def test_create_artifact_description_leaves_argument_rules_to_the_arguments():
+    """The kind enum, PDF preview rules and used refs are said once, on their arguments."""
+    from clio_agent.gact.artifacts.proposals import build_create_artifact_tool
+    from clio_agent.gact.types import AgentDef
+
+    tool = build_create_artifact_tool(AgentDef(id="main", title="m"))
+    for rejection in ("path_missing", "escapes_root", "over_cap", "invalid_kind", "missing_input"):
+        assert rejection in tool.desc
+    assert "accepted flag" in tool.desc
+    assert "ui_payload" not in tool.desc and "ui_payload" in tool.args["kind"]["description"]
+    assert (
+        "pdf_preview" not in tool.desc and "PDF preview" in tool.args["pdf_preview"]["description"]
+    )
+    assert "res_..." not in tool.desc and "res_..." in tool.args["used"]["description"]
 
 
 def test_absolute_path_name_registers_under_basename(tmp_path):

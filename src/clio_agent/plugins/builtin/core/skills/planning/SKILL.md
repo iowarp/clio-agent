@@ -1,7 +1,7 @@
 ---
 name: planning
 title: Plan the work before implementation
-description: Produce an approval plan when the user asks to plan before execution or an unresolved implementation decision needs approval. Enter Plan Mode with plan_enter, write the plan with plan_update, and hand it back with plan_exit. Routine authorized creation of reports, slides or other deliverables does not require this separate planning workflow.
+description: Use when the user asks for a plan before execution, or an unresolved implementation decision needs their approval (Plan Mode with plan_enter, plan_update and plan_exit).
 ---
 
 # Planning
@@ -11,6 +11,8 @@ file-mutating tools are blocked (declared read-only tools stay open), and the pl
 the one thing you change, through `plan_update`. You are here to produce a plan the
 user approves, not to execute it. Work the four phases below in order, then end your
 turn.
+Routine, authorized creation of reports, slides or other deliverables does not need
+this workflow.
 Shell tools are blocked even for inspection commands. Use the session's declared
 file-reading and inspection tools. If those cannot inspect a needed part of the
 repository, state that specific capability gap; do not treat it as a missing
