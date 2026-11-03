@@ -21,7 +21,12 @@ from typing import Any, Optional
 
 from clio_agent.arc.batch_put import BatchPutError, PutRecord
 from clio_agent.arc.blob_frame import stored_body
-from clio_agent.arc.clio_core_async_ops import store_delete, store_put, store_put_many
+from clio_agent.arc.clio_core_async_ops import (
+    store_delete,
+    store_put,
+    store_put_if_absent,
+    store_put_many,
+)
 from clio_agent.arc.companion_policy import may_carry_companion
 from clio_agent.arc.companion_write import (
     companion_body,
@@ -75,6 +80,27 @@ class ClioCoreWrites:
             stream_audit("store.put", kind=kind, name=name, size=len(data), offset=offset)
         guarded_store_rpc(self, "put", store_put, self, kind, name, data, offset, inline_kind=kind)
         self._put_companion(kind, name, search_text)
+
+    def put_if_absent(
+        self, kind: str, name: str, data: bytes, *, search_text: Optional[str] = None
+    ) -> bool:
+        """Create the record with raw ``data`` at offset 0 only if it does not exist.
+
+        clio-core decides atomically (``AsyncPutBlobIfAbsent``, iowarp-core 2.4): ``True``
+        when this call created it (its search companion is then written as
+        :meth:`put_at` writes it), ``False`` when it existed already (nothing written).
+        The data is raw, as :meth:`put_at` writes it: the chunk records frame themselves.
+        """
+        if kind == "segments":  # #1339: live-lane audit evidence (one row per put)
+            stream_audit("store.put", kind=kind, name=name, size=len(data), if_absent=True)
+        created = bool(
+            guarded_store_rpc(
+                self, "put", store_put_if_absent, self, kind, name, data, inline_kind=kind
+            )
+        )
+        if created:
+            self._put_companion(kind, name, search_text)
+        return created
 
     def _put_companion(self, kind: str, name: str, search_text: Optional[str]) -> None:
         """The optional BM25 companion (Thread D) at <name>.text; scan()/get() skip it."""

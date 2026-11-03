@@ -55,9 +55,13 @@ def _time(fn: Callable[[], Any], n: int) -> list[float]:
 
 
 class _Counting:
-    """Counts store calls and the bytes ``put`` / ``put_at`` send, by method and kind."""
+    """Counts store calls and the bytes ``put`` / ``put_at`` / ``put_if_absent`` send, by
+    method and kind."""
 
-    METHODS = ("put", "put_at", "put_many", "get", "get_raw", "delete", "exists", "sizes")
+    METHODS = (
+        "put", "put_at", "put_if_absent", "put_many",
+        "get", "get_raw", "delete", "exists", "sizes",
+    )
 
     def __init__(self, store: Any) -> None:
         self.store = store
@@ -70,7 +74,7 @@ class _Counting:
     def _wrap(self, name: str, fn: Callable[..., Any]) -> Callable[..., Any]:
         def wrapped(kind: str, *args: Any, **kwargs: Any) -> Any:
             self.calls[(name, kind)] += 1
-            if name in ("put", "put_at") and len(args) >= 2:
+            if name in ("put", "put_at", "put_if_absent") and len(args) >= 2:
                 self.bytes += len(args[1])
             return fn(kind, *args, **kwargs)
 

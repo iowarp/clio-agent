@@ -46,6 +46,14 @@ class ARCStore(Protocol):
         grows it, nothing shrinks it). ``search_text`` as for :meth:`put`."""
         ...
 
+    def put_if_absent(
+        self, kind: str, name: str, data: bytes, *, search_text: Optional[str] = None
+    ) -> bool:
+        """Create the record with raw ``data`` (as :meth:`put_at` at offset 0) only if it
+        does not exist, atomically: ``True`` when this call created it, ``False`` when
+        another writer already had (the stored bytes are unchanged)."""
+        ...
+
     def put_many(self, kind: str, records: Sequence[PutRecord]) -> None:
         """Put independent records together (no order between them).
 

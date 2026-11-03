@@ -211,6 +211,11 @@ class _MemoryStore:
         held[offset : offset + len(data)] = data
         self._data[(kind, name)] = bytes(held)
 
+    def put_if_absent(self, kind: str, name: str, data: bytes, *, search_text: Any = None) -> bool:
+        """Create the record only if absent (atomic: one dict operation under the GIL)."""
+        fresh = bytes(memoryview(data))  # a new object: identity says who stored it
+        return self._data.setdefault((kind, name), fresh) is fresh
+
     def put_many(self, kind: str, records: Any) -> None:
         """Put each record (an in-process dict cannot refuse one)."""
         for record in records:

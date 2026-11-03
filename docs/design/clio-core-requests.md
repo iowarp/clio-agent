@@ -2,7 +2,7 @@
 
 Status (2026-11-03): **not filed yet.** The texts are ready, but this session's GitHub integration cannot write to `iowarp/clio-core` (`403 Resource not accessible by integration`). The owner will grant access later. When it is granted:
 - file the parent issue first, in `iowarp/clio-core`;
-- file each of the four as its sub-issue;
+- file each of the others as its sub-issue;
 - record the issue numbers in the table below.
 
 Nothing goes in `iowarp/clio-agent`. The clio-core team decides how to solve each issue.
@@ -15,10 +15,11 @@ Nothing goes in `iowarp/clio-agent`. The clio-core team decides how to solve eac
 | 3 | Document, or make awaitable, when a deferred put is durable | — | not filed |
 | 4 | The idle daemon uses most of a core | — | not filed |
 | 5 | Build the macOS wheels for macOS 14 again | — | not filed |
+| 6 | Conditional puts in a batch, and a conditional put that replaces | — | not filed |
 
-The numbers match the sections below. The parent issue lists them by priority: 3, 2, 1, 4.
+The numbers match the sections below. The parent issue lists them by priority: 3, 2, 1, 4, 6, 5.
 
-Checked against clio-core `v2.4.0` (`3ae9fd9a`, released 2026-11-02). None of the four is in that release. CLIO moved to 2.4.0 (`ae67aba4`) after a neutral benchmark.
+Checked against clio-core `v2.4.0` (`3ae9fd9a`, released 2026-11-02). Issues 1 to 5 are not in that release; issue 6 asks to extend what it added. CLIO moved to 2.4.0 (`ae67aba4`) after a neutral benchmark.
 
 ---
 
@@ -32,8 +33,9 @@ Sub-issues, in priority order:
 3. Scope `BlobQuery`/`GetContainedBlobs` to the tag (blocks one blob per event)
 4. Idle daemon CPU (busy-poll)
 5. macOS 14 wheels (2.4.0 publishes macOS 15 wheels only, so CLIO Desktop's floor moved to macOS 15 with it)
+6. Conditional puts in a batch, and a conditional put that replaces (so the 2.4.0 conditional writes reach CLIO's grouped writes and shared index rows)
 
-Already in 2.4.0 and useful to CLIO: conditional writes in Python (`AsyncPutBlobIfAbsent`, `AsyncPutBlobIfVersion`, `AsyncGetBlobVersioned`), which give a compare-and-swap primitive for several agent processes sharing a session.
+Already in 2.4.0 and used by CLIO: `AsyncPutBlobIfAbsent` creates each content-addressed task record in one round trip instead of a read and a put, and decides which of two writers creates it. `AsyncPutBlobIfVersion` and `AsyncGetBlobVersioned` are not used yet; issue 6 says what CLIO needs to use them.
 
 Not in 2.4.0: free-threaded (`cp314t`) wheels. The bindings release the GIL during blocking calls, as 2.3.2 already mostly did, but the wheels are GIL builds. Free-threaded wheels are optional for CLIO today.
 
@@ -116,3 +118,18 @@ This matters for CLIO because it runs a local daemon per user on desktops and la
 
 ---
 
+## clio-core issue 6: Conditional puts in a batch, and a conditional put that replaces
+
+**What CLIO uses from 2.4.0.** `AsyncPutBlobIfAbsent` for content-addressed records (a task's content is stored once under its SHA-256). A new record costs one round trip instead of a read and a put, and when two writers create the same record, clio-core decides which one does (`clio_agent/arc/segment_create.py`).
+
+**Where it cannot be used.** CLIO writes most records in groups: the records of several tool calls are staged and then written with one multi-put per tag. A conditional put exists only for one blob at a time, so using it there would turn one round trip per group into one per record. CLIO keeps the group path, which reads the sizes of the new records first (one `sizes` probe per group). Two processes can then both find a record absent and both write it. For content-addressed records that is harmless (same content), but it is not exact.
+
+**Where `AsyncPutBlobIfVersion` does not fit yet.** The task index has rows that several writers update by reading, changing and rewriting them, for example a task tree's member list (`clio_agent/gact/task_index_writes.py`, `_merge`). Two things stop a compare-and-swap there:
+- these rows are staged and written with the rest of a group (the same multi-put as above);
+- CLIO's segment records are raw, append-only chunks with no length frame, so a shorter rewrite needs truncation. `AsyncPutBlobIfVersion` writes at an offset and never truncates. (CLIO's index rows carry their own length frame, so for them truncation is not the blocker.)
+
+**Ask.**
+1. A multi-put where each record carries a precondition (absent, or an expected version) and the result carries a status and new version per record, like `MultiPutBlobTask` with per-put status (issue 2).
+2. A replace variant of `AsyncPutBlobIfVersion` that sets the blob to exactly the given bytes, or a version precondition on put-replace (`kCtePutReplace`, issue 2).
+
+**Acceptance.** Python can create or compare-and-swap N records in one round trip with a status per record, and a compare-and-swap can leave a blob shorter than before.
