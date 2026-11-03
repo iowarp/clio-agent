@@ -79,7 +79,9 @@ def _fast_model_ref() -> str:
     from clio_agent.gact.fleet.selection import _fast_model  # noqa: PLC0415
 
     app, session_id = _ctx.active_app(), _ctx.active_session_id() or ""
-    session = app.state.sessions.get(session_id) if app is not None and session_id else None
+    if app is None or not session_id:
+        return ""
+    session = app.state.sessions.get(session_id)
     if session is None:
         return ""
     account = caller_model(app, session).get("provider_id", "")
