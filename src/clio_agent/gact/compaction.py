@@ -476,8 +476,10 @@ def _summary(app: Any, sid: str, plan: _ScopePlan, focus: str, summarize: Summar
         render_compaction_prompt,
     )
 
-    try:  # read from the configured file at every compaction (no restart, no fallback)
-        prompt = render_compaction_prompt(focus=focus, files=_context_file_inventory(app, sid))
+    try:  # the session's copy of clio.compaction, read at every compaction (no fallback)
+        prompt = render_compaction_prompt(
+            focus=focus, files=_context_file_inventory(app, sid), app=app, session_id=sid
+        )
     except CompactionPromptError as exc:
         raise CompactionError(500, exc.reason, str(exc), dict(exc.details or {})) from exc
     ask = summarize or _scope_summarize(app, sid, plan.scope, agent)
