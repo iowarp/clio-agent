@@ -1148,7 +1148,7 @@ def build_app(
     # WITHOUT importing _make_permission_gate/_make_tool_observer from app.py
     # (which would reintroduce the no-cycle violation). Callers prefer the
     # already-installed app.state.pending_permission_gate/pending_tool_observer
-    # and fall back to these factories — mirroring _call_enabled_external_mcp_tool.
+    # and fall back to these factories.
     app.state.make_permission_gate = lambda: _make_permission_gate(app)
     app.state.make_tool_observer = lambda: _make_tool_observer(app)
     # MCP Apps receives the full FastMCP result through a separate private
