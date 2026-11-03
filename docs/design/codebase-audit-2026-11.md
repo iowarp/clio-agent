@@ -30,6 +30,13 @@ Old code stays and looks alive. New code grows on a wrong model, and the bugs th
 
 See `claude-code-provider-review-2026-11.md`.
 
+**Done (`ee78181c`).** The conversation lives on the pooled entry that holds the client (`providers/claude_code_conversation.py`):
+- deleted: the registry, its LRU and capacity key, and the drop-listener and cross-key reset plumbing;
+- size: `conversations.py` + `claude_code_engine.py` + `claude_code_sessions.py` went from 190 + 663 + 791 lines to 57 + 139 + 645 + 772, counting the new module;
+- live on the real CLI: a delta, an ARC-op reset that clears the CLI (it forgot the earlier word), a side call, and a cancel in 0.6 s.
+
+**Still to do: the per-entry thread and event loop.** Every query is driven on the shared LM loop, but each entry still owns a thread and a loop, with cross-loop queues for streaming, cancel and teardown. Removing them requires every caller to use the LM loop: the sync engine twin drives its own loop today.
+
 ## 1b. One history writer for every session (rebuild; owned by the main thread)
 
 **What it owns.** Every session's history writes go through one store-I/O writer (`gact/core_io.py`), behind global locks: the task history (`gact/task_history*.py`), the task index revision (`gact/task_index*.py`) and the artifact registry. Their callers are the admission paths in `gact/external_tasks.py` and `native_*`.
