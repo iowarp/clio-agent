@@ -373,7 +373,7 @@ Production changes in this phase are observability only.
 5. Write the `explore`, `planner` and `review` prompts in the marketplace `delegation` plugin; move the Delegating section into `delegation.parent`; rewrite `delegation.child`.
 6. Read the exact dumps for the root agent and each role in full, then run the evaluation's "after Phase 1" configuration.
 
-Status (2026-11-02): steps 1, 2, 4, 5 and 6 done; step 3 partly (the skills listing and the largest tool descriptions are not trimmed). Step 6 became a loop, recorded in the ledger ("Prompt audit"): round 1 changed the prompt against the evaluation's evidence (config `prompt1`); its P4 regression traced to fixed caps on child reports, not to the prompt, which led to the agent-facing caps audit and its removals (config `caps1`). Every text CLIO injects is now a Markdown reminder template (`docs/design/sdk/reminders.md`).
+Status (2026-11-03): all steps done. Step 3's remaining trims landed in `e70b7cd9` and marketplace `d35bba5`/`bd8b0d5`: the skills listing went from 6,179 to 4,599 characters, and the four largest tool descriptions from 7,106 to 2,092 characters in total, their situational guidance moved into the tool responses (the spill note, the launcher-limit error, the `over_cap` rejection), the arguments and the skills. Step 6 became a loop, recorded in the ledger ("Prompt audit"): round 1 changed the prompt against the evaluation's evidence (config `prompt1`); its P4 regression traced to fixed caps on child reports, not to the prompt, which led to the agent-facing caps audit and its removals (config `caps1`). Every text CLIO injects is now a Markdown reminder template (`docs/design/sdk/reminders.md`).
 
 ## Phase 2: exploration primitives
 
