@@ -140,7 +140,7 @@ install_desktop() {
     || die "invalid release version: $tag"
   case "$os" in
     Darwin)
-      [ "$(sw_vers -productVersion | cut -d. -f1)" -ge 14 ] || die "CLIO Desktop requires macOS 14 or newer"
+      [ "$(sw_vers -productVersion | cut -d. -f1)" -ge 15 ] || die "CLIO Desktop requires macOS 15 or newer"
       # uname can describe the Rosetta shell rather than the physical machine.
       [ "$(sysctl -n hw.optional.arm64 2>/dev/null || true)" = 1 ] || [ "$cpu" = arm64 ] \
         || die "CLIO Desktop is not available for Intel Macs yet; install CLIO without --desktop instead"

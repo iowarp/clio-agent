@@ -19,6 +19,10 @@ TUI/HTTP surface aren't tracked here.
 
 ### Changed
 
+- CLIO Desktop requires macOS 15 or newer (was 14). iowarp-core 2.4.0, now required,
+  publishes macOS wheels for macOS 15 only; the installer, the bundle build
+  (`MACOSX_DEPLOYMENT_TARGET=15.0`) and the release startup checks moved with it.
+
 - `get_task_result` returns a result too big to inline as a file: `result` is
   `null`, `result_file` gives its path, size, media type and typed `reason`, and
   `result_excerpt` its beginning. The bound is

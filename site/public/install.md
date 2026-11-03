@@ -28,7 +28,7 @@ Supported:
 |---|---|---|
 | Windows 10 or 11, x64 | yes | yes |
 | Windows on ARM | yes (the x64 app, through emulation) | yes |
-| macOS 14 or newer, Apple Silicon | yes | yes |
+| macOS 15 or newer, Apple Silicon | yes | yes |
 | macOS, Intel | no desktop app yet | yes |
 | Linux x86_64 or aarch64 with `apt` or `dnf`/`rpm` | yes | yes |
 | Linux without a package manager | no | yes |

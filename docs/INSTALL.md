@@ -21,7 +21,7 @@ for Intel Macs yet; use Web via the service install there.
 ### Desktop from a terminal
 
 The install script installs the desktop app, bundled with its agent, with `--desktop`
-(macOS 14+ and Linux; Windows uses `install.ps1 -Desktop`). No Python, uv or Node is
+(macOS 15+ and Linux; Windows uses `install.ps1 -Desktop`). No Python, uv or Node is
 needed:
 
 ```sh
@@ -56,7 +56,7 @@ disables security settings or removes quarantine. Invalid checksums/signatures f
 before replacing an installed app.
 
 The macOS CI builds a DMG from source and boots its relocated application and packaged
-backend on macOS 14, 15, and 26. The same checks gate release publication. These checks
+backend on macOS 15 and 26. The same checks gate release publication. These checks
 validate package integrity and startup, separately from Apple notarization.
 
 **Proving a release candidate's desktop lifecycle (Windows).** `scripts/
