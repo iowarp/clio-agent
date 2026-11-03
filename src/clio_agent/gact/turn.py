@@ -259,9 +259,9 @@ async def _run_turn_in_background(
         # do anything useful. Don't raise — the publishing path
         # would crash and pollute logs with no client to notify.
         return
-    # #1215 S5: first-turn bring-up phase from "the background task started
+    # #1215 S5: the turn's bring-up phase from "the background task started
     # running" to "turn.started published" (see the end_phase call below).
-    bringup_timing.timer_for_session(app, sid).start_phase("turn.accept_gap")
+    bringup_timing.begin_turn(app, sid).start_phase("turn.accept_gap")
 
     # #767 Phase B: the turn's whole working set lives on one mutable ``TurnState``
     # threaded through the closures + body (formerly ~40 function-scope locals).
@@ -406,10 +406,6 @@ async def _run_turn_in_background(
         # expert_handoffs and returns the prediction (TRICKY #2: pred is a seam
         # return value, ``state.pred = forward_turn(state)``).
         state.pred = await forward_turn(state)
-        # #1215 S5: bring-up as far as instrumented (fleet.mount not wired yet,
-        # #1215 stays open) ends here on the success path; a failed first turn's
-        # still-open timer settles later via the registry's LRU eviction.
-        bringup_timing.finish_bringup(state.app, state.sid)
 
         if not await _apply_turn_prediction(
             state, _drain_observed_tool_calls, _update_retry_attempt
