@@ -12,8 +12,12 @@ What is deferred:
   ``tool(defer=True)``, or ``defer`` / ``servers.<name>.defer`` in the plugin's
   ``ai.iowarp.clio`` extension);
 - an MCP server whose plugin says nothing, when its schemas exceed the smaller of
-  ``tools.defer_share`` of the model's context window and ``tools.defer_tokens``.
-  A plugin's own native and Python tools are deferred only when it says so.
+  ``tools.defer_share`` of the model's context window and ``tools.defer_tokens``;
+- a native or Python tool whose plugin says nothing, when ``tools.defer_builtins`` is
+  on (the default). Across 464 evaluation sessions 54 of the 67 listed tools, 77% of
+  the listing's characters, were never called (2026-11); a plugin keeps a tool listed
+  by declaring ``defer=False``, and ``tools.never_defer`` (the core loop) is always
+  listed.
 
 Nothing is deferred when the agent cannot call ``search_tools`` (an allowlist without
 it): the tools are listed in full and the trace records ``tools_deferral_unavailable``.
@@ -49,6 +53,7 @@ TOOLS_DEFERRAL_UNAVAILABLE = "tools_deferral_unavailable"
 #: declares. An entry ending in ``*`` names a prefix.
 _NEVER_DEFER: Sequence[str] = (
     SEARCH_TOOLS,
+    "ask_user",
     "load_skill",
     "submit",
     "run_code",
@@ -96,6 +101,14 @@ def deferral_enabled() -> bool:
     off lists every tool, for the deferral ablation)."""
     return conf.resolve(
         "tools.deferral", env="CLIO_TOOLS_DEFERRAL", default=True, cast=conf.as_bool
+    )
+
+
+def defer_builtins() -> bool:
+    """Whether native and Python tools that declare nothing are deferred
+    (``tools.defer_builtins``, default on)."""
+    return conf.resolve(
+        "tools.defer_builtins", env="CLIO_TOOLS_DEFER_BUILTINS", default=True, cast=conf.as_bool
     )
 
 
@@ -158,11 +171,15 @@ def plan_disclosure(
                 deferred.update(names)
                 deferred_servers.add(owner)
             continue
-        deferred.update(name for name in names if rows.get(name, {}).get("defer") is True)
+        by_default = defer_builtins()
+        for name in names:
+            declared = rows.get(name, {}).get("defer")
+            if declared is True or (declared is None and by_default):
+                deferred.add(name)
     never, never_prefixes = never_defer()
     deferred = {
         name
-        for name in deferred - loaded
+        for name in deferred - loaded - {SEARCH_TOOLS}  # the loader is never behind itself
         if name not in never and not name.startswith(never_prefixes)
     }
     if not deferred:

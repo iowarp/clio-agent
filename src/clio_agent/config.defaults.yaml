@@ -1357,6 +1357,13 @@ tools.call_workers: 32
 # plugin tools page writes this mapping.
 # tools.callers:  # computed at runtime: {}
 
+# CLIO_TOOLS_DEFER_BUILTINS  (bool)  <- src/clio_agent/gact/agents/deferred_tools.py
+# Whether built-in and plugin Python tools that do not declare defer are
+# deferred behind search_tools (named in the prompt, schemas loaded on
+# demand); tools.never_defer stays listed and a plugin keeps a tool listed
+# with defer=False.
+tools.defer_builtins: true
+
 # CLIO_TOOLS_DEFER_SHARE  (str)  <- src/clio_agent/gact/agents/deferred_tools.py
 # Share of the model's context window (0-1) an MCP server's tool schemas may
 # take before its tools are deferred behind search_tools, when its plugin
@@ -1555,7 +1562,7 @@ tools.mcp_cache.temp_max_age_days: 3.0
 # CLIO_TOOLS_NEVER_DEFER  (list)  <- src/clio_agent/gact/agents/deferred_tools.py
 # Tools never deferred behind search_tools whatever a plugin declares (the
 # core loop); an entry ending in * names a prefix, such as fs_*.
-tools.never_defer: ["search_tools", "load_skill", "submit", "run_code", "wait_tasks", "spawn_agent_task", "spawn_agents_parallel", "write_todos", "plan_enter", "plan_update", "plan_exit", "fs_*", "shell_*"]
+tools.never_defer: ["search_tools", "ask_user", "load_skill", "submit", "run_code", "wait_tasks", "spawn_agent_task", "spawn_agents_parallel", "write_todos", "plan_enter", "plan_update", "plan_exit", "fs_*", "shell_*"]
 
 # CLIO_TOOLS_PER_SERVER_CONCURRENCY  (int)  <- src/clio_agent/gact/agents/tool_concurrency.py
 # Tool calls to one server that run at once, for a step's calls and a

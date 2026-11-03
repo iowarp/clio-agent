@@ -1203,6 +1203,11 @@ KEY_NOTES: dict[str, str] = {
         "How long a pending clio-core call is polled before the daemon's progress is first "
         "measured; a stall is still decided a whole stall window after that."
     ),
+    "tools.defer_builtins": (
+        "Whether built-in and plugin Python tools that do not declare defer are deferred "
+        "behind search_tools (named in the prompt, schemas loaded on demand); tools.never_defer "
+        "stays listed and a plugin keeps a tool listed with defer=False."
+    ),
     "tools.deferral": (
         "Whether tools may be deferred behind search_tools; off lists every tool (the "
         "deferral ablation), recorded as tools_deferral_off in the trace."

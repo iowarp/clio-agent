@@ -146,6 +146,35 @@ class TestPlan:
         plan = plan_disclosure(resolution, tools)
         assert plan.deferred == {"shell_bash"}
 
+    def test_a_builtin_that_declares_nothing_is_deferred_by_default(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Built-ins follow MCP servers: deferred unless the core loop or declared
+        listed. SABOTAGE: drop the ``declared is None and by_default`` branch and
+        connected_data_connect stays listed."""
+        resolution = SimpleNamespace(
+            mcp_servers={},
+            tools=[
+                {"name": "connected_data_connect", "plugin": "core"},
+                {"name": "create_artifact", "plugin": "core", "defer": False},
+                {"name": "run_code", "plugin": "core"},
+            ],
+            plugins=[{"id": "core", "description": "Conversation runtime."}],
+        )
+        tools = _tools(SEARCH_TOOLS, "connected_data_connect", "create_artifact", "run_code")
+        plan = plan_disclosure(resolution, tools)
+        assert plan.deferred == {"connected_data_connect"}
+        assert "connected_data_connect" in plan.entry
+        monkeypatch.setenv("CLIO_TOOLS_DEFER_BUILTINS", "false")
+        assert plan_disclosure(resolution, tools).deferred == frozenset()
+
+    def test_search_tools_is_never_deferred_whatever_the_setting(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("CLIO_TOOLS_NEVER_DEFER", "fs_*")
+        tools = _tools(SEARCH_TOOLS, "ask_user")
+        assert plan_disclosure(_resolution(), tools).deferred == {"ask_user"}
+
     def test_loaded_tools_stay_listed(self) -> None:
         tools = _tools(SEARCH_TOOLS, "cron_list")
         plan = plan_disclosure(_resolution(), tools, loaded=frozenset({"cron_list"}))
