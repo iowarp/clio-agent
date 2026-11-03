@@ -69,6 +69,7 @@ from clio_agent.lm.engines.text_tools import (
 )
 from clio_agent.providers import claude_code_bridge as _bridge
 from clio_agent.providers.claude_code_audit import emit_call_started, emit_call_usage
+from clio_agent.providers.claude_code_clear import side_key
 from clio_agent.providers.claude_code_cwd import session_cwd
 from clio_agent.providers.claude_code_lifecycle import DEAD_ENTRY_MARKER
 from clio_agent.providers.claude_code_multimodal import native_blocks
@@ -209,7 +210,9 @@ class AsyncClaudeCodeEngine:
             ),
         )
         yield StreamStartEvent(model=request.model)
-        entry = _STREAM_CLIENT_POOL.entry_for(session_id=gact_session, gact_session_id=gact_session)
+        # One-shot calls run on the session's side client: never on an agent's conversation.
+        pool_key = gact_session if send.key is not None else side_key(gact_session)
+        entry = _STREAM_CLIENT_POOL.entry_for(session_id=pool_key, gact_session_id=pool_key)
         received = False
         try:
             for attempt in range(2):
@@ -225,6 +228,7 @@ class AsyncClaudeCodeEngine:
                             cwd=cwd,
                             thinking=self.thinking,
                             system_prompt=system,
+                            fresh=send.handle is None,
                         )
                     ) as messages:
                         async for message in messages:
@@ -248,7 +252,7 @@ class AsyncClaudeCodeEngine:
                         gact_session,
                     )
                     entry = _STREAM_CLIENT_POOL.entry_for(
-                        session_id=gact_session, gact_session_id=gact_session
+                        session_id=pool_key, gact_session_id=pool_key
                     )
         except TimeoutError as exc:  # typed by claude_code_expiry: connect vs stream idle
             _reset(send)
@@ -280,6 +284,8 @@ class AsyncClaudeCodeEngine:
             elif turn.provider_compacted:
                 _CONVERSATIONS.reset(send.key, "provider_compacted")
             elif send.handle is None:
+                # The client was cleared for this conversation: its others are gone.
+                _CONVERSATIONS.reset_session(gact_session, "conversation_cleared")
                 _CONVERSATIONS.opened(send.key, session_id, request, system)
             else:
                 _CONVERSATIONS.continued(send.key, request)

@@ -86,6 +86,7 @@ def test_reset_catalog_covers_the_declared_reasons() -> None:
         "session_evicted",
         "provider_error",
         "provider_compacted",
+        "conversation_cleared",
     }
 
 

@@ -75,6 +75,7 @@ from clio_agent.providers.claude_code_cancel import (
     register_sdk_stream,
     unregister_sdk_stream,
 )
+from clio_agent.providers.claude_code_clear import clear_conversation, side_key
 from clio_agent.providers.claude_code_expiry import connect_while_working, relay_with_idle_bound
 from clio_agent.providers.claude_code_idle_reaper import IdleSessionReaper
 from clio_agent.providers.claude_code_multimodal import sdk_prompt
@@ -229,6 +230,7 @@ class _StreamClientEntry:
         self._system_prompt: str | None = None
         self._bound_session = ""  # the GACT session the connected client serves
         self._drop_announced = False  # this client's loss was already announced
+        self._holds_history = False  # the connected CLI holds a conversation (/clear first)
 
     @property
     def dead(self) -> bool:
@@ -332,6 +334,7 @@ class _StreamClientEntry:
         self._client = client
         self._bound_session = gact_session_id
         self._drop_announced = False
+        self._holds_history = False  # a new CLI process starts empty
         self._model, self._cwd = model, cwd
         self._thinking, self._thinking_key = thinking, thinking_key_
         self._system_prompt = system_prompt
@@ -497,8 +500,13 @@ class _StreamClientEntry:
         cwd: str | None = None,
         thinking: dict[str, Any] | None = None,
         system_prompt: str | None = None,
+        fresh: bool = False,
     ) -> AsyncGenerator[Any, None]:
-        """Yield SDK messages for one ``query`` on the pooled client (cross-loop)."""
+        """Yield SDK messages for one ``query`` on the pooled client (cross-loop).
+
+        ``fresh``: the payload is a whole conversation, so a client already holding one
+        is cleared first (:mod:`~clio_agent.providers.claude_code_clear`).
+        """
         if self._dead:
             from clio_agent.providers.claude_code_lifecycle import (  # noqa: PLC0415
                 dead_entry_error_message,
@@ -532,6 +540,9 @@ class _StreamClientEntry:
                     system_prompt=system_prompt,
                 )
                 async with self._query_lock:
+                    if fresh and self._holds_history:
+                        await clear_conversation(client, session_id)
+                    self._holds_history = True
                     query_input: Any = (
                         sdk_prompt(payload, native_blocks) if native_blocks else payload
                     )
@@ -713,8 +724,8 @@ class ClaudeStreamClientPool:
         if not session_id:
             return
         with self._guard:
-            entry = self._entries.pop(session_id, None)
-        if entry is not None:
+            entries = [self._entries.pop(k, None) for k in (session_id, side_key(session_id))]
+        for entry in filter(None, entries):
             with contextlib.suppress(Exception):
                 entry.close_blocking()
 

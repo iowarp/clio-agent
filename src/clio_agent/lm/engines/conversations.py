@@ -105,7 +105,8 @@ class ConversationRegistry:
             self._resets[key] = reason
 
     def reset_session(self, session: str, reason: str) -> None:
-        """Reset every conversation of the GACT session ``session`` (its client is gone)."""
+        """Reset every conversation of the GACT session ``session`` (its client is gone,
+        or was cleared for a conversation :meth:`plan` already dropped)."""
         with self._lock:
             keys = [key for key in self._live if key[0] == session]
         for key in keys:

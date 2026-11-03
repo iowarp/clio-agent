@@ -63,6 +63,14 @@ STATEFUL_RESET_REASONS: dict[str, dict[str, Any]] = {
             "reset: the session is restarted with a full send."
         ),
     },
+    "conversation_cleared": {
+        "category": "stateful_reset",
+        "description": (
+            "Another conversation of this session was opened on the same Claude Code "
+            "client, which cleared the CLI's history (one client holds one conversation). "
+            "The next call of this one is a full send."
+        ),
+    },
     "session_evicted": {
         "category": "stateful_reset",
         "description": (
