@@ -253,6 +253,11 @@ What changed:
 
 All 200 calls recorded, end to end in 1.3-1.6 s against 18-19 s before. The remaining writer time is clio-core processing the blobs themselves (about 4 per call: two content records, two index rows) and Python work per record.
 
+Recovery (follow-up, tested in `tests/test_arc/test_read_only_outcome_recovery.py` and `tests/test_gact/test_interrupted_tool_calls.py`):
+
+- **Partial landing.** A group whose `_events` put failed after its lane put landed was retried as if nothing had landed. The retry minted a new observation id and completion time. With the index built, the lane refused the changed outcome, the record was logged `read_only_outcome_unrecorded` although task readers showed it, and `_events` (export, trace, provenance) never got it. Before the build, the lane got a second submission and a second settled snapshot. Now the record's observation id and settle time are fixed when it is queued, and the retry runs under `task_event_reconcile.reconciled`: each task event is written only to the record that lacks it (typed `task_event_reconciled`; a different body under the same identity is `task_event_identity_conflict`).
+- **Crash window.** A record still in the queue is lost with the process: no task, index row or task event survives, and nothing is resubmitted. The turn's `tool.call.started` can then be the call's only record (a `tool_call` part is sealed only at its result). Turn recovery (`restart_interruptions`) now gives the interrupted turn's closing row a `tool_call` part for each call that started with no recorded completion, typed `tool_outcome_unrecorded` (`gact/interrupted_tool_calls.py`), so the transcript reports its outcome as unknown instead of leaving it out.
+
 Not used: clio-core's deferred puts (`AsyncPutBlobDefer`). They batch small puts into one native task, but small writes may wait in client-side sieve pages, a put has no confirmation of its own (only a sticky process-wide `DeferErrorCount` and the process-wide drain `AwaitPutsUntilSpace(0)`), and a failure cannot be attributed to a blob. Group commit needs both a per-record confirmation before it reports a record durable and per-blob failures to abandon a chunk.
 
 ## Measurement notes
