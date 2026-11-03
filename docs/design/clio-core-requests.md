@@ -10,10 +10,12 @@ Nothing goes in `iowarp/clio-agent`. The clio-core team decides how to solve eac
 | # | Issue (in iowarp/clio-core) | Filed as | State |
 | --- | --- | --- | --- |
 | parent | CLIO agent parent request: clio-core changes for the next release | — | not filed |
-| 1 | Deferred puts: durability contract and a per-put or per-batch await | — | not filed |
-| 2 | Python bindings for the existing native put-replace, TruncateBlob, multi-get, multi-put, DelTag | — | not filed |
-| 3 | Scope BlobQuery / GetContainedBlobs to the tag | — | not filed |
+| 1 | Scope BlobQuery / GetContainedBlobs to the tag | — | not filed |
+| 2 | Expose the existing native write and read primitives to Python | — | not filed |
+| 3 | Document, or make awaitable, when a deferred put is durable | — | not filed |
 | 4 | The idle daemon uses most of a core | — | not filed |
+
+The numbers match the sections below. The parent issue lists them by priority: 3, 2, 1, 4.
 
 Checked against clio-core `v2.4.0` (`3ae9fd9a`, released 2026-11-02). None of the four is in that release.
 
