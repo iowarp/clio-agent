@@ -3,8 +3,8 @@
 Prompt files are Markdown with flat YAML-like frontmatter:
 
 ---
-id: clio.chat
-title: Chat prompt
+id: clio.compaction
+title: Compaction checkpoint
 profile: heavy
 provider: anthropic
 model: claude-sonnet-4-5
@@ -19,7 +19,6 @@ execution semantics part of the trusted prompt path.
 from __future__ import annotations
 
 import hashlib
-import inspect
 import os
 import re
 from dataclasses import dataclass, field
@@ -108,114 +107,19 @@ def default_prompt_sources(
     ]
 
 
-def _builtin_profile_policies() -> dict[str, str]:
-    """Load built-in profile policy text from packaged Markdown files."""
-
-    rows: dict[str, str] = {}
-    try:
-        root = resources.files("clio_agent.prompt_packs.builtin") / "profiles"
-        for name in sorted(path.name for path in root.iterdir() if path.name.endswith(".md")):
-            parsed = parse_prompt_text(
-                (root / name).read_text(encoding="utf-8"),
-                scope="builtin",
-                source_path=f"package://clio_agent.prompt_packs.builtin/profiles/{name}",
-                fallback_id=name.removesuffix(".md"),
-            )
-            profile = next(iter(parsed.profiles.values()), None)
-            if profile is not None:
-                rows[parsed.id] = profile.text
-    except Exception:  # noqa: BLE001 - prompt parse failure yields an empty mapping
-        return {}
-    return rows
-
-
-def _builtin_alignment_requirements() -> dict[str, tuple[str, ...]]:
-    """Load built-in prompt-family requirements from packaged Markdown files."""
-
-    rows: dict[str, tuple[str, ...]] = {}
-    try:
-        root = resources.files("clio_agent.prompt_packs.builtin") / "requirements"
-        for name in sorted(path.name for path in root.iterdir() if path.name.endswith(".md")):
-            parsed = parse_prompt_text(
-                (root / name).read_text(encoding="utf-8"),
-                scope="builtin",
-                source_path=f"package://clio_agent.prompt_packs.builtin/requirements/{name}",
-                fallback_id=name.removesuffix(".md"),
-            )
-            profile = next(iter(parsed.profiles.values()), None)
-            if profile is None:
-                continue
-            rows[parsed.id] = tuple(
-                line.strip()[2:].strip()
-                for line in profile.text.splitlines()
-                if line.strip().startswith("- ")
-            )
-    except Exception:  # noqa: BLE001 - prompt parse failure yields an empty mapping
-        return {}
-    return rows
-
-
 def builtin_prompt_definitions() -> dict[str, PromptDefinition]:
-    """Return built-in CLIO prompt definitions loaded from package data."""
+    """Return built-in CLIO prompt definitions loaded from package data.
 
+    The built-ins are the reminders (``reminders/*.md``) and the templates
+    (``templates/*.md``, such as ``clio.compaction``), each used verbatim. The former
+    chat, planner, answer and expert prompts, with the behaviour profiles and
+    per-family requirements appended to them, were removed with the chat module and
+    the planner loop that read them: they were editable but had no effect.
+    """
     rows: dict[str, PromptDefinition] = {}
-    alignment_requirements = _builtin_alignment_requirements()
-
-    def add(prompt_id: str, title: str, text: str, *, description: str = "") -> None:
-        cleaned = inspect.cleandoc(text or "").strip()
-        profiles = _aligned_builtin_profiles(prompt_id, cleaned)
-        rows[prompt_id] = PromptDefinition(
-            id=prompt_id,
-            title=title,
-            description=description,
-            default_profile="default",
-            profiles=profiles,
-            scope="builtin",
-            source_path=f"package://clio_agent.prompt_packs.builtin/{prompt_id}.md",
-            metadata={
-                "source": "packaged_prompt_file",
-                "alignment": "public_reference_matrix",
-                "references": "PROMPT_ALIGNMENT_REFERENCE_MATRIX.md",
-                "requirements": list(alignment_requirements.get(prompt_id, ())),
-                "profiles": list(profiles),
-            },
-        )
-
-    try:
-        root = resources.files("clio_agent.prompt_packs.builtin")
-        prompt_files = [(path, path.name) for path in root.iterdir() if path.name.endswith(".md")]
-        runtime_root = root / "runtime"
-        if runtime_root.is_dir():
-            prompt_files.extend(
-                (path, f"runtime/{path.name}")
-                for path in runtime_root.iterdir()
-                if path.name.endswith(".md")
-            )
-        for path, source_name in sorted(prompt_files, key=lambda item: item[1]):
-            name = path.name
-            text = path.read_text(encoding="utf-8")
-            parsed = parse_prompt_text(
-                text,
-                scope="builtin",
-                source_path=f"package://clio_agent.prompt_packs.builtin/{source_name}",
-                fallback_id=name.removesuffix(".md"),
-            )
-            base_profile = next(iter(parsed.profiles.values()), None)
-            add(parsed.id, parsed.title or parsed.id, base_profile.text if base_profile else "")
-            rows[parsed.id].description = parsed.description
-            rows[parsed.id].source_path = parsed.source_path
-            rows[parsed.id].metadata.update(parsed.metadata)
-        rows.update(_builtin_verbatim(root, "reminders"))
-        rows.update(_builtin_verbatim(root, "templates"))
-    except Exception as exc:  # pragma: no cover - defensive import guard  # noqa: BLE001 - import failure surfaced as an error prompt to the user
-        text = (
-            "CLIO built-in prompt files could not be imported. Check packaged "
-            f"prompt resources before running prompt alignment. Error: {type(exc).__name__}"
-        )
-        add("clio.chat", "Chat agent", text, description="fallback import-error prompt")
-        rows["clio.chat"].enabled = False
-        rows["clio.chat"].validation_errors.append(text)
-
+    root = resources.files("clio_agent.prompt_packs.builtin")
+    for folder_name in ("reminders", "templates"):
+        rows.update(_builtin_verbatim(root, folder_name))
     return rows
 
 
@@ -237,39 +141,6 @@ def _builtin_verbatim(root: Any, folder_name: str) -> dict[str, PromptDefinition
         )
         rows[parsed.id] = parsed
     return rows
-
-
-def _aligned_builtin_profiles(prompt_id: str, base_text: str) -> dict[str, PromptProfile]:
-    """Return CLIO's aligned built-in prompt profiles for one prompt family."""
-
-    base = base_text.strip()
-    alignment_requirements = _builtin_alignment_requirements()
-    profile_policies = _builtin_profile_policies()
-    requirements = "\n".join(f"- {item}" for item in alignment_requirements.get(prompt_id, ()))
-    family_block = f"\n\nPrompt-family requirements:\n{requirements}" if requirements else ""
-    profiles: dict[str, PromptProfile] = {}
-    for name, policy in profile_policies.items():
-        profile_text = "\n\n".join(
-            part
-            for part in (
-                base,
-                inspect.cleandoc(policy).strip(),
-                family_block.strip(),
-            )
-            if part
-        )
-        profiles[name] = PromptProfile(
-            name=name,
-            text=profile_text,
-            scope="builtin",
-            checksum=_checksum(profile_text),
-            metadata={
-                "alignment": "public_reference_matrix",
-                "behavior_profile": name,
-                "prompt_family": prompt_id,
-            },
-        )
-    return profiles
 
 
 class PromptRegistry:

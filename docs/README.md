@@ -19,7 +19,7 @@ lives under [archive/](archive/README.md).
 - [PLUGINS_AND_FLOWS.md](PLUGINS_AND_FLOWS.md) — Agent Plugins, the Python Agent SDK, resolution, trust and flows.
 - [HOOKS.md](HOOKS.md) — the declarative hook system: wire contract, config, trust, events.
 - [PROMPT_SYSTEM.md](PROMPT_SYSTEM.md) — the external, editable prompt system.
-- [PROMPT_ALIGNMENT_REFERENCE_MATRIX.md](PROMPT_ALIGNMENT_REFERENCE_MATRIX.md) — prompt families mapped to public sources.
+- [PROMPT_ALIGNMENT_REFERENCE_MATRIX.md](archive/PROMPT_ALIGNMENT_REFERENCE_MATRIX.md) — prompt families mapped to public sources.
 - [SEMANTIC_EXECUTION_TRACES.md](SEMANTIC_EXECUTION_TRACES.md) — the semantic event log and traces.
 
 ## Behavior & contracts

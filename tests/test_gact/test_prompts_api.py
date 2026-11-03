@@ -57,35 +57,40 @@ def test_capabilities_advertise_prompt_registry(client: TestClient) -> None:
 
 
 def test_builtin_prompts_are_listed_and_resolvable(client: TestClient) -> None:
+    """The built-ins are the reminders and templates, used verbatim (the chat, planner,
+    answer and expert prompts that nothing read were removed)."""
     listed = client.get("/v1/prompts")
 
     assert listed.status_code == 200
     prompts = {row["id"]: row for row in listed.json()["prompts"]}
-    assert "clio.chat" in prompts
-    assert "default" in prompts["clio.chat"]["profiles"]
-    assert "heavy" in prompts["clio.chat"]["profiles"]
-    assert "small_model" in prompts["clio.main.planner"]["profiles"]
+    assert "clio.compaction" in prompts and "clio.reminder.child_report" in prompts
+    assert not {"clio.example", "clio.main.planner", "clio.main.answer"} & set(prompts)
 
-    resolved = client.get("/v1/prompts/clio.chat").json()["prompt"]
-    assert resolved["id"] == "clio.chat"
+    resolved = client.get("/v1/prompts/clio.compaction").json()["prompt"]
+    assert resolved["id"] == "clio.compaction"
     assert resolved["profile"] == "default"
-    assert "CLIO" in resolved["text"]
-    assert "Never claim a tool call" in resolved["text"]
+    assert resolved["text"].startswith("The context window is nearly full")
     assert resolved["scope"] == "builtin"
-    assert resolved["checksum"]
-    assert resolved["source_path"].startswith("package://clio_agent.prompt_packs.builtin/")
-    assert resolved["metadata"]["source"] == "packaged_prompt_file"
+    assert resolved["source_path"] == (
+        "package://clio_agent.prompt_packs.builtin/templates/clio.compaction.md"
+    )
+    assert resolved["metadata"]["kind"] == "template"
 
-    heavy = client.get("/v1/prompts/clio.main.planner?profile=heavy").json()["prompt"]
-    assert heavy["profile"] == "heavy"
-    assert heavy["metadata"]["alignment"] == "public_reference_matrix"
-    assert "delegate to scoped child experts" in heavy["text"]
-    assert "declared tools and experts" in heavy["text"]
+
+_RENDER_ME = """Agents:
+{{ agents.available_tree }}
+Tools:
+{{ tools.available }}
+Memory: {{ memory.policy_summary }}
+Commands:
+{{ commands.agent_invocable }}"""
 
 
 def test_prompt_render_expands_safe_dynamic_placeholders(client: TestClient) -> None:
+    saved = client.put("/v1/prompts/clio.render_me", json={"profile": "heavy", "text": _RENDER_ME})
+    assert saved.status_code == 200, saved.text
     resp = client.post(
-        "/v1/prompts/clio.main.planner/render",
+        "/v1/prompts/clio.render_me/render",
         json={
             "profile": "heavy",
             "context": {
@@ -143,13 +148,13 @@ def test_prompt_validate_and_reload_endpoints(client: TestClient) -> None:
     reload_resp = client.post("/v1/prompts/reload", json={})
 
     assert reload_resp.status_code == 200, reload_resp.text
-    assert "clio.chat" in reload_resp.json()["reload"]["prompt_ids"]
+    assert "clio.compaction" in reload_resp.json()["reload"]["prompt_ids"]
     assert reload_resp.json()["reload"]["prompt_count"] >= 1
 
 
 def test_put_prompt_saves_external_profile_and_resolution_uses_it(client: TestClient) -> None:
     resp = client.put(
-        "/v1/prompts/clio.chat",
+        "/v1/prompts/clio.example",
         json={
             "profile": "heavy",
             "title": "Heavy chat",
@@ -165,7 +170,7 @@ def test_put_prompt_saves_external_profile_and_resolution_uses_it(client: TestCl
     saved = resp.json()["prompt"]
     assert saved["profiles"]["heavy"]["text"] == "Use detailed but grounded CLIO behavior."
 
-    resolved = client.get("/v1/prompts/clio.chat?profile=heavy").json()["prompt"]
+    resolved = client.get("/v1/prompts/clio.example?profile=heavy").json()["prompt"]
     assert resolved["text"] == "Use detailed but grounded CLIO behavior."
     assert resolved["title"] == "Heavy chat"
     assert resolved["scope"] == "global"
@@ -176,7 +181,7 @@ def test_put_prompt_saves_external_profile_and_resolution_uses_it(client: TestCl
 
 def test_put_prompt_rejects_invalid_profile(client: TestClient) -> None:
     resp = client.put(
-        "/v1/prompts/clio.chat",
+        "/v1/prompts/clio.example",
         json={"profile": "../bad", "text": "bad"},
     )
 
@@ -190,28 +195,28 @@ def test_session_prompt_override_does_not_leak_to_other_sessions(tmp_path: Path)
         sid_a = c.post("/v1/sessions", json={"title": "A"}).json()["id"]
         sid_b = c.post("/v1/sessions", json={"title": "B"}).json()["id"]
         saved = c.put(
-            "/v1/prompts/clio.chat",
+            "/v1/prompts/clio.compaction",
             json={
                 "scope": "session",
                 "session_id": sid_a,
                 "profile": "default",
-                "text": "Session A chat prompt.",
+                "text": "Session A compaction prompt.",
             },
         )
         assert saved.status_code == 200, saved.text
 
         prompt_a = c.get(
-            "/v1/prompts/clio.chat",
+            "/v1/prompts/clio.compaction",
             params={"session_id": sid_a},
         ).json()["prompt"]
         prompt_b = c.get(
-            "/v1/prompts/clio.chat",
+            "/v1/prompts/clio.compaction",
             params={"session_id": sid_b},
         ).json()["prompt"]
 
-    assert prompt_a["text"] == "Session A chat prompt."
+    assert prompt_a["text"] == "Session A compaction prompt."
     assert prompt_a["scope"] == "session"
-    assert "Session A chat prompt." not in prompt_b["text"]
+    assert "Session A compaction prompt." not in prompt_b["text"]
 
 
 def test_workspace_prompt_override_uses_workspace_root(tmp_path: Path) -> None:
@@ -227,7 +232,7 @@ def test_workspace_prompt_override_uses_workspace_root(tmp_path: Path) -> None:
             },
         ).json()["id"]
         saved = c.put(
-            "/v1/prompts/clio.chat",
+            "/v1/prompts/clio.example",
             json={
                 "scope": "workspace",
                 "workspace_id": wid,
@@ -237,11 +242,11 @@ def test_workspace_prompt_override_uses_workspace_root(tmp_path: Path) -> None:
         )
         assert saved.status_code == 200, saved.text
         prompt = c.get(
-            "/v1/prompts/clio.chat",
+            "/v1/prompts/clio.example",
             params={"workspace_id": wid},
         ).json()["prompt"]
 
-    assert (workspace / ".clio-agent" / "shared" / "prompts" / "clio.chat--default.md").exists()
+    assert (workspace / ".clio-agent" / "shared" / "prompts" / "clio.example--default.md").exists()
     assert not (workspace / ".clio").exists()
     assert prompt["text"] == "Workspace chat prompt."
     assert prompt["scope"] == "workspace"
@@ -283,8 +288,10 @@ def test_planner_render_context_uses_agent_scoped_commands(
             "/v1/sessions", json={"title": "t", "metadata": {"agent_ref": "clio/caller"}}
         ).json()["id"]
 
+        saved = c.put("/v1/prompts/clio.render_me", json={"text": _RENDER_ME})
+        assert saved.status_code == 200, saved.text
         rendered = c.post(
-            "/v1/prompts/clio.main.planner/render",
+            "/v1/prompts/clio.render_me/render",
             json={"session_id": sid},
         ).json()["prompt"]
 
