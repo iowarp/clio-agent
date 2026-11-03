@@ -344,6 +344,18 @@ The per-run report now records each run's context, compactions (before and after
 13. **A weaker Claude model does not make it long either.** H8 on `claude-haiku-5-5` was correct (12/12) in 6 steps and 81 s, with file tools and no children. The synthetic environments cannot reproduce the OPAL run's length on Claude models. The real lighthouse is the OPAL investigation itself, rerun on its deployment (Polaris/Eagle, its model) with the current head. That deployment is out of this session's reach, and it would show what today's context fixes changed there (findings 6 to 9: duplicated shell results, compaction that never shrank the context on `claude_code`).
 12. **Tool time can dominate a short run.** H8 spent 65 of 140 s in four shell calls (grep loops over 531 files), more than model time (61 s).
 
+### Multi-turn science chains and the cost of a turn's start (2026-11-03, `claude-sonnet-5-5` on `claude_code`)
+
+The attention-provenance suite's 100 OPAL-style chains (`spotter-ai-genesis/experiments`, `opal-poisoning-suite`, `bench/opal/data/opal_chains.csv`) run as `C1` to `C100` (`scripts/eval/tool_calling/chains.py`): one session per chain, each later round sent once the previous turn has ended, each round graded on its `ANSWER:` line.
+
+| Runs | Rounds | Correct | Model calls | Tools |
+| --- | --- | --- | --- | --- |
+| C1 to C3 (low, medium) | 10 | 10/10 | one per round | none |
+| C5, C6, C8, C11, C12 (hard, 6 to 7 rounds) | 32 | 32/32 | one per round | none |
+
+14. **The chains are easy for this model and do not exercise tools** (their tool outputs are given inline), so they are not a long-horizon lighthouse. They did expose a per-turn cost: on turns with one 2 to 4 s model call, 0.55 to 2.65 s passed between the request and its model call. Only a session's first turn was timed (`bringup_timing`), so this was invisible. Every turn is now timed up to its model request, with the module build split into parts (`7cfa39ad`, `174059a2`).
+15. **Each turn re-derived every native tool's argument schemas (fixed, `1affb1c0`).** The module build was 60 to 85% of a turn's start, and inside it DSPy's `Tool._parse_function` built a pydantic `TypeAdapter` and JSON schema per argument for about 80 native tools and again for their recording wrappers, each turn. The derivation is now kept per function shape. Later turns' start, mean of turns 2 to 7: C5 579 to 162 ms, C6 489 to 153 ms; module build 329 to 112 and 353 to 101 ms; all rounds still correct. The before runs overlapped a test suite and two leftover clio-core daemons (load about 12 on 4 CPUs, against about 5 after), so part of the drop is load; the offline profile alone puts 0.2 to 0.35 s per turn on the derivation (native tools 159-400 to 15 ms, wrapping 45 to 13 ms). Remaining per turn: tool assembly 57 to 117 ms; single 2 KB `_events` puts of the turn's bring-up events that occasionally take 300 to 500 ms under load and sit on the critical path (not fixed).
+
 ### Targets
 
 The plan asked for targets after the base and before Phase 1; they were not written then. The targets below are the plan's own examples (section "Targets"), judged against the final runs, so they are a check, not a prediction.
