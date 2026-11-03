@@ -45,6 +45,15 @@ from tests.test_gact.test_compaction_visible import (
 )
 
 
+@pytest.fixture(autouse=True)
+def _fixed_result_room(monkeypatch: pytest.MonkeyPatch) -> None:
+    """These tests script ``_last_prompt_tokens`` by read count for compaction's own
+    measurements; sizing each tool result reads it too, so its room is pinned here."""
+    from tests._result_room import pin_result_room
+
+    pin_result_room(monkeypatch, 100_000)
+
+
 @pytest.fixture
 def env(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
