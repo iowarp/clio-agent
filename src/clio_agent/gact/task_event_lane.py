@@ -34,6 +34,7 @@ import msgspec
 from clio_agent.arc import lane_chunking
 from clio_agent.arc.live import EVENTS_SCOPE, build_event_content
 from clio_agent.arc.loop_guard import assert_store_write_off_loop
+from clio_agent.gact import task_event_reconcile
 from clio_agent.gact.task_history_group import after_commit, in_group
 from clio_agent.gact.task_index_records import LOOKUP_KIND
 
@@ -107,6 +108,8 @@ def record(
     *,
     lane: dict[str, Any] | None = None,
     highway: Callable[[Callable[[], Any]], None] | None = None,
+    to_lane: bool = True,
+    to_log: bool = True,
 ) -> Any:
     """Confirm a task event in its lane, then in the canonical log and highway.
 
@@ -117,6 +120,9 @@ def record(
             its payload), never in the canonical log.
         highway: Inside a writer group, where the highway emission goes (it runs once
             the group's records are confirmed, :mod:`clio_agent.gact.task_history_group`).
+        to_lane: Append to the lane (a retry skips a lane that already holds the event,
+            :mod:`clio_agent.gact.task_event_reconcile`).
+        to_log: Append to the canonical log and emit the highway event (likewise).
 
     Returns:
         What :meth:`ARCMemory.record_semantic_event` returns (the highway projection);
@@ -124,7 +130,7 @@ def record(
     """
     session_id = str(getattr(event, "session_id", "") or "")
     content = build_event_content(event)
-    if session_id and content is not None and content["event_type"] in TASK_EVENTS:
+    if to_lane and session_id and content is not None and content["event_type"] in TASK_EVENTS:
         if lane:
             content["payload"] = {**content["payload"], LANE_KEY: lane}
         append_lane(
@@ -134,6 +140,8 @@ def record(
             turn_id=str(getattr(event, "turn_id", "") or ""),
             expert_span_id=str(getattr(event, "expert_span_id", "") or ""),
         )
+    if not to_log:
+        return None
     if highway is None:
         return arc.record_semantic_event(event)
     arc.on_semantic_event(event)  # the ``_events`` append half of record_semantic_event
@@ -165,7 +173,14 @@ def record_event(
         payload={"schema_version": 1, "observation_id": identity, "record": payload},
     )
     highway = partial(after_commit, history) if in_group(history) else None
-    history.confirm_write(lambda: record(history.arc, event, lane=lane, highway=highway))
+    to_lane = to_log = True
+    if task_event_reconcile.active(history):  # a retry: only where the first try did not land
+        to_lane, to_log = task_event_reconcile.missing(history, event)
+    history.confirm_write(
+        lambda: record(
+            history.arc, event, lane=lane, highway=highway, to_lane=to_lane, to_log=to_log
+        )
+    )
 
 
 def session_task_events(arc: ARCMemory, session_id: str) -> Iterator[tuple[str, dict[str, Any]]]:

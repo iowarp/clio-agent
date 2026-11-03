@@ -311,10 +311,14 @@ class ExternalTasks:
             backend=host.backend,
         )
 
-        def confirm(settle: Callable[[str], dict[str, Any]] | None = None) -> Any:
+        def confirm(
+            settle: Callable[[str], dict[str, Any]] | None = None, observation: str = ""
+        ) -> Any:
             # ``settle`` (a read-only call's inline outcome) makes the first snapshot
             # the terminal one: nothing could observe the task before it was recorded.
             # Admission was checked before that call was sent; its record is history.
+            # ``observation`` and ``settle`` are fixed when that record is queued, so a
+            # retry re-derives the same events (task_event_reconcile).
             with self.history.serialized():
                 if settle is None:
                     self.app.state.conversations.require_admission(assignment)
@@ -335,7 +339,7 @@ class ExternalTasks:
                 )
                 if settle is not None:
                     snapshot = snapshot.model_copy(update=settle(sid))
-                self.history.record_snapshot(snapshot, observation_id=uuid4().hex)
+                self.history.record_snapshot(snapshot, observation_id=observation or uuid4().hex)
                 return content
 
         if self._closing:
@@ -455,7 +459,7 @@ class ExternalTasks:
             # already settled, is its one record, written behind it (read_only_outcomes).
             self.outcomes.record(
                 "external-inline:" + handle,
-                partial(confirm, partial(self._inline_updates, reply=reply)),
+                partial(confirm, partial(self._inline_updates, reply=reply, at=now()), uuid4().hex),
                 minted=minted_names(handle, reference),
                 creates=lambda: (
                     (sid, content_reference(sid, description).scope),
@@ -699,15 +703,16 @@ class ExternalTasks:
             "isError": reply.is_error,
         }
 
-    def _inline_updates(self, session_id: str, *, reply: Any) -> dict[str, Any]:
-        """Confirm an inline reply's content; the snapshot fields that settle the call."""
+    def _inline_updates(self, session_id: str, *, reply: Any, at: str = "") -> dict[str, Any]:
+        """Confirm an inline reply's content; the snapshot fields that settle the call
+        (at ``at``, or now)."""
         result = self.history.write_content(session_id, self._inline_value(reply))
         return {
             "status": "failed" if reply.is_error else "completed",
             "raw_status": "inline",
             "activity": "",
-            "terminal_at": now(),
-            "updated_at": now(),
+            "terminal_at": at or now(),
+            "updated_at": at or now(),
             "settlement": "external_acknowledged",
             "result": result,
             "backend_observation": result,

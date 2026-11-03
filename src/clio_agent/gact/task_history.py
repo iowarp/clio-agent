@@ -36,6 +36,7 @@ from clio_agent.arc.task_types import (
 from clio_agent.errors import ClioError
 from clio_agent.gact import (
     task_event_lane,
+    task_event_reconcile,
     task_history_group,
     task_history_projection,
     task_history_queries,
@@ -270,7 +271,8 @@ class TaskHistory:
             if existing is not None:
                 if self.read_content(existing) != context.model_dump(mode="json"):
                     raise ValueError("Submission reference cannot be reused")
-                return existing
+                if not task_event_reconcile.active(self):  # a retry completes its events
+                    return existing
             state = self._session_state(context.owner.session_id)
             content = self.write_content(context.owner.session_id, context.model_dump(mode="json"))
             payload = {"reference": context.reference, "content": content.model_dump(mode="json")}

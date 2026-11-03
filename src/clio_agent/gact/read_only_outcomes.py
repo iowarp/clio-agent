@@ -23,7 +23,10 @@ median 0.48 s, for a server that answers in milliseconds (2026-11-03).
 * **Failure is never silent.** A record that fails is logged with the typed reason
   ``read_only_outcome_deferred`` and handed to the existing recovery path
   (``CoreRecovery.defer``), which retries it alone after the writer's hold is
-  reconciled. A retry that fails for any reason other than a recording hold is logged
+  reconciled. A group can fail after some of its records landed (the task-event lane,
+  not ``_events``); the retry writes each event only where it is missing
+  (:mod:`clio_agent.gact.task_event_reconcile`), with the same identities and settle
+  time, fixed when the record was queued. A retry that fails for any reason other than a recording hold is logged
   ``read_only_outcome_unrecorded`` and dropped: the call already answered, and after a
   crash an unrecorded read-only call is likewise reported as unknown, never resubmitted.
 """
@@ -37,6 +40,7 @@ from collections.abc import Callable, Iterable
 from dataclasses import dataclass
 from typing import Any
 
+from clio_agent.gact.task_event_reconcile import reconciled
 from clio_agent.gact.task_history import TaskHistory
 from clio_agent.gact.task_history_group import GroupedOperation
 
@@ -162,8 +166,8 @@ class ReadOnlyOutcomes:
         )
 
         async def retry() -> bool:
-            try:
-                await self.history.io.run(item.write)
+            try:  # the group may have landed part of it: each event once per record
+                await self.history.io.run(reconciled, self.history, item.write)
             except Exception as failure:
                 if self.history.requires_recovery:
                     raise  # held: recovery restores the writer, then retries this
