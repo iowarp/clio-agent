@@ -152,3 +152,35 @@ def test_the_boundary_notes_a_collected_foreground_reply_for_the_calling_step(
 
 async def _run_inline(function: Any, *args: Any) -> Any:
     return function(*args)
+
+
+def _envelope(tool_text: str) -> str:
+    """A finished foreground shell reply, as the model received it (H5, 2026-11-03)."""
+    task = {
+        "meta": {"io.modelcontextprotocol/serverInfo": {"name": "CLIO shell"}},
+        "task_id": "r0CC",
+        "status": "completed",
+        "ttl_ms": 900000,
+        "poll_interval_ms": 5000,
+        "result_type": "complete",
+        "result": {"content": [{"type": "text", "text": tool_text}]},
+    }
+    return json.dumps({"handle": "task_e", "status": "completed", "pending": False, "result": task})
+
+
+def test_the_model_reads_the_tools_own_result_not_the_task_envelope() -> None:
+    """SABOTAGE: return ``value`` unchanged in ``collected_observation`` and the model
+    reads the envelope, with each stdout newline escaped three times."""
+    from clio_agent.gact.tool_observation import collected_observation, reply_content
+
+    shell = json.dumps({"command": "ls", "exit_code": 0, "stdout": "a\nb\n"})
+    seen = collected_observation(_envelope(shell), [_carried()])
+    assert isinstance(seen, CollectedText) and seen.notification_ids == (NOTICE,)
+    assert str(seen) == shell
+    assert len(_envelope(shell)) > 2 * len(shell)
+    # Format only: anything else is returned unchanged.
+    for other in ("not json", json.dumps(REPLY), json.dumps({"result": {"result": {}}})):
+        assert reply_content(other) == other
+    image = json.loads(_envelope(shell))
+    image["result"]["result"]["content"].append({"type": "image", "data": "x"})
+    assert reply_content(json.dumps(image)) == json.dumps(image)
