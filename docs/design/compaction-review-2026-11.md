@@ -51,7 +51,7 @@ Each is a mechanism or a fact given to the model, not a behavioural rule in a pr
 | Run | Summarizer: cached / total input | Context before → after each fold |
 | --- | --- | --- |
 | head1 (old summarizer) | 0 and 789 cached | 33k → 33k (reset only by the persona's reconnect) |
-| cmp1 (new summarizer, no `/clear`) | 51,286 / 69,269; 159,942 / 177,393 | 69k → 114k; 177k → 264k (the old history stayed in the CLI) |
+| cmp1 (new summarizer, no `/clear`) | 51,286 / 69,269; 159,942 / 177,393 | 69k → 114k; 177k → 221k (the old history stayed in the CLI) |
 | cmp2 (with `/clear`) | 51,223 / 67,977; 395,627 / 403,522; 109,006 / 116,387 | 68k → 72k; 404k → 54k; 116k → 52k |
 
 Both cmp runs answered correctly. cmp2 compacted three times in one run.
