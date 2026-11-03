@@ -4,7 +4,7 @@ The harness guides, it never decides: the call already ran exactly as the agent
 asked; when it failed, this tells the agent which same-named files exist under the
 allowed roots, and the agent chooses (owner decision, 2026-09-29).
 
-Each line is the reminder ``clio.reminder.path_hint`` (:mod:`clio_agent.gact.reminders`):
+Each line is the reminder ``clio.reminder.path_hint`` (:mod:`clio_agent.injections`):
 a person can reword it or switch it off, and switched off no hint is looked for.
 """
 
@@ -99,9 +99,9 @@ def missing_path_hint(args: Mapping[str, Any]) -> str:
     (bounded walk, at most ``_HINT_MATCHES`` each). Empty when there is nothing to say,
     or when the person switched the reminder off.
     """
-    from clio_agent.gact import reminders  # noqa: PLC0415 - tools load before gact
+    from clio_agent import injections  # noqa: PLC0415 - tools load before gact
 
-    if not reminders.active(PATH_HINT_SOURCE):
+    if not injections.active(PATH_HINT_SOURCE):
         return ""
     try:
         policy = FileAccessPolicy.from_env()
@@ -125,7 +125,7 @@ def missing_path_hint(args: Mapping[str, Any]) -> str:
         )
         if matches:
             options = " or ".join(f"'{m}'" for m in sorted(set(matches)))
-            line = reminders.render(
+            line = injections.render(
                 PATH_HINT_SOURCE, {"argument": key, "value": value, "options": options}
             )
             if line:

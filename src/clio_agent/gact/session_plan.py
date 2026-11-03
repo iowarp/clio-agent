@@ -118,7 +118,7 @@ def plan_injection(app: Any, session_id: str, session: Any) -> str:
     on the Work rail is offered in any mode, once, marked as theirs. The wording is the
     reminders ``plan``, ``plan_person_edit`` and ``plan_truncated``.
     """
-    from clio_agent.gact import reminders  # noqa: PLC0415
+    from clio_agent import injections  # noqa: PLC0415
 
     state = plan_state(session)
     if not state["exists"]:
@@ -126,18 +126,18 @@ def plan_injection(app: Any, session_id: str, session: Any) -> str:
     where = {"app": app, "session_id": session_id}
     text = state["text"].strip()
     if (cut := _cut_plan(text)) is not None:
-        note = reminders.render(PLAN_TRUNCATED_SOURCE, {"path": state["path"]}, **where)
+        note = injections.render(PLAN_TRUNCATED_SOURCE, {"path": state["path"]}, **where)
         text = cut + (f"\n\n{note}" if note else "")
     if (getattr(session, "metadata", None) or {}).get(PERSON_EDIT_KEY):
-        edited = reminders.render(
+        edited = injections.render(
             PLAN_PERSON_EDIT_SOURCE, {"path": state["path"], "plan": text}, **where
         )
         if edited is not None:  # switched off: the plan is offered as usual below
             return edited
     if str(getattr(session, "mode", "") or "") == "plan" or state["status"] not in ACTIVE_STATUSES:
         return ""
-    variables = {"status": state["status"], "path": state["path"], "plan": text}
-    return reminders.render(PLAN_SOURCE, variables, **where) or ""
+    variables = {"status": state["status"], "path": state["path"], "plan_text": text}
+    return injections.render(PLAN_SOURCE, variables, **where) or ""
 
 
 def mark_person_edit(app: Any, session_id: str) -> None:

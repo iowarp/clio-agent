@@ -50,7 +50,7 @@ _DEFAULT_FULL_INTERVAL = 10
 #: ``plan_small`` full-reminder cadence — SPARSER than the default (lightweight task, less nagging).
 _SMALL_FULL_INTERVAL = 20
 
-#: The reminders (``prompt_packs/builtin/reminders/``) whose text forms the structure bullet
+#: The reminders (``plugins/builtin/core/ai.iowarp.clio/injections/``) whose text forms the structure bullet
 #: per variant, and the ``plan_workflow`` extra bullet (its Risks & Dependencies section).
 _STRUCTURE_DEFAULT = "plan_mode_structure"
 _STRUCTURE_WORKFLOW = "plan_mode_structure_workflow"
@@ -140,15 +140,15 @@ def plan_mode_reminder_block(
     a variant's generic structure posture); the variant's extra bullets and reminder
     cadence still compose. ``None`` leaves the block byte-for-byte unchanged.
     """
-    from clio_agent.gact import reminders  # noqa: PLC0415
+    from clio_agent import injections  # noqa: PLC0415
 
     where = {"app": app, "session_id": session_id}
     guide = guidance if guidance is not None else DEFAULT_PLAN_VARIANT_GUIDANCE
     if not full:
-        return reminders.render(PLAN_MODE_SHORT_SOURCE, {"path": plan_file}, **where) or ""
+        return injections.render(PLAN_MODE_SHORT_SOURCE, {"path": plan_file}, **where) or ""
 
     def bullet(source: str, variables: dict[str, str] | None = None) -> str:
-        text = reminders.render(source, variables or {}, **where)
+        text = injections.render(source, variables or {}, **where)
         return f"- {text}" if text else ""
 
     file_note = "plan_mode_file_exists" if exists else "plan_mode_file_new"
@@ -160,7 +160,7 @@ def plan_mode_reminder_block(
         *(bullet(source) for source in guide.extra_sources),
     ]
     first = "\n".join(line for line in bullets if line)
-    return reminders.render(PLAN_MODE_SOURCE, {"file_and_structure": first}, **where) or ""
+    return injections.render(PLAN_MODE_SOURCE, {"file_and_structure": first}, **where) or ""
 
 
 def recorded_plan_variant(session: Any) -> str:
@@ -738,7 +738,7 @@ def playbook_from_saved_plan(content: str, *, name: str = "") -> Playbook:
 def _playbook_structure_bullet(playbook: Playbook, *, app: Any, session_id: str) -> str:
     """The FULL-reminder bullet presenting the playbook skeleton as required structure (the
     reminder ``plan_mode_playbook``; each step's line is data)."""
-    from clio_agent.gact import reminders  # noqa: PLC0415
+    from clio_agent import injections  # noqa: PLC0415
 
     label = f' "{playbook.name}"' if playbook.name else ""
     lines = []
@@ -749,7 +749,7 @@ def _playbook_structure_bullet(playbook: Playbook, *, app: Any, session_id: str)
         if step.tools_allowed:
             parts.append(f" (tools_allowed: {', '.join(step.tools_allowed)})")
         lines.append("".join(parts))
-    text = reminders.render(
+    text = injections.render(
         "plan_mode_playbook",
         {"label": label, "steps": "\n".join(lines)},
         app=app,

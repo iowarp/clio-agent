@@ -31,7 +31,7 @@ from clio_agent.gact.agent_elicitation_reasons import (
 )
 from clio_agent.gact.agent_elicitation_reply import parse_agent_reply
 from clio_agent.gact.elicitation_schema import ELICITATION_QUESTION_SOURCE
-from clio_agent.gact.reminders import render as render_reminder
+from clio_agent.injections import render as render_reminder
 
 if TYPE_CHECKING:
     from clio_agent.gact.types import UserQuestion

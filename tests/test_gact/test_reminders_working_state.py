@@ -13,7 +13,7 @@ from typing import Any
 
 import pytest
 
-from clio_agent.gact import reminders
+from clio_agent import injections
 from clio_agent.gact.agents.composition import _runtime_active_workspace_context
 from clio_agent.gact.app import build_app
 from clio_agent.gact.plan_mode import PLAN_MODE_REMINDER_MARKER, plan_mode_reminder_block
@@ -89,10 +89,10 @@ def test_session_facts_render_todays_text(facts: dict[str, Any]) -> None:
 def test_switching_session_facts_off_stops_them(facts: dict[str, Any]) -> None:
     """The opening line is the source's switch; a piece's switch drops only that piece.
     SABOTAGE: ignore ``head is None`` in ``composition`` and the first assertion fails."""
-    reminders.update("session_facts", active=False)
+    injections.update("session_facts", active=False)
     assert _facts() == ""
-    reminders.update("session_facts", active=True)
-    reminders.update("session_facts_scratch", active=False)
+    injections.update("session_facts", active=True)
+    injections.update("session_facts_scratch", active=False)
     assert _facts() == _WORKSPACE_FACTS.rpartition("\n")[0]
 
 
@@ -156,7 +156,7 @@ def test_switching_the_plan_off_stops_it(plan_session: Any) -> None:
     app, sid = plan_session
     session = app.state.sessions.get(sid)
     assert "plan" in dict(working_state_injections(app, sid, session))
-    reminders.update("plan", active=False, app=app)
+    injections.update("plan", active=False, app=app)
     assert "plan" not in dict(working_state_injections(app, sid, session))
 
 
@@ -164,7 +164,7 @@ def test_with_the_person_edit_note_off_the_plan_is_offered_as_usual(plan_session
     """SABOTAGE: return ``""`` instead of falling through in ``plan_injection`` and this fails."""
     app, sid = plan_session
     app.state.sessions.update(sid, metadata_patch={PERSON_EDIT_KEY: True})
-    reminders.update("plan_person_edit", active=False, app=app)
+    injections.update("plan_person_edit", active=False, app=app)
     text, path = _plan(app, sid)
     assert text.startswith(f"## The plan (approved, {path})")
 
@@ -193,7 +193,7 @@ def test_the_todos_render_todays_text() -> None:
 
 def test_switching_the_todos_off_stops_them() -> None:
     """SABOTAGE: return the template's text regardless of ``render`` and this fails."""
-    reminders.update("todos", active=False)
+    injections.update("todos", active=False)
     assert todo_recitation(None, "sess_t", _todo_session()) == ""
 
 
@@ -273,19 +273,19 @@ def test_the_playbook_renders_todays_text() -> None:
 
 def test_the_plan_mode_contract_cannot_be_switched_off() -> None:
     """It is the agent's only signal that writes are blocked and plan_exit ends the mode."""
-    reminders.update("plan_mode", active=False)
-    reminders.update("plan_mode_playbook", active=False)
+    injections.update("plan_mode", active=False)
+    injections.update("plan_mode_playbook", active=False)
     full = plan_mode_reminder_block(full=True, plan_file=_PLAN_FILE, exists=False)
     assert full.startswith(PLAN_MODE_REMINDER_MARKER + "\n\nYou are in PLAN MODE.")
-    assert reminders.active("plan_mode") and reminders.active("plan_mode_playbook")
+    assert injections.active("plan_mode") and injections.active("plan_mode_playbook")
 
 
 def test_switching_a_plan_mode_piece_off_drops_only_that_piece() -> None:
     """SABOTAGE: keep empty bullets in ``plan_mode_reminder_block`` and the blank line shows."""
-    reminders.update("plan_mode_structure", active=False)
+    injections.update("plan_mode_structure", active=False)
     full = plan_mode_reminder_block(full=True, plan_file=_PLAN_FILE, exists=True)
     assert full == _CONTRACT_HEAD + _CONTRACT_TAIL
-    reminders.update("plan_mode_short", active=False)
+    injections.update("plan_mode_short", active=False)
     assert plan_mode_reminder_block(full=False, plan_file=_PLAN_FILE, exists=True) == ""
 
 
@@ -293,4 +293,4 @@ def test_the_marker_constants_open_the_builtin_templates() -> None:
     """Tests and greps detect the blocks by these headings; the templates must keep them."""
     short = plan_mode_reminder_block(full=False, plan_file=_PLAN_FILE, exists=True)
     assert short.startswith(PLAN_MODE_REMINDER_MARKER + " (")
-    assert reminders.reminder("todos").text.startswith(TODO_RECITATION_MARKER + "\n\n")
+    assert injections.injection("todos").text.startswith(TODO_RECITATION_MARKER + "\n\n")

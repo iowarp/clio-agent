@@ -35,10 +35,10 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any, Literal, cast
 
+from clio_agent import injections
 from clio_agent.arc import history_mode
 from clio_agent.errors import ClioError
 from clio_agent.gact import context as _ctx
-from clio_agent.gact import reminders
 from clio_agent.gact.compaction_policy import keep_policy, post_compaction_context
 from clio_agent.gact.compaction_summarizer import Summarize
 from clio_agent.gact.conversation_projection import model_context_messages
@@ -83,7 +83,7 @@ def __getattr__(name: str) -> str:
     """``ABOVE_THRESHOLD_NOTICE``: the wording of that skip's ``notice`` (written once per
     forward), now the reminder ``clio.reminder.compaction_skipped``."""
     if name == "ABOVE_THRESHOLD_NOTICE":
-        found = reminders.reminder(COMPACTION_SKIPPED_SOURCE)
+        found = injections.injection(COMPACTION_SKIPPED_SOURCE)
         return found.text if found is not None else ""
     raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
 
@@ -387,7 +387,7 @@ def _failed(app: Any, sid: str, base: dict[str, Any], exc: CompactionError) -> N
     from clio_agent.gact.compaction_record import write_notice  # noqa: PLC0415
 
     error = {"code": exc.error, "message": exc.message}
-    text = reminders.render(
+    text = injections.render(
         COMPACTION_FAILED_SOURCE, {"error": exc.message}, app=app, session_id=sid
     )
     if text is None:  # switched off (traced): the event alone records the failure
@@ -714,7 +714,7 @@ def _notice_above_threshold(app: Any, sid: str, scope: str, compaction_id: str) 
     typed."""
     from clio_agent.gact.compaction_record import write_notice  # noqa: PLC0415
 
-    text = reminders.render(COMPACTION_SKIPPED_SOURCE, {}, app=app, session_id=sid)
+    text = injections.render(COMPACTION_SKIPPED_SOURCE, {}, app=app, session_id=sid)
     if text is None:  # switched off (traced): the audit still records each skip
         return
     notice = skipped_notice_part(

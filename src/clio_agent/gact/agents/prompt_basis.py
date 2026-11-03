@@ -46,9 +46,9 @@ DEFERRED_ADDED_KEY = "deferred_tools_added"
 
 def _say(piece: str, app: Any = None, session_id: str = "", **variables: Any) -> str | None:
     """One piece of the change note (``None``: the person switched that piece off)."""
-    from clio_agent.gact import reminders  # noqa: PLC0415
+    from clio_agent import injections  # noqa: PLC0415
 
-    return reminders.render(piece, variables, app=app, session_id=session_id)
+    return injections.render(piece, variables, app=app, session_id=session_id)
 
 
 def _metadata(app: Any, session_id: str) -> Mapping[str, Any]:

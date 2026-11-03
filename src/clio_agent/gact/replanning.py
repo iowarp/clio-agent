@@ -292,9 +292,9 @@ def _emit_stall_event(
 def _suggestion_block(app: Any = None, sid: str = "") -> str:
     """The replanning suggestion (the reminder ``clio.reminder.replan``; a SUGGESTION, never
     a mode flip). ``""`` when the person switched it off."""
-    from clio_agent.gact import reminders  # noqa: PLC0415
+    from clio_agent import injections  # noqa: PLC0415
 
-    return reminders.render("replan", {}, app=app, session_id=sid) or ""
+    return injections.render("replan", {}, app=app, session_id=sid) or ""
 
 
 def replan_suggestion(app: "FastAPI", sid: str, session: Any) -> str:

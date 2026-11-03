@@ -100,6 +100,6 @@ def child_report_note(app: object, session_id: str, session: object) -> str:
     """
     if not str(getattr(session, "parent_session_id", "") or ""):
         return ""
-    from clio_agent.gact import reminders  # noqa: PLC0415
+    from clio_agent import injections  # noqa: PLC0415
 
-    return reminders.render(CHILD_REPORT_SOURCE, {}, app=app, session_id=session_id) or ""
+    return injections.render(CHILD_REPORT_SOURCE, {}, app=app, session_id=session_id) or ""

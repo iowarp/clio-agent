@@ -2,7 +2,7 @@
 
 What the harness says about a call -- a hook changed it, the tool keeps failing -- is
 the reminder ``clio.reminder.hook_<piece>`` or ``clio.reminder.circuit_breaker_<piece>``
-(``prompt_packs/builtin/reminders/``; :mod:`clio_agent.gact.reminders`), so a person can
+(``plugins/builtin/core/ai.iowarp.clio/injections/``; :mod:`clio_agent.injections`), so a person can
 reword it on the Prompts page. The code decides when a note is due and supplies its
 data; the template is what it says. The fixed markers (``[clio: hook]`` ...) stay in
 code: the transcript and other code recognise a note by them.
@@ -32,9 +32,9 @@ CIRCUIT_BREAKER_MARKER = "[clio: circuit_breaker] "
 
 def _note(marker: str, source: str, variables: Mapping[str, Any]) -> str:
     """``marker`` and the reminder's text; ``""`` when the person switched it off."""
-    from clio_agent.gact import reminders  # noqa: PLC0415 - tools load before gact
+    from clio_agent import injections  # noqa: PLC0415 - tools load before gact
 
-    text = reminders.render(source, variables)
+    text = injections.render(source, variables)
     return f"{marker}{text}" if text is not None else ""
 
 
@@ -45,9 +45,9 @@ def hook_note(piece: str, **variables: Any) -> str:
 
 def failure_warning_after() -> int:
     """Failures in a row before the warning (``x_param_after``; 0 never warns)."""
-    from clio_agent.gact import reminders  # noqa: PLC0415 - tools load before gact
+    from clio_agent import injections  # noqa: PLC0415 - tools load before gact
 
-    return reminders.param("circuit_breaker_warning", "after", 3, int)
+    return injections.param("circuit_breaker_warning", "after", 3, int)
 
 
 def circuit_warning_note(name: str, count: int) -> str:

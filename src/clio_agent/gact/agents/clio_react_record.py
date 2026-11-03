@@ -462,9 +462,9 @@ class StepRecorder:
         """Record changed CLIO additions; retain identical existing context for prefix reuse.
 
         A source whose reminder is switched off is not recorded (traced
-        ``reminder_inactive``; :mod:`clio_agent.gact.reminders`).
+        ``injection_inactive``; :mod:`clio_agent.injections`).
         """
-        from clio_agent.gact.reminders import active  # noqa: PLC0415
+        from clio_agent.injections import active  # noqa: PLC0415
 
         injections = [
             (src, text) for src, text in injections if active(src, session_id=self.session)

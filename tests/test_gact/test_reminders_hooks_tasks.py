@@ -14,13 +14,13 @@ from typing import Any
 
 import pytest
 
+from clio_agent import injections
 from clio_agent.arc.memory import ARCMemory
 from clio_agent.arc.task_types import MailItem
-from clio_agent.gact import reminders
 from clio_agent.gact.session_mail import SessionMail
 from clio_agent.gact.task_access import TaskCaller
 from clio_agent.prompts import PromptRegistry
-from clio_agent.tools import harness_notes, injections
+from clio_agent.tools import harness_notes
 from tests._config_layer import set_config
 from tests.test_arc.test_human_steering_notice import STAMP, history_with_child, input_mail
 
@@ -59,7 +59,7 @@ def test_hook_notes_render_todays_text_and_cannot_be_switched_off(
     """The operator configured the hook: its note can be reworded, never dropped.
     SABOTAGE: drop ``x_required`` from a hook template and the switched-off render fails."""
     assert harness_notes.hook_note(piece, **variables) == f"[clio: hook] {text}"
-    reminders.update(f"hook_{piece}", active=False)
+    injections.update(f"hook_{piece}", active=False)
     assert harness_notes.hook_note(piece, **variables) == f"[clio: hook] {text}"
 
 
@@ -109,7 +109,7 @@ def test_a_stop_hook_without_words_re_drives_with_the_hook_defer_text(
     captured: dict[str, Any] = {}
     monkeypatch.setattr(defer, "suspend_turn_defer", lambda app, **kw: captured.update(kw) or "q")
     app = SimpleNamespace(state=SimpleNamespace(sessions=SimpleNamespace(get=lambda sid: None)))
-    reminders.update("hook_defer", active=False)
+    injections.update("hook_defer", active=False)
     result = stop_loop.run_stop_hooks(app, session_id="s", turn_id="t", cwd="", payload={})
     assert result.deferred
     assert captured["resume_text"] == (
@@ -132,7 +132,7 @@ def test_circuit_breaker_note_renders_its_text() -> None:
     """SABOTAGE: change a word in the circuit_breaker_warning template and this fails."""
     from clio_agent.tools.execution import SyncMCPToolExecutor
 
-    reminders.update("circuit_breaker_warning", params={"after": 2})
+    injections.update("circuit_breaker_warning", params={"after": 2})
     state = _breaker({"t": 1})
     assert SyncMCPToolExecutor._record_tool_failure(state, "t", "read timeout") == (
         "[clio: circuit_breaker] t has failed 2 times in a row. Unless something has "
@@ -145,7 +145,7 @@ def test_the_failure_note_can_be_switched_off() -> None:
     ``circuit_warning_note`` ignore the switch and this fails."""
     from clio_agent.tools.execution import SyncMCPToolExecutor
 
-    reminders.update("circuit_breaker_warning", active=False, params={"after": 2})
+    injections.update("circuit_breaker_warning", active=False, params={"after": 2})
     state = _breaker({"t": 1})
     assert SyncMCPToolExecutor._record_tool_failure(state, "t", "read timeout") == ""
     assert state._consecutive_failures["t"] == 2
@@ -168,7 +168,7 @@ def test_path_hint_renders_todays_text_and_switches_off(
         f"[clio: path_hint]\nargument 'path': '{tmp_path / 'x.csv'}' does not exist. "
         f"Did you mean '{found.resolve()}'?"
     )
-    reminders.update("path_hint", active=False)
+    injections.update("path_hint", active=False)
 
     def no_search(*_args: Any) -> Any:
         raise AssertionError("searched for a switched-off hint")
@@ -198,7 +198,7 @@ def test_variant_advice_is_recorded_as_rendered_and_cannot_be_switched_off(
     monkeypatch.setattr(
         injection_parts, "emit_injection", lambda s, t, agent_id="": shown.append((s, t))
     )
-    reminders.update("variant_advice", active=False)
+    injections.update("variant_advice", active=False)
     variant_lines.record_advice(1, "Cite the sources.", "variant_advice")
     assert segments[0]["text"] == "Cite the sources." and segments[0]["source"] == "variant_advice"
     assert shown == [("variant_advice", "Cite the sources.")]
@@ -256,7 +256,7 @@ def test_the_drafting_note_switched_off_emits_nothing() -> None:
     from clio_agent.gact.agents.variant_resume import _drafting_note
     from clio_agent.gact.injection_parts import emit_injection
 
-    reminders.update("variant_drafting", active=False)
+    injections.update("variant_drafting", active=False)
     assert _drafting_note(_run("best_of_n", "user")) == ""
     assert emit_injection("variant_drafting", "") is False
 
@@ -279,9 +279,9 @@ def test_the_mcp_elicitation_assignment_renders_todays_text() -> None:
         '{"answer": {field: typed_value}} or {"decline": true, "reason": "short explanation"}. '
         "Complete this assignment with that response.\n\n" + request
     )
-    assert reminders.render("mcp_elicitation", {"request": request}) == expected
-    reminders.update("mcp_elicitation", active=False)
-    assert reminders.render("mcp_elicitation", {"request": request}) == expected
+    assert injections.render("mcp_elicitation", {"request": request}) == expected
+    injections.update("mcp_elicitation", active=False)
+    assert injections.render("mcp_elicitation", {"request": request}) == expected
 
 
 # --------------------------------------------------------------------------- #
@@ -303,7 +303,7 @@ def test_a_finished_task_notification_keeps_todays_framing(arc: ARCMemory) -> No
             content=history.write_content("parent", "The table has 12 rows.\n"),
         )
     )
-    reminders.update("task_result", active=False)
+    injections.update("task_result", active=False)
     staged = SessionMail(history, lambda _sid, _item: True).stage(TaskCaller("parent", "human"))
     assert staged.injections[0] == (
         "task_result",

@@ -66,6 +66,7 @@ from dspy.lm15 import (
 )
 from dspy.utils.exceptions import AdapterParseError, ContextWindowExceededError
 
+from clio_agent import injections
 from clio_agent.errors import ClioError, MCPProtocolError
 from clio_agent.gact.agents import clio_react_extract as extract
 from clio_agent.gact.agents import clio_react_record as record
@@ -85,7 +86,6 @@ from clio_agent.lm.engines.text_tools import CALLABLE_TOOLS, INVALID_TOOL_CALL
 from clio_agent.lm.request_builder import sendable_lm_kwargs
 from clio_agent.lm.request_config import config_from_lm_kwargs
 from clio_agent.runtime.fresh_loop import run_in_new_loop
-from clio_agent.tools import injections
 
 __all__ = ["ClioReAct"]
 
@@ -369,7 +369,8 @@ class _Loop:
                 ledger.get(self.session, []) or [],
                 allow_transcript=self.scope == _ctx.run_keyed_scope(primary),
             )
-        self.recorder.injections(list(_ctx.turn_injections()))
+        start = injections.fire("turn_start", {}, session_id=self.session)
+        self.recorder.injections([*_ctx.turn_injections(), *start])
         # The continuing flag is this forward's alone: anything it starts opens its own task.
         continue_token = _CONTINUING.set(False) if _CONTINUING.get() else None
         if continue_token is None:
@@ -564,6 +565,7 @@ class _Loop:
             INLINE_COLLECTION,
             collected_observation,
         )
+        from clio_agent.injections.tool_guidance import after_tool_result  # noqa: PLC0415
 
         slot: dict[str, str] = {}
         slot_token, carried = MODEL_CALL_SLOT.set(slot), []
@@ -576,6 +578,10 @@ class _Loop:
             MODEL_CALL_SLOT.reset(slot_token)
         if not outcome.is_error:
             outcome.value = collected_observation(outcome.value, carried)
+        outcome.value, guidance = after_tool_result(
+            call.name, dict(call.input), outcome.value, outcome.is_error
+        )
+        told.extend(guidance)
         if slot.get("call_id"):
             outcome.call_ref = call_reference(self.recorder.session, slot["call_id"])
         # What the harness told the agent about this call is shown to the user too.

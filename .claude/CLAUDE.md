@@ -340,7 +340,7 @@ src/clio_agent/
 ├── conversation_manager.py   # Session conversation state
 ├── errors.py                 # Structured error types
 ├── experts/                  # native_tools.py — native expert tool surface
-├── prompt_packs/             # Built-in prompt packs
+├── injections/               # Injection system: declarations, events, Jinja
 ├── agent_blueprints/         # Built-in agent blueprints
 ├── registry/                 # Capability-based agent registry + matching
 ├── arc/                      # ARC memory: live context plane, prompt recorder,

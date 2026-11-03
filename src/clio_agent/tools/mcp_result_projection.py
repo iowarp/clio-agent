@@ -30,9 +30,9 @@ RESULT_SPILLED_MARKER = f"[clio: {RESULT_SPILLED_SOURCE}]"
 
 def _say(piece: str, variables: Mapping[str, object]) -> str:
     """A piece of the note (a ``result_spilled*`` reminder; required, so never off)."""
-    from clio_agent.gact import reminders  # noqa: PLC0415
+    from clio_agent import injections  # noqa: PLC0415
 
-    return reminders.render(piece, variables) or ""
+    return injections.render(piece, variables) or ""
 
 
 def transcript_tool_result_chars() -> int:
@@ -105,7 +105,7 @@ def bounded_model_tool_result(
     if whole:
         head = head[:cut]  # end on a whole line when one is near
     projection = f"{note(head, whole)}\n\n{head}"
-    from clio_agent.tools import injections  # noqa: PLC0415
+    from clio_agent import injections  # noqa: PLC0415
 
     # Details must include the head promised by the notice, exactly as returned
     # to the model. Recording only `note` silently loses that part of the view.

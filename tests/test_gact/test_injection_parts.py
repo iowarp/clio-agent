@@ -18,6 +18,7 @@ import dspy
 import pytest
 from fastapi.testclient import TestClient
 
+from clio_agent import injections
 from clio_agent.arc.memory import ARCMemory
 from clio_agent.gact import context as ctx
 from clio_agent.gact.agents import clio_react, clio_react_record
@@ -25,7 +26,6 @@ from clio_agent.gact.agents.clio_react import ClioReAct
 from clio_agent.gact.app import build_app
 from clio_agent.gact.injection_parts import emit_injection
 from clio_agent.gact.protocol.v3.message import part_to_v3_block
-from clio_agent.tools import injections
 from clio_agent.tools.mcp_result_projection import bounded_model_tool_result
 from tests._result_room import pin_result_room
 from tests._scripted_engine import Reply, calls, scripted_lm

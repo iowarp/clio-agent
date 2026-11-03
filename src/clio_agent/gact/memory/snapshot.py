@@ -24,8 +24,8 @@ from __future__ import annotations
 
 from typing import Any
 
+from clio_agent import injections
 from clio_agent.arc.memory_document import SINGLETON_CATEGORIES, MemoryDocument
-from clio_agent.gact import reminders
 from clio_agent.gact.memory.policy import session_policy, setting
 from clio_agent.gact.memory.service import MemoryService, StoredDocument
 from clio_agent.gact.memory.usage import UsageCounters, document_subject
@@ -71,7 +71,7 @@ def build_snapshot(
     """
 
     def say(piece: str, **variables: Any) -> str | None:
-        return reminders.render(piece, variables, app=app, session_id=session_id)
+        return injections.render(piece, variables, app=app, session_id=session_id)
 
     documents = service.documents(scopes)
     # A profile or preferences document with no live facts (the profile can hold only
@@ -158,7 +158,7 @@ def memory_snapshot_text(app: Any, sid: str, session: Any, turn_id: str) -> str:
     from clio_agent.errors import ClioError  # noqa: PLC0415
     from clio_agent.gact.runtime.globals import _emit_semantic_event  # noqa: PLC0415
 
-    if not reminders.active(SOURCE, app=app, session_id=sid):
+    if not injections.active(SOURCE, app=app, session_id=sid):
         return ""
     try:
         current = app.state.sessions.get(sid) or session

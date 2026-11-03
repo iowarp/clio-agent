@@ -38,9 +38,9 @@ _WORKING_STATE_WRITES = frozenset({"plan_update", "write_todos", "plan_enter", "
 def stale_steps() -> int:
     """Steps without plan_update or write_todos before the plan is mentioned (0: never):
     the ``steps`` setting of the reminder ``clio.reminder.plan_stale``."""
-    from clio_agent.gact import reminders  # noqa: PLC0415
+    from clio_agent import injections  # noqa: PLC0415
 
-    return reminders.param(PLAN_STALE_SOURCE, "steps", 25, int)
+    return injections.param(PLAN_STALE_SOURCE, "steps", 25, int)
 
 
 def note_stale_plan(loop: Any, call_names: list[str]) -> None:
@@ -55,7 +55,7 @@ def note_stale_plan(loop: Any, call_names: list[str]) -> None:
     if _WORKING_STATE_WRITES & set(call_names):
         loop._clio_plan_quiet_steps = 0
         return
-    from clio_agent.gact import reminders  # noqa: PLC0415
+    from clio_agent import injections  # noqa: PLC0415
 
     quiet = getattr(loop, "_clio_plan_quiet_steps", 0) + 1
     limit = getattr(loop, "_clio_plan_stale_limit", None)
@@ -70,7 +70,7 @@ def note_stale_plan(loop: Any, call_names: list[str]) -> None:
     if state.get("status") not in ACTIVE_STATUSES or not state.get("exists"):
         return
     loop._clio_plan_quiet_steps = 0
-    text = reminders.render(PLAN_STALE_SOURCE, {"path": state["path"], "steps": quiet})
+    text = injections.render(PLAN_STALE_SOURCE, {"path": state["path"], "steps": quiet})
     if text:
         loop.recorder.injections([(PLAN_STALE_SOURCE, text)])
 

@@ -7,16 +7,16 @@ read-only calls in a turn with no delegation, the loop adds one injection naming
 the note comes at most once per turn.
 
 The note is the reminder ``clio.reminder.explore_nudge``
-(``prompt_packs/builtin/reminders/explore_nudge.md``): its switch, its wording and its
+(``plugins/builtin/core/ai.iowarp.clio/injections/explore_nudge.md``): its switch, its wording and its
 threshold (``x_param_after``; 0 never notes) are edited on the Reminders page, and the
-Fleet page's switch writes the same reminder (:mod:`clio_agent.gact.reminders`).
+Fleet page's switch writes the same reminder (:mod:`clio_agent.injections`).
 """
 
 from __future__ import annotations
 
 from typing import Any
 
-from clio_agent.gact import reminders
+from clio_agent import injections
 
 __all__ = [
     "EXPLORE_NUDGE_SOURCE",
@@ -33,18 +33,18 @@ _DEFAULT_AFTER = 6
 
 
 def _after(**where: Any) -> int:
-    return reminders.param(EXPLORE_NUDGE_SOURCE, "after", _DEFAULT_AFTER, int, **where)
+    return injections.param(EXPLORE_NUDGE_SOURCE, "after", _DEFAULT_AFTER, int, **where)
 
 
 def nudge_settings(app: Any = None) -> dict[str, Any]:
     """The note's switch and threshold as the Fleet settings page shows them."""
-    found = reminders.reminder(EXPLORE_NUDGE_SOURCE, app=app)
+    found = injections.injection(EXPLORE_NUDGE_SOURCE, app=app)
     return {"enabled": bool(found and found.active), "after": _after(app=app)}
 
 
 def save_nudge_settings(enabled: bool, after: int, app: Any = None) -> None:
     """The Fleet page's switch and threshold, saved into the reminder itself."""
-    reminders.update(EXPLORE_NUDGE_SOURCE, active=enabled, params={"after": after}, app=app)
+    injections.update(EXPLORE_NUDGE_SOURCE, active=enabled, params={"after": after}, app=app)
 
 
 def _read_only(name: str) -> bool:
@@ -103,7 +103,7 @@ def note_reading_run(loop: Any, call_names: list[str]) -> None:
     if not spawn:
         return
     loop._clio_explore_noted = True
-    text = reminders.render(
+    text = injections.render(
         EXPLORE_NUDGE_SOURCE,
         {"calls": count, "explore_model": _explore_model(), "spawn_tool": f"`{spawn}`"},
     )

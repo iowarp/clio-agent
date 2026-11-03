@@ -18,10 +18,10 @@ from clio_agent.arc.task_types import (
     RecipientInput,
 )
 from clio_agent.gact.native_work import now
-from clio_agent.gact.reminders import render as render_reminder
 from clio_agent.gact.task_access import TaskAccess, TaskCaller
 from clio_agent.gact.task_history import MailboxFull, TaskHistory
 from clio_agent.gact.task_publication import task_owner_recipient
+from clio_agent.injections import render as render_reminder
 
 Eligibility = Callable[[str, MailItem], bool]
 ATOMIC_INPUT_KINDS = frozenset({"human", "composer", "delegation", "question_answer"})
