@@ -52,6 +52,7 @@ __all__ = [
     "defer_event",
     "flush_session",
     "highway_writer",
+    "operation_queue",
 ]
 
 #: Typed reason: a deferred group of highway events was not confirmed by clio-core.
@@ -95,9 +96,10 @@ def defer_enabled() -> bool:
 @dataclass
 class _Queued:
     session_id: str
-    event: Any
+    event: Any  # ``None`` for an operation
     after: Callable[[], None] | None
     context: contextvars.Context
+    operation: Callable[[], None] | None = None
 
 
 @dataclass
@@ -128,12 +130,32 @@ class HighwayWriter:
             with state.done:
                 state.pending += 1
             self._queue.append(_Queued(session_id, event, after, contextvars.copy_context()))
-            if self._thread is None:
-                self._thread = threading.Thread(
-                    target=self._run, name="clio-highway-writer", daemon=True
-                )
-                self._thread.start()
+            self._ensure_thread()
             self._wake.notify()
+
+    def submit_operation(self, session_id: str, operation: Callable[[], None]) -> None:
+        """Queue a store write that must land before the events queued after it.
+
+        The artifact index puts of a transform go here, ahead of the
+        ``artifact.transform.recorded`` event that confirms them.
+        """
+        with self._lock:
+            if self._closed:
+                raise RuntimeError("The highway writer is closed")
+            state = self._sessions.setdefault(session_id, _Session())
+            with state.done:
+                state.pending += 1
+            context = contextvars.copy_context()
+            self._queue.append(_Queued(session_id, None, None, context, operation))
+            self._ensure_thread()
+            self._wake.notify()
+
+    def _ensure_thread(self) -> None:
+        if self._thread is None:
+            self._thread = threading.Thread(
+                target=self._run, name="clio-highway-writer", daemon=True
+            )
+            self._thread.start()
 
     def flush(self, session_id: str, timeout: float | None = None) -> None:
         """Wait until every event queued for ``session_id`` is recorded.
@@ -183,7 +205,10 @@ class HighwayWriter:
         try:
             with segment_group(self._arc._segments, lambda _scope: (0,)) as group:
                 for item in batch:
-                    item.context.run(self._arc.on_semantic_event, item.event)
+                    if item.operation is not None:
+                        item.context.run(item.operation)  # put now: before the group's events
+                    else:
+                        item.context.run(self._arc.on_semantic_event, item.event)
                 group.flush()
         except Exception as exc:  # noqa: BLE001 - reported at the session's next flush
             error = exc
@@ -197,6 +222,8 @@ class HighwayWriter:
         if error is None:
             sink = getattr(self._arc, "_highway_sink", None)
             for item in batch:
+                if item.operation is not None:
+                    continue
                 try:
                     if sink is not None:
                         item.context.run(sink, item.event)
@@ -269,6 +296,17 @@ def defer_event(app: Any, arc: Any, session_id: str, event: Any, payload: Any) -
         after = partial(confirm_artifact_event, app, payload)
     writer.submit(session_id, event, after)
     return True
+
+
+def operation_queue(app: Any, session_id: str) -> Callable[[Callable[[], None]], None] | None:
+    """Queue store writes on the session's ordered writer, or ``None`` to write through."""
+    arc = getattr(getattr(app, "state", None), "arc", None)
+    if not session_id or arc is None:
+        return None
+    writer = highway_writer(app, arc)
+    if writer is None:
+        return None
+    return partial(writer.submit_operation, session_id)
 
 
 def flush_session(app: Any, session_id: str, timeout: float | None = None) -> None:

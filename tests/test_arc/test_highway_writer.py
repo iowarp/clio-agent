@@ -245,3 +245,26 @@ def test_a_synchronous_event_is_recorded_after_what_its_session_queued(tmp_path)
         ("lm.call", 1),
         ("react.step.completed", 2),
     ]
+
+
+def test_a_queued_store_write_lands_before_the_event_queued_after_it(tmp_path) -> None:
+    """The artifact index put runs before the event that confirms it is recorded.
+
+    SABOTAGE: run operations after ``group.flush()`` in ``HighwayWriter._record`` and the
+    operation sees its confirming event already in clio-core.
+    """
+    arc = ARCMemory(data_dir=str(tmp_path / "arc"))
+    sid = f"sess_hw_op_{uuid.uuid4().hex[:8]}"
+    seen: list[list[tuple[str, int]]] = []
+
+    def put() -> None:
+        arc._segments.release(sid)
+        seen.append([row for row in _logged(arc, sid) if row[0]])
+
+    writer = HighwayWriter(arc)
+    writer.submit_operation(sid, put)
+    writer.submit(sid, _ev("artifact.transform.recorded", 1, sid))
+    writer.flush(sid, timeout=30)
+    writer.close()
+    assert seen == [[]]
+    assert [row for row in _logged(arc, sid) if row[0]] == [("artifact.transform.recorded", 1)]

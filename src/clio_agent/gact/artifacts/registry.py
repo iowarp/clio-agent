@@ -216,22 +216,22 @@ class ArtifactRegistry:
             self._backend.add_transform(record)
             return FoldResult(applied=True, reason="")
 
-    def record_transform(self, record: Any) -> bool:
-        """Store a live-minted TransformRecord idempotently (S5 #971).
+    def record_transform(
+        self, record: Any, *, fresh: bool = False, write_behind: Any = None
+    ) -> bool:
+        """Store a live-minted TransformRecord idempotently (S5 #971); ``True`` if new.
 
-        Called BEFORE its ``artifact.transform.recorded`` event is emitted (the index
-        record lands first, pending until the event is recorded). Marks the record's
-        ``event_id`` seen so a replay of that event is a ``duplicate_event_id`` no-op,
-        exactly like :meth:`mint`. Returns whether it was newly stored (``False``
-        when the ``call_id`` was already recorded).
-        """
+        Its index record lands BEFORE its ``artifact.transform.recorded`` event (pending
+        until then); ``event_id`` is marked seen like :meth:`mint`. ``fresh``: a call id
+        minted here (only the cache can hold it); ``write_behind``: an ordered writer."""
         with self._lock:
             if record.event_id:
                 self._seen_event_ids.add(record.event_id)
-            if self._backend.transform(record.call_id) is not None:
+            if self._backend.transform(record.call_id, cached_only=fresh) is not None:
                 return False
             pending = PendingWrite(str(record.event_id or ""), str(record.session_id or ""))
-            self._backend.add_transform(record, pending=pending)
+            with self._backend.writes_behind(write_behind):
+                self._backend.add_transform(record, pending=pending)
             return True
 
     def get_transform(self, call_id: str) -> Optional[Any]:

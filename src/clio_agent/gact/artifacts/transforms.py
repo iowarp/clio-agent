@@ -494,8 +494,11 @@ def record_transform(
         candidates=candidates,
         notes=notes,
     )
-    # Index record first (pending), then the event that confirms it (crash-safe order).
-    get_registry(app).record_transform(record)
+    # Index record first (pending), then the event that confirms it (crash-safe order):
+    # both on the session's ordered highway writer when it is on.
+    from clio_agent.gact.highway_writer import operation_queue  # noqa: PLC0415
+
+    get_registry(app).record_transform(record, fresh=True, write_behind=operation_queue(app, sid))
     _emit_transform_recorded(app, sid, record, turn_id=turn_id, trace_id=trace_id)
     return record
 

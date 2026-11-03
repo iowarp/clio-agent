@@ -43,7 +43,8 @@ import json
 import logging
 import time
 from collections import OrderedDict
-from collections.abc import Callable, Iterable
+from collections.abc import Callable, Iterable, Iterator
+from contextlib import contextmanager
 from typing import TYPE_CHECKING, Any, Optional
 
 from clio_agent.arc.batch_put import PutRecord
@@ -139,6 +140,7 @@ class StoreBackend:
         self._cache_entries = cache_entries
         self._grace_s = grace_s
         self._inflight: dict[str, list[str]] = {}
+        self._behind: Optional[Callable[[Callable[[], None]], None]] = None
         self.seen_event_ids: Any = BoundedSet(_SEEN_EVENT_IDS)
         #: The last typed read/write degrade (for diagnostics/tests); ``None`` when clean.
         self.last_degrade: Optional[dict[str, Any]] = None
@@ -165,11 +167,33 @@ class StoreBackend:
 
     def _write(self, key: str, value: Any) -> None:
         self._remember(key, value)
+        put = functools.partial(self._put, key, encode(_persistable(value)))
+        if self._behind is not None:
+            self._behind(put)  # in order on the caller's writer; the cache answers reads
+        else:
+            put()
+
+    def _put(self, key: str, raw: bytes) -> None:
         try:
-            self._store.put(ARTIFACT_INDEX_KIND, key, encode(_persistable(value)))
+            self._store.put(ARTIFACT_INDEX_KIND, key, raw)
         except STORE_ERRORS as exc:
             self._degrade("artifact_index_write_failed", key, exc)
             self._on_write_failure()
+
+    @contextmanager
+    def writes_behind(
+        self, defer: Optional[Callable[[Callable[[], None]], None]]
+    ) -> Iterator[None]:
+        """Within this block, hand each put to ``defer`` (an ordered writer) instead.
+
+        The caller holds the registry lock, so the block's writes are queued in the
+        order the cache took them; ``None`` writes through as usual.
+        """
+        self._behind = defer
+        try:
+            yield
+        finally:
+            self._behind = None
 
     def _delete(self, key: str) -> None:
         self._cache.pop(key, None)
@@ -400,9 +424,17 @@ class StoreBackend:
 
     # ---- transforms --------------------------------------------------------
 
-    def transform(self, call_id: str) -> Optional[Any]:
-        """The TransformRecord for ``call_id``, or ``None``."""
-        body = self._body(index_key("t", call_id), _decode_transform)
+    def transform(self, call_id: str, *, cached_only: bool = False) -> Optional[Any]:
+        """The TransformRecord for ``call_id``, or ``None``.
+
+        ``cached_only`` answers from this process's cache: for a call id minted here,
+        clio-core cannot hold a record this process did not write.
+        """
+        key = index_key("t", call_id)
+        if cached_only:
+            body = self._cache.get(key)
+            return None if body is None else body["transform"]
+        body = self._body(key, _decode_transform)
         return None if body is None else body["transform"]
 
     def add_transform(self, record: Any, *, pending: Optional[PendingWrite] = None) -> None:

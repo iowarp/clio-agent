@@ -56,3 +56,49 @@ def test_a_whole_list_written_by_the_migration_still_reads_and_grows() -> None:
     backend = _backend(store)
     backend._append(key, "call_new")
     assert backend._members(key) == [*legacy, "call_new"]
+
+
+def test_a_live_transform_neither_reads_clio_core_nor_puts_under_the_registry_lock() -> None:
+    """A transform of a call id minted here: no read, and its puts are queued in order.
+
+    Every concurrent tool call takes the registry lock; on a P7 burst it was held
+    across a read (always a miss for a fresh id) and two puts, and waiting for it was
+    most of a call's own time (2026-11-03).
+
+    SABOTAGE: ignore ``cached_only`` in ``StoreBackend.transform`` and the fresh id
+    is read from the store; or call ``put()`` in ``_write`` regardless of ``_behind``
+    and the puts happen inside the lock.
+    """
+    from clio_agent.gact.artifacts.registry import ArtifactRegistry
+    from clio_agent.gact.artifacts.transform_types import Instrument
+    from clio_agent.gact.artifacts.transforms import TransformRecord, TransformStatus
+
+    reads: list[str] = []
+    store = _Store()
+    original_get = store.get
+
+    def get(kind: str, name: str) -> bytes | None:
+        reads.append(name)
+        return original_get(kind, name)
+
+    store.get = get  # type: ignore[method-assign]
+    backend = _backend(store)
+    registry = ArtifactRegistry(backend=backend)
+    queued: list[Any] = []
+    record = TransformRecord(
+        call_id="call_fresh",
+        event_id="evt_1",
+        session_id="sess_1",
+        workspace_id="ws",
+        status=TransformStatus.SUCCESS,
+        instrument=Instrument(tool="records_get_record", args={}),
+        started_at="2026-11-03T00:00:00Z",
+        ended_at="2026-11-03T00:00:01Z",
+    )
+    assert registry.record_transform(record, fresh=True, write_behind=queued.append) is True
+    assert index_key("t", "call_fresh") not in reads  # no read of the fresh id
+    assert store.records == {} and len(queued) == 2  # nothing put yet: queued in order
+    for put in queued:  # the writer runs them later, outside the lock
+        put()
+    assert set(store.records) == {index_key("s", "sess_1"), index_key("t", "call_fresh")}
+    assert registry.get_transform("call_fresh") is record  # the cache answers meanwhile
