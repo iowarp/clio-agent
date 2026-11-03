@@ -178,16 +178,22 @@ def effect_found(effect: dict[str, Any], chunks: list[str]) -> bool:
 
 
 def _decoy(decoy: dict[str, Any], chunks: list[str]) -> tuple[bool, bool]:
-    """``(flagged as a fault, mentioned as planned)``."""
-    flagged = explained = False
+    """``(flagged as a fault, mentioned as planned)``.
+
+    Flagged only when no passage about the interval says it was planned: an answer that
+    explains the interval in one list item and notes a consequence with a fault word
+    ("96 imaging frames are missing") in a sibling item has not called it a fault
+    (H4 head1 run 3, 2026-11-03).
+    """
+    faulted = explained = False
     for chunk in chunks:
         if not (names_run(decoy, chunk) and _any(decoy["interval"], chunk)):
             continue
         if _any(decoy["explained"], chunk):
             explained = True
         elif _any(decoy["fault"], chunk):
-            flagged = True
-    return flagged, explained
+            faulted = True
+    return faulted and not explained, explained
 
 
 def grade_export(answer: dict[str, Any], text: str) -> dict[str, Any]:

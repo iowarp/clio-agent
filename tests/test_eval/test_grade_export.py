@@ -132,6 +132,34 @@ def test_reporting_the_decoy_as_a_fault_fails(key) -> None:
     assert all(result["findings"].values())
 
 
+def test_a_decoy_explained_beside_a_fault_word_is_not_flagged(key) -> None:
+    """The interval explained in one passage, mentioned with a fault word in another.
+
+    Found grading head1 H4 run 3 (2026-11-03): its section "Checked and fine: the
+    10:00-13:00 dark interval is documented ... This is not a fault" explained the decoy,
+    but the progress notes merged above the answer named the chamber and "issues", and
+    that one passage flagged the decoy.
+
+    SABOTAGE: return ``faulted`` (not ``faulted and not explained``) from ``_decoy`` and
+    the explained decoy is flagged.
+    """
+    decoy = key["decoy"]
+    run = decoy["runs"][0]
+    day = decoy["dark_utc"][0][:10]
+    checked = "\n".join(
+        [
+            f"Working notes: {run} shows dropped frames in the 10:00-13:00 interval; an issue?",
+            "",
+            "## Checked and fine",
+            f"- **{run}:** the 10:00-13:00 dark interval on {day} is documented in the README.",
+            "  - This is the planned dark adaptation, not a fault.",
+        ]
+    )
+    result = _grade(key, _answer(_findings(key), checked))
+    assert not result["decoy_flagged"] and result["decoy_explained"]
+    assert result["correct"]
+
+
 def test_effect_needs_its_size(key) -> None:
     rate = key["effect"]["metrics"][0]
     parts = _findings(key)
