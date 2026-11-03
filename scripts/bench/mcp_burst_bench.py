@@ -4,7 +4,7 @@
 [--concurrency C] [--sessions K] [--namespace bench-...] [--json PATH]``
 
 With ``--sessions K`` the calls are spread over K sessions that share the one history
-writer, each with its own connection and in-flight bound: the shape of several agents
+writer and the server's connection, each with its own in-flight bound: the shape of several agents
 working at once. The report adds each session's p90 latency and the process's CPU over
 wall time (near 1.0: the interpreter lock is the limit; well under it with latency
 rising: waiting on clio-core).
@@ -156,8 +156,11 @@ async def _burst(
     app.state.task_recovery = CoreRecovery(history)
     timed = _TimedIO(history.io)
     external = ExternalTasks(app)
-    # Each session has its own connection and in-flight bound, as on a server.
-    clients = [Client(_server(handler_ms)) for _ in sids]
+    # One connection to the server (sessions in a workspace share its MCP servers, and
+    # the call path keeps one connection per server name); each session has its own
+    # in-flight bound, as on a server.
+    shared = Client(_server(handler_ms))
+    clients = [shared for _ in sids]
     gates = [asyncio.Semaphore(concurrency) for _ in sids]
     latencies: list[float] = []
     per_session: dict[str, list[float]] = {sid: [] for sid in sids}
