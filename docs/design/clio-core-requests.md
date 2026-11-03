@@ -75,6 +75,17 @@ All of these exist natively in `context-transfer-engine/core/include/clio_cte/co
 | `MultiPutBlobTask` (issue #862), with a per-put status | `core_tasks.h:3226` | One round trip for the ~11 small records CLIO writes per tool call (see issue 3). |
 | `DelTagTask` | `core_tasks.h:4069` | Python cannot delete a tag, so benchmark and test tags are left behind in the daemon. |
 
+**Measured cost of the current path (2026-11-03, iowarp-core 2.4.0, local daemon, `arc.core_threads` 8).** CLIO writes many small blobs, one `AsyncPutBlob` each. All are issued before any is awaited:
+
+| Blobs | Issuing them | Waiting | Rate |
+| --- | --- | --- | --- |
+| 3,000 × 4 KB | 3,495 ms (1.2 ms per call) | 1,757 ms | 571 blobs/s, 2.3 MB/s |
+| 3,000 × 256 B | 2,470 ms | 583 ms | 983 blobs/s |
+| 300 × 40 KB | 98 ms | 1,961 ms | 146 blobs/s, 6.0 MB/s |
+
+Issuing an `AsyncPutBlob` costs about 1 ms of synchronous binding work per blob. In CLIO's burst bench (2,000 read-only tool calls), one grouped write of 3,220 blobs (13 MB) took 8.4 s. The history writer spent 28 of its 45 s inside clio-core puts, and per-call latency rose from 26 ms (p90, one session) to 750 ms (eight sessions) while the process used under half a core. A multi-put with one submission for N blobs (`MultiPutBlobTask`, below), and a cheaper single issue, would remove most of that.
+
+
 **Acceptance.** Async Python methods for each, matching the existing `AsyncPutBlob`/`AsyncGetBlob` style: release the GIL while waiting, return a `Future`, and give a per-item return code for the multi operations.
 
 ---

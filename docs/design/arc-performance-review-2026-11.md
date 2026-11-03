@@ -280,6 +280,30 @@ Measured on live P7 runs (2,000 read-only `get_record` calls gathered by a `run_
 
 **Crash window.** A queued highway event is lost with the process, like a queued read-only outcome. The writer records continuously, so the window is one group (tens of milliseconds), not a step. Turn recovery (`gact/interrupted_tool_calls.py`) reports an interrupted call from its recorded `tool.call.started`; a call whose start was still queued when the process stopped has no record and is not reported. Before this change the window was the start's own synchronous append.
 
+## Parallel sessions and the history writer (2026-11-03, iowarp-core 2.4.0)
+
+The burst bench gained `--sessions K` (K sessions sharing the one history writer and the server's connection) and the stream audit gained timed clio-core rows (`runtime/io_audit.py`: `store.rpc`, `core_io.job`, `highway.flush`). 2,000 read-only calls, 8 in flight per session:
+
+| Sessions | p90 latency per call | Calls/s | Process CPU / wall | Writer ms per call | Backlog after the last reply |
+| --- | --- | --- | --- | --- | --- |
+| 1 | 26 ms | 353 | 0.39 | 18 | 31 s |
+| 2 | 122 ms | 222 | 0.51 | 15 | 21 s |
+| 4 | 446 ms | 172 | 0.38 | 20 | 28 s |
+| 8 | 750 ms | 202 | 0.50 | 13 | 16 s |
+
+The earlier conclusion (W4 below: "GIL-bound, parallel writers would add contention, not throughput") came from one session and is wrong for parallel load. Latency grows about 30 times from one session to eight while the process uses under half a core.
+
+With one session, the writer was busy 45 s:
+- 28 s inside 33 clio-core puts; one grouped put of 3,220 blobs (13 MB) took 8.4 s;
+- about 17 s of Python.
+
+A direct probe puts clio-core's rate for many small concurrent puts at 571 blobs/s (2.3 MB/s) for 4 KB blobs. Issuing each `AsyncPutBlob` costs about 1 ms of synchronous binding work (`clio-core-requests.md`, issue 2). CLIO writes about 2 blobs and 12 KB of records per read-only tool call.
+
+What follows, in order:
+1. CLIO writes far fewer blobs per tool call (a call's records packed into one).
+2. clio-core gets a batched multi-put and a cheaper issue (issue 2).
+3. Per-session ordering (W4), so one session's backlog does not delay another's.
+
 ## The clio-core plan's remaining items, against the measurements (2026-11-03)
 
 Done since the review: the highway writer and the registry fix (above); each task event written once, to its lane (`7b80d1b6`); an `lm.call` record stores only its chain's new messages (`d06960ae`; H4's six records were 23-300 KB, and a turn near a 1M-token window's threshold stored about 3 MB per step); the Stop dispatch span names the message instead of copying it (`12a9123d`; 13.2 MB in one P7 journal).
