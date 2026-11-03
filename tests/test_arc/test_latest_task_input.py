@@ -104,14 +104,15 @@ def test_failed_projection_restore_keeps_previous_confirmed_lookup(
     history = TaskHistory(arc)
     latest = commit(history, "first", "2026-10-15T12:00:00Z")
 
-    original = task_history_projection._scope_inputs
+    # A restore replays the lane (task events' one record) and reads no canonical input
+    # for an annotated lane: lose the lane read instead.
+    from clio_agent.gact import task_event_lane
 
-    def fail_context(selected: TaskHistory, *args: Any, **kwargs: Any) -> Any:
-        if selected is not history:
-            raise OSError("canonical input read unavailable")
-        return original(selected, *args, **kwargs)
+    def fail_read(*_args: Any, **_kwargs: Any) -> Any:
+        raise OSError("canonical input read unavailable")
+        yield  # a generator, like the reader it replaces
 
-    monkeypatch.setattr(task_history_projection, "_scope_inputs", fail_context)
+    monkeypatch.setattr(task_event_lane, "session_task_events", fail_read)
     with pytest.raises(OSError, match="canonical input read"):
         history.restore()
     assert history.requires_recovery
