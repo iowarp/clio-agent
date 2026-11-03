@@ -234,12 +234,17 @@ def node_output_refusal(effective_args: Mapping[str, Any]) -> str:
 
     from clio_agent.tools.file_policy import FileAccessPolicy, FilePolicyError  # noqa: PLC0415
 
+    outputs = {
+        key: value
+        for key, value in effective_args.items()
+        if key in OUTPUT_PATH_ARG_NAMES and isinstance(value, str) and value.strip()
+    }
+    if not outputs:
+        return ""  # nothing to check: the policy (filesystem-resolved roots) is not built
     policy = FileAccessPolicy.from_env()
     if not policy.write_roots:
         return ""
-    for key, value in effective_args.items():
-        if key not in OUTPUT_PATH_ARG_NAMES or not isinstance(value, str) or not value.strip():
-            continue
+    for key, value in outputs.items():
         try:
             policy._ensure_writable(Path(value).expanduser().resolve(strict=False), field=key)
         except FilePolicyError as refused:

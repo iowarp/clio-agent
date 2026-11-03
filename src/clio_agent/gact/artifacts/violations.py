@@ -228,12 +228,22 @@ def observe_policy_violations(
     if resolved is None or not resolved.active:
         return []
     mechanism = str(resolved.mechanism)
+    from clio_agent.gact.artifacts.designation import (  # noqa: PLC0415
+        grounded_output_paths,
+        result_declared_paths,
+    )
+
+    denial = write_denial_from_result(result)
+    designated = {**grounded_output_paths(args), **result_declared_paths(result)}
+    if denial is None and not designated:
+        # Nothing to place against the write territory: resolving it (every root through
+        # the filesystem) was most of the observer's own time on a read-only call burst.
+        return []
     started_iso = _iso(started_at)
     ended_iso = _iso(time.time())
     roots = _effective_roots(app, workspace_id)
     violations: list[PolicyViolation] = []
 
-    denial = write_denial_from_result(result)
     if denial is not None:
         dpath = str(denial.get("path") or "")
         if dpath and not _within_roots(Path(dpath), roots):
@@ -272,8 +282,7 @@ def observe_policy_violations(
             app,
             sid,
             tool_name=tool_name,
-            args=args,
-            result=result,
+            designated=designated,
             call_id=call_id,
             workspace_id=workspace_id,
             turn_id=turn_id,
@@ -306,8 +315,7 @@ def _designated_out_of_root_violations(
     sid: str,
     *,
     tool_name: str,
-    args: dict[str, Any],
-    result: Any,
+    designated: dict[str, str],
     call_id: str,
     workspace_id: str,
     turn_id: str,
@@ -325,12 +333,6 @@ def _designated_out_of_root_violations(
     a violation. Without a call window a present out-of-root file is NEVER called ``detected``
     (F5) — escape is unproven, so it is a typed skip.
     """
-    from clio_agent.gact.artifacts.designation import (  # noqa: PLC0415
-        grounded_output_paths,
-        result_declared_paths,
-    )
-
-    designated = {**grounded_output_paths(args), **result_declared_paths(result)}
     out: list[PolicyViolation] = []
     for raw_path in designated.values():
         path = Path(raw_path)

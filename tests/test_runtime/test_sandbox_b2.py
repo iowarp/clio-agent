@@ -732,3 +732,31 @@ def test_install_chokepoint_idempotent_and_shutdown_clears() -> None:
         nc.shutdown_chokepoint()
     assert nc.current_chokepoint() is None
     assert nc.chokepoint_port() is None
+
+
+def test_a_call_with_nothing_to_place_never_resolves_the_write_territory(monkeypatch) -> None:
+    """A fenced call with no denial and no output path skips the roots (the read-only burst).
+
+    Resolving the effective write roots walks every root through the filesystem; on a burst
+    of read-only MCP calls it was most of the tool observer's own time, for no possible
+    violation.
+    """
+    from fastapi import FastAPI
+
+    from clio_agent.gact.artifacts import violations as v
+
+    def refuse(_app, _ws):
+        raise AssertionError("the write territory was resolved for a call with nothing to place")
+
+    monkeypatch.setattr(v, "_effective_roots", refuse)
+    out = v.observe_policy_violations(
+        FastAPI(),
+        "sess",
+        tool_name="get_record",
+        args={"record_id": "R1"},
+        call_id="c1",
+        result={"record_id": "R1", "value": "ok"},
+        workspace_id="",
+        state=_active_fence(),
+    )
+    assert out == []
