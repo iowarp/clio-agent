@@ -26,6 +26,7 @@ import sys
 from pathlib import Path
 from typing import Any
 
+from scripts.eval.tool_calling import chains
 from scripts.eval.tool_calling.grade_export import (
     grade_breadth,
     grade_export,
@@ -278,7 +279,9 @@ def grade_root_cause(answer: dict[str, Any], text: str) -> dict[str, Any]:
 def grade(task: str, answer: dict[str, Any], run: dict[str, Any]) -> dict[str, Any]:
     """Grade one run; ``correct`` is ``None`` where the task has no mechanical key."""
     text = str((run.get("outcome") or {}).get("final_text") or "")
-    if task == "P1":
+    if chains.is_chain_task(task):
+        result = chains.grade_chain(task, list(run.get("replies") or []))
+    elif task == "P1":
         result = grade_p1(answer, text)
     elif task == "P2":
         result = grade_p2(answer, text)
@@ -320,7 +323,7 @@ def main(argv: list[str] | None = None) -> int:
     manifest = json.loads(manifest_path(args.fixtures).read_text(encoding="utf-8"))
     for path in args.runs:
         run = json.loads(path.read_text(encoding="utf-8"))
-        answer = manifest["tasks"][run["task"]]["answer"]
+        answer = manifest["tasks"].get(run["task"], {}).get("answer", {})
         print(json.dumps({"run": str(path), **grade(run["task"], answer, run)}, indent=1))
     return 0
 

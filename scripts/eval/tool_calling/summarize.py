@@ -19,6 +19,7 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
+from scripts.eval.tool_calling.chains import is_chain_task
 from scripts.eval.tool_calling.claude_code_ref import rate_windows
 from scripts.eval.tool_calling.grade import grade
 from scripts.eval.tool_calling.metrics import run_metrics
@@ -116,6 +117,8 @@ def build_rows(runs: list[dict[str, Any]], manifest: dict[str, Any] | None) -> l
         row.runs.append(run)
         row.metrics.append(run_metrics(run))
         answer = ((manifest or {}).get("tasks") or {}).get(key[0], {}).get("answer")
+        if is_chain_task(key[0]):
+            answer = {}
         row.grades.append(grade(key[0], answer, run) if answer is not None else None)
     order = {t: i for i, t in enumerate(ALL_TASKS)}
     return sorted(rows.values(), key=lambda r: (order.get(r.task, 99), r.config))

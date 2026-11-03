@@ -33,6 +33,9 @@ class Task:
     metadata: dict[str, Any] = field(default_factory=dict)
     #: Messages the person sends mid-run: ``(seconds after the request, text)`` (H6).
     follow_ups: tuple[tuple[float, str], ...] = ()
+    #: Later requests of a multi-turn task, each sent when the previous turn has ended
+    #: (the science chains, ``chains.py``).
+    rounds: tuple[str, ...] = ()
 
     def agent_delta(self) -> dict[str, list[str]]:
         return {"add": [f"{MARKETPLACE_NAME}/{name}" for name in self.plugins], "remove": []}
@@ -158,7 +161,12 @@ def task(
     """The task ``task_id`` with its prompt filled from ``manifest``.
 
     H3 and H5 are H1 and H4 with automatic compaction at ``h3_autocompact_pct``.
+    ``C<n>`` is a science chain from the suite's CSV (``chains.py``).
     """
+    from scripts.eval.tool_calling import chains
+
+    if chains.is_chain_task(task_id):
+        return chains.chain_task(task_id)
     if task_id in _FILLED:
         answer = manifest["tasks"][task_id]["answer"]
         suite = "long-horizon" if task_id.startswith("H") else "performance"
@@ -181,10 +189,20 @@ def task(
 
 
 def select(spec: str) -> list[str]:
-    """Parse ``P1,P3-P5,H*`` style task selections, in catalog order."""
+    """Parse ``P1,P3-P5,H*`` style task selections, in catalog order.
+
+    Science chains are named ``C3`` or ``C1-C10`` and follow the catalog, in order.
+    """
+    from scripts.eval.tool_calling import chains
+
     chosen: set[str] = set()
+    picked_chains: list[int] = []
     for part in (s.strip().upper() for s in spec.split(",") if s.strip()):
-        if part in ("ALL", "*"):
+        low, _, high = part.partition("-")
+        if chains.is_chain_task(low) and (not high or chains.is_chain_task(high)):
+            first, last = int(low[1:]), int((high or low)[1:])
+            picked_chains += [n for n in range(first, last + 1) if n not in picked_chains]
+        elif part in ("ALL", "*"):
             chosen.update(ALL_TASKS)
         elif part.endswith("*"):
             chosen.update(t for t in ALL_TASKS if t.startswith(part[:-1]))
@@ -196,9 +214,13 @@ def select(spec: str) -> list[str]:
             chosen.add(part)
         else:
             raise KeyError(f"unknown task {part!r}")
-    return [t for t in ALL_TASKS if t in chosen]
+    return [t for t in ALL_TASKS if t in chosen] + [f"C{n}" for n in picked_chains]
 
 
 def fixture_dir(task_id: str, manifest: dict[str, Any]) -> str:
     """The fixture folder (relative to the fixtures root) a task works in."""
+    from scripts.eval.tool_calling import chains
+
+    if chains.is_chain_task(task_id):
+        return chains.FIXTURE
     return str(manifest["tasks"][task_id]["fixture"])

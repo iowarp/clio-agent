@@ -159,6 +159,7 @@ def wait_for_turn(
     interaction_timeout_s: float,
     decline_after_s: float | None = None,
     follow_ups: tuple[tuple[float, str], ...] = (),
+    rounds: tuple[str, ...] = (),
     clock: Callable[[], float] = time.monotonic,
     sleep: Callable[[float], None] = time.sleep,
 ) -> dict[str, Any]:
@@ -167,6 +168,9 @@ def wait_for_turn(
     ``follow_ups``: ``(seconds after start, text)`` messages the person sends while the
     work runs (a changed instruction mid-run). Each is sent once its time has come, and
     the work has not ended until every one was sent; ``sent`` records when.
+    ``rounds``: later requests of a multi-turn task. Each is sent once the previous
+    turn has settled, and the work has ended when the last one has; ``sent`` records
+    them with their ``round`` (2 onward).
 
     Returns ``{"state": "settled" | "timed_out" | <interaction status>,
     "status", "polls", "first_done_wall", "declined"}``; ``first_done_wall`` is the
@@ -184,6 +188,8 @@ def wait_for_turn(
     seen: dict[str, float] = {}
     declined: list[dict[str, Any]] = []
     pending = sorted(follow_ups)
+    later = list(rounds)
+    answered = ""  # the reply that ended the previous round; a round needs a new one
     sent: list[dict[str, Any]] = []
     while True:
         if clock() - start > timeout_s:
@@ -217,12 +223,30 @@ def wait_for_turn(
             if pending:  # a follow-up is still due: the person has not finished
                 sleep(poll_s)
                 continue
-            if newest is not None and newest.get("stop_reason"):
+            if (
+                newest is not None
+                and newest.get("stop_reason")
+                and str(newest.get("id") or "") != answered
+            ):
                 now = (
                     str(newest.get("id") or ""),
                     str(newest.get("updated_at") or ""),
                     int(session.get("message_count") or 0),
                 )
+                if marker == now and later:
+                    text = later.pop(0)
+                    answered = now[0]
+                    client.send(sid, text)
+                    sent.append(
+                        {
+                            "after_s": round(clock() - start, 1),
+                            "round": len(rounds) - len(later) + 1,
+                            "text": text,
+                        }
+                    )
+                    marker = first_done_wall = None
+                    sleep(poll_s)
+                    continue
                 if marker == now:
                     return {
                         "state": "settled",
@@ -408,6 +432,7 @@ def execute_run(ctx: RunContext, spec: RunSpec) -> dict[str, Any]:
             interaction_timeout_s=ctx.interaction_timeout_s,
             decline_after_s=ctx.decline_questions_after_s,
             follow_ups=task.follow_ups,
+            rounds=task.rounds,
         )
     except Exception:
         # A failed poll (the server stopped answering) must not leave the turn running
@@ -454,6 +479,7 @@ def execute_run(ctx: RunContext, spec: RunSpec) -> dict[str, Any]:
         "wait": waited,
         "declined_permissions": waited.get("declined", []),
         "outcome": norm["outcome"],
+        "replies": norm["replies"],
         "sessions": norm["sessions"],
         "recording": {"root": norm["recording"], "children": norm["child_recordings"]},
         "fleet_before": fleet_before,

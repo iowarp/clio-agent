@@ -296,6 +296,21 @@ def outcome(messages: list[dict[str, Any]], *, timed_out: bool = False) -> dict[
     }
 
 
+def replies(messages: list[dict[str, Any]]) -> list[str]:
+    """The answer to each request, in order: the last assistant text before the next one.
+
+    A request with no assistant text after it answers ``""``.
+    """
+    ordered = sorted(messages, key=lambda m: str(m.get("created_at") or ""))
+    answers: list[str] = []
+    for message in ordered:
+        if message.get("role") == "user":
+            answers.append("")
+        elif message.get("role") == "assistant" and answers and (text := message_text(message)):
+            answers[-1] = text
+    return answers
+
+
 def normalize_export(export: dict[str, Any]) -> dict[str, Any]:
     """The whole export: sessions (root first), the outcome and recording notes."""
     sessions = [normalize_session(export)]
@@ -303,6 +318,7 @@ def normalize_export(export: dict[str, Any]) -> dict[str, Any]:
     return {
         "sessions": sessions,
         "outcome": outcome(list(export.get("messages") or [])),
+        "replies": replies(list(export.get("messages") or [])),
         "recording": export.get("recording") or {},
         "child_recordings": [
             {"session_id": (c.get("session") or {}).get("id"), **(c.get("recording") or {})}
