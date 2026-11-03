@@ -619,8 +619,19 @@ def fence_pending_restart() -> bool:
     return _FENCE_PENDING_RESTART
 
 
-# Doctor probe: the ``sandbox`` row lives in the sandbox_doctor sibling (ratchet); re-exported.
-from clio_agent.runtime.sandbox_doctor import emit_boot_state_event, probe_sandbox  # noqa: E402
+# Doctor probe: the ``sandbox`` row lives in the sandbox_doctor sibling (ratchet); re-exported
+# on first use. Importing the doctor pulls in config, the LM factory and the A2UI schemas
+# (about 0.55 s), which a tool server confining its first command paid on the call (2026-11).
+_DOCTOR_EXPORTS = frozenset({"emit_boot_state_event", "probe_sandbox"})
+
+
+def __getattr__(name: str) -> Any:
+    if name in _DOCTOR_EXPORTS:
+        from clio_agent.runtime import sandbox_doctor  # noqa: PLC0415
+
+        return getattr(sandbox_doctor, name)
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+
 
 __all__ = [
     "MECHANISM_LANDLOCK",
@@ -656,6 +667,4 @@ __all__ = [
     "REASON_FENCE_PENDING_RESTART",
     "mark_fence_pending_restart",
     "fence_pending_restart",
-    "emit_boot_state_event",
-    "probe_sandbox",
-]
+]  # emit_boot_state_event and probe_sandbox resolve through __getattr__
