@@ -113,6 +113,12 @@ _STATIC: dict[str, Task] = {
     "H1": Task("H1", "long-horizon", _H1),
     "H2": Task("H2", "long-horizon", _H2),
     "H4": Task("H4", "long-horizon", _H4),
+    "H8": Task(
+        "H8",
+        "long-horizon",
+        "Several batches failed QC this quarter. These are the lab's records: for each failed "
+        "batch, find out why it failed.",
+    ),
     "H6": Task(
         "H6",
         "long-horizon",
@@ -140,7 +146,7 @@ def _h7(answer: dict[str, Any]) -> str:
 _FILLED = {"P1": _p1, "P2": _p2, "P4": _p4, "H7": _h7}
 ALL_TASKS = (
     "P1", "P2", "P3", "P4", "P5", "P6", "P7", "P8", "P9", "P10", "H1", "H2", "H3", "H4", "H5",
-    "H6", "H7",
+    "H6", "H7", "H8",
 )  # fmt: skip
 #: Tasks the Claude Code reference runs.
 REFERENCE_TASKS = ("P1", "P2", "P3", "P4")

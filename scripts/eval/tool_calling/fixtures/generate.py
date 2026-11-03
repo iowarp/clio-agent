@@ -13,6 +13,7 @@ there::
     h2/           the recstream repository               H2
     h4-export/    a growth-chamber data export, 140 files, about 300 MB   H4, H5, H6
     h7-trail/     a lab's records, a QC failure to trace (about 350 files)  H7
+    h8-breadth/   a lab's records, twelve QC failures with separate causes  H8
     marketplace/  the clio-eval plugins                  P5 to P10
     manifest.json sha256 per file (git internals excepted) and the answer keys
 
@@ -28,7 +29,14 @@ import sys
 from pathlib import Path
 from typing import Any
 
-from scripts.eval.tool_calling.fixtures import export_h4, repos, seed_bugs, source_tree, trail_h7
+from scripts.eval.tool_calling.fixtures import (
+    breadth_h8,
+    export_h4,
+    repos,
+    seed_bugs,
+    source_tree,
+    trail_h7,
+)
 from scripts.eval.tool_calling.fixtures.common import (
     archive_tree,
     derive_rng,
@@ -133,6 +141,8 @@ def generate(
     tasks["H6"] = {"fixture": export_h4.FIXTURE, "answer": h4}
     h7 = trail_h7.write_trail(out / trail_h7.FIXTURE, seed)
     tasks["H7"] = {"fixture": trail_h7.FIXTURE, "answer": h7}
+    h8 = breadth_h8.write_breadth(out / breadth_h8.FIXTURE, seed)
+    tasks["H8"] = {"fixture": breadth_h8.FIXTURE, "answer": h8}
 
     market = write_marketplace(out / MARKETPLACE_DIR, seed=seed, python=python)
     manifest = {

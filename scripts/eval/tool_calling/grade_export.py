@@ -317,3 +317,23 @@ def grade_trail(answer: dict[str, Any], text: str) -> dict[str, Any]:
         "distractors_blamed": blamed,
         "hops": hops,
     }
+
+
+def grade_breadth(answer: dict[str, Any], text: str) -> dict[str, Any]:
+    """H8: each failed batch's cause, found or not.
+
+    A batch counts when one passage names it together with its cause: one of its
+    evidence ids (a lot, a notice, a note, the swapped batch) or a term for its cause's
+    kind. ``correct`` needs every batch; ``batch_recall`` is the share found.
+    """
+    rows = passages(text, join_tables=True)
+    found: dict[str, bool] = {}
+    for entry in answer["batches"]:
+        batch, terms = entry["batch"], answer["cause_terms"][entry["kind"]]
+        found[batch] = any(
+            re.search(rf"\b{re.escape(batch)}\b", r)
+            and (any(i in r for i in entry["ids"]) or any(t in r.lower() for t in terms))
+            for r in rows
+        )
+    recall = sum(found.values()) / len(found) if found else 0.0
+    return {"correct": all(found.values()), "batch_recall": round(recall, 3), "found": found}

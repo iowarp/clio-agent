@@ -117,7 +117,7 @@ def test_plan_runs_skips_existing_results(tmp_path: Path) -> None:
 
 def test_task_selection_and_prompts() -> None:
     assert tasks.select("P1,P3-P5,H*") == [
-        "P1", "P3", "P4", "P5", "H1", "H2", "H3", "H4", "H5", "H6", "H7",
+        "P1", "P3", "P4", "P5", "H1", "H2", "H3", "H4", "H5", "H6", "H7", "H8",
     ]  # fmt: skip
     assert tasks.select("all") == list(tasks.ALL_TASKS)
     with pytest.raises(KeyError):
