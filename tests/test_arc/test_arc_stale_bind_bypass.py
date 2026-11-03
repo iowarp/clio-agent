@@ -69,12 +69,17 @@ def test_clioagent_reuses_injected_arc(tmp_path):
     dd = str(tmp_path / "agent_data")
     # Build two agents with the SAME injected ARC (models the initial build + a rebuild).
     agent_a = ClioAgent(verbose=False, data_dir=dd, arc=arc)
-    agent_b = ClioAgent(verbose=False, data_dir=dd, arc=arc)
-
-    assert agent_a.arc is arc
-    assert agent_b.arc is arc
-    # Both agents share the identical ARC object — no per-build churn.
-    assert agent_a.arc is agent_b.arc
+    try:
+        agent_b = ClioAgent(verbose=False, data_dir=dd, arc=arc)
+        try:
+            assert agent_a.arc is arc
+            assert agent_b.arc is arc
+            # Both agents share the identical ARC object — no per-build churn.
+            assert agent_a.arc is agent_b.arc
+        finally:
+            agent_b.shutdown()  # each agent owns a tool executor and its event loop
+    finally:
+        agent_a.shutdown()
 
 
 # --- (2) With ONE ARC, an event recorded then read back is present (no split) ----
