@@ -34,6 +34,7 @@ import msgspec
 from clio_agent.arc.chunk_records import (
     CHUNK_APPEND_ABANDONED,
     ChunkMark,
+    ChunkWrite,
     appendable,
     plan_write,
     read_chunk,
@@ -42,6 +43,7 @@ from clio_agent.arc.lane_chunking import seal_chunk
 from clio_agent.arc.loop_guard import LoopThreadStoreWrite, assert_store_write_off_loop
 from clio_agent.arc.schema import Segment, segment_text
 from clio_agent.arc.segment_errors import ArcPersistError, SegmentReadError
+from clio_agent.arc.segment_group import active_group
 from clio_agent.runtime.stream_audit import stream_audit
 
 if TYPE_CHECKING:
@@ -140,6 +142,9 @@ class ScopeCache:
         Always called under this scope's per-scope lock. Inside :func:`transient_reads`
         a cold scope is decoded and returned without being cached or reported."""
         key = (session_id, scope)
+        group = active_group(self)
+        if group is not None and key in group.pending:  # this thread's staged appends
+            return group.pending[key].staged
         residency = self._residency
         if key in self._loaded:
             if residency is not None:
@@ -191,6 +196,14 @@ class ScopeCache:
         tail). Raises if a segment does not encode, ``store.put_at`` refuses, or
         (#1334) the caller runs an event loop."""
         assert_store_write_off_loop("segments.put", scope=scope)
+        name, write, search_text = self._planned_put(session_id, scope, segs, mark)
+        self._store.put_at("segments", name, write.data, write.offset, search_text=search_text)
+        return write.committed(segs)
+
+    def _planned_put(
+        self, session_id: str, scope: str, segs: list[Segment], mark: Optional[ChunkMark]
+    ) -> tuple[str, ChunkWrite, Optional[str]]:
+        """The record name, the planned put and the search companion text of ``segs``."""
         # search_text: the live render flattened to plain text, so semantic discovery
         # (Thread D) can find this scope by content. A scope the ``search_indexed``
         # predicate excludes (the reserved ``_events`` family) never writes it.
@@ -199,10 +212,7 @@ class ScopeCache:
             search_text = live_text or None
         else:
             search_text = None
-        write = plan_write(segs, mark)
-        name = self._record_name(session_id, scope)
-        self._store.put_at("segments", name, write.data, write.offset, search_text=search_text)
-        return write.committed(segs)
+        return self._record_name(session_id, scope), plan_write(segs, mark), search_text
 
     def _append_mark(self, key: tuple[str, str], staged: list[Segment]) -> Optional[ChunkMark]:
         """The stored end ``staged`` can be appended at, or ``None`` (a full rewrite)."""
@@ -232,7 +242,11 @@ class ScopeCache:
         end (one put of the new records); anything else rewrites the record. A refused
         rewrite raises :class:`ArcPersistError` and leaves the cache at the last committed
         record; a refused append also abandons the chunk (:meth:`_abandon_chunk`). Called
-        under this scope's per-scope lock."""
+        under this scope's per-scope lock. Inside this thread's :func:`segment_group`
+        an append is staged instead and put with the group's other appends."""
+        group = active_group(self)
+        if group is not None and group.stage((session_id, scope), staged):
+            return
         mark = self._append_mark((session_id, scope), staged)
         try:
             committed = self._put_scope(session_id, scope, staged, mark=mark)

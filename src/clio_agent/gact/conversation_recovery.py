@@ -524,7 +524,9 @@ async def _retired_segment(
 ) -> None:
     """Reconcile Stop once, after physical retirement and before slot release."""
     from clio_agent.gact.conversation_assignments import observe_child_lifecycle
+    from clio_agent.gact.read_only_outcomes import outcomes_recorded
 
+    await outcomes_recorded(self.app)  # read-only calls' records, written behind replies
     task = self.history.task_snapshot(segment.assignment.handle)
     if task is not None and task.kind == "Subagent" and task.terminal_at is not None:
         await self.history.io.run(observe_child_lifecycle, self, task, started=False)

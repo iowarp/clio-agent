@@ -13,6 +13,7 @@ from clio_agent.gact import context
 from clio_agent.gact.agents.tool_instrumentation import native_tool
 from clio_agent.gact.child_report_fit import report_room
 from clio_agent.gact.off_loop import join_off_loop
+from clio_agent.gact.read_only_outcomes import outcomes_recorded
 from clio_agent.gact.task_access import TaskAccess
 from clio_agent.gact.task_tool_collection import collected as _collected
 from clio_agent.gact.tool_observation import CollectedTaskResult
@@ -112,6 +113,7 @@ def build_task_tools() -> list[Any]:
         message_before: str | None = None,
     ) -> dict[str, Any]:
         app, caller = _runtime()
+        await outcomes_recorded(app)  # read-only calls' records, written behind replies
         value = await join_off_loop(
             app.state.task_operations.query,
             caller,
@@ -142,6 +144,7 @@ def build_task_tools() -> list[Any]:
         artifact_id: str | None = None,
     ) -> dict[str, Any]:
         app, caller = _runtime()
+        await outcomes_recorded(app)
         value = await app.state.task_operations.observe(
             caller,
             tasks,

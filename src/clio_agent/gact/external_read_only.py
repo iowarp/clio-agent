@@ -19,9 +19,13 @@ task support, so the call is not task-augmented, and ``tools.write_ahead`` is
 ``non_read_only`` (``all`` restores write-ahead for every call). The submission's
 content reference is content-addressed, so the call is bound to it before it is
 written; the admission (submission plus first snapshot) is then written once, in
-the same history-writer turn as the outcome: the rejection, the attention record, a
-task the server created anyway (adopted as before), or the inline result, in which
-case the first snapshot is already the settled one.
+the same history-writer turn as the outcome: the rejection, the attention record, or a
+task the server created anyway (adopted as before).
+
+An inline result with nothing recorded before it is the common case: the admission is
+written already settled (one snapshot, not running then completed), behind the reply.
+The call returns at once; the record is queued on the history writer and
+group-committed with the other queued records (:mod:`clio_agent.gact.read_only_outcomes`).
 """
 
 from __future__ import annotations
@@ -90,21 +94,6 @@ class LazyAdmission:
             if not self.recorded:
                 self._admit()
                 self.recorded = True
-
-    def settled(self, admit: Callable[[], Any], write: Callable[[], Any]) -> Callable[[], Any]:
-        """The inline outcome as one write: ``admit`` records the admission already
-        settled (one snapshot, not running then completed); once the admission is
-        recorded (a progress report or input request came first), ``write`` instead."""
-
-        def outcome() -> Any:
-            with self._lock:
-                if not self.recorded:
-                    admit()
-                    self.recorded = True
-                    return None
-            return write()
-
-        return outcome
 
     def then(self, write: Callable[[], Any]) -> Callable[[], Any]:
         """``write`` preceded by the admission, as one history-writer operation."""

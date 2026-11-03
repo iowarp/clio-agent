@@ -30,6 +30,8 @@ import json
 import re
 import threading
 from collections import OrderedDict
+from collections.abc import Iterable, Iterator
+from contextlib import contextmanager
 from typing import Any
 
 from clio_agent.arc.store_protocol import ARCStore
@@ -125,6 +127,15 @@ def display_open_row(session_id: str, mail_id: str) -> Row:
     }
 
 
+def minted_names(handle: str, reference: str) -> tuple[str, ...]:
+    """Lookup names that cannot exist yet for a handle and reference this process minted."""
+    return (
+        handle_row(handle, "", "", "", "")[0],
+        list_row("wait.", handle, [])[0],
+        reference_row(reference, "", "")[0],
+    )
+
+
 class _Lru:
     """A small bounded mapping for immutable or single-writer lookups."""
 
@@ -166,6 +177,11 @@ class TaskIndex:
         self._open: dict[str, dict[str, Any]] | None = None
         self._open_lock = threading.Lock()
         self.open_listings = 0
+        # Group commit (gact.task_history_group): rows staged by the writer thread, and
+        # lookup names known absent (identities this process just minted).
+        self._staging: tuple[int, dict[tuple[str, str], bytes]] | None = None
+        self._absent: frozenset[str] = frozenset()  # replaced whole, under _absent_lock
+        self._absent_lock = threading.Lock()
 
     def clear_caches(self) -> None:
         """Forget cached lookups and the open mirror; clio-core is unchanged."""
@@ -176,13 +192,60 @@ class TaskIndex:
             self._open = None
 
     def _get(self, kind: str, name: str) -> Any:
+        if name in self._absent:
+            return None
         raw = self.store.get(kind, name)
         return json.loads(raw) if raw else None
+
+    @contextmanager
+    def staged(self) -> Iterator[dict[tuple[str, str], bytes]]:
+        """On this thread, stage lookup and open-record puts instead of writing them.
+
+        The caches are updated at once (an index may over-claim, never under-claim);
+        :meth:`put_staged` writes the rows, the last value per name.
+        """
+        rows: dict[tuple[str, str], bytes] = {}
+        self._staging = (threading.get_ident(), rows)
+        try:
+            yield rows
+        finally:
+            self._staging = None
+
+    def put_staged(self, rows: dict[tuple[str, str], bytes]) -> None:
+        """Write staged rows, one ``put_many`` per record kind (lookups first)."""
+        from clio_agent.arc.batch_put import PutRecord  # noqa: PLC0415 - import cost
+
+        for kind in (LOOKUP_KIND, OPEN_KIND):
+            records = [PutRecord(name, data) for (k, name), data in rows.items() if k == kind]
+            for start in range(0, len(records), 256):
+                self.store.put_many(kind, records[start : start + 256])
+
+    def _put(self, kind: str, name: str, value: Any) -> None:
+        staging = self._staging
+        if staging is not None and staging[0] == threading.get_ident():
+            staging[1][(kind, name)] = _encode(value)
+        else:
+            self.store.put(kind, name, _encode(value))
+        if name in self._absent:
+            with self._absent_lock:
+                self._absent = self._absent - {name}
+
+    @contextmanager
+    def assume_absent(self, names: Iterable[str]) -> Iterator[None]:
+        """Read ``names`` as absent without asking clio-core (identities just minted)."""
+        fresh = frozenset(names)
+        with self._absent_lock:
+            self._absent = self._absent | fresh
+        try:
+            yield
+        finally:
+            with self._absent_lock:
+                self._absent = self._absent - fresh
 
     def put_lookup(self, row: Row) -> None:
         """Write one lookup record and refresh this process's cache of it."""
         name, value = row
-        self.store.put(LOOKUP_KIND, name, _encode(value))
+        self._put(LOOKUP_KIND, name, value)
         if name.startswith("h."):
             self._handles.set(value["handle"], value)
         elif name.startswith("s."):
@@ -283,7 +346,7 @@ class TaskIndex:
     def put_open(self, row: Row) -> None:
         """Open an obligation; called before the event that opens it."""
         name, value = row
-        self.store.put(OPEN_KIND, name, _encode(value))
+        self._put(OPEN_KIND, name, value)
         with self._open_lock:
             if self._open is not None:
                 self._open[name] = value
