@@ -55,6 +55,7 @@ from clio_agent.arc.memory import EVENTS_SCOPE, ARCMemory
 from clio_agent.gact import context as gctx
 from clio_agent.gact import server_boot
 from clio_agent.gact.events import EventBus
+from clio_agent.gact.highway_writer import flush_session
 from clio_agent.gact.semantic_events import (
     SemanticEvent,
     SemanticEventSink,
@@ -133,6 +134,7 @@ def test_baseline_single_arc_event_reaches_both_trace_and_events(tmp_path, monke
     app = _make_app(arc, trace)
 
     app_mod._emit_semantic_event(app, "sess_x", "lm.call", turn_id="t1")
+    flush_session(app, "sess_x")  # lm.call is recorded behind the call (highway writer)
 
     assert _trace_types(trace) == ["lm.call"]
     assert _events_types(arc, "sess_x") == ["lm.call"]
@@ -221,6 +223,7 @@ def test_one_arc_per_agent_no_split_across_bind(tmp_path, monkeypatch):
     app_mod._emit_semantic_event(app, sid, "turn.started", turn_id="t1")
     app_mod._emit_semantic_event(app, sid, "agent.invocation.started", turn_id="t1")
     app_mod._emit_semantic_event(app, sid, "lm.call", turn_id="t1")
+    flush_session(app, sid)  # lm.call is recorded behind the call (highway writer)
 
     assert _events_types(arc, sid) == [
         "turn.started",
@@ -244,6 +247,7 @@ def test_one_arc_per_agent_no_split_across_bind(tmp_path, monkeypatch):
     # A deep event recorded AFTER the bind (react.step / tool.call).
     app_mod._emit_semantic_event(app, sid, "react.step.completed", turn_id="t1")
     app_mod._emit_semantic_event(app, sid, "tool.call", turn_id="t1")
+    flush_session(app, sid)
 
     trace_types = _trace_types(trace)
     live_events_types = _events_types(live_arc, sid)

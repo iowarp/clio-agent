@@ -886,6 +886,12 @@ arc.cte.ram_capacity: "1GB"
 # before rolling; raise to cut chunk count, lower to bound re-encode cost.
 arc.events_chunk_segments: 512
 
+# CLIO_ARC_HIGHWAY_DEFERRED  (bool)  <- src/clio_agent/gact/highway_writer.py
+# Record highway-only events (tool calls, routing, transforms, model calls)
+# on a writer thread in groups, before the next model request; false records
+# each on the caller.
+arc.highway_deferred: true
+
 # CLIO_ARC_LIVENESS_BACKOFF_INITIAL_S  (float)  <- src/clio_agent/arc/rpc_liveness.py
 # Seconds of initial backoff before the first retry of a stalled (zombie)
 # clio-core RPC; raise to give a slow daemon more recovery time.

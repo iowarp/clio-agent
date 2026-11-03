@@ -240,6 +240,10 @@ KEY_NOTES: dict[str, str] = {
         "Semantic-event segments held per on-disk chunk of a session's event log before rolling; "
         "raise to cut chunk count, lower to bound re-encode cost."
     ),
+    "arc.highway_deferred": (
+        "Record highway-only events (tool calls, routing, transforms, model calls) on a writer "
+        "thread in groups, before the next model request; false records each on the caller."
+    ),
     "arc.liveness.backoff_initial_s": (
         "Seconds of initial backoff before the first retry of a stalled (zombie) clio-core RPC; "
         "raise to give a slow daemon more recovery time."

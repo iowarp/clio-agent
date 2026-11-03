@@ -403,6 +403,7 @@ def publish_finalized_turn(
     update_retry_attempt: "Callable[..., None]",
 ) -> None:
     """Publish one already-recorded result; never rebuild the prediction or execute it again."""
+    from clio_agent.gact.highway_writer import flush_session
     from clio_agent.gact.transcript_recording import publication_step
 
     steps = state.publication_steps
@@ -460,6 +461,12 @@ def publish_finalized_turn(
         "agent_invocation_terminal",
         lambda: _emit_unsettled_agent_invocation(state),
         retry=True,
+    )
+    publication_step(
+        steps,
+        "highway_records",  # the turn's deferred tool and model records are in clio-core
+        lambda: flush_session(state.app, state.sid),
+        retry=False,
     )
     publication_step(
         steps,

@@ -930,7 +930,11 @@ def test_tool_result_full_in_trace_but_bounded_in_ledger(tmp_path: Path, monkeyp
     observer("hdf5_dump_all", {"filepath": "x.h5"}, "started", None)
     observer("hdf5_dump_all", {"filepath": "x.h5"}, "completed", None, big_result)
 
-    # T1: durable trace carries the FULL result (all 4000 rows, not a preview).
+    # T1: durable trace carries the FULL result (all 4000 rows, not a preview). Tool-call
+    # events are recorded behind the call; the barrier a turn passes before reading.
+    from clio_agent.gact.highway_writer import flush_session
+
+    flush_session(app, sid)
     app.state.semantic_trace_backend.flush()
     rows = [
         _json.loads(line) for line in (trace_dir / f"{sid}.semantic.jsonl").read_text().splitlines()

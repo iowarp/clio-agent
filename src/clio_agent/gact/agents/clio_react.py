@@ -78,6 +78,8 @@ from clio_agent.gact.agents.clio_react_stream_call import call_lm as _call_lm
 from clio_agent.gact.agents.clio_react_submit import active_react_scope_safe, record_submit_audit
 from clio_agent.gact.agents.clio_react_submit import submit_tool as _submit_tool
 from clio_agent.gact.agents.tool_concurrency import run_bounded
+from clio_agent.gact.context import active_app
+from clio_agent.gact.highway_writer import flush_session
 from clio_agent.gact.injection_parts import emit_injection
 from clio_agent.lm.engines.text_tools import CALLABLE_TOOLS, INVALID_TOOL_CALL
 from clio_agent.lm.request_builder import sendable_lm_kwargs
@@ -442,6 +444,7 @@ class _Loop:
 
         def request() -> Request:
             nonlocal attempt
+            flush_session(active_app(), self.recorder.session)  # last step's records first
             self.recorder.commit_input(self.step, attempt=attempt)
             attempt += 1
             return Request(
