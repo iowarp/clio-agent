@@ -247,6 +247,24 @@ One feature off at a time, on the tasks it touches (`.cloud-run/ablations.sh`), 
 - **The explorer is not used on P1 to P4.** No final run on these tasks spawned a child (0 child sessions in all 12), so withholding the spawn tools changes nothing material: the same steps on P1 to P3, with P4 two steps longer and 15 s slower in one comparison of three runs. The explorer's value has to be shown on a task too wide for one context, which this suite does not contain (see T4).
 - **The session plan is not used on H1 to H3.** No final run called `plan_update` or `write_todos`, so withholding them changes nothing (9/9 correct either way). These tasks are too short to test it (T14); the mechanism is verified by T15, T17 and T18, and its value on a long task is still unmeasured.
 
+### Lighthouse: the long export investigation, H4 and H5 (2026-11-03, one run each)
+
+H4 is the OPAL-shaped task the suite lacked: a plain request to investigate a 140-file, 291 MB growth-chamber export broadly, with five seeded problems and a documented decoy (`scripts/eval/tool_calling/fixtures/export_h4.py`, graded by `grade_export.py`). H5 is H4 with the compaction threshold lowered. Each ran once on the head (`claude-sonnet-5-5` on `claude_code`, config `h4-probe`/`h5-probe2`). These are single runs read for what they show, not a measurement.
+
+| Run | Steps | Wall | Findings | Tools | Compactions | Handle |
+| --- | --- | --- | --- | --- | --- | --- |
+| H4 | 6 | 101 s | 5/5, decoy explained, both index anomalies | 6 `shell_bash`, two of them Python scripts in the scratch folder | 0 | `sess_472b4e1dfa97` |
+| H5 (threshold 0.25) | 7 | 110 s | 4/5 (summarised growth without comparing conditions, and said so) | 10 reads, glob, 2 writes, 2 shell | 0 (see finding 2) | `sess_1d6847a5d81d` |
+| H5 (threshold 0.05) | 7 | 168 s | 5/5, decoy explained, both index anomalies | 6 | 1 mid-turn, coherent after it | `sess_6e503f03b9bd` |
+
+**What the runs show.**
+
+1. **On this model, the export is a short task.** The agent writes one or two analysis scripts (h5py, pandas) that read every run folder and answers in 6 or 7 steps and under 3 minutes. It used no `explore` children and no `run_code`. The OPAL run's 18-25 minutes and about 50 model calls are therefore not explained by the task's width alone; the likely causes are the model (open models in that run) and the clio-core overhead of that time (P7's tool time has since fallen from 303 s to about 60 s). A long-horizon lighthouse for this model needs a task that cannot be scripted in one pass, or the open models of the local phase.
+2. **The prompt grows fast on such a task:** 33k cached tokens at the first step, 147k by the sixth, almost all from large shell outputs (the second step prints every document). Context per step, not steps, is what limits run length here.
+3. **Compaction never fired at 0.25.** The model's window is 1,000,000 tokens on `claude_code`, so 0.25 is 250k; H5 peaked at 142k and H3 at about 70k, which is why no H3 run in any configuration compacted. H3 and H5 now use 0.05 (`b919ae60`).
+4. **After one compaction, auto compaction stopped for the turn.** At 0.05 the run compacted once; the first measurement after it was 58k (system prompt and tools 33k, the summary, the steps kept verbatim) against a 50k threshold, so the guard concluded compaction could not get under it and stopped; the context then grew to 159k. On a 128k open model that is a context overflow after the first compaction. The post-compaction size is now a floor and the next compaction waits for the threshold's share of the room above it (`b919ae60`, `tests/test_gact/test_compaction_no_thrash.py`).
+5. **Tool-call blocks the engine could not read.** H5's third step was a `tool_calls` block whose JSON was malformed (the first call's object was not closed before the second began); CLIO answered "could not be read ... send the calls again", and the model changed approach. Across the 1,918 recorded steps in this machine's traces, 45 (2.35%, 34 sessions) were such blocks: 14 not a non-empty list, 13 a missing `,`, 8 several blocks, 3 a missing property quote, 3 XML fragments, 3 a missing opening fence, 1 an unterminated string. Each costs a model step. The cause is that `claude_code` carries tool calls as text, not as native tool use; repairing malformed JSON could execute a guessed command, so it is not repaired. Open: native tool calls for this engine.
+
 ### Targets
 
 The plan asked for targets after the base and before Phase 1; they were not written then. The targets below are the plan's own examples (section "Targets"), judged against the final runs, so they are a check, not a prediction.
