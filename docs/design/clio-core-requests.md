@@ -17,7 +17,7 @@ Nothing goes in `iowarp/clio-agent`. The clio-core team decides how to solve eac
 
 The numbers match the sections below. The parent issue lists them by priority: 3, 2, 1, 4.
 
-Checked against clio-core `v2.4.0` (`3ae9fd9a`, released 2026-11-02). None of the four is in that release.
+Checked against clio-core `v2.4.0` (`3ae9fd9a`, released 2026-11-02). None of the four is in that release. CLIO moved to 2.4.0 (`ae67aba4`) after a neutral benchmark.
 
 ---
 
@@ -96,7 +96,9 @@ CLIO's rule is that a record is only claimed durable after clio-core confirms it
 
 This matters for CLIO because it runs a local daemon per user on desktops and laptops. An idle agent costing most of a core drains batteries and slows everything else.
 
-**Ask.** Please check this on 2.4.0. The new scheduler ("schedule by predicted worker hold time; one elastic pool", `efd9349b`) may already change it. When there's no work, workers should back off to a blocking wait (futex/epoll) rather than spin.
+**Re-measured on 2.4.0 (2026-11-03):** about 0.92 to 0.94 of one core idle (9.2 and 9.45 CPU-seconds in 10 s, measured 35 s and 90 s after the last client finished), so the scheduler change did not remove it.
+
+**Ask.** Please look at this on 2.4.0. The new scheduler ("schedule by predicted worker hold time; one elastic pool", `efd9349b`) may already change it. When there's no work, workers should back off to a blocking wait (futex/epoll) rather than spin.
 
 **Acceptance.** An idle daemon stays under a few percent of one core.
 
