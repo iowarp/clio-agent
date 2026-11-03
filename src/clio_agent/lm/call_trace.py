@@ -260,7 +260,12 @@ def _emit(record: dict[str, Any]) -> None:
 
     from clio_agent.arc.loop_guard import on_server_loop  # noqa: PLC0415
     from clio_agent.gact.runtime.globals import _emit_semantic_event  # noqa: PLC0415
+    from clio_agent.lm.call_messages_delta import delta  # noqa: PLC0415
 
+    # Only what the session's chain has not recorded yet (readers rebuild the rest).
+    messages, prefix = delta(session, record.get("messages"))
+    if prefix:
+        record = {**record, "messages": messages, "messages_prefix": prefix}
     status = "failed" if "error" in record else "completed"
 
     def emit() -> Any:
