@@ -116,7 +116,9 @@ def test_plan_runs_skips_existing_results(tmp_path: Path) -> None:
 
 
 def test_task_selection_and_prompts() -> None:
-    assert tasks.select("P1,P3-P5,H*") == ["P1", "P3", "P4", "P5", "H1", "H2", "H3", "H4", "H5"]
+    assert tasks.select("P1,P3-P5,H*") == [
+        "P1", "P3", "P4", "P5", "H1", "H2", "H3", "H4", "H5", "H6",
+    ]  # fmt: skip
     assert tasks.select("all") == list(tasks.ALL_TASKS)
     with pytest.raises(KeyError):
         tasks.select("P42")
@@ -421,3 +423,26 @@ def test_io_summary_counts_this_runs_puts_and_cache_tokens(tmp_path: Path) -> No
         "cache_read_tokens": 9000,
     }
     assert summarize_io(None, 0.0, 1.0, {"sess_a"})["store_puts"] == 0
+
+
+def test_a_follow_up_is_sent_mid_run_and_the_run_waits_for_it() -> None:
+    """H6: the person's change arrives while the work runs; a turn that ends before the
+    change is due is not the end of the run. SABOTAGE: drop the ``if pending`` wait in
+    ``wait_for_turn`` and the run settles before the change is sent."""
+    clock = _Clock()
+    client = FakeClient(["running", "idle", "idle", "idle", "idle", "idle", "idle", "idle"])
+    result = wait_for_turn(
+        client,  # type: ignore[arg-type]
+        "s",
+        poll_s=2.0,
+        settle_s=6.0,
+        timeout_s=100.0,
+        interaction_timeout_s=30.0,
+        follow_ups=((30.0, "Change of plan."),),
+        clock=clock,
+        sleep=clock.sleep,
+    )
+    assert result["state"] == "settled"
+    assert [text for kind, text in client.calls if kind == "send"] == ["Change of plan."]
+    assert [s["text"] for s in result["sent"]] == ["Change of plan."]
+    assert result["sent"][0]["after_s"] >= 30.0

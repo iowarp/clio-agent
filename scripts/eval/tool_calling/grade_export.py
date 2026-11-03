@@ -225,3 +225,52 @@ def grade_export(answer: dict[str, Any], text: str) -> dict[str, Any]:
         },
         "measured_recall": round(named / len(measured), 3) if measured else None,
     }
+
+
+_MM = re.compile(r"\d\s*mm\b", re.IGNORECASE)
+_CM = re.compile(r"\d\s*cm\b", re.IGNORECASE)
+_HEIGHT = re.compile(r"\b(?:height|elongation|taller|tall)\b", re.IGNORECASE)
+#: Campaign the H6 request first excludes and the change then includes.
+H6_CHANGED_CAMPAIGN = 3
+
+
+def _problem_table(text: str, min_rows: int) -> bool:
+    """A Markdown table whose header names run, problem and evidence, with enough rows."""
+    lines = [line.strip() for line in text.splitlines()]
+    for i, line in enumerate(lines):
+        head = line.lower()
+        if line.startswith("|") and all(w in head for w in ("run", "problem", "evidence")):
+            rows = 0
+            for row in lines[i + 2 :]:
+                if not row.startswith("|"):
+                    break
+                rows += 1
+            if rows >= min_rows:
+                return True
+    return False
+
+
+def grade_h6(answer: dict[str, Any], text: str) -> dict[str, Any]:
+    """H6: H4's findings, plus the person's constraints and the change made mid-run.
+
+    - ``heights_in_cm``: a passage about height gives a value in cm, and none in mm;
+    - ``change_honoured``: every problem in campaign C3, first excluded and then
+      included by the change, is reported;
+    - ``problem_table``: a table with run, problem and evidence columns and a row per
+      problem.
+    ``correct`` needs H4's findings and every constraint.
+    """
+    result = grade_export(answer, text)
+    heights = [r for r in passages(text) if _HEIGHT.search(r)]
+    changed = [a["id"] for a in answer["anomalies"] if int(a["campaign"]) == H6_CHANGED_CAMPAIGN]
+    constraints = {
+        "heights_in_cm": any(_CM.search(r) for r in heights)
+        and not any(_MM.search(r) for r in heights),
+        "change_honoured": all(result["findings"][kind] for kind in changed),
+        "problem_table": _problem_table(text, len(answer["anomalies"])),
+    }
+    return {
+        **result,
+        "constraints": constraints,
+        "correct": result["correct"] and all(constraints.values()),
+    }

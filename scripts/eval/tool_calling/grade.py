@@ -26,7 +26,7 @@ import sys
 from pathlib import Path
 from typing import Any
 
-from scripts.eval.tool_calling.grade_export import grade_export
+from scripts.eval.tool_calling.grade_export import grade_export, grade_h6
 from scripts.eval.tool_calling.paths import DEFAULT_FIXTURES, manifest_path
 
 LINE_TOLERANCE = 1
@@ -289,6 +289,8 @@ def grade(task: str, answer: dict[str, Any], run: dict[str, Any]) -> dict[str, A
         result = grade_root_cause(answer, text)
     elif task in ("H4", "H5"):
         result = grade_export(answer, text)
+    elif task == "H6":
+        result = grade_h6(answer, text)
     elif task == "P10":
         servers = tuple(answer.get("deferred_servers") or ())
         calls = [c for s in run.get("sessions") or [] for c in s.get("tool_calls") or []]

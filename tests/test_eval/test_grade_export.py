@@ -223,3 +223,38 @@ def test_an_empty_answer_finds_nothing(key) -> None:
     assert _grade(key, "")["findings"] == dict.fromkeys(
         ("calibration", "unit", "duplicate", "clock", "effect"), False
     )
+
+
+def test_h6_needs_the_findings_the_constraints_and_the_change() -> None:
+    """SABOTAGE: accept heights in mm in ``grade_h6`` and the mm answer passes."""
+    from scripts.eval.tool_calling.grade_export import grade_h6
+
+    answer = {
+        "anomalies": [
+            {"id": "calibration", "runs": ["run_0112"], "campaign": 3, "terms": ["offset"]},
+            {"id": "clock", "runs": ["run_0102"], "campaign": 1, "terms": ["clock"]},
+        ],
+        "decoy": {"runs": ["run_0123"], "terms": [], "fault": [], "planned": []},
+        "effect": {"metrics": []},
+    }
+    good = (
+        "- run_0112 has an uncorrected offset.\n- run_0102 has a clock shift.\n"
+        "- Plant height reached 14.2 cm under B.\n\n"
+        "| run | problem | evidence file |\n|---|---|---|\n"
+        "| run_0112 | offset | a.log |\n| run_0102 | clock | b.log |\n"
+    )
+    result = grade_h6(answer, good)
+    assert result["constraints"] == {
+        "heights_in_cm": True,
+        "change_honoured": True,
+        "problem_table": True,
+    }
+    in_mm = grade_h6(answer, good.replace("14.2 cm", "14.2 cm (142 mm)"))
+    assert in_mm["constraints"]["heights_in_cm"] is False and not in_mm["correct"]
+    no_c3 = grade_h6(
+        answer,
+        good.replace("- run_0112 has an uncorrected offset.\n", "").replace(
+            "| run_0112 | offset | a.log |\n", ""
+        ),
+    )
+    assert no_c3["constraints"]["change_honoured"] is False

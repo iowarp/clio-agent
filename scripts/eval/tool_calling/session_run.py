@@ -158,10 +158,15 @@ def wait_for_turn(
     timeout_s: float,
     interaction_timeout_s: float,
     decline_after_s: float | None = None,
+    follow_ups: tuple[tuple[float, str], ...] = (),
     clock: Callable[[], float] = time.monotonic,
     sleep: Callable[[float], None] = time.sleep,
 ) -> dict[str, Any]:
     """Poll until the session's work has ended; never busy-loops.
+
+    ``follow_ups``: ``(seconds after start, text)`` messages the person sends while the
+    work runs (a changed instruction mid-run). Each is sent once its time has come, and
+    the work has not ended until every one was sent; ``sent`` records when.
 
     Returns ``{"state": "settled" | "timed_out" | <interaction status>,
     "status", "polls", "first_done_wall", "declined"}``; ``first_done_wall`` is the
@@ -178,9 +183,22 @@ def wait_for_turn(
     status = ""
     seen: dict[str, float] = {}
     declined: list[dict[str, Any]] = []
+    pending = sorted(follow_ups)
+    sent: list[dict[str, Any]] = []
     while True:
         if clock() - start > timeout_s:
-            return {"state": "timed_out", "status": status, "polls": polls, "declined": declined}
+            return {
+                "state": "timed_out",
+                "status": status,
+                "polls": polls,
+                "declined": declined,
+                "sent": sent,
+            }
+        if pending and clock() - start >= pending[0][0]:
+            at, text = pending.pop(0)
+            client.send(sid, text)
+            sent.append({"after_s": round(clock() - start, 1), "planned_s": at, "text": text})
+            marker = first_done_wall = None
         session = client.session(sid)
         polls += 1
         status = str(session.get("status") or "")
@@ -196,6 +214,9 @@ def wait_for_turn(
         else:
             interaction_since = None
             newest = _newest_assistant(client.messages(sid, limit=5))
+            if pending:  # a follow-up is still due: the person has not finished
+                sleep(poll_s)
+                continue
             if newest is not None and newest.get("stop_reason"):
                 now = (
                     str(newest.get("id") or ""),
@@ -209,6 +230,7 @@ def wait_for_turn(
                         "polls": polls,
                         "first_done_wall": first_done_wall,
                         "declined": declined,
+                        "sent": sent,
                     }
                 marker, first_done_wall = now, time.time()
                 sleep(settle_s)
@@ -359,6 +381,7 @@ def execute_run(ctx: RunContext, spec: RunSpec) -> dict[str, Any]:
             timeout_s=ctx.timeout_s,
             interaction_timeout_s=ctx.interaction_timeout_s,
             decline_after_s=ctx.decline_questions_after_s,
+            follow_ups=task.follow_ups,
         )
     except Exception:
         # A failed poll (the server stopped answering) must not leave the turn running

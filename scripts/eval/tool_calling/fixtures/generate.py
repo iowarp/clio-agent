@@ -129,6 +129,7 @@ def generate(
     h4 = export_h4.write_export(out / export_h4.FIXTURE, seed, scale=h4_scale)
     tasks["H4"] = {"fixture": export_h4.FIXTURE, "answer": h4}
     tasks["H5"] = {"fixture": export_h4.FIXTURE, "answer": h4}
+    tasks["H6"] = {"fixture": export_h4.FIXTURE, "answer": h4}
 
     market = write_marketplace(out / MARKETPLACE_DIR, seed=seed, python=python)
     manifest = {

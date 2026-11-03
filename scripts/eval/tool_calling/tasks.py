@@ -31,6 +31,8 @@ class Task:
     plugins: tuple[str, ...] = ()
     #: Extra session metadata (H3's and H5's compaction threshold).
     metadata: dict[str, Any] = field(default_factory=dict)
+    #: Messages the person sends mid-run: ``(seconds after the request, text)`` (H6).
+    follow_ups: tuple[tuple[float, str], ...] = ()
 
     def agent_delta(self) -> dict[str, list[str]]:
         return {"add": [f"{MARKETPLACE_NAME}/{name}" for name in self.plugins], "remove": []}
@@ -73,6 +75,23 @@ _H4 = (
     "done, what the data shows, and whether anything is wrong with it."
 )
 
+#: H4's export with the person's own constraints, one of them changed mid-run, and
+#: compaction low enough to fire several times: can the agent keep to what it was told,
+#: and to the change, across compactions? Graded by ``grade_export.grade_h6``.
+_H6 = (
+    "This folder is an export of experimental data. Investigate it broadly and tell me "
+    "whether anything is wrong with it. My constraints: leave campaign C3 out entirely, "
+    "it is being re-run; give every plant height in centimetres, never millimetres; and "
+    "end with a table that has one row per problem, with the columns run, problem and "
+    "evidence file."
+)
+_H6_CHANGE = (
+    "Change of plan: include campaign C3 after all, the re-run was cancelled. The other "
+    "constraints stand."
+)
+#: Seconds after the request when the change is sent (H5 runs take about 3 minutes).
+H6_CHANGE_AFTER_S = 60.0
+
 #: Static prompts; P1, P2 and P4 are filled from the manifest's answer keys.
 _STATIC: dict[str, Task] = {
     "P3": Task(
@@ -94,12 +113,25 @@ _STATIC: dict[str, Task] = {
     "H1": Task("H1", "long-horizon", _H1),
     "H2": Task("H2", "long-horizon", _H2),
     "H4": Task("H4", "long-horizon", _H4),
+    "H6": Task(
+        "H6",
+        "long-horizon",
+        _H6,
+        metadata={
+            "context_preferences": {
+                "automatic_compaction": True,
+                "autocompact_pct": H3_AUTOCOMPACT_PCT,
+            }
+        },
+        follow_ups=((H6_CHANGE_AFTER_S, _H6_CHANGE),),
+    ),
 }
 #: Tasks that rerun another with the compaction threshold lowered, so they compact.
 _COMPACTING = {"H3": _H1, "H5": _H4}
 _FILLED = {"P1": _p1, "P2": _p2, "P4": _p4}
 ALL_TASKS = (
     "P1", "P2", "P3", "P4", "P5", "P6", "P7", "P8", "P9", "P10", "H1", "H2", "H3", "H4", "H5",
+    "H6",
 )  # fmt: skip
 #: Tasks the Claude Code reference runs.
 REFERENCE_TASKS = ("P1", "P2", "P3", "P4")
