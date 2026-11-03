@@ -280,6 +280,21 @@ Measured on live P7 runs (2,000 read-only `get_record` calls gathered by a `run_
 
 **Crash window.** A queued highway event is lost with the process, like a queued read-only outcome. The writer records continuously, so the window is one group (tens of milliseconds), not a step. Turn recovery (`gact/interrupted_tool_calls.py`) reports an interrupted call from its recorded `tool.call.started`; a call whose start was still queued when the process stopped has no record and is not reported. Before this change the window was the start's own synchronous append.
 
+## The clio-core plan's remaining items, against the measurements (2026-11-03)
+
+Done since the review: the highway writer and the registry fix (above); each task event written once, to its lane (`7b80d1b6`); an `lm.call` record stores only its chain's new messages (`d06960ae`; H4's six records were 23-300 KB, and a turn near a 1M-token window's threshold stored about 3 MB per step); the Stop dispatch span names the message instead of copying it (`12a9123d`; 13.2 MB in one P7 journal).
+
+Not done, with the reason measured:
+
+| Item | What it would remove | What the measurements say | When it pays |
+| --- | --- | --- | --- |
+| Per-session ordering: keyed CoreIO, per-tree locks, `arc.core_io_workers` (W4) | One history writer shared by every session | The server process is GIL-bound at one core in a P7 burst (about 30 ms of Python per call, about 30 calls/s); the single writer sustains 250-330 calls/s in the burst bench. Parallel writers would add contention for the interpreter, not throughput. | Free-threaded clio-core wheels (`cp314t`), or many concurrent sessions waiting on clio-core I/O rather than Python |
+| Grouped admission for calls that can write (rest of W5) | About 10 sequential round trips (about 13 ms) per write call | H4 and H5 make 6 to 15 tool calls per run against 5-35 s model steps: under 0.1% of a run | Write-heavy bursts (scripts making many write calls) |
+| One put per lane per step, `react.step.completed` without observations (rest of W7) | About 2N+11 round trips per step | Step overhead was 44-181 ms against multi-second model steps in the final evaluation; the step event also feeds the live UI, whose readers would need the content lane | A loop with sub-second model steps (local models) |
+| Agent module build cache; MCP start for spawned children (W8) | 0.35 s per turn (median) building the module | A long run is one turn; children run in their parent's workspace, whose servers are up | Many short turns, or children in other workspaces |
+
+The levers that do pay next are in the section above: a direct client for an external stdio server instead of the in-process gateway proxy hop, and the observer's remaining per-call Python work.
+
 ## Measurement notes
 
 - Micro-benchmarks ran against the live daemon in namespaces `bench-arc-a` and `bench-arc-b`, and every record they wrote was deleted. The scripts are in the session scratchpad and are not part of the repository.
