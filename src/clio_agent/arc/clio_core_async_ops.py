@@ -237,6 +237,29 @@ class AsyncPutTag:
             raise ClioCorePutRefused(name, code)
 
 
+def store_put_if_absent(store: Any, kind: str, name: str, body: bytes) -> bool:
+    """Create blob ``name`` of ``store`` with ``body`` only if it does not exist (GIL-free).
+
+    One ``AsyncPutBlobIfAbsent`` (iowarp-core 2.4): clio-core decides atomically, so two
+    writers of the same name never both create it. Returns ``True`` when this call
+    created the blob, ``False`` when it already existed (``PUT_EXISTS_RC``; the stored
+    bytes are left as they were).
+
+    Raises:
+        ClioCorePutRefused: The runtime refused the put with any other code.
+    """
+    import clio_cte_core_ext as cte  # noqa: PLC0415 - loaded with the client
+
+    tag_id = store._tag_ids.get(kind)
+    future = await_future(store._client.AsyncPutBlobIfAbsent(tag_id, name, body, 0), op_name="put")
+    code = future.wait(0)
+    if code == cte.PUT_EXISTS_RC:
+        return False
+    if code != 0:
+        raise ClioCorePutRefused(name, code)
+    return True
+
+
 def delete_blob(client: Any, tag_id: Any, name: str) -> bool:
     """Delete one blob via ``AsyncDelBlob``; ``True`` iff it existed (return code 0)."""
     future = await_future(client.AsyncDelBlob(tag_id, name), op_name="delete")

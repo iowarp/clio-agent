@@ -21,6 +21,7 @@ from uuid import uuid4
 from pydantic import JsonValue, TypeAdapter
 
 from clio_agent.arc.loop_guard import assert_store_write_off_loop
+from clio_agent.arc.segment_create import create_scope_once
 from clio_agent.arc.task_types import (
     CoordinationGrant,
     CoreReference,
@@ -144,19 +145,18 @@ class TaskHistory:
         value = _JSON_VALUE.validate_python(value, strict=True)
         reference = content_reference(session_id, value, scope)
         content_id = digest = reference.content_id
-        with self._writing():
-            existing = self.arc.list_segments(session_id, reference.scope)
-            if existing:
-                self.read_content(reference)
-                return reference
-            self.confirm_write(
-                lambda: self.arc.append_segment(
+        with self._writing():  # one atomic create (iowarp-core 2.4) instead of probe + put
+            created = self.confirm_write(
+                lambda: create_scope_once(
+                    self.arc._segments,
                     session_id,
                     reference.scope,
                     "task_content",
                     {"content_id": content_id, "sha256": digest, "value": value},
                 )
             )
+            if not created:  # held already (this process, an earlier one, another writer)
+                self.read_content(reference)
         return reference
 
     def read_content(self, reference: CoreReference) -> JsonValue:
