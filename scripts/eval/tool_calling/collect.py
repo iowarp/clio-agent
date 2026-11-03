@@ -13,7 +13,11 @@ Normalized session::
      "tool_calls": [{"id", "step_id", "tool", "args", "started_at", "ended_at",
                      "duration_ms", "ok"}],
      "steps":      [{"step_id", "index", "tools", "is_finish"}],
-     "events":     {"compactions", "goal_redrives", "turns_completed", "turns_failed"}}
+     "events":     {"compactions", "goal_redrives", "turns_completed", "turns_failed"},
+     "prompt_tokens": [total input of each model call, in order],
+     "compactions": [{"compaction_id", "trigger", "replaced", "before", "after",
+                      "checkpoint_cache_read", "checkpoint_input", "checkpoint"}],
+     "injections": {source: count}, "spill_reads": n}
 
 Times are epoch seconds. An ``lm.call`` payload carries ``timestamp`` (when
 the call ended) and ``usage``; ``started_at``, ``duration_ms`` and ``ttft_ms``
@@ -27,7 +31,15 @@ from typing import Any
 
 #: Message stop reasons that are not a final answer.
 NOT_FINAL = frozenset({"error", "cancelled", "incomplete", "waiting_user", "max_tokens"})
-USAGE_FIELDS = ("input_tokens", "output_tokens", "cache_read_tokens", "reasoning_tokens")
+USAGE_FIELDS = (
+    "input_tokens",
+    "output_tokens",
+    "cache_read_tokens",
+    "cache_write_tokens",
+    "reasoning_tokens",
+)
+#: Where a large tool result is spilled for later reads (``shell_spill_store``).
+SPILL_MARKER = "/tool-output/"
 
 
 def epoch(value: Any) -> float | None:
@@ -152,6 +164,66 @@ def _count(events: list[dict[str, Any]], *types: str) -> int:
     return sum(1 for e in events if e.get("event_type") in types)
 
 
+def prompt_tokens(call: dict[str, Any]) -> int:
+    """Everything a model call was sent: new, cached and cache-written input."""
+    usage = call.get("usage") or {}
+    return sum(
+        int(usage.get(k) or 0) for k in ("input_tokens", "cache_read_tokens", "cache_write_tokens")
+    )
+
+
+def compaction_rows(events: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Each completed compaction: the context before and after it, and the checkpoint call.
+
+    The checkpoint call is the model call between ``compaction.started`` and
+    ``compaction.completed``; before and after are the nearest model calls outside it.
+    """
+    rows = []
+    started = {
+        (e.get("payload") or {}).get("compaction_id"): epoch(e.get("occurred_at"))
+        for e in events
+        if e.get("event_type") == "compaction.started"
+    }
+    calls = [
+        (epoch(e.get("occurred_at")) or 0.0, e) for e in events if e.get("event_type") == "lm.call"
+    ]
+    for event in events:
+        if event.get("event_type") != "compaction.completed":
+            continue
+        payload = event.get("payload") or {}
+        begin = started.get(payload.get("compaction_id")) or 0.0
+        end = epoch(event.get("occurred_at")) or 0.0
+        inside = [e for t, e in calls if begin <= t <= end]
+        before = [e for t, e in calls if t < begin]
+        after = [e for t, e in calls if t > end]
+        checkpoint = inside[-1] if inside else None
+        row = lm_call_row(checkpoint) if checkpoint else None
+        rows.append(
+            {
+                "compaction_id": payload.get("compaction_id"),
+                "trigger": payload.get("trigger"),
+                "replaced": payload.get("replaced_count"),
+                "before": prompt_tokens(lm_call_row(before[-1])) if before else None,
+                "after": prompt_tokens(lm_call_row(after[0])) if after else None,
+                "checkpoint_cache_read": (row or {}).get("usage", {}).get("cache_read_tokens"),
+                "checkpoint_input": prompt_tokens(row) if row else None,
+                "checkpoint": str(((checkpoint or {}).get("payload") or {}).get("content") or ""),
+            }
+        )
+    return rows
+
+
+def injection_counts(messages: list[dict[str, Any]]) -> dict[str, int]:
+    """How many times each injection source added text to what the agent read."""
+    counts: dict[str, int] = {}
+    for message in messages:
+        for part in message.get("parts") or []:
+            if part.get("type") == "injection":
+                source = str(part.get("source") or "")
+                counts[source] = counts.get(source, 0) + 1
+    return counts
+
+
 def normalize_session(transcript: dict[str, Any]) -> dict[str, Any]:
     """One exported session (root or child) as a normalized session."""
     session = transcript.get("session") or {}
@@ -173,6 +245,9 @@ def normalize_session(transcript: dict[str, Any]) -> dict[str, Any]:
         "attribution": str(relationship.get("attribution") or ("root" if not relationship else "")),
         "agent": str((session.get("agent") or {}).get("id") or ""),
         "lm_calls": lm_calls,
+        "prompt_tokens": [prompt_tokens(c) for c in lm_calls],
+        "compactions": compaction_rows(events),
+        "injections": injection_counts(list(transcript.get("messages") or [])),
         "tool_calls": tool_call_rows(events),
         "steps": step_rows(events),
         "events": {

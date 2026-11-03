@@ -16,7 +16,13 @@ recorded steps, calls and model calls and reports:
   calls, nested script calls included in their script) and the rest, which is the
   harness: recording, hooks, scheduling between steps;
 - **clio-core and cache**: puts and megabytes sent to clio-core, and the provider's
-  prompt-cache tokens created and read (from the stream audit, when it was on).
+  prompt-cache tokens created and read (from the stream audit, when it was on);
+- **context**: the root agent's prompt at its first and largest model call;
+- **compaction**: how many ran, the context before and after each (median shrink),
+  and the share of the checkpoint call's input read from the cache;
+- **delegation**: child sessions and the models they ran on;
+- **tool-return semantics**: injections the agent read (by source, in
+  :func:`run_semantics`) and reads of spilled tool output.
 
 A table per task puts the configurations side by side with the median over runs.
 """
@@ -31,6 +37,7 @@ from collections import defaultdict
 from pathlib import Path
 from typing import Any
 
+from scripts.eval.tool_calling.collect import SPILL_MARKER
 from scripts.eval.tool_calling.metrics import _union_ms
 from scripts.eval.tool_calling.paths import DEFAULT_RESULTS
 from scripts.eval.tool_calling.summarize import load_runs
@@ -95,6 +102,7 @@ def run_behaviour(run: dict[str, Any]) -> dict[str, Any]:
         model_ms += sum(float(c.get("duration_ms") or 0.0) for c in lm_calls)
     width_max = max(widths, default=0)
     tool_ms = _union_ms(intervals)
+    semantics = run_semantics(run)
     wall_ms = float(run.get("wall_s") or 0.0) * 1000.0
     return {
         "steps": steps,
@@ -115,6 +123,46 @@ def run_behaviour(run: dict[str, Any]) -> dict[str, Any]:
         "store_mb": float((run.get("io") or {}).get("store_put_bytes") or 0) / 1e6,
         "cache_create_k": float((run.get("io") or {}).get("cache_creation_tokens") or 0) / 1e3,
         "cache_read_k": float((run.get("io") or {}).get("cache_read_tokens") or 0) / 1e3,
+        **{k: v for k, v in semantics.items() if not isinstance(v, (dict, list))},
+    }
+
+
+def run_semantics(run: dict[str, Any]) -> dict[str, Any]:
+    """Context, compaction, delegation and tool-return use of one run."""
+    sessions = list(run.get("sessions") or [])
+    root = next((s for s in sessions if not s.get("depth")), sessions[0] if sessions else {})
+    prompts = [p for p in root.get("prompt_tokens") or [] if p]
+    compactions = [c for s in sessions for c in s.get("compactions") or []]
+    shrink = [c["after"] / c["before"] for c in compactions if c.get("before") and c.get("after")]
+    cached = [
+        c["checkpoint_cache_read"] / c["checkpoint_input"]
+        for c in compactions
+        if c.get("checkpoint_input")
+    ]
+    children = [s for s in sessions if s.get("depth")]
+    injections: dict[str, int] = defaultdict(int)
+    for session in sessions:
+        for source, n in (session.get("injections") or {}).items():
+            injections[source] += n
+    spill_reads = sum(
+        1
+        for s in sessions
+        for c in s.get("tool_calls") or []
+        if SPILL_MARKER in str(c.get("args") or "")
+    )
+    return {
+        "prompt_first_k": (prompts[0] / 1e3) if prompts else 0.0,
+        "prompt_max_k": (max(prompts) / 1e3) if prompts else 0.0,
+        "compactions": len(compactions),
+        "compaction_kept": statistics.median(shrink) if shrink else 0.0,
+        "checkpoint_cached": statistics.median(cached) if cached else 0.0,
+        "children": len(children),
+        "child_models": sorted(
+            {str(c.get("model") or "") for s in children for c in s.get("lm_calls") or []}
+        ),
+        "injections": sum(injections.values()),
+        "injections_by_source": dict(injections),
+        "spill_reads": spill_reads,
     }
 
 
@@ -137,6 +185,14 @@ _COLUMNS = (
     ("core MB", "store_mb", "{:.1f}"),
     ("cache new k", "cache_create_k", "{:.1f}"),
     ("cache read k", "cache_read_k", "{:.0f}"),
+    ("prompt first k", "prompt_first_k", "{:.0f}"),
+    ("prompt max k", "prompt_max_k", "{:.0f}"),
+    ("compactions", "compactions", "{:.0f}"),
+    ("kept after fold", "compaction_kept", "{:.2f}"),
+    ("checkpoint cached", "checkpoint_cached", "{:.2f}"),
+    ("children", "children", "{:.0f}"),
+    ("injections", "injections", "{:.0f}"),
+    ("spill reads", "spill_reads", "{:.0f}"),
 )
 
 
