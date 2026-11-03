@@ -47,9 +47,9 @@ def _result_part(call_id: str, name: str, value: Any, is_error: bool) -> ToolRes
         logger.warning(
             "tool media unavailable reason=%s call=%s detail=%s", type(exc).__name__, call_id, exc
         )
-        from clio_agent.gact import reminders  # noqa: PLC0415
+        from clio_agent import injections  # noqa: PLC0415
 
-        note = reminders.render("media_unavailable_result", {"error": exc}) or ""
+        note = injections.render("media_unavailable_result", {"error": exc}) or ""
         return ToolResultPart(
             id=call_id, content=(TextPart(text=note),), name=name, is_error=is_error
         )

@@ -88,10 +88,10 @@ def recall_line(compaction_id: str, *, search_enabled: bool = True) -> str:
     The reminder ``clio.reminder.summarization`` (``summarization_ids_only`` when the
     context store cannot search text). It is required, so it is never switched off.
     """
-    from clio_agent.gact import reminders  # noqa: PLC0415
+    from clio_agent import injections  # noqa: PLC0415
 
     source = SUMMARIZATION_SOURCE if search_enabled else f"{SUMMARIZATION_SOURCE}_ids_only"
-    line = reminders.render(source, {"recall_tool": RECALL_TOOL, "compaction_id": compaction_id})
+    line = injections.render(source, {"recall_tool": RECALL_TOOL, "compaction_id": compaction_id})
     return line or ""  # ``None`` only if an override drops ``x_required`` (traced)
 
 

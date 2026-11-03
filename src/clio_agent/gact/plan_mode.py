@@ -31,7 +31,7 @@ The block is SERVER grounding prepended to the turn input — never user text, n
 — so it carries a stable, greppable marker (:data:`PLAN_MODE_REMINDER_MARKER`, the #881 marker
 discipline). ``turn.py`` calls :func:`plan_mode_reminder` from its enrichment step. Its wording is
 the reminder ``clio.reminder.plan_mode`` and its ``plan_mode_*`` pieces
-(``prompt_packs/builtin/reminders/``); this module decides when the full contract is due.
+(``plugins/builtin/core/ai.iowarp.clio/injections/``); this module decides when the full contract is due.
 """
 
 from __future__ import annotations

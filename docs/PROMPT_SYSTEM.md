@@ -392,7 +392,7 @@ When CLIO compacts an agent's context it asks an LM to summarize the steps the
 summary replaces. That prompt is a Markdown template file, read at every
 compaction (an edit applies without a restart):
 
-- Default: the packaged `src/clio_agent/prompt_packs/builtin/compaction.md`.
+- Default: the core template `src/clio_agent/gact/compaction_prompt.md`.
 - Your own: set `compaction.prompt_file` in `config.yaml`, or
   `CLIO_COMPACTION_PROMPT_FILE`, to the path of your template.
 

@@ -4,8 +4,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from clio_agent import injections
 from clio_agent.gact.agents.native_result_bound import recorded_observation
-from clio_agent.tools import injections
 from clio_agent.tools.execution import tool_workspace_context
 from tests._config_layer import set_config
 

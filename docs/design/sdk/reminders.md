@@ -1,9 +1,32 @@
 # Reminders: every injection as a Markdown template
 
-Status: implemented, 2026-11-02 (every source below renders from a template; the
-trigger system is still to come). Tracks the owner's direction: every piece of text CLIO adds to
-what an agent sees is a Markdown template that a person can switch off, edit and preview in
-the UI; a trigger system comes later.
+Status: the injection system, 2026-11-03 (`src/clio_agent/injections/`). Every piece
+of text CLIO adds to what an agent reads is a declared injection, from core or a plugin,
+attached to an event; a person can switch it off, edit it and preview it in the UI.
+
+## The injection system (2026-11-03)
+
+- **Declarations.** One Markdown file per injection (flat frontmatter, body). Core's 70 ship in
+  the core plugin (`src/clio_agent/plugins/builtin/core/ai.iowarp.clio/injections/`); a plugin
+  declares its own in `ai.iowarp.clio/injections/*.md` (`name`, `event`, optional `tool`
+  pattern, `title`, `description`, `active`). `prompt_packs/` is deleted.
+- **Events.** The code decides only *when* an event fired and what it knows. General events,
+  fired for every loop: `turn_start` (with the turn's other additions) and `tool_result`
+  (after each call, appended to the result the model reads, narrowed by `tool:`; this is
+  guidance in tool responses). Every core injection is also an event, named after it
+  (`plan_stale`, `result_spilled`, `task_result`, `summarization`...), with its declared
+  variables; a plugin may add text to any of them. Catalogue: `injections/events.py`.
+- **Variables.** The event's own (`x_variables`), plus the session state any template may read:
+  `plan` (`location`, `status`, `exists`), `todos` (`open`, `done`, `total`, `items`),
+  `session` (`id`, `workspace`, `delegated`), `context` (`tokens`, `window`, `percent`),
+  computed only when used.
+- **Templates.** Sandboxed Jinja (`ImmutableSandboxedEnvironment`, `StrictUndefined`):
+  ternaries and `{% if %}`, no code execution; a name or attribute nobody supplied is a
+  typed `InjectionTemplateError`. A core or person's template that fails raises; a plugin's
+  is left out with the typed reason `injection_plugin_render_failed` (trace and stream audit).
+- **Edits.** A person's copy is saved through the prompt registry under `clio.reminder.<name>`
+  (plugin injections: `clio.reminder.<plugin>.<name>`), per user, workspace or session, as
+  before; the registry validates an injection body with the same Jinja parser.
 
 ## What a reminder is
 
@@ -31,7 +54,7 @@ Piebald-AI mirror), each with declared variables and conditionals filled in by t
 
 ### As built
 
-69 templates under `src/clio_agent/prompt_packs/builtin/reminders/`, named
+70 templates under `src/clio_agent/plugins/builtin/core/ai.iowarp.clio/injections/`, named
 `<source>` or `<source>_<piece>` when the text is built from conditional pieces (one
 template per piece; the code decides which apply, the template is the wording). Every
 default renders today's text byte for byte, pinned by `tests/test_gact/test_reminders*.py`.
@@ -80,9 +103,9 @@ You have made {{calls}} reading calls in this turn without delegating. ...
   resolved template, so the reminder page is the one place to change them.
 - `trigger` describes when it fires. It is documentation until the trigger system exists.
 
-Code calls `render_reminder(source, variables)` (new owner module `gact/reminders.py`),
+Code calls `render_reminder(source, variables)` (now `clio_agent.injections.render`),
 which resolves `clio.reminder.<source>`, returns `None` with a typed
-`reminder_inactive` trace when it is switched off, and otherwise renders the declared
+`injection_inactive` trace when it is switched off, and otherwise renders the declared
 variables. Scopes resolve as for every prompt: a workspace override beats a user one,
 which beats the built-in.
 
@@ -96,7 +119,7 @@ second switch.
 
 ## Order
 
-1. `gact/reminders.py`, the `kind`, `active`, `variables`, `params` frontmatter fields, and
+1. `clio_agent.injections` (was `gact/reminders.py`), the `kind`, `active`, `variables`, `params` frontmatter fields, and
    the explore and stale-plan notes moved to templates (the conf keys
    `delegation.explore_nudge*` and `plan.stale_steps` are retired in favour of `active` and
    `params`, pre-release).

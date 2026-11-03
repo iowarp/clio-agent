@@ -72,7 +72,7 @@ def test_builtin_prompts_are_listed_and_resolvable(client: TestClient) -> None:
     assert resolved["text"].startswith("Your final answer is passed as written")
     assert resolved["scope"] == "builtin"
     assert resolved["source_path"] == (
-        "package://clio_agent.prompt_packs.builtin/reminders/child_report.md"
+        "package://clio_agent.plugins.builtin/core/ai.iowarp.clio/injections/child_report.md"
     )
     assert resolved["metadata"]["kind"] == "reminder"
 

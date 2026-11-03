@@ -305,7 +305,7 @@ def todo_recitation(app: "FastAPI", sid: str, session: Any) -> str:
     are recorded. Otherwise a compact, marked block (the reminder ``todos``); the agent loop
     records it as its own message, again only when the list changed (never the system prompt).
     """
-    from clio_agent.gact import reminders  # noqa: PLC0415
+    from clio_agent import injections  # noqa: PLC0415
 
     if str(getattr(session, "mode", "") or "") == "plan":
         return ""
@@ -313,4 +313,4 @@ def todo_recitation(app: "FastAPI", sid: str, session: Any) -> str:
     if not todos:
         return ""
     checklist = {"checklist": _render_checklist(todos)}
-    return reminders.render(TODOS_SOURCE, checklist, app=app, session_id=sid) or ""
+    return injections.render(TODOS_SOURCE, checklist, app=app, session_id=sid) or ""

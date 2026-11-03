@@ -14,7 +14,7 @@ from collections.abc import Mapping
 from dataclasses import asdict, is_dataclass
 from typing import TYPE_CHECKING, Any
 
-from clio_agent.gact import reminders
+from clio_agent import injections
 from clio_agent.runtime import trace
 
 if TYPE_CHECKING:
@@ -27,7 +27,7 @@ def _runtime_active_workspace_context(app: "FastAPI", *, session_id: str = "") -
     Workspace facts tell the agent where generated artifacts belong. They change
     no permissions and force no paths: the file policy validates access. The text is
     the reminder ``clio.reminder.session_facts`` followed by its ``session_facts_*``
-    pieces (``prompt_packs/builtin/reminders/``); the code decides which pieces apply.
+    pieces (``plugins/builtin/core/ai.iowarp.clio/injections/``); the code decides which pieces apply.
     """
 
     if app is None:
@@ -45,7 +45,7 @@ def _runtime_active_workspace_context(app: "FastAPI", *, session_id: str = "") -
     from clio_agent.gact.node_folders import session_node_folder  # noqa: PLC0415
 
     def fact(piece: str, variables: dict[str, Any]) -> str | None:
-        return reminders.render(f"session_facts{piece}", variables, app=app, session_id=session_id)
+        return injections.render(f"session_facts{piece}", variables, app=app, session_id=session_id)
 
     tail = _session_scratch_lines(app, session_id)
     head = fact("", {"root": root})
@@ -72,9 +72,9 @@ def _session_scratch_lines(app: Any, session_id: str) -> list[str | None]:
 
     where = {"app": app, "session_id": session_id}
     machine = {"machine": session_scratch.machine_name()}
-    lines = [reminders.render("session_facts_machine", machine, **where)]
+    lines = [injections.render("session_facts_machine", machine, **where)]
     if folder := session_scratch.session_scratch_dir(session_id):
-        lines.append(reminders.render("session_facts_scratch", {"folder": folder}, **where))
+        lines.append(injections.render("session_facts_scratch", {"folder": folder}, **where))
     return lines
 
 

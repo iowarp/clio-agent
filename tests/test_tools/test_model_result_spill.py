@@ -16,7 +16,8 @@ from pathlib import Path
 
 import pytest
 
-from clio_agent.tools import injections, mcp_result_projection
+from clio_agent import injections
+from clio_agent.tools import mcp_result_projection
 from clio_agent.tools.execution import tool_workspace_context
 from clio_agent.tools.mcp_result_projection import bounded_model_tool_result
 from tests._config_layer import set_config

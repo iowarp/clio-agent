@@ -20,9 +20,9 @@ MEDIA_UNAVAILABLE_SOURCE = "media_unavailable"
 def file_recovery_note() -> str:
     """The note that replaces a refused document: the reminder
     ``clio.reminder.media_unavailable`` (required, so never switched off)."""
-    from clio_agent.gact import reminders  # noqa: PLC0415
+    from clio_agent import injections  # noqa: PLC0415
 
-    return reminders.render(MEDIA_UNAVAILABLE_SOURCE, {}) or ""
+    return injections.render(MEDIA_UNAVAILABLE_SOURCE, {}) or ""
 
 
 def __getattr__(name: str) -> str:

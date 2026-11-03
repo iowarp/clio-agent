@@ -17,12 +17,12 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Iterator, Optional, Protocol, cast
 
-from clio_agent import conf
+from clio_agent import conf, injections
 from clio_agent.errors import ClioError
 from clio_agent.runtime import commitment_activity
 from clio_agent.runtime.stream_audit import stream_audit
 from clio_agent.tools import foreground_cancellation as foreground_cancel
-from clio_agent.tools import harness_notes, injections, task_descriptions, tool_presentation
+from clio_agent.tools import harness_notes, task_descriptions, tool_presentation
 from clio_agent.tools import task_call_context as task_calls
 from clio_agent.tools.mcp_executor import (
     SYNC_TOOL_RESULT_GRACE_SECONDS,

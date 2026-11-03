@@ -7,7 +7,8 @@ from typing import Any
 
 import pytest
 
-from clio_agent.gact import explore_nudge, reminders
+from clio_agent import injections
+from clio_agent.gact import explore_nudge
 
 
 class _Recorder:
@@ -28,7 +29,7 @@ def reading(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(explore_nudge, "_read_only", lambda name: name.startswith("fs_"))
     monkeypatch.setattr(explore_nudge, "_can_explore", lambda loop: "spawn_agents_parallel")
     monkeypatch.setattr(explore_nudge, "_explore_model", lambda: "claude-haiku-5-5")
-    reminders.update(explore_nudge.EXPLORE_NUDGE_SOURCE, params={"after": 4})
+    injections.update(explore_nudge.EXPLORE_NUDGE_SOURCE, params={"after": 4})
 
 
 @pytest.mark.usefixtures("reading")
@@ -54,7 +55,7 @@ def test_delegating_restarts_the_count_and_the_switch_turns_it_off() -> None:
     explore_nudge.note_reading_run(loop, ["spawn_agents_parallel"])
     explore_nudge.note_reading_run(loop, ["fs_read_file"] * 3)
     assert loop.recorder.notes == []
-    reminders.update(explore_nudge.EXPLORE_NUDGE_SOURCE, active=False)
+    injections.update(explore_nudge.EXPLORE_NUDGE_SOURCE, active=False)
     loop = _loop()
     explore_nudge.note_reading_run(loop, ["fs_read_file"] * 5)
     assert loop.recorder.notes == []
@@ -79,7 +80,7 @@ def test_the_note_is_a_template_and_runs_nothing(tmp_path: Any) -> None:
 def test_no_explore_role_means_no_note(monkeypatch: pytest.MonkeyPatch) -> None:
     """Without the spawn tools there is nothing to suggest."""
     monkeypatch.setattr(explore_nudge, "_read_only", lambda name: True)
-    reminders.update(explore_nudge.EXPLORE_NUDGE_SOURCE, params={"after": 1})
+    injections.update(explore_nudge.EXPLORE_NUDGE_SOURCE, params={"after": 1})
     loop = SimpleNamespace(agent=SimpleNamespace(tools={"fs_read_file": 1}), recorder=_Recorder())
     explore_nudge.note_reading_run(loop, ["fs_read_file"] * 3)
     assert loop.recorder.notes == []

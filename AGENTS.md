@@ -44,7 +44,7 @@ code, examples and checks required before calling a new tool complete.
 - `agent.py`, `harness.py`, `errors.py` for the Tier-1 planner loop and run tracing
 - `conf.py`, `config.py`, `paths.py`, `prompts.py` for runtime/LM configuration, canonical paths, and the editable prompt system
 - `experts/`, `registry/` for generic expert support and the agent registry
-- `prompt_packs/` for built-in prompt packs
+- `injections/` for what CLIO adds to an agent's context: declarations (core's in the core plugin, a plugin's in its `ai.iowarp.clio/injections`), events, sandboxed Jinja templates
 - `arc/` for ARC memory: live context plane, prompt recorder, context compiler, cache/index/LSM/storage/retrieval
 - `tools/` for the FastMCP gateway, tool catalog, file policy, and execution boundary; `tools/servers/` for the FS and shell MCP servers
 - `providers/` for provider auth and LiteLLM bridges (Argonne/ALCF, claude_code, codex) plus `handshake/` model-limit discovery

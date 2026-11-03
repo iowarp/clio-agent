@@ -6,7 +6,8 @@ from types import SimpleNamespace
 
 import pytest
 
-from clio_agent.gact import child_report_fit, reminders
+from clio_agent import injections
+from clio_agent.gact import child_report_fit
 from clio_agent.gact.runtime import context_tokens
 
 
@@ -44,5 +45,5 @@ def test_only_a_child_is_told_who_reads_its_answer() -> None:
     note = child_report_fit.child_report_note(None, "sess_child", child)
     assert note.startswith("Your final answer is passed as written to the agent that started")
     assert "succinct" in note
-    reminders.update(child_report_fit.CHILD_REPORT_SOURCE, active=False)
+    injections.update(child_report_fit.CHILD_REPORT_SOURCE, active=False)
     assert child_report_fit.child_report_note(None, "sess_child", child) == ""

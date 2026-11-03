@@ -15,7 +15,7 @@ from typing import Any
 
 import pytest
 
-from clio_agent.gact import reminders
+from clio_agent import injections
 from tests._result_room import pin_result_room
 
 # --------------------------------------------------------------------------- #
@@ -39,7 +39,7 @@ def test_the_summary_ends_with_todays_recall_line_and_it_cannot_be_switched_off(
     assert recall_line("cmp_1", search_enabled=False) == _RECALL_IDS
     assert summary_text("S.", "cmp_1") == f"S.\n\n{_RECALL_SEARCH}"
     for source in ("summarization", "summarization_ids_only"):
-        assert reminders.update(source, active=False).active  # required: data the agent needs
+        assert injections.update(source, active=False).active  # required: data the agent needs
     assert summary_text("S.", "cmp_1", search_enabled=False) == f"S.\n\n{_RECALL_IDS}"
 
 
@@ -73,7 +73,7 @@ def test_a_failed_compaction_notice_keeps_its_text_and_can_be_switched_off(
     assert [n.text for n in notices] == [
         "Summarizing the context failed, so it was left as it was. the model timed out"
     ]
-    reminders.update("compaction_failed", active=False)
+    injections.update("compaction_failed", active=False)
     compaction._failed(None, "s", base, error)
     assert len(notices) == 1
     assert events[-1][2] == "failed" and events[-1][4]["part_id"] == ""
@@ -95,7 +95,7 @@ def test_a_skipped_compaction_notice_keeps_its_text_and_can_be_switched_off(
     assert compaction.ABOVE_THRESHOLD_NOTICE == today  # the constant still reads it
     compaction._notice_above_threshold(None, "s", "main", "cmp_1")
     assert [n.text for n in notices] == [today]
-    reminders.update("compaction_skipped", active=False)
+    injections.update("compaction_skipped", active=False)
     compaction._notice_above_threshold(None, "s", "main", "cmp_1")
     assert len(notices) == 1
 
@@ -135,11 +135,11 @@ def test_the_recovery_note_keeps_its_text(monkeypatch: pytest.MonkeyPatch) -> No
     notes = [s.content["text"] for s in segments if s.content.get("source") == "context_recovery"]
     assert notes == [_RECOVERED]
     assert told == [("context_recovery", _RECOVERED)]
-    assert reminders.render("context_recovery_operations", {}) == (
+    assert injections.render("context_recovery_operations", {}) == (
         "Recovered this session's context from recorded context operations. "
         "No operation was replayed."
     )
-    assert reminders.render("context_recovery_unconfirmed", {}) == (
+    assert injections.render("context_recovery_unconfirmed", {}) == (
         "Prepared model input was found without independent delivery proof; its content "
         "remains outside model context until normal mailbox authorization and commitment."
     )
@@ -151,7 +151,7 @@ def test_a_switched_off_recovery_note_reaches_neither_the_model_nor_the_transcri
     """The context is still restored; only the note is gone, from both places.
     SABOTAGE: append the notice segment even when the note is empty and the model
     context gains an empty CLIO note."""
-    reminders.update("context_recovery_transcript", active=False)
+    injections.update("context_recovery_transcript", active=False)
     segments, told = _carry_over(monkeypatch, _LEDGER)
     assert [s.content.get("text") for s in segments] == ["which station?", "P595."]
     assert told == []
@@ -161,7 +161,7 @@ def test_a_call_whose_outcome_was_lost_keeps_its_required_result(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """SABOTAGE: change ``context_recovery_uncertain.md`` and the equality fails."""
-    assert reminders.update("context_recovery_uncertain", active=False).active  # required
+    assert injections.update("context_recovery_uncertain", active=False).active  # required
     call = {"type": "tool_call", "call_id": "c", "tool_name": "read", "input": {"path": "x"}}
     segments, _ = _carry_over(monkeypatch, [{"role": "assistant", "parts": [call]}])
     [result] = [s for s in segments if s.kind == "observation"]
@@ -178,7 +178,7 @@ _TEXT = "line\n" * 200  # 1,000 characters; the room is 400
 
 
 def _bounded(monkeypatch: pytest.MonkeyPatch, spilled: Path | Exception) -> tuple[str, list]:
-    from clio_agent.tools import injections
+    from clio_agent import injections
     from clio_agent.tools import mcp_result_projection as projection
 
     def spill(text: str, **_: Any) -> Path:
@@ -226,8 +226,8 @@ def test_a_cut_result_keeps_todays_note_and_it_cannot_be_switched_off(
     )
     assert result.startswith(note + "\n\n") and told == [("result_spilled", result)]
     for source in ("result_spilled", "result_spilled_read_on", "result_spilled_json"):
-        reminders.update(source, active=False)
-    reminders.update("result_spilled_unsaved", active=False)
+        injections.update(source, active=False)
+    injections.update("result_spilled_unsaved", active=False)
     assert _bounded(monkeypatch, spilled)[0] == result  # required: the rest's whereabouts
 
 
@@ -248,7 +248,7 @@ def test_the_refused_document_note_keeps_its_text_and_cannot_be_switched_off() -
     )
     assert file_inputs.file_recovery_note() == today
     assert file_inputs.FILE_RECOVERY_NOTE == today  # the old constant still reads it
-    reminders.update("media_unavailable", active=False)
+    injections.update("media_unavailable", active=False)
     assert file_inputs.file_recovery_note() == today
 
 
@@ -299,7 +299,7 @@ def test_the_memory_snapshot_keeps_todays_text(monkeypatch: pytest.MonkeyPatch) 
         "- user/areas/b (areas): About B\n"
         "- 1 more not listed; find them with memory_search."
     )
-    assert reminders.render("memory_empty", {}) == "- (nothing yet)"
+    assert injections.render("memory_empty", {}) == "- (nothing yet)"
 
 
 def test_a_switched_off_memory_piece_or_snapshot_is_not_added(
@@ -309,12 +309,12 @@ def test_a_switched_off_memory_piece_or_snapshot_is_not_added(
     switched-off snapshot is still added."""
     from clio_agent.gact.memory import snapshot
 
-    reminders.update("memory_omitted", active=False)
+    injections.update("memory_omitted", active=False)
     assert _snapshot(monkeypatch).endswith("- user/areas/b (areas): About B")
     monkeypatch.setattr(snapshot, "session_snapshot", lambda app, session: {"text": "M"})
     app = SimpleNamespace(state=SimpleNamespace(sessions=SimpleNamespace(get=lambda sid: None)))
     assert snapshot.memory_snapshot_text(app, "s", object(), "t") == "M"
-    reminders.update("memory", active=False)
+    injections.update("memory", active=False)
     assert snapshot.memory_snapshot_text(app, "s", object(), "t") == ""
 
 
@@ -377,9 +377,9 @@ def test_plugin_change_pieces_switch_off_only_where_allowed(
         "plugin_change_skills",
         "plugin_change_tool_introductions",
     ):
-        assert reminders.update(source, active=False).active, source
-    reminders.update("plugin_change_footer", active=False)
-    reminders.update("plugin_change_deferred_tools", active=False)
+        assert injections.update(source, active=False).active, source
+    injections.update("plugin_change_footer", active=False)
+    injections.update("plugin_change_deferred_tools", active=False)
     note = _note(monkeypatch, {PROMPT_BASIS_KEY: "d1", DEFERRED_ADDED_KEY: ["home_new"]})
     assert note.splitlines()[-1] == "- hdf5-basics: Read HDF5"
     assert note.startswith("The person changed this conversation's plugins.\nRemoved: shell.")

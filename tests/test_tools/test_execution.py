@@ -14,9 +14,8 @@ from fastmcp import Context, FastMCP
 from mcp.types import CancelledNotificationParams, TextContent
 from pydantic import BaseModel, ConfigDict, Field
 
-from clio_agent import conf
+from clio_agent import conf, injections
 from clio_agent.errors import CancellationError
-from clio_agent.gact import reminders
 from clio_agent.gact.artifacts.designation import ground_output_paths
 from clio_agent.tools import foreground_cancellation as foreground_cancel
 from clio_agent.tools.execution import (
@@ -834,7 +833,7 @@ def test_any_failure_counts_and_after_zero_never_notes() -> None:
         assert err.value.__notes__[0].startswith("[clio: circuit_breaker] fake_echo has failed 3")
     finally:
         executor.close()
-    reminders.update("circuit_breaker_warning", params={"after": 0})
+    injections.update("circuit_breaker_warning", params={"after": 0})
     fake_client = FailingClient([TimeoutError(f"t{i}") for i in range(4)])
     executor = SyncMCPToolExecutor(object(), timeout=1.0, client_factory=lambda _: fake_client)
     try:

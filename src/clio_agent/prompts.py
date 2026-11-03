@@ -22,7 +22,6 @@ import hashlib
 import os
 import re
 from dataclasses import dataclass, field
-from importlib import resources
 from pathlib import Path
 from typing import Any, Iterable, Optional
 
@@ -108,34 +107,18 @@ def default_prompt_sources(
 
 
 def builtin_prompt_definitions() -> dict[str, PromptDefinition]:
-    """Return built-in CLIO prompt definitions loaded from package data.
+    """The built-in prompts: core's injections (``clio_agent.injections``), so a person
+    can switch one off, edit it or override it per workspace or session on the Prompts
+    page. They ship in the core plugin (``plugins/builtin/core/ai.iowarp.clio/
+    injections``), used verbatim."""
+    from clio_agent.injections.declarations import core_dir  # noqa: PLC0415
 
-    The built-ins are the reminders (``reminders/*.md``), used verbatim. The former
-    chat, planner, answer and expert prompts, with the behaviour profiles and
-    per-family requirements appended to them, were removed with the chat module and
-    the planner loop that read them: they were editable but had no effect.
-    """
     rows: dict[str, PromptDefinition] = {}
-    root = resources.files("clio_agent.prompt_packs.builtin")
-    for folder_name in ("reminders",):
-        rows.update(_builtin_verbatim(root, folder_name))
-    return rows
-
-
-def _builtin_verbatim(root: Any, folder_name: str) -> dict[str, PromptDefinition]:
-    """Templates used verbatim (``reminders/*.md``): each is exactly what the agent is
-    told."""
-    folder = root / folder_name
-    if not folder.is_dir():
-        return {}
-    rows: dict[str, PromptDefinition] = {}
-    for path in sorted(folder.iterdir(), key=lambda item: item.name):
-        if not path.name.endswith(".md"):
-            continue
+    for path in sorted(core_dir().glob("*.md")):
         parsed = parse_prompt_text(
             path.read_text(encoding="utf-8"),
             scope="builtin",
-            source_path=f"package://clio_agent.prompt_packs.builtin/{folder_name}/{path.name}",
+            source_path=f"package://clio_agent.plugins.builtin/core/ai.iowarp.clio/injections/{path.name}",
             fallback_id=path.name.removesuffix(".md"),
         )
         rows[parsed.id] = parsed
@@ -341,8 +324,10 @@ def parse_prompt_text(
         profile_name = "default"
     if not body.strip():
         errors.append("prompt body is empty")
-    placeholder_errors = _placeholder_validation_errors(body, declared_variables(meta))
-    errors.extend(placeholder_errors)
+    if str(meta.get("x_kind", meta.get("kind")) or "").strip() == "reminder":
+        errors.extend(_injection_validation_errors(body, declared_variables(meta)))
+    else:
+        errors.extend(_placeholder_validation_errors(body, declared_variables(meta)))
     title = str(meta.get("title") or prompt_id).strip()
     description = str(meta.get("description") or "").strip()
     provider = str(meta.get("provider") or meta.get("default_provider") or "").strip()
@@ -537,6 +522,19 @@ def declared_variables(meta: dict[str, Any]) -> frozenset[str]:
     raw = meta.get("x_variables", meta.get("variables")) or ""
     items = raw if isinstance(raw, list) else str(raw).split(",")
     return frozenset(str(item).strip() for item in items if str(item).strip())
+
+
+def _injection_validation_errors(text: str, declared: frozenset[str]) -> list[str]:
+    """An injection's body is a sandboxed Jinja template: valid syntax, and only its
+    declared variables and the session state (``clio_agent.injections.events.STATE``)."""
+    from clio_agent.injections.events import STATE  # noqa: PLC0415
+    from clio_agent.injections.template import InjectionTemplateError, names_used  # noqa: PLC0415
+
+    try:
+        unknown = sorted(names_used(text) - declared - STATE)
+    except InjectionTemplateError as exc:
+        return [exc.problem]
+    return [f"unknown render placeholder: {name}" for name in unknown]
 
 
 def _placeholder_validation_errors(text: str, declared: frozenset[str] = frozenset()) -> list[str]:

@@ -41,9 +41,10 @@ def restore_context(
         return ""
     import uuid
 
+    from clio_agent import injections
     from clio_agent.arc.context_restore import recorded_segments, unanswered_calls
     from clio_agent.arc.schema import Segment
-    from clio_agent.gact import context, reminders
+    from clio_agent.gact import context
     from clio_agent.gact.agents.clio_react_record import fold_steps
     from clio_agent.gact.agents.context_reader import model_context_segments
     from clio_agent.gact.conversation_projection import _get, transcript_segments
@@ -89,7 +90,7 @@ def restore_context(
     recovered: list[Segment] = []
     pending: dict[str, Segment] = {}
     clock = max((segment.logical_time for segment in restored), default=0)
-    uncertain = reminders.render("context_recovery_uncertain", {}, session_id=session) or ""
+    uncertain = injections.render("context_recovery_uncertain", {}, session_id=session) or ""
 
     def close_step(boundary: float | None) -> None:
         nonlocal clock
@@ -140,7 +141,7 @@ def restore_context(
         *(["context_recovery_unconfirmed"] if unconfirmed else []),
     ]
     note = " ".join(
-        text for piece in pieces if (text := reminders.render(piece, {}, session_id=session))
+        text for piece in pieces if (text := injections.render(piece, {}, session_id=session))
     )
     if note:
         notice = Segment(

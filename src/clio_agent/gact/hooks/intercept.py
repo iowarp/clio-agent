@@ -134,7 +134,7 @@ def run_post_tool(
         cwd=cwd,
         context=context,
     )
-    from clio_agent.tools import injections  # noqa: PLC0415
+    from clio_agent import injections  # noqa: PLC0415
     from clio_agent.tools.harness_notes import HOOK_MARKER, hook_note  # noqa: PLC0415
 
     result = observation
