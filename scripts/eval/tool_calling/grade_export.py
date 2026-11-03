@@ -229,7 +229,7 @@ def grade_export(answer: dict[str, Any], text: str) -> dict[str, Any]:
 
 _MM = re.compile(r"\d\s*mm\b", re.IGNORECASE)
 _CM = re.compile(r"\d\s*cm\b", re.IGNORECASE)
-_HEIGHT = re.compile(r"\b(?:height|elongation|taller|tall)\b", re.IGNORECASE)
+_HEIGHT = re.compile(r"\b(?:heights?|elongation|taller|tall)\b", re.IGNORECASE)
 #: Campaign the H6 request first excludes and the change then includes.
 H6_CHANGED_CAMPAIGN = 3
 

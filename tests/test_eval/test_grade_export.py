@@ -239,7 +239,7 @@ def test_h6_needs_the_findings_the_constraints_and_the_change() -> None:
     }
     good = (
         "- run_0112 has an uncorrected offset.\n- run_0102 has a clock shift.\n"
-        "- Plant height reached 14.2 cm under B.\n\n"
+        "- Plant heights reached 14.2 cm under B.\n\n"
         "| run | problem | evidence file |\n|---|---|---|\n"
         "| run_0112 | offset | a.log |\n| run_0102 | clock | b.log |\n"
     )
