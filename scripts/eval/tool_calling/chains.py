@@ -8,6 +8,13 @@ gold answer. A chain runs as one session: round 1 is the request, and each later
 is sent when the previous turn has ended (``Task.rounds``), so the agent carries the
 session's rules, tables and earlier answers across turns and compactions.
 
+What they are for: a probe of the turn stack (request to agent to provider to model),
+not a test. Every round is one model call on inlined tool outputs, so a chain shows
+CLIO's per-turn cost plainly (bring-up phases, provider handoff) and says nothing about
+long tool use or coherence on a strong model (42 of 42 rounds correct on
+``claude-sonnet-5-5``, ledger finding 14). Run one chain when measuring that path, not
+batches.
+
 Task ids are ``C1`` to ``C100`` in the CSV's chain order (``CLIO_EVAL_CHAINS`` names
 another copy of the file). They are not part of ``all``. They need no files and run in
 the ``home`` fixture.

@@ -173,3 +173,19 @@ def test_each_round_waits_for_a_new_reply_to_the_previous_one() -> None:
     assert conversation.sent == ["round 1", "round 2", "round 3"]
     assert conversation.reply_id == "a3"
     assert [s["round"] for s in result["sent"]] == [2, 3]
+
+
+def test_the_exploration_task_runs_in_the_data_folder(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """X1 is a plain request on a real dataset, outside the generated fixtures: the
+    fixtures root joined with its folder is the folder itself."""
+    monkeypatch.setenv("CLIO_EVAL_OPAL_DATA", str(tmp_path))
+    task = tasks.task("X1", {})
+    assert task.suite == "long-horizon" and "tool" not in task.prompt.lower()
+    folder = tasks.fixture_dir("X1", {})
+    assert Path("/any/fixtures") / folder == tmp_path.resolve()
+    assert tasks.select("X1,P1") == ["P1", "X1"]
+    monkeypatch.setenv("CLIO_EVAL_OPAL_DATA", str(tmp_path / "missing"))
+    with pytest.raises(FileNotFoundError):
+        tasks.fixture_dir("X1", {})
