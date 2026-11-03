@@ -111,10 +111,17 @@ def missing(history: TaskHistory, event: Any) -> tuple[bool, bool]:
     session_id = str(event.session_id)
     event_type, payload = str(event.event_type), event.payload
     identity, record = str(payload["observation_id"]), payload["record"]
+    from clio_agent.gact.task_event_lane import TASK_EVENTS  # noqa: PLC0415 - cycle
+
     lane = (content for _session, content in session_task_events(arc, session_id))
-    log = (segment.content for segment in arc._live.iter_session_event_segments(session_id))
     to_lane = not _held(lane, event_type, identity, record)
-    to_log = not _held(log, event_type, identity, record)
+    if event_type in TASK_EVENTS:
+        # The lane is a task event's one record; its highway emission follows it, so a
+        # held record was emitted (or is being) and a missing one is emitted now.
+        to_log = to_lane
+    else:
+        log = (s.content for s in arc._live.iter_session_event_segments(session_id))
+        to_log = not _held(log, event_type, identity, record)
     if not (to_lane and to_log):
         logger.warning(
             "Task boundary reason=%s session=%s event=%s identity=%s lane=%s log=%s",

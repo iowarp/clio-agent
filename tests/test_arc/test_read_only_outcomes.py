@@ -24,6 +24,7 @@ from clio_agent.gact import context
 from clio_agent.gact.external_tasks import ExternalTasks
 from clio_agent.gact.read_only_outcomes import READ_ONLY_OUTCOME_DEFERRED
 from clio_agent.gact.task_event_lane import session_task_events
+from clio_agent.gact.task_event_merge import session_log_segments
 from clio_agent.tools.task_call_context import TASK_CALL, TaskCall
 from tests.test_arc.test_external_read_only_admission import _environment
 
@@ -189,8 +190,7 @@ async def test_group_committed_records_equal_records_written_one_at_a_time(
         await external.outcomes.recorded()
         assert sorted(puts) == [
             ("put_many", "segments"),  # task content
-            ("put_many", "segments"),  # the task-event lane
-            ("put_many", "segments"),  # the _events log
+            ("put_many", "segments"),  # the task-event lane: a task event's one record
             ("put_many", "task_lookup"),
         ]
     finally:
@@ -202,7 +202,7 @@ async def test_group_committed_records_equal_records_written_one_at_a_time(
         lane = [content for _sid, content in session_task_events(arc, sid)]
         events = [
             segment.content
-            for segment in arc._live.iter_session_event_segments(sid)
+            for segment in session_log_segments(arc, sid)  # the whole log: lane merged in
             if isinstance(segment.content, dict)
             and segment.content.get("event_type") in {"task.submission", "task.observed"}
         ]

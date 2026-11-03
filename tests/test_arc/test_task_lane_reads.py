@@ -24,6 +24,7 @@ from clio_agent.gact.task_lane_reads import (
     migrate_task_lane_reads,
     reads_owed,
 )
+from tests.test_arc.test_task_event_lane import _as_before_the_lane
 
 STAMP = "2026-10-27T20:00:00Z"
 
@@ -140,7 +141,8 @@ def test_one_time_pass_annotates_an_older_lane_and_then_skips(
     history = _built(arc)
     history.record_snapshot(_assignment(history), observation_id="owner")
     _commit_input(history)
-    migrate_task_event_lane(history)  # rebuild from the log: drops both, owes the pass
+    _as_before_the_lane(arc, "owner")  # a store from before the lane: the log only
+    migrate_task_event_lane(history)  # the lane copied from the log: owes the pass
     assert not any("lane" in row["payload"] for row in _lane(arc))
     assert INPUT_COMMITTED not in [row["event_type"] for row in _lane(arc)]
 

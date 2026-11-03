@@ -31,7 +31,7 @@ from clio_agent.gact.read_only_outcomes import READ_ONLY_OUTCOME_UNRECORDED
 from clio_agent.gact.session_export import _events as exported_events
 from clio_agent.gact.task_access import TaskCaller
 from clio_agent.gact.task_event_lane import session_task_events
-from clio_agent.gact.task_event_reconcile import TASK_EVENT_RECONCILED
+from clio_agent.gact.task_event_merge import session_log_segments
 from clio_agent.gact.task_operations import TaskOperations
 from tests.test_arc.test_external_read_only_admission import _environment
 from tests.test_arc.test_read_only_outcomes import _Calls, _close, _mcp_tasks, _setup
@@ -79,7 +79,7 @@ def _ours(contents: list[dict[str, Any]], handle: str, reference: str) -> list[t
 @pytest.mark.asyncio
 @pytest.mark.timeout(180)  # in-memory MCP sessions, a failed group and a recovery cycle
 @pytest.mark.parametrize("built", [True, False], ids=["built-index", "before-index-build"])
-@pytest.mark.parametrize("rank", ["log", "lane"])
+@pytest.mark.parametrize("rank", ["lane"])
 async def test_a_partly_landed_group_is_recorded_once_for_every_reader(
     arc: ARCMemory,
     tmp_path: Path,
@@ -88,10 +88,12 @@ async def test_a_partly_landed_group_is_recorded_once_for_every_reader(
     rank: str,
     built: bool,
 ) -> None:
-    """A group's ``_events`` put (or its lane put) fails once, after the ranks below it
-    landed. After recovery the call's submission and settled snapshot are each held
-    once in the lane and once in ``_events``, with one identity; the task tree, query,
-    observe and export all report one completed call; nothing is logged unrecorded.
+    """A group's lane put fails once, after the content below it landed. After recovery
+    the call's submission and settled snapshot are each held once in the lane (their
+    one record), and the whole log (``_events`` with the lane merged in) and the export
+    show them once, with one identity; the task tree, query, observe and export all
+    report one completed call; nothing is logged unrecorded. (A task event is no longer
+    written to ``_events``, so a group cannot land its lane and lose its log copy.)
 
     SABOTAGE: run the retry without ``reconciled`` in ``ReadOnlyOutcomes._finished``
     (lane landed: the built index refuses the re-derived outcome and ``_events`` never
@@ -122,8 +124,6 @@ async def test_a_partly_landed_group_is_recorded_once_for_every_reader(
         assert not history.requires_recovery
         assert not app.state.task_recovery.pending
         assert f"reason={READ_ONLY_OUTCOME_UNRECORDED}" not in caplog.text
-        if rank == "log":  # the lane held them: only the log was completed
-            assert f"reason={TASK_EVENT_RECONCILED}" in caplog.text
     finally:
         gate.set()
         await _close(app, external, release)
@@ -137,7 +137,7 @@ async def test_a_partly_landed_group_is_recorded_once_for_every_reader(
             for key, task in tasks.items()
         }
         lane = [content for _sid, content in session_task_events(arc, sid)]
-        log = [segment.content for segment in arc._live.iter_session_event_segments(sid)]
+        log = [segment.content for segment in session_log_segments(arc, sid)]
         exported, _source = exported_events(app, sid)
         return {
             "tasks": tasks,

@@ -54,6 +54,28 @@ def _built(arc: ARCMemory) -> TaskHistory:
     return history
 
 
+def _as_before_the_lane(arc: ARCMemory, session_id: str) -> None:
+    """Make ``session_id`` a store from before the lane: its task events only in ``_events``.
+
+    The lane is now a task event's one record, so the old layout is rebuilt from it:
+    each lane event is appended to the whole log as the old writer did, then the lane
+    is dropped.
+    """
+    from clio_agent.gact.semantic_events import semantic_event_from_events_content
+
+    for segment in lane_chunking.lane_segments(arc._segments, session_id, TASK_EVENT_LANE):
+        if segment.content["event_type"] == "session.input.committed":
+            continue  # lane-only from the start: never in the ``_events`` log
+        content = dict(segment.content)
+        content["payload"] = {
+            k: v for k, v in content["payload"].items() if k != task_event_lane.LANE_KEY
+        }
+        arc.on_semantic_event(
+            semantic_event_from_events_content(content, session_id=session_id, turn_id="")
+        )
+    lane_chunking.drop_lane(arc._segments, session_id, TASK_EVENT_LANE)
+
+
 def _lane_types(arc: ARCMemory, session_id: str) -> list[str]:
     return [
         str(segment.content["event_type"])
@@ -70,9 +92,14 @@ def test_task_events_are_written_to_their_lane_and_trees_read_only_it(
     for index in range(3):
         history.record_mail(_mail(history, str(index)))
     assert _lane_types(arc, "owner") == ["session.mail.accepted"] * 3
-    # The canonical log stays complete for its other readers.
+    # The lane is their one record: the ``_events`` log does not repeat them, and the
+    # whole log a reader sees (trace, export) merges the lane in.
+    from clio_agent.gact.task_event_merge import session_log_segments
+
     logged = [s.content["event_type"] for s in arc._live.iter_session_event_segments("owner")]
-    assert logged.count("session.mail.accepted") == 3 and "lm.call" in logged
+    assert "session.mail.accepted" not in logged and "lm.call" in logged
+    whole = [s.content["event_type"] for s in session_log_segments(arc, "owner")]
+    assert whole.count("session.mail.accepted") == 3 and "lm.call" in whole
 
     def refuse(*_args: Any, **_kwargs: Any) -> Any:
         raise AssertionError("a task tree read the whole event log")
@@ -92,7 +119,7 @@ def test_migration_copies_task_events_once_and_boot_then_skips(arc: ARCMemory) -
         history.record_mail(_mail(history, str(index)))
     expected = [item.id for item in history.pending_mail("owner")]
     # Simulate a store from before the lane: task events only in the whole log.
-    lane_chunking.drop_lane(arc._segments, "owner", TASK_EVENT_LANE)
+    _as_before_the_lane(arc, "owner")
     assert _lane_types(arc, "owner") == []
 
     older = TaskHistory(arc)
@@ -117,6 +144,7 @@ def test_rerun_after_interruption_rebuilds_without_duplicates(
     history = TaskHistory(arc)
     for index in range(2):
         history.record_mail(_mail(history, str(index)))
+    _as_before_the_lane(arc, "owner")
     put_marker = history.index.put_done_marker
 
     def crash(*_args: Any, **_kwargs: Any) -> None:
@@ -126,6 +154,24 @@ def test_rerun_after_interruption_rebuilds_without_duplicates(
     with pytest.raises(RuntimeError):
         migrate_task_event_lane(history)
     monkeypatch.setattr(history.index, "put_done_marker", put_marker)
+    assert migration_owed(history)
+    report = migrate_task_event_lane(history)
+    assert report["events"] == 2
+    assert _lane_types(arc, "owner") == ["session.mail.accepted"] * 2
+
+
+def test_a_migration_rerun_keeps_task_events_only_the_lane_holds(arc: ARCMemory) -> None:
+    """A copy rerun (a version bump, an interrupted first run) keeps lane-only events.
+
+    SABOTAGE: read only the ``_events`` scopes in ``_copy_session`` and the rerun drops
+    the events written since the lane became their one record.
+    """
+    history = TaskHistory(arc)
+    history.record_mail(_mail(history, "old"))
+    _as_before_the_lane(arc, "owner")
+    assert migrate_task_event_lane(history)["events"] == 1
+    history.record_mail(_mail(history, "new"))  # lane only
+    history.index.put_done_marker(LANE_DONE, {"version": 0})  # owed again
     assert migration_owed(history)
     report = migrate_task_event_lane(history)
     assert report["events"] == 2
