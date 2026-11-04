@@ -503,13 +503,19 @@ def thoughts(monkeypatch: pytest.MonkeyPatch) -> list[dict[str, Any]]:
 
     seen: list[dict[str, Any]] = []
     write = StepRecorder._write
+    write_many = StepRecorder._write_many
 
     def spy(self: Any, kind: str, content: dict[str, Any], step: int, span: str) -> str:
         if kind == "thought":
             seen.append(content)
         return write(self, kind, content, step, span)
 
+    def spy_many(self: Any, writes: list[Any], step: int, span: str) -> list[str]:
+        seen.extend(content for kind, content in writes if kind == "thought")
+        return write_many(self, writes, step, span)
+
     monkeypatch.setattr(StepRecorder, "_write", spy)
+    monkeypatch.setattr(StepRecorder, "_write_many", spy_many)
     return seen
 
 

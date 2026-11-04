@@ -14,14 +14,15 @@ and it is bounded at ``arc.search_chunk_atoms`` (16) atoms, so that re-put is sm
 from __future__ import annotations
 
 import threading
+from collections.abc import Sequence
 from typing import TYPE_CHECKING, Any, cast
 
 from clio_agent.arc.batch_put import BatchPutError, PutRecord
 from clio_agent.arc.chunk_records import ChunkMark, plan_write
-from clio_agent.arc.lane_chunking import chunk_for_append
+from clio_agent.arc.lane_chunking import chunks_for_append
 from clio_agent.arc.lane_index import INDEX_SCOPE, SessionIndex, encode_index, note_atom
 from clio_agent.arc.loop_guard import LoopThreadStoreWrite, assert_store_write_off_loop
-from clio_agent.arc.schema import Segment
+from clio_agent.arc.schema import Segment, SegmentKind
 from clio_agent.arc.search_companion import SearchCompanion, SearchCompanionError
 from clio_agent.arc.segment_index import SegmentIndex
 from clio_agent.arc.segments import ArcPersistError, SegmentStore
@@ -105,68 +106,142 @@ class LaneWriter:
                 self._scopes[key] = []
                 self._loaded.add(key)
 
+    def append_many(
+        self,
+        session_id: str,
+        scope: str,
+        rows: Sequence[tuple[SegmentKind, dict[str, Any], int]],
+        *,
+        step: int = -1,
+        turn_id: str = "",
+        expert_span_id: str = "",
+        run_span_id: str = "",
+    ) -> list[Segment]:
+        """Append ``rows`` (kind, content, token count), in order, as one write.
+
+        A working-set scope gets one ``arc.op`` for all of them and one put per lane
+        chunk they land in (one, unless the chunk fills) with their companion records:
+        what ``len(rows)`` appends did in ``len(rows)`` ops and puts (an agent step's
+        thought, calls and observations; X2: 23-173 ms a step). Other scopes append
+        each row as :meth:`append` does.
+        """
+        store = cast(Any, self)
+        if not store._is_working_set_scope(scope):
+            return [
+                store.append(session_id, scope, kind, content, step=step, token_count=tokens,
+                             turn_id=turn_id, expert_span_id=expert_span_id,
+                             run_span_id=run_span_id)
+                for kind, content, tokens in rows
+            ]  # fmt: skip
+        from clio_agent.arc.lane_index import ws_content_partition  # noqa: PLC0415
+
+        view = store._view(session_id, scope)
+        with view.lock:
+            base = view.next_order
+            atoms = [
+                store._make_atom(session_id, scope, kind, content, order=base + number,
+                                 step=step, token_count=tokens, turn_id=turn_id,
+                                 expert_span_id=expert_span_id, run_span_id=run_span_id)
+                for number, (kind, content, tokens) in enumerate(rows)
+            ]  # fmt: skip
+            if not atoms:
+                return []
+            store._emit_op(
+                "append", session_id, scope, written=atoms, step=step,
+                logical_time=atoms[0].logical_time,
+            )  # fmt: skip
+            late = self._write_atoms(session_id, ws_content_partition(expert_span_id), atoms)
+            for atom in atoms:
+                view.append(atom)
+            if late is not None:
+                raise late
+        return atoms
+
     def _write(
         self, session_id: str, partition: str, atom: Segment
     ) -> tuple[str, SearchCompanionError | None]:
-        """Persist ONE atom to its partition's active chunk and index its text.
+        """Persist ONE atom (:meth:`_write_atoms`); its chunk scope and companion failure."""
+        chunks: list[str] = []
+        late = self._write_atoms(session_id, partition, [atom], chunks)
+        return chunks[0], late
+
+    def _write_atoms(
+        self,
+        session_id: str,
+        partition: str,
+        atoms: list[Segment],
+        chunks: list[str] | None = None,
+    ) -> SearchCompanionError | None:
+        """Persist atoms, in order, to their partition's active chunk and index their text.
 
         The index first when it changes (it must never list less than is stored), then
-        the lane chunk and the atom's search-companion chunk together in one concurrent
-        batch. Never runs ``_finish_write`` (§2.9). Held under the partition's writer
-        lock so chunk choice and persist are one step per partition.
+        per chunk the atoms land in, their lane records and search-companion chunks
+        together in one concurrent batch. Never runs ``_finish_write`` (§2.9). Held
+        under the partition's writer lock so chunk choice and persist are one step per
+        partition. ``chunks`` receives each atom's chunk scope.
 
         Returns:
-            The chunk scope, and the companion's typed failure (the atom itself is
-            stored; the caller folds it in, then raises it).
+            The companion's typed failure (the atoms themselves are stored; the caller
+            folds them in, then raises it).
 
         Raises:
-            ArcPersistError: The lane chunk was not stored (nothing to fold in).
+            ArcPersistError: A lane chunk was not stored (its atoms are not folded in).
         """
         state = self._session(session_id)
         with self._sessions_lock:
             writer = self._partition_locks.setdefault((session_id, partition), threading.Lock())
+        late: SearchCompanionError | None = None
         with writer:
             with state.lock:
                 if partition not in state.index.chunks:
                     self._mark_absent(session_id, partition)
-            chunk = chunk_for_append(
-                cast("SegmentStore", self), session_id, partition, capacity=_chunk_capacity()
-            )
+            placed = chunks_for_append(
+                cast("SegmentStore", self), session_id, partition, len(atoms),
+                capacity=_chunk_capacity(),
+            )  # fmt: skip
             with state.lock:
-                if chunk not in state.index.chunks:
-                    self._mark_absent(session_id, chunk)
-                if note_atom(state.index, chunk, atom):
+                changed = False
+                for chunk, atom in zip(placed, atoms, strict=True):
+                    if chunk not in state.index.chunks:
+                        self._mark_absent(session_id, chunk)
+                    changed = note_atom(state.index, chunk, atom) or changed
+                if changed:
                     self._put_index(session_id, state.index)
-            with self._lock_for(session_id, chunk):
-                staged = [*self._segs(session_id, chunk), atom]
-                late = self._put_batch(session_id, chunk, staged, atom)
-                self._index.add(session_id, chunk, atom)
-        return chunk, late
+            for chunk in dict.fromkeys(placed):
+                group = [atom for at, atom in zip(placed, atoms, strict=True) if at == chunk]
+                with self._lock_for(session_id, chunk):
+                    staged = [*self._segs(session_id, chunk), *group]
+                    late = self._put_batch(session_id, chunk, staged, group) or late
+                    for atom in group:
+                        self._index.add(session_id, chunk, atom)
+        if chunks is not None:
+            chunks.extend(placed)
+        return late
 
     def _put_batch(
-        self, session_id: str, chunk: str, staged: list[Segment], atom: Segment
+        self, session_id: str, chunk: str, staged: list[Segment], atoms: list[Segment]
     ) -> SearchCompanionError | None:
-        """Put the atom's lane record (appended at the chunk's stored end, or the whole
-        chunk on its first write) and its companion chunk concurrently (under the chunk's
-        lock), then cache the chunk clio-core accepted (write-through). A lost lane
-        record raises typed: a lost first write leaves the cache at the committed chunk,
-        a lost append also abandons the chunk (the next atom rolls to a new one)."""
+        """Put the atoms' lane records (appended at the chunk's stored end, or the whole
+        chunk on its first write) and their companion chunks concurrently (under the
+        chunk's lock), then cache the chunk clio-core accepted (write-through). A lost
+        lane record raises typed: a lost first write leaves the cache at the committed
+        chunk, a lost append also abandons the chunk (the next atom rolls to a new one)."""
         assert_store_write_off_loop("segments.put", scope=chunk)
         lane = self._record_name(session_id, chunk)
         mark = self._append_mark((session_id, chunk), staged)
         write = plan_write(staged, mark)
         late: SearchCompanionError | None = None
         try:
-            stage = self._search.stage(session_id, [atom])
+            stage = self._search.stage(session_id, atoms)
             records = [PutRecord(lane, write.data, offset=write.offset), *stage]
             self._store.put_many("segments", records)
         except BatchPutError as exc:
             if lane in exc.failed:
-                self._lane_lost(session_id, chunk, atom, mark, exc)
+                self._lane_lost(session_id, chunk, atoms, mark, exc)
                 raise ArcPersistError(session_id, chunk, exc) from exc
-            late = SearchCompanionError(session_id, atom.scope, exc)
+            late = SearchCompanionError(session_id, atoms[0].scope, exc)
         except Exception as exc:  # noqa: BLE001 - re-raised typed; the cache is unchanged
-            self._lane_lost(session_id, chunk, atom, mark, exc)
+            self._lane_lost(session_id, chunk, atoms, mark, exc)
             raise ArcPersistError(session_id, chunk, exc) from exc
         self._install_committed(session_id, chunk, staged, write.committed(staged))
         return late
@@ -175,12 +250,13 @@ class LaneWriter:
         self,
         session_id: str,
         chunk: str,
-        atom: Segment,
+        atoms: list[Segment],
         mark: ChunkMark | None,
         exc: BaseException,
     ) -> None:
-        """The atom's lane record was not stored: take it back from the companion, and
+        """The atoms' lane record was not stored: take them back from the companion, and
         abandon the chunk when the lost put was an append that may still land."""
-        self._search.unstage(session_id, atom)
+        for atom in atoms:
+            self._search.unstage(session_id, atom)
         if mark is not None:
             self._abandon_chunk(session_id, chunk, exc)

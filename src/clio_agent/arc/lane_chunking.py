@@ -341,18 +341,33 @@ def chunk_for_append(store: "SegmentStore", session_id: str, base: str, *, capac
     Returns:
         The scope to append this ONE segment into.
     """
+    return chunks_for_append(store, session_id, base, 1, capacity=capacity)[0]
+
+
+def chunks_for_append(
+    store: "SegmentStore", session_id: str, base: str, count: int, *, capacity: int
+) -> list[str]:
+    """Reserve ``count`` consecutive slots (:func:`chunk_for_append`), one chunk scope each.
+
+    One cursor step for the batch: reserving them one by one would re-recover the
+    cursor for a chunk not yet stored (absent from ``_loaded`` until its put) and
+    count it short.
+    """
     key = _cursor_key(session_id, base)
+    placed: list[str] = []
     with _CURSORS_LOCK:
         store_cursors = _CURSORS.setdefault(store, {})
         cur = store_cursors.get(key)
         if cur is None or (session_id, chunk_scope(base, cur.index)) not in store._loaded:
-            index, count = recover_writer(store, session_id, base)
-            cur = _LaneCursor(index=index, count=count)
-        if cur.count >= capacity or (cur.count and _sealed(store, session_id, base, cur.index)):
-            cur = _LaneCursor(index=cur.index + 1, count=0)
-        cur.count += 1
+            index, stored = recover_writer(store, session_id, base)
+            cur = _LaneCursor(index=index, count=stored)
+        for _slot in range(count):
+            if cur.count >= capacity or (cur.count and _sealed(store, session_id, base, cur.index)):
+                cur = _LaneCursor(index=cur.index + 1, count=0)
+            cur.count += 1
+            placed.append(chunk_scope(base, cur.index))
         store_cursors[key] = cur
-        return chunk_scope(base, cur.index)
+    return placed
 
 
 def _sealed(store: "SegmentStore", session_id: str, base: str, index: int) -> bool:
@@ -459,6 +474,7 @@ __all__ = [
     "ATOM_LANE_CHUNK_GAP",
     "LANE_CHUNK_CURSOR_RESET",
     "chunk_for_append",
+    "chunks_for_append",
     "chunk_index",
     "chunk_scope",
     "drop_lane",

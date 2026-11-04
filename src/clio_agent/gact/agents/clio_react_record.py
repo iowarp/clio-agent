@@ -559,7 +559,8 @@ class StepRecorder:
         }
         if not thinking_complete:
             thought["thinking_incomplete"] = True
-        thought_id = self._write("thought", thought, step, span)
+        writes: list[tuple[str, dict[str, Any]]] = [("thought", thought)]
+        collections: list[tuple[int, dict[str, Any], tuple[str, ...], str]] = []
         rows: list[dict[str, Any]] = []
         for call in calls:
             value, is_error = results.get(call.id, ("", False))
@@ -570,11 +571,8 @@ class StepRecorder:
             observe_handles = list(value.observe_handles) if isinstance(value, COLLECTED) else []
             collect = not isinstance(value, COLLECTED) or value.collect
             value = str(value) if isinstance(value, CollectedText) else value  # stored as text
-            self._write(
-                "tool_call",
-                {"id": call.id, "name": call.name, "args": dict(call.input)},
-                step,
-                span,
+            writes.append(
+                ("tool_call", {"id": call.id, "name": call.name, "args": dict(call.input)})
             )
             observation = {
                 "call_id": call.id,
@@ -586,18 +584,9 @@ class StepRecorder:
                 **({"task_observe_handles": observe_handles} if observe_handles else {}),
                 **({"task_collection": False} if not collect else {}),
             }
-            observation_id = self._write("observation", observation, step, span)
+            writes.append(("observation", observation))
             if notification_ids or read_handles or observe_handles:
-                from clio_agent.gact.task_access import TaskAccessDenied
-
-                try:
-                    self._commit_collection(
-                        observation_id, observation, tuple(notification_ids), call.id
-                    )
-                except TaskAccessDenied:
-                    # The original observation stays protected by ContextReader.
-                    # Legitimate revocation does not fail the unrelated assignment.
-                    logger.info("Task disclosure withheld before input commit: %s", observation_id)
+                collections.append((len(writes) - 1, observation, tuple(notification_ids), call.id))
             rows.append(
                 {
                     "id": call.id,
@@ -607,6 +596,17 @@ class StepRecorder:
                     "is_error": is_error,
                 }
             )
+        ids = self._write_many(writes, step, span)  # the step as one write (one lane put)
+        thought_id = ids[0] if ids else ""
+        for position, observation, notifications, call_id in collections:
+            from clio_agent.gact.task_access import TaskAccessDenied
+
+            try:
+                self._commit_collection(ids[position], observation, notifications, call_id)
+            except TaskAccessDenied:
+                # The original observation stays protected by ContextReader.
+                # Legitimate revocation does not fail the unrelated assignment.
+                logger.info("Task disclosure withheld before input commit: %s", ids[position])
         from clio_agent.gact import context
 
         owner = getattr(getattr(context.active_app(), "state", None), "conversations", None)
@@ -766,6 +766,22 @@ class StepRecorder:
         except Exception as exc:  # noqa: BLE001 - re-raised typed, never swallowed
             raise ContextWriteError(self.scope, kind, exc) from exc
         return str(getattr(segment, "id", "") or "")
+
+    def _write_many(
+        self, writes: list[tuple[str, dict[str, Any]]], step: int, span: str
+    ) -> list[str]:
+        """Append ``(kind, content)`` segments in order as one write; their ids."""
+        if self.arc is None:
+            return ["" for _ in writes]
+        rows = [(kind, content, _token_estimate(content)) for kind, content in writes]
+        try:
+            segments = self.arc.append_segments(
+                self.session, self.scope, rows, step=step, turn_id=self.turn_id,
+                expert_span_id=self.expert_span_id, run_span_id=span,
+            )  # fmt: skip
+        except Exception as exc:  # noqa: BLE001 - re-raised typed, never swallowed
+            raise ContextWriteError(self.scope, "step", exc) from exc
+        return [str(getattr(segment, "id", "") or "") for segment in segments]
 
 
 _MEDIA_TOKENS = 1_500  # a rough per-attachment share of the context window
