@@ -43,14 +43,29 @@ def _numbers(text: str) -> set[str]:
     return found - _DOSES
 
 
+def _decimals(number: str) -> int:
+    return len(number.partition(".")[2])
+
+
+def _same(a: str, b: str) -> bool:
+    """Equal, or the less precise one is the other rounded (0.745 and 0.7451): a table
+    given again at more or fewer decimals is the same claim."""
+    if a == b:
+        return True
+    rough, fine = sorted((a, b), key=_decimals)
+    places = _decimals(rough)
+    return places > 0 and float(rough) == round(float(fine), places)
+
+
 def _overlap(answer: str, source: str) -> dict[str, Any]:
     said, given = _numbers(source), _numbers(answer)
-    found = given & said
+    found = {g for g in given if any(_same(g, s) for s in said)}
+    recalled = {s for s in said if any(_same(g, s) for g in given)}
     return {
         "numbers_in_answer": len(given),
         "numbers_precision": round(len(found) / len(given), 3) if given else None,
-        "numbers_recall": round(len(found) / len(said), 3) if said else None,
-        "numbers_not_said": sorted(given - said)[:12],
+        "numbers_recall": round(len(recalled) / len(said), 3) if said else None,
+        "numbers_not_said": sorted(given - found)[:12],
     }
 
 

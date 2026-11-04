@@ -41,3 +41,14 @@ def test_numbers_never_said_are_named() -> None:
     assert means["numbers_precision"] == 0.0
     assert "0.7575" in means["numbers_not_said"]
     assert grade_recall(run)["recall_context_calls"] == 0
+
+
+def test_a_table_given_again_at_more_decimals_is_the_same_claim() -> None:
+    """SABOTAGE: compare numbers as strings only and 0.74912 reads as never said."""
+    run = _run("swir was fine.", "0: 0.74912, 50: 0.761, 200: 0.79649", [])
+    means = grade_recall(run)["means_before_change"]
+    assert means["numbers_precision"] == 1.0
+    assert means["numbers_recall"] == 1.0
+    assert grade_recall(_run("x", "0: 0.7481", []))["means_before_change"]["numbers_not_said"] == [
+        "0.7481"
+    ]
