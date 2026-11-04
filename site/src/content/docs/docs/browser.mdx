@@ -64,11 +64,15 @@ The panel opens only web pages. Local files and browser-internal addresses are r
 
 ## Choose the browser CLIO runs
 
-| Browser | What happens | Settings |
+Choose the browser in **Settings**, under **Browser**. The change applies when you save
+it: the pages open now close, and the next page opens in the browser you chose. The
+browser runs on the computer the CLIO backend runs on.
+
+| Browser | What happens | In Settings |
 |---|---|---|
-| CLIO's own (default) | CLIO downloads its own Chromium the first time the browser is used and keeps it in your user cache. It does not change any browser you have installed. | none |
-| Your installed Chrome or Edge | CLIO runs the Chrome or Edge you have installed, on a profile of its own. You sign in there once. | `browser.channel: chrome` or `msedge` |
-| Your running Chrome or Edge | CLIO opens its pages as tabs in the Chrome or Edge you are using, with your own sign-ins. | `browser.backend: cdp` and `browser.cdp_url: chrome` or `msedge` |
+| Bundled Chromium (default) | CLIO downloads its own Chromium the first time the browser is used and keeps it in your user cache. It does not change any browser you have installed. | **Which browser**: A separate browser. **Separate browser**: Bundled Chromium. |
+| Your installed Chrome or Edge | CLIO runs the Chrome or Edge you have installed, on a profile of its own. You sign in there once. | **Which browser**: A separate browser. **Separate browser**: Installed Google Chrome, or Installed Microsoft Edge. |
+| Your running Chrome or Edge | CLIO opens its pages as tabs in the Chrome or Edge you are using, with your own sign-ins. | **Which browser**: Your running Chrome or Edge. **Running browser to connect to**: `chrome` or `msedge`. |
 
 In every case the pages show in the side panel the same way.
 
@@ -80,7 +84,8 @@ your running Chrome:
 
 1. Use Chrome 144 or later, and open `chrome://inspect/#remote-debugging`.
 2. Turn on **Allow remote debugging for this browser instance**.
-3. Set the browser in your `config.yaml`, then restart CLIO:
+3. In **Settings** > **Browser**, choose **Your running Chrome or Edge**, enter `chrome`
+   under **Running browser to connect to**, and save. In `config.yaml` the same choice is:
 
    ```yaml
    browser:
@@ -100,9 +105,11 @@ above still apply, but choose the sites you allow with that in mind.
 
 ## Browser settings
 
-Set these in [`config.yaml`](/docs/configuration/) under `browser:`. Each also has an
-environment variable: `CLIO_BROWSER_` followed by the setting's name in capitals, such as
-`CLIO_BROWSER_CHANNEL`. Restart CLIO after changing the browser itself.
+`backend`, `channel` and `cdp_url` are in **Settings** > **Browser**. All of them can be
+set in [`config.yaml`](/docs/configuration/) under `browser:`, and each has an environment
+variable: `CLIO_BROWSER_` followed by the setting's name in capitals, such as
+`CLIO_BROWSER_CHANNEL`. A change to `config.yaml` or the environment applies after a
+restart.
 
 | Setting | Default | What it does |
 |---|---|---|

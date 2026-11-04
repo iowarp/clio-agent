@@ -49,6 +49,7 @@ __all__ = [
     "close_all",
     "close_session",
     "service",
+    "switch_browser",
 ]
 
 PAGE_OPENED = "browser.page.opened"
@@ -614,6 +615,16 @@ class BrowserService:
         with self._lock:
             self._loop = None
 
+    def switch_browser(self) -> int:
+        """Close every page and browser, keeping the loop, after Settings named another
+        browser; the next page opens in that one. Returns how many pages closed."""
+        if self._loop is None or not (self.pages or self.profiles):
+            return 0
+        closed = len(self.pages)
+        trace.event("BROWSER", "browser switched pages_closed=%d", closed)
+        self.submit(self._shutdown()).result(timeout=30)
+        return closed
+
     def reap_idle(self) -> list[str]:
         """Close pages, then browsers, unused for ``browser.idle_minutes`` (BR32).
 
@@ -747,3 +758,9 @@ def close_all() -> None:
     current = _SERVICE
     if current is not None:
         current.close_all()
+
+
+def switch_browser() -> int:
+    """Apply a changed browser setting at once, if the service ever started."""
+    current = _SERVICE
+    return current.switch_browser() if current is not None else 0

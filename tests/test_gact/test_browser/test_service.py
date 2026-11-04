@@ -181,3 +181,13 @@ def test_an_unstartable_sandbox_is_refused_unless_allowed(
 
     row = probe_browser()
     assert row.details["sandbox"]["sandboxed"] is False
+
+
+def test_switching_the_browser_closes_its_pages_and_the_next_page_opens_again(
+    browser: Any,
+) -> None:
+    first = browser.wait(browser.open("sess_a", ""))
+    assert browser.switch_browser() == 1
+    assert first.closed and not browser.profiles
+    again = browser.wait(browser.open("sess_a", ""))
+    assert not again.closed and browser.profiles
