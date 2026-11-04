@@ -86,11 +86,12 @@ def test_waiting_for_the_answer_does_not_count_against_the_clock(
 ) -> None:
     app, _sid = conversation
     _ungranted(monkeypatch)
+    page = tools.browser_open()["page"]["id"]  # launching Chromium is not the clock's subject
     monkeypatch.setenv("CLIO_BROWSER_ACTION_TIMEOUT_S", "1")
     answering = _answer(app, "allow", after=2.5, seen=[])
-    opened = tools.browser_open(url=site["a"] + "/")
+    went = tools.browser_navigate(page, url=site["a"] + "/")
     answering.join(5)
-    assert opened["page"]["host"] == "a.fixture.localhost"
+    assert went["page"]["host"] == "a.fixture.localhost"
 
 
 def test_a_denied_redirect_raises_and_the_page_stays(

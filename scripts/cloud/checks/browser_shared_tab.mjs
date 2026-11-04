@@ -1,12 +1,26 @@
-// Browser check: send a plain request (CHECK_ASK), answer each permission question the
-// way a person would (CHECK_DURATION, default "This session"), then show the
-// conversation, the nested browser calls and the shared tab. CHECK_DENY_HOST names a host
-// whose question is denied instead. CHECK_SETTLE_MS bounds the turn (default 7 minutes).
+// Browser check: send a plain request (CHECK_ASK) and answer each permission question the
+// way a person would, then capture the conversation and the browser calls nested under
+// their run_code rows. Environment:
+//   CHECK_ASK            the request (no tool or step named)
+//   CHECK_DURATION       duration for allowed answers (default "This session")
+//   CHECK_DENY_HOST      a host whose site question is denied instead
+//   CHECK_HOST_DELAY_MS  wait this long before answering a site question (W2: 45 s)
+//   CHECK_SETTLE_MS      bound on the turn (default 7 minutes)
+// It prints {"answered": [...], "answer": "<final reply>"} on stderr.
+const ALLOW =
+  /^(Allow once|Allow for session|Allow for workspace|Allow for the rest of this script)$/;
+
 export default async function (page, shot) {
   const ask = process.env.CHECK_ASK;
   const duration = process.env.CHECK_DURATION || "This session";
   const denyHost = process.env.CHECK_DENY_HOST || "";
+  const hostDelay = Number(process.env.CHECK_HOST_DELAY_MS || 0);
   const settle = Number(process.env.CHECK_SETTLE_MS || 420000);
+  if (process.env.CHECK_SESSION_PATH) {
+    await page.goto(new URL(process.env.CHECK_SESSION_PATH, page.url()).toString());
+    await page.waitForTimeout(4000);
+  }
+  const doneBefore = await page.getByText("Done", { exact: true }).count();
   if (ask) {
     const composer = page.locator('textarea, [contenteditable="true"]').first();
     await composer.click();
@@ -14,35 +28,32 @@ export default async function (page, shot) {
     await page.keyboard.press("Enter");
   }
   const deadline = Date.now() + settle;
-  let answered = 0;
+  await page.waitForTimeout(3000);
+  const answered = [];
   while (Date.now() < deadline) {
-    const done = page.getByText("Done", { exact: true }).last();
-    if (await done.isVisible().catch(() => false)) break;
-    const allow = page.getByRole("button", {
-      name: /^(Allow once|Allow for session|Allow for workspace|Allow for the rest of this script)$/,
-    });
+    const done = page.getByText("Done", { exact: true });
+    if ((await done.count()) > doneBefore && (await done.last().isVisible().catch(() => false))) break;
+    const allow = page.getByRole("button", { name: ALLOW });
     if (await allow.count()) {
-      const card = allow.first().locator("xpath=ancestor::*[@data-slot][1]");
+      const card = page.locator('[data-slot="pending-interaction"], [role="region"]').filter({ has: allow.first() }).last();
+      const text = (await card.innerText().catch(() => "")) || (await page.locator("body").innerText()).slice(-3000);
+      const site = /Site\s+(\S+)/u.exec(text)?.[1] ?? "";
+      const title = text.split("\n").find((line) => line.trim() && !/attention/i.test(line))?.trim() ?? "";
       await allow.first().scrollIntoViewIfNeeded().catch(() => {});
-      await shot(`question-${answered + 1}`);
-      const text = (await page.locator("body").innerText()).slice(-4000);
-      if (denyHost && text.includes(denyHost) && text.includes("Open a website")) {
+      await shot(`question-${answered.length + 1}`);
+      if (site && hostDelay) await page.waitForTimeout(hostDelay);
+      if (site && denyHost && site === denyHost) {
         await page.getByRole("button", { name: /^Deny$/ }).first().click();
+        answered.push({ title, site, answer: "deny" });
       } else {
         const picker = page.getByRole("combobox", { name: "Permission duration" }).first();
         if (await picker.count()) {
           await picker.click();
           await page.getByRole("option", { name: duration }).click().catch(() => {});
         }
-        await page
-          .getByRole("button", {
-            name: /^(Allow once|Allow for session|Allow for workspace|Allow for the rest of this script)$/,
-          })
-          .first()
-          .click();
+        await page.getByRole("button", { name: ALLOW }).first().click();
+        answered.push({ title, site, answer: site ? duration : "allowed" });
       }
-      void card;
-      answered += 1;
       await page.waitForTimeout(1500);
       continue;
     }
@@ -50,7 +61,11 @@ export default async function (page, shot) {
   }
   await page.waitForTimeout(1500);
   await shot("answered");
-  // The nested browser calls under their run_code row.
+  const answer = await page
+    .locator('[data-slot="message-response"], [data-role="assistant"]')
+    .last()
+    .innerText()
+    .catch(() => "");
   const groups = page.getByRole("button", { name: /^Activity: / });
   for (let i = 0; i < (await groups.count()); i += 1) {
     const group = groups.nth(i);
@@ -59,29 +74,5 @@ export default async function (page, shot) {
       await page.waitForTimeout(300);
     }
   }
-  const row = page.getByRole("button", { name: /Run code/ }).last();
-  if (await row.count()) {
-    await row.scrollIntoViewIfNeeded().catch(() => {});
-    await row.click().catch(() => {});
-    await page.waitForTimeout(1200);
-    const nested = page.locator('[data-slot="nested-tool-calls"]').last();
-    await nested.scrollIntoViewIfNeeded().catch(() => {});
-    await shot("nested-calls");
-  }
-  // The shared tab, opened from the Work rail's Browser pages.
-  const work = page.getByRole("button", { name: /^(Work|Session and work|Work rail)/ }).first();
-  if (await work.count()) await work.click().catch(() => {});
-  await page.waitForTimeout(1000);
-  await shot("work-rail");
-  const pageRow = page
-    .getByRole("region", { name: /Work rail/ })
-    .getByRole("button")
-    .filter({ hasText: /fixture|Browser|localhost/ })
-    .first();
-  if (await pageRow.count()) {
-    await pageRow.click();
-    await page.waitForTimeout(4000);
-    await shot("browser-surface");
-  }
-  console.error(JSON.stringify({ answered }));
+  console.error(JSON.stringify({ answered, url: page.url(), answer: answer.slice(0, 1500) }));
 }

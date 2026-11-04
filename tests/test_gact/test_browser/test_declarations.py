@@ -153,3 +153,20 @@ def test_a_parent_conversation_sees_its_subagents_pages_only() -> None:
     assert _in_family(app, "grandchild", "parent")
     assert not _in_family(app, "parent", "child")
     assert not _in_family(app, "stranger", "parent")
+
+
+def test_the_browser_fragment_reaches_an_agent_only_with_run_code() -> None:
+    from pathlib import Path
+
+    from clio_agent.plugins.compose_final import fragment_reaches
+    from clio_agent.plugins.loader import load_plugin
+
+    root = Path(__file__).resolve().parents[3] / "external/clio-agent-marketplace/plugins/browser"
+    record = load_plugin(root, marketplace="clio", trusted=True)
+    [fragment] = [f for f in record.fragments if f.id == "browser.use"]
+    assert fragment.when_tools == ("run_code", "browser_open")
+    row = {"when_tools": list(fragment.when_tools)}
+    tools = {"run_code", "browser_open", "browser_act"}
+    assert fragment_reaches(row, tools, delegated=False)
+    assert not fragment_reaches(row, tools - {"run_code"}, delegated=False)
+    assert [b.name for b in record.kernel_bindings] == ["browser"]

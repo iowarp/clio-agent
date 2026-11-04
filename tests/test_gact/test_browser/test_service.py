@@ -46,6 +46,24 @@ def test_the_page_limit_refuses_one_more(browser: Any, monkeypatch: pytest.Monke
     with pytest.raises(BrowserError) as refused:
         browser.wait(browser.open("sess_a", ""))
     assert refused.value.reason == "browser_page_limit"
+    assert "1 in this conversation" in refused.value.message
+    with pytest.raises(BrowserError) as elsewhere:
+        browser.wait(browser.open("sess_b", ""))
+    assert "0 in this conversation and 1 in 1 other conversations" in elsewhere.value.message
+
+
+def test_pages_nobody_uses_close_but_watched_ones_stay(
+    browser: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    unused = browser.wait(browser.open("sess_a", ""))
+    watched = browser.wait(browser.open("sess_b", ""))
+    busy = browser.wait(browser.open("sess_c", ""))
+    watched.viewers = 1
+    for record in (unused, watched):
+        record.last_used -= 3600
+    monkeypatch.setenv("CLIO_BROWSER_IDLE_MINUTES", "30")
+    browser.reap_idle()
+    assert unused.closed and not watched.closed and not busy.closed
 
 
 def test_an_action_past_its_clock_is_stopped(browser: Any, monkeypatch: pytest.MonkeyPatch) -> None:

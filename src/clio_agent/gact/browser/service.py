@@ -94,6 +94,10 @@ class PageRecord:
     downloads_expected: int = 0
     downloads_started: int = 0
     last_action: str = ""
+    #: When the agent, the person or a viewer last used the page (idle pages close).
+    last_used: float = field(default_factory=time.monotonic)
+    #: Live-view windows watching the page now; a watched page never counts as idle.
+    viewers: int = 0
     title: str = ""
     loading: bool = False
     closed: bool = False
@@ -345,10 +349,22 @@ class BrowserService:
         return record
 
     async def open(self, session_id: str, label: str) -> PageRecord:
-        if len([p for p in self.pages.values() if not p.closed]) >= settings.max_pages():
+        open_pages = [p for p in self.pages.values() if not p.closed]
+        if len(open_pages) >= settings.max_pages():
+            mine = sum(1 for p in open_pages if p.session_id == session_id)
+            others = len({p.session_id for p in open_pages if p.session_id != session_id})
             raise BrowserError(
                 "browser_page_limit",
-                f"{settings.max_pages()} pages are open (browser.max_pages); close one first",
+                f"{len(open_pages)} pages are open (browser.max_pages): {mine} in this "
+                f"conversation and {len(open_pages) - mine} in {others} other conversations. "
+                + (
+                    "Close one of this conversation's pages first."
+                    if mine
+                    else "The others close after browser.idle_minutes unused, or the person "
+                    "can close them in their Browser tabs."
+                ),
+                mine=mine,
+                others=len(open_pages) - mine,
             )
         profile = await self.profile(session_id)
         page = await profile.context.new_page()
@@ -424,6 +440,7 @@ class BrowserService:
     ) -> Any:
         async with record.lock:
             record.inflight = inflight
+            record.last_used = time.monotonic()
             record.last_action = inflight.action
             self.publish(PAGE_UPDATED, record)
             try:
@@ -442,6 +459,7 @@ class BrowserService:
                 raise _typed(exc, inflight) from exc
             finally:
                 record.inflight = None
+                record.last_used = time.monotonic()
                 self.publish(PAGE_UPDATED, record)
 
     def take_notes(self, record: PageRecord) -> dict[str, Any]:
@@ -565,11 +583,27 @@ class BrowserService:
             self._loop = None
 
     def reap_idle(self) -> list[str]:
-        """Close each profile's browser that has had no pages for ``browser.idle_minutes``."""
+        """Close pages, then browsers, unused for ``browser.idle_minutes`` (BR32).
+
+        A page is unused when no agent call, person input or live viewer touched it for
+        that long; its conversation can open the URL again. A profile's browser closes
+        once it has no pages for that long.
+        """
         if self._loop is None:
             return []
         limit = settings.idle_minutes() * 60
         now = time.monotonic()
+        stale = [
+            r
+            for r in list(self.pages.values())
+            if not r.closed
+            and r.inflight is None
+            and r.viewers == 0
+            and now - max(r.last_used, r.last_person_input) > limit
+        ]
+        if stale:
+            trace.event("BROWSER", "browser_page_idle_closed pages=%s", [r.id for r in stale])
+            self.submit(self._close_pages(stale)).result(timeout=30)
         idle = [
             p
             for p in self.profiles.values()

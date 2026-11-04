@@ -10,7 +10,8 @@ Pages (on either host):
 - ``/table?page=N`` a paginated table of 23 rows, 10 per page, with a Next link;
 - ``/form`` text, select, three checkboxes and a file input; a POST to ``/form`` is
   appended to ``DIR/submissions.jsonl`` and echoed back;
-- ``/link-to-b`` a link to the other host and ``/redirect-to-b`` a 302 to it;
+- ``/link-to-b`` a link to the other host, ``/redirect-to-b`` a 302 to it, and
+  ``/redirect-link`` a link on this host that leads through that redirect;
 - ``/frames`` an iframe ``#results`` holding a button; ``/download`` a file link;
 - ``/slow?ms=N`` answers after N milliseconds; ``/list`` renders its list from script;
 - ``/timed-redirect`` moves to the other host after five seconds (W20);
@@ -112,6 +113,7 @@ class Handler(BaseHTTPRequestHandler):
             "form",
             "link-to-b",
             "redirect-to-b",
+            "redirect-link",
             "frames",
             "download",
             "slow",
@@ -183,6 +185,12 @@ class Handler(BaseHTTPRequestHandler):
     def get_link_to_b(self, _query: dict[str, list[str]]) -> None:
         target = f"http://{_other(self._host())}/"
         self._send(200, _page("Link", f"<a id='go' href='{target}'>Go to the other site</a>"))
+
+    def get_redirect_link(self, _query: dict[str, list[str]]) -> None:
+        self._send(
+            200,
+            _page("Redirect link", "<a id='go' href='/redirect-to-b'>Continue to the results</a>"),
+        )
 
     def get_redirect_to_b(self, _query: dict[str, list[str]]) -> None:
         self._send(302, b"", headers={"Location": f"http://{_other(self._host())}/"})

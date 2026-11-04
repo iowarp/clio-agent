@@ -272,6 +272,7 @@ async def _serve(app: Any, websocket: Any, session_id: str, page_id: str) -> Non
     hub = _HUBS.setdefault(page_id, _Hub(page_id))
     viewer = _Viewer(websocket, asyncio.get_running_loop(), controls=not hub.viewers)
     hub.viewers.append(viewer)
+    record.viewers += 1
     try:
         if hub.screencast is None:
             await asyncio.wrap_future(svc.submit(_start(svc, record, hub)))
@@ -283,6 +284,8 @@ async def _serve(app: Any, websocket: Any, session_id: str, page_id: str) -> Non
             sender.cancel()
     finally:
         hub.viewers.remove(viewer)
+        record.viewers -= 1
+        record.last_used = time.monotonic()
         if hub.viewers and not any(v.controls for v in hub.viewers):
             hub.viewers[0].controls = True  # the next viewer takes over input
             _broadcast_state(svc, record)
