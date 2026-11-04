@@ -618,10 +618,12 @@ Kept: defaults the agent can override per call (read lines, search and recall li
 
 | Overhead | Measured | Above baseline noise | Fixed in |
 | --- | --- | --- | --- |
-| `list_tools` per external call | | | |
-| Direct stdio per-call spawn | | | |
-| Sequential segment writes in `step_done` | | | |
-| Per-call `asyncio.Runner` | | | |
+| `list_tools` per external call | Not timed before the fix: `ExternalTasks._call` listed before every `tools/call` | Assumed (one extra RPC per call) | `02dbe742`: listed once per connected client, re-listed only for a name it lacks |
+| Direct stdio per-call spawn | Not exercised by any evaluation task (2026-11-04): only the direct-client route for a server that declares tasks uses it, and there a stdio or SSE transport is opened per submission by design (`external_task_connections.connection`: an invocation-bound transport is never shared); the common route is the in-process gateway proxy, whose connection is kept | Unknown; a server's spawn is typically 0.5-2 s, so it would be if such a server were called often | Not fixed. The ARC review's next lever (a direct client instead of the proxy hop) would put this path in front of more calls; it needs a kept connection first |
+| Sequential segment writes in `step_done` | Before: five writes a step, each with a companion put; base P6 showed a 2.7 s gap after 200 direct calls (`arc-performance-review-2026-11.md`) | Yes | A2 (`5d6a4179`): one write a step; `record_write` median 21 ms for the whole step on `l1p3-compact` (finding 29) |
+| Per-call `asyncio.Runner` | 0.06 ms a call (median, 300 calls); 0.69 ms when the call offloads one thread, as tool code does (2026-11-04, `run_in_new_loop`) | No: a shell call's own CLIO overhead is about 270 ms (finding 29) | Not fixed (kept: it releases anyio's per-loop state, `runtime/fresh_loop.py`) |
+
+Step 4's conditional items, against the long runs (2026-11-04): **W4/W10 per-session ordering** was to follow if explorer fan-out showed writer contention, and no run since the read-only shell was fenced spawned children (finding 30), so the condition did not arise; the store-call attribution (`f315c468`) would show it. **W8 child warmup** likewise had no children to measure. **The first turn's memory snapshot** (230 ms, once per session) is under 0.1% of a five-minute session and was left. **The content lane** (`claude/history-writer` `d67efd38`) stays unexplained and unmerged; merging is the owner's call.
 
 ## Scenarios
 
