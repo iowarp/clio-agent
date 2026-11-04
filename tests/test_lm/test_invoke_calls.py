@@ -147,3 +147,16 @@ def test_markup_that_is_data_is_never_a_call(invoke: None) -> None:
         assert split.calls == [] and "<invoke" in split.text
     split = split_reply(_call("shell_bash", command="ls"), call_prefix="c")
     assert split.calls == []  # no tools: an answer
+
+
+def test_the_stream_never_shows_call_markup_or_its_pieces(invoke: None) -> None:
+    """L1's answers began with "</  </function_cal   </": a step's closing
+    ``</function_calls>`` (its opener lost) streamed as text, in pieces. SABOTAGE: drop
+    ``</?function_calls>`` from the splitter's openers and the pieces stream."""
+    reply = ("Reading the shards.\\n" + _call("shell_bash", command="ls")
+             + "</function_calls>\\nThe peak is at 200.")  # fmt: skip
+    for size in (1, 3, 7, len(reply)):
+        splitter = text_tools.StreamSplitter()
+        shown = "".join(splitter.push(reply[i : i + size]) for i in range(0, len(reply), size))
+        assert "<" not in shown and "function" not in shown, (size, shown)
+        assert shown.startswith("Reading the shards.")

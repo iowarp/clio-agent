@@ -509,8 +509,16 @@ _INVOKE_MARKUP = re.compile(
     r"""(?:\s*</function_calls>)?""",
     re.DOTALL,
 )
-_INVOKE_OPENER = re.compile(r"""<function_calls>|<invoke\s+name=""")
-_INVOKE_OPENERS = ("<function_calls>", "<invoke name=")
+#: Where call markup begins, an invoke opener or the pieces of a call whose opener was
+#: lost (the invoke protocol: L1's answers began with streamed "</function_cal" pieces).
+_INVOKE_OPENER = re.compile(r"""</?function_calls>|<invoke\s+name=|<parameter\s+name=|</invoke>""")
+_INVOKE_OPENERS = (
+    "<function_calls>",
+    "</function_calls>",
+    "<invoke name=",
+    "<parameter name=",
+    "</invoke>",
+)
 
 
 def _without_invoke_markup(text: str) -> tuple[str, int]:
