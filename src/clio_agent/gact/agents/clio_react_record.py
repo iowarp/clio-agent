@@ -31,17 +31,30 @@ from collections.abc import Mapping, Sequence
 from typing import Any
 
 from dspy.lm15 import (
-    ContinuationState,
-    DocumentPart,
-    ImagePart,
     Message,
-    TextPart,
     ThinkingPart,
     ToolCallPart,
-    ToolResultPart,
 )
 
 from clio_agent.errors import ClioError
+from clio_agent.gact.agents.clio_react_codec import (
+    _text as _text,
+)
+from clio_agent.gact.agents.clio_react_codec import (
+    fold_steps as fold_steps,
+)
+from clio_agent.gact.agents.clio_react_codec import (
+    thinking_from_record as thinking_from_record,
+)
+from clio_agent.gact.agents.clio_react_codec import (
+    thinking_to_record as thinking_to_record,
+)
+from clio_agent.gact.agents.clio_react_codec import (
+    user_from_record as user_from_record,
+)
+from clio_agent.gact.agents.clio_react_codec import (
+    user_to_record as user_to_record,
+)
 from clio_agent.gact.agents.context_errors import (
     ContextFoldError as ContextFoldError,
 )
@@ -67,20 +80,6 @@ from clio_agent.gact.agents.recorded_media import (
 from clio_agent.gact.injection_parts import emit_injection
 
 logger = logging.getLogger(__name__)
-
-_FOLDED_KINDS = frozenset({"user", "thought", "tool_call", "observation", "summary"})
-# clio-core record kinds that are never the agent's context (skipped by declaration).
-_NON_CONTEXT_KINDS = frozenset(
-    {
-        "answer",
-        "semantic_event",
-        "ws_op",
-        "step_open",
-        "message_part",
-        "state_merge",
-        "recipient_input",
-    }
-)
 
 
 def arc_scope() -> tuple[Any, str, str]:
@@ -110,169 +109,6 @@ def read_steps(arc: Any, session: str, scope: str) -> list[Message]:
     step re-folds only the open tail step.
     """
     return ContextReader(arc, session, scope).read()
-
-
-# --------------------------------------------------------------------------- #
-# The step codec: typed parts <-> plane content (CLIO-owned, JSON)            #
-# --------------------------------------------------------------------------- #
-def thinking_to_record(part: ThinkingPart, source: str = "") -> dict[str, Any]:
-    """A thinking part as plane content, provider continuation state kept byte-exact.
-
-    ``source`` (``provider_field`` / ``inline_tag``, see ``gact.reasoning_extract``) is
-    kept when known; :func:`thinking_from_record` ignores it.
-    """
-    return {
-        "text": part.text,
-        "continuation": [
-            {"provider": c.provider, "kind": c.kind, "data": c.data} for c in part.continuation
-        ],
-        **({"source": source} if source else {}),
-    }
-
-
-def thinking_from_record(record: Mapping[str, Any]) -> ThinkingPart:
-    """Rebuild a thinking part from :func:`thinking_to_record`'s content."""
-    return ThinkingPart(
-        text=str(record.get("text") or ""),
-        continuation=tuple(
-            ContinuationState(provider=c["provider"], kind=c["kind"], data=c.get("data") or {})
-            for c in record.get("continuation") or []
-            if isinstance(c, Mapping)
-        ),
-    )
-
-
-def user_to_record(message: Message) -> dict[str, Any]:
-    """A user message as plane content: its text and its media, byte-exact."""
-    text = "".join(p.text for p in message.parts if isinstance(p, TextPart))
-    media = [
-        {
-            "type": "image" if isinstance(p, ImagePart) else "document",
-            "media_type": p.media_type,
-            "data": p.data,
-        }
-        for p in message.parts
-        if isinstance(p, ImagePart | DocumentPart)
-    ]
-    return {"text": text, "media": media} if media else {"text": text}
-
-
-def user_from_record(record: Mapping[str, Any]) -> Message:
-    """Rebuild a user message from :func:`user_to_record`'s content.
-
-    A CLIO addition (``actor: algorithm``) is headed with its source, so the model
-    can tell it from what the user wrote.
-    """
-    text = _text(record.get("text"))
-    if record.get("actor") == "algorithm":  # CLIO's addition; a steer is the user's own
-        text = f"[clio: {_text(record.get('source'))}]\n{text}"
-    parts: list[Any] = [TextPart(text=text)]
-    for item in record.get("media") or []:
-        if not isinstance(item, Mapping):
-            continue
-        cls = ImagePart if item.get("type") == "image" else DocumentPart
-        parts.append(cls(data=str(item.get("data") or ""), media_type=str(item["media_type"])))
-    return Message(role="user", parts=tuple(parts))
-
-
-def fold_steps(segments: Sequence[Any]) -> list[Message]:
-    """Group ordered live segments into typed messages, one assistant + tool pair per step.
-
-    A ``user`` segment is the user message it recorded. A ``thought`` opens a step; its
-    ``tool_call`` / ``observation`` segments attach to it, each result matched to its call
-    by ``call_id``; a call with no step open starts its own. A ``summary`` becomes a user
-    message carrying its text, so compacted content still reaches the model. Record kinds
-    that are never agent context are skipped by declaration; anything else that cannot be
-    folded exactly is a :class:`ContextFoldError`.
-    """
-    messages: list[Message] = []
-    step: _StepFold | None = None
-
-    def close(seg: Any) -> None:
-        nonlocal step
-        if step is not None:
-            messages.extend(step.messages(seg))
-            step = None
-
-    for seg in segments:
-        kind = getattr(seg, "kind", "")
-        if kind in _NON_CONTEXT_KINDS:
-            continue
-        if kind not in _FOLDED_KINDS:
-            raise ContextFoldError("unmodelled_kind", seg)
-        content = getattr(seg, "content", None)
-        if not isinstance(content, Mapping):
-            raise ContextFoldError("malformed_content", seg)
-        if kind == "thought":
-            close(seg)
-            step = _StepFold(content, seg)
-        elif kind == "tool_call":
-            if step is None:  # a call with no thought before it (an edit put it there)
-                step = _StepFold({}, seg)
-            step.add_call(content, seg)
-        elif kind == "observation":
-            if step is None:
-                raise ContextFoldError("orphan_observation", seg, "no step is open")
-            step.add_result(content, seg)
-        elif kind == "user":
-            close(seg)
-            messages.append(user_from_record(content))
-        else:  # summary
-            close(seg)
-            text = _text(content.get("text"))
-            if not text:
-                raise ContextFoldError("empty_summary", seg)
-            messages.append(Message.user(f"[earlier context]\n{text}"))
-    close(None)
-    return messages
-
-
-class _StepFold:
-    """Accumulates one step's thinking, text, calls and results while folding."""
-
-    def __init__(self, content: Mapping[str, Any], seg: Any) -> None:
-        self.text = _text(content.get("text"))
-        thinking = content.get("thinking") or []
-        if not isinstance(thinking, list) or not all(isinstance(t, Mapping) for t in thinking):
-            raise ContextFoldError("malformed_thinking", seg)
-        try:
-            self.thinking = [thinking_from_record(t) for t in thinking]
-        except (KeyError, TypeError) as exc:
-            raise ContextFoldError("malformed_thinking", seg, str(exc)) from exc
-        self.calls: list[ToolCallPart] = []
-        self.results: dict[str, ToolResultPart] = {}
-
-    def add_call(self, content: Mapping[str, Any], seg: Any) -> None:
-        call_id, name, args = content.get("id"), content.get("name"), content.get("args", {})
-        if not call_id or not name or not isinstance(args, Mapping):
-            raise ContextFoldError("malformed_call", seg)
-        self.calls.append(ToolCallPart(id=str(call_id), name=str(name), input=dict(args)))
-
-    def add_result(self, content: Mapping[str, Any], seg: Any) -> None:
-        call_id = str(content.get("call_id") or "")
-        call = next((c for c in self.calls if c.id == call_id), None)
-        if call is None or call_id in self.results:
-            raise ContextFoldError("orphan_observation", seg, f"no open call {call_id!r}")
-        self.results[call_id] = result_part(
-            call_id,
-            call.name,
-            content.get("text", ""),
-            bool(content.get("is_error")),
-            call_ref=str(content.get("call_ref") or ""),
-        )
-
-    def messages(self, next_seg: Any) -> list[Message]:
-        unanswered = [c.id for c in self.calls if c.id not in self.results]
-        if unanswered:
-            raise ContextFoldError("unanswered_call", next_seg, ", ".join(unanswered))
-        parts: list[Any] = [*self.thinking]
-        if self.text or not (self.thinking or self.calls):
-            parts.append(TextPart(text=self.text))
-        parts.extend(self.calls)
-        out = [Message(role="assistant", parts=tuple(parts))]
-        if self.calls:
-            out.append(Message(role="tool", parts=tuple(self.results[c.id] for c in self.calls)))
-        return out
 
 
 # --------------------------------------------------------------------------- #
@@ -354,10 +190,14 @@ class StepRecorder:
         assignment = context.active_assignment_handle()
         if not assignment:
             raise ValueError("Model input has no confirmed conversation assignment")
+        from clio_agent.gact.agents.step_clock import mark  # noqa: PLC0415
+
+        mark("")
         caller = owner.caller(self.session)
         identity = context.current_turn().input_notification_id
         with owner.history.serialized():
             trigger = owner.history.mail_item(self.session, identity)
+        mark("commit_head")
         human_head = (
             self._mail_head
             if trigger is not None and trigger.kind in {"human", "composer"}
@@ -366,7 +206,9 @@ class StepRecorder:
         from clio_agent.gact.session_mail import StagedInput
 
         segments = self.arc.context_view(self.session, self.scope).segments
+        mark("commit_view")
         committed = owner.history.committed_observations(self.session, self.scope)
+        mark("commit_committed")
         from clio_agent.gact.task_access import TaskAccessDenied
 
         for row in segments:
@@ -390,7 +232,9 @@ class StepRecorder:
                     # ContextReader keeps this observation behind its existing safe
                     # placeholder. Revocation must not strand unrelated accepted input.
                     continue
+        mark("commit_collect")
         segments = self.arc.context_view(self.session, self.scope).segments
+        mark("commit_view")
         collected = (identity,) if identity and human_head else ()
         staged = (
             StagedInput((), ())
@@ -432,6 +276,7 @@ class StepRecorder:
         from clio_agent.gact.session_store import project_accepted_mail_messages
 
         project_accepted_mail_messages(app, owner.history, self.session, staged.items)
+        mark("commit_stage")
         references = tuple(
             owner.history.write_content(self.session, rendered[item.id])
             for item in staged.items
@@ -452,6 +297,7 @@ class StepRecorder:
             turn_id=self.turn_id,
             rendered_content=references,
         )
+        mark("commit_mail")
         for source, text in staged.injections:
             if source != "steer":
                 for notification in text.notification_ids:
@@ -596,7 +442,11 @@ class StepRecorder:
                     "is_error": is_error,
                 }
             )
+        from clio_agent.gact.agents.step_clock import mark  # noqa: PLC0415
+
+        mark("")
         ids = self._write_many(writes, step, span)  # the step as one write (one lane put)
+        mark("record_write")
         thought_id = ids[0] if ids else ""
         for position, observation, notifications, call_id in collections:
             from clio_agent.gact.task_access import TaskAccessDenied
@@ -607,6 +457,7 @@ class StepRecorder:
                 # The original observation stays protected by ContextReader.
                 # Legitimate revocation does not fail the unrelated assignment.
                 logger.info("Task disclosure withheld before input commit: %s", ids[position])
+        mark("record_collect")
         from clio_agent.gact import context
 
         owner = getattr(getattr(context.active_app(), "state", None), "conversations", None)
@@ -631,6 +482,7 @@ class StepRecorder:
                 tuple(call.name for call in calls),
                 step,
             )
+        mark("record_progress")
         _emit_react_step_event(
             expert_id=self.expert_id,
             expert_span_id=self.expert_span_id,
@@ -641,6 +493,7 @@ class StepRecorder:
             tool_calls=rows,
             is_finish=any(call.name == "submit" for call in calls),
         )
+        mark("record_event")
 
     def _commit_collection(
         self, identity: str, content: dict[str, Any], notifications: tuple[str, ...], call_id: str
@@ -792,7 +645,3 @@ def _token_estimate(content: Mapping[str, Any]) -> int:
     media = content.get("media") or []
     text = {k: v for k, v in content.items() if k != "media"}
     return max(1, len(json.dumps(text, default=str)) // 4 + _MEDIA_TOKENS * len(media))
-
-
-def _text(value: Any) -> str:
-    return value if isinstance(value, str) else str(value if value is not None else "")

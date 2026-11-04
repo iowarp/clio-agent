@@ -4,11 +4,24 @@ X2 showed 0.06-0.5 s between a tool result and the next model call with the high
 flush only 46 ms a run; this names where the rest goes: ``prep`` (arrivals, tool
 refresh, compaction check, working state), ``flush``, ``commit`` (input commit),
 ``build`` (reading the context into the request) and ``record`` (the step's writes).
+Code the step calls marks its own parts on the step's clock with :func:`mark`
+(``record_write``, ``record_collect``, ``record_progress``, ``record_event``).
 """
 
 from __future__ import annotations
 
-__all__ = ["StepClock"]
+from contextvars import ContextVar
+
+__all__ = ["StepClock", "mark"]
+
+_ACTIVE: ContextVar[StepClock | None] = ContextVar("clio_step_clock", default=None)
+
+
+def mark(name: str) -> None:
+    """Mark ``name`` on the running step's clock; nothing outside a step."""
+    clock = _ACTIVE.get()
+    if clock is not None:
+        clock.mark(name)
 
 
 class StepClock:
@@ -23,6 +36,7 @@ class StepClock:
         self._now = time.perf_counter
         self._last = self._now()
         self.parts: dict[str, float] = {}
+        _ACTIVE.set(self)  # the step's clock until the next step makes its own
 
     def mark(self, name: str) -> None:
         now = self._now()

@@ -669,15 +669,15 @@ def test_the_loop_places_media_by_the_lms_tag(monkeypatch: pytest.MonkeyPatch) -
     lm, engine = scripted_lm([calls(("view", {"path": "p"})), Reply(text="ok")])
     lm._clio_tool_result_media = "user_message"  # type: ignore[attr-defined]
     image = ImagePart(data="aGk=", media_type="image/png")
-    from clio_agent.gact.agents import clio_react_record
+    from clio_agent.gact.agents import clio_react_codec
 
-    original = clio_react_record.result_part
+    original = clio_react_codec.result_part
 
     def with_image(call_id: str, name: str, value: Any, is_error: bool, **kwargs: Any) -> Any:
         part = original(call_id, name, value, is_error, **kwargs)
         return ToolResultPart(id=part.id, name=part.name, content=(*part.content, image))
 
-    monkeypatch.setattr(clio_react_record, "result_part", with_image)
+    monkeypatch.setattr(clio_react_codec, "result_part", with_image)
     with dspy.context(lm=lm):
         ClioReAct("question -> answer", tools=[view])(question="q")
     roles = [m.role for m in engine.requests[1].messages]
