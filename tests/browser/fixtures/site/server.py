@@ -26,6 +26,7 @@ import email.parser
 import email.policy
 import html
 import json
+import re
 import threading
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -96,7 +97,8 @@ class Handler(BaseHTTPRequestHandler):
     def do_GET(self) -> None:  # noqa: N802 - stdlib name
         url = urlsplit(self.path)
         query = parse_qs(url.query)
-        route = getattr(self, "get_" + (url.path.strip("/").replace("-", "_") or "index"), None)
+        name = re.sub(r"[^a-z0-9]", "_", url.path.strip("/").lower()) or "index"
+        route = getattr(self, "get_" + name, None)
         if route is None:
             self._send(404, _page("Not found", f"<p>No page at {html.escape(url.path)}.</p>"))
             return

@@ -1,6 +1,7 @@
 #!/bin/bash
 # Start, stop and inspect the local CLIO stack inside a cloud session:
-#   the GACT server (clio-agent serve) and the gact-tui web dev server.
+#   the GACT server (clio-agent serve), the gact-tui web dev server and the
+#   browser fixture site (tests/browser/fixtures/site/server.py).
 #
 #   bash scripts/cloud/stack.sh start     # both, waits until they answer
 #   bash scripts/cloud/stack.sh stop      # stops what this script started
@@ -9,7 +10,8 @@
 #   bash scripts/cloud/stack.sh logs      # last lines of both logs
 #
 # Ports: AGENT_PORT (default 8787, the UI's default service address) and
-# UI_PORT (default 5173). The model provider defaults to claude_code, which uses
+# UI_PORT (default 5173); FIXTURE_PORT (default 8790) serves the browser fixture
+# site as a.fixture.localhost and b.fixture.localhost. The model provider defaults to claude_code, which uses
 # the Claude CLI that cloud sessions ship already signed in; override with
 # CLIO_LM_PROVIDER / CLIO_LM_MODEL. Runtime state stays in .cloud-run/.
 
@@ -19,6 +21,7 @@ STATE="$ROOT/.cloud-run"
 mkdir -p "$STATE"
 AGENT_PORT="${AGENT_PORT:-8787}"
 UI_PORT="${UI_PORT:-5173}"
+FIXTURE_PORT="${FIXTURE_PORT:-8790}"
 export CLIO_LM_PROVIDER="${CLIO_LM_PROVIDER:-claude_code}"
 export CLIO_LM_MODEL="${CLIO_LM_MODEL:-claude-haiku-5-5}"
 
@@ -63,6 +66,17 @@ start_ui() {
   fi
 }
 
+start_fixture() {
+  if alive "$STATE/fixture.pid"; then echo "fixture: already running"; return 0; fi
+  launch "$STATE/fixture.pid" "$STATE/fixture.log" "$ROOT" \
+    python3 tests/browser/fixtures/site/server.py --port "$FIXTURE_PORT" --state "$STATE/fixture-site"
+  if wait_http "http://127.0.0.1:$FIXTURE_PORT/" 20; then
+    echo "fixture: http://a.fixture.localhost:$FIXTURE_PORT and http://b.fixture.localhost:$FIXTURE_PORT"
+  else
+    echo "fixture: did not answer within 20s; see $STATE/fixture.log"; return 1
+  fi
+}
+
 stop_one() {  # stop_one <name>
   local pidf="$STATE/$1.pid"
   if alive "$pidf"; then
@@ -82,16 +96,16 @@ stop_one() {  # stop_one <name>
 }
 
 status() {
-  for n in agent ui; do
+  for n in agent ui fixture; do
     if alive "$STATE/$n.pid"; then echo "$n: running (pid $(cat "$STATE/$n.pid"))"; else echo "$n: stopped"; fi
   done
 }
 
 case "${1:-status}" in
-  start) start_agent && start_ui ;;
-  stop) stop_one ui; stop_one agent ;;
-  restart) stop_one ui; stop_one agent; start_agent && start_ui ;;
+  start) start_fixture && start_agent && start_ui ;;
+  stop) stop_one ui; stop_one agent; stop_one fixture ;;
+  restart) stop_one ui; stop_one agent; stop_one fixture; start_fixture && start_agent && start_ui ;;
   status) status ;;
-  logs) tail -n 40 "$STATE/agent.log" "$STATE/ui.log" 2>/dev/null ;;
+  logs) tail -n 40 "$STATE/agent.log" "$STATE/ui.log" "$STATE/fixture.log" 2>/dev/null ;;
   *) echo "usage: $0 start|stop|restart|status|logs"; exit 2 ;;
 esac
