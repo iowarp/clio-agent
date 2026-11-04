@@ -433,6 +433,16 @@ Both answers are of a similar standard: checked against the data, CLIO's trait w
     - **The stale-plan note never fired across turns (`f03b0a61`).** Its quiet-step count lived on the turn's loop, so a session of short turns restarted it each turn; it now runs per session. (Rounds 4-9 were 14 steps, under the note's 25, so these runs would not have seen it either.) The replan suggestion now offers `plan_update` before plan mode (`4a7fa461`).
     - **A loaded tool cost a whole-prompt cache write (`a7d76183`).** A compaction promoted tools loaded with `search_tools` (`view_image` and the A2UI tools for the figure) into the tool list; the next turn's start changed the system prompt and tools, and the call read 0 cached tokens and wrote 34k (`l1p-compact` call 28, `l1p2-compact-noreoffer` call 34). The compaction itself keeps them cached (18k read). Loaded tools now stay unlisted and callable.
     - **Context.** A 434-file `fs_glob` (`limit` 500-1000, the model's choice) is the largest single read at 22.8k characters; the agent then lists the folders with the shell anyway.
+28. **L2 and H6: one long open request, and constraints across compaction (2026-11-04, one run each, head `4afea0ac`).** L2 is H4's broad request word for word ("Investigate it broadly: what was done, what the data shows, and whether anything is wrong with it") on the real `appl-vision` export.
+
+    | Run | Wall | Model calls | Output tokens | Peak prompt | Compactions | Plan | Result |
+    | --- | --- | --- | --- | --- | --- | --- | --- |
+    | L2, forced 0.06 (`l2-compact`) | 147 s (31 s of it the checkpoint) | 11 | 11.9k | 76k | 1 | none | the incomplete second snapshot, the 1.797e+308 sentinel, the design checked |
+    | L2, Claude Code | 96 s | 11 | 8.5k | 59k | - | none (TodoWrite allowed) | the same, plus all-null duplicate spectral columns and implausible ratio values |
+    | H6 (`l2-h6`, its own 0.05 threshold) | 126 s | 13 | | 59k | 1 | none | 5/5 findings, decoy explained, every constraint and the mid-run change of mind honoured |
+
+    For this model, both are ten-step tasks: neither CLIO nor Claude Code wrote a plan or todos, which fits "long or open-ended work" being judged by the work rather than the wording; H6's constraints survived the compaction in the checkpoint, not a plan.
+    - **The CLI adds the host's environment notes to CLIO's conversation (an evaluation confound).** CLIO hands the `claude` CLI its own system prompt with no setting sources, but the CLI still attaches an environment reminder, and in this cloud container that reminder carries the container's guidance (downloaded files are untrusted, run Python with `-I`, the HTTPS proxy). The agent followed it, then spent a step working around `-I` blocking its own helper import, and the checkpoint quoted it as a requirement. The Claude Code reference gets the same reminder, so comparisons stay level; a CLIO deployment on a person's machine gets only the CLI's plain environment lines.
 18. **Observed: native tool-call markup in the visible text.** In 2 of 396 runs (`head1` H4, `x1`) the model wrote a fragment of Claude's native call markup before a correct call block; it reaches the transcript as prose. Not fixed.
 
 ### Targets
