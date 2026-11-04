@@ -235,6 +235,19 @@ def _admitted(websocket: Any, app: Any) -> tuple[int, str] | None:
     return None
 
 
+def _in_family(app: Any, page_session: str, session_id: str) -> bool:
+    """Whether ``page_session`` is ``session_id`` or one of its children (a subagent's page)."""
+    current = page_session
+    for _ in range(8):  # spawn depth is bounded well below this
+        if current == session_id:
+            return True
+        session = app.state.sessions.get(current) if current else None
+        current = str(getattr(session, "parent_session_id", "") or "")
+        if not current:
+            return False
+    return False
+
+
 def _offered(websocket: Any) -> bool:
     header = websocket.headers.get("sec-websocket-protocol", "")
     return LIVE_PROTOCOL in {part.strip() for part in header.split(",")}
@@ -246,7 +259,9 @@ async def _serve(app: Any, websocket: Any, session_id: str, page_id: str) -> Non
     refusal = _admitted(websocket, app)
     svc = service()
     record = svc.pages.get(page_id)
-    if refusal is None and (record is None or record.session_id != session_id or record.closed):
+    if refusal is None and (
+        record is None or record.closed or not _in_family(app, record.session_id, session_id)
+    ):
         refusal = (4404, "page_not_found")
     if refusal is not None:
         await websocket.accept(subprotocol=LIVE_PROTOCOL if _offered(websocket) else None)
@@ -328,8 +343,12 @@ def register_browser_routes(app: Any) -> None:
 
     @app.get("/v1/sessions/{session_id}/browser/pages")
     async def browser_pages(session_id: str) -> dict[str, Any]:
+        """The conversation's pages and its subagents' (labelled by their task)."""
         svc = service()
-        return {"pages": [svc.state(r) for r in svc.session_pages(session_id)]}
+        records = [r for r in list(svc.pages.values()) if not r.closed]
+        return {
+            "pages": [svc.state(r) for r in records if _in_family(app, r.session_id, session_id)]
+        }
 
     @app.post("/v1/sessions/{session_id}/browser/pages/{page_id}/allow-host")
     async def browser_allow_host(session_id: str, page_id: str) -> dict[str, Any]:
@@ -337,7 +356,7 @@ def register_browser_routes(app: Any) -> None:
 
         svc = service()
         record = svc.pages.get(page_id)
-        if record is None or record.session_id != session_id or record.closed:
+        if record is None or record.closed or not _in_family(app, record.session_id, session_id):
             raise HTTPException(status_code=404, detail="browser page not found")
         svc.app = app
         host = await asyncio.to_thread(allow_blocked, svc, record)

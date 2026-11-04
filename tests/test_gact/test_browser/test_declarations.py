@@ -135,3 +135,21 @@ def test_presenters_handle_failed_and_running_calls() -> None:
     assert blocked["blocks"][0]["severity"] == "warning"
     pages = presenter_for("browser_pages")({}, None, {"pages": []})
     assert pages["summary"] == "0 pages" and pages["blocks"][0]["text"] == "No pages are open."
+
+
+def test_a_parent_conversation_sees_its_subagents_pages_only() -> None:
+    from types import SimpleNamespace
+
+    from clio_agent.gact.browser.live import _in_family
+
+    sessions = {
+        "child": SimpleNamespace(parent_session_id="parent"),
+        "grandchild": SimpleNamespace(parent_session_id="child"),
+        "parent": SimpleNamespace(parent_session_id=""),
+        "stranger": SimpleNamespace(parent_session_id=""),
+    }
+    app = SimpleNamespace(state=SimpleNamespace(sessions=sessions))
+    assert _in_family(app, "parent", "parent")
+    assert _in_family(app, "grandchild", "parent")
+    assert not _in_family(app, "parent", "child")
+    assert not _in_family(app, "stranger", "parent")
