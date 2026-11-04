@@ -9,6 +9,7 @@ import functools
 import hashlib
 import inspect
 import json
+import time
 from dataclasses import dataclass, field
 from typing import Any, Callable
 from uuid import uuid4
@@ -116,6 +117,20 @@ class BuiltinTool(Tool):
             raise
         finally:
             invocation.retired.set()
+
+
+def _audit_phases(name: str, marks: list[tuple[str, float]]) -> None:
+    """One ``builtin.native_call`` stream-audit row: each phase's milliseconds.
+
+    A shell call cost 0.3-0.7 s more than its command (X1, 2026-11); the row says where.
+    """
+    from clio_agent.runtime.stream_audit import stream_audit  # noqa: PLC0415
+
+    phases = {
+        f"{label}_ms": round((at - before) * 1000, 2)
+        for (_, before), (label, at) in zip(marks, marks[1:], strict=False)
+    }
+    stream_audit("builtin.native_call", tool=name, **phases)
 
 
 class BuiltinBoundary:
@@ -297,6 +312,7 @@ class BuiltinBoundary:
         from clio_agent.tools.result_room import result_room, room_limits
         from clio_agent.tools.task_call_context import safe_description
 
+        marks = [("start", time.perf_counter())]
         public = dict(arguments)
         description = public.pop("_clio_task_description", None) or safe_description(name, public)
         if not isinstance(description, str) or len(description) > 2000:
@@ -330,6 +346,7 @@ class BuiltinBoundary:
         )
         if assignment is None:
             raise ValueError("Task submission requires a confirmed assignment")
+        marks.append(("assignment", time.perf_counter()))
         call = captured.run(TASK_CALL.get)
         inherited_approval = (
             kind == "Shell"
@@ -400,6 +417,7 @@ class BuiltinBoundary:
             )
             if decision != "allow":
                 raise PermissionError("Task submission was not approved")
+        marks.append(("gate", time.perf_counter()))
         attribution: dict[str, Any] = {"agent": captured.run(context.active_react_scope)}
         if selection_digest is not None:
             attribution["ndp_selection_digest"] = selection_digest
@@ -436,12 +454,15 @@ class BuiltinBoundary:
             description=description,
             background=bool(public.get("background", False)) if kind == "Shell" else True,
         )
+        marks.append(("submit", time.perf_counter()))
         if (
             kind == "Shell"
             and not public.get("background", False)
             and value.get("pending") is False
         ):
-            return await self.collect_inline(sid, value, captured)
+            value = await self.collect_inline(sid, value, captured)
+            marks.append(("collect", time.perf_counter()))
+        _audit_phases(name, marks)
         return value
 
     async def collect_inline(
