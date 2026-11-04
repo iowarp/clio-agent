@@ -389,6 +389,11 @@ def _diff(args: Mapping[str, Any], result: Any, snapshot: Any) -> dict[str, Any]
                 .decode("utf-8", errors="replace")
             )
             diff = unified_file_diff(before, after, Path(snapshot.path).name, context=1)
+    elif not diff and row.get("created") is True and isinstance(args.get("content"), str):
+        # A new file's result no longer echoes its content as a diff (fs_edit); its
+        # whole content is the call's own argument, so the view builds it from that.
+        path = str(row.get("path") or args.get("path") or "")
+        diff = unified_file_diff("", args["content"], PureWindowsPath(path).name)
     return {
         "subject": "file-link",
         "summary": "",
