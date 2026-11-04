@@ -45,7 +45,9 @@ def session(browser: Any, tmp_path: Path) -> Iterator[tuple[Any, str]]:
 def _agent() -> Any:
     tools = {name: build() for name, build in BUILDERS.items()}
     tools["run_code"] = SimpleNamespace(name="run_code")  # present: bindings need run_code
-    agent = SimpleNamespace(tools=tools, _clio_tool_servers=frozenset(), _clio_deferred_catalog=None)
+    agent = SimpleNamespace(
+        tools=tools, _clio_tool_servers=frozenset(), _clio_deferred_catalog=None
+    )
     apply_tool_settings(agent, SimpleNamespace(tools=[], mcp_servers={}))
     del tools["run_code"]
     text = FACADE.read_text()

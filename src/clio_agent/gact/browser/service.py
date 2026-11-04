@@ -155,6 +155,8 @@ class BrowserService:
         self._ids = itertools.count(1)
         self._reaper: threading.Thread | None = None
         self.app: Any = None
+        #: Called on every page change, e.g. the live view's state push.
+        self.listeners: list[Callable[[str, PageRecord], None]] = []
 
     # ---- the loop ----------------------------------------------------------------------
     def _ensure_loop(self) -> asyncio.AbstractEventLoop:
@@ -615,6 +617,11 @@ class BrowserService:
 
     def publish(self, kind: str, record: PageRecord) -> None:
         """Tell the session's readers that one of its pages changed."""
+        for listener in list(self.listeners):
+            try:
+                listener(kind, record)
+            except Exception as exc:  # noqa: BLE001 - a reader never breaks the page
+                trace.event("BROWSER", "page listener failed error=%s", exc)
         bus = getattr(getattr(self.app, "state", None), "bus", None)
         if bus is None:
             return
