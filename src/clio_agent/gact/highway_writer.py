@@ -211,7 +211,7 @@ class HighwayWriter:
                     else:
                         item.context.run(self._arc.on_semantic_event, item.event)
                 group.flush()
-        except Exception as exc:  # noqa: BLE001 - reported at the session's next flush
+        except Exception as exc:  # noqa: BLE001 - forwards: the session's next flush raises it
             error = exc
             logger.warning(
                 "%s events=%d sessions=%s error=%r",
