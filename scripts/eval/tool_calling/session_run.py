@@ -160,6 +160,7 @@ def wait_for_turn(
     decline_after_s: float | None = None,
     follow_ups: tuple[tuple[float, str], ...] = (),
     rounds: tuple[str, ...] = (),
+    round_poll_s: float = 0.25,
     clock: Callable[[], float] = time.monotonic,
     sleep: Callable[[float], None] = time.sleep,
 ) -> dict[str, Any]:
@@ -168,9 +169,10 @@ def wait_for_turn(
     ``follow_ups``: ``(seconds after start, text)`` messages the person sends while the
     work runs (a changed instruction mid-run). Each is sent once its time has come, and
     the work has not ended until every one was sent; ``sent`` records when.
-    ``rounds``: later requests of a multi-turn task. Each is sent once the previous
-    turn has settled, and the work has ended when the last one has; ``sent`` records
-    them with their ``round`` (2 onward).
+    ``rounds``: later requests of a multi-turn task. Each is sent as soon as the
+    previous turn has ended with a new reply, as a person would once they see it (no
+    settle; polled every ``round_poll_s``), and the work has ended when the last one
+    has settled; ``sent`` records them with their ``round`` (2 onward).
 
     Returns ``{"state": "settled" | "timed_out" | <interaction status>,
     "status", "polls", "first_done_wall", "declined"}``; ``first_done_wall`` is the
@@ -233,7 +235,7 @@ def wait_for_turn(
                     str(newest.get("updated_at") or ""),
                     int(session.get("message_count") or 0),
                 )
-                if marker == now and later:
+                if later:  # a person sends the next round once they see the reply
                     text = later.pop(0)
                     answered = now[0]
                     client.send(sid, text)
@@ -245,7 +247,7 @@ def wait_for_turn(
                         }
                     )
                     marker = first_done_wall = None
-                    sleep(poll_s)
+                    sleep(round_poll_s)
                     continue
                 if marker == now:
                     return {
@@ -259,7 +261,7 @@ def wait_for_turn(
                 marker, first_done_wall = now, time.time()
                 sleep(settle_s)
                 continue
-        sleep(poll_s)
+        sleep(round_poll_s if later else poll_s)
 
 
 def read_jsonl(path: Path | None) -> list[dict[str, Any]]:
@@ -365,6 +367,7 @@ def _activity_end(norm: dict[str, Any], messages: list[dict[str, Any]]) -> float
         for t in [
             *(c["ended_at"] for c in s["lm_calls"]),
             *(c["ended_at"] for c in s["tool_calls"]),
+            *(s.get("turn_ends") or ()),  # the reply is seen when its turn ends
         ]
         if t
     ]
@@ -503,20 +506,20 @@ def execute_run(ctx: RunContext, spec: RunSpec) -> dict[str, Any]:
 def active_seconds(
     started: float, ended: float, sent: list[dict[str, Any]], sessions: list[dict[str, Any]]
 ) -> float:
-    """Wall time less the runner's own waits between a turn's last activity and the
-    next round it sends (it confirms a turn has settled before sending, about 7 s;
-    the Claude Code reference starts the next round as the CLI exits)."""
+    """Wall time less only the runner's own delay in noticing a turn had ended.
+
+    A person sees a reply when its turn ends (``turn.completed``), not when the model
+    stops writing, so CLIO's time from the last model output to the turn's end stays
+    in. What is left out is the gap from that end to the runner's next send (its poll
+    interval). A round with no recorded turn end before its send counts in full.
+    """
     sends = [started + float(row["after_s"]) for row in sent if "round" in row]
-    activity = sorted(
-        float(row["ended_at"])
-        for session in sessions
-        for row in (*session["lm_calls"], *session["tool_calls"])
-        if row.get("ended_at")
-    )
+    ends = sorted(at for session in sessions[:1] for at in session.get("turn_ends") or [])
     idle, previous = 0.0, started
     for send in sends:
-        last = max([at for at in activity if previous <= at <= send] or [previous])
-        idle += send - last
+        before = [at for at in ends if previous <= at <= send]
+        if before:
+            idle += send - max(before)
         previous = send
     return round(ended - started - idle, 3)
 

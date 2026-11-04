@@ -250,6 +250,12 @@ def normalize_session(transcript: dict[str, Any]) -> dict[str, Any]:
         "injections": injection_counts(list(transcript.get("messages") or [])),
         "tool_calls": tool_call_rows(events),
         "steps": step_rows(events),
+        "turn_ends": [
+            at
+            for e in events
+            if e.get("event_type") in ("turn.completed", "turn.failed")
+            and (at := epoch(e.get("occurred_at")))
+        ],
         "events": {
             "compactions": _count(events, "compaction.completed"),
             "compaction_failures": _count(events, "compaction.failed"),

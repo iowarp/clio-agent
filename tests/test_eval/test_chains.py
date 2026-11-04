@@ -219,16 +219,20 @@ def test_x2_asks_the_chain_from_the_files_and_grades_each_trap_wrong(
     assert [r["correct"] for r in graded["rounds"]] == [False, False, False, False]
 
 
-def test_active_time_leaves_out_the_runners_waits_between_rounds() -> None:
-    """Round 2 is sent 10 s after the run starts but the first turn's last activity
-    ended at 4 s: 6 s of the wall are the runner's wait. SABOTAGE: return the wall
-    and this reads 20."""
+def test_active_time_counts_the_turn_end_a_person_sees_not_the_last_model_output() -> None:
+    """Round 2 is sent 10 s after the run starts; the first turn's model output ended
+    at 4 s but the turn ended at 5 s: only the runner's 5 s are left out. SABOTAGE:
+    measure from the last model call and this reads 14."""
     from scripts.eval.tool_calling.session_run import active_seconds
 
-    sessions = [{"lm_calls": [{"ended_at": 104.0}, {"ended_at": 118.0}], "tool_calls": []}]
+    sessions = [
+        {"lm_calls": [{"ended_at": 104.0}, {"ended_at": 118.0}], "tool_calls": [],
+         "turn_ends": [105.0, 119.5]},
+    ]  # fmt: skip
     sent = [{"after_s": 10.0, "round": 2, "text": "next"}]
-    assert active_seconds(100.0, 120.0, sent, sessions) == 14.0
+    assert active_seconds(100.0, 120.0, sent, sessions) == 15.0
     assert active_seconds(100.0, 120.0, [], sessions) == 20.0
+    assert active_seconds(100.0, 120.0, sent, [{"turn_ends": []}]) == 20.0
 
 
 def test_only_a_copy_of_external_data_is_dropped(tmp_path: Path) -> None:
