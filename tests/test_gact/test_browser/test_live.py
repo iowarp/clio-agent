@@ -127,3 +127,36 @@ def test_a_viewer_without_the_bearer_or_for_another_session_is_refused(
         ) as socket:
             socket.receive_text()
     assert refused.value.code == 4401
+
+
+def test_the_person_signs_in_through_the_live_view(
+    browser: Any, site: dict[str, Any], tmp_path: Path
+) -> None:
+    client, _app, sid = _client(tmp_path)
+    record = browser.wait(browser.open(sid, ""))
+    browser.run(record, "goto", lambda r: r.page.goto(site["a"] + "/signin"))
+    boxes = {
+        name: browser.wait(record.page.locator(selector).bounding_box())
+        for name, selector in (("user", "input[name=username]"), ("pass", "input[type=password]"))
+    }
+    url = f"/v1/sessions/{sid}/browser/{record.id}/live"
+    with client.websocket_connect(url, subprotocols=["clio.browser.v1"]) as socket:
+        _until_state(socket, lambda s: s["type"] == "state")
+        for name, text in (("user", "ada"), ("pass", "correct horse")):
+            box = boxes[name]
+            x, y = box["x"] + box["width"] / 2, box["y"] + box["height"] / 2
+            for action in ("down", "up"):  # as the live view sends a click
+                socket.send_text(json.dumps({"type": "mouse", "action": action, "x": x, "y": y}))
+            socket.send_text(json.dumps({"type": "text", "text": text}))
+        for _ in range(30):
+            values = [
+                browser.wait(record.page.locator(s).input_value())
+                for s in ("input[name=username]", "input[type=password]")
+            ]
+            if values == ["ada", "correct horse"]:
+                break
+            time.sleep(0.1)
+        assert values == ["ada", "correct horse"], values
+        socket.send_text(json.dumps({"type": "key", "action": "press", "key": "Enter"}))
+        _until_state(socket, lambda s: s.get("url", "").endswith("/account"))
+    assert record.url().endswith("/account")

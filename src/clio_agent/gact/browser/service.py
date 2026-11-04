@@ -161,6 +161,9 @@ class BrowserService:
         self.app: Any = None
         #: Called on every page change, e.g. the live view's state push.
         self.listeners: list[Callable[[str, PageRecord], None]] = []
+        #: Awaited when an agent call on a page starts (True) and ends (False), on the loop;
+        #: the live view shows the agent's action annotations only meanwhile.
+        self.agent_hooks: list[Callable[[PageRecord, bool], Awaitable[None]]] = []
 
     # ---- the loop ----------------------------------------------------------------------
     def _ensure_loop(self) -> asyncio.AbstractEventLoop:
@@ -443,6 +446,7 @@ class BrowserService:
             record.last_used = time.monotonic()
             record.last_action = inflight.action
             self.publish(PAGE_UPDATED, record)
+            await self._agent_hook(record, True)
             try:
                 result = await work(record)
                 if inflight.denied_host:  # a click or form led to a host the person refused
@@ -458,9 +462,17 @@ class BrowserService:
             except Exception as exc:  # noqa: BLE001 - Playwright's errors become typed reasons
                 raise _typed(exc, inflight) from exc
             finally:
+                await self._agent_hook(record, False)
                 record.inflight = None
                 record.last_used = time.monotonic()
                 self.publish(PAGE_UPDATED, record)
+
+    async def _agent_hook(self, record: PageRecord, active: bool) -> None:
+        for hook in list(self.agent_hooks):
+            try:
+                await hook(record, active)
+            except Exception as exc:  # noqa: BLE001 - a viewer never breaks the agent's call
+                trace.event("BROWSER", "agent hook failed page=%s error=%s", record.id, exc)
 
     def take_notes(self, record: PageRecord) -> dict[str, Any]:
         """What the agent's result reports since its previous call on this page, then reset."""

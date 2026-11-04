@@ -63,6 +63,8 @@ class _Hub:
     actions: Any = None
     viewport: tuple[int, int] = (0, 0)
     theme: dict[str, str] = field(default_factory=dict)
+    #: The latest frame, for a viewer who joins a page that is not changing.
+    last_frame: bytes = b""
 
 
 _HUBS: dict[str, _Hub] = {}
@@ -115,8 +117,9 @@ async def _start(service: Any, record: Any, hub: _Hub) -> None:
         if size != hub.viewport:
             hub.viewport = size
             _broadcast_state(service, record)
+        hub.last_frame = bytes(frame["data"])
         for viewer in list(hub.viewers):
-            _deliver(viewer, bytes(frame["data"]))
+            _deliver(viewer, hub.last_frame)
 
     width = settings.frame_width()
     viewport = record.page.viewport_size or {"width": 1280, "height": 800}
@@ -124,15 +127,46 @@ async def _start(service: Any, record: Any, hub: _Hub) -> None:
     hub.screencast = await record.page.screencast.start(
         on_frame=on_frame, quality=settings.frame_quality(), size={"width": width, "height": height}
     )
-    await _annotate(record, hub)
+    if not hub.last_frame:
+        # The screencast sends frames only when the page changes; a still page would
+        # otherwise show nothing, so the first frame is a still of the page as it is.
+        hub.viewport = (int(viewport["width"]), int(viewport["height"]))
+        still = await record.page.screenshot(type="jpeg", quality=settings.frame_quality())
+        if not hub.last_frame:
+            hub.last_frame = still
+        _broadcast_state(service, record)
+        for viewer in list(hub.viewers):
+            _deliver(viewer, hub.last_frame)
 
 
 async def _annotate(record: Any, hub: _Hub) -> None:
-    if hub.actions is not None:
-        await hub.actions.__aexit__(None, None, None)
+    await _hide_actions(hub)
     hub.actions = await record.page.screencast.show_actions(
         style=_style(hub.theme.get("accent", "")), duration=600
     )
+
+
+async def _hide_actions(hub: _Hub) -> None:
+    if hub.actions is not None:
+        actions, hub.actions = hub.actions, None
+        await actions.__aexit__(None, None, None)
+
+
+async def _agent_activity(record: Any, active: bool) -> None:
+    """Annotate the agent's actions only while its call runs on a watched page.
+
+    Playwright annotates every action made through its API, the person's input played
+    back here included, and an annotated pointer action waits for its animation; turned
+    on for the person's input, it made typed text land before the click that focused
+    the field. So the annotations follow the agent's calls, which is what they show.
+    """
+    hub = _HUBS.get(record.id)
+    if hub is None or hub.screencast is None:
+        return
+    if active:
+        await _annotate(record, hub)
+    else:
+        await _hide_actions(hub)
 
 
 async def _stop(hub: _Hub) -> None:
@@ -158,7 +192,6 @@ async def _play(service: Any, record: Any, hub: _Hub, message: dict[str, Any]) -
     kind = message.get("type")
     if kind == "theme":
         hub.theme = {"accent": str(message.get("accent") or "")}
-        await _annotate(record, hub)
         return
     record.person_acted = True
     record.last_person_input = time.monotonic()
@@ -276,6 +309,8 @@ async def _serve(app: Any, websocket: Any, session_id: str, page_id: str) -> Non
     try:
         if hub.screencast is None:
             await asyncio.wrap_future(svc.submit(_start(svc, record, hub)))
+        elif hub.last_frame:
+            _deliver(viewer, hub.last_frame)
         await websocket.send_json(_state(svc, record, hub, viewer))
         sender = asyncio.create_task(_send(viewer))
         try:
@@ -310,7 +345,7 @@ async def _receive(svc: Any, record: Any, hub: _Hub, viewer: _Viewer) -> None:
     while True:
         try:
             text = await viewer.socket.receive_text()
-        except WebSocketDisconnect:
+        except (WebSocketDisconnect, RuntimeError):  # closed; Starlette raises either
             return
         try:
             message = json.loads(text)
@@ -332,13 +367,23 @@ async def _receive(svc: Any, record: Any, hub: _Hub, viewer: _Viewer) -> None:
             )
 
 
+def _on_page_change(kind: str, record: Any) -> None:
+    from clio_agent.gact.browser.service import service  # noqa: PLC0415
+
+    _broadcast_state(service(), record)
+
+
 def register_browser_routes(app: Any) -> None:
     """The live view, the session's pages, and allowing a blocked host."""
     from fastapi import HTTPException  # noqa: PLC0415
 
     from clio_agent.gact.browser.service import PAGE_UPDATED, service  # noqa: PLC0415
 
-    service().listeners.append(lambda kind, record: _broadcast_state(service(), record))
+    svc = service()
+    if _on_page_change not in svc.listeners:
+        svc.listeners.append(_on_page_change)
+    if _agent_activity not in svc.agent_hooks:
+        svc.agent_hooks.append(_agent_activity)
 
     @app.websocket("/v1/sessions/{session_id}/browser/{page_id}/live")
     async def browser_live(websocket: WebSocket, session_id: str, page_id: str) -> None:
