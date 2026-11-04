@@ -610,9 +610,10 @@ class NativeTools:
                         "attention_episode": None,
                     }
                 )
-            if unchanged_reply(current, observed, stamp):
-                return  # a running task's repeated reply: no write (native_task_replies)
-            self.history.record_snapshot(observed, observation_id=uuid4().hex)
+            if not unchanged_reply(current, observed, stamp):  # (native_task_replies)
+                self.history.record_snapshot(observed, observation_id=uuid4().hex)
+            else:
+                observed = current  # a running task's repeated reply: not written again
             self._settle(observed, accepted)
 
     async def _cleanup(self, handle: str) -> None:

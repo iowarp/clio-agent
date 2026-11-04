@@ -58,6 +58,15 @@ def test_any_change_or_an_end_is_recorded(change: dict[str, Any]) -> None:
     assert not unchanged_reply(_snap(), _snap(**change), _at(0.4))
 
 
+def test_a_repeated_terminal_reply_is_recorded() -> None:
+    """A terminal reply carries the result settlement reads; repeating one must still
+    reach settlement (a cleanup that turned unknown makes the task uncertain).
+    SABOTAGE: skip any unchanged reply and the cancelled task never turns uncertain
+    (``test_native_cleanup_visibility``, under parallel load)."""
+    cancelled = _snap(raw_status="cancelled")
+    assert not unchanged_reply(cancelled, _snap(raw_status="cancelled"), _at(0.4))
+
+
 def test_the_shell_task_advertises_the_configured_poll_ceiling(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

@@ -19,15 +19,21 @@ __all__ = ["REFRESH_S", "unchanged_reply"]
 #: nothing (fastmcp's default poll ceiling, the cadence before faster polling).
 REFRESH_S = 5.0
 _COMPARED = ("raw_status", "status", "activity", "progress", "connection_freshness")
+#: Replies that may be skipped: a task still running. A terminal reply is always
+#: recorded (it carries the result, and settlement reads it).
+_RUNNING = frozenset({"working", "input_required"})
 
 
 def unchanged_reply(current: Any, observed: Any, at: str) -> bool:
     """Whether ``observed`` repeats ``current`` on a running task recorded recently.
 
     A terminal reply, any changed field, or a snapshot older than :data:`REFRESH_S`
-    is recorded.
+    is recorded. The caller still settles a skipped reply: settlement also acts on
+    the task's attempts (a cleanup turned unknown), not only on the reply.
     """
     if current.terminal_at is not None or observed.terminal_at is not None:
+        return False
+    if observed.raw_status not in _RUNNING:
         return False
     if any(getattr(current, f) != getattr(observed, f) for f in _COMPARED):
         return False
