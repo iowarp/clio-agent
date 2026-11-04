@@ -74,7 +74,19 @@ _L1_ROUNDS = (
     "Write a short report in the workspace (Markdown): the data, the quality decisions, "
     "the results tables, the figure and the open questions.",
 )
-CHAINS = {"X2": (_X2_SETUP, _X2_ROUNDS), "L1": (_X2_SETUP, _L1_ROUNDS)}
+#: L1P: L1 where the person shares the whole agenda up front and asks for a plan first
+#: (Step 3 variant e): a person's request, not a handcuff. The rounds are L1's.
+_L1P_AGENDA = (
+    "Over this session I want to: get to know the export, check its data quality, answer "
+    "four questions about QY_max across the doses and accessions, make a figure, test "
+    "whether the dose response differs by accession, possibly redo parts with stricter "
+    "filters, and end with a short written report. Plan the work first, then start.\n\n"
+)
+CHAINS = {
+    "X2": (_X2_SETUP, _X2_ROUNDS),
+    "L1": (_X2_SETUP, _L1_ROUNDS),
+    "L1P": (_X2_SETUP + _L1P_AGENDA, _L1_ROUNDS),
+}
 #: Where X2's four questions sit in L1's replies.
 L1_X2_ROUNDS = slice(2, 6)
 

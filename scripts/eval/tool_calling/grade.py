@@ -281,11 +281,11 @@ def grade(task: str, answer: dict[str, Any], run: dict[str, Any]) -> dict[str, A
     text = str((run.get("outcome") or {}).get("final_text") or "")
     if chains.is_chain_task(task):
         result = chains.grade_chain(task, list(run.get("replies") or []))
-    elif task in ("X2", "L1"):
+    elif task in ("X2", "L1", "L1P"):
         from scripts.eval.tool_calling.explore import L1_X2_ROUNDS, grade_x2  # noqa: PLC0415
 
         replies = list(run.get("replies") or [])
-        result = grade_x2(replies[L1_X2_ROUNDS] if task == "L1" else replies)
+        result = grade_x2(replies[L1_X2_ROUNDS] if task != "X2" else replies)
     elif task == "P1":
         result = grade_p1(answer, text)
     elif task == "P2":
