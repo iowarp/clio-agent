@@ -283,9 +283,10 @@ def build_plan_enter_tool() -> Any:
         domain="planning",
         title="Enter plan mode",
         desc=(
-            "Enter plan mode for long or open-ended work, or when the person asks for a plan: "
+            "Enter plan mode when the person should approve a plan before anything changes: "
             "you investigate with read tools, write the plan with plan_update, and hand it "
-            "back for approval with plan_exit. Nothing else is changed in plan mode."
+            "back for approval with plan_exit. Nothing else is changed in plan mode. A plan "
+            "you write and then carry out yourself needs no plan mode: write it with plan_update."
         ),
         args={"reason": {"type": "string", "description": "Why planning first helps here."}},
     )
@@ -322,8 +323,9 @@ def build_plan_update_tool() -> Any:
         domain="planning",
         title="Update plan",
         desc=(
-            "Keep the session plan current, in plan mode or not: content writes the whole "
-            "plan; old and new replace one exact passage; status done or abandoned closes it. "
+            "Write the session plan and keep it current, in plan mode or not (outside plan mode "
+            "the work goes on): content writes the whole plan; old and new replace one exact "
+            "passage; status done or abandoned closes it. "
             "Update it when a finding changes your understanding or direction, not every step."
         ),
         args={
