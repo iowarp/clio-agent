@@ -182,3 +182,32 @@ def test_the_page_lays_out_at_the_views_size(
                 break  # frames keep coming at the new size
         else:
             raise AssertionError("no frame after the resize")
+
+
+def test_a_link_the_person_opens_is_their_navigation(
+    browser: Any, site: dict[str, Any], tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A conversation link opens in the shared browser; its host is the person's to grant."""
+    monkeypatch.setenv("CLIO_BROWSER_GRANTED_HOSTS", "")
+    client, app, sid = _client(tmp_path)
+    browser.app = app
+    url = site["b"] + "/table"
+    opened = client.post(f"/v1/sessions/{sid}/browser/pages", json={"url": url})
+    assert opened.status_code == 200, opened.text
+    page = opened.json()["page"]["id"]
+    record = browser.owned(sid, page)
+    for _ in range(100):
+        if record.host() == "b.fixture.localhost":
+            break
+        time.sleep(0.05)
+    assert record.host() == "b.fixture.localhost"
+    rows = [p for p in app.state.permission_policies if p.get("kind") == "browser_host"]
+    assert rows[-1]["host_pattern"] == "b.fixture.localhost" and rows[-1]["scope_id"] == sid
+    again = client.post(f"/v1/sessions/{sid}/browser/pages", json={"url": url}).json()
+    assert again["page"]["id"] == page  # the page already on that address
+    assert (
+        client.post(
+            f"/v1/sessions/{sid}/browser/pages", json={"url": "file:///etc/hosts"}
+        ).status_code
+        == 422
+    )

@@ -29,11 +29,12 @@ import json
 import time
 from dataclasses import dataclass, field
 from typing import Any
+from urllib.parse import urlsplit
 
 from fastapi import WebSocket
 
 from clio_agent.gact.browser import settings
-from clio_agent.gact.browser.settings import page_errors
+from clio_agent.gact.browser.settings import BrowserError, page_errors
 from clio_agent.runtime import trace
 
 __all__ = ["LIVE_PROTOCOL", "register_browser_routes"]
@@ -389,6 +390,18 @@ def _on_page_change(kind: str, record: Any) -> None:
     _broadcast_state(service(), record)
 
 
+def _open_for_person(svc: Any, session_id: str, url: str) -> Any:
+    """The conversation's page already on ``url``, or a new one the person navigates there
+    (their navigation: its host is granted for the conversation)."""
+    for record in svc.session_pages(session_id):
+        if record.url().split("#", 1)[0] == url.split("#", 1)[0]:
+            return record
+    record = svc.wait(svc.open(session_id, ""))
+    record.last_person_input = time.monotonic()
+    svc.submit(record.page.goto(url))
+    return record
+
+
 def register_browser_routes(app: Any) -> None:
     """The live view, the session's pages, and allowing a blocked host."""
     from fastapi import HTTPException  # noqa: PLC0415
@@ -413,6 +426,22 @@ def register_browser_routes(app: Any) -> None:
         return {
             "pages": [svc.state(r) for r in records if _in_family(app, r.session_id, session_id)]
         }
+
+    @app.post("/v1/sessions/{session_id}/browser/pages")
+    async def browser_open_for_person(session_id: str, body: dict[str, Any]) -> dict[str, Any]:
+        """Open a link the person clicked in the conversation, as their own navigation."""
+        url = str(body.get("url") or "")
+        if urlsplit(url).scheme.lower() not in ("http", "https"):
+            raise HTTPException(status_code=422, detail="only web links open in the browser")
+        if app.state.sessions.get(session_id) is None:
+            raise HTTPException(status_code=404, detail="session not found")
+        svc = service()
+        svc.app = app
+        try:
+            record = await asyncio.to_thread(_open_for_person, svc, session_id, url)
+        except BrowserError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+        return {"page": svc.state(record)}
 
     @app.post("/v1/sessions/{session_id}/browser/pages/{page_id}/allow-host")
     async def browser_allow_host(session_id: str, page_id: str) -> dict[str, Any]:
