@@ -37,10 +37,14 @@ _WORKING_STATE_WRITES = frozenset({"plan_update", "write_todos", "plan_enter", "
 
 def stale_steps() -> int:
     """Steps without plan_update or write_todos before the plan is mentioned (0: never):
-    the ``steps`` setting of the reminder ``clio.reminder.plan_stale``."""
+    the ``steps`` setting of the reminder ``clio.reminder.plan_stale``.
+
+    Only steps that call tools count. The default was 25, sized for one long turn; in a
+    session of short turns (L1P: nine rounds, about 18 tool steps) it was never reached,
+    and the plan went untouched from round 3 to the end in 4 of 5 runs."""
     from clio_agent import injections  # noqa: PLC0415
 
-    return injections.param(PLAN_STALE_SOURCE, "steps", 25, int)
+    return injections.param(PLAN_STALE_SOURCE, "steps", 8, int)
 
 
 def _quiet_steps(app: Any, loop: Any) -> dict[str, int]:
