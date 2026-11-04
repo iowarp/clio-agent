@@ -476,6 +476,7 @@ def execute_run(ctx: RunContext, spec: RunSpec) -> dict[str, Any]:
         "wall_s": round(ended - started, 3),
         "wall_s_source": "activity" if ended is activity else "poll",
         "wall_s_polled": round(polled_end - started, 3),
+        "active_s": active_seconds(started, ended, waited.get("sent") or [], norm["sessions"]),
         "wait": waited,
         "declined_permissions": waited.get("declined", []),
         "outcome": norm["outcome"],
@@ -495,7 +496,36 @@ def execute_run(ctx: RunContext, spec: RunSpec) -> dict[str, Any]:
     write_json(target, result)
     if ctx.keep_export:
         write_json(target.with_suffix(".export.json"), export)
+    drop_external_copy(fixture, workdir)
     return result
+
+
+def active_seconds(
+    started: float, ended: float, sent: list[dict[str, Any]], sessions: list[dict[str, Any]]
+) -> float:
+    """Wall time less the runner's own waits between a turn's last activity and the
+    next round it sends (it confirms a turn has settled before sending, about 7 s;
+    the Claude Code reference starts the next round as the CLI exits)."""
+    sends = [started + float(row["after_s"]) for row in sent if "round" in row]
+    activity = sorted(
+        float(row["ended_at"])
+        for session in sessions
+        for row in (*session["lm_calls"], *session["tool_calls"])
+        if row.get("ended_at")
+    )
+    idle, previous = 0.0, started
+    for send in sends:
+        last = max([at for at in activity if previous <= at <= send] or [previous])
+        idle += send - last
+        previous = send
+    return round(ended - started - idle, 3)
+
+
+def drop_external_copy(fixture: str, workdir: Path) -> None:
+    """Remove a run's copy of external data (an absolute fixture such as the OPAL
+    export, 422 MB a run) once its result is written; generated fixtures stay."""
+    if Path(fixture).is_absolute() and workdir.is_dir():
+        shutil.rmtree(workdir)
 
 
 def write_json(path: Path, data: Any) -> None:

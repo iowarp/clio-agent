@@ -217,3 +217,26 @@ def test_x2_asks_the_chain_from_the_files_and_grades_each_trap_wrong(
     ]
     graded = grade_x2(traps)
     assert [r["correct"] for r in graded["rounds"]] == [False, False, False, False]
+
+
+def test_active_time_leaves_out_the_runners_waits_between_rounds() -> None:
+    """Round 2 is sent 10 s after the run starts but the first turn's last activity
+    ended at 4 s: 6 s of the wall are the runner's wait. SABOTAGE: return the wall
+    and this reads 20."""
+    from scripts.eval.tool_calling.session_run import active_seconds
+
+    sessions = [{"lm_calls": [{"ended_at": 104.0}, {"ended_at": 118.0}], "tool_calls": []}]
+    sent = [{"after_s": 10.0, "round": 2, "text": "next"}]
+    assert active_seconds(100.0, 120.0, sent, sessions) == 14.0
+    assert active_seconds(100.0, 120.0, [], sessions) == 20.0
+
+
+def test_only_a_copy_of_external_data_is_dropped(tmp_path: Path) -> None:
+    from scripts.eval.tool_calling.session_run import drop_external_copy
+
+    external, generated = tmp_path / "external", tmp_path / "generated"
+    external.mkdir()
+    generated.mkdir()
+    drop_external_copy("/data/opal", external)
+    drop_external_copy("home", generated)
+    assert not external.exists() and generated.exists()

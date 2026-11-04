@@ -37,7 +37,12 @@ from typing import Any
 
 from scripts.eval.tool_calling import tasks
 from scripts.eval.tool_calling.paths import DEFAULT_FIXTURES, DEFAULT_RESULTS, DEFAULT_WORK
-from scripts.eval.tool_calling.session_run import RESULT_SCHEMA, prepare_workdir, write_json
+from scripts.eval.tool_calling.session_run import (
+    RESULT_SCHEMA,
+    drop_external_copy,
+    prepare_workdir,
+    write_json,
+)
 from scripts.eval.tool_calling.usage_guard import DEFAULT_STOP_AT
 
 CONFIG = "claude-code"
@@ -374,6 +379,7 @@ def run_once(
         **parsed,
     }
     write_json(target, result)
+    drop_external_copy(tasks.fixture_dir(task_id, manifest), workdir)
     return result
 
 

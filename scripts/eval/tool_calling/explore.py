@@ -80,7 +80,9 @@ def grade_x2(replies: list[str]) -> dict[str, object]:
         line = answer_line(replies[index]) if index < len(replies) else ""
         if isinstance(key[0], float):
             got = [float(n) for n in re.findall(r"\d+\.\d+", line)]
-            ok = len(got) == len(key) and all(abs(a - b) <= 0.002 for a, b in zip(got, key, strict=True))
+            ok = len(got) == len(key) and all(
+                abs(a - b) <= 0.002 for a, b in zip(got, key, strict=True)
+            )
         elif len(key) == 1:
             ok = re.findall(r"\d+", line)[:1] == list(key)
         else:
