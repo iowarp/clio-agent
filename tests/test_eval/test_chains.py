@@ -296,3 +296,16 @@ def test_the_long_session_grades_x2s_four_rounds_where_they_sit() -> None:
                "Saved fig.png", "Interaction p=0.01", "Redone.", "Report written."]  # fmt: skip
     graded = grade.grade("L1", {}, {"replies": replies})
     assert [r["correct"] for r in graded["rounds"]] == [True, True, True, True]
+
+
+def test_the_recall_session_asks_about_the_conversation_after_l1ps_rounds() -> None:
+    """L1R is L1P plus three questions about the conversation itself, asked plainly
+    (no tool named) after the compactions; X2's rounds are graded where they sit.
+    SABOTAGE: drop the recall rounds and the count is L1P's."""
+    from scripts.eval.tool_calling import tasks
+
+    task = tasks.task("L1R", {})
+    assert len(task.rounds) + 1 == 13 and "Plan the work first" in task.prompt
+    recall = task.rounds[-3:]
+    assert "first message" in recall[0] and "first reply" in recall[1]
+    assert not any("recall_context" in r or "tool" in r for r in recall)

@@ -88,10 +88,22 @@ _L1P_AGENDA = (
     "whether the dose response differs by accession, possibly redo parts with stricter "
     "filters, and end with a short written report. Plan the work first, then start.\n\n"
 )
+#: L1R: L1P, then three questions about the conversation itself, asked after the
+#: compactions: the person's first message (kept verbatim in context), the agent's own
+#: first reply (only in clio-core once compacted), and the numbers it gave before the
+#: change of plan. Read by hand against the stored replies; no tool is named.
+_RECALL_ROUNDS = (
+    "Do you remember what my first message in this conversation was? Quote it.",
+    "In your very first reply in this conversation, what did you say about the second "
+    "snapshot? Quote what you wrote then, not what you know now.",
+    "Before my change of plan, what per-dose means did you first report when I asked where "
+    "QY_max peaks? Give the numbers you gave then, not new ones.",
+)
 CHAINS = {
     "X2": (_X2_SETUP, _X2_ROUNDS),
     "L1": (_X2_SETUP, _L1_ROUNDS),
     "L1P": (_X2_SETUP + _L1P_AGENDA, _L1_ROUNDS),
+    "L1R": (_X2_SETUP + _L1P_AGENDA, _L1_ROUNDS + _RECALL_ROUNDS),
     # L1P's opening message alone: a one-minute probe of whether a plan asked for is written.
     "L1P1": (_X2_SETUP + _L1P_AGENDA, _L1_ROUNDS[:1]),
 }
