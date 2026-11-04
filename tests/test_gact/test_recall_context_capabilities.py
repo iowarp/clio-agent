@@ -38,13 +38,11 @@ def test_recall_schema_and_summary_match_the_actual_context_capability(
     monkeypatch.setattr(recall, "_plane", lambda: (arc, "session"))
     tool: Any = recall.build_recall_context_tool()
     assert set(tool.args) == ({"ids", "query", "limit"} if search_enabled else {"ids"})
-    assert tool(ids=["step1"]).endswith(
-        "--- step1 · result · compacted\nretained original evidence"
-    )
+    assert tool(ids=["step1"]).endswith("--- step1 (result, compacted)\nretained original evidence")
     footer = recall_line("cmp_example", search_enabled=search_enabled)
     assert 'recall_context(ids=["cmp_example"])' in footer
     if search_enabled:
-        assert "--- step1 · result" in tool(query="evidence")
+        assert "--- step1 (result" in tool(query="evidence")
         assert 'recall_context(query="...")' in footer
     else:
         assert "unavailable" in tool.desc
@@ -91,7 +89,7 @@ def test_a_query_returns_the_steps_with_its_words_oldest_first() -> None:
     text = recall.recall_text(rows, left_out=left_out, rest=rest)
     assert text.startswith("2 of 3 steps, oldest first. 2 records without text left out")
     assert 'recall_context(ids=["first"])' in text
-    assert text.index("--- later · said · compacted") < text.index("--- ask · message")
+    assert text.index("--- later (said, compacted)") < text.index("--- ask (message, compacted)")
     assert "musing" not in text and "schema_version" not in text
 
 

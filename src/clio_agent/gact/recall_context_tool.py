@@ -187,8 +187,8 @@ def recall_text(rows: list[dict[str, Any]], *, left_out: int, rest: list[str]) -
     if rest:
         head.append(f"Not shown, by id: recall_context(ids={json.dumps(rest)})")
     blocks = [
-        f"--- {r['id']} · {_LABELS.get(r['kind'], r['kind'])}"
-        + (" · compacted" if r["compacted"] else "")
+        f"--- {r['id']} ({_LABELS.get(r['kind'], r['kind'])}"
+        + (", compacted)" if r["compacted"] else ")")
         + f"\n{r['text']}"
         for r in rows
     ]
