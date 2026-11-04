@@ -20,7 +20,7 @@ from __future__ import annotations
 
 import json
 import re
-from collections.abc import Mapping
+from collections.abc import Collection, Mapping
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -35,8 +35,10 @@ __all__ = [
 
 _OPEN, _CLOSE = "<function_calls>", "</function_calls>"
 _INVOKE = re.compile(r"""<invoke\s+name=(["'])(?P<name>[^"']+)\1\s*>(?P<body>.*?)</invoke>""", re.S)
+#: A fenced code block (``` ... ```): markup inside it is an example, not a call.
+_FENCED = re.compile(r"```.*?(?:```|\Z)", re.S)
 #: An <invoke name=...> opener (closed or not).
-_INVOKE_OPEN = re.compile(r"""<invoke\s+name=(["'])[^"']+\1\s*>""")
+_INVOKE_OPEN = re.compile(r"""<invoke\s+name=(["'])(?P<name>[^"']+)\1\s*>""")
 #: A call's closing markup or a parameter without its <invoke name=...> opener.
 _CUT = re.compile(r"""<parameter\s+name=|</invoke>|</function_calls>""")
 #: The reason a cut call block is refused, in this protocol's own terms.
@@ -87,7 +89,7 @@ def text_tool_protocol() -> str:
     from clio_agent import conf  # noqa: PLC0415
 
     value = conf.resolve(
-        "lm.text_tool_protocol", env="CLIO_TEXT_TOOL_PROTOCOL", default="json", cast=str
+        "lm.text_tool_protocol", env="CLIO_TEXT_TOOL_PROTOCOL", default="invoke", cast=str
     )
     if value not in ("json", "invoke"):
         raise ValueError(f"lm.text_tool_protocol must be json or invoke, not {value!r}")
@@ -120,7 +122,9 @@ def _value(raw: str, schema: Mapping[str, Any]) -> Any:
     return json.loads(text)
 
 
-def parse_invoke_calls(reply: str, schemas: Mapping[str, Mapping[str, Any]]) -> InvokeCalls | None:
+def parse_invoke_calls(
+    reply: str, schemas: Mapping[str, Mapping[str, Any]], known: Collection[str] = ()
+) -> InvokeCalls | None:
     """Read ``reply``'s calls; ``None`` when it has none.
 
     The calls are its complete ``<invoke name=...>...</invoke>`` elements, in order. The
@@ -131,16 +135,28 @@ def parse_invoke_calls(reply: str, schemas: Mapping[str, Mapping[str, Any]]) -> 
     1 of 57) or an ``<invoke>`` never closed is refused, since there is no whole call to
     run. ``schemas`` maps a tool name to its parameters schema; a parameter the schema
     does not type as a string must be JSON.
+
+    Markup that is data is never a call: an ``<invoke>`` inside a fenced code block is
+    an example, and a reply whose invokes name none of the ``known`` tools (or with no
+    tools at all) is an answer that happens to contain markup.
     """
-    invokes = list(_INVOKE.finditer(reply))
+    if not known:
+        return None
+    fences = [m.span() for m in _FENCED.finditer(reply)]
+    invokes = [m for m in _INVOKE.finditer(reply) if not any(a <= m.start() < b for a, b in fences)]
+    if invokes and not any(m["name"] in known for m in invokes):
+        return None
     if not invokes:
-        opened = _INVOKE_OPEN.search(reply)
-        cut = opened or _CUT.search(reply)
-        if cut is None:
+        outside = _FENCED.sub("", reply)  # markup in a fenced block is an example
+        opened = _INVOKE_OPEN.search(outside)
+        if opened is None and _CUT.search(outside) is None:
             return None
+        if opened is not None and opened["name"] not in known:
+            return None
+        start = (opened or _CUT.search(outside)).start()  # type: ignore[union-attr]
         reason = "an <invoke> was not closed with </invoke>; nothing ran, send it again whole"
-        return InvokeCalls(_visible(reply[: cut.start()]), error=reason if opened else CUT_BLOCK,
-                           raw=reply[cut.start() :])  # fmt: skip
+        return InvokeCalls(_visible(outside[:start]), error=reason if opened else CUT_BLOCK,
+                           raw=outside[start:])  # fmt: skip
     pieces, last = [], 0
     for invoke in invokes:
         pieces.append(reply[last : invoke.start()])
@@ -148,7 +164,7 @@ def parse_invoke_calls(reply: str, schemas: Mapping[str, Mapping[str, Any]]) -> 
     pieces.append(reply[last:])
     text = _visible("".join(pieces))
     raw = reply[invokes[0].start() : invokes[-1].end()]
-    if _INVOKE_OPEN.search(text) or _PARAMETER.search(text):
+    if _INVOKE_OPEN.search(_FENCED.sub("", text)) or _PARAMETER.search(_FENCED.sub("", text)):
         return InvokeCalls(text, error=CUT_BLOCK, raw=raw)  # a whole call beside a broken one
     calls: list[tuple[str, dict[str, Any]]] = []
     for invoke in invokes:

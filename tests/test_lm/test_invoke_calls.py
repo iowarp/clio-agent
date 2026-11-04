@@ -19,6 +19,7 @@ SCHEMAS = {
     "fs_read_file": {"properties": {"path": {"type": "string"},
                                     "limit": {"anyOf": [{"type": "integer"}, {"type": "null"}]}}},
 }  # fmt: skip
+TOOLS = list(SCHEMAS)  # the agent's tools: an invoke of one of them is a call
 SCRIPT = "cat > p.py <<'E'\nprint(\"a\\tb\")\nE\npython3 p.py"
 
 
@@ -36,7 +37,7 @@ def test_a_script_is_one_raw_string_and_other_types_are_json(invoke: None) -> No
     """SABOTAGE: read every parameter as text and ``timeout`` stays the string "30"."""
     reply = ("Writing the parser.\n<function_calls>\n" + _call("shell_bash", command=SCRIPT,
              timeout="30") + _call("fs_read_file", path="a.csv", limit="5") + "</function_calls>")  # fmt: skip
-    split = split_reply(reply, call_prefix="c", schemas=SCHEMAS)
+    split = split_reply(reply, call_prefix="c", available_tools=TOOLS, schemas=SCHEMAS)
     assert split.text == "Writing the parser."
     assert [(c.name, c.input) for c in split.calls] == [
         ("shell_bash", {"command": SCRIPT, "timeout": 30}),
@@ -48,10 +49,12 @@ def test_the_x2_shapes_a_call_then_an_empty_or_equal_json_block_run_once(invoke:
     """The model's markup, then ``[]`` (as on X2) or the same call again as JSON: one call
     runs. SABOTAGE: refuse a JSON block beside the markup and these are unreadable steps."""
     markup = "<function_calls>\n" + _call("shell_bash", command="ls") + "</function_calls>\n\n"
-    empty = split_reply(markup + "```tool_calls\n[]\n```", call_prefix="c", schemas=SCHEMAS)
+    empty = split_reply(
+        markup + "```tool_calls\n[]\n```", call_prefix="c", available_tools=TOOLS, schemas=SCHEMAS
+    )
     same = split_reply(
         markup + '```tool_calls\n[{"name": "shell_bash", "arguments": {"command": "ls"}}]\n```',
-        call_prefix="c", schemas=SCHEMAS,
+        call_prefix="c", available_tools=TOOLS, schemas=SCHEMAS,
     )  # fmt: skip
     for split in (empty, same):
         assert [(c.name, c.input) for c in split.calls] == [("shell_bash", {"command": "ls"})]
@@ -61,7 +64,7 @@ def test_the_x2_shapes_a_call_then_an_empty_or_equal_json_block_run_once(invoke:
 def test_a_different_json_block_beside_the_markup_is_refused(invoke: None) -> None:
     reply = ("<function_calls>\n" + _call("shell_bash", command="ls") + "</function_calls>\n"
              '```tool_calls\n[{"name": "shell_bash", "arguments": {"command": "rm x"}}]\n```')  # fmt: skip
-    split = split_reply(reply, call_prefix="c", schemas=SCHEMAS)
+    split = split_reply(reply, call_prefix="c", available_tools=TOOLS, schemas=SCHEMAS)
     assert [c.name for c in split.calls] == [INVALID_TOOL_CALL]
 
 
@@ -73,7 +76,7 @@ def test_a_typed_value_that_is_not_json_and_an_unclosed_invoke_are_refused(invok
     )
     unclosed = '<function_calls>\n<invoke name="shell_bash">\n<parameter name="command">ls'
     for reply in (bad, unclosed):
-        [call] = split_reply(reply, call_prefix="c", schemas=SCHEMAS).calls
+        [call] = split_reply(reply, call_prefix="c", available_tools=TOOLS, schemas=SCHEMAS).calls
         assert call.name == INVALID_TOOL_CALL
 
 
@@ -86,7 +89,7 @@ def test_the_container_is_decoration_lost_or_stray(invoke: None) -> None:
     lost = "\n" + _call("shell_bash", command="ls") + "</function_calls>"
     stray = "\n" + _call("shell_bash", command="ls") + "\n\n\n<function_calls>"
     for reply in (lost, stray):
-        split = split_reply(reply, call_prefix="c", schemas=SCHEMAS)
+        split = split_reply(reply, call_prefix="c", available_tools=TOOLS, schemas=SCHEMAS)
         assert [(c.name, c.input) for c in split.calls] == [("shell_bash", {"command": "ls"})]
         assert split.text == ""
 
@@ -114,8 +117,8 @@ def test_the_protocol_is_described_and_echoed_in_its_own_form(invoke: None) -> N
     assert f'<parameter name="command">{SCRIPT}</parameter>' in echoed
 
 
-def test_the_json_protocol_is_unchanged_by_default(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.delenv("CLIO_TEXT_TOOL_PROTOCOL", raising=False)
+def test_the_json_protocol_reads_only_its_fenced_block(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("CLIO_TEXT_TOOL_PROTOCOL", "json")
     reply = "<function_calls>\n" + _call("shell_bash", command="ls") + "</function_calls>"
     assert all(c.name != "shell_bash" for c in split_reply(reply, call_prefix="c").calls)
     assert text_tools.turn_reminder() == text_tools.TURN_REMINDER
@@ -127,6 +130,20 @@ def test_a_block_cut_before_its_invoke_is_refused_in_this_protocols_terms(invoke
     one (it said "require a complete ```tool_calls JSON block"). SABOTAGE: drop the
     ``_CUT`` branch and the JSON protocol's message comes back."""
     reply = '\n<parameter name="command">ls</parameter>\n</invoke>\n</function_calls>'
-    [call] = split_reply(reply, call_prefix="c", schemas=SCHEMAS).calls
+    [call] = split_reply(reply, call_prefix="c", available_tools=TOOLS, schemas=SCHEMAS).calls
     assert call.name == INVALID_TOOL_CALL
     assert call.input.get("error") == invoke_calls.CUT_BLOCK
+
+
+def test_markup_that_is_data_is_never_a_call(invoke: None) -> None:
+    """An ``<invoke>`` in a fenced example, one naming a tool the agent does not have,
+    and any markup when the agent has no tools stay text. SABOTAGE: drop the fence
+    filter and the example runs as a call."""
+    known = ["shell_bash"]
+    example = "Write it like this:\n```xml\n" + _call("shell_bash", command="rm -rf x") + "```"
+    unknown = _call("other_tool", query="x")
+    for reply in (example, unknown):
+        split = split_reply(reply, call_prefix="c", available_tools=known, schemas=SCHEMAS)
+        assert split.calls == [] and "<invoke" in split.text
+    split = split_reply(_call("shell_bash", command="ls"), call_prefix="c")
+    assert split.calls == []  # no tools: an answer

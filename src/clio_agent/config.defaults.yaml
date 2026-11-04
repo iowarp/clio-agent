@@ -189,10 +189,9 @@ lm.sent_prompt_sessions: 64
 
 # CLIO_TEXT_TOOL_PROTOCOL  (str)  <- src/clio_agent/lm/engines/invoke_calls.py
 # How a provider without native tools (Claude Code) writes tool calls:
-# "json" (a fenced tool_calls JSON list, default) or "invoke" (a
-# <function_calls> block of <invoke> calls, the model's own call format;
-# string arguments are written raw).
-lm.text_tool_protocol: "json"
+# "invoke" (default: <invoke> calls, the model's own call format, string
+# arguments written raw) or "json" (a fenced tool_calls JSON list).
+lm.text_tool_protocol: "invoke"
 
 # CLIO_LM_THINKING_BUDGET  (int)  <- src/clio_agent/config.py
 # Explicit reasoning token-budget override, mapped per-provider

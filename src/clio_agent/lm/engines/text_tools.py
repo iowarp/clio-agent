@@ -252,7 +252,8 @@ def split_reply(
     from clio_agent.lm.engines import invoke_calls  # noqa: PLC0415
 
     if invoke_calls.text_tool_protocol() == "invoke":
-        found = invoke_calls.parse_invoke_calls(reply, schemas or {})
+        known = callable_tools(available_tools) if available_tools else frozenset()
+        found = invoke_calls.parse_invoke_calls(reply, schemas or {}, known)
         if found is not None:
             return _invoke_split(found, call_prefix)
     fences = list(re.finditer(r"(?m)^[ \t]*(?P<fence>```tool_calls)[ \t]*(?=\r?$)", reply))

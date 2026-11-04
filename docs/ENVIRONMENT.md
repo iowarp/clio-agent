@@ -323,7 +323,7 @@ These resolve through `clio_agent.conf`: a value under the dotted key in `config
 | `CLIO_TASKS_STORAGE_CONCURRENCY` | `gact.tasks.storage.concurrency` | int | `10` | `src/clio_agent/tools/native_roots.py` |
 | `CLIO_TASKS_STORAGE_QUEUE` | `gact.tasks.storage.queue` | str | _(unset)_ | `src/clio_agent/tools/native_roots.py` |
 | `CLIO_TASKS_STORAGE_URL` | `gact.tasks.storage.url` | str | `memory://` | `src/clio_agent/tools/native_roots.py` |
-| `CLIO_TEXT_TOOL_PROTOCOL` | `lm.text_tool_protocol` | str | `json` | `src/clio_agent/lm/engines/invoke_calls.py` |
+| `CLIO_TEXT_TOOL_PROTOCOL` | `lm.text_tool_protocol` | str | `invoke` | `src/clio_agent/lm/engines/invoke_calls.py` |
 | `CLIO_TOOLS_CALLERS` | `tools.callers` | mapping | `{}` _(computed)_ | `src/clio_agent/tools/tool_settings.py` |
 | `CLIO_TOOLS_CALL_WORKERS` | `tools.call_workers` | int | `32` | `src/clio_agent/gact/agents/tool_concurrency.py` |
 | `CLIO_TOOLS_DEFERRAL` | `tools.deferral` | bool | `true` | `src/clio_agent/gact/agents/deferred_tools.py` |
