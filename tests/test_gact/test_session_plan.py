@@ -279,14 +279,14 @@ def _open_request_only(monkeypatch: pytest.MonkeyPatch) -> None:
     keep_open_request_only(monkeypatch)
 
 
-def test_the_shipped_stale_note_reaches_a_session_of_short_turns() -> None:
-    """Only tool steps count. At 25 the note never fired on L1P (nine short rounds,
-    about 18 tool steps), where the plan sat untouched from round 3 in 4 of 5 runs;
-    finished threads are named as a reason to update. SABOTAGE: ship 25 again."""
+def test_the_shipped_stale_note_threshold_and_wording() -> None:
+    """The owner's threshold is 25 tool steps (8 was tried on L1P and reverted: a plan
+    that is still right needs no update); finished threads are named as a reason to
+    update. SABOTAGE: ship 8 again, or drop the finished-threads clause."""
     from clio_agent import injections
     from clio_agent.gact import working_state
 
-    assert working_state.stale_steps() <= 9  # about every three or four short rounds
+    assert working_state.stale_steps() == 25
     text = injections.render(working_state.PLAN_STALE_SOURCE, {"path": "p", "steps": 8})
     assert text is not None and "threads have finished" in text
 
