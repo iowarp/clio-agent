@@ -35,6 +35,13 @@ __all__ = [
 
 _OPEN, _CLOSE = "<function_calls>", "</function_calls>"
 _INVOKE = re.compile(r"""<invoke\s+name=(["'])(?P<name>[^"']+)\1\s*>(?P<body>.*?)</invoke>""", re.S)
+#: A call's closing markup or a parameter without its <invoke name=...> opener.
+_CUT = re.compile(r"""<parameter\s+name=|</invoke>|</function_calls>""")
+#: The reason a cut call block is refused, in this protocol's own terms.
+CUT_BLOCK = (
+    "the call block was cut: it must open with <function_calls> and then "
+    '<invoke name="tool name"> before its parameters; nothing ran, send the whole block again'
+)
 _PARAMETER = re.compile(
     r"""<parameter\s+name=(["'])(?P<name>[^"']+)\1\s*>(?P<value>.*?)</parameter>""", re.S
 )
@@ -122,7 +129,14 @@ def parse_invoke_calls(reply: str, schemas: Mapping[str, Mapping[str, Any]]) -> 
     if start < 0:
         bare = _INVOKE.search(reply)
         if bare is None:
-            return None
+            cut = _CUT.search(reply)
+            if cut is None:
+                return None
+            # The call's opening lines are missing (seen on H4: the reply began at a
+            # <parameter>): without the tool's name there is no call to run.
+            return InvokeCalls(
+                reply[: cut.start()].rstrip(), error=CUT_BLOCK, raw=reply[cut.start() :]
+            )
         start = bare.start()  # an <invoke> without its container is still a call block
         end, close = reply.rfind("</invoke>") + len("</invoke>"), ""
     else:

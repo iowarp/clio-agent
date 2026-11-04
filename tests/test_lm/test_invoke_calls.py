@@ -105,3 +105,14 @@ def test_the_json_protocol_is_unchanged_by_default(monkeypatch: pytest.MonkeyPat
     reply = "<function_calls>\n" + _call("shell_bash", command="ls") + "</function_calls>"
     assert all(c.name != "shell_bash" for c in split_reply(reply, call_prefix="c").calls)
     assert text_tools.turn_reminder() == text_tools.TURN_REMINDER
+
+
+def test_a_block_cut_before_its_invoke_is_refused_in_this_protocols_terms(invoke: None) -> None:
+    """On H4 a reply began at ``<parameter ...>``, its opening lines missing: there is no
+    tool name, so nothing runs, and the reason names this protocol's block, not the JSON
+    one (it said "require a complete ```tool_calls JSON block"). SABOTAGE: drop the
+    ``_CUT`` branch and the JSON protocol's message comes back."""
+    reply = '\n<parameter name="command">ls</parameter>\n</invoke>\n</function_calls>'
+    [call] = split_reply(reply, call_prefix="c", schemas=SCHEMAS).calls
+    assert call.name == INVALID_TOOL_CALL
+    assert call.input.get("error") == invoke_calls.CUT_BLOCK
