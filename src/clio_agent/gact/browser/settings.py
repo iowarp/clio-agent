@@ -14,6 +14,7 @@ __all__ = [
     "allow_unsandboxed",
     "backend",
     "cdp_url",
+    "channel",
     "frame_quality",
     "frame_width",
     "granted_hosts",
@@ -60,6 +61,24 @@ def profile() -> str:
 def cdp_url() -> str:
     """The DevTools endpoint of the person's Chrome for the ``cdp`` backend."""
     return str(conf.resolve("browser.cdp_url", env="CLIO_BROWSER_CDP_URL", default="") or "")
+
+
+#: The browsers the managed backend can run: CLIO's own Chromium, or the person's installed
+#: Chrome or Edge (on a profile CLIO owns; the default profile cannot be automated).
+CHANNELS = ("chromium", "chrome", "msedge")
+
+
+def channel() -> str:
+    """Which browser the managed backend launches."""
+    value = (
+        str(conf.resolve("browser.channel", env="CLIO_BROWSER_CHANNEL", default="chromium") or "")
+        .strip()
+        .lower()
+        or "chromium"
+    )
+    if value not in CHANNELS:
+        raise ValueError(f"browser.channel is one of {', '.join(CHANNELS)}, not {value!r}")
+    return value
 
 
 def action_timeout_s() -> float:

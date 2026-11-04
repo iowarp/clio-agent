@@ -115,7 +115,13 @@ KEY_NOTES: dict[str, str] = {
         "conversation shares and that survives restarts."
     ),
     "browser.cdp_url": (
-        "DevTools endpoint of your own Chrome for the cdp backend, e.g. http://127.0.0.1:9222."
+        "DevTools endpoint of your own Chrome for the cdp backend, e.g. http://127.0.0.1:9222; "
+        "chrome or msedge attaches to the one you run, after you allow remote debugging at "
+        "chrome://inspect/#remote-debugging (Chrome 144 or later), with your sign-ins."
+    ),
+    "browser.channel": (
+        "The browser the managed backend runs: chromium (CLIO's own, the default), chrome or "
+        "msedge (your installed one, on a profile CLIO keeps; you sign in there once)."
     ),
     "browser.action_timeout_s": (
         "Seconds one browser action may take; time waiting for your answer to a site question "

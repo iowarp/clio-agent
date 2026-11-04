@@ -250,9 +250,13 @@ class BrowserService:
         return found
 
     async def _connect(self, pw: Any, name: str) -> Profile:
+        from clio_agent.gact.browser import chrome_discovery  # noqa: PLC0415
+
         url = settings.cdp_url()
         if not url:
             raise BrowserError("browser_cdp_url_missing", "browser.backend is cdp but no url")
+        if url.lower() in chrome_discovery.PRODUCTS:  # the person's own running Chrome or Edge
+            url = chrome_discovery.devtools_endpoint(url.lower())
         try:
             browser = await pw.chromium.connect_over_cdp(url, no_defaults=True)
         except Exception as exc:  # noqa: BLE001 - forwards: a typed browser_cdp_unreachable
@@ -265,14 +269,22 @@ class BrowserService:
 
     async def _launch(self, pw: Any, name: str, session_id: str) -> Profile:
         loop = asyncio.get_running_loop()
-        executable = await loop.run_in_executor(None, install.ensure_chromium)
-        user_data = _state_root() / "profiles" / name
+        product = settings.channel()
+        executable = (
+            await loop.run_in_executor(None, install.ensure_chromium)
+            if product == "chromium"
+            else None
+        )
+        # Each browser keeps its own profile folder: their formats differ.
+        user_data = (
+            _state_root() / "profiles" / (name if product == "chromium" else f"{name}-{product}")
+        )
         user_data.mkdir(parents=True, exist_ok=True)
         from clio_agent.gact.browser.egress import proxy_for  # noqa: PLC0415
 
         proxy, channel = proxy_for(self.app, session_id)
         options: dict[str, Any] = {
-            "executable_path": str(executable),
+            **({"executable_path": str(executable)} if executable else {"channel": product}),
             "headless": True,
             "accept_downloads": True,
             "viewport": {"width": 1280, "height": 800},
