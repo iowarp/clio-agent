@@ -11,7 +11,10 @@ import zipfile
 from typing import Any
 
 from clio_agent.gact.session_export_document import CSS, document_body, embedded_evidence, escape
-from clio_agent.gact.session_export_projection import archive_transcript_views
+from clio_agent.gact.session_export_projection import (
+    archive_transcript_views,
+    with_minted_artifacts,
+)
 
 
 def _page(title: str, body: str, *, stylesheet: str = "", scripts: tuple[str, ...] = ()) -> str:
@@ -121,7 +124,7 @@ def write_archive_review(
     stylesheet = str(visual_review["stylesheet"])
     data = {
         "transcript": transcript,
-        "transcript_views": archive_transcript_views(transcript),
+        "transcript_views": with_minted_artifacts(archive_transcript_views(transcript), manifest),
         "manifest": manifest,
         "snapshot": snapshot,
         "embedded_tool_outputs": embedded_outputs,
