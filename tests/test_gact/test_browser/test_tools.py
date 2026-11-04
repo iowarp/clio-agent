@@ -264,6 +264,9 @@ def test_a_screenshot_is_written_to_scratch_and_presented(
     path = Path(shot["screenshot"]["path"])
     assert path.read_bytes()[:8] == b"\x89PNG\r\n\x1a\n"
     assert path.is_relative_to(tmp_path / "scratch")
+    assert path.name.startswith(f"a.fixture.localhost-{page}-")  # unlike another's name
+    second = Path(tools.browser_screenshot(page)["screenshot"]["path"])
+    assert second.name != path.name
     view = presenter_for("browser_screenshot")({"page": page}, None, shot)
     assert view["summary"].startswith("PNG")
     assert view["blocks"][0]["id"] == "screenshot"

@@ -347,7 +347,7 @@ def browser_wait(
 def browser_screenshot(page: str, target: Any = None, full_page: bool = False) -> dict[str, Any]:
     """Write a PNG of the page (or one element) to scratch and return its path."""
     app, record = _record(page)
-    path = files.screenshot_path(record.session_id, record.id)
+    path = files.screenshot_path(record.session_id, record.id, record.host())
 
     async def shoot(r: PageRecord) -> None:
         if target is not None:

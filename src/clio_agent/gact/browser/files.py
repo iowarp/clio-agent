@@ -9,6 +9,8 @@ the transform record reads as the file's ``used`` source (BR15).
 from __future__ import annotations
 
 import itertools
+import re
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -36,8 +38,13 @@ def scratch_folder(session_id: str, name: str) -> Path:
     return folder
 
 
-def screenshot_path(session_id: str, page_id: str) -> Path:
-    return scratch_folder(session_id, "screenshots") / f"{page_id}-{next(_COUNTER)}.png"
+def screenshot_path(session_id: str, page_id: str, host: str = "") -> Path:
+    """A name the person can read and no other screenshot shares: an artifact's name keys
+    its version chain, so two screenshots named alike would read as one file revised."""
+    stamp = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S")
+    prefix = re.sub(r"[^A-Za-z0-9.-]+", "-", host).strip("-.") or "page"
+    name = f"{prefix}-{page_id}-{stamp}-{next(_COUNTER)}.png"
+    return scratch_folder(session_id, "screenshots") / name
 
 
 def mint(app: Any, session_id: str, path: Path, *, image: bool, page_url: str) -> dict[str, Any]:
