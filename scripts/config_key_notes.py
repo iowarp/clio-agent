@@ -403,6 +403,11 @@ KEY_NOTES: dict[str, str] = {
         "Fraction (0-1) of the model's context window that triggers proactive auto-compaction; "
         "lower to compact earlier, raise to accumulate more."
     ),
+    "compaction.keep.working_state": (
+        "Keep the latest plan, todos and plan-mode note verbatim through a compaction and "
+        "offer them again after a mid-turn one (default true). Off only to measure what that "
+        "re-offer is worth: the summary alone then carries the working state."
+    ),
     "compaction.keep.head": (
         "Whether a compaction keeps the current user question verbatim after the summary "
         "(mid-turn); turn off to summarize it too."

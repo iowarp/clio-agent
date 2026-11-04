@@ -115,8 +115,13 @@ def offer_person_edit(recorder: Any) -> None:
 
 
 def reinject_after_compaction(recorder: Any) -> None:
-    """A compaction just ran in this turn: offer the working state again."""
+    """A compaction just ran in this turn: offer the working state again (unless
+    ``compaction.keep.working_state`` is off, to measure what the re-offer is worth)."""
     from clio_agent.gact import context as _ctx  # noqa: PLC0415
+    from clio_agent.gact.compaction_policy import keep_policy  # noqa: PLC0415
+
+    if not keep_policy().keep_working_state:
+        return
 
     app, session_id = _ctx.active_app(), _ctx.active_session_id() or ""
     session = app.state.sessions.get(session_id) if app is not None and session_id else None

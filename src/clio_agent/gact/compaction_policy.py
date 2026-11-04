@@ -47,12 +47,16 @@ class KeepPolicy:
             mid-turn).
         keep_user_chars: Keep every message the person typed, newest first, while their
             rendered size stays within this many characters (0: only ``keep_head``).
+        keep_working_state: Keep the latest plan, todos and plan-mode note verbatim, and
+            offer them again after a mid-turn compaction (off only to measure what that
+            re-offer is worth: the summary alone then carries them).
     """
 
     keep_head: bool = True
     keep_last_turns: int = 0
     keep_last_steps: int = 1
     keep_user_chars: int = 80_000
+    keep_working_state: bool = True
 
 
 @dataclass(frozen=True)
@@ -95,6 +99,12 @@ def keep_policy() -> KeepPolicy:
             default=80_000,
             cast=conf.as_int,
         ),
+        keep_working_state=conf.resolve(
+            "compaction.keep.working_state",
+            env="CLIO_COMPACTION_KEEP_WORKING_STATE",
+            default=True,
+            cast=conf.as_bool,
+        ),
     )
 
 
@@ -133,8 +143,9 @@ def post_compaction_context(
     # copy per source stays verbatim, and the loop re-offers it after the compaction.
     from clio_agent.gact.working_state import WORKING_STATE_SOURCES  # noqa: PLC0415
 
-    newest_state = {u.source: i for i, u in enumerate(units) if u.source in WORKING_STATE_SOURCES}
-    kept.update(newest_state.values())
+    if policy.keep_working_state:
+        newest = {u.source: i for i, u in enumerate(units) if u.source in WORKING_STATE_SOURCES}
+        kept.update(newest.values())
     if policy.keep_head and open_turn_id:
         heads = [i for i, u in enumerate(units) if u.head and u.turn_id == open_turn_id]
         kept.update(heads[-1:])
