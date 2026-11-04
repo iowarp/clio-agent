@@ -295,6 +295,7 @@ def mint_artifact_outcome(
             version=version,
             turn_id=turn_id,
             trace_id=trace_id,
+            event_id=event_id,
         )
         emit_alias_moved(
             app,

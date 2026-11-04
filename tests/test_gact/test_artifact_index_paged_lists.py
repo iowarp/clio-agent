@@ -102,3 +102,59 @@ def test_a_live_transform_neither_reads_clio_core_nor_puts_under_the_registry_lo
         put()
     assert set(store.records) == {index_key("s", "sess_1"), index_key("t", "call_fresh")}
     assert registry.get_transform("call_fresh") is record  # the cache answers meanwhile
+
+
+def test_an_orphan_rechecked_inside_a_route_is_repaired_off_the_loop() -> None:
+    """A route reads the registry on the server loop, which may not wait on a store
+    write; the recheck's repair was refused there (``LoopThreadStoreWrite``) and lost.
+
+    SABOTAGE: drop ``_loop_writer()`` from ``StoreBackend._recheck`` and the guarded
+    store refuses the put, so the stored record keeps the orphan.
+    """
+    import asyncio
+    import time
+
+    from clio_agent.gact.artifacts.records import (
+        ArtifactRecord,
+        ArtifactVersion,
+        IdentityEvidence,
+    )
+    from clio_agent.gact.artifacts.registry_backend import PendingWrite
+
+    class _Guarded(_Store):
+        def put(self, kind: str, name: str, data: bytes) -> None:
+            try:
+                asyncio.get_running_loop()
+            except RuntimeError:
+                return super().put(kind, name, data)
+            raise RuntimeError("store write waited on from the loop thread")
+
+        def delete(self, _kind: str, name: str) -> None:
+            try:
+                asyncio.get_running_loop()
+            except RuntimeError:
+                self.records.pop(name, None)
+                return
+            raise RuntimeError("store write waited on from the loop thread")
+
+    store = _Guarded()
+    writer = StoreBackend(store, event_check=lambda _sid, _eid: True)  # type: ignore[arg-type]
+    record = writer.ensure_record("ws1", "x.csv")
+    evidence = IdentityEvidence.hashed_at_use(sha256="0" * 64, size_bytes=3)
+    version = ArtifactVersion(version=1, evidence=evidence)
+    record.add_version(version)
+    writer.save_record(record, new_version=version, pending=PendingWrite("ev_lost", "sess_1"))
+    # A restart: the event was never appended, and the grace has passed.
+    reader = StoreBackend(store, event_check=lambda _sid, _eid: False, grace_s=0)  # type: ignore[arg-type]
+
+    async def route() -> None:
+        assert reader.record("ws1", "x.csv") is None  # the orphan is undone at once
+        for _ in range(100):  # and the repair lands off the loop
+            if index_key("r", "ws1", "x.csv") not in store.records:
+                return
+            await asyncio.sleep(0.02)
+
+    asyncio.run(route())
+    time.sleep(0.05)
+    assert index_key("r", "ws1", "x.csv") not in store.records
+    assert isinstance(record, ArtifactRecord)

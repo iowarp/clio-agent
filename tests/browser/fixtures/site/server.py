@@ -219,6 +219,21 @@ class Handler(BaseHTTPRequestHandler):
             {"Content-Disposition": "attachment; filename=report.csv"},
         )
 
+    def get_readings(self, _query: dict[str, list[str]]) -> None:
+        link = "<a href='/files/readings.csv'>Download the latest readings</a>"
+        self._send(200, _page("Readings", link))
+
+    def get_files_readings_csv(self, _query: dict[str, list[str]]) -> None:
+        """New content under one file name on every request: a second download is a
+        second version of the same artifact, not a duplicate."""
+        body = f"taken_at,value\n{time.time():.6f},{time.monotonic_ns() % 1000}\n"
+        self._send(
+            200,
+            body.encode(),
+            "text/csv",
+            {"Content-Disposition": "attachment; filename=readings.csv"},
+        )
+
     def get_slow(self, query: dict[str, list[str]]) -> None:
         delay = int((query.get("ms") or ["3000"])[0] or 0)
         time.sleep(min(delay, 60_000) / 1000)
