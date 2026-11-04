@@ -78,6 +78,7 @@ from clio_agent.gact.agents.clio_react_recovery import recover_stream
 from clio_agent.gact.agents.clio_react_stream_call import call_lm as _call_lm
 from clio_agent.gact.agents.clio_react_submit import active_react_scope_safe, record_submit_audit
 from clio_agent.gact.agents.clio_react_submit import submit_tool as _submit_tool
+from clio_agent.gact.agents.step_clock import StepClock as _StepClock
 from clio_agent.gact.agents.tool_concurrency import run_bounded
 from clio_agent.gact.context import active_app
 from clio_agent.gact.highway_writer import flush_session
@@ -442,6 +443,7 @@ class _Loop:
         from clio_agent.gact.compaction import maybe_autocompact  # noqa: PLC0415
 
         _raise_if_cancelled()
+        clock = _StepClock()  # CLIO's own time around the model call (stream audit)
         self._arrivals()
         self._refresh_tools()
         compacted = self.autocompact.compaction_id
@@ -451,14 +453,20 @@ class _Loop:
         if self.autocompact.compaction_id != compacted:
             working_state.reinject_after_compaction(self.recorder)
         working_state.offer_person_edit(self.recorder)
+        clock.mark("prep")
         attempt = 0
 
         def request() -> Request:
             nonlocal attempt
+            clock.mark("")
             flush_session(active_app(), self.recorder.session)  # last step's records first
+            clock.mark("flush")
             self.recorder.commit_input(self.step, attempt=attempt)
+            clock.mark("commit")
             attempt += 1
-            return self._next_request()
+            built = self._next_request()
+            clock.mark("build")
+            return built
 
         callable_token = CALLABLE_TOOLS.set(frozenset(self.agent.tools))
         try:
@@ -475,7 +483,10 @@ class _Loop:
         thinking, text, origin = stream.reply_thinking_and_text(response)
         calls = [p for p in response.message.parts if isinstance(p, ToolCallPart)]
         if not calls:
+            clock.mark("")
             self._record(text, thinking, calls, {}, origin)
+            clock.mark("record")
+            clock.report(self.recorder.session, self.step, 0)
             if (self.max_iters <= 0 or self.step + 1 < self.max_iters) and self._arrivals():
                 # Feedback accepted during this model call must be considered
                 # before closing the turn, even if that call chose no tools.
@@ -498,7 +509,10 @@ class _Loop:
             _ctx.reset(thought_token)
         results = {c.id: (o.value, o.is_error) for c, o in zip(calls, outcomes, strict=True)}
         refs = {c.id: o.call_ref for c, o in zip(calls, outcomes, strict=True) if o.call_ref}
+        clock.mark("")
         self._record(text, thinking, calls, results, origin, refs)
+        clock.mark("record")
+        clock.report(self.recorder.session, self.step, len(calls))
         for outcome in outcomes:
             if outcome.escalate is not None:
                 raise outcome.escalate
