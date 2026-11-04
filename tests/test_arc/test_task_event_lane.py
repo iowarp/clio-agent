@@ -187,3 +187,21 @@ def test_lane_writer_skips_non_task_events(arc: ARCMemory) -> None:
     assert _lane_types(arc, "owner") == []
     logged = [s.content["event_type"] for s in arc._live.iter_session_event_segments("owner")]
     assert logged == ["task.human.intervention"]
+
+
+def test_the_provenance_timeline_reads_the_lane_too(arc: ARCMemory) -> None:
+    """The native provenance timeline is a reader of the whole log: task events, whose
+    one record is the lane, are in it. SABOTAGE: read ``iter_session_event_segments``
+    alone in ``_native_events`` and the mail events are missing."""
+    from types import SimpleNamespace
+
+    from clio_agent.gact.routes.provenance import _native_events
+
+    history = _built(arc)
+    _lm_call(arc, "owner")
+    history.record_mail(_mail(history, "0"))
+    app = SimpleNamespace(state=SimpleNamespace(arc=arc))
+    events, degradations = _native_events(app, ["owner"])  # type: ignore[arg-type]
+    types = [event["event_type"] for event in events]
+    assert degradations == []
+    assert "session.mail.accepted" in types and "lm.call" in types
