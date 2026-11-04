@@ -189,3 +189,11 @@ The `docs-memory-*` images other than `docs-memory-search.png` are light-mode br
 | `docs-memory-popover.png` | An answer that used a remembered preference, with its memory popover |
 | `docs-memory-notice.png` | A memory write in a conversation, expanded: the fact it saved and Edit in memory |
 | `docs-memory-off.png` | Memory off in the composer for a new conversation |
+
+## Browser panel
+
+`docs-browser-panel.png` (1440 x 900, dark mode) is an untouched screenshot of a real
+development session on 4 November 2026: CLIO read the test fixture site's dataset table,
+and the link in its answer opened the page in the side panel's Browser tab. The browser
+was the installed-browser channel (`browser.channel: chrome`); the panel looks the same
+with CLIO's own browser. The table is synthetic test data.

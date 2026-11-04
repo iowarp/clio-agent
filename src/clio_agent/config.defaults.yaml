@@ -1670,7 +1670,8 @@ browser.frame_width: 1280
 # browser.granted_hosts:  # default unset; resolved in code
 
 # CLIO_BROWSER_IDLE_MINUTES  (float)  <- src/clio_agent/gact/browser/settings.py
-# Minutes a profile's browser stays open with no pages before it closes.
+# Minutes a page nobody uses or watches stays open, and a browser with no
+# pages, before it closes.
 browser.idle_minutes: 30.0
 
 # CLIO_BROWSER_MAX_PAGES  (int)  <- src/clio_agent/gact/browser/settings.py

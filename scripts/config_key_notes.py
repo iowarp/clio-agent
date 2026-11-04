@@ -129,7 +129,8 @@ KEY_NOTES: dict[str, str] = {
     ),
     "browser.max_pages": "Pages open at once across the server; opening one more is refused.",
     "browser.idle_minutes": (
-        "Minutes a profile's browser stays open with no pages before it closes."
+        "Minutes a page nobody uses or watches stays open, and a browser with no pages, "
+        "before it closes."
     ),
     "browser.allow_unsandboxed": (
         "Run Chromium without its own sandbox when the sandbox cannot start (as root, or "
