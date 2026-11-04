@@ -9,7 +9,9 @@ accessor for the call-start epoch) stays where it is, unchanged.
 
 from __future__ import annotations
 
+import threading
 from contextvars import ContextVar
+from typing import Any
 
 #: Set by the agent loop around one model tool call: the observer fills in the call id
 #: it mints, so the loop can show the model a citable reference to that exact call
@@ -45,4 +47,34 @@ def report_observer_call(call_id: str) -> None:
         slot["call_id"] = call_id
 
 
-__all__ = ["MODEL_CALL_SLOT", "current_call_id", "observer_call_id", "report_observer_call"]
+#: Versions a tool minted itself during one call, outside the workspace's declared-output
+#: channel (a browser screenshot in the conversation's scratch folder). The observer takes
+#: them when the call completes, so they become that call's generated outputs and share
+#: its transform with the call's used edges. Keyed by observer call id.
+_CALL_OUTPUTS: dict[str, list[Any]] = {}
+_CALL_OUTPUTS_LOCK = threading.Lock()
+
+
+def note_call_output(version: Any) -> str:
+    """Record ``version`` as an output of the observed call now running; returns its id."""
+    call_id = observer_call_id()
+    if call_id and version is not None:
+        with _CALL_OUTPUTS_LOCK:
+            _CALL_OUTPUTS.setdefault(call_id, []).append(version)
+    return call_id
+
+
+def take_call_outputs(call_id: str) -> list[Any]:
+    """The versions noted for ``call_id``, once."""
+    with _CALL_OUTPUTS_LOCK:
+        return _CALL_OUTPUTS.pop(call_id, []) if call_id else []
+
+
+__all__ = [
+    "MODEL_CALL_SLOT",
+    "current_call_id",
+    "note_call_output",
+    "observer_call_id",
+    "report_observer_call",
+    "take_call_outputs",
+]

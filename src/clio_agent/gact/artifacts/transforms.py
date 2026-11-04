@@ -593,6 +593,9 @@ def observe_tool_transform(
             call_started_at=started,
             result=result,
         )
+        from clio_agent.gact.artifacts.observer_bridge import take_call_outputs  # noqa: PLC0415
+
+        minted = [*minted, *take_call_outputs(call_id)]  # minted by the tool itself
         # The MODEL lane's half of designation: publish this call's registry-resolved
         # artifact ids so the execution boundary can merge them into the result the
         # model reads back (the wire lane already carries them as artifact.created +

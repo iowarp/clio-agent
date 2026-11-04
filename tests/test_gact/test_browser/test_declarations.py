@@ -170,3 +170,34 @@ def test_the_browser_fragment_reaches_an_agent_only_with_run_code() -> None:
     assert fragment_reaches(row, tools, delegated=False)
     assert not fragment_reaches(row, tools - {"run_code"}, delegated=False)
     assert [b.name for b in record.kernel_bindings] == ["browser"]
+
+
+def test_a_screenshot_artifact_is_generated_by_its_call_from_the_page(tmp_path: Any) -> None:
+    """W15: the screenshot's lineage reaches the page it was taken of (``web:<host>``)."""
+    from fastapi.testclient import TestClient
+
+    from clio_agent.gact.app import build_app
+    from clio_agent.gact.artifacts.transforms import observe_tool_transform
+    from clio_agent.gact.browser import files
+    from clio_agent.gact.tool_observer import _OBSERVER_CALL_IDS
+
+    client = TestClient(build_app(sessions_path=tmp_path / "s.json"))
+    workspace = tmp_path / "w"
+    workspace.mkdir()
+    wid = client.post("/v1/workspaces", json={"name": "w", "root_path": str(workspace)}).json()
+    sid = client.post("/v1/sessions", json={"workspace_id": wid["id"]}).json()["id"]
+    shot = tmp_path / "scratch" / "p1-1.png"
+    shot.parent.mkdir()
+    shot.write_bytes(b"\x89PNG\r\n\x1a\n" + b"0" * 64)
+    page = {"id": "p1", "url": "https://arxiv.org/list/cs.DC/new", "host": "arxiv.org"}
+    token = _OBSERVER_CALL_IDS.set("call_shot")
+    try:
+        minted = files.mint(client.app, sid, shot, image=True, page_url=page["url"])
+    finally:
+        _OBSERVER_CALL_IDS.reset(token)
+    result = {"page": page, "screenshot": {"path": str(shot), **minted}}
+    observe_tool_transform(client.app, sid, "browser_screenshot", {}, "call_shot", True, result)
+    lineage = client.get(f"/v1/artifacts/{minted['artifact_id']}/lineage").json()
+    [root] = [n for n in lineage["nodes"] if n["id"] == minted["artifact_id"]]
+    assert root["producer_call_id"] == "call_shot"
+    assert "arxiv.org" in str(lineage["nodes"]) and lineage["edges"]

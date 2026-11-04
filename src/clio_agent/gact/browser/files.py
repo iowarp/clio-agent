@@ -50,6 +50,10 @@ def mint(app: Any, session_id: str, path: Path, *, image: bool, page_url: str) -
         artifact_name_for_path,
         mint_artifact,
     )
+    from clio_agent.gact.artifacts.observer_bridge import (  # noqa: PLC0415
+        note_call_output,
+        observer_call_id,
+    )
     from clio_agent.gact.artifacts.records import ArtifactKind, Mechanism  # noqa: PLC0415
     from clio_agent.gact.artifacts.storage import ingest_artifact_identity  # noqa: PLC0415
 
@@ -69,6 +73,7 @@ def mint(app: Any, session_id: str, path: Path, *, image: bool, page_url: str) -
                 "designation": "browser_screenshot" if image else "browser_download",
                 "session_id": session_id,
                 "page_url": page_url,
+                "call_id": observer_call_id(),
             },
             custody=ingested.custody,
             path=str(path),
@@ -80,4 +85,5 @@ def mint(app: Any, session_id: str, path: Path, *, image: bool, page_url: str) -
         return {"artifact_note": f"browser_artifact_unminted: {exc}"[:300]}
     if version is None:
         return {"artifact_note": "browser_artifact_unminted"}
+    note_call_output(version)  # the call's transform names it generated, from its page
     return {"artifact_id": version.artifact_id}
