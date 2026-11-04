@@ -188,6 +188,7 @@ def cmd_run(args: argparse.Namespace) -> int:
         call_log=args.call_log,
         shared_root=args.shared_root,
         keep_export=args.keep_export,
+        plan_policy=args.plan_policy,
         fleet_settings=fleet_settings,
     )
     specs = plan_runs(tasks.select(args.tasks), args.n, args.results, args.config, force=args.force)
@@ -266,6 +267,12 @@ def build_parser() -> argparse.ArgumentParser:
         help="the server's allowed root, emptied before each run (the call log's folder stays)",
     )
     run.add_argument("--keep-export", action="store_true", help="also save the raw export")
+    run.add_argument(
+        "--plan-policy",
+        choices=("approve", "reject_once", "none"),
+        default="approve",
+        help="how a plan approval is answered, as a person would (default approve)",
+    )
     return parser
 
 

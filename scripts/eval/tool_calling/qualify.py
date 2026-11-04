@@ -31,7 +31,12 @@ from typing import Any
 
 from scripts.eval.tool_calling import collect, tasks
 from scripts.eval.tool_calling.http_client import GactClient
-from scripts.eval.tool_calling.paths import DEFAULT_FIXTURES, DEFAULT_RESULTS, DEFAULT_WORK
+from scripts.eval.tool_calling.paths import (
+    DEFAULT_FIXTURES,
+    DEFAULT_RESULTS,
+    DEFAULT_WORK,
+    is_run_file,
+)
 from scripts.eval.tool_calling.runner import load_manifest
 from scripts.eval.tool_calling.session_run import (
     ACTIVE,
@@ -491,6 +496,7 @@ def _results(task: str, config: str = "final") -> list[dict[str, Any]]:
     return [
         json.loads(p.read_text(encoding="utf-8"))
         for p in sorted((DEFAULT_RESULTS / config / task).glob("run-*.json"))
+        if is_run_file(p)
     ]
 
 

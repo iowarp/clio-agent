@@ -242,8 +242,16 @@ def render(runs: list[dict[str, Any]]) -> str:
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="behaviour", description=__doc__.split("\n")[0])
     parser.add_argument("results", nargs="?", type=Path, default=DEFAULT_RESULTS)
+    parser.add_argument(
+        "--semantics", action="store_true", help="also the semantic table (run-N.semantic.json)"
+    )
     args = parser.parse_args(argv)
-    print(render(load_runs(args.results)))
+    runs = load_runs(args.results)
+    print(render(runs))
+    if args.semantics:
+        from scripts.eval.tool_calling.semantic import render_semantics  # noqa: PLC0415
+
+        print(render_semantics(runs))
     return 0
 
 

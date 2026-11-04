@@ -169,6 +169,25 @@ class GactClient:
     def cancel(self, sid: str) -> Any:
         return self.post(f"/v1/sessions/{quote(sid)}/cancel")
 
+    def work(self, sid: str) -> dict[str, Any]:
+        """The session's work state: todos and their history (``GET .../work``)."""
+        return dict(self.get(f"/v1/sessions/{quote(sid)}/work") or {})
+
+    def exact_prompt(self, sid: str) -> dict[str, Any]:
+        """The last request the session's agent sent, exactly (system, tools, messages)."""
+        return dict(self.get(f"/v1/sessions/{quote(sid)}/agent", exact="true") or {})
+
+    def pending_questions(self, sid: str) -> list[dict[str, Any]]:
+        """The session's unanswered questions (ask_user, plan approval)."""
+        body = self.get("/v1/questions", session_id=sid, status="pending") or {}
+        rows = body.get("questions") if isinstance(body, dict) else body
+        return list(rows or [])
+
+    def answer_question(self, sid: str, qid: str, value: str, answer: str = "") -> Any:
+        """Answer a question: ``value`` selects an option; ``answer`` adds free text."""
+        body: dict[str, Any] = {"selected_options": [value], "answer": answer}
+        return self.post(f"/v1/sessions/{quote(sid)}/questions/{quote(qid)}/answer", body)
+
     def export(self, sid: str) -> dict[str, Any]:
         return self.request("GET", f"/v1/sessions/{quote(sid)}/export", timeout=600.0)
 
