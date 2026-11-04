@@ -16,6 +16,8 @@ dependencies = [
     "odfpy>=1.4.1,<2",
     "pillow>=10,<13",
     "numpy>=2.2,<3",
+    "pandas>=2.2,<3",
+    "matplotlib>=3.9,<4",
     "lxml>=5,<7",
     "defusedxml>=0.7,<1",
     "nodejs-wheel-binaries==24.19.0",
