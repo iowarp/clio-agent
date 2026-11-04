@@ -21,8 +21,9 @@ What is deferred:
 
 Nothing is deferred when the agent cannot call ``search_tools`` (an allowlist without
 it): the tools are listed in full and the trace records ``tools_deferral_unavailable``.
-A tool loaded with ``search_tools`` joins the tool list once a compaction has re-based
-the prompt after it was loaded (``metadata["loaded_tools"]``).
+A tool loaded with ``search_tools`` joins the tool list when an applied plugin change
+rebuilds the prompt after it was loaded (``metadata["loaded_tools"]``); a compaction
+keeps the cached tool list, so it does not list them.
 """
 
 from __future__ import annotations
