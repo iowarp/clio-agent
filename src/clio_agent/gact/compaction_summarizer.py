@@ -23,9 +23,10 @@ so the scope's context is read once and sent with the prompt on the session's mo
 from __future__ import annotations
 
 from collections.abc import Callable
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
-from dspy.lm15 import Message, Request, Response, TextPart
+if TYPE_CHECKING:  # the model stack loads with a turn, not with the app (lazy imports)
+    from dspy.lm15 import Message, Request, Response
 
 __all__ = ["Summarize", "loop_summarizer", "reply_text", "scope_summarizer"]
 
@@ -48,6 +49,8 @@ def _ask(lm: Any, request: Request) -> str:
 
 
 def _with_prompt(messages: Any, prompt: str) -> tuple[Message, ...]:
+    from dspy.lm15 import Message, TextPart  # noqa: PLC0415
+
     return (*messages, Message(role="user", parts=(TextPart(text=prompt),)))
 
 
@@ -61,6 +64,8 @@ def loop_summarizer(lm: Callable[[], Any], next_request: Callable[[], Request]) 
     """
 
     def summarize(prompt: str) -> str:
+        from dspy.lm15 import Request  # noqa: PLC0415
+
         base = next_request()
         return _ask(
             lm(),
@@ -83,6 +88,8 @@ def scope_summarizer(app: Any, sid: str, scope: str, lm: Any) -> Summarize:
     from clio_agent.lm.hooked_lm import wrap_lm_with_hooks  # noqa: PLC0415 - model hooks
 
     def summarize(prompt: str) -> str:
+        from dspy.lm15 import Request  # noqa: PLC0415
+
         # The loop's own read, with the app's content resolver for confirmed input.
         segments = app.state.arc.context_view(sid, scope).segments
         history = getattr(app.state, "task_history", None)
