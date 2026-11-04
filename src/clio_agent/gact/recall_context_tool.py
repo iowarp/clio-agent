@@ -162,7 +162,9 @@ def recall_text(rows: list[dict[str, Any]], *, left_out: int, rest: list[str]) -
     total = len(rows) + len(rest)
     head = [f"{len(rows)} of {total} steps, oldest first."]
     if left_out:
-        head.append(f"{left_out} records without text left out (input delivery bookkeeping, or reasoning only).")
+        head.append(
+            f"{left_out} records without text left out (input delivery bookkeeping, or reasoning only)."
+        )
     if rest:
         head.append(f"Not shown, by id: recall_context(ids={json.dumps(rest)})")
     blocks = [
