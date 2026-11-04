@@ -79,15 +79,20 @@ def hold_basis(app: Any, session_id: str, previous_digest: str) -> None:
         app.state.sessions.update(session_id, metadata_patch={PROMPT_BASIS_KEY: previous_digest})
 
 
-def settle_basis(app: Any, session_id: str) -> None:
+def settle_basis(app: Any, session_id: str, *, promote_loaded: bool = True) -> None:
     """The prompt catches up with the pinned resolution (apply now, or a compaction).
 
-    Tools loaded with ``search_tools`` since the last rebuild join the tool list too.
+    With ``promote_loaded``, tools loaded with ``search_tools`` since the last rebuild
+    join the tool list too. A compaction passes False: it keeps the cached system prompt
+    and tool list, so listing them there changed the tool list at the next turn's start
+    and cost a second whole-prompt cache write (34k tokens on L1P). A loaded tool stays
+    callable and named among the deferred tools either way.
     """
 
     from clio_agent.gact.search_tools import promote_loaded_tools  # noqa: PLC0415
 
-    promote_loaded_tools(app, session_id)
+    if promote_loaded:
+        promote_loaded_tools(app, session_id)
     if _metadata(app, session_id).get(PROMPT_BASIS_KEY):
         app.state.sessions.update(session_id, metadata_patch={PROMPT_BASIS_KEY: ""})
     if _metadata(app, session_id).get(DEFERRED_ADDED_KEY):

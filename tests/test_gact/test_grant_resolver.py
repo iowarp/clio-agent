@@ -830,11 +830,20 @@ def test_validate_rejects_malformed_modes_and_on() -> None:
 _WRITE_TOOL = "fs_write_file"
 
 
-def test_default_plan_acl_rows_shape() -> None:
+def test_default_plan_acl_rows_shape(monkeypatch: pytest.MonkeyPatch) -> None:
     """The engine ships banded plan_acl defaults: deny-all @40 and a plan-tool allow-band @50.
 
-    No row lets a file tool write in plan mode: plan_update writes the plan.
+    No row lets a file tool write in plan mode: plan_update writes the plan. A fenced
+    host also re-allows the shell for read_only (its writes reach only scratch and temp).
     """
+    from clio_agent.runtime import sandbox
+
+    monkeypatch.setattr(sandbox, "fence_enforced", lambda: True)
+    fenced = [r for r in default_plan_acl_rows() if "read_only" in r["modes"]][1:]
+    assert [(r["action"], r["tool_name_pattern"], r["modes"]) for r in fenced] == [
+        ("allow", "shell_bash", ["read_only"])
+    ]
+    monkeypatch.setattr(sandbox, "fence_enforced", lambda: False)  # an unfenced host
     rows = default_plan_acl_rows()
     # 1 deny + one allow row per plan tool + one per architect tool.
     assert len(rows) == 1 + len(PLAN_ACL_PLAN_TOOLS) + len(PLAN_ACL_ARCHITECT_TOOLS)

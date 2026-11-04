@@ -70,9 +70,13 @@ def test_plan_update_writes_replaces_and_closes(app_session: Any) -> None:
 
 
 def test_plan_update_works_outside_plan_mode(app_session: Any) -> None:
+    """A plan the agent writes to carry out itself is active, not approved: no one
+    approved it, and the plan injection and the goal judge read the status. SABOTAGE:
+    give it ``approved`` and it claims the person's approval."""
     app, sid, _ = app_session
     result = update_plan(app, sid, content=_PLAN)
-    assert result["status"] == "approved"
+    assert result["status"] == "active"
+    assert plan_injection(app, sid, _session(app, sid)).startswith("## The plan (active, ")
     assert _session(app, sid).mode != "plan"
 
 
@@ -97,10 +101,10 @@ def test_the_rail_and_the_goal_judge_see_the_plan_and_todos(app_session: Any) ->
     todos = [{"content": "bisect the range", "status": "in_progress"}]
     app.state.sessions.update(sid, metadata_patch={"todos": todos})
     work = client.get(f"/v1/sessions/{sid}/work").json()
-    assert work["plan"]["status"] == "approved" and "bisect" in work["plan"]["text"]
+    assert work["plan"]["status"] == "active" and "bisect" in work["plan"]["text"]
     assert rail_plan(SimpleNamespace(metadata={})) is None
     transcript = _build_transcript(app, sid)
-    assert transcript.startswith("--- session plan (approved) ---")
+    assert transcript.startswith("--- session plan (active) ---")
     assert "bisect the range" in transcript
 
 
@@ -120,7 +124,7 @@ def test_a_fork_gets_its_own_copy_of_the_plan_and_the_todos(app_session: Any) ->
         encoding="utf-8"
     )
     assert branch.metadata["todos"] == [{"content": "a", "status": "pending"}]
-    assert branch.metadata[PLAN_STATUS_KEY] == "approved"
+    assert branch.metadata[PLAN_STATUS_KEY] == "active"
 
 
 def _segment(seg_id: str, kind: str, turn: str, content: dict[str, Any]) -> Any:
@@ -184,6 +188,32 @@ def test_a_quiet_active_plan_is_mentioned_after_the_stale_steps(
             ctx.reset(token)
 
 
+def test_the_quiet_count_runs_across_the_sessions_turns(
+    app_session: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """On L1P the plan went untouched for six rounds of two or three steps each: the
+    count lived on the turn's loop and restarted every turn, so it was never mentioned.
+    SABOTAGE: keep the count on the loop and the second turn's note never comes."""
+    from clio_agent.gact import context as ctx
+    from clio_agent.gact import working_state
+
+    app, sid, _ = app_session
+    update_plan(app, sid, content=_PLAN)
+    monkeypatch.setattr(working_state, "stale_steps", lambda: 3)
+    noted: list[list[tuple[str, str]]] = []
+    tokens = [ctx.set_app(app), ctx.set_session_id(sid)]
+    try:
+        for _turn in range(2):  # each turn has its own loop
+            loop = SimpleNamespace(recorder=SimpleNamespace(injections=noted.append))
+            for _ in range(2):
+                working_state.note_stale_plan(loop, ["shell_bash"])
+        [[(source, text)]] = noted
+        assert source == working_state.PLAN_STALE_SOURCE and "in 3 steps" in text
+    finally:
+        for token in reversed(tokens):
+            ctx.reset(token)
+
+
 def test_the_person_can_save_an_edited_plan(app_session: Any) -> None:
     app, sid, client = app_session
     update_plan(app, sid, content=_PLAN)
@@ -209,7 +239,7 @@ def test_the_person_can_save_an_edited_plan(app_session: Any) -> None:
     assert source == "plan" and text.startswith("## The plan, as the person edited it")
     assert "check the config first" in text
     # Afterwards the plan is ordinary working state again.
-    assert plan_injection(app, sid, _session(app, sid)).startswith("## The plan (approved")
+    assert plan_injection(app, sid, _session(app, sid)).startswith("## The plan (active")
 
 
 def test_the_plan_is_offered_whole_unless_past_the_window_share(
@@ -247,3 +277,28 @@ def test_the_plan_is_offered_whole_unless_past_the_window_share(
 def _open_request_only(monkeypatch: pytest.MonkeyPatch) -> None:
     """The keep rule these mechanics tests were written for (see the helper)."""
     keep_open_request_only(monkeypatch)
+
+
+def test_the_shipped_stale_note_threshold_and_wording() -> None:
+    """The owner's threshold is 25 tool steps (8 was tried on L1P and reverted: a plan
+    that is still right needs no update); finished threads are named as a reason to
+    update. SABOTAGE: ship 8 again, or drop the finished-threads clause."""
+    from clio_agent import injections
+    from clio_agent.gact import working_state
+
+    assert working_state.stale_steps() == 25
+    text = injections.render(working_state.PLAN_STALE_SOURCE, {"path": "p", "steps": 8})
+    assert text is not None and "threads have finished" in text
+
+
+def test_a_plan_closed_as_done_says_how_many_threads_it_still_marks_open(
+    app_session: Any,
+) -> None:
+    """On L1P two of seven runs set the plan done while its threads still read open or
+    active, the finished work never recorded. The result states the count; the agent
+    decides. SABOTAGE: drop ``unfinished_threads`` and the closed plan reads as clean."""
+    app, sid, _ = app_session
+    update_plan(app, sid, content="# Objective\nx\n\n- [closed] a\n- [active] b\n1. [open] c\n")
+    assert update_plan(app, sid, status="done")["unfinished_threads"] == 2
+    update_plan(app, sid, content="# Objective\nx\n\n- [closed] a\n- [dropped] b: not needed\n")
+    assert update_plan(app, sid, status="done")["unfinished_threads"] == 0

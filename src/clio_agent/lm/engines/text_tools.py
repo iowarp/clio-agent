@@ -21,8 +21,9 @@ carries the typed :class:`dspy.lm15.Request` across as text and brings tool call
 from __future__ import annotations
 
 import json
+import logging
 import re
-from collections.abc import Collection, Iterable, Sequence
+from collections.abc import Collection, Iterable, Mapping, Sequence
 from contextvars import ContextVar
 from dataclasses import dataclass, field
 from typing import Any
@@ -37,8 +38,12 @@ from dspy.lm15 import (
     ToolResultPart,
 )
 
+logger = logging.getLogger(__name__)
+
 __all__ = [
+    "CALLABLE_TOOL_DEFS",
     "CALLABLE_TOOLS",
+    "ToolSchemas",
     "INVALID_TOOL_CALL",
     "callable_tools",
     "FENCE",
@@ -47,6 +52,7 @@ __all__ = [
     "render_messages",
     "render_system",
     "split_reply",
+    "turn_reminder",
 ]
 
 #: The fence that opens the tool-call block (closed by a line of three backticks).
@@ -62,6 +68,36 @@ CALLABLE_TOOLS: ContextVar[frozenset[str]] = ContextVar("clio_callable_tools", d
 def callable_tools(listed: Collection[str]) -> frozenset[str]:
     """``listed`` plus every tool the running agent may call unlisted."""
     return frozenset(listed) | CALLABLE_TOOLS.get()
+
+
+#: The running agent's tools by name, so a tool it calls unlisted (a deferred tool loaded
+#: with search_tools) is read against its own parameter schema.
+CALLABLE_TOOL_DEFS: ContextVar[Mapping[str, Any] | None] = ContextVar(
+    "clio_callable_tool_defs", default=None
+)
+
+
+class ToolSchemas(dict):  # type: ignore[type-arg]
+    """Listed tools' parameter schemas; an unlisted callable tool's on first use.
+
+    Without it a loaded deferred tool had no schema, so the invoke protocol read every
+    parameter as text: ``recall_context(ids=[...])`` arrived as the string ``'[...]'``
+    and was refused (L1R, 2026-11-04).
+    """
+
+    def get(self, name: Any, default: Any = None) -> Any:  # type: ignore[override]
+        if name in self:
+            return self[name]
+        tool = (CALLABLE_TOOL_DEFS.get() or {}).get(name)
+        if tool is None:
+            return default
+        try:
+            schema = tool.format_as_litellm_function_call()["function"]["parameters"]
+        except (AttributeError, KeyError, TypeError) as exc:
+            logger.warning("No parameter schema for unlisted tool %s: %s", name, exc)
+            return default
+        self[name] = schema
+        return schema
 
 
 _TOOL_RULES = """\
@@ -111,6 +147,17 @@ TURN_REMINDER = (
 )
 
 
+def turn_reminder() -> str:
+    """The call-syntax reminder of the configured protocol (``lm.text_tool_protocol``)."""
+    from clio_agent.lm.engines import invoke_calls  # noqa: PLC0415
+
+    return (
+        invoke_calls.INVOKE_REMINDER
+        if invoke_calls.text_tool_protocol() == "invoke"
+        else TURN_REMINDER
+    )
+
+
 def render_system(system: str | None, tools: Sequence[Any]) -> str:
     """The tool rules and the tool list, then the system prompt.
 
@@ -128,7 +175,10 @@ def render_system(system: str | None, tools: Sequence[Any]) -> str:
             f"{json.dumps(t.parameters, sort_keys=True)}"
             for t in functions
         )
-        rules = _TOOL_RULES
+        from clio_agent.lm.engines import invoke_calls  # noqa: PLC0415
+
+        invoke = invoke_calls.text_tool_protocol() == "invoke"
+        rules = invoke_calls.INVOKE_RULES if invoke else _TOOL_RULES
         if any(t.name == "search_tools" for t in functions):
             rules += f"\n\n{_LOADED_TOOLS_RULE}"
         parts.append(f"{rules}\n\n# Available tools\n\n{listing}")
@@ -178,7 +228,14 @@ def _render_message(message: Message, media: _Media) -> str:
             for p in message.parts
             if isinstance(p, ToolCallPart)
         ]
-        block = f"\n{FENCE}\n{json.dumps(calls)}\n```" if calls else ""
+        from clio_agent.lm.engines import invoke_calls  # noqa: PLC0415
+
+        if not calls:
+            block = ""
+        elif invoke_calls.text_tool_protocol() == "invoke":
+            block = "\n" + invoke_calls.render_invoke([(c["name"], c["arguments"]) for c in calls])
+        else:
+            block = f"\n{FENCE}\n{json.dumps(calls)}\n```"
         return f"[assistant]\n{text}{block}".rstrip()
     body = _content_text(message.parts, media)
     return f"[{message.role}]\n{body}" if body else ""
@@ -212,9 +269,25 @@ class ReplySplit:
 
 
 def split_reply(
-    reply: str, *, call_prefix: str, available_tools: Collection[str] = ()
+    reply: str,
+    *,
+    call_prefix: str,
+    available_tools: Collection[str] = (),
+    schemas: Mapping[str, Mapping[str, Any]] | None = None,
 ) -> ReplySplit:
-    """Split a reply into visible text and tool calls (never repaired; see module doc)."""
+    """Split a reply into visible text and tool calls (never repaired; see module doc).
+
+    Under the ``invoke`` protocol (``lm.text_tool_protocol``) a ``<function_calls>``
+    block is the step's calls (:mod:`~clio_agent.lm.engines.invoke_calls`); a fenced
+    JSON block is still read when there is none.
+    """
+    from clio_agent.lm.engines import invoke_calls  # noqa: PLC0415
+
+    if invoke_calls.text_tool_protocol() == "invoke":
+        known = callable_tools(available_tools) if available_tools else frozenset()
+        found = invoke_calls.parse_invoke_calls(reply, schemas or {}, known)
+        if found is not None:
+            return _invoke_split(found, call_prefix)
     fences = list(re.finditer(r"(?m)^[ \t]*(?P<fence>```tool_calls)[ \t]*(?=\r?$)", reply))
     if len(fences) > 1:
         return _invalid_reply(
@@ -286,6 +359,31 @@ def split_reply(
     except (ValueError, TypeError) as exc:
         return _invalid_reply(text, raw, str(exc), call_prefix)
     return ReplySplit(text=text, calls=parts)
+
+
+def _invoke_split(found: Any, call_prefix: str) -> ReplySplit:
+    """An invoke-protocol reply as a split. A fenced JSON block beside the calls is the
+    same calls written twice when it is empty or equal to them (dropped, on the record);
+    a different one is refused, since which to run is not the host's to guess."""
+    if found.error:
+        return _invalid_reply(found.text, found.raw, found.error, call_prefix)
+    text, calls = found.text, [{"name": n, "arguments": a} for n, a in found.calls]
+    fence = re.search(r"(?ms)^[ \t]*```tool_calls[ \t]*\r?\n(.*?)^[ \t]*```", text)
+    if fence:
+        try:
+            listed = json.loads(fence[1])
+        except ValueError:
+            listed = None
+        if listed not in ([], calls):
+            return _invalid_reply(text, fence[0], "calls written both as a function_calls block "
+                                  "and as a tool_calls block; write each call once, in one "
+                                  "function_calls block", call_prefix)  # fmt: skip
+        logger.info("invoke reply carried a duplicate tool_calls block; dropped (%d calls)",
+                    len(listed or []))  # fmt: skip
+        text = (text[: fence.start()] + text[fence.end() :]).strip()
+    return ReplySplit(
+        text=text, calls=[_call(c, f"{call_prefix}_{i}") for i, c in enumerate(calls)]
+    )
 
 
 def _xml_call_block(reply: str, available_tools: Collection[str]) -> bool:
@@ -443,8 +541,16 @@ _INVOKE_MARKUP = re.compile(
     r"""(?:\s*</function_calls>)?""",
     re.DOTALL,
 )
-_INVOKE_OPENER = re.compile(r"""<function_calls>|<invoke\s+name=""")
-_INVOKE_OPENERS = ("<function_calls>", "<invoke name=")
+#: Where call markup begins, an invoke opener or the pieces of a call whose opener was
+#: lost (the invoke protocol: L1's answers began with streamed "</function_cal" pieces).
+_INVOKE_OPENER = re.compile(r"""</?function_calls>|<invoke\s+name=|<parameter\s+name=|</invoke>""")
+_INVOKE_OPENERS = (
+    "<function_calls>",
+    "</function_calls>",
+    "<invoke name=",
+    "<parameter name=",
+    "</invoke>",
+)
 
 
 def _without_invoke_markup(text: str) -> tuple[str, int]:

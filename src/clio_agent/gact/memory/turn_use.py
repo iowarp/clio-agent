@@ -17,14 +17,20 @@ _MEMORY = "memory/"
 
 
 def note_skill(event: str, skill_id: str, plugin: str) -> None:
-    """Count a skill shown in the index (``loaded``) or loaded with ``load_skill`` (``read``)."""
+    """Count a skill shown in the index (``loaded``, once a session) or loaded with
+    ``load_skill`` (``read``)."""
     from clio_agent.gact import context  # noqa: PLC0415
 
     app = context.active_app()
     usage = getattr(getattr(app, "state", None), "memory_usage", None)
     turn = context.active_turn_id() or context.active_session_id()
-    if usage is not None and turn:
-        usage.note(turn, skill_subject(plugin, skill_id), event)  # type: ignore[arg-type]
+    if usage is None or not turn:
+        return
+    subject = skill_subject(plugin, skill_id)
+    session = context.active_session_id() or turn
+    if event == "loaded" and not usage.first_shown(session, subject):
+        return
+    usage.note(turn, subject, event)  # type: ignore[arg-type]
 
 
 def attach_turn_memory(state: Any) -> None:

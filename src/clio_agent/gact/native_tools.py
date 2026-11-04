@@ -38,6 +38,7 @@ from clio_agent.gact import native_task_recovery, native_task_settlement
 from clio_agent.gact.core_recovery import CoreRecovery
 from clio_agent.gact.native_identity import local_runtime_identity
 from clio_agent.gact.native_shell import register_native_shell
+from clio_agent.gact.native_task_replies import unchanged_reply
 from clio_agent.gact.native_work import SUBMISSION_ARGUMENT, NativeWork, SubmissionAuthorizer, now
 from clio_agent.gact.task_access import TaskAccessDenied
 from clio_agent.gact.task_history import TaskHistory
@@ -572,10 +573,11 @@ class NativeTools:
                 raw = self.history.write_content(
                     current.owner.session_id, reply.model_dump(mode="json")
                 )
+            stamp = now()
             observed = current.model_copy(
                 update={
                     "raw_status": reply.status,
-                    "updated_at": now(),
+                    "updated_at": stamp,
                     "connection_freshness": "fresh",
                     "backend_observation": raw or current.backend_observation,
                     "progress": current.progress.model_copy(
@@ -608,7 +610,10 @@ class NativeTools:
                         "attention_episode": None,
                     }
                 )
-            self.history.record_snapshot(observed, observation_id=uuid4().hex)
+            if not unchanged_reply(current, observed, stamp):  # (native_task_replies)
+                self.history.record_snapshot(observed, observation_id=uuid4().hex)
+            else:
+                observed = current  # a running task's repeated reply: not written again
             self._settle(observed, accepted)
 
     async def _cleanup(self, handle: str) -> None:

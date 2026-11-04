@@ -252,7 +252,7 @@ async def test_csv_stdout_survives_both_downstream_bounders_unwrapped(workspace:
         copy = row(bounded)
         assert isinstance(copy["stdout"], str) and copy["stdout_truncated"] is True
         assert copy["stdout_original_chars"] == len(data["stdout"])
-        assert copy["exit_code"] == 0 and copy["command"] == command
+        assert copy["exit_code"] == 0 and "command" not in copy  # never echoed back
         parsed = list(csv.reader(io.StringIO(copy["stdout"])))
         assert parsed[0] == ["station", "lat", "lon", "name", "value"]
         assert len(parsed) > 1 and all(len(r) == 5 for r in parsed)  # no torn row

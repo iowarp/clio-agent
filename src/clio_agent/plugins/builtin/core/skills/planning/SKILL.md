@@ -1,7 +1,7 @@
 ---
 name: planning
-title: Plan the work before implementation
-description: Use when the user asks for a plan before execution, or an unresolved implementation decision needs their approval (Plan Mode with plan_enter, plan_update and plan_exit).
+title: Plan for the person's approval before acting
+description: Use when the person wants to approve a plan before anything changes, or an unresolved decision needs their approval (Plan Mode with plan_enter, plan_update and plan_exit). A plan you write and carry out yourself needs only plan_update.
 ---
 
 # Planning
@@ -13,10 +13,11 @@ user approves, not to execute it. Work the four phases below in order, then end 
 turn.
 Routine, authorized creation of reports, slides or other deliverables does not need
 this workflow.
-Shell tools are blocked even for inspection commands. Use the session's declared
-file-reading and inspection tools. If those cannot inspect a needed part of the
-repository, state that specific capability gap; do not treat it as a missing
-repository or claim that uninspected code has been verified.
+Tools that would change files are refused. The shell stays available only where the
+OS write fence confines it to reading; otherwise use the session's file-reading and
+inspection tools. If those cannot inspect a needed part of the work, state that
+specific capability gap; do not treat it as missing or claim that uninspected code
+or data has been verified.
 
 ## Phase 1 — Ground (explore before you ask)
 Do not ask the user what the repository can answer. Investigate first: read the

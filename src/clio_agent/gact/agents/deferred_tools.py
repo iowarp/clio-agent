@@ -21,8 +21,9 @@ What is deferred:
 
 Nothing is deferred when the agent cannot call ``search_tools`` (an allowlist without
 it): the tools are listed in full and the trace records ``tools_deferral_unavailable``.
-A tool loaded with ``search_tools`` joins the tool list once a compaction has re-based
-the prompt after it was loaded (``metadata["loaded_tools"]``).
+A tool loaded with ``search_tools`` joins the tool list when an applied plugin change
+rebuilds the prompt after it was loaded (``metadata["loaded_tools"]``); a compaction
+keeps the cached tool list, so it does not list them.
 """
 
 from __future__ import annotations
@@ -66,6 +67,10 @@ _NEVER_DEFER: Sequence[str] = (
     "plan_exit",
     "fs_*",
     "shell_*",
+    # The memory injection points at these by name whenever memory is on (the only
+    # time they exist); deferred, the model called memory_read blind (X2, path= for name=).
+    "memory_search",
+    "memory_read",
 )
 #: Built-in tool groups named like servers (``fs_read_file``), for ``run_code``'s stubs.
 _BUILTIN_SERVERS = frozenset({"fs", "shell", "web"})

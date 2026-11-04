@@ -8,4 +8,4 @@ x_trigger: after `steps` recorded steps without plan_update, write_todos, plan_e
 x_variables: path, steps
 x_param_steps: 25
 ---
-The plan ({{path}}) has not been updated in {{steps}} steps. If your understanding or direction has changed, update it with plan_update.
+The plan ({{path}}) has not been updated in {{steps}} steps. If threads have finished or your understanding or direction has changed, update it with plan_update.

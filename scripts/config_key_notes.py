@@ -452,6 +452,11 @@ KEY_NOTES: dict[str, str] = {
         "Fraction (0-1) of the model's context window that triggers proactive auto-compaction; "
         "lower to compact earlier, raise to accumulate more."
     ),
+    "compaction.keep.working_state": (
+        "Keep the latest plan, todos and plan-mode note verbatim through a compaction and "
+        "offer them again after a mid-turn one (default true). Off only to measure what that "
+        "re-offer is worth: the summary alone then carries the working state."
+    ),
     "compaction.keep.head": (
         "Whether a compaction keeps the current user question verbatim after the summary "
         "(mid-turn); turn off to summarize it too."
@@ -761,6 +766,11 @@ KEY_NOTES: dict[str, str] = {
     "lm.claude_code_transport": (
         'Selects the Claude Code transport; "sdk" is the only supported value, kept as an '
         "explicit contract check, not a tuning knob."
+    ),
+    "lm.text_tool_protocol": (
+        'How a provider without native tools (Claude Code) writes tool calls: "invoke" '
+        "(default: <invoke> calls, the model's own call format, string arguments written "
+        'raw) or "json" (a fenced tool_calls JSON list).'
     ),
     "lm.codex_transport": (
         'Selects the Codex transport; "websocket" (default, with delta continuation) or "sse" '
@@ -1264,6 +1274,11 @@ KEY_NOTES: dict[str, str] = {
     "tools.write_ahead": (
         "Which MCP calls record their submission before they are sent: non_read_only "
         "(read-only tools are sent at once and recorded with their result) or all."
+    ),
+    "tools.shell_poll_interval_ms": (
+        "Longest a shell command's end can go unseen: the status-poll ceiling its task "
+        "advertises (polls start at 20 ms and double up to it). Replies that change nothing "
+        "are recorded at most every 5 s, so a shorter ceiling does not add writes."
     ),
     "tools.per_server_concurrency": (
         "Tool calls to one server that run at once, for a step's calls and a run_code "

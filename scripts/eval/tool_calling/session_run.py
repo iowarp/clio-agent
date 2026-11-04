@@ -66,6 +66,8 @@ class RunContext:
     call_log: Path | None = None
     shared_root: Path | None = None
     keep_export: bool = False
+    #: How a plan approval is answered (``wait_for_turn``'s ``plan_policy``).
+    plan_policy: str = "approve"
     fleet_settings: dict[str, Any] | None = None
 
 
@@ -149,6 +151,26 @@ def _decline_waiting(
     return declined
 
 
+#: The note a ``reject_once`` plan answer sends with its first rejection.
+REVISE_NOTE = "Before you start, say how you will check each step's result."
+
+
+def _answer_plan(
+    client: GactClient, sid: str, policy: str, answers: list[dict[str, Any]], at: float
+) -> bool:
+    """Answer the session's pending plan approval per ``policy``; whether one was."""
+    for question in client.pending_questions(sid):
+        if question.get("source") != "plan_exit":
+            continue
+        reject = policy == "reject_once" and not any(a["choice"] == "reject" for a in answers)
+        choice = "reject" if reject else "auto"
+        client.answer_question(sid, str(question.get("id")), choice, REVISE_NOTE if reject else "")
+        answers.append({"id": question.get("id"), "choice": choice, "after_s": round(at, 1),
+                        "prompt": str(question.get("prompt") or "")})  # fmt: skip
+        return True
+    return False
+
+
 def wait_for_turn(
     client: GactClient,
     sid: str,
@@ -160,6 +182,7 @@ def wait_for_turn(
     decline_after_s: float | None = None,
     follow_ups: tuple[tuple[float, str], ...] = (),
     rounds: tuple[str, ...] = (),
+    plan_policy: str = "approve",
     clock: Callable[[], float] = time.monotonic,
     sleep: Callable[[float], None] = time.sleep,
 ) -> dict[str, Any]:
@@ -181,8 +204,12 @@ def wait_for_turn(
     With ``decline_after_s``, a pending permission question (runs are serial, so any
     is this run's, a child's included) is answered ``deny`` once it has waited that
     long; ``declined`` lists them.
+    ``plan_policy``: how a plan approval (the agent's ``plan_exit``) is answered, as a
+    person would: ``approve`` (execute it), ``reject_once`` (ask for a revision the first
+    time, then approve) or ``none`` (leave it unanswered). ``plan_answers`` records each.
     """
     start = clock()
+    plan_answers: list[dict[str, Any]] = []
     polls = 0
     marker: tuple[str, str, int] | None = None
     first_done_wall: float | None = None
@@ -205,6 +232,7 @@ def wait_for_turn(
                 "polls": polls,
                 "declined": declined,
                 "sent": sent,
+                "plan_answers": plan_answers,
             }
         if pending and clock() - start >= pending[0][0]:
             at, text = pending.pop(0)
@@ -221,8 +249,15 @@ def wait_for_turn(
         elif status in INTERACTION:
             marker = first_done_wall = None
             interaction_since = interaction_since if interaction_since is not None else clock()
+            if status == "waiting_user" and plan_policy != "none":
+                answered = _answer_plan(client, sid, plan_policy, plan_answers, clock() - start)
+                if answered:
+                    interaction_since = None
+                    sleep(poll_s)
+                    continue
             if clock() - interaction_since > interaction_timeout_s:
-                return {"state": status, "status": status, "polls": polls, "declined": declined}
+                return {"state": status, "status": status, "polls": polls, "declined": declined,
+                        "plan_answers": plan_answers}  # fmt: skip
         else:
             interaction_since = None
             newest = _newest_assistant(client.messages(sid, limit=5))
@@ -251,6 +286,7 @@ def wait_for_turn(
                         "first_done_wall": first_done_wall,
                         "declined": declined,
                         "sent": sent,
+                        "plan_answers": plan_answers,
                     }
                 marker, first_done_wall = now, time.time()
                 sleep(settle_s)
@@ -430,6 +466,7 @@ def execute_run(ctx: RunContext, spec: RunSpec) -> dict[str, Any]:
             decline_after_s=ctx.decline_questions_after_s,
             follow_ups=task.follow_ups,
             rounds=task.rounds,
+            plan_policy=ctx.plan_policy,
         )
     except Exception:
         # A failed poll (the server stopped answering) must not leave the turn running
@@ -491,10 +528,56 @@ def execute_run(ctx: RunContext, spec: RunSpec) -> dict[str, Any]:
     }
     target = result_path(ctx.results, ctx.config, spec.task, spec.index)
     write_json(target, result)
+    write_semantics(ctx.client, sid, export, result, target, waited.get("plan_answers") or [])
     if ctx.keep_export:
         write_json(target.with_suffix(".export.json"), export)
     drop_external_copy(fixture, workdir)
     return result
+
+
+def write_semantics(
+    client: GactClient,
+    sid: str,
+    export: dict[str, Any],
+    result: dict[str, Any],
+    target: Path,
+    plan_answers: list[dict[str, Any]],
+) -> None:
+    """Write ``run-N.semantic.json`` and ``run-N.read.md`` beside the result (``semantic``).
+
+    The work state, the plan file and the exact last prompt are read now, at the run's
+    end; one that cannot be read is named in the record's ``unread`` list.
+    """
+    from scripts.eval.tool_calling import semantic  # noqa: PLC0415
+
+    unread: list[str] = []
+    work: dict[str, Any] = {}
+    exact: dict[str, Any] = {}
+    try:
+        work = client.work(sid)
+    except Exception as exc:  # noqa: BLE001 - recorded in unread; the run is still read
+        unread.append(f"work: {exc}")
+    metadata = client.session(sid).get("metadata") or {}
+    work["plan_status"] = metadata.get("plan_status")
+    plan_text = ""
+    if plan_file := str(metadata.get("plan_file") or ""):
+        try:
+            plan_text = Path(plan_file).read_text(encoding="utf-8")
+        except OSError as exc:
+            unread.append(f"plan file {plan_file}: {exc}")
+    try:
+        exact = client.exact_prompt(sid).get("exact") or {}
+    except Exception as exc:  # noqa: BLE001 - recorded in unread; the run is still read
+        unread.append(f"exact prompt: {exc}")
+    record = semantic.semantic_record(
+        export, work=work, plan_text=plan_text, exact_prompt=exact, plan_answers=plan_answers
+    )
+    record["unread"] = unread
+    write_json(target.with_suffix(".semantic.json"), record)
+    header = {k: result.get(k) for k in ("task", "run_index", "config", "wall_s", "active_s")}
+    target.with_suffix(".read.md").write_text(
+        semantic.reading_report(record, header), encoding="utf-8"
+    )
 
 
 def active_seconds(

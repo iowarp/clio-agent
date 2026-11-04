@@ -51,6 +51,13 @@ SEARCH = FunctionTool(
 
 
 # The engine dispatches on the SDK message class names (duck-typed, no SDK import).
+@pytest.fixture(autouse=True)
+def _json_protocol(monkeypatch: pytest.MonkeyPatch) -> None:
+    """These tests cover the fenced JSON call protocol (``lm.text_tool_protocol: json``);
+    the invoke protocol, the default, has its own (``tests/test_lm/test_invoke_calls.py``)."""
+    monkeypatch.setenv("CLIO_TEXT_TOOL_PROTOCOL", "json")
+
+
 class StreamEvent:
     def __init__(self, event: dict[str, Any]) -> None:
         self.event = event

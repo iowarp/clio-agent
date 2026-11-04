@@ -213,7 +213,12 @@ def effective_write_roots(
         system_temp_roots,
     )
     from clio_agent.tools.file_policy import FileAccessPolicy  # noqa: PLC0415 - avoid cycle
+    from clio_agent.tools.write_scope import active_tool_read_only  # noqa: PLC0415
 
+    if profile == PROFILE_SHELL and active_tool_read_only():
+        # A read-only session's shell (an explore child): reads anything, writes only
+        # its scratch and temp, as a plan-mode run_code kernel.
+        return read_only_write_roots()
     if policy is None:
         policy = (
             FileAccessPolicy.from_mapping(env) if env is not None else FileAccessPolicy.from_env()

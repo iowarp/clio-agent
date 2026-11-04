@@ -43,10 +43,29 @@ def _emit(stage: str, **fields: Any) -> None:
     stream_audit(stage, thread=threading.current_thread().name, **fields)
 
 
+#: Modules a store call passes through on its way to the store; ``caller`` skips them
+#: so it names the CLIO code that asked for the write.
+_PLUMBING = ("clio_agent/arc/", "clio_agent/runtime/", "clio_agent/gact/task_history")
+
+
+def _caller() -> str:
+    """The first CLIO frames outside the store plumbing, innermost first (audit only)."""
+    import sys  # noqa: PLC0415
+
+    frame, names = sys._getframe(2), []
+    while frame is not None and len(names) < 3:
+        path = frame.f_code.co_filename.replace("\\", "/")
+        if "clio_agent/" in path and not any(p in path for p in _PLUMBING):
+            module = path.rsplit("clio_agent/", 1)[1].removesuffix(".py").replace("/", ".")
+            names.append(f"{module}.{frame.f_code.co_name}")
+        frame = frame.f_back
+    return " < ".join(names)
+
+
 def rpc(op: str, kind: str, seconds: float) -> None:
-    """One store call took ``seconds``."""
+    """One store call took ``seconds``; ``caller`` names the CLIO code that made it."""
     if enabled():
-        _emit("store.rpc", op=op, kind=kind, ms=round(seconds * 1e3, 3))
+        _emit("store.rpc", op=op, kind=kind, ms=round(seconds * 1e3, 3), caller=_caller())
 
 
 def job(label: str, wait_s: float, run_s: float) -> None:

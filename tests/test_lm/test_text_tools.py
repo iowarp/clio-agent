@@ -33,6 +33,13 @@ SEARCH = FunctionTool(
 )
 
 
+@pytest.fixture(autouse=True)
+def _json_protocol(monkeypatch: pytest.MonkeyPatch) -> None:
+    """These tests cover the fenced JSON call protocol (``lm.text_tool_protocol: json``);
+    the invoke protocol, the default, has its own (``tests/test_lm/test_invoke_calls.py``)."""
+    monkeypatch.setenv("CLIO_TEXT_TOOL_PROTOCOL", "json")
+
+
 def _block(calls: list[dict[str, object]]) -> str:
     return f"{FENCE}\n{json.dumps(calls)}\n```"
 

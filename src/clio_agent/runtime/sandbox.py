@@ -556,6 +556,14 @@ def install_sandbox(*, env: Optional[Mapping[str, str]] = None) -> SandboxResult
     return result
 
 
+def fence_enforced() -> bool:
+    """Whether this host's sandbox enforces the write fence (an active backend), so a
+    child's writes are confined to the territory it is given."""
+
+    state = current_state()
+    return state is not None and state.active and state.mechanism != MECHANISM_NONE
+
+
 def current_state() -> SandboxResult | None:
     """Return the confinement state resolved in THIS process, or ``None`` if never installed."""
     return _STATE

@@ -53,3 +53,24 @@ def test_the_budget_keeps_the_newest_typed_messages() -> None:
     decision = post_compaction_context(live, open_turn_id="t2", policy=policy)
     assert {"q2", "steer"} <= set(decision.keep)
     assert "q1" in decision.summarize
+
+
+def test_the_working_state_is_kept_unless_the_measurement_switch_is_off() -> None:
+    """The latest plan and todos stay verbatim through a compaction; with
+    ``keep_working_state`` off (the Step 3 ablation) they are summarized like the rest.
+    SABOTAGE: ignore the switch and the off case still keeps them."""
+    live = [
+        _segment(
+            "plan1", "user", "t1", {"text": "old plan", "source": "plan", "actor": "algorithm"}
+        ),
+        _segment(
+            "plan2", "user", "t1", {"text": "new plan", "source": "plan", "actor": "algorithm"}
+        ),
+        _segment("todo", "user", "t1", {"text": "[ ] a", "source": "todos", "actor": "algorithm"}),
+        *_live(),
+    ]
+    kept = post_compaction_context(live, open_turn_id="t2", policy=KeepPolicy()).keep
+    assert {"plan2", "todo"} <= set(kept) and "plan1" not in kept
+    off = KeepPolicy(keep_working_state=False)
+    kept = post_compaction_context(live, open_turn_id="t2", policy=off).keep
+    assert not {"plan1", "plan2", "todo"} & set(kept)

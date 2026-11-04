@@ -36,6 +36,9 @@ def _run(text: str, tool_calls: list[dict[str, Any]] | None = None) -> dict[str,
             ],
         ),
         ("a.py:3 at 10:30 today", [("a.py", 3, 3)]),
+        # Prose forms from the 2026-11-04 P1 runs, both right and graded wrong.
+        ("is defined at line 429 of `src/p.py`, as", [("src/p.py", 429, 429)]),
+        ("defined once, in `src/p.py` at line 429 (`def", [("src/p.py", 429, 429)]),
     ],
 )
 def test_locations(text: str, expected: list[tuple[str, int, int]]) -> None:

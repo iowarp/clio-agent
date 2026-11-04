@@ -329,8 +329,9 @@ def compact_session_context(
             settle_basis(app, sid)
         return _skip(sid, skipped)
     done = [_compact_scope(app, sid, plan, trigger, focus, open_turn, summarize) for plan in plans]
-    # The cache restarts here anyway: plugin changes held as a note join the prompt.
-    settle_basis(app, sid)
+    # The history's cache restarts here: plugin changes held as a note join the prompt.
+    # Loaded tools stay off the list, which keeps the cached system prompt and tools.
+    settle_basis(app, sid, promote_loaded=False)
     return {"session_id": sid, "compacted": True, "compactions": done}
 
 

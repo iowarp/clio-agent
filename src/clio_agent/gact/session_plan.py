@@ -5,17 +5,20 @@ The plan is the file plan mode writes under CLIO's state folder, its path on
 ``session.metadata['plan_status']``:
 
 - ``draft`` while it is written in plan mode (``plan_enter``);
-- ``approved`` after ``plan_exit`` is approved;
+- ``approved`` after the person approves it at ``plan_exit``;
+- ``active`` when the agent wrote it outside plan mode, to carry out itself (no one
+  approved it, so it is not called approved);
 - ``done`` or ``abandoned`` when the agent says so with ``plan_update``.
 
 ``plan_update`` writes the whole plan or replaces one exact passage, in plan mode and
 outside it, so the agent replans at any step without a mode switch. While a plan is
-``draft`` or ``approved`` it is offered as working state (:func:`plan_injection`) at
+``draft``, ``approved`` or ``active`` it is offered as working state (:func:`plan_injection`) at
 turn start and after a compaction; todos stay separate (``write_todos``).
 """
 
 from __future__ import annotations
 
+import re
 from pathlib import Path
 from typing import Any
 
@@ -44,7 +47,7 @@ PLAN_SOURCE = "plan"
 PLAN_PERSON_EDIT_SOURCE = "plan_person_edit"
 PLAN_TRUNCATED_SOURCE = "plan_truncated"
 #: Statuses in which the plan is offered as working state.
-ACTIVE_STATUSES = frozenset({"draft", "approved"})
+ACTIVE_STATUSES = frozenset({"draft", "approved", "active"})
 _SETTABLE = frozenset({"done", "abandoned"})
 
 
@@ -111,7 +114,7 @@ def set_plan_status(app: Any, session_id: str, status: str) -> None:
 
 
 def plan_injection(app: Any, session_id: str, session: Any) -> str:
-    """The plan as working state, while it is ``draft`` or ``approved`` outside plan mode.
+    """The plan as working state, while it is active (:data:`ACTIVE_STATUSES`) outside plan mode.
 
     In plan mode the plan-mode reminder already names the file. The model judges whether
     the plan still applies; CLIO only says it exists and shows it. A plan the person edited
@@ -235,20 +238,29 @@ def update_plan(
         next_status = status
     elif current in _SETTABLE or not current:
         # Writing a plan after it was closed (or before any) makes it current again.
-        next_status = "draft" if str(getattr(session, "mode", "")) == "plan" else "approved"
+        next_status = "draft" if str(getattr(session, "mode", "")) == "plan" else "active"
     else:
         next_status = current
     if next_status != current:
         set_plan_status(app, session_id, next_status)
     _publish_work(app, session_id)
+    text = path.read_text(encoding="utf-8") if path.exists() else ""
     return {
         "plan_file": str(path),
         "status": next_status,
         "change": change or "status",
         "old": old if change == "passage" else None,
         "new": new if change == "passage" else None,
-        "chars": len(path.read_text(encoding="utf-8")) if path.exists() else 0,
+        "chars": len(text),
+        # A fact for a plan closed as done: threads its own text still marks open or
+        # active (the states core.plan names). On L1P two of seven runs closed a plan
+        # this way, its finished work never recorded. The agent decides what to do.
+        "unfinished_threads": len(_UNFINISHED.findall(text)) if next_status == "done" else 0,
     }
+
+
+#: A thread line marked open or active, as ``core.plan`` describes threads.
+_UNFINISHED = re.compile(r"(?im)^\s*(?:[-*]|\d+[.)])\s*\[(?:open|active)\]")
 
 
 def _publish_work(app: Any, session_id: str) -> None:
@@ -283,9 +295,10 @@ def build_plan_enter_tool() -> Any:
         domain="planning",
         title="Enter plan mode",
         desc=(
-            "Enter plan mode for long or open-ended work, or when the person asks for a plan: "
+            "Enter plan mode when the person should approve a plan before anything changes: "
             "you investigate with read tools, write the plan with plan_update, and hand it "
-            "back for approval with plan_exit. Nothing else is changed in plan mode."
+            "back for approval with plan_exit. Nothing else is changed in plan mode. A plan "
+            "you write and then carry out yourself needs no plan mode: write it with plan_update."
         ),
         args={"reason": {"type": "string", "description": "Why planning first helps here."}},
     )
@@ -312,7 +325,13 @@ def build_plan_update_tool() -> Any:
         what = {"whole": "Plan written", "passage": "Plan passage replaced"}.get(
             result["change"], "Plan status set"
         )
-        return f"{what} ({result['status']}, {result['plan_file']})."
+        reply = f"{what} ({result['status']}, {result['plan_file']})."
+        if result["unfinished_threads"]:
+            count = result["unfinished_threads"]
+            reply += (
+                f" The plan still marks {count} thread{'s' if count != 1 else ''} open or active."
+            )
+        return reply
 
     return native_tool(
         plan_update,
@@ -322,8 +341,9 @@ def build_plan_update_tool() -> Any:
         domain="planning",
         title="Update plan",
         desc=(
-            "Keep the session plan current, in plan mode or not: content writes the whole "
-            "plan; old and new replace one exact passage; status done or abandoned closes it. "
+            "Write the session plan and keep it current, in plan mode or not (outside plan mode "
+            "the work goes on): content writes the whole plan; old and new replace one exact "
+            "passage; status done or abandoned closes it. "
             "Update it when a finding changes your understanding or direction, not every step."
         ),
         args={

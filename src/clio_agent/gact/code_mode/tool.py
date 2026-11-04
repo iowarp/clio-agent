@@ -103,8 +103,7 @@ def _plan_mode_refusal(app: Any, session_id: str) -> bool:
     session = app.state.sessions.get(session_id)
     if str(getattr(session, "mode", "") or "") != "plan":
         return False
-    state = sandbox.current_state()
-    if state is not None and state.active and state.mechanism != sandbox.MECHANISM_NONE:
+    if sandbox.fence_enforced():
         return True
     raise CodeError(
         "run_code is not available in Plan mode here: this host's sandbox does not enforce "

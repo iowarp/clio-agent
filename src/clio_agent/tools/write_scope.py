@@ -20,6 +20,28 @@ from pathlib import Path
 _ACTIVE_TOOL_WRITE_ROOT: contextvars.ContextVar[str] = contextvars.ContextVar(
     "clio_active_tool_write_root", default=""
 )
+#: A read-only session's tool call (an explore child, a side conversation): its shell
+#: may write only its own scratch folder and temp (``read_only_write_roots``).
+_ACTIVE_TOOL_READ_ONLY: contextvars.ContextVar[bool] = contextvars.ContextVar(
+    "clio_active_tool_read_only", default=False
+)
+
+
+@contextmanager
+def tool_read_only_context(read_only: bool) -> Iterator[None]:
+    """Bind whether the calling session is read-only."""
+
+    token = _ACTIVE_TOOL_READ_ONLY.set(bool(read_only))
+    try:
+        yield
+    finally:
+        _ACTIVE_TOOL_READ_ONLY.reset(token)
+
+
+def active_tool_read_only() -> bool:
+    """Whether the calling session is read-only (its shell writes only scratch and temp)."""
+
+    return _ACTIVE_TOOL_READ_ONLY.get()
 
 
 @contextmanager
@@ -76,4 +98,10 @@ def narrowed_write_roots(node: Path, workspace: Path | None) -> tuple[Path, ...]
     return tuple(dict.fromkeys(roots))
 
 
-__all__ = ["active_tool_write_root", "narrowed_write_roots", "tool_write_root_context"]
+__all__ = [
+    "active_tool_read_only",
+    "active_tool_write_root",
+    "narrowed_write_roots",
+    "tool_read_only_context",
+    "tool_write_root_context",
+]

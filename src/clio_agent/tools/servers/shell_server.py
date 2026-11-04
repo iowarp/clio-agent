@@ -727,8 +727,10 @@ async def execute_shell(
                             for reader in readers
                         ):
                             cleanup.confirm_cleanup()
+                    # The command is not echoed back: the caller wrote it, and it is in
+                    # the call (L1: 35.6k of 84.9k shell result characters were the echo).
+                    # The person's terminal view shows it from the call's arguments.
                     base = {
-                        "command": command,
                         "cwd": str(safe_cwd),
                         "exit_code": None if timed_out else process.returncode,
                         "timed_out": timed_out,

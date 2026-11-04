@@ -72,3 +72,22 @@ def test_nothing_is_written_when_the_audit_is_off(
     io_audit._state.update(at=-io_audit._RECHECK_S, on=False)
     io_audit.rpc("put", "segments", 0.01)
     assert not io_audit.enabled()
+
+
+def test_a_store_call_names_the_clio_code_that_made_it(audit: Path) -> None:
+    """On L1P a 27-step session made about 1,400 segment puts; the row names who asked,
+    past the store plumbing. SABOTAGE: skip no frames and ``caller`` names the arc
+    module that only forwards the write."""
+    namespace: dict[str, Any] = {"io_audit": io_audit}
+    plumbing = compile(
+        "def append():\n    io_audit.rpc('put', 'segments', 0.001)\n",
+        "/x/src/clio_agent/arc/fake_store.py", "exec",
+    )  # fmt: skip
+    asker = compile(
+        "def step_done():\n    append()\n", "/x/src/clio_agent/gact/fake_rec.py", "exec"
+    )
+    exec(plumbing, namespace)
+    exec(asker, namespace)
+    namespace["step_done"]()
+    [row] = _rows(audit, "store.rpc")
+    assert row["caller"] == "gact.fake_rec.step_done"

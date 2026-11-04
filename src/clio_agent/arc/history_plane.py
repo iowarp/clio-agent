@@ -94,6 +94,25 @@ class HistoryPlane:
             self._scopes[key] = dspy.History(messages=[*records, msgspec.to_builtins(seg)])
             return seg
 
+    def append_segments(
+        self,
+        session_id: str,
+        scope: str,
+        rows: list[tuple[str, dict[str, Any], int]],
+        *,
+        step: int = -1,
+        turn_id: str = "",
+        expert_span_id: str = "",
+        run_span_id: str = "",
+    ) -> list[Segment]:
+        """Append ``rows`` (kind, content, token count) in order (memory only: no batch)."""
+        return [
+            self.append_segment(session_id, scope, kind, content, step=step, token_count=tokens,
+                                turn_id=turn_id, expert_span_id=expert_span_id,
+                                run_span_id=run_span_id)
+            for kind, content, tokens in rows
+        ]  # fmt: skip
+
     def list_segments(
         self, session_id: str, scope: str, *, include_tombstoned: bool = False
     ) -> list[Segment]:

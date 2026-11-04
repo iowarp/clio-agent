@@ -31,7 +31,12 @@ from typing import Any
 
 from scripts.eval.tool_calling import collect, tasks
 from scripts.eval.tool_calling.http_client import GactClient
-from scripts.eval.tool_calling.paths import DEFAULT_FIXTURES, DEFAULT_RESULTS, DEFAULT_WORK
+from scripts.eval.tool_calling.paths import (
+    DEFAULT_FIXTURES,
+    DEFAULT_RESULTS,
+    DEFAULT_WORK,
+    is_run_file,
+)
 from scripts.eval.tool_calling.runner import load_manifest
 from scripts.eval.tool_calling.session_run import (
     ACTIVE,
@@ -491,6 +496,7 @@ def _results(task: str, config: str = "final") -> list[dict[str, Any]]:
     return [
         json.loads(p.read_text(encoding="utf-8"))
         for p in sorted((DEFAULT_RESULTS / config / task).glob("run-*.json"))
+        if is_run_file(p)
     ]
 
 
@@ -576,7 +582,7 @@ def check_t4(rec: dict[str, Any]) -> tuple[str, list[str]]:
         c
         for c in parallel
         if c["args"].get("wait") in (True, "true")
-        and all((t or {}).get("agent") == "explore" for t in (c["args"].get("tasks") or [{}]))
+        and all((t or {}).get("agent") == "explore" for t in (c["args"].get("spawns") or [{}]))
     ]
     children = [
         s for norm in rec["normalized"].values() for s in norm["sessions"] if s.get("depth", 0) > 0
@@ -677,7 +683,9 @@ def check_t8b(rec: dict[str, Any]) -> tuple[str, list[str]]:
 
 
 def check_t8c(rec: dict[str, Any]) -> tuple[str, list[str]]:
-    scripts = _per_script(rec)
+    # Only the script's nested writes: the agent's own later call (a shell check of the
+    # files it wrote, asked under approval mode ask) is not the script's question.
+    scripts = [[w for w in ws if tool_of(w) == "fs_write_file"] for ws in _per_script(rec)]
     files = sorted(f for f in rec["files"] if f.startswith("out/"))
     asked = [len(w) for w in scripts]
     notes = [

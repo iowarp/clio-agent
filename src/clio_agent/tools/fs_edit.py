@@ -74,7 +74,10 @@ def _write_change(path: Path, before: bytes | None, after: str) -> dict[str, Any
         **written,
         "created": before is None,
         "sha256_before": _sha256(before) if before is not None else "",
-        "unified_diff": diff,
+        # A new file's diff is its whole content, which the caller just wrote: echoing
+        # it back doubled a report's cost in context (L1: 10.2k for a 9.1k report). The
+        # person's diff view rebuilds it from the pre-write capture.
+        "unified_diff": diff if before is not None else "",
         "lines_added": added,
         "lines_removed": removed,
     }

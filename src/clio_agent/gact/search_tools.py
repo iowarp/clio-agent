@@ -10,9 +10,10 @@ The query forms are :meth:`clio_agent.gact.tool_catalog.ToolCatalog.search`'s:
 keywords. Any word that is exactly a tool's name is returned first.
 
 Loaded names are recorded on the session (``metadata["loaded_tools"]``): ``pending``
-until the prompt is next rebuilt (a compaction or an applied plugin change), then
-``listed``, and a listed tool is built into the tool list from then on rather than
-deferred, so a tool the agent depends on stops costing a search after the rebuild.
+until the prompt is next rebuilt by an applied plugin change, then ``listed``, and a
+listed tool is built into the tool list from then on rather than deferred. A
+compaction does not list them: it keeps the cached system prompt and tool list, and a
+change there would cost a whole-prompt cache write at the next turn.
 """
 
 from __future__ import annotations

@@ -19,6 +19,12 @@ from scripts.eval.tool_calling.tasks import Task
 DEFAULT_OPAL = Path("/home/user/opal-data/appl-vision")
 PROMPTS = {
     "X1": "Explore this dataset and understand what it contains and how it is shaped.",
+    # L2: H4's broad request, word for word, on the real export: one long turn, read by
+    # hand (Step 3); no tool or step is named.
+    "L2": (
+        "This folder is an export of experimental data. Investigate it broadly: what was "
+        "done, what the data shows, and whether anything is wrong with it."
+    ),
 }
 
 #: X2: the owner's exp67 QY_max chain (2026-11-04), answered from the files. Round 2
@@ -53,7 +59,56 @@ X2_KEY = (
     ("ISU 210", "9", "RIL 407"),
     (0.7434, 0.7552, 0.7414, 0.7905, 0.6598, 0.6593),
 )
-CHAINS = {"X2": (_X2_SETUP, _X2_ROUNDS)}
+#: L1: a project session on the same export, about ten rounds as a person would ask them
+#: (explore, quality control, the X2 analysis, a figure, a follow-up test, a change of
+#: mind, a report). Rounds 3-6 are X2's four questions, graded on ``X2_KEY``; the rest
+#: are read by hand. Long enough (about 50+ model calls) for planning, todos and a
+#: natural compaction to matter; nothing names a tool or a step.
+_L1_ROUNDS = (
+    "Explore this export and tell me what it contains and how it is shaped.",
+    "Check the data quality: missing readings, impossible values, differences between "
+    "the two snapshots, and anything else that would bias an analysis of QY_max. Say "
+    "what you would exclude and why, but do not change the files.",
+    *(question + _ANSWER_LINE for question in _X2_ROUNDS),
+    "Make a figure of QY_max against dose with one line per accession and the plant "
+    "spread shown, and save it as a PNG in the workspace.",
+    "Is the drop from 200 to 500 mg/kg the same in every accession? Test the dose by "
+    "accession interaction and name the accessions that break the pattern.",
+    "Change of plan: leave out the second snapshot entirely and any plant with fewer "
+    "than three QY_max readings, then redo the per-dose means and the top three "
+    "accessions by retention at 500.",
+    "Write a short report in the workspace (Markdown): the data, the quality decisions, "
+    "the results tables, the figure and the open questions.",
+)
+#: L1P: L1 where the person shares the whole agenda up front and asks for a plan first
+#: (Step 3 variant e): a person's request, not a handcuff. The rounds are L1's.
+_L1P_AGENDA = (
+    "Over this session I want to: get to know the export, check its data quality, answer "
+    "four questions about QY_max across the doses and accessions, make a figure, test "
+    "whether the dose response differs by accession, possibly redo parts with stricter "
+    "filters, and end with a short written report. Plan the work first, then start.\n\n"
+)
+#: L1R: L1P, then three questions about the conversation itself, asked after the
+#: compactions: the person's first message (kept verbatim in context), the agent's own
+#: first reply (only in clio-core once compacted), and the numbers it gave before the
+#: change of plan. Read by hand against the stored replies; no tool is named.
+_RECALL_ROUNDS = (
+    "Do you remember what my first message in this conversation was? Quote it.",
+    "In your very first reply in this conversation, what did you say about the second "
+    "snapshot? Quote what you wrote then, not what you know now.",
+    "Before my change of plan, what per-dose means did you first report when I asked where "
+    "QY_max peaks? Give the numbers you gave then, not new ones.",
+)
+CHAINS = {
+    "X2": (_X2_SETUP, _X2_ROUNDS),
+    "L1": (_X2_SETUP, _L1_ROUNDS),
+    "L1P": (_X2_SETUP + _L1P_AGENDA, _L1_ROUNDS),
+    "L1R": (_X2_SETUP + _L1P_AGENDA, _L1_ROUNDS + _RECALL_ROUNDS),
+    # L1P's opening message alone: a one-minute probe of whether a plan asked for is written.
+    "L1P1": (_X2_SETUP + _L1P_AGENDA, _L1_ROUNDS[:1]),
+}
+#: Where X2's four questions sit in L1's replies.
+L1_X2_ROUNDS = slice(2, 6)
 
 
 def is_explore_task(task_id: str) -> bool:
@@ -63,7 +118,9 @@ def is_explore_task(task_id: str) -> bool:
 def explore_task(task_id: str) -> Task:
     if task_id in CHAINS:
         setup, rounds = CHAINS[task_id]
-        asked = [question + _ANSWER_LINE for question in rounds]
+        asked = (
+            [question + _ANSWER_LINE for question in rounds] if task_id == "X2" else list(rounds)
+        )
         return Task(task_id, "long-horizon", setup + asked[0], rounds=tuple(asked[1:]))
     return Task(task_id, "long-horizon", PROMPTS[task_id])
 

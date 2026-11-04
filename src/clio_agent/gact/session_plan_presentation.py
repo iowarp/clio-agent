@@ -11,6 +11,7 @@ __all__ = ["present"]
 _STATUS = {
     "draft": "Draft, in plan mode",
     "approved": "Approved, being worked on",
+    "active": "Being worked on",
     "done": "Done",
     "abandoned": "Abandoned",
 }

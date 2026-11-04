@@ -188,6 +188,15 @@ class FakeClient:
         self.calls.append(("permission", (pid, action)))
         self.pending = [row for row in self.pending if row["id"] != pid]
 
+    def pending_questions(self, sid: str) -> list[dict[str, Any]]:
+        return []  # no plan approval: a waiting question is the person's to answer
+
+    def work(self, sid: str) -> dict[str, Any]:
+        return {"todos": []}
+
+    def exact_prompt(self, sid: str) -> dict[str, Any]:
+        return {"exact": {"system": "S", "tools": []}}
+
     def session(self, sid: str) -> dict[str, Any]:
         status = self.statuses[min(self.polls, len(self.statuses) - 1)]
         self.polls += 1
@@ -299,6 +308,12 @@ def test_execute_run_writes_a_result_that_metrics_grade_and_summarize_read(tmp_p
     assert stored["outcome"]["final"] is True
     assert stored["usage_windows"]["Weekly"]["delta_points"] == 1.0
     assert (tmp_path / "work" / "base" / "P2" / "run-1" / "station_registry.py").is_file()
+    # Beside the result: what the agent saw and did, and its reading report.
+    target = result_path(ctx.results, "base", "P2", 1)
+    semantic_record = json.loads(target.with_suffix(".semantic.json").read_text())
+    assert [s["session_id"] for s in semantic_record["sessions"]] == ["sess_root", "sess_child"]
+    assert semantic_record["unread"] == [] and semantic_record["exact_prompt"]["system_chars"] == 1
+    assert target.with_suffix(".read.md").read_text().startswith("# P2 run 1 (base)")
     body = dict(client.calls)["session"]
     assert body["metadata"]["agent_ref"] == "clio/standard"
     assert body["model"] == {"provider_id": "claude_code", "model_id": "claude-sonnet-5-5"}

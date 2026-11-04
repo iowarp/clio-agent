@@ -385,6 +385,9 @@ def run_once(
         **parsed,
     }
     write_json(target, result)
+    from scripts.eval.tool_calling.semantic_sources import rebuild  # noqa: PLC0415
+
+    rebuild(target.parent)  # its semantic record and reading report, from the stream
     drop_external_copy(tasks.fixture_dir(task_id, manifest), workdir)
     return result
 

@@ -84,6 +84,19 @@ READ_ONLY_POLICY_MODE = "read_only"
 #: registered artifact, but direct file/edit/shell tools remain blocked and it has no ``plan_exit``.
 #: ``read_only`` has no allow band at all.
 PLAN_ACL_MODES = frozenset({"plan", "architect", READ_ONLY_POLICY_MODE})
+#: Effectful tools a read-only session may still run when this host enforces the write
+#: fence: its shell writes only its scratch and temp (``sandbox_roots.read_only_write_roots``),
+#: so an explore child can grep, count and list (owner, 2026-11-04). Unfenced, it stays denied.
+READ_ONLY_FENCED_TOOLS = frozenset({"shell_bash"})
+
+
+def read_only_fenced_allows(tool_name: str) -> bool:
+    """Whether a read-only session may run ``tool_name`` because the fence contains it."""
+    if tool_name not in READ_ONLY_FENCED_TOOLS:
+        return False
+    from clio_agent.runtime import sandbox  # noqa: PLC0415 - keep this data module light
+
+    return sandbox.fence_enforced()
 
 
 def plans_dir() -> Path:
@@ -181,6 +194,18 @@ def default_plan_acl_rows() -> list[dict[str, Any]]:
             "band": "allow_tool",
         }
         for tool_name in PLAN_ACL_ARCHITECT_TOOLS
+    )
+    rows.extend(
+        {
+            "kind": "plan_acl",
+            "action": "allow",
+            "tool_name_pattern": tool_name,
+            "modes": [READ_ONLY_POLICY_MODE],
+            "priority": PLAN_ACL_ALLOW_TOOL_PRIORITY,
+            "band": "allow_tool",
+        }
+        for tool_name in sorted(READ_ONLY_FENCED_TOOLS)
+        if read_only_fenced_allows(tool_name)
     )
     # The plan itself is written with plan_update (gact/session_plan.py), a CLIO tool that
     # owns the plans folder; no file-mutating tool reaches it in plan mode.

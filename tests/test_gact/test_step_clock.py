@@ -43,3 +43,20 @@ def _init(ticks: Any) -> Any:
         self.parts = {}
 
     return init
+
+
+def test_code_the_step_calls_marks_the_steps_own_clock() -> None:
+    """``record`` was one figure (44-66 ms a step on L1P); the step's writes now mark
+    their own parts on the running step's clock. SABOTAGE: drop the clock's
+    registration and ``record_write`` never appears."""
+    import contextvars
+
+    def step() -> dict[str, float]:
+        step_clock.mark("record_write")  # no step yet: nothing happens
+        clock = step_clock.StepClock()
+        step_clock.mark("")
+        step_clock.mark("record_write")
+        return clock.parts
+
+    parts = contextvars.copy_context().run(step)
+    assert set(parts) == {"record_write"}

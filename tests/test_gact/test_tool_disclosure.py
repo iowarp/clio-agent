@@ -137,6 +137,14 @@ class TestPlan:
         plan = plan_disclosure(_resolution(fs={"defer": True}, shell={"defer": True}), tools)
         assert plan.deferred == frozenset()
 
+    def test_the_memory_tools_the_memory_injection_names_stay_listed(self) -> None:
+        """The memory injection names memory_search and memory_read whenever memory is
+        on; deferred, the model called memory_read blind (X2). SABOTAGE: drop them from
+        the default never-defer list and both are deferred."""
+        tools = _tools(SEARCH_TOOLS, "memory_search", "memory_read", "memory_write")
+        plan = plan_disclosure(_resolution(memory={"defer": True}), tools)
+        assert plan.deferred == {"memory_write"}
+
     def test_the_never_deferred_names_and_prefixes_are_configured(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:

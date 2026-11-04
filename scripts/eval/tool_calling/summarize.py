@@ -23,7 +23,12 @@ from scripts.eval.tool_calling.chains import is_chain_task
 from scripts.eval.tool_calling.claude_code_ref import rate_windows
 from scripts.eval.tool_calling.grade import grade
 from scripts.eval.tool_calling.metrics import run_metrics
-from scripts.eval.tool_calling.paths import DEFAULT_FIXTURES, DEFAULT_RESULTS, manifest_path
+from scripts.eval.tool_calling.paths import (
+    DEFAULT_FIXTURES,
+    DEFAULT_RESULTS,
+    is_run_file,
+    manifest_path,
+)
 from scripts.eval.tool_calling.tasks import ALL_TASKS
 
 DASH = "—"
@@ -33,7 +38,7 @@ def load_runs(results: Path) -> list[dict[str, Any]]:
     """Every run JSON under ``results`` (raw exports and streams excluded)."""
     runs = []
     for path in sorted(results.glob("*/*/run-*.json")):
-        if path.name.endswith(".export.json"):
+        if not is_run_file(path):
             continue
         run = json.loads(path.read_text(encoding="utf-8"))
         run["_path"] = str(path)
