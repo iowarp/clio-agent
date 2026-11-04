@@ -132,19 +132,22 @@ def test_exact_and_active_reads_are_bounded_by_candidates_not_retained_history(
 async def test_readiness_failure_after_last_owner_flush_remains_recoverable(
     arc: ARCMemory, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    from clio_agent.gact import task_history as task_history_module
+
     history = TaskHistory(arc)
     recovery = CoreRecovery(history)
-    append = arc.append_segment
+    create = task_history_module.create_scope_once
     fail_next = True
     ready_calls = 0
     flush_calls = 0
 
-    def faulted_append(*args: Any, **kwargs: Any) -> Any:
+    def faulted_create(*args: Any, **kwargs: Any) -> Any:
+        # Content is created once, atomically (iowarp-core 2.4), not appended.
         nonlocal fail_next
         if fail_next:
             fail_next = False
             raise OSError("readiness content write unavailable")
-        return append(*args, **kwargs)
+        return create(*args, **kwargs)
 
     async def flush() -> bool:
         nonlocal flush_calls
@@ -169,7 +172,7 @@ async def test_readiness_failure_after_last_owner_flush_remains_recoverable(
 
         await asyncio.to_thread(record)
 
-    monkeypatch.setattr(arc, "append_segment", faulted_append)
+    monkeypatch.setattr(task_history_module, "create_scope_once", faulted_create)
     recovery.on_ready = ready
     recovery.defer("last-owner-flush", flush)
     await asyncio.wait_for(recovery.drain(), 10)
