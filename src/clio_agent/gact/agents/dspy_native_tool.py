@@ -165,7 +165,9 @@ class ClioNativeTool(dspy.Tool):
                 for key, parameter in parameters.items()
                 if parameter.default is inspect.Parameter.empty
             }
-            raise ToolArgumentError(str(self.name), str(exc), dict(self.args or {}), required) from exc
+            raise ToolArgumentError(
+                str(self.name), str(exc), dict(self.args or {}), required
+            ) from exc
 
     def format_as_litellm_function_call(self) -> dict[str, Any]:
         """Return a LiteLLM schema requiring only arguments without defaults."""

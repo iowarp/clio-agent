@@ -120,7 +120,10 @@ class NativeWork:
         stream_audit("native.work", handle=admitted.handle, phase="admitted")
 
         async def execute() -> dict[str, Any]:
-            from clio_agent.tools.write_scope import tool_write_root_context  # noqa: PLC0415
+            from clio_agent.tools.write_scope import (  # noqa: PLC0415
+                tool_read_only_context,
+                tool_write_root_context,
+            )
 
             token = gact_context.set_session_id(submission.owner.session_id)
             # An isolated workflow node's shell starts in, and writes only, its folder.
@@ -131,6 +134,7 @@ class NativeWork:
                 with (
                     tool_workspace_context(submission.workspace),
                     tool_write_root_context(node),
+                    tool_read_only_context(bool(submission.confinement.get("read_only"))),
                     pinned_room(room),
                 ):
                     return await body(submission, evidence)

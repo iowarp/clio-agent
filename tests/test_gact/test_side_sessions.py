@@ -165,8 +165,11 @@ def test_side_session_allows_declared_read_only_tools(tmp_path: Path) -> None:
     ],
 )
 def test_side_session_denies_every_tool_that_does_not_declare_no_side_effects(
-    tmp_path: Path, tool: str, context: dict | None
+    tmp_path: Path, tool: str, context: dict | None, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    from clio_agent.runtime import sandbox
+
+    monkeypatch.setattr(sandbox, "fence_enforced", lambda: False)  # an unfenced host
     app = build_app(sessions_path=tmp_path / "s.json")
     with TestClient(app) as client:
         # The parent runs in bypass; that posture must not leak into the aside.
@@ -185,6 +188,43 @@ def test_side_session_denies_every_tool_that_does_not_declare_no_side_effects(
         assert len(rows) == 1
         assert rows[0]["status"] == "auto_denied"
         assert rows[0]["reason"] == REASON_READ_ONLY_SIDE_SESSION
+
+
+def test_a_fenced_host_lets_a_read_only_session_run_its_shell(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Owner, 2026-11-04: an explore child (a read-only role) needs grep, wc and find.
+    Where the OS fence is enforced, its shell runs, writing only its scratch and temp;
+    unfenced it stays denied (the parametrized test above). SABOTAGE: drop the read-only
+    allow row from ``default_plan_acl_rows`` and this is denied."""
+    from clio_agent.runtime import sandbox
+
+    monkeypatch.setattr(sandbox, "fence_enforced", lambda: True)
+    app = build_app(sessions_path=tmp_path / "s.json")
+    with TestClient(app) as client:
+        side = _open_side(client, _parent_with_history(client, app)).json()["id"]
+        gate = _make_permission_gate(app)
+        with _tool_session_context(side):
+            assert gate("shell_bash", {"cmd": "grep -c x data.csv"}) == "allow"
+            assert gate("fs_write_file", {"filepath": "x", "content": "y"}) == "deny"
+
+
+def test_a_read_only_shell_writes_only_its_scratch_and_temp(tmp_path: Path) -> None:
+    """The shell fence's territory under the read-only flag: never the workspace."""
+    from clio_agent.runtime import sandbox_roots
+    from clio_agent.tools.write_scope import tool_read_only_context
+
+    workspace = str(tmp_path / "ws")
+    with tool_read_only_context(True):
+        roots = sandbox_roots.effective_write_roots(
+            sandbox_roots.PROFILE_SHELL, workspace_root=workspace
+        )
+    assert roots == sandbox_roots.read_only_write_roots()
+    assert all(Path(workspace) not in (root, *root.parents) for root in roots)
+    full = sandbox_roots.effective_write_roots(
+        sandbox_roots.PROFILE_SHELL, workspace_root=workspace
+    )
+    assert Path(workspace) in full
 
 
 def test_a_user_allow_policy_cannot_widen_a_side_session(tmp_path: Path) -> None:
@@ -206,7 +246,7 @@ def test_a_user_allow_policy_cannot_widen_a_side_session(tmp_path: Path) -> None
         )
         gate = _make_permission_gate(app)
         with _tool_session_context(side):
-            assert gate("shell_bash", {"cmd": "rm -rf /"}) == "deny"
+            assert gate("fs_write_file", {"filepath": "x", "content": "y"}) == "deny"
 
 
 def test_the_parent_keeps_its_own_posture(tmp_path: Path) -> None:
@@ -320,3 +360,17 @@ def test_a_file_change_cannot_be_undone_from_a_side_session(tmp_path: Path) -> N
     assert resp.status_code == 422, resp.text
     assert resp.json()["error"]["error"] == "side_session_read_only"
     assert app.state.file_changes[side][0]["status"] == "applied"
+
+
+def test_a_read_only_sessions_native_call_carries_the_read_only_flag(tmp_path: Path) -> None:
+    """The shell runs on the native worker, which rebinds its context from the
+    submission's confinement: without the flag there, a read-only session's shell would
+    get the full territory. SABOTAGE: drop ``read_only`` from ``node_confinement``."""
+    from clio_agent.gact.node_folders import node_confinement
+
+    app = build_app(sessions_path=tmp_path / "s.json")
+    with TestClient(app) as client:
+        parent = _parent_with_history(client, app)
+        side = _open_side(client, parent).json()["id"]
+        assert node_confinement(app, side).get("read_only") is True
+        assert "read_only" not in node_confinement(app, parent)

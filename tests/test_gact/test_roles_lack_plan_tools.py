@@ -56,8 +56,16 @@ def test_a_read_only_session_is_not_offered_a_tool_its_gate_refuses(
         setattr(func, TOOL_OBSERVED_ATTR, True)
         return SimpleNamespace(name=name, func=func)
 
+    from clio_agent.runtime import sandbox
+
     monkeypatch.setattr(side_sessions, "is_read_only_side_session", lambda session: True)
     monkeypatch.setattr(session_tool_posture, "_active_session", lambda: object())
-    tools = [routed("shell_bash"), routed("fs_read_file"), routed("ext_lookup")]
+    tools = [routed("shell_bash"), routed("fs_write_file"), routed("fs_read_file"),
+             routed("ext_lookup")]  # fmt: skip
+    monkeypatch.setattr(sandbox, "fence_enforced", lambda: False)  # an unfenced host
     kept = session_tool_posture.restrict_tools_to_session_posture(tools)
     assert [tool.name for tool in kept] == ["fs_read_file", "ext_lookup"]
+    # Fenced, the shell is offered (it writes only scratch and temp); writes are not.
+    monkeypatch.setattr(sandbox, "fence_enforced", lambda: True)
+    kept = session_tool_posture.restrict_tools_to_session_posture(tools)
+    assert [tool.name for tool in kept] == ["shell_bash", "fs_read_file", "ext_lookup"]

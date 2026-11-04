@@ -38,9 +38,13 @@ REASON_CATALOG_NOT_READ_ONLY = "gate_tool_not_read_only"
 
 
 def _catalog_refuses(name: str) -> bool:
-    """Whether the catalog knows ``name`` and the read-only gate would refuse it."""
+    """Whether the catalog knows ``name`` and the read-only gate would refuse it (a
+    fenced shell is allowed: ``plan_acl.read_only_fenced_allows``)."""
+    from clio_agent.gact.runtime.plan_acl import read_only_fenced_allows  # noqa: PLC0415
     from clio_agent.tools.catalog import get_tool_entry  # noqa: PLC0415
 
+    if read_only_fenced_allows(name):
+        return False
     entry = get_tool_entry(name)
     return entry is not None and not ("read" in entry.tags and "write" not in entry.tags)
 

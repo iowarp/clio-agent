@@ -55,7 +55,14 @@ def node_confinement(app: Any, session_id: str) -> dict[str, Any]:
     """A native submission's confinement: the session's node folder, when it has one."""
 
     folder = session_node_folder(app, session_id)
-    return {"write_root": folder} if folder else {}
+    confinement: dict[str, Any] = {"write_root": folder} if folder else {}
+    sessions = getattr(getattr(app, "state", None), "sessions", None)
+    session = sessions.get(session_id) if sessions is not None and session_id else None
+    from clio_agent.gact.side_sessions import is_read_only_side_session  # noqa: PLC0415
+
+    if is_read_only_side_session(session):
+        confinement["read_only"] = True  # its shell writes only scratch and temp
+    return confinement
 
 
 def isolation_refusal() -> dict[str, Any] | None:
