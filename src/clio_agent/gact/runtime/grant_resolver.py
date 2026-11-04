@@ -34,13 +34,11 @@ from __future__ import annotations
 
 import fnmatch
 from collections.abc import Mapping
-from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
 # The full raw action vocabulary a policy row may carry (never collapsed).
 from clio_agent.gact.runtime.permission_actions import POLICY_ACTIONS as _VALID_ACTIONS
-from clio_agent.gact.runtime.permission_actions import POLICY_ALLOWING
 from clio_agent.gact.runtime.plan_acl import (
     PLAN_ACL_ALLOW_TOOL_PRIORITY,
     PLAN_ACL_ARCHITECT_TOOLS,
@@ -72,9 +70,17 @@ KIND_ROOT = "fs_root"
 #: (subject in ``tool_name_pattern``) and are matched by the shared axis step below.
 KIND_PLAN_ACL = "plan_acl"
 KIND_HOOK = "hook"
+#: A site the agent's browser may load (browser plan BR8): a host row like ``domain``, but a
+#: different grant (browsing with the person's sign-ins, not a process reaching a host), so it
+#: honours session and workspace scope and never answers a ``domain`` resolve.
+KIND_BROWSER_HOST = "browser_host"
+#: The kinds whose subject is ``host_pattern``.
+HOST_KINDS = frozenset({KIND_DOMAIN, KIND_BROWSER_HOST})
 
 #: The full set of explicit ``kind`` discriminators a stored row may declare.
-_VALID_KINDS = frozenset({KIND_TOOL, KIND_DOMAIN, KIND_ROOT, KIND_PLAN_ACL, KIND_HOOK})
+_VALID_KINDS = frozenset(
+    {KIND_TOOL, KIND_DOMAIN, KIND_ROOT, KIND_PLAN_ACL, KIND_HOOK, KIND_BROWSER_HOST}
+)
 
 #: The tool-axis kinds: all carry their subject in ``tool_name_pattern``, so :func:`_kind_admitted`
 #: treats them as interchangeable — a ``plan_acl``/``hook`` row is admissible to a ``kind="tool"``
@@ -267,7 +273,7 @@ def _path_pattern_matches(path_pattern: str, path: str) -> bool:
 def _subject_matches(kind: str, policy: Mapping[str, Any], pattern: str, path: str) -> bool:
     """Return whether ``policy``'s subject encoding matches this ``kind`` call."""
 
-    if kind == KIND_DOMAIN:
+    if kind in HOST_KINDS:
         host_pattern = str(policy.get("host_pattern") or "")
         if not host_pattern:
             return False
@@ -485,6 +491,8 @@ def _collect_matches(
     if kind == KIND_DOMAIN and (not pattern or not workspace_id):
         # _host_action_for guard: an empty host or unknown workspace can never match a host row.
         return []
+    if kind == KIND_BROWSER_HOST and not pattern:
+        return []
     total = len(policies)
     matches: list[tuple[int, str, bool]] = []
     for index, policy in enumerate(policies):
@@ -668,116 +676,14 @@ def _plan_lock_is_the_cause(
     return _winning_action(edit_matches) != "deny"
 
 
-@dataclass(frozen=True)
-class GrantRecord:
-    """A typed view over one ``permission_policies`` row, discriminated by ``kind``.
-
-    The store holds all three subject encodings in one list, so a grant is a ``kind`` view over
-    existing fields — no data migration. :meth:`from_policy_row` synthesizes ``kind`` from whichever
-    pattern field is set for a legacy row that lacks it; :meth:`to_policy_row` round-trips back.
-    ``decision`` is the coarse ``allow``/``deny``/``ask`` value (the raw ``allow_session`` /
-    ``allow_workspace`` stickiness is carried by ``scope``); enforcement always reads the raw store
-    via :func:`resolve`, so this typed view never gates on its own. ``modes``/``on`` mirror the
-    optional row-level axis fields (P0.2 #1060) as ``tuple[str, ...]`` (frozen-dataclass
-    hashability); both default to empty, matching the "absent axis = matches anything" semantics
-    :func:`_axis_matches` applies at enforcement.
-    """
-
-    kind: str
-    pattern: str
-    decision: str
-    scope: str
-    scope_id: str = ""
-    grantor: str = ""
-    created_from_permission_id: str = ""
-    priority: int | None = None
-    modes: tuple[str, ...] = ()
-    on: tuple[str, ...] = ()
-
-    @staticmethod
-    def _kind_for_row(row: Mapping[str, Any]) -> str:
-        explicit = str(row.get("kind") or "").strip()
-        if explicit in _VALID_KINDS:
-            return explicit
-        if str(row.get("host_pattern") or ""):
-            return KIND_DOMAIN
-        if str(row.get("path_pattern") or ""):
-            return KIND_ROOT
-        return KIND_TOOL
-
-    @classmethod
-    def from_policy_row(cls, row: Mapping[str, Any]) -> "GrantRecord":
-        """Build a typed grant from a stored policy row, synthesizing ``kind`` when absent."""
-
-        kind = cls._kind_for_row(row)
-        if kind == KIND_DOMAIN:
-            pattern = str(row.get("host_pattern") or "")
-        elif kind == KIND_ROOT:
-            pattern = str(row.get("path_pattern") or "")
-        else:
-            pattern = str(row.get("tool_name_pattern") or "*")
-        action = str(row.get("action") or "").lower()
-        if action in POLICY_ALLOWING:
-            decision = "allow"
-        elif action == "deny":
-            decision = "deny"
-        else:
-            decision = "ask"
-        raw_priority = row.get("priority")
-        priority = (
-            raw_priority
-            if isinstance(raw_priority, int) and not isinstance(raw_priority, bool)
-            else None
-        )
-        raw_modes = row.get("modes")
-        modes = tuple(str(m) for m in raw_modes) if isinstance(raw_modes, list) else ()
-        raw_on = row.get("on")
-        on = tuple(str(e) for e in raw_on) if isinstance(raw_on, list) else ()
-        return cls(
-            kind=kind,
-            pattern=pattern,
-            decision=decision,
-            scope=str(row.get("scope") or "").lower(),
-            scope_id=str(row.get("scope_id") or ""),
-            grantor=str(row.get("grantor") or ""),
-            created_from_permission_id=str(row.get("created_from_permission_id") or ""),
-            priority=priority,
-            modes=modes,
-            on=on,
-        )
-
-    def to_policy_row(self) -> dict[str, Any]:
-        """Round-trip back to a ``permission_policies`` row shape (kind + subject field)."""
-
-        action = self.decision if self.decision in {"deny", "ask"} else "allow"
-        row: dict[str, Any] = {
-            "kind": self.kind,
-            "scope": self.scope,
-            "scope_id": self.scope_id,
-            "action": action,
-        }
-        if self.kind == KIND_DOMAIN:
-            row["host_pattern"] = self.pattern
-        elif self.kind == KIND_ROOT:
-            row["path_pattern"] = self.pattern
-        else:
-            row["tool_name_pattern"] = self.pattern
-        if self.grantor:
-            row["grantor"] = self.grantor
-        if self.created_from_permission_id:
-            row["created_from_permission_id"] = self.created_from_permission_id
-        if self.priority is not None:
-            row["priority"] = self.priority
-        if self.modes:
-            row["modes"] = list(self.modes)
-        if self.on:
-            row["on"] = list(self.on)
-        return row
-
+# The typed row view lives in its own module (no accretion); re-exported here for importers.
+from clio_agent.gact.runtime.grant_record import GrantRecord  # noqa: E402
 
 __all__ = [
     "EXTERNAL_MCP_CONTEXT_KIND",
     "GrantRecord",
+    "HOST_KINDS",
+    "KIND_BROWSER_HOST",
     "KIND_DOMAIN",
     "KIND_HOOK",
     "KIND_PLAN_ACL",

@@ -24,6 +24,8 @@ UI_PORT="${UI_PORT:-5173}"
 FIXTURE_PORT="${FIXTURE_PORT:-8790}"
 export CLIO_LM_PROVIDER="${CLIO_LM_PROVIDER:-claude_code}"
 export CLIO_LM_MODEL="${CLIO_LM_MODEL:-claude-haiku-5-5}"
+# The cloud stack runs as root, where Chromium's sandbox cannot start (browser ledger BR11).
+export CLIO_BROWSER_ALLOW_UNSANDBOXED="${CLIO_BROWSER_ALLOW_UNSANDBOXED:-1}"
 
 alive() { [ -f "$1" ] && kill -0 "$(cat "$1")" 2>/dev/null; }
 

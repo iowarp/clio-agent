@@ -576,6 +576,7 @@ from clio_agent.gact.permission_gate import (  # noqa: E402,F401
     _policy_action_for_tool,
     _record_resolved_permission,
 )
+from clio_agent.gact.session_processes import close_all_processes
 from clio_agent.gact.sessions import SessionStore, _default_store_path
 
 # Prediction rendering + the stream-fallback ledger (gact/streaming.py, #714),
@@ -762,6 +763,7 @@ async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
                 "one or more MCP Apps failed explicit host cleanup; "
                 "child transport shutdown will run the server cleanup backstop"
             )
+        await asyncio.to_thread(close_all_processes)  # kernels and browsers (BR23)
         try:
             loop = asyncio.get_running_loop()
             await loop.run_in_executor(

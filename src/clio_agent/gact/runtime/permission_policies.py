@@ -41,6 +41,7 @@ from clio_agent.gact.runtime.grant_resolver import (
     _VALID_KINDS as VALID_KINDS,  # kind enumeration owner (B4 #1057 — validate at the boundary)
 )
 from clio_agent.gact.runtime.grant_resolver import (
+    KIND_BROWSER_HOST,
     KIND_DOMAIN,
     migrate_priorities,
     next_append_priority,
@@ -60,6 +61,10 @@ _PERMISSION_POLICY_ACTIONS = set(POLICY_ACTIONS)
 #: SAME interactive permission gate as a destructive tool call — a new request KIND, not a new
 #: gate (⚑ #974.8) — so ``allow_workspace`` derives a sticky ``host_pattern`` policy below.
 NETWORK_EGRESS_REQUEST_KIND = "network_egress"
+#: The request kind of the browser's per-host question (browser plan BR8). Its sticky answer
+#: is a ``browser_host`` row, not a ``domain`` row: browsing a site with the person's sign-ins
+#: is a different grant from a sandboxed process reaching a host.
+BROWSER_HOST_REQUEST_KIND = KIND_BROWSER_HOST
 
 
 def _permission_host_from_args(args: Mapping[str, Any]) -> str:
@@ -309,6 +314,15 @@ def _append_permission_policy_from_resolution(
         # ``"*"`` glob was the fleet-egress kind-bleed vector).
         policy["host_pattern"] = host
         policy["kind"] = KIND_DOMAIN
+        policy.pop("tool_name_pattern", None)
+        return _appended(app, policy)
+    if str(row.get("kind") or "") == BROWSER_HOST_REQUEST_KIND:
+        host = _permission_host_from_args(args)
+        if not host:
+            logger.warning("browser host policy skipped reason=browser_grant_missing_host")
+            return None
+        policy["host_pattern"] = host
+        policy["kind"] = KIND_BROWSER_HOST
         policy.pop("tool_name_pattern", None)
         return _appended(app, policy)
     path = _permission_path_from_args(args)

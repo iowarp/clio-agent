@@ -450,7 +450,7 @@ RATCHET_BASELINE: dict[str, int] = {
     # Ratchet down 2469 -> 2467 (naming reversal): removed the now-unneeded
     # codex->chatgpt boot migration call (the provider id never changed).
     # Ratchet down 2435 -> 2419: the transcript-store boot moved to gact/transcript_file.py.
-    "src/clio_agent/gact/app.py": 1820,
+    "src/clio_agent/gact/app.py": 1822,  # +2: one shutdown call for kernels and browsers (BR23)
     # #971 GAP A (S5 live gate): the artifact mint funnel was at the 800 cap; +24
     # adds the designation-by-RESULT channel (ndp_stage_resource writes an
     # intermediate whose path rides only ``local_path`` in the result — the arg
@@ -676,7 +676,7 @@ RATCHET_BASELINE: dict[str, int] = {
     # gact/compaction.py::compact_session_context (one operation, two triggers); the
     # whole manual-compact body, gact/compact_memory.py's import, and the dead
     # session_archives snapshot are gone -- 1407 -> 1176.
-    "src/clio_agent/gact/routes/sessions.py": 820,  # fork and question routes have their own owners
+    "src/clio_agent/gact/routes/sessions.py": 822,  # fork and question routes have their own owners; +2 BR23
     # #1215 S5: crossed the 800 new-file cap (793 -> 809) for enrich_turn_context —
     # a thin timed combinator wrapping the TWO existing enrichment calls
     # (_enrich_with_context_files + _enrich_with_requested_memory_search) in ONE
@@ -859,7 +859,7 @@ RATCHET_BASELINE: dict[str, int] = {
     # #1201 (adversarial review, PR #1202): +4 to register the mcp_yaml doctor
     # sub-check (import + the probe_mcp_yaml_declarations() call); the probe
     # logic lives in the owner module runtime/mcp_launcher.py.
-    "src/clio_agent/runtime/status.py": 1101,
+    "src/clio_agent/runtime/status.py": 1103,  # +2: the browser doctor row (BR22)
     # #932: +62 for preloaded tool definitions (start() without the list_tools
     # fan-out) and namespace-direct call routing with lazy per-namespace
     # clients — the executor IS the owner module for this.

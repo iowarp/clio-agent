@@ -76,6 +76,17 @@ These resolve through `clio_agent.conf`: a value under the dotted key in `config
 | `CLIO_ARTIFACT_PROVENANCE_PROVIDER` | `provenance.artifacts.provider` | str | `native` | `src/clio_agent/gact/artifacts/provenance/factory.py` |
 | `CLIO_ARTIFACT_PROVENANCE_QUEUE_SIZE` | `provenance.artifacts.queue_size` | int | `4096` | `src/clio_agent/gact/artifacts/provenance/factory.py` |
 | `CLIO_AUTOCOMPACT_PCT` | `autocompact.pct` | str | `0.85` | `src/clio_agent/gact/runtime/context_tokens.py` |
+| `CLIO_BROWSER_ACTION_TIMEOUT_S` | `browser.action_timeout_s` | float | `30.0` | `src/clio_agent/gact/browser/settings.py` |
+| `CLIO_BROWSER_ALLOW_UNSANDBOXED` | `browser.allow_unsandboxed` | bool | `false` | `src/clio_agent/gact/browser/settings.py` |
+| `CLIO_BROWSER_BACKEND` | `browser.backend` | str | `managed` | `src/clio_agent/gact/browser/settings.py` |
+| `CLIO_BROWSER_CDP_URL` | `browser.cdp_url` | str | _(unset)_ | `src/clio_agent/gact/browser/settings.py` |
+| `CLIO_BROWSER_FRAME_QUALITY` | `browser.frame_quality` | int | `70` | `src/clio_agent/gact/browser/settings.py` |
+| `CLIO_BROWSER_FRAME_WIDTH` | `browser.frame_width` | int | `1280` | `src/clio_agent/gact/browser/settings.py` |
+| `CLIO_BROWSER_GRANTED_HOSTS` | `browser.granted_hosts` | list | _(unset)_ | `src/clio_agent/gact/browser/settings.py` |
+| `CLIO_BROWSER_IDLE_MINUTES` | `browser.idle_minutes` | float | `30.0` | `src/clio_agent/gact/browser/settings.py` |
+| `CLIO_BROWSER_MAX_PAGES` | `browser.max_pages` | int | `12` | `src/clio_agent/gact/browser/settings.py` |
+| `CLIO_BROWSER_PERSON_WINDOW_S` | `browser.person_window_s` | float | `2.0` | `src/clio_agent/gact/browser/settings.py` |
+| `CLIO_BROWSER_PROFILE` | `browser.profile` | str | `default` | `src/clio_agent/gact/browser/settings.py` |
 | `CLIO_CAPTURE_REASONING` | `runtime.capture_reasoning` | bool | `true` | `src/clio_agent/gact/usage.py` |
 | `CLIO_CLAUDE_CODE_AUTH_STATUS_TIMEOUT_S` | `providers.claude_code.auth_status_timeout_s` | float | `20.0` | `src/clio_agent/providers/model_discovery/claude_code.py` |
 | `CLIO_CLAUDE_CODE_MAX_CONCURRENT_PROCESSES` | `providers.claude_code.max_concurrent_processes` | float | `4.0` | `src/clio_agent/providers/claude_code_stream_bounds.py` |

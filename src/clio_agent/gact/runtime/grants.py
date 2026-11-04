@@ -265,7 +265,7 @@ def emit_boundary_for_derived_policy(
         return
     emit_boundary_granted(
         app,
-        kind=KIND_DOMAIN,
+        kind=str(policy.get("kind") or KIND_DOMAIN),  # domain, or browser_host (BR8)
         scope=SCOPE_WORKSPACE if str(policy.get("scope")) == SCOPE_WORKSPACE else SCOPE_SESSION,
         grantor=GRANTOR_MODEL_REQUEST,
         pattern=host,
