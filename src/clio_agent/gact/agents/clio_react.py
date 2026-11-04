@@ -83,7 +83,7 @@ from clio_agent.gact.agents.tool_concurrency import run_bounded
 from clio_agent.gact.context import active_app
 from clio_agent.gact.highway_writer import flush_session
 from clio_agent.gact.injection_parts import emit_injection
-from clio_agent.lm.engines.text_tools import CALLABLE_TOOLS, INVALID_TOOL_CALL
+from clio_agent.lm.engines.text_tools import CALLABLE_TOOL_DEFS, CALLABLE_TOOLS, INVALID_TOOL_CALL
 from clio_agent.lm.request_builder import sendable_lm_kwargs
 from clio_agent.lm.request_config import config_from_lm_kwargs
 from clio_agent.runtime.fresh_loop import run_in_new_loop
@@ -469,12 +469,14 @@ class _Loop:
             return built
 
         callable_token = CALLABLE_TOOLS.set(frozenset(self.agent.tools))
+        defs_token = CALLABLE_TOOL_DEFS.set(self.agent.tools)
         try:
             response = recover_stream(self.lm, request, _call_lm, _raise_if_cancelled)
         except (ContextWindowExceededError, ContextLengthError):
             return self._stop("context_window_exceeded")
         finally:
             CALLABLE_TOOLS.reset(callable_token)
+            CALLABLE_TOOL_DEFS.reset(defs_token)
         if response.finish_reason == "length":
             # A cut-off reply is not an answer or a complete call: a typed turn failure.
             from clio_agent.lm.policy import LMOutputTruncatedError  # noqa: PLC0415

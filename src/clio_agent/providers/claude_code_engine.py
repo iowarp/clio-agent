@@ -60,6 +60,7 @@ from clio_agent.lm.engines.text_tools import (
     INVALID_TOOL_CALL,
     ReplySplit,
     StreamSplitter,
+    ToolSchemas,
     callable_tools,
     render_messages,
     render_system,
@@ -187,11 +188,13 @@ class AsyncClaudeCodeEngine:
             available_tools=callable_tools(
                 [tool.name for tool in request.tools if isinstance(tool, FunctionTool)]
             ),
-            schemas={
-                tool.name: tool.parameters
-                for tool in request.tools
-                if isinstance(tool, FunctionTool)
-            },
+            schemas=ToolSchemas(
+                {
+                    tool.name: tool.parameters
+                    for tool in request.tools
+                    if isinstance(tool, FunctionTool)
+                }
+            ),
         )
         yield StreamStartEvent(model=request.model)
         received = False

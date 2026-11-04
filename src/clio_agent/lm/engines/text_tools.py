@@ -41,7 +41,9 @@ from dspy.lm15 import (
 logger = logging.getLogger(__name__)
 
 __all__ = [
+    "CALLABLE_TOOL_DEFS",
     "CALLABLE_TOOLS",
+    "ToolSchemas",
     "INVALID_TOOL_CALL",
     "callable_tools",
     "FENCE",
@@ -66,6 +68,36 @@ CALLABLE_TOOLS: ContextVar[frozenset[str]] = ContextVar("clio_callable_tools", d
 def callable_tools(listed: Collection[str]) -> frozenset[str]:
     """``listed`` plus every tool the running agent may call unlisted."""
     return frozenset(listed) | CALLABLE_TOOLS.get()
+
+
+#: The running agent's tools by name, so a tool it calls unlisted (a deferred tool loaded
+#: with search_tools) is read against its own parameter schema.
+CALLABLE_TOOL_DEFS: ContextVar[Mapping[str, Any] | None] = ContextVar(
+    "clio_callable_tool_defs", default=None
+)
+
+
+class ToolSchemas(dict):  # type: ignore[type-arg]
+    """Listed tools' parameter schemas; an unlisted callable tool's on first use.
+
+    Without it a loaded deferred tool had no schema, so the invoke protocol read every
+    parameter as text: ``recall_context(ids=[...])`` arrived as the string ``'[...]'``
+    and was refused (L1R, 2026-11-04).
+    """
+
+    def get(self, name: Any, default: Any = None) -> Any:  # type: ignore[override]
+        if name in self:
+            return self[name]
+        tool = (CALLABLE_TOOL_DEFS.get() or {}).get(name)
+        if tool is None:
+            return default
+        try:
+            schema = tool.format_as_litellm_function_call()["function"]["parameters"]
+        except (AttributeError, KeyError, TypeError) as exc:
+            logger.warning("No parameter schema for unlisted tool %s: %s", name, exc)
+            return default
+        self[name] = schema
+        return schema
 
 
 _TOOL_RULES = """\

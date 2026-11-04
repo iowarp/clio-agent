@@ -160,3 +160,29 @@ def test_the_stream_never_shows_call_markup_or_its_pieces(invoke: None) -> None:
         shown = "".join(splitter.push(reply[i : i + size]) for i in range(0, len(reply), size))
         assert "<" not in shown and "function" not in shown, (size, shown)
         assert shown.startswith("Reading the shards.")
+
+
+def test_a_loaded_deferred_tool_is_read_against_its_own_schema(invoke: None) -> None:
+    """On L1R the agent loaded recall_context with search_tools and called it with
+    ``ids=["cmp_..."]``: unlisted, it had no schema, so the list arrived as the string
+    '["cmp_..."]' and ``limit`` as '10', and the tool refused both. SABOTAGE: pass a
+    plain dict of the listed schemas (what the engine passed) and ``ids`` is a string
+    again."""
+
+    class _Recall:
+        def format_as_litellm_function_call(self) -> dict:
+            return {"function": {"parameters": {"properties": {
+                "ids": {"type": "array", "items": {"type": "string"}},
+                "query": {"type": "string"}, "limit": {"type": "integer"}}}}}  # fmt: skip
+
+    reply = '<invoke name="recall_context">\n<parameter name="ids">["cmp_1"]</parameter>\n' \
+        '<parameter name="limit">10</parameter>\n</invoke>'  # fmt: skip
+    token = text_tools.CALLABLE_TOOL_DEFS.set({"recall_context": _Recall()})
+    try:
+        split = split_reply(reply, call_prefix="c", available_tools=[*TOOLS, "recall_context"],
+                            schemas=text_tools.ToolSchemas(SCHEMAS))  # fmt: skip
+    finally:
+        text_tools.CALLABLE_TOOL_DEFS.reset(token)
+    assert [(c.name, c.input) for c in split.calls] == [
+        ("recall_context", {"ids": ["cmp_1"], "limit": 10})
+    ]
