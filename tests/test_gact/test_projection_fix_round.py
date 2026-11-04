@@ -422,7 +422,9 @@ def test_the_execution_route_honours_include_children(tmp_path, include_children
     assert body["lineage_truncated"] is False
 
 
-def test_one_unreadable_child_does_not_cost_the_parent_its_timeline() -> None:
+def test_one_unreadable_child_does_not_cost_the_parent_its_timeline(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     """The ARC read raised straight out of the route: a 500 for the whole query.
 
     A child whose event segments cannot be read is one gap, not a failed query --
@@ -431,7 +433,11 @@ def test_one_unreadable_child_does_not_cost_the_parent_its_timeline() -> None:
 
     from types import SimpleNamespace
 
+    from clio_agent.gact import task_event_merge
     from clio_agent.gact.routes.provenance import _native_events
+
+    # The timeline merges each session's task-event lane in; this fake store has none.
+    monkeypatch.setattr(task_event_merge, "_lane", lambda arc, session_id: iter(()))
 
     def iterate(session_id: str) -> list[Any]:
         if session_id == "child":
