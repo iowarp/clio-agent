@@ -210,6 +210,26 @@ def _clean_tool_timeouts(tool_timeouts: Mapping[str, float] | None) -> dict[str,
     return cleaned
 
 
+def _builtin_namespace_server(namespace: str) -> Any:
+    """CLIO's in-process server for a built-in namespace (``fs``, ``shell``), else None.
+
+    A built-in call sent to the composite gateway was resolved by listing every mounted
+    server, which starts each declared server not yet running: a session's first
+    ``fs_list_directory`` waited about 2.5 s on the ``web`` server's start (X1,
+    2026-11; a 2 s server took a first call to 3.7 s in a probe). Declared namespaces
+    already get a client of their own; the built-ins now do too.
+    """
+    if namespace == "fs":
+        from clio_agent.tools.servers.fs_server import fs_server  # noqa: PLC0415
+
+        return fs_server
+    if namespace == "shell":
+        from clio_agent.tools.servers.shell_server import shell_server  # noqa: PLC0415
+
+        return shell_server
+    return None
+
+
 class AsyncMCPToolExecutor(AsyncNamespacePreparationMixin):
     """Async FastMCP execution boundary with no background thread.
 
@@ -384,6 +404,8 @@ class AsyncMCPToolExecutor(AsyncNamespacePreparationMixin):
                         return _MCPCallOutcome(json.dumps(value), result, "shell")
                     namespace, _, bare = name.partition("_")
                     proxy = self._namespace_servers.get(namespace)
+                    if proxy is None and bare and name in self._mcp_tools:
+                        proxy = _builtin_namespace_server(namespace)
                     if proxy is not None:
                         configured, decision = resolve_and_build_direct_client(
                             namespace, self._clio_namespace_direct_factories
