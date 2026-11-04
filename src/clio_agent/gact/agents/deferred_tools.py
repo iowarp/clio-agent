@@ -66,6 +66,10 @@ _NEVER_DEFER: Sequence[str] = (
     "plan_exit",
     "fs_*",
     "shell_*",
+    # The memory injection points at these by name whenever memory is on (the only
+    # time they exist); deferred, the model called memory_read blind (X2, path= for name=).
+    "memory_search",
+    "memory_read",
 )
 #: Built-in tool groups named like servers (``fs_read_file``), for ``run_code``'s stubs.
 _BUILTIN_SERVERS = frozenset({"fs", "shell", "web"})

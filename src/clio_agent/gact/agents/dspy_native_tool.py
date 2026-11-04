@@ -73,6 +73,22 @@ def _parsed(func: Callable[..., Any], arg_desc: dict[str, str] | None) -> _Parse
     return hit
 
 
+class ToolArgumentError(ValueError):
+    """A call's arguments did not fit the tool: the reason and the arguments it takes.
+
+    The model reads this as the call's result, so it is a sentence, not a stack: on X2 a
+    ``memory_read(path=...)`` came back as a 1,000-character traceback ending in "Arg
+    path is not in the tool's args.", without the name it takes (``name``).
+    """
+
+    def __init__(self, tool: str, reason: str, args: dict[str, Any], required: set[str]) -> None:
+        listed = ", ".join(
+            f"{key} ({(schema or {}).get('type', 'any')}{', required' if key in required else ''})"
+            for key, schema in args.items()
+        )
+        super().__init__(f"{tool}: {reason} Its arguments are: {listed or 'none'}.")
+
+
 class ClioNativeTool(dspy.Tool):
     """DSPy tool whose JSON schema honors declared argument defaults."""
 
@@ -144,7 +160,12 @@ class ClioNativeTool(dspy.Tool):
             reason = f"invalid arguments: {exc}"
             execution.notify_global_tool_observer(str(self.name), kwargs, "started")
             execution.notify_global_tool_observer(str(self.name), kwargs, "completed", reason)
-            raise
+            required = {
+                key
+                for key, parameter in parameters.items()
+                if parameter.default is inspect.Parameter.empty
+            }
+            raise ToolArgumentError(str(self.name), str(exc), dict(self.args or {}), required) from exc
 
     def format_as_litellm_function_call(self) -> dict[str, Any]:
         """Return a LiteLLM schema requiring only arguments without defaults."""
