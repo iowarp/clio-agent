@@ -356,6 +356,28 @@ The attention-provenance suite's 100 OPAL-style chains (`spotter-ai-genesis/expe
 14. **The chains are easy for this model and do not exercise tools** (their tool outputs are given inline), so they are not a test: their use is as a probe of the request-to-agent-to-provider-to-model path, one chain at a time, and no more batches are run. They did expose a per-turn cost: on turns with one 2 to 4 s model call, 0.55 to 2.65 s passed between the request and its model call. Only a session's first turn was timed (`bringup_timing`), so this was invisible. Every turn is now timed up to its model request, with the module build split into parts (`7cfa39ad`, `174059a2`).
 15. **Each turn re-derived every native tool's argument schemas (fixed, `1affb1c0`).** The module build was 60 to 85% of a turn's start, and inside it DSPy's `Tool._parse_function` built a pydantic `TypeAdapter` and JSON schema per argument for about 80 native tools and again for their recording wrappers, each turn. The derivation is now kept per function shape. Later turns' start, mean of turns 2 to 7: C5 579 to 162 ms, C6 489 to 153 ms; module build 329 to 112 and 353 to 101 ms; all rounds still correct. The before runs overlapped a test suite and two leftover clio-core daemons (load about 12 on 4 CPUs, against about 5 after), so part of the drop is load; the offline profile alone puts 0.2 to 0.35 s per turn on the derivation (native tools 159-400 to 15 ms, wrapping 45 to 13 ms). Remaining per turn: tool assembly 57 to 117 ms; single 2 KB `_events` puts of the turn's bring-up events that occasionally take 300 to 500 ms under load and sit on the critical path (not fixed).
 
+### X1: exploring the real OPAL data against Claude Code (2026-11-03/04, `claude-sonnet-5-5`)
+
+`X1` is the plain request "Explore this dataset and understand what it contains and how it is shaped." on the OPAL `appl-vision` export (434 `.js` shards, 422 MB, two snapshots, seven modalities; `scripts/eval/tool_calling/explore.py`). Each run works in a fresh copy; the Claude Code reference runs the CLI with its defaults on the same copy.
+
+| Configuration | Runs | Wall (median) | Model | Tools | First call prompt |
+| --- | --- | --- | --- | --- | --- |
+| CLIO before (`x1`, `x1p`) | 2 | 86.9, 97.3 s | 59.6, 64.6 s | 23.8, 28.5 s | 33.9k |
+| CLIO on `44daf995` (`x1f`) | 3 | **57.7 s** (54.4-59.3) | 44.1 s | 12.4 s | 18.9k |
+| Claude Code | 3 | **59.0 s** (51.6-70.8) | 49.1 s | 16.4 s | 18.4k (13.1k by `/context`) |
+
+Both answers are of a similar standard: checked against the data, CLIO's trait widths, rounds and row counts were exact on `x1d`, and Claude Code found the missing-measurement encoding and negative `Fv`; each made one or two wrong claims. A single run (`x1e`, 28.9 s) was faster only because the model stopped early, and it misread the empty file, so single runs are not compared.
+
+16. **Fixed this round, each found in the X1 traces:**
+    - **Built-ins listed by default (`66d322a7`).** 54 of the 67 listed tools were never called in 464 sessions; built-ins are now deferred behind `search_tools` unless they are the core loop, as MCP servers are. First prompt 33.9k to 18.9k tokens. Claude Code defers 13.9k of its own tools the same way.
+    - **Process-tree settle waited for the system to reap zombies (`663256f7`).** A command with a background or substituted process waited about 2 s for this container's init to reap the exited child: `diff <(...) <(...)`, 22 ms native, took 2.2 s.
+    - **Search and glob text repeated the folder on every line (`4b6e789f`).** A 434-file glob was 42k characters, 32k of them prefix; now paths are relative to the searched folder (22.8k).
+    - **A tool server's first call imported the model stack (`f7ea0cf9`).** Measuring a result's size looked up the active LM by importing dspy and the OpenAI SDK; the sandbox imported its doctor. In-process first shell call 2,856 to 440 ms.
+    - **Built-in calls went through the composite gateway (`44daf995`).** FastMCP resolved `fs_list_directory` by listing every mounted server, starting the `web` server; the session's first `fs` call took about 2.5 s. Built-ins now go to their own server: first calls 26-104 ms.
+    - **Orientation calls (`96a25240`).** Connected sources and uploaded resources now ride `session_facts` instead of `connected_data_status` and `workspace_resource_list` calls.
+17. **Open: a shell call still costs 0.3-0.7 s more than its command** (replays of `x1f` commands: 453, 610, 334, 729, 452, 536 ms over native). The shell server itself takes about 20 ms warm; the cost is in the built-in boundary (`native_call`: assignment read through the history writer's queue, permission gate, task submission and inline collection). `ed2b2b88` records one `builtin.native_call` stream-audit row per call with each phase's time.
+18. **Observed: native tool-call markup in the visible text.** In 2 of 396 runs (`head1` H4, `x1`) the model wrote a fragment of Claude's native call markup before a correct call block; it reaches the transcript as prose. Not fixed.
+
 ### Targets
 
 The plan asked for targets after the base and before Phase 1; they were not written then. The targets below are the plan's own examples (section "Targets"), judged against the final runs, so they are a check, not a prediction.
