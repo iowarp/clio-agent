@@ -4,7 +4,8 @@ A session's plugin set is its pinned resolution (``gact.agents.resolution``). Ea
 non-core plugin's declarations are read from its root once per plugin version (the
 resolution's ``text_digest``); core's come from :func:`~clio_agent.injections.
 declarations.core_injections`. A session with no pinned resolution yet (before its
-first turn) has no plugin injections; nothing is pinned from here.
+first turn), or whose pin no longer resolves, has no plugin injections; nothing is
+pinned from here.
 """
 
 from __future__ import annotations
@@ -34,6 +35,7 @@ def plugin_injections(app: Any, session_id: str) -> list[Injection]:
         return []
     from clio_agent.gact.agents.resolution import (  # noqa: PLC0415
         AGENT_RESOLUTION_KEY,
+        SessionAgentUnavailable,
         pinned_resolution,
     )
 
@@ -41,7 +43,14 @@ def plugin_injections(app: Any, session_id: str) -> list[Injection]:
     digest = str(metadata.get(AGENT_RESOLUTION_KEY) or "")
     if not digest:
         return []
-    resolution = pinned_resolution(app, digest)
+    try:
+        resolution = pinned_resolution(app, digest)
+    except SessionAgentUnavailable:
+        # A pin that does not resolve has no plugins to read. The turn cannot run on
+        # it: its agent resolution, the owner of that error, fails it typed
+        # (``agent_unavailable``) with every resolution error. Raised here, in the
+        # turn's prologue, it was settled as a generic finalize crash instead.
+        return []
     out: list[Injection] = []
     for row in resolution.plugins:
         if row.get("id") == _CORE or not row.get("root"):
