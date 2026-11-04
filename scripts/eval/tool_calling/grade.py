@@ -296,6 +296,10 @@ def grade(task: str, answer: dict[str, Any], run: dict[str, Any]) -> dict[str, A
 
         replies = list(run.get("replies") or [])
         result = grade_x2(replies[L1_X2_ROUNDS] if task != "X2" else replies)
+        if task == "L1R":
+            from scripts.eval.tool_calling.grade_recall import grade_recall  # noqa: PLC0415
+
+            result = {**result, "recall": grade_recall(run)}
     elif task == "P1":
         result = grade_p1(answer, text)
     elif task == "P2":
