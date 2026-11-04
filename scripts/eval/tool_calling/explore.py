@@ -53,7 +53,30 @@ X2_KEY = (
     ("ISU 210", "9", "RIL 407"),
     (0.7434, 0.7552, 0.7414, 0.7905, 0.6598, 0.6593),
 )
-CHAINS = {"X2": (_X2_SETUP, _X2_ROUNDS)}
+#: L1: a project session on the same export, about ten rounds as a person would ask them
+#: (explore, quality control, the X2 analysis, a figure, a follow-up test, a change of
+#: mind, a report). Rounds 3-6 are X2's four questions, graded on ``X2_KEY``; the rest
+#: are read by hand. Long enough (about 50+ model calls) for planning, todos and a
+#: natural compaction to matter; nothing names a tool or a step.
+_L1_ROUNDS = (
+    "Explore this export and tell me what it contains and how it is shaped.",
+    "Check the data quality: missing readings, impossible values, differences between "
+    "the two snapshots, and anything else that would bias an analysis of QY_max. Say "
+    "what you would exclude and why, but do not change the files.",
+    *(question + _ANSWER_LINE for question in _X2_ROUNDS),
+    "Make a figure of QY_max against dose with one line per accession and the plant "
+    "spread shown, and save it as a PNG in the workspace.",
+    "Is the drop from 200 to 500 mg/kg the same in every accession? Test the dose by "
+    "accession interaction and name the accessions that break the pattern.",
+    "Change of plan: leave out the second snapshot entirely and any plant with fewer "
+    "than three QY_max readings, then redo the per-dose means and the top three "
+    "accessions by retention at 500.",
+    "Write a short report in the workspace (Markdown): the data, the quality decisions, "
+    "the results tables, the figure and the open questions.",
+)
+CHAINS = {"X2": (_X2_SETUP, _X2_ROUNDS), "L1": (_X2_SETUP, _L1_ROUNDS)}
+#: Where X2's four questions sit in L1's replies.
+L1_X2_ROUNDS = slice(2, 6)
 
 
 def is_explore_task(task_id: str) -> bool:
@@ -63,7 +86,9 @@ def is_explore_task(task_id: str) -> bool:
 def explore_task(task_id: str) -> Task:
     if task_id in CHAINS:
         setup, rounds = CHAINS[task_id]
-        asked = [question + _ANSWER_LINE for question in rounds]
+        asked = (
+            [question + _ANSWER_LINE for question in rounds] if task_id == "X2" else list(rounds)
+        )
         return Task(task_id, "long-horizon", setup + asked[0], rounds=tuple(asked[1:]))
     return Task(task_id, "long-horizon", PROMPTS[task_id])
 

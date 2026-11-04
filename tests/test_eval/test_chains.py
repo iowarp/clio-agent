@@ -277,3 +277,22 @@ def test_only_a_copy_of_external_data_is_dropped(tmp_path: Path) -> None:
     drop_external_copy("/data/opal", external)
     drop_external_copy("home", generated)
     assert not external.exists() and generated.exists()
+
+
+def test_the_long_session_grades_x2s_four_rounds_where_they_sit() -> None:
+    """L1 asks X2's four questions as its rounds 3-6, between rounds read by hand.
+    SABOTAGE: grade L1's replies from the start and every round reads wrong."""
+    from scripts.eval.tool_calling import grade, tasks
+    from scripts.eval.tool_calling.explore import X2_KEY
+
+    task = tasks.task("L1", {})
+    assert len(task.rounds) + 1 == 10 and "ANSWER:" in task.rounds[1]
+    assert "ANSWER:" not in task.prompt and "ANSWER:" not in task.rounds[0]
+    means = "; ".join(
+        f"{d}: {v}" for d, v in zip((0, 50, 100, 200, 500, 1000), X2_KEY[3], strict=True)
+    )
+    keyed = ["ANSWER: 200", "ANSWER: 500", "ANSWER: ISU 210, 9, RIL 407", f"ANSWER: {means}"]
+    replies = ["It holds seven modalities.", "Exclude 139 negative readings.", *keyed,
+               "Saved fig.png", "Interaction p=0.01", "Redone.", "Report written."]  # fmt: skip
+    graded = grade.grade("L1", {}, {"replies": replies})
+    assert [r["correct"] for r in graded["rounds"]] == [True, True, True, True]
