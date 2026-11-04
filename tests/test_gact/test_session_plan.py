@@ -70,9 +70,13 @@ def test_plan_update_writes_replaces_and_closes(app_session: Any) -> None:
 
 
 def test_plan_update_works_outside_plan_mode(app_session: Any) -> None:
+    """A plan the agent writes to carry out itself is active, not approved: no one
+    approved it, and the plan injection and the goal judge read the status. SABOTAGE:
+    give it ``approved`` and it claims the person's approval."""
     app, sid, _ = app_session
     result = update_plan(app, sid, content=_PLAN)
-    assert result["status"] == "approved"
+    assert result["status"] == "active"
+    assert plan_injection(app, sid, _session(app, sid)).startswith("## The plan (active, ")
     assert _session(app, sid).mode != "plan"
 
 
@@ -97,10 +101,10 @@ def test_the_rail_and_the_goal_judge_see_the_plan_and_todos(app_session: Any) ->
     todos = [{"content": "bisect the range", "status": "in_progress"}]
     app.state.sessions.update(sid, metadata_patch={"todos": todos})
     work = client.get(f"/v1/sessions/{sid}/work").json()
-    assert work["plan"]["status"] == "approved" and "bisect" in work["plan"]["text"]
+    assert work["plan"]["status"] == "active" and "bisect" in work["plan"]["text"]
     assert rail_plan(SimpleNamespace(metadata={})) is None
     transcript = _build_transcript(app, sid)
-    assert transcript.startswith("--- session plan (approved) ---")
+    assert transcript.startswith("--- session plan (active) ---")
     assert "bisect the range" in transcript
 
 
@@ -120,7 +124,7 @@ def test_a_fork_gets_its_own_copy_of_the_plan_and_the_todos(app_session: Any) ->
         encoding="utf-8"
     )
     assert branch.metadata["todos"] == [{"content": "a", "status": "pending"}]
-    assert branch.metadata[PLAN_STATUS_KEY] == "approved"
+    assert branch.metadata[PLAN_STATUS_KEY] == "active"
 
 
 def _segment(seg_id: str, kind: str, turn: str, content: dict[str, Any]) -> Any:
@@ -209,7 +213,7 @@ def test_the_person_can_save_an_edited_plan(app_session: Any) -> None:
     assert source == "plan" and text.startswith("## The plan, as the person edited it")
     assert "check the config first" in text
     # Afterwards the plan is ordinary working state again.
-    assert plan_injection(app, sid, _session(app, sid)).startswith("## The plan (approved")
+    assert plan_injection(app, sid, _session(app, sid)).startswith("## The plan (active")
 
 
 def test_the_plan_is_offered_whole_unless_past_the_window_share(

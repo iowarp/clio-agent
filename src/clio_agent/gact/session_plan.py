@@ -5,12 +5,14 @@ The plan is the file plan mode writes under CLIO's state folder, its path on
 ``session.metadata['plan_status']``:
 
 - ``draft`` while it is written in plan mode (``plan_enter``);
-- ``approved`` after ``plan_exit`` is approved;
+- ``approved`` after the person approves it at ``plan_exit``;
+- ``active`` when the agent wrote it outside plan mode, to carry out itself (no one
+  approved it, so it is not called approved);
 - ``done`` or ``abandoned`` when the agent says so with ``plan_update``.
 
 ``plan_update`` writes the whole plan or replaces one exact passage, in plan mode and
 outside it, so the agent replans at any step without a mode switch. While a plan is
-``draft`` or ``approved`` it is offered as working state (:func:`plan_injection`) at
+``draft``, ``approved`` or ``active`` it is offered as working state (:func:`plan_injection`) at
 turn start and after a compaction; todos stay separate (``write_todos``).
 """
 
@@ -44,7 +46,7 @@ PLAN_SOURCE = "plan"
 PLAN_PERSON_EDIT_SOURCE = "plan_person_edit"
 PLAN_TRUNCATED_SOURCE = "plan_truncated"
 #: Statuses in which the plan is offered as working state.
-ACTIVE_STATUSES = frozenset({"draft", "approved"})
+ACTIVE_STATUSES = frozenset({"draft", "approved", "active"})
 _SETTABLE = frozenset({"done", "abandoned"})
 
 
@@ -111,7 +113,7 @@ def set_plan_status(app: Any, session_id: str, status: str) -> None:
 
 
 def plan_injection(app: Any, session_id: str, session: Any) -> str:
-    """The plan as working state, while it is ``draft`` or ``approved`` outside plan mode.
+    """The plan as working state, while it is active (:data:`ACTIVE_STATUSES`) outside plan mode.
 
     In plan mode the plan-mode reminder already names the file. The model judges whether
     the plan still applies; CLIO only says it exists and shows it. A plan the person edited
@@ -235,7 +237,7 @@ def update_plan(
         next_status = status
     elif current in _SETTABLE or not current:
         # Writing a plan after it was closed (or before any) makes it current again.
-        next_status = "draft" if str(getattr(session, "mode", "")) == "plan" else "approved"
+        next_status = "draft" if str(getattr(session, "mode", "")) == "plan" else "active"
     else:
         next_status = current
     if next_status != current:

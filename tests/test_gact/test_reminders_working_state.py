@@ -123,7 +123,7 @@ def test_the_plan_renders_todays_text(plan_session: Any) -> None:
     app, sid = plan_session
     text, path = _plan(app, sid)
     assert text == (
-        f"## The plan (approved, {path})\n\n"
+        f"## The plan (active, {path})\n\n"
         "If this plan is relevant to the current work and not finished, continue on it, and "
         "update it with plan_update when your understanding or direction changes.\n\n"
         f"{_PLAN_TEXT}"
@@ -166,7 +166,7 @@ def test_with_the_person_edit_note_off_the_plan_is_offered_as_usual(plan_session
     app.state.sessions.update(sid, metadata_patch={PERSON_EDIT_KEY: True})
     injections.update("plan_person_edit", active=False, app=app)
     text, path = _plan(app, sid)
-    assert text.startswith(f"## The plan (approved, {path})")
+    assert text.startswith(f"## The plan (active, {path})")
 
 
 # --------------------------------------------------------------------------- #
