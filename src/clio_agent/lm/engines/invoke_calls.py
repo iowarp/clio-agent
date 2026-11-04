@@ -35,6 +35,8 @@ __all__ = [
 
 _OPEN, _CLOSE = "<function_calls>", "</function_calls>"
 _INVOKE = re.compile(r"""<invoke\s+name=(["'])(?P<name>[^"']+)\1\s*>(?P<body>.*?)</invoke>""", re.S)
+#: An <invoke name=...> opener (closed or not).
+_INVOKE_OPEN = re.compile(r"""<invoke\s+name=(["'])[^"']+\1\s*>""")
 #: A call's closing markup or a parameter without its <invoke name=...> opener.
 _CUT = re.compile(r"""<parameter\s+name=|</invoke>|</function_calls>""")
 #: The reason a cut call block is refused, in this protocol's own terms.
@@ -119,40 +121,37 @@ def _value(raw: str, schema: Mapping[str, Any]) -> Any:
 
 
 def parse_invoke_calls(reply: str, schemas: Mapping[str, Mapping[str, Any]]) -> InvokeCalls | None:
-    """Read ``reply``'s ``<function_calls>`` block; ``None`` when it has none.
+    """Read ``reply``'s calls; ``None`` when it has none.
 
-    ``schemas`` maps a tool name to its parameters schema; a parameter the schema does
-    not type as a string must be JSON. Text before the block (and after it) is the
-    visible text.
+    The calls are its complete ``<invoke name=...>...</invoke>`` elements, in order. The
+    ``<function_calls>`` container is decoration: across the protocol A/B's runs it was
+    missing before 18 of 57 calls (the reply began at ``<invoke``) and once trailed the
+    calls on its own, so it is stripped from the visible text and never decides what
+    runs. A parameter or closing tag with no ``<invoke name=...>`` (the tool's name lost:
+    1 of 57) or an ``<invoke>`` never closed is refused, since there is no whole call to
+    run. ``schemas`` maps a tool name to its parameters schema; a parameter the schema
+    does not type as a string must be JSON.
     """
-    start = reply.find(_OPEN)
-    if start < 0:
-        bare = _INVOKE.search(reply)
-        if bare is None:
-            cut = _CUT.search(reply)
-            if cut is None:
-                return None
-            # The call's opening lines are missing (seen on H4: the reply began at a
-            # <parameter>): without the tool's name there is no call to run.
-            return InvokeCalls(
-                reply[: cut.start()].rstrip(), error=CUT_BLOCK, raw=reply[cut.start() :]
-            )
-        start = bare.start()  # an <invoke> without its container is still a call block
-        end, close = reply.rfind("</invoke>") + len("</invoke>"), ""
-    else:
-        end = reply.find(_CLOSE, start)
-        if end < 0:
-            return InvokeCalls(reply[:start].rstrip(), error="the function_calls block was not "
-                               "closed with </function_calls>", raw=reply[start:])  # fmt: skip
-        close = _CLOSE
-    block = reply[start : end + len(close)] if close else reply[start:end]
-    after = reply[end + len(close) :].strip()
-    text = "\n\n".join(t for t in (reply[:start].rstrip(), after) if t)
-    if _OPEN in after or _INVOKE.search(after):
-        return InvokeCalls(text, error="several function_calls blocks: put every call of this "
-                           "step in one block", raw=reply[start:])  # fmt: skip
+    invokes = list(_INVOKE.finditer(reply))
+    if not invokes:
+        opened = _INVOKE_OPEN.search(reply)
+        cut = opened or _CUT.search(reply)
+        if cut is None:
+            return None
+        reason = "an <invoke> was not closed with </invoke>; nothing ran, send it again whole"
+        return InvokeCalls(_visible(reply[: cut.start()]), error=reason if opened else CUT_BLOCK,
+                           raw=reply[cut.start() :])  # fmt: skip
+    pieces, last = [], 0
+    for invoke in invokes:
+        pieces.append(reply[last : invoke.start()])
+        last = invoke.end()
+    pieces.append(reply[last:])
+    text = _visible("".join(pieces))
+    raw = reply[invokes[0].start() : invokes[-1].end()]
+    if _INVOKE_OPEN.search(text) or _PARAMETER.search(text):
+        return InvokeCalls(text, error=CUT_BLOCK, raw=raw)  # a whole call beside a broken one
     calls: list[tuple[str, dict[str, Any]]] = []
-    for invoke in _INVOKE.finditer(block):
+    for invoke in invokes:
         name = invoke["name"]
         properties = (schemas.get(name) or {}).get("properties") or {}
         arguments: dict[str, Any] = {}
@@ -162,12 +161,15 @@ def parse_invoke_calls(reply: str, schemas: Mapping[str, Mapping[str, Any]]) -> 
                 arguments[key] = _value(parameter["value"], properties.get(key) or {})
             except ValueError:
                 return InvokeCalls(text, error=f"parameter {key} of {name} is not a string, so "
-                                   "it must be written as JSON", raw=block)  # fmt: skip
+                                   "it must be written as JSON", raw=raw)  # fmt: skip
         calls.append((name, arguments))
-    if not calls:
-        return InvokeCalls(text, error="the function_calls block holds no <invoke> call",
-                           raw=block)  # fmt: skip
-    return InvokeCalls(text, calls=calls, raw=block)
+    return InvokeCalls(text, calls=calls, raw=raw)
+
+
+def _visible(text: str) -> str:
+    """``text`` without the container tags, its blank runs closed up."""
+    cleaned = text.replace(_OPEN, "").replace(_CLOSE, "")
+    return re.sub(r"\n{3,}", "\n\n", cleaned).strip()
 
 
 def render_invoke(calls: list[tuple[str, Mapping[str, Any]]]) -> str:

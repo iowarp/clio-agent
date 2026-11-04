@@ -65,16 +65,30 @@ def test_a_different_json_block_beside_the_markup_is_refused(invoke: None) -> No
     assert [c.name for c in split.calls] == [INVALID_TOOL_CALL]
 
 
-def test_a_typed_value_that_is_not_json_and_an_unclosed_block_are_refused(invoke: None) -> None:
+def test_a_typed_value_that_is_not_json_and_an_unclosed_invoke_are_refused(invoke: None) -> None:
     bad = (
         "<function_calls>\n"
         + _call("shell_bash", command="ls", timeout="soon")
         + "</function_calls>"
     )
-    unclosed = "<function_calls>\n" + _call("shell_bash", command="ls")
+    unclosed = '<function_calls>\n<invoke name="shell_bash">\n<parameter name="command">ls'
     for reply in (bad, unclosed):
         [call] = split_reply(reply, call_prefix="c", schemas=SCHEMAS).calls
         assert call.name == INVALID_TOOL_CALL
+
+
+def test_the_container_is_decoration_lost_or_stray(invoke: None) -> None:
+    """Across the A/B the ``<function_calls>`` opener was missing before 18 of 57 calls
+    (the reply began at ``<invoke``) and once trailed the calls on its own, which was
+    refused as an unclosed block. The complete ``<invoke>`` elements are the calls.
+    SABOTAGE: read the block from the first ``<function_calls>`` and the stray one
+    fails the call."""
+    lost = "\n" + _call("shell_bash", command="ls") + "</function_calls>"
+    stray = "\n" + _call("shell_bash", command="ls") + "\n\n\n<function_calls>"
+    for reply in (lost, stray):
+        split = split_reply(reply, call_prefix="c", schemas=SCHEMAS)
+        assert [(c.name, c.input) for c in split.calls] == [("shell_bash", {"command": "ls"})]
+        assert split.text == ""
 
 
 def test_without_a_block_a_json_block_is_still_read_and_plain_text_is_an_answer(
