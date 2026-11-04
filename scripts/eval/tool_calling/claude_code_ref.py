@@ -305,10 +305,10 @@ def run_once(
     workdir = prepare_workdir(
         args.fixtures,
         tasks.fixture_dir(task_id, manifest),
-        args.work_root / CONFIG / task_id / f"run-{index}",
+        args.work_root / args.config / task_id / f"run-{index}",
     )
     requests = [task.prompt, *task.rounds]
-    target = args.results / CONFIG / task_id / f"run-{index}.json"
+    target = args.results / args.config / task_id / f"run-{index}.json"
     target.parent.mkdir(parents=True, exist_ok=True)
     received: list[tuple[float, dict[str, Any]]] = []
     replies: list[str] = []
@@ -329,6 +329,12 @@ def run_once(
             if args.allowed_tools:
                 # Pre-approved tools, for where skipping permissions is refused (as root).
                 command += ["--allowedTools", args.allowed_tools]
+            if args.append_system_prompt_file:
+                # An A/B on the prompt: text added to the CLI's own system prompt.
+                command += [
+                    "--append-system-prompt",
+                    args.append_system_prompt_file.read_text(encoding="utf-8"),
+                ]
             commands.append(command)
             reply = ""
             with subprocess.Popen(
@@ -361,7 +367,7 @@ def run_once(
     result = {
         "schema": RESULT_SCHEMA,
         "source": "claude_code",
-        "config": CONFIG,
+        "config": args.config,
         "task": task_id,
         "run_index": index,
         "prompt": task.prompt,
@@ -390,7 +396,7 @@ def cmd_run(args: argparse.Namespace) -> int:
     utilization: float | None = None
     for task_id in tasks.select(args.tasks):
         for index in range(1, args.n + 1):
-            target = args.results / CONFIG / task_id / f"run-{index}.json"
+            target = args.results / args.config / task_id / f"run-{index}.json"
             if target.is_file() and not args.force:
                 continue
             if utilization is not None and utilization >= args.stop_at:
@@ -430,6 +436,15 @@ def main(argv: list[str] | None = None) -> int:
         "--allowed-tools",
         default="",
         help="tools pre-approved with --allowedTools (comma-separated), e.g. Bash,Read,Grep,Glob",
+    )
+    run.add_argument(
+        "--append-system-prompt-file",
+        type=Path,
+        default=None,
+        help="text appended to the CLI's own system prompt (a prompt A/B)",
+    )
+    run.add_argument(
+        "--config", default=CONFIG, help="results label (default claude-code; an A/B gets its own)"
     )
     run.add_argument("--timeout", type=float, default=3600.0)
     run.add_argument("--stop-at", type=float, default=DEFAULT_STOP_AT)
