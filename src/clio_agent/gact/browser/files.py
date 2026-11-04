@@ -87,7 +87,7 @@ def mint(app: Any, session_id: str, path: Path, *, image: bool, page_url: str) -
             ingested=ingested,
             not_ingested_size=ingested.not_ingested_size,
         )
-    except Exception as exc:  # noqa: BLE001 - the file stays; the note says why it is unminted
+    except Exception as exc:  # noqa: BLE001 - forwards: the note says why it is unminted
         trace.event("BROWSER", "browser_artifact_unminted path=%s error=%s", path, exc)
         return {"artifact_note": f"browser_artifact_unminted: {exc}"[:300]}
     if version is None:

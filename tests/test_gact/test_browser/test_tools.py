@@ -303,7 +303,7 @@ def test_a_person_acting_is_reported_once(
         None,
         first,
     )
-    assert view["subject"] == "text h1 · a.fixture.localhost"
+    assert view["subject"] == "text h1 on a.fixture.localhost"
     assert any(b["id"] == "person-acted" for b in view["blocks"])
 
 

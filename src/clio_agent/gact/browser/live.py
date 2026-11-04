@@ -33,6 +33,7 @@ from typing import Any
 from fastapi import WebSocket
 
 from clio_agent.gact.browser import settings
+from clio_agent.gact.browser.settings import page_errors
 from clio_agent.runtime import trace
 
 __all__ = ["LIVE_PROTOCOL", "register_browser_routes"]
@@ -174,7 +175,7 @@ async def _stop(hub: _Hub) -> None:
         if handle is not None:
             try:
                 await handle.__aexit__(None, None, None)
-            except Exception as exc:  # noqa: BLE001 - the page closed first
+            except page_errors() as exc:  # the page closed first
                 trace.event("BROWSER", "live stop skipped page=%s error=%s", hub.page_id, exc)
     hub.actions = hub.screencast = None
 
@@ -361,7 +362,7 @@ async def _receive(svc: Any, record: Any, hub: _Hub, viewer: _Viewer) -> None:
             continue
         try:
             await asyncio.wrap_future(svc.submit(_play(svc, record, hub, message)))
-        except Exception as exc:  # noqa: BLE001 - one bad input never ends the view
+        except Exception as exc:  # noqa: BLE001 - forwards: to the viewer as live_input_failed
             await viewer.socket.send_json(
                 {"type": "error", "reason": "live_input_failed", "detail": str(exc)[:300]}
             )

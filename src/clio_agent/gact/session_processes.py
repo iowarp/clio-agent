@@ -14,6 +14,7 @@ from __future__ import annotations
 
 from typing import Any
 
+from clio_agent.gact.browser.settings import BrowserError, page_errors
 from clio_agent.runtime import trace
 
 __all__ = ["close_all_processes", "close_child_pages", "close_session_processes"]
@@ -35,7 +36,7 @@ def close_child_pages(session_id: str) -> None:
 
     try:
         closed = browser.close_session(session_id)
-    except Exception as exc:  # noqa: BLE001 - settling a task never fails on a browser
+    except (TimeoutError, BrowserError, *page_errors()) as exc:  # settling never fails here
         trace.event("BROWSER", "child pages close failed session=%s error=%s", session_id, exc)
         return
     if closed:

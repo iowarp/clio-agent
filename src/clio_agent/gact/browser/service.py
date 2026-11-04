@@ -38,7 +38,7 @@ from urllib.parse import urlsplit
 
 from clio_agent import paths
 from clio_agent.gact.browser import install, settings
-from clio_agent.gact.browser.settings import BrowserError
+from clio_agent.gact.browser.settings import BrowserError, page_errors
 from clio_agent.runtime import trace
 
 __all__ = [
@@ -111,7 +111,7 @@ class PageRecord:
     def url(self) -> str:
         try:
             return str(self.page.url)
-        except Exception:  # noqa: BLE001 - a closed page has no URL
+        except page_errors():  # a closed page has no URL
             return ""
 
 
@@ -255,7 +255,7 @@ class BrowserService:
             raise BrowserError("browser_cdp_url_missing", "browser.backend is cdp but no url")
         try:
             browser = await pw.chromium.connect_over_cdp(url, no_defaults=True)
-        except Exception as exc:  # noqa: BLE001 - forwarded as a typed reason
+        except Exception as exc:  # noqa: BLE001 - forwards: a typed browser_cdp_unreachable
             raise BrowserError(
                 "browser_cdp_unreachable", f"no Chrome answers at {url}: {exc}"
             ) from exc
@@ -285,7 +285,7 @@ class BrowserService:
             context = await pw.chromium.launch_persistent_context(
                 str(user_data), chromium_sandbox=True, **options
             )
-        except Exception as exc:  # noqa: BLE001 - classified below, never swallowed
+        except Exception as exc:  # noqa: BLE001 - forwards: classified into a typed refusal
             text = str(exc)
             libraries = install.missing_libraries(text)
             if libraries:
@@ -382,7 +382,7 @@ class BrowserService:
             return
         try:
             opener = await page.opener()
-        except Exception:  # noqa: BLE001 - a page that closed already
+        except page_errors():  # a page that closed already
             return
         parent = next((r for r in self.pages.values() if r.page is opener), None)
         if parent is None:
@@ -406,7 +406,7 @@ class BrowserService:
     async def _retitle(self, record: PageRecord) -> None:
         try:
             record.title = await record.page.title()
-        except Exception:  # noqa: BLE001 - the page closed while loading
+        except page_errors():  # the page closed while loading
             record.title = ""
         self.publish(PAGE_UPDATED, record)
 
@@ -463,7 +463,7 @@ class BrowserService:
                 raise
             except asyncio.CancelledError:
                 raise
-            except Exception as exc:  # noqa: BLE001 - Playwright's errors become typed reasons
+            except Exception as exc:  # noqa: BLE001 - forwards: Playwright's errors as typed reasons
                 raise _typed(exc, inflight) from exc
             finally:
                 await self._agent_hook(record, False)
@@ -475,7 +475,7 @@ class BrowserService:
         for hook in list(self.agent_hooks):
             try:
                 await hook(record, active)
-            except Exception as exc:  # noqa: BLE001 - a viewer never breaks the agent's call
+            except page_errors() as exc:  # a closed viewer page never breaks the agent's call
                 trace.event("BROWSER", "agent hook failed page=%s error=%s", record.id, exc)
 
     def take_notes(self, record: PageRecord) -> dict[str, Any]:
@@ -497,7 +497,7 @@ class BrowserService:
             if request.frame.parent_frame is not None or not request.is_navigation_request():
                 return
             disposition = response.headers.get("content-disposition", "")
-        except Exception:  # noqa: BLE001 - a response of a page that closed
+        except page_errors():  # a response of a page that closed
             return
         if disposition.lower().startswith("attachment"):
             record.downloads_expected += 1
@@ -530,7 +530,7 @@ class BrowserService:
         target = _unique(folder / Path(download.suggested_filename or "download").name)
         try:
             await download.save_as(str(target))
-        except Exception as exc:  # noqa: BLE001 - reported to the agent, not dropped
+        except Exception as exc:  # noqa: BLE001 - forwards: into the call's downloads
             record.downloads.append(
                 {"name": target.name, "error": f"browser_download_failed: {exc}"}
             )
@@ -549,7 +549,7 @@ class BrowserService:
         for record in records:
             try:
                 await record.page.close()
-            except Exception as exc:  # noqa: BLE001 - a page that closed itself already
+            except page_errors() as exc:  # a page that closed itself already
                 trace.event("BROWSER", "page close skipped id=%s error=%s", record.id, exc)
             self._forget(record)
 
@@ -592,7 +592,7 @@ class BrowserService:
             return
         try:
             self.submit(self._shutdown()).result(timeout=30)
-        except Exception as exc:  # noqa: BLE001 - shutdown goes on; the trace says why
+        except (TimeoutError, BrowserError, *page_errors()) as exc:  # shutdown goes on
             trace.event("BROWSER", "browser shutdown incomplete error=%s", exc)
         loop.call_soon_threadsafe(loop.stop)
         with self._lock:
@@ -639,7 +639,11 @@ class BrowserService:
                 time.sleep(60)
                 try:
                     self.reap_idle()
-                except Exception as exc:  # noqa: BLE001 - the reaper keeps running
+                except (
+                    BrowserError,
+                    RuntimeError,
+                    *page_errors(),
+                ) as exc:  # the reaper keeps running
                     trace.event("BROWSER", "browser reap failed error=%s", exc)
 
         self._reaper = threading.Thread(target=reap, name="clio-browser-reaper", daemon=True)
@@ -670,7 +674,7 @@ class BrowserService:
         for listener in list(self.listeners):
             try:
                 listener(kind, record)
-            except Exception as exc:  # noqa: BLE001 - a reader never breaks the page
+            except (RuntimeError, *page_errors()) as exc:  # a closed reader never breaks the page
                 trace.event("BROWSER", "page listener failed error=%s", exc)
         bus = getattr(getattr(self.app, "state", None), "bus", None)
         if bus is None:

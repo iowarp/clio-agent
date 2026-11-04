@@ -1,7 +1,7 @@
 """How a browser call reads in the transcript, nested under its ``run_code`` row.
 
 Each row is the action, a short form of the target (role and name, or the ref) and the
-host: "Act on page · click button "Next" · arxiv.org". Expanding shows what came back: a
+host: "Act on page: click button "Next" on arxiv.org". Expanding shows what came back: a
 snapshot collapsed to its line count with the text on expand, a value read, the
 screenshot as its artifact (the UI previews image artifacts inline), downloads, and what
 changed under the agent (the person acted, a host was blocked). Exact arguments and the
@@ -55,8 +55,9 @@ def _subject(name: str, args: Mapping[str, Any], row: Mapping[str, Any]) -> str:
     if name in {"browser_open", "browser_navigate"}:
         url = str(args.get("url") or "")
         head = " ".join(p for p in (action if name == "browser_navigate" else "", url) if p)
-    parts = [p for p in (head, host) if p]
-    return " · ".join(parts) or str(args.get("page") or "")
+    if head and host:
+        return f"{head} on {host}"
+    return head or host or str(args.get("page") or "")
 
 
 def _notes(row: Mapping[str, Any]) -> list[dict[str, Any]]:
@@ -131,7 +132,7 @@ def _body(
         return f"Opened {page_id}", _page_link(row)
     if name == "browser_pages":
         pages = [p for p in row.get("pages") or () if isinstance(p, Mapping)]
-        lines = [f"{p.get('id')} · {p.get('label') or 'untitled'} · {p.get('url')}" for p in pages]
+        lines = [f"{p.get('id')}: {p.get('label') or 'untitled'}, {p.get('url')}" for p in pages]
         summary = f"{len(pages)} page{'s' if len(pages) != 1 else ''}"
         text = "\n".join(lines) or "No pages are open."
         return summary, [{"id": "pages", "type": "text", "text": text}]

@@ -7,6 +7,7 @@ from typing import Any
 from clio_agent import conf
 
 __all__ = [
+    "page_errors",
     "BACKENDS",
     "BrowserError",
     "action_timeout_s",
@@ -137,3 +138,13 @@ def frame_width() -> int:
     if value < 320:
         raise ValueError(f"browser.frame_width must be at least 320, not {value}")
     return value
+
+
+def page_errors() -> tuple[type[BaseException], ...]:
+    """Playwright's error class, which a closed page or browser raises (``TargetClosedError``
+    among them). Resolved when a handler needs it, so importing CLIO never loads Playwright."""
+    try:
+        from playwright.async_api import Error  # noqa: PLC0415
+    except ImportError:
+        return ()
+    return (Error,)

@@ -214,7 +214,13 @@ async def _ask_for_call(
 
 
 def _blocked(
-    service: "BrowserService", record: "PageRecord", host: str, url: str, *, reason: str
+    service: "BrowserService",
+    record: "PageRecord",
+    host: str,
+    url: str,
+    *,
+    reason: str,
+    detail: str = "",
 ) -> None:
     from clio_agent.gact.browser.service import PAGE_UPDATED  # noqa: PLC0415
 
@@ -223,6 +229,7 @@ def _blocked(
         "url": url,
         "reason": reason,
         "at": datetime.now(timezone.utc).isoformat(),
+        **({"detail": detail[:300]} if detail else {}),
     }
     record.blocked_reported = False
     trace.event("BROWSER", "%s host=%s page=%s", reason, host, record.id)
@@ -243,9 +250,10 @@ async def attach(service: "BrowserService", record: "PageRecord") -> None:
             if event.get("frameId") == main_frame:
                 record.loading = True
                 allowed = await _decide(service, record, str(event["request"]["url"]))
-        except Exception as exc:  # noqa: BLE001 - a gate failure refuses, never allows
-            trace.event("BROWSER", "browser_host_gate_error page=%s error=%s", record.id, exc)
-            allowed = False
+        except Exception as exc:  # noqa: BLE001 - forwards: refused, as a typed block
+            allowed = False  # a gate failure refuses, never allows
+            url = str(event.get("request", {}).get("url") or "")
+            _blocked(service, record, "", url, reason="browser_host_gate_error", detail=str(exc))
         try:
             if allowed:
                 await cdp.send("Fetch.continueRequest", {"requestId": request_id})
@@ -254,7 +262,7 @@ async def attach(service: "BrowserService", record: "PageRecord") -> None:
                 await cdp.send(
                     "Fetch.failRequest", {"requestId": request_id, "errorReason": "Aborted"}
                 )
-        except Exception as exc:  # noqa: BLE001 - the page closed meanwhile
+        except settings.page_errors() as exc:  # the page closed meanwhile
             trace.event("BROWSER", "browser gate reply skipped page=%s error=%s", record.id, exc)
 
     cdp.on("Fetch.requestPaused", lambda event: asyncio.ensure_future(paused(event)))

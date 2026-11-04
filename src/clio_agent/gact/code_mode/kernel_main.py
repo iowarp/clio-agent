@@ -180,7 +180,7 @@ class _Bindings:
         for name, spec in (message.get("bindings") or {}).items():
             try:
                 self.namespace[str(name)] = self._plugin(str(name), dict(spec))
-            except Exception as exc:  # noqa: BLE001 - reported to the host, typed there
+            except Exception as exc:  # noqa: BLE001 - forwards: to the host, typed there
                 self.namespace.pop(str(name), None)
                 failed[str(name)] = "".join(traceback.format_exception_only(type(exc), exc))
         return failed
