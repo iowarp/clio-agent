@@ -39,8 +39,12 @@ LINE_TOLERANCE = 1
 P3_TOLERANCE = 3
 _PATH = re.compile(r"[A-Za-z0-9_./\\-]*[A-Za-z0-9_]\.py\b")
 _AFTER_PATH = re.compile(
-    r"^[`'\")\]]*\s*(?:(?::|#L|,?\s*\(?\s*(?:lines?|L)\s*)(\d+)(?:\s*(?:-|–|to)\s*L?(\d+))?)",
+    r"^[`'\")\]]*\s*(?:(?::|#L|,?\s*\(?\s*(?:at\s+)?(?:lines?|L)\s*)(\d+)(?:\s*(?:-|–|to)\s*L?(\d+))?)",
     re.IGNORECASE,
+)
+#: The line before the path, in prose: "at line 429 of `prompts.py`".
+_BEFORE_PATH = re.compile(
+    r"\blines?\s+(\d+)(?:\s*(?:-|–|to)\s*(\d+))?\s+(?:of|in)\s+[`'\"]?$", re.IGNORECASE
 )
 _CELL_NUMBER = re.compile(r"^\s*`?L?(\d+)(?:\s*(?:-|–)\s*L?(\d+))?`?\s*$")
 #: ":139" after a located path on the same line: another line of that file
@@ -55,6 +59,12 @@ def locations(text: str) -> list[tuple[str, int, int]]:
         paths = list(_PATH.finditer(line))
         hits_in_line = 0
         for index, match in enumerate(paths):
+            before = _BEFORE_PATH.search(line[: match.start()])
+            if before:
+                first = int(before.group(1))
+                found.append((match.group(0), first, int(before.group(2) or first)))
+                hits_in_line += 1
+                continue
             after = _AFTER_PATH.match(line[match.end() :])
             if after:
                 first = int(after.group(1))
