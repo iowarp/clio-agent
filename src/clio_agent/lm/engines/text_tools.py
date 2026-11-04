@@ -21,8 +21,9 @@ carries the typed :class:`dspy.lm15.Request` across as text and brings tool call
 from __future__ import annotations
 
 import json
+import logging
 import re
-from collections.abc import Collection, Iterable, Sequence
+from collections.abc import Collection, Iterable, Mapping, Sequence
 from contextvars import ContextVar
 from dataclasses import dataclass, field
 from typing import Any
@@ -37,6 +38,8 @@ from dspy.lm15 import (
     ToolResultPart,
 )
 
+logger = logging.getLogger(__name__)
+
 __all__ = [
     "CALLABLE_TOOLS",
     "INVALID_TOOL_CALL",
@@ -47,6 +50,7 @@ __all__ = [
     "render_messages",
     "render_system",
     "split_reply",
+    "turn_reminder",
 ]
 
 #: The fence that opens the tool-call block (closed by a line of three backticks).
@@ -111,6 +115,17 @@ TURN_REMINDER = (
 )
 
 
+def turn_reminder() -> str:
+    """The call-syntax reminder of the configured protocol (``lm.text_tool_protocol``)."""
+    from clio_agent.lm.engines import invoke_calls  # noqa: PLC0415
+
+    return (
+        invoke_calls.INVOKE_REMINDER
+        if invoke_calls.text_tool_protocol() == "invoke"
+        else TURN_REMINDER
+    )
+
+
 def render_system(system: str | None, tools: Sequence[Any]) -> str:
     """The tool rules and the tool list, then the system prompt.
 
@@ -128,7 +143,10 @@ def render_system(system: str | None, tools: Sequence[Any]) -> str:
             f"{json.dumps(t.parameters, sort_keys=True)}"
             for t in functions
         )
-        rules = _TOOL_RULES
+        from clio_agent.lm.engines import invoke_calls  # noqa: PLC0415
+
+        invoke = invoke_calls.text_tool_protocol() == "invoke"
+        rules = invoke_calls.INVOKE_RULES if invoke else _TOOL_RULES
         if any(t.name == "search_tools" for t in functions):
             rules += f"\n\n{_LOADED_TOOLS_RULE}"
         parts.append(f"{rules}\n\n# Available tools\n\n{listing}")
@@ -178,7 +196,14 @@ def _render_message(message: Message, media: _Media) -> str:
             for p in message.parts
             if isinstance(p, ToolCallPart)
         ]
-        block = f"\n{FENCE}\n{json.dumps(calls)}\n```" if calls else ""
+        from clio_agent.lm.engines import invoke_calls  # noqa: PLC0415
+
+        if not calls:
+            block = ""
+        elif invoke_calls.text_tool_protocol() == "invoke":
+            block = "\n" + invoke_calls.render_invoke([(c["name"], c["arguments"]) for c in calls])
+        else:
+            block = f"\n{FENCE}\n{json.dumps(calls)}\n```"
         return f"[assistant]\n{text}{block}".rstrip()
     body = _content_text(message.parts, media)
     return f"[{message.role}]\n{body}" if body else ""
@@ -212,9 +237,24 @@ class ReplySplit:
 
 
 def split_reply(
-    reply: str, *, call_prefix: str, available_tools: Collection[str] = ()
+    reply: str,
+    *,
+    call_prefix: str,
+    available_tools: Collection[str] = (),
+    schemas: Mapping[str, Mapping[str, Any]] | None = None,
 ) -> ReplySplit:
-    """Split a reply into visible text and tool calls (never repaired; see module doc)."""
+    """Split a reply into visible text and tool calls (never repaired; see module doc).
+
+    Under the ``invoke`` protocol (``lm.text_tool_protocol``) a ``<function_calls>``
+    block is the step's calls (:mod:`~clio_agent.lm.engines.invoke_calls`); a fenced
+    JSON block is still read when there is none.
+    """
+    from clio_agent.lm.engines import invoke_calls  # noqa: PLC0415
+
+    if invoke_calls.text_tool_protocol() == "invoke":
+        found = invoke_calls.parse_invoke_calls(reply, schemas or {})
+        if found is not None:
+            return _invoke_split(found, call_prefix)
     fences = list(re.finditer(r"(?m)^[ \t]*(?P<fence>```tool_calls)[ \t]*(?=\r?$)", reply))
     if len(fences) > 1:
         return _invalid_reply(
@@ -286,6 +326,31 @@ def split_reply(
     except (ValueError, TypeError) as exc:
         return _invalid_reply(text, raw, str(exc), call_prefix)
     return ReplySplit(text=text, calls=parts)
+
+
+def _invoke_split(found: Any, call_prefix: str) -> ReplySplit:
+    """An invoke-protocol reply as a split. A fenced JSON block beside the calls is the
+    same calls written twice when it is empty or equal to them (dropped, on the record);
+    a different one is refused, since which to run is not the host's to guess."""
+    if found.error:
+        return _invalid_reply(found.text, found.raw, found.error, call_prefix)
+    text, calls = found.text, [{"name": n, "arguments": a} for n, a in found.calls]
+    fence = re.search(r"(?ms)^[ \t]*```tool_calls[ \t]*\r?\n(.*?)^[ \t]*```", text)
+    if fence:
+        try:
+            listed = json.loads(fence[1])
+        except ValueError:
+            listed = None
+        if listed not in ([], calls):
+            return _invalid_reply(text, fence[0], "calls written both as a function_calls block "
+                                  "and as a tool_calls block; write each call once, in one "
+                                  "function_calls block", call_prefix)  # fmt: skip
+        logger.info("invoke reply carried a duplicate tool_calls block; dropped (%d calls)",
+                    len(listed or []))  # fmt: skip
+        text = (text[: fence.start()] + text[fence.end() :]).strip()
+    return ReplySplit(
+        text=text, calls=[_call(c, f"{call_prefix}_{i}") for i, c in enumerate(calls)]
+    )
 
 
 def _xml_call_block(reply: str, available_tools: Collection[str]) -> bool:

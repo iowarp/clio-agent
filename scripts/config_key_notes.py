@@ -713,6 +713,11 @@ KEY_NOTES: dict[str, str] = {
         'Selects the Claude Code transport; "sdk" is the only supported value, kept as an '
         "explicit contract check, not a tuning knob."
     ),
+    "lm.text_tool_protocol": (
+        'How a provider without native tools (Claude Code) writes tool calls: "json" (a '
+        'fenced tool_calls JSON list, default) or "invoke" (a <function_calls> block of '
+        "<invoke> calls, the model's own call format; string arguments are written raw)."
+    ),
     "lm.codex_transport": (
         'Selects the Codex transport; "websocket" (default, with delta continuation) or "sse" '
         "to force the stateless HTTP transport."

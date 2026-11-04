@@ -58,13 +58,13 @@ from clio_agent.lm.engines.conversations import conversation_key
 from clio_agent.lm.engines.text_tools import (
     FENCE,
     INVALID_TOOL_CALL,
-    TURN_REMINDER,
     ReplySplit,
     StreamSplitter,
     callable_tools,
     render_messages,
     render_system,
     split_reply,
+    turn_reminder,
 )
 from clio_agent.providers import claude_code_bridge as _bridge
 from clio_agent.providers.claude_code_audit import emit_call_started, emit_call_usage
@@ -187,6 +187,11 @@ class AsyncClaudeCodeEngine:
             available_tools=callable_tools(
                 [tool.name for tool in request.tools if isinstance(tool, FunctionTool)]
             ),
+            schemas={
+                tool.name: tool.parameters
+                for tool in request.tools
+                if isinstance(tool, FunctionTool)
+            },
         )
         yield StreamStartEvent(model=request.model)
         received = False
@@ -273,7 +278,7 @@ def _payload(request: Request, send: Send) -> tuple[str, Any]:
     """The text body and native media blocks of ``send``'s messages."""
     body, media = render_messages(send.messages, media=(ImagePart, DocumentPart))
     if request.tools:
-        body = f"{body}{chr(10) * 2}{TURN_REMINDER}"
+        body = f"{body}{chr(10) * 2}{turn_reminder()}"
     return body, native_blocks(media)
 
 
@@ -313,11 +318,13 @@ class _Turn:
         session_id: str = "",
         *,
         available_tools: frozenset[str] = frozenset(),
+        schemas: dict[str, Any] | None = None,
     ) -> None:
         self.model = model
         self.call_index = call_index
         self.session_id = session_id
         self.available_tools = available_tools
+        self.schemas = schemas or {}
         self.events = 0
         self.redacted_tokens = 0
         self.reply = ""
@@ -461,7 +468,10 @@ class _Turn:
             )
             if self.protocol_error
             else split_reply(
-                reply, call_prefix=f"call_{call_id[:8]}", available_tools=self.available_tools
+                reply,
+                call_prefix=f"call_{call_id[:8]}",
+                available_tools=self.available_tools,
+                schemas=self.schemas,
             )
         )
         if self.dropped_word:

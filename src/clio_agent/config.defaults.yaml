@@ -187,6 +187,13 @@ lm.sent_prompt_sessions: 64
 # brief Part 7 item 1) -- set to force a specific value.
 # lm.temperature:  # default unset; resolved in code
 
+# CLIO_TEXT_TOOL_PROTOCOL  (str)  <- src/clio_agent/lm/engines/invoke_calls.py
+# How a provider without native tools (Claude Code) writes tool calls:
+# "json" (a fenced tool_calls JSON list, default) or "invoke" (a
+# <function_calls> block of <invoke> calls, the model's own call format;
+# string arguments are written raw).
+lm.text_tool_protocol: "json"
+
 # CLIO_LM_THINKING_BUDGET  (int)  <- src/clio_agent/config.py
 # Explicit reasoning token-budget override, mapped per-provider
 # (Anthropic/Claude Code SDK/OpenAI reasoning_effort); set for a fixed
@@ -1562,7 +1569,7 @@ tools.mcp_cache.temp_max_age_days: 3.0
 # CLIO_TOOLS_NEVER_DEFER  (list)  <- src/clio_agent/gact/agents/deferred_tools.py
 # Tools never deferred behind search_tools whatever a plugin declares (the
 # core loop); an entry ending in * names a prefix, such as fs_*.
-tools.never_defer: ["search_tools", "ask_user", "load_skill", "submit", "run_code", "wait_tasks", "spawn_agent_task", "spawn_agents_parallel", "write_todos", "plan_enter", "plan_update", "plan_exit", "fs_*", "shell_*"]
+tools.never_defer: ["search_tools", "ask_user", "load_skill", "submit", "run_code", "wait_tasks", "spawn_agent_task", "spawn_agents_parallel", "write_todos", "plan_enter", "plan_update", "plan_exit", "fs_*", "shell_*", "memory_search", "memory_read"]
 
 # CLIO_TOOLS_PER_SERVER_CONCURRENCY  (int)  <- src/clio_agent/gact/agents/tool_concurrency.py
 # Tool calls to one server that run at once, for a step's calls and a
