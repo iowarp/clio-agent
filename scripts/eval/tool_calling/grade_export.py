@@ -278,7 +278,9 @@ def grade_h6(answer: dict[str, Any], text: str) -> dict[str, Any]:
 
 _BLAME = re.compile(r"\b(?:caused|cause of|due to|because of|responsible|root cause)\b", re.I)
 _CLEARED = re.compile(
-    r"\b(?:within|not (?:the )?cause|ruled out|no samples affected|unrelated|normal)\b", re.I
+    r"\b(?:within|not (?:the )?cause|not (?:because of|due to|caused by)|ruled out"
+    r"|no samples affected|unrelated|normal)\b",
+    re.I,
 )
 
 

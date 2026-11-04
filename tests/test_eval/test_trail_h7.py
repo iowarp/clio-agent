@@ -53,3 +53,10 @@ def test_the_grade_needs_the_recalled_lot_and_no_blamed_distractor() -> None:
     result = grade_trail(key, blamed)
     assert not result["correct"] and result["distractors_blamed"] == ["freezer"]
     assert not grade_trail(key, "The pipette PIP-7 was recalibrated.")["correct"]
+    # s2final run 3 (2026-11-04): the distractor named only to rule it out, in the
+    # opening sentence. SABOTAGE: drop "not because of" from _CLEARED and this fails.
+    cleared = (
+        "B-16 failed because of the recalled lamp lot L-7672 (wavelength drift), not "
+        "because of freezer storage."
+    )
+    assert grade_trail(key, cleared)["correct"]
