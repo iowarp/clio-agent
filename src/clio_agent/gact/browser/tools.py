@@ -114,10 +114,19 @@ def browser_open(url: str | None = None, label: str = "") -> dict[str, Any]:
     session = app.state.sessions.get(session_id) if app is not None else None
     name = label or str(getattr(session, "title", "") or "")
     svc = service()
+    same = [page_info(r) for r in svc.session_pages(session_id) if url and _same_url(r, url)]
     record = svc.wait(svc.open(session_id, name))
     if url:
         svc.run(record, f"open {url}", lambda r: r.page.goto(url, wait_until="load"))
-    return _result(app, record, opened=True, label=record.label)
+    extra = {"already_open": same} if same else {}
+    return _result(app, record, opened=True, label=record.label, **extra)
+
+
+def _same_url(record: PageRecord, url: str) -> bool:
+    """Whether an open page already shows ``url`` (fragment aside): the new page is a fresh
+    load, while that one keeps what the person and earlier scripts did on it."""
+    current = record.url()
+    return current.split("#", 1)[0] == url.split("#", 1)[0]
 
 
 def browser_pages() -> dict[str, Any]:

@@ -47,6 +47,9 @@ __all__ = ["GRANTOR_PERSON_NAVIGATION", "allow_blocked", "attach", "decision_for
 GRANTOR_PERSON_NAVIGATION = "user_navigation"
 _LOCAL_SCHEMES = frozenset({"about", "data", "blob"})
 _WEB_SCHEMES = frozenset({"http", "https"})
+#: The open question per (conversation, host): pages loading the same new host at once
+#: share one question and its answer (W8 asked twice). Touched only on the browser loop.
+_questions: dict[tuple[str, str], "asyncio.Future[bool]"] = {}
 
 
 def decision_for(app: Any, session_id: str, host: str) -> str:
@@ -190,12 +193,21 @@ async def _ask_for_call(
     assert inflight is not None
     inflight.waiting = True
     started = time.monotonic()
-    loop = asyncio.get_running_loop()
-    context = inflight.context.copy()
+    key = (record.session_id, host)
     try:
-        return await loop.run_in_executor(
+        pending = _questions.get(key)
+        if pending is not None:  # another page of this conversation is asking already
+            return await asyncio.shield(pending)
+        context = inflight.context.copy()
+        question = asyncio.get_running_loop().run_in_executor(
             None, lambda: context.run(_ask, service.app, record, host, url)
         )
+        _questions[key] = question
+        try:
+            return await asyncio.shield(question)
+        finally:
+            if _questions.get(key) is question:
+                del _questions[key]
     finally:
         inflight.paused_s += time.monotonic() - started
         inflight.waiting = False

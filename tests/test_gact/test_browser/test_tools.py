@@ -94,6 +94,36 @@ def test_waiting_for_the_answer_does_not_count_against_the_clock(
     assert went["page"]["host"] == "a.fixture.localhost"
 
 
+def test_pages_loading_one_new_host_at_once_share_one_question(
+    conversation: Any, site: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import contextvars
+
+    app, _sid = conversation
+    _ungranted(monkeypatch)
+    pages = [tools.browser_open()["page"]["id"] for _ in range(2)]
+    seen: list[dict[str, Any]] = []
+    answering = _answer(app, "allow", after=1.0, seen=seen)
+    landed: list[str] = []
+
+    def go(page: str, path: str) -> None:
+        landed.append(tools.browser_navigate(page, url=site["a"] + path)["page"]["url"])
+
+    runs = [
+        threading.Thread(target=contextvars.copy_context().run, args=(go, page, path))
+        for page, path in zip(pages, ["/table", "/list"], strict=True)
+    ]
+    for run in runs:
+        run.start()
+    for run in runs:
+        run.join(30)
+    answering.join(5)
+    assert len(seen) == 1
+    assert sorted(url.rsplit("/", 1)[-1] for url in landed) == ["list", "table"]
+    asked = [r for r in app.state.permissions.values() if r.get("kind") == "browser_host"]
+    assert len(asked) == 1
+
+
 def test_a_denied_redirect_raises_and_the_page_stays(
     conversation: Any, site: dict[str, Any], monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -272,3 +302,14 @@ def test_a_person_acting_is_reported_once(
     )
     assert view["subject"] == "text h1 · a.fixture.localhost"
     assert any(b["id"] == "person-acted" for b in view["blocks"])
+
+
+def test_opening_an_address_a_page_already_shows_names_that_page(
+    conversation: Any, site: dict[str, Any]
+) -> None:
+    first = tools.browser_open(url=site["a"] + "/frames")
+    assert "already_open" not in first
+    again = tools.browser_open(url=site["a"] + "/frames#top")
+    assert [p["id"] for p in again.get("already_open", [])] == [first["page"]["id"]]
+    elsewhere = tools.browser_open(url=site["a"] + "/table")
+    assert "already_open" not in elsewhere
