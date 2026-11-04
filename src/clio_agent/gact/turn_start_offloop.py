@@ -147,10 +147,13 @@ def _prepare_turn_off_loop_steps(
         state.enriched_text = enrich_turn_context(
             state.app, state.sid, state.user_text, state.user_msg
         )
+        timer = bringup_timing.timer_for_session(state.app, state.sid)
         # Long-term memory: the session's pinned snapshot (built on its first turn).
-        memory = memory_snapshot_text(state.app, state.sid, state.sess, state.turn_id)
+        with timer.phase("prologue.memory"):
+            memory = memory_snapshot_text(state.app, state.sid, state.sess, state.turn_id)
         # Working state: plan mode, the plan (draft/approved) and the todos (empty when absent).
-        working = working_state_injections(state.app, state.sid, state.sess)
+        with timer.phase("prologue.working_state"):
+            working = working_state_injections(state.app, state.sid, state.sess)
         # P1.6d #1068: surface a pending stall-triggered replanning suggestion once (no-op otherwise).
         replan = replan_suggestion(state.app, state.sid, state.sess)
         # Plugin changes applied as a note, until a compaction folds them into the prompt.
@@ -177,16 +180,17 @@ def _prepare_turn_off_loop_steps(
             state.app, state.sid, status="error"
         )
     _check_not_cancelled(state)
-    state.context_frame = _record_context_frame(
-        state.app,
-        state.sid,
-        state.sess,
-        state.user_msg,
-        user_text=state.user_text,
-        enriched_text=state.enriched_text,
-        context_error=state.context_file_error,
-        injections=state.injections,
-    )
+    with bringup_timing.timer_for_session(state.app, state.sid).phase("prologue.context_frame"):
+        state.context_frame = _record_context_frame(
+            state.app,
+            state.sid,
+            state.sess,
+            state.user_msg,
+            user_text=state.user_text,
+            enriched_text=state.enriched_text,
+            context_error=state.context_file_error,
+            injections=state.injections,
+        )
     # P2.2 #1070 / P2.6 #1074: UserPromptSubmit hooks (the ported ``pre_message``
     # consumer). A deny VETOES the turn (session -> error); a ``defer`` SUSPENDS it for
     # out-of-band approval (waiting_user, resume as a new turn). The whole finalize-
@@ -197,7 +201,8 @@ def _prepare_turn_off_loop_steps(
     _check_not_cancelled(state)
     from clio_agent.gact.hooks.user_prompt import run_user_prompt_submit  # noqa: PLC0415
 
-    return run_user_prompt_submit(state, update_retry_attempt=update_retry_attempt)
+    with bringup_timing.timer_for_session(state.app, state.sid).phase("prologue.prompt_hooks"):
+        return run_user_prompt_submit(state, update_retry_attempt=update_retry_attempt)
 
 
 def prepare_turn_off_loop(state: "TurnState", *, update_retry_attempt: Callable[..., Any]) -> str:

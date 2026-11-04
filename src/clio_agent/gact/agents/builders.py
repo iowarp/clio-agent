@@ -199,14 +199,15 @@ def _agent_tools(
     claimed = [row["name"] for row in resolution.tools if row["kind"] == "native"]
     allowed = set(agent_def.tools)
     claimed = [name for name in claimed if name in allowed and name not in AGENT_RUNTIME_TOOLS]
-    available, gateway_names, withheld = build_native_tools(
-        agent_def,
-        claimed,
-        sources,
-        supports_vision=supports_vision,
-        supports_pdf=supports_pdf,
-        a2ui_catalogs=bool(resolution.catalogs),
-    )
+    with _build_phase("tools.native"):
+        available, gateway_names, withheld = build_native_tools(
+            agent_def,
+            claimed,
+            sources,
+            supports_vision=supports_vision,
+            supports_pdf=supports_pdf,
+            a2ui_catalogs=bool(resolution.catalogs),
+        )
     namespaces = sorted(resolution.mcp_servers) if agent_def.tools else []
     mount_failures: dict[str, str] = {}
     if gateway_names or namespaces:
@@ -227,13 +228,18 @@ def _agent_tools(
                 reason="custom_agent_tool_executor_unavailable",
                 tools=[*gateway_names, *namespaces],
             )
-        refresh_executor_tools(tool_executor)  # a server's tools/list_changed since last turn
-        picked, mount_failures = _gateway_and_namespace_tools(
-            tool_executor, gateway_names, namespaces
-        )
+        with _build_phase("tools.refresh"):
+            refresh_executor_tools(tool_executor)  # a server's tools/list_changed since last turn
+        with _build_phase("tools.gateway"):
+            picked, mount_failures = _gateway_and_namespace_tools(
+                tool_executor, gateway_names, namespaces
+            )
         whole = set(namespaces) - set(mount_failures)
         if not agent_def.parent_id:
-            whole |= attach_always_load_tools(tool_executor, picked, mount_failures, list(picked))
+            with _build_phase("tools.always_load"):
+                whole |= attach_always_load_tools(
+                    tool_executor, picked, mount_failures, list(picked)
+                )
         if live is not None:
             live.executor, live.namespaces = tool_executor, whole
         mounted = toolset_inventory.mounted_namespace_set(tool_executor)
@@ -249,8 +255,9 @@ def _agent_tools(
         toolset_inventory.record_tools_unavailable_degraded(
             _ctx.active_app(), agent_def.id, sorted(unavailable), mount_failures=unavailable
         )
-    tools = [_recording_tool(tool) for tool in available.values()]
-    tools.extend(_recording_tool(tool) for tool in _python_tools(resolution, sources))
+    with _build_phase("tools.wrap"):
+        tools = [_recording_tool(tool) for tool in available.values()]
+        tools.extend(_recording_tool(tool) for tool in _python_tools(resolution, sources))
     return tools
 
 
