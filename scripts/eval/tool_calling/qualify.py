@@ -683,7 +683,9 @@ def check_t8b(rec: dict[str, Any]) -> tuple[str, list[str]]:
 
 
 def check_t8c(rec: dict[str, Any]) -> tuple[str, list[str]]:
-    scripts = _per_script(rec)
+    # Only the script's nested writes: the agent's own later call (a shell check of the
+    # files it wrote, asked under approval mode ask) is not the script's question.
+    scripts = [[w for w in ws if tool_of(w) == "fs_write_file"] for ws in _per_script(rec)]
     files = sorted(f for f in rec["files"] if f.startswith("out/"))
     asked = [len(w) for w in scripts]
     notes = [
