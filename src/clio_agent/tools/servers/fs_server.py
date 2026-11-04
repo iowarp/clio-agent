@@ -159,8 +159,9 @@ def write_file(
     """Create a file, or replace its whole content, with ``content``.
 
     Missing parent folders are created. The bytes on disk are exactly ``content``.
-    The result says whether the file was ``created`` and carries the ``unified_diff``
-    of the change, its line counts, and the sha256 of the file before and after.
+    The result says whether the file was ``created``, its line counts and the sha256 of
+    the file before and after; replacing a file also carries the ``unified_diff`` of
+    the change (a new file's content is what was written).
     The change is listed in the person's diff panel, where they can undo it.
     """
 
