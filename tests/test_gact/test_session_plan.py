@@ -289,3 +289,16 @@ def test_the_shipped_stale_note_reaches_a_session_of_short_turns() -> None:
     assert working_state.stale_steps() <= 9  # about every three or four short rounds
     text = injections.render(working_state.PLAN_STALE_SOURCE, {"path": "p", "steps": 8})
     assert text is not None and "threads have finished" in text
+
+
+def test_a_plan_closed_as_done_says_how_many_threads_it_still_marks_open(
+    app_session: Any,
+) -> None:
+    """On L1P two of seven runs set the plan done while its threads still read open or
+    active, the finished work never recorded. The result states the count; the agent
+    decides. SABOTAGE: drop ``unfinished_threads`` and the closed plan reads as clean."""
+    app, sid, _ = app_session
+    update_plan(app, sid, content="# Objective\nx\n\n- [closed] a\n- [active] b\n1. [open] c\n")
+    assert update_plan(app, sid, status="done")["unfinished_threads"] == 2
+    update_plan(app, sid, content="# Objective\nx\n\n- [closed] a\n- [dropped] b: not needed\n")
+    assert update_plan(app, sid, status="done")["unfinished_threads"] == 0
