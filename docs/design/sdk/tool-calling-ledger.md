@@ -410,6 +410,24 @@ Both answers are of a similar standard: checked against the data, CLIO's trait w
     | Right | X2 12/12 rounds, H4 2/2 | X2 12/12, H4 4/5 | X2 12/12, H4 2/3 |
 
     Under invoke no reply wrote a call in both formats (5-6 per X2 run did under json). Two parser gaps showed in the first invoke runs and are fixed: the model often omits or misplaces the `<function_calls>` container (18 of 57 calls began at `<invoke`; one trailed a stray opener), so the calls are the complete `<invoke>` elements and the container is decoration (`185d1906`); once the tool's own `<invoke name=...>` line was missing, which cannot run, and its refusal now asks for the block in this protocol's terms instead of the JSON one (`3d336ced`; the one H4 miss followed that misleading refusal). Markup that is data never runs: an `<invoke>` in a fenced code block, or one naming no tool the agent has.
+27. **Long sessions on the real data: L1 and L1P (2026-11-04, one run each, invoke protocol).** L1 is ten queued rounds on the `appl-vision` export: explore, data quality, X2's four questions, a figure, a dose by accession test, a change of plan, a report. L1P is the same with the agenda up front and "Plan the work first, then start." Forced compaction sets `autocompact_pct` 0.06 (about 60k); at the default 0.85 no run compacted.
+
+    | Run | Rounds 3-6 right | Wall | Model calls | Peak prompt | Compactions | Plan | Todos |
+    | --- | --- | --- | --- | --- | --- | --- | --- |
+    | L1, planning available (`l1a`) | 4/4 | 349 s | 26 | 121k | 0 | none | none |
+    | L1, plan and todo tools withheld (`l1b`) | 4/4 | 352 s | 31 | 110k | 0 | - | - |
+    | L1, Claude Code (no TodoWrite allowed) | 4/4 | 358 s | 32 | 85k | - | - | - |
+    | L1P (`l1p`) | 2/4* | 359 s | 27 | 120k | 0 | none | none |
+    | L1P, forced compaction (`l1p-compact`) | 2/4* | 366 s | 35 | 77k (peak before a compaction) | 2 | none | none |
+    | L1P, forced, no re-offer (`l1p-compact-noreoffer`) | 4/4 | 473 s | 31 | 71k | 2 | none | none |
+    | L1P, Claude Code (TodoWrite allowed) | 2/4* | 429 s | 43 | 113k | - | in its reply | none |
+
+    \* The agent applied its own data-quality exclusions (readings of 0 and round 5577) to rounds 5 and 6 and said so; Claude Code did the same on L1P. With the agenda's "possibly redo parts with stricter filters" in view, both chose stricter defaults, so these are judgement differences, not errors.
+
+    - **Compaction.** Both checkpoints kept the agenda in the person's words, every answer given, the person's constraints and the step in progress; after each the agent resumed that step (inspecting its figure) without redoing work. The checkpoint replays every person turn verbatim after it.
+    - **No plan when asked.** No L1P run wrote a session plan; the first thought read the plan request as background ("what they're asking for now is exploration"). Probe L1P1 (the opening message alone, three runs, `probe-plan0`): 0/3 used a planning tool, 2/3 wrote a plan in the reply only, as Claude Code did. Every planning text sent a plan request to plan mode, an approval stop the person had not asked for ("then start"), and offered `plan_update` only for work already under way. After `f0fdf156` says what each tool is for (`plan_update` writes a plan the agent carries out; `plan_enter` is for a plan the person approves): 3/3 wrote a session plan with `plan_update` (`probe-plan1`), each following the agenda thread by thread with checking last; wall 43-81 s against 58-63 s. The planning skill's "shell is blocked" was also wrong under the read-only fence.
+    - **A self-written plan was labelled approved (`a0942fbc`).** `plan_update` outside plan mode set the status `approved`, so the plan injection, the Work row and the goal judge's transcript claimed an approval no one gave. It is now `active`.
+    - **Context.** A 434-file `fs_glob` (`limit` 500-1000, the model's choice) is the largest single read at 22.8k characters; the agent then lists the folders with the shell anyway.
 18. **Observed: native tool-call markup in the visible text.** In 2 of 396 runs (`head1` H4, `x1`) the model wrote a fragment of Claude's native call markup before a correct call block; it reaches the transcript as prose. Not fixed.
 
 ### Targets
