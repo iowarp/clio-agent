@@ -7,16 +7,17 @@ navigation alike (BR20: Playwright's route handler misses redirect hops). Subfra
 subresources are not gated: they belong to the page the person or the agent chose.
 
 A host is allowed when ``browser.granted_hosts`` or a ``browser_host`` policy row covers it.
-Otherwise the navigation is attributed (BR18) to the first of:
+The gate governs the agent, not the person: the shared tab is the person's browser too.
 
-1. an agent call in flight on that page: the person is asked, through the same interactive
-   gate as any tool call, with the script the call came from; the call's clock and the
-   script's clock pause while the question is open (BR17), and Stop cancels both;
-2. the person (their input or the URL bar in the live view, within
-   ``browser.person_window_s``): granted for the conversation, recorded as their grant;
-3. the page itself (a timed redirect, a script running between agent calls): refused, the
-   page stays where it was, and the block is reported to the panel and to the agent's next
-   result as ``navigation_blocked``.
+1. A navigation during an agent call on that page (a link it clicks, a redirect, a form)
+   to a host not allowed asks the person, through the same interactive gate as any tool
+   call, with the script the call came from; the call's clock and the script's clock
+   pause while the question is open (BR17), and Stop cancels both.
+2. A navigation outside any agent call loads: the person's link, URL bar, sign-in chain
+   across providers, or the page's own redirect. One the person made (input or URL bar
+   within ``browser.person_window_s``) grants its host for the conversation.
+3. Before an agent call acts on a page, the page's current host must be allowed; a page
+   the person or the page itself took to a new host asks first (:func:`admit_call`).
 
 A denied hop fails with ``Aborted``, which keeps the page on the page it was on (Phase 0).
 Only ``http`` and ``https`` navigations reach a host check; ``about:``, ``data:`` and
@@ -36,12 +37,20 @@ from typing import TYPE_CHECKING, Any
 from urllib.parse import urlsplit
 
 from clio_agent.gact.browser import settings
+from clio_agent.gact.browser.settings import BrowserError
 from clio_agent.runtime import trace
 
 if TYPE_CHECKING:
     from clio_agent.gact.browser.service import BrowserService, PageRecord
 
-__all__ = ["GRANTOR_PERSON_NAVIGATION", "allow_blocked", "attach", "decision_for", "grant"]
+__all__ = [
+    "GRANTOR_PERSON_NAVIGATION",
+    "admit_call",
+    "allow_blocked",
+    "attach",
+    "decision_for",
+    "grant",
+]
 
 #: How a host the person opened in the shared tab is recorded.
 GRANTOR_PERSON_NAVIGATION = "user_navigation"
@@ -165,25 +174,46 @@ async def _decide(service: "BrowserService", record: "PageRecord", url: str) -> 
     decision = decision_for(service.app, record.session_id, host)
     if decision == "allow":
         return True
-    if decision == "deny":
-        if inflight is not None:
-            inflight.denied_host = host
-        else:
-            _blocked(service, record, host, url, reason="browser_host_denied")
-        return False
-    if inflight is not None:
-        allowed = await _ask_for_call(service, record, host, url)
-        if not allowed:
-            inflight.denied_host = host
-        return allowed
-    if time.monotonic() - record.last_person_input < settings.person_window_s():
-        await asyncio.get_running_loop().run_in_executor(
-            None,
-            lambda: grant(service.app, record.session_id, host, grantor=GRANTOR_PERSON_NAVIGATION),
-        )
+    if inflight is None:  # the person's browsing, or the page's own: it loads
+        person = time.monotonic() - record.last_person_input < settings.person_window_s()
+        if person and decision != "deny":
+            await asyncio.get_running_loop().run_in_executor(
+                None,
+                lambda: grant(
+                    service.app, record.session_id, host, grantor=GRANTOR_PERSON_NAVIGATION
+                ),
+            )
         return True
-    _blocked(service, record, host, url, reason="browser_host_not_granted")
-    return False
+    if decision == "deny":
+        inflight.denied_host = host
+        return False
+    allowed = await _ask_for_call(service, record, host, url)
+    if not allowed:
+        inflight.denied_host = host
+    return allowed
+
+
+async def admit_call(service: "BrowserService", record: "PageRecord") -> None:
+    """Before an agent call acts on the page: its host must be one the agent may use.
+
+    The person, or the page, may have taken the page to a host the agent was never
+    allowed; the agent asks before reading or acting on it, as for a navigation.
+    """
+    parts = urlsplit(record.url())
+    if parts.scheme.lower() not in _WEB_SCHEMES:
+        return
+    host = (parts.hostname or "").lower()
+    decision = decision_for(service.app, record.session_id, host)
+    if decision == "allow":
+        return
+    if decision != "deny" and await _ask_for_call(service, record, host, record.url()):
+        return
+    raise BrowserError(
+        "browser_host_denied",
+        f"the person did not allow the agent to use {host}; the page is on it",
+        host=host,
+        page=record.id,
+    )
 
 
 async def _ask_for_call(

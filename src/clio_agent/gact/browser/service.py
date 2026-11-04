@@ -452,6 +452,9 @@ class BrowserService:
             self.publish(PAGE_UPDATED, record)
             await self._agent_hook(record, True)
             try:
+                from clio_agent.gact.browser import host_gate  # noqa: PLC0415
+
+                await host_gate.admit_call(self, record)
                 result = await work(record)
                 if inflight.denied_host:  # a click or form led to a host the person refused
                     raise _typed(RuntimeError("navigation refused"), inflight)

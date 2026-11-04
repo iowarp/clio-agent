@@ -160,3 +160,25 @@ def test_the_person_signs_in_through_the_live_view(
         socket.send_text(json.dumps({"type": "key", "action": "press", "key": "Enter"}))
         _until_state(socket, lambda s: s.get("url", "").endswith("/account"))
     assert record.url().endswith("/account")
+
+
+def test_the_page_lays_out_at_the_views_size(
+    browser: Any, site: dict[str, Any], tmp_path: Path
+) -> None:
+    """A narrow panel shows the page's own narrow layout, not a shrunken wide frame."""
+    client, _app, sid = _client(tmp_path)
+    record = browser.wait(browser.open(sid, "Narrow"))
+    browser.run(record, "goto", lambda r: r.page.goto(site["a"] + "/table"))
+    url = f"/v1/sessions/{sid}/browser/{record.id}/live"
+    with client.websocket_connect(url, subprotocols=["clio.browser.v1"]) as socket:
+        _until_state(socket, lambda s: s["type"] == "state")
+        socket.send_text(json.dumps({"type": "resize", "width": 390, "height": 700}))
+        state = _until_state(socket, lambda s: (s.get("viewport") or {}).get("width") == 390)
+        assert state["viewport"] == {"width": 390, "height": 700}
+        assert record.page.viewport_size == {"width": 390, "height": 700}
+        assert record.person_acted is False  # resizing the view is not acting on the page
+        for _ in range(100):
+            if socket.receive().get("bytes"):
+                break  # frames keep coming at the new size
+        else:
+            raise AssertionError("no frame after the resize")

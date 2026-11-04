@@ -122,8 +122,8 @@ async def _start(service: Any, record: Any, hub: _Hub) -> None:
         for viewer in list(hub.viewers):
             _deliver(viewer, hub.last_frame)
 
-    width = settings.frame_width()
     viewport = record.page.viewport_size or {"width": 1280, "height": 800}
+    width = min(settings.frame_width(), int(viewport["width"]))  # never upscaled
     height = max(1, round(width * viewport["height"] / max(1, viewport["width"])))
     hub.screencast = await record.page.screencast.start(
         on_frame=on_frame, quality=settings.frame_quality(), size={"width": width, "height": height}
@@ -180,6 +180,22 @@ async def _stop(hub: _Hub) -> None:
     hub.actions = hub.screencast = None
 
 
+async def _resize(service: Any, record: Any, hub: _Hub, message: dict[str, Any]) -> None:
+    """Lay the page out at the controlling view's size, as a browser window would, so a
+    page reflows in a narrow panel instead of shrinking a wide frame into it."""
+    width = min(2560, max(320, int(_number(message, "width"))))
+    height = min(2560, max(240, int(_number(message, "height"))))
+    current = record.page.viewport_size or {}
+    if (current.get("width"), current.get("height")) == (width, height):
+        return
+    await record.page.set_viewport_size({"width": width, "height": height})
+    await _stop(hub)  # the screencast keeps the size it started with
+    hub.last_frame = b""
+    await _start(service, record, hub)
+    if record.inflight is not None:
+        await _annotate(record, hub)
+
+
 def _number(message: dict[str, Any], key: str) -> float:
     value = message.get(key)
     if not isinstance(value, (int, float)) or isinstance(value, bool):
@@ -193,6 +209,9 @@ async def _play(service: Any, record: Any, hub: _Hub, message: dict[str, Any]) -
     kind = message.get("type")
     if kind == "theme":
         hub.theme = {"accent": str(message.get("accent") or "")}
+        return
+    if kind == "resize":  # the view's size, not something the person did on the page
+        await _resize(service, record, hub, message)
         return
     record.person_acted = True
     record.last_person_input = time.monotonic()
@@ -222,10 +241,6 @@ async def _play(service: Any, record: Any, hub: _Hub, message: dict[str, Any]) -
         await getattr(page.keyboard, action)(key)
     elif kind == "text":
         await page.keyboard.insert_text(str(message.get("text") or ""))
-    elif kind == "resize":
-        width = min(2560, max(320, int(_number(message, "width"))))
-        height = min(2560, max(240, int(_number(message, "height"))))
-        await page.set_viewport_size({"width": width, "height": height})
     elif kind == "navigate":
         await _navigate(page, message)
     else:

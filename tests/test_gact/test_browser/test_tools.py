@@ -155,19 +155,27 @@ def test_a_click_that_leads_to_a_denied_host_raises(
 
 
 @pytest.mark.timeout(60)
-def test_the_pages_own_navigation_is_refused_and_reported(
+def test_the_pages_own_navigation_loads_and_the_agent_asks_before_using_it(
     conversation: Any, site: dict[str, Any], monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    """The shared tab is the person's browser: a redirect with no call in flight loads
+    (a sign-in hops across hosts this way). The agent asks before it uses the new host."""
+    app, _sid = conversation
     monkeypatch.setenv("CLIO_BROWSER_GRANTED_HOSTS", "a.fixture.localhost")
     page = tools.browser_open(url=site["a"] + "/timed-redirect")["page"]["id"]
     time.sleep(6.5)  # the fixture moves to host b after five seconds, with no call in flight
-    result = tools.browser_wait(page, "load")
-    assert result["navigation_blocked"]["host"] == "b.fixture.localhost"
-    assert result["navigation_blocked"]["reason"] == "browser_host_not_granted"
-    assert result["page"]["host"] == "a.fixture.localhost"
-    assert "navigation_blocked" not in tools.browser_wait(page, "load")  # told once
-    # The panel still shows the refusal until the page loads something else.
-    assert tools.browser_pages()["pages"][0]["navigation_blocked"]["host"] == "b.fixture.localhost"
+    assert tools.browser_pages()["pages"][0]["url"].startswith(site["b"])
+    seen: list[dict[str, Any]] = []
+    answering = _answer(app, "deny", seen=seen)
+    with pytest.raises(BrowserError) as refused:
+        tools.browser_read(page, {"steps": [{"by": "css", "css": "h1"}]}, "text")
+    answering.join(5)
+    assert refused.value.reason == "browser_host_denied"
+    assert [row["tool_call"]["input"]["host"] for row in seen] == ["b.fixture.localhost"]
+    answering = _answer(app, "allow", seen=seen)
+    text = tools.browser_read(page, {"steps": [{"by": "css", "css": "h1"}]}, "text")
+    answering.join(5)
+    assert text["page"]["host"] == "b.fixture.localhost"
 
 
 def test_the_persons_own_navigation_is_granted_for_the_conversation(
