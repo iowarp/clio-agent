@@ -38,6 +38,7 @@ from clio_agent.gact import native_task_recovery, native_task_settlement
 from clio_agent.gact.core_recovery import CoreRecovery
 from clio_agent.gact.native_identity import local_runtime_identity
 from clio_agent.gact.native_shell import register_native_shell
+from clio_agent.gact.native_task_replies import unchanged_reply
 from clio_agent.gact.native_work import SUBMISSION_ARGUMENT, NativeWork, SubmissionAuthorizer, now
 from clio_agent.gact.task_access import TaskAccessDenied
 from clio_agent.gact.task_history import TaskHistory
@@ -53,7 +54,6 @@ from clio_agent.tools.task_client import (
     submission_failure,
 )
 from clio_agent.tools.task_receipt import AcceptedTaskResult, accepted_result
-from clio_agent.gact.native_task_replies import unchanged_reply
 from clio_agent.tools.task_transport import TaskObservationTransport
 
 logger = logging.getLogger(__name__)
