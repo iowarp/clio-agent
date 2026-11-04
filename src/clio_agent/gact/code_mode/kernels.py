@@ -136,6 +136,8 @@ class Kernel:
         self.messages: queue.Queue[dict[str, Any] | None] = queue.Queue()
         self.stderr: collections.deque[str] = collections.deque(maxlen=200)
         self.bound_digest = ""
+        #: Digest of each plugin binding the kernel holds now.
+        self.bound_bindings: dict[str, str] = {}
         self.last_used = time.monotonic()
         self.lock = threading.Lock()  # one script at a time per kernel
         self.send_lock = threading.Lock()  # results come back from several call threads
@@ -226,16 +228,41 @@ class Kernel:
             self.messages.put(None)  # stay at end of stream for later readers
         return message
 
-    def bind(self, table: dict[str, Any]) -> None:
-        """Send the stub table when it changed since the last script."""
+    def bind(
+        self, table: dict[str, Any], bindings: dict[str, dict[str, str]] | None = None
+    ) -> None:
+        """Send the stub table and the plugin bindings that changed since the last script."""
+        bindings = bindings or {}
+        message: dict[str, Any] = {"type": "bind"}
         digest = json.dumps(table, sort_keys=True, default=str)
-        if digest == self.bound_digest:
+        if digest != self.bound_digest:
+            message["stubs"] = table
+        changed = {
+            name: spec
+            for name, spec in bindings.items()
+            if self.bound_bindings.get(name) != spec.get("digest")
+        }
+        if changed:
+            message["bindings"] = changed
+        gone = sorted(set(self.bound_bindings) - set(bindings))
+        if gone:
+            message["unbind"] = gone
+        if len(message) == 1:
             return
-        self.send({"type": "bind", "stubs": table})
+        self.send(message)
         answer = self.receive(start_timeout_s())
         if not answer or answer.get("type") != "bound":
             raise KernelError(f"the Python kernel did not take its tools: {self.diagnostics()}")
         self.bound_digest = digest
+        for name in gone:
+            self.bound_bindings.pop(name, None)
+        failed = answer.get("failed") or {}
+        for name, spec in changed.items():
+            if name in failed:
+                self.bound_bindings.pop(name, None)
+                trace.event("CODE", "kernel_binding_failed name=%s error=%s", name, failed[name])
+            else:
+                self.bound_bindings[name] = str(spec.get("digest") or "")
 
     def stop(self, reason: str) -> None:
         """Stop the kernel and everything it started."""

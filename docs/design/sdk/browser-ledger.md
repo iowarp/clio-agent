@@ -80,6 +80,10 @@ the headless shell and ffmpeg it fetches alongside). Probes:
 | BR25 | Draft PRs target `claude/tool-calling-long-horizon` until it merges, then `develop`; against `develop` now they would carry that branch's 300 and more commits. | Addendum A, "Base" | | open |
 | BR26 | Chromium is launched with a short `TMPDIR` CLIO owns (`<tmp>/clio-browser-<uid>`, falling back to `/tmp` when the temp root is long): Chromium keeps its process-singleton socket there, and a Unix socket path over about 100 bytes aborts the launch ("Socket path too long"), as the test runner's temp path did. | Phase 1 testing | `gact/browser/service.py` `_chromium_env`; `tests/test_gact/test_browser/test_service.py` | done |
 | BR27 | A call that leads to a download waits for it: a main-frame response with `Content-Disposition: attachment` makes the call wait for that download to be saved before it returns, so the result that triggered it reports it (W11). Playwright delivers the `download` event after the click returns. | Phase 1 testing | `test_a_download_lands_in_session_scratch_and_is_reported_once` | done |
+| BR28 | A screenshot is shown in the transcript through its minted artifact: the row carries an artifact link with `media_type: image/png`, and the UI previews image artifacts inline. The `workspace_file` block cannot serve it, since the workspace file route reads only the workspace, and a base64 `media` block shows only after its full content is loaded. | Phase 2 | `gact/browser/presentation.py`; `gact/routes/workspace_file_read.py` | open |
+| BR29 | The browser tools share one concurrency group through a declared attribute on their callables (`dispatch.CONCURRENCY_GROUP_ATTR`, `"browser"`), read by the script dispatcher where an MCP tool's group is its server; calls on one page are serialized by the service's page lock. | Plan, "Concurrency" | `tests/test_gact/test_browser/test_declarations.py` | done |
+| BR30 | The browser tools declare the tool domain `browser`, added to `ToolDomain` and to the UI's domain labels. | Phase 2 | `gact/types.py` | done |
+| BR31 | `kernel_bindings` rows are part of the resolution (`Resolution.kernel_bindings`, in its digest), carry the source text, and come only from trusted plugins; an agent gets a binding when `run_code` and every required tool are script-callable, and the kernel binds `tools` first, then each plugin binding as its source's `export`. A binding that fails to run is traced `kernel_binding_failed` and left out. | Plan, "The registry" | `tests/test_gact/test_kernel_bindings.py` | done |
 
 ## Qualification
 
@@ -102,7 +106,7 @@ the headless shell and ffmpeg it fetches alongside). Probes:
 | W15 | arxiv.org cs.DC listing: the host is asked, sources list the browser calls with arxiv.org URLs, the screenshot has a `web:arxiv.org` tool-declared edge | | open |
 | W16 | The live view at 390 by 844 | | open |
 | W17 | Export a W1 session | | open |
-| W18 | `plugin check` rejects a binding importing `requests` | | open |
+| W18 | `plugin check` rejects a binding importing `requests` | `clio-agent plugin check <probe>`: `FAIL plugin probe@0.1.0 ... ai.iowarp.clio/kernel/b.py:2 imports 'requests', which is not in the standard library; a kernel binding is standard library only [kernel_binding_import]`; `test_plugin_check_rejects_a_binding_that_imports_outside_the_standard_library` | passed (live) |
 | W19 | No browser launch under `src/` outside `gact/browser/` | | open |
 | W20 | A timed redirect with no call in flight is refused; the panel allows it; with no viewer the next call reports `navigation_blocked` | | open |
 | W-L1 | Tauri desktop, "Use my Chrome", `cdp` against a real Chrome | | local phase |

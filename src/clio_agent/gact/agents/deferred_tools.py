@@ -261,6 +261,9 @@ def apply_disclosure(
     tools: Mapping[str, Any] = getattr(program, "tools", {}) or {}
     servers = frozenset(getattr(resolution, "mcp_servers", {}) or {}) | _BUILTIN_SERVERS
     finalize_run_code(program, servers)
+    from clio_agent.plugins.kernel_bindings import attach  # noqa: PLC0415
+
+    attach(program, resolution)  # after tool settings: a binding needs its tools script-callable
     # Code-only tools are kernel stubs: never listed, never in the deferred catalog.
     offered = {name: tool for name, tool in tools.items() if name not in code_only}
     disclosure = plan_disclosure(resolution, offered, context_tokens=context_tokens, loaded=loaded)

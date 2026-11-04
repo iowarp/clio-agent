@@ -24,6 +24,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from clio_agent.plugins.compose import PRODUCT_MARKETPLACES, ComposedPrompt, compose
+from clio_agent.plugins.kernel_bindings import resolution_rows as kernel_binding_rows
 from clio_agent.plugins.model_union import model_union
 from clio_agent.plugins.records import Diagnostic, FragmentRecord, PluginRecord, SubagentRecord
 from clio_agent.plugins.resolution_digest import resolution_digest
@@ -110,6 +111,7 @@ class Resolution:
     delta: dict[str, list[str]]
     diagnostics: list[dict[str, Any]]
     digest: str = ""
+    kernel_bindings: list[dict[str, Any]] = field(default_factory=list)
 
     def body(self) -> dict[str, Any]:
         return {
@@ -129,6 +131,7 @@ class Resolution:
             "workflow_state": self.workflow_state,
             "delta": self.delta,
             "diagnostics": self.diagnostics,
+            "kernel_bindings": self.kernel_bindings,
         }
 
     def to_dict(self) -> dict[str, Any]:
@@ -136,8 +139,7 @@ class Resolution:
 
     @classmethod
     def from_dict(cls, data: Mapping[str, Any]) -> "Resolution":
-        values = {key: data[key] for key in cls.__dataclass_fields__ if key in data}
-        return cls(**values)
+        return cls(**{key: data[key] for key in cls.__dataclass_fields__ if key in data})
 
     @property
     def plugin_ids(self) -> list[str]:
@@ -645,6 +647,7 @@ def _finish(
         workflow_state=collected["workflow_state"],
         delta=delta.to_dict(),
         diagnostics=[],
+        kernel_bindings=kernel_binding_rows(entry.record for entry in entries),
     )
     generators = {
         key: (lambda generator=generator: generator(resolution))

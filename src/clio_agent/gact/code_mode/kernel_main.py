@@ -5,12 +5,19 @@ The host (:mod:`clio_agent.gact.code_mode.kernels`) starts it as ``python -I
 kernel_main.py <output limit>`` inside the shell's write fence and talks
 newline-delimited JSON over stdin and the original stdout:
 
-- host to kernel: ``{"type": "bind", "stubs": {...}}`` (the tools a script may call),
-  ``{"type": "exec", "id": n, "code": "..."}``, and ``{"type": "result", "id": k,
-  "ok": bool, "value": ..., "error": "..."}`` answering a call;
-- kernel to host: ``{"type": "ready"}``, ``{"type": "call", "id": k, "tool": name,
-  "args": {...}}`` and ``{"type": "done", "id": n, "ok": bool, "output": "...",
-  "value": "...", "error": "..."}``.
+- host to kernel: ``{"type": "bind", "stubs": {...}, "bindings": {name: {"source",
+  "digest"}}, "unbind": [name]}`` (the tools a script may call, and the plugins' kernel
+  bindings that changed), ``{"type": "exec", "id": n, "code": "..."}``, and
+  ``{"type": "result", "id": k, "ok": bool, "value": ..., "error": "..."}`` answering a
+  call;
+- kernel to host: ``{"type": "ready"}``, ``{"type": "bound", "failed": {name: error}}``,
+  ``{"type": "call", "id": k, "tool": name, "args": {...}}`` and ``{"type": "done", "id":
+  n, "ok": bool, "output": "...", "value": "...", "error": "..."}``.
+
+The script's names come from one binding registry: ``tools`` is its first entry, generated
+from the stubs; each plugin binding is its source run in a module that holds ``tools`` and
+``ToolError``, bound under its name as the module's ``export``
+(:mod:`clio_agent.plugins.kernel_bindings`).
 
 At start the kernel keeps a duplicate of its stdout for the protocol; each script's
 file descriptors 1 and 2 point at a temporary file, so its prints and those of its
@@ -32,6 +39,7 @@ import sys
 import tempfile
 import threading
 import traceback
+import types
 from typing import Any, cast
 
 #: How much of one script's output the kernel returns (the host bounds it further) when
@@ -136,6 +144,46 @@ class _Tools(_Namespace):
     async def call(self, name: str, **args: Any) -> Any:
         """Call a tool by its full name, for names found with tools.search."""
         return await self._host.call(name, args)
+
+
+class _Bindings:
+    """The binding registry: the names a script gets, ``tools`` first."""
+
+    def __init__(self, host: _Host, namespace: dict[str, Any]) -> None:
+        self.host = host
+        self.namespace = namespace
+        self.modules: dict[str, types.ModuleType] = {}
+
+    def _tools(self, stubs: dict[str, Any]) -> Any:
+        return _Tools(self.host, stubs)
+
+    def _plugin(self, name: str, spec: dict[str, Any]) -> Any:
+        module = types.ModuleType(f"clio_binding_{name}")
+        module.__dict__.update(tools=self.namespace.get("tools"), ToolError=ToolError)
+        code = compile(str(spec.get("source") or ""), f"<binding {name}>", "exec")
+        exec(code, module.__dict__)  # noqa: S102 - a trusted plugin's binding (plugin check)
+        if "export" not in module.__dict__:
+            raise NameError(f"binding {name!r} defines no export")
+        self.modules[name] = module
+        return module.__dict__["export"]
+
+    def bind(self, message: dict[str, Any]) -> dict[str, str]:
+        """Apply one ``bind`` message; the bindings that failed, with their errors."""
+        if "stubs" in message:
+            self.namespace["tools"] = self._tools(message.get("stubs") or {})
+            for module in self.modules.values():  # bindings call the current tools
+                module.__dict__["tools"] = self.namespace["tools"]
+        for name in message.get("unbind") or ():
+            self.modules.pop(str(name), None)
+            self.namespace.pop(str(name), None)
+        failed: dict[str, str] = {}
+        for name, spec in (message.get("bindings") or {}).items():
+            try:
+                self.namespace[str(name)] = self._plugin(str(name), dict(spec))
+            except Exception as exc:  # noqa: BLE001 - reported to the host, typed there
+                self.namespace.pop(str(name), None)
+                failed[str(name)] = "".join(traceback.format_exception_only(type(exc), exc))
+        return failed
 
 
 def _compile(code: str) -> tuple[Any, Any]:
@@ -277,10 +325,10 @@ def main() -> None:
     namespace: dict[str, Any] = {"__name__": "__main__", "ToolError": ToolError}
     capture = tempfile.TemporaryFile()
     host.send({"type": "ready", "pid": os.getpid(), "python": sys.version.split()[0]})
+    bindings = _Bindings(host, namespace)
     while (message := work.get()) is not None:
         if message.get("type") == "bind":
-            namespace["tools"] = _Tools(host, message.get("stubs") or {})
-            host.send({"type": "bound"})
+            host.send({"type": "bound", "failed": bindings.bind(message)})
         elif message.get("type") == "exec":
             code = str(message.get("code") or "")
             done = _execute(loop, namespace, code, capture, host, output_limit)

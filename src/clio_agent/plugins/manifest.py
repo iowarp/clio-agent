@@ -45,6 +45,7 @@ _EXTENSION_FIELDS = (
     "connections",
     "defer",
     "servers",
+    "kernel_bindings",
 )
 #: What one ``servers.<name>`` entry may set.
 _SERVER_FIELDS = ("defer", "description", "callers", "permission", "tools")
@@ -191,6 +192,9 @@ def clio_extension(manifest: Mapping[str, Any], plugin: str) -> dict[str, Any]:
     unknown = sorted(set(ext) - set(_EXTENSION_FIELDS))
     if unknown:
         raise ManifestError(f"{plugin}: unknown {NAMESPACE} field(s): {', '.join(unknown)}")
+    from clio_agent.plugins.kernel_bindings import check_shape  # noqa: PLC0415
+
+    check_shape(ext.get("kernel_bindings"), plugin)
     kind = ext.get("kind", "plugin")
     if kind not in ("plugin", "pack"):
         raise ManifestError(f"{plugin}: {NAMESPACE}.kind must be 'plugin' or 'pack'")

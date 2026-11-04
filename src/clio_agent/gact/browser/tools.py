@@ -249,6 +249,10 @@ def _act_work(
             await _refuse_focused_password(page)
             await page.keyboard.press(str(value))
             return
+        if action == "type" and target is None:  # into the focused element
+            await _refuse_focused_password(page)
+            await page.keyboard.type(str(value or ""))
+            return
         if action == "scroll" and target is None:
             await page.mouse.wheel(float(x), float(y))
             return
