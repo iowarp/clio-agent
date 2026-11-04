@@ -189,3 +189,31 @@ def test_the_exploration_task_runs_in_the_data_folder(
     monkeypatch.setenv("CLIO_EVAL_OPAL_DATA", str(tmp_path / "missing"))
     with pytest.raises(FileNotFoundError):
         tasks.fixture_dir("X1", {})
+
+
+def test_x2_asks_the_chain_from_the_files_and_grades_each_trap_wrong(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The exp67 QY_max chain: four rounds, no data in the prompt, and each round's trap
+    answer (a plain dip, plant means, absolute ranking) graded wrong. SABOTAGE: compare
+    round 3's names as a set and the reordered trap list passes."""
+    from scripts.eval.tool_calling.explore import grade_x2
+
+    monkeypatch.setenv("CLIO_EVAL_OPAL_DATA", str(tmp_path))
+    task = tasks.task("X2", {})
+    assert len(task.rounds) == 3 and "ANSWER:" in task.prompt and "0.7" not in task.prompt
+    right = [
+        "ANSWER: 200",
+        "Done.\nANSWER: 500 mg/kg",
+        "ANSWER: ISU 210, 9, RIL 407",
+        "ANSWER: 0.7434, 0.7552, 0.7414, 0.7905, 0.6598, 0.6593",
+    ]
+    assert grade_x2(right)["correct"] is True
+    traps = [
+        "ANSWER: 50",
+        "ANSWER: 100",
+        "ANSWER: 9, ISU 210, RIL 407",
+        "ANSWER: 0.7451, 0.7576, 0.7414, 0.7934, 0.6626, 0.6606",
+    ]
+    graded = grade_x2(traps)
+    assert [r["correct"] for r in graded["rounds"]] == [False, False, False, False]

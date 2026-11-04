@@ -302,38 +302,54 @@ def run_once(
         tasks.fixture_dir(task_id, manifest),
         args.work_root / CONFIG / task_id / f"run-{index}",
     )
-    command = [
-        args.claude, "-p", task.prompt, "--output-format", "stream-json", "--verbose",
-        "--include-partial-messages", "--model", args.model,
-        "--permission-mode", args.permission_mode, "--no-session-persistence",
-    ]  # fmt: skip
-    if args.allowed_tools:
-        # Pre-approved tools, for where skipping permissions is refused (as root).
-        command += ["--allowedTools", args.allowed_tools]
+    requests = [task.prompt, *task.rounds]
     target = args.results / CONFIG / task_id / f"run-{index}.json"
     target.parent.mkdir(parents=True, exist_ok=True)
     received: list[tuple[float, dict[str, Any]]] = []
+    replies: list[str] = []
+    commands: list[list[str]] = []
     start = time.time()
     timed_out = False
-    with (
-        target.with_suffix(".stream.jsonl").open("w", encoding="utf-8") as raw,
-        subprocess.Popen(
-            command, cwd=workdir, stdout=subprocess.PIPE, text=True, bufsize=1
-        ) as proc,
-    ):
-        assert proc.stdout is not None
-        for line in proc.stdout:
-            at = time.time()
-            try:
-                event = json.loads(line)
-            except json.JSONDecodeError:
-                continue
-            received.append((at, event))
-            raw.write(json.dumps({"recv": at, "event": event}) + "\n")
-            if at - start > args.timeout:
-                timed_out = True
-                proc.kill()
+    session = ""
+    with target.with_suffix(".stream.jsonl").open("w", encoding="utf-8") as raw:
+        for request in requests:
+            # A multi-round task keeps its CLI session to resume it for the next round.
+            command = [
+                args.claude, "-p", request, "--output-format", "stream-json", "--verbose",
+                "--include-partial-messages", "--model", args.model,
+                "--permission-mode", args.permission_mode,
+            ]  # fmt: skip
+            command += ["--resume", session] if session else []
+            command += [] if len(requests) > 1 else ["--no-session-persistence"]
+            if args.allowed_tools:
+                # Pre-approved tools, for where skipping permissions is refused (as root).
+                command += ["--allowedTools", args.allowed_tools]
+            commands.append(command)
+            reply = ""
+            with subprocess.Popen(
+                command, cwd=workdir, stdout=subprocess.PIPE, text=True, bufsize=1
+            ) as proc:
+                assert proc.stdout is not None
+                for line in proc.stdout:
+                    at = time.time()
+                    try:
+                        event = json.loads(line)
+                    except json.JSONDecodeError:
+                        continue
+                    received.append((at, event))
+                    raw.write(json.dumps({"recv": at, "event": event}) + "\n")
+                    if event.get("type") == "system" and event.get("subtype") == "init":
+                        session = str(event.get("session_id") or session)
+                    if event.get("type") == "result":
+                        reply = str(event.get("result") or "")
+                    if at - start > args.timeout:
+                        timed_out = True
+                        proc.kill()
+                        break
+            replies.append(reply)
+            if timed_out:
                 break
+    command = commands[0]
     parsed = parse_stream(received, start)
     if timed_out:
         parsed["outcome"] = {**parsed["outcome"], "final": False, "reason": "timed_out"}
@@ -345,13 +361,15 @@ def run_once(
         "run_index": index,
         "prompt": task.prompt,
         "command": command,
+        "commands": commands,
+        "replies": replies,
         "model": {"provider_id": "claude-code-cli", "model_id": args.model},
         "workdir": str(workdir),
         "ancestor_instructions": ancestor_instructions(workdir),
         "started_at": start,
         "wall_s": round(parsed["ended_at"] - start, 3),
         "handles": [parsed["init"].get("session_id") or ""],
-        "exit_code": proc.returncode,
+        "exit_code": proc.returncode,  # the last round's
         "stream_audit_enabled": False,
         **parsed,
     }
