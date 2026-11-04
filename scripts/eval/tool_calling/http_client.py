@@ -154,6 +154,18 @@ class GactClient:
             {"parts": [{"type": "text", "text": text}], "delivery": "start"},
         )
 
+    def queue(self, sid: str, text: str) -> dict[str, Any]:
+        """Queue a message the session starts by itself once its turn has ended."""
+        return self.post(
+            f"/v1/sessions/{quote(sid)}/queued-messages",
+            {"parts": [{"type": "text", "text": text}]},
+        )
+
+    def queued(self, sid: str) -> list[dict[str, Any]]:
+        """The messages still queued (not yet started) on the session."""
+        body = self.get(f"/v1/sessions/{quote(sid)}/queued-messages") or {}
+        return list(body.get("queued_messages") or [])
+
     def cancel(self, sid: str) -> Any:
         return self.post(f"/v1/sessions/{quote(sid)}/cancel")
 

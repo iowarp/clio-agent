@@ -160,7 +160,6 @@ def wait_for_turn(
     decline_after_s: float | None = None,
     follow_ups: tuple[tuple[float, str], ...] = (),
     rounds: tuple[str, ...] = (),
-    round_poll_s: float = 0.25,
     clock: Callable[[], float] = time.monotonic,
     sleep: Callable[[float], None] = time.sleep,
 ) -> dict[str, Any]:
@@ -169,12 +168,14 @@ def wait_for_turn(
     ``follow_ups``: ``(seconds after start, text)`` messages the person sends while the
     work runs (a changed instruction mid-run). Each is sent once its time has come, and
     the work has not ended until every one was sent; ``sent`` records when.
-    ``rounds``: later requests of a multi-turn task. Each is sent as soon as the
-    previous turn has ended with a new reply, as a person would once they see it (no
-    settle; polled every ``round_poll_s``), and the work has ended when the last one
-    has settled; ``sent`` records them with their ``round`` (2 onward).
+    ``rounds``: later requests of a multi-turn task, put on the session's queue at
+    the start. CLIO starts each one itself when the previous turn ends, so no poll of
+    the runner's sits between rounds; the work has ended when the queue is empty and
+    the last turn has settled. ``sent`` records them with their ``round`` (2 onward).
+    A queued round CLIO could not start (held with a promotion error) ends the wait
+    with state ``queue_held``.
 
-    Returns ``{"state": "settled" | "timed_out" | <interaction status>,
+    Returns ``{"state": "settled" | "timed_out" | "queue_held" | <interaction status>,
     "status", "polls", "first_done_wall", "declined"}``; ``first_done_wall`` is the
     wall time (epoch seconds) of the first poll that saw the end, before settling.
     With ``decline_after_s``, a pending permission question (runs are serial, so any
@@ -190,9 +191,12 @@ def wait_for_turn(
     seen: dict[str, float] = {}
     declined: list[dict[str, Any]] = []
     pending = sorted(follow_ups)
-    later = list(rounds)
-    answered = ""  # the reply that ended the previous round; a round needs a new one
     sent: list[dict[str, Any]] = []
+    for number, text in enumerate(rounds, start=2):
+        client.queue(sid, text)
+        sent.append(
+            {"after_s": round(clock() - start, 1), "round": number, "text": text, "queued": True}
+        )
     while True:
         if clock() - start > timeout_s:
             return {
@@ -225,30 +229,20 @@ def wait_for_turn(
             if pending:  # a follow-up is still due: the person has not finished
                 sleep(poll_s)
                 continue
-            if (
-                newest is not None
-                and newest.get("stop_reason")
-                and str(newest.get("id") or "") != answered
-            ):
+            waiting = client.queued(sid) if rounds else []
+            if any(item.get("promotion_error") for item in waiting):
+                return {"state": "queue_held", "status": status, "polls": polls,
+                        "declined": declined, "sent": sent, "queued": waiting}  # fmt: skip
+            if waiting:  # CLIO starts the next round itself
+                marker = first_done_wall = None
+                sleep(poll_s)
+                continue
+            if newest is not None and newest.get("stop_reason"):
                 now = (
                     str(newest.get("id") or ""),
                     str(newest.get("updated_at") or ""),
                     int(session.get("message_count") or 0),
                 )
-                if later:  # a person sends the next round once they see the reply
-                    text = later.pop(0)
-                    answered = now[0]
-                    client.send(sid, text)
-                    sent.append(
-                        {
-                            "after_s": round(clock() - start, 1),
-                            "round": len(rounds) - len(later) + 1,
-                            "text": text,
-                        }
-                    )
-                    marker = first_done_wall = None
-                    sleep(round_poll_s)
-                    continue
                 if marker == now:
                     return {
                         "state": "settled",
@@ -261,7 +255,7 @@ def wait_for_turn(
                 marker, first_done_wall = now, time.time()
                 sleep(settle_s)
                 continue
-        sleep(round_poll_s if later else poll_s)
+        sleep(poll_s)
 
 
 def read_jsonl(path: Path | None) -> list[dict[str, Any]]:
@@ -506,14 +500,17 @@ def execute_run(ctx: RunContext, spec: RunSpec) -> dict[str, Any]:
 def active_seconds(
     started: float, ended: float, sent: list[dict[str, Any]], sessions: list[dict[str, Any]]
 ) -> float:
-    """Wall time less only the runner's own delay in noticing a turn had ended.
+    """Wall time less only the runner's own delay in sending a round after a turn ended.
 
     A person sees a reply when its turn ends (``turn.completed``), not when the model
     stops writing, so CLIO's time from the last model output to the turn's end stays
-    in. What is left out is the gap from that end to the runner's next send (its poll
-    interval). A round with no recorded turn end before its send counts in full.
+    in. Rounds queued at the start (``wait_for_turn``) are started by CLIO itself, so
+    nothing is left out for them; a round sent later loses the gap from the turn's end
+    to its send. A round with no recorded turn end before its send counts in full.
     """
-    sends = [started + float(row["after_s"]) for row in sent if "round" in row]
+    sends = [
+        started + float(row["after_s"]) for row in sent if "round" in row and not row.get("queued")
+    ]
     ends = sorted(at for session in sessions[:1] for at in session.get("turn_ends") or [])
     idle, previous = 0.0, started
     for send in sends:

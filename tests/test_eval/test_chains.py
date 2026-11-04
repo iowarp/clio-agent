@@ -121,29 +121,43 @@ class _Clock:
 
 
 class _Conversation:
-    """A session that answers each request after a lag: for two polls after a send
-    the old reply is still the newest (the turn has not started yet), then the turn
-    runs for two polls, then the new reply lands."""
+    """A session with CLIO's queue: a send starts a turn that runs for two polls, then
+    its reply lands; a queued message is started by the session itself, but only on
+    the third poll after the turn has ended (idle admission takes a moment)."""
 
     def __init__(self) -> None:
         self.sent: list[str] = []
+        self.waiting: list[str] = []
         self.polls_since_send = 0
+        self.idle_polls = 0
         self.count = 1
         self.reply_id = ""
 
     def send(self, sid: str, text: str) -> dict[str, Any]:
         self.sent.append(text)
         self.polls_since_send = 0
+        self.idle_polls = 0
         self.count += 1
         return {"message_id": f"u{len(self.sent)}"}
 
+    def queue(self, sid: str, text: str) -> dict[str, Any]:
+        self.waiting.append(text)
+        return {"id": f"q{len(self.waiting)}"}
+
+    def queued(self, sid: str) -> list[dict[str, Any]]:
+        return [{"id": text, "promotion_error": None} for text in self.waiting]
+
     def session(self, sid: str) -> dict[str, Any]:
         self.polls_since_send += 1
-        if 2 < self.polls_since_send <= 4:
+        if self.polls_since_send <= 2:
             return {"status": "running", "message_count": self.count}
-        if self.polls_since_send == 5:
+        if self.polls_since_send == 3:
             self.reply_id = f"a{len(self.sent)}"
             self.count += 1
+        self.idle_polls += 1
+        if self.waiting and self.idle_polls == 3:
+            self.send(sid, self.waiting.pop(0))
+            return {"status": "running", "message_count": self.count}
         return {"status": "idle", "message_count": self.count}
 
     def messages(self, sid: str, limit: int = 5) -> list[dict[str, Any]]:
@@ -152,9 +166,10 @@ class _Conversation:
         return [{"id": self.reply_id, "role": "assistant", "stop_reason": "end_turn"}]
 
 
-def test_each_round_waits_for_a_new_reply_to_the_previous_one() -> None:
-    """SABOTAGE: drop the ``answered`` check and round 3 is sent while round 2's turn
-    has not started, because the old reply looks settled."""
+def test_later_rounds_go_on_the_queue_and_the_wait_ends_when_it_is_empty() -> None:
+    """Every later round is queued before the first reply (CLIO starts each one, the
+    runner never sends between rounds), and the wait has not ended while one is still
+    queued. SABOTAGE: drop the ``if waiting`` check and it settles after round 1."""
     clock = _Clock()
     conversation = _Conversation()
     conversation.send("s", "round 1")
@@ -172,7 +187,23 @@ def test_each_round_waits_for_a_new_reply_to_the_previous_one() -> None:
     assert result["state"] == "settled"
     assert conversation.sent == ["round 1", "round 2", "round 3"]
     assert conversation.reply_id == "a3"
-    assert [s["round"] for s in result["sent"]] == [2, 3]
+    assert [(s["round"], s["after_s"], s["queued"]) for s in result["sent"]] == [
+        (2, 0.0, True),
+        (3, 0.0, True),
+    ]
+
+
+def test_a_round_clio_could_not_start_ends_the_wait() -> None:
+    conversation = _Conversation()
+    conversation.queued = lambda sid: [{"id": "q1", "promotion_error": {"status_code": 409}}]  # type: ignore[method-assign]
+    clock = _Clock()
+    conversation.send("s", "round 1")
+    result = wait_for_turn(
+        conversation,  # type: ignore[arg-type]
+        "s", poll_s=2.0, settle_s=6.0, timeout_s=500.0, interaction_timeout_s=30.0,
+        rounds=("round 2",), clock=clock, sleep=clock.sleep,
+    )  # fmt: skip
+    assert result["state"] == "queue_held"
 
 
 def test_the_exploration_task_runs_in_the_data_folder(
@@ -231,6 +262,8 @@ def test_active_time_counts_the_turn_end_a_person_sees_not_the_last_model_output
     ]  # fmt: skip
     sent = [{"after_s": 10.0, "round": 2, "text": "next"}]
     assert active_seconds(100.0, 120.0, sent, sessions) == 15.0
+    queued = [{"after_s": 0.0, "round": 2, "text": "next", "queued": True}]
+    assert active_seconds(100.0, 120.0, queued, sessions) == 20.0
     assert active_seconds(100.0, 120.0, [], sessions) == 20.0
     assert active_seconds(100.0, 120.0, sent, [{"turn_ends": []}]) == 20.0
 
