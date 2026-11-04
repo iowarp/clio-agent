@@ -87,7 +87,10 @@ class PageRecord:
     inflight: Inflight | None = None
     person_acted: bool = False
     last_person_input: float = 0.0
+    #: The host the page was last refused; shown by the panel until the page loads again.
     navigation_blocked: dict[str, Any] | None = None
+    #: Whether the agent's results already reported that refusal (it is told once).
+    blocked_reported: bool = False
     downloads: list[dict[str, Any]] = field(default_factory=list)
     saving: set[asyncio.Task[Any]] = field(default_factory=set)
     #: Main-frame responses that were attachments: downloads the call should wait for.
@@ -397,6 +400,7 @@ class BrowserService:
 
     def _loaded(self, record: PageRecord) -> None:
         record.loading = False
+        record.navigation_blocked = None  # a page that loaded is past any refusal
         asyncio.ensure_future(self._retitle(record))
 
     async def _retitle(self, record: PageRecord) -> None:
@@ -477,12 +481,12 @@ class BrowserService:
     def take_notes(self, record: PageRecord) -> dict[str, Any]:
         """What the agent's result reports since its previous call on this page, then reset."""
         notes: dict[str, Any] = {"person_acted": record.person_acted}
-        if record.navigation_blocked:
+        if record.navigation_blocked and not record.blocked_reported:
             notes["navigation_blocked"] = record.navigation_blocked
+            record.blocked_reported = True
         if record.downloads:
             notes["downloads"] = list(record.downloads)
         record.person_acted = False
-        record.navigation_blocked = None
         record.downloads.clear()
         return notes
 

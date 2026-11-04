@@ -133,8 +133,11 @@ def test_the_browser_facade_builds_targets_and_calls_the_tools(workspace: Path) 
     )
     outcome = _run(agent, code)
     assert outcome["status"] == "completed", outcome
-    assert outcome["output"].split("\n")[0] == "3 Dataset 01 False /scratch/p1-1.png p1"
-    assert outcome["output"].split("\n")[1] == "True"
+    lines = [line for line in outcome["output"].split("\n") if not line.startswith("[browser]")]
+    assert lines[0] == "3 Dataset 01 False /scratch/p1-1.png p1"
+    assert lines[1] == "True"
+    # The stand-in reports the person acting on every read: the script's output says so.
+    assert "[browser] the person used page p1 since your last call on it" in outcome["output"]
     calls = recorder.calls
     assert calls[0] == ("browser_open", {"url": "https://example.org/list", "label": ""})
     rows = {

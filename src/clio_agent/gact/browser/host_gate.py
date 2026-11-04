@@ -212,6 +212,7 @@ def _blocked(
         "reason": reason,
         "at": datetime.now(timezone.utc).isoformat(),
     }
+    record.blocked_reported = False
     trace.event("BROWSER", "%s host=%s page=%s", reason, host, record.id)
     service.publish(PAGE_UPDATED, record)
 

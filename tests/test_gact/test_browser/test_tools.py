@@ -135,7 +135,9 @@ def test_the_pages_own_navigation_is_refused_and_reported(
     assert result["navigation_blocked"]["host"] == "b.fixture.localhost"
     assert result["navigation_blocked"]["reason"] == "browser_host_not_granted"
     assert result["page"]["host"] == "a.fixture.localhost"
-    assert "navigation_blocked" not in tools.browser_wait(page, "load")
+    assert "navigation_blocked" not in tools.browser_wait(page, "load")  # told once
+    # The panel still shows the refusal until the page loads something else.
+    assert tools.browser_pages()["pages"][0]["navigation_blocked"]["host"] == "b.fixture.localhost"
 
 
 def test_the_persons_own_navigation_is_granted_for_the_conversation(
