@@ -1588,6 +1588,13 @@ tools.per_server_concurrency: 8
 # overrides the plugin's declared default; CLIO_TOOLS_PERMISSIONS uses JSON.
 # tools.permissions:  # computed at runtime: {}
 
+# CLIO_TOOLS_RECALL_RESULT_CHARS  (int)  <- src/clio_agent/gact/recall_context_tool.py
+# Characters of a recall_context result shown inline (default 16000, about
+# 4,000 tokens); past it the whole result is saved to the session's tool-
+# output folder and the agent gets its head and the file to search and read
+# on. A fixed size, not a share of the window.
+tools.recall_result_chars: 16000
+
 # CLIO_TOOL_RESULT_SHARE  (float)  <- src/clio_agent/tools/result_room.py
 # Share of the model's context window (0-1] one tool result may use before
 # it is saved to a file and the model gets its head; never more than the

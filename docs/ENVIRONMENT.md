@@ -335,6 +335,7 @@ These resolve through `clio_agent.conf`: a value under the dotted key in `config
 | `CLIO_TOOLS_NEVER_DEFER` | `tools.never_defer` | list | `search_tools,ask_user,load_skill,submit,run_code,wait_tasks,spawn_agent_task,spawn_agents_parallel,write_todos,plan_enter,plan_update,plan_exit,fs_*,shell_*,memory_search,memory_read` | `src/clio_agent/gact/agents/deferred_tools.py` |
 | `CLIO_TOOLS_PERMISSIONS` | `tools.permissions` | mapping | `{}` _(computed)_ | `src/clio_agent/tools/tool_settings.py` |
 | `CLIO_TOOLS_PER_SERVER_CONCURRENCY` | `tools.per_server_concurrency` | int | `8` | `src/clio_agent/gact/agents/tool_concurrency.py` |
+| `CLIO_TOOLS_RECALL_RESULT_CHARS` | `tools.recall_result_chars` | int | `16000` | `src/clio_agent/gact/recall_context_tool.py` |
 | `CLIO_TOOLS_SEARCH_LIMIT` | `tools.search_limit` | int | `5` | `src/clio_agent/gact/search_tools.py` |
 | `CLIO_TOOLS_SEARCH_MAX` | `tools.search_max` | int | `20` | `src/clio_agent/gact/search_tools.py` |
 | `CLIO_TOOLS_SEARCH_MISS_NAMES` | `tools.search_miss_names` | int | `40` | `src/clio_agent/gact/search_tools.py` |

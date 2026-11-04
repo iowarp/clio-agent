@@ -1273,6 +1273,12 @@ KEY_NOTES: dict[str, str] = {
         "Tokens of one tool result the model is shown when its context window is unknown (no "
         "handshake or catalog entry); a longer result is saved to a file with its head."
     ),
+    "tools.recall_result_chars": (
+        "Characters of a recall_context result shown inline (default 16000, about 4,000 "
+        "tokens); past it the whole result is saved to the session's tool-output folder and "
+        "the agent gets its head and the file to search and read on. A fixed size, not a "
+        "share of the window."
+    ),
     "tools.full_result": (
         "Native tools whose whole result reaches the model, never cut to the result size with "
         "the rest saved to a file; a skill's procedure is the default."

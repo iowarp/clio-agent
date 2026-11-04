@@ -106,3 +106,34 @@ def test_a_compaction_id_past_the_cap_names_the_rest() -> None:
     rows, left_out, rest = recall.recall_atoms(_arc([*segments, summary], []), "s", ids=["cmp_1"])
     assert len(rows) == 50 and rest == ["s50", "s51", "s52"] and left_out == 0
     assert "50 of 53 steps" in recall.recall_text(rows, left_out=0, rest=rest)
+
+
+def test_a_long_recall_goes_to_a_file_the_agent_can_search(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Any
+) -> None:
+    """A fixed size, not a share of the window: on a large window a whole compaction
+    came back inline. Past ``tools.recall_result_chars`` the agent gets the head, the
+    cut note and the file holding every step.
+
+    SABOTAGE: size the recall by the window's room alone and the 40 KB text returns whole."""
+    import re
+
+    from clio_agent.tools import result_room
+
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("CLIO_TOOLS_RECALL_RESULT_CHARS", "2000")
+    big = result_room.ResultRoom(tokens=250_000, chars=1_000_000, reason="test", window=1_000_000)
+    monkeypatch.setattr(result_room, "_measure", lambda: big)
+    segments = [
+        _seg(f"s{i:02d}", "observation", {"text": f"step {i} " + "x" * 1000}, i) for i in range(40)
+    ]
+    rows, left_out, rest = recall.recall_atoms(
+        _arc(segments, []), "s", ids=[s.id for s in segments]
+    )
+    full = recall.recall_text(rows, left_out=left_out, rest=rest)
+    shown = recall.bounded_recall(full)
+    assert len(shown) < 2_000 < len(full)
+    assert shown.startswith("[clio: result_spilled]") and "fs_search_text" in shown
+    path = re.search(r"`([^`]+\.txt)`", shown)
+    assert path is not None and open(path.group(1), encoding="utf-8").read() == full
+    assert recall.bounded_recall("1 of 1 steps") == "1 of 1 steps"

@@ -17,6 +17,13 @@ oldest first, each text exactly as recorded. A search hit is a companion chunk o
 how many, and ``limit`` counts those steps. Records without text (an input's delivery
 bookkeeping: ids and content hashes) and reasoning are left out; a cut is stated with
 what to ask for next.
+
+A recall result has a fixed size (``tools.recall_result_chars``), not a share of the
+context window: on a 1M-token window a share is 125k tokens, and whole compactions came
+back inline (64-195 KB a call, L1R). Past it the whole text goes to the session's
+tool-output folder and the agent gets the head and the file, with the same note as any
+cut result (``clio.reminder.result_spilled``), to search with fs_search_text and read on
+with fs_read_file.
 """
 
 from __future__ import annotations
@@ -29,9 +36,21 @@ from typing import Any
 from clio_agent.arc.schema import segment_text
 from clio_agent.errors import ClioError
 
-__all__ = ["RecallContextError", "build_recall_context_tool", "recall_atoms", "recall_text"]
+__all__ = [
+    "RECALL_RESULT_ROOM",
+    "RecallContextError",
+    "bounded_recall",
+    "build_recall_context_tool",
+    "recall_atoms",
+    "recall_result_chars",
+    "recall_text",
+]
 
 _MAX_ATOMS = 50
+#: The default ``tools.recall_result_chars``: about 4,000 tokens, a few replies.
+_RECALL_RESULT_CHARS = 16_000
+#: The room's reason, as recorded with a cut result.
+RECALL_RESULT_ROOM = "recall_result_chars"
 #: How each kind of step is labelled in the text the agent reads.
 _LABELS = {"thought": "said", "tool_call": "call", "observation": "result", "user": "message"}
 
@@ -176,6 +195,41 @@ def recall_text(rows: list[dict[str, Any]], *, left_out: int, rest: list[str]) -
     return "\n".join([" ".join(head), *blocks]) if rows else " ".join(head)
 
 
+def recall_result_chars() -> int:
+    """Characters of a recall result shown inline (``tools.recall_result_chars``)."""
+    from clio_agent import conf  # noqa: PLC0415
+
+    return conf.resolve(
+        "tools.recall_result_chars",
+        env="CLIO_TOOLS_RECALL_RESULT_CHARS",
+        default=_RECALL_RESULT_CHARS,
+        cast=conf.as_int,
+    )
+
+
+def bounded_recall(text: str) -> str:
+    """``text`` whole when it fits the recall size and the window's room, else its head
+    and the file that holds all of it."""
+    from clio_agent.tools.mcp_result_projection import (  # noqa: PLC0415
+        bounded_model_tool_result,
+    )
+    from clio_agent.tools.result_room import (  # noqa: PLC0415
+        CHARS_PER_TOKEN,
+        ResultRoom,
+        result_room,
+    )
+
+    window = result_room()
+    chars = max(CHARS_PER_TOKEN, recall_result_chars())
+    room = ResultRoom(
+        tokens=chars // CHARS_PER_TOKEN,
+        chars=chars,
+        reason=RECALL_RESULT_ROOM,
+        window=window.window,
+    )
+    return bounded_model_tool_result(text, room=room if room.tokens < window.tokens else window)
+
+
 def build_recall_context_tool() -> Any:
     """Build the auto-attached, read-only ``recall_context`` tool."""
     from clio_agent.arc.history_plane import plane_for  # noqa: PLC0415
@@ -188,7 +242,7 @@ def build_recall_context_tool() -> Any:
         """Read back earlier context, compacted steps included, exactly as recorded."""
         arc, session = _plane()
         rows, left_out, rest = recall_atoms(arc, session, query=query, ids=ids, limit=limit)
-        return recall_text(rows, left_out=left_out, rest=rest)
+        return bounded_recall(recall_text(rows, left_out=left_out, rest=rest))
 
     def recall_ids(ids: list[str]) -> str:
         """Read retained step or compaction IDs without an unavailable search mode."""
