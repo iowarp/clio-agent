@@ -327,7 +327,10 @@ def build_plan_update_tool() -> Any:
         )
         reply = f"{what} ({result['status']}, {result['plan_file']})."
         if result["unfinished_threads"]:
-            reply += f" The plan still marks {result['unfinished_threads']} threads open or active."
+            count = result["unfinished_threads"]
+            reply += (
+                f" The plan still marks {count} thread{'s' if count != 1 else ''} open or active."
+            )
         return reply
 
     return native_tool(
