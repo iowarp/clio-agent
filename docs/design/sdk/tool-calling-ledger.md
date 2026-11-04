@@ -455,6 +455,24 @@ Both answers are of a similar standard: checked against the data, CLIO's trait w
     - **Across the four runs with the note** (`l1p6`-`l1p9`): the plan was kept current through the question rounds in 4/4 (0/5 before: two runs only rewrote it at the end); finished threads were closed at the end in 4/4; the claim-checking thread was carried out in 1/4. X2's rounds: 4/4 in one run, 2/4 in three (the agent's own exclusions, stated). Still open: checking claims before the end is done once in four runs; that is the model's judgement of when work is finished, and the plan now shows it plainly.
     - **The delegation text was out of step with the script guidance (marketplace `c1a96a5`, pinned in `e609deb9`).** It sent a broad survey to several `explore` children; on P4 the agent rightly took one script (finding 30). Children are now for parts that need reading and judgement; a survey a script can do mechanically is one script.
     - **T8c rerun after the `path` rename** (`sess_399668383883`, tool-directed prompt: mechanism verified, not evidence of agent judgement): one write question per script, `allow_script` covered the rest, four files; the check had counted the agent's later shell check as the script's second question (`a1d23e77`).
+32. **The short tasks on the final head (`s2final`, 2026-11-04, three runs each, head `c85e253a`).** Earlier head: `head1` for P1-P5 and H1-H5 (three runs), one run each for H6-H8 (`h6a`, `h7a`, `h8h`); Claude Code from the stored references.
+
+    | Task | Earlier head: wall (median), right | Final head: wall, right | Claude Code wall |
+    | --- | --- | --- | --- |
+    | P1 | 12.3 s, 3/3 | 9.6 s, 3/3 | 4.5 s |
+    | P2 | 17.9 s, 3/3 | 10.7 s, 3/3 | 6.3 s |
+    | P3 | 51.4 s, 0/3 | 53.6 s, 0/3 | 30.4 s |
+    | P4 | 59.2 s, by hand | 43.6 s, by hand | 42.5 s |
+    | H1 | 29.6 s, 3/3 | 18.0 s, 3/3 | - |
+    | H2 | 25.9 s, 3/3 | 23.0 s, 2/3 | - |
+    | H3 | 29.5 s, 3/3 | 22.2 s, 3/3 | - |
+    | H4 | 91.8 s, 2/3 | 61.0 s, 3/3 | 79.5 s |
+    | H5 | 120.0 s, 3/3 | 110.8 s, 3/3 | - |
+    | H6 | 158.2 s, 1/1 | 143.5 s, 3/3 | - |
+    | H7 | 39.6 s, 1/1 | 31.9 s, 3/3 | - |
+    | H8 | 81.1 s, 1/1 | 33.7 s, 3/3 | - |
+
+    Wall time fell on 11 of 12 tasks. Two graders were wrong, not the agent, and are fixed with every stored run regraded: P1's location reader missed "at line 429 of `prompts.py`" and "in `prompts.py` at line 429" (`4d6ff85b`; two of three right answers read as wrong), and H7's blame check read "because of the recalled lamp, not because of freezer storage" as blaming the freezer (`50fd2fd5`). The H2 miss is real: the right cause and commit, but the file (`recstream/reader.py`) never named. P3 fails on every head and for Claude Code too (0/3, at most one of the five planted issues found): its key asks for all five.
 18. **Observed: native tool-call markup in the visible text.** In 2 of 396 runs (`head1` H4, `x1`) the model wrote a fragment of Claude's native call markup before a correct call block; it reaches the transcript as prose. Not fixed.
 
 ### Targets
