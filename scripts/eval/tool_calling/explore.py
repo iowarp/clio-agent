@@ -19,6 +19,12 @@ from scripts.eval.tool_calling.tasks import Task
 DEFAULT_OPAL = Path("/home/user/opal-data/appl-vision")
 PROMPTS = {
     "X1": "Explore this dataset and understand what it contains and how it is shaped.",
+    # L2: H4's broad request, word for word, on the real export: one long turn, read by
+    # hand (Step 3); no tool or step is named.
+    "L2": (
+        "This folder is an export of experimental data. Investigate it broadly: what was "
+        "done, what the data shows, and whether anything is wrong with it."
+    ),
 }
 
 #: X2: the owner's exp67 QY_max chain (2026-11-04), answered from the files. Round 2
