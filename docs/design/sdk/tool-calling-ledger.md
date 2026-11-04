@@ -394,6 +394,7 @@ Both answers are of a similar standard: checked against the data, CLIO's trait w
     | Claude Code | 4/4, 4/4, 4/4 | 67.7 / 55.6 / 57.9 s | 51.4 s | 6.8 s | 13-16 | 4.5-5.3k |
 
     Medians 73.5 against 57.9 s. About 12 s is model time (output about 1.5x; the model appends to one analysis script and reruns it each round), about 6 s a run is CLIO outside the model and tools (about 0.37 s per model call; near zero for Claude Code), and tools are faster. Run 2 (58.6 s) matched Claude Code's median.
+22. **Where CLIO's own ~5.7 s of an X2 run goes (`x2c` traces, `x2d` with the new phases of `f0980f18`).** Turn start to the first model call 1.5-2.5 s a run; a tool result to the next model call 1.2-1.7 s over about 10 steps (most about 0.1 s); last model call to the turn's end 0.6-1.4 s; the queue's start of the next round 0.16-0.29 s each. Bring-up of a later turn is now 128-226 ms, most of it the tool build (64-80 ms, `tools.native` about 45 ms). A session's first turn adds the memory snapshot, assembled and pinned on first use (`prologue.memory`, 230 ms), and after a server restart the first session also loads skills (322 ms) and builds native tools (125 ms) once for the process. `x2d` (one run): 60.6 s, 4/4.
 18. **Observed: native tool-call markup in the visible text.** In 2 of 396 runs (`head1` H4, `x1`) the model wrote a fragment of Claude's native call markup before a correct call block; it reaches the transcript as prose. Not fixed.
 
 ### Targets
