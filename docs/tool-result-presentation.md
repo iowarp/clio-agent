@@ -37,7 +37,8 @@ Use these ownership points:
    must not rerun work, change the model's result or mark acceptance as success.
    Use stable block IDs, typed links and existing retained-content paging.
 3. Coordinate the consumer declaration and shared reader in GACT. Follow its
-   [authoring steps](../external/gact-tui/docs/tool-result-presentation.md#adding-or-changing-a-tool).
+   [renderer guide](../external/gact-tui/docs/tool-result-presentation.md) (GACT's
+   transcript results; the authoring steps are this guide's own section above).
    New integrations should produce meaningful standard content even before a
    specialized adapter exists. Do not require a frontend viewer for every tool.
 4. Add a showcase of actual request/result shapes: a small success, a large

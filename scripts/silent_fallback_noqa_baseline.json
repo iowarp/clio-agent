@@ -148,7 +148,7 @@
  "providers/support_restore.py": 1,
  "runtime/commitment_activity.py": 1,
  "runtime/disk_gc.py": 3,
- "runtime/lm_activity.py": 18,
+ "runtime/lm_activity.py": 15,
  "runtime/mcp_launcher.py": 1,
  "runtime/net_chokepoint.py": 3,
  "runtime/process_census.py": 2,
