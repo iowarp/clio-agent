@@ -93,7 +93,7 @@ the headless shell and ffmpeg it fetches alongside). Probes:
 | BR38 | `page.screenshot()` prints the screenshot's `artifact://` link, and the skill says that link shows the image in an answer; the conversation blocks a scratch path in an answer. | Phase 6, W17 | W17c (`sess_86243d586492`) | passed (live) |
 | BR39 | A file a tool mints itself, outside the declared-output channel (browser screenshots and downloads in the scratch folder), is noted for the running call (`artifacts/observer_bridge.note_call_output`). `observe_tool_transform` folds it into that call's generated outputs, so the file's lineage reaches the page the call declared as used. | Phase 6, W15 | `test_a_screenshot_artifact_is_generated_by_its_call_from_the_page` (fails without the fix); W15c lineage | passed (live) |
 | BR40 | A screenshot's name carries its host, page and time (`arxiv.org-p1-20261104-075712-1.png`). An artifact's name keys its version chain, and `p1-1.png` in every conversation chained unrelated screenshots as revisions of each other. | Phase 6, W15 | `test_a_screenshot_is_written_to_scratch_and_presented` | done |
-| BR41 | Every live scenario ran on the cloud stack's `claude_code` provider with `claude-haiku-5-5`. Agent-judgement findings (opening a page again instead of reading it, W9 and W10) belong to that model and are recorded, not gated. | Phase 6 | `scripts/cloud/stack.sh` | done |
+| BR41 | Every live scenario ran on the cloud stack's `claude_code` provider with its default model (`CLIO_LM_MODEL` in `scripts/cloud/stack.sh`). Agent-judgement findings (opening a page again instead of reading it, W9 and W10) belong to that one model and are recorded, not gated. | Phase 6 | `scripts/cloud/stack.sh` | done |
 
 ## Qualification
 
@@ -127,7 +127,7 @@ the headless shell and ffmpeg it fetches alongside). Probes:
 
 Recorded, not passed: steps, tokens and wall time for W1, W6 and W15 with the browser tools as
 `code`, and again with `browser_snapshot` also `direct` (`CLIO_TOOLS_CALLERS={"browser_snapshot":
-"both"}`). One run per cell, the same plain requests as the scenarios, `claude-haiku-5-5` on the
+"both"}`). One run per cell, the same plain requests as the scenarios, the stack's default model on the
 cloud stack, questions answered "allow" by `browser_shared_tab.mjs`. Steps are the model's
 top-level calls; nested are the browser calls its scripts made; tokens are input (cache reads
 included) and output.
