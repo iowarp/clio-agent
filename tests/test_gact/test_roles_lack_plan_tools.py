@@ -34,3 +34,30 @@ def test_a_read_only_session_is_given_no_plan_or_todo_tools(
     kept = session_tool_posture.restrict_tools_to_session_posture(available.values())
     names = {getattr(tool, "name", "") for tool in kept}
     assert not names & set(PLAN_TOOLS)
+
+
+def test_a_read_only_session_is_not_offered_a_tool_its_gate_refuses(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """``shell_bash`` reaches the gate, which refuses every call in a read-only session
+    (the catalog tags it not read-only): an explore child listed it and spent up to five
+    calls learning that (prompt1 P4). A gate-routed tool the catalog reads as read-only,
+    or does not know, stays for the gate to decide. SABOTAGE: drop ``_catalog_refuses``
+    and shell_bash is offered."""
+    from types import SimpleNamespace
+
+    from clio_agent.gact import side_sessions
+    from clio_agent.gact.agents.tool_instrumentation import TOOL_OBSERVED_ATTR
+
+    def routed(name: str) -> SimpleNamespace:
+        def func() -> None:
+            return None
+
+        setattr(func, TOOL_OBSERVED_ATTR, True)
+        return SimpleNamespace(name=name, func=func)
+
+    monkeypatch.setattr(side_sessions, "is_read_only_side_session", lambda session: True)
+    monkeypatch.setattr(session_tool_posture, "_active_session", lambda: object())
+    tools = [routed("shell_bash"), routed("fs_read_file"), routed("ext_lookup")]
+    kept = session_tool_posture.restrict_tools_to_session_posture(tools)
+    assert [tool.name for tool in kept] == ["fs_read_file", "ext_lookup"]

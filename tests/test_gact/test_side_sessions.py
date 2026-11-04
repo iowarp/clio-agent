@@ -270,7 +270,8 @@ def test_side_session_toolset_keeps_only_declared_read_only_natives(tmp_path: Pa
             _native("spawn_agent_task"),  # effectful native: never reaches the gate
             _native("raise_alert_card"),
             _native("workspace_resource_read", read_only=True),
-            _mcp_bridged("fs_write_file"),  # gated per call instead
+            _mcp_bridged("fs_write_file"),  # the catalog says the gate refuses it: withheld
+            _mcp_bridged("fs_read_file"),  # the catalog reads it as read-only: gated per call
         ]
         app_token = gact_context.set_app(app)
         try:
@@ -287,8 +288,9 @@ def test_side_session_toolset_keeps_only_declared_read_only_natives(tmp_path: Pa
         finally:
             gact_context.reset(app_token)
 
-    assert _names(side_tools) == ["fs_write_file", "workspace_resource_read"]
+    assert _names(side_tools) == ["fs_read_file", "workspace_resource_read"]
     assert _names(parent_tools) == [
+        "fs_read_file",
         "fs_write_file",
         "raise_alert_card",
         "spawn_agent_task",
