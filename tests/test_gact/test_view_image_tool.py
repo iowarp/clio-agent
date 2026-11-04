@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import base64
+import os
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, cast
@@ -73,6 +74,32 @@ def test_view_image_refuses_a_file_outside_the_active_workspace(tmp_path: Path) 
         tool(path=str(outside))
 
     assert exc_info.value.reason == "view_image_outside_workspace"
+
+
+def test_view_image_reads_the_conversations_scratch_folder(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from clio_agent.gact.agents.native_presenters_workspace_file import (
+        workspace_file_presentation,
+    )
+    from clio_agent.runtime import session_scratch
+
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    scratch = tmp_path / "scratch"
+    scratch.mkdir()
+    shot = scratch / "p1-1.png"  # where a browser screenshot lands
+    shot.write_bytes(_ONE_PIXEL_PNG)
+    monkeypatch.setattr(session_scratch, "active_scratch_dir", lambda **_: scratch)
+    monkeypatch.setenv("CLIO_ALLOWED_ROOTS", f"{workspace}{os.pathsep}{scratch}")
+    tool = build_view_image_tool()
+    with tool_workspace_context(workspace):
+        result = tool(path=str(shot))
+    assert result["path"] == str(shot.resolve()) and result["snapshot"]
+    view = workspace_file_presentation({"path": str(shot)}, result, result)
+    assert view["blocks"] == [
+        {"id": "scratch-file", "type": "text", "label": "Viewed", "text": str(shot.resolve())}
+    ]
 
 
 def test_view_image_hydrates_pixels_without_mutating_the_retained_descriptor(
