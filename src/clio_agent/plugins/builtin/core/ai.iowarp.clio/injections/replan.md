@@ -9,5 +9,5 @@ x_trigger: at the next turn start after the stall monitor records little progres
 ## Replanning suggestion — sustained lack of progress detected
 
 Your recent turns have shown little measurable progress — no plan-step or checklist advancement, and/or the same tool call repeated across turns. Consider whether the current approach is working.
-- If it is NOT, you MAY re-enter plan mode to replan (invoke the `planning` skill) and revise your approach. This is your decision — nothing is forced.
+- If it is NOT, revise the approach in the plan with plan_update and carry on, or use plan mode (the `planning` skill) when the person should approve the new approach. This is your decision — nothing is forced.
 - If you ARE making progress, disregard this notice and continue.
