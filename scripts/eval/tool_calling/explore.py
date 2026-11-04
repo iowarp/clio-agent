@@ -86,6 +86,8 @@ CHAINS = {
     "X2": (_X2_SETUP, _X2_ROUNDS),
     "L1": (_X2_SETUP, _L1_ROUNDS),
     "L1P": (_X2_SETUP + _L1P_AGENDA, _L1_ROUNDS),
+    # L1P's opening message alone: a one-minute probe of whether a plan asked for is written.
+    "L1P1": (_X2_SETUP + _L1P_AGENDA, _L1_ROUNDS[:1]),
 }
 #: Where X2's four questions sit in L1's replies.
 L1_X2_ROUNDS = slice(2, 6)
