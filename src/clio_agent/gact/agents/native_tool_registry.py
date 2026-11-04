@@ -26,6 +26,7 @@ from typing import Any
 _NONE: Sequence[str] = ()
 
 from clio_agent.gact.agents import toolset_inventory
+from clio_agent.gact.browser.tools import BROWSER_TOOLS
 from clio_agent.gact.science_log.tools import SCIENCE_LOG_TOOLS
 from clio_agent.gact.task_declarations import (
     TASK_COMPATIBILITY_ALIASES,
@@ -98,6 +99,7 @@ def _singles(agent_def: Any) -> dict[str, Callable[[], Any]]:
     from clio_agent.gact.action_cards import build_raise_alert_card_tool  # noqa: PLC0415
     from clio_agent.gact.artifacts.proposals import build_create_artifact_tool  # noqa: PLC0415
     from clio_agent.gact.autonomous_loop import build_loop_wakeup_tool  # noqa: PLC0415
+    from clio_agent.gact.browser.tools import BUILDERS as BROWSER_BUILDERS  # noqa: PLC0415
     from clio_agent.gact.code_mode.tool import build_run_code_tool  # noqa: PLC0415
     from clio_agent.gact.document_tools import (  # noqa: PLC0415
         build_prepare_document_runtime_tool,
@@ -187,6 +189,7 @@ def _singles(agent_def: Any) -> dict[str, Callable[[], Any]]:
         "clio_search_read": build_clio_search_read_tool,
         **MEMORY_BUILDERS,
         **SCIENCE_LOG_BUILDERS,
+        **BROWSER_BUILDERS,
         "session_search": lambda: build_session_search_tool(agent_def),
         "session_read_summary": lambda: build_session_summary_tool(agent_def),
         "session_read_context_frame": lambda: build_session_context_frame_tool(agent_def),
@@ -259,6 +262,7 @@ _SINGLE_NAMES = frozenset(
         "make_plugin",
         *_A2UI_PRODUCERS,
         *SCIENCE_LOG_TOOLS,
+        *BROWSER_TOOLS,
     }
 )
 

@@ -180,12 +180,22 @@ class BrowserService:
         """Run ``coro`` on the browser loop; the caller waits on the returned future."""
         return asyncio.run_coroutine_threadsafe(coro, self._ensure_loop())  # type: ignore[arg-type]
 
-    def wait(self, coro: Awaitable[Any], *, inflight: Inflight | None = None) -> Any:
-        """Run ``coro`` on the loop and wait, honouring Stop and the action clock."""
+    def wait(
+        self,
+        coro: Awaitable[Any],
+        *,
+        inflight: Inflight | None = None,
+        limit_s: float | None = None,
+    ) -> Any:
+        """Run ``coro`` on the loop and wait, honouring Stop and the action clock.
+
+        ``limit_s`` lengthens the clock for a call that asked to wait longer (a
+        ``browser_wait`` with its own ``timeout_s``); it never shortens it.
+        """
         future = self.submit(coro)
         from clio_agent.runtime.cancellation import cancellation_requested  # noqa: PLC0415
 
-        limit = settings.action_timeout_s()
+        limit = max(settings.action_timeout_s(), float(limit_s or 0) + 1.0)
         started = time.monotonic()
         while True:
             try:
@@ -393,6 +403,8 @@ class BrowserService:
         record: PageRecord,
         action: str,
         work: Callable[[PageRecord], Awaitable[Any]],
+        *,
+        limit_s: float | None = None,
     ) -> Any:
         """Run one agent action on ``record`` with the page lock held and the clock running.
 
@@ -400,7 +412,7 @@ class BrowserService:
         asked about inside it: the question shows the script and pauses its clock too.
         """
         inflight = Inflight(action=action, context=contextvars.copy_context())
-        return self.wait(self._locked(record, inflight, work), inflight=inflight)
+        return self.wait(self._locked(record, inflight, work), inflight=inflight, limit_s=limit_s)
 
     async def _locked(
         self,

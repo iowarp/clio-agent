@@ -651,6 +651,10 @@ def detect_authority_edges(
         return EdgeScan(_relay_fetch_edges(structured), [])
     if short in _NDP_DETAILS_TOOLS:
         return EdgeScan(_catalog_resource_edges(structured), [])
+    if short.startswith("browser_"):  # a screenshot or download names its page (BR15)
+        from clio_agent.gact.browser.provenance import page_source_edges  # noqa: PLC0415
+
+        return EdgeScan(page_source_edges(short, structured), [])
     if short in _NDP_SEARCH_TOOLS:
         hits = _count_catalog_hits(structured)
         notes = (
