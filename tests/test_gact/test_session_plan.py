@@ -188,6 +188,32 @@ def test_a_quiet_active_plan_is_mentioned_after_the_stale_steps(
             ctx.reset(token)
 
 
+def test_the_quiet_count_runs_across_the_sessions_turns(
+    app_session: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """On L1P the plan went untouched for six rounds of two or three steps each: the
+    count lived on the turn's loop and restarted every turn, so it was never mentioned.
+    SABOTAGE: keep the count on the loop and the second turn's note never comes."""
+    from clio_agent.gact import context as ctx
+    from clio_agent.gact import working_state
+
+    app, sid, _ = app_session
+    update_plan(app, sid, content=_PLAN)
+    monkeypatch.setattr(working_state, "stale_steps", lambda: 3)
+    noted: list[list[tuple[str, str]]] = []
+    tokens = [ctx.set_app(app), ctx.set_session_id(sid)]
+    try:
+        for _turn in range(2):  # each turn has its own loop
+            loop = SimpleNamespace(recorder=SimpleNamespace(injections=noted.append))
+            for _ in range(2):
+                working_state.note_stale_plan(loop, ["shell_bash"])
+        [[(source, text)]] = noted
+        assert source == working_state.PLAN_STALE_SOURCE and "in 3 steps" in text
+    finally:
+        for token in reversed(tokens):
+            ctx.reset(token)
+
+
 def test_the_person_can_save_an_edited_plan(app_session: Any) -> None:
     app, sid, client = app_session
     update_plan(app, sid, content=_PLAN)

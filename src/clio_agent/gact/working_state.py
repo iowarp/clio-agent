@@ -43,33 +43,53 @@ def stale_steps() -> int:
     return injections.param(PLAN_STALE_SOURCE, "steps", 25, int)
 
 
+def _quiet_steps(app: Any, loop: Any) -> dict[str, int]:
+    """The session's quiet-step counts, kept on the app so they run across turns.
+
+    A session of many short turns (a person asking one thing at a time) would otherwise
+    restart the count at every turn and never be told. In memory only: a server restart
+    restarts the count, which costs at most one later note.
+    """
+    if app is None:
+        counts = getattr(loop, "_clio_plan_quiet_steps", None)
+        if counts is None:
+            counts = loop._clio_plan_quiet_steps = {}
+        return counts
+    counts = getattr(app.state, "plan_quiet_steps", None)
+    if counts is None:
+        counts = app.state.plan_quiet_steps = {}
+    return counts
+
+
 def note_stale_plan(loop: Any, call_names: list[str]) -> None:
     """Count a recorded step; after the reminder's ``steps`` quiet ones, say the plan exists.
 
     A fact, not a decision: the agent judges whether the plan needs updating. The count
-    restarts after each note and whenever the step wrote the plan or the todos.
+    runs across the session's turns and restarts after each note and whenever the step
+    wrote the plan or the todos.
     """
     from clio_agent.gact import context as _ctx  # noqa: PLC0415
     from clio_agent.gact.session_plan import ACTIVE_STATUSES, plan_state  # noqa: PLC0415
 
+    app, session_id = _ctx.active_app(), _ctx.active_session_id() or ""
+    counts = _quiet_steps(app, loop)
     if _WORKING_STATE_WRITES & set(call_names):
-        loop._clio_plan_quiet_steps = 0
+        counts[session_id] = 0
         return
     from clio_agent import injections  # noqa: PLC0415
 
-    quiet = getattr(loop, "_clio_plan_quiet_steps", 0) + 1
+    quiet = counts.get(session_id, 0) + 1
     limit = getattr(loop, "_clio_plan_stale_limit", None)
     if limit is None:  # read once per turn: the loop lives for one turn
         limit = loop._clio_plan_stale_limit = stale_steps()
-    loop._clio_plan_quiet_steps = quiet
+    counts[session_id] = quiet
     if limit <= 0 or quiet < limit:
         return
-    app, session_id = _ctx.active_app(), _ctx.active_session_id() or ""
     session = app.state.sessions.get(session_id) if app is not None and session_id else None
     state = plan_state(session) if session is not None else {}
     if state.get("status") not in ACTIVE_STATUSES or not state.get("exists"):
         return
-    loop._clio_plan_quiet_steps = 0
+    counts[session_id] = 0
     text = injections.render(PLAN_STALE_SOURCE, {"path": state["path"], "steps": quiet})
     if text:
         loop.recorder.injections([(PLAN_STALE_SOURCE, text)])
