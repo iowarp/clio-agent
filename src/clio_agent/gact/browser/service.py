@@ -38,6 +38,7 @@ from urllib.parse import urlsplit
 
 from clio_agent import paths
 from clio_agent.gact.browser import install, settings
+from clio_agent.gact.browser.driver_loop import driver_loop
 from clio_agent.gact.browser.settings import BrowserError, page_errors
 from clio_agent.runtime import trace
 
@@ -86,7 +87,7 @@ class PageRecord:
     opened_at: float = field(default_factory=time.time)
     inflight: Inflight | None = None
     person_acted: bool = False
-    last_person_input: float = 0.0
+    last_person_input: float = float("-inf")  # never, until the person acts
     #: The host the page was last refused; shown by the panel until the page loads again.
     navigation_blocked: dict[str, Any] | None = None
     #: Whether the agent's results already reported that refusal (it is told once).
@@ -173,7 +174,7 @@ class BrowserService:
         with self._lock:
             if self._loop is not None and self._thread is not None and self._thread.is_alive():
                 return self._loop
-            loop = asyncio.new_event_loop()
+            loop = driver_loop()
             ready = threading.Event()
 
             def run() -> None:
