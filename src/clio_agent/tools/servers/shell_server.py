@@ -421,6 +421,10 @@ def _log_shell_phase(
 ) -> float:
     """Log wall time for one call stage without adding command contents to diagnostics."""
     finished = time.perf_counter()
+    from clio_agent.runtime.stream_audit import stream_audit  # noqa: PLC0415
+
+    elapsed = round((finished - started) * 1000, 3)
+    stream_audit("shell.phase", call=call_id, phase=phase, outcome=outcome, ms=elapsed)
     logger.info(
         "shell_phase call=%s phase=%s outcome=%s elapsed_ms=%.3f",
         call_id,

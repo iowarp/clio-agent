@@ -24,6 +24,7 @@ from clio_agent.arc.task_types import (
 from clio_agent.gact import context as gact_context
 from clio_agent.gact.core_recovery import CoreRecovery
 from clio_agent.gact.task_history import TaskHistory
+from clio_agent.runtime.stream_audit import stream_audit
 from clio_agent.tools.execution import tool_workspace_context
 from clio_agent.tools.result_room import pinned_room, room_from_limits
 
@@ -116,6 +117,7 @@ class NativeWork:
                     raise
 
         evidence = WorkEvidence()
+        stream_audit("native.work", handle=admitted.handle, phase="admitted")
 
         async def execute() -> dict[str, Any]:
             from clio_agent.tools.write_scope import tool_write_root_context  # noqa: PLC0415
@@ -163,7 +165,9 @@ class NativeWork:
 
             async def finish() -> None:
                 async def record() -> None:
+                    stream_audit("native.work", handle=admitted.handle, phase="body_done")
                     await self.history.io.run(self._finished, admitted, outcome, evidence)
+                    stream_audit("native.work", handle=admitted.handle, phase="finished")
                     await self.cleanup_observer(admitted.handle)
 
                 try:
