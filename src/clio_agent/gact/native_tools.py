@@ -42,6 +42,7 @@ from clio_agent.gact.native_work import SUBMISSION_ARGUMENT, NativeWork, Submiss
 from clio_agent.gact.task_access import TaskAccessDenied
 from clio_agent.gact.task_history import TaskHistory
 from clio_agent.gact.task_publication import publish_task_notice
+from clio_agent.runtime.stream_audit import stream_audit
 from clio_agent.tools.native_roots import NativeRootKind, build_native_roots
 from clio_agent.tools.task_client import (
     AcceptedCallResult,
@@ -210,6 +211,7 @@ class NativeTools:
             raise ValueError("Submission references are application-owned")
         if tool == "connected_data_continue":
             raise ValueError("Provider continuations are host-owned, not public submissions")
+        stream_audit("native.phase", handle="", phase="submit", tool=tool)
         component = await self.roots[root].server.get_tool(tool)
         if component is None:
             raise ValueError("Native workload is unavailable")
@@ -243,6 +245,7 @@ class NativeTools:
             local_runtime=await self.history.io.run(local_runtime_identity),
         )
         content = await self.history.io.run(self._confirm, context, kind, description)
+        stream_audit("native.phase", handle=context.handle, phase="confirmed")
         if isinstance(content, TaskSnapshot):
             return {
                 "handle": content.handle,
@@ -291,6 +294,7 @@ class NativeTools:
                     stopped = True
                     if rpc.cancelled():
                         raise
+            stream_audit("native.phase", handle=handle, phase="accepted")
             if not isinstance(response, AcceptedCallResult):
                 raise RuntimeError("Native-required workload returned without acceptance")
             if stopped:
@@ -307,7 +311,9 @@ class NativeTools:
                 driver = self._drivers.get(handle)
                 if driver is not None:
                     await asyncio.shield(driver)
+                stream_audit("native.phase", handle=handle, phase="driven")
                 current = await self.await_settlement(handle)
+                stream_audit("native.phase", handle=handle, phase="settled")
                 return {
                     "handle": handle,
                     "status": current.status,
