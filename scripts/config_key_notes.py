@@ -1226,6 +1226,11 @@ KEY_NOTES: dict[str, str] = {
         "Which MCP calls record their submission before they are sent: non_read_only "
         "(read-only tools are sent at once and recorded with their result) or all."
     ),
+    "tools.shell_poll_interval_ms": (
+        "Longest a shell command's end can go unseen: the status-poll ceiling its task "
+        "advertises (polls start at 20 ms and double up to it). Replies that change nothing "
+        "are recorded at most every 5 s, so a shorter ceiling does not add writes."
+    ),
     "tools.per_server_concurrency": (
         "Tool calls to one server that run at once, for a step's calls and a run_code "
         "script's calls alike; the others wait their turn."

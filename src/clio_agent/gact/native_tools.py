@@ -53,6 +53,7 @@ from clio_agent.tools.task_client import (
     submission_failure,
 )
 from clio_agent.tools.task_receipt import AcceptedTaskResult, accepted_result
+from clio_agent.gact.native_task_replies import unchanged_reply
 from clio_agent.tools.task_transport import TaskObservationTransport
 
 logger = logging.getLogger(__name__)
@@ -572,10 +573,11 @@ class NativeTools:
                 raw = self.history.write_content(
                     current.owner.session_id, reply.model_dump(mode="json")
                 )
+            stamp = now()
             observed = current.model_copy(
                 update={
                     "raw_status": reply.status,
-                    "updated_at": now(),
+                    "updated_at": stamp,
                     "connection_freshness": "fresh",
                     "backend_observation": raw or current.backend_observation,
                     "progress": current.progress.model_copy(
@@ -608,6 +610,8 @@ class NativeTools:
                         "attention_episode": None,
                     }
                 )
+            if unchanged_reply(current, observed, stamp):
+                return  # a running task's repeated reply: no write (native_task_replies)
             self.history.record_snapshot(observed, observation_id=uuid4().hex)
             self._settle(observed, accepted)
 

@@ -1615,6 +1615,13 @@ tools.search_miss_names: 40
 # (powershell/bash/cmd); match it to your commands' shell.
 tools.shell.windows_backend: "powershell"
 
+# CLIO_TOOLS_SHELL_POLL_INTERVAL_MS  (int)  <- src/clio_agent/gact/native_shell.py
+# Longest a shell command's end can go unseen: the status-poll ceiling its
+# task advertises (polls start at 20 ms and double up to it). Replies that
+# change nothing are recorded at most every 5 s, so a shorter ceiling does
+# not add writes.
+tools.shell_poll_interval_ms: 200
+
 # CLIO_UNKNOWN_WINDOW_RESULT_TOKENS  (int)  <- src/clio_agent/tools/result_room.py
 # Tokens of one tool result the model is shown when its context window is
 # unknown (no handshake or catalog entry); a longer result is saved to a
