@@ -66,6 +66,49 @@ def test_a_rectangle_gives_line_ranges_and_a_line_gives_its_places() -> None:
     assert 240 < top < 256 < top + height
 
 
+def test_a_sections_place_leaves_out_the_paragraph_that_ends_at_its_heading() -> None:
+    # Two columns. The left column's last intro row is a line box and a line-end kern tagged
+    # background.tex 1, because \\section{Background} ended that paragraph; its glue says
+    # intro. The section's own rows sit lower, and the right column belongs to the model.
+    rows = [
+        "SyncTeX Version:1",
+        "Input:1:/tmp/b/main.tex",
+        "Input:2:/tmp/b/sections/intro.tex",
+        "Input:3:/tmp/b/sections/background.tex",
+        "Input:4:/tmp/b/sections/model.tex",
+        "Output:pdf",
+        "Content:",
+        "{1",
+        f"(3,1:{_sp(49)},{_sp(340)}:{_sp(251)},{_sp(7)},{_sp(2)}",
+        f"g2,3:{_sp(80)},{_sp(340)}",
+        f"g2,3:{_sp(120)},{_sp(340)}",
+        f"k3,1:{_sp(300)},{_sp(340)}:{_sp(150)}",
+        f"g3,1:{_sp(300)},{_sp(340)}",
+        # The intro's one-word last row: only its line box and line-end records, all bg 1.
+        f"(3,1:{_sp(49)},{_sp(352)}:{_sp(251)},{_sp(7)},{_sp(2)}",
+        f"k3,1:{_sp(300)},{_sp(352)}:{_sp(200)}",
+        f"(3,1:{_sp(49)},{_sp(460)}:{_sp(251)},{_sp(7)},{_sp(2)}",
+        f"g3,2:{_sp(70)},{_sp(460)}",
+        f"g3,2:{_sp(150)},{_sp(460)}",
+        f"g3,4:{_sp(90)},{_sp(600)}",
+        f"g4,1:{_sp(330)},{_sp(460)}",
+        f"g4,1:{_sp(400)},{_sp(460)}",
+        "}1",
+        "Postamble:",
+    ]
+    index = SyncIndex.parse(
+        "\n".join(rows).encode(),
+        ["main.tex", "sections/intro.tex", "sections/background.tex", "sections/model.tex"],
+    )
+    [(page, (x, top, width, height))] = index.places("sections/background.tex", 1, 4)
+    assert page == 0 and round(x) == 49 and round(x + width) == 300
+    assert 440 < top < 460 and top + height > 600  # not the intro row at 340
+    [(_, (mx, _, mwidth, _))] = index.places("sections/model.tex", 1, 1)
+    assert mx > 300 and mwidth < 100  # its own column only
+    [(_, (_, itop, _, iheight))] = index.places("sections/intro.tex", 1, 9)
+    assert itop < 340 < itop + iheight < 350
+
+
 _TEXTS = {
     "main.tex": "\n".join(
         [
