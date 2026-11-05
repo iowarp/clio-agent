@@ -83,15 +83,37 @@ def build_create_artifact_tool(agent_def: "AgentDef") -> Any:
             artifacts=artifacts,
             purpose=purpose,
         )
-        result = promote_proposals(
-            app,
-            sid,
-            proposals,
-            workspace_id=workspace_id,
-            turn_id=_ctx.active_turn_id(),
-            trace_id=_ctx.active_trace_id(),
-            agent_id=agent_id,
-        )
+        turn_id, trace_id = _ctx.active_turn_id(), _ctx.active_trace_id()
+
+        def promote() -> dict[str, Any]:
+            return promote_proposals(
+                app,
+                sid,
+                proposals,
+                workspace_id=workspace_id,
+                turn_id=turn_id,
+                trace_id=trace_id,
+                agent_id=agent_id,
+            )
+
+        if path and not content and not artifacts:
+            # A background script re-registering its file gets one version per interval.
+            from clio_agent.gact.artifacts.minting import artifact_name_for_path  # noqa: PLC0415
+            from clio_agent.gact.artifacts.version_pacing import pace  # noqa: PLC0415
+
+            deferred = pace(
+                sid, str(workspace_id or ""), artifact_name_for_path(name or path), promote
+            )
+            if deferred is not None:
+                from clio_agent.gact.agents.tool_instrumentation import (  # noqa: PLC0415
+                    declare_structured_content,
+                )
+
+                result = {"artifacts": [deferred], "created": 0, "deduplicated": 0, "rejected": 0}
+                message = f"next version of {deferred['name']} at {deferred['version_at']}"
+                declare_structured_content({"message": message, **result})
+                return result
+        result = promote()
         if pdf_preview is not False or any(proposal.pdf_preview is True for proposal in proposals):
             from clio_agent.gact.artifacts.registry import get_registry
             from clio_agent.gact.documents.profiles import document_format
@@ -159,6 +181,9 @@ def build_create_artifact_tool(agent_def: "AgentDef") -> Any:
             "returns its record or a typed rejection (path_missing, escapes_root, over_cap, "
             "invalid_kind, missing_input) you can correct and retry; check every batch "
             "item's accepted flag. promotion_budget gives this turn's remaining slots. "
+            "Registering a path again records its new bytes as the next version, and a view "
+            "bound to artifact://<workspace>/<name>@latest follows it; from a background "
+            "script one version per interval is recorded (deferred, with version_at). "
             "Nothing is registered unless you call this."
         ),
         args={

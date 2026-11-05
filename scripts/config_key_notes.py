@@ -419,6 +419,11 @@ KEY_NOTES: dict[str, str] = {
         "Ceiling on new artifact promotions one turn may make via create_artifact; re-designating "
         "identical bytes is free."
     ),
+    "artifacts.version_interval_s": (
+        "Seconds between two versions of one file registered from a background script; a "
+        "registration inside the interval is recorded when it ends, with the file as it is "
+        "then (the latest wins, nothing is dropped). 0 records every one. Default 5."
+    ),
     "artifacts.table_export_max_rows": (
         "Ceiling on the processed row count a table-export (current-view or full-dataset) "
         "request may reach; past it the export is refused with a typed 413 rather than "

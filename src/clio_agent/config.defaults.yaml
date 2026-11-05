@@ -1145,6 +1145,13 @@ artifacts.table_query_no_progress_s: 30.0
 # reading it per page.
 artifacts.table_query_processed_cache_entries: 8
 
+# CLIO_ARTIFACTS_VERSION_INTERVAL_S  (str)  <- src/clio_agent/gact/artifacts/version_pacing.py
+# Seconds between two versions of one file registered from a background
+# script; a registration inside the interval is recorded when it ends, with
+# the file as it is then (the latest wins, nothing is dropped). 0 records
+# every one. Default 5.
+artifacts.version_interval_s: "5.0"
+
 # ==========================================================================
 # Workspace resources
 # ==========================================================================

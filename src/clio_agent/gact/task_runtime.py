@@ -440,6 +440,10 @@ async def close(app: Any) -> tuple[BaseException, ...]:
     errors: list[BaseException] = []
     if native is not None:
         errors.extend(await native.settle_shutdown())
+    from clio_agent.gact.artifacts.version_pacing import flush_pending  # noqa: PLC0415
+
+    # A file version a background script's registration deferred is recorded, not lost.
+    await asyncio.to_thread(flush_pending)
     question_events = getattr(app.state, "question_events", None)
     stack = getattr(app.state, "task_resource_stack", None)
     external = getattr(app.state, "external_tasks", None)
