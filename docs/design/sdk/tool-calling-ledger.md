@@ -419,10 +419,12 @@ Both answers are of a similar standard: checked against the data, CLIO's trait w
     | L1, Claude Code (no TodoWrite allowed) | 4/4 | 358 s | 32 | 85k | - | - | - |
     | L1P (`l1p`) | 2/4* | 359 s | 27 | 120k | 0 | none | none |
     | L1P, forced compaction (`l1p-compact`) | 2/4* | 366 s | 35 | 77k (peak before a compaction) | 2 | none | none |
-    | L1P, forced, no re-offer (`l1p-compact-noreoffer`) | 4/4 | 473 s | 31 | 71k | 2 | none | none |
+    | L1P, forced, no re-offer (`l1p-compact-noreoffer`) \*\* | 4/4 | 473 s | 31 | 71k | 2 | none | none |
     | L1P, Claude Code (TodoWrite allowed) | 2/4* | 429 s | 43 | 113k | - | in its reply | none |
     | L1P after `f0fdf156`, forced (`l1p2-compact`) | 2/4* | 373 s | 25 | 65k | 1 | written, kept to round 3, closed at the end | none |
-    | L1P after `f0fdf156`, forced, no re-offer (`l1p2-compact-noreoffer`) | 4/4 | 447 s | 36 | 67k | 2 | written, kept to round 3, closed at the end | none |
+    | L1P after `f0fdf156`, forced, no re-offer (`l1p2-compact-noreoffer`) \*\* | 4/4 | 447 s | 36 | 67k | 2 | written, kept to round 3, closed at the end | none |
+
+    \*\* The no re-offer rows are confounded (audit 2026-11-05, D8): the compaction prompt then told the summarizer that the plan, todos and session facts come back verbatim whatever `compaction.keep.working_state` said, so with the re-offer off the summary was told not to restate a plan that was not coming back. Since `c8420f64` the prompt says what comes back from the keep policy; the comparison would need a rerun before it says anything about the re-offer's worth.
 
     \* The agent applied its own data-quality exclusions (readings of 0 and round 5577) to rounds 5 and 6 and said so; Claude Code did the same on L1P. With the agenda's "possibly redo parts with stricter filters" in view, both chose stricter defaults, so these are judgement differences, not errors.
 
