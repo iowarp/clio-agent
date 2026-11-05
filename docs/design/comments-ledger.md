@@ -108,8 +108,8 @@ stays `open` until it is run live on a fresh stack (Phase 6); the mechanisms are
 | ID | Scenario | Passes when | Status |
 | --- | --- | --- | --- |
 | K1 | Open a `.docx`, a `.pptx` and an `.odt` | Each shows its rendition; no embedded editor is offered | open |
-| K2 | A text comment on a sentence in a Markdown report, sent | The agent receives the entry with before and after text and no anchor JSON, edits the source, and the thread shows its reply and the new version | open |
-| K3 | Ask the agent for a throughput plot from a CSV, then a region comment on its legend | The entry has the crop as an image part and a "Produced by" line naming the script; the agent edits the script, reruns it and looks at the new image; the thread links version 2 and shows before and after | open |
+| K2 | A text comment on a sentence in a Markdown report, sent | The agent receives the entry with before and after text and no anchor JSON, edits the source, and the thread shows its reply and the new version | passed (cloud, session `sess_c2d58e5cf470`, plain request): the entry carried Selected, Before, After and `Source: line 7 of report.md` with no JSON; the agent edited report.md (version 2, `fs_edit_file`); S1 stores the reply and links version 2. Screenshots `comment-text-on-markdown-sent.png`, `comment-markdown-text-editor.png` |
+| K3 | Ask the agent for a throughput plot from a CSV, then a region comment on its legend | The entry has the crop as an image part and a "Produced by" line naming the script; the agent edits the script, reruns it and looks at the new image; the thread links version 2 and shows before and after | passed through the file view (FB22): the agent wrote throughput.png without registering it; the region comment registered it as version 1 (`comment-target`, Producer unknown), sent overview and crop as image parts, the agent changed its script and reran it, and finalize minted version 2 (`reconcile-observed`, FB28) linked from S1. The live run found two bugs, fixed: an unregistered file broke the comment target lookup (gact-tui `6da34111`), and the reply joined the agent's narration (clio-agent `0dceedb9`) |
 | K4 | The same as K3 when the agent drew the plot inside `run_code` | "Produced by" names the `run_code` cell | open |
 | K5 | An element comment on a series in an SVG figure | The anchor's selector matches one element, and the agent's change affects that series | open |
 | K6 | An element comment on a button in an HTML artifact | The selector matches exactly one element, and the agent's edit changes that element | open |
@@ -119,18 +119,18 @@ stays `open` until it is run live on a fresh stack (Phase 6); the mechanisms are
 | K10 | A native `@clio` comment in a `.docx` | It becomes a review as today | open |
 | K11 | Three marks of mixed modes on one PDF in one session, sent together | One turn carries the overview, three entries labelled `S1` to `S3` with their crops and the text under each, and no JSON, and each thread shows the reply and the new version | open |
 | K12 | A comment with "Send to agent" off | Stored as a human note; no turn starts | open |
-| K13 | The agent edits the document after K2 and K11 | Text threads that still match are marked moved; one whose text was rewritten is outdated; region threads stay on their version with before and after | open |
+| K13 | The agent edits the document after K2 and K11 | Text threads that still match are marked moved; one whose text was rewritten is outdated; region threads stay on their version with before and after | partly: after K2 the rewritten quote's thread is `outdated`; after K3 the region thread stays `current` on version 1. A thread whose text still matches (`moved`) is not yet seen live |
 | K14 | "Add to chat" on an agent answer, and a region on an A2UI chart | Both use the shared comment box, travel as attachments to the next message, and render as entries | open |
 | K15 | A figure produced by a call whose transform was not recorded | The entry says the producer is unknown | open |
-| K16 | Any viewer at 390 by 844 | The comment box, mode control and thread list fit; a region can be dragged with touch | open |
+| K16 | Any viewer at 390 by 844 | The comment box, mode control and thread list fit; a region can be dragged with touch | passed: at 390 by 844 with touch input (`ui_check --touch`, DevTools touch events) a region is dragged on a figure; the controls and editor fit the width. Screenshots `comment-phone-*.png`. One console error from tapping a conversation chip is not from comments (queued separately) |
 | K17 | An element comment on a fixture button in the in-app browser | The agent receives the entry with the crop and a role-and-name target spec, and its script acts on that exact element | open |
 | K18 | A region comment over the fixture table in the in-app browser | The crop arrives as an image part and the agent answers about that area | open |
 | K19 | A text selection on a browser page | The entry carries the selected text with before and after | open |
 | K20 | Search both repositories for the editor names, routes and variables, the old annotation types, `_review_prompt`, the Review selection dialog and the Reviews tab | Nothing remains outside the ledgers and this plan | open |
 | K21 | Today's A2UI capture on a chart and a map, through the generalized panel | The agent receives the labelled overview, the rows and features under each box as readable lines, and no JSON block; the behaviour matches the base otherwise | open |
 | K22 | A region over a dense table in an HTML artifact | The text under the mark is cut at the limit and the entry names the session file holding the rest | open |
-| K23 | Close the panel with two unsent marks on a document, reopen the document | Both marks come back as a draft with their labels and comments | open |
-| K24 | A second session on the same artifact version after a session with `S1` to `S3` | The new marks start at `S4` | open |
+| K23 | Close the panel with two unsent marks on a document, reopen the document | Both marks come back as a draft with their labels and comments | passed: a mark left unsent on report.md came back as a draft when the controls opened again |
+| K24 | A second session on the same artifact version after a session with `S1` to `S3` | The new marks start at `S4` | passed: the next mark on report.md version 2 after S1 was S2; a new version starts again at S1 (throughput.png version 2) |
 | — | The Tauri desktop and Windows and macOS installs | Not reachable from a cloud session | local phase |
 
 ## Known gaps
