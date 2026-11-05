@@ -78,7 +78,7 @@ export default async function (page, shot) {
   const activity = page.getByRole("button", { name: /used tools/ });
   if (await activity.count()) await activity.first().click();
   await page.waitForTimeout(800);
-  const scriptRow = page.getByRole("button", { name: /background|Script|script/ });
+  const scriptRow = page.getByRole("button", { name: /Run code/ });
   log.push(`script rows: ${await scriptRow.count()}`);
   const launch = page.getByRole("button", { name: "Show the task in Work" });
   if (!(await launch.count()) && (await scriptRow.count())) {
