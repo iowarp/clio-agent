@@ -11,8 +11,10 @@
 #
 # Ports: AGENT_PORT (default 8787, the UI's default service address) and
 # UI_PORT (default 5173); FIXTURE_PORT (default 8790) serves the browser fixture
-# site as a.fixture.localhost and b.fixture.localhost. The model provider defaults to claude_code, which uses
-# the Claude CLI that cloud sessions ship already signed in; override with
+# site as a.fixture.localhost and b.fixture.localhost, and FIXTURE_TLS_PORT (default
+# 8791) as https://c.fixture.localhost with a self-signed certificate. The model
+# provider defaults to claude_code, which uses the Claude CLI that cloud sessions
+# ship already signed in; override with
 # CLIO_LM_PROVIDER / CLIO_LM_MODEL. Runtime state stays in .cloud-run/.
 
 set -u
@@ -22,6 +24,7 @@ mkdir -p "$STATE"
 AGENT_PORT="${AGENT_PORT:-8787}"
 UI_PORT="${UI_PORT:-5173}"
 FIXTURE_PORT="${FIXTURE_PORT:-8790}"
+FIXTURE_TLS_PORT="${FIXTURE_TLS_PORT:-8791}"
 export CLIO_LM_PROVIDER="${CLIO_LM_PROVIDER:-claude_code}"
 export CLIO_LM_MODEL="${CLIO_LM_MODEL:-claude-haiku-5-5}"
 # The cloud stack runs as root, where Chromium's sandbox cannot start (browser ledger BR11).
@@ -71,7 +74,8 @@ start_ui() {
 start_fixture() {
   if alive "$STATE/fixture.pid"; then echo "fixture: already running"; return 0; fi
   launch "$STATE/fixture.pid" "$STATE/fixture.log" "$ROOT" \
-    python3 tests/browser/fixtures/site/server.py --port "$FIXTURE_PORT" --state "$STATE/fixture-site"
+    python3 tests/browser/fixtures/site/server.py --port "$FIXTURE_PORT" \
+    --tls-port "$FIXTURE_TLS_PORT" --state "$STATE/fixture-site"
   if wait_http "http://127.0.0.1:$FIXTURE_PORT/" 20; then
     echo "fixture: http://a.fixture.localhost:$FIXTURE_PORT and http://b.fixture.localhost:$FIXTURE_PORT"
   else

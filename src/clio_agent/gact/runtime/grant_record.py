@@ -46,6 +46,8 @@ class GrantRecord:
     priority: int | None = None
     modes: tuple[str, ...] = ()
     on: tuple[str, ...] = ()
+    #: A ``browser_certificate`` row's SHA-256 SPKI fingerprint (empty for other kinds).
+    fingerprint: str = ""
 
     @staticmethod
     def _kind_for_row(row: Mapping[str, Any]) -> str:
@@ -99,6 +101,7 @@ class GrantRecord:
             priority=priority,
             modes=modes,
             on=on,
+            fingerprint=str(row.get("fingerprint") or ""),
         )
 
     def to_policy_row(self) -> dict[str, Any]:
@@ -128,4 +131,6 @@ class GrantRecord:
             row["modes"] = list(self.modes)
         if self.on:
             row["on"] = list(self.on)
+        if self.fingerprint:
+            row["fingerprint"] = self.fingerprint
         return row

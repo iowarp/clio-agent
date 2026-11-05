@@ -106,6 +106,10 @@ SECTIONS: list[tuple[str, tuple[str, ...], str]] = [
 ]
 
 KEY_NOTES: dict[str, str] = {
+    "deployment.target": (
+        "The infrastructure target this CLIO was started through; a remote deployment's "
+        "launcher sets it, and the browser names it when a host does not answer."
+    ),
     "browser.backend": (
         "managed (CLIO launches its own Chromium, the default) or cdp (connect to a Chrome you "
         "run with remote debugging and a separate profile, at browser.cdp_url)."

@@ -41,6 +41,7 @@ from clio_agent.gact.runtime.grant_resolver import (
     _VALID_KINDS as VALID_KINDS,  # kind enumeration owner (B4 #1057 — validate at the boundary)
 )
 from clio_agent.gact.runtime.grant_resolver import (
+    KIND_BROWSER_CERTIFICATE,
     KIND_BROWSER_HOST,
     KIND_DOMAIN,
     migrate_priorities,
@@ -65,6 +66,8 @@ NETWORK_EGRESS_REQUEST_KIND = "network_egress"
 #: is a ``browser_host`` row, not a ``domain`` row: browsing a site with the person's sign-ins
 #: is a different grant from a sandboxed process reaching a host.
 BROWSER_HOST_REQUEST_KIND = KIND_BROWSER_HOST
+#: Host rows whose explicit kind validation keeps (never stamped ``domain``).
+_BROWSER_HOST_KINDS = frozenset({KIND_BROWSER_HOST, KIND_BROWSER_CERTIFICATE})
 
 
 def _permission_host_from_args(args: Mapping[str, Any]) -> str:
@@ -159,7 +162,13 @@ def _validate_permission_policies(
                 }
             )
 
-        for field in ("scope_id", "tool_name_pattern", "path_pattern", "host_pattern"):
+        for field in (
+            "scope_id",
+            "tool_name_pattern",
+            "path_pattern",
+            "host_pattern",
+            "fingerprint",
+        ):
             value = policy.get(field)
             if value is not None and not isinstance(value, str):
                 policy_has_errors = True
@@ -224,8 +233,12 @@ def _validate_permission_policies(
         # bleed into a ``kind="tool"`` resolve). This self-heals the persisted shape on the next
         # flush; ``grant_resolver._kind_admitted`` is the belt-and-suspenders match-time guard for
         # any un-normalized in-memory row.
+        # An explicit browser host kind keeps its kind: rewriting it to ``domain`` turned a
+        # saved browser grant into a process-egress row on the next load, where the browser's
+        # resolve no longer found it (browser addendum B).
         if str(policy.get("host_pattern") or ""):
-            policy["kind"] = KIND_DOMAIN
+            if str(policy.get("kind") or "").strip() not in _BROWSER_HOST_KINDS:
+                policy["kind"] = KIND_DOMAIN
             policy.pop("tool_name_pattern", None)
         clean.append(policy)
     return clean, errors

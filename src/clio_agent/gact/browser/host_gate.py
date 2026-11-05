@@ -193,15 +193,21 @@ async def _decide(service: "BrowserService", record: "PageRecord", url: str) -> 
     return allowed
 
 
-async def admit_call(service: "BrowserService", record: "PageRecord") -> None:
+async def admit_call(
+    service: "BrowserService", record: "PageRecord", *, navigates: bool = False
+) -> None:
     """Before an agent call acts on the page: its host must be one the agent may use.
 
     The person, or the page, may have taken the page to a host the agent was never
-    allowed; the agent asks before reading or acting on it, as for a navigation.
+    allowed; the agent asks before reading or acting on it, as for a navigation. Its
+    certificate must be one this conversation trusts (:func:`certificates.check_call`).
     """
     parts = urlsplit(record.url())
     if parts.scheme.lower() not in _WEB_SCHEMES:
         return
+    from clio_agent.gact.browser import certificates  # noqa: PLC0415
+
+    certificates.check_call(service, record, navigates=navigates)
     host = (parts.hostname or "").lower()
     decision = decision_for(service.app, record.session_id, host)
     if decision == "allow":
@@ -295,6 +301,9 @@ async def attach(service: "BrowserService", record: "PageRecord") -> None:
         except settings.page_errors() as exc:  # the page closed meanwhile
             trace.event("BROWSER", "browser gate reply skipped page=%s error=%s", record.id, exc)
 
+    from clio_agent.gact.browser import certificates  # noqa: PLC0415
+
+    await certificates.attach(record, cdp, main_frame)
     cdp.on("Fetch.requestPaused", lambda event: asyncio.ensure_future(paused(event)))
     await cdp.send(
         "Fetch.enable", {"patterns": [{"resourceType": "Document", "requestStage": "Request"}]}

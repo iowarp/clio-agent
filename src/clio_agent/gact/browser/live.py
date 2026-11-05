@@ -17,8 +17,9 @@ through GACT like everything else, so the view works the same for a local agent,
 one and one behind a tunnel.
 
 Also here: ``GET /v1/sessions/{sid}/browser/pages`` (the session's pages, for the Browser
-surface and the Work rail) and ``POST .../pages/{page_id}/allow-host`` (the person allows a
-host the page was blocked from, as their own grant).
+surface and the Work rail), ``POST .../pages/{page_id}/allow-host`` (the person allows a
+host the page was blocked from, as their own grant) and ``POST .../trust-certificate``
+(the person trusts the certificate a page warns about, for the conversation or workspace).
 """
 
 from __future__ import annotations
@@ -37,7 +38,7 @@ from clio_agent.gact.browser import settings
 from clio_agent.gact.browser.settings import BrowserError, page_errors
 from clio_agent.runtime import trace
 
-__all__ = ["LIVE_PROTOCOL", "register_browser_routes"]
+__all__ = ["LIVE_PROTOCOL", "pause_view", "register_browser_routes", "resume_view"]
 
 LIVE_PROTOCOL = "clio.browser.v1"
 #: Frames a slow viewer may have queued before older ones are dropped (latest wins).
@@ -179,6 +180,23 @@ async def _stop(hub: _Hub) -> None:
             except page_errors() as exc:  # the page closed first
                 trace.event("BROWSER", "live stop skipped page=%s error=%s", hub.page_id, exc)
     hub.actions = hub.screencast = None
+
+
+async def pause_view(record: Any) -> None:
+    """Stop a page's screencast before its browser relaunches (its viewers stay)."""
+    hub = _HUBS.get(record.id)
+    if hub is not None:
+        await _stop(hub)
+
+
+async def resume_view(service: Any, record: Any) -> None:
+    """Start the screencast again on the page's new browser page, for its viewers."""
+    hub = _HUBS.get(record.id)
+    if hub is None or not hub.viewers:
+        return
+    hub.last_frame = b""
+    await _start(service, record, hub)
+    _broadcast_state(service, record)
 
 
 async def _resize(service: Any, record: Any, hub: _Hub, message: dict[str, Any]) -> None:
@@ -328,7 +346,12 @@ async def _serve(app: Any, websocket: Any, session_id: str, page_id: str) -> Non
             await asyncio.wrap_future(svc.submit(_start(svc, record, hub)))
         elif hub.last_frame:
             _deliver(viewer, hub.last_frame)
-        await websocket.send_json(_state(svc, record, hub, viewer))
+        from starlette.websockets import WebSocketDisconnect  # noqa: PLC0415
+
+        try:
+            await websocket.send_json(_state(svc, record, hub, viewer))
+        except WebSocketDisconnect:  # the viewer left before its first state (a remount)
+            return
         sender = asyncio.create_task(_send(viewer))
         try:
             await _receive(svc, record, hub, viewer)
@@ -442,6 +465,26 @@ def register_browser_routes(app: Any) -> None:
         except BrowserError as exc:
             raise HTTPException(status_code=409, detail=str(exc)) from exc
         return {"page": svc.state(record)}
+
+    @app.post("/v1/sessions/{session_id}/browser/pages/{page_id}/trust-certificate")
+    async def browser_trust_certificate(
+        session_id: str, page_id: str, body: dict[str, Any]
+    ) -> dict[str, Any]:
+        """The person trusts the certificate the page warns about (browser addendum B)."""
+        from clio_agent.gact.browser.certificates import trust  # noqa: PLC0415
+
+        scope = str(body.get("scope") or "session")
+        if scope not in ("session", "workspace"):
+            raise HTTPException(status_code=422, detail="scope is session or workspace")
+        svc = service()
+        record = svc.pages.get(page_id)
+        if record is None or record.closed or not _in_family(app, record.session_id, session_id):
+            raise HTTPException(status_code=404, detail="browser page not found")
+        svc.app = app
+        try:
+            return await asyncio.to_thread(trust, svc, record, scope)
+        except BrowserError as exc:
+            raise HTTPException(status_code=409, detail=exc.message) from exc
 
     @app.post("/v1/sessions/{session_id}/browser/pages/{page_id}/allow-host")
     async def browser_allow_host(session_id: str, page_id: str) -> dict[str, Any]:

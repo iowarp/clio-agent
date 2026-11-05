@@ -48,6 +48,26 @@ def site(tmp_path_factory: pytest.TempPathFactory) -> Iterator[dict[str, Any]]:
     server.server_close()
 
 
+@pytest.fixture()
+def tls_site(tmp_path: Path) -> Iterator[dict[str, Any]]:
+    """``https://c.fixture.localhost`` with its own self-signed certificate (addendum B)."""
+    import shutil
+
+    if shutil.which("openssl") is None:
+        pytest.skip("the TLS fixture makes its certificate with openssl")
+    module = _site_module()
+    tls = module.TlsFixture(0, tmp_path / "tls-site")
+    thread = threading.Thread(target=tls.server.serve_forever, daemon=True)
+    thread.start()
+    yield {
+        "c": f"https://{module.TLS_HOST}:{tls.server.server_port}",
+        "tls": tls,
+        "fingerprint": lambda: module.fingerprint(tls.folder / "cert.pem"),
+    }
+    tls.server.shutdown()
+    tls.server.server_close()
+
+
 def _installed_chromium() -> Path | None:
     from clio_agent.gact.browser import install
 

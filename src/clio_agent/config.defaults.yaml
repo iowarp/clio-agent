@@ -2008,3 +2008,12 @@ spotter.max_clearance_events: 256
 # Installed agent (marketplace/id) that runs as the SPOTTER standing watcher
 # child session; change to point spotter-ai at a custom watcher agent.
 spotter.watcher_agent: "clio/spotter-ai"
+
+# ==========================================================================
+# Unassigned -- add these to scripts/config_key_notes.py
+
+# CLIO_DEPLOYMENT_TARGET  (str)  <- src/clio_agent/gact/browser/failures.py
+# The infrastructure target this CLIO was started through; a remote
+# deployment's launcher sets it, and the browser names it when a host does
+# not answer.
+# deployment.target:  # default unset; resolved in code

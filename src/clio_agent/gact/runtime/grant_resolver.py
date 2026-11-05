@@ -74,12 +74,24 @@ KIND_HOOK = "hook"
 #: different grant (browsing with the person's sign-ins, not a process reaching a host), so it
 #: honours session and workspace scope and never answers a ``domain`` resolve.
 KIND_BROWSER_HOST = "browser_host"
+#: A certificate Chromium does not trust, trusted by the person for one host (browser
+#: addendum B): a host row that also names the certificate's SHA-256 SPKI ``fingerprint``, so
+#: a device presenting another certificate later is asked about again.
+KIND_BROWSER_CERTIFICATE = "browser_certificate"
 #: The kinds whose subject is ``host_pattern``.
-HOST_KINDS = frozenset({KIND_DOMAIN, KIND_BROWSER_HOST})
+HOST_KINDS = frozenset({KIND_DOMAIN, KIND_BROWSER_HOST, KIND_BROWSER_CERTIFICATE})
 
 #: The full set of explicit ``kind`` discriminators a stored row may declare.
 _VALID_KINDS = frozenset(
-    {KIND_TOOL, KIND_DOMAIN, KIND_ROOT, KIND_PLAN_ACL, KIND_HOOK, KIND_BROWSER_HOST}
+    {
+        KIND_TOOL,
+        KIND_DOMAIN,
+        KIND_ROOT,
+        KIND_PLAN_ACL,
+        KIND_HOOK,
+        KIND_BROWSER_HOST,
+        KIND_BROWSER_CERTIFICATE,
+    }
 )
 
 #: The tool-axis kinds: all carry their subject in ``tool_name_pattern``, so :func:`_kind_admitted`
@@ -273,6 +285,13 @@ def _path_pattern_matches(path_pattern: str, path: str) -> bool:
 def _subject_matches(kind: str, policy: Mapping[str, Any], pattern: str, path: str) -> bool:
     """Return whether ``policy``'s subject encoding matches this ``kind`` call."""
 
+    if kind == KIND_BROWSER_CERTIFICATE:
+        # The exact host and the exact key: ``path`` carries the certificate's fingerprint.
+        host = str(policy.get("host_pattern") or "").strip().lower()
+        fingerprint = str(policy.get("fingerprint") or "")
+        return (
+            bool(host and fingerprint) and host == pattern.strip().lower() and (fingerprint == path)
+        )
     if kind in HOST_KINDS:
         host_pattern = str(policy.get("host_pattern") or "")
         if not host_pattern:
@@ -491,7 +510,7 @@ def _collect_matches(
     if kind == KIND_DOMAIN and (not pattern or not workspace_id):
         # _host_action_for guard: an empty host or unknown workspace can never match a host row.
         return []
-    if kind == KIND_BROWSER_HOST and not pattern:
+    if kind in (KIND_BROWSER_HOST, KIND_BROWSER_CERTIFICATE) and not pattern:
         return []
     total = len(policies)
     matches: list[tuple[int, str, bool]] = []
@@ -683,6 +702,7 @@ __all__ = [
     "EXTERNAL_MCP_CONTEXT_KIND",
     "GrantRecord",
     "HOST_KINDS",
+    "KIND_BROWSER_CERTIFICATE",
     "KIND_BROWSER_HOST",
     "KIND_DOMAIN",
     "KIND_HOOK",

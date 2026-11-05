@@ -15,9 +15,15 @@ Pages (on either host):
 - ``/frames`` an iframe ``#results`` holding a button; ``/download`` a file link;
 - ``/slow?ms=N`` answers after N milliseconds; ``/list`` renders its list from script;
 - ``/timed-redirect`` moves to the other host after five seconds (W20);
-- ``/settings`` a form whose Save button disables after the email changes.
+- ``/settings`` a form whose Save button disables after the email changes;
+- ``/status`` a device status page (a printer's nozzle temperature).
 
-Standard library only, so it runs with any Python and in tests.
+``--tls-port 8791`` also serves the same pages over ``https://`` as ``c.fixture.localhost``
+(browser addendum B, W21), with a self-signed certificate made by ``openssl`` into
+``DIR/tls``. ``POST /tls/regenerate`` on the plain server makes a new key and certificate;
+connections after it get the new one (W22).
+
+Standard library and the ``openssl`` command only, so it runs with any Python and in tests.
 """
 
 from __future__ import annotations
@@ -28,6 +34,8 @@ import email.policy
 import html
 import json
 import re
+import ssl
+import subprocess
 import threading
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -104,6 +112,12 @@ class Handler(BaseHTTPRequestHandler):
             self._send(404, _page("Not found", f"<p>No page at {html.escape(url.path)}.</p>"))
             return
         route(query)
+
+    def get_status(self, _query: dict[str, list[str]]) -> None:
+        self._send(
+            200,
+            _page("Printer status", "<p>Nozzle temperature: <b id='nozzle'>215 °C</b></p>"),
+        )
 
     def get_index(self, _query: dict[str, list[str]]) -> None:
         links = [
@@ -272,6 +286,13 @@ class Handler(BaseHTTPRequestHandler):
         path = urlsplit(self.path).path
         if path == "/signin":
             self._signin()
+        elif path == "/tls/regenerate":
+            tls = getattr(self.server, "tls", None)
+            if tls is None:
+                self._send(404, _page("No TLS host", "<p>Started without --tls-port.</p>"))
+                return
+            fingerprint = tls.regenerate()
+            self._send(200, json.dumps({"fingerprint": fingerprint}).encode())
         elif path == "/form":
             self._submit()
         else:
@@ -330,12 +351,89 @@ class FixtureServer(ThreadingHTTPServer):
             out.write(json.dumps(submission) + "\n")
 
 
+TLS_HOST = "c.fixture.localhost"
+
+
+class TlsFixture:
+    """``c.fixture.localhost`` over ``https://`` with a self-signed certificate."""
+
+    def __init__(self, port: int, state: Path) -> None:
+        self.folder = state / "tls"
+        self.folder.mkdir(parents=True, exist_ok=True)
+        self.context = self._make()
+        self.server = FixtureServer(port, state)
+        self.server.get_request = self._wrapped  # type: ignore[method-assign]
+
+    def _make(self) -> ssl.SSLContext:
+        key, cert = self.folder / "key.pem", self.folder / "cert.pem"
+        subprocess.run(
+            [
+                "openssl",
+                "req",
+                "-x509",
+                "-newkey",
+                "ec",
+                "-pkeyopt",
+                "ec_paramgen_curve:prime256v1",
+                "-nodes",
+                "-days",
+                "30",
+                "-subj",
+                f"/CN={TLS_HOST}/O=Fixture Printer",
+                "-addext",
+                f"subjectAltName=DNS:{TLS_HOST}",
+                "-keyout",
+                str(key),
+                "-out",
+                str(cert),
+            ],
+            check=True,
+            capture_output=True,
+        )
+        context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+        context.load_cert_chain(cert, key)
+        return context
+
+    def _wrapped(self) -> tuple[Any, Any]:
+        sock, address = self.server.socket.accept()
+        return self.context.wrap_socket(sock, server_side=True), address
+
+    def regenerate(self) -> str:
+        self.context = self._make()
+        return fingerprint(self.folder / "cert.pem")
+
+
+def fingerprint(cert: Path) -> str:
+    """The certificate's base64 SHA-256 SPKI fingerprint, as Chromium's flag takes it."""
+    spki = subprocess.run(
+        ["openssl", "x509", "-in", str(cert), "-pubkey", "-noout"],
+        check=True,
+        capture_output=True,
+    ).stdout
+    der = subprocess.run(
+        ["openssl", "pkey", "-pubin", "-outform", "der"],
+        input=spki,
+        check=True,
+        capture_output=True,
+    ).stdout
+    import base64  # noqa: PLC0415
+    import hashlib  # noqa: PLC0415
+
+    return base64.b64encode(hashlib.sha256(der).digest()).decode()
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__.split("\n", 1)[0])
     parser.add_argument("--port", type=int, default=8790)
+    parser.add_argument("--tls-port", type=int, default=0)
     parser.add_argument("--state", type=Path, default=Path(".cloud-run/fixture-site"))
     options = parser.parse_args()
     server = FixtureServer(options.port, options.state)
+    if options.tls_port:
+        tls = TlsFixture(options.tls_port, options.state)
+        server.tls = tls  # type: ignore[attr-defined]
+        threading.Thread(target=tls.server.serve_forever, daemon=True).start()
+        print(f"fixture site on https://{TLS_HOST}:{tls.server.server_port}", flush=True)
     print(f"fixture site on http://a.fixture.localhost:{server.server_port}", flush=True)
     server.serve_forever()
 

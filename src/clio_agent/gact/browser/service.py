@@ -37,7 +37,7 @@ from typing import Any
 from urllib.parse import urlsplit
 
 from clio_agent import paths
-from clio_agent.gact.browser import install, settings
+from clio_agent.gact.browser import certificates, failures, install, settings
 from clio_agent.gact.browser.driver_loop import driver_loop
 from clio_agent.gact.browser.settings import BrowserError, page_errors
 from clio_agent.runtime import trace
@@ -73,6 +73,8 @@ class Inflight:
     navigated: bool = False
     #: The host the person denied during this call, if any.
     denied_host: str = ""
+    #: The call only navigates (goto, back, open): it may leave a page the agent may not use.
+    navigates: bool = False
 
 
 @dataclass
@@ -106,6 +108,14 @@ class PageRecord:
     title: str = ""
     loading: bool = False
     closed: bool = False
+    #: The last main-frame address requested, and why it failed if it did.
+    main_url: str = ""
+    load_error: dict[str, Any] | None = None
+    #: What the page's certificate was, as Chromium saw it (browser addendum B).
+    certificate: dict[str, Any] | None = None
+    #: The browser is relaunching under this page (it keeps its id), or just did.
+    relaunching: bool = False
+    restarted: bool = False
 
     def host(self) -> str:
         return (urlsplit(self.url()).hostname or "").lower()
@@ -291,6 +301,8 @@ class BrowserService:
             "accept_downloads": True,
             "viewport": {"width": 1280, "height": 800},
             "env": _chromium_env(),
+            # The certificates the person trusted, pinned to their keys (browser addendum B).
+            "args": certificates.launch_args(self.app),
         }
         if proxy:
             options["proxy"] = proxy
@@ -347,10 +359,6 @@ class BrowserService:
     async def _register(
         self, session_id: str, label: str, page: Any, profile: Profile
     ) -> PageRecord:
-        from clio_agent.gact.browser import host_gate  # noqa: PLC0415
-
-        page.set_default_timeout(0)
-        page.set_default_navigation_timeout(0)
         record = PageRecord(
             id=self._new_id(),
             session_id=session_id,
@@ -360,13 +368,22 @@ class BrowserService:
             lock=asyncio.Lock(),
         )
         self.pages[record.id] = record
-        page.on("download", lambda download: self._on_download(record, download))
-        page.on("response", lambda response: self._on_response(record, response))
-        page.on("close", lambda _page: self._forget(record))
-        page.on("load", lambda _page: self._loaded(record))
-        await host_gate.attach(self, record)
+        await self._bind(record, page)
         self.publish(PAGE_OPENED, record)
         return record
+
+    async def _bind(self, record: PageRecord, page: Any) -> None:
+        """Give ``record`` its browser page: listeners, the host gate, no default timeouts."""
+        from clio_agent.gact.browser import host_gate  # noqa: PLC0415
+
+        record.page = page
+        page.set_default_timeout(0)
+        page.set_default_navigation_timeout(0)
+        page.on("download", lambda download: self._on_download(record, download))
+        page.on("response", lambda response: self._on_response(record, response))
+        page.on("close", lambda closed: self._forget(record) if closed is record.page else None)
+        page.on("load", lambda _page: self._loaded(record))
+        await host_gate.attach(self, record)
 
     async def open(self, session_id: str, label: str) -> PageRecord:
         open_pages = [p for p in self.pages.values() if not p.closed]
@@ -406,7 +423,7 @@ class BrowserService:
             await self._register(parent.session_id, f"{parent.label} (popup)", page, profile)
 
     def _forget(self, record: PageRecord) -> None:
-        if record.closed:
+        if record.closed or record.relaunching:
             return
         record.closed = True
         self.pages.pop(record.id, None)
@@ -444,13 +461,14 @@ class BrowserService:
         work: Callable[[PageRecord], Awaitable[Any]],
         *,
         limit_s: float | None = None,
+        navigates: bool = False,
     ) -> Any:
         """Run one agent action on ``record`` with the page lock held and the clock running.
 
         The calling thread's context is captured, so a navigation this action causes is
         asked about inside it: the question shows the script and pauses its clock too.
         """
-        inflight = Inflight(action=action, context=contextvars.copy_context())
+        inflight = Inflight(action=action, context=contextvars.copy_context(), navigates=navigates)
         return self.wait(self._locked(record, inflight, work), inflight=inflight, limit_s=limit_s)
 
     async def _locked(
@@ -468,10 +486,10 @@ class BrowserService:
             try:
                 from clio_agent.gact.browser import host_gate  # noqa: PLC0415
 
-                await host_gate.admit_call(self, record)
+                await host_gate.admit_call(self, record, navigates=inflight.navigates)
                 result = await work(record)
                 if inflight.denied_host:  # a click or form led to a host the person refused
-                    raise _typed(RuntimeError("navigation refused"), inflight)
+                    raise failures.denied(inflight)
                 if inflight.navigated:
                     await record.page.wait_for_load_state("load")
                 await self._settle_downloads(record)
@@ -481,7 +499,7 @@ class BrowserService:
             except asyncio.CancelledError:
                 raise
             except Exception as exc:  # noqa: BLE001 - forwards: Playwright's errors as typed reasons
-                raise _typed(exc, inflight) from exc
+                raise await failures.classify(self, record, inflight, exc) from exc
             finally:
                 await self._agent_hook(record, False)
                 record.inflight = None
@@ -503,6 +521,9 @@ class BrowserService:
             record.blocked_reported = True
         if record.downloads:
             notes["downloads"] = list(record.downloads)
+        if record.restarted:  # a trusted certificate relaunched the browser under the page
+            notes["browser_restarted"] = True
+            record.restarted = False
         record.person_acted = False
         record.downloads.clear()
         return notes
@@ -678,14 +699,16 @@ class BrowserService:
 
     # ---- events and state --------------------------------------------------------------
     def state(self, record: PageRecord) -> dict[str, Any]:
-        """The page as the UI and the live view see it."""
+        """The page as the UI and the live view see it (on Chromium's error page, the address
+        it could not load)."""
         profile = self.profiles.get(record.profile)
+        shown = record.main_url if record.url().startswith("chrome-error:") else record.url()
         return {
             "id": record.id,
             "session_id": record.session_id,
             "label": record.label,
-            "url": record.url(),
-            "host": record.host(),
+            "url": shown,
+            "host": (urlsplit(shown).hostname or "").lower(),
             "title": record.title,
             "loading": record.loading,
             "agent_acting": record.inflight is not None,
@@ -694,6 +717,7 @@ class BrowserService:
             "sandbox_off": profile is not None and not profile.sandboxed,
             "sandbox_reason": profile.sandbox_reason if profile is not None else "",
             "closed": record.closed,
+            **certificates.state(record),
         }
 
     def publish(self, kind: str, record: PageRecord) -> None:
@@ -709,19 +733,6 @@ class BrowserService:
         from clio_agent.gact.events import Event  # noqa: PLC0415
 
         bus.publish(Event(type=kind, session_id=record.session_id, payload=self.state(record)))
-
-
-def _typed(exc: Exception, inflight: Inflight) -> BrowserError:
-    text = str(exc).splitlines()[0] if str(exc) else type(exc).__name__
-    if inflight.denied_host:
-        return BrowserError(
-            "browser_host_denied",
-            f"the person did not allow loading {inflight.denied_host}",
-            host=inflight.denied_host,
-        )
-    if "strict mode violation" in text:
-        return BrowserError("browser_target_ambiguous", text)
-    return BrowserError("browser_action_failed", text)
 
 
 def _unique(path: Path) -> Path:

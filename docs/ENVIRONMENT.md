@@ -134,6 +134,7 @@ These resolve through `clio_agent.conf`: a value under the dotted key in `config
 | `CLIO_DEBUG_ONLY` | `debug.only` | list | `_no_only` _(computed)_ | `src/clio_agent/runtime/trace.py` |
 | `CLIO_DEFAULT_MARKETPLACE` | `plugins.default_marketplace` | str | _(unset)_ | `src/clio_agent/plugins/service.py` |
 | `CLIO_DEFAULT_WORKSPACE` | `paths.default_workspace` | str | _(unset)_ | `src/clio_agent/gact/workspaces.py` |
+| `CLIO_DEPLOYMENT_TARGET` | `deployment.target` | str | _(unset)_ | `src/clio_agent/gact/browser/failures.py` |
 | `CLIO_DOCUMENT_PROCESSOR_URL` | `resources.document_processor_url` | str | _(unset)_ | `src/clio_agent/gact/composer_runtime.py` |
 | `CLIO_ENVIRONMENT` | `runtime.environment` | str | `dev` | `src/clio_agent/config.py` |
 | `CLIO_FLEET_DELEGATION` | `fleet.delegation` | str | `{}` _(computed)_ | `src/clio_agent/gact/fleet/guard.py` |

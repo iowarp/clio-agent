@@ -117,7 +117,9 @@ def browser_open(url: str | None = None, label: str = "") -> dict[str, Any]:
     same = [page_info(r) for r in svc.session_pages(session_id) if url and _same_url(r, url)]
     record = svc.wait(svc.open(session_id, name))
     if url:
-        svc.run(record, f"open {url}", lambda r: r.page.goto(url, wait_until="load"))
+        svc.run(
+            record, f"open {url}", lambda r: r.page.goto(url, wait_until="load"), navigates=True
+        )
     extra = {"already_open": same} if same else {}
     return _result(app, record, opened=True, label=record.label, **extra)
 
@@ -165,7 +167,7 @@ def browser_navigate(
             response = await r.page.reload(wait_until=wait_until)
         return response.status if response is not None else None
 
-    status = service().run(record, f"{action} {url or ''}".strip(), go)
+    status = service().run(record, f"{action} {url or ''}".strip(), go, navigates=True)
     return _result(app, record, status=status)
 
 
