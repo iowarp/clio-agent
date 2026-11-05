@@ -1,0 +1,146 @@
+---
+title: "Write a paper"
+description: Ask for a LaTeX paper, read its source beside the built PDF, comment on either and follow its versions.
+---
+
+import PreviewGuide from '../../../components/docs/PreviewGuide.astro';
+import { Aside, Steps } from "@astrojs/starlight/components";
+import Capture from "../../../components/overview/Capture";
+import { captureImage } from "../../../lib/captures";
+import card from "../../../assets/captures/papers/paper-card-in-reply.png";
+import opened from "../../../assets/captures/papers/paper-opened.png";
+import outline from "../../../assets/captures/papers/paper-outline-to-pdf.png";
+import sourceToPdf from "../../../assets/captures/papers/latex-workspace-source-to-pdf.png";
+import problems from "../../../assets/captures/papers/latex-workspace-problems.png";
+import pdfOnly from "../../../assets/captures/papers/latex-paper-pdf-only.png";
+import comment from "../../../assets/captures/papers/paper-comment-on-pdf.png";
+import threads from "../../../assets/captures/papers/paper-threads-on-v2.png";
+import lineage from "../../../assets/captures/papers/paper-lineage.png";
+import phone from "../../../assets/captures/papers/latex-workspace-phone.png";
+
+CLIO writes LaTeX papers as projects: a `main.tex` that brings in one file per section,
+a bibliography and figures. It builds the project to PDF and gives you the result as one
+**paper**, shown by its title, that opens with its source and its PDF side by side.
+
+<PreviewGuide features="Papers, the LaTeX workspace and paper templates" />
+
+## Ask for a paper
+
+<Steps>
+
+1. Say what the paper is about, where it is going and how you want it laid out.
+
+   ```text
+   Write a short paper on how burst buffers change
+   checkpoint performance on shared HPC storage, for an
+   IEEE conference. Put it in a new folder paper-ee: a
+   main.tex that brings together five sections, each
+   section in its own .tex file. Then build it so I can
+   read it.
+   ```
+
+2. CLIO starts from a template for the venue, writes the files, builds the paper and
+   fixes the problems the build reports.
+
+3. The answer ends with the paper's card. Choose it to open the paper.
+
+</Steps>
+
+<Capture client:visible image={await captureImage(card)}
+  alt="The end of CLIO's answer, with a card titled Burst Buffers and Checkpoint Performance on Shared HPC Storage"
+  caption="The paper's card shows its title, its type and venue (Paper, IEEE conference), its pages and its version. The section files are inside the paper, not listed beside it."
+  sizes="(min-width: 50rem) 46rem, 100vw" />
+
+The templates cover IEEE conference and journal papers, ACM conference papers (with
+double-blind review) and journal articles, Springer LNCS and Elsevier articles. When the
+paper is for one of these venues, CLIO also checks it against the venue's usual rules:
+the page limit, double-blind review, required packages and the paper size. Give CLIO the
+call for papers to use its exact limits.
+
+## Read the source beside the PDF
+
+The paper opens with its outline, its source and its PDF. The source pane shows one
+project file at a time; choose another from the file menu above it.
+
+<Capture client:visible image={await captureImage(opened)}
+  alt="The paper open full width: the outline on the left, main.tex in the middle and the built PDF on the right"
+  caption="The outline, the source of main.tex and the built PDF."
+  sizes="(min-width: 50rem) 46rem, 100vw" />
+
+- **Choose a section in the outline** to open its file and outline its place on the PDF.
+- **Click a source line** to outline where it lands on the PDF.
+- **Double-click the PDF** to open the source file and line behind that point.
+
+<Capture client:visible image={await captureImage(outline)}
+  alt="Background chosen in the outline: its file open in the source pane and the section outlined on the PDF"
+  caption="Background chosen in the outline: sections/background.tex opens, and the section is outlined on the page."
+  sizes="(min-width: 50rem) 46rem, 100vw" />
+
+<Capture client:visible image={await captureImage(sourceToPdf)}
+  alt="A source line selected and the sentence it produces outlined on the PDF"
+  caption="A clicked source line, outlined on the PDF."
+  sizes="(min-width: 50rem) 46rem, 100vw" />
+
+To give one side the whole width, choose **Source** or **PDF** above the panes, or use
+the arrows on the strip between them. **Source and PDF** brings both back. On a narrow
+screen, the paper shows **Source**, **PDF** and **Outline** as tabs.
+
+<Capture client:visible image={await captureImage(pdfOnly)}
+  alt="The paper with only its PDF showing, and the outline still open on the left"
+  caption="PDF only. The arrow at the left edge brings the source back."
+  sizes="(min-width: 50rem) 46rem, 100vw" />
+
+## Check the build
+
+The summary above the panes says how the build went, in words: its pages, problems and
+warnings. Choose it to list every problem; choose a problem to open its file at its line.
+Problems are also marked beside their lines in the source.
+
+<Capture client:visible image={await captureImage(problems)}
+  alt="The build summary open, listing font substitution warnings"
+  caption="The build's problems, listed by kind with their messages."
+  sizes="(min-width: 50rem) 46rem, 100vw" />
+
+<Aside type="caution">
+The first build that needs a TeX package downloads it, so it needs network access.
+Packages that run other programs, such as `minted`, are not supported; use `listings`
+for code. Bibliographies build with BibTeX, not biber.
+</Aside>
+
+## Comment on the paper
+
+Choose **Comment**, then select text in the source or on the PDF, or drag a region over
+a figure. CLIO receives each comment with the source file, the lines and the section it
+falls in, so the change is made in the source.
+
+<Capture client:visible image={await captureImage(comment)}
+  alt="A phrase selected on the PDF with its comment box open, titled with the paper's name"
+  caption="A comment on the PDF. CLIO receives it as sections/background.tex, line 4, in the Background section."
+  sizes="(min-width: 50rem) 46rem, 100vw" />
+
+See [Comment on results](/docs/comments/) for the comment controls.
+
+## Follow its versions
+
+Each build after a change is the paper's next version, and the answer shows the new
+card. Your comments follow the paper: open **Comments** from the more menu (the three
+dots) to see each one, CLIO's answer and whether the part you marked **Moved to
+version 2** or was changed.
+
+<Capture client:visible image={await captureImage(threads)}
+  alt="Two comment threads on the paper: one moved to version 2, one outdated because version 2 changed it"
+  caption="After CLIO edited the section, one comment's text moved to version 2 and the other was rewritten."
+  sizes="(min-width: 50rem) 46rem, 100vw" />
+
+**Lineage**, beside the paper's name, shows which version of each source file the
+paper was built from.
+
+<Capture client:visible image={await captureImage(lineage)}
+  alt="The paper's lineage: each section file written, then used by the build that made the paper"
+  caption="Each source file, the build that used them and the paper it made."
+  sizes="(min-width: 50rem) 46rem, 100vw" />
+
+<Capture client:visible image={await captureImage(phone)}
+  alt="The paper at phone width, with Source, PDF and Outline tabs"
+  caption="At phone width the paper shows one pane at a time."
+  sizes="(min-width: 50rem) 24rem, 100vw" />

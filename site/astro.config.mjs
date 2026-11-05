@@ -111,6 +111,8 @@ export default defineConfig({
 					items: [
 						{ label: 'Check answers and sources', slug: 'docs/evidence' },
 						{ label: 'Open and edit documents', slug: 'docs/working-with-files' },
+						{ label: 'Comment on results', slug: 'docs/comments' },
+						{ label: 'Write a paper', slug: 'docs/papers' },
 						{ label: 'Explore charts and dashboards', slug: 'docs/dashboards' },
 						{ label: 'Compare alternative answers', slug: 'docs/best-of-n' },
 						{ label: 'Save and share your work', slug: 'docs/exports' },
