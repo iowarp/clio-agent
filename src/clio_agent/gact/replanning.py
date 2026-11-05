@@ -23,11 +23,12 @@ prose/keywords, and never forces a mode change silently). Two surfaces:
   suggestion / is replanning). SCOPE: only sessions with an active execution playbook are monitored,
   so a plain session is a byte-identical no-op.
 
-* :func:`replan_suggestion` — the per-turn-input attachment (the plan-mode-reminder /
-  todo-recitation pattern). When the monitor has flagged a pending suggestion, this prepends a typed
-  notice to the NEXT turn's input EXACTLY ONCE (it clears the flag), telling the model it may
-  re-enter plan mode to replan — it is a SUGGESTION, not a mode flip. ``turn.py`` calls it from the
-  enrichment step alongside the plan-mode reminder and todo recitation.
+* :func:`replan_suggestion` — the turn-start injection (the reminder ``clio.reminder.replan``).
+  When the monitor has flagged a pending suggestion, the next turn records it once (the flag is
+  cleared) as an event note (:func:`clio_agent.injections.fired`), so a later suggestion in the
+  same words is recorded too. It tells the model it may revise the plan with ``plan_update`` or
+  call ``plan_enter``; it is a suggestion, not a mode flip. ``turn_start_offloop`` calls it beside
+  the working-state injections.
 
 State rides ``session.metadata`` (:data:`STALL_STATE_KEY` / :data:`REPLAN_SUGGESTION_KEY`) — the
 #948 no-fifth-store projection, exactly like ``loop`` / ``plan_playbook``.
@@ -69,7 +70,7 @@ STALL_THRESHOLD = 3
 STALL_COOLDOWN_TURNS = 3
 
 #: Marker heading the injected replanning-suggestion block (stable + greppable; #881 discipline).
-REPLAN_SUGGESTION_MARKER = "## Replanning suggestion — sustained lack of progress detected"
+REPLAN_SUGGESTION_MARKER = "## Replanning suggestion: little progress in recent turns"
 
 #: Trace-only semantic event types (registered in ``semantic_events.SSE_TRACE_ONLY_EVENT_TYPES``):
 #: bucket telemetry is governance substrate the operator queries after the fact, never a UI atom.
@@ -313,4 +314,10 @@ def replan_suggestion(app: "FastAPI", sid: str, session: Any) -> str:
     if not isinstance(pending, Mapping) or not pending.get("pending"):
         return ""
     app.state.sessions.update(sid, metadata_patch={REPLAN_SUGGESTION_KEY: {}})
-    return _suggestion_block(app, sid)
+    block = _suggestion_block(app, sid)
+    if not block:
+        return ""
+    from clio_agent import injections  # noqa: PLC0415
+
+    # An event note: a second suggestion with the same words is recorded too.
+    return injections.fired(block)

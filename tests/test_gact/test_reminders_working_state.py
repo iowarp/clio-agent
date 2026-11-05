@@ -202,23 +202,22 @@ def test_switching_the_todos_off_stops_them() -> None:
 # --------------------------------------------------------------------------- #
 
 _CONTRACT_TAIL = (
-    "- The plan file is NOT the user's requested target or final deliverable. Never copy "
-    "the requested target contents alone into the plan file; the plan must describe how "
-    "the requested result will be implemented and verified after approval. Never infer "
-    "a requested filename from the plan-file path or its generated slug; preserve targets "
-    "from the user's request exactly.\n"
+    "- The plan file holds your plan, not the deliverable the person asked for: it says how "
+    "the requested result will be made and checked after approval. The deliverable's names "
+    "and places come from the person's request; the plan file's path is CLIO's own.\n"
     "- Keep what you know apart from what you still must find out: findings carry their "
     "references, and what is unknown stays an open thread until you look it up.\n"
-    "- If a plan already exists, evaluate whether it is still relevant to THIS task before "
-    "editing; treat a new task as a fresh plan.\n"
-    "- Show the plan to the user in your response — don't just write it to disk.\n"
-    "- Turn-ending contract: when the plan is complete, call plan_exit to hand the saved plan "
-    "back for approval, then END YOUR TURN — do NOT try to execute the plan while in plan mode."
+    "- If a plan already exists, judge whether it still fits this task before editing it; "
+    "a new task gets a fresh plan.\n"
+    "- Show the plan to the person in your reply as well; they read your reply, not the file.\n"
+    "- Ending the turn: when the plan is complete, call plan_exit to hand the saved plan back "
+    "for approval and end your turn there. Nothing is carried out in plan mode; the work "
+    "starts after approval."
 )
 _CONTRACT_HEAD = (
     "## Plan Mode active — read-only except the plan file\n\n"
-    "You are in PLAN MODE. Investigate freely, but do NOT modify the system: every write, "
-    "edit, and file-mutating tool is blocked.\n"
+    "You are in plan mode. Investigate freely; nothing else changes until the plan is "
+    "approved, so every write, edit and file-mutating tool is blocked except plan_update.\n"
     "- A plan file already exists at /tmp/plans/x.md. Update it with plan_update as you "
     "learn (old and new replace one passage).\n"
 )
@@ -276,7 +275,7 @@ def test_the_plan_mode_contract_cannot_be_switched_off() -> None:
     injections.update("plan_mode", active=False)
     injections.update("plan_mode_playbook", active=False)
     full = plan_mode_reminder_block(full=True, plan_file=_PLAN_FILE, exists=False)
-    assert full.startswith(PLAN_MODE_REMINDER_MARKER + "\n\nYou are in PLAN MODE.")
+    assert full.startswith(PLAN_MODE_REMINDER_MARKER + "\n\nYou are in plan mode.")
     assert injections.active("plan_mode") and injections.active("plan_mode_playbook")
 
 
