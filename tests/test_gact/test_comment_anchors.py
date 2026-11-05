@@ -327,9 +327,7 @@ def test_an_element_on_an_html_artifact_is_found_by_its_selector(
     assert any(note.startswith("remote_resources_refused: 1") for note in mark.notes)
 
 
-def test_the_server_render_is_offline_even_for_library_cdns(
-    tmp_path: Path, chromium: None
-) -> None:
+def test_the_server_render_is_offline_even_for_library_cdns(tmp_path: Path, chromium: None) -> None:
     """HTML opens in the shared browser now (H5): the server's render keeps no CDN list."""
     path = tmp_path / "chart.html"
     path.write_text(
