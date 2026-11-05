@@ -28,6 +28,7 @@ import asyncio
 import hmac
 import json
 import time
+from collections import deque
 from dataclasses import dataclass, field
 from typing import Any
 from urllib.parse import urlsplit
@@ -41,8 +42,10 @@ from clio_agent.runtime import trace
 __all__ = ["LIVE_PROTOCOL", "pause_view", "register_browser_routes", "resume_view"]
 
 LIVE_PROTOCOL = "clio.browser.v1"
-#: Frames a slow viewer may have queued before older ones are dropped (latest wins).
-_FRAME_BACKLOG = 2
+#: Replies (errors, ``ignored``) a viewer may have waiting; past it the oldest go.
+_REPLY_BACKLOG = 64
+#: Close code for a viewer whose page closed.
+PAGE_CLOSED_CODE = 4410
 _MOUSE_ACTIONS = ("move", "down", "up", "click")
 _KEY_ACTIONS = ("down", "up", "press")
 _NAVIGATIONS = ("goto", "back", "forward", "reload")
@@ -50,10 +53,19 @@ _NAVIGATIONS = ("goto", "back", "forward", "reload")
 
 @dataclass
 class _Viewer:
+    """One viewer. Only its sender writes to its socket (#1918): what it is sent waits here,
+    bounded: the latest frame, the latest state (a state is the whole page state, so
+    the latest replaces the rest), and a few replies to its own messages."""
+
     socket: Any
     loop: asyncio.AbstractEventLoop
-    queue: asyncio.Queue[Any] = field(default_factory=lambda: asyncio.Queue())
     controls: bool = False
+    frame: bytes | None = None
+    state: dict[str, Any] | None = None
+    replies: deque[dict[str, Any]] = field(default_factory=lambda: deque(maxlen=_REPLY_BACKLOG))
+    #: The page closed: the sender sends what is waiting, then closes the socket.
+    closing: bool = False
+    wake: asyncio.Event = field(default_factory=asyncio.Event)
 
 
 @dataclass
@@ -73,16 +85,33 @@ class _Hub:
 _HUBS: dict[str, _Hub] = {}
 
 
+def _put(viewer: _Viewer, item: Any) -> None:
+    """Hold ``item`` for the viewer's sender (on the viewer's loop): a frame or a state
+    replaces the one waiting, so a burst of frames never pushes a state out."""
+    if isinstance(item, bytes):
+        viewer.frame = item
+    elif isinstance(item, dict) and item.get("type") == "state":
+        viewer.state = item
+    else:
+        viewer.replies.append(item)
+    viewer.wake.set()
+
+
 def _deliver(viewer: _Viewer, item: Any) -> None:
-    """Queue ``item`` for one viewer from any thread; frames drop oldest when it lags."""
+    """Hold ``item`` for one viewer, from any thread."""
+    viewer.loop.call_soon_threadsafe(_put, viewer, item)
 
-    def put() -> None:
-        if isinstance(item, bytes):
-            while viewer.queue.qsize() >= _FRAME_BACKLOG:
-                viewer.queue.get_nowait()
-        viewer.queue.put_nowait(item)
 
-    viewer.loop.call_soon_threadsafe(put)
+def _close_viewers(page_id: str) -> None:
+    """The page closed: each viewer gets its last state, then its socket is closed."""
+    hub = _HUBS.get(page_id)
+    for viewer in list(hub.viewers if hub is not None else ()):
+
+        def close(viewer: _Viewer = viewer) -> None:
+            viewer.closing = True
+            viewer.wake.set()
+
+        viewer.loop.call_soon_threadsafe(close)
 
 
 def _state(service: Any, record: Any, hub: _Hub, viewer: _Viewer) -> dict[str, Any]:
@@ -372,12 +401,21 @@ async def _serve(app: Any, websocket: Any, session_id: str, page_id: str) -> Non
 
 
 async def _send(viewer: _Viewer) -> None:
+    """The viewer's only writer: replies, then the latest state, then the latest frame."""
     while True:
-        item = await viewer.queue.get()
-        if isinstance(item, bytes):
-            await viewer.socket.send_bytes(item)
-        else:
-            await viewer.socket.send_text(json.dumps(item, default=str))
+        await viewer.wake.wait()
+        viewer.wake.clear()
+        while viewer.replies:
+            await viewer.socket.send_text(json.dumps(viewer.replies.popleft(), default=str))
+        state, viewer.state = viewer.state, None
+        if state is not None:
+            await viewer.socket.send_text(json.dumps(state, default=str))
+        frame, viewer.frame = viewer.frame, None
+        if frame is not None and not viewer.closing:
+            await viewer.socket.send_bytes(frame)
+        if viewer.closing:
+            await viewer.socket.close(code=PAGE_CLOSED_CODE, reason="page_closed")
+            return
 
 
 async def _receive(svc: Any, record: Any, hub: _Hub, viewer: _Viewer) -> None:
@@ -393,25 +431,23 @@ async def _receive(svc: Any, record: Any, hub: _Hub, viewer: _Viewer) -> None:
             if not isinstance(message, dict):
                 raise ValueError("a message is a JSON object")
         except ValueError as exc:
-            await viewer.socket.send_json(
-                {"type": "error", "reason": "live_message_invalid", "detail": str(exc)}
-            )
+            _put(viewer, {"type": "error", "reason": "live_message_invalid", "detail": str(exc)})
             continue
         if not viewer.controls and message.get("type") != "theme":
-            await viewer.socket.send_json({"type": "ignored", "reason": "view_only"})
+            _put(viewer, {"type": "ignored", "reason": "view_only"})
             continue
         try:
             await asyncio.wrap_future(svc.submit(_play(svc, record, hub, message)))
         except Exception as exc:  # noqa: BLE001 - forwards: to the viewer as live_input_failed
-            await viewer.socket.send_json(
-                {"type": "error", "reason": "live_input_failed", "detail": str(exc)[:300]}
-            )
+            _put(viewer, {"type": "error", "reason": "live_input_failed", "detail": str(exc)[:300]})
 
 
 def _on_page_change(kind: str, record: Any) -> None:
     from clio_agent.gact.browser.service import service  # noqa: PLC0415
 
     _broadcast_state(service(), record)
+    if getattr(record, "closed", False):
+        _close_viewers(record.id)  # their last state says closed; nothing more will come
 
 
 def _open_for_person(svc: Any, session_id: str, url: str) -> Any:
