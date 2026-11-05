@@ -50,6 +50,7 @@ from typing import TYPE_CHECKING, Any, Optional
 
 from clio_agent.arc.batch_put import PutRecord
 from clio_agent.errors import ClioError
+from clio_agent.gact.artifacts.index_puts import INDEX_PUT_SINK, IndexPut
 from clio_agent.gact.artifacts.records import ArtifactRecord, ArtifactVersion
 from clio_agent.gact.artifacts.registry_backend import AliasKey, BoundedSet, PendingWrite
 
@@ -168,9 +169,12 @@ class StoreBackend:
 
     def _write(self, key: str, value: Any) -> None:
         self._remember(key, value)
-        put = functools.partial(self._put, key, encode(_persistable(value)))
+        put = IndexPut(self, key, encode(_persistable(value)))
+        sink = INDEX_PUT_SINK.get()
         if self._behind is not None:
             self._behind(put)  # in order on the caller's writer; the cache answers reads
+        elif sink is not None:
+            sink.append(put)  # sent with the writer turn's other confirms (index_puts)
         else:
             put()
 
@@ -179,6 +183,13 @@ class StoreBackend:
             self._store.put(ARTIFACT_INDEX_KIND, key, raw)
         except STORE_ERRORS as exc:
             self._degrade("artifact_index_write_failed", key, exc)
+            self._on_write_failure()
+
+    def _put_many(self, items: list[tuple[str, bytes]]) -> None:
+        try:
+            self._store.put_many(ARTIFACT_INDEX_KIND, [PutRecord(k, raw) for k, raw in items])
+        except STORE_ERRORS as exc:
+            self._degrade("artifact_index_write_failed", ",".join(k for k, _ in items), exc)
             self._on_write_failure()
 
     @contextmanager
