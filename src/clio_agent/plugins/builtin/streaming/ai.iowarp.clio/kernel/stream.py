@@ -8,8 +8,11 @@
 
 ``open`` is one ``open_stream`` call (asked about like any call); each ``write`` then goes
 straight to the stream, with no tool call of its own. A view bound to ``s.view_uri``
-shows the latest rows while someone looks at it.
+shows the latest rows while someone looks at it. A write is sent when made; awaiting it
+waits for it, and a forgotten ``await`` still sends.
 """
+
+import asyncio
 
 
 class Stream:
@@ -25,21 +28,27 @@ class Stream:
     def __repr__(self):
         return f"<stream {self.name} -> {self.view_uri}>"
 
-    async def write(self, row=None, **fields):
+    def write(self, row=None, **fields):
         """Add one row (a dict, or keyword fields); the oldest leaves past the window."""
         data = dict(row or {})
         data.update(fields)
-        return await tools.call("__stream_write__", stream_id=self._id, key=self._key, rows=[data])
-
-    async def write_many(self, rows):
-        """Add several rows at once, the newest last."""
-        return await tools.call(
-            "__stream_write__", stream_id=self._id, key=self._key, rows=[dict(r) for r in rows]
+        return asyncio.ensure_future(
+            tools.call("__stream_write__", stream_id=self._id, key=self._key, rows=[data])
         )
 
-    async def stop(self):
+    def write_many(self, rows):
+        """Add several rows at once, the newest last."""
+        return asyncio.ensure_future(
+            tools.call(
+                "__stream_write__", stream_id=self._id, key=self._key, rows=[dict(r) for r in rows]
+            )
+        )
+
+    def stop(self):
         """Stop writing: the last rows stay shown, marked stopped."""
-        return await tools.call("__stream_stop__", stream_id=self._id, key=self._key)
+        return asyncio.ensure_future(
+            tools.call("__stream_stop__", stream_id=self._id, key=self._key)
+        )
 
 
 class _Streams:

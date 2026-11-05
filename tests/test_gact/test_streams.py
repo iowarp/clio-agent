@@ -208,9 +208,12 @@ def test_a_script_writes_through_the_binding_with_one_tool_call(
     )
     outcome = tool_module.run_script(
         agent,
+        "import asyncio\n"
         "s = await stream.open('kiln', window=5)\n"
-        "for n in range(20):\n"
+        "for n in range(19):\n"
         "    await s.write(n=n, temp=900 + n)\n"
+        "s.write(n=19, temp=919)\n"  # a forgotten await still sends
+        "await asyncio.sleep(0.2)\n"
         "print(s.view_uri)",
         session_id="streams",
         scope="main",

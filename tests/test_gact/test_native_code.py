@@ -227,8 +227,9 @@ def test_notifies_inside_the_window_arrive_together_and_none_is_lost(
         reporting, "_send", lambda _app, owner, entries: sent.append((owner, entries))
     )
     code = (
-        "for word in ('one', 'two', 'three'):\n"
+        "for word in ('one', 'two'):\n"
         "    await task.notify(word, data={'word': word})\n"
+        "task.notify('three', data={'word': 'three'})\n"  # a forgotten await still sends
         "import asyncio\nawait asyncio.sleep(3)"
     )
     handle = str(_launch(app, sid, root, code, label="watcher")["handle"])
