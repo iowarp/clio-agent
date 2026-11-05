@@ -64,7 +64,7 @@ The model is 80% of a short turn. On P1, 14.7 s of 18.4 s is model time (TTFT 11
   - a psutil sample of the daemon before each call (0.29 ms);
   - a hand-off to a stall-watch thread;
   - a first sleep of 1 ms before checking completion.
-- **One daemon I/O worker.** The generated `cte.yaml` has `runtime: num_threads: 4`, a literal in `arc/clio_core_config.py:145`. That gives one I/O worker, and every put of 4 KB or more (all of CLIO's, because of the size-class floor) queues on it, from every server on the machine (`work_orchestrator.cc:85-90`, `default_sched.cc:63-130` in clio-core).
+- **One daemon I/O worker.** The generated `cte.yaml` has `runtime: num_threads: 4`, a literal in `arc/clio_core_config.py:145` (now `arc.core_threads`, default 8: see "Final state"). That gives one I/O worker, and every put of 4 KB or more (all of CLIO's, because of the size-class floor) queues on it, from every server on the machine (`work_orchestrator.cc:85-90`, `default_sched.cc:63-130` in clio-core).
 - **Unused clio-core features** (iowarp-core 2.3.2; the cloned source matches the installed binding):
   - async gets (`AsyncGetBlob`, `AsyncGetBlobSize`, `AsyncGetContainedBlobs`);
   - batched puts (`AsyncPutBlobDefer`: one RPC per 64 puts or 128 KiB);
@@ -291,7 +291,7 @@ The burst bench gained `--sessions K` (K sessions sharing the one history writer
 | 4 | 446 ms | 172 | 0.38 | 20 | 28 s |
 | 8 | 750 ms | 202 | 0.50 | 13 | 16 s |
 
-The earlier conclusion (W4 below: "GIL-bound, parallel writers would add contention, not throughput") came from one session and is wrong for parallel load. Latency grows about 30 times from one session to eight while the process uses under half a core.
+The earlier conclusion (W4 below: "GIL-bound, parallel writers would add contention, not throughput") came from one session and is wrong for parallel load. Latency grows about 30 times from one session to eight while the process uses under half a core. (Superseded by later measurements on the branch head: see "Final state".)
 
 With one session, the writer was busy 45 s:
 - 28 s inside 33 clio-core puts; one grouped put of 3,220 blobs (13 MB) took 8.4 s;
@@ -299,7 +299,7 @@ With one session, the writer was busy 45 s:
 
 A direct probe puts clio-core's rate for many small concurrent puts at 571 blobs/s (2.3 MB/s) for 4 KB blobs. Issuing each `AsyncPutBlob` costs about 1 ms of synchronous binding work (`clio-core-requests.md`, issue 2). CLIO writes about 2 blobs and 12 KB of records per read-only tool call.
 
-What follows, in order:
+What follows, in order (where each ended is in "Final state"):
 1. CLIO writes far fewer blobs per tool call (a call's records packed into one).
 2. clio-core gets a batched multi-put and a cheaper issue (issue 2).
 3. Per-session ordering (W4), so one session's backlog does not delay another's.
@@ -312,12 +312,23 @@ Not done, with the reason measured:
 
 | Item | What it would remove | What the measurements say | When it pays |
 | --- | --- | --- | --- |
-| Per-session ordering: keyed CoreIO, per-tree locks, `arc.core_io_workers` (W4) | One history writer shared by every session | The server process is GIL-bound at one core in a P7 burst (about 30 ms of Python per call, about 30 calls/s); the single writer sustains 250-330 calls/s in the burst bench. Parallel writers would add contention for the interpreter, not throughput. | Free-threaded clio-core wheels (`cp314t`), or many concurrent sessions waiting on clio-core I/O rather than Python |
+| Per-session ordering: keyed CoreIO, per-tree locks, `arc.core_io_workers` (W4; still not built, "Final state") | One history writer shared by every session | The server process is GIL-bound at one core in a P7 burst (about 30 ms of Python per call, about 30 calls/s); the single writer sustains 250-330 calls/s in the burst bench. Parallel writers would add contention for the interpreter, not throughput. | Free-threaded clio-core wheels (`cp314t`), or many concurrent sessions waiting on clio-core I/O rather than Python |
 | Grouped admission for calls that can write (rest of W5) | About 10 sequential round trips (about 13 ms) per write call | H4 and H5 make 6 to 15 tool calls per run against 5-35 s model steps: under 0.1% of a run | Write-heavy bursts (scripts making many write calls) |
-| One put per lane per step, `react.step.completed` without observations (rest of W7) | About 2N+11 round trips per step | Step overhead was 44-181 ms against multi-second model steps in the final evaluation; the step event also feeds the live UI, whose readers would need the content lane | A loop with sub-second model steps (local models) |
+| One put per lane per step, `react.step.completed` without observations (rest of W7; the first half done since, "Final state") | About 2N+11 round trips per step | Step overhead was 44-181 ms against multi-second model steps in the final evaluation; the step event also feeds the live UI, whose readers would need the content lane | A loop with sub-second model steps (local models) |
 | Agent module build cache; MCP start for spawned children (W8) | 0.35 s per turn (median) building the module | A long run is one turn; children run in their parent's workspace, whose servers are up | Many short turns, or children in other workspaces |
 
 The levers that do pay next are in the section above: a direct client for an external stdio server instead of the in-process gateway proxy hop, and the observer's remaining per-call Python work.
+
+## Final state (2026-11-05)
+
+This section supersedes the conclusions above where they differ.
+
+- **Per-session ordering (W4): not built.** The 2026-11-03 table (latency 30 times higher with eight sessions while the process used under half a core) is superseded by two later measurements on the branch head. On 2026-11-04 (tool-calling ledger, "Overheads"), one session gave 236-243 calls/s and four sessions 223-227, served evenly, with the process interpreter-bound in both (CPU over wall 1.06-1.10). On 2026-11-05 (ledger finding 34), one session gave 270 calls/s and eight gave 292, at 1.0 CPU per wall second. The limit is the interpreter, not the writer. `arc.core_io_workers` was not added, and `CoreIO` keeps one worker.
+- **Fewer blobs per call.** The content lane (`d67efd38`), which packed small task content into a lane, was measured and dropped (ledger CT38): it halves records per call but does the work during a burst, about 11% fewer replies per second, and every call is durable at about the same time. Batched artifact-index puts (`47fb4f88`) and the native wait (`138d36c8`) cut a script's nested call from 8.63 to 6.93 store round trips (finding 34).
+- **W7.** One put per lane per step is done (`5d6a4179`): a step's segments are one op and one put per lane chunk. `react.step.completed` still carries its observations; that half is not done.
+- **Daemon threads ((a)13).** The `num_threads: 4` literal is now `arc.core_threads` (default 8), which the `cte.yaml` template reads (`d7982160`). Its sibling `arc.core_io_workers` is not added (W4 above).
+- **(a)7 pipelined reads: not done.** Reads still issue one `AsyncGetBlob` at a time (only the content-record size probe is pipelined, one `sizes` call per group), and `Tag.GetContainedBlobs` stays a blocking call under the stall watch. Not taken up because the measurements above put the remaining time in writes and the interpreter, not reads. It matters when a long transcript is loaded cold (up to about 3,000 sequential gets, 4-5 s); clio-core's multi-get (`clio-core-requests.md`, issue 2) would replace it.
+- **(a)12 base64.** Removed for segment-list chunks only (`arc/chunk_records.py`). Whole records (`put`/`get`) are still framed base64 (`arc/blob_frame.py`).
 
 ## Measurement notes
 

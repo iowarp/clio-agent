@@ -1,6 +1,6 @@
 # clio-core requests from CLIO (to file upstream)
 
-Status (2026-11-03): **not filed yet.** The texts are ready, but this session's GitHub integration cannot write to `iowarp/clio-core` (`403 Resource not accessible by integration`). The owner will grant access later. When it is granted:
+Status (2026-11-05): **not filed yet.** The texts are ready, but this session's GitHub integration cannot write to `iowarp/clio-core` (`403 Resource not accessible by integration`). The owner will grant access later. When it is granted:
 - file the parent issue first, in `iowarp/clio-core`;
 - file each of the others as its sub-issue;
 - record the issue numbers in the table below.
@@ -16,16 +16,17 @@ Nothing goes in `iowarp/clio-agent`. The clio-core team decides how to solve eac
 | 4 | The idle daemon uses most of a core | — | not filed |
 | 5 | Build the macOS wheels for macOS 14 again | — | not filed |
 | 6 | Conditional puts in a batch, and a conditional put that replaces | — | not filed |
+| 7 | Keep a blob in memory by choice, for streams | — | not filed |
 
-The numbers match the sections below. The parent issue lists them by priority: 3, 2, 1, 4, 6, 5.
+The numbers match the sections below. The parent issue lists them by priority: 3, 2, 1, 4, 6, 5, 7.
 
-Checked against clio-core `v2.4.0` (`3ae9fd9a`, released 2026-11-02). Issues 1 to 5 are not in that release; issue 6 asks to extend what it added. CLIO moved to 2.4.0 (`ae67aba4`) after a neutral benchmark.
+Checked against clio-core `v2.4.0` (`3ae9fd9a`, released 2026-11-02). Issues 1 to 5 and 7 are not in that release; issue 6 asks to extend what it added. CLIO moved to 2.4.0 (`ae67aba4`) after a neutral benchmark.
 
 ---
 
 ## Parent issue — title: "CLIO agent parent request: clio-core changes for the next release"
 
-CLIO's evaluation shows that clio-core round trips, not the model or the MCP servers, limit tool-heavy work. In P7, 2,001 read-only MCP calls make about 22,000 puts, which is about 160 s of tool time, against a server that answers in milliseconds. CLIO has already done what it can on its side: read-only calls no longer wait for their records, and queued records are group-committed (on a P7-shaped burst, about 11 calls/s became 250–330 calls/s; CLIO's serialized time per call fell from about 90 ms to 6–7 ms). These upstream items remove the rest and unblock the one-blob-per-event store design:
+CLIO's evaluation shows that clio-core round trips, not the model or the MCP servers, limit tool-heavy work. In P7, 2,001 read-only MCP calls against a server that answers in milliseconds made 21,665 puts and 156 s of tool time before CLIO's own work; after it (2026-11-03) they make 7,214 puts and 71 s of tool time, and a script's tool call still costs 6.93 store round trips (2026-11-05). CLIO has already done what it can on its side: read-only calls no longer wait for their records, and queued records are group-committed (on a P7-shaped burst, about 11 calls/s became 250–330 calls/s; CLIO's serialized time per call fell from about 90 ms to 6–7 ms). These upstream items remove the rest and unblock the one-blob-per-event store design:
 
 Sub-issues, in priority order:
 1. Deferred puts: durability contract and a per-put or per-batch await (or multi-put with per-put status)
@@ -34,6 +35,7 @@ Sub-issues, in priority order:
 4. Idle daemon CPU (busy-poll)
 5. macOS 14 wheels (2.4.0 publishes macOS 15 wheels only, so CLIO Desktop's floor moved to macOS 15 with it)
 6. Conditional puts in a batch, and a conditional put that replaces (so the 2.4.0 conditional writes reach CLIO's grouped writes and shared index rows)
+7. Keep a blob in memory by choice, for streams (last: CLIO holds stream content in its own process until then)
 
 Already in 2.4.0 and used by CLIO: `AsyncPutBlobIfAbsent` creates each content-addressed task record in one round trip instead of a read and a put, and decides which of two writers creates it. `AsyncPutBlobIfVersion` and `AsyncGetBlobVersioned` are not used yet; issue 6 says what CLIO needs to use them.
 
@@ -72,7 +74,7 @@ All of these exist natively in `context-transfer-engine/core/include/clio_cte/co
 | `kCtePutReplace` flag on put | `core_tasks.h:2247` | Rewrite a chunk whole when it shrinks. Today CLIO writes the body plus an end marker because a put cannot truncate. |
 | `TruncateBlobTask` | `core_tasks.h:4007` | Same, as an explicit operation. |
 | `PodMultiGetBlobTask` | `core_tasks.h:3869` | Read a transcript's chunks in one round trip. Today it is up to 3,000 sequential gets, about 4–5 s for a long session. |
-| `MultiPutBlobTask` (issue #862), with a per-put status | `core_tasks.h:3226` | One round trip for the ~11 small records CLIO writes per tool call (see issue 3). |
+| `MultiPutBlobTask` (issue #862), with a per-put status | `core_tasks.h:3226` | One round trip for the small records CLIO writes per tool call (6.93 store round trips per call from a script, see issue 3). |
 | `DelTagTask` | `core_tasks.h:4069` | Python cannot delete a tag, so benchmark and test tags are left behind in the daemon. |
 
 **Measured cost of the current path (2026-11-03, iowarp-core 2.4.0, local daemon, `arc.core_threads` 8).** CLIO writes many small blobs, one `AsyncPutBlob` each. All are issued before any is awaited:
@@ -83,7 +85,7 @@ All of these exist natively in `context-transfer-engine/core/include/clio_cte/co
 | 3,000 × 256 B | 2,470 ms | 583 ms | 983 blobs/s |
 | 300 × 40 KB | 98 ms | 1,961 ms | 146 blobs/s, 6.0 MB/s |
 
-Issuing an `AsyncPutBlob` costs about 1 ms of synchronous binding work per blob. In CLIO's burst bench (2,000 read-only tool calls), one grouped write of 3,220 blobs (13 MB) took 8.4 s. The history writer spent 28 of its 45 s inside clio-core puts, and per-call latency rose from 26 ms (p90, one session) to 750 ms (eight sessions) while the process used under half a core. A multi-put with one submission for N blobs (`MultiPutBlobTask`, below), and a cheaper single issue, would remove most of that.
+Issuing an `AsyncPutBlob` costs about 1 ms of synchronous binding work per blob. In CLIO's burst bench (2,000 read-only tool calls), one grouped write of 3,220 blobs (13 MB) took 8.4 s. The history writer spent 28 of its 45 s inside clio-core puts, and per-call latency rose from 26 ms (p90, one session) to 750 ms (eight sessions) while the process used under half a core. Later runs on CLIO's branch head (2026-11-04 and 2026-11-05) found the same burst bound by CLIO's own interpreter instead (CPU over wall about 1.0, sessions served evenly), so the per-put issue cost is one part of the time, not all of it. A multi-put with one submission for N blobs (`MultiPutBlobTask`, below), and a cheaper single issue, would remove most of that.
 
 
 **Acceptance.** Async Python methods for each, matching the existing `AsyncPutBlob`/`AsyncGetBlob` style: release the GIL while waiting, return a `Future`, and give a per-item return code for the multi operations.
@@ -94,7 +96,7 @@ Issuing an `AsyncPutBlob` costs about 1 ms of synchronous binding work per blob.
 
 **Context.** The Python client already exposes `AsyncPutBlobDefer`, `AwaitPutsUntilSpace` and `DeferErrorCount`. The client batches deferred puts into `MultiPutBlobTask` (`core_client.h:1047`, `:1649`).
 
-**Why it matters.** CLIO writes about 11 small records per MCP tool call, each a separate `AsyncPutBlob`. On one session's ordered writer this costs about 60 ms per call. Measured: P7 in CLIO's evaluation makes 2,001 calls, sends 22,113 puts, and takes about 160 s of tool time for a server that answers in milliseconds.
+**Why it matters.** CLIO's records for a tool call are now group-committed (records queued while the writer is busy go in one writer turn), but each record is still a separate `AsyncPutBlob`: a script's tool call costs 6.93 store round trips, median 4.55 ms each (2026-11-05, 1,000 sequential calls). Measured: P7 in CLIO's evaluation makes 2,001 calls; it sent about 22,000 puts and took about 160 s of tool time before group commit, and 7,214 puts and 71 s after it (2026-11-03), for a server that answers in milliseconds.
 
 CLIO's rule is that a record is only claimed durable after clio-core confirms it. The deferred pipeline could remove most of those round trips, but its completion contract is not documented.
 
@@ -135,21 +137,19 @@ This matters for CLIO because it runs a local daemon per user on desktops and la
 
 **Where it cannot be used.** CLIO writes most records in groups: the records of several tool calls are staged and then written with one multi-put per tag. A conditional put exists only for one blob at a time, so using it there would turn one round trip per group into one per record. CLIO keeps the group path, which reads the sizes of the new records first (one `sizes` probe per group). Two processes can then both find a record absent and both write it. For content-addressed records that is harmless (same content), but it is not exact.
 
-**Where `AsyncPutBlobIfVersion` does not fit yet.** The task index has rows that several writers update by reading, changing and rewriting them, for example a task tree's member list (`clio_agent/gact/task_index_writes.py`, `_merge`). Two things stop a compare-and-swap there:
-- these rows are staged and written with the rest of a group (the same multi-put as above);
-- CLIO's segment records are raw, append-only chunks with no length frame, so a shorter rewrite needs truncation. `AsyncPutBlobIfVersion` writes at an offset and never truncates. (CLIO's index rows carry their own length frame, so for them truncation is not the blocker.)
+**Where `AsyncPutBlobIfVersion` does not fit yet.** The task index has rows that several writers update by reading, changing and rewriting them, for example a task tree's member list (`clio_agent/gact/task_index_writes.py`, `_merge`). What stops a compare-and-swap there is that the conditional put is single-blob: these rows are staged and written with the rest of a group (the same multi-put as above), and a conditional put per row would turn one round trip per group into one per row. Truncation is not a blocker: CLIO's segment chunks are length- and CRC-framed records with an end marker (`clio_agent/arc/chunk_records.py`), so a reader stops before a stale tail, and index rows carry their own length frame.
 
 **Ask.**
 1. A multi-put where each record carries a precondition (absent, or an expected version) and the result carries a status and new version per record, like `MultiPutBlobTask` with per-put status (issue 2).
-2. A replace variant of `AsyncPutBlobIfVersion` that sets the blob to exactly the given bytes, or a version precondition on put-replace (`kCtePutReplace`, issue 2).
+2. Optional: a replace variant of `AsyncPutBlobIfVersion` that sets the blob to exactly the given bytes, or a version precondition on put-replace (`kCtePutReplace`, issue 2). CLIO's framing reads a shorter rewrite correctly without it; it would drop the stale tail.
 
-**Acceptance.** Python can create or compare-and-swap N records in one round trip with a status per record, and a compare-and-swap can leave a blob shorter than before.
+**Acceptance.** Python can create or compare-and-swap N records in one round trip with a status per record (and, for the optional ask, a compare-and-swap can leave a blob shorter than before).
 
 ---
 
 ## clio-core issue 7: Keep a blob in memory by choice, for streams
 
-**What CLIO needs.** A stream is an artifact whose content is rewritten often (a device's status, a feed of recent readings) and read mostly for its latest value. Its content should live in memory and reach disk only by a flush policy: every update, or only the latest content and a bounded window. CLIO's clio-core configuration (`clio_core_config.py:142-171`) has data on file tiers only; the RAM pool is the working arena. A put cannot choose a tier (`PutBlob`/`AsyncPutBlob` take no score), `Tag.ReorganizeBlob` moves a blob after the fact, and `clio_cte_stream` (page blobs, deferred appends) has no Python binding.
+**What CLIO needs.** A stream is an artifact whose content is rewritten often (a device's status, a feed of recent readings) and read mostly for its latest value. Its content should live in memory and reach disk only by a flush policy: every update, or only the latest content and a bounded window. CLIO's clio-core configuration (`clio_core_config.py:144-173`) has data on file tiers only; the RAM pool is the working arena. A put cannot choose a tier (`PutBlob`/`AsyncPutBlob` take no score), `Tag.ReorganizeBlob` moves a blob after the fact, and `clio_cte_stream` (page blobs, deferred appends) has no Python binding.
 
 **Until then.** CLIO keeps a stream's latest content and window in its server process and writes them to clio-core on the stream's flush policy (taskable `run_code` plan, Part 4, decision CT25).
 
