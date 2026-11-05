@@ -1,0 +1,164 @@
+---
+title: "Scripts and background work"
+description: How the agent writes Python scripts that call its tools, how you approve them, and how a script keeps running in the background.
+---
+
+import PreviewGuide from '../../../components/docs/PreviewGuide.astro';
+import { Aside, CardGrid, LinkCard } from '@astrojs/starlight/components';
+
+<PreviewGuide features="Scripts, background scripts and the controls on this page" />
+
+Some work needs many tool calls whose results the agent only filters, counts or joins:
+paging through a long listing, reading every file in a folder, querying several
+services. Instead of making those calls one at a time, the agent can write one short
+Python script that makes them and prints only what matters. The tool it uses is
+`run_code`, and every agent has it.
+
+## What a script is
+
+A script is ordinary Python that runs on the computer the CLIO backend runs on. It can
+call the agent's own tools, and the results stay inside the script. The agent reads only
+what the script prints, an error if there was one, the value of its last line, and how
+many tool calls it made.
+
+- **It uses the same tools.** A script calls the tools the agent already has, with the
+  same permissions. It does not get new access.
+- **It can read your workspace.** A script can open and parse many files itself, which
+  is faster than running a separate command for each file.
+- **Its variables last.** Variables from one script are still there for the next script
+  in the conversation. After 30 minutes without a script they are cleared
+  (`code.idle_minutes`).
+- **Nothing limits its time.** A script runs until it finishes or is stopped. **Stop**
+  stops a script that is part of the current response.
+
+You do not need to ask for a script. A plain request such as this one is enough, and the
+agent decides whether a script helps:
+
+```text
+Which of the CSV files in this folder have a "station" column, and how many rows
+does each of them have?
+```
+
+For one call, or a short chain where each call depends on the last answer, the agent
+calls the tools directly instead.
+
+## Approve a script
+
+Running a script is one action that needs your approval, like running a command. The
+request shows the script before it runs.
+
+The calls a script makes are checked one by one, like any other call. Reads run without
+asking. A rule that denies a tool still denies it, and Plan mode still refuses writes.
+For a call that would otherwise ask you, the conversation's confirmation policy decides:
+
+| Confirmation policy | A call inside the script that would ask |
+| --- | --- |
+| **Ask first** | Asks you, showing the script it comes from. One question per script at a time. |
+| **Workspace edits**, **AI review**, **SPOTTER review** | Runs: your approval of the script covers it. |
+| **Bypass checks** | Runs. |
+
+When a script asks under **Ask first**, the request has one more answer: **Allow for the
+rest of this script**. It lets the rest of that script's calls run without asking again.
+The next script asks again.
+
+A script keeps the confirmation policy it was approved under. If you change the policy
+while a background script runs, that script still follows the policy you approved it
+with. See [Choose what CLIO may do](/docs/permissions/#scripts).
+
+## Scripts in Plan mode
+
+In Plan mode a script can only read. It runs only on a computer where CLIO's
+[OS sandbox](/docs/permissions/#the-os-sandbox) enforces the write boundary, and it may
+write only to the conversation's scratch folder and temporary files. Where the sandbox
+cannot enforce that, the agent is told that scripts are not available in Plan mode and
+uses its read tools instead.
+
+## Background scripts
+
+Some work outlives one response: watching a job, a device or a running calculation.
+For this the agent starts the script **in the background**. It gets a task handle at
+once and the response can end while the script keeps running in its own process.
+
+```text
+Watch the simulation in runs/today and tell me when it finishes or if it fails.
+```
+
+### Find a running script
+
+A background script is a task of the kind **Script**. It appears under **Background
+tasks**, in the **Work** section of the side panel and in **Observability → Evidence**.
+Its row shows how long it has run, how many tool calls it has made, its memory use and
+the last progress it reported, with a control to cancel it. Its printed output is saved
+to a log file in the conversation's scratch folder as it runs.
+
+When the agent starts one, its row in the conversation offers **Show the task in Work**,
+which opens the Background tasks list at that task's row.
+
+### What keeps it running
+
+- **The response ends.** A background script keeps running after the response that
+  started it, and after you press **Stop** on a later response.
+- **A subagent ends.** A background script started by a subagent keeps running after the
+  subagent finishes. Its messages and its result go to that subagent, which can wake to
+  handle them.
+- **It needs your answer.** A question from a background script is asked in the
+  conversation that owns it and names the task. It waits until you answer, however long
+  that takes. Only cancelling the task ends the wait.
+- **Cancel task** on its row stops it. Nothing else does, apart from a restart.
+
+### Messages from a script
+
+A background script can send a message to its conversation when something is worth
+attention, such as a job finishing or a value crossing a limit. The message wakes the
+agent if it is idle. In the conversation it reads **Message from** and the script's
+name, and **Show the script in Work** opens the script's row under Background tasks.
+
+To keep a busy script from waking the agent constantly, a conversation is woken at most
+once every 30 seconds (`code.notify_min_interval_s`). Messages sent in between arrive
+together at the end of that interval, grouped by script. None are dropped.
+
+When the script ends, its result is delivered to the agent like any other task result.
+
+### When CLIO restarts
+
+Background scripts do not survive a restart of the CLIO backend.
+
+- **A clean stop**, such as `clio stop` or a restart from the app, settles each running
+  script as cancelled. Its output so far is kept.
+- **A crash** leaves the script interrupted, with its outcome uncertain. Its output so
+  far is kept.
+
+In both cases CLIO does not start the script again. The agent is told, and can start a
+new one if the work still needs it.
+
+<Aside type="note">
+A background script runs on the computer the CLIO backend runs on, under the same
+sandbox and permissions as the agent's other tools. Closing the app does not stop it;
+stopping the backend does.
+</Aside>
+
+## Tools loaded when needed
+
+An agent can have many tools. To keep its instructions short, some tools are listed in
+its prompt by name only, under **Tools you load when needed**, with a line about each
+group. When the agent needs one, it loads its full description with `search_tools` and
+then uses it. A script can call such a tool without loading it.
+
+Which tools wait to be loaded:
+
+- tools a plugin marks to be loaded on demand;
+- the tools of a connected tool server whose descriptions would take more than a small
+  share of the model's context (`tools.defer_share`, 5% of the window, or
+  `tools.defer_tokens`, 4,000 tokens, whichever is smaller);
+- CLIO's own tools that no plugin says to keep listed (`tools.defer_builtins`).
+
+The core tools are always listed, among them `run_code`, `search_tools`, `ask_user`,
+the file and shell tools, and the planning tools (`tools.never_defer`). Set
+`tools.deferral: false` in [Configuration](/docs/configuration/) to list every tool in
+full.
+
+<CardGrid>
+  <LinkCard title="Watch something live" href="/docs/live-sources/" description="A background script that writes to a stream, and a dashboard that updates by itself." />
+  <LinkCard title="Background work" href="/docs/tasks/" description="Task handles, waiting and cancelling across every kind of task." />
+  <LinkCard title="Choose what CLIO may do" href="/docs/permissions/" description="Rules, confirmation policies and default permissions." />
+</CardGrid>

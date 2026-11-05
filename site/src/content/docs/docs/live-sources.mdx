@@ -1,0 +1,107 @@
+---
+title: "Watch something live"
+description: Keep an eye on a job, an instrument or a device, with a dashboard that updates by itself while it is open.
+---
+
+import PreviewGuide from '../../../components/docs/PreviewGuide.astro';
+import { CardGrid, LinkCard } from '@astrojs/starlight/components';
+
+<PreviewGuide features="Streams and live dashboards" />
+
+Ask CLIO to watch something that keeps changing, and it can show you how it is doing
+in a chart or table that updates on its own. You do not have to send another message
+for the view to change.
+
+## An example: a 3D printer
+
+Say your printer reports its status at an address on your network. Ask in plain words:
+
+```text
+Keep an eye on my 3D printer and show me how it's doing. Its status is at
+http://printer.local/status.
+```
+
+What the agent typically does:
+
+1. Reads the status once to see which values answer "how is it doing", such as the
+   state, progress and nozzle temperature.
+2. Starts a [background script](/docs/scripts/#background-scripts) that reads the
+   status every few seconds and writes each reading to a **stream** named for it, for
+   example `printer`.
+3. Builds a dashboard bound to that stream: a table of the latest reading and a chart
+   of recent ones.
+4. Asks the script to send a message when the print finishes or fails.
+
+While the dashboard is open, it updates as readings arrive. Ask "How is it doing?" and
+the agent answers from the stream's latest rows instead of reading the printer again.
+When the print ends, the script reports it, the agent tells you, and the dashboard
+shows the last readings marked as stopped.
+
+To end it early, say "Stop watching the printer." The agent stops the stream and cancels
+the script. The readings so far are kept.
+
+The backend has to reach the device. A CLIO backend on a cluster or a remote server
+cannot reach devices on your home or lab network.
+
+## What a stream is
+
+A stream is a named table in your workspace whose newest rows are kept in the CLIO
+backend's memory. A script writes to it as often as the source changes, without a
+separate tool call for each write.
+
+- **Latest row or recent history.** A stream keeps either its newest row or a window
+  of its newest rows, chosen when it is opened.
+- **Saved as versions.** Its rows are saved as a version of the file `<name>.parquet` in
+  the workspace when it opens, every 30 seconds while it changes, when it stops, and
+  when CLIO stops cleanly. Earlier versions stay available like those of any file.
+- **It stops with its script.** When the script that writes it ends or is cancelled,
+  the stream stops. Its last rows stay readable.
+- **The agent reads it like a file.** It can read the latest rows on request, or open
+  the saved file.
+
+## What a live view shows
+
+A chart or table bound to a stream:
+
+- **updates by itself while it is on screen.** Updates are sent only while someone has
+  the view open. A closed view sends nothing.
+- **says when the stream stopped.** A stopped stream's view reads "Stopped at" and the
+  time, and shows its last rows.
+- **after a restart of CLIO,** shows the last saved version, and the stream reads as
+  stopped.
+
+## Follow a file as it changes
+
+Not everything needs a stream. A file that a script rewrites now and then, such as a
+log the instrument appends to, can be followed directly. Ask for a chart that "follows
+the file as it grows". The view follows the file's newest version, and each time the
+file is registered as a new version the view moves to it.
+
+A background script registers a changed file at most once every 5 seconds
+(`artifacts.version_interval_s`). Changes in between become one version with the
+file's contents at the end of the interval; nothing is lost. When the script stops
+cleanly, a waiting version is still recorded.
+
+Use a stream for values that change every second. Use a followed file when the file
+itself is what you want to keep.
+
+## Export a live view
+
+When you [export a conversation](/docs/exports/), a view bound to a stream keeps the
+rows and state it had at that moment. Opened offline:
+
+- a stream that had stopped reads "Stopped at" with the time, showing its last rows;
+- a stream still being written reads "Captured at" with the time "while live",
+  showing the rows it had then.
+
+An exported view does not update. The conversation's published dashboards appear in
+the export under **Saved results**, each at its newest version with the data it reads.
+A ZIP export also carries every saved version of the stream's file.
+
+A dashboard's own **HTML dashboard** download, from the viewer's download menu, is a
+separate export; see [Explore charts and dashboards](/docs/dashboards/#a-report-your-colleague-can-explore).
+
+<CardGrid>
+  <LinkCard title="Scripts and background work" href="/docs/scripts/" description="How background scripts run, ask, message you and stop." />
+  <LinkCard title="Explore charts and dashboards" href="/docs/dashboards/" description="Build, revise and export a dashboard." />
+</CardGrid>
