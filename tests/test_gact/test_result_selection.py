@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from pathlib import Path
 from typing import Any
 from uuid import uuid4
 
@@ -12,6 +13,7 @@ from clio_agent.arc.task_types import CoordinationGrant
 from clio_agent.gact.native_work import now
 from clio_agent.gact.result_selection import result_keys, select_fields, validate_selection
 from clio_agent.gact.task_access import TaskAccessDenied, TaskCaller
+from clio_agent.gact.task_result_content import result_cursor
 from tests.test_gact.test_flow_tool_evidence import _tool
 from tests.test_gact.test_permission_evidence import world as world
 
@@ -58,10 +60,16 @@ def test_rest_reads_only_metadata_then_preserves_selected_unicode_paging(
     assert page["result"] == {pointer: metadata} and page["next_cursor"] is None
     assert "irrelevant" not in json.dumps(page)
     assert app.state.task_history.read_content(task.result) == body
-    monkeypatch.setenv("CLIO_TOOL_RESULT_CHARS", "21")
+    monkeypatch.setenv("CLIO_AGENT_TASK_OUTPUT_DIGEST_CHARS", "21")
     page = client.get(path, params=[("select", pointer)]).json()
+    # Too big for the bound: the selection is saved to a file, not paged (#1844).
+    assert page["result_selection"] == [pointer] and page["next_cursor"] is None
+    saved = Path(page["result_file"]["path"])
+    assert json.loads(saved.read_text(encoding="utf-8")) == {pointer: metadata}
+    # A version-1 cursor from an earlier release still pages, and still pins its selection.
     reference, pieces = page["result_reference"], []
-    cursor = page["next_cursor"]
+    cursor = result_cursor(sid, task.handle, task.result, "task_result", 0, [pointer])
+    page = client.get(path, params={"cursor": cursor}).json()
     mismatch = client.get(path, params=[("cursor", cursor), ("select", "/answer")])
     assert mismatch.status_code == 404 and "different selection" in mismatch.text
     while True:

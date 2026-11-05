@@ -103,8 +103,10 @@ async def test_finished_critic_tool_handoff_uses_real_delegation_commit_and_exac
     with pytest.raises(ValueError, match="before delegated input commitment"):
         await asyncio.to_thread(operations.result, reader, fetch.handle)
     monkeypatch.setenv("CLIO_TOOL_RESULT_CHARS", "31")
+    monkeypatch.setenv("CLIO_AGENT_TASK_OUTPUT_DIGEST_CHARS", "31")
     cursor = await asyncio.to_thread(commit_delegation, owner, critic)
     monkeypatch.setenv("CLIO_TOOL_RESULT_CHARS", "12000")
+    monkeypatch.setenv("CLIO_AGENT_TASK_OUTPUT_DIGEST_CHARS", "12000")
     metadata = await asyncio.to_thread(
         operations.result,
         reader,

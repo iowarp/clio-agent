@@ -151,15 +151,16 @@ class SlowClioAgent(FakeClioAgent):
 class BlockingClioAgent(FakeClioAgent):
     """Hold one real background turn open at a deterministic checkpoint."""
 
-    def __init__(self) -> None:
+    def __init__(self, *, timeout_s: float = 5.0) -> None:
         super().__init__(answer="released")
         self.entered = threading.Event()
         self.release = threading.Event()
+        self.timeout_s = timeout_s
 
     def forward(self, question: str, session_id: str) -> Any:
         self.calls.append((question, session_id))
         self.entered.set()
-        if not self.release.wait(timeout=5.0):
+        if not self.release.wait(timeout=self.timeout_s):
             raise TimeoutError("test did not release blocked turn")
         return FakePrediction(answer=self.answer)
 

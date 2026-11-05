@@ -78,9 +78,13 @@ def _earthscope_marketplace(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, *se
 def _session_rows(client: TestClient, *, root_path: str) -> dict[str, object]:
     """Open an ``earthscope`` session and return the ``/v1/mcp/servers`` body."""
 
-    wid = client.post("/v1/workspaces", json={"name": "Workspace", "root_path": root_path}).json()[
-        "id"
-    ]
+    made = client.post("/v1/workspaces", json={"name": "Workspace", "root_path": root_path})
+    # One workspace per folder: a later app over the same store reuses the first one's.
+    wid = (
+        made.json()["error"]["details"]["workspace_id"]
+        if made.status_code == 409
+        else made.json()["id"]
+    )
     created = client.post(
         "/v1/sessions",
         json={"title": "Earth", "workspace_id": wid, "metadata": {"agent_ref": _AGENT_REF}},

@@ -301,7 +301,7 @@ class ClioAgent(dspy.Module):
         """
 
         plugin_servers = self._discover_plugin_servers(server_set)
-        specs = load_agent_mcp_servers(plugin_servers=plugin_servers)
+        specs = load_agent_mcp_servers(cwd=cwd, plugin_servers=plugin_servers)  # #1300
         # Product execution uses application-owned SDK clients and input binding.
         tool_gateway = build_gateway(specs, cwd=cwd)
         if not set_catalog:

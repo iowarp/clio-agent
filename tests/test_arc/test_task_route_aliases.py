@@ -30,6 +30,7 @@ async def test_rest_result_cursor_reconstructs_exact_unicode_output(
 ) -> None:
     app, owner, root = await create_environment(arc, tmp_path)
     monkeypatch.setenv("CLIO_TOOL_RESULT_CHARS", "64")
+    monkeypatch.setenv("CLIO_AGENT_TASK_OUTPUT_DIGEST_CHARS", "64")
     body = {"output": "é 中文 🚀 " * 80, "count": 80}
 
     def prepare() -> TaskSnapshot:

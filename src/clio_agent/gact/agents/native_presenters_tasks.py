@@ -7,6 +7,7 @@ from collections.abc import Mapping
 from typing import Any
 
 from clio_agent.gact.agents.native_presenters import _record
+from clio_agent.gact.task_result_spill import saved_result_block
 from clio_agent.gact.task_wait_presentation import wait_presentation
 
 
@@ -89,7 +90,10 @@ def _task_blocks(
     result = row.get("result")
     if result_body and result is None and isinstance(row.get("output"), str):
         result = row["output"]  # Shipped getter alias; no separate result lookup.
-    if result_body and result is not None:
+    saved = saved_result_block(row, index) if result_body else None
+    if saved is not None:
+        blocks.append(saved)  # #1844: too big to return whole, so it went to a file
+    elif result_body and result is not None:
         # The shared presentation projector owns paging and complete-text references.
         blocks.append(
             {
@@ -194,7 +198,7 @@ def _task_blocks(
                     "text": _detail("\n".join(errors)),
                 }
             )
-    if (row.get("result_reference") and result is None) or (
+    if (row.get("result_reference") and result is None and saved is None) or (
         not result_body and row.get("result") is not None
     ):
         blocks.append(
@@ -323,7 +327,9 @@ def present_task_family(
     error = payload.get("error")
     if declaration == "task_output":
         collected = sum(
-            task.get("result") is not None or isinstance(task.get("output"), str)
+            task.get("result") is not None
+            or isinstance(task.get("output"), str)
+            or isinstance(task.get("result_file"), Mapping)
             for task in selected
         )
         summary = f"{collected} {'result' if collected == 1 else 'results'} collected"

@@ -37,6 +37,7 @@ from clio_agent.gact.context_reference_file_io import (
 from clio_agent.gact.context_reference_file_io import (
     sha256_file as _sha256_file,
 )
+from clio_agent.gact.context_reference_hdf5 import LocatorError, locator_summary, split_locator
 from clio_agent.gact.types import Message, Part
 
 if TYPE_CHECKING:
@@ -74,12 +75,13 @@ def summary_excerpt_chars() -> int:
 
 
 def max_hashable_bytes() -> int:
-    """Byte ceiling on a workspace file admitted as a ``context_ref``.
+    """Largest workspace file whose ``context_ref`` revision is a sha256 digest.
 
-    Admission digests the WHOLE file to pin its revision, so an unbounded
-    reference to a multi-gigabyte artefact is a per-request read of that size.
-    A file above this ceiling is REFUSED with a typed reason naming the limit --
-    never silently admitted with a partial or skipped digest.
+    A digest reads every byte, so pinning a multi-gigabyte file that way is a
+    per-request read of that size. A larger file is pinned by its stat revision
+    (``stat:<mtime_ns>:<size>``, the revision the picker already offers) and the
+    delivery record says ``revision_basis: "stat"`` -- the pin is never presented
+    as a content digest it is not.
 
     Config: ``gact.context_references.max_hashable_bytes`` /
     ``CLIO_CONTEXT_REFERENCE_MAX_HASHABLE_BYTES``.
@@ -234,43 +236,21 @@ def _agent_run_summary(app: "FastAPI", task: Any) -> dict[str, Any]:
     }
 
 
-def _refuse_unhashable_file(ref_id: str, workspace_id: str, size: int) -> None:
-    """Refuse a workspace file too large to digest at admission.
-
-    Pinning a ``workspace_file`` revision means digesting the WHOLE file, so an
-    unbounded reference turns one POST into a read of that many bytes on a
-    request path. Past the ceiling the reference is REFUSED with the limit and
-    the actual size in the payload -- never admitted with a skipped or partial
-    digest, which would make the pinned revision a lie.
-    """
-
-    limit = max_hashable_bytes()
-    if size <= limit:
-        return
-    raise _failure(
-        status_code=413,
-        error="context_ref_too_large",
-        message="workspace file is larger than the referenceable size limit",
-        ref_kind="workspace_file",
-        ref_id=ref_id,
-        workspace_id=workspace_id,
-        recoverable=True,
-        size_bytes=size,
-        max_bytes=limit,
-        recovery_actions=["reference_a_smaller_file", "raise_max_hashable_bytes"],
-    )
-
-
 def _resolve_file(
     app: "FastAPI", workspace_id: str, part: Part, *, enforce_revision: bool
 ) -> tuple[Part, dict[str, Any]]:
-    _root, path = _contained_file(app, workspace_id, part.ref_id)
+    root = _workspace_root(app, workspace_id)
+    file_id, locator = split_locator(root, part.ref_id)
+    _root, path = _contained_file(app, workspace_id, file_id)
     requested = part.revision
     try:
         stat_revision = _stat_revision(path)
         size = path.stat().st_size
-        _refuse_unhashable_file(part.ref_id, workspace_id, size)
-        actual_sha = _sha256_file(path)
+        # Digesting pins content exactly but reads every byte; past the ceiling the
+        # revision is the file's stat (mtime + size), and the record says so.
+        by_stat = size > max_hashable_bytes()
+        actual_sha = "" if by_stat else _sha256_file(path)
+        summary = locator_summary(root, path, locator) if locator else None
     except OSError as exc:
         raise _failure(
             status_code=404,
@@ -283,7 +263,18 @@ def _resolve_file(
             operation="read",
             original_error=type(exc).__name__,
         ) from exc
-    actual_revision = f"sha256:{actual_sha}"
+    except LocatorError as exc:
+        raise _failure(
+            status_code=exc.status,
+            error="context_ref_invalid",
+            message=f"{locator} cannot be referenced in {path.name}: {exc}",
+            ref_kind="workspace_file",
+            ref_id=part.ref_id,
+            workspace_id=workspace_id,
+            recoverable=True,
+            reason=exc.code,
+        ) from exc
+    actual_revision = stat_revision if by_stat else f"sha256:{actual_sha}"
     if enforce_revision and requested and requested not in {stat_revision, actual_revision}:
         raise _failure(
             status_code=409,
@@ -297,6 +288,21 @@ def _resolve_file(
             actual_stat_revision=stat_revision,
         )
     media_type = _file_media_type(path)
+    navigation = {"workspace_id": workspace_id, "path": file_id}
+    delivery: dict[str, Any] = {
+        "mode": "inline_text"
+        if media_type.startswith("text/") and not locator
+        else "workspace_path",
+        "revision_basis": "stat" if by_stat else "sha256",
+        "size_bytes": size,
+        "workspace_path": file_id,
+        "agent_host_path": str(path),
+    }
+    if actual_sha:
+        delivery["sha256"] = actual_sha
+    if locator:
+        navigation["locator"] = delivery["locator"] = locator
+        delivery["object"] = summary
     metadata = {
         "kind": "workspace_file",
         "ref_id": part.ref_id,
@@ -304,19 +310,13 @@ def _resolve_file(
         "requested_revision": requested,
         "resolved_revision": actual_revision,
         "media_type": media_type,
-        "navigation": {"workspace_id": workspace_id, "path": part.ref_id},
-        "delivery": {
-            "mode": "inline_text" if media_type.startswith("text/") else "workspace_path",
-            "sha256": actual_sha,
-            "size_bytes": size,
-            "workspace_path": part.ref_id,
-            "agent_host_path": str(path),
-        },
-        "provenance": {"source": "workspace_file_repository", "path": part.ref_id},
+        "navigation": navigation,
+        "delivery": delivery,
+        "provenance": {"source": "workspace_file_repository", "path": file_id},
     }
     resolved = part.model_copy(
         update={
-            "label": path.name,
+            "label": f"{path.name} › {locator}" if locator else path.name,
             "revision": actual_revision,
             "metadata": {**dict(part.metadata), "context_reference": metadata},
         }

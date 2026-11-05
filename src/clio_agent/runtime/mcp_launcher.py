@@ -62,6 +62,8 @@ def discover_declared_mcp_servers(
         for record in PluginService().store.records()
         for name, spec in record.mcp_servers.items()
     }
+    # Doctor and health have no workspace: the user file and the launch folder are
+    # what they report on. Workspace gateways pass their own root (#1300).
     return load_mcp_servers(plugin_servers=server_declarations(rows), env=env)
 
 

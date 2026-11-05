@@ -31,6 +31,7 @@ from clio_agent.gact.artifacts.transform_edges import (
 from clio_agent.gact.artifacts.transform_types import EdgeEvidence
 from clio_agent.gact.artifacts.transforms import record_transform
 from clio_agent.gact.sessions import SessionStore
+from tests._workspace_rows import legacy_duplicate
 
 # --------------------------------------------------------------------------- #
 # Fakes (parity with the S5 harness).
@@ -171,8 +172,10 @@ def test_cross_job_edited_input_binds_as_revision_not_new_artifact(
     from clio_agent.gact import tool_observer
 
     app = clio_core_plane
-    ws1 = app.state.workspaces.create(name="Producer", root_path=str(tmp_path))
-    ws2 = app.state.workspaces.create(name="Consumer", root_path=str(tmp_path))
+    # Two workspaces sharing one folder exist only in stores older than #1771.
+    ws1 = app.state.workspaces.get("ws_default")
+    assert ws1 is not None and ws1.root_path == str(tmp_path)
+    ws2 = legacy_duplicate(app, ws1, "consumer")
     sess = {
         workspace.id: app.state.sessions.create(workspace_id=workspace.id, title=workspace.name)
         for workspace in (ws1, ws2)

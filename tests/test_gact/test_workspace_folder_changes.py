@@ -17,6 +17,7 @@ from clio_agent.gact.workspaces import WorkspaceStore
 from clio_agent.runtime import sandbox_roots
 from clio_agent.tools.execution import get_active_tool_workspace_root, tool_workspace_context
 from clio_agent.tools.file_policy import FileAccessPolicy, FilePolicyError
+from tests._workspace_rows import legacy_duplicate
 
 
 @pytest.fixture(autouse=True)
@@ -159,7 +160,7 @@ def test_repointing_does_not_revoke_another_workspace_grant(tmp_path: Path) -> N
     client = TestClient(app)
     root = tmp_path / "shared-primary"
     first = app.state.workspaces.create(name="first", root_path=str(root))
-    second = app.state.workspaces.create(name="second", root_path=str(root))
+    second = legacy_duplicate(app, first, "second")
     shared = tmp_path / "shared-extra"
     only_first = tmp_path / "first-extra"
     grants.apply_root_grant(app, first.id, str(shared))
@@ -246,7 +247,7 @@ def test_revocation_keeps_another_workspace_owner_at_the_same_primary(tmp_path: 
     app = build_app(sessions_path=tmp_path / "sessions.json")
     primary, additional = tmp_path / "primary", tmp_path / "additional"
     first = app.state.workspaces.create(name="first", root_path=str(primary))
-    second = app.state.workspaces.create(name="second", root_path=str(primary))
+    second = legacy_duplicate(app, first, "second")
     grants.apply_root_grant(app, first.id, str(additional))
     grants.apply_root_grant(app, second.id, str(additional))
     response = TestClient(app).delete(
@@ -272,3 +273,36 @@ def test_revocation_keeps_another_workspace_owner_at_the_same_primary(tmp_path: 
     )
     assert last_owner.status_code == 200 and last_owner.json()["grant"]["revoked"] is True
     assert sandbox_roots.granted_write_roots(str(primary)) == ()
+
+
+def test_renaming_a_legacy_duplicate_resends_its_root_without_conflict(tmp_path: Path) -> None:
+    """Only a real move is checked: a rename that echoes the current root is never a 409."""
+    app = build_app(sessions_path=tmp_path / "sessions.json")
+    root = tmp_path / "shared"
+    first = app.state.workspaces.create(name="first", root_path=str(root))
+    second = legacy_duplicate(app, first, "second")
+
+    response = TestClient(app).patch(
+        f"/v1/workspaces/{second.id}", json={"name": "renamed", "root_path": str(root)}
+    )
+
+    assert response.status_code == 200, response.text
+    assert app.state.workspaces.get(second.id).name == "renamed"
+
+
+def test_a_refused_folder_is_not_created(tmp_path: Path) -> None:
+    """The 409 comes before the folder is made, for both create and move."""
+    app = build_app(sessions_path=tmp_path / "sessions.json")
+    client = TestClient(app)
+    taken = tmp_path / "taken"
+    owner = client.post("/v1/workspaces", json={"name": "owner", "root_path": str(taken)})
+    mover = client.post("/v1/workspaces", json={"name": "mover", "root_path": str(tmp_path / "m")})
+    alias = f"{taken}/sub/.."  # the same folder, spelled so that mkdir would make sub/
+
+    created = client.post("/v1/workspaces", json={"name": "copy", "root_path": alias})
+    moved = client.patch(f"/v1/workspaces/{mover.json()['id']}", json={"root_path": alias})
+
+    for response in (created, moved):
+        assert response.status_code == 409
+        assert response.json()["error"]["details"]["workspace_id"] == owner.json()["id"]
+    assert not (taken / "sub").exists()

@@ -11,16 +11,68 @@ from pathlib import Path
 import pytest
 from fastapi.testclient import TestClient
 
-from clio_agent.gact.agents.resolution import SessionAgentUnavailable, agent_server_set
+from clio_agent.gact.agents.resolution import (
+    SessionAgentUnavailable,
+    agent_server_set,
+    plugin_service,
+)
 from clio_agent.gact.app import build_app
 from clio_agent.gact.mcp_user_configuration import remove_user_mcp_server, set_user_mcp_server
 from clio_agent.plugins.servers import server_set_declarations
+from clio_agent.plugins.store import UserAgent
 
 
 @pytest.fixture
 def client(tmp_path: Path) -> Iterator[TestClient]:
     with TestClient(build_app(sessions_path=tmp_path / "sessions.json")) as started:
         yield started
+
+
+def test_local_inventory_reads_agent_only_collection_without_installing(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    service = plugin_service(client.app)
+    saved = UserAgent("local-science", "Local science", "clio/standard", remove=("memory",))
+    path = service.store.save_user_agent(saved)
+
+    def refuse_install() -> None:
+        pytest.fail("Browsing local content must not install marketplace sources")
+
+    monkeypatch.setattr(service, "ready", refuse_install)
+    response = client.get("/v1/plugins/local")
+    assert response.status_code == 200, response.text
+    data = response.json()
+    assert Path(data["agents_directory"]) == path.parent.resolve()
+    assert (
+        Path(data["plugins_directory"])
+        == (service.store.root / "local" / "private-local" / "plugins").resolve()
+    )
+    assert data["agents"] == [
+        {"ref": "user/local-science", "path": str(path.resolve()), "definition": saved.to_dict()}
+    ]
+    assert not Path(data["plugins_directory"]).exists()
+
+
+def test_empty_local_inventory_does_not_create_content_folders(client: TestClient) -> None:
+    response = client.get("/v1/plugins/local")
+    assert response.status_code == 200, response.text
+    data = response.json()
+    assert data["agents"] == []
+    assert not Path(data["agents_directory"]).exists()
+    assert not Path(data["plugins_directory"]).exists()
+
+
+def test_local_inventory_does_not_report_traversal_paths(client: TestClient) -> None:
+    import json
+
+    root = plugin_service(client.app).store.root / "user-agents"
+    root.mkdir(parents=True, exist_ok=True)
+    (root / "bad.json").write_text(
+        json.dumps({"id": "../outside", "extends": "clio/standard"}), encoding="utf-8"
+    )
+    response = client.get("/v1/plugins/local")
+    assert response.status_code == 200, response.text
+    assert response.json()["agents"] == []
 
 
 def test_create_inspect_variation_and_compose_saved_connection(client: TestClient) -> None:
@@ -109,6 +161,27 @@ def test_private_marketplace_export_and_contextual_upload(client: TestClient) ->
         assert "ai.iowarp.clio/marketplace.json" in files
         assert archive.read("plugins/portable/references/details.md") == b"Reference contents"
         assert not any("oauth" in path or path.endswith("mcp.yaml") for path in files)
+
+
+def test_agent_only_collection_can_be_downloaded_for_github(client: TestClient) -> None:
+    saved = client.post(
+        "/v1/agents/user",
+        json={
+            "id": "dememory",
+            "name": "Dememory",
+            "extends": "clio/standard",
+            "remove": ["memory"],
+        },
+    )
+    assert saved.status_code == 201, saved.text
+    exported = client.get("/v1/plugins/local/export")
+    assert exported.status_code == 200, exported.text
+    with zipfile.ZipFile(io.BytesIO(exported.content)) as archive:
+        assert "ai.iowarp.clio/marketplace.json" in archive.namelist()
+        assert any(
+            name.startswith("agents/") and name.endswith(".py") for name in archive.namelist()
+        )
+        assert "user-agents/dememory.json" in archive.namelist()
 
 
 def test_upload_portable_skill_and_reject_duplicate_name(client: TestClient) -> None:

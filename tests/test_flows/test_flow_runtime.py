@@ -48,6 +48,10 @@ def test_gather_runs_children_as_tasks_and_checkpoints_them(flow_app: TestClient
         assert child.status == "completed"
     response = flow_app.get(f"/v1/sessions/{sid}/tasks/{owner.handle}/flow")
     assert response.status_code == 200
+    # The gather's limit travels with its calls, so a viewer need not call them parallel.
+    assert run["max_concurrency"] == 0 and response.json()["max_concurrency"] == 0
+    assert {(c["together"], c["gather_limit"]) for c in calls} == {(calls[0]["together"], 2)}
+    assert {c["gather_limit"] for c in response.json()["calls"]} == {2}
     timings = response.json()["timings"]
     assert set(timings) == {owner.handle, *(row["handle"] for row in calls)}
     for handle, timing in timings.items():
@@ -232,7 +236,11 @@ def test_budget_refuses_queued_children_after_the_first_spends_it(
     post(flow_app, sid, target)
     assert text_of(_answer(flow_app, sid)) == "CallResult,FlowLimitExceeded,FlowLimitExceeded"
     assert executed == ["budgeted part 0"]
-    (row,) = _checkpoint(flow_app, sid)["calls"].values()
+    run = _checkpoint(flow_app, sid)
+    # The flow's own bound is recorded; this gather named none of its own.
+    assert run["max_concurrency"] == 1
+    (row,) = run["calls"].values()
+    assert row["together"] and "gather_limit" not in row
     history = flow_app.app.state.task_history
     child_ids = {row["session_id"], *history.session_tree_ids(row["session_id"])}
     children = [flow_app.app.state.sessions.get(child_id) for child_id in child_ids]
