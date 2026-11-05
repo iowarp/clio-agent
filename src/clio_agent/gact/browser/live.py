@@ -82,6 +82,9 @@ class _Hub:
     theme: dict[str, str] = field(default_factory=dict)
     #: The latest frame, for a viewer who joins a page that is not changing.
     last_frame: bytes = b""
+    #: The screencast's start while it runs (on the server's loop): a viewer who joins
+    #: then waits for it rather than starting a second screencast.
+    starting: Any = None
 
 
 _HUBS: dict[str, _Hub] = {}
@@ -375,8 +378,8 @@ async def _serve(app: Any, websocket: Any, session_id: str, page_id: str) -> Non
     record.viewers += 1
     try:
         if hub.screencast is None:
-            await asyncio.wrap_future(svc.submit(_start(svc, record, hub)))
-        elif hub.last_frame:
+            await _started(svc, record, hub)
+        if hub.last_frame:
             _deliver(viewer, hub.last_frame)
         from starlette.websockets import WebSocketDisconnect  # noqa: PLC0415
 
@@ -400,6 +403,15 @@ async def _serve(app: Any, websocket: Any, session_id: str, page_id: str) -> Non
             _HUBS.pop(page_id, None)
             if not record.closed:
                 await asyncio.wrap_future(svc.submit(_stop(hub)))
+
+
+async def _started(svc: Any, record: Any, hub: _Hub) -> None:
+    """Start the page's screencast once: viewers who connect while it starts wait for the
+    same start (a viewer leaving does not cancel it for the others)."""
+    if hub.starting is None:
+        hub.starting = asyncio.wrap_future(svc.submit(_start(svc, record, hub)))
+        hub.starting.add_done_callback(lambda _done: setattr(hub, "starting", None))
+    await asyncio.shield(hub.starting)
 
 
 async def _send(viewer: _Viewer) -> None:
