@@ -105,7 +105,7 @@ def test_ask_mode_asks_with_the_script_and_allow_script_covers_the_rest(tmp_path
         assert answer.status_code == 204
         thread.join(timeout=5)
         assert result == {"first": "allow", "second": "allow"}
-        assert grant.covered and grant.waited_s > 0
+        assert grant.covered and not grant.waiting
         reasons = [r.get("reason") for r in app.state.permissions.values()]
         assert grants.REASON_SCRIPT_GRANT in reasons
 
