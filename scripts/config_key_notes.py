@@ -62,9 +62,9 @@ SECTIONS: list[tuple[str, tuple[str, ...], str]] = [
     ),
     (
         "Artifacts",
-        ("artifacts",),
-        "Artifact minting, the content-addressed store, lineage, exports and artifact-provenance "
-        "backends.",
+        ("artifacts", "streams"),
+        "Artifact minting, the content-addressed store, lineage, exports, artifact-provenance "
+        "backends and streams (artifacts whose latest rows live in memory).",
     ),
     (
         "Workspace resources",

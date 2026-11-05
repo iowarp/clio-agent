@@ -1019,8 +1019,9 @@ arc.ws_chunk_segments: 32
 # ==========================================================================
 # Artifacts
 # ==========================================================================
-# Artifact minting, the content-addressed store, lineage, exports and
-# artifact-provenance backends.
+# Artifact minting, the content-addressed store, lineage, exports, artifact-
+# provenance backends and streams (artifacts whose latest rows live in
+# memory).
 
 # CLIO_ARTIFACT_CAS_BUDGET_BYTES  (int)  <- src/clio_agent/gact/artifacts/cas.py
 # Byte budget for the content-addressed artifact store; over it, GC evicts
@@ -1151,6 +1152,12 @@ artifacts.table_query_processed_cache_entries: 8
 # the file as it is then (the latest wins, nothing is dropped). 0 records
 # every one. Default 5.
 artifacts.version_interval_s: "5.0"
+
+# CLIO_STREAMS_PUSH_INTERVAL_S  (str)  <- src/clio_agent/gact/streams/push.py
+# Shortest gap in seconds between two announcements of one stream to the
+# sessions watching it; writes inside it are announced together with the
+# latest state. Default 0.1.
+streams.push_interval_s: "0.1"
 
 # ==========================================================================
 # Workspace resources
@@ -2052,9 +2059,3 @@ spotter.max_clearance_events: 256
 # Installed agent (marketplace/id) that runs as the SPOTTER standing watcher
 # child session; change to point spotter-ai at a custom watcher agent.
 spotter.watcher_agent: "clio/spotter-ai"
-
-# ==========================================================================
-# Unassigned -- add these to scripts/config_key_notes.py
-
-# CLIO_STREAMS_PUSH_INTERVAL_S  (str)  <- src/clio_agent/gact/streams/push.py
-streams.push_interval_s: "0.1"

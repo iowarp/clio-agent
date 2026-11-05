@@ -347,9 +347,9 @@ class Analyst(Agent):
 """
 
 
-#: The skills every agent carries: core's planning and task protocol, and the fleet
-#: plugin's update-models.
-CORE_SKILLS = ("planning", "task-protocol", "update-models")
+#: The skills every agent carries: core's planning and task protocol, the fleet
+#: plugin's update-models and the streaming plugin's live-status.
+CORE_SKILLS = ("planning", "task-protocol", "update-models", "live-status")
 
 
 def _write_inventory_skill(root: Path, skill_id: str, description: str, body: str) -> Path:
@@ -813,12 +813,14 @@ def test_session_agent_sees_plugin_skills_and_catalog_skills_together(
     )
 
     # Plugin skills follow resolution order: core, then the agent's plugins, then
-    # the plugins they require (fleet, which core requires, resolves after visuals).
+    # the plugins they require (fleet and streaming, which core requires, resolve after
+    # visuals).
     assert list(runtime.resolved) == [
         "planning",
         "task-protocol",
         "present-interactive-analysis",
         "update-models",
+        "live-status",
         "a2ui-catalog-clio-workspace",
     ]
     assert runtime.resolved["present-interactive-analysis"].skill.scope == "plugin"
