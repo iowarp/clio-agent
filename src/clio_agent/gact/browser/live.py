@@ -371,6 +371,8 @@ async def _serve(app: Any, websocket: Any, session_id: str, page_id: str) -> Non
     finally:
         hub.viewers.remove(viewer)
         record.viewers -= 1
+        if viewer.controls:  # a pick it started would keep taking the page's clicks
+            await asyncio.wrap_future(svc.submit(picker.stop(record)))
         record.last_used = time.monotonic()
         if hub.viewers and not any(v.controls for v in hub.viewers):
             hub.viewers[0].controls = True  # the next viewer takes over input

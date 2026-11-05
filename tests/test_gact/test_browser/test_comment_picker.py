@@ -119,3 +119,23 @@ def test_a_comment_on_a_closed_page_says_so(browser: Any, tmp_path: Path) -> Non
     assert "page_unavailable: browser_page_not_found" in rendered.text
     assert '  Selected: "hello"' in rendered.text
     assert rendered.images == []
+
+
+def test_stopping_a_pick_gives_the_page_its_clicks_back(browser: Any, site: dict[str, Any]) -> None:
+    record = _open(browser, site, "/form")
+    received: list[dict[str, Any]] = []
+    assert browser.wait(
+        picker.handle(record, {"type": "pick.start", "mode": "element"}, received.append)
+    )
+    browser.wait(picker.stop(record))  # what the live view does when its controller leaves
+
+    async def click(r: Any) -> bool:
+        await r.page.evaluate(
+            "() => document.querySelector('button').addEventListener('click', (e) => {"
+            " e.preventDefault(); window.__clicked = true; })"
+        )
+        await r.page.locator("button").first.click()
+        return bool(await r.page.evaluate("() => window.__clicked === true"))
+
+    assert browser.run(record, "click", click)  # the page's own handler saw the click
+    assert received == []

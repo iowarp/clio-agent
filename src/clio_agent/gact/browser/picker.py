@@ -16,7 +16,9 @@ import logging
 from collections.abc import Callable
 from typing import Any
 
-__all__ = ["handle", "install"]
+from clio_agent.gact.browser.settings import page_errors
+
+__all__ = ["handle", "install", "stop"]
 
 logger = logging.getLogger(__name__)
 
@@ -175,8 +177,18 @@ async def handle(
         )
         return True
     if kind == "pick.stop":
-        _MODES.pop(record.id, None)
-        _SINKS.pop(record.id, None)
-        await record.page.evaluate("() => window.__clioSetPickMode && window.__clioSetPickMode('')")
+        await stop(record)
         return True
     return False
+
+
+async def stop(record: Any) -> None:
+    """End any pick on ``record``'s page, so its clicks reach the page again."""
+
+    _SINKS.pop(record.id, None)
+    if _MODES.pop(record.id, None) is None or record.closed:
+        return
+    try:
+        await record.page.evaluate("() => window.__clioSetPickMode && window.__clioSetPickMode('')")
+    except page_errors() as exc:  # the page is gone or navigating
+        logger.info("browser pick stop failed page=%s reason=%s", record.id, str(exc)[:200])
