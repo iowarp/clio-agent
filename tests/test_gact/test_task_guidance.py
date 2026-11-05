@@ -70,7 +70,7 @@ PROTOCOL = (
     "Accepted background tasks continue and their results may wake you after Stop",
     "Stop also cancels a foreground shell command",
     "waits for its actual process-tree cleanup",
-    "Subagent, Session, MCP, Download, Indexing, Shell and Question",
+    "Subagent, Session, MCP, Download, Indexing, Shell, Code and Question",
     "Stopping or expiring the wait leaves the question open",
     "Model-written intent grants nothing",
     "Peer collection never consumes the owner's delivery",
