@@ -19,7 +19,6 @@ from __future__ import annotations
 
 import asyncio
 import threading
-from contextvars import ContextVar
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -29,6 +28,12 @@ from fastmcp import Context
 from fastmcp.utilities.tasks import TaskConfig
 
 from clio_agent.arc.task_types import SubmissionContext
+from clio_agent.gact.code_task_context import (
+    _BACKGROUND_TASK,
+    BackgroundTask,
+    active_background_task,
+    question_cancel_token,
+)
 from clio_agent.gact.native_work import NativeWork, WorkEvidence
 from clio_agent.tools.native_roots import NativeRoot
 
@@ -59,36 +64,6 @@ class CodeLaunch:
     session_id: str
     workspace: Path
     read_only: bool
-
-
-@dataclass(frozen=True)
-class BackgroundTask:
-    """The background script a nested call belongs to: its handle and its stop event."""
-
-    handle: str
-    stop: threading.Event
-
-
-#: Set in a background script's captured context, so its nested calls know their task.
-_BACKGROUND_TASK: ContextVar[BackgroundTask | None] = ContextVar(
-    "clio_background_task", default=None
-)
-
-
-def active_background_task() -> BackgroundTask | None:
-    """The background script the current call belongs to, if any."""
-    return _BACKGROUND_TASK.get()
-
-
-def question_cancel_token(app: Any, session_id: str) -> threading.Event | None:
-    """What ends a permission question's wait (CT8): a background script's question ends
-    only when its task is cancelled, never on Stop of whatever turn the session runs
-    then; any other question ends with its turn, as before."""
-    task = _BACKGROUND_TASK.get()
-    if task is not None:
-        return task.stop
-    events = getattr(app.state, "cancel_events", None) or {}
-    return events.get(session_id)
 
 
 _LAUNCHES: dict[str, CodeLaunch] = {}
@@ -164,7 +139,12 @@ def status(live: dict[str, Any], started: float) -> dict[str, Any]:
 def _run(
     launch: CodeLaunch, handle: str, stop: threading.Event, live: dict[str, Any]
 ) -> dict[str, Any]:
-    """Run the script in its own kernel until it ends or ``stop`` is set; stop the kernel."""
+    """Run the script in its own kernel until it ends or ``stop`` is set; stop the kernel.
+
+    The kernel gets the ``task`` binding, and the script's dispatcher answers its calls
+    (:mod:`clio_agent.gact.code_task_reporting`)."""
+    from clio_agent.gact import code_task_reporting as reporting  # noqa: PLC0415
+    from clio_agent.gact import context as gact_context  # noqa: PLC0415
     from clio_agent.gact.code_mode import kernels  # noqa: PLC0415
     from clio_agent.gact.code_mode.tool import execute_script  # noqa: PLC0415
 
@@ -173,8 +153,17 @@ def _run(
     )
     live["kernel"] = kernel
     launch.prepared.context.run(_BACKGROUND_TASK.set, BackgroundTask(handle, stop))
+    app = launch.prepared.context.run(gact_context.active_app)
+    reserved = reporting.handlers(app, launch.session_id, handle, live.get("label", ""), live)
     try:
-        return execute_script(launch.prepared, kernel, stop.is_set, live)
+        return execute_script(
+            launch.prepared,
+            kernel,
+            stop.is_set,
+            live,
+            bindings=reporting.binding(),
+            reserved=reserved,
+        )
     finally:
         kernels.discard(kernel, "task_settled")
 
@@ -209,12 +198,17 @@ def register_native_code(root: NativeRoot, work: NativeWork) -> None:
 
             from clio_agent.gact.native_progress import NativeProgress  # noqa: PLC0415
 
-            live: dict[str, Any] = {}
             stop, started = threading.Event(), time.monotonic()
+            progress = NativeProgress(submission, work, ctx)
+            live: dict[str, Any] = {
+                "label": label,
+                "started": started,
+                "progress": progress,
+                "loop": asyncio.get_running_loop(),
+            }
             running = asyncio.ensure_future(
                 asyncio.to_thread(_run, staged_launch, submission.handle, stop, live)
             )
-            progress = NativeProgress(submission, work, ctx)
 
             async def report() -> None:
                 interval = status_interval_s()
@@ -238,6 +232,7 @@ def register_native_code(root: NativeRoot, work: NativeWork) -> None:
                 "label": label,
                 "calls": outcome.get("calls", 0),
                 "failed_calls": outcome.get("failed_calls", 0),
+                "notifies_coalesced": int(live.get("coalesced") or 0),
                 "text": model_text(outcome),
             }
 

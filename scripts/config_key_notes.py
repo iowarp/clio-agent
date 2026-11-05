@@ -1256,6 +1256,11 @@ KEY_NOTES: dict[str, str] = {
         "Seconds between a background run_code script's status reports on its task row "
         "(elapsed time, nested calls, memory); a display cadence, not a limit. Default 5."
     ),
+    "code.notify_min_interval_s": (
+        "Minimum seconds between two wakes of one conversation by its background scripts' "
+        "task.notify; notifies inside the window arrive together at its end, never dropped. "
+        "Default 30."
+    ),
     "code.idle_minutes": (
         "Minutes a run_code kernel keeps its variables without a script before it is stopped."
     ),

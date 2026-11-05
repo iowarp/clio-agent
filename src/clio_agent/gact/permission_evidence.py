@@ -17,7 +17,7 @@ logger = logging.getLogger(__name__)
 
 def permission_identity(app: Any, session_id: str) -> dict[str, str]:
     """Capture the admitted assignment now; HTTP resolution has no such context."""
-    from clio_agent.gact.native_code import active_background_task  # noqa: PLC0415
+    from clio_agent.gact.code_task_context import active_background_task  # noqa: PLC0415
 
     sessions = getattr(app.state, "sessions", None)
     session = sessions.get(session_id) if sessions is not None else None

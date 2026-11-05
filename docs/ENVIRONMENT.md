@@ -109,6 +109,7 @@ These resolve through `clio_agent.conf`: a value under the dotted key in `config
 | `CLIO_CODE_INDEX_LINE_CHARS` | `code.index_line_chars` | int | `320` | `src/clio_agent/gact/code_mode/stubs.py` |
 | `CLIO_CODE_MAX_OUTPUT_BYTES` | `code.max_output_bytes` | int | `2000000` | `src/clio_agent/gact/code_mode/kernels.py` |
 | `CLIO_CODE_MAX_SCRIPT_CHARS` | `code.max_script_chars` | int | `20000` | `src/clio_agent/gact/code_mode/grants.py` |
+| `CLIO_CODE_NOTIFY_MIN_INTERVAL_S` | `code.notify_min_interval_s` | str | `30.0` | `src/clio_agent/gact/code_task_reporting.py` |
 | `CLIO_CODE_POLL_S` | `code.poll_s` | float | `0.25` | `src/clio_agent/gact/code_mode/tool.py` |
 | `CLIO_CODE_START_TIMEOUT_S` | `code.start_timeout_s` | float | `60.0` | `src/clio_agent/gact/code_mode/kernels.py` |
 | `CLIO_COMPACTION_KEEP_HEAD` | `compaction.keep.head` | bool | `true` | `src/clio_agent/gact/compaction_policy.py` |

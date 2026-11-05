@@ -133,7 +133,7 @@ def test_allow_script_is_refused_on_a_question_that_does_not_offer_it(tmp_path: 
 
 def _background_question(app: Any, sid: str, stop: threading.Event) -> tuple[dict, Any]:
     """Ask the gate as a background script's nested call would; the row and the thread."""
-    from clio_agent.gact import native_code
+    from clio_agent.gact import code_task_context as native_code
 
     result: dict[str, Any] = {}
 

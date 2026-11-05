@@ -103,8 +103,11 @@ class Dispatcher:
         servers: tuple[str, ...],
         context: contextvars.Context,
         search: Callable[[str, int], Any],
+        reserved: Mapping[str, Callable[[Mapping[str, Any]], Any]] | None = None,
     ) -> None:
         self.tools = tools
+        #: Host calls a binding makes by a reserved name (a background task's ``task``).
+        self.reserved = dict(reserved or {})
         self.servers = servers
         self.context = context
         self.search = search
@@ -125,6 +128,9 @@ class Dispatcher:
             query = str(args.get("query") or "")
             reply({"type": "result", "id": call_id, "ok": True, "value": self.search(query, 5)})
             return
+        if tool in self.reserved:
+            self._reserved(call_id, self.reserved[tool], dict(args), reply)
+            return
         refusal = self._refusal(tool)
         if refusal:
             reply({"type": "result", "id": call_id, "ok": False, "error": refusal})
@@ -137,6 +143,21 @@ class Dispatcher:
 
         future = self.pool.submit(context.run, self._run, tool, dict(args))
         future.add_done_callback(lambda f: done(f.result()))
+
+    def _reserved(
+        self,
+        call_id: Any,
+        handler: Callable[[Mapping[str, Any]], Any],
+        args: dict[str, Any],
+        reply: Callable[[dict[str, Any]], None],
+    ) -> None:
+        def run() -> None:
+            try:
+                reply({"type": "result", "id": call_id, "ok": True, "value": handler(args)})
+            except Exception as exc:  # noqa: BLE001 - reported to the script as ToolError
+                reply({"type": "result", "id": call_id, "ok": False, "error": str(exc)})
+
+        self.pool.submit(self.context.copy().run, run)
 
     def _refusal(self, tool: str) -> str:
         if tool not in self.tools:  # direct-only and blocked tools are not given here

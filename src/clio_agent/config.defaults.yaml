@@ -1326,6 +1326,12 @@ code.max_output_bytes: 2000000
 # person.
 code.max_script_chars: 20000
 
+# CLIO_CODE_NOTIFY_MIN_INTERVAL_S  (str)  <- src/clio_agent/gact/code_task_reporting.py
+# Minimum seconds between two wakes of one conversation by its background
+# scripts' task.notify; notifies inside the window arrive together at its
+# end, never dropped. Default 30.
+code.notify_min_interval_s: "30.0"
+
 # CLIO_CODE_POLL_S  (float)  <- src/clio_agent/gact/code_mode/tool.py
 # Seconds between checks for cancellation and the time limit while a
 # run_code script runs.

@@ -8,6 +8,7 @@ agent's (records), so nested calls go through the real dispatcher.
 
 from __future__ import annotations
 
+import json
 import time
 from collections.abc import Iterator
 from pathlib import Path
@@ -152,7 +153,11 @@ def test_a_running_script_reports_elapsed_time_calls_and_memory(
         reference = task.progress.output if task is not None else None
         if reference is not None:
             row = app.state.task_history.read_content(reference).get("output")
-            if isinstance(row, dict) and row.get("type") == "clio.code.status":
+            if (
+                isinstance(row, dict)
+                and row.get("type") == "clio.code.status"
+                and row.get("calls") == 5  # under load the first report can precede the calls
+            ):
                 seen = row
         time.sleep(0.1)
     assert seen, "no status row while the script ran"
@@ -160,3 +165,103 @@ def test_a_running_script_reports_elapsed_time_calls_and_memory(
     assert seen["calls"] == 5
     assert isinstance(seen["memory_mb"], float) and seen["memory_mb"] > 5
     assert _settled(app, handle).status == "completed"
+
+
+def test_task_progress_reaches_the_row_and_wakes_nobody(world: Any) -> None:
+    """``task.progress`` writes the task row's progress with the script's status.
+
+    SABOTAGE: drop the reserved progress handler -> the script's call raises -> red."""
+    app, sid, root = world
+    code = (
+        "await task.progress('half way', done=1, total=2)\nimport asyncio\nawait asyncio.sleep(1)"
+    )
+    handle = str(_launch(app, sid, root, code)["handle"])
+    found: dict[str, Any] = {}
+    deadline = time.monotonic() + 30
+    while time.monotonic() < deadline and not found:
+        task = app.state.task_history.task_snapshot(handle)
+        reference = task.progress.output if task is not None else None
+        if reference is not None:
+            row = app.state.task_history.read_content(reference).get("output")
+            if isinstance(row, dict) and row.get("type") == "clio.code.progress":
+                found = row
+        time.sleep(0.05)
+    assert found["message"] == "half way" and (found["done"], found["total"]) == (1, 2)
+    assert "memory_mb" in found and found["state"] == "running"
+    assert _settled(app, handle).status == "completed"
+
+
+def test_notifies_inside_the_window_arrive_together_and_none_is_lost(
+    world: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """At most one wake per window per conversation; queued notifies arrive at its end as
+    one delivery, and the result counts them (CT9).
+
+    SABOTAGE: send every notify at once (no window) -> three deliveries -> red."""
+    from clio_agent.gact import code_task_reporting as reporting
+
+    app, sid, root = world
+    monkeypatch.setenv("CLIO_CODE_NOTIFY_MIN_INTERVAL_S", "1.5")
+    monkeypatch.setattr(reporting, "_WINDOWS", {})
+    sent: list[tuple[str, list[dict[str, Any]]]] = []
+    monkeypatch.setattr(
+        reporting, "_send", lambda _app, owner, entries: sent.append((owner, entries))
+    )
+    code = (
+        "for word in ('one', 'two', 'three'):\n"
+        "    await task.notify(word, data={'word': word})\n"
+        "import asyncio\nawait asyncio.sleep(3)"
+    )
+    handle = str(_launch(app, sid, root, code, label="watcher")["handle"])
+    task = _settled(app, handle)
+    assert task.status == "completed"
+    assert [len(entries) for _owner, entries in sent] == [1, 2]
+    assert [e["message"] for _o, entries in sent for e in entries] == ["one", "two", "three"]
+    assert all(owner == sid for owner, _entries in sent)
+    assert sent[1][1][0]["handle"] == handle and sent[1][1][0]["label"] == "watcher"
+    result = app.state.task_history.read_content(task.result)
+    assert "notifies_coalesced" in json.dumps(result) and '"notifies_coalesced": 2' in json.dumps(
+        result
+    )
+
+
+def test_a_synchronous_script_has_no_task_binding(world: Any) -> None:
+    """``task`` exists only in a background kernel."""
+    app, sid, root = world
+    with active_turn_fixture(app, sid), tool_workspace_context(str(root)):
+        outcome = tool_module.run_script(_agent(), "task", session_id=sid, scope="main")
+    assert outcome["status"] == "failed" and "NameError" in outcome["error"]
+
+
+def test_a_notify_is_attention_mail_attributed_to_its_task() -> None:
+    """``_send`` writes one attention message for the owner, grouped by task."""
+    from types import SimpleNamespace
+
+    from clio_agent.gact import code_task_reporting as reporting
+
+    written: dict[str, Any] = {}
+
+    class History:
+        def serialized(self) -> Any:
+            import contextlib
+
+            return contextlib.nullcontext()
+
+        def write_content(self, session_id: str, value: object) -> Any:
+            from clio_agent.arc.task_types import CoreReference
+
+            written["content"] = (session_id, value)
+            return CoreReference.model_construct()
+
+        def record_mail(self, item: Any) -> Any:
+            written["mail"] = item
+            return item
+
+    app = SimpleNamespace(state=SimpleNamespace(task_history=History()))
+    entry = {"handle": "task_a", "label": "feed", "message": "hot", "data": {"t": 231}, "at": "x"}
+    reporting._send(app, "sess_owner", [entry, {**entry, "message": "hotter"}])
+    mail = written["mail"]
+    assert (mail.kind, mail.recipient_session, mail.handle) == ("attention", "sess_owner", "task_a")
+    owner, value = written["content"]
+    assert owner == "sess_owner" and value["type"] == "clio.code.notify"
+    assert [n["message"] for n in value["tasks"][0]["notifies"]] == ["hot", "hotter"]

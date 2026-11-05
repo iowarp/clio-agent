@@ -68,8 +68,8 @@ from clio_agent.gact.cancellation_check import (
     make_cancellation_checker as _make_cancellation_checker,  # noqa: F401 - compatibility export
 )
 from clio_agent.gact.code_mode import grants as script_grants
+from clio_agent.gact.code_task_context import question_cancel_token
 from clio_agent.gact.folder_access import bind_folder_gate
-from clio_agent.gact.native_code import question_cancel_token
 from clio_agent.gact.permission_context import (
     _external_mcp_permission_context as _external_mcp_permission_context,
 )

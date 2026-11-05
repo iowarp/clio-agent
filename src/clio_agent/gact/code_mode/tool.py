@@ -178,6 +178,9 @@ def execute_script(
     kernel: Any,
     cancelled: Callable[[], bool],
     live: dict[str, Any] | None = None,
+    *,
+    bindings: Mapping[str, dict[str, str]] | None = None,
+    reserved: Mapping[str, Callable[[Mapping[str, Any]], Any]] | None = None,
 ) -> dict[str, Any]:
     """Run a prepared script in ``kernel`` until it finishes or ``cancelled()`` turns true;
     a cancelled or exited kernel is discarded. The outcome, never raising for a cancel."""
@@ -188,7 +191,7 @@ def execute_script(
     agent, code = prepared.agent, prepared.code
     callable_tools = {n: t for n, t in agent.tools.items() if n not in prepared.direct_only}
     dispatcher = Dispatcher(
-        callable_tools, prepared.servers, prepared.context, _search(callable_tools)
+        callable_tools, prepared.servers, prepared.context, _search(callable_tools), reserved
     )
     if live is not None:
         live["dispatcher"] = dispatcher  # a background task's status reads its call count
@@ -204,7 +207,7 @@ def execute_script(
                     direct_only=prepared.direct_only,
                     code_only=prepared.code_only,
                 ),
-                dict(getattr(agent, "_clio_kernel_bindings", None) or {}),
+                {**dict(getattr(agent, "_clio_kernel_bindings", None) or {}), **(bindings or {})},
             )
             kernel.send({"type": "exec", "id": 1, "code": code})
             while True:
