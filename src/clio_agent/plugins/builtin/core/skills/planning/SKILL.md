@@ -55,8 +55,9 @@ Write the plan with `plan_update(content=...)` and revise it as you learn
 only Changes and Verification. Larger or open-ended work:
 - **Objective**: the question, what a complete answer contains, what counts as done.
 - **Approach**: how you will get there.
-- **Threads**: each open, active, closed or dropped, with a one-line reason when it
-  ends and the handles of any children working on it.
+- **Threads**: one per line, each marked at the start `[open]`, `[active]`, `[closed]`
+  or `[dropped]` (`- [open] name: what it asks`), so CLIO can count what is left; a
+  one-line reason when it ends and the handles of any children working on it.
 - **Findings**: each a claim with its references (`call:` refs, paths and lines,
   handles); a corrected finding is marked superseded rather than deleted.
 - Checking your claims is the last thread.
