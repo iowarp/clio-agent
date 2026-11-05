@@ -132,7 +132,7 @@ def test_a_view_reads_the_rows_in_memory_and_the_resolution_names_the_stream(
 ) -> None:
     from clio_agent.gact.artifacts.references import resolve_reference
 
-    app, workspace_id, _sid, client, _bus = session
+    app, workspace_id, sid, client, _bus = session
     opened = open_stream("readings", window=10)
     store = stream_store(app)
     store.write(
@@ -146,7 +146,7 @@ def test_a_view_reads_the_rows_in_memory_and_the_resolution_names_the_stream(
     body = response.json()
     assert body["returnedRows"] == 2 and body["columns"]["t"] == [2.0, 1.0]
     assert body["stream"]["state"] == "open"
-    watched = client.post(f"/v1/streams/{opened['stream_id']}/watch", json={"session_id": "s1"})
+    watched = client.post(f"/v1/streams/{opened['stream_id']}/watch", json={"session_id": sid})
     assert watched.json()["watchers"] == 1
     resolved = asyncio.run(
         resolve_reference(app, opened["view_uri"], session_workspace_id=workspace_id)

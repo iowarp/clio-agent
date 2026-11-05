@@ -11,7 +11,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from clio_agent.gact.streams.store import StreamError, stream_store
+from clio_agent.gact.streams.store import StreamError, stream_store, window_max
 
 STREAM_TOOLS = ("open_stream", "read_stream", "stop_stream")
 _READ_ROWS = 50
@@ -35,13 +35,14 @@ def open_stream(
     name: str, columns: list[str] | None = None, window: int = 1, flush_s: float = 30.0
 ) -> dict[str, Any]:
     """Open a stream: a named table whose latest rows live in memory, written many times a
-    second by a script (``stream.open(name)`` then ``await s.write(row)`` in run_code) with
-    no tool call per write. A dashboard's chart or table bound to the returned view_uri
-    updates by itself, only while someone is looking. window keeps the last N rows (1: the
-    latest only); the rows are saved as the artifact's next version every flush_s seconds
-    while they change and when the stream stops. columns names the columns a view can bind
-    to before the first write. A background script's streams stop when it ends; their
-    last rows stay readable and show as stopped."""
+    second by a script (``s = await stream.open(name)`` then ``await s.write(row)`` in
+    run_code) with no tool call per write. A dashboard's chart or table bound to the
+    returned view_uri updates by itself, only while someone is looking. window keeps the
+    last N rows (1: the latest only; at most as many rows as one view reads); the rows are
+    saved as the artifact's next version every flush_s seconds while they change and when
+    the stream stops. columns names the columns a view can bind to before the first write.
+    A background script's streams stop when it ends; their last rows stay readable and
+    show as stopped."""
 
     from clio_agent.gact.code_task_context import active_background_task  # noqa: PLC0415
 
@@ -127,7 +128,7 @@ def build_open_stream_tool() -> Any:
         args={
             "name": _NAME,
             "columns": {"type": "array", "items": {"type": "string"}, "default": []},
-            "window": {"type": "integer", "minimum": 1, "default": 1},
+            "window": {"type": "integer", "minimum": 1, "maximum": window_max(), "default": 1},
             "flush_s": {"type": "number", "minimum": 0, "default": 30.0},
         },
         read_only=False,

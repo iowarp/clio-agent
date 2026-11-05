@@ -4,8 +4,11 @@
 - ``POST /v1/streams/{id}/table-query``: the rows in memory now, through the same
   filter, aggregate, sort and page pipeline as an artifact (``schema``, ``columns``,
   ``totalRows`` ...), plus ``stream`` (the state, so a view can say it stopped).
-- ``POST /v1/streams/{id}/watch``: ``{session_id, release?}`` holds or releases that
-  session's lease (:mod:`clio_agent.gact.streams.push`); a view renews it while shown.
+- ``POST /v1/streams/{id}/watch``: ``{session_id, release?, lease_id?}`` holds or
+  releases a view's lease (:mod:`clio_agent.gact.streams.push`); a view renews it while
+  shown, and names a ``lease_id`` of its own so that its release leaves the other views
+  of its session watching. The session must exist (404 ``session_not_found``) and be in
+  the stream's workspace (403 ``stream_not_in_session_workspace``).
 """
 
 from __future__ import annotations
@@ -24,10 +27,12 @@ from clio_agent.gact.routes.artifact_table_preview import _error
 
 
 class StreamWatchRequest(BaseModel):
-    """A view's lease on a stream, for the session it is shown in."""
+    """A view's lease on a stream, for the session it is shown in (``lease_id``: the view's
+    own, when one session shows the stream in more than one view)."""
 
     session_id: str
     release: bool = False
+    lease_id: str = ""
 
 
 def _stream(app: Any, stream_id: str) -> Any:
@@ -108,8 +113,17 @@ def register_stream_routes(app: FastAPI) -> None:
     async def watch_stream(stream_id: str, body: StreamWatchRequest) -> dict[str, Any]:
         from clio_agent.gact.streams.push import LEASE_S, watch  # noqa: PLC0415
 
-        _stream(app, stream_id)
-        watchers = watch(stream_id, body.session_id, release=body.release)
+        stream = _stream(app, stream_id)
+        session = app.state.sessions.get(body.session_id) if body.session_id else None
+        if session is None:
+            raise _error(404, "session_not_found", f"No session {body.session_id!r}.")
+        if str(getattr(session, "workspace_id", "") or "") != stream.workspace_id:
+            raise _error(
+                403,
+                "stream_not_in_session_workspace",
+                "The stream belongs to another workspace than this session's.",
+            )
+        watchers = watch(stream_id, body.session_id, release=body.release, lease_id=body.lease_id)
         return {"stream_id": stream_id, "watchers": watchers, "lease_s": LEASE_S}
 
 
