@@ -228,6 +228,18 @@ class SyncIndex:
     def _words(self, page: int) -> list[Box]:
         return [box for box in self.boxes if box.page == page and box.word_level]
 
+    def _text(self, page: int) -> list[Box]:
+        """The page's records that carry their own word's line, not a paragraph's end line."""
+        found: list[Box] = []
+        for piece in _pieces(self._words(page)):
+            words = _words(piece)
+            if not words:
+                if _ends_a_line(piece):
+                    continue
+                words = list(piece)
+            found.extend(words)
+        return found
+
     def source_at(self, page: int, x: float, y: float) -> tuple[str, int] | None:
         """The source file and line at a point of ``page`` (big points from top-left).
 
@@ -235,7 +247,7 @@ class SyncIndex:
         word-level record at or before the point. Away from any text, the nearest record on
         the page is taken, so a click in a margin still lands on a line.
         """
-        words = self._words(page)
+        words = self._text(page) or self._words(page)
         if not words:
             return None
         near = [box for box in words if -_DESCENT - 1 <= box.baseline - y <= _ASCENT + 4]
@@ -258,11 +270,15 @@ class SyncIndex:
     def lines_in(
         self, page: int, x0: float, y0: float, x1: float, y1: float
     ) -> dict[str, tuple[int, int]]:
-        """The source line range per file of the text inside a rectangle of ``page``."""
+        """The source line range per file of the text inside a rectangle of ``page``.
+
+        A record counts when its baseline lies in the rectangle (a selection's box reaches a
+        little below its baseline), so the rows above and below do not leak in.
+        """
         ranges: dict[str, tuple[int, int]] = {}
-        for box in self._words(page):
-            bx0, by0, bx1, by1 = box.extent()
-            if bx1 < x0 or bx0 > x1 or by1 < y0 or by0 > y1:
+        for box in self._text(page):
+            bx0, _by0, bx1, _by1 = box.extent()
+            if bx1 < x0 or bx0 > x1 or not y0 <= box.baseline <= y1 + _DESCENT:
                 continue
             low, high = ranges.get(box.file, (box.line, box.line))
             ranges[box.file] = (min(low, box.line), max(high, box.line))
@@ -276,8 +292,8 @@ class SyncIndex:
 
         Words decide: glue, kern and character records carry their word's line, while a
         paragraph's line boxes and the kern ending each line carry the line where the paragraph
-        ended, which can be the next section's first line. A row whose words are all in range counts whole; a row that
-        also holds other lines' words counts only the words in range.
+        ended, which can be the next section's first line. A row whose words are all in range
+        counts whole; a row that also holds other lines' words counts only the words in range.
         """
         by_page: dict[int, list[Box]] = {}
         for box in self.boxes:

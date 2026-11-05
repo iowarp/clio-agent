@@ -107,6 +107,10 @@ def test_a_sections_place_leaves_out_the_paragraph_that_ends_at_its_heading() ->
     assert mx > 300 and mwidth < 100  # its own column only
     [(_, (_, itop, _, iheight))] = index.places("sections/intro.tex", 1, 9)
     assert itop < 340 < itop + iheight < 350
+    # A selection maps to the lines its words came from, not to the paragraph's end line.
+    assert index.lines_in(0, 60, 333, 200, 342) == {"sections/intro.tex": (3, 3)}
+    assert index.lines_in(0, 60, 452, 200, 462) == {"sections/background.tex": (2, 2)}
+    assert index.source_at(0, 75, 338) == ("sections/intro.tex", 3)
 
 
 _TEXTS = {
