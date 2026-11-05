@@ -1,0 +1,123 @@
+# Comments and visual feedback ledger
+
+Rows follow [comments-and-visual-feedback-plan.md](sdk/comments-and-visual-feedback-plan.md) as
+amended by [comments-and-visual-feedback-addendum-a.md](sdk/comments-and-visual-feedback-addendum-a.md).
+Where the addendum and the plan disagree, the addendum wins. The LaTeX plan's side of the
+boundary is [latex-and-document-comments-addendum-a.md](sdk/latex-and-document-comments-addendum-a.md).
+Status values are the ones [acceptance-ledger.md](sdk/acceptance-ledger.md) defines
+(`passed (live)`, `tests only`, `static`, `done`, `open`, `blocked`), plus `local phase` for a
+row the plan assigns to the local qualification pass.
+
+Decisions use the prefix `FB`, qualification scenarios `K`.
+
+**Branch.** `claude/busy-turing-r40z0q` in clio-agent, gact-tui and clio-agent-marketplace.
+**Base.** The head of `claude/tool-calling-long-horizon` (the PTC branch), which has merged the
+browser branch `claude/gracious-goldberg-gagoo4`: clio-agent `1928f984` (merge `5c2449c1`),
+gact-tui `ae59c622`, marketplace `31e2357`. The plan was read against clio-agent `c90ca484`
+and gact-tui `941e6f21`; both are ancestors of this base. Rebase onto `develop` when the PTC
+branch merges. No LaTeX-plan branch exists in any of the three repositories, and the LaTeX
+plan itself is not in this repository (only its addendum A is), so its `source-map` resolver
+registers later through the registry this plan defines.
+
+**State of this ledger.** Phase 0 only. No production code has changed. Every decision below
+that implementation must carry out is `open`, and every scenario is `open`.
+
+## Phase 0 measurements
+
+Cloud host, as root. Playwright 1.64.1 (Python) driving the pre-installed
+`/opt/pw-browsers/chromium-1243`. LibreOffice `soffice` and poppler are on the host;
+`python-pptx`, `python-docx`, `pypdf` and Pillow are already dependencies (`pyproject.toml`).
+Probes: [`scripts/cloud/comments_probe/`](../../scripts/cloud/comments_probe/). The live checks
+used the cloud stack (`scripts/cloud/stack.sh start`, `claude_code`, `claude-haiku-5-5`) and a
+scratch workspace `ws_9301a34cc6d2` at `.cloud-run/p0-figures/`, with a synthetic
+`results/sweep.csv`.
+
+| Item | Result |
+| --- | --- |
+| 1. Editor inventory | Confirmed against the base. clio-agent: `gact/documents/editors.py` and `editor_callbacks.py` (whole files); `EditorProvider`, `DocumentManifest.embedded_editors`, `CreateEditorSessionRequest` and `DocumentEditorSession` in `documents/models.py`; the `embedded_editors` slot of every format in `profiles.py`; the `editor_format_unsupported` check and eight route-method pairs in `routes/documents.py` (editor health, editor sessions, ONLYOFFICE content and callback, Collabora WOPI file info and contents); `"embedded_editors"` in the `x_clio_document_artifacts` capability (`routes/system.py:548`); `DocumentsAPI.editor_health` and `create_editor_session` and the `DocumentEditorSession` type in `client/`; three editor tests in `tests/test_gact/test_document_artifacts.py`; `CLIO_ONLYOFFICE_URL`, `CLIO_ONLYOFFICE_JWT_SECRET`, `CLIO_COLLABORA_URL` and `CLIO_GACT_PUBLIC_URL` (editor-only) in `.env.example`, `clio-paths.yaml:495`, `docs/ENVIRONMENT.md` and the four `docs/knob_audit/` files; editor sections of `docs/design/document-artifacts-human-review-2026-07.md`. gact-tui: `onlyoffice-editor.tsx` (whole file); the embedded branches of `document-launch.ts`, `document-open-menu.tsx`, `document-open-policy.ts` (`hasEmbeddedDocumentEditors`), `document-workspace.tsx`, `document-working-copy.tsx` and `document-refresh-action.tsx`; `DocumentEditorSession`, `DocumentEditorHealth` and `embedded_editors` in `packages/core/src/v3/document-domain.ts` and `document-repository.ts`; their unit tests; `embedded_editors` in six e2e and review fixtures; three rows of `contract/SPEC.md`. The marketplace has none. No Docker, `install/` or Singularity file configures an editor: the Office steps in `install/` and `CLIO_DOCUMENT_OFFICE_ROOT` serve the PDF rendition converter and stay. |
+| 1a. What the removal must keep | The working copy for "Open in the desktop application": `CreateWorkingCopyRequest`, `DocumentWorkingCopy`, the store's create, get, close, checkpoint, conflict, lease and save monitor, native comment ingestion, the four working-copy routes, `_dispatch_checkpoint`, and their client and TypeScript counterparts. `write_working_copy` is editor-only (desktop saves reach the store through its polling monitor). |
+| 1b. Two mechanical consequences | `tests/test_gact/test_decomposition_guardrails.py:223` `EXPECTED_ROUTE_METHOD_PAIRS = 435` drops to 427. `DocumentWorkingCopy` rows persisted with `provider: "onlyoffice"` or `"collabora"` are re-read at `documents/store.py:579`; the model does not forbid extra keys, so removing the `provider` field (rather than narrowing its literal) keeps old rows loading. |
+| 2. Selection inventory: duplicates of `DocumentAnchor` | `lib/composer-annotations.ts` (`TextQuoteAnnotation`, `DataZoneQuoteAnnotation`, `RegionCaptureAnnotation`), `use-region-capture-annotation.ts`, the `Region` and `CaptureTarget` types of `a2ui-region-evidence.ts`, `region-coordinate-inputs.tsx`'s `Box`, `lib/selection-actions.ts` (`AgentAnswerTextSelection`, `DataSurfaceZoneSelection`), `data-zone-reference.ts` (title, summary and a Markdown blob), the client SDK's looser `DocumentAnchor` in `client/types.py`, and `DocumentPartFields.anchor: dict` (`gact/document_fields.py`). |
+| 2a. Capture mechanisms | `document-workspace.tsx` `captureTextSelection` (a `text-quote` with `exact` and `source_path` only: no prefix, suffix or offsets, and nothing inside the HTML frame); `document-pdf-viewer.tsx` `captureSelection` (a `pdf-quad`), wired only in the document workspace, so PDFs in other viewers capture nothing; `a2ui-region-capture.tsx` (`S1`... boxes, `labelledPng`, `captureText` with its JSON block); `selection-actions.tsx`, `use-add-to-chat-selection-action.ts`, `use-reference-this-selection-action.ts`, `data-reference-this-button.tsx` and `lib/surface-text-selection.ts`; eleven `buildZoneReference` producers (chart, data table, map, map data source, GeoJSON, mesh, raster, media, code view, Mermaid, workflow catalog); native comment ingestion on the server. `dom`, `sheet-range` (except from native Excel comments), `slide-shape` and `source-map` are advertised and never captured in the UI. |
+| 2b. Two listeners for one event | `clio:add-region-capture` is handled by `composer-attachments.tsx:89` (attaches the PNG) and by `use-region-capture-annotation.ts` (adds the annotation). |
+| 2c. A second selection family | clio-schemas `ContentSelection` (`TextSelection`, `WholeSelection`, `ImageSelection` `image_region`, `StructuredSelection`, `SurfaceSelectionIdentity`), mirrored in gact-tui `packages/core/src/generated/clio-schemas/`, is the wire type of the attention set: `gact/attention/surface_selection.py`, `attention/routes.py`, `lib/transcript-content-selection.ts`, `transcript-content-picker.tsx`, `lib/a2ui/attention-selection*.ts`, and "Add to attention set" in the capture panel. The attention service also has its own text-span `SelectionRequest` and the TypeScript `AttentionSelection`. See open question Q2. |
+| 2d. Not selections | A2UI linked selection (`selection-state.ts`, `chart-selection.ts`, `chart-box-selection.ts`, `map-selection-pointer.ts`) is a cross-view highlight; the browser live view's `browser-live-input.ts` maps pointer input only; `browser/live.py` `_style` draws the agent's actions. None are comment anchors. |
+| 2e. Consumers outside the code | The marketplace skill `plugins/document-production/skills/review-document-artifact/` and its `references/anchor-semantics.md` teach the agent the seven anchor profiles; `plugins/docx` teaches the `@clio` rule. Both change with the anchor and the renderer. |
+| 3. "Produced by" on `shell_bash` | Plain request ("Plot throughput against node count ... save it as figs/throughput.png. Keep the plotting code as a script under scripts/ ..."), session `sess_037e5346f143`. The agent wrote `scripts/plot_throughput.py` and ran it through `shell_bash` call `call_d2d1bdcd1754`. `GET /v1/transforms/call_d2d1bdcd1754/lineage?direction=both` returns the activity with one `used` edge (`hash-pair`) to `plot_throughput.py` (`artifact_582489f6...`, kind `script`, designation `used-script`) and **no `generated` edge**. `GET /v1/workspaces/ws_9301a34cc6d2/artifacts` lists only the script: `figs/throughput.png` exists on disk and is **not an artifact**. |
+| 3a. "Produced by" on `run_code` | Tool-directed prompt ("Using run_code, plot ..."), session `sess_961ca39f80ce`, call `call_5acf0f738766`; mechanism verified with a tool-directed prompt, not evidence of agent judgement. The transform exists with **no edges at all** (neither the CSV it read nor the PNG it wrote), and `figs/throughput_rc.png` is not an artifact. |
+| 3b. Why | Files are minted from declared output paths only: a path argument (`designation.grounded_output_paths`), a path in the result (`result_declared_paths`), a file a tool mints itself (`observer_bridge.take_call_outputs`), or the agent's own `create_artifact` call. A shell command line is scanned for **used** paths (`shell_command_paths.py`) but not for written ones, and a `run_code` script's own file writes are seen by nothing. `transforms_generating` therefore returns `[]` for a figure made either way, and the figure has no artifact version to hold a thread. The plan requires this fixed in this plan (Phase 0 item 3); see open question Q1. |
+| 4. Server-side HTML render | The preview frame runs scripts (`desktop-html-frame.tsx:181`, `sandbox="allow-scripts"`) and the content route's CSP refuses all network (`routes/documents.py:326`). A short-lived Chromium launch (`browser.new_context(offline=True)`, scripts on, `context.route("**/*")` aborting every request) at the viewer's width and `device_scale_factor=2` ran the page's script, refused its one remote image, and cropped a picked button's CSS box to exactly 2x (104 x 21 CSS px to 208 x 42 px) in 0.9 to 1.5 s with launch included. The managed backend's persistent profile cannot open a second context (`launch_persistent_context` has no `browser`), so the render uses its own launch of the same executable, never the person's profile. LibreOffice's HTML to PDF runs no scripts and lays out differently, so it was not chosen. |
+| 5. Embedded pictures in renditions | `make_fixtures.py` builds a deck with a chart on slide 4 and a Word report with the chart on page 2; LibreOffice renders both. PowerPoint: rendition page N is slide N and has the slide's aspect (720 x 540 pt, 1.3333); a picture shape's EMU box over the slide size (`(0.5, 0.267, 0.4, 0.4)`) is in the same normalized coordinates as a region on the page, so overlap names slide 4, shape id 3 "Picture 2". Word: inline pictures have no absolute position; the rendition's content stream gives each image's placement (`cm` before `Do`: page 2, `(0.162, 0.122, 0.353, 0.205)`, 400 x 300 px), matched to the document's pictures in order (paragraph 3, `/word/media/image1.png`) with pixel size as a check. In both, the picture's package bytes hash to the workspace PNG's SHA-256 (`e5f7d4ac...`), which is what links a slide or page region to the figure's own artifact and "Produced by". |
+| 6. Picker in managed pages | A persistent context with the managed launch options (headless, no Chromium sandbox as on the cloud stack) took `context.expose_binding("__clioPickReport", ...)` and `context.add_init_script(picker)`, with `page.screencast.start(...)` running as the live view runs it. A click through `page.mouse` (the live view's input path) produced the picker's report with selector, tag, text, rectangle, viewport width, frame and page URL; it did again after a second navigation, so the script survives navigation. CDP `DOM.querySelector` plus `Accessibility.getPartialAXTree` on that node gave role `button`, name `Submit`. Probed on a fresh context with the service's options, not inside `BrowserService`; the host gate's `Fetch` interception (`host_gate.py:307`) was not attached. |
+
+## Decisions
+
+| ID | Decision | Source | Evidence | Status |
+| --- | --- | --- | --- | --- |
+| FB1 | Work on the head of the PTC branch `claude/tool-calling-long-horizon`, which contains the browser branch, in all three repositories, on `claude/busy-turing-r40z0q`; rebase onto `develop` when the PTC branch merges. | Plan, "Base"; the person's direction | This ledger's header | done |
+| FB2 | The plan and its addendum live in `docs/design/sdk/` beside the browser plan they replace part of; this ledger is at `docs/design/comments-ledger.md`, the path the plan's contract table names. | Plan, "Contract" | This file | done |
+| FB3 | Phase 0 changes no production code. The person asked for a planning phase after Phase 0, so Phase 1 starts after that plan, not straight after Phase 0. | The person's direction | This ledger, "State" | done |
+| FB4 | Delete the ONLYOFFICE and Collabora integrations in one change in each repository, keeping the desktop working copy (measurement 1a). Remove the `provider` field rather than narrowing it, so stored working copies still load (1b). | Plan, "Removing the embedded Office editors"; Phase 0 item 1 | Measurements 1, 1a, 1b | open |
+| FB5 | One `DocumentAnchor` for comments, gaining `region`, `rect`, `crop_asset`, and the completed `text-quote` and `dom` fields; the comment-side duplicates in measurement 2 are deleted. | Plan, rule 1 and "One anchor model" | Measurement 2 | open |
+| FB6 | Default mode: text where text exists; region on images and A2UI surfaces. | Plan, defaults table | | open |
+| FB7 | "Send to agent" is on by default; off stores a human note. | Plan, defaults table | | open |
+| FB8 | Marks are labelled `S1`, `S2` and onward per select session, continuing per artifact version (a second session after `S1` to `S3` starts at `S4`). | Addendum A, defaults table and section 1 | | open |
+| FB9 | Batching: one select session is one send. The capture panel, generalized from `a2ui-region-capture.tsx`, replaces the plan's pending review and its "Send N comments" UI. | Addendum A, section 1 | | open |
+| FB10 | Images to the agent: one labelled overview per session (per page when paged) as the first image part, then a 2x crop per region or element in label order. | Addendum A, section 2 | | open |
+| FB11 | Text under each mark is cut at `comments.under_mark_chars` (default 1,200) per mark, with the rest in a session file the entry names. The A2UI JSON block goes. | Addendum A, section 2 | | open |
+| FB12 | Closing the panel unsent keeps the marks as a draft on an artifact version and discards them elsewhere. | Addendum A, defaults table | | open |
+| FB13 | A region on a new version stays on its version, shown beside the same rectangle on the new one. | Plan, defaults table | | open |
+| FB14 | Crops and overviews for artifacts and browser pages come from the server, from the version itself or a fresh `browser_screenshot`, never from the person's screen. A2UI surfaces are the exception: the browser draws them, as `labelledPng` does, because the surface lives only in the client. | Plan, defaults table; addendum A, section 3 | | open |
+| FB15 | Server-side HTML render for crops: a short-lived Chromium launch of the managed backend's executable, scripts on, every request aborted, at the anchor's `viewport_width`, at 2x; not the person's profile and not LibreOffice. | Phase 0 item 4 | Measurement 4; `scripts/cloud/comments_probe/probe_html_render.py` | done |
+| FB16 | A region on a PowerPoint rendition names its slide and picture shapes from the file's own geometry; on a Word rendition, from the rendition's image placements matched in order to the document's pictures. A picture whose package bytes hash to a workspace image artifact names that artifact and its "Produced by". | Plan, "Figures inside documents"; Phase 0 item 5 | Measurement 5; `probe_embedded.py`, `make_fixtures.py` | done |
+| FB17 | Page comments use a picker installed with `context.add_init_script` and reported through `context.expose_binding`; an element's target spec reads role and name from CDP `Accessibility.getPartialAXTree`, falling back to the picker's selector. | Plan, "Pages in the in-app browser"; Phase 0 item 6 | Measurement 6; `probe_picker.py` | done |
+| FB18 | HTML excerpt length 400 characters; text context 64 characters before and after. | Plan, defaults table | | open |
+| FB19 | Comments on browser pages, agent answers and A2UI surfaces are attachments to the next message, not stored reviews. | Plan, defaults table | | open |
+| FB20 | When no transform is recorded, the entry says the producer is unknown. | Plan, defaults table | | open |
+| FB21 | SVG images take region and element. | Plan, defaults table | | open |
+
+## Open questions for the planning phase
+
+These came out of Phase 0 and need a choice before Phase 1.
+
+| ID | Question | What Phase 0 found | Recommendation |
+| --- | --- | --- | --- |
+| Q1 | How does a figure a script writes become an artifact version with a `generated` edge? | Neither `shell_bash` nor `run_code` registers a file the script writes (measurements 3 to 3b), so "Produced by" is empty and a comment on the figure has no version to hold a thread. | Record what a call writes into the workspace: snapshot the workspace's files (size and modification time, bounded) when a `shell_bash` or `run_code` call starts and finishes, and mint new or changed files as that call's `generated` outputs, so `transforms_generating` names the call, with its script as the `used` edge already recorded. `run_code` also needs its own `used` edges (the CSV). The alternative of asking the agent to call `create_artifact` is a prompt constraint and would leave figures made without it unreviewable. |
+| Q2 | Does "one anchor model" reach the attention set's `ContentSelection`? | clio-schemas defines a second selection family used only by the attention set (measurement 2c); addendum A keeps "Add to attention set" beside the panel and says it is not a comment. | Keep `ContentSelection` for the attention set, which is a separate contract owned by clio-schemas, and apply rule 1 to comments, reviews, annotations and captures. Record it as a decision so K20 does not search for it. |
+| Q3 | What does the agent receive when the selected model cannot take images? | Image parts are refused for a model whose live modalities omit images (`message_submission.py:312`); an unknown model is allowed with `modality_unknown`. | Send the entries without image parts and say so in the header ("images not sent: this model does not accept images; the overview and crops are at <session file>"), never silently. Whether `claude_code` passes images through is checked in qualification. |
+| Q4 | Where is a figure commented on if it is a workspace file but not an artifact? | Today's figures open through the workspace file view, not the document workspace. | Solved by Q1 for new figures. For files that predate it, decide whether opening one to comment registers it as an observed version with "producer unknown" (FB20). |
+| Q5 | Where do replies come from? | The plan stores the turn's final message on every thread; nothing ties a turn back to its review today (`_dispatch_review` only records `message_id`). | Find the turn-finish seam that holds the final assistant message and the artifact change feed, in the planning phase. |
+| Q6 | Where do drafts live, given "no fifth store"? | Reviews persist in the workspace's `documents/reviews.jsonl` as append-only projections. | A draft is a review row with status `draft` in the same ledger; it becomes a thread when sent. |
+
+## Qualification scenarios
+
+Cloud phase unless marked. K11 is as amended by addendum A; K21 to K24 are added by it. All
+`open`: no implementation exists yet.
+
+| ID | Scenario | Passes when | Status |
+| --- | --- | --- | --- |
+| K1 | Open a `.docx`, a `.pptx` and an `.odt` | Each shows its rendition; no embedded editor is offered | open |
+| K2 | A text comment on a sentence in a Markdown report, sent | The agent receives the entry with before and after text and no anchor JSON, edits the source, and the thread shows its reply and the new version | open |
+| K3 | Ask the agent for a throughput plot from a CSV, then a region comment on its legend | The entry has the crop as an image part and a "Produced by" line naming the script; the agent edits the script, reruns it and looks at the new image; the thread links version 2 and shows before and after | open (needs Q1) |
+| K4 | The same as K3 when the agent drew the plot inside `run_code` | "Produced by" names the `run_code` cell | open (needs Q1) |
+| K5 | An element comment on a series in an SVG figure | The anchor's selector matches one element, and the agent's change affects that series | open |
+| K6 | An element comment on a button in an HTML artifact | The selector matches exactly one element, and the agent's edit changes that element | open |
+| K7 | A region comment on part of an HTML artifact | The crop comes from the server's render of that version | open |
+| K8 | A region comment on a chart on slide 4 of a `.pptx` whose picture is a workspace PNG | The entry names slide 4, the shape, the PNG and its producing script; the agent fixes the script and rebuilds the deck | open (needs Q1) |
+| K9 | A text comment on a `.docx` rendition | The entry names the paragraph, and the agent edits the `.docx` | open |
+| K10 | A native `@clio` comment in a `.docx` | It becomes a review as today | open |
+| K11 | Three marks of mixed modes on one PDF in one session, sent together | One turn carries the overview, three entries labelled `S1` to `S3` with their crops and the text under each, and no JSON, and each thread shows the reply and the new version | open |
+| K12 | A comment with "Send to agent" off | Stored as a human note; no turn starts | open |
+| K13 | The agent edits the document after K2 and K11 | Text threads that still match are marked moved; one whose text was rewritten is outdated; region threads stay on their version with before and after | open |
+| K14 | "Add to chat" on an agent answer, and a region on an A2UI chart | Both use the shared comment box, travel as attachments to the next message, and render as entries | open |
+| K15 | A figure produced by a call whose transform was not recorded | The entry says the producer is unknown | open |
+| K16 | Any viewer at 390 by 844 | The comment box, mode control and thread list fit; a region can be dragged with touch | open |
+| K17 | An element comment on a fixture button in the in-app browser | The agent receives the entry with the crop and a role-and-name target spec, and its script acts on that exact element | open |
+| K18 | A region comment over the fixture table in the in-app browser | The crop arrives as an image part and the agent answers about that area | open |
+| K19 | A text selection on a browser page | The entry carries the selected text with before and after | open |
+| K20 | Search both repositories for the editor names, routes and variables, the old annotation types, `_review_prompt`, the Review selection dialog and the Reviews tab | Nothing remains outside the ledgers and this plan | open |
+| K21 | Today's A2UI capture on a chart and a map, through the generalized panel | The agent receives the labelled overview, the rows and features under each box as readable lines, and no JSON block; the behaviour matches the base otherwise | open |
+| K22 | A region over a dense table in an HTML artifact | The text under the mark is cut at the limit and the entry names the session file holding the rest | open |
+| K23 | Close the panel with two unsent marks on a document, reopen the document | Both marks come back as a draft with their labels and comments | open |
+| K24 | A second session on the same artifact version after a session with `S1` to `S3` | The new marks start at `S4` | open |
+| — | The Tauri desktop and Windows and macOS installs | Not reachable from a cloud session | local phase |
