@@ -291,7 +291,7 @@ def execute_script(
                     )
                     break
     finally:
-        dispatcher.close(finished=finished)
+        dispatcher.close(finished=finished, cancelled=cancelled)  # a Cancel ends its wait
         kernel.last_used = time.monotonic()
     calls = list(dispatcher.records)
     outcome.update(

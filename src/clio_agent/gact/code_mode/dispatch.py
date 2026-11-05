@@ -25,7 +25,7 @@ import json
 import threading
 import time
 from collections.abc import Callable, Mapping
-from concurrent.futures import Future, ThreadPoolExecutor
+from concurrent.futures import FIRST_COMPLETED, Future, ThreadPoolExecutor, wait
 from dataclasses import dataclass
 from typing import Any
 
@@ -128,6 +128,8 @@ class Dispatcher:
         )
         self.records: list[CallRecord] = []
         self.lock = threading.Lock()
+        #: The calls sent and not yet ended, which a finished script's close waits for.
+        self.pending: set[Future[Any]] = set()
 
     def submit(self, message: Mapping[str, Any], reply: Callable[[dict[str, Any]], None]) -> None:
         """Start one call; ``reply`` gets the kernel's ``result`` message when it ends."""
@@ -147,6 +149,7 @@ class Dispatcher:
             return
         future = self.pool.submit(self.context.copy().run, self._run, tool, dict(args))
         future.add_done_callback(lambda f: self._settle(call_id, tool, f, reply))
+        self._track(future)  # after the reply: close waits until it is answered
 
     def _search(self, args: Mapping[str, Any]) -> dict[str, Any]:
         """``tools.search(query, limit)``: the script's limit, within the search bounds
@@ -201,6 +204,18 @@ class Dispatcher:
 
         future = self.pool.submit(self.context.copy().run, run)
         future.add_done_callback(lambda f: self._settle(call_id, "", f, reply))
+        self._track(future)
+
+    def _track(self, future: Future[Any]) -> None:
+        """Count the call as sent until it ends (a finished script's close waits for it)."""
+        with self.lock:
+            self.pending.add(future)
+
+        def ended(done: Future[Any]) -> None:
+            with self.lock:
+                self.pending.discard(done)
+
+        future.add_done_callback(ended)
 
     def _refusal(self, tool: str) -> str:
         """Why a script may not call ``tool`` (``""`` when it may): direct-only, blocked
@@ -259,11 +274,27 @@ class Dispatcher:
             self.records.append(CallRecord(tool, ok, duration, error[:500]))
         return ok, value if ok else None, error
 
-    def close(self, *, finished: bool = False) -> None:
+    def close(
+        self,
+        *,
+        finished: bool = False,
+        cancelled: Callable[[], bool] | None = None,
+        poll_s: float = 0.1,
+    ) -> None:
         """End the script's calls. A script that finished waits for the calls it sent (a
         call is made when the script makes it, awaited or not); a stopped one drops those
-        not yet started."""
-        if finished:
-            self.pool.shutdown(wait=True)
-        else:
+        not yet started. A finished script stopped while it waits (``cancelled``) stops
+        waiting then and drops the calls not yet started, so its task settles."""
+        if not finished:
             self.pool.shutdown(wait=False, cancel_futures=True)
+            return
+        self.pool.shutdown(wait=False)  # no new calls; the ones sent keep running
+        while True:
+            with self.lock:
+                pending = set(self.pending)
+            if not pending:
+                return
+            if cancelled is not None and cancelled():
+                self.pool.shutdown(wait=False, cancel_futures=True)
+                return
+            wait(pending, timeout=poll_s, return_when=FIRST_COMPLETED)
