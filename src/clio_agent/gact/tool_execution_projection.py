@@ -103,7 +103,12 @@ def _result_presentation(
     args = arguments if isinstance(arguments, Mapping) else {}
     # Task custody retains the server's local tool name. Reconstruct the declared
     # gateway identity rather than guessing result semantics from display labels.
-    name = f"{task.backend.server}_{task.tool}" if task.backend.server else task.tool
+    # A native root (``clio-shell``/``bash``) is CLIO's own placement, not a gateway
+    # mount: its declared identity is the invocation's own tool name (``shell_bash``).
+    if task.backend.owner == "native" and tool.get("name"):
+        name = str(tool["name"])
+    else:
+        name = f"{task.backend.server}_{task.tool}" if task.backend.server else task.tool
     presentation = present_mcp_result(name, args, result)
     return result, presentation
 
@@ -163,7 +168,9 @@ def project_execution(
             error = structured_tool_result_error(result)
             if error and state == "succeeded":
                 state = "failed"
-            if state == "failed" and not error:
+            # A presenter that declared the failure from the reply's own facts (a shell's
+            # exit code and output) has explained it; the task's last progress line has not.
+            if state == "failed" and not error and presentation.get("status") != "failed":
                 error = task.progress.message or "The execution owner reported failure."
                 presentation["blocks"].extend(_diagnostic(error, failed=True)["blocks"])
             presentation["status"] = state

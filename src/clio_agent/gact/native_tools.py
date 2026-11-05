@@ -39,7 +39,7 @@ from clio_agent.gact.core_recovery import CoreRecovery
 from clio_agent.gact.native_code import register_native_code
 from clio_agent.gact.native_identity import local_runtime_identity
 from clio_agent.gact.native_shell import register_native_shell
-from clio_agent.gact.native_task_replies import unchanged_reply
+from clio_agent.gact.native_task_replies import reply_status_line, unchanged_reply
 from clio_agent.gact.native_work import SUBMISSION_ARGUMENT, NativeWork, SubmissionAuthorizer, now
 from clio_agent.gact.task_access import TaskAccessDenied
 from clio_agent.gact.task_history import TaskHistory
@@ -585,10 +585,8 @@ class NativeTools:
                     "updated_at": stamp,
                     "connection_freshness": "fresh",
                     "backend_observation": raw or current.backend_observation,
-                    "progress": current.progress.model_copy(
-                        update={"message": reply.status_message}
-                    )
-                    if reply.status_message is not None
+                    "progress": current.progress.model_copy(update={"message": line})
+                    if (line := reply_status_line(reply.status_message)) is not None
                     else current.progress,
                 }
             )

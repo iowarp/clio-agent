@@ -16,6 +16,7 @@ from clio_agent.tools.file_policy import validate_read_path
 from clio_agent.tools.fs_edit import PreviousContent, capture_previous_content
 from clio_agent.tools.result_errors import structured_tool_result_error
 from clio_agent.tools.shell_spill_presentation import saved_output_blocks
+from clio_agent.tools.task_envelope import settled_tool_result
 
 logger = logging.getLogger(__name__)
 Adapter = Callable[[Mapping[str, Any], Any, Any], dict[str, Any]]
@@ -422,7 +423,8 @@ def _diff(args: Mapping[str, Any], result: Any, snapshot: Any) -> dict[str, Any]
 
 def _terminal(args: Mapping[str, Any], result: Any, snapshot: Any) -> dict[str, Any]:
     del snapshot
-    row = _structured(result)
+    # A native shell call settles as a task envelope; its output is the reply inside.
+    row = _structured(settled_tool_result(result) or result)
     exit_code = row.get("exit_code")
     timed_out = bool(row.get("timed_out"))
     return {
