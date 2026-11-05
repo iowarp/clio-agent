@@ -86,6 +86,10 @@ dependencies = [
     # The workspace file viewer's HDF5 data route (gact/hdf5_view.py): metadata and
     # bounded slices, so a large file is never read whole.
     "h5grove>=4.0.0",
+    # The in-app browser (gact/browser/): imported only when the service starts. Its
+    # Chromium build is downloaded on first use into CLIO's cache, never at install time.
+    # Exact: the service relies on 1.64's screencast, show_actions(style=) and get_by_ref.
+    "playwright==1.64.1",
     "pyarrow>=14.0.0",
     # Artifact table-query LTTB downsampling (gact/artifacts/lttb.py). Already present
     # transitively (matplotlib/pyarrow); declared now that first-party code imports it.

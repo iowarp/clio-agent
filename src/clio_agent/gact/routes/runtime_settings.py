@@ -64,4 +64,8 @@ def register_runtime_settings_routes(app: FastAPI) -> None:
                     row.value for row in result.settings if row.key == "agent_tasks.max_concurrent"
                 )
                 app.state.conversations.set_inference_capacity(int(value))
+            if any(key.startswith("browser.") for key in request.changes):
+                from clio_agent.gact.browser.service import switch_browser  # noqa: PLC0415
+
+                await run_off_loop(switch_browser)
             return result

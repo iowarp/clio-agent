@@ -37,6 +37,7 @@ name)`` at once can race on the version number (reported in the design doc).
 
 from __future__ import annotations
 
+import asyncio
 import functools
 import hashlib
 import json
@@ -197,6 +198,13 @@ class StoreBackend:
 
     def _delete(self, key: str) -> None:
         self._cache.pop(key, None)
+        remove = functools.partial(self._remove, key)
+        if self._behind is not None:
+            self._behind(remove)
+        else:
+            remove()
+
+    def _remove(self, key: str) -> None:
         try:
             self._store.delete(ARTIFACT_INDEX_KIND, key)
         except STORE_ERRORS as exc:
@@ -287,7 +295,21 @@ class StoreBackend:
                 self._write(key, body)
 
     def _recheck(self, key: str, body: dict[str, Any]) -> Any:
-        """Resolve pending entries older than the grace against the event log."""
+        """Resolve pending entries older than the grace against the event log.
+
+        A read inside a route runs on the server loop, which may not wait on a store
+        write (``arc.loop_guard``): there the rewrite goes to a worker instead (the
+        cache answers meanwhile), so the repair is not lost to ``LoopThreadStoreWrite``.
+        """
+        outer = self._behind
+        if outer is None:
+            self._behind = _loop_writer()
+        try:
+            return self._resolve_pending(key, body)
+        finally:
+            self._behind = outer
+
+    def _resolve_pending(self, key: str, body: dict[str, Any]) -> Any:
         pending = body.get("pending") or {}
         changed = False
         for event_id, info in list(pending.items()):
@@ -595,6 +617,20 @@ def _arc(app: "FastAPI") -> Any:
     from clio_agent.gact.runtime.globals import _PROCESS_ARC  # noqa: PLC0415
 
     return getattr(app.state, "arc", None) or _PROCESS_ARC
+
+
+def _loop_writer() -> Optional[Callable[[Callable[[], None]], None]]:
+    """Hand a write to a worker when this thread runs the server loop, else ``None``."""
+    try:
+        asyncio.get_running_loop()
+    except RuntimeError:
+        return None
+    from clio_agent.gact.off_loop import schedule_off_loop  # noqa: PLC0415
+
+    def off_loop(put: Callable[[], None]) -> None:
+        schedule_off_loop(put, label="artifact_index_recheck")
+
+    return off_loop
 
 
 def index_store(app: "FastAPI") -> Optional["ARCStore"]:

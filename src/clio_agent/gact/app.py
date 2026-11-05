@@ -557,6 +557,7 @@ _turn_start_background_user_turn = _start_background_user_turn
 from typing import Protocol
 
 from clio_agent.gact import agent_initialization
+from clio_agent.gact.browser.live import register_browser_routes
 from clio_agent.gact.catalog import (  # noqa: E402, F401
     _command_search_roots,
     _load_command_files_from_disk,
@@ -576,6 +577,7 @@ from clio_agent.gact.permission_gate import (  # noqa: E402,F401
     _policy_action_for_tool,
     _record_resolved_permission,
 )
+from clio_agent.gact.session_processes import close_all_processes
 from clio_agent.gact.sessions import SessionStore, _default_store_path
 
 # Prediction rendering + the stream-fallback ledger (gact/streaming.py, #714),
@@ -762,6 +764,7 @@ async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
                 "one or more MCP Apps failed explicit host cleanup; "
                 "child transport shutdown will run the server cleanup backstop"
             )
+        await asyncio.to_thread(close_all_processes)  # kernels and browsers (BR23)
         try:
             loop = asyncio.get_running_loop()
             await loop.run_in_executor(
@@ -1522,6 +1525,7 @@ def build_app(
     from clio_agent.gact.routes.tasks import register_task_routes
 
     register_task_routes(app)
+    register_browser_routes(app)  # the shared tab: pages, live view, allowing a host
     composer_runtime.register_composer_routes(app, deps)
     register_a2ui_routes(app, deps)
 

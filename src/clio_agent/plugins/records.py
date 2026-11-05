@@ -138,6 +138,17 @@ class CatalogRecord:
 
 
 @dataclass(frozen=True)
+class KernelBindingRecord:
+    """Python a plugin binds into ``run_code``'s kernel under ``name`` (read, never imported)."""
+
+    name: str
+    source: str
+    text: str
+    digest: str
+    requires: tuple[str, ...] = ()
+
+
+@dataclass(frozen=True)
 class PluginRecord:
     """Everything a plugin contributes, as data."""
 
@@ -161,6 +172,7 @@ class PluginRecord:
     fragments: tuple[FragmentRecord, ...] = ()
     commands: tuple[CommandRecord, ...] = ()
     catalogs: tuple[CatalogRecord, ...] = ()
+    kernel_bindings: tuple[KernelBindingRecord, ...] = ()
     workflow_state: dict[str, Any] | None = None
     diagnostics: tuple[Diagnostic, ...] = ()
     executable_digest: str = ""
@@ -200,7 +212,15 @@ class PluginRecord:
             out = []
             for row in data.get(key) or []:
                 values = dict(row)
-                for name in ("args", "before", "after", "plugins", "when_tools", "when_plugins"):
+                for name in (
+                    "args",
+                    "before",
+                    "after",
+                    "plugins",
+                    "when_tools",
+                    "when_plugins",
+                    "requires",
+                ):
                     if name in values and isinstance(values[name], list):
                         values[name] = tuple(values[name])
                 if kind is SubagentRecord and isinstance(values.get("tools"), list):
@@ -229,6 +249,7 @@ class PluginRecord:
             fragments=rows("fragments", FragmentRecord),
             commands=rows("commands", CommandRecord),
             catalogs=rows("catalogs", CatalogRecord),
+            kernel_bindings=rows("kernel_bindings", KernelBindingRecord),
             workflow_state=data.get("workflow_state"),
             diagnostics=rows("diagnostics", Diagnostic),
             executable_digest=data.get("executable_digest") or "",

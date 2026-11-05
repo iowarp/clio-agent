@@ -236,6 +236,7 @@ class RuntimeProbe:
         """Collect all currently supported integration statuses (``include_process_census=False``
         skips the ~10s cold psutil census rows for callers serving them from a cache)."""
         from clio_agent.compaction_prompt import probe_compaction_prompt  # noqa: PLC0415
+        from clio_agent.gact.browser.install import probe_browser  # noqa: PLC0415
         from clio_agent.runtime import sandbox_conformance as _sconf  # noqa: PLC0415
         from clio_agent.runtime.clio_core_health import probe_clio_core_health  # noqa: PLC0415
         from clio_agent.runtime.mcp_launcher import (  # noqa: PLC0415
@@ -260,6 +261,7 @@ class RuntimeProbe:
             probe_sandbox(),
             _sconf.probe_sandbox_conformance(),
             probe_compaction_prompt(),
+            probe_browser(),
             *probe_process_tree(include_live_census=include_process_census),
         ]
         return RuntimeReport(integrations=integrations)

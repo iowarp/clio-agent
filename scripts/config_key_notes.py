@@ -80,6 +80,12 @@ SECTIONS: list[tuple[str, tuple[str, ...], str]] = [
         "discovery/cache/timeouts.",
     ),
     (
+        "Browser",
+        ("browser",),
+        "The in-app browser the agent drives from run_code: backend, profile, host grants, "
+        "action and page limits, the sandbox and the live view's frames.",
+    ),
+    (
         "Web search",
         ("search",),
         "Which backend serves the web_search tool (CLIO's private SearXNG by default, a CLIO Web "
@@ -100,6 +106,53 @@ SECTIONS: list[tuple[str, tuple[str, ...], str]] = [
 ]
 
 KEY_NOTES: dict[str, str] = {
+    "deployment.target": (
+        "The infrastructure target this CLIO was started through; a remote deployment's "
+        "launcher sets it, and the browser names it when a host does not answer."
+    ),
+    "browser.backend": (
+        "managed (CLIO launches its own Chromium, the default) or cdp (connect to a Chrome you "
+        "run with remote debugging and a separate profile, at browser.cdp_url)."
+    ),
+    "browser.profile": (
+        "Name of the browser profile; one profile is one Chromium whose sign-ins every "
+        "conversation shares and that survives restarts."
+    ),
+    "browser.cdp_url": (
+        "DevTools endpoint of your own Chrome for the cdp backend, e.g. http://127.0.0.1:9222; "
+        "chrome or msedge attaches to the one you run, after you allow remote debugging at "
+        "chrome://inspect/#remote-debugging (Chrome 144 or later), with your sign-ins."
+    ),
+    "browser.channel": (
+        "The browser the managed backend runs: chromium (CLIO's own, the default), chrome or "
+        "msedge (your installed one, on a profile CLIO keeps; you sign in there once)."
+    ),
+    "browser.action_timeout_s": (
+        "Seconds one browser action may take; time waiting for your answer to a site question "
+        "is not counted."
+    ),
+    "browser.max_pages": "Pages open at once across the server; opening one more is refused.",
+    "browser.idle_minutes": (
+        "Minutes a page nobody uses or watches stays open, and a browser with no pages, "
+        "before it closes."
+    ),
+    "browser.allow_unsandboxed": (
+        "Run Chromium without its own sandbox when the sandbox cannot start (as root, or "
+        "without unprivileged user namespaces); off by default, and doctor and the live view "
+        "say when it is on."
+    ),
+    "browser.granted_hosts": (
+        "Comma-separated host patterns (*.example.org works) every conversation may load "
+        "without asking; a deployment pre-grant."
+    ),
+    "browser.person_window_s": (
+        "Seconds after your input in the live view in which a navigation counts as yours "
+        "(granted for the conversation) rather than the page's own."
+    ),
+    "browser.frame_quality": "JPEG quality, 1 to 100, of the live view's frames.",
+    "browser.frame_width": (
+        "Width in pixels of the live view's frames; lower it for a slow connection."
+    ),
     "a2ui.max_message_bytes": (
         "Byte ceiling on one encoded A2UI server-to-client message; raise only for trusted "
         "producers emitting larger surface updates."

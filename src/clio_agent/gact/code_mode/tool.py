@@ -178,7 +178,8 @@ def run_script(
     try:
         with kernel.lock:
             kernel.bind(
-                stub_table(agent.tools, servers, direct_only=direct_only, code_only=code_only)
+                stub_table(agent.tools, servers, direct_only=direct_only, code_only=code_only),
+                dict(getattr(agent, "_clio_kernel_bindings", None) or {}),
             )
             kernel.send({"type": "exec", "id": 1, "code": code})
             while True:

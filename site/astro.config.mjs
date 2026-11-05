@@ -94,6 +94,7 @@ export default defineConfig({
 							],
 						},
 						{ label: 'Answer a question', slug: 'docs/questions' },
+						{ label: 'Use the browser', slug: 'docs/browser' },
 						{ label: 'Follow work in progress', slug: 'docs/following-work' },
 						{ label: 'Flows and workflows', slug: 'docs/flows' },
 						{ label: 'Subagents', slug: 'docs/subagents' },

@@ -217,3 +217,43 @@ def accept_session_input(
         )
         coalesce_pending_inputs(history, session_id)
     return identity
+
+
+#: Inputs that start work by themselves: a person's message, what the person set up, and
+#: their Resume of a stopped assignment (a ``control`` input).
+STARTING_KINDS = frozenset({"human", "composer", "goal", "loop", "schedule", "hook", "control"})
+
+
+def stopped_by_person(latest: Any) -> bool:
+    """Whether the person stopped the latest assignment: Stop leaves it open as
+    ``stopping`` / ``stopped`` until they write or Resume; a cancellation ends it."""
+    if latest is None:
+        return False
+    if latest.terminal_at is None:
+        return latest.activity in {"stopping", "stopped"}
+    return latest.cancellation_requested_at is not None
+
+
+def admission_trigger(session_id: str, items: tuple[MailItem, ...], latest: Any) -> MailItem | None:
+    """The staged input a new turn answers, or ``None`` when nothing may start one.
+
+    After the person stopped the latest assignment, an outcome of the stopped work does
+    not start the agent again: it stays eligible and reaches the agent with the person's
+    next message or Resume, which is then the turn's trigger. Before this, a shell
+    command's outcome arriving after Stop woke the agent with a synthesized "continue"
+    prompt, and again at the next boot; the agent went on installing packages and
+    starting a server the person had stopped.
+    """
+    if not stopped_by_person(latest):
+        return items[0] if items else None
+    trigger = next((item for item in items if item.kind in STARTING_KINDS), None)
+    if trigger is None and items:
+        from clio_agent.runtime import trace  # noqa: PLC0415
+
+        trace.event(
+            "CONVERSATION",
+            "admission_waits reason=stopped_by_person session=%s outcomes=%d",
+            session_id,
+            len(items),
+        )
+    return trigger

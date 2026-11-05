@@ -33,7 +33,10 @@ from clio_agent import conf
 from clio_agent.gact.agents.tool_concurrency import ServerGates, call_workers
 from clio_agent.gact.code_mode.stubs import tool_group
 
-__all__ = ["CallRecord", "Dispatcher", "max_nested_calls"]
+__all__ = ["CONCURRENCY_GROUP_ATTR", "CallRecord", "Dispatcher", "max_nested_calls"]
+
+#: The attribute a native tool's callable sets to share a concurrency cap with other tools.
+CONCURRENCY_GROUP_ATTR = "_clio_concurrency_group"
 
 _SEARCH = "__search__"
 
@@ -166,6 +169,8 @@ class Dispatcher:
 
         target = self.tools[tool]
         group, _ = tool_group(tool, self.servers)
+        # A native tool may declare the group it shares a concurrency cap with (the browser).
+        group = group or str(getattr(getattr(target, "func", None), CONCURRENCY_GROUP_ATTR, ""))
         sink: list[tuple[str | None, Any]] = []
         MODEL_CALL_SLOT.set({})  # this call's own observer id, not the script's
         INLINE_COLLECTION.set(None)  # the script reads the reply, not the model

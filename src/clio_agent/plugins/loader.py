@@ -671,6 +671,10 @@ def load_plugin(root: Path, *, marketplace: str = "", trusted: bool) -> PluginRe
                     plugin,
                 )
             )
+    from clio_agent.plugins import kernel_bindings  # noqa: PLC0415
+
+    bindings, binding_problems = kernel_bindings.load(root, ext.get("kernel_bindings"), plugin)
+    diagnostics += binding_problems
     record = PluginRecord(
         id=plugin,
         version=version,
@@ -696,6 +700,7 @@ def load_plugin(root: Path, *, marketplace: str = "", trusted: bool) -> PluginRe
             + _catalogs(clio_dir)
         ),
         workflow_state=workflow_state,
+        kernel_bindings=bindings,
         diagnostics=tuple(diagnostics),
         executable_digest=exec_digest,
         text_digest=text_digest,

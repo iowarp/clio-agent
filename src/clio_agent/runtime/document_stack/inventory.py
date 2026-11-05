@@ -30,6 +30,8 @@ PACKAGES = {
     "odfpy": "odf",
     "pillow": "PIL",
     "numpy": "numpy",
+    "pandas": "pandas",
+    "matplotlib": "matplotlib",
     "lxml": "lxml.etree",
     "defusedxml": "defusedxml",
     "nodejs-wheel-binaries": "nodejs_wheel",

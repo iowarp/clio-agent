@@ -1,0 +1,174 @@
+---
+title: "Use the browser with CLIO"
+description: Watch and use the web pages CLIO opens, sign in to sites yourself, choose which sites it may load, and pick the browser it runs.
+---
+
+import PreviewGuide from '../../../components/docs/PreviewGuide.astro';
+import { Aside, CardGrid, LinkCard, Steps } from '@astrojs/starlight/components';
+import Capture from '../../../components/overview/Capture';
+import { captureImage } from '../../../lib/captures';
+import panel from '../../../assets/captures/docs-browser-panel.png';
+
+<PreviewGuide features="The browser panel and the settings on this page" />
+
+CLIO has a browser of its own. When the agent opens a web page, the page appears as a
+tab in the side panel. You see what the agent does there, and you can use the page
+yourself: click, type, scroll, or enter an address. The agent and you share the same
+page.
+
+The agent uses the browser for pages a plain download cannot read, such as pages that
+need a sign-in, pages built by scripts, forms, and web apps running on your computer.
+For a public page it can read directly, it fetches the page instead.
+
+<Capture client:visible image={await captureImage(panel)}
+  alt="A conversation where CLIO counted the rows of a dataset table, with the same page open in the Browser tab of the side panel, showing back, forward, reload and the address"
+  caption="The page the agent read, open in the side panel. You can click and type in it, or enter another address."
+/>
+
+## Use the shared page
+
+- **Links in an answer.** Choose a web link and it opens in the side panel. To open it
+  in your own browser instead, hold Shift (or Ctrl, Cmd or Alt) as you click.
+- **Taking part.** Anything you do on the page is yours: the agent is told you used the
+  page and reads it again before it continues.
+- **More than one window.** The first window that shows a page controls it. Another
+  window, or another device, shows the same page to watch only.
+- **Pages a conversation opened.** The **Work** summary lists the pages of the
+  conversation and of its subagents.
+- **Closing.** Deleting a conversation closes its pages. A subagent's pages close when
+  its work ends. A page nobody uses or watches closes after 30 minutes.
+
+## Which sites the agent may load
+
+The first time the agent loads a site in a conversation, CLIO asks you, with the site's
+name. You can allow it once, for the conversation, or for the workspace. While you
+decide, the agent's time limit does not run.
+
+Pages you open, and links you follow, load without a question, as in any browser. If you
+take a page to a site the agent may not use yet, CLIO asks before the agent reads or acts
+on it. When a page is refused, the panel says so and offers to allow the site.
+
+The panel opens only web pages. Local files and browser-internal addresses are refused.
+
+## Sign-ins, passwords and files
+
+- **Sign in yourself.** The agent does not type into password fields. When a site needs
+  a sign-in, it asks you to sign in in the panel, then continues.
+- **Sign-ins are kept.** CLIO's browser keeps its cookies between conversations and
+  across restarts, so you sign in to a site once.
+- **Uploads** follow the same [file permissions](/docs/permissions/) as the rest of
+  CLIO.
+- **Running a script in the page** asks you first.
+- **Screenshots and downloads** are saved with the conversation's files. A screenshot
+  records the page it came from.
+
+## Devices with their own certificate
+
+A printer, a home server or a lab instrument on your network often uses a certificate
+the browser does not trust. CLIO never gets around such a warning on its own: the agent
+stops, tells you the site and the certificate's fingerprint, and asks you to look.
+
+The page stays on the browser's warning in the side panel, with a note above it. Hover
+over the note's information icon to see who the certificate was issued to and by, when
+it expires, and its fingerprint. If you know the device, choose **Trust this certificate
+for** **This conversation** or **This workspace**. The browser restarts, the page loads,
+and the agent can continue.
+
+- **The trust is for that certificate.** If the device later presents a different
+  certificate, CLIO asks you again.
+- **The browser's own Proceed link is not the same.** Clicking through the warning lets
+  you see the page until the browser closes, but the agent still treats it as untrusted.
+- **Removing the trust.** The trusted certificate is listed in
+  [Choose what CLIO may do](/docs/permissions/), where you can remove it.
+- **Your running Chrome.** When CLIO uses your own Chrome, proceed in Chrome if you trust
+  the site. CLIO keeps no record of it.
+
+## When a site does not answer
+
+Pages load from the computer the CLIO backend runs on, not from yours. When a site does
+not answer, the agent says which computer tried, and for an address on a local network
+(such as `192.168.1.20` or `printer.local`) that the address was looked up on that
+computer's network. A CLIO backend on a cluster or a remote server cannot reach devices
+on your home or lab network.
+
+## Choose the browser CLIO runs
+
+Choose the browser in **Settings**, under **Browser**. The change applies when you save
+it: the pages open now close, and the next page opens in the browser you chose. The
+browser runs on the computer the CLIO backend runs on.
+
+| Browser | What happens | In Settings |
+|---|---|---|
+| Bundled Chromium (default) | CLIO downloads its own Chromium the first time the browser is used and keeps it in your user cache. It does not change any browser you have installed. | **Which browser**: A separate browser. **Separate browser**: Bundled Chromium. |
+| Your installed Chrome or Edge | CLIO runs the Chrome or Edge you have installed, on a profile of its own. You sign in there once. | **Which browser**: A separate browser. **Separate browser**: Installed Google Chrome, or Installed Microsoft Edge. |
+| Your running Chrome or Edge | CLIO opens its pages as tabs in the Chrome or Edge you are using, with your own sign-ins. | **Which browser**: Your running Chrome or Edge. **Running browser to connect to**: `chrome` or `msedge`. |
+
+In every case the pages show in the side panel the same way.
+
+CLIO does not copy cookies or saved passwords out of your own Chrome: Chrome keeps them
+encrypted with your operating system's keys. To work with your own sign-ins, let CLIO use
+your running Chrome:
+
+<Steps>
+
+1. Use Chrome 144 or later, and open `chrome://inspect/#remote-debugging`.
+2. Turn on **Allow remote debugging for this browser instance**.
+3. In **Settings** > **Browser**, choose **Your running Chrome or Edge**, enter `chrome`
+   under **Running browser to connect to**, and save. In `config.yaml` the same choice is:
+
+   ```yaml
+   browser:
+     backend: cdp
+     cdp_url: chrome
+   ```
+
+4. Chrome asks you to allow CLIO when it connects. Stopping CLIO closes the tabs it
+   opened and leaves Chrome running.
+
+</Steps>
+
+<Aside type="caution">
+With your running browser, the agent works where you are signed in. The site questions
+above still apply, but choose the sites you allow with that in mind.
+</Aside>
+
+## Browser settings
+
+`backend`, `channel` and `cdp_url` are in **Settings** > **Browser**. All of them can be
+set in [`config.yaml`](/docs/configuration/) under `browser:`, and each has an environment
+variable: `CLIO_BROWSER_` followed by the setting's name in capitals, such as
+`CLIO_BROWSER_CHANNEL`. A change to `config.yaml` or the environment applies after a
+restart.
+
+| Setting | Default | What it does |
+|---|---|---|
+| `backend` | `managed` | `managed` runs a browser for CLIO; `cdp` connects to a browser you run, at `cdp_url`. |
+| `channel` | `chromium` | The browser `managed` runs: `chromium` (CLIO's own), `chrome` or `msedge` (your installed one). |
+| `cdp_url` | unset | `chrome` or `msedge` for your running browser, or a DevTools address such as `http://127.0.0.1:9222`. |
+| `profile` | `default` | The profile whose sign-ins every conversation shares. |
+| `granted_hosts` | unset | Sites every conversation may load without asking, such as `*.example.org`. |
+| `max_pages` | `12` | Pages open at once. Opening one more is refused. |
+| `idle_minutes` | `30` | Minutes before a page nobody uses or watches closes, and a browser with no pages. |
+| `action_timeout_s` | `30` | Seconds one browser action may take. Time waiting for your answer is not counted. |
+| `frame_width` | `1280` | Width in pixels of the side panel's picture of the page. Lower it on a slow connection. |
+| `frame_quality` | `70` | Picture quality, 1 to 100. |
+| `allow_unsandboxed` | `false` | Run Chromium without its sandbox when the sandbox cannot start. The panel shows when it is on. |
+
+## Web apps on your computer
+
+The agent can start a web app, open it in the panel, and work in it with you. The
+`marimo` plugin does this for [marimo](https://marimo.io) notebooks: the agent starts the
+notebook's server, opens it in the panel, and runs code in the notebook's own Python
+session, so you see each change as it happens. marimo runs on CLIO's own Python, so it
+works without Python installed on your computer and changes none of your environments.
+
+The `marimo` plugin is not part of any agent by default. Add it to a conversation from
+the Agent panel, as described in [Agents and plugins](/docs/agents-and-plugins/).
+
+## Next steps
+
+<CardGrid>
+  <LinkCard title="Choose what CLIO may do" href="/docs/permissions/" />
+  <LinkCard title="Agents and plugins" href="/docs/agents-and-plugins/" />
+  <LinkCard title="Configuration" href="/docs/configuration/" />
+</CardGrid>

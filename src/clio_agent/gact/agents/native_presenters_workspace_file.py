@@ -74,6 +74,11 @@ def workspace_file_presentation(
     sha256 = str(row.get("sha256") or "")
     if not path or not media_type or not sha256:
         return {"summary": "", "blocks": []}
+    if path.startswith("/") or ":" in path[:3]:  # the conversation's scratch, not the workspace
+        return {
+            "summary": "",
+            "blocks": [{"id": "scratch-file", "type": "text", "label": "Viewed", "text": path}],
+        }
     block: dict[str, Any] = {
         "id": "workspace-file",
         "type": "workspace_file",

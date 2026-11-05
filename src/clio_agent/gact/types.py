@@ -691,6 +691,7 @@ ToolDomain = Literal[
     "messaging",
     "interaction",
     "science",
+    "browser",
 ]
 
 

@@ -61,6 +61,17 @@ def _workspace_root() -> Path:
         ) from exc
 
 
+def _scratch_root() -> Path | None:
+    """This conversation's own scratch folder (browser screenshots land there), if any."""
+    from clio_agent.runtime.session_scratch import active_scratch_dir  # noqa: PLC0415
+
+    try:
+        folder = active_scratch_dir()
+    except OSError:
+        return None
+    return Path(folder).resolve() if folder else None
+
+
 def _workspace_image(path: str) -> tuple[Path, Path, bytes, str]:
     root = _workspace_root()
     requested = Path(path)
@@ -71,10 +82,14 @@ def _workspace_image(path: str) -> tuple[Path, Path, bytes, str]:
     try:
         relative = resolved.relative_to(root)
     except ValueError as exc:
-        raise ViewImageError(
-            "view_image_outside_workspace",
-            "view_image can only inspect files inside the active CLIO workspace.",
-        ) from exc
+        scratch = _scratch_root()
+        if scratch is None or not resolved.is_relative_to(scratch):
+            raise ViewImageError(
+                "view_image_outside_workspace",
+                "view_image can only inspect files inside the active CLIO workspace or this "
+                "conversation's scratch folder.",
+            ) from exc
+        relative = resolved  # a scratch file is named by its full path, as captures are
 
     data = resolved.read_bytes()
     check_block_bytes("image", len(data), label=relative.as_posix())
@@ -156,7 +171,8 @@ def build_view_image_tool() -> Any:
     def view_image(path: str) -> dict[str, Any]:
         """Attach a workspace image to the next model step for visual inspection.
 
-        Use this only for an image that already exists inside the active workspace.
+        Use this only for an image that already exists inside the active workspace or
+        this conversation's scratch folder (where browser screenshots are written).
         PDF files must first be rendered into bounded PNG, JPEG, GIF, or WebP pages.
         The file is size-bounded, media-sniffed, hashed, and revalidated before its
         pixels reach the model.
