@@ -162,10 +162,10 @@ def render_system(system: str | None, tools: Sequence[Any]) -> str:
     """The tool rules and the tool list, then the system prompt.
 
     The tools come first, as in Anthropic's own request order (tools, system,
-    messages): they are the same for every session of an agent, while the system
-    prompt ends with per-session facts (the workspace, its write roots). Putting the
-    stable text first keeps the provider's prompt-cache prefix shared across sessions;
-    only the short per-session tail is new.
+    messages): both are the same for every session of an agent. The session's own
+    facts (the workspace, its write roots) are not in the system prompt; they ride the
+    conversation as the ``session_facts`` injection, so the provider's prompt-cache
+    prefix is shared across sessions.
     """
     parts: list[str] = []
     functions = [t for t in tools if isinstance(t, FunctionTool)]

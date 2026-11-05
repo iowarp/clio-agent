@@ -6,7 +6,7 @@ attached to an event; a person can switch it off, edit it and preview it in the 
 
 ## The injection system (2026-11-03)
 
-- **Declarations.** One Markdown file per injection (flat frontmatter, body). Core's 70 ship in
+- **Declarations.** One Markdown file per injection (flat frontmatter, body). Core's 72 ship in
   the core plugin (`src/clio_agent/plugins/builtin/core/ai.iowarp.clio/injections/`); a plugin
   declares its own in `ai.iowarp.clio/injections/*.md` (`name`, `event`, optional `tool`
   pattern, `title`, `description`, `active`). `prompt_packs/` is deleted.
@@ -25,21 +25,34 @@ attached to an event; a person can switch it off, edit it and preview it in the 
   typed `InjectionTemplateError`. A core or person's template that fails raises; a plugin's
   is left out with the typed reason `injection_plugin_render_failed` (trace and stream audit).
 - **Edits.** A person's copy is saved through the prompt registry under `clio.reminder.<name>`
-  (plugin injections: `clio.reminder.<plugin>.<name>`), per user, workspace or session, as
-  before; the registry validates an injection body with the same Jinja parser.
+  (plugin injections: `clio.reminder.<plugin>.<name>`), per user, workspace or session; the
+  registry validates an injection body with the same Jinja parser. A copy is a text edit
+  (its own body) or a settings overlay (`x_overlay: true`, no body: only the switch and the
+  settings that differ from the shipped ones), so switching a reminder never freezes its
+  wording; the Reminders tab's switch and the Fleet page's explore switch write overlays.
+  Installed plugins' injections are listed beside core's and switched the same way; only
+  core's may be `x_required`.
+- **Recording.** The recorder writes state (the plan, the todos, the session's facts) only
+  when it differs from the copy still in context. An event note (`plan_stale`, `replan`,
+  `explore_nudge`) carries a per-firing id and is recorded at every firing, even in the same
+  words. The plan the agent wrote itself is held while its `plan_update` call is in context
+  and offered again after a compaction, a rebuilt context or the person's edit.
 
 ## What a reminder is
 
 An *injection* is text CLIO adds to the conversation the model reads, recorded in the
-transcript as an `injection` part (`gact/injection_parts.py`). About twenty sources exist
-today; most build their text in Python:
+transcript as an `injection` part (`gact/injection_parts.py`). About twenty sources exist;
+each source's code decides when it fires and fills the variables, and its wording is the
+template (pieces built from conditions are one template each):
 
 | Source | Owner module | Fires |
 | --- | --- | --- |
 | `session_facts` | `gact/working_state.py` | when the session's facts change, and after a compaction |
 | `plan`, `todos`, `plan_mode` | `gact/session_plan.py`, `gact/todos.py`, `gact/plan_mode.py` | turn start when changed; after a compaction |
-| `plan_stale` | `gact/working_state.py` | after `plan.stale_steps` steps without a plan or todo write |
-| `explore_nudge` | `gact/explore_nudge.py` | after N read-only calls without delegating, once per turn |
+| `plan_stale` | `gact/working_state.py` | after the reminder's `steps` setting (`x_param_steps`, 25) of tool-calling steps without a plan or todo write, outside plan mode |
+| `explore_nudge` | `gact/explore_nudge.py` | after `x_param_after` read-only calls without delegating, once per turn |
+| `replan` | `gact/replanning.py` | the turn after the stall monitor flags little progress in an approved playbook |
+| `child_report` | `gact/child_report_fit.py` | turn start of a session another agent started |
 | `task_result` | task notifications | when a child or background task finishes |
 | `plugin_change` | `gact/agents/prompt_basis.py` | when the agent's plugins or a deferred server's tools change |
 | `summarization`, `compaction_failed`, `compaction_skipped` | `gact/summarization_record.py` | around a compaction |
@@ -54,10 +67,11 @@ Piebald-AI mirror), each with declared variables and conditionals filled in by t
 
 ### As built
 
-70 templates under `src/clio_agent/plugins/builtin/core/ai.iowarp.clio/injections/`, named
+72 templates under `src/clio_agent/plugins/builtin/core/ai.iowarp.clio/injections/`, named
 `<source>` or `<source>_<piece>` when the text is built from conditional pieces (one
-template per piece; the code decides which apply, the template is the wording). Every
-default renders today's text byte for byte, pinned by `tests/test_gact/test_reminders*.py`.
+template per piece; the code decides which apply, the template is the wording). The
+defaults' rendered text is pinned by `tests/test_gact/test_reminders*.py`; 35 are
+`x_required`, 37 can be switched off.
 
 - **Switchable** (a person may turn them off): `explore_nudge`, `plan_stale`,
   `session_facts*`, `plan*`, `todos`, the optional `plan_mode_*` bullets,
@@ -85,23 +99,29 @@ inherits built-in, user and workspace scopes, editing (`save`) and rendering:
 ```markdown
 ---
 id: clio.reminder.explore_nudge
-kind: reminder
-title: Suggest Explore while searching
-description: After a run of reading calls, remind the agent that explore exists.
-active: true
-variables: [calls, explore_model, spawn_tool]
-params: {after: 6}
-trigger: after `params.after` read-only calls in a turn with no delegation; once per turn
+title: Suggest explore while searching
+description: After a run of reading calls, remind the agent that an explore child can take the rest of the search.
+x_kind: reminder
+x_active: true
+x_trigger: after `after` read-only calls in one turn with no delegation, when the agent can start an explore child; at most once per turn
+x_variables: calls, explore_model, spawn_tool
+x_param_after: 6
 ---
 You have made {{calls}} reading calls in this turn without delegating. ...
 ```
 
-- `active` is the person's switch (distinct from the registry's validity check).
-- `variables` declares what the code fills in; a placeholder outside the list is a
-  validation error, shown in the editor. Values are text; nothing in a template runs.
-- `params` are the reminder's own settings (a threshold); the code reads them from the
-  resolved template, so the reminder page is the one place to change them.
-- `trigger` describes when it fires. It is documentation until the trigger system exists.
+Frontmatter is flat (`key: value`); the registry strips the `x_` prefix in its rows.
+
+- `x_kind: reminder` marks an injection: its body is validated as a sandboxed template.
+- `x_active` is the person's switch (distinct from the registry's validity check).
+- `x_required` says why it cannot be switched off; read from core's shipped file only.
+- `x_variables` declares what the code fills in; a name outside the list (and the session
+  state) is a validation error, shown in the editor. Nothing in a template runs.
+- `x_param_<name>` are the reminder's own settings (a threshold); the code reads them from
+  the resolved reminder, so the Reminders tab is the one place to change them.
+- `x_trigger` describes, in words, when the code fires it. The events themselves exist
+  (`injections/events.py`: `turn_start`, `tool_result` and one per core injection); a
+  plugin attaches to one with `event:`.
 
 Code calls `render_reminder(source, variables)` (now `clio_agent.injections.render`),
 which resolves `clio.reminder.<source>`, returns `None` with a typed
@@ -114,17 +134,18 @@ which beats the built-in.
 Settings, Reminders (gact-tui): every `kind: reminder` prompt with its title, description
 and trigger; a switch for `active`; a Markdown editor listing the declared variables and
 params; a preview rendered with sample values (`/v1/prompts/{id}/render`); reset to the
-built-in. The Fleet page's Explore suggestion becomes a link to its reminder rather than a
-second switch.
+built-in. Plugin injections are listed beside core's. The Fleet page keeps its explore
+switch and threshold; it writes the same reminder's settings overlay
+(`explore_nudge.save_nudge_settings`), so the two never disagree.
 
 ## Order
 
-1. `clio_agent.injections` (was `gact/reminders.py`), the `kind`, `active`, `variables`, `params` frontmatter fields, and
-   the explore and stale-plan notes moved to templates (the conf keys
-   `delegation.explore_nudge*` and `plan.stale_steps` are retired in favour of `active` and
-   `params`, pre-release).
-2. The Reminders page.
-3. The remaining sources, in batches, each with its rendered text pinned by its tests.
+1. `clio_agent.injections` (was `gact/reminders.py`), the `x_kind`, `x_active`, `x_variables`,
+   `x_param_*` frontmatter fields, and the explore and stale-plan notes moved to templates
+   (the conf keys `delegation.explore_nudge*` and `plan.stale_steps` are retired in favour of
+   `x_active` and `x_param_*`, pre-release). Done.
+2. The Reminders page. Done.
+3. The remaining sources, in batches, each with its rendered text pinned by its tests. Done.
 4. Later: declarative triggers in the frontmatter, evaluated by the loop, so a person can
    add a reminder without code. `$(command)` values are an open owner decision (user
    configuration only, sandboxed, run once per session).
@@ -138,7 +159,9 @@ carry the repository's CLAUDE.md, skills and plugins as a reminder. Guidance arr
 the event that makes it relevant, not in the base prompt. Three triggers to start with,
 each a template whose frontmatter names its event:
 
-- **On a tool result** (`x_trigger: tool_result <tool>`): the template is appended to that
+- **On a tool result** (built: a declaration with `event: tool_result` and a `tool:`
+  pattern, `injections/events.py`; core's own cut-result and path notes still fire from
+  their code): the template is appended to that
   tool's result, so a tool's situational guidance (what to do next, what will be refused)
   costs nothing until the tool runs and is editable on the Reminders page. Today's ad hoc
   cases move here: the spilled-result note, path hints, the failure fact.
