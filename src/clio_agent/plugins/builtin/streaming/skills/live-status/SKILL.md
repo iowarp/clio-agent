@@ -51,5 +51,6 @@ did.
 
 ## 5. Stop
 
-`stop_stream(name)` or cancelling the task ends the writes. Both keep the last
-status.
+To stop watching, cancel the watcher's task: that stops its streams and keeps
+their last rows, shown as stopped. `stop_stream(name)` is for a stream no script
+writes to; a script that writes to a stopped stream fails.
