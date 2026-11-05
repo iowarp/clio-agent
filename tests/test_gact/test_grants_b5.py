@@ -484,11 +484,14 @@ def test_domain_grant_endpoint_writes_host_pattern_policy(tmp_path, captured_eve
 
 
 def test_policy_violation_carries_grant_affordance() -> None:
-    from clio_agent.gact.artifacts.violations import PolicyViolation, _grant_affordance
+    """The violation's next action is the boundary diagnosis' message (#1905): the folder,
+    the retry with access_paths and access_reason, and that the person approves it."""
+    from clio_agent.gact.artifacts.violations import PolicyViolation
+    from clio_agent.runtime.sandbox_diagnosis import write_denied_message
 
-    text = _grant_affordance("ws1", "/etc/passwd")
-    assert "access_paths=[" in text and "access_reason" in text
-    assert "Never call the workspace grants API to approve yourself" in text
+    text = write_denied_message(["/x"], seam="shell")
+    assert 'access_paths=["/x"]' in text and "access_reason" in text
+    assert "CLIO will ask the person to approve the folder first" in text
     v = PolicyViolation(kind="prevented", mechanism="landlock", path="/x/y", next_action=text)
     assert v.to_payload()["next_action"] == text
 
