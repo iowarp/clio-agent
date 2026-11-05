@@ -156,13 +156,18 @@ the conversation shows a notice. The agent does not see these notices.
 ### Recall what a summary replaced
 
 The summary's last line names its compaction. With `recall_context`, the agent gets
-back the steps a summary replaced, as they were recorded: what was said, each tool
-call and each result, oldest first. Where CLIO's storage can search, the agent can
-also search earlier steps for words and get the matching ones, at most 50.
+back the steps a summary replaced, as they were recorded: your messages, messages
+and reports delivered to it, each tool call and each result, oldest first. A summary
+that replaced an earlier summary leads back to that one's steps. Where CLIO's storage
+can search, the agent can also search earlier steps for words and get the matching
+ones, best match first, at most 50.
 
-A recall result has a fixed size, 16,000 characters (`tools.recall_result_chars`).
-A longer result is saved to a file, and the agent gets its beginning and the file,
-which it can search and read on. Recall does not return the model's reasoning.
+Recall returns only what the agent's own context would have shown: a result still
+waiting for its authorization reads as such, and input not yet given to the agent is
+left out. A recall result has a fixed size, 16,000 characters
+(`tools.recall_result_chars`). A longer result is saved to a file, and the agent gets
+its beginning and the file, which it can search and read on. Recall does not return
+the model's reasoning.
 
 ## Ask CLIO to recall earlier work
 
