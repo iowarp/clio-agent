@@ -1,4 +1,4 @@
-"""Doctor check: surface the effective clio-core CTE ram hot-tier capacity cap.
+"""Doctor check: surface the effective clio-core CTE RAM bounds (budget and ram tier).
 
 clio-core reads a ram tier ``capacity_limit`` of ``"0g"`` as *"default to 80% of total
 system DRAM"* (#890) — so the value is normally implicit and invisible until the machine
@@ -40,11 +40,10 @@ if TYPE_CHECKING:
     from clio_agent.arc.history_mode import ContextMode
 
 _REMEDIATION = (
-    "Set a bounded ram cap via arc.cte.ram_capacity (or env CLIO_ARC_CTE_RAM_CAPACITY), "
-    "e.g. '2GB', then delete the stale cte.yaml so it regenerates — or edit the "
-    "capacity_limit under storage[cte_ram_tier] in that file directly. Offload to the "
-    "disk tier is byte-identical (tests/test_arc/test_clio_core_offload_spill.py), so a small "
-    "hot tier is safe."
+    "Set the memory budget via arc.cte.ram_capacity (or env CLIO_ARC_CTE_RAM_CAPACITY), "
+    "e.g. '2GB', then delete the stale cte.yaml so it regenerates (disk-only data, the "
+    "budget as the ram bdev's capacity) — or, in that file, bound the capacity of the "
+    "bdev_type: ram module and the capacity_limit of any hand-authored ram data tier."
 )
 
 
@@ -56,7 +55,7 @@ def _cap_source(cap: RamTierCap) -> str:
 
 
 def probe_clio_core_ram_cap(*, env: Mapping[str, str] | None = None) -> list[IntegrationStatus]:
-    """Report the effective clio-core CTE ram hot-tier cap as a doctor row.
+    """Report the effective clio-core CTE RAM bounds as a doctor row.
 
     Returns a single-row list (clio-core is the only ARC store). The row is:
 
@@ -95,7 +94,7 @@ def probe_clio_core_ram_cap(*, env: Mapping[str, str] | None = None) -> list[Int
                 name="clio_core_ram_cap",
                 state=IntegrationState.MISCONFIGURED,
                 summary=(
-                    f"clio-core CTE ram hot-tier cap {cap.cap!r} is not a valid capacity: "
+                    f"clio-core CTE ram data tier cap {cap.cap!r} is not a valid capacity: "
                     f"{cap.parse_error}."
                 ),
                 config_source=source,
@@ -158,7 +157,7 @@ def probe_clio_core_ram_cap(*, env: Mapping[str, str] | None = None) -> list[Int
                 name="clio_core_ram_cap",
                 state=IntegrationState.DEGRADED,
                 summary=(
-                    f"clio-core CTE ram hot-tier cap is {cap.cap!r}, which clio-core reads "
+                    f"clio-core CTE ram data tier cap is {cap.cap!r}, which clio-core reads "
                     "as 80% of total system DRAM — the context plane can consume most of "
                     "the machine (#890)."
                 ),
@@ -177,7 +176,7 @@ def probe_clio_core_ram_cap(*, env: Mapping[str, str] | None = None) -> list[Int
             name="clio_core_ram_cap",
             state=IntegrationState.READY,
             summary=(
-                f"clio-core CTE ram hot tier is bounded at {cap.cap} (~{human}); cold blobs "
+                f"clio-core CTE ram data tier is bounded at {cap.cap} (~{human}); cold blobs "
                 "spill to the disk tier."
             ),
             config_source=source,
