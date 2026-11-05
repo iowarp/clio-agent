@@ -52,7 +52,8 @@ def _caller() -> str:
     """The first CLIO frames outside the store plumbing, innermost first (audit only)."""
     import sys  # noqa: PLC0415
 
-    frame, names = sys._getframe(2), []
+    frame: Any = sys._getframe(2)
+    names: list[str] = []
     while frame is not None and len(names) < 3:
         path = frame.f_code.co_filename.replace("\\", "/")
         if "clio_agent/" in path and not any(p in path for p in _PLUMBING):

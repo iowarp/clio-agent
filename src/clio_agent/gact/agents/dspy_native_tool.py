@@ -40,7 +40,9 @@ _PARSED_LOCK = threading.Lock()
 def _parse_key(func: Callable[..., Any], arg_desc: dict[str, str] | None) -> tuple[Any, ...] | None:
     """Everything ``dspy.Tool._parse_function`` reads from ``func``; ``None`` when the
     callable has no code object to key on (it is then parsed every time)."""
-    target = func if inspect.isfunction(func) or inspect.ismethod(func) else func.__call__
+    target: Any = func
+    if not (inspect.isfunction(func) or inspect.ismethod(func)):
+        target = type(func).__call__
     code = getattr(target, "__code__", None)
     if code is None:
         return None
@@ -91,6 +93,11 @@ class ToolArgumentError(ValueError):
 
 class ClioNativeTool(dspy.Tool):
     """DSPy tool whose JSON schema honors declared argument defaults."""
+
+    name: str
+    desc: str
+    args: dict[str, Any]
+    arg_types: dict[str, Any]
 
     def __init__(
         self,

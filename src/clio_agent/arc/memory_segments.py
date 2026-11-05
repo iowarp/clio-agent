@@ -103,7 +103,8 @@ class SegmentPlane:
             return many(session_id, scope, rows, step=step, **spans)
         return [
             self._segments.append(session_id, scope, cast(SegmentKind, kind), content,
-                                  step=step, token_count=tokens, **spans)
+                                  step=step, token_count=tokens, turn_id=turn_id,
+                                  expert_span_id=expert_span_id, run_span_id=run_span_id)
             for kind, content, tokens in rows
         ]  # fmt: skip
 

@@ -670,7 +670,8 @@ def run_sandbox_cli(
 
 def _sandbox_status_cli(*, json_output: bool) -> int:
     """Render the ``sandbox`` doctor row standalone (reuses :func:`probe_sandbox`)."""
-    from clio_agent.runtime.sandbox import install_sandbox, probe_sandbox  # noqa: PLC0415
+    from clio_agent.runtime.sandbox import install_sandbox  # noqa: PLC0415
+    from clio_agent.runtime.sandbox_doctor import probe_sandbox  # noqa: PLC0415
 
     install_sandbox()  # resolve THIS process's backend so the row is real (no server needed)
     row = probe_sandbox()

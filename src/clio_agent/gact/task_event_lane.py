@@ -137,7 +137,7 @@ def record(
     session_id = str(getattr(event, "session_id", "") or "")
     content = build_event_content(event)
     in_lane = bool(session_id) and content is not None and content["event_type"] in TASK_EVENTS
-    if to_lane and in_lane:
+    if to_lane and in_lane and content is not None:
         if lane:
             content["payload"] = {**content["payload"], LANE_KEY: lane}
         append_lane(

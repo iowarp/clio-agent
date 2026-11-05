@@ -584,7 +584,8 @@ class _Loop:
         from clio_agent.injections.tool_guidance import after_tool_result  # noqa: PLC0415
 
         slot: dict[str, str] = {}
-        slot_token, carried = MODEL_CALL_SLOT.set(slot), []
+        carried: list[Any] = []
+        slot_token = MODEL_CALL_SLOT.set(slot)
         carried_token = INLINE_COLLECTION.set(carried)  # task outcomes the reply carries
         try:
             with injections.collect() as told, native_gate(tool, call.name, call.input) as no:

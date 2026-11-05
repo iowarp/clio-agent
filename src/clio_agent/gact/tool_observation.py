@@ -109,4 +109,4 @@ def reply_content(text: str) -> str:
     texts = [c.get("text") for c in content if isinstance(c, dict) and c.get("type") == "text"]
     if len(texts) != len(content) or not all(isinstance(t, str) for t in texts):
         return text
-    return "\n".join(texts)
+    return "\n".join(t for t in texts if isinstance(t, str))
