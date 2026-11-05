@@ -234,7 +234,7 @@ No production code changes in this phase.
 ## Phase 2: reporting
 
 1. The `task` binding in the registry, bound only in background kernels.
-2. `task.progress` through the progress path; `task.notify` through `conversations.mail.peer` with image parts and the per-owner window and coalescing.
+2. `task.progress` through the progress path; `task.notify` through `conversations.mail.peer` with image parts and the per-owner window and coalescing. Done except the image part (5e68ac32): a notify is an `attention` mail item attributed to the task, as a settled task's notice is; the mail item has no image part yet.
 3. One counted record per window of repeated successful calls from a background task; errors, denials and questions recorded individually.
 4. Streaming output to scratch, and `observe_tasks` and the final result through the cut-result path with `result_spilled`.
 
