@@ -137,7 +137,7 @@ stays `open` until it is run live on a fresh stack (Phase 6); the mechanisms are
 
 | ID | Gap | Where it stands |
 | --- | --- | --- |
-| G1 | The A2UI surface keeps its own capture panel (`a2ui-region-capture.tsx`, made smaller) rather than the shared `CommentPanel`. Its marks use the shared labels and travel as the shared `comment_session` attachment, so the agent's entries are the same. | The panel itself is not yet the shared one |
+| G1 | Closed. Every view now renders the A2UI capture controls and editor (`comments/comment-controls.tsx`, `comments/comment-editor.tsx`, extracted from `a2ui-region-capture.tsx`); the separate `CommentPanel` is deleted (gact-tui `2a7bb08f`). Screenshots: `.cloud-run/website-shots/comment-*.png`. | done |
 | G2 | An SVG in the image viewer takes regions only. The server resolves SVG element anchors (FB21), but the viewer does not yet render the SVG in the HTML frame where the picker could reach its elements. | K5 cannot pass from the image viewer until this is done |
 
 ## HTML files in the shared browser
