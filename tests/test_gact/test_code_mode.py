@@ -394,3 +394,16 @@ def test_a_plan_mode_kernel_writes_only_scratch_and_temp(monkeypatch: Any, tmp_p
         assert stopped == ["replaced_mode_changed (read_only=True)"]
     finally:
         kernels._KERNELS.pop(("sess_x", "scope"), None)
+
+
+def test_a_background_launch_reads_as_a_started_task_not_as_a_script_without_calls() -> None:
+    """SABOTAGE: drop the background branch in ``present`` -> "No tool calls"."""
+    view = present(
+        {"code": "while True:\n    pass", "background": True, "label": "Counter watch"},
+        "Started",
+        {"handle": "task_abc", "status": "working"},
+    )
+    assert view["summary"] == "Started in the background: Counter watch"
+    assert "task_abc" in view["blocks"][-1]["text"]
+    unnamed = present({"code": "\nimport time\n", "background": True}, "", {"handle": "t"})
+    assert unnamed["summary"] == "Started in the background: import time"

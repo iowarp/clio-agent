@@ -45,6 +45,23 @@ def present(args: Mapping[str, Any], result: Any, structured: Any) -> dict[str, 
     if not row:
         blocks.append({"id": "result", "type": "text", "text": str(result or "")})
         return {"subject": "script", "summary": "", "blocks": blocks}
+    if args.get("background"):
+        # A background launch: the script runs on as a task with its own row.
+        name = (
+            str(args.get("label") or "").strip()
+            or next((line.strip() for line in code.splitlines() if line.strip()), "")[:80]
+        )
+        handle = str(row.get("handle") or "")
+        blocks.append(
+            {
+                "id": "task",
+                "type": "text",
+                "text": f"Runs in the background as task {handle}; its progress and a "
+                "cancel control are in Work, under Background tasks.",
+            }
+        )
+        summary = f"Started in the background: {name}" if name else "Started in the background"
+        return {"subject": "script", "summary": summary, "blocks": blocks}
     if row.get("output"):
         blocks.append({"id": "output", "type": "text", "label": "Output", "text": row["output"]})
     if row.get("value") is not None:
