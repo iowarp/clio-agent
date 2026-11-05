@@ -52,6 +52,28 @@ def test_the_script_approval_covers_nested_calls(tmp_path: Path, mode: str) -> N
         assert (row["status"], row["reason"]) == ("auto_approved", grants.REASON_SCRIPT_GRANT)
 
 
+def test_a_script_keeps_the_approval_mode_it_was_accepted_with(tmp_path: Path) -> None:
+    """CK10: a script approved under bypass keeps bypass for its nested calls after the
+    session's mode changes to ask; a call outside the script follows the new mode.
+
+    SABOTAGE: read the session's mode in the gate again (``current.approval_mode``)
+    and the script's call asks."""
+    from fastapi.testclient import TestClient
+
+    app = build_app(sessions_path=tmp_path / "s.json")
+    with TestClient(app) as client:
+        sid = _session(client, "ask")
+        gate = _make_permission_gate(app)
+        grant = grants.ScriptGrant("call_1", "await tools.shell.exec()", approval_mode="bypass")
+        token = grants.bind_grant(grant)
+        try:
+            with _tool_session_context(sid):
+                assert gate(_NON_READ, {"cmd": "ls"}) == "allow"
+        finally:
+            grants.reset_grant(token)
+        assert grants.approval_mode(app.state.sessions.get(sid)) == "ask"
+
+
 def test_without_a_script_the_same_call_asks(tmp_path: Path) -> None:
     from fastapi.testclient import TestClient
 

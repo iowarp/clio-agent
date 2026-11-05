@@ -33,6 +33,7 @@ __all__ = [
     "REASON_SCRIPT_GRANT",
     "ScriptGrant",
     "active_grant",
+    "approval_mode",
     "bind_grant",
     "covering_postures",
     "covers",
@@ -88,9 +89,22 @@ class ScriptGrant:
     asking: threading.Lock = field(default_factory=threading.Lock)
     #: A question is open now (the row says "Script paused, waiting for you").
     waiting: bool = False
+    #: The session's approval mode when the script was approved: its nested calls keep
+    #: it, so changing the mode while a background script runs does not change what the
+    #: script may do (CK10). Empty: the session's current mode applies.
+    approval_mode: str = ""
 
 
 _ACTIVE: ContextVar[ScriptGrant | None] = ContextVar("clio_run_code_grant", default=None)
+
+
+def approval_mode(current: Any) -> str:
+    """The approval mode a call is decided under: its script's, when it is a script's
+    nested call, else the session's (``ask`` when there is no session)."""
+    grant = _ACTIVE.get()
+    if grant is not None and grant.approval_mode:
+        return grant.approval_mode
+    return str(getattr(current, "approval_mode", "ask") or "ask") if current is not None else "ask"
 
 
 def active_grant() -> ScriptGrant | None:

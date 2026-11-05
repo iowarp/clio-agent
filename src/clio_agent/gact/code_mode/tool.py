@@ -151,6 +151,15 @@ class PreparedScript:
     code_only: frozenset[str]
 
 
+def _session_approval_mode() -> str:
+    """The approval mode of the session approving the script now ("" without one)."""
+    from clio_agent.gact import context as gact_context  # noqa: PLC0415
+
+    app, sid = gact_context.active_app(), gact_context.active_session_id()
+    session = app.state.sessions.get(sid) if app is not None and sid else None
+    return str(getattr(session, "approval_mode", "") or "")
+
+
 def prepare_script(agent: Any, code: str) -> PreparedScript:
     """Capture the calling ``run_code`` call's grant and context for ``code``'s nested calls."""
     from clio_agent.gact.artifacts.observer_bridge import current_call_id  # noqa: PLC0415
@@ -161,7 +170,7 @@ def prepare_script(agent: Any, code: str) -> PreparedScript:
     )
     from clio_agent.gact.tool_call_nesting import PARENT_CALL_ID  # noqa: PLC0415
 
-    grant = ScriptGrant(current_call_id(), code)
+    grant = ScriptGrant(current_call_id(), code, approval_mode=_session_approval_mode())
     grant_token, parent_token = bind_grant(grant), PARENT_CALL_ID.set(grant.call_id)
     try:
         context = contextvars.copy_context()

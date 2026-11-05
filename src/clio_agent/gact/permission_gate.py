@@ -627,7 +627,7 @@ def _make_permission_gate(app: "FastAPI"):
         # only a fallback for truly out-of-band tool calls.
         sid, current = _resolve_tool_session(app)
         cancelled = question_cancel_token(app, sid)
-        approval_mode = getattr(current, "approval_mode", "ask") if current is not None else "ask"
+        approval_mode = script_grants.approval_mode(current)  # a script keeps its accepted mode
         default = layers.tool_default(app, sid, name)
         if is_read_only("tool", name, args, context):
             # TD53: a deny from any layer, or an ask rule or default, holds for reads too.
