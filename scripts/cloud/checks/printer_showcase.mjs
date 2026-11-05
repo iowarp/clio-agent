@@ -1,5 +1,6 @@
 // The printer case end to end (issue #1908): a plain request, answered as a person would.
 //
+// PRINTER_TEXT replaces the first request ({url} is the status endpoint).
 // PRINTER_ROOT names a fresh workspace folder (inside CLIO_ALLOWED_ROOTS); PRINTER_URL
 // the fixture's status endpoint (scripts/cloud/fixtures/printer_status.py). The step
 // opens a new conversation there, sends "Keep an eye on my 3D printer and show me how
@@ -75,7 +76,10 @@ export default async function (page, shot) {
   const session = await api("POST", "/v1/sessions", { workspace_id: workspace.id });
   await page.goto(new URL(`/workspaces/${workspace.id}/sessions/${session.id}`, page.url()).toString());
   await page.waitForTimeout(5000);
-  await send(page, `Keep an eye on my 3D printer and show me how it's doing. Its status is at ${url}.`);
+  const request =
+    process.env.PRINTER_TEXT ||
+    "Keep an eye on my 3D printer and show me how it's doing. Its status is at {url}.";
+  await send(page, request.replaceAll("{url}", url));
   const settled = await waitIdle(page, session.id, log, 12);
   log.push(`first turn settled: ${settled}`);
   await shot("reply");
