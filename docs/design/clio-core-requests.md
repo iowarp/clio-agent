@@ -144,3 +144,17 @@ This matters for CLIO because it runs a local daemon per user on desktops and la
 2. A replace variant of `AsyncPutBlobIfVersion` that sets the blob to exactly the given bytes, or a version precondition on put-replace (`kCtePutReplace`, issue 2).
 
 **Acceptance.** Python can create or compare-and-swap N records in one round trip with a status per record, and a compare-and-swap can leave a blob shorter than before.
+
+---
+
+## clio-core issue 7: Keep a blob in memory by choice, for streams
+
+**What CLIO needs.** A stream is an artifact whose content is rewritten often (a device's status, a feed of recent readings) and read mostly for its latest value. Its content should live in memory and reach disk only by a flush policy: every update, or only the latest content and a bounded window. CLIO's clio-core configuration (`clio_core_config.py:142-171`) has data on file tiers only; the RAM pool is the working arena. A put cannot choose a tier (`PutBlob`/`AsyncPutBlob` take no score), `Tag.ReorganizeBlob` moves a blob after the fact, and `clio_cte_stream` (page blobs, deferred appends) has no Python binding.
+
+**Until then.** CLIO keeps a stream's latest content and window in its server process and writes them to clio-core on the stream's flush policy (taskable `run_code` plan, Part 4, decision CT25).
+
+**Ask.** Either:
+1. a put with a placement hint (a score or a target), with a RAM data target that the durability check can tell apart from the working arena, and a flush of a memory-placed blob to a persistent target on demand; or
+2. a Python binding for `clio_cte_stream`: create a stream on a tag with a retention (latest, or a window of N pages), append, read the latest and the window, and flush.
+
+**Acceptance.** From Python, CLIO can write a blob that stays in memory, read it back without a disk read, and flush it to a persistent target when its policy says, with a per-write confirmation.
