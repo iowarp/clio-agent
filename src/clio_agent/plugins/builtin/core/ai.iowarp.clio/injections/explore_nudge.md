@@ -8,4 +8,4 @@ x_trigger: after `after` read-only calls in one turn with no delegation, when th
 x_variables: calls, explore_model, spawn_tool
 x_param_after: 6
 ---
-You have made {{calls}} reading calls in this turn without delegating. If the rest of this search can go to an `explore` child (it returns only its findings, with paths; it runs on {{explore_model}} unless you pass a model, and a fast, cheap one is usually enough for it), {{spawn_tool}} may be faster and keep your context smaller. If you are close to the answer, carry on.
+You have made {{calls}} reading calls in this turn without delegating. If the rest of this search can go to an `explore` child (it returns only its findings, with paths; it runs on {{explore_model}} unless you pass a model), {{spawn_tool}} may be faster and keep your context smaller. If you are close to the answer, carry on.

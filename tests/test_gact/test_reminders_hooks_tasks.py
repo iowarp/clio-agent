@@ -113,7 +113,8 @@ def test_a_stop_hook_without_words_re_drives_with_the_hook_defer_text(
     result = stop_loop.run_stop_hooks(app, session_id="s", turn_id="t", cwd="", payload={})
     assert result.deferred
     assert captured["resume_text"] == (
-        "A Stop hook reported the task is not complete; continue working."
+        "The person chose not to end the turn here (a Stop hook asked them first); "
+        "continue working."
     )
 
 

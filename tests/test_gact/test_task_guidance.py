@@ -47,7 +47,7 @@ reader = Subagent(
 
 #: What every task-capable agent is told on every request (the short ``core.tasks``).
 LIFECYCLE = (
-    "Ending a turn does not itself complete your assignment",
+    "A direct final answer yields while work you started is still pending",
     "eligible messages and results enter before the next model call",
     "while idle they wake you without another human message",
     'wait_tasks(tasks=handle, return_when="all")',
