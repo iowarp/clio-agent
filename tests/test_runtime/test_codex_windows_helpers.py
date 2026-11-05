@@ -179,6 +179,7 @@ def test_installer_never_records_incomplete_helpers(
     monkeypatch.setattr(document_install, "prepare_office_runtime", lambda: "test office")
     monkeypatch.setattr(document_install, "ensure_github_cli", lambda: tmp_path / "gh")
     monkeypatch.setattr(document_install, "ensure_ripgrep", lambda: Path("/usr/bin/rg"))
+    monkeypatch.setattr(document_install, "ensure_tectonic", lambda: Path("/usr/bin/tectonic"))
 
     def failed() -> dict[str, Any]:
         raise helpers.CodexWindowsHelpersError("matching helper unavailable")
