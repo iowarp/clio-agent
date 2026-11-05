@@ -77,7 +77,7 @@ export default async function (page, shot) {
     await item.click();
     await page.waitForTimeout(4000);
     await shot("science-log");
-    const views = page.getByRole("button", { name: "Views" });
+    const views = page.getByRole("radio", { name: "Views" });
     if (await views.count()) {
       await views.first().click();
       await page.waitForTimeout(6000);
