@@ -462,7 +462,7 @@ async def bash(
     access_paths: Annotated[
         list[str] | None,
         Field(
-            description="Files or folders outside permitted folders; CLIO asks the user before running. Include both source and destination for a move. Already approved downloaded source paths need none for reads and stay read-only; save derivatives in the workspace."
+            description="Files or folders outside the permitted folders this command reads or writes (for a move, both source and destination); CLIO asks the person to approve them before it runs. Approved downloaded sources need none for reads."
         ),
     ] = None,
     access_reason: Annotated[
