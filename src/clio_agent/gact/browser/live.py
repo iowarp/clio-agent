@@ -135,7 +135,6 @@ async def _start(service: Any, record: Any, hub: _Hub) -> None:
 
 
 async def _begin(service: Any, record: Any, hub: _Hub) -> None:
-
     def on_frame(frame: dict[str, Any]) -> None:
         size = (int(frame.get("viewportWidth") or 0), int(frame.get("viewportHeight") or 0))
         if size != hub.viewport:
