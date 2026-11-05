@@ -122,12 +122,12 @@ def test_ask_mode_asks_with_the_script_and_allow_script_covers_the_rest(tmp_path
         row = _pending(app)
         assert row["script"] == {"call_id": "call_9", "code": grant.code}
         assert row["actions"][-1] == grants.ALLOW_SCRIPT
-        assert grant.waiting
+        assert grant.asking.locked()  # the script's one open question
         answer = client.post(f"/v1/permissions/{row['id']}", json={"action": grants.ALLOW_SCRIPT})
         assert answer.status_code == 204
         thread.join(timeout=5)
         assert result == {"first": "allow", "second": "allow"}
-        assert grant.covered and not grant.waiting
+        assert grant.covered and not grant.asking.locked()
         reasons = [r.get("reason") for r in app.state.permissions.values()]
         assert grants.REASON_SCRIPT_GRANT in reasons
 

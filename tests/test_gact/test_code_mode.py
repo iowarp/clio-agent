@@ -325,7 +325,7 @@ class TestGrants:
             assert fields["script"] == {"call_id": "call_1", "code": "print(1)"}
             assert fields["actions"] == ["allow", "deny", ALLOW_SCRIPT]
             with grants.question():
-                assert grants.active_grant().waiting
+                assert grants.active_grant().asking.locked()
             grants.answered({"action": ALLOW_SCRIPT})
             assert grants.covers("ask")
         finally:
