@@ -1261,6 +1261,11 @@ KEY_NOTES: dict[str, str] = {
         "task.notify; notifies inside the window arrive together at its end, never dropped. "
         "Default 30."
     ),
+    "code.background_record_window_s": (
+        "Seconds one counted record covers for a background run_code script's repeated "
+        "successful calls to one tool (errors and calls that asked are recorded on their own). "
+        "Default 60."
+    ),
     "code.idle_minutes": (
         "Minutes a run_code kernel keeps its variables without a script before it is stopped."
     ),

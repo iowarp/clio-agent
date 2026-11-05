@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import threading
 from contextvars import ContextVar
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any
 
 __all__ = ["BackgroundTask", "active_background_task", "question_cancel_token"]
@@ -20,6 +20,9 @@ class BackgroundTask:
 
     handle: str
     stop: threading.Event
+    #: Questions this task has asked the person so far (its calls that asked are recorded
+    #: on their own, CT5); one cell so the frozen record can count.
+    questions: list[int] = field(default_factory=lambda: [0])
 
 
 #: Set in a background script's captured context, so its nested calls know their task.

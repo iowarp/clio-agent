@@ -30,6 +30,7 @@ def permission_identity(app: Any, session_id: str) -> dict[str, str]:
     task = active_background_task()
     if task is not None:  # the question is the background script's, shown as its task's
         identity["task_handle"] = task.handle
+        task.questions[0] += 1
     return identity
 
 

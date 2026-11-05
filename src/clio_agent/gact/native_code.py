@@ -152,7 +152,13 @@ def _run(
         launch.session_id, "task:" + handle, launch.workspace, read_only=launch.read_only
     )
     live["kernel"] = kernel
-    launch.prepared.context.run(_BACKGROUND_TASK.set, BackgroundTask(handle, stop))
+    from clio_agent.gact.code_task_records import CallGrouper  # noqa: PLC0415
+    from clio_agent.tools.tool_observation import OBSERVATION_GROUP  # noqa: PLC0415
+
+    task = BackgroundTask(handle, stop)
+    grouper = CallGrouper(asked=lambda: task.questions[0])
+    launch.prepared.context.run(_BACKGROUND_TASK.set, task)
+    launch.prepared.context.run(OBSERVATION_GROUP.set, grouper)
     app = launch.prepared.context.run(gact_context.active_app)
     reserved = reporting.handlers(app, launch.session_id, handle, live.get("label", ""), live)
     try:
@@ -165,6 +171,7 @@ def _run(
             reserved=reserved,
         )
     finally:
+        grouper.flush()  # what was held is recorded when the script ends
         kernels.discard(kernel, "task_settled")
 
 
