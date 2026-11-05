@@ -381,6 +381,9 @@ def send_session(
             )
         emit_thread(app, thread, "document.review.created")
         threads.append(thread)
+    # A send carries every mark of the session: a draft it leaves out was deleted by the person.
+    for dropped in drafts.values():
+        store.update_review(dropped.id, status="discarded", updated_at=_now())
     sent = SentSession(session_key, threads)
     queued = [thread for thread in threads if thread.status == "queued"]
     if queued:

@@ -133,7 +133,10 @@ def test_labels_continue_per_version_and_drafts_come_back(tmp_path: Path) -> Non
             ],
             "session-two-0002",
         )
+        after = client.get(f"/v1/artifacts/{pinned['artifact_id']}/threads").json()["threads"]
     assert [d["label"] for d in drafts.json()["drafts"]] == ["S4", "S5"]
+    # S5 was left out of the send, so the person deleted it: it is no draft any more.
+    assert not [t for t in after if t["label"] == "S5" and t["status"] == "draft"]
     by_label = {t["label"]: t for t in listed["threads"]}
     assert by_label["S4"]["status"] == "draft" and by_label["S4"]["text"] == "draft one"
     assert listed["next_label"] == "S6"
