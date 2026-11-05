@@ -105,6 +105,8 @@ function Invoke-WebRequest {{
     else {{ return @{{Content = (Get-Content -Raw -LiteralPath {quote(manifest)})}} }}
 }}
 function Start-Process {{ throw 'DownloadOnly must never start setup' }}
+# Downloads use curl.exe when Windows has it; hide it so the stub above serves them.
+$env:PATH = (($env:PATH -split ';') | Where-Object {{ $_ -and -not (Test-Path (Join-Path $_ 'curl.exe')) }}) -join ';'
 & {quote(ROOT / "install/install.ps1")} -Desktop -Version '{version}' -DownloadOnly {quote(output)}
 exit $LASTEXITCODE
 """,

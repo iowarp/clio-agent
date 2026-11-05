@@ -29,13 +29,13 @@ You can also install Desktop from a terminal:
 **Linux / macOS**
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/iowarp/clio-agent/main/install/install.sh | bash -s -- --desktop
+curl -fsSL https://clio.iowarp.ai/desktop.sh | bash
 ```
 
 **Windows (PowerShell)**
 
 ```powershell
-& ([scriptblock]::Create((irm https://raw.githubusercontent.com/iowarp/clio-agent/main/install/install.ps1))) -Desktop
+irm https://clio.iowarp.ai/desktop.ps1 | iex
 ```
 
 See the **[installation guide](https://clio.iowarp.ai/docs/install/)** for supported

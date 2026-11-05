@@ -28,3 +28,7 @@ pnpm-debug.log*
 
 # macOS-specific files
 .DS_Store
+/public/install.sh
+/public/install.ps1
+/public/desktop.sh
+/public/desktop.ps1
