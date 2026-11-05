@@ -190,6 +190,11 @@ def finalize_turn(
                 if v
             },
         )
+        # Deferred: recorded (then published) by the highway writer. Wait for it so the
+        # wire keeps the decision ahead of the answer message minted below.
+        from clio_agent.gact.highway_writer import flush_session  # noqa: PLC0415
+
+        flush_session(state.app, state.sid)
     # Mechanism 2 replaced: there is no finalize rebuild-from-rows — delegation
     # appended its expert_handoff parts once, at emit time; the
     # ``expert_handoffs`` rows stay message METADATA only (design §4 row 6).
