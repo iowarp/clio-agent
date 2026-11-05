@@ -926,7 +926,9 @@ RATCHET_BASELINE: dict[str, int] = {
     # on-demand mount (gact/agents/builders.py).
     # -11: the hook and circuit-breaker notes moved to reminder templates
     # (tools/harness_notes.py).
-    "src/clio_agent/tools/execution.py": 985,  # the circuit breaker no longer blocks (2026-11-02)
+    # -2: a raised call's sandbox-boundary note (#1905) added 4 lines; a magic trailing
+    # comma dropped from one observer call freed 6.
+    "src/clio_agent/tools/execution.py": 983,
     # #1201 (adversarial review, PR #1202): not previously baselined (under the
     # 800 default cap). +24 for the unreadable-mcp.yaml snapshot (a reset-per-
     # call list + lock, mirroring the existing per-server MCPServerSpec.

@@ -321,3 +321,14 @@ def test_a_published_boundary_is_taken_once_and_only_by_its_call(
     sd.publish_call_boundary("c1", diagnosis)
     assert sd.take_call_boundary("c1") == diagnosis
     assert sd.take_call_boundary("c1") is None
+
+
+def test_a_path_quoted_inside_another_quote_is_found(territory: tuple[Path, Path]) -> None:
+    """A raised MCP error reaches the boundary as its ``repr``: the path sits in single
+    quotes inside double quotes. SABOTAGE: scan all quote kinds with one alternation -> red."""
+    workspace, outside = territory
+    error = repr(
+        RuntimeError(f"Error calling tool 'x': [Errno 13] Permission denied: '{outside}/a'")
+    )
+    diagnosis = _posix(error, workspace)
+    assert diagnosis is not None and diagnosis.paths == (str(outside / "a"),)

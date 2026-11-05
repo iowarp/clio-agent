@@ -214,13 +214,69 @@ def _served_call_boundary(
     """Diagnose a failed call a confined stdio MCP server served, and publish it for the
     model's observation of that call (#1905).
 
-    A long-lived server has no per-call roots, so its error text is checked against the
-    recomputed fleet territory (:func:`_effective_roots`, the roots its spawn was given,
-    plus grants since) at ``possible`` confidence. ``None`` for a call no confined child
-    served (an in-process tool is not fenced) or one that did not fail.
+    ``None`` for a result that is not an error, or a call no confined child served (an
+    in-process tool is not fenced). See :func:`_diagnose_served`.
     """
     if not (isinstance(result, dict) and (result.get("isError") or result.get("is_error"))):
         return None
+    diagnosis = _diagnose_served(
+        app,
+        call_id=call_id,
+        text=result_text(result),
+        workspace_id=workspace_id,
+        mechanism=mechanism,
+    )
+    if diagnosis is not None:
+        publish_call_boundary(call_id, diagnosis)
+    return diagnosis
+
+
+def raised_call_boundary(error_text: str) -> Optional[BoundaryDiagnosis]:
+    """The diagnosis for the running call when it RAISED (FastMCP raises a server's error
+    result, so the observer never sees its text); the execution boundary notes its message
+    on the error. ``None`` off a turn, on the floor, or for a call no confined child served.
+
+    Never raises: it runs on the failing call's own error path, whose error must stand.
+    """
+    from clio_agent.gact.artifacts.minting import _session_workspace_id  # noqa: PLC0415
+    from clio_agent.gact.artifacts.observer_bridge import observer_call_id  # noqa: PLC0415
+    from clio_agent.gact.runtime.globals import _resolve_tool_session  # noqa: PLC0415
+
+    app = _active_app()
+    state = _current_sandbox_state()
+    if app is None or state is None or not state.active:
+        return None
+    try:
+        sid, _session = _resolve_tool_session(app)
+        return _diagnose_served(
+            app,
+            call_id=observer_call_id(),
+            text=error_text,
+            workspace_id=_session_workspace_id(app, sid) if sid else "",
+            mechanism=str(state.mechanism),
+        )
+    except (OSError, RuntimeError, ValueError, LookupError, AttributeError, TypeError) as exc:
+        logger.warning(
+            "boundary diagnosis skipped reason=raised_call_boundary_failed error=%r", exc
+        )
+        return None
+
+
+def _active_app() -> Optional["FastAPI"]:
+    from clio_agent.gact import context as _ctx  # noqa: PLC0415
+
+    return _ctx.active_app()
+
+
+def _diagnose_served(
+    app: "FastAPI", *, call_id: str, text: str, workspace_id: str, mechanism: str
+) -> Optional[BoundaryDiagnosis]:
+    """A confined stdio MCP server's error, diagnosed at ``possible`` confidence.
+
+    A long-lived server has no per-call roots, so its error text is checked against the
+    recomputed fleet territory (:func:`_effective_roots`, the roots its spawn was given,
+    plus grants since). ``None`` for a call no confined child served.
+    """
     from clio_agent.gact.artifacts.ingest_edges import resolve_serving_child_id  # noqa: PLC0415
 
     if not resolve_serving_child_id(app, call_id):
@@ -229,18 +285,14 @@ def _served_call_boundary(
 
     diagnosis = diagnose_boundary(
         exit_code=None,
-        stderr=result_text(result),
+        stderr=text,
         command=None,
         cwd=_workspace_root(app, workspace_id),
         write_roots=_effective_roots(app, workspace_id),
         mechanism=mechanism,
         seam="tool",
     )
-    if diagnosis is None:
-        return None
-    diagnosis = hedged(diagnosis)
-    publish_call_boundary(call_id, diagnosis)
-    return diagnosis
+    return hedged(diagnosis) if diagnosis is not None else None
 
 
 def _effective_roots(app: "FastAPI", workspace_id: str) -> tuple[Path, ...]:
@@ -422,4 +474,5 @@ __all__ = [
     "PolicyViolation",
     "observe_policy_violations",
     "policy_violations",
+    "raised_call_boundary",
 ]

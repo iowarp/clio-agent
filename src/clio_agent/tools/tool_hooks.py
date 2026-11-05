@@ -6,7 +6,7 @@ appended to the ``execution.py`` god-file. ``execution.py`` imports these and ke
 only THIN call sites (the seam owner still owns the bundle dataclass itself).
 
 :func:`assemble_model_observation` is the ONE place the boundary builds what the
-MODEL reads back from a completed call. It runs two steps in order, both strictly
+MODEL reads back from a completed call. It runs three steps in order, all strictly
 after the observer recorded the real effect (the durable trace always keeps the
 verbatim result):
 
@@ -14,9 +14,10 @@ verbatim result):
    registry truth the WIRE lane already carries as ``artifact.created`` + a
    ``resource_link`` part, which the model lane was missing entirely (a staged CSV
    the agent could not cite as ``artifact://<artifact-id>``);
-2. the ``PostToolUse`` hook rewrite / deny feedback (:func:`apply_post_tool_hook`).
+2. the sandbox-boundary message published for a confined server's failed call (#1905);
+3. the ``PostToolUse`` hook rewrite / deny feedback (:func:`apply_post_tool_hook`).
 
-Neither step can un-run the effect; both only change what enters model context.
+No step can un-run the effect; each only changes what enters model context.
 """
 
 from __future__ import annotations
@@ -124,6 +125,43 @@ def merge_artifact_identity(name: str, observation: Any) -> Any:
         return observation
 
 
+def merge_boundary_message(observation: Any) -> Any:
+    """Append THIS call's sandbox-boundary message to the model-visible result (#1905).
+
+    A confined seam that owns its result (the shell, ``run_code``) carries the diagnosis in
+    the result itself. A confined stdio MCP server cannot: the tool observer diagnoses its
+    failed call and publishes the diagnosis for the call
+    (:func:`clio_agent.runtime.sandbox_diagnosis.publish_call_boundary`), and it is
+    consumed here, keyed by the observer's call id as the artifact identity is, so the
+    model reads why the sandbox refused and how to ask for the folder on every engine.
+    The slot is consumed for every call, so a publication never leaks onto the next one.
+    """
+
+    from clio_agent.gact.artifacts.observer_bridge import observer_call_id  # noqa: PLC0415
+    from clio_agent.runtime.sandbox_diagnosis import take_call_boundary  # noqa: PLC0415
+
+    diagnosis = take_call_boundary(observer_call_id())
+    if diagnosis is None or not diagnosis.message or not isinstance(observation, str):
+        return observation
+    return f"{observation}\n\n{diagnosis.message}"
+
+
+def boundary_error_note(error_text: str) -> str:
+    """The sandbox-boundary message for a call that RAISED, as a note on its error (#1905).
+
+    FastMCP raises a server's error result, so a confined stdio MCP server's refusal never
+    reaches :func:`assemble_model_observation`: the boundary adds this message to the
+    exception, which every engine renders with its notes. Empty when the call was not served
+    by a confined child, or its error is no sandbox denial
+    (:func:`clio_agent.gact.artifacts.violations.raised_call_boundary`).
+    """
+
+    from clio_agent.gact.artifacts.violations import raised_call_boundary  # noqa: PLC0415
+
+    diagnosis = raised_call_boundary(error_text)
+    return diagnosis.message if diagnosis is not None else ""
+
+
 def assemble_model_observation(
     post_tool: Optional[PostToolHook],
     name: str,
@@ -135,8 +173,9 @@ def assemble_model_observation(
 ) -> Any:
     """Build the model-visible observation for one completed call (the ONE seam).
 
-    Artifact identity first (registry truth about what this call produced), then
-    clio's own author-independent narrowing disclosure (so the agent is told when a
+    Artifact identity first (registry truth about what this call produced), then the
+    sandbox-boundary message a confined server's failed call earned
+    (:func:`merge_boundary_message`), then clio's own author-independent narrowing disclosure (so the agent is told when a
     result was shaped by an agent-answered elicitation), then the ``PostToolUse``
     hook (a user rewrite must be able to see — and override — the enriched result,
     exactly as it can override the raw one). Returns the observation unchanged when
@@ -144,6 +183,7 @@ def assemble_model_observation(
     """
 
     observation = merge_artifact_identity(name, observation)
+    observation = merge_boundary_message(observation)
     return apply_post_tool_hook(
         post_tool, name, args, observation, is_error=is_error, synthetic=synthetic
     )
