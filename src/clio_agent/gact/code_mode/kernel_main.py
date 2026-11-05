@@ -52,6 +52,24 @@ class ToolError(Exception):
     """A tool call made by the script failed; the message is the tool's error."""
 
 
+def _wire(value: Any) -> Any:
+    """A value JSON cannot hold, as one it can: a path as its string, a numpy scalar as
+    its Python number.
+
+    Raises:
+        TypeError: Anything else (it reaches the script, which can convert it).
+    """
+    if isinstance(value, os.PathLike):
+        return os.fspath(value)
+    numpy = sys.modules.get("numpy")
+    if numpy is not None and isinstance(value, numpy.generic):
+        return value.item()
+    raise TypeError(
+        f"a {type(value).__name__} cannot be sent to a tool; pass text, numbers, booleans, "
+        "lists or dicts"
+    )
+
+
 class _Host:
     """The protocol channel: writes to the saved stdout, futures for pending calls."""
 
@@ -62,7 +80,7 @@ class _Host:
         self.next_id = 0
 
     def send(self, message: dict[str, Any]) -> None:
-        line = json.dumps(message, default=repr)
+        line = json.dumps(message, default=_wire)
         with self.lock:
             self.out.write(line + "\n")
             self.out.flush()
@@ -79,7 +97,12 @@ class _Host:
             self.next_id += 1
             call_id = self.next_id
             self.pending[call_id] = (loop, future)
-        self.send({"type": "call", "id": call_id, "tool": tool, "args": args})
+        try:
+            self.send({"type": "call", "id": call_id, "tool": tool, "args": args})
+        except TypeError:  # an argument JSON cannot hold: the script's error, nothing sent
+            with self.lock:
+                self.pending.pop(call_id, None)
+            raise
         return future
 
     def answer(self, message: dict[str, Any]) -> None:
@@ -213,7 +236,7 @@ def _stop_leftovers(loop: asyncio.AbstractEventLoop) -> int:
     """Cancel the tasks a script started and left running; how many there were.
 
     The loop outlives the script, so a task a failed ``gather`` left behind would
-    otherwise keep calling tools during the next script, against that script's budget.
+    otherwise keep calling tools while the next script runs, as if that script made them.
     A script's tasks end with it; its variables persist.
     """
     pending = [task for task in asyncio.all_tasks(loop) if not task.done()]

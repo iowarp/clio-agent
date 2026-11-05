@@ -612,3 +612,31 @@ def test_code_tools_are_offered_directly_where_plan_mode_cannot_run_scripts(
     monkeypatch.setattr(sandbox, "current_state", lambda: enforced)
     assert "only be called from a run_code script" in call_refusal(agent, "browser_read")
     assert "browser_read" in unlisted_tools(agent)
+
+
+def test_a_script_sends_paths_as_text_and_refuses_what_json_cannot_hold() -> None:
+    """A10: a path argument reaches the tool as its string (not ``PosixPath('/a')``), a
+    numpy scalar as its number, and anything else raises TypeError in the script with
+    nothing sent. SABOTAGE: send with ``default=repr`` again -> red."""
+    import asyncio
+    import io
+
+    from clio_agent.gact.code_mode import kernel_main
+
+    out = io.StringIO()
+    host = kernel_main._Host(out)
+    loop = asyncio.new_event_loop()
+    try:
+        asyncio.set_event_loop(loop)
+        host.call("fs_stat", {"path": Path("/a/b.txt")})
+        sent = json.loads(out.getvalue())
+        assert sent["args"] == {"path": "/a/b.txt"}
+        numpy = pytest.importorskip("numpy")
+        host.call("records_get_record", {"n": numpy.int64(3)})
+        assert json.loads(out.getvalue().splitlines()[-1])["args"] == {"n": 3}
+        with pytest.raises(TypeError, match="a object cannot be sent to a tool"):
+            host.call("fs_stat", {"path": object()})
+        assert len(out.getvalue().splitlines()) == 2 and len(host.pending) == 2
+    finally:
+        asyncio.set_event_loop(None)
+        loop.close()

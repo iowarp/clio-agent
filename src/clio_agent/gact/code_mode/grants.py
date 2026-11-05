@@ -13,8 +13,8 @@ would ask, the approval mode decides (the plan's table):
 
 The grant lives in a ``ContextVar`` that ``run_code`` binds for its nested calls, so
 the gate (which runs in the nested call's thread) sees it, and nothing outside the
-script does. Time spent waiting for an answer does not count against the script's
-timeout.
+script does. Nothing bounds a script's time, so waiting for an answer costs it nothing
+but the wait.
 """
 
 from __future__ import annotations
