@@ -40,6 +40,7 @@ __all__ = [
     "build_run_code_tool",
     "finalize_run_code",
     "poll_s",
+    "run_code_unavailable",
     "run_script",
 ]
 
@@ -111,21 +112,31 @@ def _approve(app: Any, code: str) -> None:
     )
 
 
+def run_code_unavailable(app: Any, session_id: str) -> str:
+    """Why ``run_code`` cannot run a script in this session now (``""`` when it can):
+    :data:`CODE_PLAN_MODE_UNCONFINED` in plan mode on a host whose sandbox does not
+    enforce the write fence. The tool settings then offer ``code`` tools directly."""
+    from clio_agent.runtime import sandbox  # noqa: PLC0415
+
+    sessions = getattr(getattr(app, "state", None), "sessions", None)
+    session = sessions.get(session_id) if sessions is not None and session_id else None
+    if str(getattr(session, "mode", "") or "") != "plan" or sandbox.fence_enforced():
+        return ""
+    return CODE_PLAN_MODE_UNCONFINED
+
+
 def _plan_mode_refusal(app: Any, session_id: str) -> bool:
     """Whether the session is in plan mode (the script then runs read-only); refuses when
     plan mode has no enforced fence."""
-    from clio_agent.runtime import sandbox  # noqa: PLC0415
-
+    if run_code_unavailable(app, session_id):
+        raise CodeError(
+            "run_code is not available in Plan mode here: this host's sandbox does not "
+            "enforce the write fence, so nothing would keep a script read-only. Call the "
+            "read tools directly; tools offered only to scripts can be called directly too.",
+            CODE_PLAN_MODE_UNCONFINED,
+        )
     session = app.state.sessions.get(session_id)
-    if str(getattr(session, "mode", "") or "") != "plan":
-        return False
-    if sandbox.fence_enforced():
-        return True
-    raise CodeError(
-        "run_code is not available in Plan mode here: this host's sandbox does not enforce "
-        "the write fence, so nothing would keep a script read-only. Use the read tools.",
-        CODE_PLAN_MODE_UNCONFINED,
-    )
+    return str(getattr(session, "mode", "") or "") == "plan"
 
 
 def _workspace() -> Path:

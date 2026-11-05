@@ -404,7 +404,9 @@ class _Loop:
                 _CONTINUING.reset(continue_token)
 
     def _listed_tools(self) -> tuple[FunctionTool, ...]:
-        unlisted: frozenset[str] = getattr(self.agent, "_clio_unlisted", frozenset())
+        from clio_agent.gact.agents.tool_settings import unlisted_tools  # noqa: PLC0415
+
+        unlisted = unlisted_tools(self.agent)
         return tuple(_function_tool(t) for t in self.agent.tools.values() if t.name not in unlisted)
 
     def _refresh_tools(self) -> None:

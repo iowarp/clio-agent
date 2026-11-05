@@ -540,3 +540,39 @@ def test_a_refused_script_says_why_the_gate_refused_it() -> None:
         tool_module._approve(app("deny"), "print(1)")
     assert "not approved, or a permission rule denies run_code" in str(declined.value)
     assert tool_module.CODE_SCRIPT_NOT_ALLOWED in str(declined.value)
+
+
+def test_code_tools_are_offered_directly_where_plan_mode_cannot_run_scripts(
+    monkeypatch: Any,
+) -> None:
+    """A4: in plan mode on a host whose sandbox does not enforce the write fence run_code
+    refuses, so a ``code`` tool is listed and callable directly; behind the fence it
+    stays script-only. SABOTAGE: drop the ``_code_unavailable`` check in ``call_refusal``
+    or ``unlisted_tools`` -> red."""
+    from clio_agent.gact import context as gact_context
+    from clio_agent.gact.agents.tool_settings import call_refusal, unlisted_tools
+    from clio_agent.runtime import sandbox
+
+    def read_page(url: str) -> str:
+        return url
+
+    setattr(read_page, CALLERS_ATTR, "code")
+    agent = _agent()
+    agent.tools["browser_read"] = dspy.Tool(read_page, name="browser_read", desc="Read.")
+    agent.tools["run_code"] = dspy.Tool(_finish, name="run_code", desc="Run.")
+    apply_tool_settings(agent, SimpleNamespace(tools=[], mcp_servers={}))
+    agent._clio_unlisted = frozenset(agent._clio_code_only)
+    assert agent._clio_code_only == {"browser_read"}
+    sessions = {"s": SimpleNamespace(mode="plan")}
+    app = SimpleNamespace(state=SimpleNamespace(sessions=SimpleNamespace(get=sessions.get)))
+    monkeypatch.setattr(gact_context, "active_app", lambda: app)
+    monkeypatch.setattr(gact_context, "active_session_id", lambda: "s")
+    monkeypatch.setattr(sandbox, "current_state", lambda: None)
+    assert call_refusal(agent, "browser_read") == ""
+    assert "browser_read" not in unlisted_tools(agent)
+    enforced = sandbox.SandboxResult(
+        mechanism=sandbox.MECHANISM_LANDLOCK, active=True, reason=sandbox.REASON_FENCE_ACTIVE
+    )
+    monkeypatch.setattr(sandbox, "current_state", lambda: enforced)
+    assert "only be called from a run_code script" in call_refusal(agent, "browser_read")
+    assert "browser_read" in unlisted_tools(agent)
