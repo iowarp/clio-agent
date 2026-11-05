@@ -47,7 +47,7 @@ import atexit
 import logging
 import socket
 import threading
-from collections.abc import Callable
+from collections.abc import Callable, Iterable
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Optional
@@ -151,6 +151,31 @@ def set_egress_gate(gate: Optional[Callable[[EgressRecord], str]]) -> None:
     global _GATE
     with _GATE_LOCK:
         _GATE = gate
+
+
+#: Per-child host allowlists (LaTeX ledger L6). A child registered here may reach only
+#: these hosts, whatever the workspace gate says: a LaTeX build reaches its pinned bundle and
+#: nothing else. Keyed by the child's channel id; cleared when the child is released.
+_CHILD_HOSTS: dict[str, frozenset[str]] = {}
+_CHILD_HOSTS_LOCK = threading.Lock()
+
+
+def restrict_child_hosts(child_id: str, hosts: Iterable[str]) -> None:
+    """Limit ``child_id``'s egress to ``hosts`` (exact, case-insensitive host names)."""
+    with _CHILD_HOSTS_LOCK:
+        _CHILD_HOSTS[child_id] = frozenset(host.lower() for host in hosts)
+
+
+def release_child_hosts(child_id: str) -> None:
+    """Drop ``child_id``'s host allowlist (idempotent)."""
+    with _CHILD_HOSTS_LOCK:
+        _CHILD_HOSTS.pop(child_id, None)
+
+
+def _child_host_allowed(child_id: str, host: str) -> bool:
+    with _CHILD_HOSTS_LOCK:
+        allowed = _CHILD_HOSTS.get(child_id) if child_id else None
+    return allowed is None or host.lower() in allowed
 
 
 class ChokepointStartError(RuntimeError):
@@ -427,6 +452,11 @@ class Chokepoint:
         (an unrecognised/foreign gate, or record construction) — equivalent to unwired — so a
         total wiring failure degrades to the B4 default rather than severing all egress.
         """
+        if not _child_host_allowed(child_id, host):
+            logger.info(
+                "net egress refused reason=child_host_not_allowed child=%s host=%s", child_id, host
+            )
+            return False
         gate = _GATE
         if gate is None:
             return True
