@@ -39,7 +39,7 @@ from urllib.parse import urlsplit
 from clio_agent import paths
 from clio_agent.gact.browser import certificates, failures, install, settings
 from clio_agent.gact.browser.driver_loop import driver_loop
-from clio_agent.gact.browser.settings import BrowserError, page_errors
+from clio_agent.gact.browser.settings import BrowserError, errors, page_errors
 from clio_agent.runtime import trace
 
 __all__ = [
@@ -630,7 +630,7 @@ class BrowserService:
             return
         try:
             self.submit(self._shutdown()).result(timeout=30)
-        except (TimeoutError, BrowserError, *page_errors()) as exc:  # shutdown goes on
+        except errors(TimeoutError, BrowserError) as exc:  # shutdown goes on
             trace.event("BROWSER", "browser shutdown incomplete error=%s", exc)
         loop.call_soon_threadsafe(loop.stop)
         with self._lock:
@@ -687,11 +687,7 @@ class BrowserService:
                 time.sleep(60)
                 try:
                     self.reap_idle()
-                except (
-                    BrowserError,
-                    RuntimeError,
-                    *page_errors(),
-                ) as exc:  # the reaper keeps running
+                except errors(BrowserError, RuntimeError) as exc:  # the reaper keeps running
                     trace.event("BROWSER", "browser reap failed error=%s", exc)
 
         self._reaper = threading.Thread(target=reap, name="clio-browser-reaper", daemon=True)
@@ -725,7 +721,7 @@ class BrowserService:
         for listener in list(self.listeners):
             try:
                 listener(kind, record)
-            except (RuntimeError, *page_errors()) as exc:  # a closed reader never breaks the page
+            except errors(RuntimeError) as exc:  # a closed reader never breaks the page
                 trace.event("BROWSER", "page listener failed error=%s", exc)
         bus = getattr(getattr(self.app, "state", None), "bus", None)
         if bus is None:

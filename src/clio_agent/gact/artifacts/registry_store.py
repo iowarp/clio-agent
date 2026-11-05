@@ -627,7 +627,10 @@ def _loop_writer() -> Optional[Callable[[Callable[[], None]], None]]:
         return None
     from clio_agent.gact.off_loop import schedule_off_loop  # noqa: PLC0415
 
-    return lambda put: schedule_off_loop(put, label="artifact_index_recheck")
+    def off_loop(put: Callable[[], None]) -> None:
+        schedule_off_loop(put, label="artifact_index_recheck")
+
+    return off_loop
 
 
 def index_store(app: "FastAPI") -> Optional["ARCStore"]:

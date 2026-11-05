@@ -335,6 +335,7 @@ async def _serve(app: Any, websocket: Any, session_id: str, page_id: str) -> Non
         await websocket.accept(subprotocol=LIVE_PROTOCOL if _offered(websocket) else None)
         await websocket.close(code=refusal[0], reason=refusal[1])
         return
+    assert record is not None  # a missing page was refused above
     await websocket.accept(subprotocol=LIVE_PROTOCOL if _offered(websocket) else None)
     svc.app = app
     hub = _HUBS.setdefault(page_id, _Hub(page_id))

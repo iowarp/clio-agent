@@ -71,15 +71,15 @@ def _apply(root: Any, page: Any, step: Any, first: bool) -> Any:
     if first:
         raise BrowserError(REASON, f"a {by!r} step narrows a locator; it cannot come first")
     if by == "filter":
-        options: dict[str, Any] = {}
+        narrowing: dict[str, Any] = {}
         for key in ("has_text", "has_not_text"):
             if key in step:
-                options[key] = str(step[key])
+                narrowing[key] = str(step[key])
         if "visible" in step:
-            options["visible"] = bool(step["visible"])
-        if not options:
+            narrowing["visible"] = bool(step["visible"])
+        if not narrowing:
             raise BrowserError(REASON, "a filter step needs has_text, has_not_text or visible")
-        return root.filter(**options)
+        return root.filter(**narrowing)
     if by == "nth":
         index = step.get("index")
         if not isinstance(index, int) or isinstance(index, bool):
@@ -139,7 +139,8 @@ def describe(spec: Any) -> str:
     """A short human form of a target: ``button "Save changes"``, ``ref f9e14``."""
     if not isinstance(spec, Mapping):
         return ""
-    steps = spec.get("steps") if isinstance(spec.get("steps"), list) else []
+    raw = spec.get("steps")
+    steps = raw if isinstance(raw, list) else []
     text = " ".join(_step_text(s) for s in steps if isinstance(s, Mapping))
     if spec.get("frame"):
         text += " in a frame"

@@ -37,8 +37,12 @@ def _row(result: Any, structured: Any) -> Mapping[str, Any]:
     return {}
 
 
+def _mapping(value: Any) -> Mapping[str, Any]:
+    return value if isinstance(value, Mapping) else {}
+
+
 def _host(args: Mapping[str, Any], row: Mapping[str, Any]) -> str:
-    page = row.get("page") if isinstance(row.get("page"), Mapping) else {}
+    page = _mapping(row.get("page"))
     host = str(page.get("host") or "")
     if host:
         return host
@@ -110,7 +114,7 @@ def _notes(row: Mapping[str, Any]) -> list[dict[str, Any]]:
 
 
 def _page_link(row: Mapping[str, Any]) -> list[dict[str, Any]]:
-    page = row.get("page") if isinstance(row.get("page"), Mapping) else {}
+    page = _mapping(row.get("page"))
     url = str(page.get("url") or "")
     if not url.startswith(("http://", "https://")):
         return []
@@ -126,7 +130,7 @@ def _value_text(value: Any) -> str:
 def _body(
     name: str, args: Mapping[str, Any], row: Mapping[str, Any]
 ) -> tuple[str, list[dict[str, Any]]]:
-    page = row.get("page") if isinstance(row.get("page"), Mapping) else {}
+    page = _mapping(row.get("page"))
     page_id = str(page.get("id") or args.get("page") or "")
     if name == "browser_open":
         return f"Opened {page_id}", _page_link(row)
@@ -142,7 +146,7 @@ def _body(
         status = row.get("status")
         return (f"HTTP {status}" if status else "Loaded"), _page_link(row)
     if name == "browser_snapshot":
-        lines = int(row.get("lines") or 0)
+        count = int(row.get("lines") or 0)
         block = {
             "id": "snapshot",
             "type": "code",
@@ -150,7 +154,7 @@ def _body(
             "label": "Page structure",
             "text": str(row.get("snapshot") or ""),
         }
-        return f"{lines} line{'s' if lines != 1 else ''}", [block]
+        return f"{count} line{'s' if count != 1 else ''}", [block]
     if name == "browser_read":
         value = row.get("value")
         text = _value_text(value)
@@ -161,7 +165,7 @@ def _body(
     if name == "browser_wait":
         return "Reached", []
     if name == "browser_screenshot":
-        shot = row.get("screenshot") if isinstance(row.get("screenshot"), Mapping) else {}
+        shot = _mapping(row.get("screenshot"))
         size = int(shot.get("size_bytes") or 0)
         blocks: list[dict[str, Any]] = []
         if shot.get("artifact_id"):

@@ -123,8 +123,9 @@ def allow_unsandboxed() -> bool:
 
 def granted_hosts() -> frozenset[str]:
     """Host patterns the deployment grants to every session (``*.example.org`` works)."""
+    empty: list[str] = []
     raw = conf.resolve(
-        "browser.granted_hosts", env="CLIO_BROWSER_GRANTED_HOSTS", default=(), cast=conf.as_csv
+        "browser.granted_hosts", env="CLIO_BROWSER_GRANTED_HOSTS", default=empty, cast=conf.as_csv
     )
     return frozenset(h.strip().lower() for h in raw if h.strip())
 
@@ -157,6 +158,11 @@ def frame_width() -> int:
     if value < 320:
         raise ValueError(f"browser.frame_width must be at least 320, not {value}")
     return value
+
+
+def errors(*more: type[BaseException]) -> tuple[type[BaseException], ...]:
+    """``more`` and Playwright's error class, as one ``except`` tuple."""
+    return (*more, *page_errors())
 
 
 def page_errors() -> tuple[type[BaseException], ...]:

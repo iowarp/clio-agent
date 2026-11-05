@@ -32,7 +32,8 @@ def page_source_edges(tool: str, structured: Mapping[str, Any]) -> list[Any]:
         isinstance(d, Mapping) and d.get("path") for d in structured.get("downloads") or ()
     )
     page = structured.get("page")
-    url = str(page.get("url") or "") if isinstance(page, Mapping) else ""
+    page = page if isinstance(page, Mapping) else {}
+    url = str(page.get("url") or "")
     if not produced or not url.startswith(("http://", "https://")):
         return []
     return [
