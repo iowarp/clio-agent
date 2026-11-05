@@ -302,6 +302,8 @@ def execute_script(
         duration_ms=int((time.monotonic() - started) * 1000),
         python=kernel.python,
     )
+    if outcome["status"] == "failed" and (boundary := _boundary(kernel, outcome)):
+        outcome["boundary"] = boundary  # the fence refused a write: which folder, and how
     if kernel.replaced:  # the scope's earlier kernel, and its variables, are gone
         outcome["new_kernel"], kernel.replaced = kernel.replaced, ""
     if kernel.read_only:  # plan mode: a write elsewhere is refused by the fence
@@ -315,6 +317,22 @@ def execute_script(
         outcome["duration_ms"],
     )
     return outcome
+
+
+def _boundary(kernel: Any, outcome: Mapping[str, Any]) -> dict[str, Any] | None:
+    """A failed script's sandbox-boundary diagnosis (#1905), against the roots its kernel's
+    fence was given; a plan-mode kernel's territory is narrowed, so no grant is offered."""
+    from clio_agent.runtime.sandbox_diagnosis import diagnose_confined  # noqa: PLC0415
+
+    return diagnose_confined(
+        getattr(kernel, "confinement", None),
+        exit_code=None,
+        stderr=str(outcome.get("error") or ""),
+        command=str(outcome.get("code") or ""),
+        cwd=getattr(kernel, "workspace", None),
+        seam="script",
+        narrowed=bool(getattr(kernel, "read_only", False)),
+    )
 
 
 def run_script(
@@ -381,13 +399,16 @@ _NEW_KERNEL_WORDS = {
 
 
 def model_text(outcome: Mapping[str, Any]) -> str:
-    """What the model reads: output, error, final value, then the call count; first that a
-    new kernel replaced the earlier one, and in plan mode where the script may write."""
+    """What the model reads: output, error (and why the sandbox refused it), final value,
+    then the call count; first that a new kernel replaced the earlier one, and in plan mode
+    where the script may write."""
     parts = []
     if outcome.get("output"):
         parts.append(str(outcome["output"]).rstrip())
     if outcome.get("error"):
         parts.append(f"Error:\n{str(outcome['error']).rstrip()}")
+    if isinstance(boundary := outcome.get("boundary"), Mapping) and boundary.get("message"):
+        parts.append(str(boundary["message"]))  # why the sandbox refused, and the next step
     if outcome.get("value") is not None:
         parts.append(f"Value: {outcome['value']}")
     calls, failed = int(outcome.get("calls") or 0), int(outcome.get("failed_calls") or 0)

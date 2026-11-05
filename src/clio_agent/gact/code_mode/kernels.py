@@ -135,8 +135,11 @@ class Kernel:
         self.workspace = workspace
         #: Plan mode: the kernel may write only its scratch folder and temp.
         self.read_only = read_only
-        #: The folders a read-only kernel may write, as it was started with them.
+        #: The folders the kernel may write, as its fence was given them (plan mode: only
+        #: scratch and temp), and the fence's resolved state: a script's denial is diagnosed
+        #: against exactly these (#1905).
         self.write_roots: tuple[Path, ...] = ()
+        self.confinement: Any = None
         #: Why this kernel replaced the scope's earlier one (``replaced_dead``,
         #: ``replaced_mode_changed``, ``replaced_workspace_changed``); ``""`` when it did not.
         #: The first script it runs reports it and clears it.
@@ -163,23 +166,23 @@ class Kernel:
 
         python, env = _environment(self.workspace, self.key[0])
         self.python = python
-        if self.read_only:
-            self.write_roots = read_only_write_roots()
+        self.write_roots = (
+            read_only_write_roots()
+            if self.read_only
+            else sandbox.effective_write_roots(
+                sandbox.PROFILE_SHELL, workspace_root=str(self.workspace)
+            )
+        )
         confined = sandbox.wrap_confined(
             python,
             ["-I", str(_MAIN), str(max_output_bytes())],
-            write_roots=(
-                self.write_roots
-                if self.read_only
-                else sandbox.effective_write_roots(
-                    sandbox.PROFILE_SHELL, workspace_root=str(self.workspace)
-                )
-            ),
+            write_roots=self.write_roots,
             net_policy=sandbox.NET_ALLOW_RECORD,
             profile=sandbox.PROFILE_SHELL,
             pdeathsig=True,
             cwd=self.workspace,
         )
+        self.confinement = confined.result
         self.process = _spawn(  # the confined, resolved kernel argv
             [confined.command, *confined.args],
             cwd=str(self.workspace),
