@@ -68,12 +68,23 @@ export default async function (page, shot) {
   await page.waitForTimeout(5000);
   await send(
     page,
-    `Watch my 3D printer and tell me when the print is half done and when it finishes. Its status is at ${url}.`,
+    process.env.LINKS_TEXT ||
+      `Watch my 3D printer and tell me when the print is half done and when it finishes. Its status is at ${url}.`,
   );
   log.push(`first turn settled: ${await waitIdle(page, session.id, log, 10)}`);
   await shot("reply");
 
+  // The turn's activity is one collapsed row; open it, then the script's row.
+  const activity = page.getByRole("button", { name: /used tools/ });
+  if (await activity.count()) await activity.first().click();
+  await page.waitForTimeout(800);
+  const scriptRow = page.getByRole("button", { name: /background|Script|script/ });
+  log.push(`script rows: ${await scriptRow.count()}`);
   const launch = page.getByRole("button", { name: "Show the task in Work" });
+  if (!(await launch.count()) && (await scriptRow.count())) {
+    await scriptRow.first().click();
+    await page.waitForTimeout(800);
+  }
   log.push(`launch links: ${await launch.count()}`);
   if (await launch.count()) {
     await launch.first().scrollIntoViewIfNeeded();
@@ -95,6 +106,11 @@ export default async function (page, shot) {
   }
   log.push(`notify recorded: ${notified}`);
   await waitIdle(page, session.id, log, 5);
+  const group = page.getByRole("button", { name: /Received a task notice/ });
+  if (await group.count()) {
+    await group.first().click();
+    await page.waitForTimeout(800);
+  }
   const notice = page.getByRole("button", { name: /^Injection Message from / });
   log.push(`notify rows: ${await notice.count()}`);
   if (await notice.count()) {
