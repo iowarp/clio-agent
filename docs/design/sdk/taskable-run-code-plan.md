@@ -97,7 +97,7 @@ The idle reaper already skips a kernel whose lock is held, so a running backgrou
 - **No call timeout.** `code.call_timeout_s` and `code.max_nested_calls` are removed for both modes (CT decision recording the change to TD17).
 - **Stop does not cancel it.** Stopping the turn that launched a background script leaves it running, as storage indexing does. `cancel_tasks(handle)` cancels it; the kernel is discarded and the task settles as cancelled with its output so far.
 - **Children and forks.** A background script launched by a child session belongs to that child and outlives it: its settle and its notifies wake the child, which may be waiting on exactly that (the owner's decision; no rule cancels owned work when a child settles). It is cancelled like any task, by the agent or the person, and the parent's Work rail shows it in the child's subtree. A fork inherits no background scripts.
-- **Restart.** A clean shutdown cancels each running background script, which settles as cancelled with its output so far. After a crash, `runtime_loss_observer` settles it as lost with `code_task_runtime_lost` and its output so far. Neither is resumed.
+- **Restart.** A clean shutdown cancels each running background script, which settles as cancelled with its output so far. After a crash, the generic native recovery settles it as interrupted (`native_runtime_interrupted`), as it does every native task. Neither is resumed.
 
 ## Design: approval
 
