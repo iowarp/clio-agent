@@ -27,6 +27,12 @@ from clio_agent.tools.tool_presentation import present_mcp_result
 
 logger = logging.getLogger(__name__)
 
+#: Tools whose calls run a script. The script's own tool calls are recorded under the
+#: script call's invocation id (so they nest under it), which makes them claim that
+#: invocation too; none of them is the script call's execution, so these calls are never
+#: joined to a task. A background script's own task is reached through its receipt.
+_SCRIPT_TOOLS = frozenset({"run_code"})
+
 _STATES = {
     "accepted": "pending",
     "queued": "pending",
@@ -258,10 +264,11 @@ def join_task_executions(
     app: Any, session_id: str, tools: Sequence[Mapping[str, Any]]
 ) -> list[dict[str, Any]]:
     """Rebuild operation views from the same owned task records on every read."""
-    matches = own_execution_tasks(app, session_id, {str(tool["id"]) for tool in tools})
+    joinable = {str(tool["id"]) for tool in tools if tool.get("name") not in _SCRIPT_TOOLS}
+    matches = own_execution_tasks(app, session_id, joinable)
     result = []
     for tool in tools:
-        tasks = matches.get(str(tool["id"]), ())
+        tasks = matches.get(str(tool["id"]), ()) if str(tool["id"]) in joinable else ()
         if len(tasks) == 1:
             entity, _presentation = project_execution(app.state.task_history, tool, tasks[0])
             result.append(entity)
@@ -289,6 +296,8 @@ def execution_presentation(
     result_sha256: str | None = None,
 ) -> dict[str, Any] | None:
     """Resolve task-owned presentation pages through the same authorized join."""
+    if name in _SCRIPT_TOOLS:
+        return None
     matches = own_execution_tasks(app, session_id, {call_id}).get(call_id, ())
     if len(matches) != 1:
         return None
@@ -309,6 +318,8 @@ def completion_execution(
 ) -> dict[str, Any] | None:
     """Join a live RPC completion to its current execution using recorded call context."""
     call_id = str(payload.get("call_id") or "")
+    if str(payload.get("tool") or "") in _SCRIPT_TOOLS:
+        return None
     tasks = own_execution_tasks(app, session_id, {call_id}).get(call_id, ())
     if not tasks:
         return None
