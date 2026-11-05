@@ -689,11 +689,11 @@ def _make_tool_observer(app: "FastAPI"):
                 **({"error": completion_error} if completion_error else {}),
                 **({"result": _bounded_tool_call_result(result)} if result is not None else {}),
                 **cancellation_metadata,
+                **nested_call_fields(),  # a script's call nests under it from any first event
             }
-            # Append to the per-session ledger FIRST -- before the (potentially
-            # I/O-bound, e.g. durable-trace-writing) semantic emit + live parts --
-            # so the turn handler's post-forward drain never races a slow emit and
-            # drops tools_called from the assistant message metadata.
+            # Append to the per-session ledger FIRST -- before the (potentially I/O-bound)
+            # semantic emit + live parts -- so the turn handler's post-forward drain never
+            # races a slow emit and drops tools_called from the assistant message metadata.
             ledger = getattr(app.state, "tool_call_ledger", None)
             if ledger is not None and not completed_after_cancel:
                 ledger.setdefault(sid, []).append(

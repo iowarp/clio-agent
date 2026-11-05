@@ -335,6 +335,26 @@ def test_nested_calls_carry_their_parent_into_the_live_and_v3_views() -> None:
     assert projection.payload["parent_call_id"] == "call_run"
 
 
+def test_a_nested_calls_completion_carries_its_parent_too() -> None:
+    """A background script's calls are recorded behind the call (CT5), so a live view can
+    meet a call first through its completion; that event must name the parent as well,
+    or the call shows as a row of its own (CK21: stray "Created version" rows).
+
+    SABOTAGE: drop ``parent_call_id`` from ``_tool_completed`` -> red."""
+    from clio_agent.gact.events import Event
+    from clio_agent.gact.protocol.v3.event import _tool_completed
+
+    payload = {"call_id": "call_child", "tool": "create_artifact", "ok": True}
+    payload["parent_call_id"] = "call_run"
+    event = Event(type="tool.call.completed", session_id="s", payload=payload)
+    projection = _tool_completed(event, payload, None)
+    assert projection.payload["parent_call_id"] == "call_run"
+    assert (
+        "parent_call_id"
+        not in _tool_completed(event, {**payload, "parent_call_id": ""}, None).payload
+    )
+
+
 def test_plan_mode_runs_scripts_only_behind_an_enforced_fence(monkeypatch: Any) -> None:
     """The sandbox is what keeps a script read-only in plan mode; without it, refuse typed."""
     from clio_agent.runtime import sandbox
