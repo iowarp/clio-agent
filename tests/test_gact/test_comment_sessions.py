@@ -236,6 +236,15 @@ def test_under_text_is_cut_with_the_rest_in_a_session_file(tmp_path: Path) -> No
     assert (tmp_path / "S1-under.txt").read_text() == "x" * 5000
 
 
+def test_a_long_selection_is_cut_too(tmp_path: Path) -> None:
+    quote = '"' + "y" * 3000 + '"'
+    mark = ResolvedMark(mode="text", under="y" * 3000, lines=[("Selected", quote)])
+    block = entry_block("S2", mark, "Shorten this.", image_number=None, overflow_dir=tmp_path)
+    assert "  Cut:      at 1,200 of 3,002 characters. The rest is in " in block
+    assert (tmp_path / "S2-selected.txt").read_text() == quote
+    assert len(block) < 1600
+
+
 def test_the_turn_reply_lands_on_every_thread_including_through_a_steer(tmp_path: Path) -> None:
     root = tmp_path / "workspace"
     root.mkdir()

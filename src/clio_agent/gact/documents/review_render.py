@@ -99,13 +99,14 @@ def entry_block(
     lines = [heading]
     limit = under_mark_chars()
     for name, value in mark.lines:
-        if name == "Under" and len(value) > limit:
+        # What lies under a mark, or a long selection, is cut at the limit (ledger FB11).
+        if name in ("Under", "Selected") and len(value) > limit:
             kept = value[:limit].rstrip()
             where = ""
             if overflow_dir is not None:
                 overflow_dir.mkdir(parents=True, exist_ok=True)
-                spill = overflow_dir / f"{_safe(label)}-under.txt"
-                spill.write_text(mark.under, encoding="utf-8")
+                spill = overflow_dir / f"{_safe(label)}-{name.lower()}.txt"
+                spill.write_text(mark.under if name == "Under" else value, encoding="utf-8")
                 where = f" The rest is in {spill}."
             lines.append(_line(name, kept + " ..."))
             lines.append(_line("Cut", f"at {limit:,} of {len(value):,} characters.{where}"))
