@@ -21,8 +21,9 @@ The gate governs the agent, not the person: the shared tab is the person's brows
 
 A denied hop fails with ``Aborted``, which keeps the page on the page it was on (Phase 0).
 Only ``http`` and ``https`` navigations reach a host check; ``about:``, ``data:`` and
-``blob:`` load, and every other scheme (``file:``, ``chrome:``) is refused, so a page can
-never read the computer's files past CLIO's file policy.
+``blob:`` load; a ``file:`` page loads only inside the session's readable roots
+(:mod:`file_pages`, an HTML file opened from Files); every other scheme (``chrome:``) is
+refused, so a page can never open the computer's files past CLIO's file policy.
 """
 
 from __future__ import annotations
@@ -56,6 +57,10 @@ __all__ = [
 GRANTOR_PERSON_NAVIGATION = "user_navigation"
 _LOCAL_SCHEMES = frozenset({"about", "data", "blob"})
 _WEB_SCHEMES = frozenset({"http", "https"})
+#: Refusals no host grant can lift: the scheme, or a local file outside the readable roots.
+_NOT_GRANTABLE = frozenset(
+    {"browser_scheme_refused", "browser_file_outside_roots", "browser_file_url_invalid"}
+)
 #: The open question per (conversation, host): pages loading the same new host at once
 #: share one question and its answer (W8 asked twice). Touched only on the browser loop.
 _questions: dict[tuple[str, str], "asyncio.Future[bool]"] = {}
@@ -163,6 +168,8 @@ async def _decide(service: "BrowserService", record: "PageRecord", url: str) -> 
     scheme = parts.scheme.lower()
     if scheme in _LOCAL_SCHEMES:
         return True
+    if scheme == "file":
+        return await _decide_file(service, record, url)
     if scheme not in _WEB_SCHEMES:
         trace.event("BROWSER", "browser_scheme_refused url=%s page=%s", url[:200], record.id)
         _blocked(service, record, scheme + ":", url, reason="browser_scheme_refused")
@@ -191,6 +198,20 @@ async def _decide(service: "BrowserService", record: "PageRecord", url: str) -> 
     if not allowed:
         inflight.denied_host = host
     return allowed
+
+
+async def _decide_file(service: "BrowserService", record: "PageRecord", url: str) -> bool:
+    """A ``file:`` page loads when it lies inside the session's readable roots."""
+    from clio_agent.gact.browser import file_pages  # noqa: PLC0415
+
+    reason = await asyncio.get_running_loop().run_in_executor(
+        None, lambda: file_pages.refusal(service.app, record.session_id, url)
+    )
+    if not reason:
+        return True
+    trace.event("BROWSER", "%s url=%s page=%s", reason, url[:200], record.id)
+    _blocked(service, record, "file:", url, reason=reason)
+    return False
 
 
 async def admit_call(
@@ -313,7 +334,7 @@ async def attach(service: "BrowserService", record: "PageRecord") -> None:
 def allow_blocked(service: "BrowserService", record: "PageRecord") -> str:
     """The person allows the host a page was blocked from, and the page loads it."""
     blocked = record.navigation_blocked
-    if not blocked or blocked.get("reason") == "browser_scheme_refused":
+    if not blocked or blocked.get("reason") in _NOT_GRANTABLE:
         return ""
     host, url = str(blocked["host"]), str(blocked["url"])
     grant(service.app, record.session_id, host, grantor="user")

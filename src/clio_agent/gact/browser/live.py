@@ -467,10 +467,34 @@ def register_browser_routes(app: Any) -> None:
     async def browser_open_for_person(session_id: str, body: dict[str, Any]) -> dict[str, Any]:
         """Open a link the person clicked in the conversation, as their own navigation."""
         url = str(body.get("url") or "")
-        if urlsplit(url).scheme.lower() not in ("http", "https"):
-            raise HTTPException(status_code=422, detail="only web links open in the browser")
+        if not url and (body.get("path") or body.get("artifact_id")):
+            from clio_agent.gact.browser.file_pages import url_for  # noqa: PLC0415
+
+            try:  # a workspace file or an artifact's file, opened as a local page
+                url = await asyncio.to_thread(
+                    lambda: url_for(
+                        app,
+                        session_id,
+                        path=str(body.get("path") or ""),
+                        artifact_id=str(body.get("artifact_id") or ""),
+                    )
+                )
+            except ValueError as exc:
+                raise HTTPException(status_code=422, detail=str(exc)) from exc
+        scheme = urlsplit(url).scheme.lower()
+        if scheme not in ("http", "https", "file"):
+            raise HTTPException(status_code=422, detail="only web pages and local files open")
         if app.state.sessions.get(session_id) is None:
             raise HTTPException(status_code=404, detail="session not found")
+        if scheme == "file":
+            from clio_agent.gact.browser.file_pages import refusal  # noqa: PLC0415
+
+            reason = await asyncio.to_thread(refusal, app, session_id, url)
+            if reason:
+                raise HTTPException(
+                    status_code=422,
+                    detail=f"{reason}: the file is outside what this conversation may read",
+                )
         svc = service()
         svc.app = app
         try:

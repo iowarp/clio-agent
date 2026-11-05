@@ -7,6 +7,7 @@
 //   node scripts/cloud/ui_check.mjs --send "List the plugins you have"
 //   node scripts/cloud/ui_check.mjs --steps scripts/cloud/checks/runs_view.mjs
 //   node scripts/cloud/ui_check.mjs --label plugins --width 390 --height 844   # phone width
+//   node scripts/cloud/ui_check.mjs --width 390 --height 844 --touch          # with touch input
 //
 // --steps names a module whose default export is `async (page, shot) => {}`; call
 // `await shot("name")` to capture a screenshot at any point. Screenshots land in
@@ -37,6 +38,8 @@ const height = Number(opt("height", 900));
 const send = opt("send", null);
 const stepsFile = opt("steps", null);
 const settleMs = Number(opt("settle", 60000));
+// --touch gives the page touch input (hasTouch, isMobile), so steps can drag with real touches.
+const touch = args.includes("--touch");
 
 function chromiumPath() {
   const base = "/opt/pw-browsers";
@@ -62,7 +65,10 @@ try {
 } catch {
   browser = await chromium.launch({ executablePath: chromiumPath() });
 }
-const page = await browser.newPage({ viewport: { width, height } });
+const page = await browser.newPage({
+  viewport: { width, height },
+  ...(touch ? { hasTouch: true, isMobile: true } : {}),
+});
 const consoleErrors = [];
 const failedRequests = [];
 page.on("console", (m) => m.type() === "error" && consoleErrors.push(m.text().slice(0, 300)));

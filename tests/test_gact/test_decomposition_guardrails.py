@@ -232,7 +232,8 @@ from clio_agent.gact.app import build_app
 # /v1/document-threads/{id}/crop.
 # 437 -> 435: the UI moved onto comment sessions, so GET /v1/artifacts/{id}/reviews and
 # POST /v1/sessions/{sid}/artifact-reviews are deleted (comments plan Phase 4).
-EXPECTED_ROUTE_METHOD_PAIRS = 435
+# 435 -> 434: GET /v1/html-renderer is deleted; HTML files open in the shared browser.
+EXPECTED_ROUTE_METHOD_PAIRS = 434
 
 # app.py is build_app + lifecycle + re-export shims only. The ceiling is
 # the current size (~2892 lines) plus ~300 lines of headroom so ordinary
@@ -285,7 +286,7 @@ def test_build_app_registers_expected_route_count() -> None:
         ("/v1/sessions/{sid}/legacy-transcript", "GET"),
     } <= set(route_pairs)
     assert ("/v1/infrastructure/models/details", "GET") in route_pairs
-    assert ("/v1/html-renderer", "GET") in route_pairs
+    assert ("/v1/html-renderer", "GET") not in route_pairs
     assert ("/v1/infrastructure/targets/{target_id}/models/{job_id}/remove", "POST") in route_pairs
     assert ("/v1/workspaces/{wid}/ndp-endpoints/{identifier}/request", "POST") in route_pairs
     assert ("/v1/workspaces/{wid}/ndp-endpoints/{identifier}", "PATCH") in route_pairs

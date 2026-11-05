@@ -200,6 +200,27 @@ def test_other_schemes_are_refused(conversation: Any, site: dict[str, Any]) -> N
     assert tools.browser_pages()["pages"][0]["host"] == "a.fixture.localhost"
 
 
+def test_a_local_html_file_opens_only_inside_the_readable_roots(
+    conversation: Any, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    allowed = tmp_path / "allowed"
+    allowed.mkdir()
+    monkeypatch.setenv("CLIO_ALLOWED_ROOTS", str(allowed))
+    inside = allowed / "figure.html"
+    inside.write_text(
+        "<title>Figure</title><canvas id=c></canvas><script>document.title='ran'</script>"
+    )
+    page = tools.browser_open(url=inside.as_uri())["page"]
+    assert page["url"] == inside.as_uri(), page
+    deadline = time.monotonic() + 10  # the title is read after the load event
+    while tools.browser_pages()["pages"][0]["title"] != "ran" and time.monotonic() < deadline:
+        time.sleep(0.1)
+    assert tools.browser_pages()["pages"][0]["title"] == "ran"  # its script ran
+    with pytest.raises(BrowserError):
+        tools.browser_navigate(page["id"], url="file:///etc/hostname")  # outside every root
+    assert tools.browser_pages()["pages"][0]["url"] == inside.as_uri()
+
+
 def test_the_agent_never_types_a_password(conversation: Any, site: dict[str, Any]) -> None:
     page = tools.browser_open(url=site["a"] + "/signin")["page"]["id"]
     password = {"steps": [{"by": "label", "text": "Password"}]}

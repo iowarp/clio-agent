@@ -211,3 +211,32 @@ def test_a_link_the_person_opens_is_their_navigation(
         ).status_code
         == 422
     )
+
+
+def test_an_html_file_the_person_opens_loads_as_a_local_page(
+    browser: Any, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Files opens an HTML file in the shared browser by its path, inside the readable roots."""
+    client, app, sid = _client(tmp_path)
+    browser.app = app
+    root = tmp_path / "workspace"
+    root.mkdir()
+    workspace = client.post(
+        "/v1/workspaces", json={"name": "figures", "root_path": str(root)}
+    ).json()
+    sid = client.post(
+        "/v1/sessions", json={"title": "Figures", "workspace_id": workspace["id"]}
+    ).json()["id"]
+    (root / "figs").mkdir()
+    figure = root / "figs" / "scene.html"
+    figure.write_text("<title>Scene</title><p>three</p>")
+    opened = client.post(f"/v1/sessions/{sid}/browser/pages", json={"path": "figs/scene.html"})
+    assert opened.status_code == 200, opened.text
+    record = browser.owned(sid, opened.json()["page"]["id"])
+    for _ in range(100):
+        if record.url() == figure.as_uri():
+            break
+        time.sleep(0.05)
+    assert record.url() == figure.as_uri()
+    missing = client.post(f"/v1/sessions/{sid}/browser/pages", json={"path": "figs/none.html"})
+    assert missing.status_code == 422 and "browser_file_missing" in missing.text
