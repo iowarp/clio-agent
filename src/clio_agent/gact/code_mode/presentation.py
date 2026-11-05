@@ -60,6 +60,17 @@ def present(args: Mapping[str, Any], result: Any, structured: Any) -> dict[str, 
                 "cancel control are in Work, under Background tasks.",
             }
         )
+        if handle:
+            # Opens Work at this task's row.
+            blocks.append(
+                {
+                    "id": "open-task",
+                    "type": "link",
+                    "target": "work",
+                    "uri": handle,
+                    "label": "Show the task in Work",
+                }
+            )
         summary = f"Started in the background: {name}" if name else "Started in the background"
         return {"subject": "script", "summary": summary, "blocks": blocks}
     if row.get("output"):

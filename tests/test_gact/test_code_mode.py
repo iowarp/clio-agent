@@ -417,14 +417,25 @@ def test_a_plan_mode_kernel_writes_only_scratch_and_temp(monkeypatch: Any, tmp_p
 
 
 def test_a_background_launch_reads_as_a_started_task_not_as_a_script_without_calls() -> None:
-    """SABOTAGE: drop the background branch in ``present`` -> "No tool calls"."""
+    """The launch row links to the task's row in Work by its handle.
+
+    SABOTAGE: drop the background branch in ``present`` -> "No tool calls". Drop the
+    ``open-task`` link -> red."""
     view = present(
         {"code": "while True:\n    pass", "background": True, "label": "Counter watch"},
         "Started",
         {"handle": "task_abc", "status": "working"},
     )
     assert view["summary"] == "Started in the background: Counter watch"
-    assert "task_abc" in view["blocks"][-1]["text"]
+    blocks = {block["id"]: block for block in view["blocks"]}
+    assert "task_abc" in blocks["task"]["text"]
+    assert blocks["open-task"] | {"label": ""} == {
+        "id": "open-task",
+        "type": "link",
+        "target": "work",
+        "uri": "task_abc",
+        "label": "",
+    }
     unnamed = present({"code": "\nimport time\n", "background": True}, "", {"handle": "t"})
     assert unnamed["summary"] == "Started in the background: import time"
 
