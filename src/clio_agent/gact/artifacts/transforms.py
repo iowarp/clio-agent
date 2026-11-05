@@ -655,6 +655,18 @@ def observe_tool_transform(
             trace_id=trace_id,
             started_at=started,
         )
+        # A confirmed sandbox block asks the person with the folder-access card (#1905).
+        from clio_agent.gact.sandbox_folder_offer import offer_blocked_folders  # noqa: PLC0415
+
+        offer_blocked_folders(
+            app,
+            sid,
+            tool_name=tool_name,
+            args=effective_args,
+            call_id=call_id,
+            result=result,
+            workspace_id=workspace_id,
+        )
         return record
     except Exception as exc:  # noqa: BLE001 — a live provenance record must never break a turn
         # Finding [11]: the wiring's ONLY production path must not SWALLOW its own
