@@ -1266,11 +1266,6 @@ KEY_NOTES: dict[str, str] = {
         "successful calls to one tool (errors and calls that asked are recorded on their own). "
         "Default 60."
     ),
-    "a2ui.live_checkpoint_s": (
-        "Seconds between two transcript checkpoints of a surface a background run_code "
-        "script feeds; between them its updates are state, sent to viewers as they happen. "
-        "Default 60."
-    ),
     "code.idle_minutes": (
         "Minutes a run_code kernel keeps its variables without a script before it is stopped."
     ),

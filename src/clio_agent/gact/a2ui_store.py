@@ -232,11 +232,6 @@ class A2UIStore:
         candidates.extend(
             (getattr(self._app.state, "live_assistant_parts", {}) or {}).get(session_id, [])
         )
-        # A background script's live feed (gact/a2ui_live_feed.py): its updates since
-        # the surface's last checkpoint, held in memory until the next one.
-        candidates.extend(
-            ((getattr(self._app.state, "a2ui_live_feeds", {}) or {}).get(session_id) or {}).values()
-        )
         stamped: list[tuple[str, int, Any]] = []
         seen: set[str] = set()
         carried = ""
@@ -580,7 +575,6 @@ class A2UIStore:
         part_id: str = "",
         persist_part: _PersistPart | None = None,
         expected_revisions: Mapping[str, int] | None = None,
-        transient: bool = False,
     ) -> A2UIBatchOutcome:
         """Apply a batch and report what it created plus the session's registry.
 
@@ -677,13 +671,7 @@ class A2UIStore:
                     if operation == "deleteSurface"
                     else surface.to_wire()
                 )
-                # A live feed's upserts stay out of the replay log: a reconnecting client
-                # catches up from the surfaces route (taskable run_code CT10).
-                self._bus.publish(
-                    Event(
-                        type=event_type, session_id=session_id, payload=payload, transient=transient
-                    )
-                )
+                self._bus.publish(Event(type=event_type, session_id=session_id, payload=payload))
             return A2UIBatchOutcome(
                 surfaces=[surface for _, _, surface in applied],
                 created_surface_ids=tuple(

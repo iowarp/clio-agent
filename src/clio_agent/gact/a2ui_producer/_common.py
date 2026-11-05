@@ -176,14 +176,6 @@ def apply_messages(
     def persist_part(candidate: Any) -> bool:
         return _emit.emit_surface_part(app, session_id, candidate)
 
-    from clio_agent.gact.code_task_context import active_background_task  # noqa: PLC0415
-
-    task = active_background_task()
-    if task is not None:  # a background script feeds it: state, not transcript (CT10)
-        from clio_agent.gact.a2ui_live_feed import writer  # noqa: PLC0415
-
-        persist_part = writer(app, session_id, task.handle)  # type: ignore[assignment]
-
     try:
         return app.state.a2ui_store.apply_batch_outcome(
             session_id,
@@ -191,7 +183,6 @@ def apply_messages(
             part_id=minted_part_id,
             persist_part=persist_part,
             expected_revisions=expected_revisions,
-            transient=task is not None,
         )
     except A2UIRevisionConflictError as exc:
         return refusal("a2ui_view_stale", detail=str(exc))

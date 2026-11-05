@@ -10,7 +10,6 @@ These resolve through `clio_agent.conf`: a value under the dotted key in `config
 
 | Environment variable | Config key | Type | Default | Defined in |
 | --- | --- | --- | --- | --- |
-| `CLIO_A2UI_LIVE_CHECKPOINT_S` | `a2ui.live_checkpoint_s` | str | `60.0` | `src/clio_agent/gact/a2ui_live_feed.py` |
 | `CLIO_A2UI_MAX_MESSAGE_BYTES` | `a2ui.max_message_bytes` | int | `262144` | `src/clio_agent/gact/a2ui.py` |
 | `CLIO_A2UI_MAX_STRING_CHARS` | `a2ui.max_string_chars` | int | `16384` | `src/clio_agent/gact/a2ui.py` |
 | `CLIO_AI_REVIEW_MODEL` | `permissions.ai_review_model` | str | _(unset)_ | `src/clio_agent/gact/runtime/ai_review.py` |
