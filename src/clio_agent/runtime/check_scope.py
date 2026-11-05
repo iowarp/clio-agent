@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import contextvars
 import functools
+import inspect
 from collections.abc import Callable, Hashable, Iterator
 from contextlib import contextmanager
 from typing import Any, ParamSpec, TypeVar
@@ -41,7 +42,17 @@ def check_scope() -> Iterator[None]:
 
 
 def checked(function: Callable[_P, _T]) -> Callable[_P, _T]:
-    """Run ``function`` as one decision (:func:`check_scope`)."""
+    """Run ``function`` as one decision (:func:`check_scope`).
+
+    Raises:
+        TypeError: ``function`` is a coroutine function. Its scope would close when the
+            coroutine is created, before any of its reads, so nothing would be kept.
+    """
+    if inspect.iscoroutinefunction(function):
+        raise TypeError(
+            f"checked() cannot wrap coroutine function {function.__qualname__}: "
+            "open check_scope() inside it instead"
+        )
 
     @functools.wraps(function)
     def run(*args: _P.args, **kwargs: _P.kwargs) -> _T:
