@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import asyncio
 import contextvars
+import logging
 import threading
 import time
 import weakref
@@ -18,15 +19,39 @@ from concurrent.futures import Future, ThreadPoolExecutor
 from functools import partial
 from typing import Any, Generic, TypeVar
 
+from clio_agent.arc.native_threads import mark_native_thread
 from clio_agent.runtime import io_audit
+
+logger = logging.getLogger(__name__)
 
 T = TypeVar("T")
 I = TypeVar("I")  # noqa: E741 - a batch item
 
+#: Typed reason: a batch runner raised; items it did not settle are reported by it.
+CORE_IO_BATCH_FAILED = "core_io_batch_failed"
+
 
 def _remember_thread(threads: list[threading.Thread], started: threading.Event) -> None:
+    # The I/O thread lives until close: its clio-core calls run on it, never handed
+    # to a native-pool worker (arc/native_threads.py).
+    mark_native_thread()
     threads.append(threading.current_thread())
     started.set()
+
+
+def _report_batch_failure(runner: Callable[..., Any], future: Future[Any]) -> None:
+    """A batch's future has no waiter: its exception is logged typed, never dropped."""
+    if future.cancelled():
+        return
+    error = future.exception()
+    if error is not None:
+        logger.error(
+            "Core I/O reason=%s runner=%s error_type=%s",
+            CORE_IO_BATCH_FAILED,
+            getattr(runner, "__qualname__", "") or type(runner).__name__,
+            type(error).__name__,
+            exc_info=error,
+        )
 
 
 def _timed(operation: Callable[[], T], queued: float) -> Callable[[], T]:
@@ -92,6 +117,8 @@ class CoreIO:
         ``runner`` that has not started; otherwise a new batch is queued. Order is FIFO
         either way. ``runner`` gets the items in queue order and owns their outcomes
         (each item carries its own completion); it runs in the first item's context.
+        Nothing waits on the batch itself, so an exception ``runner`` lets escape is
+        logged with the typed reason ``core_io_batch_failed``.
         """
         with self._lock:
             tail = self._tail
@@ -99,7 +126,8 @@ class CoreIO:
                 tail.items.append(item)
                 return
             batch = _Batch(self, runner, item)
-            self._submit(batch.run)
+            future = self._submit(batch.run)
+            future.add_done_callback(partial(_report_batch_failure, runner))
             self._tail = batch
 
     def _submit(self, operation: Callable[[], T]) -> Future[T]:
