@@ -69,6 +69,8 @@ class _Hub:
     theme: dict[str, str] = field(default_factory=dict)
     #: The latest frame, for a viewer who joins a page that is not changing.
     last_frame: bytes = b""
+    #: A start is under way: viewers joining meanwhile share its screencast.
+    starting: bool = False
 
 
 _HUBS: dict[str, _Hub] = {}
@@ -123,8 +125,16 @@ def _style(accent: str) -> dict[str, str]:
 async def _start(service: Any, record: Any, hub: _Hub) -> None:
     """Start the screencast and the agent-action annotations (on the browser loop)."""
 
-    if hub.screencast is not None:  # already started for a viewer that joined meanwhile
+    if hub.screencast is not None or hub.starting:  # one screencast per page
         return
+    hub.starting = True  # set before the first await: _start runs on the browser loop
+    try:
+        await _begin(service, record, hub)
+    finally:
+        hub.starting = False
+
+
+async def _begin(service: Any, record: Any, hub: _Hub) -> None:
 
     def on_frame(frame: dict[str, Any]) -> None:
         size = (int(frame.get("viewportWidth") or 0), int(frame.get("viewportHeight") or 0))

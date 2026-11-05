@@ -263,3 +263,24 @@ def test_a_view_remounted_at_once_keeps_its_frames(
             first = _until_state(socket, lambda s: s["type"] == "state")
             frame, _viewport = _frame_and_viewport(socket, first)
             assert frame[:2] == b"\xff\xd8"
+
+
+def test_two_views_joining_at_once_share_one_screencast(
+    browser: Any, site: dict[str, Any], tmp_path: Path
+) -> None:
+    """Two viewers joining an idle page together start one screencast between them."""
+    import asyncio
+
+    from clio_agent.gact.browser import live
+
+    _client_, _app, sid = _client(tmp_path)
+    record = browser.wait(browser.open(sid, "Shared"))
+    browser.run(record, "goto", lambda r: r.page.goto(site["a"] + "/frames"))
+    hub = live._Hub(record.id)
+
+    async def both() -> None:
+        await asyncio.gather(live._start(browser, record, hub), live._start(browser, record, hub))
+
+    browser.wait(both())  # the second start used to fail: "Screencast is already started"
+    assert hub.screencast is not None and hub.last_frame
+    browser.wait(live._stop(hub))
