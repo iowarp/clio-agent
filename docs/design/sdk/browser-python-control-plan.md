@@ -50,7 +50,7 @@ Do not implement, stub or reserve fields for these:
 - Browser extensions in the managed profile.
 - Two people sharing one tab, or one tab shown in two CLIO desktops at once with both sending input. A second viewer sees the page but cannot send input (below).
 - Direct (non-script) browser tools. Every browser tool is `callers="code"`; see the defaults table for how this is measured.
-- Taking actions in the person's daily Chrome profile. Chrome 136 and later ignore remote debugging on the default profile, and the `cdp` backend always uses a separate one.
+- Importing the installed Chrome's cookies or passwords into a CLIO profile: the operating system seals them (BR45). Attaching to the Chrome or Edge the person already runs, with their consent, is in scope since BR45 (the `cdp` backend below).
 
 ## Current state
 
@@ -83,7 +83,7 @@ What exists at the base, read on `claude/tool-calling-long-horizon` at `30c08f64
 **Backends.** `browser.backend` is `managed` (default) or `cdp`:
 
 - `managed`: Playwright's Chromium in the new headless mode, launched by the service. It works the same on a laptop, a server and a remote agent, because the person sees it through the live view.
-- `cdp`: `connect_over_cdp(browser.cdp_url, no_defaults=True)` to a Chrome the person runs, so Playwright does not change that browser's defaults. CLIO opens and touches only its own pages there. Chrome ignores remote debugging on its default profile from version 136, so this is always a separate profile. On the desktop, Settings offers "Use my Chrome", which starts the installed Chrome with remote debugging and a CLIO-owned profile folder and writes the setting, so nobody edits a configuration file. The live view works with both backends.
+- `cdp`: `connect_over_cdp(browser.cdp_url, no_defaults=True)` to a Chrome or Edge the person runs, so Playwright does not change that browser's defaults. CLIO opens and touches only its own pages there. `browser.cdp_url` is an endpoint URL, or `chrome` / `msedge`: after the person allows remote debugging at `chrome://inspect/#remote-debugging` (Chrome 144 and later), CLIO reads the endpoint from `DevToolsActivePort` in that browser's user data folder, and Chrome asks the person on each attach (BR45, `gact/browser/chrome_discovery.py`). Chrome 136 and later refuse remote debugging on the default profile only by launch flag. Separately, `browser.channel = chrome / msedge` makes the `managed` backend run the installed browser on a profile CLIO keeps. The choice is made in **Settings > Browser** (`browser.backend`, `browser.channel`, `browser.cdp_url`; BR57), which replaced the planned "Use my Chrome" button, so nobody edits a configuration file. The live view works with both backends.
 
 **Chromium's own sandbox.** Chromium is not started through `wrap_confined`. It has its own multi-process sandbox, and the fence ladder's backends (Codex's bubblewrap and Seatbelt, Landlock) were never built to host it; nesting it there is the unresolved question this plan settles by not doing it. The service launches Chromium with its sandbox on. When Chromium reports that its sandbox cannot start (running as root, no unprivileged user namespaces, a distribution policy that restricts them), the service refuses with `browser_sandbox_unavailable` and the reason, unless `browser.allow_unsandboxed` is true; then it launches with `--no-sandbox`, the trace and doctor say so, and the live view shows a warning icon with the reason on hover. The cloud stack sets the flag because it runs as root. Phase 0 records what happens on a stock Ubuntu 24.04 desktop, macOS, Windows and one HPC login node, and the doctor row reports it everywhere.
 
@@ -285,7 +285,7 @@ Run focused tests and `ruff` on touched paths while working. Then run these agai
 
 Evaluation, recorded rather than passed: on W1, W6 and W15, steps, tokens and wall time with the browser tools as `code` and again with `browser_snapshot` also `direct`. The numbers decide whether to keep the default.
 
-The cloud session cannot qualify the Tauri desktop, the "Use my Chrome" button, the `cdp` backend against a real Chrome, Windows, macOS or HPC login nodes; those rows are recorded as local phase. Nothing else may be blocked. A failing scenario is fixed, not deferred.
+The cloud session cannot qualify the Tauri desktop, branded Chrome and its attach consent prompt (the channel and attach mechanisms passed live against Chrome for Testing, BR54), Windows, macOS or HPC login nodes; those rows are recorded as local phase. Nothing else may be blocked. A failing scenario is fixed, not deferred.
 
 ## Done
 
