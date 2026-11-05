@@ -29,6 +29,7 @@ __all__ = [
     "KeepPolicy",
     "PostCompactionContext",
     "ReadContent",
+    "kept_verbatim",
     "keep_policy",
     "post_compaction_context",
     "transcript_rows",
@@ -112,6 +113,24 @@ def keep_policy() -> KeepPolicy:
             cast=conf.as_bool,
         ),
     )
+
+
+def kept_verbatim(policy: KeepPolicy) -> str:
+    """What the compaction prompt says comes back after the checkpoint, from ``policy``."""
+    kept = ["the system instructions"]
+    if policy.keep_user_chars > 0:
+        kept.append("the messages the person typed (the newest ones, as many as fit)")
+    elif policy.keep_head:
+        kept.append("the person's request of a turn in progress")
+    if policy.keep_last_turns > 0:
+        n = policy.keep_last_turns
+        kept.append("the last whole turn" if n == 1 else f"the last {n} whole turns")
+    if policy.keep_last_steps > 0:
+        n = policy.keep_last_steps
+        kept.append("the newest step of work" if n == 1 else f"the newest {n} steps of work")
+    if policy.keep_working_state:
+        kept.append("the session plan, todo checklist and session facts when they exist")
+    return kept[0] if len(kept) == 1 else ", ".join(kept[:-1]) + " and " + kept[-1]
 
 
 @dataclass

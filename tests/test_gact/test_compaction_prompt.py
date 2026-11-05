@@ -18,8 +18,13 @@ from typing import Any
 import pytest
 from fastapi.testclient import TestClient
 
-from clio_agent.compaction_prompt import PROMPT_ID, probe_compaction_prompt
+from clio_agent.compaction_prompt import (
+    PROMPT_ID,
+    probe_compaction_prompt,
+    render_compaction_prompt,
+)
 from clio_agent.gact.app import build_app
+from clio_agent.gact.compaction_policy import keep_policy, kept_verbatim
 from clio_agent.runtime.status import IntegrationState
 from tests._compaction_summary import keep_open_request_only, split_seen
 
@@ -64,9 +69,45 @@ def test_the_core_template_is_the_prompt(
     assert response.status_code == 200, response.text
     [(history, prompt)] = [split_seen(p) for p in prompts]
     assert history == "USER: DEFAULT-ROW"  # the scope's own context, then the prompt
-    expected = _shipped_body().replace("{{focus}}", "").replace("{{files}}", "").strip()  # noqa: E501
+    kept = kept_verbatim(keep_policy())
+    expected = (
+        (_shipped_body().replace("{{focus}}", "").replace("{{files}}", ""))
+        .replace("{{kept}}", kept)
+        .strip()
+    )
     assert prompt == expected
     assert prompt.startswith("The context window is nearly full")
+
+
+def test_what_comes_back_verbatim_is_said_from_the_keep_policy(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The prompt tells the model what it need not restate. It said the newest step and
+    the plan, todos and session facts come back whatever the keep policy was, so with
+    them switched off (the working-state ablation) the summary left them out and nothing
+    brought them back.
+
+    SABOTAGE: ship the fixed sentence again -> the switched-off case still names them."""
+    monkeypatch.setenv("CLIO_COMPACTION_KEEP_USER_CHARS", "80000")
+    monkeypatch.setenv("CLIO_COMPACTION_KEEP_LAST_STEPS", "1")
+    monkeypatch.setenv("CLIO_COMPACTION_KEEP_WORKING_STATE", "true")
+    default = render_compaction_prompt()
+    assert (
+        "need not restate it: the system instructions, the messages the person typed (the "
+        "newest ones, as many as fit), the newest step of work and the session plan, todo "
+        "checklist and session facts when they exist." in default
+    )
+    monkeypatch.setenv("CLIO_COMPACTION_KEEP_USER_CHARS", "0")
+    monkeypatch.setenv("CLIO_COMPACTION_KEEP_LAST_STEPS", "0")
+    monkeypatch.setenv("CLIO_COMPACTION_KEEP_WORKING_STATE", "false")
+    monkeypatch.setenv("CLIO_COMPACTION_KEEP_LAST_TURNS", "2")
+    off = render_compaction_prompt()
+    assert (
+        "need not restate it: the system instructions, the person's request of a turn in "
+        "progress and the last 2 whole turns." in off
+    )
+    assert "plan" not in off.split("Record what happened")[0]
+    assert "{{" not in default and "{{" not in off
 
 
 def test_focus_and_files_fill_their_placeholders(tmp_path: Path) -> None:
