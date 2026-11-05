@@ -10,7 +10,10 @@ compaction prompt appended, sent on the loop's own model: a provider that keeps 
 conversation (``claude_code``, Codex) is sent only the new messages, and any prefix
 cache (Anthropic, OpenAI, vLLM, LM Studio) serves the rest. The tools stay declared and
 the config unchanged, because changing either invalidates a provider's cached prefix;
-the prompt says the reply is text and runs no tools. Before this, the summary ran
+the prompt says the reply is text and runs no tools. A model that answers with a tool
+call and no text is asked once more with tool use turned off (``tool_choice`` none, the
+tools still declared), traced :data:`TOOL_CALL_REASON`; an empty reply after that fails
+the compaction typed (``empty_summary``). Before this, the summary ran
 through the host's legacy chat module with the history pasted into one question: no
 cache (0 and 789 cached tokens on the H5 compactions, against 33k to 158k on the agent
 steps around them) and no sight of the request it was summarizing
@@ -25,13 +28,23 @@ from __future__ import annotations
 from collections.abc import Callable
 from typing import TYPE_CHECKING, Any
 
+from clio_agent.runtime.stream_audit import stream_audit
+
 if TYPE_CHECKING:  # the model stack loads with a turn, not with the app (lazy imports)
     from dspy.lm15 import Message, Request, Response
 
-__all__ = ["Summarize", "loop_summarizer", "reply_text", "scope_summarizer"]
+__all__ = [
+    "TOOL_CALL_REASON",
+    "Summarize",
+    "loop_summarizer",
+    "reply_text",
+    "scope_summarizer",
+]
 
 #: Writes the checkpoint for one rendered compaction prompt.
 Summarize = Callable[[str], str]
+#: Traced when the summarizer's reply is a tool call with no text, and it is asked again.
+TOOL_CALL_REASON = "compaction_summary_tool_call"
 
 
 def reply_text(response: Response) -> str:
@@ -43,9 +56,28 @@ def reply_text(response: Response) -> str:
 
 
 def _ask(lm: Any, request: Request) -> str:
-    from clio_agent.lm.engines.lm_loop import run_on_lm_loop  # noqa: PLC0415
+    """The reply's text; a reply that is only a tool call is asked once more with tool
+    use off (the tools stay declared: a provider rejects tool history without them)."""
+    from dataclasses import replace  # noqa: PLC0415
 
-    return reply_text(run_on_lm_loop(lambda: lm.acall(request)))
+    from dspy.lm15 import ToolChoice  # noqa: PLC0415
+
+    from clio_agent.lm.engines.lm_loop import run_on_lm_loop  # noqa: PLC0415
+    from clio_agent.runtime import trace  # noqa: PLC0415
+
+    response = run_on_lm_loop(lambda: lm.acall(request))
+    text = reply_text(response)
+    if text.strip() or not response.tool_calls:
+        return text
+    trace.event(
+        "COMPACT",
+        "%s tools=%s; asked again with tool_choice none",
+        TOOL_CALL_REASON,
+        ",".join(str(getattr(c, "name", "")) for c in response.tool_calls),
+    )
+    stream_audit(TOOL_CALL_REASON, model=str(getattr(lm, "model", "")))
+    retry = replace(request, config=replace(request.config, tool_choice=ToolChoice(mode="none")))
+    return reply_text(run_on_lm_loop(lambda: lm.acall(retry)))
 
 
 def _with_prompt(messages: Any, prompt: str) -> tuple[Message, ...]:
