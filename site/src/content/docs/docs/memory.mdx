@@ -101,7 +101,7 @@ work forward while keeping the context within its budget.
 | Record | Where it comes from | What to use it for |
 | --- | --- | --- |
 | **Read session summary** | Session metadata and excerpts from the last five retained messages; no new model call. | Orient yourself before opening the conversation. |
-| **Compaction summary** | A model call over the older context selected for replacement, using the configured compaction instructions. | Understand what was carried into the model's continuing context. |
+| **Compaction summary** | A model call over the older context selected for replacement, using CLIO's built-in compaction instructions. | Understand what was carried into the model's continuing context. |
 | **Context frame** | A saved description of the sources and items assembled for a turn. | Check which items were included, their source identifiers and the reasons recorded. |
 
 Compaction uses the session's selected model. When a session has no separate
@@ -117,6 +117,52 @@ For additions to a turn's context, expand the receipt in the transcript or choos
 The compaction summary is a model interpretation. Check consequential details
 against the original messages, files and tool results. Compaction is not
 independent validation of the scientific finding.
+
+## When the context fills
+
+A compaction never deletes anything. The full record of the conversation stays
+stored and searchable; only what the agent reads from then on changes.
+
+**When it happens.** CLIO compacts automatically when the context reaches a share of
+the model's context window, 85% by default (`autocompact.pct` in
+[Configuration](/docs/configuration/)). Change it for one conversation in
+**Observability → Context → Compaction settings**: **Automatic compaction** turns it
+on or off, the slider sets the threshold from 50% to 95%, and **Compact now** compacts
+at once.
+
+**What the agent reads afterwards.** Its instructions, then the summary, then what is
+kept word for word, then the steps that follow. By default CLIO keeps word for word:
+
+- the messages you typed, newest first, as many as fit in 80,000 characters
+  (`compaction.keep.user_chars`); a message too long for what is left is summarized,
+  and older ones that still fit are kept;
+- the request the agent is working on now;
+- its newest step, so the output it was using stays exact;
+- the [session plan](/docs/following-work/#follow-the-session-plan), its todo list and
+  the conversation's facts, such as its workspace folder, which are offered again.
+
+The `compaction.keep.*` settings change these defaults.
+
+**The summary.** The model that runs the conversation writes it, under fixed headings:
+the objective in your words, your requirements, progress, findings with their
+sources, decisions, files, open threads and the next step. The instructions for it are
+part of CLIO. The earlier `compaction.prompt_file` setting is no longer read: if it is
+still set, compaction fails and reports `compaction_prompt_invalid`, so remove it from
+your configuration.
+
+When a compaction fails, or the context is still over the threshold just after one,
+the conversation shows a notice. The agent does not see these notices.
+
+### Recall what a summary replaced
+
+The summary's last line names its compaction. With `recall_context`, the agent gets
+back the steps a summary replaced, as they were recorded: what was said, each tool
+call and each result, oldest first. Where CLIO's storage can search, the agent can
+also search earlier steps for words and get the matching ones, at most 50.
+
+A recall result has a fixed size, 16,000 characters (`tools.recall_result_chars`).
+A longer result is saved to a file, and the agent gets its beginning and the file,
+which it can search and read on. Recall does not return the model's reasoning.
 
 ## Ask CLIO to recall earlier work
 

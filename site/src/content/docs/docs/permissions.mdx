@@ -17,7 +17,8 @@ For each action that is not a read, CLIO decides in this order:
 
 1. Mode. In Plan and Deep research, tools that write are refused. Plan mode may still write plan files in Markdown. No rule can override this.
 2. Rules. An access rule can `allow`, `deny`, or `ask`. A matching `deny` blocks the action. A matching `allow` lets it through, and the decision is recorded.
-3. The conversation's confirmation policy, if nothing above settled it. **Ask first** prompts you; **AI review** uses the risk reviewer described below.
+3. The tool's default permission, if no rule matched. A plugin can declare one for each of its tools, and a deployment can set it with `tools.permissions`; see [Tool settings for a plugin](#tool-settings-for-a-plugin). A default `deny` blocks the tool even under **Bypass checks**, and a default `ask` asks in every confirmation policy except **Bypass checks**.
+4. The conversation's confirmation policy, if nothing above settled it. **Ask first** prompts you; **AI review** uses the risk reviewer described below. A call made inside a script can be covered by the script's approval; see [Scripts](#scripts).
 
 The agent writes files with `fs_write_file` and `fs_edit_file`. Both are writes, so they follow this order: **Ask first** asks before each write and **Workspace edits** allows writes without asking. [Hooks](/docs/hooks/) see every write before it happens, and a hook can refuse it. Each change can be undone from **Changed files** in Evidence; see [Evidence](/docs/evidence/#changed-files-and-diffs).
 
@@ -36,9 +37,29 @@ When an agent needs your decision, the session shows a request that describes th
 | Allow for session | Allows matching actions for the rest of this session. |
 | Allow for workspace | Allows matching actions in this workspace from now on. |
 
-If nobody answers within 10 minutes, the request is denied. A request from an agent that has no session to ask is denied at once. A denial is reported back to the agent, so it can try another approach or ask you.
+A request waits until you answer it or its work is cancelled, however long that takes, so you can answer a request from a long run when you come back. A request from an agent that has no session to ask is denied at once. A denial is reported back to the agent, so it can try another approach or ask you.
 
 The **Confirmation policy** control in the composer changes how often CLIO pauses. See [Start and steer a conversation](/docs/sessions/).
+
+## Scripts
+
+The agent can write a Python script that calls its tools; see
+[Scripts and background work](/docs/scripts/). Running the script is one action that
+asks first like a command, and the request shows the script.
+
+The calls the script then makes are decided one by one. Reads run, and rules and Plan
+mode still apply. For a call that would otherwise ask:
+
+- **Ask first**: it asks, showing the script, one question per script at a time. The
+  request adds **Allow for the rest of this script**, which covers that script's later
+  calls.
+- **Workspace edits**, **AI review** and **SPOTTER review**: the approval of the script
+  covers it (`code.covering_postures`).
+- **Bypass checks**: it runs.
+
+A rule or a tool's default permission set to `ask` still asks inside a script; the
+script's approval does not cover it. A script keeps the confirmation policy it was
+approved under, even if you change the conversation's policy while it runs.
 
 ## AI review (Automode)
 
@@ -65,6 +86,32 @@ Open Settings and choose **Permissions** to see your access rules and add new on
 A higher priority wins. At the same priority, the more restrictive decision wins. Saving replaces the whole rule set in one step, and an invalid rule leaves the existing rules unchanged, so a typo cannot silently drop a rule.
 
 The same rules are available over the HTTP API at `GET` and `PUT /v1/policies`.
+
+## Tool settings for a plugin
+
+Open a plugin, for example from the **Plugins** tab of the Agent panel, and choose its
+**Tools** tab. It lists the plugin's tools in two groups, **Read-only tools** and
+**Write and delete tools**, with two settings for each:
+
+| Column | Choices |
+|---|---|
+| **Permission** | **Always allow**: used without asking. **Needs approval**: asks before each use, in every confirmation policy. **Blocked**: hidden from the agent, and any call to it is refused. Or the plugin's default. |
+| **I/O** | **Direct**: the agent calls it itself, its scripts cannot. **Code**: only scripts call it, and its description stays out of the agent's instructions. **Both**. Or the plugin's default. |
+
+**Show what happens in** picks a confirmation policy, and each row then says what a
+call does under it, for a direct call and for a call from a script, for example
+**Asks you** or **Covered by the script's approval**. A tool of a tool server appears
+once a conversation has connected that server.
+
+Your permission choice is saved as a rule for every workspace, listed with your other
+rules under **Permissions**. Your I/O choice is saved as `tools.callers` in your user
+`config.yaml`.
+
+Plugins can declare these defaults for their tools; see
+[Plugin reference](/docs/sdk/plugins/#tools). A deployment can override them in
+[Configuration](/docs/configuration/) with `tools.permissions` and `tools.callers`,
+mappings from tool name to value (`CLIO_TOOLS_PERMISSIONS` and `CLIO_TOOLS_CALLERS` as
+JSON). A `deny` there removes the tool from every agent.
 
 ## File access
 

@@ -60,6 +60,9 @@ The manifest accepts only the format's ten fields: `$schema`, `name`, `version`,
 | `connections` | Saved MCP connections the plugin uses, mapping a tool namespace to a connection name on the CLIO host: `{"home": "home-assistant"}`. See [Extensions preview](/docs/extensions/). |
 | `catalogs` | Ids of built-in interactive catalogs the plugin brings. |
 | `workflow_state` | The typed `workflow_state` vocabulary the plugin's agents and subagents return. At most one resolved plugin may declare one. |
+| `defer` | `true` or `false`: the default for every tool and server of the plugin that does not say otherwise. `true` lists them by name only until the agent loads them with `search_tools`. See [Tools loaded when needed](/docs/scripts/#tools-loaded-when-needed). |
+| `servers` | Settings for the plugin's MCP servers, by server name. See [Server settings](#server-settings). |
+| `kernel_bindings` | Python bound into `run_code` scripts under a name. See [Script bindings](#script-bindings). |
 
 ## plugin.py
 
@@ -101,7 +104,7 @@ def find_peaks(path: str, min_height: float = 0.0) -> dict:
     """Find the local maxima in a two-column CSV spectrum (x, intensity)."""
 ```
 
-`@tool` works bare or with options: `name` (defaults to the function's name), `description` (defaults to the docstring) and `read_only`. The arguments' names, types and defaults become the tool's parameters. The function may be ordinary or `async`. A flow calls a tool by name with a mapping of its arguments, and reads the value it returned as `result.value`.
+`@tool` works bare or with options: `name` (defaults to the function's name), `description` (defaults to the docstring), `read_only`, and the three settings below. The arguments' names, types and defaults become the tool's parameters. The function may be ordinary or `async`. A flow calls a tool by name with a mapping of its arguments, and reads the value it returned as `result.value`.
 
 A plugin can also claim one of CLIO's built-in tools by name, which is how CLIO's own plugins bring them:
 
@@ -110,6 +113,23 @@ from clio_agent.sdk import native_tool
 
 shell_bash = native_tool("shell_bash")
 ```
+
+Both forms take three settings, the plugin's defaults for the tool:
+
+- `defer=True` lists the tool by name only until the agent loads it with `search_tools`; `defer=False` keeps it listed.
+- `callers`: `"direct"` (the agent calls it; scripts cannot), `"code"` (only `run_code` scripts call it, and its description stays out of the prompt) or `"both"`.
+- `permission`: `"allow"`, `"ask"` or `"deny"`. The person's rules override it, and it overrides the confirmation policy. `"deny"` hides the tool from the agent.
+
+```python
+send_report = native_tool("send_report", permission="ask")
+
+
+@tool(read_only=True, callers="code")
+def list_spectra(folder: str) -> list[str]:
+    """List the spectrum files in a folder."""
+```
+
+An unknown value fails the load. A deployment's `tools.callers` and `tools.permissions` settings override the plugin's, and a person can change each tool in the plugin's **Tools** tab; see [Choose what CLIO may do](/docs/permissions/#tool-settings-for-a-plugin).
 
 Claiming a name CLIO does not have is an error (`native_tool_unknown`). Tool names are shared by every plugin in a conversation: two plugins that bring the same name cannot be used together (`tool_collision`). To use a built-in tool in your plugin, require the plugin that already brings it (`"requires": ["shell"]`) instead of claiming it again. [What's available](/docs/sdk/available/) lists which plugin brings each tool.
 
@@ -136,6 +156,25 @@ Claiming a name CLIO does not have is an error (`native_tool_unknown`). Tool nam
 | `streamable-http`, `sse` | `url`: `https`, or `http` only on `localhost`, `127.0.0.1` or `::1`. `headers`. |
 
 `${PLUGIN_ROOT}` is the installed plugin's folder and `${PLUGIN_DATA}` a folder that persists for the plugin across updates. Both are expanded in `args`, `env` and `cwd` and set in the server's environment; `env` may not set them. Servers start the first time one of their tools is used, in the conversation's workspace. A server's tools are named after the server, for example `web_fetch` from a server named `web`. An invalid entry is skipped with `mcp_server_invalid`. Two plugins declaring the same server name cannot be used together (`mcp_server_collision`).
+
+### Server settings
+
+`extensions["ai.iowarp.clio"].servers` sets, for each MCP server the plugin declares:
+
+| Field | Meaning |
+|---|---|
+| `defer` | `true` lists the server's tools by name only until the agent loads them; `false` keeps them listed. Unset, a server is deferred when its tool descriptions are larger than a small share of the model's context. |
+| `description` | What the server is for, shown beside its tool names while they are deferred. Without it, the server's own MCP instructions are used, or the plugin's description when the plugin has one server. `plugin check` warns (`deferred_server_undescribed`) when a server has neither. |
+| `callers`, `permission` | Defaults for all of the server's tools, with the values above. |
+| `tools` | Per tool, by the server's own tool name: `callers` and `permission` only. |
+
+```json
+"extensions": {"ai.iowarp.clio": {"servers": {"spectra": {
+  "defer": true,
+  "description": "Spectrum files: list, read and fit.",
+  "tools": {"delete_spectrum": {"permission": "ask"}}
+}}}}
+```
 
 ## Skills
 
@@ -265,6 +304,39 @@ A subagent arrives and leaves with its plugin. It runs as its own conversation, 
 
 `ai.iowarp.clio/flows/*.py` holds `Flow` classes. See [Write a flow](/docs/sdk/flows/).
 
+## Script bindings
+
+A plugin can bind plain Python into every `run_code` script under a name, so a script
+writes `await stream.open("printer")` instead of raw tool calls. CLIO's built-in
+`streaming` plugin declares its `stream` binding this way:
+
+```json
+"extensions": {"ai.iowarp.clio": {"kernel_bindings": {
+  "stream": {
+    "source": "ai.iowarp.clio/kernel/stream.py",
+    "requires": ["open_stream"],
+    "host": "ai.iowarp.clio/host/stream.py"
+  }
+}}}
+```
+
+- `source` is a file under `ai.iowarp.clio/`. It runs in the script's process with
+  `tools` and `ToolError` available, and its `export` object is bound under the
+  binding's name. It may import only the Python standard library; `plugin check`
+  compiles it and rejects any other import.
+- `requires` lists the tools the binding calls. An agent gets the binding only when
+  its scripts can call every one of them, so a blocked or removed tool removes the
+  binding.
+- `host`, optional, is a module of [`host_call`](/docs/sdk/reference/#host_call)
+  functions that answer the binding's reserved calls (`__<binding>_<name>__`) in the
+  CLIO backend without a tool call each. The stream binding's writes use this, and
+  each write presents the key that the gated `open_stream` call returned.
+- The name must be a Python identifier and may not be `tools`, `ToolError`,
+  `__builtins__` or `__name__`.
+
+Bindings are executable parts: they load only from a trusted plugin, and a changed
+binding needs the trust step again.
+
 ## Trust and executable parts
 
 A plugin's executable parts are `mcp.json`, `.mcp.json`, `hooks/hooks.json`, every `.py` file under `ai.iowarp.clio/`, and the scripts an imported hook runs. Its text parts are everything else. A marketplace you add loads only text until you trust it, and an update that changes an executable part waits for the trust step again, while the version you trusted earlier stays in use. Text-only updates need no trust step. See [Trust and executable parts](/docs/marketplaces/#trust-and-executable-parts).
@@ -291,3 +363,6 @@ CLIO installs Claude Code plugin marketplaces as they are. A plugin's `dependenc
 | `plugin_untrusted` | An agent resolves an untrusted plugin with executable parts. |
 | `skill_invalid`, `mcp_server_invalid` | Warnings: an entry was skipped. |
 | `fragment_budget` | Warning: a fragment is above about 150 tokens. |
+| `deferred_server_undescribed` | Warning: an MCP server has no description to show while its tools are deferred. |
+| `kernel_binding_import`, `kernel_binding_syntax`, `kernel_binding_no_export` | A script binding imports outside the standard library, does not compile, or defines no `export`. |
+| `kernel_binding_missing`, `kernel_binding_outside` | A script binding's source cannot be read or lies outside the plugin. |

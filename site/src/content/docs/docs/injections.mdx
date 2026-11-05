@@ -50,11 +50,20 @@ the evidence.
 | Todo list reminder | Keeps the current checklist available to the agent. |
 | Recovered conversation context; Summarization | Restores earlier context or carries a condensed record forward. |
 | Memory search results | Provides relevant retained information found through memory search. |
-| Plan reminder; Replanning suggestion | Supplies the current planning constraints or guidance for revising the approach. |
+| Plan mode; Replanning suggestion | Supplies the rules of Plan mode, or suggests reconsidering the plan after a stall. |
+| Session plan; Session plan (shortened) | Offers the [session plan](/docs/following-work/#follow-the-session-plan) while it is a draft, approved or active: when it changed and after a compaction. A plan too long for its share of the context is cut, with where to read the rest. |
+| Plan edited by you | Offers the plan as you edited it in Work, once, at the agent's next step, as your direction. |
+| Plan not updated lately | One line when an active plan has gone 25 steps without an update. The agent decides whether it needs one. |
+| Explore suggestion | After several reading calls in one response, notes that a separate explore agent could take the rest of the search. At most once per response. |
+| Session facts | The conversation's own facts: its workspace folder, where to write, the computer, its scratch folder, connected sources and uploaded files. Offered when they change and after a compaction. |
+| Report instructions | Tells a subagent that its final answer goes to the agent that started it, as written. |
+| Compaction failed; Compaction skipped | A notice for you that summarizing the context failed, or that the next automatic compaction waits for more room. The agent does not see these. |
+| Notice from a background task; Message from a script | A message sent by a running task, such as a [background script](/docs/scripts/#messages-from-a-script), naming the task. **Show the script in Work** opens its row. |
+| Task result; Answer to a question | Heads each result or answer the agent receives with who sent it, the task and its status. |
 | Goal judgment | Reports the goal check and guidance for continued work. |
 | Loop wake; Scheduled wake | Delivers an instruction from a monitoring loop or scheduled action. |
 | Repeated-failure warning | Calls attention to repeated unsuccessful operations. |
-| Large result saved to a file | Points to a saved result that is too large to keep inline. |
+| Large result saved to a file | A tool result longer than the agent is shown: the agent reads its beginning, and the note says how long it was and which file holds the rest. |
 | Path suggestion | Supplies a relevant file or folder location. |
 | Hook | Supplies context produced by a configured hook. |
 | Tool use | Supplies guidance about using the available tools. |
@@ -62,6 +71,22 @@ the evidence.
 
 Not every conversation uses every type. Goals, loops, schedules, hooks, and
 connected tools determine which additions are relevant.
+
+## Reminders
+
+Most of these updates are **reminders**: short texts CLIO adds to what the agent
+reads, each with a rule for when it appears. Open **Settings → Prompts and commands**
+and choose the **Reminders** tab to see them. Each row has its title, what it does, when
+it appears, any settings such as the number of steps before the stale-plan note, and
+whether it is **On** or **Off**.
+
+- **Switch one off** with its switch. It is no longer added from then on.
+- **Edit its text** by opening it. Your change is saved as a visible override of the
+  built-in text, and the editor's **Rendered preview** shows the result against the
+  connected service.
+- **Some are always on.** A reminder the agent cannot work correctly without, such as
+  the note that a tool result was cut or the heading of each notification, shows
+  **Always on** and a line saying why it cannot be turned off.
 
 ## Example: a goal still needs work
 

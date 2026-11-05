@@ -44,9 +44,11 @@ The first time the agent loads a site in a conversation, CLIO asks you, with the
 name. You can allow it once, for the conversation, or for the workspace. While you
 decide, the agent's time limit does not run.
 
-Pages you open, and links you follow, load without a question, as in any browser. If you
-take a page to a site the agent may not use yet, CLIO asks before the agent reads or acts
-on it. When a page is refused, the panel says so and offers to allow the site.
+Pages you open, links you follow, and a page's own redirects (such as a sign-in that
+passes through another site) load without a question, as in any browser. If a page
+reaches a site the agent may not use yet, CLIO asks before the agent reads or acts
+on it. A page is refused only when its address is of a kind the browser does not open,
+or when CLIO cannot check the site; the panel then says so.
 
 The panel opens only web pages. Local files and browser-internal addresses are refused.
 
