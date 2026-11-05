@@ -138,7 +138,7 @@ stays `open` until it is run live on a fresh stack (Phase 6); the mechanisms are
 | ID | Gap | Where it stands |
 | --- | --- | --- |
 | G1 | Closed. Every view now renders the A2UI capture controls and editor (`comments/comment-controls.tsx`, `comments/comment-editor.tsx`, extracted from `a2ui-region-capture.tsx`); the separate `CommentPanel` is deleted (gact-tui `2a7bb08f`). Screenshots: `.cloud-run/website-shots/comment-*.png`. | done |
-| G2 | An SVG in the image viewer takes regions only. The server resolves SVG element anchors (FB21), but the viewer does not yet render the SVG in the HTML frame where the picker could reach its elements. | K5 cannot pass from the image viewer until this is done |
+| G2 | Closed. An SVG in the image viewer takes region and element marks: in element mode an inert copy is laid over the image and a click marks the element by its path in the SVG (gact-tui `svg-element-layer.tsx`); live, a click on a marker gave `#series-with_burst_buffer_MBps > g > use:nth-of-type(7)`, and the server resolves such paths (`test_an_element_on_an_svg_names_the_series`). Screenshots `comment-svg-element-*.png`. | done |
 
 ## HTML files in the shared browser
 

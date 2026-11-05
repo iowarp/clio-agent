@@ -352,3 +352,11 @@ def test_an_element_on_an_svg_names_the_series(tmp_path: Path, chromium: None) -
     assert dict(element.lines)["Element"].startswith('<polyline id="series-baseline">')
     region = _resolve(_target(path), DocumentAnchor(profile="region", rect=[0.7, 0.0, 0.3, 0.3]))
     assert '<g id="legend">' in region.under and "burst buffer" in region.under
+    # The image viewer's picker names elements by their path in the SVG (svg-element-layer).
+    picked = _resolve(
+        _target(path),
+        DocumentAnchor(profile="dom", selector="svg > g > text:nth-of-type(2)", tag="text"),
+    )
+    lines = dict(picked.lines)
+    assert lines["Element"].startswith("<text") and "baseline" in lines.get("Text", picked.under)
+    assert not any(note.startswith("element_not_found") for note in picked.notes)
