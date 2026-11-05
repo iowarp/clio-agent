@@ -28,6 +28,7 @@ from clio_agent.gact.documents.confined_tools import run_confined
 from clio_agent.gact.documents.mark_images import crop_png
 from clio_agent.gact.documents.models import DocumentAnchor
 from clio_agent.gact.documents.office_map import office_source_line
+from clio_agent.gact.documents.office_pictures import picture_lines
 from clio_agent.runtime.document_stack.process import DocumentError, find_native, scratch_root
 
 if TYPE_CHECKING:
@@ -295,6 +296,10 @@ class PdfResolver:
             mark.lines.append(("Source", source))
         if note:
             mark.notes.append(note)
+        if target.via_rendition:
+            pictures, picture_notes = picture_lines(target, page, rect)
+            mark.lines.extend(pictures)
+            mark.notes.extend(picture_notes)
         image = _page_raster(target, page)
         if image is None:
             mark.notes.append("page_image_unavailable: pdftoppm is not installed or failed")

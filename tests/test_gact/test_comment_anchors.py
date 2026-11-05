@@ -225,11 +225,81 @@ def test_a_region_on_a_slide_rendition_names_the_slide_and_shapes(tmp_path: Path
     deck.save(source)
     rendition = tmp_path / "deck.pptx.v1.pdf"
     _pdf(rendition, ["slide"])
+    target = _target(source, view=rendition)
+    _registry(target, {"chart.png": picture.read_bytes()})
     mark = _resolve(
-        _target(source, view=rendition),
-        DocumentAnchor(profile="region", page_index=0, rect=[0.55, 0.25, 0.4, 0.5]),
+        target, DocumentAnchor(profile="region", page_index=0, rect=[0.55, 0.25, 0.4, 0.5])
     )
-    assert dict(mark.lines)["Source"].startswith('slide 1, shape 2 "Picture 1"')
+    lines = dict(mark.lines)
+    assert lines["Source"].startswith('slide 1, shape 2 "Picture 1"')
+    assert lines["Picture"] == (
+        'shape 2 "Picture 1": the workspace image chart.png (artifact art_chart.png, version 1)'
+    )
+    assert lines["Made by"].startswith("Producer unknown")
+    assert "Then" not in lines  # no script to change, so no rebuild advice
+
+
+def _registry(target: MarkTarget, images: dict[str, bytes]) -> None:
+    """A registry holding one workspace image artifact per name, made by no recorded call."""
+    import hashlib
+
+    records = [
+        SimpleNamespace(
+            name=name,
+            workspace_id="ws",
+            versions=[
+                SimpleNamespace(
+                    artifact_id=f"art_{name}",
+                    version=1,
+                    sha256=hashlib.sha256(data).hexdigest(),
+                    created_at="2026-11-01T00:00:00Z",
+                )
+            ],
+        )
+        for name, data in images.items()
+    ]
+    target.app.state.artifact_registry = SimpleNamespace(
+        capture_released=None,
+        list_for_workspace=lambda _ws: records,
+        transforms_generating=lambda _id: [],
+    )
+
+
+def test_a_region_on_a_word_rendition_names_the_picture_it_covers(tmp_path: Path) -> None:
+    _needs_poppler()
+    import matplotlib
+
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+    from docx import Document
+    from docx.shared import Inches
+
+    first, second = tmp_path / "first.png", tmp_path / "second.png"
+    Image.new("RGB", (60, 40), "red").save(first)
+    Image.new("RGB", (60, 40), "blue").save(second)
+    source = tmp_path / "report.docx"
+    document = Document()
+    document.add_paragraph("Figures")
+    document.add_picture(str(first), width=Inches(2))
+    document.add_picture(str(second), width=Inches(2))
+    document.save(source)
+    rendition = tmp_path / "report.docx.v1.pdf"
+    figure = plt.figure(figsize=(8.5, 11))
+    for top, path in ((0.1, first), (0.6, second)):  # drawn in document order, one above
+        axes = figure.add_axes((0.1, 1 - top - 0.2, 0.4, 0.2))
+        axes.imshow(plt.imread(path))
+        axes.axis("off")
+    figure.savefig(rendition, format="pdf")
+    plt.close(figure)
+    target = _target(source, view=rendition)
+    _registry(target, {"second.png": second.read_bytes()})
+    mark = _resolve(
+        target, DocumentAnchor(profile="region", page_index=0, rect=[0.05, 0.55, 0.5, 0.3])
+    )
+    lines = dict(mark.lines)
+    assert lines["Picture"].startswith(
+        "picture 2 of the document, in paragraph 3: the workspace image second.png"
+    )
 
 
 # --- HTML and SVG -------------------------------------------------------------------------
