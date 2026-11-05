@@ -51,7 +51,10 @@ async function waitIdle(page, sessionId, log, minutes) {
 }
 
 async function send(page, text) {
-  const composer = page.getByPlaceholder(/to investigate, build/).first();
+  // The conversation's composer: the editable field in the form with the Send button.
+  const composer = page
+    .locator('form:has(button[type="submit"]) textarea, form:has(button[type="submit"]) [contenteditable="true"]')
+    .last();
   await composer.click();
   await page.keyboard.type(text);
   await page.keyboard.press("Enter");
