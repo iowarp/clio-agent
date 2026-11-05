@@ -25,17 +25,21 @@ import json
 import threading
 import time
 from collections.abc import Callable, Mapping
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import Future, ThreadPoolExecutor
 from dataclasses import dataclass
 from typing import Any
 
 from clio_agent.gact.agents.tool_concurrency import ServerGates, call_workers
 from clio_agent.gact.code_mode.stubs import tool_group
+from clio_agent.runtime import trace
 
-__all__ = ["CONCURRENCY_GROUP_ATTR", "CallRecord", "Dispatcher"]
+__all__ = ["CODE_CALL_UNANSWERED", "CONCURRENCY_GROUP_ATTR", "CallRecord", "Dispatcher"]
 
 #: The attribute a native tool's callable sets to share a concurrency cap with other tools.
 CONCURRENCY_GROUP_ATTR = "_clio_concurrency_group"
+#: Typed trace reason: a nested call failed outside its own error handling (entering its
+#: server's gate, say); the script gets the error instead of waiting for a reply.
+CODE_CALL_UNANSWERED = "code_call_failed_outside_call"
 
 _SEARCH = "__search__"
 
@@ -104,8 +108,15 @@ class Dispatcher:
         context: contextvars.Context,
         search: Callable[[str, int], Any],
         reserved: Mapping[str, Callable[[Mapping[str, Any]], Any]] | None = None,
+        *,
+        direct_only: frozenset[str] = frozenset(),
+        refuse: Callable[[str], str] | None = None,
     ) -> None:
         self.tools = tools
+        #: Tools the agent calls directly, never from a script (``callers="direct"``).
+        self.direct_only = direct_only
+        #: Why the agent may not call a tool at all (a blocked tool's typed refusal).
+        self.refuse = refuse
         #: Host calls a binding makes by a reserved name (a background task's ``task``).
         self.reserved = dict(reserved or {})
         self.servers = servers
@@ -125,8 +136,7 @@ class Dispatcher:
         raw_args = message.get("args")
         args: Mapping[str, Any] = raw_args if isinstance(raw_args, Mapping) else {}
         if tool == _SEARCH:
-            query = str(args.get("query") or "")
-            reply({"type": "result", "id": call_id, "ok": True, "value": self.search(query, 5)})
+            reply({"type": "result", "id": call_id, **self._search(args)})
             return
         if tool in self.reserved:
             self._reserved(call_id, self.reserved[tool], dict(args), reply)
@@ -135,14 +145,46 @@ class Dispatcher:
         if refusal:
             reply({"type": "result", "id": call_id, "ok": False, "error": refusal})
             return
-        context = self.context.copy()
+        future = self.pool.submit(self.context.copy().run, self._run, tool, dict(args))
+        future.add_done_callback(lambda f: self._settle(call_id, tool, f, reply))
 
-        def done(outcome: tuple[bool, Any, str]) -> None:
-            ok, value, error = outcome
-            reply({"type": "result", "id": call_id, "ok": ok, "value": value, "error": error})
+    def _search(self, args: Mapping[str, Any]) -> dict[str, Any]:
+        """``tools.search(query, limit)``: the script's limit, within the search bounds
+        ``search_tools`` has (``tools.search_limit`` when none, ``tools.search_max`` at most)."""
+        from clio_agent.gact.search_tools import search_limit, search_max  # noqa: PLC0415
 
-        future = self.pool.submit(context.run, self._run, tool, dict(args))
-        future.add_done_callback(lambda f: done(f.result()))
+        try:
+            requested = int(args.get("limit") or 0)
+        except (TypeError, ValueError):
+            return {"ok": False, "error": f"limit must be a whole number, not {args['limit']!r}"}
+        limit = max(1, min(requested or search_limit(), search_max()))
+        try:
+            return {"ok": True, "value": self.search(str(args.get("query") or ""), limit)}
+        except Exception as exc:  # noqa: BLE001 - forwards: the script, as its ToolError
+            return {"ok": False, "error": f"{type(exc).__name__}: {exc}"}
+
+    def _settle(
+        self,
+        call_id: Any,
+        tool: str,
+        future: Future[tuple[bool, Any, str]],
+        reply: Callable[[dict[str, Any]], None],
+    ) -> None:
+        """Answer the script when a call's future settles, also when it raised."""
+        if future.cancelled():
+            return  # dropped by ``close(finished=False)``: the script stopped, none awaits it
+        exc = future.exception()
+        if exc is None:
+            ok, value, error = future.result()
+        else:
+            ok, value, error = False, None, f"{type(exc).__name__}: {exc}"
+            trace.event(
+                "CODE", "%s tool=%s error=%s", CODE_CALL_UNANSWERED, tool or "(host)", error[:300]
+            )
+            if tool:  # a tool call counts among the script's calls; a host call does not
+                with self.lock:
+                    self.records.append(CallRecord(tool, False, 0, error[:500]))
+        reply({"type": "result", "id": call_id, "ok": ok, "value": value, "error": error})
 
     def _reserved(
         self,
@@ -151,18 +193,27 @@ class Dispatcher:
         args: dict[str, Any],
         reply: Callable[[dict[str, Any]], None],
     ) -> None:
-        def run() -> None:
+        def run() -> tuple[bool, Any, str]:
             try:
-                reply({"type": "result", "id": call_id, "ok": True, "value": handler(args)})
+                return True, handler(args), ""
             except Exception as exc:  # noqa: BLE001 - forwards: the script, as its ToolError
-                reply({"type": "result", "id": call_id, "ok": False, "error": str(exc)})
+                return False, None, str(exc)
 
-        self.pool.submit(self.context.copy().run, run)
+        future = self.pool.submit(self.context.copy().run, run)
+        future.add_done_callback(lambda f: self._settle(call_id, "", f, reply))
 
     def _refusal(self, tool: str) -> str:
-        if tool not in self.tools:  # direct-only and blocked tools are not given here
-            return f"No tool named {tool!r} can be called from a script; see tools.search()."
-        return ""
+        """Why a script may not call ``tool`` (``""`` when it may): direct-only, blocked
+        (the typed refusal a direct call gets) or not one of the agent's tools."""
+        if tool in self.tools:
+            return ""
+        if tool in self.direct_only:
+            return (
+                f"{tool} cannot be called from a script: call {tool} directly, not from a script."
+            )
+        if self.refuse is not None and (why := self.refuse(tool)):
+            return why
+        return f"No tool named {tool!r} can be called from a script; see tools.search()."
 
     def _run(self, tool: str, args: dict[str, Any]) -> tuple[bool, Any, str]:
         from clio_agent.gact.artifacts.observer_bridge import MODEL_CALL_SLOT  # noqa: PLC0415

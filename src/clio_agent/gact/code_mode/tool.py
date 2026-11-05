@@ -194,6 +194,7 @@ def execute_script(
 ) -> dict[str, Any]:
     """Run a prepared script in ``kernel`` until it finishes or ``cancelled()`` turns true;
     a cancelled or exited kernel is discarded. The outcome, never raising for a cancel."""
+    from clio_agent.gact.agents.tool_settings import call_refusal  # noqa: PLC0415
     from clio_agent.gact.code_mode import kernels  # noqa: PLC0415
     from clio_agent.gact.code_mode.dispatch import Dispatcher  # noqa: PLC0415
     from clio_agent.gact.code_mode.stubs import stub_table  # noqa: PLC0415
@@ -203,7 +204,13 @@ def execute_script(
     # A plugin binding's host calls (``_clio_host_calls``) answer beside the task's own.
     host_calls = {**dict(getattr(agent, "_clio_host_calls", None) or {}), **(reserved or {})}
     dispatcher = Dispatcher(
-        callable_tools, prepared.servers, prepared.context, _search(callable_tools), host_calls
+        callable_tools,
+        prepared.servers,
+        prepared.context,
+        _search(callable_tools),
+        host_calls,
+        direct_only=prepared.direct_only,
+        refuse=lambda name: call_refusal(agent, name),
     )
     if live is not None:
         live["dispatcher"] = dispatcher  # a background task's status reads its call count

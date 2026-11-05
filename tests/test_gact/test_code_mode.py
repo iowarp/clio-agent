@@ -172,12 +172,35 @@ class TestKernel:
         outcome = _run("(await tools.fs.stat(path='a.txt'))['lines']")
         assert outcome["value"] == "3"
 
-    def test_control_tools_and_unknown_names_are_refused(self, workspace: Path) -> None:
-        outcome = _run(
-            "try:\n    await tools.call('submit', answer='x')\n"
-            "except ToolError as exc:\n    print(exc)"
+    def test_direct_only_blocked_and_unknown_names_are_refused_apart(self, workspace: Path) -> None:
+        """A5: a direct-only tool says to call it directly, a blocked one gives the typed
+        permission refusal, and only an unknown name is "No tool named". SABOTAGE: drop
+        the direct-only or ``refuse`` branch of ``Dispatcher._refusal`` -> red."""
+        agent = _agent()
+        agent.tools["records_drop"] = dspy.Tool(_finish, name="records_drop", desc="Drop.")
+        deny = SimpleNamespace(tools=[{"name": "records_drop", "permission": "deny"}])
+        apply_tool_settings(agent, SimpleNamespace(mcp_servers={}, **vars(deny)))
+        code = (
+            "for name in ('submit', 'records_drop', 'nothing_here'):\n"
+            "    try:\n        await tools.call(name, answer='x')\n"
+            "    except ToolError as exc:\n        print(exc)"
         )
-        assert "No tool named 'submit'" in outcome["output"]
+        lines = tool_module.run_script(agent, code, session_id="s", scope="main")["output"]
+        direct, blocked, unknown = lines.strip().splitlines()
+        assert direct == "submit cannot be called from a script: call submit directly, " + (
+            "not from a script."
+        )
+        assert "records_drop is blocked by a permission setting (tool_permission_deny)" in blocked
+        assert unknown.startswith("No tool named 'nothing_here' can be called from a script")
+
+    def test_a_script_search_takes_its_limit(self, workspace: Path) -> None:
+        """A2: ``tools.search(query, limit)`` returns at most ``limit`` tools, bounded by
+        ``tools.search_max``. SABOTAGE: search with a fixed 5 again -> two results -> red."""
+        outcome = _run(
+            "(len(await tools.search('record', limit=1)), "
+            "len(await tools.search('record', limit=99)))"
+        )
+        assert outcome["value"] == "(1, 2)", outcome
 
     def test_no_count_ends_a_script(self, workspace: Path) -> None:
         """CT3: a script may make more calls than the 500 the old budget allowed.
@@ -466,3 +489,31 @@ def test_a_finished_script_waits_for_the_calls_it_sent(monkeypatch: pytest.Monke
     dispatcher.close(finished=True)
     assert ran == ["first", "queued"]
     assert sorted(r["id"] for r in replies if r["ok"]) == [1, 2]
+
+
+def test_a_call_that_raises_outside_its_own_handling_still_answers_the_script() -> None:
+    """A11: a call (or a host call) whose worker raises before its own try (entering its
+    server's gate) answers the script with the error instead of leaving it waiting.
+    SABOTAGE: settle with ``f.result()`` again -> no reply -> red."""
+    import contextvars
+
+    from clio_agent.gact.code_mode.dispatch import Dispatcher
+
+    def gone(args: Any) -> str:
+        raise SystemExit("host call gone")
+
+    tools = {"records_get_record": object()}
+    dispatcher = Dispatcher(tools, (), contextvars.copy_context(), lambda q, n: [], {"__h__": gone})
+
+    def broken(tool: str, args: dict[str, Any]) -> Any:
+        raise RuntimeError("gate unavailable")
+
+    dispatcher._run = broken  # type: ignore[method-assign]
+    replies: list[dict[str, Any]] = []
+    dispatcher.submit({"id": 1, "tool": "records_get_record", "args": {}}, replies.append)
+    dispatcher.submit({"id": 2, "tool": "__h__", "args": {}}, replies.append)
+    dispatcher.close(finished=True)
+    by_id = {r["id"]: r for r in replies}
+    assert by_id[1]["ok"] is False and by_id[1]["error"] == "RuntimeError: gate unavailable"
+    assert by_id[2]["ok"] is False and "host call gone" in by_id[2]["error"]
+    assert [(r.tool, r.ok) for r in dispatcher.records] == [("records_get_record", False)]
