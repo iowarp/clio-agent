@@ -28,6 +28,7 @@ from clio_agent.errors import MCP_TASK_RECORD_STORE_ABSENT
 from clio_agent.gact import boot_timing, store_migrations
 from clio_agent.gact.composer_runtime import resource_capabilities
 from clio_agent.gact.context_references import CONTEXT_REFERENCE_CAPABILITY
+from clio_agent.gact.documents.models import ANCHOR_PROFILES, DOCUMENT_PROFILES
 from clio_agent.gact.off_loop import run_off_loop
 from clio_agent.gact.protocol_v3 import capabilities_to_v3, project_for_request
 from clio_agent.gact.provenance.child_projection import CHILD_ACTIVITY_PROJECTION_CAPABILITY
@@ -519,27 +520,8 @@ def register_system_routes(app: FastAPI, deps: "GactDeps") -> None:
                 x_clio_child_activity_projection=CHILD_ACTIVITY_PROJECTION_CAPABILITY,
                 x_clio_document_artifacts={
                     "protocol_version": "0.1.0",
-                    "profiles": [
-                        "markdown",
-                        "pdf",
-                        "latex",
-                        "html-static",
-                        "ooxml-word",
-                        "ooxml-sheet",
-                        "ooxml-slides",
-                        "odf-text",
-                        "odf-sheet",
-                        "odf-slides",
-                    ],
-                    "anchors": [
-                        "text-quote",
-                        "pdf-quad",
-                        "dom",
-                        "sheet-range",
-                        "slide-shape",
-                        "native-comment",
-                        "source-map",
-                    ],
+                    "profiles": list(DOCUMENT_PROFILES),
+                    "anchors": list(ANCHOR_PROFILES),
                     "review_parts": True,
                     "floating_comments": True,
                     "immutable_revisions": True,

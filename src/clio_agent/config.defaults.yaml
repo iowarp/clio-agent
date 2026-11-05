@@ -1722,6 +1722,31 @@ browser.person_window_s: 2.0
 browser.profile: "default"
 
 # ==========================================================================
+# Comments
+# ==========================================================================
+# What a comment session sends the agent: how much of the text under each
+# mark an entry carries, picked elements' HTML excerpts, text context, and
+# the size of its images.
+
+# CLIO_COMMENTS_CONTEXT_CHARS  (int)  <- src/clio_agent/gact/documents/comment_settings.py
+# Characters of text kept before and after a text selection.
+comments.context_chars: 64
+
+# CLIO_COMMENTS_HTML_EXCERPT_CHARS  (int)  <- src/clio_agent/gact/documents/comment_settings.py
+# Characters of a picked element's HTML kept on its comment.
+comments.html_excerpt_chars: 400
+
+# CLIO_COMMENTS_MAX_IMAGE_SIDE  (int)  <- src/clio_agent/gact/documents/comment_settings.py
+# Longest side, in pixels, of an overview or crop sent to the agent; larger
+# images are scaled down.
+comments.max_image_side: 2048
+
+# CLIO_COMMENTS_UNDER_MARK_CHARS  (int)  <- src/clio_agent/gact/documents/comment_settings.py
+# Characters of what lies under one mark that its entry carries; the rest is
+# written to a session file the entry names.
+comments.under_mark_chars: 1200
+
+# ==========================================================================
 # Web search
 # ==========================================================================
 # Which backend serves the web_search tool (CLIO's private SearXNG by

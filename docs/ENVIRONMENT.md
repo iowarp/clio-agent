@@ -112,6 +112,10 @@ These resolve through `clio_agent.conf`: a value under the dotted key in `config
 | `CLIO_CODE_MAX_SCRIPT_CHARS` | `code.max_script_chars` | int | `20000` | `src/clio_agent/gact/code_mode/grants.py` |
 | `CLIO_CODE_POLL_S` | `code.poll_s` | float | `0.25` | `src/clio_agent/gact/code_mode/tool.py` |
 | `CLIO_CODE_START_TIMEOUT_S` | `code.start_timeout_s` | float | `60.0` | `src/clio_agent/gact/code_mode/kernels.py` |
+| `CLIO_COMMENTS_CONTEXT_CHARS` | `comments.context_chars` | int | `64` | `src/clio_agent/gact/documents/comment_settings.py` |
+| `CLIO_COMMENTS_HTML_EXCERPT_CHARS` | `comments.html_excerpt_chars` | int | `400` | `src/clio_agent/gact/documents/comment_settings.py` |
+| `CLIO_COMMENTS_MAX_IMAGE_SIDE` | `comments.max_image_side` | int | `2048` | `src/clio_agent/gact/documents/comment_settings.py` |
+| `CLIO_COMMENTS_UNDER_MARK_CHARS` | `comments.under_mark_chars` | int | `1200` | `src/clio_agent/gact/documents/comment_settings.py` |
 | `CLIO_COMPACTION_KEEP_HEAD` | `compaction.keep.head` | bool | `true` | `src/clio_agent/gact/compaction_policy.py` |
 | `CLIO_COMPACTION_KEEP_LAST_STEPS` | `compaction.keep.last_steps` | int | `1` | `src/clio_agent/gact/compaction_policy.py` |
 | `CLIO_COMPACTION_KEEP_LAST_TURNS` | `compaction.keep.last_turns` | int | `0` | `src/clio_agent/gact/compaction_policy.py` |

@@ -13,9 +13,9 @@ from urllib.parse import quote
 from fastapi import FastAPI, HTTPException, Response
 from fastapi.responses import FileResponse
 
-from clio_agent.gact.artifacts.cas import CASStore, sha256_file
-from clio_agent.gact.artifacts.records import ArtifactRecord, ArtifactVersion, Custody
+from clio_agent.gact.artifacts.records import ArtifactRecord, ArtifactVersion
 from clio_agent.gact.artifacts.registry import get_registry
+from clio_agent.gact.documents.artifact_bytes import ArtifactBytesError, artifact_bytes_path
 from clio_agent.gact.documents.models import (
     ArtifactReview,
     CreateArtifactReviewRequest,
@@ -76,23 +76,10 @@ def _artifact_source(
     record: ArtifactRecord,
     version: ArtifactVersion,
 ) -> Path:
-    workspace = app.state.workspaces.get(record.workspace_id)
-    workspace_root = Path(str(getattr(workspace, "root_path", "") or "")).resolve(strict=False)
-    if version.custody == Custody.CAS and version.sha256:
-        cas_candidate = CASStore(workspace_root).blob_path(version.sha256)
-        if cas_candidate.is_file():
-            return cas_candidate
-    candidate = Path(version.path) if version.path else None
-    if candidate is None or not candidate.is_file():
-        raise _error(409, "artifact_bytes_unavailable", "artifact bytes are unavailable")
-    if version.sha256 and sha256_file(candidate) != version.sha256:
-        raise _error(
-            409,
-            "integrity_violation",
-            "artifact bytes do not match the immutable version hash",
-            artifact_id=version.artifact_id,
-        )
-    return candidate
+    try:
+        return artifact_bytes_path(app, record, version)
+    except ArtifactBytesError as exc:
+        raise _error(409, exc.code, str(exc), artifact_id=version.artifact_id) from exc
 
 
 def _manifest(

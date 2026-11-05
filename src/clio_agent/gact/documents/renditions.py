@@ -22,13 +22,13 @@ from clio_agent.gact.artifacts.records import (
     Mechanism,
 )
 from clio_agent.gact.artifacts.registry import get_registry
+from clio_agent.gact.documents.confined_tools import run_confined
 from clio_agent.platform_paths import win_extended_path
 from clio_agent.runtime.document_stack.process import (
     DocumentError,
     find_native,
     inherit_parent_access,
     office_convert,
-    run,
     scratch_root,
 )
 from clio_agent.runtime.sandbox import SandboxCompositionError
@@ -103,29 +103,12 @@ def _find_executable(*names: str) -> str | None:
 
 def _run(command: list[str], *, cwd: Path, timeout_seconds: float = 120.0) -> None:
     try:
-        root = _RENDER_WORKSPACE.get()
-        env = None
-        confined = None
-        if root is not None:
-            from clio_agent.runtime import sandbox
-
-            confined = sandbox.wrap_confined(
-                command[0],
-                command[1:],
-                write_roots=sandbox.effective_write_roots(
-                    sandbox.PROFILE_SHELL, workspace_root=str(root)
-                ),
-                net_policy=sandbox.NET_DENY,
-                profile=sandbox.PROFILE_SHELL,
-                pdeathsig=False,
-            )
-            command = [confined.command, *confined.args]
-            env = {**os.environ, **confined.env_overlay}
-        try:
-            run(command, cwd=cwd, timeout=timeout_seconds, env=env)
-        finally:
-            if confined is not None:
-                confined.release()
+        run_confined(
+            command,
+            cwd=cwd,
+            workspace_root=_RENDER_WORKSPACE.get(),
+            timeout_seconds=timeout_seconds,
+        )
     except (DocumentError, SandboxCompositionError) as exc:
         raise RenditionError(str(exc)) from exc
 

@@ -2,9 +2,9 @@
 
 from __future__ import annotations
 
-from typing import Any, Literal, Optional
+from typing import Any, Literal, Optional, get_args
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 DocumentProfile = Literal[
     "markdown",
@@ -17,6 +17,7 @@ DocumentProfile = Literal[
     "odf-text",
     "odf-sheet",
     "odf-slides",
+    "image",
     "binary",
 ]
 AnchorProfile = Literal[
@@ -27,13 +28,28 @@ AnchorProfile = Literal[
     "slide-shape",
     "native-comment",
     "source-map",
+    "region",
 ]
+#: Every profile a document artifact can have, and every anchor a comment can carry, as
+#: advertised in the ``x_clio_document_artifacts`` capability.
+DOCUMENT_PROFILES: tuple[str, ...] = tuple(p for p in get_args(DocumentProfile) if p != "binary")
+ANCHOR_PROFILES: tuple[str, ...] = get_args(AnchorProfile)
 ReviewStatus = Literal["queued", "dispatched", "human-note", "failed", "stale"]
 WorkingCopyStatus = Literal["active", "conflict", "closed", "missing", "error"]
 
 
 class DocumentAnchor(BaseModel):
-    """One immutable, artifact-version-bound document selection."""
+    """What one comment points at, in the coordinates of the thing it was made on.
+
+    The one selection model for comments, reviews and attachments (comments plan rule 1).
+    ``text-quote`` and ``pdf-quad`` carry text; ``region`` a normalized rectangle (``rect``
+    as x, y, width, height in 0..1 of the page or image shown, with ``page_index`` when
+    paged and the natural size of what was shown); ``dom`` a picked element (``selector``,
+    ``tag``, excerpts, and its ``rect`` in CSS pixels of a ``viewport_width`` wide view).
+    ``source`` names a target that is not an artifact: a browser page (``page``:
+    ``{id, url, title}``, ``captured_at``), an agent answer (``message_id``) or an A2UI
+    surface (``surface``, ``component_id``, ``revision``, and the data under the mark).
+    """
 
     model_config = ConfigDict(extra="forbid")
 
@@ -53,6 +69,14 @@ class DocumentAnchor(BaseModel):
     slide_id: str = ""
     shape_id: str = ""
     native_comment_id: str = ""
+    rect: list[float] = Field(default_factory=list)
+    natural_width: Optional[int] = Field(default=None, ge=1)
+    natural_height: Optional[int] = Field(default=None, ge=1)
+    crop_asset: str = ""
+    tag: str = Field(default="", max_length=64)
+    text_excerpt: str = Field(default="", max_length=4_000)
+    html_excerpt: str = Field(default="", max_length=16_000)
+    viewport_width: Optional[int] = Field(default=None, ge=1)
     source: dict[str, Any] = Field(default_factory=dict)
 
     @field_validator("quads")
@@ -64,6 +88,26 @@ class DocumentAnchor(BaseModel):
             if len(quad) != 8 or any(point < 0.0 or point > 1.0 for point in quad):
                 raise ValueError("each quad must contain eight normalized coordinates")
         return value
+
+    @model_validator(mode="after")
+    def validate_rect(self) -> "DocumentAnchor":
+        """A region's rectangle is normalized and inside what was shown; an element's is
+        in CSS pixels of its view."""
+
+        if self.profile == "region" and len(self.rect) != 4:
+            raise ValueError("a region anchor needs rect as [x, y, width, height]")
+        if not self.rect:
+            return self
+        if len(self.rect) != 4:
+            raise ValueError("rect must be [x, y, width, height]")
+        x, y, width, height = self.rect
+        if width <= 0 or height <= 0:
+            raise ValueError("rect must have a positive width and height")
+        if self.profile == "region" and (
+            x < 0.0 or y < 0.0 or x + width > 1.0 + 1e-6 or y + height > 1.0 + 1e-6
+        ):
+            raise ValueError("a region's rect must lie within 0..1 of what was shown")
+        return self
 
 
 class ArtifactReview(BaseModel):

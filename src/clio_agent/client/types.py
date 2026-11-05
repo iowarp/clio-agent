@@ -322,7 +322,11 @@ class PostMessageAck(_WireModel):
 
 
 class DocumentAnchor(_WireModel):
-    """One artifact-version-bound selection."""
+    """What one comment points at (the server's ``gact.documents.models.DocumentAnchor``).
+
+    ``profile`` is ``text-quote``, ``pdf-quad``, ``region``, ``dom``, ``sheet-range``,
+    ``slide-shape``, ``native-comment`` or ``source-map``.
+    """
 
     profile: str
     exact: str = ""
@@ -340,6 +344,14 @@ class DocumentAnchor(_WireModel):
     slide_id: str = ""
     shape_id: str = ""
     native_comment_id: str = ""
+    rect: list[float] = Field(default_factory=list)
+    natural_width: int | None = None
+    natural_height: int | None = None
+    crop_asset: str = ""
+    tag: str = ""
+    text_excerpt: str = ""
+    html_excerpt: str = ""
+    viewport_width: int | None = None
     source: dict[str, Any] = Field(default_factory=dict)
 
 

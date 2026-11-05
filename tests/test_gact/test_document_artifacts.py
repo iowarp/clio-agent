@@ -115,7 +115,7 @@ def test_manifest_and_static_html_content_block_script_execution(tmp_path: Path)
 
     assert manifest.status_code == 200
     assert manifest.json()["profile"] == "html-static"
-    assert manifest.json()["anchors"] == ["text-quote", "dom"]
+    assert manifest.json()["anchors"] == ["text-quote", "region", "dom"]
     assert content.status_code == 200
     assert content.headers["content-security-policy"].startswith("sandbox; default-src 'none'")
     assert content.content == html.read_bytes()
