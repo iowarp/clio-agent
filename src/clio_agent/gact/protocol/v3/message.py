@@ -639,6 +639,11 @@ def _project_artifact(
             if isinstance(metadata.get("size_bytes"), int)
             else {}
         ),
+        **(
+            {"producer": dict(metadata["presentation"])}
+            if isinstance(metadata.get("presentation"), Mapping) and metadata["presentation"]
+            else {}
+        ),
         "created_at": str(context.wire.get("created_at") or utcnow_iso()),
     }
 

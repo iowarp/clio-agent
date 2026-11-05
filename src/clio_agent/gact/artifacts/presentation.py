@@ -34,13 +34,30 @@ def child_response_owners(app: "FastAPI", session_ids: set[str]) -> dict[str, st
     }
 
 
+def _bundled_members(entries: list[dict[str, Any]]) -> set[str]:
+    """The source versions a scientific document in ``entries`` lists as its members."""
+    bundled: set[str] = set()
+    for entry in entries:
+        version = entry.get("version")
+        producer = (version.producer or {}) if version is not None else {}
+        if producer.get("designation") != "scientific-document":
+            continue
+        for member in producer.get("members") or []:
+            if isinstance(member, dict) and member.get("artifact_id"):
+                bundled.add(str(member["artifact_id"]))
+    return bundled
+
+
 def response_deliverables(entries: Iterable[dict[str, Any]]) -> list[dict[str, Any]]:
     """Return the latest deliverable per artifact family and causal producer.
 
     This is a response projection only. Versions, files, events and lineage remain
-    intact. Distinct child sessions and agents never collapse by filename.
+    intact. Distinct child sessions and agents never collapse by filename. A source file a
+    paper built in the same turn bundles is shown inside that paper, not as its own card.
     A per-call purpose overrides a deduplicated version's original intent.
     """
+    entries = list(entries)
+    bundled = _bundled_members(entries)
     selected: dict[tuple[str, ...], dict[str, Any]] = {}
     for entry in entries:
         version = entry.get("version")
@@ -49,6 +66,8 @@ def response_deliverables(entries: Iterable[dict[str, Any]]) -> list[dict[str, A
         producer = version.producer or {}
         if producer.get("designation") == "document-rendition":
             continue
+        if version.artifact_id in bundled:
+            continue  # shown inside the paper that bundles it
         purpose = entry.get("purpose") or artifact_purpose(producer)
         if purpose != "deliverable":
             continue

@@ -31,7 +31,10 @@ def latex_build(entry: str, venue: str = "") -> dict[str, Any]:
 
     entry is the paper's main .tex file (the one with \\documentclass), as a workspace path;
     its folder is the project, so \\input files, the .bib and figures are found beside it.
-    The result names the PDF artifact, the page count and every problem by kind, file and line:
+    A build that makes a PDF makes the paper: one artifact the person sees by its title, built
+    from the exact versions of the source files it read, and the reply shows it. The result
+    names the paper (artifact, title, type, version, source files), the page count and every
+    problem by kind, file and line:
     error, undefined_reference, undefined_citation, missing_file, missing_package,
     overfull_box, font_warning, shell_escape_unsupported, unsupported_bibliography_backend.
     status is failed when the paper has errors or broken references, even if a PDF was made.

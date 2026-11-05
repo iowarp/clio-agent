@@ -255,3 +255,80 @@ def test_a_build_makes_a_paper_built_from_its_member_versions(
         assert target.view_path != target.path
         header = " ".join(_header(target))
         assert 'the paper "Burst Buffers" (paper-bb;' in header and "2 source file(s)" in header
+
+
+# --------------------------------------------------------------------------- #
+# The reply shows the paper; its sources are inside it
+# --------------------------------------------------------------------------- #
+
+
+def _paper_version(members: list[str], **producer):
+    from clio_agent.gact.artifacts.records import (
+        ArtifactKind,
+        ArtifactVersion,
+        Custody,
+        IdentityEvidence,
+        Mechanism,
+    )
+
+    return ArtifactVersion(
+        version=1,
+        kind=ArtifactKind.REPORT,
+        custody=Custody.WORKSPACE_REFERENCED,
+        mechanism=Mechanism.HARNESS,
+        evidence=IdentityEvidence.hashed_at_use(sha256="c" * 64, size_bytes=9),
+        producer={
+            "designation": "scientific-document",
+            "title": "Burst Buffers",
+            "document_type": "Paper",
+            "venue": "IEEE conference",
+            "page_count": 4,
+            "format": "latex",
+            "members": [{"path": f"m{i}", "artifact_id": m} for i, m in enumerate(members)],
+            **producer,
+        },
+        path="/ws/artifacts/document-previews/a/main.pdf",
+    )
+
+
+def test_a_turns_sources_fold_into_the_paper_that_bundles_them(tmp_path: Path) -> None:
+    from clio_agent.gact.artifacts.presentation import response_deliverables
+
+    app, session = _app(tmp_path)
+    [intro] = _write(app, session.id, tmp_path / "p/sections/intro.tex", "\\section{A}", call="c1")
+    [notes] = _write(app, session.id, tmp_path / "notes.tex", "\\section{N}", call="c2")
+    paper = _paper_version([intro.artifact_id])
+    entries = [
+        *drain_turn_artifacts(app, session.id, "turn_1"),
+        {"version": paper, "workspace_id": "ws1", "name": "p", "turn_id": "turn_1"},
+    ]
+    shown = [entry["version"].artifact_id for entry in response_deliverables(entries)]
+    # The paper and the unbuilt notes.tex show; the section inside the paper does not.
+    assert set(shown) == {paper.artifact_id, notes.artifact_id}
+
+
+def test_a_papers_link_carries_its_title_type_and_members() -> None:
+    from clio_agent.gact.artifacts.wire import resource_link_part
+    from clio_agent.gact.protocol.v3.message import transcript_entities
+
+    paper = _paper_version(["artifact_intro"])
+    wire = resource_link_part("ws1", "paper-bb", paper, part_id="p1").to_wire()
+    assert wire["metadata"]["presentation"] == {
+        "designation": "scientific-document",
+        "title": "Burst Buffers",
+        "document_type": "Paper",
+        "venue": "IEEE conference",
+        "page_count": 4,
+        "format": "latex",
+        "members": ["artifact_intro"],
+    }
+    message = {
+        "id": "m1",
+        "role": "assistant",
+        "created_at": "2026-11-05T00:00:00+00:00",
+        "parts": [{**wire, "id": "p1"}],
+    }
+    entities = transcript_entities([message], "sess_1")
+    [artifact] = [row for row in entities["artifacts"] if row["id"] == paper.artifact_id]
+    assert artifact["producer"]["title"] == "Burst Buffers"
+    assert artifact["name"] == "paper-bb"

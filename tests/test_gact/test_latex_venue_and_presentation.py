@@ -147,6 +147,36 @@ def test_a_clean_build_names_the_pdf_and_its_pages() -> None:
     assert ids == ["entry", "pdf"]  # a bundle-only network is the quiet default
 
 
+def test_a_build_that_made_a_paper_leads_with_its_title() -> None:
+    row = {
+        "status": "complete",
+        "entry": "paper-bb/main.tex",
+        "pdf": _PDF,
+        "paper": {
+            "artifact_id": "art_paper",
+            "name": "paper-bb",
+            "version": 3,
+            "title": "Burst Buffers and Checkpoint Performance",
+            "document_type": "Paper",
+            "venue": "IEEE conference",
+            "members": ["main.tex", "sections/intro.tex", "refs.bib"],
+            "untracked": [],
+        },
+        "page_count": 4,
+        "diagnostics": [],
+        "counts": {},
+        "network": "bundle_hosts",
+    }
+    view = _valid(latex_build_presentation({"entry": "paper-bb/main.tex"}, row, None))
+    blocks = {block["id"]: block for block in view["blocks"]}
+    assert list(blocks) == ["entry", "paper", "paper-detail"]  # the paper replaces the PDF link
+    assert blocks["paper"]["target"] == "artifact" and blocks["paper"]["uri"] == "art_paper"
+    assert blocks["paper"]["label"] == "Burst Buffers and Checkpoint Performance"
+    assert blocks["paper-detail"]["text"] == (
+        "Paper, IEEE conference, version 3, built from 3 source files"
+    )
+
+
 def test_a_failed_build_lists_each_problem_at_its_file_and_line() -> None:
     row = {
         "status": "failed",

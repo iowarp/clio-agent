@@ -124,7 +124,41 @@ def latex_build_presentation(
             ],
         }
     pdf = row.get("pdf") if isinstance(row.get("pdf"), Mapping) else None
-    if pdf and pdf.get("artifact_id"):
+    paper = row.get("paper") if isinstance(row.get("paper"), Mapping) else None
+    if paper and paper.get("artifact_id"):
+        kind = str(paper.get("document_type") or "Paper")
+        members = [str(item) for item in paper.get("members") or []]
+        detail = ", ".join(part for part in (kind, str(paper.get("venue") or "")) if part)
+        blocks.append(
+            {
+                "id": "paper",
+                "type": "link",
+                "target": "artifact",
+                "uri": str(paper["artifact_id"]),
+                "label": str(paper.get("title") or paper.get("name") or kind),
+            }
+        )
+        blocks.append(
+            {
+                "id": "paper-detail",
+                "type": "text",
+                "label": kind,
+                "text": f"{detail}, version {paper.get('version')}, built from "
+                f"{len(members)} source file{'' if len(members) == 1 else 's'}",
+            }
+        )
+        untracked = [str(item) for item in paper.get("untracked") or []]
+        if untracked:
+            blocks.append(
+                {
+                    "id": "paper-untracked",
+                    "type": "text",
+                    "label": "Not versioned",
+                    "text": "Changed while the build read them: " + ", ".join(untracked[:10]),
+                    "severity": "warning",
+                }
+            )
+    elif pdf and pdf.get("artifact_id"):
         blocks.append(
             {
                 "id": "pdf",
