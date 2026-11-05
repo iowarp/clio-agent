@@ -170,6 +170,13 @@ if [ -d "$SITE_PKGS" ]; then
   # Installer-hostile filenames (NSIS aborts on parens/brackets — the
   # litellm benchmark-data lesson from the 0.7.0 gact-tui release).
   rm -rf "$SITE_PKGS/litellm/proxy/guardrails/guardrail_hooks/litellm_content_filter/guardrail_benchmarks" || true
+  # Google's discovery documents for every Google API (107 MB in 0.9.5.1): CLIO builds
+  # only the Drive v3 client (gact/storage/drive_filesystem.py), read from this cache.
+  if [ -d "$SITE_PKGS/googleapiclient/discovery_cache/documents" ]; then
+    find "$SITE_PKGS/googleapiclient/discovery_cache/documents" -type f ! -name 'drive.v3.json' -delete
+    [ -f "$SITE_PKGS/googleapiclient/discovery_cache/documents/drive.v3.json" ] \
+      || { echo "build-gact-runtime: googleapiclient has no drive.v3.json to keep" >&2; exit 1; }
+  fi
   find "$OUT/python" -type f \( -name '*(*' -o -name '*)*' -o -name '*\[*' -o -name '*\]*' \) -delete 2>/dev/null || true
   remaining="$(find "$OUT/python" -type f \( -name '*(*' -o -name '*)*' -o -name '*\[*' -o -name '*\]*' \) | head -20)"
   if [ -n "$remaining" ]; then
