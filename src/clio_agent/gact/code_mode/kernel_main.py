@@ -237,13 +237,16 @@ def _restore(saved: tuple[int, int]) -> None:
     os.close(saved[1])
 
 
-def _read_output(capture: Any, limit: int = OUTPUT_LIMIT) -> str:
+def _read_output(capture: Any, limit: int = OUTPUT_LIMIT, *, keep: bool = False) -> str:
+    """The script's output, its first ``limit`` bytes; a kept file (a background script's
+    output file) is left whole for the person and the agent to read."""
     capture.flush()
     size = capture.seek(0, os.SEEK_END)
     capture.seek(0)
     data = capture.read(limit)
-    capture.seek(0)
-    capture.truncate()
+    if not keep:
+        capture.seek(0)
+        capture.truncate()
     text = data.decode("utf-8", errors="replace")
     if size > limit:
         text += f"\n[output cut at {limit:,} of {size:,} bytes]"
@@ -267,6 +270,8 @@ def _execute(
     capture: Any,
     host: _Host | None = None,
     output_limit: int = OUTPUT_LIMIT,
+    *,
+    keep: bool = False,
 ) -> dict[str, Any]:
     saved = _redirect(capture.fileno())
     ok, value, error = True, None, ""
@@ -288,7 +293,7 @@ def _execute(
         if host is not None:
             host.forget_settled()
         _restore(saved)
-    output = _read_output(capture, output_limit)
+    output = _read_output(capture, output_limit, keep=keep)
     if stopped:
         output += (
             f"\n[{stopped} task{'s' if stopped != 1 else ''} this script started "
@@ -331,7 +336,12 @@ def main() -> None:
             host.send({"type": "bound", "failed": bindings.bind(message)})
         elif message.get("type") == "exec":
             code = str(message.get("code") or "")
-            done = _execute(loop, namespace, code, capture, host, output_limit)
+            path = str(message.get("output_path") or "")
+            if path:  # a background script: output goes to its file as it is written
+                with open(path, "ab+") as written:
+                    done = _execute(loop, namespace, code, written, host, output_limit, keep=True)
+            else:
+                done = _execute(loop, namespace, code, capture, host, output_limit)
             host.send({"type": "done", "id": message.get("id"), **done})
 
 

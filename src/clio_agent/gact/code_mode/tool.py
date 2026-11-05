@@ -181,6 +181,7 @@ def execute_script(
     *,
     bindings: Mapping[str, dict[str, str]] | None = None,
     reserved: Mapping[str, Callable[[Mapping[str, Any]], Any]] | None = None,
+    output_path: str = "",
 ) -> dict[str, Any]:
     """Run a prepared script in ``kernel`` until it finishes or ``cancelled()`` turns true;
     a cancelled or exited kernel is discarded. The outcome, never raising for a cancel."""
@@ -209,7 +210,10 @@ def execute_script(
                 ),
                 {**dict(getattr(agent, "_clio_kernel_bindings", None) or {}), **(bindings or {})},
             )
-            kernel.send({"type": "exec", "id": 1, "code": code})
+            kernel.send(
+                {"type": "exec", "id": 1, "code": code}
+                | ({"output_path": output_path} if output_path else {})
+            )
             while True:
                 if cancelled():
                     kernels.discard(kernel, "cancelled")

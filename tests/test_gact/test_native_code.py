@@ -265,3 +265,34 @@ def test_a_notify_is_attention_mail_attributed_to_its_task() -> None:
     owner, value = written["content"]
     assert owner == "sess_owner" and value["type"] == "clio.code.notify"
     assert [n["message"] for n in value["tasks"][0]["notifies"]] == ["hot", "hotter"]
+
+
+def test_a_background_scripts_output_streams_to_its_file(
+    world: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Output is written to the session's scratch file as the script prints, the status
+    row names it, and the final result carries what was printed.
+
+    SABOTAGE: drop output_path from the exec message -> no file while running -> red."""
+    from pathlib import Path as _Path
+
+    monkeypatch.setenv("CLIO_CODE_BACKGROUND_STATUS_S", "0.5")
+    app, sid, root = world
+    code = "print('first line', flush=True)\nimport asyncio\nawait asyncio.sleep(2)\nprint('last')"
+    handle = str(_launch(app, sid, root, code)["handle"])
+    path = ""
+    deadline = time.monotonic() + 20
+    while time.monotonic() < deadline and not path:
+        task = app.state.task_history.task_snapshot(handle)
+        reference = task.progress.output if task is not None else None
+        if reference is not None:
+            row = app.state.task_history.read_content(reference).get("output")
+            if isinstance(row, dict) and row.get("output_bytes"):
+                path = str(row["output_path"])
+        time.sleep(0.1)
+    assert path.endswith(f"code-task-{handle}.log")
+    assert _Path(path).read_text().startswith("first line")  # written while it ran
+    task = _settled(app, handle)
+    result = json.dumps(app.state.task_history.read_content(task.result))
+    assert "first line" in result and "last" in result
+    assert _Path(path).read_text().splitlines() == ["first line", "last"]

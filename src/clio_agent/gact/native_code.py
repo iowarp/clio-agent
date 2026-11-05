@@ -123,16 +123,20 @@ def _memory_mb(pid: int | None) -> float | None:
 
 def status(live: dict[str, Any], started: float) -> dict[str, Any]:
     """The task row's view of a running script: elapsed time, nested calls, memory."""
+    import os  # noqa: PLC0415
     import time  # noqa: PLC0415
 
     dispatcher, kernel = live.get("dispatcher"), live.get("kernel")
     process = getattr(kernel, "process", None)
+    path = str(live.get("output_path") or "")
     return {
         "type": "clio.code.status",
         "state": "running",
         "elapsed_s": round(time.monotonic() - started, 1),
         "calls": len(getattr(dispatcher, "records", ()) or ()),
         "memory_mb": _memory_mb(getattr(process, "pid", None)),
+        "output_path": path,
+        "output_bytes": os.path.getsize(path) if path and os.path.exists(path) else 0,
     }
 
 
@@ -169,6 +173,7 @@ def _run(
             live,
             bindings=reporting.binding(),
             reserved=reserved,
+            output_path=str(live.get("output_path") or ""),
         )
     finally:
         grouper.flush()  # what was held is recorded when the script ends
@@ -193,6 +198,9 @@ def register_native_code(root: NativeRoot, work: NativeWork) -> None:
     ) -> dict[str, Any]:
         async def body(submission: SubmissionContext, evidence: WorkEvidence) -> dict[str, Any]:
             from clio_agent.gact.code_mode.tool import model_text  # noqa: PLC0415
+            from clio_agent.tools.mcp_result_projection import (  # noqa: PLC0415
+                bounded_model_tool_result,
+            )
 
             staged_launch = take_launch(launch)
             if staged_launch is None or staged_launch.prepared.code != code:
@@ -207,7 +215,13 @@ def register_native_code(root: NativeRoot, work: NativeWork) -> None:
 
             stop, started = threading.Event(), time.monotonic()
             progress = NativeProgress(submission, work, ctx)
+            from clio_agent.runtime.session_scratch import session_scratch_dir  # noqa: PLC0415
+
+            scratch = session_scratch_dir(submission.owner.session_id)
             live: dict[str, Any] = {
+                "output_path": str(scratch / f"code-task-{submission.handle}.log")
+                if scratch is not None
+                else "",
                 "label": label,
                 "started": started,
                 "progress": progress,
@@ -240,7 +254,9 @@ def register_native_code(root: NativeRoot, work: NativeWork) -> None:
                 "calls": outcome.get("calls", 0),
                 "failed_calls": outcome.get("failed_calls", 0),
                 "notifies_coalesced": int(live.get("coalesced") or 0),
-                "text": model_text(outcome),
+                "output_path": str(live.get("output_path") or ""),
+                # The caller's room bounds it; past it, the cut-result note names the file.
+                "text": bounded_model_tool_result(model_text(outcome)),
             }
 
         return await work.run(
