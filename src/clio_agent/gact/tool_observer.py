@@ -19,10 +19,10 @@ from clio_agent.gact.artifacts.ingest_edges import join_call_to_serving_child
 from clio_agent.gact.artifacts.observer_bridge import report_observer_call
 from clio_agent.gact.artifacts.observer_provenance import tool_provenance_metadata
 from clio_agent.gact.artifacts.provenance_presentation import with_provenance_blocks
+from clio_agent.gact.call_effects import pop_previous_content, record_call_effects
 from clio_agent.gact.delegation import _expert_handoff_fields
 from clio_agent.gact.events import Event
 from clio_agent.gact.evidence import _bounded_tool_call_result
-from clio_agent.gact.file_changes import pop_previous_content, record_file_change
 from clio_agent.gact.permission_gate import (
     _make_cancellation_checker,
     _make_permission_gate,
@@ -774,7 +774,7 @@ def _make_tool_observer(app: "FastAPI"):
                         ),
                     )
                 # A write that ran is on disk even if the turn was cancelled meanwhile.
-                record_file_change(app, sid, name, call_id, error, result, prev, invoking_expert)
+                record_call_effects(app, sid, name, call_id, error, result, prev, invoking_expert)
         return None
 
     return observe

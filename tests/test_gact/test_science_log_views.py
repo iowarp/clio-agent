@@ -395,3 +395,36 @@ def test_a_formula_refuses_with_a_typed_code(text: str, code: str) -> None:
 def test_a_formula_lists_its_names_and_target() -> None:
     formula = parse_formula("t = a * n + a")
     assert (formula.target, formula.names) == ("t", ("a", "n"))
+
+
+@pytest.mark.asyncio
+async def test_a_record_row_tells_the_study_its_view_changed(
+    arc: ARCMemory, tmp_path: Path
+) -> None:
+    """A tool result carrying a plugin record row publishes ``science.record`` to the
+    study's sessions, so a view over ``records/<view>`` re-reads it with no polling.
+
+    SABOTAGE: drop the ``notify_record_change`` call in ``record_call_effects`` and no
+    ``science.record`` event is published.
+    """
+
+    from clio_agent.gact.call_effects import SCIENCE_RECORD_EVENT, record_call_effects
+
+    app, sid, log, _ = await _study(arc, tmp_path)
+    published: list[Any] = []
+    app.state.bus = type("Bus", (), {"publish": lambda _self, event: published.append(event)})()
+    result = {"ok": True, "uiEvent": {"view": "board", "key": "game1", "rows": [{"score": 1}]}}
+
+    def work() -> str:
+        study = log.write(sid, "question", {"statement": "Solve the board"}, None, "c1")["id"]
+        published.clear()
+        record_call_effects(app, sid, "guess", "call_a", None, result, None)
+        record_call_effects(app, sid, "guess", "call_b", "failed", result, None)
+        record_call_effects(app, sid, "guess", "call_c", None, {"ok": True}, None)
+        return str(study)
+
+    study = await asyncio.to_thread(work)
+    records = [event for event in published if event.type == SCIENCE_RECORD_EVENT]
+    assert [(event.session_id, event.payload) for event in records] == [
+        (sid, {"study": study, "view": "board", "session_id": sid})
+    ]

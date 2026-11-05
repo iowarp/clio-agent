@@ -68,8 +68,9 @@ def build_update_a2ui_components_tool() -> Any:
             ]
 
         source_notes: list[dict[str, str]] = []
+        data_bindings: list[dict[str, Any]] = []
         data_reference_error = _data_reference.validate_component_data_references(
-            app, components, source_notes
+            app, components, source_notes, data_bindings
         )
         if data_reference_error is not None:
             return data_reference_error
@@ -134,6 +135,9 @@ def build_update_a2ui_components_tool() -> Any:
             # Live study sources with no rows yet: their field names wait for the
             # first entries (Addendum B), so the agent knows they were not checked.
             result["study_sources_unchecked"] = source_notes
+        if data_bindings:
+            # Which views follow their source (live) and which show one version (pinned).
+            result["data_bindings"] = data_bindings
         result.update(_common.surface_registry_fields(outcome))
         result.update(definition)
         return result
