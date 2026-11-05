@@ -2,7 +2,8 @@
 
 * ``GET /v1/artifacts/{id}/latex?session_id=`` builds the version (through its PDF rendition,
   the one build the agent's ``latex_build`` uses) and returns the build report, the paper's
-  outline, its project folder and the files the build read.
+  outline, its project folder, the source files the build read with their text (up to 4 MB)
+  and each PDF page's size.
 * ``GET /v1/artifacts/{id}/latex/locate?session_id=&page=&x=&y=`` gives the source file and
   line at a PDF point; ``&file=&line=`` gives where a source line lands in the PDF.
 
@@ -26,6 +27,23 @@ if TYPE_CHECKING:
     from clio_agent.gact.routes.deps import GactDeps
 
 __all__ = ["register_latex_routes"]
+
+#: The source text one report carries for the source pane (the paper's .tex and .bib files).
+_TEXT_BUDGET = 4 * 1024 * 1024
+
+
+def _page_sizes(pdf: Path) -> list[list[float]]:
+    """Each PDF page's width and height in points, for mapping a click to PDF points."""
+    from pypdf import PdfReader  # noqa: PLC0415 - heavy import on demand
+
+    try:
+        reader = PdfReader(str(pdf))
+    except (OSError, ValueError):
+        return []
+    return [
+        [round(float(page.mediabox.width), 2), round(float(page.mediabox.height), 2)]
+        for page in reader.pages
+    ]
 
 
 def _error(status_code: int, code: str, message: str) -> HTTPException:
@@ -76,12 +94,23 @@ def register_latex_routes(app: FastAPI, deps: GactDeps) -> None:
         record, version, entry = _paper_version(app, artifact_id, session_id)
         row = build_row(app, session_id, record, version, entry=entry)
         paper = paper_of(app, row)
+        texts: dict[str, str] = {}
+        if paper is not None:
+            budget = _TEXT_BUDGET
+            for name in sorted(paper.texts):
+                text = paper.texts[name]
+                if len(text) > budget:
+                    break  # the rest are listed in files; the view says it cannot show them
+                texts[name] = text
+                budget -= len(text)
         return {
             "entry": entry,
             "folder": str(Path(entry).parent.as_posix()) if "/" in entry else "",
             "build": row,
             "outline": outline_row(paper, entry) if paper is not None else None,
             "files": sorted(paper.texts) if paper is not None else [],
+            "texts": texts,
+            "page_sizes": _page_sizes(paper.pdf) if paper is not None and paper.pdf else [],
         }
 
     @app.get("/v1/artifacts/{artifact_id}/latex")

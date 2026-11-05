@@ -67,6 +67,8 @@ def test_the_report_and_click_through_both_ways(
         assert build["status"] == "failed" and build["pdf"]["artifact_id"]
         assert build["counts"] == {"undefined_reference": 1}
         assert body["files"] == ["main.tex", "sections/eval.tex"]
+        assert body["texts"]["sections/eval.tex"].startswith("\\section{Scaling}")
+        assert body["page_sizes"] == [[612.0, 792.0]]
         [section] = body["outline"]["nodes"]
         assert (section["title"], section["labels"]) == ("Scaling", ["sec:scaling"])
         place = section["places"][0]
