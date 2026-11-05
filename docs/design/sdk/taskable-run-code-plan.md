@@ -53,7 +53,7 @@ The megachange rules hold: delete and replace, the task layer is the only execut
 ## Out of scope
 
 - Images, cameras, video and scientific visualization. A stream carries what an artifact carries (a JSON status, a table of recent readings, a series). Images may come later as artifacts; nothing here prepares for them.
-- The browser. Its shared tab is a finished, separate feature. Four delivery problems found while reading `gact/browser/live.py` are filed as a separate issue.
+- The browser. Its shared tab is a finished, separate feature. Four delivery problems found while reading `gact/browser/live.py` are filed separately as iowarp/clio-agent#1918.
 - Moving the NDP event feed onto streams. It is the same kind of source and will likely move later.
 - Resuming a background script after a server restart, moving one to another machine, or running one through clio-relay.
 - Promoting a running synchronous script to background.
