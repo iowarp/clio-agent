@@ -91,9 +91,10 @@ WRITE_METHODS = frozenset({"POST", "PUT", "PATCH", "DELETE"})
 #: registry at boot so a recorded grant survives a restart — RULE 4, no new store).
 GRANTED_ROOTS_CONFIG_KEY = "granted_write_roots"
 
-#: How long a deny-mode egress prompt blocks the chokepoint connection thread before a typed
-#: timeout denial (mirrors ``permission_timeout.PERMISSION_REQUEST_TIMEOUT_S``).
-_EGRESS_GATE_TIMEOUT_S = 600.0
+#: A deny-mode egress prompt blocks the chokepoint connection thread until the person answers
+#: it: no deadline (taskable run_code CT13, as for every permission question). The wait counts
+#: as the asking session's turn progress. Tests may set a deadline here; ``None`` is none.
+_EGRESS_GATE_TIMEOUT_S: float | None = None
 
 #: Bound on DISTINCT concurrently-pending deny-mode egress prompts (review finding 4): a flood
 #: of unknown-domain CONNECTs must not spawn unbounded blocked prompts. Connects to the SAME
@@ -693,7 +694,10 @@ def _prompt_egress(
             )
             return "deny"
         _emit_egress_requested(app, str(row.get("session_id") or ""), row)
-    resolved = evt.wait(timeout=_EGRESS_GATE_TIMEOUT_S)
+    from clio_agent.runtime.commitment_activity import track  # noqa: PLC0415
+
+    with track(True, session_id=str(row.get("session_id") or "") or None):
+        resolved = evt.wait(timeout=_EGRESS_GATE_TIMEOUT_S)
     with _PENDING_EGRESS_LOCK:
         prompt["waiters"] -= 1
         if prompt["waiters"] <= 0:

@@ -65,7 +65,7 @@ def defer_timeout_s() -> float:
 
     **Thread-occupancy tradeoff (documented, deliberate):** a within-session PreToolUse
     defer parks the tool-executor thread on a ``threading.Event`` for up to this bound,
-    exactly as the interactive gate parks it for ~600s. The bound is LONG (so a human
+    while the interactive gate parks it until the person answers. The bound is LONG (so a human
     can take their time) but never infinite — an unresolved defer is released and DENIED
     fail-safe (:data:`hook_defer_timeout`), never silently auto-approved and never a
     thread pinned forever. The cross-restart path (which releases the thread entirely

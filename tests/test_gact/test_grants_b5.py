@@ -577,8 +577,15 @@ def test_deny_mode_unknown_domain_prompts_then_grant_unblocks(tmp_path, captured
     assert grants._egress_gate_decision(app, _egress_record("evil.test", str(root))) == "deny"
 
 
-def test_deny_mode_timeout_fails_closed_and_records(tmp_path, captured_events, monkeypatch) -> None:
-    """Acceptance (#979): an unresolved deny-mode prompt TIMES OUT → deny + typed record."""
+def test_deny_mode_prompt_has_no_deadline_by_default() -> None:
+    """CT13: an egress prompt waits for the person; nothing expires it by default."""
+    assert grants._EGRESS_GATE_TIMEOUT_S is None
+
+
+def test_deny_mode_deadline_if_set_fails_closed_and_records(
+    tmp_path, captured_events, monkeypatch
+) -> None:
+    """With a deadline set (tests only), an unresolved prompt is a typed, recorded deny."""
     monkeypatch.setattr(grants, "_EGRESS_GATE_TIMEOUT_S", 0.15)
     app = build_app(sessions_path=tmp_path / "s.json")
     root = tmp_path / "proj"
