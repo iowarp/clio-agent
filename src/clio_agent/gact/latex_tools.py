@@ -26,14 +26,6 @@ def _context() -> tuple[Any, str, str]:
     return app, sid, workspace_id
 
 
-def _counts(diagnostics: list[dict[str, Any]]) -> dict[str, int]:
-    counts: dict[str, int] = {}
-    for item in diagnostics:
-        kind = str(item.get("kind") or "")
-        counts[kind] = counts.get(kind, 0) + 1
-    return counts
-
-
 def latex_build(entry: str, venue: str = "") -> dict[str, Any]:
     """Build a LaTeX paper to PDF and report its problems.
 
@@ -47,12 +39,8 @@ def latex_build(entry: str, venue: str = "") -> dict[str, Any]:
     page limit, double-blind and required packages. Report missing_package and shell escape
     messages to the person as written; do not retry them.
     """
-    from clio_agent.gact.documents.comment_targets import (  # noqa: PLC0415
-        CommentTargetError,
-        register_target,
-    )
-    from clio_agent.gact.documents.latex.rendition import LatexRenditionError  # noqa: PLC0415
-    from clio_agent.gact.documents.renditions import RenditionError, render_pdf  # noqa: PLC0415
+    from clio_agent.gact.documents import comment_targets  # noqa: PLC0415
+    from clio_agent.gact.documents.latex.paper import build_row  # noqa: PLC0415
 
     app, sid, workspace_id = _context()
     if Path(entry).suffix.lower() not in {".tex", ".ltx"}:
@@ -63,81 +51,26 @@ def latex_build(entry: str, venue: str = "") -> dict[str, Any]:
             "error": f"{entry} is not a .tex file",
         }
     try:
-        record, version = register_target(app, sid, workspace_id, entry, designation="latex-source")
-    except CommentTargetError as exc:
+        record, version = comment_targets.register_target(
+            app, sid, workspace_id, entry, designation="latex-source"
+        )
+    except comment_targets.CommentTargetError as exc:
         return {"status": "failed", "entry": entry, "reason": exc.code, "error": str(exc)}
-    try:
-        rendition = render_pdf(app, sid, record, version)
-    except RenditionError as exc:
-        cause = exc.__cause__
-        result = cause.result if isinstance(cause, LatexRenditionError) else None
-        diagnostics = [item.as_dict() for item in result.diagnostics] if result else []
-        return {
-            "status": "failed",
-            "entry": entry,
-            "pdf": None,
-            "page_count": 0,
-            "diagnostics": diagnostics,
-            "counts": _counts(diagnostics),
-            "network": result.network if result else "",
-            "error": str(exc),
-        }
-    producer = rendition.version.producer
-    diagnostics = list(producer.get("diagnostics") or [])
-    row: dict[str, Any] = {
-        "status": "complete" if producer.get("build_ok") else "failed",
-        "entry": entry,
-        "source_artifact_id": version.artifact_id,
-        "source_version": version.version,
-        "pdf": {
-            "artifact_id": rendition.version.artifact_id,
-            "name": rendition.record.name,
-            "path": str(rendition.workspace_path or rendition.version.path),
-        },
-        "page_count": int(producer.get("page_count") or 0),
-        "diagnostics": diagnostics,
-        "counts": _counts(diagnostics),
-        "read": sorted(producer.get("source_files") or {}),
-        "network": str(producer.get("network") or ""),
-    }
-    if venue:
-        from clio_agent.gact.documents.latex.venue import check_venue  # noqa: PLC0415
-
-        row["venue"] = check_venue(
-            venue,
-            entry=Path(version.path),
-            pdf=Path(row["pdf"]["path"]),
-            page_count=row["page_count"],
-        )
-        if row["venue"].get("status") == "failed":
-            row["status"] = "failed"
-    if row["status"] == "failed" and "error" not in row:
-        failing = [d for d in diagnostics if d.get("kind") not in {"overfull_box", "font_warning"}]
-        row["error"] = (
-            f"{len(failing)} problem(s) make this build fail" if failing else "venue checks failed"
-        )
-    return row
+    return build_row(app, sid, record, version, entry=entry, venue=venue)
 
 
-def _paper(entry: str) -> tuple[Any, dict[str, Any] | None]:
+def _paper(entry: str) -> tuple[Any, dict[str, Any]]:
     """The paper map of ``entry``'s current build, building it when needed."""
-    from clio_agent.gact.documents.latex.mapping import paper_map  # noqa: PLC0415
+    from clio_agent.gact.documents.latex.paper import paper_of  # noqa: PLC0415
 
     built = latex_build(entry)
-    pdf = built.get("pdf")
-    if not pdf:
+    if not built.get("pdf"):
         return None, built
-    from clio_agent.gact.artifacts.registry import get_registry  # noqa: PLC0415
-
     app, _sid, _workspace_id = _context()
-    registry = get_registry(app)
-    source = registry.get_by_artifact_id(str(built.get("source_artifact_id") or ""))
-    rendition = registry.get_by_artifact_id(str(pdf["artifact_id"]))
-    if source is None or rendition is None:
+    paper = paper_of(app, built)
+    if paper is None:
         return None, {**built, "status": "failed", "error": "the build's records are missing"}
-    _record, version = source
-    _pdf_record, pdf_version = rendition
-    return paper_map(Path(version.path), pdf_version.producer, Path(pdf["path"])), built
+    return paper, built
 
 
 def latex_outline(entry: str) -> dict[str, Any]:
@@ -150,24 +83,12 @@ def latex_outline(entry: str) -> dict[str, Any]:
     "Section 4.2" and find both its source and its place on the page. It builds the paper
     first when needed.
     """
+    from clio_agent.gact.documents.latex.paper import outline_row  # noqa: PLC0415
+
     paper, built = _paper(entry)
     if paper is None:
-        return {**(built or {}), "entry": entry, "status": "failed", "nodes": []}
-    nodes = [node.as_dict() for node in paper.outline]
-    counts: dict[str, int] = {}
-    unresolved: list[str] = []
-    for root in paper.outline:
-        for node in root.walk():
-            counts[node.kind] = counts.get(node.kind, 0) + 1
-            unresolved.extend(c["key"] for c in node.citations if not c["resolved"])
-    return {
-        "status": "complete",
-        "entry": entry,
-        "nodes": nodes,
-        "counts": counts,
-        "unresolved_citations": sorted(set(unresolved)),
-        "synctex": paper.index is not None,
-    }
+        return {**built, "entry": entry, "status": "failed", "nodes": []}
+    return outline_row(paper, entry)
 
 
 def latex_locate(
@@ -180,61 +101,12 @@ def latex_locate(
     (relative to the entry's folder) and line to get the pages and rectangles that line
     produces in the PDF. It builds the paper first when needed.
     """
+    from clio_agent.gact.documents.latex.paper import locate_row  # noqa: PLC0415
+
     paper, built = _paper(entry)
     if paper is None:
-        return {**(built or {}), "entry": entry, "status": "failed"}
-    if paper.index is None:
-        return {
-            "status": "failed",
-            "entry": entry,
-            "reason": "source_map_unavailable",
-            "error": "this build has no SyncTeX index",
-        }
-    from clio_agent.gact.documents.latex.mapping import describe  # noqa: PLC0415
-    from clio_agent.gact.documents.latex.outline import node_at  # noqa: PLC0415
-
-    if file:
-        places = paper.index.places(file, line, line)
-        node = node_at(paper.outline, file, line)
-        return {
-            "status": "complete" if places else "failed",
-            "entry": entry,
-            "direction": "source_to_pdf",
-            "file": file,
-            "line": line,
-            "node": describe(node) if node else "",
-            "places": [{"page": p + 1, "rect": [round(v, 1) for v in rect]} for p, rect in places],
-            **({} if places else {"error": f"{file} line {line} produces nothing in the PDF"}),
-        }
-    if page < 1 or x < 0 or y < 0:
-        return {
-            "status": "failed",
-            "entry": entry,
-            "reason": "latex_locate_arguments",
-            "error": "give page with x and y, or file with line",
-        }
-    found = paper.index.source_at(page - 1, x, y)
-    if found is None:
-        return {
-            "status": "failed",
-            "entry": entry,
-            "direction": "pdf_to_source",
-            "page": page,
-            "error": f"page {page} has no source text",
-        }
-    source_file, source_line = found
-    node = node_at(paper.outline, source_file, source_line)
-    return {
-        "status": "complete",
-        "entry": entry,
-        "direction": "pdf_to_source",
-        "page": page,
-        "x": x,
-        "y": y,
-        "file": source_file,
-        "line": source_line,
-        "node": describe(node) if node else "",
-    }
+        return {**built, "entry": entry, "status": "failed"}
+    return locate_row(paper, entry, page=page, x=x, y=y, file=file, line=line)
 
 
 def build_latex_outline_tool() -> Any:

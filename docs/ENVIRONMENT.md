@@ -392,6 +392,7 @@ These deliberately bypass the config store (a shared file must not be able to re
 | `CLIO_DOCUMENT_OFFICE_ROOT` | unmigrated | `src/clio_agent/runtime/document_stack/process.py` |
 | `CLIO_DOCUMENT_SCRATCH` | unmigrated | `src/clio_agent/runtime/document_stack/process.py` |
 | `CLIO_DOCUMENT_SHORT_TEMP` | unmigrated | `src/clio_agent/runtime/document_stack/process.py` |
+| `CLIO_DOCUMENT_TECTONIC` | unmigrated | `src/clio_agent/runtime/tectonic.py` |
 | `CLIO_DOCUMENT_TYPST_FONT` | unmigrated | `src/clio_agent/gact/documents/renditions.py` |
 | `CLIO_ENV_FILE` | bootstrap | `src/clio_agent/config.py` |
 | `CLIO_FROM_SCRATCH` | unmigrated | `src/clio_agent/gact/infrastructure/node_service.py`, `src/clio_agent/gact/infrastructure/reuse.py` |
