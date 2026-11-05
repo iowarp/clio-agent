@@ -157,6 +157,6 @@ def test_the_explore_note_is_set_from_fleet_settings(
     stored = (paths.user_config_dir() / "prompts").glob("clio.reminder.explore_nudge--*.md")
     text = next(stored).read_text(encoding="utf-8")
     assert "x_active: false" in text and "x_param_after: 9" in text
-    assert "{{explore_model}}" in text  # the wording is kept
+    assert "x_overlay: true" in text and "{{explore_model}}" not in text  # shipped wording
     assert nudge_settings() == {"enabled": False, "after": 9}
     assert saved["revision"] != current["revision"]

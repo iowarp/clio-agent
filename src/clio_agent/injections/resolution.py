@@ -5,10 +5,11 @@ An injection (:mod:`clio_agent.injections.declarations`) is resolved for a sessi
 * its declared text and settings (core's ship in the core plugin; a plugin's in its own
   ``ai.iowarp.clio/injections``);
 * overridden by a person's copy, saved through the prompt registry under
-  ``clio.reminder.<name>`` (the Prompts page: per session, workspace or user). A copy
-  may reword it, switch it off (``x_active: false``) or change a setting
-  (``x_param_<name>``); a core injection that carries data the agent needs
-  (``x_required``) can be reworded but not switched off.
+  ``clio.reminder.<name>`` (the Reminders tab: per session, workspace or user). A copy
+  rewords it (a text edit) or only switches it off (``x_active: false``) or changes a
+  setting (``x_param_<name>``) as a settings overlay that keeps the shipped text; a core
+  injection that carries data the agent needs (``x_required``) can be reworded but not
+  switched off. A plugin's ``x_required`` is ignored.
 
 :func:`render` fires a core event: the core injection's text (unless switched off) and
 every active plugin injection attached to the same event, rendered against the event's
@@ -50,8 +51,9 @@ INJECTION_INACTIVE = "injection_inactive"
 #: Typed reason: a plugin's injection could not render and was left out.
 PLUGIN_RENDER_FAILED = "injection_plugin_render_failed"
 _OFF = frozenset({"false", "0", "no", "off"})
-#: Resolved injections per registry state (its roots and the override files' times).
-_CACHE: dict[tuple[Any, ...], dict[str, "Resolved | None"]] = {}
+#: Resolved injections per registry state (its roots and the override files' times),
+#: session and plugin set (the session's pinned resolution digest).
+_CACHE: dict[tuple[Any, ...], dict[str, "Resolved"]] = {}
 _CACHE_LIMIT = 64
 
 
@@ -103,27 +105,39 @@ def _signature(registry: Any) -> tuple[Any, ...]:
 
 
 def _effective(row: Injection, registry: Any) -> Resolved:
-    """``row`` with a person's saved copy applied (none: as declared)."""
+    """``row`` with a person's saved copy applied (none: as declared).
+
+    A copy is a text edit (its own body) or a settings overlay (the switch and settings
+    only, :mod:`clio_agent.prompts`): an overlay keeps the declared text. ``x_required``
+    counts only for core: a plugin cannot make its own text impossible to switch off.
+    """
     resolved = registry.resolve(row.id)
     meta: Mapping[str, Any] = (resolved.metadata or {}) if resolved is not None else {}
-    own = resolved is not None and resolved.scope != "builtin"
+    own_text = resolved is not None and resolved.scope != "builtin" and bool(resolved.text.strip())
+    if own_text and resolved is not None:
+        scope = resolved.scope
+    elif meta.get("settings_scope") or meta.get("overlay"):
+        scope = str(meta.get("settings_scope") or getattr(resolved, "scope", "") or "builtin")
+    else:
+        scope = "builtin"
     params = dict(row.params)
     params.update(
         {k.removeprefix("param_"): str(v) for k, v in meta.items() if k.startswith("param_")}
     )
     switch = str(meta.get("active", "true" if row.active else "false")).strip().lower()
+    required = row.required if row.plugin == "core" else ""
     return Resolved(
         name=row.name,
         event=row.event,
-        text=resolved.text if own and resolved is not None else row.text,
+        text=resolved.text if own_text and resolved is not None else row.text,
         plugin=row.plugin,
         tool=row.tool,
-        active=bool(row.required) or switch not in _OFF,
+        active=bool(required) or switch not in _OFF,
         trigger=row.trigger,
         variables=row.variables,
         params=params,
-        scope=resolved.scope if own and resolved is not None else "builtin",
-        required=row.required,
+        scope=scope,
+        required=required,
     )
 
 
@@ -134,17 +148,20 @@ def _rows(app: Any, session_id: str) -> dict[str, Injection]:
 
 
 def _resolved_all(app: Any, session_id: str) -> dict[str, Resolved]:
+    """Every injection the session sees, rebuilt whenever an override file or the
+    session's plugin set changes (a removed plugin's injections are gone, an updated
+    plugin's are read again)."""
+    from clio_agent.injections.plugin_set import plugin_set_key  # noqa: PLC0415
+
     registry = _registry(app, session_id)
-    key = (_signature(registry), session_id)
+    key = (_signature(registry), session_id, plugin_set_key(app, session_id))
     rows = _CACHE.get(key)
     if rows is None:
         if len(_CACHE) >= _CACHE_LIMIT:
             _CACHE.clear()
-        rows = _CACHE[key] = {}
-    for name, row in _rows(app, session_id).items():
-        if name not in rows:
-            rows[name] = _effective(row, registry)
-    return {name: value for name, value in rows.items() if value is not None}
+        rows = {name: _effective(row, registry) for name, row in _rows(app, session_id).items()}
+        _CACHE[key] = rows
+    return rows
 
 
 def injection(name: str, *, app: Any = None, session_id: str = "") -> Resolved | None:
@@ -159,34 +176,44 @@ def update(
     active: bool | None = None,
     params: Mapping[str, Any] | None = None,
     app: Any = None,
+    session_id: str = "",
 ) -> Resolved:
-    """Save the person's switch or settings for ``name`` as their own (global) copy.
+    """Save the person's switch or settings for ``name`` (a core or plugin injection).
 
-    The text and the other settings are kept, so an injection edited on the Prompts page
-    keeps its wording when the Fleet page turns it off.
+    Only the switch and the settings are stored, as the person's global settings overlay
+    (:mod:`clio_agent.prompts`), never the text: a later release's wording still reaches
+    them. A text edit the person saved globally on the Prompts page is kept, re-saved with
+    the new settings. ``session_id`` finds a plugin's injection (plugins are per session).
+
+    Raises:
+        LookupError: no injection ``name`` exists (for this session).
     """
+    if injection(name, app=app, session_id=session_id) is None:
+        raise LookupError(f"no injection {name!r} ({PREFIX}{name})")
     registry = _registry(app, "", "global")
     resolved = registry.resolve(f"{PREFIX}{name}")
-    if resolved is None:
-        raise LookupError(f"no injection {name!r} ({PREFIX}{name})")
-    metadata = {
-        key: value
-        for key, value in (resolved.metadata or {}).items()
-        if isinstance(value, (str, int, float, bool))
+    meta = dict((resolved.metadata or {}) if resolved is not None else {})
+    settings: dict[str, Any] = {
+        key: value for key, value in meta.items() if key == "active" or key.startswith("param_")
     }
     if active is not None:
-        metadata["active"] = "true" if active else "false"
+        settings["active"] = "true" if active else "false"
     for key, value in (params or {}).items():
-        metadata[f"param_{key}"] = str(value)
-    registry.save(
-        resolved.id,
-        text=resolved.text,
-        profile=resolved.profile or "default",
-        title=resolved.title,
-        description=resolved.description,
-        metadata=metadata,
-    )
-    found = injection(name, app=app)
+        settings[f"param_{key}"] = str(value)
+    edited = resolved is not None and resolved.scope == "global" and resolved.text.strip()
+    if edited and resolved is not None:
+        kept = {k: v for k, v in meta.items() if isinstance(v, (str, int, float, bool))}
+        registry.save(
+            resolved.id,
+            text=resolved.text,
+            profile=resolved.profile or "default",
+            title=resolved.title,
+            description=resolved.description,
+            metadata={**kept, **settings},
+        )
+    else:
+        registry.save(f"{PREFIX}{name}", text="", metadata=settings)
+    found = injection(name, app=app, session_id=session_id)
     if found is None:  # pragma: no cover - a save is read straight back
         raise LookupError(f"injection {name!r} was not saved")
     return found

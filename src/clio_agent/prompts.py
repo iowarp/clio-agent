@@ -3,17 +3,26 @@
 Prompt files are Markdown with flat YAML-like frontmatter:
 
 ---
-id: clio.compaction
-title: Compaction checkpoint
-profile: heavy
-provider: anthropic
-model: claude-sonnet-4-5
+id: clio.reminder.plan_stale
+title: Mention a plan that has not been updated
+x_kind: reminder
+x_variables: path, steps
+x_param_steps: 25
 ---
-Prompt body...
+The plan ({{path}}) has not been updated in {{steps}} steps...
 
 The parser is intentionally small and dependency-free. It supports the
 frontmatter shapes CLIO needs for prompt/profile selection without making YAML
 execution semantics part of the trusted prompt path.
+
+The built-in prompts are core's injections (the reminders, ``clio.reminder.<name>``;
+:func:`builtin_prompt_definitions`). A person's copy of a reminder is one of two kinds:
+
+* a **text edit**: the whole prompt with its own body, as before;
+* a **settings overlay** (``x_overlay: true``, no body): only the switch (``x_active``)
+  and the settings (``x_param_<name>``) that differ from the shipped ones. The text
+  stays the shipped one, so a later release's wording reaches the person. Saving a
+  reminder whose text is the shipped text, or with no text, writes an overlay.
 """
 
 from __future__ import annotations
@@ -75,6 +84,8 @@ class ResolvedPrompt:
     metadata: dict[str, Any] = field(default_factory=dict)
 
 
+#: The id prefix of core's injections (``clio_agent.injections.declarations.PREFIX``).
+REMINDER_PREFIX = "clio.reminder."
 _RENDER_PLACEHOLDER_RE = re.compile(r"\{\{\s*([A-Za-z0-9_.-]+)\s*\}\}")
 _ALLOWED_RENDER_PLACEHOLDERS = {
     "agents.available_tree",
@@ -234,6 +245,13 @@ class PromptRegistry:
         clean_profile = _validate_profile(profile or "default")
         self.write_root.mkdir(parents=True, exist_ok=True)
         path = self.write_root / f"{clean_id}--{clean_profile}.md"
+        if clean_id.startswith(REMINDER_PREFIX):
+            shipped = self._builtins().get(clean_id)
+            row = shipped.profiles.get(clean_profile) if shipped is not None else None
+            if not text.strip() or (row is not None and text.strip() == row.text.strip()):
+                return self._save_settings(clean_id, clean_profile, path, metadata or {})
+        elif not text.strip():
+            raise ValueError(f"prompt text is empty: {clean_id}")
         frontmatter: dict[str, Any] = {
             "id": clean_id,
             "profile": clean_profile,
@@ -254,6 +272,35 @@ class PromptRegistry:
         if row is None:  # pragma: no cover - save then read should normally succeed
             raise ValueError(f"prompt was not saved: {clean_id}")
         return row
+
+    def _save_settings(
+        self, prompt_id: str, profile: str, path: Path, metadata: dict[str, Any]
+    ) -> PromptDefinition:
+        """Write a reminder's settings overlay: the switch and settings that differ from the
+        shipped ones. With none left, the person's copy at this scope is removed."""
+        shipped = self._builtins().get(prompt_id)
+        defaults: dict[str, Any] = {}
+        if shipped is not None:
+            defaults.update(shipped.metadata)
+            row = shipped.profiles.get(profile)
+            defaults.update(row.metadata if row is not None else {})
+        settings = {
+            key: _frontmatter_text(value)
+            for key, value in metadata.items()
+            if (key == "active" or key.startswith("param_"))
+            and _is_frontmatter_scalar(value)
+            and str(value).strip().lower() != str(defaults.get(key, "")).strip().lower()
+        }
+        if settings.get("active") == "true" and "active" not in defaults:
+            settings.pop("active")  # on is the default of a reminder that does not say
+        if not settings:
+            path.unlink(missing_ok=True)
+        else:
+            frontmatter: dict[str, Any] = {"id": prompt_id, "profile": profile, "x_overlay": "true"}
+            frontmatter.update({f"x_{key}": value for key, value in settings.items()})
+            path.write_text(_render_prompt_file(frontmatter, ""), encoding="utf-8")
+        # A plugin's reminder has no shipped row here: back to its declared settings.
+        return self.get(prompt_id) or PromptDefinition(id=prompt_id, profiles={})
 
     def reload(self) -> dict[str, Any]:
         """Clear cached packaged prompts and return a fresh registry summary."""
@@ -322,9 +369,12 @@ def parse_prompt_text(
     if not _PROFILE_RE.fullmatch(profile_name):
         errors.append("invalid profile; use letters, numbers, underscores, and hyphens")
         profile_name = "default"
-    if not body.strip():
+    overlay = str(meta.get("x_overlay") or "").strip().lower() == "true"
+    if not body.strip() and not overlay:
         errors.append("prompt body is empty")
-    if str(meta.get("x_kind", meta.get("kind")) or "").strip() == "reminder":
+    if overlay:
+        pass  # settings only: there is no body to validate
+    elif str(meta.get("x_kind", meta.get("kind")) or "").strip() == "reminder":
         errors.extend(_injection_validation_errors(body, declared_variables(meta)))
     else:
         errors.extend(_placeholder_validation_errors(body, declared_variables(meta)))
@@ -347,7 +397,7 @@ def parse_prompt_text(
         title=title,
         description=description,
         default_profile=str(meta.get("default_profile") or profile_name).strip() or profile_name,
-        profiles={profile_name: profile},
+        profiles={} if overlay else {profile_name: profile},
         scope=scope,
         source_path=source_path,
         enabled=not errors,
@@ -414,6 +464,16 @@ def _merge_definition(base: PromptDefinition, override: PromptDefinition) -> Pro
             invalid_sources.append(override.source_path)
         if invalid_sources:
             merged.metadata["invalid_sources"] = invalid_sources
+        return merged
+    if override.metadata.get("overlay"):
+        # Settings only: the text, title and description stay as they were; the row
+        # names where the person's settings are (each profile keeps its text's source).
+        settings = {k: v for k, v in override.metadata.items() if k != "overlay"}
+        settings["settings_scope"] = override.scope
+        merged.scope, merged.source_path = override.scope, override.source_path
+        merged.metadata.update(settings)
+        for profile in merged.profiles.values():
+            profile.metadata.update(settings)
         return merged
     if override.title:
         merged.title = override.title
@@ -506,6 +566,10 @@ def _metadata_from_frontmatter(meta: dict[str, Any]) -> dict[str, Any]:
             str(item).strip() for item in placeholders if str(item).strip()
         ]
     return metadata
+
+
+def _frontmatter_text(value: Any) -> str:
+    return ("true" if value else "false") if isinstance(value, bool) else str(value)
 
 
 def _is_frontmatter_scalar(value: Any) -> bool:

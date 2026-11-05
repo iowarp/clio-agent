@@ -6,7 +6,7 @@ injection::
 
     ---
     name: plan-pointer            # core files use ``id: clio.reminder.<name>``
-    event: tool_result            # an event of :data:`clio_agent.injections.events.EVENTS`
+    event: tool_result            # an event of :func:`clio_agent.injections.events.events`
     tool: run_code                # tool_result only: an fnmatch pattern on the tool name
     title: Point at the plan
     description: What it tells the agent and why.
@@ -15,9 +15,10 @@ injection::
     {% if plan.status == "approved" %}The approved plan is at {{ plan.location }}.{% endif %}
 
 The body is a sandboxed Jinja template (:mod:`clio_agent.injections.template`). Keys may
-carry the ``x_`` prefix the Prompts page writes (``x_active``, ``x_variables``,
-``x_param_<name>``, ``x_required``, ``x_trigger``). A core injection's event is its own
-name unless it says otherwise: the code that fires it is the event.
+carry the ``x_`` prefix the Reminders tab writes (``x_kind``, ``x_active``,
+``x_variables``, ``x_param_<name>``, ``x_required``, ``x_trigger``). ``x_required``
+counts only for core's injections. A core injection's event is its own name unless it
+says otherwise: the code that fires it is the event.
 """
 
 from __future__ import annotations
