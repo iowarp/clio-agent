@@ -10,7 +10,9 @@ from typing import Any, Literal, get_args
 
 from pydantic import BaseModel, ConfigDict, Field, JsonValue, model_validator
 
-TaskKind = Literal["Shell", "Download", "Indexing", "MCP", "Session", "Subagent", "Question"]
+TaskKind = Literal[
+    "Shell", "Download", "Indexing", "Code", "MCP", "Session", "Subagent", "Question"
+]
 TaskStatus = Literal[
     "accepted",
     "queued",

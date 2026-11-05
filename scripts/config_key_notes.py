@@ -213,6 +213,18 @@ KEY_NOTES: dict[str, str] = {
     "gact.tasks.storage.concurrency": (
         "Native Download/Indexing worker concurrency; positive, default 10, independent of Shell."
     ),
+    "gact.tasks.code.url": (
+        "Native backend URL for background run_code scripts, independent of Shell and storage. "
+        "memory:// is ephemeral: a script does not survive a restart in any case."
+    ),
+    "gact.tasks.code.queue": (
+        "Background run_code queue identity; empty selects an automatic clio-code name. Keep "
+        "it separate from Shell and storage."
+    ),
+    "gact.tasks.code.concurrency": (
+        "Worker slots for background run_code scripts; each running script holds one for its "
+        "life. Default 10000: nothing bounds how many scripts run, the person stops them."
+    ),
     "plugins.store_root": (
         "Folder holding installed marketplaces, plugin snapshots, user agents and pinned session "
         "resolutions; unset uses <config>/plugins. Set it for an isolated or shared store."

@@ -36,6 +36,7 @@ from clio_agent.arc.task_types import (
 )
 from clio_agent.gact import native_task_recovery, native_task_settlement
 from clio_agent.gact.core_recovery import CoreRecovery
+from clio_agent.gact.native_code import register_native_code
 from clio_agent.gact.native_identity import local_runtime_identity
 from clio_agent.gact.native_shell import register_native_shell
 from clio_agent.gact.native_task_replies import unchanged_reply
@@ -92,6 +93,7 @@ class NativeTools:
             for kind in self.roots
         }
         register_native_shell(self.roots["shell"], self.work["shell"])
+        register_native_code(self.roots["code"], self.work["code"])
         self.clients: dict[NativeRootKind, TaskAwareClient] = {}
         self._calls: dict[str, AcceptedNativeCall] = {}
         self._identities: dict[tuple[NativeRootKind, str], AcceptedNativeCall] = {}

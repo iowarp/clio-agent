@@ -168,7 +168,7 @@ async def start(app: Any) -> None:
                 "status": settled.status,
                 "settlement": settled.settlement,
             }
-        if current.kind in {"Shell", "Download", "Indexing"} or (
+        if current.kind in {"Shell", "Download", "Indexing", "Code"} or (
             current.backend is not None and current.backend.owner == "native"
         ):
             return await app.state.native_tools.cancel(current.handle, caller=caller)

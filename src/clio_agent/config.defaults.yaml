@@ -725,6 +725,23 @@ gact.resident_ledgers.max_sessions: 512
 # Seconds between the idle sweeps that release unused sessions from memory.
 gact.resident_ledgers.sweep_interval_s: 15.0
 
+# CLIO_TASKS_CODE_CONCURRENCY  (int)  <- src/clio_agent/tools/native_roots.py
+# Worker slots for background run_code scripts; each running script holds
+# one for its life. Default 10000: nothing bounds how many scripts run, the
+# person stops them.
+# gact.tasks.code.concurrency:  # computed at runtime: _DEFAULT_CONCURRENCY['code']
+
+# CLIO_TASKS_CODE_QUEUE  (str)  <- src/clio_agent/tools/native_roots.py
+# Background run_code queue identity; empty selects an automatic clio-code
+# name. Keep it separate from Shell and storage.
+# gact.tasks.code.queue:  # default unset; resolved in code
+
+# CLIO_TASKS_CODE_URL  (str)  <- src/clio_agent/tools/native_roots.py
+# Native backend URL for background run_code scripts, independent of Shell
+# and storage. memory:// is ephemeral: a script does not survive a restart
+# in any case.
+gact.tasks.code.url: "memory://"
+
 # CLIO_TASKS_HEALTH_TIMEOUT_S  (float)  <- src/clio_agent/tools/task_client.py
 # Timeout in seconds for task transport discovery/cancellation RPC delivery;
 # accepted execution, result waits and physical cleanup retain their own
@@ -733,7 +750,7 @@ gact.tasks.health_timeout_s: 10.0
 
 # CLIO_TASKS_SHELL_CONCURRENCY  (int)  <- src/clio_agent/tools/native_roots.py
 # Native Shell worker concurrency; positive, default 10.
-gact.tasks.shell.concurrency: 10
+# gact.tasks.shell.concurrency:  # computed at runtime: _DEFAULT_CONCURRENCY['shell']
 
 # CLIO_TASKS_SHELL_QUEUE  (str)  <- src/clio_agent/tools/native_roots.py
 # Shell queue identity; empty selects an automatic clio-shell name, with an
@@ -749,7 +766,7 @@ gact.tasks.shell.url: "memory://"
 # CLIO_TASKS_STORAGE_CONCURRENCY  (int)  <- src/clio_agent/tools/native_roots.py
 # Native Download/Indexing worker concurrency; positive, default 10,
 # independent of Shell.
-gact.tasks.storage.concurrency: 10
+# gact.tasks.storage.concurrency:  # computed at runtime: _DEFAULT_CONCURRENCY['storage']
 
 # CLIO_TASKS_STORAGE_QUEUE  (str)  <- src/clio_agent/tools/native_roots.py
 # Storage queue identity; empty selects an automatic clio-storage name, with

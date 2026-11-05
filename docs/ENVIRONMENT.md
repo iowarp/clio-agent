@@ -327,11 +327,14 @@ These resolve through `clio_agent.conf`: a value under the dotted key in `config
 | `CLIO_SSE_EVENT_LOG` | `debug.sse_event_log` | str | _(unset)_ | `src/clio_agent/gact/routes/misc.py` |
 | `CLIO_SSE_WIRE_TAP` | `debug.sse_wire_tap` | str | _(unset)_ | `src/clio_agent/gact/routes/misc.py` |
 | `CLIO_STREAM_AUDIT_LOG` | `debug.stream_audit_log` | str | _(unset)_ | `src/clio_agent/runtime/stream_audit.py` |
+| `CLIO_TASKS_CODE_CONCURRENCY` | `gact.tasks.code.concurrency` | int | `_DEFAULT_CONCURRENCY['code']` _(computed)_ | `src/clio_agent/tools/native_roots.py` |
+| `CLIO_TASKS_CODE_QUEUE` | `gact.tasks.code.queue` | str | _(unset)_ | `src/clio_agent/tools/native_roots.py` |
+| `CLIO_TASKS_CODE_URL` | `gact.tasks.code.url` | str | `memory://` | `src/clio_agent/tools/native_roots.py` |
 | `CLIO_TASKS_HEALTH_TIMEOUT_S` | `gact.tasks.health_timeout_s` | float | `10.0` | `src/clio_agent/tools/task_client.py` |
-| `CLIO_TASKS_SHELL_CONCURRENCY` | `gact.tasks.shell.concurrency` | int | `10` | `src/clio_agent/tools/native_roots.py` |
+| `CLIO_TASKS_SHELL_CONCURRENCY` | `gact.tasks.shell.concurrency` | int | `_DEFAULT_CONCURRENCY['shell']` _(computed)_ | `src/clio_agent/tools/native_roots.py` |
 | `CLIO_TASKS_SHELL_QUEUE` | `gact.tasks.shell.queue` | str | _(unset)_ | `src/clio_agent/tools/native_roots.py` |
 | `CLIO_TASKS_SHELL_URL` | `gact.tasks.shell.url` | str | `memory://` | `src/clio_agent/tools/native_roots.py` |
-| `CLIO_TASKS_STORAGE_CONCURRENCY` | `gact.tasks.storage.concurrency` | int | `10` | `src/clio_agent/tools/native_roots.py` |
+| `CLIO_TASKS_STORAGE_CONCURRENCY` | `gact.tasks.storage.concurrency` | int | `_DEFAULT_CONCURRENCY['storage']` _(computed)_ | `src/clio_agent/tools/native_roots.py` |
 | `CLIO_TASKS_STORAGE_QUEUE` | `gact.tasks.storage.queue` | str | _(unset)_ | `src/clio_agent/tools/native_roots.py` |
 | `CLIO_TASKS_STORAGE_URL` | `gact.tasks.storage.url` | str | `memory://` | `src/clio_agent/tools/native_roots.py` |
 | `CLIO_TEXT_TOOL_PROTOCOL` | `lm.text_tool_protocol` | str | `invoke` | `src/clio_agent/lm/engines/invoke_calls.py` |
