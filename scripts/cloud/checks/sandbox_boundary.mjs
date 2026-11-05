@@ -51,10 +51,22 @@ async function waitIdle(page, sessionId, log, minutes, options) {
 }
 
 async function send(page, text) {
-  const composer = page.locator('textarea[placeholder^="Ask"], [contenteditable="true"][aria-placeholder^="Ask"]').first();
-  await composer.click();
-  await page.keyboard.type(text);
-  await page.keyboard.press("Enter");
+  // The conversation's composer, wherever the page puts it (welcome page or thread).
+  const candidates = [
+    page.getByPlaceholder(/^Ask /),
+    page.locator('[contenteditable="true"]').last(),
+    page.locator('form:has(button[type="submit"]) textarea').first(),
+  ];
+  for (const candidate of candidates) {
+    const field = candidate.first();
+    if (await field.isVisible().catch(() => false)) {
+      await field.click();
+      await page.keyboard.type(text);
+      await page.keyboard.press("Enter");
+      return;
+    }
+  }
+  throw new Error("no composer found");
 }
 
 export default async function (page, shot) {
