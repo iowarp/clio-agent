@@ -233,7 +233,9 @@ from clio_agent.gact.app import build_app
 # 437 -> 435: the UI moved onto comment sessions, so GET /v1/artifacts/{id}/reviews and
 # POST /v1/sessions/{sid}/artifact-reviews are deleted (comments plan Phase 4).
 # 435 -> 434: GET /v1/html-renderer is deleted; HTML files open in the shared browser.
-EXPECTED_ROUTE_METHOD_PAIRS = 434
+# 434 -> 436: the LaTeX workspace (LaTeX plan), routes/latex.py: GET
+# /v1/artifacts/{id}/latex and GET /v1/artifacts/{id}/latex/locate.
+EXPECTED_ROUTE_METHOD_PAIRS = 436
 
 # app.py is build_app + lifecycle + re-export shims only. The ceiling is
 # the current size (~2892 lines) plus ~300 lines of headroom so ordinary
