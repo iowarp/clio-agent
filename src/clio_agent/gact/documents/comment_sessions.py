@@ -23,7 +23,7 @@ from typing import TYPE_CHECKING, Any
 
 from clio_agent.gact.artifacts.records import ArtifactRecord, ArtifactVersion
 from clio_agent.gact.artifacts.registry import get_registry
-from clio_agent.gact.documents.anchors import MarkTarget
+from clio_agent.gact.documents.anchors import MarkTarget, mark_mode
 from clio_agent.gact.documents.artifact_bytes import ArtifactBytesError, artifact_bytes_path
 from clio_agent.gact.documents.latex.paper_artifact import is_paper, paper_entry
 from clio_agent.gact.documents.models import (
@@ -139,9 +139,18 @@ def _allocate(
 
 
 def mark_target(
-    app: "FastAPI", record: ArtifactRecord, version: ArtifactVersion, session_id: str
+    app: "FastAPI",
+    record: ArtifactRecord,
+    version: ArtifactVersion,
+    session_id: str,
+    *,
+    needs_view: bool = True,
 ) -> MarkTarget:
     """The version to resolve marks against, with its PDF rendition when it is shown as one.
+
+    ``needs_view`` is false when every mark is a native comment in the file itself (a Word
+    comment saved in a working copy): those resolve against the file, so no rendition is
+    made for them.
 
     Raises:
         CommentSessionError: the version's bytes or its rendition are unavailable.
@@ -168,7 +177,7 @@ def mark_target(
             view = artifact_bytes_path(app, *shown)
         except ArtifactBytesError as exc:
             raise CommentSessionError(409, exc.code, str(exc)) from exc
-    elif profile in _RENDITION_PROFILES:
+    elif needs_view and profile in _RENDITION_PROFILES:
         from clio_agent.gact.documents.renditions import (  # noqa: PLC0415
             RenditionError,
             find_pdf_rendition,
@@ -472,7 +481,13 @@ def dispatch_threads(
     store = get_document_store(app)
     text = _transcript_text(record, version, threads)
     try:
-        target = mark_target(app, record, version, session_id)
+        target = mark_target(
+            app,
+            record,
+            version,
+            session_id,
+            needs_view=any(mark_mode(thread.anchor) != "native" for thread in threads),
+        )
         probe = PostMessageRequest(parts=[Part(type="text", text=text)])
         images = request_takes_images(app, app.state.sessions.get(session_id), probe)
         rendered = render_session(

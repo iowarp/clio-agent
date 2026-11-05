@@ -108,6 +108,14 @@ jobs:
         run: uv run python scripts/check_no_class_in_function.py
       - name: "guard: no delegation-summary vocabulary (baseline 0) (#880)"
         run: uv run python scripts/check_no_summaries.py
+      # The marketplace this clio-agent carries (the pinned external/clio-agent-marketplace)
+      # must install against it: every plugin loads and every agent resolves, so a tool,
+      # skill or fragment a plugin declares exists in this checkout.
+      - name: "plugin check: the pinned marketplace"
+        if: matrix.python-version == '3.14'
+        env:
+          CLIO_PLUGIN_STORE: ${{ runner.temp }}/clio-plugin-store
+        run: uv run clio-agent plugin check external/clio-agent-marketplace
       - name: "guard: no settle/synthesis routing vocabulary (baseline 0) (#948)"
         run: uv run python scripts/check_no_settle_vocabulary.py
       - name: "guard: no elicitationId residue (baseline 0) (SEP-2577, C1-S4 #1284)"

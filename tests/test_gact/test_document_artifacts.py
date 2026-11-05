@@ -255,11 +255,22 @@ def test_working_copy_reloads_from_long_canonical_state(
         assert Path(restored.path).is_relative_to(root / "artifacts" / "document-working-copies")
 
 
-def test_working_copy_save_mints_revision_and_stale_save_conflicts(tmp_path: Path) -> None:
+def test_working_copy_save_mints_revision_and_stale_save_conflicts(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     root = tmp_path / "workspace"
     root.mkdir()
     document = root / "brief.docx"
     _docx(document)
+    # A Word comment saved in the file resolves against the file: dispatching it renders no
+    # PDF (which would provision the Office runtime, a download, on a machine without it).
+    from clio_agent.gact.documents import renditions
+
+    def no_render(*_args, **_kwargs):  # noqa: ANN002, ANN003, ANN202
+        raise AssertionError("a native comment must not render the document")
+
+    monkeypatch.setattr(renditions, "render_pdf", no_render)
+    monkeypatch.setattr(renditions, "find_pdf_rendition", no_render)
 
     with TestClient(build_app(sessions_path=tmp_path / "sessions.json")) as client:
         workspace_id, session_id = _workspace_session(client, root)
@@ -313,6 +324,7 @@ def test_working_copy_save_mints_revision_and_stale_save_conflicts(tmp_path: Pat
 
     assert reviews[0]["native"] is True
     assert reviews[0]["text"].startswith("@clio")
+    assert "must not render" not in (reviews[0].get("error") or "")
     assert conflict.status == "conflict"
     assert conflict.conflict_head_artifact_id == external["artifact_id"]
 
