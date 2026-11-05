@@ -174,7 +174,10 @@ def prepare_script(agent: Any, code: str) -> PreparedScript:
 
 
 def execute_script(
-    prepared: PreparedScript, kernel: Any, cancelled: Callable[[], bool]
+    prepared: PreparedScript,
+    kernel: Any,
+    cancelled: Callable[[], bool],
+    live: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Run a prepared script in ``kernel`` until it finishes or ``cancelled()`` turns true;
     a cancelled or exited kernel is discarded. The outcome, never raising for a cancel."""
@@ -187,6 +190,8 @@ def execute_script(
     dispatcher = Dispatcher(
         callable_tools, prepared.servers, prepared.context, _search(callable_tools)
     )
+    if live is not None:
+        live["dispatcher"] = dispatcher  # a background task's status reads its call count
     outcome: dict[str, Any] = {"status": "failed", "output": "", "value": None, "error": ""}
     started = time.monotonic()
     poll = poll_s()

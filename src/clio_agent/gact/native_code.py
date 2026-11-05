@@ -81,7 +81,55 @@ def take_launch(key: str) -> CodeLaunch | None:
         return _LAUNCHES.pop(key, None)
 
 
-def _run(launch: CodeLaunch, handle: str, stop: threading.Event) -> dict[str, Any]:
+def status_interval_s() -> float:
+    """Seconds between a running script's status reports (``code.background_status_s``):
+    a display cadence for the task row, not a limit."""
+    from clio_agent import conf  # noqa: PLC0415
+
+    value = conf.resolve(
+        "code.background_status_s", env="CLIO_CODE_BACKGROUND_STATUS_S", default=5.0, cast=float
+    )
+    return max(0.5, value)
+
+
+def _memory_mb(pid: int | None) -> float | None:
+    """Resident memory of the kernel and its children, in MB; ``None`` when unreadable."""
+    if not pid:
+        return None
+    import psutil  # noqa: PLC0415
+
+    try:
+        root = psutil.Process(pid)
+        processes = [root, *root.children(recursive=True)]
+        total = 0
+        for process in processes:
+            try:
+                total += process.memory_info().rss
+            except psutil.Error:
+                continue
+        return round(total / 1e6, 1)
+    except psutil.Error:
+        return None
+
+
+def status(live: dict[str, Any], started: float) -> dict[str, Any]:
+    """The task row's view of a running script: elapsed time, nested calls, memory."""
+    import time  # noqa: PLC0415
+
+    dispatcher, kernel = live.get("dispatcher"), live.get("kernel")
+    process = getattr(kernel, "process", None)
+    return {
+        "type": "clio.code.status",
+        "state": "running",
+        "elapsed_s": round(time.monotonic() - started, 1),
+        "calls": len(getattr(dispatcher, "records", ()) or ()),
+        "memory_mb": _memory_mb(getattr(process, "pid", None)),
+    }
+
+
+def _run(
+    launch: CodeLaunch, handle: str, stop: threading.Event, live: dict[str, Any]
+) -> dict[str, Any]:
     """Run the script in its own kernel until it ends or ``stop`` is set; stop the kernel."""
     from clio_agent.gact.code_mode import kernels  # noqa: PLC0415
     from clio_agent.gact.code_mode.tool import execute_script  # noqa: PLC0415
@@ -89,8 +137,9 @@ def _run(launch: CodeLaunch, handle: str, stop: threading.Event) -> dict[str, An
     kernel = kernels.kernel_for(
         launch.session_id, "task:" + handle, launch.workspace, read_only=launch.read_only
     )
+    live["kernel"] = kernel
     try:
-        return execute_script(launch.prepared, kernel, stop.is_set)
+        return execute_script(launch.prepared, kernel, stop.is_set, live)
     finally:
         kernels.discard(kernel, "task_settled")
 
@@ -120,16 +169,35 @@ def register_native_code(root: NativeRoot, work: NativeWork) -> None:
                     f"{CODE_TASK_LAUNCH_MISSING}: this script has no approved launch in this "
                     "server process (it does not survive a restart); run it again."
                 )
-            stop = threading.Event()
+            import json  # noqa: PLC0415
+            import time  # noqa: PLC0415
+
+            from clio_agent.gact.native_progress import NativeProgress  # noqa: PLC0415
+
+            live: dict[str, Any] = {}
+            stop, started = threading.Event(), time.monotonic()
             running = asyncio.ensure_future(
-                asyncio.to_thread(_run, staged_launch, submission.handle, stop)
+                asyncio.to_thread(_run, staged_launch, submission.handle, stop, live)
             )
+            progress = NativeProgress(submission, work, ctx)
+
+            async def report() -> None:
+                interval = status_interval_s()
+                while not running.done():
+                    await asyncio.sleep(interval)
+                    if not running.done():
+                        row = status(live, started)
+                        await progress.report_progress(row["elapsed_s"], None, json.dumps(row))
+
+            reporting = asyncio.ensure_future(report())
             try:
                 outcome = await asyncio.shield(running)
             except asyncio.CancelledError:
                 stop.set()  # the script's loop sees it at its next poll and stops the kernel
                 await asyncio.shield(running)
                 raise
+            finally:
+                reporting.cancel()
             return {
                 "status": outcome["status"],
                 "label": label,

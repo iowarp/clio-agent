@@ -1252,6 +1252,10 @@ KEY_NOTES: dict[str, str] = {
         "Release manifest the server reads to report the latest CLIO release to clients; point "
         "at a mirror or a fork's releases feed."
     ),
+    "code.background_status_s": (
+        "Seconds between a background run_code script's status reports on its task row "
+        "(elapsed time, nested calls, memory); a display cadence, not a limit. Default 5."
+    ),
     "code.idle_minutes": (
         "Minutes a run_code kernel keeps its variables without a script before it is stopped."
     ),

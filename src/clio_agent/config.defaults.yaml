@@ -1295,6 +1295,12 @@ resources.upload_chunk_bytes: 8388608
 # run_code execution bounds, HDF5 reference summaries and the MCP tool
 # fleet's discovery/cache/timeouts.
 
+# CLIO_CODE_BACKGROUND_STATUS_S  (str)  <- src/clio_agent/gact/native_code.py
+# Seconds between a background run_code script's status reports on its task
+# row (elapsed time, nested calls, memory); a display cadence, not a limit.
+# Default 5.
+code.background_status_s: "5.0"
+
 # CLIO_CODE_COVERING_POSTURES  (list)  <- src/clio_agent/gact/code_mode/grants.py
 # Approval modes in which approving a run_code script also covers the non-
 # read tool calls it makes; in other modes each such call asks.

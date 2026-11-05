@@ -126,3 +126,37 @@ def test_only_an_approved_staged_launch_reaches_the_code_root(world: Any) -> Non
     )
     with pytest.raises(PermissionError, match="approved launch"):
         asyncio.run_coroutine_threadsafe(coroutine, boundary._loop).result(timeout=30)
+
+
+def test_a_running_script_reports_elapsed_time_calls_and_memory(
+    world: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The task row shows a running script's state, elapsed time, nested calls and the
+    kernel's memory (CT3: memory is shown, never a limit).
+
+    SABOTAGE: drop the status reporter -> no status row while it runs -> red."""
+    app, sid, root = world
+    monkeypatch.setenv("CLIO_CODE_BACKGROUND_STATUS_S", "0.5")
+    code = (
+        "import asyncio\n"
+        "for _ in range(5):\n"
+        "    await tools.records.get_record(record_id='r1')\n"
+        "await asyncio.sleep(4)"
+    )
+    receipt = _launch(app, sid, root, code)
+    handle = str(receipt["handle"])
+    seen: dict[str, Any] = {}
+    deadline = time.monotonic() + 30
+    while time.monotonic() < deadline and not seen:
+        task = app.state.task_history.task_snapshot(handle)
+        reference = task.progress.output if task is not None else None
+        if reference is not None:
+            row = app.state.task_history.read_content(reference).get("output")
+            if isinstance(row, dict) and row.get("type") == "clio.code.status":
+                seen = row
+        time.sleep(0.1)
+    assert seen, "no status row while the script ran"
+    assert seen["state"] == "running" and seen["elapsed_s"] > 0
+    assert seen["calls"] == 5
+    assert isinstance(seen["memory_mb"], float) and seen["memory_mb"] > 5
+    assert _settled(app, handle).status == "completed"
