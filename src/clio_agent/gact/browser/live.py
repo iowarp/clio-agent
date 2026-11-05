@@ -431,6 +431,9 @@ def _open_for_person(svc: Any, session_id: str, url: str) -> Any:
     (their navigation: its host is granted for the conversation)."""
     for record in svc.session_pages(session_id):
         if record.url().split("#", 1)[0] == url.split("#", 1)[0]:
+            if url.lower().startswith("file:"):  # opened again: show the file as it is now
+                record.last_person_input = time.monotonic()
+                svc.submit(record.page.reload())
             return record
     record = svc.wait(svc.open(session_id, ""))
     record.last_person_input = time.monotonic()

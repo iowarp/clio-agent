@@ -238,5 +238,13 @@ def test_an_html_file_the_person_opens_loads_as_a_local_page(
             break
         time.sleep(0.05)
     assert record.url() == figure.as_uri()
+    figure.write_text("<title>Scene v2</title><p>three</p>")  # the file changed on disk
+    again = client.post(f"/v1/sessions/{sid}/browser/pages", json={"path": "figs/scene.html"})
+    assert again.json()["page"]["id"] == record.id  # the same tab, reloaded
+    for _ in range(100):
+        if record.title == "Scene v2":
+            break
+        time.sleep(0.05)
+    assert record.title == "Scene v2"
     missing = client.post(f"/v1/sessions/{sid}/browser/pages", json={"path": "figs/none.html"})
     assert missing.status_code == 422 and "browser_file_missing" in missing.text
