@@ -244,3 +244,39 @@ def test_a_region_on_the_figure_names_its_environment_and_graphics(built) -> Non
     assert lines["Graphics"] == "figs/tput.png; it is not a registered artifact"
     assert lines["Made by"].startswith("Producer unknown")
     assert mark.crop is not None
+
+
+def test_a_quote_on_any_project_file_names_that_file_and_its_section(tmp_path: Path) -> None:
+    from clio_agent.gact.documents.anchors import MarkTarget
+    from clio_agent.gact.documents.latex.anchor_source_map import LatexTextResolver
+    from clio_agent.gact.documents.models import DocumentAnchor
+
+    paper = tmp_path / "paper"
+    (paper / "sections").mkdir(parents=True)
+    for name, text in _TEXTS.items():
+        (paper / name).write_text(text)
+    entry = paper / "main.tex"
+    target = MarkTarget(
+        app=None,
+        record=SimpleNamespace(name="main.tex", workspace_id="ws"),
+        version=SimpleNamespace(path=str(entry), artifact_id="a", version=1),
+        path=entry,
+        profile="latex",
+        view_path=entry,
+    )
+    resolver = LatexTextResolver()
+    mark = resolver.resolve(
+        target,
+        DocumentAnchor(
+            profile="text-quote", exact="Throughput by block size", source_path="sections/eval.tex"
+        ),
+    )
+    lines = dict(mark.lines)
+    assert lines["Selected"] == '"Throughput by block size"'
+    assert lines["Source"] == (
+        'line 6 of sections/eval.tex, in figure "Throughput by block size" (fig:tput)'
+    )
+    entry_mark = resolver.resolve(
+        target, DocumentAnchor(profile="text-quote", exact="We study burst buffers.")
+    )
+    assert dict(entry_mark.lines)["Source"].startswith("line 4 of main.tex, in abstract")

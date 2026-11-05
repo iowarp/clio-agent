@@ -9,8 +9,10 @@ names the figure environment and its ``\\includegraphics`` file, with that file'
 by". Re-anchoring after a rebuild moves a text mark by its quote, and the Source line then
 comes from the new build's index.
 
-A text mark on the ``.tex`` source itself stays with the text resolver: it already names its
-file and lines.
+A text mark on a project file in the LaTeX workspace's source pane is a ``text-quote`` that
+names its file in ``source_path``. :class:`LatexTextResolver` finds the quote in that file (the
+entry when none is named) and adds the outline node to its Source line, so one comment session
+on the paper holds marks on every file and on the PDF.
 """
 
 from __future__ import annotations
@@ -21,14 +23,15 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from clio_agent.gact.documents.anchor_pdf import PdfResolver
-from clio_agent.gact.documents.anchors import register
+from clio_agent.gact.documents.anchor_text import TextResolver, find_quote, quote_lines, text_map
+from clio_agent.gact.documents.anchors import ResolvedMark, register
 
 if TYPE_CHECKING:
-    from clio_agent.gact.documents.anchors import MarkTarget, ResolvedMark
+    from clio_agent.gact.documents.anchors import MarkTarget
     from clio_agent.gact.documents.latex.mapping import PaperMap
     from clio_agent.gact.documents.models import DocumentAnchor
 
-__all__ = ["SourceMapResolver", "register_builtin"]
+__all__ = ["LatexTextResolver", "SourceMapResolver", "register_builtin"]
 
 _GRAPHICS = re.compile(r"\\includegraphics\*?(?:\[[^\]]*\])?\{([^}]+)\}")
 _GRAPHIC_SUFFIXES = (".pdf", ".png", ".jpg", ".jpeg", ".eps", ".svg")
@@ -165,6 +168,68 @@ class SourceMapResolver(PdfResolver):
         return lines
 
 
+class LatexTextResolver(TextResolver):
+    """Text quotes on any file of a LaTeX paper's project, with the outline node they fall in."""
+
+    def _project_file(self, target: MarkTarget, anchor: DocumentAnchor) -> tuple[Path, str]:
+        entry = Path(target.version.path) if target.version.path else target.path
+        name = (anchor.source_path or "").strip().replace("\\", "/")
+        if not name or name == entry.name:
+            return target.path, entry.name
+        root = entry.parent.resolve()
+        candidate = (root / name).resolve()
+        if not candidate.is_relative_to(root) or not candidate.is_file():
+            return target.path, entry.name
+        return candidate, candidate.relative_to(root).as_posix()
+
+    def _node(self, target: MarkTarget, file: str, line: int) -> str:
+        from clio_agent.gact.documents.latex.mapping import describe  # noqa: PLC0415
+        from clio_agent.gact.documents.latex.outline import build_outline, node_at  # noqa: PLC0415
+
+        if "latex_outline" not in target.cache:
+            entry = Path(target.version.path) if target.version.path else target.path
+            root = entry.parent
+            texts: dict[str, str] = {}
+            for path in sorted(root.rglob("*")):
+                if path.suffix.lower() in {".tex", ".bib"} and path.is_file():
+                    relative = path.relative_to(root)
+                    if not any(part.startswith(".") for part in relative.parts):
+                        texts[relative.as_posix()] = path.read_text(
+                            encoding="utf-8", errors="replace"
+                        )
+            target.cache["latex_outline"] = build_outline(entry.name, texts)
+        node = node_at(target.cache["latex_outline"], file, line)
+        return describe(node) if node else ""
+
+    def resolve(self, target: MarkTarget, anchor: DocumentAnchor) -> ResolvedMark:
+        path, name = self._project_file(target, anchor)
+        if path == target.path:
+            mark = super().resolve(target, anchor)
+            file = name
+        else:
+            mapped = text_map(path.read_text(encoding="utf-8", errors="replace"), "plain")
+            found = find_quote(mapped, anchor.exact, anchor.prefix, anchor.suffix, anchor.start)
+            if found is None:
+                return super().resolve(target, anchor)
+            start, end = found
+            mark = ResolvedMark(
+                mode="text",
+                lines=quote_lines(mapped, start, end, source_name=name),
+                under=mapped.text[start:end],
+            )
+            file = name
+        lines = []
+        for label, value in mark.lines:
+            if label == "Source":
+                found_line = re.search(r"line (\d+)", value)
+                node = self._node(target, file, int(found_line.group(1))) if found_line else ""
+                value = f"{value}, in {node}" if node else value
+            lines.append((label, value))
+        mark.lines = lines
+        return mark
+
+
 def register_builtin() -> None:
-    """Text and regions on a LaTeX paper's compiled PDF."""
+    """Text and regions on a LaTeX paper's compiled PDF, and text on its project files."""
     register(("latex",), ("pdf-quad", "region"), SourceMapResolver())
+    register(("latex",), ("text-quote",), LatexTextResolver())
