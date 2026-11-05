@@ -15,7 +15,7 @@ from clio_agent.gact.agents.tool_settings import apply_tool_settings
 from clio_agent.gact.code_mode import dispatch as dispatch_module
 from clio_agent.gact.code_mode import grants, kernels
 from clio_agent.gact.code_mode import tool as tool_module
-from clio_agent.gact.code_mode.presentation import present, starting
+from clio_agent.gact.code_mode.presentation import present, script_name, starting
 from clio_agent.gact.code_mode.stubs import index_text, stub_table, tool_group
 from clio_agent.gact.runtime.permission_actions import ALLOW_SCRIPT, allows, offered
 from clio_agent.tools.execution import tool_workspace_context
@@ -362,7 +362,10 @@ class TestPresentation:
         }
         view = present({}, "", row)
         assert view["summary"] == "14 calls, 1 failed"
-        assert view["blocks"][0]["language"] == "python"
+        blocks = {block["id"]: block for block in view["blocks"]}
+        # The row names the script; on expansion the script itself comes first.
+        assert view["subject"] == "target" and blocks["target"]["label"] == "print(1)"
+        assert view["blocks"][1]["language"] == "python"
         assert "status" not in view
         # The calls are nested rows; the result does not list their tool identifiers.
         assert all("records_get_record" not in str(b.get("text")) for b in view["blocks"])
@@ -372,7 +375,19 @@ class TestPresentation:
         assert timed["status"] == "failed" and timed["summary"].startswith("Stopped")
         cancelled = present({}, "", {"code": "x", "status": "cancelled", "calls": 2})
         assert cancelled["status"] == "interrupted"
-        assert starting({"code": "x = 1"})["blocks"][0]["text"] == "x = 1"
+        assert starting({"code": "x = 1"})["blocks"][1]["text"] == "x = 1"
+
+    def test_the_row_names_the_script(self) -> None:
+        """Label, else first comment, else first statement that is not an import.
+
+        SABOTAGE: return "" from ``script_name`` -> the row has no target -> red."""
+        assert script_name({"label": "printer watch"}, "import x\nrun()") == "printer watch"
+        assert script_name({}, "import csv\n# Log the printer\nrun()") == "Log the printer"
+        assert (
+            script_name({}, "import csv, json\nfrom a import b\nrows = load()") == "rows = load()"
+        )
+        assert script_name({}, "import csv") == "import csv"
+        assert starting({"code": "import csv\nrows = load()"})["subject"] == "target"
 
 
 def test_nested_calls_carry_their_parent_into_the_live_and_v3_views() -> None:
@@ -485,8 +500,9 @@ def test_a_background_launch_reads_as_a_started_task_not_as_a_script_without_cal
         "Started",
         {"handle": "task_abc", "status": "working"},
     )
-    assert view["summary"] == "Started in the background: Counter watch"
+    assert view["summary"] == "Started in the background"
     blocks = {block["id"]: block for block in view["blocks"]}
+    assert view["subject"] == "target" and blocks["target"]["label"] == "Counter watch"
     assert "task_abc" in blocks["task"]["text"]
     assert blocks["open-task"] | {"label": ""} == {
         "id": "open-task",
@@ -496,7 +512,7 @@ def test_a_background_launch_reads_as_a_started_task_not_as_a_script_without_cal
         "label": "",
     }
     unnamed = present({"code": "\nimport time\n", "background": True}, "", {"handle": "t"})
-    assert unnamed["summary"] == "Started in the background: import time"
+    assert {b["id"]: b for b in unnamed["blocks"]}["target"]["label"] == "import time"
 
 
 def test_a_finished_script_waits_for_the_calls_it_sent(monkeypatch: pytest.MonkeyPatch) -> None:

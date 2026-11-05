@@ -119,7 +119,9 @@ def _result_presentation(
     return result, presentation
 
 
-def _diagnostic(message: str, *, failed: bool = False) -> dict[str, Any]:
+def _diagnostic(message: str, *, failed: bool = False, uncertain: bool = False) -> dict[str, Any]:
+    """The execution's status as a block: an error when it failed, a warning when its
+    outcome is uncertain (the row reads Unknown), information otherwise."""
     return {
         "summary": "",
         "blocks": [
@@ -128,9 +130,22 @@ def _diagnostic(message: str, *, failed: bool = False) -> dict[str, Any]:
                 "type": "text",
                 "label": "Execution status",
                 "text": message,
-                "severity": "error" if failed else "info",
+                "severity": "error" if failed else "warning" if uncertain else "info",
             }
         ],
+    }
+
+
+def _with_request(tool: Mapping[str, Any], diagnostic: dict[str, Any]) -> dict[str, Any]:
+    """The call's own view (its request: a script, a command, a query) with the
+    execution's status added, so a problem never hides what was asked."""
+    original = tool.get("presentation")
+    if not isinstance(original, Mapping) or not original.get("blocks"):
+        return diagnostic
+    return {
+        **{key: value for key, value in original.items() if key != "status"},
+        "summary": original.get("summary") or "",
+        "blocks": [*original["blocks"], *diagnostic["blocks"]],
     }
 
 
@@ -147,13 +162,14 @@ def project_execution(
             accepted = None
         if accepted is not None and accepted.get("handle") != task.handle:
             mismatch = "The submission receipt and execution record name different tasks."
+            view = _with_request(tool, _diagnostic(mismatch, uncertain=True))
             return {
                 **tool,
                 "state": "unknown",
                 "execution_problem": "submission_task_mismatch",
                 "error": mismatch,
-                "presentation": _diagnostic(mismatch, failed=True),
-            }, _diagnostic(mismatch, failed=True)
+                "presentation": view,
+            }, view
     state = _STATES[task.status]
     result: Any = None
     error: str | None = None
@@ -169,7 +185,7 @@ def project_execution(
                 type(problem).__name__,
             )
             state, error = "unknown", "The recorded execution result could not be decoded."
-            presentation = _diagnostic(error, failed=True)
+            presentation = _with_request(tool, _diagnostic(error, uncertain=True))
         else:
             error = structured_tool_result_error(result)
             if error and state == "succeeded":
@@ -193,7 +209,9 @@ def project_execution(
         )
         if task.cancellation_requested_at and task.terminal_at is None:
             message = "Cancellation requested; settlement is not yet confirmed. " + message
-        presentation = _diagnostic(message, failed=state in {"failed", "unknown"})
+        presentation = _with_request(
+            tool, _diagnostic(message, failed=state == "failed", uncertain=state == "unknown")
+        )
     original_presentation = tool.get("presentation") or {}
     if original_presentation.get("action") and not presentation.get("action"):
         presentation["action"] = original_presentation["action"]
