@@ -1,7 +1,7 @@
 """HTML and SVG anchors: dragged regions and picked elements, resolved in a server render.
 
-The version is rendered on the server as the preview frame shows it (``html_render``); the
-crop comes from that render, never from the person's screen. A region lists the text inside
+The version is rendered on the server, offline (``html_render``); the crop comes from that
+render, never from the person's screen. A region lists the text inside
 it and the elements it covers, with each element's tag and accessible name; a picked element
 is found again by its selector and must match exactly one element.
 
@@ -165,8 +165,8 @@ class DomResolver:
                     self._region(render, anchor, mark)
                 if render.refused:
                     mark.notes.append(
-                        f"remote_resources_refused: {len(render.refused)} requests outside the "
-                        "preview's library origins were not loaded in the server's render"
+                        f"remote_resources_refused: {len(render.refused)} network requests were "
+                        "not loaded in the server's offline render"
                     )
         except HtmlRenderError as exc:
             mark.notes.append(f"{exc.code}: {exc}")

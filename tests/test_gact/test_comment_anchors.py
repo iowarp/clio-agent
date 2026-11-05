@@ -327,6 +327,22 @@ def test_an_element_on_an_html_artifact_is_found_by_its_selector(
     assert any(note.startswith("remote_resources_refused: 1") for note in mark.notes)
 
 
+def test_the_server_render_is_offline_even_for_library_cdns(
+    tmp_path: Path, chromium: None
+) -> None:
+    """HTML opens in the shared browser now (H5): the server's render keeps no CDN list."""
+    path = tmp_path / "chart.html"
+    path.write_text(
+        '<!doctype html><html><body><button id="go">Go</button>'
+        '<script src="https://cdn.jsdelivr.net/npm/plotly.js-dist-min@2.35.2"></script>'
+        "</body></html>"
+    )
+    anchor = DocumentAnchor(profile="dom", selector="#go", tag="button", viewport_width=800)
+    mark = _resolve(_target(path), anchor)
+    assert dict(mark.lines)["Element"].startswith('<button id="go">, role button "Go"')
+    assert any(note.startswith("remote_resources_refused: 1 ") for note in mark.notes)
+
+
 def test_a_region_on_an_html_artifact_lists_what_it_covers(tmp_path: Path, chromium: None) -> None:
     path = tmp_path / "dashboard.html"
     path.write_text(DASHBOARD)

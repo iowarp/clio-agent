@@ -1,12 +1,12 @@
-"""Render an HTML or SVG version on the server, as the person's preview frame shows it.
+"""Render an HTML or SVG version on the server, for the comment renderer's crops and lines.
 
 The comment renderer crops from the version itself, never from the person's screen
-(comments plan, "Region capture"; ledger FB14, FB15). The preview frame runs the page's
-scripts with an opaque origin and loads only the chart libraries its policy names
-(gact-tui ``html-interactive-policy.ts``). This render matches that: a short-lived Chromium of
-the managed browser's executable (never the person's profile), scripts on, requests to the
-same library origins allowed and every other request refused and counted, at the viewer's
-width and twice its pixel density.
+(comments plan, "Region capture"; ledger FB14, FB15). HTML files open in the shared
+browser, where the person's comments are page comments (ledger H2, H5); this render serves
+the marks that still resolve on a stored version: SVG figures and HTML anchors sent through
+the API. It is a short-lived Chromium of the managed browser's executable (never the
+person's profile), offline: scripts run, every network request is refused and counted, at
+the viewer's width and twice its pixel density.
 """
 
 from __future__ import annotations
@@ -16,10 +16,8 @@ from collections.abc import Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass, field
 from typing import Any
-from urllib.parse import urlsplit
 
 __all__ = [
-    "LIBRARY_ORIGINS",
     "HtmlRender",
     "HtmlRenderError",
     "render_html",
@@ -27,16 +25,6 @@ __all__ = [
 
 logger = logging.getLogger(__name__)
 
-#: The origins the preview frame's policy lets a page load libraries from.
-LIBRARY_ORIGINS = frozenset(
-    {
-        "https://cdn.jsdelivr.net",
-        "https://unpkg.com",
-        "https://esm.sh",
-        "https://cdnjs.cloudflare.com",
-        "https://cdn.babylonjs.com",
-    }
-)
 _LOAD_TIMEOUT_MS = 20_000
 _SETTLE_MS = 300
 _SANDBOX_MARKERS = ("sandboxing failed", "no usable sandbox", "without --no-sandbox")
@@ -164,12 +152,7 @@ def render_html(html: str, *, viewport_width: int, scale: float = 2.0) -> Iterat
             render = HtmlRender(page=None, scale=scale)
 
             def gate(route: Any) -> None:
-                url = route.request.url
-                parts = urlsplit(url)
-                if f"{parts.scheme}://{parts.netloc}" in LIBRARY_ORIGINS:
-                    route.continue_()
-                    return
-                render.refused.append(url)
+                render.refused.append(route.request.url)
                 route.abort()
 
             context.route("**/*", gate)
