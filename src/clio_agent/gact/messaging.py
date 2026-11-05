@@ -333,6 +333,7 @@ def _user_message_parts(
             "artifact_review",
             "resource_ref",
             "context_ref",
+            "comment_session",
         }:
             continue
         metadata = dict(part.metadata)

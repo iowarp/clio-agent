@@ -226,7 +226,11 @@ from clio_agent.gact.app import build_app
 # 439 -> 431: the embedded ONLYOFFICE and Collabora editors are deleted (comments ledger
 # FB4): editor health, editor sessions, ONLYOFFICE content and callback, and Collabora
 # WOPI file info and contents, GET and POST each.
-EXPECTED_ROUTE_METHOD_PAIRS = 431
+# 431 -> 437: comment sessions (comments plan Phase 3), routes/comments.py: GET and POST
+# /v1/workspaces/{wid}/comment-targets, GET /v1/artifacts/{id}/threads, PUT
+# .../comment-drafts, POST /v1/sessions/{sid}/comment-sessions and GET
+# /v1/document-threads/{id}/crop.
+EXPECTED_ROUTE_METHOD_PAIRS = 437
 
 # app.py is build_app + lifecycle + re-export shims only. The ceiling is
 # the current size (~2892 lines) plus ~300 lines of headroom so ordinary

@@ -11,10 +11,11 @@ from __future__ import annotations
 import re
 from collections.abc import Sequence
 from pathlib import Path
+from typing import Any
 
 from clio_agent.gact.documents.models import DocumentProfile
 
-__all__ = ["office_source_line"]
+__all__ = ["NativeCommentResolver", "office_source_line", "register_builtin"]
 
 _WORD = re.compile(r"\w+", re.UNICODE)
 
@@ -154,6 +155,42 @@ def office_source_line(
             return page, "source_unmapped: no cell of the workbook matches the marked text"
         if profile.startswith("odf-"):
             return page, "source_unmapped: OpenDocument files have no position map here"
-    except Exception as exc:  # noqa: BLE001 - a damaged package is reported, not raised
+    except Exception as exc:  # noqa: BLE001 - forwards: into the entry, as the note on a damaged package
         return page, f"source_unreadable: {type(exc).__name__}: {exc}"
     return page, None
+
+
+class NativeCommentResolver:
+    """``@clio`` comments written in an Office or OpenDocument file itself.
+
+    The comment's place in the file is what the package records: a cell for a workbook
+    comment, otherwise the comment's own identifier. There is no crop; the file is the
+    target and the comment text is the instruction.
+    """
+
+    def resolve(self, target: Any, anchor: Any) -> Any:
+        from clio_agent.gact.documents.anchors import ResolvedMark  # noqa: PLC0415
+
+        where = f"cell {anchor.cell_range}" if anchor.cell_range else "a comment in the file itself"
+        lines = [("In file", f"{where} of {target.name}")]
+        if anchor.native_comment_id:
+            lines.append(("Comment id", anchor.native_comment_id))
+        return ResolvedMark(mode="native", lines=lines)
+
+    def page_image(self, target: Any, page_index: int | None) -> None:
+        return None
+
+    def reanchor(self, old: Any, new: Any, anchor: Any) -> tuple[str, Any]:
+        return "current", anchor
+
+
+def register_builtin() -> None:
+    """Native comments on every Office and OpenDocument profile."""
+
+    from clio_agent.gact.documents.anchors import register  # noqa: PLC0415
+
+    register(
+        ("ooxml-word", "ooxml-sheet", "ooxml-slides", "odf-text", "odf-sheet", "odf-slides"),
+        ("native-comment", "sheet-range"),
+        NativeCommentResolver(),  # type: ignore[arg-type]
+    )

@@ -171,6 +171,7 @@ def _load_builtins() -> None:
             anchor_image,
             anchor_pdf,
             anchor_text,
+            office_map,
         )
 
         for load in (
@@ -178,6 +179,7 @@ def _load_builtins() -> None:
             anchor_pdf.register_builtin,
             anchor_image.register_builtin,
             anchor_html.register_builtin,
+            office_map.register_builtin,
         ):
             load()
         _BUILTINS_LOADED = True

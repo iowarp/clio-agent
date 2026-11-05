@@ -523,6 +523,7 @@ def register_system_routes(app: FastAPI, deps: "GactDeps") -> None:
                     "profiles": list(DOCUMENT_PROFILES),
                     "anchors": list(ANCHOR_PROFILES),
                     "review_parts": True,
+                    "comment_sessions": True,
                     "floating_comments": True,
                     "immutable_revisions": True,
                     "native_working_copies": True,

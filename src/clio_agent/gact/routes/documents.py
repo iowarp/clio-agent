@@ -3,8 +3,6 @@
 from __future__ import annotations
 
 import asyncio
-import json
-import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
@@ -16,8 +14,15 @@ from fastapi.responses import FileResponse
 from clio_agent.gact.artifacts.records import ArtifactRecord, ArtifactVersion
 from clio_agent.gact.artifacts.registry import get_registry
 from clio_agent.gact.documents.artifact_bytes import ArtifactBytesError, artifact_bytes_path
+from clio_agent.gact.documents.comment_sessions import (
+    CommentSessionError,
+    dispatch_native,
+    send_session,
+)
 from clio_agent.gact.documents.models import (
     ArtifactReview,
+    CommentMark,
+    CommentSessionRequest,
     CreateArtifactReviewRequest,
     CreateRenditionRequest,
     CreateWorkingCopyRequest,
@@ -39,7 +44,6 @@ from clio_agent.gact.documents.store import (
     get_document_store,
 )
 from clio_agent.gact.session_input import accept_session_input
-from clio_agent.gact.types import Part
 
 if TYPE_CHECKING:
     from clio_agent.gact.routes.deps import GactDeps
@@ -114,131 +118,13 @@ def _manifest(
     )
 
 
-def _review_prompt(review: ArtifactReview) -> str:
-    anchor = json.dumps(review.anchor.model_dump(mode="json"), sort_keys=True)
-    return (
-        f"Artifact review instruction for {review.artifact_name} "
-        f"(artifact {review.artifact_id}, immutable version {review.artifact_version}, "
-        f"sha256 {review.artifact_sha256}).\n"
-        f"Selected anchor: {anchor}\n"
-        f"User comment: {review.text}\n"
-        "Edit the canonical source artifact, preserve unrelated content and unsupported "
-        "package parts, then produce a new immutable artifact version. Do not reinterpret "
-        "the anchor against another version."
-    )
-
-
-def _review_part(review: ArtifactReview) -> Part:
-    return Part(
-        id=f"part_{uuid.uuid4().hex}",
-        type="artifact_review",
-        review_id=review.id,
-        artifact_id=review.artifact_id,
-        artifact_version=review.artifact_version,
-        artifact_sha256=review.artifact_sha256,
-        review_text=review.text,
-        anchor=review.anchor.model_dump(mode="json"),
-        metadata={
-            "artifact_name": review.artifact_name,
-            "workspace_id": review.workspace_id,
-            "native": review.native,
-        },
-    )
-
-
-def _emit_review(app: FastAPI, review: ArtifactReview, event_type: str) -> None:
-    """Dispatch the review event off the loop (#1334: the routes are coroutines and the
-    event is a store RPC); inline when no loop runs on this thread."""
-
-    from clio_agent.gact.off_loop import schedule_off_loop  # noqa: PLC0415
-
-    schedule_off_loop(
-        lambda: _emit_review_now(app, review, event_type), label=f"document.review:{event_type}"
-    )
-
-
-def _emit_review_now(app: FastAPI, review: ArtifactReview, event_type: str) -> None:
-    from clio_agent.gact.runtime.globals import _emit_semantic_event
-
-    _emit_semantic_event(
-        app,
-        review.session_id,
-        event_type,
-        status="failed" if review.status == "failed" else "completed",
-        summary=f"Document review {review.id} {review.status}.",
-        actor={"role": "user"},
-        subject={
-            "review_id": review.id,
-            "artifact_id": review.artifact_id,
-            "artifact_name": review.artifact_name,
-        },
-        payload={
-            "review_id": review.id,
-            "artifact_id": review.artifact_id,
-            "artifact_version": review.artifact_version,
-            "artifact_sha256": review.artifact_sha256,
-            "status": review.status,
-            "native": review.native,
-            "message_id": review.message_id,
-        },
-        detail_level="semantic",
-    )
-
-
-def _dispatch_review(
-    app: FastAPI,
-    deps: "GactDeps",
-    review: ArtifactReview,
-) -> ArtifactReview:
-    store = get_document_store(app)
-    if review.status == "dispatched":
-        return review
-    session = app.state.sessions.get(review.session_id)
-    if session is None:
-        failed = store.update_review(review.id, status="failed", error="session not found")
-        _emit_review(app, failed, "document.review.dispatched")
-        return failed
-    prompt = _review_prompt(review)
-    part = _review_part(review)
-    try:
-        from clio_agent.gact.message_submission import accept_message
-        from clio_agent.gact.parts import Part
-        from clio_agent.gact.types import PostMessageRequest
-
-        response, _ = accept_message(
-            app,
-            deps,
-            review.session_id,
-            PostMessageRequest(
-                parts=[Part(id="review-prompt-" + review.id, type="text", text=prompt), part],
-                metadata={"artifact_review_id": review.id},
-                client_message_id="review_" + review.id,
-            ),
-        )
-        message_id = response.message_id
-    except Exception as exc:  # noqa: BLE001 - persist dispatch failure for recovery
-        failed = store.update_review(review.id, status="failed", error=str(exc))
-        _emit_review(app, failed, "document.review.dispatched")
-        return failed
-    dispatched = store.update_review(
-        review.id,
-        status="dispatched",
-        message_id=message_id,
-        error="",
-    )
-    _emit_review(app, dispatched, "document.review.dispatched")
-    return dispatched
-
-
 def _dispatch_checkpoint(
     app: FastAPI,
     deps: "GactDeps",
     working_copy: DocumentWorkingCopy,
     reviews: list[ArtifactReview],
 ) -> None:
-    for review in reviews:
-        if review.status == "queued":
-            _dispatch_review(app, deps, review)
+    dispatch_native(app, deps, reviews)
     runner = getattr(app.state, "turn_runner", None)
     if runner is None or not runner.busy(working_copy.session_id):
         return
@@ -308,61 +194,24 @@ def register_document_routes(app: FastAPI, deps: "GactDeps") -> None:
         session_id: str,
         request: CreateArtifactReviewRequest,
     ) -> Response:
-        session = app.state.sessions.get(session_id)
-        if session is None:
-            raise _error(404, "not_found", f"session not found: {session_id}")
-        record, version = await _artifact(app, request.artifact_id)
-        if record.workspace_id != session.workspace_id:
-            raise _error(403, "artifact_workspace_mismatch", "artifact is outside this session")
-        if (
-            version.version != request.expected_version
-            or (version.sha256 or "") != request.expected_sha256
-        ):
-            raise _error(
-                409,
-                "stale_artifact_anchor",
-                "review identity does not match the selected immutable artifact version",
-                expected_version=request.expected_version,
-                actual_version=version.version,
-                expected_sha256=request.expected_sha256,
-                actual_sha256=version.sha256 or "",
-            )
-        registry = await asyncio.to_thread(get_registry, app)
-        current = registry.get(record.workspace_id, record.name)
-        if (
-            not request.allow_historical
-            and current is not None
-            and current.head is not None
-            and current.head.artifact_id != version.artifact_id
-        ):
-            raise _error(
-                409,
-                "stale_artifact_anchor",
-                "artifact head advanced; reselect the intended content or explicitly review history",
-                selected_artifact_id=version.artifact_id,
-                head_artifact_id=current.head.artifact_id,
-            )
-        review = ArtifactReview(
-            id=f"docreview_{uuid.uuid4().hex}",
-            session_id=session_id,
-            workspace_id=record.workspace_id,
-            artifact_id=version.artifact_id,
-            artifact_name=record.name,
-            artifact_version=version.version,
-            artifact_sha256=version.sha256 or "",
-            anchor=request.anchor,
-            text=request.text,
-            status="queued",
+        """One comment sent on its own: a one-mark comment session (comments plan)."""
+
+        session_request = CommentSessionRequest(
+            artifact_id=request.artifact_id,
+            expected_version=request.expected_version,
+            expected_sha256=request.expected_sha256,
+            marks=[CommentMark(anchor=request.anchor, comment=request.text)],
             idempotency_key=request.idempotency_key,
-            created_at=_now_iso(),
+            allow_historical=request.allow_historical,
         )
-        persisted = await asyncio.to_thread(store.create_review, review)
-        if persisted.id == review.id:
-            _emit_review(app, persisted, "document.review.created")
-        dispatched = await asyncio.to_thread(_dispatch_review, app, deps, persisted)
-        status = 202 if dispatched.status == "dispatched" else 503
+        try:
+            sent = await asyncio.to_thread(send_session, app, deps, session_id, session_request)
+        except CommentSessionError as exc:
+            raise _error(exc.status, exc.code, str(exc), **exc.details) from exc
+        thread = sent.threads[0]
+        status = 202 if thread.status == "dispatched" else 503
         return Response(
-            content=dispatched.model_dump_json(),
+            content=thread.model_dump_json(),
             media_type="application/json",
             status_code=status,
         )

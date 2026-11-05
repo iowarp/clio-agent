@@ -134,6 +134,17 @@ class DocumentStore:
             self._append_review(review)
             return review
 
+    def get_review(self, review_id: str) -> ArtifactReview | None:
+        """The latest projection of one review or thread, loading workspaces as needed."""
+
+        with self._lock:
+            found = self._reviews.get(review_id)
+            if found is None:
+                for workspace_id in self._workspace_ids():
+                    self._load_workspace(workspace_id)
+                found = self._reviews.get(review_id)
+            return found
+
     def update_review(self, review_id: str, **changes: Any) -> ArtifactReview:
         """Append a new projection row for a review state change."""
 
@@ -155,6 +166,18 @@ class DocumentStore:
                 review
                 for review in self._reviews.values()
                 if review.workspace_id == workspace_id and review.artifact_name == artifact_name
+            ]
+        return sorted(rows, key=lambda review: review.created_at)
+
+    def session_threads(self, workspace_id: str, session_id: str) -> list[ArtifactReview]:
+        """The latest projection of every comment thread a conversation made, oldest first."""
+
+        with self._lock:
+            self._load_workspace(workspace_id)
+            rows = [
+                review
+                for review in self._reviews.values()
+                if review.workspace_id == workspace_id and review.session_id == session_id
             ]
         return sorted(rows, key=lambda review: review.created_at)
 
@@ -603,6 +626,11 @@ class DocumentStore:
         if row is None:
             raise KeyError(working_copy_id)
         return row
+
+    def documents_folder(self, workspace_id: str) -> Path:
+        """The workspace's document state folder (the reviews ledger lives here)."""
+
+        return self._documents_root(self._workspace_root(workspace_id))
 
     def _workspace_root(self, workspace_id: str) -> Path:
         store = getattr(self._app.state, "workspaces", None)

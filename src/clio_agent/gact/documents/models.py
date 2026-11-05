@@ -34,7 +34,10 @@ AnchorProfile = Literal[
 #: advertised in the ``x_clio_document_artifacts`` capability.
 DOCUMENT_PROFILES: tuple[str, ...] = tuple(p for p in get_args(DocumentProfile) if p != "binary")
 ANCHOR_PROFILES: tuple[str, ...] = get_args(AnchorProfile)
-ReviewStatus = Literal["queued", "dispatched", "human-note", "failed", "stale"]
+ReviewStatus = Literal[
+    "draft", "queued", "dispatched", "human-note", "failed", "stale", "discarded"
+]
+ThreadAnchorState = Literal["current", "moved", "outdated"]
 WorkingCopyStatus = Literal["active", "conflict", "closed", "missing", "error"]
 
 
@@ -111,7 +114,17 @@ class DocumentAnchor(BaseModel):
 
 
 class ArtifactReview(BaseModel):
-    """A durable user-to-agent review instruction for one artifact version."""
+    """One comment thread on one artifact version: the mark, the comment, the agent's reply.
+
+    A select session's marks become threads sharing ``session_key``, labelled ``S1``, ``S2``
+    and onward per artifact version (addendum A, section 1). A ``draft`` is a mark not yet
+    sent; ``human-note`` one sent with "Send to agent" off. When the turn the session
+    started finishes, its final message is stored as ``reply_text`` on every thread of the
+    session and the version it made as ``reply_version_artifact_id``. A newer version
+    re-anchors the thread: ``anchor_state`` is ``moved`` (``current_anchor`` on
+    ``current_artifact_id``) or ``outdated``; a region stays ``current`` on its version.
+    Rows are append-only projections in the workspace's reviews ledger.
+    """
 
     model_config = ConfigDict(frozen=True)
 
@@ -131,6 +144,61 @@ class ArtifactReview(BaseModel):
     message_id: str = ""
     created_at: str
     error: str = ""
+    label: str = ""
+    session_key: str = ""
+    send_to_agent: bool = True
+    reply_text: str = ""
+    reply_message_id: str = ""
+    reply_version_artifact_id: str = ""
+    reply_error: str = ""
+    anchor_state: ThreadAnchorState = "current"
+    current_artifact_id: str = ""
+    current_anchor: Optional[DocumentAnchor] = None
+    updated_at: str = ""
+
+
+class CommentMark(BaseModel):
+    """One mark of a select session: what it points at and the person's comment."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    label: str = Field(default="", pattern=r"^(S[1-9][0-9]{0,3})?$")
+    anchor: DocumentAnchor
+    comment: str = Field(default="", max_length=16_384)
+    send_to_agent: bool = True
+
+
+class CommentSessionRequest(BaseModel):
+    """Send one select session's marks on one artifact version together, as one turn."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    artifact_id: str
+    expected_version: int = Field(ge=1)
+    expected_sha256: str
+    marks: list[CommentMark] = Field(min_length=1, max_length=32)
+    idempotency_key: str = Field(min_length=8, max_length=200)
+    allow_historical: bool = False
+
+
+class CommentDraftsRequest(BaseModel):
+    """Keep a session's unsent marks as a draft on one artifact version (ledger FB25)."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    session_id: str = Field(min_length=1)
+    expected_version: int = Field(ge=1)
+    expected_sha256: str
+    marks: list[CommentMark] = Field(default_factory=list, max_length=32)
+
+
+class CommentTargetRequest(BaseModel):
+    """A workspace file the person wants to comment on (ledger FB22)."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    path: str = Field(min_length=1, max_length=4_096)
+    session_id: str = Field(min_length=1)
 
 
 class CreateArtifactReviewRequest(BaseModel):
