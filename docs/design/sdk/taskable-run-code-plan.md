@@ -146,6 +146,8 @@ An eight-hour feed therefore leaves the surface's creation part and one checkpoi
 
 **Ending.** The surface survives the script. When the script ends or is cancelled, the surface keeps its last values in the final checkpoint, each stream leaves its last frame as a snapshot (below), and the script's last update should mark the surface stopped (a status field the components show), so a frozen view is never mistaken for a live one.
 
+**A chart reads the data model (found by the 2026-11-05 probe).** `clio.chart.v1`'s `data` is an inline array in the component, not a data-model binding, so a chart cannot read a series the script keeps in the data model; today only `dataUri: study://...` is a live chart source (polled every 4 s). The work adds a binding: in clio-schemas `data` also accepts a data-model path (a `DynamicValue` resolving to rows, under the same 10,000-row cap), the server's chart guard (`a2ui_producer/_chart_spec.py`, `_data_reference.py`) validates the bound rows' shape on each update, and gact-tui renders the bound rows and re-renders when they change. Metric, progress and text components already bind to data-model paths.
+
 **Data shape.** A live series lives in the data model as a bounded list the script trims itself (for example the last 600 points of a 1 Hz feed), plus scalar fields for current values. The worked example shows this, so the model does not grow a list for eight hours.
 
 ## Design: frame streams
@@ -246,7 +248,8 @@ No production code changes in this phase.
 
 ## Phase 4: presentation and teaching
 
-1. The `frame-stream` component and the `stream://` scheme in clio-schemas, its catalog entry, `streamUri` binding through `_bound_files.py`, the `stream` scheme and `a2ui_stream_invalid`.
+1. `clio.chart.v1` `data` bound to a data-model path (clio-schemas, the server's chart guard, the gact-tui renderer).
+2. The `frame-stream` component and the `stream://` scheme in clio-schemas, its catalog entry, `streamUri` binding through `_bound_files.py`, the `stream` scheme and `a2ui_stream_invalid`.
 2. The sentences in `create_a2ui_surface`, `update_a2ui_data_model` and `run_code`, and the prompt dump check.
 3. The task row in the Work rail, nested calls under it, collapsed runs of the same tool, the "Live" label on a fed surface, stream rates on the row, all as icon and label.
 4. The launching row's link, notify messages with images in the conversation, grouped when coalesced.
