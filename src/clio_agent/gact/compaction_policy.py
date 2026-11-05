@@ -31,6 +31,7 @@ __all__ = [
     "ReadContent",
     "keep_policy",
     "post_compaction_context",
+    "transcript_rows",
 ]
 
 _STEP_KINDS = frozenset({"thought", "tool_call", "observation"})
@@ -225,6 +226,28 @@ def _units(live: Sequence[Any]) -> list[_Unit]:
         else:
             units.append(_Unit("summary", turn, [seg.id]))
     return units
+
+
+def transcript_rows(live: Sequence[Any], ids: Sequence[str]) -> frozenset[tuple[str, str]]:
+    """The transcript rows the segments ``ids`` belong to, as ``(turn id, role)``.
+
+    A message the person sent (or its delivery record) is its turn's ``user`` row; a
+    step and a summary belong to an ``assistant`` row (a summary between turns is its
+    own row, keyed by the turn id it was folded under). CLIO's additions (session
+    facts, plan, todos, reminders) are context, not a transcript row, so they are left
+    out. A compaction stands in for a row when it folded some of that row's segments
+    and kept none of them.
+    """
+    wanted = set(ids)
+    rows = ((seg, _row_role(seg)) for seg in live if seg.id in wanted)
+    return frozenset((str(getattr(seg, "turn_id", "") or ""), role) for seg, role in rows if role)
+
+
+def _row_role(seg: Any) -> str:
+    content = seg.content if isinstance(seg.content, Mapping) else {}
+    if seg.kind == "user" and content.get("actor") == "algorithm":
+        return ""
+    return "user" if seg.kind in {"user", "recipient_input"} else "assistant"
 
 
 def _message_chars(seg: Any, read_content: ReadContent | None) -> int:

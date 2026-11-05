@@ -44,6 +44,7 @@ import json
 import re
 import sys
 import threading
+import time
 from collections.abc import Iterator
 from pathlib import Path
 from typing import Any
@@ -684,12 +685,16 @@ def test_the_summary_renders_first_even_when_the_oldest_context_is_kept(
     assert "question 2" in flat[-1]
 
 
-def test_a_record_whose_turn_settled_before_the_fold_is_still_shown_live(
+def test_a_manual_compaction_during_a_running_turn_is_refused_busy(
     app_env: tuple[Any, TestClient, SummarizerAgent, list[Any]], monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """A manual compaction during a turn writes its record into the turn's message;
-    the turn settles before the fold lands. Live must still equal reload: the record is
-    published into that message (a ``message.created`` upsert after the turn settled)."""
+    """Delete and rollback refuse while a turn runs; a manual compaction folded the running
+    loop's context under it, its record written into the turn's message while the turn
+    kept writing. It is refused 409 ``session_busy`` and folds nothing (the loop compacts
+    its own context at its step boundaries); once the turn settles the same request
+    compacts.
+
+    SABOTAGE: ``compaction_session.compaction_slot`` reserves nothing -> 200 mid-turn."""
     from tests.turn_signals import wait_for_terminal_status
 
     app, client, _summarizer, events = app_env
@@ -703,8 +708,8 @@ def test_a_record_whose_turn_settled_before_the_fold_is_still_shown_live(
 
     def run(question: str, session_id: str, **_kwargs: Any) -> Any:
         lm, _engine = scripted_lm([calls(("slow", {"q": "x"}), text="wait"), Reply(text="done")])
-        # Something to fold while the step is still running: a CLIO note recorded ahead of
-        # the question (the open turn's question itself is kept verbatim).
+        # Something to fold: a CLIO note recorded ahead of the question (the open
+        # turn's question itself is kept verbatim).
         tokens = [
             ctx.set_react_scope(SCOPE),
             ctx.set_react_session(session_id),
@@ -718,7 +723,7 @@ def test_a_record_whose_turn_settled_before_the_fold_is_still_shown_live(
             for token in reversed(tokens):
                 ctx.reset(token)
 
-    # A failure before the fold must not leave the turn blocked in its tool forever.
+    # A failure before the release must not leave the turn blocked in its tool forever.
     try:
         install_scripted_module(monkeypatch, run, commit_input=False)
         _patch_tokens(monkeypatch, high_on=set())
@@ -728,36 +733,22 @@ def test_a_record_whose_turn_settled_before_the_fold_is_still_shown_live(
             f"/v1/sessions/{sid}/messages", json={"parts": [{"type": "text", "text": "go"}]}
         )
         assert ack.status_code == 202, ack.text
-        assert ack.json()["task_handle"]
         assert started.wait(120), "the turn never reached its tool"
 
-        real_fold = app.state.arc.summarize_segments
-        settled: list[int] = []
-
-        def fold_after_the_turn_settled(*args: Any, **kwargs: Any) -> Any:
-            release.set()
-            assert wait_for_terminal_status(bus, sid, after_event_id=cursor) == "idle"
-            settled.append(bus.latest_event_id(sid))
-            return real_fold(*args, **kwargs)
-
-        monkeypatch.setattr(app.state.arc, "summarize_segments", fold_after_the_turn_settled)
+        before = [s.id for s in _live(app, sid)]
         r = client.post(f"/v1/sessions/{sid}/compact", params={"scope": SCOPE})
-        assert r.status_code == 200, r.text
-        assert r.json()["compactions"], r.json()
-        [done] = r.json()["compactions"]
-        assert settled, "the fold did not wait for the turn"
+        assert r.status_code == 409 and r.json()["error"]["error"] == "session_busy", r.text
+        assert [s.id for s in _live(app, sid)] == before
+        assert not _compaction_events(events)
 
-        live_wire = _transcript(client, sid)
-        [assistant] = [m for m in live_wire if m["role"] == "assistant"]
-        assert assistant["id"] == done["message_id"]
-        assert [p["id"] for p in assistant["parts"] if _is_record(p)] == [done["part_id"]]
-        assert _reload(app, client, sid) == live_wire
-        upserts = [
-            e
-            for e in bus.session_events_since(sid, cursor=settled[0] + 1)
-            if e.type == "message.created" and e.payload.get("id") == done["message_id"]
-        ]
-        assert upserts and any(_is_record(p) for p in upserts[-1].payload["parts"])
+        release.set()
+        assert wait_for_terminal_status(bus, sid, after_event_id=cursor) == "idle"
+        deadline = time.monotonic() + 10
+        while app.state.turn_runner.busy(sid):  # the turn retires after it reads idle
+            assert time.monotonic() < deadline, "the turn never released the session"
+            time.sleep(0.01)
+        r = client.post(f"/v1/sessions/{sid}/compact", params={"scope": SCOPE})
+        assert r.status_code == 200 and r.json()["compactions"], r.text
         seq = [e.event_type for e in _compaction_events(events)]
         assert seq == ["compaction.started", "compaction.completed"]
     finally:
