@@ -1,6 +1,6 @@
 # Taskable `run_code`, live dashboards and streams: implementation plan
 
-**Status: rewritten for review (2026-11-05). No implementation resumes until the owner has reviewed it.** This version replaces v3. It follows the owner's addenda A, B and C (the planning conversation of 2026-11-05) and his answers recorded in the ledger (CT16 onward). Where an earlier decision in the ledger disagrees with this document, this document wins.
+**Status: accepted (CT25, 2026-11-05) and built (CT26 to CT38).** This version replaced v3. It follows the owner's addenda A, B and C (the planning conversation of 2026-11-05) and his answers recorded in the ledger (CT16 onward). The "Current state" section describes the branch before implementation; the design sections state what was built, with a pointer where the build changed the plan. Where a later decision in the ledger (CT25 onward) disagrees with this document, the ledger wins.
 
 ## The goal
 
@@ -9,7 +9,7 @@ A user asked CLIO to watch her 3D printer the way OctoPrint does: temperatures, 
 1. **Async tasks.** `run_code` becomes taskable, so a script can watch something for hours without holding the conversation.
 2. **Views and dashboards unified.** A study view is a dashboard, built and reviewed like every dashboard.
 3. **Live updates.** Whether a view updates is a property of the source it reads, with one rule for every source. A script's writes to a file become new versions of its artifact.
-4. **Streams.** A stream is an artifact whose content lives in memory in clio-core, for state that changes too often to be worth writing to disk, such as a printer's status. Streaming ships as a CLIO plugin package.
+4. **Streams.** A stream is an artifact whose latest content is held in memory, for state that changes too often to be worth writing to disk at every change, such as a printer's status. GACT holds it and writes it to clio-core as versions by the stream's flush policy (CT25 (5), CT28 (b)). Streaming ships as a CLIO plugin package.
 
 Together they let the agent write a small script that reads the printer, keeps its status in a stream, and shows it on a dashboard that updates by itself. The canonical script is general:
 
@@ -76,7 +76,7 @@ Built on this branch and kept (commits in the ledger, CT1 to CT9, CT13, CT15):
 - Output goes to a scratch file as it is written; results go through the cut-result path with `result_spilled`.
 - A child's background script outlives the child (CT6). A clean restart settles it as cancelled; a crash as interrupted (CT7).
 
-Not yet built: the Work rail task row and its collapsed nested calls, the launching row's link, the notify message's rendering, and the teaching.
+Not yet built at the time: the Work rail task row and its collapsed nested calls, the launching row's link, the notify message's rendering, and the teaching. All built since (CT29 to CT38; gact-tui `9d4bef797` row state in words, `a00542830` grouped call counts, `525dfeb03` the launch row's and messages' task links).
 
 **Cost of a nested call.** A script's call to a tool writes about 7.3 clio-core records (CT5, `sess_ba2a1d84b12b`): 3.6 to `segments` (the call's transcript parts and task events, grouped per chunk), 0.7 to `task_lookup`, and 3.0 to `artifact_index`. The last three are the provenance transform every completed call records, read-only calls included (`tool_observer.py:662-671` → `transforms.record_transform` → `registry_store.add_transform`, `:462-474`): the session's transform page, the transform record marked pending, and the record again to clear the mark. Each is its own round trip on the writer thread, ahead of the group commit (`highway_writer.py:207-213`, `:294-298`). Whether a read-only call needs a transform record at all is part of the clio-core interaction work, not of this plan.
 
@@ -98,7 +98,7 @@ Not yet built: the Work rail task row and its collapsed nested calls, the launch
 
 ### Part 4: streams
 
-- **CLIO's clio-core has no in-memory data tier.** The seeded `cte.yaml` (`clio_core_config.py:142-171`) composes a 1 GB RAM pool that is clio-core's working arena and file tiers for data, all at score 1.0 and `temporary` persistence; `clio_core_growth.py` adds more file tiers at runtime. Several comments still describe a DRAM tier that is not configured (`clio_core_config.py:125-128`, `:338-339`; `storage.py:390-392`, `:456-460`; `clio_core_writes.py:70`).
+- **CLIO's clio-core has no in-memory data tier.** The seeded `cte.yaml` (`clio_core_config.py:144-173` at the branch head) composes a 1 GB RAM pool that is clio-core's working arena and file tiers for data, all at score 1.0 and `temporary` persistence; `clio_core_growth.py` adds more file tiers at runtime. Several comments still describe a DRAM tier that is not configured (`clio_core_config.py:125-128`, `:338-339`; `storage.py:390-392`, `:456-460`; `clio_core_writes.py:70`).
 - **A put cannot choose its tier.** The Python binding's `PutBlob`/`AsyncPutBlob` take no score. `Tag.ReorganizeBlob(blob, score)`, `GetBlobScore` and `RegisterTarget` exist; CLIO never calls them. `put(..., tier=...)` ignores its tier. The durability check refuses a configuration with no non-RAM persistent tier (`clio_core_durability.py:53-100`). iowarp-core 2.4 ships a `clio_cte_stream` module (page blobs, deferred appends) with no Python binding, not composed by CLIO.
 - **GACT pushes only through the session stream.** One SSE stream per session (`events.py`, `routes/misc.py:369-540`); `Event.transient` keeps an event out of replay. There is no per-view subscription and no server-side latest-wins; `subscriber_count` is per session.
 - **What a plugin can contribute.** Tools, kernel bindings (stdlib source whose `export` calls `tools.*`, `plugins/kernel_bindings.py:42-196`), skills and injections. A binding can reach only `tools.*` calls, which pass the gate and the observer (about 7.3 records each, counted per window in background scripts). Reserved host calls, which skip the gate and the observer, can be registered only by core (`dispatch.py:106-160`), and any script code can call a registered one.
@@ -109,7 +109,7 @@ As built (current state). The remaining design:
 
 **Presentation.** Status is an icon with a short text label, never an icon alone, with detail on hover on desktop and on tap at phone width. A background script is a task row in the Work rail: label, running state and elapsed time, nested-call count, memory, last progress message, output on expand, and a cancel control always visible. Its nested calls sit under it through `parent_call_id`; consecutive calls to one tool show as one row with a count, matching the counted record. The launching `run_code` row links to the task row. A notify arrives in the conversation as a message from the task, with its label and a link to the task; a coalesced wake shows its notifies grouped by task.
 
-**Notify path (to confirm).** A notify is an `attention` mail attributed to the task handle, as a settled task's notice is, not `conversations.mail.peer`: `peer` mail records a sending session, and a task is not one. The owner confirms this or asks for a task sender kind on mail.
+**Notify path (decided, CT38).** A notify is an `attention` mail attributed to the task handle, as a settled task's notice is, not `conversations.mail.peer`: `peer` mail records a sending session, and a task is not one. Notifies of several scripts in one wake are one mail per task (`e5f7fefd`).
 
 ## Design: Part 2, a study view is a dashboard
 
@@ -119,7 +119,7 @@ A study view is a dashboard attached to a study. It is authored the way every da
 - **Listing and rendering.** `study_views` lists the dashboards the view entries name, at their latest report version, and the Science log tab renders them with the dashboard renderer. The 4 s poll of the science log read for views goes: a dashboard's sources update it (Part 3).
 - **Validation.** Publishing a dashboard reports empty study sources as a chat surface does (`study_sources_unchecked`), instead of accepting them silently.
 - **Teaching.** `run-a-study` and the science log fragment point the agent to `create-dashboard` for views. `create-dashboard` covers study sources, pinned and live artifact bindings, streams, and when to use each.
-- **Deleted, not kept beside.** The chat-surface path for study views: the gate's surface check, the read from the owner's transcript, and the skill's instruction.
+- **Old views stay readable (CT25 (3)).** New views are dashboards: the gate's surface check and the skill's instruction for chat-surface views are gone. A view entry that already names a chat surface is still read from the owner's transcript and shown read-only (`science_log/views.py`); nothing converts it.
 
 ## Design: Part 3, liveness is a property of the source
 
@@ -131,15 +131,15 @@ Every `dataUri` source is fixed or live and names its change event:
 | An artifact addressed by `latest` (`artifact://<ws>/<name>@latest`) | Live | A new version of that artifact |
 | `study://<study>/measurements` and `entries` | Live | `science.entry` |
 | `study://<study>/records/<name>` | Live | A change event for the record, added here |
-| A stream (Part 4) | Live | Every write, pushed with its content |
+| A stream (Part 4) | Live | Every write, announced to watching views |
 
-**One client rule.** gact-tui reads every source through one client: a fixed source is cached as immutable; a live source is refetched when its change event arrives on the session stream (a stream's content arrives with the event, Part 4). The study-specific caching, the refetch wiring and the `records/` polling are replaced by the rule. Chat surfaces and dashboards render the same components, so both get it.
+**One client rule.** gact-tui reads every source through one client: a fixed source is cached as immutable; a live source is refetched when its change event arrives on the session stream (for a stream too: the event notifies and the view re-reads its bounded rows, Part 4). The study-specific caching, the refetch wiring and the `records/` polling are replaced by the rule. Chat surfaces and dashboards render the same components, so both get it.
 
 **Pinned or live is the agent's choice.** A view that shows a file at one moment binds the pinned version, as today. A view that follows a file binds its `latest`. The work:
 
 - clio-schemas: the chart, table and map `dataUri` grammar accepts a named artifact reference with `@latest`.
 - The producer side (`_export.py`, `_data_reference.py`): accepts a `latest` reference, validates it against the artifact's current version, and the tool result says which bindings are live and which pinned.
-- Table query: an artifact query can address a name at `latest`, or the client re-resolves `latest` to a version id on each change event (Phase 0 of implementation picks one, see open question 4).
+- Table query: the client re-resolves `latest` to a version id on each version event and caches each version's rows under its id; no table query by `latest` was added (CT26 (c)).
 - The version event reaches views: `artifact.version.added` is delivered under a name the client handles, scoped to the artifact, so the one rule can refetch the views bound to it.
 - Study records gain a change event when a tool result adds rows to a record.
 
@@ -147,13 +147,13 @@ Every `dataUri` source is fixed or live and names its change event:
 
 ## Design: Part 4, streams
 
-**What a stream is.** An artifact whose content lives in memory in clio-core instead of on disk. It is an artifact in every other way: identity, provenance, `artifact://` references, `latest`, version events and export. It carries any content an artifact can (a JSON status record, a table of recent readings, a series). It is for state that is rewritten often and where the latest value, or a short window of recent values, is what matters. A dashboard reads a stream the way it reads any artifact.
+**What a stream is.** An artifact whose latest content is held in memory instead of written to disk at every change: GACT holds it (`gact/streams/store.py`) until clio-core can keep a blob in memory by choice (`docs/design/clio-core-requests.md`, issue 7). It is an artifact in every other way: identity, provenance, `artifact://` references, `latest`, version events and export. It carries any content an artifact can (a JSON status record, a table of recent readings, a series). It is for state that is rewritten often and where the latest value, or a short window of recent values, is what matters. A dashboard reads a stream the way it reads any artifact.
 
-**Content and versions.** A stream keeps its latest content, or a bounded window of recent content, as declared when it is created. Writing to a stream does not mint a durable version per write; its in-memory versions are cheap or ephemeral.
+**Content and versions.** A stream keeps its latest content, or a bounded window of recent content, as declared when it is created. Writing to a stream does not mint a durable version per write: the content is written to clio-core as the artifact's next version on open, every `flush_s` (default 30 s) while it changes, at stop and at a clean shutdown (CT28 (b)).
 
-**Delivery.** A view subscribes to a live artifact through GACT, and GACT pushes when it changes. A stream pushes its content: the latest content wins, a slow viewer skips ahead to the newest, and nothing is sent while no view is subscribed. A disk artifact pushes a change notice and the view refetches through the table-query path (Part 3). Views go through GACT, never straight to clio-core, so the desktop does not depend on where the agent runs, and authentication and the desktop CSP stay as they are. GACT has no per-view subscription today: the design adds a small subscription registry (a view says which live artifacts it shows; GACT keeps a count per artifact) and delivers through the session stream as transient events carrying the latest content, coalesced per artifact on the server. A subscription route of its own is used only if Phase 0 of implementation shows the session stream cannot carry the content at the rate needed.
+**Delivery.** A view subscribes to a live artifact through GACT, and GACT pushes when it changes. A stream announces a change: a write sends a transient `stream.updated` event, at most once per `streams.push_interval_s` (latest wins), only to sessions whose views hold a lease, and the view re-reads its bounded rows, so a view's `dataQuery` applies unchanged (CT28 (c)). Nothing is sent while no view watches. A disk artifact pushes a change notice and the view refetches through the table-query path (Part 3). Views go through GACT, never straight to clio-core, so the desktop does not depend on where the agent runs, and authentication and the desktop CSP stay as they are. As built, a view on screen holds a lease on the stream (`POST /v1/streams/{id}/watch`, 30 s, renewed every 15 s, released on unmount), and the announcements go through the session stream as transient events, coalesced per stream on the server.
 
-**Persistence.** clio-core writes down to disk; what a stream needs is a flush policy, declared when it is created: whether a flush keeps every update or only the latest content and its window. When a stream's producer stops, its last content is what a saved dashboard and an export show. Where the content lives, given that CLIO's clio-core has no in-memory tier today, is open question 5.
+**Persistence.** clio-core writes down to disk; what a stream needs is a flush policy, declared when it is created: whether a flush keeps every update or only the latest content and its window. When a stream's producer stops, its last content is what a saved dashboard and an export show. Where the content lives was open question 5, answered (c): GACT holds it (CT25 (5)).
 
 **Who writes.** Any producer that can write to clio-core: a background script, an MCP server, a cluster job through clio-relay. For this plan the background script must work. How a script writes is open question 6.
 
@@ -172,7 +172,7 @@ The agent has to find these semantics from a request that names none of them ("k
 - **`task-protocol`** gains a worked example: a background script that polls a status endpoint and writes the status into a stream, a dashboard bound to it, and a notify on a threshold; and one that watches a job and notifies on completion.
 - **The system prompt** changes only if the qualification runs show the model missing the semantic after the skills and tool messages, and then for understanding.
 
-Each change goes through the prompt dump check (`clio-agent plugin resolve <agent> --exact`) for the standard and science agents, and the cached prefix stays stable within a process.
+Each change goes through the prompt dump check (`GET /v1/sessions/{sid}/agent?exact=true`, the prompt last sent in a session of that agent) for the standard and science agents, and the cached prefix stays stable within a process.
 
 ## Open questions for the owner
 
@@ -192,9 +192,9 @@ Each with what was found and a recommendation.
 
 **Phase 1: Part 1 presentation and teaching.** The Work rail task row, collapsed nested calls, the launching row's link, notify rendering; the description line and the fragment sentences.
 
-**Phase 2: a study view is a dashboard.** The `view` entry links a dashboard; the gate, `views.py` and the Science log tab follow; dashboard publish reports empty study sources; the marketplace skills and fragment point to `create-dashboard`; the chat-surface path is deleted.
+**Phase 2: a study view is a dashboard.** The `view` entry links a dashboard; the gate, `views.py` and the Science log tab follow; dashboard publish reports empty study sources; the marketplace skills and fragment point to `create-dashboard`; new chat-surface views are refused, and old ones stay readable, read-only (CT25 (3)).
 
-**Phase 3: liveness by source.** `latest` references in clio-schemas (its own pin), export and validation reporting live and pinned bindings; table query by `latest`; the version event delivered to views; the study record change event; one client rule in gact-tui with the study-specific caching and polling removed.
+**Phase 3: liveness by source.** `latest` references in clio-schemas (its own pin), export and validation reporting live and pinned bindings; the client re-resolving `latest` on each version event (no table query by `latest`, CT26 (c)); the version event delivered to views; the study record change event; one client rule in gact-tui with the study-specific caching and polling removed.
 
 **Phase 4: file writes become versions,** by the mechanism and rate chosen.
 
@@ -208,7 +208,7 @@ Verify each UI change as the megachange plan describes: restart the stack, run `
 
 ## Qualification
 
-Against a freshly restarted stack (`claude_code` provider), each recorded with commands, handles, numbers and the screenshots read. Every request is a plain request that names no tool. The fixture is a small status server under `tests/code_mode/fixtures/` served by `scripts/cloud/stack.sh`: a printer status endpoint (state, temperatures, progress following a scripted curve) and a job whose status finishes after a set time. No camera endpoint.
+Against a freshly restarted stack (`claude_code` provider), each recorded with commands, handles, numbers and the screenshots read. Every request is a plain request that names no tool. The fixture is `scripts/cloud/fixtures/printer_status.py`, started on its own port (`python scripts/cloud/fixtures/printer_status.py --port 8799 --print-s 240`; `stack.sh` does not start it): a printer status endpoint (state, temperatures, progress following a scripted curve) whose print job finishes after a set time. No camera endpoint.
 
 | ID | Scenario | Passes when |
 | --- | --- | --- |
