@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import asyncio
 import threading
+from contextvars import ContextVar
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -34,7 +35,10 @@ from clio_agent.tools.native_roots import NativeRoot
 __all__ = [
     "CODE_TASK_LAUNCH_MISSING",
     "CODE_TASK_TOOL",
+    "BackgroundTask",
     "CodeLaunch",
+    "active_background_task",
+    "question_cancel_token",
     "register_native_code",
     "stage_launch",
     "take_launch",
@@ -55,6 +59,36 @@ class CodeLaunch:
     session_id: str
     workspace: Path
     read_only: bool
+
+
+@dataclass(frozen=True)
+class BackgroundTask:
+    """The background script a nested call belongs to: its handle and its stop event."""
+
+    handle: str
+    stop: threading.Event
+
+
+#: Set in a background script's captured context, so its nested calls know their task.
+_BACKGROUND_TASK: ContextVar[BackgroundTask | None] = ContextVar(
+    "clio_background_task", default=None
+)
+
+
+def active_background_task() -> BackgroundTask | None:
+    """The background script the current call belongs to, if any."""
+    return _BACKGROUND_TASK.get()
+
+
+def question_cancel_token(app: Any, session_id: str) -> threading.Event | None:
+    """What ends a permission question's wait (CT8): a background script's question ends
+    only when its task is cancelled, never on Stop of whatever turn the session runs
+    then; any other question ends with its turn, as before."""
+    task = _BACKGROUND_TASK.get()
+    if task is not None:
+        return task.stop
+    events = getattr(app.state, "cancel_events", None) or {}
+    return events.get(session_id)
 
 
 _LAUNCHES: dict[str, CodeLaunch] = {}
@@ -138,6 +172,7 @@ def _run(
         launch.session_id, "task:" + handle, launch.workspace, read_only=launch.read_only
     )
     live["kernel"] = kernel
+    launch.prepared.context.run(_BACKGROUND_TASK.set, BackgroundTask(handle, stop))
     try:
         return execute_script(launch.prepared, kernel, stop.is_set, live)
     finally:

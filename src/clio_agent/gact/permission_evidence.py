@@ -17,14 +17,20 @@ logger = logging.getLogger(__name__)
 
 def permission_identity(app: Any, session_id: str) -> dict[str, str]:
     """Capture the admitted assignment now; HTTP resolution has no such context."""
+    from clio_agent.gact.native_code import active_background_task  # noqa: PLC0415
+
     sessions = getattr(app.state, "sessions", None)
     session = sessions.get(session_id) if sessions is not None else None
-    return {
+    identity = {
         "assignment_id": active_assignment_handle()
         if active_app() is app and active_session_id() == session_id
         else "",
         "workspace_id": str(getattr(session, "workspace_id", "") or ""),
     }
+    task = active_background_task()
+    if task is not None:  # the question is the background script's, shown as its task's
+        identity["task_handle"] = task.handle
+    return identity
 
 
 def emit_permission_resolution(app: Any, row: Mapping[str, Any]) -> None:
