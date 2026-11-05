@@ -18,6 +18,7 @@ than running without its approval.
 from __future__ import annotations
 
 import asyncio
+import contextvars
 import threading
 from dataclasses import dataclass
 from pathlib import Path
@@ -220,9 +221,12 @@ def _on_own_thread(handle: str, run: Any) -> asyncio.Future[Any]:
     and its nested calls need that executor's threads (admission, task history), so a
     few long scripts would starve every script's calls (CK3: 8 threads, 30 scripts,
     every call stalled). Scripts have no count limit (CT18), so each gets its own thread.
+    It runs in a copy of this context, as ``to_thread`` would: the kernel's territory reads
+    the active session (its scratch folder holds the script's output log).
     """
     loop = asyncio.get_running_loop()
     future: asyncio.Future[Any] = loop.create_future()
+    context = contextvars.copy_context()
 
     def settle(outcome: Any, error: BaseException | None) -> None:
         if future.done():
@@ -234,7 +238,7 @@ def _on_own_thread(handle: str, run: Any) -> asyncio.Future[Any]:
 
     def target() -> None:
         try:
-            outcome = run()
+            outcome = context.run(run)
         except BaseException as exc:  # noqa: BLE001 - forwards: the task's awaiting future
             loop.call_soon_threadsafe(settle, None, exc)
         else:

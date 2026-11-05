@@ -366,3 +366,23 @@ def test_background_scripts_never_starve_each_others_calls() -> None:
         return list(await asyncio.wait_for(asyncio.gather(*futures), timeout=15))
 
     assert asyncio.run(main()) == ["script 0 done", "script 1 done", "script 2 done"]
+
+
+def test_a_background_script_runs_in_its_launchers_context() -> None:
+    """The script's thread sees the launching context (the active session), as
+    ``to_thread`` did: the kernel's sandbox territory includes the session's scratch
+    folder only through it, and the script's output log lives there (live CK10: a kernel
+    started without it could not open its log, so every background script failed).
+
+    SABOTAGE: call ``run()`` directly on the new thread -> the variable is unset -> red."""
+    import asyncio
+
+    from clio_agent.gact import context as gact_context
+    from clio_agent.gact.native_code import _on_own_thread
+    from clio_agent.runtime.session_scratch import active_session
+
+    async def main() -> object:
+        gact_context.set_session_id("sess_context_check")
+        return await _on_own_thread("t", active_session)
+
+    assert asyncio.run(main()) == "sess_context_check"
