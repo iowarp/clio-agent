@@ -56,7 +56,32 @@ def latex_build(entry: str, venue: str = "") -> dict[str, Any]:
         )
     except comment_targets.CommentTargetError as exc:
         return {"status": "failed", "entry": entry, "reason": exc.code, "error": str(exc)}
-    return build_row(app, sid, record, version, entry=entry, venue=venue)
+    row = build_row(app, sid, record, version, entry=entry, venue=venue)
+    _offer_paper(app, sid, workspace_id, record.name, version)
+    return row
+
+
+def _offer_paper(app: Any, sid: str, workspace_id: str, name: str, version: Any) -> None:
+    """Make the paper this turn's output, so the reply ends with its card.
+
+    The card is the entry's source version, which opens as the LaTeX workspace (source, PDF
+    and problems together). The PDF itself is a rendition, which replies never show as a card.
+    """
+    from clio_agent.gact import context as _ctx  # noqa: PLC0415
+    from clio_agent.gact.artifacts.minting import _record_turn_artifact  # noqa: PLC0415
+
+    turn_id = _ctx.active_turn_id()
+    if not turn_id:
+        return
+    _record_turn_artifact(
+        app,
+        sid,
+        workspace_id=workspace_id,
+        name=name,
+        version=version,
+        turn_id=turn_id,
+        purpose="deliverable",
+    )
 
 
 def _paper(entry: str) -> tuple[Any, dict[str, Any]]:

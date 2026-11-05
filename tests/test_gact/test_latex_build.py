@@ -154,6 +154,20 @@ def test_shell_escape_biber_and_bibtex_styles_are_named() -> None:
     assert style.kind == "missing_package" and style.detail == "plain.bst"
 
 
+def test_a_shell_escape_package_tex_could_not_fetch_is_named_as_shell_escape() -> None:
+    # Fetching minted would not help (it runs programs), so the build says so, not "fetch it".
+    output = "\n".join(
+        [
+            'warning: failure fetching "minted.sty" from network (3/3)',
+            "error: main.tex:2: ! LaTeX Error: File `minted.sty' not found.",
+        ]
+    )
+    [item] = parse_diagnostics(output, texts=_TEXTS)
+    assert item.kind == "shell_escape_unsupported" and item.detail == "minted"
+    assert (item.file, item.line) == ("main.tex", 2)
+    assert build_failed([item])
+
+
 def test_a_bundle_file_tex_went_on_without_is_a_warning_not_a_failure() -> None:
     output = (
         'warning: failure fetching "hyph-nl.tex" from network (3/3)\n'

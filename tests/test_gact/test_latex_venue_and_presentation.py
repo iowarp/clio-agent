@@ -352,6 +352,41 @@ def test_the_tool_reads_a_successful_builds_record(monkeypatch: pytest.MonkeyPat
     assert latex_tools.latex_build("notes.md")["reason"] == "latex_entry_not_tex"
 
 
+def test_a_build_in_a_turn_ends_the_reply_with_the_papers_card(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # The card is the entry's source version: it opens as the LaTeX workspace.
+    from types import SimpleNamespace
+
+    from clio_agent.gact import context, latex_tools
+    from clio_agent.gact.artifacts import minting
+    from clio_agent.gact.documents import comment_targets
+    from clio_agent.gact.documents.latex import paper
+
+    app = object()
+    monkeypatch.setattr(latex_tools, "_context", lambda: (app, "sess_1", "ws_1"))
+    version = SimpleNamespace(artifact_id="art_src", version=2, path="/ws/paper/main.tex")
+    monkeypatch.setattr(
+        comment_targets,
+        "register_target",
+        lambda *a, **k: (SimpleNamespace(name="main.tex"), version),
+    )
+    monkeypatch.setattr(paper, "build_row", lambda *a, **k: {"status": "complete"})
+    offered: list[dict] = []
+    monkeypatch.setattr(
+        minting, "_record_turn_artifact", lambda *a, **k: offered.append({"args": a, **k})
+    )
+    monkeypatch.setattr(context, "active_turn_id", lambda: "")
+    latex_tools.latex_build("paper/main.tex")
+    assert offered == []  # outside a turn there is no reply to end
+    monkeypatch.setattr(context, "active_turn_id", lambda: "turn_7")
+    latex_tools.latex_build("paper/main.tex")
+    [card] = offered
+    assert card["args"] == (app, "sess_1")
+    assert card["version"] is version and card["turn_id"] == "turn_7"
+    assert card["name"] == "main.tex" and card["purpose"] == "deliverable"
+
+
 def test_the_outline_lists_each_part_at_its_source_line_and_page() -> None:
     from clio_agent.gact.agents.native_presenters_latex import latex_outline_presentation
 

@@ -156,6 +156,16 @@ def _missing(
         return Diagnostic(
             "warning", f"{name} was not found; TeX went on without it.", file, line, detail=name
         )
+    stem = name.rsplit(".", 1)[0].lower()
+    if stem in SHELL_ESCAPE_PACKAGES:
+        # Fetching it would not help: the package runs programs, and builds never may.
+        return Diagnostic(
+            "shell_escape_unsupported",
+            f"{stem} needs shell escape, which builds never enable.",
+            file,
+            line,
+            detail=stem,
+        )
     message = (
         _MISSING_PACKAGE_MESSAGE.format(name=name)
         if offline
