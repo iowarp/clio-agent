@@ -717,6 +717,33 @@ The plan is `docs/design/sdk/taskable-run-code-plan.md`; its scenario table hold
 | CT10 | A background task's surface updates change the stored model in place and go out as transient `a2ui.surface.upserted`; a checkpoint setting the whole model at `/` is appended (by `_persist_part`) at most every `a2ui.live_checkpoint_s` (60) and on settle; a `/` update drops earlier data-model slots; revisions stay monotonic; the client's reconnect also fetches `/a2ui/surfaces`, and a transient upsert does not refetch the pending-interaction queries. | Owner, review of v2. No checkpoint replay exists: 512 slots per surface, every upsert ships all (`a2ui.py:445-461`, `a2ui_store.py:663-674`); reconnect reads a 40-message page (`use-session-live-stream.ts:92-131`); renderer revision gate (`processor-store.ts:595-602`); four refetches per `a2ui.*` frame (`use-session-live-stream.ts:269-283`) |
 | CT11 | Frames travel from the kernel on a second descriptor, length-prefixed; the text protocol is untouched. | Measured with 640x480 JPEG at quality 70 (47-52 KB): base64 in NDJSON about 2,000 frames/s, p50 0.75 ms at 10 fps; length-prefixed on the protocol descriptor about 19,000 frames/s, 0.16 ms; a second descriptor about 10,000 frames/s, 0.14 ms. Every form carries 10 fps (0.5 MB/s) with room; the second descriptor keeps frames from queueing ahead of tool calls. Through the remote tunnel: a local-phase row |
 | CT12 | A `dataUri` chart is a snapshot. | gact-tui fetches an artifact table once (`table-query-rows.ts:298-319`, `staleTime` infinite) and nothing invalidates it |
+| CT13 | No timeout ends work that waits on a person. Removed: the permission question's 600 s (`permission_timeout.py:31`, also used by folder access and the browser host gate) and the egress prompt's 600 s (`runtime/grants.py:96`); a wait on a person counts as turn progress, so the 900 s no-progress watchdog does not cancel it. Kept, with reasons: `ask_user`'s `expiresInSeconds` (the agent chose a deadline; none by default); sign-in flows (300-900 s: the provider's code expires anyway). To decide with the owner: the hook defer's 24 h fail-safe deny (`hooks.defer_timeout`, an external approver). Timeouts on models, tools, networks and idle resources stay for now and are listed below. | Owner, 2026-11-05 ("what if the user went for lunch"); Phase 0 inventory |
+| CT14 | The browser live view's generic half becomes the stream service; admission is one helper shared with the infrastructure transport; four delivery faults are fixed in the move. | Phase 0 item 11, plan Design: frame streams |
+
+**Timeouts that end work without a person deciding (Phase 0 inventory, 2026-11-05, code at `688f1329`).**
+
+| What | Key or constant | Default | When it fires | Waits on | Disposition |
+| --- | --- | --- | --- | --- | --- |
+| Permission question (tool gate, folder access, browser host) | `PERMISSION_REQUEST_TIMEOUT_S` (`gact/permission_timeout.py:31`) | 600 s | typed deny `permission_request_timeout` | person | removed (CT13) |
+| Egress host prompt | `_EGRESS_GATE_TIMEOUT_S` (`gact/runtime/grants.py:96`) | 600 s | deny `egress_gate_timeout` | person | removed (CT13) |
+| `ask_user` expiry | argument `expiresInSeconds` | none | question `expired` | person | kept: the agent's choice |
+| Hook defer | `hooks.defer_timeout` | 86,400 s | fail-safe deny | external approver | owner to decide |
+| Sign-in flows | `SIGN_IN_SECONDS`, Codex login | 300-900 s | flow expires | person | kept: the provider's code expires |
+| AI review of a permission | `permissions.ai_review_timeout_s` | 45 s | escalates to the person, never denies | model | kept |
+| `run_code` script | `code.call_timeout_s` | 600 s | kernel discarded | script | removed (CT3) |
+| Kernel start | `code.start_timeout_s` | 60 s | start failed | local process | kept: a kernel that never starts is a failure |
+| Idle kernel, page, MCP fleet, pooled connection | `code.idle_minutes`, `browser.idle_minutes`, `tools.mcp.workspace_ttl_s`, `providers.claude_code.stream_idle_ttl_s` | 30 min, 30 min, 120 s, 300 s | idle resource closed; running or watched ones are skipped | nothing | kept: ends no work |
+| Turn no-progress watchdog | `limits.turn_timeout_s` | 900 s | turn cancelled | anything in the turn | kept as a runaway backstop; a wait on a person counts as progress (CT13) |
+| LM call and stream idle | `limits.lm_call_s`, `limits.lm_inter_token_idle_s` | 1,800 s, 120 s | stops counting as progress (claude_code: idle error) | model, network | later review |
+| LM admission queue; Claude Code connect | `limits.lm_request_queue_s`; `CONNECT_FIRST_WAIT_S` | 120 s; 60-180 s | no request sent; connect error | capacity, local CLI | later review |
+| Goal judge | `DEFAULT_JUDGE_TIMEOUT_S` (`gact/goal.py:54`) | 60 s | `goal_judge_unavailable` | model | later review |
+| MCP call, connect, provision, probe | `tools.mcp.call_timeout_s`, `no_progress_s`/`max_wait_s`, `provision_max_wait_s`, `probe_timeout_retries` | 600 s, 30/180 s, 900 s, 3 | call error or `outcome_unknown`; typed failures | tool server, network | later review |
+| `wait_tasks` | argument `timeout_s` | none | returns `timed_out`; tasks keep running | tasks | kept: the agent's choice, ends no work |
+| Task transport RPC | `gact.tasks.health_timeout_s` | 10 s | bounds discovery and cancel delivery | local transport | kept |
+| Browser action | `browser.action_timeout_s` | 30 s | `browser_action_timeout`; person-wait time excluded | page, network | later review |
+| clio-core liveness | `arc.liveness.*` | 30/180/15 s | stalled RPC reason; a stopping daemon killed | daemon | kept |
+| SPOTTER clearance | `spotter.clearance_progress_timeout_s` | 180 s | protected call fails closed | watcher | kept: fails closed by design |
+| File search; artifact table query and export; document processor; web search; CMF publish; network chokepoint | `fs.search_timeout_s`, `artifacts.table_*`, `resources.processor_*`, `search.searxng.request_timeout_s`, `provenance.artifacts.cmf.publish_timeout_s`, `_CONNECT_READ_TIMEOUT_S` | 5-180 s | partial results or typed errors | tool, network | later review |
 
 ## Prompt research sources
 
