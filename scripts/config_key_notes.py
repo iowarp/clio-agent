@@ -8,7 +8,7 @@
 SECTIONS: list[tuple[str, tuple[str, ...], str]] = [
     (
         "Runtime + paths",
-        ("runtime", "paths", "sandbox", "system"),
+        ("runtime", "paths", "sandbox", "system", "deployment"),
         "Process identity, filesystem locations and the global runtime toggles.",
     ),
     (

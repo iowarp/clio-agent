@@ -16,6 +16,12 @@
 # ==========================================================================
 # Process identity, filesystem locations and the global runtime toggles.
 
+# CLIO_DEPLOYMENT_TARGET  (str)  <- src/clio_agent/gact/browser/failures.py
+# The infrastructure target this CLIO was started through; a remote
+# deployment's launcher sets it, and the browser names it when a host does
+# not answer.
+# deployment.target:  # default unset; resolved in code
+
 # CLIO_ALLOW_SYSTEM_TEMP  (bool)  <- src/clio_agent/runtime/session_scratch.py
 # Keeps the platform temp dir (/tmp) in every session's write roots; turn
 # off to confine temporary files to each session's own scratch folder
@@ -1694,7 +1700,7 @@ browser.frame_width: 1280
 # CLIO_BROWSER_GRANTED_HOSTS  (list)  <- src/clio_agent/gact/browser/settings.py
 # Comma-separated host patterns (*.example.org works) every conversation may
 # load without asking; a deployment pre-grant.
-# browser.granted_hosts:  # default unset; resolved in code
+# browser.granted_hosts:  # computed at runtime: empty
 
 # CLIO_BROWSER_IDLE_MINUTES  (float)  <- src/clio_agent/gact/browser/settings.py
 # Minutes a page nobody uses or watches stays open, and a browser with no
@@ -2015,12 +2021,3 @@ spotter.max_clearance_events: 256
 # Installed agent (marketplace/id) that runs as the SPOTTER standing watcher
 # child session; change to point spotter-ai at a custom watcher agent.
 spotter.watcher_agent: "clio/spotter-ai"
-
-# ==========================================================================
-# Unassigned -- add these to scripts/config_key_notes.py
-
-# CLIO_DEPLOYMENT_TARGET  (str)  <- src/clio_agent/gact/browser/failures.py
-# The infrastructure target this CLIO was started through; a remote
-# deployment's launcher sets it, and the browser names it when a host does
-# not answer.
-# deployment.target:  # default unset; resolved in code

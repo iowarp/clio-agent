@@ -94,11 +94,6 @@ class ToolArgumentError(ValueError):
 class ClioNativeTool(dspy.Tool):
     """DSPy tool whose JSON schema honors declared argument defaults."""
 
-    name: str
-    desc: str
-    args: dict[str, Any]
-    arg_types: dict[str, Any]
-
     def __init__(
         self,
         func: Callable[..., Any],
@@ -134,10 +129,14 @@ class ClioNativeTool(dspy.Tool):
         if hit is None:
             super()._parse_function(func, arg_desc)
             return
-        self.name = self.name or hit.name
-        self.desc = self.desc or hit.desc
-        self.args = self.args if self.args is not None else copy.deepcopy(hit.args)
-        self.arg_types = self.arg_types if self.arg_types is not None else dict(hit.arg_types)
+        # dspy.Tool is a pydantic model whose fields mypy cannot type; declaring them here
+        # would re-declare them as pydantic fields (arg_types=None then fails validation).
+        self.name = self.name or hit.name  # type: ignore[has-type]
+        self.desc = self.desc or hit.desc  # type: ignore[has-type]
+        self.args = self.args if self.args is not None else copy.deepcopy(hit.args)  # type: ignore[has-type]
+        self.arg_types = (  # type: ignore[has-type]
+            self.arg_types if self.arg_types is not None else dict(hit.arg_types)  # type: ignore[has-type]
+        )
         self.has_kwargs = hit.has_kwargs
 
     def _validate_and_parse_args(self, **kwargs: Any) -> Any:

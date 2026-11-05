@@ -83,7 +83,7 @@ These resolve through `clio_agent.conf`: a value under the dotted key in `config
 | `CLIO_BROWSER_CHANNEL` | `browser.channel` | str | `chromium` | `src/clio_agent/gact/browser/settings.py` |
 | `CLIO_BROWSER_FRAME_QUALITY` | `browser.frame_quality` | int | `70` | `src/clio_agent/gact/browser/settings.py` |
 | `CLIO_BROWSER_FRAME_WIDTH` | `browser.frame_width` | int | `1280` | `src/clio_agent/gact/browser/settings.py` |
-| `CLIO_BROWSER_GRANTED_HOSTS` | `browser.granted_hosts` | list | _(unset)_ | `src/clio_agent/gact/browser/settings.py` |
+| `CLIO_BROWSER_GRANTED_HOSTS` | `browser.granted_hosts` | list | `empty` _(computed)_ | `src/clio_agent/gact/browser/settings.py` |
 | `CLIO_BROWSER_IDLE_MINUTES` | `browser.idle_minutes` | float | `30.0` | `src/clio_agent/gact/browser/settings.py` |
 | `CLIO_BROWSER_MAX_PAGES` | `browser.max_pages` | int | `12` | `src/clio_agent/gact/browser/settings.py` |
 | `CLIO_BROWSER_PERSON_WINDOW_S` | `browser.person_window_s` | float | `2.0` | `src/clio_agent/gact/browser/settings.py` |
