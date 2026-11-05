@@ -336,8 +336,29 @@ A root grant widens the fence `write_roots` and restarts the workspace's residen
 fleet so an already-spawned, workspace-shared child picks up the new territory at a
 safe boundary (a busy fleet is never torn down mid-call — the restart defers and is
 reported as a typed `grant_restart_deferred_busy`, never silently — #1033). A denied
-`policy_violation` carries a
-static grant affordance (`next_action`) so the model may *ask* and the user decides.
+`policy_violation` carries the boundary diagnosis' message as its `next_action`, so
+the model may *ask* and the user decides.
+
+**Boundary feedback in the result (#1905).** A denial is diagnosed once, in the
+confinement layer (`runtime/sandbox_diagnosis.py`): a per-platform denial signature
+in stderr (PowerShell "Access to the path … is denied", `UnauthorizedAccessException`,
+`WinError 5`, `0x80070005`, errno 13/30/1, "Read-only file system", "Operation not
+permitted"; numeric codes match localized text), the denied paths from the denial
+lines or the command, and the territory check against the write roots that seam gave
+its fence. The shell and `run_code` attach it to their result as a typed `boundary`
+field (`kind`, `confidence`, `mechanism`, `paths`, `request_roots`, `message`,
+`signature`) only when there is one, and the model reads its `message`: the folder
+(nearest existing parent) and the retry with `access_paths` + `access_reason`.
+`confidence` is `confirmed` with paths outside the roots and `possible` with none
+found; a path inside the roots, or one the server's own account cannot write either,
+gets nothing, as does the floor (mechanism `none`). Exit 740 or "requires elevation"
+is `elevation_required`: no grant applies, and the agent tells the person the exact
+file to run. A confined stdio MCP server's failed call is diagnosed by the observer
+against the recomputed fleet roots at `possible` confidence, and its message is noted
+on the error (or appended to the returned error result). A narrowed territory (plan
+mode, a read-only task, a workflow step) names where the call may write instead of a
+retry. No automatic rerun, no automatic prompt, no elevated lane;
+`artifact.policy_violation` reads the same diagnosis.
 
 ### Provenance tiers under the fence (#980)
 

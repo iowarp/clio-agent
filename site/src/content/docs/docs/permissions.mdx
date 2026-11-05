@@ -148,10 +148,17 @@ The grant persists after restart; remove it from **Additional permitted folders*
 Workspaces with the same primary folder share that boundary.
 
 For shell commands, the agent declares `access_paths` and `access_reason` before
-execution. A move includes both source and destination. An undeclared write that
-hits the OS fence returns instructions for requesting access through that same
-approval flow. Arbitrary shell reads are not universally restricted by the write
-sandbox. Folder approval cannot override connected-source credential protection,
+execution. A move includes both source and destination. When an undeclared write
+hits the OS fence, the failed call's result says so: it names the folder that was
+refused and tells the agent to run the command again with that folder in
+`access_paths` and a reason, which brings you the same approval request. Nothing is
+retried or requested on its own; the agent decides, since the command may have
+partly run. A Python script (`run_code`) refused the same way is told to make that
+write through a shell command with `access_paths`, and a tool server's refusal gets
+the same advice, worded as a likely cause. A command that needs administrator
+rights, such as an installer, cannot be approved from CLIO: the agent tells you the
+exact file to run yourself. Arbitrary shell reads are not universally restricted by
+the write sandbox. Folder approval cannot override connected-source credential protection,
 read-only source storage, or disabled symlinks.
 
 Remove a folder in the editor and save to withdraw that additional grant. This
