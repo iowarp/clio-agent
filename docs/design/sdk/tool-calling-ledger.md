@@ -487,6 +487,17 @@ Both answers are of a similar standard: checked against the data, CLIO's trait w
       - **Means before the change: 3/3 for the table asked for**, quoted at the reply's own precision and kept apart from the post-change means (precision 0.85, 1.0, 0.35). One run also caught its own report wrongly saying the original plant counts were not recorded. The 0.35 is a misattribution, not an invention: run 3 added four sensitivity series it said "that reply also gave", but the reply gave only each series' peak; the full series are real, from the script output in the same recalled block. That is the weak spot left: the agent can blur a step's output into the reply it led to.
       - **What recall costs:** by compaction id, 20-34 steps, 64-70 KB a call; one or two calls per question. `recall_context` stays deferred: each run loaded it with `search_tools` when it needed it.
     - **Not changed:** the refusals stopped with the two fixes, but three runs cannot show the cause; if they come back, the refused request ids are in the agent log (`provider_safety_refusal`).
+    - **A recall result has a fixed size; past it, a file (`dc77b2ce`, the owner's design).** Sized as a share of the window, a recall on this model's 1M window could return 125k tokens inline, and did (64-526 KB a question above). `tools.recall_result_chars` (16,000) now bounds it; past it the whole result goes to the session's tool-output folder with the cut-result note, and the agent searches and reads the file. Three runs (`l1r-spill`: `sess_308b39a4e5e7`, `sess_9648664e856d`, `sess_ad3ded47f846`, 387-466 s, no refusal):
+
+      | Per run, Q2 (first reply) | Inline (`l1r-fixed`) | Fixed size and file (`l1r-spill`) |
+      | --- | --- | --- |
+      | Time | 47-63 s | 20-46 s |
+      | Model calls | 5 (one a compaction) | 4-7, no compaction |
+      | Largest prompt | 117-120k tokens | 59-67k tokens |
+      | Recall text taken in | 198-230 KB | 30-31 KB |
+      | File searches and reads | - | 1-4 |
+
+      All nine answers were right in both sets: the first message quoted (3/3), the first reply quoted from the recorded step (3/3), the original means given at the reply's precision and kept apart from the post-change ones (3/3). Number precision reads lower in two spill runs (0.5, 0.67) only because the agent cited the file's line numbers and a step id; the misattribution seen once inline did not recur, and one run said outright which values the reply had not given.
 18. **Observed: native tool-call markup in the visible text.** In 2 of 396 runs (`head1` H4, `x1`) the model wrote a fragment of Claude's native call markup before a correct call block; it reaches the transcript as prose. Not fixed.
 
 ### Targets
