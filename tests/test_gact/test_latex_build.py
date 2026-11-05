@@ -227,3 +227,94 @@ def test_a_broken_reference_fails_the_build_although_tectonic_exits_cleanly(
     assert not result.ok
     [undefined] = [item for item in result.diagnostics if item.kind == "undefined_reference"]
     assert (undefined.file, undefined.line, undefined.detail) == ("main.tex", 3, "nowhere")
+
+
+# --- the PDF rendition ---------------------------------------------------------------------
+
+
+def _version(entry: Path):  # noqa: ANN202 - a minimal stand-in for ArtifactVersion
+    from types import SimpleNamespace
+
+    from clio_agent.gact.documents.latex.project import _sha256
+
+    return SimpleNamespace(path=str(entry), sha256=_sha256(entry))
+
+
+def test_a_rendition_records_the_files_its_build_read_and_goes_stale_when_one_changes(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from clio_agent.gact.documents.latex import rendition
+    from clio_agent.gact.documents.latex.build import BuildResult
+    from clio_agent.gact.documents.latex.project import _sha256
+
+    paper = tmp_path / "paper"
+    paper.mkdir()
+    (paper / "main.tex").write_text("\\documentclass{article}")
+    (paper / "refs.bib").write_text("@misc{a,title={one}}")
+    read = {name: _sha256(paper / name) for name in ("main.tex", "refs.bib")}
+
+    def fake_build(entry: Path, *, workspace_root: Path) -> BuildResult:
+        del workspace_root
+        assert entry == paper / "main.tex"
+        return BuildResult(
+            entry="main.tex",
+            ok=True,
+            exit_code=0,
+            diagnostics=[],
+            sources=read,
+            read=read,
+            pdf=b"%PDF-1.7",
+            synctex=b"sync",
+            page_count=1,
+            network="bundle_hosts",
+        )
+
+    monkeypatch.setattr(rendition, "build_project", fake_build)
+    version = _version(paper / "main.tex")
+    target = tmp_path / "preview" / "main.pdf"
+    target.parent.mkdir()
+    converter, producer = rendition.build_rendition(version, workspace_root=tmp_path, target=target)
+    assert converter == "tectonic" and target.read_bytes() == b"%PDF-1.7"
+    assert (tmp_path / "preview" / "main.synctex.gz").read_bytes() == b"sync"
+    assert producer["source_files"] == read and producer["build_ok"] is True
+    assert rendition.sources_current(version, producer)
+    # Editing only the bibliography makes the retained rendition stale (L6).
+    (paper / "refs.bib").write_text("@misc{a,title={two}}")
+    assert not rendition.sources_current(version, producer)
+
+
+def test_a_changed_entry_or_a_build_without_a_pdf_is_a_worded_failure(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from clio_agent.gact.documents.latex import rendition
+    from clio_agent.gact.documents.latex.build import BuildResult
+    from clio_agent.gact.documents.latex.diagnostics import Diagnostic
+
+    entry = tmp_path / "main.tex"
+    entry.write_text("\\documentclass{article}")
+    version = _version(entry)
+    monkeypatch.setattr(
+        rendition,
+        "build_project",
+        lambda *a, **k: BuildResult(
+            entry="main.tex",
+            ok=False,
+            exit_code=1,
+            sources={},
+            read={},
+            diagnostics=[
+                Diagnostic(
+                    "missing_file",
+                    "figs/a.png is not in the project.",
+                    "main.tex",
+                    4,
+                    detail="figs/a.png",
+                )
+            ],
+        ),
+    )
+    with pytest.raises(rendition.LatexRenditionError, match=r"missing_file.*main.tex:4"):
+        rendition.build_rendition(version, workspace_root=tmp_path, target=tmp_path / "o.pdf")
+    entry.write_text("\\documentclass{report}")
+    with pytest.raises(rendition.LatexRenditionError, match="changed since this version"):
+        rendition.build_rendition(version, workspace_root=tmp_path, target=tmp_path / "o.pdf")

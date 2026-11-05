@@ -481,40 +481,13 @@ def test_markdown_rendition_prefers_local_typst_engine(
     ]
 
 
-def test_latex_rendition_uses_only_cached_tectonic_resources(
+def test_latex_never_falls_through_to_pandoc(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
+    """A .tex source renders only through the LaTeX project build, never pandoc (L rule 1)."""
     source = tmp_path / "paper.tex"
     source.write_text(r"\documentclass{article}\begin{document}Local\end{document}")
-    output_dir = tmp_path / "output"
-    output_dir.mkdir()
-    commands: list[list[str]] = []
-
-    monkeypatch.setattr(
-        renditions,
-        "_find_executable",
-        lambda *names: "tectonic" if names == ("tectonic",) else None,
-    )
-
-    def run(command: list[str], *, cwd: Path, timeout_seconds: float = 120.0) -> None:
-        del cwd, timeout_seconds
-        commands.append(command)
-        (output_dir / "paper.pdf").write_bytes(b"%PDF-1.7")
-
-    monkeypatch.setattr(renditions, "_run", run)
-
-    rendered, converter = renditions._convert_to_pdf(source, output_dir)
-
-    assert rendered.read_bytes() == b"%PDF-1.7"
-    assert converter == "tectonic"
-    assert commands == [
-        [
-            "tectonic",
-            "--only-cached",
-            "--keep-logs",
-            "--outdir",
-            str(output_dir),
-            str(source),
-        ]
-    ]
+    monkeypatch.setattr(renditions, "_find_executable", lambda *names: "/usr/bin/pandoc")
+    with pytest.raises(renditions.RenditionError, match="project build"):
+        renditions._convert_to_pdf(source, tmp_path)

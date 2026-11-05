@@ -23,6 +23,12 @@ from clio_agent.gact.artifacts.records import (
 )
 from clio_agent.gact.artifacts.registry import get_registry
 from clio_agent.gact.documents.confined_tools import run_confined
+from clio_agent.gact.documents.latex.rendition import (
+    LatexRenditionError,
+    build_rendition,
+    is_latex,
+    sources_current,
+)
 from clio_agent.platform_paths import win_extended_path
 from clio_agent.runtime.document_stack.process import (
     DocumentError,
@@ -117,25 +123,10 @@ def _convert_to_pdf(source: Path, output_dir: Path) -> tuple[Path, str]:
     suffix = source.suffix.lower()
     if suffix == ".pdf":
         return source, "identity"
-    if suffix == ".tex":
-        tectonic = _find_executable("tectonic")
-        if tectonic is not None:
-            _run(
-                [
-                    tectonic,
-                    "--only-cached",
-                    "--keep-logs",
-                    "--outdir",
-                    str(output_dir),
-                    str(source),
-                ],
-                cwd=source.parent,
-            )
-            output = output_dir / f"{source.stem}.pdf"
-            if not output.is_file():
-                raise RenditionError("tectonic completed without producing a PDF")
-            return output, "tectonic"
-    if suffix in {".md", ".markdown", ".html", ".htm", ".tex"}:
+    if suffix in {".tex", ".ltx"}:
+        # LaTeX renders through the one project build (latex.rendition), never here.
+        raise RenditionError("LaTeX sources render through the project build")
+    if suffix in {".md", ".markdown", ".html", ".htm"}:
         pandoc = _find_executable("pandoc")
         if pandoc is not None:
             output = output_dir / f"{source.stem}.pdf"
@@ -189,6 +180,7 @@ def find_pdf_rendition(
             producer.get("designation") != "document-rendition"
             or producer.get("source_artifact_id") != version.artifact_id
             or producer.get("source_sha256") != version.sha256
+            or not sources_current(version, producer)
         ):
             continue
         retained = CASStore(workspace_root).blob_path(derived.sha256) if derived.sha256 else None
@@ -283,8 +275,19 @@ def _render_pdf(
         return RenditionResult(
             existing.record, existing.version, existing.converter, workspace_path=target
         )
-    prepared = _prepared_pdf(workspace_root, version)
-    if prepared is not None:
+    latex_producer: dict[str, object] = {}
+    prepared = None if is_latex(record.name) else _prepared_pdf(workspace_root, version)
+    if is_latex(record.name):
+        token = _RENDER_WORKSPACE.set(workspace_root)
+        try:
+            converter, latex_producer = build_rendition(
+                version, workspace_root=workspace_root, target=target
+            )
+        except LatexRenditionError as exc:
+            raise RenditionError(str(exc)) from exc
+        finally:
+            _RENDER_WORKSPACE.reset(token)
+    elif prepared is not None:
         rendered, prepared_hash = prepared
         _copy_preview(rendered, target, prepared_hash)
         converter = "libreoffice (prepared document)"
@@ -326,6 +329,7 @@ def _render_pdf(
             "source_artifact_id": version.artifact_id,
             "source_sha256": version.sha256,
             "converter": converter,
+            **latex_producer,
         },
         custody=ingested.custody,
         path=str(target),
