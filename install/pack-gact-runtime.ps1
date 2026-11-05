@@ -6,7 +6,8 @@
 .DESCRIPTION
   The previous NSIS bundle listed every Python file separately, making install
   and uninstall take many minutes. This script creates one Zstandard-compressed
-  tar archive plus a small integrity manifest. The desktop verifies and expands
+  tar archive (level 19, long window; install/compress_runtime.py) plus a small
+  integrity manifest. The desktop verifies and expands
   it atomically on first launch.
 #>
 
@@ -33,7 +34,7 @@ if (-not (Test-Path -LiteralPath (Join-Path $Runtime 'runtime.json') -PathType L
 
 $tar = Get-Command tar.exe -ErrorAction SilentlyContinue
 if (-not $tar) {
-  throw "pack-gact-runtime: Windows tar.exe with Zstandard support is required"
+  throw "pack-gact-runtime: Windows tar.exe is required"
 }
 
 $runtimeParent = Split-Path -Parent $Runtime
@@ -44,11 +45,22 @@ Remove-Item -LiteralPath $Archive -Force -ErrorAction SilentlyContinue
 Remove-Item -LiteralPath $Manifest -Force -ErrorAction SilentlyContinue
 
 $watch = [System.Diagnostics.Stopwatch]::StartNew()
-Write-Host "[pack-gact-runtime] compressing $Runtime"
-& $tar.Source --zstd -cf $Archive -C $runtimeParent $runtimeLeaf
+Write-Host "[pack-gact-runtime] archiving $Runtime"
+# tar.exe writes the archive; the runtime's own Python compresses it at level 19 with a
+# long window (install/compress_runtime.py): tar's default level 3 left the download
+# about 140 MB larger.
+$plainTar = "$Archive.tar"
+Remove-Item -LiteralPath $plainTar -Force -ErrorAction SilentlyContinue
+& $tar.Source -cf $plainTar -C $runtimeParent $runtimeLeaf
 if ($LASTEXITCODE -ne 0) {
   throw "pack-gact-runtime: tar.exe exited $LASTEXITCODE"
 }
+$python = Join-Path $Runtime 'python\python.exe'
+& $python -I -B (Join-Path $PSScriptRoot 'compress_runtime.py') --tar $plainTar --out $Archive
+if ($LASTEXITCODE -ne 0) {
+  throw "pack-gact-runtime: compress_runtime.py exited $LASTEXITCODE"
+}
+Remove-Item -LiteralPath $plainTar -Force
 $watch.Stop()
 
 $files = @(Get-ChildItem -LiteralPath $Runtime -Recurse -File -Force)
