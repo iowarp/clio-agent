@@ -61,6 +61,7 @@ from clio_agent.gact.agents.tool_instrumentation import instrument_tools
 from clio_agent.gact.app import build_app
 from clio_agent.gact.protocol.v3.event import event_to_v3
 from clio_agent.gact.protocol.v3.message import part_to_v3_block
+from clio_agent.gact.recall_context_tool import _readable as recall_readable
 from clio_agent.gact.recall_context_tool import build_recall_context_tool
 from clio_agent.gact.summarization_record import as_summarization
 from tests._compaction_summary import (
@@ -481,6 +482,17 @@ def test_a_failed_fold_retracts_the_record_and_records_a_notice_the_model_never_
     assert "near LA?" in seeded and notice_text not in seeded
 
 
+def _recalled_steps(text: str) -> dict[str, dict[str, Any]]:
+    """recall_context's text by step id: ``--- <id> (<label>[, compacted])`` then the text."""
+    steps: dict[str, dict[str, Any]] = {}
+    for block in text.split("\n--- ")[1:]:
+        header, _, body = block.partition("\n")
+        step_id, _, rest = header.partition(" (")
+        label, _, flag = rest.rstrip(")").partition(", ")
+        steps[step_id] = {"label": label, "compacted": flag == "compacted", "text": body}
+    return steps
+
+
 def test_recall_context_returns_a_compacted_step_byte_exact(
     app_env: tuple[Any, TestClient, SummarizerAgent, list[Any]], monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -508,23 +520,21 @@ def test_recall_context_returns_a_compacted_step_byte_exact(
 
     [(_, [(_, _, recalled_text, is_error)])] = _texts(by_ids.messages[-1:])
     assert not is_error
-    recalled = {row["id"]: row for row in json.loads(recalled_text)}
+    recalled = _recalled_steps(recalled_text)
     history = {s.id: s for s in app.state.arc.list_segments(sid, SCOPE, include_tombstoned=True)}
     replaced = [history[i] for i in recalled]
     assert replaced and all(s.status == "tombstoned" for s in replaced)
     assert all(recalled[s.id]["compacted"] for s in replaced)
-    for seg in replaced:  # byte-exact: the stored content, as clio-core holds it
-        assert json.dumps(recalled[seg.id]["content"], sort_keys=True) == json.dumps(
-            seg.content, sort_keys=True
-        )
-    obs = [row for row in recalled.values() if row["kind"] == "observation"][0]
+    for seg in replaced:  # exact: each step's text as clio-core holds it
+        assert recalled[seg.id]["text"] == recall_readable(seg)
+    obs = [row for row in recalled.values() if row["label"] == "result"][0]
     first_result = _texts(engines[0].requests[1].messages)[-1]
-    assert first_result == ("tool", [("result", "call_0_0", obs["content"]["text"], False)])
+    assert first_result == ("tool", [("result", "call_0_0", obs["text"], False)])
 
     if search_enabled:
         by_query = engines[1].requests[2]
         [(_, [(_, _, searched_text, searched_error)])] = _texts(by_query.messages[-1:])
-        assert not searched_error and json.loads(searched_text)
+        assert not searched_error and _recalled_steps(searched_text)
     else:
         from clio_agent.arc.memory_segments import SearchUnavailableError
         from clio_agent.gact.recall_context_tool import recall_atoms
