@@ -246,6 +246,42 @@ class TestKernel:
         assert outcome["status"] == "completed", outcome
         assert outcome["output"].startswith("x" * 10 + "\n[output cut at 10 of 101 bytes]")
 
+    def test_a_replaced_kernel_tells_the_model_its_variables_are_gone(
+        self, workspace: Path
+    ) -> None:
+        """A6: the first script in a kernel that replaced a stopped one says so, once.
+        SABOTAGE: drop ``kernel.replaced = replaced`` in ``kernel_for`` -> no note -> red."""
+        assert _run("x = 1")["status"] == "completed"
+        old = kernels._KERNELS[("s", "main")]
+        assert old.process is not None
+        old.process.kill()
+        old.process.wait()
+        outcome = _run("print('x' in globals())")
+        assert outcome["new_kernel"] == "replaced_dead"
+        text = tool_module.model_text(outcome)
+        assert text.startswith("(New kernel: the previous one had stopped; earlier variables")
+        assert "new_kernel" not in _run("x = 2")
+
+    def test_a_plan_mode_script_is_told_where_it_may_write(
+        self, workspace: Path, monkeypatch: Any
+    ) -> None:
+        """A7: a read-only kernel's outcome names the folders it may write.
+        SABOTAGE: drop ``write_roots`` from ``execute_script``'s outcome -> red."""
+        from clio_agent.runtime import session_scratch
+
+        scratch = workspace / "scratch"
+        monkeypatch.setattr(session_scratch, "active_scratch_dir", lambda: scratch)
+        monkeypatch.setattr(session_scratch, "system_temp_roots", lambda: (Path("/tmp"),))
+        agent = _agent()
+        outcome = tool_module.run_script(
+            agent, "print(1)", session_id="s", scope="plan", read_only=True
+        )
+        assert outcome["write_roots"] == [str(scratch), "/tmp"]
+        assert f"(Plan mode: this script may write only in `{scratch}` and `/tmp`.)" in (
+            tool_module.model_text(outcome)
+        )
+        assert "write_roots" not in _run("print(1)")
+
     def test_closing_the_session_stops_its_kernels(self, workspace: Path) -> None:
         _run("z = 1")
         kernel = kernels._KERNELS[("s", "main")]

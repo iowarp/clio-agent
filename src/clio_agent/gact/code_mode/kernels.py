@@ -11,8 +11,10 @@ and the trace says so (``code_kernel_server_python``).
 Each kernel owns a fresh process group (Job on Windows), so stopping it stops what the
 script started. Kernels end when their scope's session closes
 (:func:`close_session`), after ``code.idle_minutes`` without a script (the reaper),
-when a script is cancelled or times out (the state is gone; the next script starts a
-new kernel), and at process exit.
+when a script is cancelled or its kernel exits (the state is gone; the next script
+starts a new kernel), and at process exit. A kernel that replaces a scope's earlier one
+(it had stopped, or the workspace or plan mode changed) says why (:attr:`Kernel.replaced`),
+so the model is told its variables are gone.
 
 Kernels are started from one long-lived thread (:func:`_spawn`): the ``pdeathsig``
 wrapper kills a child when the *thread* that started it exits, and a script's first call
@@ -133,6 +135,12 @@ class Kernel:
         self.workspace = workspace
         #: Plan mode: the kernel may write only its scratch folder and temp.
         self.read_only = read_only
+        #: The folders a read-only kernel may write, as it was started with them.
+        self.write_roots: tuple[Path, ...] = ()
+        #: Why this kernel replaced the scope's earlier one (``replaced_dead``,
+        #: ``replaced_mode_changed``, ``replaced_workspace_changed``); ``""`` when it did not.
+        #: The first script it runs reports it and clears it.
+        self.replaced = ""
         self.messages: queue.Queue[dict[str, Any] | None] = queue.Queue()
         self.stderr: collections.deque[str] = collections.deque(maxlen=200)
         self.bound_digest = ""
@@ -155,11 +163,13 @@ class Kernel:
 
         python, env = _environment(self.workspace, self.key[0])
         self.python = python
+        if self.read_only:
+            self.write_roots = read_only_write_roots()
         confined = sandbox.wrap_confined(
             python,
             ["-I", str(_MAIN), str(max_output_bytes())],
             write_roots=(
-                read_only_write_roots()
+                self.write_roots
                 if self.read_only
                 else sandbox.effective_write_roots(
                     sandbox.PROFILE_SHELL, workspace_root=str(self.workspace)
@@ -291,7 +301,8 @@ _REAPER: threading.Thread | None = None
 
 
 def _replaced_because(kernel: Kernel, workspace: Path, read_only: bool) -> str:
-    """Why a scope's kernel is not reused, for the trace (its state is lost)."""
+    """Why a scope's kernel is not reused, for the trace (its state is lost); the first
+    word is the typed reason."""
     if not kernel.alive():
         return f"replaced_dead ({kernel.diagnostics()})"[:400]
     if kernel.workspace != workspace:
@@ -303,7 +314,8 @@ def kernel_for(session_id: str, scope: str, workspace: Path, *, read_only: bool 
     """The scope's running kernel, started when there is none (or it died).
 
     A kernel started in the other mode is replaced: a plan-mode script never runs in a
-    kernel that can write the workspace, and its variables do not carry across."""
+    kernel that can write the workspace, and its variables do not carry across. A
+    replacement carries the typed reason in :attr:`Kernel.replaced`."""
     key = (session_id, scope)
     with _LOCK:
         kernel = _KERNELS.get(key)
@@ -315,9 +327,13 @@ def kernel_for(session_id: str, scope: str, workspace: Path, *, read_only: bool 
         ):
             kernel.last_used = time.monotonic()
             return kernel
+        replaced = ""
         if kernel is not None:
-            kernel.stop(_replaced_because(kernel, workspace, read_only))
+            why = _replaced_because(kernel, workspace, read_only)
+            kernel.stop(why)
+            replaced = why.split(" ", 1)[0]
         kernel = Kernel(key, workspace, read_only=read_only)
+        kernel.replaced = replaced
         _KERNELS[key] = kernel
         _start_reaper()
     kernel.start()
@@ -325,7 +341,7 @@ def kernel_for(session_id: str, scope: str, workspace: Path, *, read_only: bool 
 
 
 def discard(kernel: Kernel, reason: str) -> None:
-    """Stop a kernel whose state can no longer be trusted (cancelled, timed out)."""
+    """Stop a kernel whose state can no longer be trusted (cancelled, exited, settled)."""
     with _LOCK:
         if _KERNELS.get(kernel.key) is kernel:
             del _KERNELS[kernel.key]

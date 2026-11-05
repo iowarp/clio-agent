@@ -302,6 +302,10 @@ def execute_script(
         duration_ms=int((time.monotonic() - started) * 1000),
         python=kernel.python,
     )
+    if kernel.replaced:  # the scope's earlier kernel, and its variables, are gone
+        outcome["new_kernel"], kernel.replaced = kernel.replaced, ""
+    if kernel.read_only:  # plan mode: a write elsewhere is refused by the fence
+        outcome["write_roots"] = [str(root) for root in kernel.write_roots]
     trace.event(
         "CODE",
         "run_code status=%s calls=%d failed=%d ms=%d",
@@ -368,8 +372,17 @@ def background_text(receipt: Mapping[str, Any], label: str) -> str:
     )
 
 
+#: Why a script ran in a new kernel, in words (:attr:`.kernels.Kernel.replaced`).
+_NEW_KERNEL_WORDS = {
+    "replaced_dead": "the previous one had stopped",
+    "replaced_mode_changed": "Plan mode began or ended",
+    "replaced_workspace_changed": "the workspace changed",
+}
+
+
 def model_text(outcome: Mapping[str, Any]) -> str:
-    """What the model reads: output, error, final value, then the call count."""
+    """What the model reads: output, error, final value, then the call count; first that a
+    new kernel replaced the earlier one, and in plan mode where the script may write."""
     parts = []
     if outcome.get("output"):
         parts.append(str(outcome["output"]).rstrip())
@@ -385,8 +398,14 @@ def model_text(outcome: Mapping[str, Any]) -> str:
         f", {failed} failed" if failed else ""
     )
     parts.append(f"({status}; {count}.)")
+    if "write_roots" in outcome:
+        roots = " and ".join(f"`{root}`" for root in outcome["write_roots"]) or "nowhere"
+        parts.append(f"(Plan mode: this script may write only in {roots}.)")
     if not outcome.get("output") and outcome.get("value") is None and not outcome.get("error"):
         parts.insert(0, "The script printed nothing.")
+    if new := str(outcome.get("new_kernel") or ""):
+        words = _NEW_KERNEL_WORDS.get(new, new)
+        parts.insert(0, f"(New kernel: {words}; earlier variables are gone.)")
     return "\n\n".join(parts)
 
 
