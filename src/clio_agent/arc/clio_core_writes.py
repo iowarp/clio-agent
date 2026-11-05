@@ -60,8 +60,10 @@ class ClioCoreWrites:
         search_text: Optional[str] = None,
     ) -> None:
         # Bound each async RPC individually, with the GIL released while awaiting it.
-        # base64-wrap: CTE GetBlob UTF-8-decodes, so store ascii-safe bytes; framed with
-        # its length and padded to a size class so a growing record adds few blocks.
+        # The whole-record frame (blob_frame): a length header, so a put over a longer
+        # blob reads back without its stale tail, padded to a size class so a growing
+        # record adds few blocks. Reads are raw bytes (AsyncGetBlob) on both paths; the
+        # frame's base64 body is its format, not a read-side need (put_at writes raw).
         payload = stored_body(data)
         if kind == "segments":  # #1339: live-lane audit evidence (one row per put)
             stream_audit("store.put", kind=kind, name=name, size=len(payload))
