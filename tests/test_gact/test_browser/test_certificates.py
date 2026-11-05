@@ -20,6 +20,7 @@ from clio_agent.gact.browser import certificates, tools
 from clio_agent.gact.browser.settings import BrowserError
 from clio_agent.gact.runtime.grant_resolver import KIND_BROWSER_CERTIFICATE, resolve
 from clio_agent.gact.runtime.permission_policies import _validate_permission_policies
+from tests._marketplace import MARKETPLACE_ROOT, REPO_ROOT
 
 _NOZZLE = {"steps": [{"by": "css", "css": "#nozzle"}]}
 
@@ -236,13 +237,14 @@ def test_browser_grants_keep_their_kind_when_policies_reload() -> None:
     assert [row["kind"] for row in clean] == ["browser_host", KIND_BROWSER_CERTIFICATE, "domain"]
 
 
+@pytest.mark.marketplace
 def test_nothing_in_clio_turns_certificate_checks_off() -> None:
     """W24: no tool argument, setting or plugin reaches a context-wide bypass."""
-    root = Path(__file__).resolve().parents[3]
+    root = REPO_ROOT
     banned = ("ignore_https_errors", "setIgnoreCertificateErrors", "ignoreHTTPSErrors")
     found = [
         f"{path.relative_to(root)}: {word}"
-        for folder in (root / "src", root / "external" / "clio-agent-marketplace" / "plugins")
+        for folder in (root / "src", MARKETPLACE_ROOT / "plugins")
         if folder.is_dir()
         for path in folder.rglob("*")
         if path.suffix in {".py", ".md", ".json", ".ts"}

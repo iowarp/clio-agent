@@ -201,15 +201,26 @@ class HighwayWriter:
 
     def _record(self, batch: list[_Queued]) -> None:
         from clio_agent.arc.segment_group import segment_group  # noqa: PLC0415
+        from clio_agent.gact.artifacts.index_puts import (  # noqa: PLC0415
+            IndexPut,
+            collecting,
+            put_batch,
+        )
 
         error: BaseException | None = None
         try:
             with segment_group(self._arc._segments, lambda _scope: (0,)) as group:
+                index_puts: list[IndexPut] = []  # sent together, before the group's events
                 for item in batch:
-                    if item.operation is not None:
+                    if isinstance(item.operation, IndexPut):
+                        index_puts.append(item.operation)
+                    elif item.operation is not None:
+                        put_batch(index_puts)  # an operation of another kind keeps its place
+                        index_puts = []
                         item.context.run(item.operation)  # put now: before the group's events
-                    else:
+                    else:  # staged: the group's events reach clio-core at its flush
                         item.context.run(self._arc.on_semantic_event, item.event)
+                put_batch(index_puts)
                 group.flush()
         except Exception as exc:  # noqa: BLE001 - forwards: the session's next flush raises it
             error = exc
@@ -222,6 +233,7 @@ class HighwayWriter:
             )
         if error is None:
             sink = getattr(self._arc, "_highway_sink", None)
+            confirms: list[IndexPut] = []  # the turn's confirm puts, sent together after
             for item in batch:
                 if item.operation is not None:
                     continue
@@ -229,13 +241,14 @@ class HighwayWriter:
                     if sink is not None:
                         item.context.run(sink, item.event)
                     if item.after is not None:
-                        item.context.run(item.after)
+                        item.context.run(collecting, confirms, item.after)
                 except Exception:  # noqa: BLE001 - the record stands; the projection is logged
                     logger.exception(
                         "highway projection failed after record event=%s session=%s",
                         getattr(item.event, "event_type", ""),
                         item.session_id,
                     )
+            put_batch(confirms)
         self._settle(batch, error)
 
     def _settle(self, batch: list[_Queued], error: BaseException | None) -> None:

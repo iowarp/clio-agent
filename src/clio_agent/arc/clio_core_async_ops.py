@@ -102,10 +102,23 @@ def _sample_after_s() -> float:
 
 
 def _polled(future: Any) -> Callable[[float], bool]:
-    """``done_within`` for a native Future: poll ``done()``, sleeping (GIL released)."""
+    """``done_within`` for a native Future: block in ``wait`` with the GIL released.
+
+    The native ``Future.wait(max_sec)`` blocks without the interpreter lock and returns
+    when the task completes. Polling ``done()`` instead woke a pending put up to eight
+    times (sleeps from ``arc.liveness.first_poll_s``, doubling to 10 ms), each wake
+    retaking the lock from the threads doing the agent's own work: a script's nested
+    call waited on those hand-offs (2026-11-05 profile). A future without ``wait`` (a
+    test double) is polled as before.
+    """
 
     def done_within(timeout: float) -> bool:
         deadline = time.monotonic() + timeout
+        wait = getattr(future, "wait", None)
+        if callable(wait) and timeout > 0:
+            wait(timeout)
+            if future.done():
+                return True
         interval = min(_first_poll_s(), _POLL_S)
         while not future.done():
             remaining = deadline - time.monotonic()
