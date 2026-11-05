@@ -86,39 +86,86 @@ def _measured_study(app: Any, sid: str, log: ScienceLog, seconds: list[float]) -
 
 
 @pytest.mark.asyncio
-async def test_a_view_attaches_a_surface_of_its_writer_and_is_listed_until_withdrawn(
-    arc: ARCMemory, tmp_path: Path
+async def test_a_view_attaches_a_published_dashboard_and_is_listed_until_withdrawn(
+    arc: ARCMemory, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    """A study view is a dashboard the writing session published (CT19).
+
+    SABOTAGE: accept a view naming a chat surface again (skip ``_check_view_dashboard``)
+    -> the surface-only view is recorded -> red."""
+    from clio_agent.gact import dashboard_reports
+
     app, sid, log, surfaces = await _study(arc, tmp_path)
+    reports: list[dict[str, Any]] = []
+    saved: dict[str, dict[str, Any]] = {}
+    monkeypatch.setattr(dashboard_reports, "list_dashboard_reports", lambda _app, _sid: reports)
+
+    def read(_app: Any, _sid: str, artifact_id: str) -> dict[str, Any]:
+        if artifact_id not in saved:
+            raise ValueError("The saved dashboard bytes are unavailable.")
+        return saved[artifact_id]
+
+    monkeypatch.setattr(dashboard_reports, "read_dashboard_report", read)
 
     def work() -> tuple[str, dict[str, Any], dict[str, Any]]:
         question = log.write(sid, "question", {"statement": "What sets the rate?"}, None, "c1")
-        fields = {"surface_id": "overview", "title": "Rate", "purpose": "Watch the rate"}
+        links = {"serves": question["id"]}
+        old = {"surface_id": "overview", "title": "Rate", "purpose": "Watch the rate"}
+        with pytest.raises(EntryRejected) as surface_only:
+            log.write(sid, "view", old, links, "c2")
+        assert surface_only.value.reason == "view_needs_dashboard"
+        fields = {"dashboard_id": "artifact://artifact_rate", "title": "Rate", "purpose": "Rate"}
         with pytest.raises(EntryRejected) as missing:
-            log.write(sid, "view", fields, {"serves": question["id"]}, "c2")
-        assert missing.value.reason == "view_surface_missing"
-        surfaces.add(sid, "overview")
-        view = log.write(sid, "view", fields, {"serves": question["id"]}, "c3")
+            log.write(sid, "view", fields, links, "c3")
+        assert missing.value.reason == "view_dashboard_missing"
+        reports.append({"id": "rep-1", "artifact_id": "artifact_rate", "title": "Rate"})
+        saved["artifact_rate"] = {"surface": {"id": "dashboard_rep-1", "components": []}}
+        view = log.write(sid, "view", fields, links, "c4")
         return question["id"], view, science_log_view(app, sid)
 
     question, view, shown = await asyncio.to_thread(work)
-    assert view["status"] == "recorded"
+    assert view["status"] == "recorded" and view["fields"]["dashboard_id"] == "rep-1"
     [row] = shown["views"]
-    assert row["entry"] == view["id"]
-    assert row["session_id"] == sid
-    assert (row["title"], row["purpose"], row["serves"]) == ("Rate", "Watch the rate", [question])
-    assert row["surface"]["id"] == "overview"
+    assert (row["entry"], row["session_id"], row["kind"]) == (view["id"], sid, "dashboard")
+    assert (row["title"], row["serves"]) == ("Rate", [question])
+    assert row["surface"]["id"] == "dashboard_rep-1" and row["artifact_id"] == "artifact_rate"
 
-    def delete_then_withdraw() -> tuple[dict[str, Any], dict[str, Any]]:
-        surfaces.add(sid, "overview", state="deleted")
-        deleted = science_log_view(app, sid)
-        log.set_status(sid, view["id"], "withdrawn", "the question moved on", "c4")
-        return deleted, science_log_view(app, sid)
+    def gone_then_withdraw() -> tuple[dict[str, Any], dict[str, Any]]:
+        saved.clear()
+        gone = science_log_view(app, sid)
+        log.set_status(sid, view["id"], "withdrawn", "the question moved on", "c5")
+        return gone, science_log_view(app, sid)
 
-    deleted, withdrawn = await asyncio.to_thread(delete_then_withdraw)
-    assert deleted["views"][0]["surface"] is None
-    assert deleted["views"][0]["reason"] == "view_surface_deleted"
+    gone, withdrawn = await asyncio.to_thread(gone_then_withdraw)
+    assert gone["views"][0]["surface"] is None
+    assert gone["views"][0]["reason"] == "view_dashboard_missing"
     assert withdrawn["views"] == []
+
+
+@pytest.mark.asyncio
+async def test_a_view_attached_as_a_chat_surface_before_still_reads_read_only(
+    arc: ARCMemory, tmp_path: Path
+) -> None:
+    """Views attached before views were dashboards stay listed as they are (CT25)."""
+    app, sid, log, surfaces = await _study(arc, tmp_path)
+
+    def work() -> dict[str, Any]:
+        question = log.write(sid, "question", {"statement": "What sets the rate?"}, None, "c1")
+        legacy = {
+            **question,
+            "id": "view_legacy",
+            "type": "view",
+            "status": "recorded",
+            "fields": {"surface_id": "overview", "title": "Rate", "purpose": "Watch it"},
+            "links": [{"relation": "serves", "to": question["id"]}],
+        }
+        log._record(sid, question["study"], legacy)
+        surfaces.add(sid, "overview")
+        return science_log_view(app, sid)
+
+    shown = await asyncio.to_thread(work)
+    [row] = shown["views"]
+    assert (row["kind"], row["read_only"], row["surface"]["id"]) == ("surface", True, "overview")
 
 
 @pytest.mark.asyncio
