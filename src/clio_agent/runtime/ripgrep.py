@@ -21,6 +21,7 @@ import tempfile
 import threading
 import zipfile
 from pathlib import Path
+from typing import Any
 
 import httpx
 
@@ -33,6 +34,7 @@ __all__ = [
     "ensure_ripgrep",
     "installed_ripgrep",
     "max_bytes",
+    "probe_ripgrep",
     "ripgrep_executable",
 ]
 
@@ -195,6 +197,41 @@ def ripgrep_executable() -> Path:
             f"{RIPGREP_MISSING}: no ripgrep is installed and the pinned release could not be "
             f"installed ({type(exc).__name__}: {exc})"
         ) from exc
+
+
+def probe_ripgrep() -> Any:
+    """The ``ripgrep`` doctor row: which ripgrep the file search tools would run, without
+    downloading one (a missing ripgrep makes those tools fail with ``ripgrep_missing``)."""
+    from clio_agent.runtime.status import IntegrationState, IntegrationStatus  # noqa: PLC0415
+
+    managed, host = installed_ripgrep(), shutil.which("rg")
+    found = managed or (Path(host) if host else None)
+    if found is not None:
+        source = "managed" if managed else "host PATH"
+        return IntegrationStatus(
+            name="ripgrep",
+            state=IntegrationState.READY,
+            summary=f"File search runs ripgrep from the {source} ({found}).",
+            config_source=source,
+            next_action="None.",
+            required=False,
+            details={"executable": str(found), "source": source, "version": VERSION},
+        )
+    return IntegrationStatus(
+        name="ripgrep",
+        state=IntegrationState.DEGRADED,
+        summary=(
+            "No ripgrep is installed: file search and glob download the pinned release on "
+            f"first use and fail with {RIPGREP_MISSING} if they cannot."
+        ),
+        config_source="none",
+        next_action=(
+            "Run `python -m clio_agent.runtime.ripgrep` while online (the installer does this), "
+            "or put rg on PATH."
+        ),
+        required=False,
+        details={"executable": "", "version": VERSION},
+    )
 
 
 if __name__ == "__main__":
