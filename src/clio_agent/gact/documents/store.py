@@ -24,7 +24,6 @@ from clio_agent.gact.artifacts.registry import get_registry
 from clio_agent.gact.documents.models import (
     ArtifactReview,
     DocumentWorkingCopy,
-    EditorProvider,
 )
 from clio_agent.gact.documents.native_comments import (
     UnsafeDocumentArchiveError,
@@ -166,7 +165,6 @@ class DocumentStore:
         workspace_id: str,
         record: ArtifactRecord,
         version: ArtifactVersion,
-        provider: EditorProvider,
         writable: bool,
         auto_checkpoint: bool,
     ) -> DocumentWorkingCopy:
@@ -213,7 +211,6 @@ class DocumentStore:
                 base_sha256=version.sha256 or sha256_file(target),
                 last_sha256=version.sha256 or sha256_file(target),
                 path=str(target.resolve()),
-                provider=provider,
                 writable=writable,
                 auto_checkpoint=auto_checkpoint,
                 status="active",

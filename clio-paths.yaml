@@ -492,8 +492,6 @@ legacy:
     kind: secret
   - name: CLIO_GACT_BEARER_TOKEN
     kind: secret
-  - name: CLIO_ONLYOFFICE_JWT_SECRET
-    kind: secret
   - name: CLIO_PREFIX
     kind: path
 accepts_foreign:

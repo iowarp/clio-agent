@@ -220,7 +220,13 @@ from clio_agent.gact.app import build_app
 # (routes/schedules.py, with GET /v1/sessions/{sid}/work).
 # 432 -> 435: the plugin tools page (TD54), routes/tool_settings.py: GET and PUT
 # /v1/settings/tools and POST /v1/settings/tools/rules/remove.
-EXPECTED_ROUTE_METHOD_PAIRS = 435
+# 435 -> 439: the in-app browser's HTTP routes (gact/browser/live.py), merged into the PTC
+# branch without updating this count: GET and POST /v1/sessions/{sid}/browser/pages and
+# POST .../browser/pages/{page_id}/trust-certificate and .../allow-host.
+# 439 -> 431: the embedded ONLYOFFICE and Collabora editors are deleted (comments ledger
+# FB4): editor health, editor sessions, ONLYOFFICE content and callback, and Collabora
+# WOPI file info and contents, GET and POST each.
+EXPECTED_ROUTE_METHOD_PAIRS = 431
 
 # app.py is build_app + lifecycle + re-export shims only. The ceiling is
 # the current size (~2892 lines) plus ~300 lines of headroom so ordinary

@@ -545,7 +545,6 @@ def register_system_routes(app: FastAPI, deps: "GactDeps") -> None:
                     "immutable_revisions": True,
                     "native_working_copies": True,
                     "native_comment_trigger": "@clio",
-                    "embedded_editors": ["onlyoffice", "collabora"],
                     "static_html_scripts": "blocked",
                     "executable_html_transition": "live-web",
                 },

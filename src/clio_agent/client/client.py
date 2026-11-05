@@ -34,7 +34,6 @@ from clio_agent.client.types import (
     ArtifactReview,
     Capabilities,
     DocumentAnchor,
-    DocumentEditorSession,
     DocumentManifest,
     DocumentWorkingCopy,
     Health,
@@ -603,7 +602,6 @@ class DocumentsAPI:
         artifact_id: str,
         *,
         session_id: str,
-        provider: str = "native",
         writable: bool = True,
         auto_checkpoint: bool = True,
     ) -> DocumentWorkingCopy:
@@ -614,7 +612,6 @@ class DocumentsAPI:
             f"/v1/artifacts/{artifact_id}/working-copies",
             json={
                 "session_id": session_id,
-                "provider": provider,
                 "writable": writable,
                 "auto_checkpoint": auto_checkpoint,
             },
@@ -651,26 +648,6 @@ class DocumentsAPI:
             },
         )
         return DocumentWorkingCopy.model_validate(response.json())
-
-    def editor_health(self) -> dict[str, Any]:
-        """Probe configured ONLYOFFICE and Collabora endpoints."""
-
-        return self._client._request("GET", "/v1/document-editors/health").json()
-
-    def create_editor_session(
-        self,
-        working_copy_id: str,
-        *,
-        provider: Literal["onlyoffice", "collabora"],
-    ) -> DocumentEditorSession:
-        """Create a short-lived embedded editor launch."""
-
-        response = self._client._request(
-            "POST",
-            f"/v1/document-working-copies/{working_copy_id}/editor-sessions",
-            json={"provider": provider},
-        )
-        return DocumentEditorSession.model_validate(response.json())
 
 
 class PermissionsAPI:

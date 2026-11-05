@@ -375,7 +375,6 @@ class DocumentManifest(_WireModel):
     content_url: str
     anchors: list[str] = Field(default_factory=list)
     native_open: bool = False
-    embedded_editors: list[str] = Field(default_factory=list)
     rendition_formats: list[str] = Field(default_factory=list)
     provenance: dict[str, Any] = Field(default_factory=dict)
 
@@ -394,25 +393,10 @@ class DocumentWorkingCopy(_WireModel):
     base_sha256: str
     last_sha256: str
     path: str
-    provider: str
     writable: bool
     auto_checkpoint: bool
     status: str
     conflict_head_artifact_id: str = ""
-    error: str = ""
-
-
-class DocumentEditorSession(_WireModel):
-    """One short-lived ONLYOFFICE or Collabora editor launch."""
-
-    id: str
-    working_copy_id: str
-    provider: str
-    status: str
-    editor_url: str = ""
-    token: str = ""
-    expires_at: str = ""
-    config: dict[str, Any] = Field(default_factory=dict)
     error: str = ""
 
 

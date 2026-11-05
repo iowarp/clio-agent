@@ -30,7 +30,6 @@ AnchorProfile = Literal[
 ]
 ReviewStatus = Literal["queued", "dispatched", "human-note", "failed", "stale"]
 WorkingCopyStatus = Literal["active", "conflict", "closed", "missing", "error"]
-EditorProvider = Literal["native", "onlyoffice", "collabora"]
 
 
 class DocumentAnchor(BaseModel):
@@ -105,12 +104,11 @@ class CreateArtifactReviewRequest(BaseModel):
 
 
 class CreateWorkingCopyRequest(BaseModel):
-    """Materialize an exact artifact version for desktop or embedded editing."""
+    """Materialize an exact artifact version for editing in its desktop application."""
 
     model_config = ConfigDict(extra="forbid")
 
     session_id: str = Field(min_length=1)
-    provider: EditorProvider = "native"
     writable: bool = True
     auto_checkpoint: bool = True
 
@@ -129,7 +127,6 @@ class DocumentWorkingCopy(BaseModel):
     base_sha256: str
     last_sha256: str
     path: str
-    provider: EditorProvider
     writable: bool
     auto_checkpoint: bool
     status: WorkingCopyStatus = "active"
@@ -172,29 +169,6 @@ class DocumentManifest(BaseModel):
     content_url: str
     anchors: list[AnchorProfile]
     native_open: bool
-    embedded_editors: list[EditorProvider] = Field(default_factory=list)
     rendition_formats: list[str] = Field(default_factory=list)
     pdf_rendition_artifact_id: str = ""
     provenance: dict[str, Any] = Field(default_factory=dict)
-
-
-class CreateEditorSessionRequest(BaseModel):
-    """Open one embedded editor against an existing working copy."""
-
-    model_config = ConfigDict(extra="forbid")
-
-    provider: Literal["onlyoffice", "collabora"]
-
-
-class DocumentEditorSession(BaseModel):
-    """A short-lived, working-copy-scoped embedded editor session."""
-
-    id: str
-    working_copy_id: str
-    provider: Literal["onlyoffice", "collabora"]
-    status: Literal["ready", "unavailable", "closed"]
-    editor_url: str = ""
-    token: str = ""
-    expires_at: str = ""
-    config: dict[str, Any] = Field(default_factory=dict)
-    error: str = ""

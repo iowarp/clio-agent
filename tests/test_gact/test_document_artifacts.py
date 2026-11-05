@@ -17,9 +17,7 @@ from fastapi.testclient import TestClient
 from clio_agent.arc.memory import ARCMemory
 from clio_agent.arc.task_types import ContextBoundary, MailItem
 from clio_agent.gact.app import build_app
-from clio_agent.gact.documents import renditions
-from clio_agent.gact.documents.editor_callbacks import exact_http_origin
-from clio_agent.gact.documents.editors import issue_access_token, verify_access_token
+from clio_agent.gact.documents import DocumentWorkingCopy, renditions
 from clio_agent.gact.documents.native_comments import (
     UnsafeDocumentArchiveError,
     extract_native_comments,
@@ -95,9 +93,9 @@ def test_capability_and_format_profiles_are_explicit(tmp_path: Path) -> None:
 
     assert capability["native_comment_trigger"] == "@clio"
     assert capability["static_html_scripts"] == "blocked"
-    assert capability["embedded_editors"] == ["onlyoffice", "collabora"]
+    assert "embedded_editors" not in capability
     assert document_format("report.docx").profile == "ooxml-word"
-    assert document_format("model.odp").embedded_editors == ("collabora",)
+    assert document_format("model.odp").rendition_formats == ("pdf",)
     assert document_format("paper.tex").anchors == ("text-quote", "source-map")
 
 
@@ -240,7 +238,7 @@ def test_working_copy_reloads_from_long_canonical_state(
         monkeypatch.setattr(paths, "workspace_agent_dir", workspace_state)
         created = client.post(
             f"/v1/artifacts/{first['artifact_id']}/working-copies",
-            json={"session_id": session_id, "provider": "native", "auto_checkpoint": False},
+            json={"session_id": session_id, "auto_checkpoint": False},
         )
         assert created.status_code == 200, created.text
         working_copy = created.json()
@@ -266,7 +264,6 @@ def test_working_copy_save_mints_revision_and_stale_save_conflicts(tmp_path: Pat
             f"/v1/artifacts/{first['artifact_id']}/working-copies",
             json={
                 "session_id": session_id,
-                "provider": "native",
                 "auto_checkpoint": False,
             },
         )
@@ -313,128 +310,42 @@ def test_working_copy_save_mints_revision_and_stale_save_conflicts(tmp_path: Pat
     assert conflict.conflict_head_artifact_id == external["artifact_id"]
 
 
-def test_editor_tokens_are_short_lived_scoped_and_write_aware(tmp_path: Path) -> None:
-    app = build_app(sessions_path=tmp_path / "sessions.json")
-    token, expires = issue_access_token(
-        app,
-        working_copy_id="wc-one",
-        provider="onlyoffice",
-        writable=False,
-    )
-
-    payload = verify_access_token(
-        app,
-        token,
-        working_copy_id="wc-one",
-        provider="onlyoffice",
-    )
-    assert payload["exp"] == expires
-    with pytest.raises(ValueError, match="incorrectly scoped"):
-        verify_access_token(
-            app,
-            token,
-            working_copy_id="wc-two",
-            provider="onlyoffice",
-        )
-    with pytest.raises(ValueError, match="read-only"):
-        verify_access_token(
-            app,
-            token,
-            working_copy_id="wc-one",
-            provider="onlyoffice",
-            require_write=True,
-        )
-
-
-def test_editor_callback_download_requires_an_exact_origin() -> None:
-    assert exact_http_origin(
-        "https://editor.example.test/download/file",
-        "https://editor.example.test",
-    )
-    assert exact_http_origin(
-        "https://editor.example.test:443/download/file",
-        "https://editor.example.test",
-    )
-    assert not exact_http_origin(
-        "http://editor.example.test/download/file",
-        "https://editor.example.test",
-    )
-    assert not exact_http_origin(
-        "https://editor.example.test:444/download/file",
-        "https://editor.example.test",
-    )
-    assert not exact_http_origin(
-        "https://user:secret@editor.example.test/download/file",
-        "https://editor.example.test",
-    )
-
-
-def test_collabora_wopi_locks_guard_editor_saves(tmp_path: Path) -> None:
-    root = tmp_path / "workspace"
-    root.mkdir()
-    document = root / "brief.odt"
-    _odt(document)
+def test_embedded_editor_routes_are_gone_and_old_working_copies_still_load(
+    tmp_path: Path,
+) -> None:
+    """The ONLYOFFICE and Collabora routes are deleted; a working copy stored with the old
+    ``provider`` field still validates, since the model ignores keys it no longer has."""
 
     with TestClient(build_app(sessions_path=tmp_path / "sessions.json")) as client:
-        _workspace_id, session_id = _workspace_session(client, root)
-        pinned = _pin(client, session_id, document.name)
-        created = client.post(
-            f"/v1/artifacts/{pinned['artifact_id']}/working-copies",
-            json={
-                "session_id": session_id,
-                "provider": "collabora",
-                "auto_checkpoint": False,
-            },
+        assert client.get("/v1/document-editors/health").status_code == 404
+        assert (
+            client.post(
+                "/v1/document-working-copies/wc_missing/editor-sessions",
+                json={"provider": "onlyoffice"},
+            ).status_code
+            == 404
         )
-        assert created.status_code == 200, created.text
-        working_copy = created.json()
-        token, _expires = issue_access_token(
-            cast(FastAPI, client.app),
-            working_copy_id=working_copy["id"],
-            provider="collabora",
-            writable=True,
-        )
-        file_url = (
-            "/v1/internal/document-editors/collabora/wopi/files/"
-            f"{working_copy['id']}?access_token={token}"
-        )
-        contents_url = file_url.replace(f"?access_token={token}", f"/contents?access_token={token}")
-
-        info = client.get(file_url)
-        acquired = client.post(
-            file_url,
-            headers={"X-WOPI-Override": "LOCK", "X-WOPI-Lock": "lock-a"},
-        )
-        conflicting = client.post(
-            file_url,
-            headers={"X-WOPI-Override": "LOCK", "X-WOPI-Lock": "lock-b"},
-        )
-        blocked_save = client.post(
-            contents_url,
-            headers={"X-WOPI-Override": "PUT", "X-WOPI-Lock": "lock-b"},
-            content=b"blocked",
-        )
-        replacement = tmp_path / "replacement.odt"
-        _odt(replacement, "Edited text")
-        saved = client.post(
-            contents_url,
-            headers={"X-WOPI-Override": "PUT", "X-WOPI-Lock": "lock-a"},
-            content=replacement.read_bytes(),
-        )
-        released = client.post(
-            file_url,
-            headers={"X-WOPI-Override": "UNLOCK", "X-WOPI-Lock": "lock-a"},
-        )
-
-    assert info.status_code == 200
-    assert info.json()["SupportsLocks"] is True
-    assert acquired.status_code == 200
-    assert conflicting.status_code == 409
-    assert conflicting.headers["X-WOPI-Lock"] == "lock-a"
-    assert blocked_save.status_code == 409
-    assert saved.status_code == 200, saved.text
-    assert saved.headers["X-WOPI-ItemVersion"]
-    assert released.status_code == 200
+    stored = {
+        "id": "docwc_old",
+        "session_id": "sess_old",
+        "workspace_id": "ws_old",
+        "artifact_name": "brief.docx",
+        "base_artifact_id": "artifact_a",
+        "head_artifact_id": "artifact_a",
+        "base_version": 1,
+        "head_version": 1,
+        "base_sha256": "0" * 64,
+        "last_sha256": "0" * 64,
+        "path": str(tmp_path / "brief.docx"),
+        "provider": "onlyoffice",
+        "writable": True,
+        "auto_checkpoint": True,
+        "created_at": "2026-11-05T00:00:00+00:00",
+        "updated_at": "2026-11-05T00:00:00+00:00",
+    }
+    restored = DocumentWorkingCopy.model_validate(stored)
+    assert restored.id == "docwc_old"
+    assert not hasattr(restored, "provider")
 
 
 @pytest.mark.asyncio
