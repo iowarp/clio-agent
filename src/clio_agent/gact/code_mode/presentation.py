@@ -61,12 +61,13 @@ def present(args: Mapping[str, Any], result: Any, structured: Any) -> dict[str, 
             }
         )
         if handle:
-            # Opens Work at this task's row.
+            # Opens this task's row under Background tasks (the ``task`` target names a
+            # background task by its handle).
             blocks.append(
                 {
                     "id": "open-task",
                     "type": "link",
-                    "target": "work",
+                    "target": "task",
                     "uri": handle,
                     "label": "Show the task in Work",
                 }

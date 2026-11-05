@@ -440,10 +440,10 @@ def test_a_plan_mode_kernel_writes_only_scratch_and_temp(monkeypatch: Any, tmp_p
 
 
 def test_a_background_launch_reads_as_a_started_task_not_as_a_script_without_calls() -> None:
-    """The launch row links to the task's row in Work by its handle.
+    """The launch row links to the task's row by its handle (the ``task`` target).
 
     SABOTAGE: drop the background branch in ``present`` -> "No tool calls". Drop the
-    ``open-task`` link -> red."""
+    ``open-task`` link, or target ``work`` again -> red."""
     view = present(
         {"code": "while True:\n    pass", "background": True, "label": "Counter watch"},
         "Started",
@@ -455,7 +455,7 @@ def test_a_background_launch_reads_as_a_started_task_not_as_a_script_without_cal
     assert blocks["open-task"] | {"label": ""} == {
         "id": "open-task",
         "type": "link",
-        "target": "work",
+        "target": "task",
         "uri": "task_abc",
         "label": "",
     }
