@@ -24,7 +24,14 @@ __all__ = ["LatexRenditionError", "build_rendition", "is_latex", "sources_curren
 
 
 class LatexRenditionError(RuntimeError):
-    """The LaTeX version could not be built to a PDF; the message names why."""
+    """The LaTeX version could not be built to a PDF; the message names why.
+
+    ``result`` is the build when it ran, so a caller can show its diagnostics.
+    """
+
+    def __init__(self, message: str, result: BuildResult | None = None) -> None:
+        super().__init__(message)
+        self.result = result
 
 
 def is_latex(name: str) -> bool:
@@ -95,7 +102,7 @@ def build_rendition(
     except (ProjectError, LatexBuildError) as exc:
         raise LatexRenditionError(f"{exc.reason}: {exc}") from exc
     if not result.pdf:
-        raise LatexRenditionError(_failure(result))
+        raise LatexRenditionError(_failure(result), result)
     temporary = target.with_name(f".{target.name}.build")
     temporary.write_bytes(result.pdf)
     temporary.replace(target)

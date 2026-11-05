@@ -152,6 +152,7 @@ def _singles(agent_def: Any) -> dict[str, Callable[[], Any]]:
         build_connected_data_status_tool,
         build_connected_data_write_tool,
     )
+    from clio_agent.gact.latex_tools import build_latex_build_tool  # noqa: PLC0415
     from clio_agent.gact.todos import build_write_todos_tool  # noqa: PLC0415
     from clio_agent.gact.view_image_tool import build_view_image_tool  # noqa: PLC0415
     from clio_agent.gact.view_pdf_tool import build_view_pdf_tool  # noqa: PLC0415
@@ -184,6 +185,7 @@ def _singles(agent_def: Any) -> dict[str, Callable[[], Any]]:
         "prepare_document_runtime": build_prepare_document_runtime_tool,
         "prepare_execution_runtime": build_prepare_execution_runtime_tool,
         "prepare_document": build_prepare_document_tool,
+        "latex_build": build_latex_build_tool,
         "ssh_execute": build_ssh_execute_tool,
         "clio_search": build_clio_search_tool,
         "clio_search_read": build_clio_search_read_tool,
@@ -238,6 +240,7 @@ _SINGLE_NAMES = frozenset(
         "prepare_document_runtime",
         "prepare_execution_runtime",
         "prepare_document",
+        "latex_build",
         "ssh_execute",
         "clio_search",
         "clio_search_read",

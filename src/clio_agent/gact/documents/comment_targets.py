@@ -69,9 +69,17 @@ def _name(app: "FastAPI", workspace_id: str, root: Path, absolute: Path) -> str:
 
 
 def register_target(
-    app: "FastAPI", session_id: str, workspace_id: str, path: str
+    app: "FastAPI",
+    session_id: str,
+    workspace_id: str,
+    path: str,
+    *,
+    designation: str = "comment-target",
 ) -> tuple[ArtifactRecord, ArtifactVersion]:
-    """The artifact version to comment on for a workspace file, registering it if needed.
+    """The artifact version for a workspace file, registering it if needed.
+
+    ``designation`` names why the file was registered on demand: a comment on it, or a
+    LaTeX build of it (``latex-source``). It has no producing call either way (FB22).
 
     Raises:
         CommentTargetError: the workspace or file is unknown, or the file is outside it.
@@ -109,7 +117,7 @@ def register_target(
         evidence=ingested.evidence,
         kind=kind_for_path(absolute),
         mechanism=Mechanism.NONE,
-        producer={"designation": "comment-target", "session_id": session_id},
+        producer={"designation": designation, "session_id": session_id},
         custody=ingested.custody,
         path=str(absolute),
         ingested=ingested,
