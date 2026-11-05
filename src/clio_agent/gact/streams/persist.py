@@ -57,6 +57,7 @@ def write_version(
         mechanism=Mechanism.HARNESS,
         turn_id=context.active_turn_id() or "",
         trace_id=context.active_trace_id() or "",
+        producing=False,  # the stream persisting itself, not an output of the turn
         producer={
             "designation": "stream",
             "stream_id": stream.id,

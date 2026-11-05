@@ -51,7 +51,7 @@ async function waitIdle(page, sessionId, log, minutes) {
 }
 
 async function send(page, text) {
-  const composer = page.locator('textarea, [contenteditable="true"]').first();
+  const composer = page.getByPlaceholder(/to investigate, build/).first();
   await composer.click();
   await page.keyboard.type(text);
   await page.keyboard.press("Enter");
@@ -77,12 +77,7 @@ export default async function (page, shot) {
   log.push(`first turn settled: ${settled}`);
   await shot("reply");
 
-  // The dashboard opens from its card in the conversation.
-  const card = page.getByRole("button", { name: /dashboard|printer/i }).last();
-  if (await card.count()) {
-    await card.scrollIntoViewIfNeeded().catch(() => {});
-    await card.click().catch(() => {});
-  }
+  // The agent's view of the stream is in the conversation; it should update by itself.
   await page.waitForTimeout(6000);
   await shot("dashboard");
   const before = streamRequests.length;
