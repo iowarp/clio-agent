@@ -296,6 +296,7 @@ class SegmentStore(ScopeCache, PlainContextRestore):
                 written=[seg],
                 step=step,
                 logical_time=seg.logical_time,
+                extends=segs,
             )
             return seg
 
@@ -587,6 +588,7 @@ class SegmentStore(ScopeCache, PlainContextRestore):
         position: int | None = None,
         derived_from: list[str] | None = None,
         logical_time: int | None = None,
+        extends: list[Segment] | None = None,
     ) -> None:
         """Log the op to the Trace, stamp ``trace_ref`` on the written segments, commit
         ``staged`` to clio-core and only then cache it (write-through: a refusal leaves
@@ -618,7 +620,7 @@ class SegmentStore(ScopeCache, PlainContextRestore):
                         s.trace_ref = event_id
             except Exception as exc:  # noqa: BLE001 - re-raised typed; nothing was cached
                 raise ContextOpLogError(op=op, scope=scope, cause=exc) from exc
-        self._commit_scope(session_id, scope, staged)
+        self._commit_scope(session_id, scope, staged, extends=extends)
         if op != "append":  # an op may rewrite the prefix: a new view generation
             self._generations[(session_id, scope)] = next_generation()
         for seg in written:  # parallel locator: index every newly-written segment

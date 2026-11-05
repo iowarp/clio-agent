@@ -99,12 +99,18 @@ class SegmentGroup:
         self.rank = rank
         self.pending: dict[Key, _Staged] = {}
 
-    def stage(self, key: Key, staged: list[Segment]) -> bool:
+    def stage(
+        self, key: Key, staged: list[Segment], *, extends: list[Segment] | None = None
+    ) -> bool:
         """Stage ``staged`` for ``key`` (``True``), or leave the put to the caller.
 
         Only appends are staged. A rewrite of a scope with staged appends is put at once
         by the caller, with the staged segments it holds, if no other thread changed the
         committed record meanwhile.
+
+        ``extends`` is the list ``staged`` was built from by adding segments after it:
+        when it is what this scope holds now (its staged list, or the committed record),
+        ``staged`` is an append without comparing every segment.
 
         Raises:
             ArcPersistError: A rewrite of a staged scope whose record another thread
@@ -112,7 +118,9 @@ class SegmentGroup:
         """
         entry = self.pending.get(key)
         base = entry.base if entry is not None else self.store._scopes.get(key)
-        if base is None or not _extends(staged, base):
+        held = entry.staged if entry is not None else base
+        appended = base is not None and extends is not None and extends is held
+        if not appended and (base is None or not _extends(staged, base)):
             if entry is not None:
                 if self.store._scopes.get(key) is not base:
                     conflict = SegmentGroupConflict(SEGMENT_GROUP_CONFLICT)
@@ -148,12 +156,14 @@ class SegmentGroup:
                 self.store._discard_scope(*key)
         self.pending.clear()
 
-    def _rebased(self, key: Key, entry: _Staged) -> list[Segment]:
-        """``entry.staged`` over the record as committed now (called under the scope lock)."""
+    def _rebased(self, key: Key, entry: _Staged) -> tuple[list[Segment], list[Segment]]:
+        """``entry.staged`` over the record as committed now, and the committed list it
+        extends (called under the scope lock). Only appends are staged, so a staged list
+        extends its base."""
         store = self.store
         current = store._scopes.get(key) if key in store._loaded else None
         if current is entry.base:
-            return entry.staged
+            return entry.staged, entry.base
         if current is None:  # released meanwhile: reload the committed record
             current = store._segs(*key)
         ours = entry.staged[len(entry.base) :]
@@ -162,7 +172,7 @@ class SegmentGroup:
             msgspec.structs.replace(segment, order=top + position)
             for position, segment in enumerate(ours, start=1)
         ]
-        return [*current, *moved]
+        return [*current, *moved], current
 
     def _flush_rank(self, keys: list[Key]) -> None:
         store = self.store
@@ -174,8 +184,8 @@ class SegmentGroup:
                 held.append(lock)
             plans = []
             for key in keys:
-                staged = self._rebased(key, self.pending[key])
-                mark = store._append_mark(key, staged)
+                staged, extends = self._rebased(key, self.pending[key])
+                mark = store._append_mark(key, staged, extends)
                 name, write, text = store._planned_put(key[0], key[1], staged, mark)
                 plans.append((key, staged, mark, name, write, text))
             lost: set[str] = set()
