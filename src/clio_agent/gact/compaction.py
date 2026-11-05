@@ -228,24 +228,26 @@ def _scopes(app: Any, sid: str, scope: str) -> list[str]:
 
 def _plan(app: Any, sid: str, scope: str, open_turn: str) -> _ScopePlan | None:
     """What the policy summarizes in ``scope`` (``None``: nothing to compact)."""
-    from clio_agent.gact.agents.clio_react_record import (  # noqa: PLC0415
+    from clio_agent.gact.agents.clio_react_record import fold_steps  # noqa: PLC0415
+    from clio_agent.gact.agents.context_errors import (  # noqa: PLC0415
         ContextFoldError,
-        fold_steps,
+        ContextReadError,
     )
+    from clio_agent.gact.agents.context_reader import model_context_segments  # noqa: PLC0415
 
     live = list(app.state.arc.render_working_set(sid, scope))
-    decision = post_compaction_context(live, open_turn_id=open_turn, policy=keep_policy())
-    replaced = [s for s in live if s.id in set(decision.summarize)]
-    if not replaced or all(s.kind == "summary" for s in replaced):
-        return None
-    try:
-        from clio_agent.gact.agents.context_reader import model_context_segments
-
-        rendered = model_context_segments(
-            replaced, getattr(app.state, "task_history", None), sid, scope
+    history = getattr(app.state, "task_history", None)
+    read = history.read_content if history is not None else None
+    try:  # the budget measures a confirmed input's content, not its reference
+        decision = post_compaction_context(
+            live, open_turn_id=open_turn, policy=keep_policy(), read_content=read
         )
+        replaced = [s for s in live if s.id in set(decision.summarize)]
+        if not replaced or all(s.kind == "summary" for s in replaced):
+            return None
+        rendered = model_context_segments(replaced, history, sid, scope)
         lines = [line for m in fold_steps(rendered) for line in _message_lines(m)]
-    except ContextFoldError as exc:
+    except (ContextFoldError, ContextReadError) as exc:
         raise CompactionError(409, exc.reason, str(exc), dict(exc.details or {})) from exc
     if not lines:
         return None
