@@ -25,11 +25,11 @@ The install script installs the desktop app, bundled with its agent, with `--des
 needed:
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/iowarp/clio-agent/main/install/install.sh | bash -s -- --desktop
+curl -fsSL https://clio.iowarp.ai/desktop.sh | bash
 ```
 
 ```powershell
-& ([scriptblock]::Create((irm https://raw.githubusercontent.com/iowarp/clio-agent/main/install/install.ps1))) -Desktop
+irm https://clio.iowarp.ai/desktop.ps1 | iex
 ```
 
 `--dev` picks the newest release including pre-releases, and `--version <v>` pins one,
@@ -77,13 +77,13 @@ Run the install script without `--desktop` / `-Desktop` to install the service,
 the released Web bundle and the `clio` launcher:
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/iowarp/clio-agent/main/install/install.sh | bash
+curl -fsSL https://clio.iowarp.ai/install.sh | bash
 clio web    # open the workspace in your browser
 clio start  # alternatively, run only the service
 ```
 
 ```powershell
-irm https://raw.githubusercontent.com/iowarp/clio-agent/main/install/install.ps1 | iex
+irm https://clio.iowarp.ai/install.ps1 | iex
 clio web
 ```
 
@@ -110,8 +110,9 @@ The default selects the latest published stable release. `--dev` / `-Dev`
 includes pre-releases; `--version <version>` / `-Version <version>` selects one.
 `--source` / `-Source` installs `main`; `--dev --source` / `-Dev -Source`
 installs `develop`; add `--ref <ref>` / `-Ref <ref>` to choose source explicitly.
-Pass shell options after `bash -s --`, and PowerShell options using the
-scriptblock invocation shown for Desktop above. `--desktop` cannot use source mode.
+Pass shell options after `bash -s --`, and PowerShell options with
+`& ([scriptblock]::Create((irm https://clio.iowarp.ai/install.ps1))) -Dev`.
+`--desktop` cannot use source mode.
 
 ## Beta releases
 

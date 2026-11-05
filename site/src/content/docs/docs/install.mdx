@@ -98,7 +98,7 @@ release's published checksums first, and needs no Python, uv or Node.
 <TabItem label="Windows">
 
 ```powershell
-& ([scriptblock]::Create((irm https://raw.githubusercontent.com/iowarp/clio-agent/main/install/install.ps1))) -Desktop
+irm https://clio.iowarp.ai/desktop.ps1 | iex
 ```
 
 The installer window opens, with its pages for your model provider and computers.
@@ -107,7 +107,7 @@ The installer window opens, with its pages for your model provider and computers
 <TabItem label="macOS">
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/iowarp/clio-agent/main/install/install.sh | bash -s -- --desktop
+curl -fsSL https://clio.iowarp.ai/desktop.sh | bash
 ```
 
 Installs **CLIO Desktop** into `~/Applications`, keeping a previous version beside it.
@@ -117,7 +117,7 @@ Set `CLIO_DESKTOP_DIR` to another absolute folder, such as `/Applications`.
 <TabItem label="Linux">
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/iowarp/clio-agent/main/install/install.sh | bash -s -- --desktop
+curl -fsSL https://clio.iowarp.ai/desktop.sh | bash
 ```
 
 Installs the `.deb` with `apt` or the `.rpm` with `dnf`, asking for your password
@@ -140,21 +140,21 @@ needs `sudo`.
 <TabItem label="Windows">
 
 ```powershell
-irm https://raw.githubusercontent.com/iowarp/clio-agent/main/install/install.ps1 | iex
+irm https://clio.iowarp.ai/install.ps1 | iex
 ```
 
 </TabItem>
 <TabItem label="macOS">
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/iowarp/clio-agent/main/install/install.sh | bash
+curl -fsSL https://clio.iowarp.ai/install.sh | bash
 ```
 
 </TabItem>
 <TabItem label="Linux">
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/iowarp/clio-agent/main/install/install.sh | bash
+curl -fsSL https://clio.iowarp.ai/install.sh | bash
 ```
 
 Run it with `bash`, not `sh`.
@@ -177,8 +177,9 @@ environment variables and the full command list are in
 
 ### Choose a release
 
-Both the install script and its `--desktop` form take these options. On Windows, pass
-them with the `& ([scriptblock]::Create((irm <url>))) <options>` form shown above.
+Both the install script and its desktop form take these options: after `bash -s --` on
+macOS and Linux (`curl -fsSL https://clio.iowarp.ai/desktop.sh | bash -s -- --dev`), and on
+Windows with `& ([scriptblock]::Create((irm https://clio.iowarp.ai/desktop.ps1))) -Dev`.
 
 | Option | Installs |
 |---|---|
@@ -189,7 +190,7 @@ them with the `& ([scriptblock]::Create((irm <url>))) <options>` form shown abov
 | `--dev --source` | the source code on `develop` |
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/iowarp/clio-agent/main/install/install.sh | bash -s -- --dev
+curl -fsSL https://clio.iowarp.ai/install.sh | bash -s -- --dev
 ```
 
 Source installs need `git`, and are meant for people working on CLIO; see

@@ -15,6 +15,10 @@ on:
   push:
     branches: [main]
     paths:
+      - "install/install.sh"
+      - "install/install.ps1"
+      - "install/desktop.sh"
+      - "install/desktop.ps1"
       - "site/**"
       - "pyproject.toml"
       - "src/clio_agent/gact/builtin_skills/present-interactive-analysis/**"
@@ -22,6 +26,10 @@ on:
       - ".github/workflows/pages.yml"
   pull_request:
     paths:
+      - "install/install.sh"
+      - "install/install.ps1"
+      - "install/desktop.sh"
+      - "install/desktop.ps1"
       - "site/**"
       - "src/clio_agent/gact/builtin_skills/present-interactive-analysis/**"
       - "external/clio-agent-marketplace"
@@ -84,6 +92,10 @@ jobs:
         working-directory: site/video
       - run: pnpm test
       - run: pnpm check
+      # The one-line installers are served from the site so the commands stay short:
+      # `irm https://clio.iowarp.ai/install.ps1 | iex`, `.../desktop.ps1`, `.../install.sh`,
+      # `.../desktop.sh`. They are copied from install/ at this commit, never kept twice.
+      - run: cp ../install/install.sh ../install/install.ps1 ../install/desktop.sh ../install/desktop.ps1 public/
       # Fails on any broken internal link (starlight-links-validator).
       - run: pnpm build
       - run: pnpm exec playwright install --with-deps chromium

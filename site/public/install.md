@@ -45,7 +45,7 @@ Use `bash` on macOS and Linux, never `sh`. The Desktop installer download is che
 macOS and Linux:
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/iowarp/clio-agent/main/install/install.sh | bash -s -- --desktop
+curl -fsSL https://clio.iowarp.ai/desktop.sh | bash
 ```
 
 - Linux installs the `.deb` or `.rpm` with the system package manager and asks for the
@@ -57,7 +57,7 @@ curl -fsSL https://raw.githubusercontent.com/iowarp/clio-agent/main/install/inst
 Windows (PowerShell):
 
 ```powershell
-& ([scriptblock]::Create((irm https://raw.githubusercontent.com/iowarp/clio-agent/main/install/install.ps1))) -Desktop
+irm https://clio.iowarp.ai/desktop.ps1 | iex
 ```
 
 The CLIO Desktop installer window opens. The person clicks through it; its pages ask
@@ -68,13 +68,13 @@ about the model provider and the computers to use. Wait for it to close.
 macOS and Linux:
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/iowarp/clio-agent/main/install/install.sh | bash
+curl -fsSL https://clio.iowarp.ai/install.sh | bash
 ```
 
 Windows (PowerShell):
 
 ```powershell
-irm https://raw.githubusercontent.com/iowarp/clio-agent/main/install/install.ps1 | iex
+irm https://clio.iowarp.ai/install.ps1 | iex
 ```
 
 This needs only `curl` (or PowerShell). The installer brings its own `uv` and Python;
@@ -85,8 +85,9 @@ person how to add it for their shell.
 
 ### Choosing a release
 
-Add these after `--desktop` (or alone for the service install). On Windows, use the
-`& ([scriptblock]::Create((irm <url>))) <options>` form to pass options.
+Pass them after `bash -s --` (`curl -fsSL https://clio.iowarp.ai/desktop.sh | bash -s -- --dev`).
+On Windows, use `& ([scriptblock]::Create((irm <url>))) <options>`, e.g.
+`& ([scriptblock]::Create((irm https://clio.iowarp.ai/desktop.ps1))) -Dev`.
 
 | Option | Installs |
 |---|---|
