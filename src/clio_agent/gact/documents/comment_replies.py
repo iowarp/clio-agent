@@ -33,6 +33,8 @@ __all__ = ["on_turn_failed", "on_turn_finalized", "reconcile_thread_file", "repl
 
 logger = logging.getLogger(__name__)
 _ARTIFACT_URI = re.compile(r"^artifact://(?P<ws>[^/]+)/(?P<name>.+)@v(?P<version>\d+)$")
+#: Parts that mark a tool call in the assistant message: text before one is narration.
+_CALL_PARTS = frozenset({"tool", "tool_call", "tool_result"})
 _REPLY_LIMIT = 16_000
 
 
@@ -53,8 +55,23 @@ def _belongs(app: "FastAPI", sid: str, message_id: str, turn_id: str) -> bool:
 
 
 def _reply_text(message: Any) -> str:
-    texts = [str(part.text) for part in message.parts if part.type == "text" and part.text]
-    return "\n\n".join(texts).strip()[:_REPLY_LIMIT]
+    """The agent's answer: its text after its last tool call (the narration before each call
+    is not the reply), or all of its text when it called no tool."""
+
+    final: list[str] = []
+    for part in message.parts:
+        if part.type == "text":
+            if str(part.text or "").strip():
+                final.append(str(part.text).strip())
+        elif part.type in _CALL_PARTS:
+            final = []
+    if not final:
+        final = [
+            str(p.text).strip()
+            for p in message.parts
+            if p.type == "text" and str(p.text or "").strip()
+        ]
+    return "\n\n".join(final)[:_REPLY_LIMIT]
 
 
 def _linked_version(app: "FastAPI", message: Any, thread: ArtifactReview) -> str:

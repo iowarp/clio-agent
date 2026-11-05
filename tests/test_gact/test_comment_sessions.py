@@ -517,3 +517,25 @@ def test_a_malformed_comment_session_is_refused(tmp_path: Path) -> None:
         posted = _attach(client, session_id, {"kind": "a2ui-surface", "marks": []})
     assert posted.status_code == 422
     assert posted.json()["error"]["error"] == "invalid_comment_session"
+
+
+def test_a_reply_is_what_the_agent_said_after_its_last_tool_call() -> None:
+    from types import SimpleNamespace
+
+    from clio_agent.gact.documents.comment_replies import _reply_text
+
+    def part(kind: str, text: str = "") -> SimpleNamespace:
+        return SimpleNamespace(type=kind, text=text)
+
+    message = SimpleNamespace(
+        parts=[
+            part("text", "I'll move the legend below the axes."),
+            part("tool_call"),
+            part("tool_result"),
+            part("text", "  \n\n "),
+            part("text", "I moved the legend below the axes and regenerated the PNG."),
+        ]
+    )
+    assert _reply_text(message) == "I moved the legend below the axes and regenerated the PNG."
+    plain = SimpleNamespace(parts=[part("text", "Done."), part("text", " ")])
+    assert _reply_text(plain) == "Done."
