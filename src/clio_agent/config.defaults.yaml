@@ -934,11 +934,6 @@ arc.liveness.backoff_initial_s: 2.0
 # lower to fail faster overall, raise to tolerate longer hiccups.
 arc.liveness.backoff_max_s: 15.0
 
-# CLIO_ARC_LIVENESS_FIRST_POLL_S  (float)  <- src/clio_agent/arc/clio_core_async_ops.py
-# Seconds of the first sleep while a clio-core write is pending; later
-# checks back off to 10 ms. Read once per process.
-arc.liveness.first_poll_s: 0.0001
-
 # CLIO_ARC_LIVENESS_MAX_WAIT_S  (float)  <- src/clio_agent/arc/daemon_progress.py
 # Ceiling (seconds) on waiting for a clio-core answer while the daemon is
 # visibly working (its CPU or I/O advancing); a daemon making no progress is
@@ -951,9 +946,9 @@ arc.liveness.max_wait_s: 180.0
 arc.liveness.retries: 3
 
 # CLIO_ARC_LIVENESS_SAMPLE_AFTER_S  (float)  <- src/clio_agent/arc/clio_core_async_ops.py
-# How long a pending clio-core call is polled before the daemon's progress
-# is first measured; a stall is still decided a whole stall window after
-# that.
+# How long a pending clio-core call is waited for before the daemon's
+# progress is first measured; a stall is still decided a whole stall window
+# after that.
 arc.liveness.sample_after_s: 0.1
 
 # CLIO_ARC_LIVENESS_STALL_AFTER_S  (float)  <- src/clio_agent/arc/rpc_liveness.py

@@ -36,7 +36,6 @@ These resolve through `clio_agent.conf`: a value under the dotted key in `config
 | `CLIO_ARC_HIGHWAY_DEFERRED` | `arc.highway_deferred` | bool | `true` | `src/clio_agent/gact/highway_writer.py` |
 | `CLIO_ARC_LIVENESS_BACKOFF_INITIAL_S` | `arc.liveness.backoff_initial_s` | float | `2.0` | `src/clio_agent/arc/rpc_liveness.py` |
 | `CLIO_ARC_LIVENESS_BACKOFF_MAX_S` | `arc.liveness.backoff_max_s` | float | `15.0` | `src/clio_agent/arc/rpc_liveness.py` |
-| `CLIO_ARC_LIVENESS_FIRST_POLL_S` | `arc.liveness.first_poll_s` | float | `0.0001` | `src/clio_agent/arc/clio_core_async_ops.py` |
 | `CLIO_ARC_LIVENESS_MAX_WAIT_S` | `arc.liveness.max_wait_s` | float | `180.0` | `src/clio_agent/arc/daemon_progress.py` |
 | `CLIO_ARC_LIVENESS_RETRIES` | `arc.liveness.retries` | int | `3` | `src/clio_agent/arc/rpc_liveness.py` |
 | `CLIO_ARC_LIVENESS_SAMPLE_AFTER_S` | `arc.liveness.sample_after_s` | float | `0.1` | `src/clio_agent/arc/clio_core_async_ops.py` |
