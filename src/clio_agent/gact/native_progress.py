@@ -87,4 +87,7 @@ class NativeProgress:
                 type(error).__name__,
             )
             self.work.recovery.defer("native-output:" + identity, confirm)
+        if isinstance(output, dict) and str(output.get("type") or "").startswith("clio.code."):
+            # The task row reads the status message: a script's is its summary line.
+            message = str(output.get("summary") or "")
         await self.sdk.report_progress(progress, total, message)

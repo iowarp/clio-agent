@@ -192,6 +192,11 @@ def test_task_progress_reaches_the_row_and_wakes_nobody(world: Any) -> None:
     # The row reads as the script's status, not as shell output (SABOTAGE: record code
     # rows like shell chunks in NativeProgress -> "Shell output available", unit bytes).
     assert line.endswith("1 of 2: half way") and " call" in line and unit == ""
+    # Named by its first line when it has no label (SABOTAGE: label=context.tool in
+    # NativeTools.submit -> "run_code_task").
+    assert app.state.task_history.task_snapshot(handle).label == (
+        "await task.progress('half way', done=1, total=2)"
+    )
     assert _settled(app, handle).status == "completed"
 
 

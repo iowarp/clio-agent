@@ -291,7 +291,7 @@ def launch_background(
     arguments = {
         "code": code,
         "launch": key,
-        "label": label,
+        "label": name[:80],  # the task row's title and the name its notifies carry
         "_clio_task_description": f"Background script: {name}"[:200],
     }
     boundary = app.state.builtin_boundary

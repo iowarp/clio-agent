@@ -419,7 +419,10 @@ class NativeTools:
                     owner=context.owner,
                     description=description,
                     description_missing=False,
-                    label=context.tool,
+                    # A background script is named by its label, not by the worker.
+                    label=str(context.arguments.get("label") or "") or context.tool
+                    if kind == "Code"
+                    else context.tool,
                     invocation_id=context.invocation_id,
                     tool=context.tool,
                     created_at=stamp,
