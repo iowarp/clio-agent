@@ -7,15 +7,16 @@ several store writes and rewrites the artifact's record, so a script registering
 second would grow a record per second. From a background script, a registration of a
 name that got a version less than ``artifacts.version_interval_s`` ago is deferred: the
 call is answered at once, and one version is recorded when the interval ends, with the
-file's bytes at that moment (the latest wins; nothing is dropped). A model's own call,
-and a synchronous script, register at once as before. State that changes every second
+file's bytes at that moment (the latest wins; nothing is dropped; a write that fails then
+is traced as ``artifact_version_deferred_failed``). A name whose last version is an
+interval old is forgotten. A model's own call, and a synchronous script, register at once
+as before. State that changes every second
 belongs in a stream, not in versions of a file.
 """
 
 from __future__ import annotations
 
 import contextvars
-import logging
 import threading
 import time
 from collections.abc import Callable
@@ -23,7 +24,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Any
 
-logger = logging.getLogger(__name__)
+from clio_agent.runtime import trace
 
 #: The deferred registration of a name failed when its interval ended (logged and traced).
 VERSION_DEFERRED_FAILED = "artifact_version_deferred_failed"
@@ -64,6 +65,19 @@ def _state(key: tuple[str, str, str]) -> _Name:
         return _NAMES.setdefault(key, _Name())
 
 
+def _prune(now: float, interval: float) -> None:
+    """Forget the names whose last version is an interval old and that wait for none: a
+    registration of one now would be recorded at once anyway."""
+    with _NAMES_LOCK:
+        idle = [
+            key
+            for key, state in _NAMES.items()
+            if state.pending is None and state.timer is None and now - state.last >= interval
+        ]
+        for key in idle:
+            del _NAMES[key]
+
+
 def _run_pending(key: tuple[str, str, str]) -> None:
     state = _state(key)
     with state.lock:
@@ -74,7 +88,8 @@ def _run_pending(key: tuple[str, str, str]) -> None:
     try:
         register()
     except (OSError, ValueError, RuntimeError) as exc:  # the version's write failed: typed
-        logger.warning(
+        trace.event(
+            "ARTIFACT",
             "deferred artifact version failed reason=%s session=%s name=%s error=%r",
             VERSION_DEFERRED_FAILED,
             key[0],
@@ -99,8 +114,9 @@ def pace(
     if active_background_task() is None or interval <= 0:
         return None
     key = (session_id, workspace_id, name)
-    state = _state(key)
     now = time.monotonic()
+    _prune(now, interval)
+    state = _state(key)
     with state.lock:
         wait = state.last + interval - now
         if wait <= 0 and state.timer is None:

@@ -419,3 +419,58 @@ def test_a_background_script_runs_in_its_launchers_context() -> None:
         return await _on_own_thread("t", active_session)
 
     assert asyncio.run(main()) == "sess_context_check"
+
+
+def test_queued_notifies_are_sent_when_the_task_settles_before_its_result(
+    world: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A notify still queued in its window when the script ends is sent then, before the
+    task settles (so before its result mail), not when the window ends.
+
+    SABOTAGE: drop the ``notifies`` step of ``_script_ended`` -> "two" waits for the
+    30 s window, after the result -> red."""
+    from clio_agent.gact import code_task_reporting as reporting
+
+    app, sid, root = world
+    monkeypatch.setenv("CLIO_CODE_NOTIFY_MIN_INTERVAL_S", "30")
+    monkeypatch.setattr(reporting, "_WINDOWS", {})
+    sent: list[tuple[str, bool]] = []
+
+    def send(_app: Any, _owner: str, entries: list[dict[str, Any]]) -> None:
+        for entry in entries:
+            task = app.state.task_history.task_snapshot(entry["handle"])
+            sent.append((entry["message"], task is not None and task.terminal_at is None))
+
+    monkeypatch.setattr(reporting, "_send", send)
+    code = "await task.notify('one')\nawait task.notify('two')"
+    handle = str(_launch(app, sid, root, code, label="pair")["handle"])
+    task = _settled(app, handle)
+    assert task.status == "completed"
+    assert sent == [("one", True), ("two", True)]  # both before the task settled
+    assert not reporting._WINDOWS[sid].pending
+    assert reporting._WINDOWS[sid].timer is None  # nothing left to send later
+
+
+def test_a_task_cancelled_before_its_worker_runs_leaves_no_staged_launch(
+    world: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """SABOTAGE: drop the ``take_launch`` in ``native_run_code``'s finally -> the approved
+    script stays staged forever -> red."""
+    from clio_agent.gact.native_work import NativeWork
+
+    app, sid, root = world
+    keys: list[str] = []
+    real_stage = native_code.stage_launch
+
+    def stage(launch: Any) -> str:
+        keys.append(real_stage(launch))
+        return keys[-1]
+
+    async def refused(*_args: Any, **_kwargs: Any) -> dict[str, Any]:
+        raise RuntimeError("cancelled before admission")
+
+    monkeypatch.setattr(native_code, "stage_launch", stage)
+    monkeypatch.setattr(NativeWork, "run", refused)
+    handle = str(_launch(app, sid, root, "1")["handle"])
+    _settled(app, handle)
+    assert keys and not native_code.staged(keys[0])

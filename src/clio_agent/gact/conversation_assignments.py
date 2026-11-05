@@ -157,7 +157,7 @@ def observe_child_lifecycle(self: Conversations, task: TaskSnapshot, *, started:
     """Publish retained observation hooks from the conversation owner's transitions."""
     if task.kind != "Subagent":
         return
-    if not started:  # a settled child's browser pages close with it (browser plan BR6)
+    if not started:  # a settled child's pages close with it, or with its last script (BR6)
         from clio_agent.gact.session_processes import close_child_pages  # noqa: PLC0415
 
         close_child_pages(task.owner.session_id)  # this runs off the event loop

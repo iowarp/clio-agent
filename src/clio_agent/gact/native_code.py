@@ -10,9 +10,15 @@ grant, its parent call id and its session.
 What cannot cross the task boundary as JSON (the agent's tools and that context) passes
 through :data:`_LAUNCHES`: staged by ``run_code`` under a fresh key, the key sent as the
 task's argument, and taken by the worker when it starts. It is a hand-off, not a registry
-of running scripts: an entry lives from approval to the worker's start. After a restart
-the entry is gone, so a redelivered task fails with ``code_task_launch_missing`` rather
-than running without its approval.
+of running scripts: an entry lives from approval to the worker's start, or to the task's
+settling when it never started (cancelled first). After a restart the entry is gone, so a
+redelivered task fails with ``code_task_launch_missing`` rather than running without its
+approval.
+
+When a script ends, before its task settles: its streams stop, its queued notifies are
+sent (so they come before its result), and its session's script count drops (a settled
+child's pages close with its last script). None of that can turn the script's outcome
+into a failure; a step that fails is traced as ``code_task_settle_step_failed``.
 """
 
 from __future__ import annotations
@@ -55,6 +61,8 @@ __all__ = [
 CODE_TASK_TOOL = "run_code_task"
 #: Typed failure: the worker found no staged launch (a restart, or a forged key).
 CODE_TASK_LAUNCH_MISSING = "code_task_launch_missing"
+#: Traced: a step of a script's end (its streams, notifies, pages) failed; the outcome stands.
+CODE_TASK_SETTLE_STEP_FAILED = "code_task_settle_step_failed"
 
 
 @dataclass(frozen=True)
@@ -196,6 +204,9 @@ def _run(
     launch.prepared.context.run(OBSERVATION_GROUP.set, grouper)
     app = launch.prepared.context.run(gact_context.active_app)
     reserved = reporting.handlers(app, launch.session_id, handle, live.get("label", ""), live)
+    from clio_agent.gact import session_processes  # noqa: PLC0415
+
+    session_processes.script_started(launch.session_id, handle)
     try:
         return execute_script(
             launch.prepared,
@@ -209,9 +220,33 @@ def _run(
     finally:
         grouper.flush()  # what was held is recorded when the script ends
         kernels.discard(kernel, "task_settled")
-        from clio_agent.gact.streams.store import stream_store  # noqa: PLC0415
+        _script_ended(app, launch.session_id, handle)
 
-        stream_store(app).stop_task(handle)  # its streams stop, their last rows kept
+
+def _script_ended(app: Any, session_id: str, handle: str) -> None:
+    """A script's end, before its task settles (module doc); never raises."""
+    from clio_agent.gact import code_task_reporting as reporting  # noqa: PLC0415
+    from clio_agent.gact import session_processes  # noqa: PLC0415
+    from clio_agent.gact.streams.store import stream_store  # noqa: PLC0415
+    from clio_agent.runtime import trace  # noqa: PLC0415
+
+    steps = (
+        ("streams", lambda: stream_store(app).stop_task(handle)),  # their last rows kept
+        ("notifies", lambda: reporting.flush_task(app, session_id, handle)),  # before result
+        ("pages", lambda: session_processes.script_ended(session_id, handle)),
+    )
+    for name, step in steps:
+        try:
+            step()
+        except (OSError, RuntimeError, ValueError, TypeError) as exc:
+            trace.event(
+                "CODE",
+                "code task end step failed reason=%s step=%s task=%s error=%s",
+                CODE_TASK_SETTLE_STEP_FAILED,
+                name,
+                handle,
+                exc,
+            )
 
 
 def _on_own_thread(handle: str, run: Any) -> asyncio.Future[Any]:
@@ -327,6 +362,12 @@ def register_native_code(root: NativeRoot, work: NativeWork) -> None:
                 "text": bounded_model_tool_result(model_text(outcome)),
             }
 
-        return await work.run(
-            _clio_submission, CODE_TASK_TOOL, {"code": code, "launch": launch, "label": label}, body
-        )
+        try:
+            return await work.run(
+                _clio_submission,
+                CODE_TASK_TOOL,
+                {"code": code, "launch": launch, "label": label},
+                body,
+            )
+        finally:
+            take_launch(launch)  # a task cancelled before its worker started leaves none
