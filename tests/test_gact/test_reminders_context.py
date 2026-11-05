@@ -203,8 +203,9 @@ def _bounded(monkeypatch: pytest.MonkeyPatch, spilled: Path | Exception) -> tupl
         ),
         (
             Path("/w/out.json"),
-            "the full result is in `/w/out.json`; it is one JSON document, so search it with "
-            "fs_search_text or load it in a script",
+            "the full result is in `/w/out.json`, saved as one indented JSON document; search "
+            "it with fs_search_text, read it with fs_read_file, or, where you can run scripts, "
+            "load it in one",
         ),
         (
             OSError("disk full"),

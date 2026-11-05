@@ -346,16 +346,16 @@ def test_model_lane_bounds_a_tabular_result_with_head_and_spill_file(
     assert len(text) <= result_room().chars
     assert text.startswith(f"[clio: result_spilled] This result is {len(full):,} characters")
     assert '"rows": 1101' in text
-    # The tail is not in the prompt; it is in the file, exactly as produced.
+    # The tail is not in the prompt; it is in the file, the same value saved indented.
     assert "earthscope_stations_clean.csv" not in text
-    assert _spilled_text(text) == full
+    assert json.loads(_spilled_text(text)) == payload
 
 
 def test_model_lane_bounds_a_quote_dense_tabular_result(tmp_path: Path) -> None:
     """A quote-dense row-dict payload (the station/geocode shape) stays within the bound.
 
     The old envelope re-escaped its slices and overran the cap on this shape; the
-    head is now raw text, so the bound holds and the file keeps the exact original.
+    head is now raw text, so the bound holds and the file keeps the same value (indented).
     """
 
     from clio_agent.tools.mcp_executor import _result_to_text
@@ -377,7 +377,7 @@ def test_model_lane_bounds_a_quote_dense_tabular_result(tmp_path: Path) -> None:
         text = bounded_model_tool_result(_result_to_text(payload))
 
     assert len(text) <= result_room().chars
-    assert _spilled_text(text) == json.dumps(payload)
+    assert json.loads(_spilled_text(text)) == payload
 
 
 def test_model_lane_bounds_an_escape_dense_result(tmp_path: Path) -> None:
