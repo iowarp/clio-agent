@@ -17,19 +17,11 @@ from clio_agent.gact.code_mode import kernels
 from clio_agent.gact.code_mode import tool as tool_module
 from clio_agent.plugins.kernel_bindings import attach
 from clio_agent.tools.execution import tool_workspace_context
+from tests._marketplace import MARKETPLACE_ROOT
 
 pytestmark = pytest.mark.timeout(120)  # real kernel processes
 
-FACADE = (
-    Path(__file__).resolve().parents[2]
-    / "external"
-    / "clio-agent-marketplace"
-    / "plugins"
-    / "browser"
-    / "ai.iowarp.clio"
-    / "kernel"
-    / "browser.py"
-)
+FACADE = MARKETPLACE_ROOT / "plugins" / "browser" / "ai.iowarp.clio" / "kernel" / "browser.py"
 
 
 def _binding(source: str) -> dict[str, str]:
@@ -115,6 +107,7 @@ def test_a_binding_that_fails_is_reported_and_left_out(workspace: Path) -> None:
     assert "broken" not in kernels._KERNELS[("kb", "main")].bound_bindings
 
 
+@pytest.mark.marketplace
 def test_the_browser_facade_builds_targets_and_calls_the_tools(workspace: Path) -> None:
     recorder = _Recorder()
     agent = _agent(recorder, {"browser": _binding(FACADE.read_text())})

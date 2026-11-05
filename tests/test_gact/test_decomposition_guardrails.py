@@ -220,7 +220,10 @@ from clio_agent.gact.app import build_app
 # (routes/schedules.py, with GET /v1/sessions/{sid}/work).
 # 432 -> 435: the plugin tools page (TD54), routes/tool_settings.py: GET and PUT
 # /v1/settings/tools and POST /v1/settings/tools/rules/remove.
-EXPECTED_ROUTE_METHOD_PAIRS = 435
+# 435 -> 439: the in-app browser, gact/browser/live.py: GET and POST
+# /v1/sessions/{sid}/browser/pages, POST .../pages/{page_id}/allow-host and
+# POST .../pages/{page_id}/trust-certificate (the live view is a WebSocket route).
+EXPECTED_ROUTE_METHOD_PAIRS = 439
 
 # app.py is build_app + lifecycle + re-export shims only. The ceiling is
 # the current size (~2892 lines) plus ~300 lines of headroom so ordinary
