@@ -176,7 +176,11 @@ def _run(
             output_path=str(live.get("output_path") or ""),
         )
     finally:
+        from clio_agent.gact.a2ui_live_feed import flush_task  # noqa: PLC0415
+
         grouper.flush()  # what was held is recorded when the script ends
+        if app is not None:
+            flush_task(app, handle)  # the surfaces it fed get their final checkpoint
         kernels.discard(kernel, "task_settled")
 
 

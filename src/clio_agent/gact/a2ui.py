@@ -27,6 +27,8 @@ from clio_agent.gact.a2ui_catalogs.validation import (
     validate_value,
 )
 from clio_agent.gact.a2ui_component_fold import (
+    apply_revision_floor,
+    drop_superseded_data_model,
     is_structural_message,
     materialize_update_components,
 )
@@ -442,6 +444,9 @@ def _apply_staged_message(
             new_revision,
         )
     else:
+        surface.messages, surface.message_revisions = drop_superseded_data_model(
+            surface.messages, surface.message_revisions, message
+        )
         if len(surface.messages) >= max_a2ui_messages():
             removable = next(
                 (
@@ -733,6 +738,7 @@ def project_a2ui_parts(
                 capture=False,
                 created_surface_ids=created_surface_ids,
             )
+            apply_revision_floor(surfaces, touched, metadata)
         except A2UICatalogUnknownError as exc:
             for key, record in snapshot.items():
                 if record is None:

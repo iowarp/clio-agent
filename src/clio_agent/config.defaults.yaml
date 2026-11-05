@@ -514,6 +514,12 @@ workflows.max_edit_rounds: 0
 # The GACT HTTP/SSE server: ledgers, the transcript file copy, auth, hooks,
 # A2UI payload bounds and context auto-compaction.
 
+# CLIO_A2UI_LIVE_CHECKPOINT_S  (str)  <- src/clio_agent/gact/a2ui_live_feed.py
+# Seconds between two transcript checkpoints of a surface a background
+# run_code script feeds; between them its updates are state, sent to viewers
+# as they happen. Default 60.
+a2ui.live_checkpoint_s: "60.0"
+
 # CLIO_A2UI_MAX_MESSAGE_BYTES  (int)  <- src/clio_agent/gact/a2ui.py
 # Byte ceiling on one encoded A2UI server-to-client message; raise only for
 # trusted producers emitting larger surface updates.
