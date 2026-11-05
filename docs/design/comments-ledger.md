@@ -14,13 +14,15 @@ Decisions use the prefix `FB`, qualification scenarios `K`.
 **Base.** The head of `claude/tool-calling-long-horizon` (the PTC branch), which has merged the
 browser branch `claude/gracious-goldberg-gagoo4`: clio-agent `1928f984` (merge `5c2449c1`),
 gact-tui `ae59c622`, marketplace `31e2357`. The plan was read against clio-agent `c90ca484`
-and gact-tui `941e6f21`; both are ancestors of this base. Rebase onto `develop` when the PTC
-branch merges. No LaTeX-plan branch exists in any of the three repositories, and the LaTeX
+and gact-tui `941e6f21`; both are ancestors of this base. **Merge path.** This branch merges into
+the PTC branch, and the PTC branch merges into `develop` after verification; the draft PRs target
+`claude/tool-calling-long-horizon`. No LaTeX-plan branch exists in any of the three repositories, and the LaTeX
 plan itself is not in this repository (only its addendum A is), so its `source-map` resolver
 registers later through the registry this plan defines.
 
-**State of this ledger.** Phase 0 only. No production code has changed. Every decision below
-that implementation must carry out is `open`, and every scenario is `open`.
+**State of this ledger.** Phase 0 and the planning phase are done; the planning phase settled
+Q1 to Q6 as FB22 to FB30. Every decision that implementation must carry out is `open` until its
+evidence is recorded.
 
 ## Phase 0 measurements
 
@@ -54,7 +56,7 @@ scratch workspace `ws_9301a34cc6d2` at `.cloud-run/p0-figures/`, with a syntheti
 
 | ID | Decision | Source | Evidence | Status |
 | --- | --- | --- | --- | --- |
-| FB1 | Work on the head of the PTC branch `claude/tool-calling-long-horizon`, which contains the browser branch, in all three repositories, on `claude/busy-turing-r40z0q`; rebase onto `develop` when the PTC branch merges. | Plan, "Base"; the person's direction | This ledger's header | done |
+| FB1 | Work on the head of the PTC branch `claude/tool-calling-long-horizon`, which contains the browser branch, in all three repositories, on `claude/busy-turing-r40z0q`. The work merges into the PTC branch, which merges into `develop` after verification; nothing is force-pushed. | Plan, "Base"; the person's direction | This ledger's header | done |
 | FB2 | The plan and its addendum live in `docs/design/sdk/` beside the browser plan they replace part of; this ledger is at `docs/design/comments-ledger.md`, the path the plan's contract table names. | Plan, "Contract" | This file | done |
 | FB3 | Phase 0 changes no production code. The person asked for a planning phase after Phase 0, so Phase 1 starts after that plan, not straight after Phase 0. | The person's direction | This ledger, "State" | done |
 | FB4 | Delete the ONLYOFFICE and Collabora integrations in one change in each repository, keeping the desktop working copy (measurement 1a). Remove the `provider` field rather than narrowing it, so stored working copies still load (1b). | Plan, "Removing the embedded Office editors"; Phase 0 item 1 | Measurements 1, 1a, 1b | open |
@@ -75,10 +77,19 @@ scratch workspace `ws_9301a34cc6d2` at `.cloud-run/p0-figures/`, with a syntheti
 | FB19 | Comments on browser pages, agent answers and A2UI surfaces are attachments to the next message, not stored reviews. | Plan, defaults table | | open |
 | FB20 | When no transform is recorded, the entry says the producer is unknown. | Plan, defaults table | | open |
 | FB21 | SVG images take region and element. | Plan, defaults table | | open |
+| FB22 | No per-call file-write detection. The comment panel also runs in the workspace file view; a workspace file that is not an artifact is registered as one (designation `comment-target`, no producing call) when the person first comments on it, and its entry says the producer is unknown. When the agent registered the file, "Produced by" reads its transforms. | Q1; the person's direction in planning | | open |
+| FB23 | The attention set keeps clio-schemas `ContentSelection`. Rule 1 and K20 cover comment, review, annotation and capture types only. | Q2; the person's choice | Measurement 2c | open |
+| FB24 | Images go only when the selected model passes the same image test `message_submission.py:308-312` applies; otherwise the entries go without image parts, and the header says so and names the session file holding the overview and crops. A request's `comment_session` parts are expanded into image parts and the model text (`internal_model_text`) by one helper, before validation, on both entry points (`accept_message_async` and the mailbox promote). | Q3 | | open |
+| FB25 | A draft is a review row with status `draft` in the workspace's `documents/reviews.jsonl`. | Q6; rule "no fifth store" | | open |
+| FB26 | Replies: one publication step in `turn_finalize.publish_finalized_turn`, and one in `publish_failed_finalize`, calls `documents/comment_replies.py`. It finds the turn's comment sessions (the user message's metadata, and steers committed with that turn), stores the final assistant text on every thread, and links the version from the assistant message's `resource_link` parts. A failed turn stores the failure, not a reply. | Q5 | | open |
+| FB27 | Re-anchoring runs lazily when threads are listed and the head is newer than a thread's version, and persists an idempotent moved or outdated row. Region threads stay `current` on their own version. | Plan, "New versions" | | open |
+| FB28 | A rerun or a shell edit leaves the head unchanged, so at finalize, and when a file opens for commenting, the server reconciles each commented file's path (`artifacts/versions.reconcile_designated_path`) to record the new version that threads link and re-anchor against. | Planning review | | open |
+| FB29 | Artifacts are named by basename (`minting.artifact_name_for_path`). On-demand registration first looks the file up by path (`registry.find_version_by_path`), and names a file by its workspace-relative path when another path already holds the basename. | Planning review | | open |
+| FB30 | When the agent registered a figure itself, `transforms_generating` returns its `create_artifact` call; "Produced by" follows that call's `used` edges and the transform's `instrument.script_artifact_id` to the script. | Planning review | | open |
 
 ## Open questions for the planning phase
 
-These came out of Phase 0 and need a choice before Phase 1.
+These came out of Phase 0. The planning phase settled them: Q1 as FB22 and FB28, Q2 as FB23, Q3 as FB24, Q4 as FB22, Q5 as FB26, Q6 as FB25.
 
 | ID | Question | What Phase 0 found | Recommendation |
 | --- | --- | --- | --- |
@@ -98,12 +109,12 @@ Cloud phase unless marked. K11 is as amended by addendum A; K21 to K24 are added
 | --- | --- | --- | --- |
 | K1 | Open a `.docx`, a `.pptx` and an `.odt` | Each shows its rendition; no embedded editor is offered | open |
 | K2 | A text comment on a sentence in a Markdown report, sent | The agent receives the entry with before and after text and no anchor JSON, edits the source, and the thread shows its reply and the new version | open |
-| K3 | Ask the agent for a throughput plot from a CSV, then a region comment on its legend | The entry has the crop as an image part and a "Produced by" line naming the script; the agent edits the script, reruns it and looks at the new image; the thread links version 2 and shows before and after | open (needs Q1) |
-| K4 | The same as K3 when the agent drew the plot inside `run_code` | "Produced by" names the `run_code` cell | open (needs Q1) |
+| K3 | Ask the agent for a throughput plot from a CSV, then a region comment on its legend | The entry has the crop as an image part and a "Produced by" line naming the script; the agent edits the script, reruns it and looks at the new image; the thread links version 2 and shows before and after | open |
+| K4 | The same as K3 when the agent drew the plot inside `run_code` | "Produced by" names the `run_code` cell | open |
 | K5 | An element comment on a series in an SVG figure | The anchor's selector matches one element, and the agent's change affects that series | open |
 | K6 | An element comment on a button in an HTML artifact | The selector matches exactly one element, and the agent's edit changes that element | open |
 | K7 | A region comment on part of an HTML artifact | The crop comes from the server's render of that version | open |
-| K8 | A region comment on a chart on slide 4 of a `.pptx` whose picture is a workspace PNG | The entry names slide 4, the shape, the PNG and its producing script; the agent fixes the script and rebuilds the deck | open (needs Q1) |
+| K8 | A region comment on a chart on slide 4 of a `.pptx` whose picture is a workspace PNG | The entry names slide 4, the shape, the PNG and its producing script; the agent fixes the script and rebuilds the deck | open |
 | K9 | A text comment on a `.docx` rendition | The entry names the paragraph, and the agent edits the `.docx` | open |
 | K10 | A native `@clio` comment in a `.docx` | It becomes a review as today | open |
 | K11 | Three marks of mixed modes on one PDF in one session, sent together | One turn carries the overview, three entries labelled `S1` to `S3` with their crops and the text under each, and no JSON, and each thread shows the reply and the new version | open |
