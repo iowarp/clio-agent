@@ -213,6 +213,37 @@ def _run(
         stream_store(app).stop_task(handle)  # its streams stop, their last rows kept
 
 
+def _on_own_thread(handle: str, run: Any) -> asyncio.Future[Any]:
+    """Run a background script on a thread of its own, its outcome a future on this loop.
+
+    Not the loop's default executor: a script holds its thread for as long as it runs,
+    and its nested calls need that executor's threads (admission, task history), so a
+    few long scripts would starve every script's calls (CK3: 8 threads, 30 scripts,
+    every call stalled). Scripts have no count limit (CT18), so each gets its own thread.
+    """
+    loop = asyncio.get_running_loop()
+    future: asyncio.Future[Any] = loop.create_future()
+
+    def settle(outcome: Any, error: BaseException | None) -> None:
+        if future.done():
+            return
+        if error is not None:
+            future.set_exception(error)
+        else:
+            future.set_result(outcome)
+
+    def target() -> None:
+        try:
+            outcome = run()
+        except BaseException as exc:  # noqa: BLE001 - forwards: the task's awaiting future
+            loop.call_soon_threadsafe(settle, None, exc)
+        else:
+            loop.call_soon_threadsafe(settle, outcome, None)
+
+    threading.Thread(target=target, name=f"code-task-{handle}", daemon=True).start()
+    return future
+
+
 def register_native_code(root: NativeRoot, work: NativeWork) -> None:
     """Register the background script worker on the code root."""
     from clio_agent.gact.native_shell import shell_poll_interval  # noqa: PLC0415
@@ -260,8 +291,8 @@ def register_native_code(root: NativeRoot, work: NativeWork) -> None:
                 "progress": progress,
                 "loop": asyncio.get_running_loop(),
             }
-            running = asyncio.ensure_future(
-                asyncio.to_thread(_run, staged_launch, submission.handle, stop, live)
+            running = _on_own_thread(
+                submission.handle, lambda: _run(staged_launch, submission.handle, stop, live)
             )
 
             async def report() -> None:

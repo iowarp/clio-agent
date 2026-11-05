@@ -316,3 +316,31 @@ def test_a_background_scripts_output_streams_to_its_file(
     result = json.dumps(app.state.task_history.read_content(task.result))
     assert "first line" in result and "last" in result
     assert _Path(path).read_text().splitlines() == ["first line", "last"]
+
+
+def test_background_scripts_never_starve_each_others_calls() -> None:
+    """CK3: each script runs on its own thread, so scripts holding their threads for
+    their whole run cannot take the loop executor their nested calls need.
+
+    SABOTAGE: run each script with ``loop.run_in_executor(None, ...)`` (the old
+    ``asyncio.to_thread``) and the three scripts deadlock on the one-thread executor."""
+    import asyncio
+    import time
+    from concurrent.futures import ThreadPoolExecutor
+
+    from clio_agent.gact.native_code import _on_own_thread
+
+    async def main() -> list[str]:
+        loop = asyncio.get_running_loop()
+        loop.set_default_executor(ThreadPoolExecutor(max_workers=1))
+
+        def script(n: int) -> str:
+            # A nested call: work the loop's default executor runs, awaited from the script.
+            done = asyncio.run_coroutine_threadsafe(asyncio.to_thread(time.sleep, 0.05), loop)
+            done.result(timeout=10)
+            return f"script {n} done"
+
+        futures = [_on_own_thread(f"t{n}", lambda n=n: script(n)) for n in range(3)]
+        return list(await asyncio.wait_for(asyncio.gather(*futures), timeout=15))
+
+    assert asyncio.run(main()) == ["script 0 done", "script 1 done", "script 2 done"]
