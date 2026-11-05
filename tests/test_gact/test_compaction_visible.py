@@ -13,7 +13,7 @@ What is pinned:
 * ``compaction.started`` then ``compaction.completed`` (trigger ``auto``) on the
   highway and the v3 wire; a record that cannot be written emits ``compaction.failed``
   and folds nothing;
-* ``recall_context`` returns a compacted step byte-exact from clio-core;
+* ``recall_context`` returns a compacted step as clio-core recorded it;
 * a manual/panel compaction (``POST /compact?scope=``) gives the same events and
   record; ``/context/compact`` is gone;
 * a stored legacy ``compaction`` part renders as the summarization injection;
@@ -272,7 +272,7 @@ def test_auto_compaction_mid_turn_shows_summary_then_question_and_reloads_the_sa
     [cmp] = [e for e in _compaction_events(events) if e.event_type == "compaction.completed"]
     recall = (
         f'[The steps this summary replaced are kept in full: recall_context(ids=["'
-        f'{cmp.payload["compaction_id"]}"]) returns them byte-exact; '
+        f'{cmp.payload["compaction_id"]}"]) returns the text they recorded; '
         + (
             'recall_context(query="...") searches them.]'
             if app.state.arc.segment_search_is_semantic()

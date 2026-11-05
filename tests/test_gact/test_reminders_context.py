@@ -23,11 +23,11 @@ from tests._result_room import pin_result_room
 # --------------------------------------------------------------------------- #
 _RECALL_SEARCH = (
     '[The steps this summary replaced are kept in full: recall_context(ids=["cmp_1"]) '
-    'returns them byte-exact; recall_context(query="...") searches them.]'
+    'returns the text they recorded; recall_context(query="...") searches them.]'
 )
 _RECALL_IDS = (
     '[The steps this summary replaced are kept in full: recall_context(ids=["cmp_1"]) '
-    "returns them byte-exact; text search is unavailable here. Use ids, not a query.]"
+    "returns the text they recorded; text search is unavailable here. Use ids, not a query.]"
 )
 
 
