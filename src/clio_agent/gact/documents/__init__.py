@@ -2,7 +2,6 @@
 
 from clio_agent.gact.documents.models import (
     ArtifactReview,
-    CreateArtifactReviewRequest,
     CreateRenditionRequest,
     CreateWorkingCopyRequest,
     DocumentAnchor,
@@ -14,7 +13,6 @@ from clio_agent.gact.documents.store import DocumentStore, get_document_store
 
 __all__ = [
     "ArtifactReview",
-    "CreateArtifactReviewRequest",
     "CreateRenditionRequest",
     "CreateWorkingCopyRequest",
     "DocumentAnchor",

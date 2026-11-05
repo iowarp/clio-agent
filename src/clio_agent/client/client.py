@@ -31,9 +31,7 @@ from clio_agent.client.errors import ClioConnectionError, error_from_response
 from clio_agent.client.events import EventStream
 from clio_agent.client.types import (
     Agent,
-    ArtifactReview,
     Capabilities,
-    DocumentAnchor,
     DocumentManifest,
     DocumentWorkingCopy,
     Health,
@@ -550,41 +548,6 @@ class DocumentsAPI:
 
         response = self._client._request("GET", f"/v1/artifacts/{artifact_id}/document/content")
         return response.content
-
-    def reviews(self, artifact_id: str) -> list[ArtifactReview]:
-        """List durable reviews across the artifact's version chain."""
-
-        response = self._client._request("GET", f"/v1/artifacts/{artifact_id}/reviews")
-        return [ArtifactReview.model_validate(row) for row in response.json().get("reviews", [])]
-
-    def review(
-        self,
-        session_id: str,
-        *,
-        artifact_id: str,
-        expected_version: int,
-        expected_sha256: str,
-        anchor: DocumentAnchor,
-        text: str,
-        idempotency_key: str,
-        allow_historical: bool = False,
-    ) -> ArtifactReview:
-        """Create and immediately dispatch one anchored review instruction."""
-
-        response = self._client._request(
-            "POST",
-            f"/v1/sessions/{session_id}/artifact-reviews",
-            json={
-                "artifact_id": artifact_id,
-                "expected_version": expected_version,
-                "expected_sha256": expected_sha256,
-                "anchor": anchor.model_dump(mode="json"),
-                "text": text,
-                "idempotency_key": idempotency_key,
-                "allow_historical": allow_historical,
-            },
-        )
-        return ArtifactReview.model_validate(response.json())
 
     def render_pdf(self, artifact_id: str, *, session_id: str) -> DocumentManifest:
         """Create a derived PDF rendition."""

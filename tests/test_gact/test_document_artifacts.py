@@ -137,22 +137,20 @@ def test_review_is_version_bound_dispatched_once_and_preserved_as_typed_part(
             "artifact_id": pinned["artifact_id"],
             "expected_version": pinned["version"],
             "expected_sha256": pinned["sha256"],
-            "anchor": {
-                "profile": "text-quote",
-                "exact": "Initial text.",
-                "prefix": "# Finding\n",
-            },
-            "text": "Make this conclusion more precise.",
+            "marks": [
+                {
+                    "anchor": {
+                        "profile": "text-quote",
+                        "exact": "Initial text.",
+                        "prefix": "# Finding\n",
+                    },
+                    "comment": "Make this conclusion more precise.",
+                }
+            ],
             "idempotency_key": "review-idempotency-0001",
         }
-        first = client.post(
-            f"/v1/sessions/{session_id}/artifact-reviews",
-            json=payload,
-        )
-        second = client.post(
-            f"/v1/sessions/{session_id}/artifact-reviews",
-            json=payload,
-        )
+        first = client.post(f"/v1/sessions/{session_id}/comment-sessions", json=payload)
+        second = client.post(f"/v1/sessions/{session_id}/comment-sessions", json=payload)
         deadline = time.time() + 5
         while not agent.calls and time.time() < deadline:
             time.sleep(0.02)
@@ -160,7 +158,7 @@ def test_review_is_version_bound_dispatched_once_and_preserved_as_typed_part(
 
     assert first.status_code == 202, first.text
     assert second.status_code == 202, second.text
-    assert first.json()["id"] == second.json()["id"]
+    assert first.json()["threads"][0]["id"] == second.json()["threads"][0]["id"]
     assert len(agent.calls) == 1
     user_message = next(message for message in messages if message["role"] == "user")
     review_part = next(part for part in user_message["parts"] if part["type"] == "artifact_review")
@@ -183,13 +181,17 @@ def test_stale_review_is_rejected_before_dispatch(tmp_path: Path) -> None:
         markdown.write_text("version two")
         _pin(client, session_id, markdown.name)
         response = client.post(
-            f"/v1/sessions/{session_id}/artifact-reviews",
+            f"/v1/sessions/{session_id}/comment-sessions",
             json={
                 "artifact_id": first["artifact_id"],
                 "expected_version": first["version"],
                 "expected_sha256": first["sha256"],
-                "anchor": {"profile": "text-quote", "exact": "version one"},
-                "text": "change this",
+                "marks": [
+                    {
+                        "anchor": {"profile": "text-quote", "exact": "version one"},
+                        "comment": "change this",
+                    }
+                ],
                 "idempotency_key": "review-idempotency-0002",
             },
         )
@@ -297,7 +299,7 @@ def test_working_copy_save_mints_revision_and_stale_save_conflicts(tmp_path: Pat
 
         assert updated.head_version == 2
         assert updated.last_sha256 == hashlib.sha256(Path(updated.path).read_bytes()).hexdigest()
-        reviews = client.get(f"/v1/artifacts/{updated.head_artifact_id}/reviews").json()["reviews"]
+        reviews = client.get(f"/v1/artifacts/{updated.head_artifact_id}/threads").json()["threads"]
 
         document.write_bytes(b"external version")
         external = _pin(client, session_id, document.name)

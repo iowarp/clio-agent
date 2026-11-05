@@ -230,7 +230,9 @@ from clio_agent.gact.app import build_app
 # /v1/workspaces/{wid}/comment-targets, GET /v1/artifacts/{id}/threads, PUT
 # .../comment-drafts, POST /v1/sessions/{sid}/comment-sessions and GET
 # /v1/document-threads/{id}/crop.
-EXPECTED_ROUTE_METHOD_PAIRS = 437
+# 437 -> 435: the UI moved onto comment sessions, so GET /v1/artifacts/{id}/reviews and
+# POST /v1/sessions/{sid}/artifact-reviews are deleted (comments plan Phase 4).
+EXPECTED_ROUTE_METHOD_PAIRS = 435
 
 # app.py is build_app + lifecycle + re-export shims only. The ceiling is
 # the current size (~2892 lines) plus ~300 lines of headroom so ordinary

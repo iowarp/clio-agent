@@ -201,20 +201,6 @@ class CommentTargetRequest(BaseModel):
     session_id: str = Field(min_length=1)
 
 
-class CreateArtifactReviewRequest(BaseModel):
-    """Create and immediately dispatch one CLIO review instruction."""
-
-    model_config = ConfigDict(extra="forbid")
-
-    artifact_id: str
-    expected_version: int = Field(ge=1)
-    expected_sha256: str
-    anchor: DocumentAnchor
-    text: str = Field(min_length=1, max_length=16_384)
-    idempotency_key: str = Field(min_length=8, max_length=200)
-    allow_historical: bool = False
-
-
 class CreateWorkingCopyRequest(BaseModel):
     """Materialize an exact artifact version for editing in its desktop application."""
 

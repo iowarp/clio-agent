@@ -256,6 +256,24 @@ def render_attachment(
     return handler(app, session_id, attachment, folder, images)
 
 
+_KIND_WORDS = {
+    "agent-answer": "your earlier answer",
+    "a2ui-surface": "a view",
+    "browser-page": "a page",
+}
+
+
+def _transcript_summary(attachment: CommentAttachment) -> str:
+    """The person's marks as their transcript shows them: what each points at, and the
+    comment. The agent reads the rendered entries instead (``internal_model_text``)."""
+
+    title = attachment.title or _KIND_WORDS[attachment.kind]
+    lines = [f"Comments on {title}:"]
+    for mark in attachment.marks:
+        lines.append(f"{mark.label}: {mark.comment.strip() or '(no comment)'}")
+    return "\n".join(lines)
+
+
 def expand_comment_sessions(
     app: "FastAPI", session: Any, parts: list[Part], *, images: bool
 ) -> tuple[list[Part], str]:
@@ -284,6 +302,14 @@ def expand_comment_sessions(
         kept = attachment.model_dump(mode="json")
         kept["images"] = []
         out.append(part.model_copy(update={"metadata": {**part.metadata, "comment_session": kept}}))
+        out.append(
+            Part(
+                id=f"{part.id or 'comment'}-summary",
+                type="text",
+                text=_transcript_summary(attachment),
+                metadata={"comment_summary": True},
+            )
+        )
         for index, (caption, png) in enumerate(rendered.images, start=1):
             out.append(
                 Part(

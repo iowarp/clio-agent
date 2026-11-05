@@ -8,22 +8,17 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 from urllib.parse import quote
 
-from fastapi import FastAPI, HTTPException, Response
+from fastapi import FastAPI, HTTPException
 from fastapi.responses import FileResponse
 
 from clio_agent.gact.artifacts.records import ArtifactRecord, ArtifactVersion
 from clio_agent.gact.artifacts.registry import get_registry
 from clio_agent.gact.documents.artifact_bytes import ArtifactBytesError, artifact_bytes_path
 from clio_agent.gact.documents.comment_sessions import (
-    CommentSessionError,
     dispatch_native,
-    send_session,
 )
 from clio_agent.gact.documents.models import (
     ArtifactReview,
-    CommentMark,
-    CommentSessionRequest,
-    CreateArtifactReviewRequest,
     CreateRenditionRequest,
     CreateWorkingCopyRequest,
     DocumentManifest,
@@ -182,39 +177,6 @@ def register_document_routes(app: FastAPI, deps: "GactDeps") -> None:
                 "style-src 'unsafe-inline'; font-src data:"
             )
         return FileResponse(source, media_type=row.mime_type, headers=headers)
-
-    @app.get("/v1/artifacts/{artifact_id}/reviews")
-    async def list_artifact_reviews(artifact_id: str) -> dict[str, Any]:
-        record, _version = await _artifact(app, artifact_id)
-        reviews = await asyncio.to_thread(store.list_reviews, record.workspace_id, record.name)
-        return {"reviews": [row.model_dump(mode="json") for row in reviews]}
-
-    @app.post("/v1/sessions/{session_id}/artifact-reviews")
-    async def create_artifact_review(
-        session_id: str,
-        request: CreateArtifactReviewRequest,
-    ) -> Response:
-        """One comment sent on its own: a one-mark comment session (comments plan)."""
-
-        session_request = CommentSessionRequest(
-            artifact_id=request.artifact_id,
-            expected_version=request.expected_version,
-            expected_sha256=request.expected_sha256,
-            marks=[CommentMark(anchor=request.anchor, comment=request.text)],
-            idempotency_key=request.idempotency_key,
-            allow_historical=request.allow_historical,
-        )
-        try:
-            sent = await asyncio.to_thread(send_session, app, deps, session_id, session_request)
-        except CommentSessionError as exc:
-            raise _error(exc.status, exc.code, str(exc), **exc.details) from exc
-        thread = sent.threads[0]
-        status = 202 if thread.status == "dispatched" else 503
-        return Response(
-            content=thread.model_dump_json(),
-            media_type="application/json",
-            status_code=status,
-        )
 
     @app.post("/v1/artifacts/{artifact_id}/renditions")
     async def create_rendition(
