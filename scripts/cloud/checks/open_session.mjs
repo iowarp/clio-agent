@@ -1,6 +1,7 @@
 // Open an existing conversation (OPEN_WORKSPACE, OPEN_SESSION), open its collapsed
 // activity rows and every "Run code" row, and capture it; prints the visible text lines
-// that mention a repeat ("Called N times") so a grouped call can be checked.
+// that mention a repeat ("Called N times") so a grouped call can be checked. With
+// OPEN_LINK=1 it then follows the last "Show the task in Work" link and captures it.
 export default async function (page, shot) {
   const ws = process.env.OPEN_WORKSPACE;
   const sid = process.env.OPEN_SESSION;
@@ -17,5 +18,12 @@ export default async function (page, shot) {
   if (await repeats.count()) await repeats.first().scrollIntoViewIfNeeded();
   await shot("session");
   const body = await page.locator("body").innerText();
+  const links = page.getByText("Show the task in Work", { exact: true });
+  if (process.env.OPEN_LINK === "1" && (await links.count())) {
+    // The last launch's link: a finished task must still show its row (Completed work).
+    await links.last().click();
+    await page.waitForTimeout(2000);
+    await shot("task-link");
+  }
   console.log(JSON.stringify({ repeats: body.split("\n").filter((l) => /Called \d+ times|calls? from this script/.test(l)) }, null, 2));
 }
