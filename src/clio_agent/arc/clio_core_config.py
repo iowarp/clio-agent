@@ -122,10 +122,12 @@ def runtime_state_dir() -> Path:
     return state
 
 
-# Default clio-core CTE config: a self-managed DRAM↔disk hierarchy on the OS data
-# dir. The DRAM tier (score 1.0) is the hot working set; the file tier (score 0.0)
-# is the cold spill target, durable across daemon restarts (``restart``, the metadata log
-# and ``persistence_level``; see :mod:`clio_agent.arc.clio_core_durability`).
+# Default clio-core CTE config: a RAM working arena (the ``ram`` bdev, clio-core's
+# working memory, not a data tier) and ONE file data tier (score 1.0) on the OS data
+# dir, durable across daemon restarts (``restart``, the metadata log and
+# ``persistence_level``; see :mod:`clio_agent.arc.clio_core_durability`). There is no
+# in-memory data tier, so a put cannot be placed in memory and ``ReorganizeBlob`` has no
+# faster tier to move a blob to.
 #
 # MEMORY BUDGET (#906, owner ruling 2026-07-13 — release-gating): a desktop
 # clio-agent must NEVER be able to grow to clio-core's HPC default of 80% of
@@ -335,8 +337,8 @@ def default_cte_config_path() -> str:
     """Seed (if absent) and return the default clio-core CTE config path.
 
     Lives under the OS data dir (:func:`clio_agent.paths.user_data_dir` ``/cte``) and
-    declares a DRAM hot tier + a file cold tier, so ARC's clio-core backend is a
-    self-managed memory↔disk hierarchy by default — no LocalFS, no manual config.
+    declares a bounded RAM working arena and one durable file data tier, so ARC's
+    clio-core backend needs no LocalFS and no manual config.
 
     Written **once** (only when absent): an existing ``cte.yaml`` is never rewritten, so
     a user's explicit values survive untouched. A stale file still carrying ``0g`` is

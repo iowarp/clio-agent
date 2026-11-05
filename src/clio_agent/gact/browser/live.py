@@ -18,7 +18,9 @@ one and one behind a tunnel.
 
 Also here: ``GET /v1/sessions/{sid}/browser/pages`` (the session's pages, for the Browser
 surface and the Work rail), ``POST .../pages/{page_id}/allow-host`` (the person allows a
-host the page was blocked from, as their own grant) and ``POST .../trust-certificate``
+host the page was blocked from, as their own grant; since BR42 a page is blocked only for
+a refused scheme or a gate error, neither of which names a host to allow, so the route
+allows nothing today) and ``POST .../trust-certificate``
 (the person trusts the certificate a page warns about, for the conversation or workspace).
 """
 

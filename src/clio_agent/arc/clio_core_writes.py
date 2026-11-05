@@ -67,7 +67,8 @@ class ClioCoreWrites:
             stream_audit("store.put", kind=kind, name=name, size=len(payload))
         guarded_store_rpc(self, "put", store_put, self, kind, name, payload, inline_kind=kind)
         self._put_companion(kind, name, search_text)
-        # ``tier`` is advisory: the default single DRAM tier makes ReorganizeBlob a no-op.
+        # ``tier`` is advisory: the default config has one data tier (the file tier), so
+        # there is no faster tier to reorganize a blob into.
 
     def put_at(
         self, kind: str, name: str, data: bytes, offset: int, *, search_text: Optional[str] = None

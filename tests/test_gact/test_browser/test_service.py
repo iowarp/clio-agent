@@ -191,3 +191,26 @@ def test_switching_the_browser_closes_its_pages_and_the_next_page_opens_again(
     assert first.closed and not browser.profiles
     again = browser.wait(browser.open("sess_a", ""))
     assert not again.closed and browser.profiles
+
+
+def test_a_gate_error_block_grants_no_host() -> None:
+    """A page blocked by a gate error names no host; allowing it grants nothing.
+
+    SABOTAGE: drop the empty-host check in ``allow_blocked`` -> a grant on host "" -> red."""
+    from types import SimpleNamespace
+
+    from clio_agent.gact.browser import host_gate
+
+    granted: list[str] = []
+    record = SimpleNamespace(
+        navigation_blocked={"host": "", "url": "https://x/", "reason": "browser_host_gate_error"},
+        session_id="sess_x",
+    )
+    original = host_gate.grant
+    host_gate.grant = lambda app, sid, host, grantor: granted.append(host)  # type: ignore[assignment]
+    try:
+        assert host_gate.allow_blocked(SimpleNamespace(app=None), record) == ""  # type: ignore[arg-type]
+    finally:
+        host_gate.grant = original  # type: ignore[assignment]
+    assert granted == []
+    assert record.navigation_blocked is not None
