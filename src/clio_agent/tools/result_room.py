@@ -13,7 +13,11 @@ counter where CLIO has it, else about four characters a token).
   and it scales with the model: 4,000 tokens on 32k, 125,000 on 1M.
 - The room left is the real limit: the window up to the point where CLIO compacts it,
   less the prompt the model already carries (the same room a child's report is fitted
-  to, :mod:`clio_agent.gact.child_report_fit`).
+  to, :mod:`clio_agent.gact.child_report_fit`). It never goes below a small floor
+  (:data:`ROOM_FLOOR_TOKENS`, or the share when that is smaller): at or past the
+  compaction point a short result ("ok") is still shown whole and a cut one keeps a
+  useful head, and the next step compacts. The floor is traced as
+  :data:`RESULT_ROOM_FLOOR`.
 
 A result that does not fit is saved to a file and the model gets its head and where the
 rest is (:func:`clio_agent.tools.mcp_result_projection.bounded_model_tool_result`).
@@ -45,7 +49,9 @@ from clio_agent.runtime import trace
 
 __all__ = [
     "CHARS_PER_TOKEN",
+    "RESULT_ROOM_FLOOR",
     "RESULT_ROOM_LEFT",
+    "ROOM_FLOOR_TOKENS",
     "RESULT_WINDOW_SHARE",
     "TOOL_RESULT_WINDOW_UNKNOWN",
     "ResultRoom",
@@ -66,6 +72,10 @@ TOOL_RESULT_WINDOW_UNKNOWN = "tool_result_window_unknown"
 #: Why a room has its size: the window's share, or the room left before compaction.
 RESULT_WINDOW_SHARE = "window_share"
 RESULT_ROOM_LEFT = "room_left"
+#: Typed reason: the room left was below the floor, so the room is the floor.
+RESULT_ROOM_FLOOR = "room_floor"
+#: The fewest tokens one result is given while the window is known (the share when smaller).
+ROOM_FLOOR_TOKENS = 500
 #: No tokenizer averages more characters a token than this on text, so a longer text
 #: cannot fit and is not counted (counting megabytes with a tokenizer takes seconds).
 _MAX_CHARS_PER_TOKEN = 8
@@ -176,6 +186,16 @@ def _measure() -> ResultRoom:
     share = int(window * result_share())
     left = room_left()
     if left is not None and left < share:
+        floor = min(ROOM_FLOOR_TOKENS, share)
+        if left < floor:
+            trace.event(
+                "TOOLS",
+                "%s: %d tokens left before compaction; one result is shown up to %d",
+                RESULT_ROOM_FLOOR,
+                left,
+                floor,
+            )
+            return _from_tokens(floor, RESULT_ROOM_FLOOR, window)
         return _from_tokens(left, RESULT_ROOM_LEFT, window)
     return _from_tokens(share, RESULT_WINDOW_SHARE, window)
 

@@ -72,8 +72,23 @@ def test_the_room_left_before_compaction_caps_the_share(window: Any) -> None:
     room = result_room.result_room()
     assert (room.tokens, room.reason) == (5_000, "room_left")
     assert not room.fits("x" * 21_000)
+
+
+def test_the_room_never_falls_below_its_floor(window: Any, tmp_path: Path) -> None:
+    """A8: past the compaction point a short result is still shown whole and a cut one
+    keeps a useful head. SABOTAGE: return the room left (0) again -> "ok" is spilled with
+    an empty head -> red."""
     window(200_000, prompt=180_000)
-    assert result_room.result_room().tokens == 0
+    room = result_room.result_room()
+    assert (room.tokens, room.reason) == (result_room.ROOM_FLOOR_TOKENS, "room_floor")
+    assert bounded_model_tool_result("ok") == "ok"
+    text = "\n".join(f"row-{i:06d},{'x' * 40}" for i in range(2_400))
+    with tool_workspace_context(str(tmp_path)), injections.collect():
+        shown = bounded_model_tool_result(text)
+    head = shown.split("\n\n", 1)[1]
+    assert head.startswith("row-000000") and len(head) > 1_000
+    window(2_000, prompt=1_900)  # a share below the floor stays the limit
+    assert result_room.result_room().tokens == 250
 
 
 def test_an_unknown_window_uses_the_configured_tokens_and_is_traced(
