@@ -29,12 +29,13 @@ import hmac
 import json
 import time
 from dataclasses import dataclass, field
+from functools import partial
 from typing import Any
 from urllib.parse import urlsplit
 
 from fastapi import WebSocket
 
-from clio_agent.gact.browser import settings
+from clio_agent.gact.browser import picker, settings
 from clio_agent.gact.browser.settings import BrowserError, page_errors
 from clio_agent.runtime import trace
 
@@ -83,6 +84,13 @@ def _deliver(viewer: _Viewer, item: Any) -> None:
         viewer.queue.put_nowait(item)
 
     viewer.loop.call_soon_threadsafe(put)
+
+
+def _deliver_controllers(hub: _Hub, item: Any) -> None:
+    """Queue ``item`` for the viewers that send input to the page (the picker's results)."""
+    for viewer in list(hub.viewers):
+        if viewer.controls:
+            _deliver(viewer, item)
 
 
 def _state(service: Any, record: Any, hub: _Hub, viewer: _Viewer) -> dict[str, Any]:
@@ -231,6 +239,8 @@ async def _play(service: Any, record: Any, hub: _Hub, message: dict[str, Any]) -
         return
     if kind == "resize":  # the view's size, not something the person did on the page
         await _resize(service, record, hub, message)
+        return
+    if await picker.handle(record, message, partial(_deliver_controllers, hub)):
         return
     record.person_acted = True
     record.last_person_input = time.monotonic()

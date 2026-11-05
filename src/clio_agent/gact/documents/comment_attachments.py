@@ -246,6 +246,10 @@ def render_attachment(
         return _answer(attachment, folder)
     if attachment.kind == "a2ui-surface":
         return _a2ui(attachment, folder, images)
+    if attachment.kind == "browser-page" and attachment.kind not in _SURFACES:
+        from clio_agent.gact.browser.comments import render_page_comments  # noqa: PLC0415
+
+        register_surface("browser-page", render_page_comments)
     handler = _SURFACES.get(attachment.kind)
     if handler is None:
         text = (

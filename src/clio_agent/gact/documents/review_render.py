@@ -29,7 +29,14 @@ from clio_agent.gact.documents.mark_images import MarkBox, labelled_overview_png
 from clio_agent.gact.documents.models import DocumentAnchor
 from clio_agent.gact.documents.produced_by import produced_by
 
-__all__ = ["MarkInput", "RenderedImage", "RenderedSession", "entry_block", "render_session"]
+__all__ = [
+    "MarkInput",
+    "RenderedImage",
+    "RenderedSession",
+    "entry_block",
+    "joined_labels",
+    "render_session",
+]
 
 _LABEL_WIDTH = 10
 _MODE_NOUN = {"text": "text", "region": "region", "element": "element", "native": "comment"}
@@ -185,7 +192,7 @@ def render_session(
             if paged and page is not None
             else ("the figure" if target.profile == "image" else "the page")
         )
-        caption = f"{what} with {_and(labels)} drawn on it"
+        caption = f"{what} with {joined_labels(labels)} drawn on it"
         name = f"overview-{'p' + str(page + 1) if paged and page is not None else 'all'}.png"
         png = labelled_overview_png(image, boxes)
         path = folder / name
@@ -229,7 +236,9 @@ def render_session(
     return rendered
 
 
-def _and(labels: Sequence[str]) -> str:
+def joined_labels(labels: Sequence[str]) -> str:
+    """ "S1", "S1 and S2", "S1, S2 and S3"."""
+
     if len(labels) == 1:
         return labels[0]
     return ", ".join(labels[:-1]) + " and " + labels[-1]
