@@ -67,15 +67,20 @@ class _Host:
             self.out.write(line + "\n")
             self.out.flush()
 
-    async def call(self, tool: str, args: dict[str, Any]) -> Any:
-        loop = asyncio.get_running_loop()
+    def call(self, tool: str, args: dict[str, Any]) -> asyncio.Future[Any]:
+        """Send the call now; the future settles with its answer. A call is made when the
+        script makes it, so one it does not await still happens (and is waited for)."""
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:  # a script with no await runs outside the loop; the kernel's
+            loop = asyncio.get_event_loop()
         future: asyncio.Future[Any] = loop.create_future()
         with self.lock:
             self.next_id += 1
             call_id = self.next_id
             self.pending[call_id] = (loop, future)
         self.send({"type": "call", "id": call_id, "tool": tool, "args": args})
-        return await future
+        return future
 
     def answer(self, message: dict[str, Any]) -> None:
         with self.lock:
@@ -104,8 +109,8 @@ class _Host:
 def _function(host: _Host, tool: str, spec: dict[str, Any]) -> Any:
     """One callable tool: ``await tools.fs.read_file(path=...)``."""
 
-    async def stub(**kwargs: Any) -> Any:
-        return await host.call(tool, kwargs)
+    def stub(**kwargs: Any) -> asyncio.Future[Any]:
+        return host.call(tool, kwargs)
 
     stub.__name__ = stub.__qualname__ = str(spec.get("function") or tool)
     stub.__doc__ = f"{spec.get('signature') or tool}\n\n{spec.get('doc') or ''}".strip()
@@ -137,13 +142,13 @@ class _Tools(_Namespace):
             if group:
                 setattr(self, group, target)
 
-    async def search(self, query: str, limit: int = 5) -> Any:
+    def search(self, query: str, limit: int = 5) -> asyncio.Future[Any]:
         """Find tools by name or keywords (the same catalog as search_tools)."""
-        return await self._host.call("__search__", {"query": query, "limit": limit})
+        return self._host.call("__search__", {"query": query, "limit": limit})
 
-    async def call(self, name: str, /, **args: Any) -> Any:
+    def call(self, name: str, /, **args: Any) -> asyncio.Future[Any]:
         """Call a tool by its full name, for names found with tools.search."""
-        return await self._host.call(name, args)
+        return self._host.call(name, args)
 
 
 class _Bindings:

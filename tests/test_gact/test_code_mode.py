@@ -407,3 +407,31 @@ def test_a_background_launch_reads_as_a_started_task_not_as_a_script_without_cal
     assert "task_abc" in view["blocks"][-1]["text"]
     unnamed = present({"code": "\nimport time\n", "background": True}, "", {"handle": "t"})
     assert unnamed["summary"] == "Started in the background: import time"
+
+
+def test_a_finished_script_waits_for_the_calls_it_sent(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Calls queued behind a busy pool when the script ends still run and are answered;
+    only a stopped script drops them (``close(finished=False)``).
+
+    SABOTAGE: close a finished script's dispatcher with ``cancel_futures`` -> the queued
+    call never runs -> red."""
+    import contextvars
+    import time
+
+    from clio_agent.gact.code_mode.dispatch import Dispatcher
+
+    monkeypatch.setenv("CLIO_TOOLS_CALL_WORKERS", "1")
+    ran: list[str] = []
+
+    def slow(args: Any) -> str:
+        time.sleep(0.3)
+        ran.append(str(args["name"]))
+        return "ok"
+
+    dispatcher = Dispatcher({}, (), contextvars.copy_context(), lambda q, n: [], {"__w__": slow})
+    replies: list[dict[str, Any]] = []
+    for call_id, name in ((1, "first"), (2, "queued")):
+        dispatcher.submit({"id": call_id, "tool": "__w__", "args": {"name": name}}, replies.append)
+    dispatcher.close(finished=True)
+    assert ran == ["first", "queued"]
+    assert sorted(r["id"] for r in replies if r["ok"]) == [1, 2]

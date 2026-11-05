@@ -208,6 +208,7 @@ def execute_script(
     if live is not None:
         live["dispatcher"] = dispatcher  # a background task's status reads its call count
     outcome: dict[str, Any] = {"status": "failed", "output": "", "value": None, "error": ""}
+    finished = False
     started = time.monotonic()
     poll = poll_s()
     try:
@@ -241,6 +242,7 @@ def execute_script(
                 if message.get("type") == "call":
                     dispatcher.submit(message, kernel.send)
                 elif message.get("type") == "done":
+                    finished = True
                     outcome.update(
                         status="completed" if message.get("ok") else "failed",
                         output=str(message.get("output") or ""),
@@ -249,7 +251,7 @@ def execute_script(
                     )
                     break
     finally:
-        dispatcher.close()
+        dispatcher.close(finished=finished)
         kernel.last_used = time.monotonic()
     calls = list(dispatcher.records)
     outcome.update(

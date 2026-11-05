@@ -32,8 +32,6 @@ __all__ = ["TASK_BINDING_SOURCE", "binding", "handlers", "notify_interval_s"]
 #: The ``task`` binding's source, bound only in a background kernel.
 TASK_BINDING_SOURCE = '''"""``task``: the background task this script runs as."""
 
-import asyncio
-
 
 class _Task:
     """This script's task: show progress on its row, or wake its conversation. Each call
@@ -41,16 +39,12 @@ class _Task:
 
     def progress(self, message, done=None, total=None):
         """Show progress on the task row (and the script's status); wakes nobody."""
-        return asyncio.ensure_future(
-            tools.call("__task_progress__", message=str(message), done=done, total=total)
-        )
+        return tools.call("__task_progress__", message=str(message), done=done, total=total)
 
     def notify(self, message, data=None):
         """Wake the conversation that owns this task with ``message`` (and JSON ``data``).
         At most one wake per window per conversation; notifies inside it arrive together."""
-        return asyncio.ensure_future(
-            tools.call("__task_notify__", message=str(message), data=data)
-        )
+        return tools.call("__task_notify__", message=str(message), data=data)
 
 
 export = _Task()

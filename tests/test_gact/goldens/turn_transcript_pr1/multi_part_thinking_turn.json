@@ -213,7 +213,7 @@
           "agent_runtime": {
             "agent_id": "standard",
             "agent_resolution": {
-              "digest": "399e34178614da782d7b3ccbc149e95739221c01d857bd5a440426490440de4b",
+              "digest": "2682b6193a834c9f1e6b9660305db29e5d768fca8fa7e87dc35035a20f83ec44",
               "flow": {
                 "id": "react",
                 "options": {}

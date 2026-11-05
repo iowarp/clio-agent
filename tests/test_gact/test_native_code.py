@@ -245,6 +245,28 @@ def test_notifies_inside_the_window_arrive_together_and_none_is_lost(
     )
 
 
+def test_a_last_notify_without_await_is_sent_and_waited_for(
+    world: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A call is made when the script makes it: a notify the script neither awaits nor
+    outlives (the live CK1 watcher's last line) is delivered, and nothing is reported
+    stopped.
+
+    SABOTAGE: send the call from a task (``ensure_future``) -> the task is cancelled with
+    the script and reported "stopped with it" -> red."""
+    from clio_agent.gact import code_task_reporting as reporting
+
+    app, sid, root = world
+    monkeypatch.setattr(reporting, "_WINDOWS", {})
+    sent: list[list[dict[str, Any]]] = []
+    monkeypatch.setattr(reporting, "_send", lambda _app, _owner, entries: sent.append(entries))
+    handle = str(_launch(app, sid, root, "task.notify('done')", label="last")["handle"])
+    task = _settled(app, handle)
+    assert task.status == "completed"
+    assert [e["message"] for entries in sent for e in entries] == ["done"]
+    assert "stopped with it" not in json.dumps(app.state.task_history.read_content(task.result))
+
+
 def test_a_synchronous_script_has_no_task_binding(world: Any) -> None:
     """``task`` exists only in a background kernel."""
     app, sid, root = world

@@ -208,5 +208,11 @@ class Dispatcher:
             self.records.append(CallRecord(tool, ok, duration, error[:500]))
         return ok, value if ok else None, error
 
-    def close(self) -> None:
-        self.pool.shutdown(wait=False, cancel_futures=True)
+    def close(self, *, finished: bool = False) -> None:
+        """End the script's calls. A script that finished waits for the calls it sent (a
+        call is made when the script makes it, awaited or not); a stopped one drops those
+        not yet started."""
+        if finished:
+            self.pool.shutdown(wait=True)
+        else:
+            self.pool.shutdown(wait=False, cancel_futures=True)
