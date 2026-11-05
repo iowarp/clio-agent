@@ -83,7 +83,7 @@ def paper_map(entry: Path, producer: dict[str, Any], pdf: Path | None = None) ->
     index = None
     if synctex is not None and synctex.is_file():
         index = SyncIndex.parse(synctex.read_bytes(), names)
-    entry_name = str(producer.get("entry") or entry.name)
+    entry_name = entry.name  # the project is the entry's folder
     found = PaperMap(entry_name, root, texts, build_outline(entry_name, texts, index), index, pdf)
     with _CACHE_LOCK:
         if len(_CACHE) >= _CACHE_SIZE:

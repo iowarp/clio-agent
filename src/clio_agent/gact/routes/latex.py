@@ -1,6 +1,6 @@
 """The LaTeX workspace's routes: a paper's build, outline and click-through (LaTeX plan).
 
-* ``GET /v1/artifacts/{id}/latex?session_id=`` builds the version (through its PDF rendition,
+* ``GET /v1/artifacts/{id}/latex?session_id=`` (a LaTeX source or its paper) builds the version (through its PDF rendition,
   the one build the agent's ``latex_build`` uses) and returns the build report, the paper's
   outline, its project folder, the source files the build read with their text (up to 4 MB)
   and each PDF page's size.
@@ -20,6 +20,7 @@ from fastapi import FastAPI, HTTPException
 
 from clio_agent.gact.artifacts.registry import get_registry
 from clio_agent.gact.documents.latex.paper import build_row, locate_row, outline_row, paper_of
+from clio_agent.gact.documents.latex.paper_artifact import is_paper, paper_entry
 from clio_agent.gact.documents.latex.rendition import is_latex
 
 if TYPE_CHECKING:
@@ -72,6 +73,12 @@ def _paper_version(
     record, version = found
     if record.workspace_id != session.workspace_id:
         raise _error(403, "artifact_workspace_mismatch", "artifact is outside this session")
+    if is_paper(version):
+        # A paper opens on its entry .tex at its current version; the build makes the paper.
+        entry_found = paper_entry(app, session_id, version)
+        if entry_found is None:
+            raise _error(409, "paper_entry_missing", "the paper's entry .tex is no longer here")
+        record, version = entry_found
     if not is_latex(record.name):
         raise _error(422, "latex_entry_not_tex", f"{record.name} is not a LaTeX source")
     workspace = app.state.workspaces.get(record.workspace_id)

@@ -22,12 +22,16 @@ import re
 from collections.abc import Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 from clio_agent.gact.documents.anchors import MarkTarget, ResolvedMark, mark_mode, resolver_for
 from clio_agent.gact.documents.comment_settings import under_mark_chars
 from clio_agent.gact.documents.mark_images import MarkBox, labelled_overview_png
 from clio_agent.gact.documents.models import DocumentAnchor
 from clio_agent.gact.documents.produced_by import produced_by
+
+if TYPE_CHECKING:
+    from clio_agent.gact.artifacts.records import ArtifactVersion
 
 __all__ = [
     "MarkInput",
@@ -118,11 +122,28 @@ def entry_block(
     return "\n".join(lines)
 
 
-def _header(target: MarkTarget) -> list[str]:
-    version = target.version
+def _identity(version: ArtifactVersion) -> str:
     sha = version.sha256 or ""
     short = f"{sha[:4]}...{sha[-4:]}" if len(sha) >= 8 else sha
-    identity = f"artifact {version.artifact_id}, version {version.version}, sha256 {short}"
+    return f"artifact {version.artifact_id}, version {version.version}, sha256 {short}"
+
+
+def _header(target: MarkTarget) -> list[str]:
+    version = target.version
+    identity = _identity(version)
+    if target.shown is not None:
+        record, shown = target.shown
+        producer = shown.producer
+        kind = str(producer.get("document_type") or "paper").lower()
+        title = str(producer.get("title") or "")
+        named = f'the {kind} "{title}"' if title else f"the {kind}"
+        files = len(producer.get("members") or [])
+        return [
+            f"Review of {named} ({record.name}; {_identity(shown)}), built from "
+            f"{target.name} and {files} source file(s).",
+            "Each mark's Source line names the file and lines to edit; edit the sources, "
+            "not the PDF.",
+        ]
     if target.via_rendition:
         return [
             f"Review of {target.name}, viewed as its PDF rendition",

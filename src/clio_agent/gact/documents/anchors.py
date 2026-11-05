@@ -62,9 +62,11 @@ class MarkTarget:
     """One artifact version a mark is resolved against, and what the person saw of it.
 
     ``view_path`` is the PDF rendition when the person commented on an Office file's
-    rendition; otherwise it is the version's own bytes. ``cache`` holds what a resolver
-    computed for this version (rasterized pages, a render) so a session of several marks
-    computes it once.
+    rendition; otherwise it is the version's own bytes. ``shown`` is the artifact the person
+    commented on when it is not the one marks resolve against: a paper, whose marks resolve
+    against its entry ``.tex`` while ``view_path`` is the paper's own PDF. ``cache`` holds
+    what a resolver computed for this version (rasterized pages, a render) so a session of
+    several marks computes it once.
     """
 
     app: Any
@@ -75,6 +77,7 @@ class MarkTarget:
     view_path: Path
     session_id: str = ""
     cache: dict[str, Any] = field(default_factory=dict)
+    shown: "tuple[ArtifactRecord, ArtifactVersion] | None" = None
 
     @property
     def name(self) -> str:

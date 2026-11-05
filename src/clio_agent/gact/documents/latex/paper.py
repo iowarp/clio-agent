@@ -77,6 +77,18 @@ def build_row(
         "read": sorted(producer.get("source_files") or {}),
         "network": str(producer.get("network") or ""),
     }
+    if producer.get("designation") == "scientific-document":
+        members = [item for item in producer.get("members") or [] if isinstance(item, dict)]
+        row["paper"] = {
+            "artifact_id": rendition.version.artifact_id,
+            "name": rendition.record.name,
+            "version": rendition.version.version,
+            "title": str(producer.get("title") or ""),
+            "document_type": str(producer.get("document_type") or "Paper"),
+            "venue": str(producer.get("venue") or ""),
+            "members": [str(item.get("path") or "") for item in members],
+            "untracked": [str(item.get("path")) for item in members if not item.get("artifact_id")],
+        }
     if venue:
         from clio_agent.gact.documents.latex.venue import check_venue  # noqa: PLC0415
 

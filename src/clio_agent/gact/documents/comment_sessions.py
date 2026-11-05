@@ -25,6 +25,7 @@ from clio_agent.gact.artifacts.records import ArtifactRecord, ArtifactVersion
 from clio_agent.gact.artifacts.registry import get_registry
 from clio_agent.gact.documents.anchors import MarkTarget
 from clio_agent.gact.documents.artifact_bytes import ArtifactBytesError, artifact_bytes_path
+from clio_agent.gact.documents.latex.paper_artifact import is_paper, paper_entry
 from clio_agent.gact.documents.models import (
     ArtifactReview,
     CommentMark,
@@ -146,13 +147,28 @@ def mark_target(
         CommentSessionError: the version's bytes or its rendition are unavailable.
     """
 
+    shown = None
+    if is_paper(version):
+        # A paper's marks resolve against its entry .tex, on the paper version's own PDF.
+        entry = paper_entry(app, session_id, version)
+        if entry is None:
+            raise CommentSessionError(
+                409, "paper_entry_missing", "the paper's entry .tex is no longer in the workspace"
+            )
+        shown = (record, version)
+        record, version = entry
     try:
         path = artifact_bytes_path(app, record, version)
     except ArtifactBytesError as exc:
         raise CommentSessionError(409, exc.code, str(exc)) from exc
     profile = document_format(record.name).profile
     view = path
-    if profile in _RENDITION_PROFILES:
+    if shown is not None:
+        try:
+            view = artifact_bytes_path(app, *shown)
+        except ArtifactBytesError as exc:
+            raise CommentSessionError(409, exc.code, str(exc)) from exc
+    elif profile in _RENDITION_PROFILES:
         from clio_agent.gact.documents.renditions import (  # noqa: PLC0415
             RenditionError,
             find_pdf_rendition,
@@ -177,6 +193,7 @@ def mark_target(
         profile=profile,
         view_path=view,
         session_id=session_id,
+        shown=shown,
     )
 
 

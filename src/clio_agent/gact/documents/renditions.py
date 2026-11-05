@@ -23,6 +23,8 @@ from clio_agent.gact.artifacts.records import (
 )
 from clio_agent.gact.artifacts.registry import get_registry
 from clio_agent.gact.documents.confined_tools import run_confined
+from clio_agent.gact.documents.latex.paper_artifact import DESIGNATION as PAPER_DESIGNATION
+from clio_agent.gact.documents.latex.paper_artifact import mint_paper, paper_name
 from clio_agent.gact.documents.latex.rendition import (
     LatexRenditionError,
     build_rendition,
@@ -168,16 +170,22 @@ def find_pdf_rendition(
 ) -> RenditionResult | None:
     """Find a retained PDF bound to this exact source version and checksum."""
     registry = get_registry(app)
-    candidate = registry.get(record.workspace_id, f"{record.name}.v{version.version}.pdf")
+    workspace_root = _workspace_root(app, record.workspace_id)
+    designation = "document-rendition"
+    name = f"{record.name}.v{version.version}.pdf"
+    if is_latex(record.name) and version.path:
+        # A LaTeX source's PDF is its paper: one record for the project, a version per build.
+        designation = PAPER_DESIGNATION
+        name = paper_name(workspace_root, Path(version.path))
+    candidate = registry.get(record.workspace_id, name)
     if candidate is None:
         return None
-    workspace_root = _workspace_root(app, record.workspace_id)
     from clio_agent.gact.artifacts.cas import CASStore
 
     for derived in reversed(candidate.versions):
         producer = derived.producer
         if (
-            producer.get("designation") != "document-rendition"
+            producer.get("designation") != designation
             or producer.get("source_artifact_id") != version.artifact_id
             or producer.get("source_sha256") != version.sha256
             or not sources_current(version, producer)
@@ -275,7 +283,6 @@ def _render_pdf(
         return RenditionResult(
             existing.record, existing.version, existing.converter, workspace_path=target
         )
-    latex_producer: dict[str, object] = {}
     prepared = None if is_latex(record.name) else _prepared_pdf(workspace_root, version)
     if is_latex(record.name):
         token = _RENDER_WORKSPACE.set(workspace_root)
@@ -287,7 +294,23 @@ def _render_pdf(
             raise RenditionError(str(exc)) from exc
         finally:
             _RENDER_WORKSPACE.reset(token)
-    elif prepared is not None:
+        try:
+            paper, minted = mint_paper(
+                app,
+                session_id,
+                entry_record=record,
+                entry_version=version,
+                workspace_root=workspace_root,
+                target=target,
+                converter=converter,
+                build=latex_producer,
+            )
+        except RuntimeError as exc:
+            raise RenditionError(str(exc)) from exc
+        return RenditionResult(
+            record=paper, version=minted.version, converter=converter, workspace_path=target
+        )
+    if prepared is not None:
         rendered, prepared_hash = prepared
         _copy_preview(rendered, target, prepared_hash)
         converter = "libreoffice (prepared document)"
@@ -329,7 +352,6 @@ def _render_pdf(
             "source_artifact_id": version.artifact_id,
             "source_sha256": version.sha256,
             "converter": converter,
-            **latex_producer,
         },
         custody=ingested.custody,
         path=str(target),

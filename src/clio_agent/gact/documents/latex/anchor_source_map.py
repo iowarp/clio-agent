@@ -58,11 +58,13 @@ class SourceMapResolver(PdfResolver):
         from clio_agent.gact.documents.renditions import find_pdf_rendition  # noqa: PLC0415
 
         paper = None
-        rendition = find_pdf_rendition(target.app, target.record, target.version)
-        if rendition is not None and target.version.path:
-            paper = paper_map(
-                Path(target.version.path), rendition.version.producer, target.view_path
-            )
+        # The build the person saw: the paper version commented on, else the current one.
+        build = target.shown[1] if target.shown is not None else None
+        if build is None:
+            rendition = find_pdf_rendition(target.app, target.record, target.version)
+            build = rendition.version if rendition is not None else None
+        if build is not None and target.version.path:
+            paper = paper_map(Path(target.version.path), build.producer, target.view_path)
         target.cache["latex_paper"] = paper
         return paper
 

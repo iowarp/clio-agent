@@ -39,6 +39,7 @@ def latex_build(entry: str, venue: str = "") -> dict[str, Any]:
     page limit, double-blind and required packages. Report missing_package and shell escape
     messages to the person as written; do not retry them.
     """
+    from clio_agent.gact.artifacts.registry import get_registry  # noqa: PLC0415
     from clio_agent.gact.documents import comment_targets  # noqa: PLC0415
     from clio_agent.gact.documents.latex.paper import build_row  # noqa: PLC0415
 
@@ -57,15 +58,21 @@ def latex_build(entry: str, venue: str = "") -> dict[str, Any]:
     except comment_targets.CommentTargetError as exc:
         return {"status": "failed", "entry": entry, "reason": exc.code, "error": str(exc)}
     row = build_row(app, sid, record, version, entry=entry, venue=venue)
-    _offer_paper(app, sid, workspace_id, record.name, version)
+    paper_id = str((row.get("paper") or {}).get("artifact_id") or "")
+    found = get_registry(app).get_by_artifact_id(paper_id) if paper_id else None
+    if found is not None:
+        _offer_paper(app, sid, workspace_id, found[0].name, found[1])
+    else:
+        _offer_paper(app, sid, workspace_id, record.name, version)
     return row
 
 
 def _offer_paper(app: Any, sid: str, workspace_id: str, name: str, version: Any) -> None:
     """Make the paper this turn's output, so the reply ends with its card.
 
-    The card is the entry's source version, which opens as the LaTeX workspace (source, PDF
-    and problems together). The PDF itself is a rendition, which replies never show as a card.
+    The card is the paper version the build made: it opens as the LaTeX workspace (sources,
+    PDF and problems together). A build that made no PDF offers the entry ``.tex``, which
+    opens the same workspace with the problems.
     """
     from clio_agent.gact import context as _ctx  # noqa: PLC0415
     from clio_agent.gact.artifacts.minting import _record_turn_artifact  # noqa: PLC0415
