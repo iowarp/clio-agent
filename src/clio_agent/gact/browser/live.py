@@ -123,6 +123,9 @@ def _style(accent: str) -> dict[str, str]:
 async def _start(service: Any, record: Any, hub: _Hub) -> None:
     """Start the screencast and the agent-action annotations (on the browser loop)."""
 
+    if hub.screencast is not None:  # already started for a viewer that joined meanwhile
+        return
+
     def on_frame(frame: dict[str, Any]) -> None:
         size = (int(frame.get("viewportWidth") or 0), int(frame.get("viewportHeight") or 0))
         if size != hub.viewport:
@@ -378,9 +381,15 @@ async def _serve(app: Any, websocket: Any, session_id: str, page_id: str) -> Non
             hub.viewers[0].controls = True  # the next viewer takes over input
             _broadcast_state(svc, record)
         if not hub.viewers:
-            _HUBS.pop(page_id, None)
+            # The hub stays registered until its screencast has stopped, so a viewer that
+            # joins meanwhile (a canvas remount) joins it rather than starting a second
+            # screencast on the page; if one did join, the screencast starts again for it.
             if not record.closed:
                 await asyncio.wrap_future(svc.submit(_stop(hub)))
+            if hub.viewers and not record.closed:
+                await asyncio.wrap_future(svc.submit(_start(svc, record, hub)))
+            elif not hub.viewers and _HUBS.get(page_id) is hub:
+                _HUBS.pop(page_id, None)
 
 
 async def _send(viewer: _Viewer) -> None:

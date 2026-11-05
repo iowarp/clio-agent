@@ -248,3 +248,18 @@ def test_an_html_file_the_person_opens_loads_as_a_local_page(
     assert record.title == "Scene v2"
     missing = client.post(f"/v1/sessions/{sid}/browser/pages", json={"path": "figs/none.html"})
     assert missing.status_code == 422 and "browser_file_missing" in missing.text
+
+
+def test_a_view_remounted_at_once_keeps_its_frames(
+    browser: Any, site: dict[str, Any], tmp_path: Path
+) -> None:
+    """Maximizing the canvas closes the live view and opens it again straight away."""
+    client, _app, sid = _client(tmp_path)
+    record = browser.wait(browser.open(sid, "Shared"))
+    browser.run(record, "goto", lambda r: r.page.goto(site["a"] + "/frames"))
+    url = f"/v1/sessions/{sid}/browser/{record.id}/live"
+    for _ in range(4):
+        with client.websocket_connect(url, subprotocols=["clio.browser.v1"]) as socket:
+            first = _until_state(socket, lambda s: s["type"] == "state")
+            frame, _viewport = _frame_and_viewport(socket, first)
+            assert frame[:2] == b"\xff\xd8"
