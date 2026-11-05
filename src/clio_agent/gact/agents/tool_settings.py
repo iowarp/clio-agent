@@ -75,10 +75,10 @@ class Declared:
 
 
 def _server_for(name: str, servers: Mapping[str, Any]) -> tuple[str, str]:
-    for server in sorted(servers, key=len, reverse=True):
-        if name.startswith(f"{server}_") and len(name) > len(server) + 1:
-            return server, name[len(server) + 1 :]
-    return "", ""
+    from clio_agent.gact.code_mode.stubs import owning_server  # noqa: PLC0415
+
+    server = owning_server(name, servers)
+    return (server, name[len(server) + 1 :]) if server else ("", "")
 
 
 def plugin_declaration(resolution: Any, name: str, setting: str) -> str | None:

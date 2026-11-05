@@ -135,10 +135,10 @@ def _schema(tool: Any) -> tuple[str, Mapping[str, Any]]:
 
 
 def _owner(name: str, servers: Mapping[str, Any], plugin_of: Mapping[str, str]) -> str:
-    for server in servers:
-        if name.startswith(f"{server}_"):
-            return server
-    return plugin_of.get(name, "")
+    """The tool's MCP server (the longest matching prefix), else its plugin."""
+    from clio_agent.gact.code_mode.stubs import owning_server  # noqa: PLC0415
+
+    return owning_server(name, servers) or plugin_of.get(name, "")
 
 
 def plan_disclosure(
@@ -278,6 +278,11 @@ def apply_disclosure(
     object.__setattr__(program, "_clio_unlisted", unlisted | disclosure.deferred)
     object.__setattr__(program, "_clio_deferred_catalog", disclosure.catalog)
     object.__setattr__(program, "_clio_deferred_servers", disclosure.deferred_servers)
+    # What a live refresh compares against: a tool here already has its place (listed,
+    # deferred or a stub), and the tools this session loaded stay listed (A1).
+    object.__setattr__(program, "_clio_disclosed_tools", frozenset(tools))
+    object.__setattr__(program, "_clio_loaded_listed", frozenset(loaded))
+    object.__setattr__(program, "_clio_owner_servers", servers)
     return disclosure.entry
 
 
@@ -286,24 +291,41 @@ def sync_deferred_catalog(program: Any) -> list[str]:
 
     Returns the names added, which the plugin-change note names to the model (TD11).
 
+    Only a tool new since the last disclosure or sync is placed: one the agent already
+    had keeps its place, so a tool loaded with ``search_tools`` (listed once the prompt
+    was rebuilt) is not deferred again when its server refreshes. A new tool that
+    ``tools.never_defer`` names, or that this session loaded before, stays listed.
+
     A tool a deferred server removed leaves the catalog; the prompt entry keeps naming
     the server's tools as they were until the prompt is rebuilt, and a search says
     which remain.
     """
-    servers = tuple(f"{s}_" for s in getattr(program, "_clio_deferred_servers", ()) or ())
+    from clio_agent.gact.code_mode.stubs import owning_server  # noqa: PLC0415
+
+    deferred_servers = frozenset(getattr(program, "_clio_deferred_servers", ()) or ())
     catalog: ToolCatalog | None = getattr(program, "_clio_deferred_catalog", None)
-    if not servers or catalog is None:
+    if not deferred_servers or catalog is None:
         return []
     tools: Mapping[str, Any] = getattr(program, "tools", {}) or {}
-    added = []
+    servers = deferred_servers | frozenset(getattr(program, "_clio_owner_servers", ()) or ())
+    known: frozenset[str] | None = getattr(program, "_clio_disclosed_tools", None)
+    loaded = frozenset(getattr(program, "_clio_loaded_listed", frozenset()) or ())
     code_only = getattr(program, "_clio_code_only", frozenset()) or frozenset()
+    never, never_prefixes = never_defer()
+    added = []
     for name, tool in tools.items():
-        if name.startswith(servers) and name not in catalog and name not in code_only:
-            owner = next(s[:-1] for s in servers if name.startswith(s))
+        if name in catalog or name in code_only or (known is not None and name in known):
+            continue
+        if name in loaded or name in never or name.startswith(never_prefixes):
+            continue
+        owner = owning_server(name, servers)
+        if owner in deferred_servers:
             catalog.add(CatalogEntry(name, owner, *_schema(tool)))
             added.append(name)
     for name in [n for n in catalog.names() if n not in tools]:
         catalog.remove(name)
+    if known is not None:
+        object.__setattr__(program, "_clio_disclosed_tools", frozenset(tools))
     if added:
         unlisted = frozenset(getattr(program, "_clio_unlisted", frozenset()))
         object.__setattr__(program, "_clio_unlisted", unlisted | set(added))
