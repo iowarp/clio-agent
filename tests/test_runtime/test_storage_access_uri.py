@@ -133,3 +133,38 @@ def test_vault_is_read_only_and_private_folders_are_denied(
     ):
         with pytest.raises(PermissionError, match="private"):
             storage_access.check_storage_access(path)
+
+
+def test_the_ledger_is_read_once_and_a_commit_is_seen_at_once(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Every gate check of a path reads the ledger; a script's 1,000 nested calls opened
+    SQLite 2,000 times. An unchanged ledger is not reopened; a commit is read at once.
+
+    SABOTAGE: return the cached rows without comparing ``_ledger_signature`` and the
+    second source never appears; drop the cache and ``connect`` runs every time."""
+    directory = tmp_path / "connected-sources"
+    directory.mkdir()
+    database = directory / "sources.sqlite3"
+    first = {"source": {"id": "src_a"}, "connected": True}
+    second = {"source": {"id": "src_b"}, "connected": True}
+    with sqlite3.connect(database) as db:
+        db.execute("CREATE TABLE records (kind TEXT, body TEXT)")
+        db.execute("INSERT INTO records VALUES ('source', ?)", (json.dumps(first),))
+    monkeypatch.setattr(storage_access.paths, "user_data_dir", lambda: tmp_path)
+    monkeypatch.setattr(storage_access, "_LEDGER", None)
+    opened: list[str] = []
+    real_connect = storage_access.sqlite3.connect
+
+    def connect(*args: object, **kwargs: object) -> sqlite3.Connection:
+        opened.append(str(args[0]))
+        return real_connect(*args, **kwargs)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(storage_access.sqlite3, "connect", connect)
+    assert storage_access._source_records() == [first]
+    assert storage_access._source_records() == [first]
+    assert len(opened) == 1
+    with real_connect(database) as db:
+        db.execute("INSERT INTO records VALUES ('source', ?)", (json.dumps(second),))
+    assert storage_access._source_records() == [first, second]
+    assert len(opened) == 2
