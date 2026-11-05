@@ -82,7 +82,9 @@ _WINDOWS_LOCK = threading.Lock()
 
 
 def _send(app: Any, owner: str, entries: list[dict[str, Any]]) -> None:
-    """One ``attention`` message to ``owner`` carrying ``entries``, grouped by task."""
+    """One ``attention`` mail per task to ``owner``, each attributed to its task by
+    ``handle`` as a task's result is; notifies of one window are recorded together, so
+    they reach the conversation in one wake."""
     from clio_agent.arc.task_types import MailItem  # noqa: PLC0415
     from clio_agent.gact.native_work import now  # noqa: PLC0415
 
@@ -96,19 +98,18 @@ def _send(app: Any, owner: str, entries: list[dict[str, Any]]) -> None:
         )
     history = app.state.task_history
     with history.serialized():
-        content = history.write_content(
-            owner, {"type": "clio.code.notify", "tasks": list(tasks.values())}
-        )
-        history.record_mail(
-            MailItem(
-                id="mail_" + uuid4().hex,
-                recipient_session=owner,
-                kind="attention",
-                content=content,
-                created_at=now(),
-                handle=next(iter(tasks)) if len(tasks) == 1 else None,
+        for handle, task in tasks.items():
+            content = history.write_content(owner, {"type": "clio.code.notify", "tasks": [task]})
+            history.record_mail(
+                MailItem(
+                    id="mail_" + uuid4().hex,
+                    recipient_session=owner,
+                    kind="attention",
+                    content=content,
+                    created_at=now(),
+                    handle=handle,
+                )
             )
-        )
 
 
 def _flush(app: Any, owner: str) -> None:

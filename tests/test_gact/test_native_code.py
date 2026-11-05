@@ -309,6 +309,39 @@ def test_a_notify_is_attention_mail_attributed_to_its_task() -> None:
     assert [n["message"] for n in value["tasks"][0]["notifies"]] == ["hot", "hotter"]
 
 
+def test_notifies_of_two_scripts_in_one_window_stay_attributed_to_each() -> None:
+    """Every task's mail names its task by ``handle``, as a task's result does: two scripts
+    notifying in the same window give two mails, one per task, recorded together.
+
+    SABOTAGE: one grouped mail for the window (``handle=None`` when tasks differ) -> red."""
+    from types import SimpleNamespace
+
+    from clio_agent.gact import code_task_reporting as reporting
+
+    mails: list[Any] = []
+
+    class History:
+        def serialized(self) -> Any:
+            import contextlib
+
+            return contextlib.nullcontext()
+
+        def write_content(self, session_id: str, value: object) -> Any:
+            from clio_agent.arc.task_types import CoreReference
+
+            return CoreReference.model_construct()
+
+        def record_mail(self, item: Any) -> Any:
+            mails.append(item)
+            return item
+
+    app = SimpleNamespace(state=SimpleNamespace(task_history=History()))
+    first = {"handle": "task_a", "label": "a", "message": "1", "data": None, "at": "x"}
+    reporting._send(app, "sess_owner", [first, {**first, "handle": "task_b", "label": "b"}])
+    assert sorted(m.handle for m in mails) == ["task_a", "task_b"]
+    assert all(m.kind == "attention" for m in mails)
+
+
 def test_a_background_scripts_output_streams_to_its_file(
     world: Any, monkeypatch: pytest.MonkeyPatch
 ) -> None:
