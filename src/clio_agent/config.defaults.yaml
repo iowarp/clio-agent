@@ -2052,3 +2052,9 @@ spotter.max_clearance_events: 256
 # Installed agent (marketplace/id) that runs as the SPOTTER standing watcher
 # child session; change to point spotter-ai at a custom watcher agent.
 spotter.watcher_agent: "clio/spotter-ai"
+
+# ==========================================================================
+# Unassigned -- add these to scripts/config_key_notes.py
+
+# CLIO_STREAMS_PUSH_INTERVAL_S  (str)  <- src/clio_agent/gact/streams/push.py
+streams.push_interval_s: "0.1"

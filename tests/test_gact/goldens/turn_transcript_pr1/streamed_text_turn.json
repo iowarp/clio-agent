@@ -116,7 +116,7 @@
           "agent_runtime": {
             "agent_id": "standard",
             "agent_resolution": {
-              "digest": "8965a9ac15b40e8a193e2643f9bc551a18bc79124a6fb40e056382d40cf7321e",
+              "digest": "b85d626d19f11bf9161ca7ee7a498e5f3ec8f6e96904bbd70d75ed6ad9b7bb31",
               "flow": {
                 "id": "react",
                 "options": {}
@@ -130,7 +130,8 @@
                 "visuals",
                 "delegation",
                 "document-runtime",
-                "fleet"
+                "fleet",
+                "streaming"
               ],
               "ref": "clio/standard"
             },
@@ -163,7 +164,8 @@
             "skills": [
               "planning",
               "task-protocol",
-              "update-models"
+              "update-models",
+              "live-status"
             ],
             "source": "plugin",
             "structured_outputs": {},
@@ -233,7 +235,10 @@
               "prepare_document",
               "list_models",
               "usage",
-              "refresh_provider_models"
+              "refresh_provider_models",
+              "open_stream",
+              "read_stream",
+              "stop_stream"
             ]
           },
           "stream_source": "live"

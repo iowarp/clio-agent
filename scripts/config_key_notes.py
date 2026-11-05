@@ -1253,6 +1253,11 @@ KEY_NOTES: dict[str, str] = {
         "Installed agent (marketplace/id) that runs as the SPOTTER standing watcher child "
         "session; change to point spotter-ai at a custom watcher agent."
     ),
+    "streams.push_interval_s": (
+        "Shortest gap in seconds between two announcements of one stream to the sessions "
+        "watching it; writes inside it are announced together with the latest state. "
+        "Default 0.1."
+    ),
     "system.release_manifest_url": (
         "Release manifest the server reads to report the latest CLIO release to clients; point "
         "at a mirror or a fork's releases feed."

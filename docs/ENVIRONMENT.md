@@ -330,6 +330,7 @@ These resolve through `clio_agent.conf`: a value under the dotted key in `config
 | `CLIO_SPOTTER_MAX_CLEARANCE_EVENTS` | `spotter.max_clearance_events` | int | `256` | `src/clio_agent/gact/spotter_clearance.py` |
 | `CLIO_SSE_EVENT_LOG` | `debug.sse_event_log` | str | _(unset)_ | `src/clio_agent/gact/routes/misc.py` |
 | `CLIO_SSE_WIRE_TAP` | `debug.sse_wire_tap` | str | _(unset)_ | `src/clio_agent/gact/routes/misc.py` |
+| `CLIO_STREAMS_PUSH_INTERVAL_S` | `streams.push_interval_s` | str | `0.1` | `src/clio_agent/gact/streams/push.py` |
 | `CLIO_STREAM_AUDIT_LOG` | `debug.stream_audit_log` | str | _(unset)_ | `src/clio_agent/runtime/stream_audit.py` |
 | `CLIO_TASKS_CODE_CONCURRENCY` | `gact.tasks.code.concurrency` | int | `_DEFAULT_CONCURRENCY['code']` _(computed)_ | `src/clio_agent/tools/native_roots.py` |
 | `CLIO_TASKS_CODE_QUEUE` | `gact.tasks.code.queue` | str | _(unset)_ | `src/clio_agent/tools/native_roots.py` |

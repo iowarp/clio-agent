@@ -442,8 +442,12 @@ async def close(app: Any) -> tuple[BaseException, ...]:
         errors.extend(await native.settle_shutdown())
     from clio_agent.gact.artifacts.version_pacing import flush_pending  # noqa: PLC0415
 
-    # A file version a background script's registration deferred is recorded, not lost.
+    # A file version a background script's registration deferred is recorded, not lost,
+    # and an open stream's rows are written as its last version.
     await asyncio.to_thread(flush_pending)
+    streams = getattr(app.state, "streams", None)
+    if streams is not None:
+        await asyncio.to_thread(streams.close)
     question_events = getattr(app.state, "question_events", None)
     stack = getattr(app.state, "task_resource_stack", None)
     external = getattr(app.state, "external_tasks", None)

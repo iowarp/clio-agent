@@ -191,8 +191,10 @@ def execute_script(
 
     agent, code = prepared.agent, prepared.code
     callable_tools = {n: t for n, t in agent.tools.items() if n not in prepared.direct_only}
+    # A plugin binding's host calls (``_clio_host_calls``) answer beside the task's own.
+    host_calls = {**dict(getattr(agent, "_clio_host_calls", None) or {}), **(reserved or {})}
     dispatcher = Dispatcher(
-        callable_tools, prepared.servers, prepared.context, _search(callable_tools), reserved
+        callable_tools, prepared.servers, prepared.context, _search(callable_tools), host_calls
     )
     if live is not None:
         live["dispatcher"] = dispatcher  # a background task's status reads its call count

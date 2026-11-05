@@ -208,6 +208,9 @@ def _run(
     finally:
         grouper.flush()  # what was held is recorded when the script ends
         kernels.discard(kernel, "task_settled")
+        from clio_agent.gact.streams.store import stream_store  # noqa: PLC0415
+
+        stream_store(app).stop_task(handle)  # its streams stop, their last rows kept
 
 
 def register_native_code(root: NativeRoot, work: NativeWork) -> None:

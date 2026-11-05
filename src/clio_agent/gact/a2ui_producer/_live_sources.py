@@ -36,6 +36,7 @@ def latest_artifact_id(
         parsed = parse_reference(data_uri)
         if parsed.kind != "artifact_name":
             return None
+        _flush_stream(app, parsed.workspace_id, parsed.name)
         resolved = _resolve_named(get_registry(app), parsed, data_uri)
     except ReferenceResolutionError as exc:
         return refusal(
@@ -43,6 +44,18 @@ def latest_artifact_id(
             detail=f"component {component_id!r} dataUri {data_uri!r}: {exc.message}",
         )
     return str(resolved["artifact_id"]), int(resolved["version"])
+
+
+def _flush_stream(app: "FastAPI", workspace_id: str, name: str) -> None:
+    """A stream's latest rows written as its version, so the check sees its columns now."""
+    from urllib.parse import unquote  # noqa: PLC0415
+
+    from clio_agent.gact.streams.store import stream_store  # noqa: PLC0415
+
+    store = stream_store(app)
+    stream = store.by_name(workspace_id, unquote(name))
+    if stream is not None:
+        store.flush(stream)
 
 
 def record_binding(

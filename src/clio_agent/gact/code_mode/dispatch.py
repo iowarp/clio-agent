@@ -154,7 +154,7 @@ class Dispatcher:
         def run() -> None:
             try:
                 reply({"type": "result", "id": call_id, "ok": True, "value": handler(args)})
-            except Exception as exc:  # noqa: BLE001 - reported to the script as ToolError
+            except Exception as exc:  # noqa: BLE001 - forwards: the script, as its ToolError
                 reply({"type": "result", "id": call_id, "ok": False, "error": str(exc)})
 
         self.pool.submit(self.context.copy().run, run)

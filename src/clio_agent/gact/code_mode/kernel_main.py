@@ -141,7 +141,7 @@ class _Tools(_Namespace):
         """Find tools by name or keywords (the same catalog as search_tools)."""
         return await self._host.call("__search__", {"query": query, "limit": limit})
 
-    async def call(self, name: str, **args: Any) -> Any:
+    async def call(self, name: str, /, **args: Any) -> Any:
         """Call a tool by its full name, for names found with tools.search."""
         return await self._host.call(name, args)
 

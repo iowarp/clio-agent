@@ -102,6 +102,7 @@ def test_external_marketplace_needs_the_trust_step(tmp_path: Path) -> None:
         "xlsx",
         "shell",
         "fleet",
+        "streaming",
         "doc-runtime",
     ]
     assert service.pinned(resolution.digest).plugin_ids == resolution.plugin_ids

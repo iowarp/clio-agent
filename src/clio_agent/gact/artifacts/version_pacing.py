@@ -73,7 +73,7 @@ def _run_pending(key: tuple[str, str, str]) -> None:
         return
     try:
         register()
-    except Exception as exc:  # noqa: BLE001 - a timer thread has no caller; logged, typed
+    except (OSError, ValueError, RuntimeError) as exc:  # the version's write failed: typed
         logger.warning(
             "deferred artifact version failed reason=%s session=%s name=%s error=%r",
             VERSION_DEFERRED_FAILED,

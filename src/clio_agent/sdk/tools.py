@@ -71,6 +71,33 @@ class NativeToolRef:
         check_permission(self.permission, f"native_tool {self.name!r}")
 
 
+@dataclass(frozen=True)
+class HostCallSpec:
+    """A function that answers a kernel binding's reserved call in the server.
+
+    A binding's script-side code calls ``tools.call("__<binding>_<name>__", **args)``; the
+    call reaches ``function(args)`` in the server, in the context of the ``run_code`` call
+    that runs the script, without a tool call of its own (no permission question, no
+    transcript row). So a host call should only do what a gated call already allowed,
+    such as writing to a stream the script opened through a tool.
+    """
+
+    name: str
+    function: Callable[..., Any]
+
+    def __call__(self, *args: Any, **kwargs: Any) -> Any:
+        return self.function(*args, **kwargs)
+
+
+def host_call(name: str) -> Callable[[Callable[..., Any]], HostCallSpec]:
+    """Declare ``function`` as the server side of a binding's reserved call ``name``."""
+
+    def wrap(fn: Callable[..., Any]) -> HostCallSpec:
+        return HostCallSpec(name=name, function=fn)
+
+    return wrap
+
+
 def tool(
     function: Callable[..., Any] | None = None,
     *,
