@@ -264,7 +264,10 @@ def test_a_last_notify_without_await_is_sent_and_waited_for(
     task = _settled(app, handle)
     assert task.status == "completed"
     assert [e["message"] for entries in sent for e in entries] == ["done"]
-    assert "stopped with it" not in json.dumps(app.state.task_history.read_content(task.result))
+    result = json.dumps(app.state.task_history.read_content(task.result))
+    assert "stopped with it" not in result
+    # The final un-awaited call is awaited, so no pending future is reported as the value.
+    assert "Future pending" not in result
 
 
 def test_a_synchronous_script_has_no_task_binding(world: Any) -> None:

@@ -227,7 +227,9 @@ def _compile(code: str) -> tuple[Any, Any]:
 
 def _run(loop: asyncio.AbstractEventLoop, code_object: Any, namespace: dict[str, Any]) -> Any:
     result = eval(code_object, namespace)  # noqa: S307 - running the agent's script is the point
-    if inspect.iscoroutine(result):
+    # A final call left un-awaited (``tools.call``, ``task.notify`` return futures) is
+    # awaited like a coroutine, so its value is the call's result, not a pending future.
+    if inspect.iscoroutine(result) or isinstance(result, asyncio.Future):
         result = loop.run_until_complete(result)
     return result
 
