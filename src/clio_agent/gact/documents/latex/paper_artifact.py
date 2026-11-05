@@ -27,6 +27,7 @@ if TYPE_CHECKING:
 
     from clio_agent.gact.artifacts.records import ArtifactRecord, ArtifactVersion
     from clio_agent.gact.artifacts.registry import MintOutcome
+    from clio_agent.gact.documents.profiles import DocumentFormat
 
 __all__ = [
     "DESIGNATION",
@@ -34,6 +35,7 @@ __all__ = [
     "is_paper",
     "mint_paper",
     "paper_entry",
+    "paper_format",
     "paper_name",
     "paper_title",
 ]
@@ -46,6 +48,24 @@ DEFAULT_DOCUMENT_TYPE = "Paper"
 _TITLE = re.compile(r"\\title\s*(?:\[[^\]]*\])?\s*\{")
 _DOCUMENTCLASS = re.compile(r"\\documentclass\s*(?:\[([^\]]*)\])?\s*\{([^}]*)\}")
 _DROPPED = re.compile(r"\\(?:thanks|footnote|IEEEauthorrefmark)\s*\{")
+
+
+def paper_format() -> DocumentFormat:
+    """How a paper reads as a document: a LaTeX paper's profile and anchors, served as its PDF.
+
+    A paper has no file extension (``paper-bb``); its marks are the LaTeX ones (text on either
+    pane, PDF quads and regions, resolved through the source map), and its bytes are the PDF.
+    """
+    from dataclasses import replace  # noqa: PLC0415
+
+    from clio_agent.gact.documents.profiles import document_format  # noqa: PLC0415
+
+    return replace(
+        document_format("paper.tex"),
+        mime_type="application/pdf",
+        native_open=False,
+        rendition_formats=(),
+    )
 
 
 def is_paper(version: ArtifactVersion | None) -> bool:

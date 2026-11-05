@@ -236,6 +236,14 @@ def test_a_build_makes_a_paper_built_from_its_member_versions(
         used = {edge["from"] for edge in lineage["edges"] if edge["type"] == "used"}
         assert {item["artifact_id"] for item in producer["members"]} <= used
 
+        # As a document, a paper is a LaTeX paper served as its PDF.
+        manifest = client.get(f"/v1/artifacts/{first['artifact_id']}/document").json()
+        assert manifest["profile"] == "latex" and manifest["mime_type"] == "application/pdf"
+        assert {"text-quote", "pdf-quad", "region"} <= set(manifest["anchors"])
+        content = client.get(f"/v1/artifacts/{first['artifact_id']}/document/content")
+        assert content.headers["content-type"] == "application/pdf"
+        assert content.content.startswith(b"%PDF")
+
         # The paper's own id opens the workspace; an unchanged rebuild is the same version.
         assert report(first["artifact_id"])["build"]["paper"]["version"] == 1
         # A section-only edit makes the paper's next version.

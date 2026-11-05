@@ -17,6 +17,7 @@ from clio_agent.gact.documents.artifact_bytes import ArtifactBytesError, artifac
 from clio_agent.gact.documents.comment_sessions import (
     dispatch_native,
 )
+from clio_agent.gact.documents.latex.paper_artifact import is_paper, paper_format
 from clio_agent.gact.documents.models import (
     ArtifactReview,
     CreateRenditionRequest,
@@ -84,7 +85,7 @@ def _artifact_source(
 def _manifest(
     record: ArtifactRecord, version: ArtifactVersion, app: FastAPI | None = None
 ) -> DocumentManifest:
-    format_row = document_format(record.name)
+    format_row = paper_format() if is_paper(version) else document_format(record.name)
     rendition = (
         find_pdf_rendition(app, record, version) if app and format_row.rendition_formats else None
     )
@@ -165,7 +166,7 @@ def register_document_routes(app: FastAPI, deps: "GactDeps") -> None:
     async def get_document_content(artifact_id: str) -> FileResponse:
         record, version = await _artifact(app, artifact_id)
         source = await asyncio.to_thread(_artifact_source, app, record, version)
-        row = document_format(record.name)
+        row = paper_format() if is_paper(version) else document_format(record.name)
         headers = {
             "ETag": f'"sha256:{version.sha256}"' if version.sha256 else "",
             "X-Content-Type-Options": "nosniff",
