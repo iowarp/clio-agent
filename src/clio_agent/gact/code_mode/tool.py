@@ -13,8 +13,10 @@ it runs only where the sandbox enforces the write fence, in a kernel that may wr
 the session's scratch folder and temp (its nested calls still meet the plan ACL), else
 it refuses with ``code_plan_mode_unconfined``.
 
-A script that runs past ``code.call_timeout_s`` (waiting for a person's answer does
-not count), or is cancelled, stops its kernel: the next script starts a fresh one.
+Nothing bounds a script's time or its number of calls: it ends when it finishes or when
+the agent or the person cancels it (taskable run_code CT3; CLIO is a human-observed
+agent, so stopping work is the person's decision). A cancelled script stops its kernel,
+and the next script starts a fresh one.
 """
 
 from __future__ import annotations
@@ -32,7 +34,6 @@ from clio_agent.runtime import trace
 __all__ = [
     "CODE_PLAN_MODE_UNCONFINED",
     "build_run_code_tool",
-    "call_timeout_s",
     "finalize_run_code",
     "poll_s",
     "run_script",
@@ -49,9 +50,8 @@ _DESCRIPTION = (
     "output, the value of a final expression and the call count, not the tools' results. "
     "The kernel is ordinary Python that can read your workspace, so a script can also open "
     "and parse many files itself (pathlib, ast, json, csv) in one process. "
-    "One call or a short dependent chain is cheaper as direct calls. A script makes at most "
-    "{budget} tool calls; its variables persist into the next script, so larger work "
-    "continues there, and tasks it started stop when it ends. `tools.search('words')` "
+    "One call or a short dependent chain is cheaper as direct calls. Its variables persist "
+    "into the next script, and tasks it started stop when it ends. `tools.search('words')` "
     "finds tools; `help(tools.<group>.<tool>)` shows arguments; a failed call raises "
     "ToolError. The script is approved before it runs."
 )
@@ -67,13 +67,6 @@ def poll_s() -> float:
     if not value > 0:
         raise ValueError(f"code.poll_s must be positive, not {value}")
     return value
-
-
-def call_timeout_s() -> float:
-    """Seconds one script may run (time waiting for a person's answer excluded)."""
-    return conf.resolve(
-        "code.call_timeout_s", env="CLIO_CODE_CALL_TIMEOUT_S", default=600.0, cast=float
-    )
 
 
 class CodeError(RuntimeError):
@@ -174,7 +167,7 @@ def run_script(
     kernel = kernels.kernel_for(session_id, scope, _workspace(), read_only=read_only)
     outcome: dict[str, Any] = {"status": "failed", "output": "", "value": None, "error": ""}
     started = time.monotonic()
-    limit, poll = call_timeout_s(), poll_s()
+    poll = poll_s()
     try:
         with kernel.lock:
             kernel.bind(
@@ -186,15 +179,6 @@ def run_script(
                 if cancellation_requested():
                     kernels.discard(kernel, "cancelled")
                     outcome.update(status="cancelled", error="The script was stopped.")
-                    break
-                elapsed = time.monotonic() - started - grant.waited_s
-                if limit > 0 and elapsed > limit and not grant.waiting:
-                    kernels.discard(kernel, "timeout")
-                    outcome.update(
-                        status="timed_out",
-                        error=f"The script ran past {limit:g} s (code.call_timeout_s) and was "
-                        "stopped; its variables are gone, so the next script starts fresh.",
-                    )
                     break
                 try:
                     message = kernel.receive(poll)
@@ -271,7 +255,6 @@ def build_run_code_tool() -> Any:
         declare_structured_content,
         native_tool,
     )
-    from clio_agent.gact.code_mode.dispatch import max_nested_calls  # noqa: PLC0415
     from clio_agent.gact.code_mode.presentation import present, starting  # noqa: PLC0415
     from clio_agent.tools.tool_settings import self_gated  # noqa: PLC0415
 
@@ -301,7 +284,7 @@ def build_run_code_tool() -> Any:
             presentation_start=starting,
             domain="workflows",
             title="Run code",
-            desc=_DESCRIPTION.format(budget=max_nested_calls()),
+            desc=_DESCRIPTION,
             args={
                 "code": {"type": "string", "description": "Python source; top-level await works."}
             },

@@ -21,7 +21,6 @@ from __future__ import annotations
 
 import contextlib
 import threading
-import time
 from collections.abc import Iterator, Mapping, Sequence
 from contextvars import ContextVar
 from dataclasses import dataclass, field
@@ -87,8 +86,6 @@ class ScriptGrant:
     covered: bool = False
     #: One open question per script: other calls that need an answer wait behind it.
     asking: threading.Lock = field(default_factory=threading.Lock)
-    #: Seconds spent waiting for answers (not counted against the script's timeout).
-    waited_s: float = 0.0
     #: A question is open now (the row says "Script paused, waiting for you").
     waiting: bool = False
 
@@ -136,13 +133,11 @@ def question() -> Iterator[None]:
         yield
         return
     with grant.asking:
-        started = time.monotonic()
         grant.waiting = True
         try:
             yield
         finally:
             grant.waiting = False
-            grant.waited_s += time.monotonic() - started
 
 
 def answered(row: Mapping[str, Any]) -> None:

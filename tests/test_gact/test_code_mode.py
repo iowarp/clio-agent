@@ -179,17 +179,19 @@ class TestKernel:
         )
         assert "No tool named 'submit'" in outcome["output"]
 
-    def test_the_nested_call_budget(self, workspace: Path, monkeypatch: Any) -> None:
-        monkeypatch.setattr(dispatch_module, "max_nested_calls", lambda: 2)
+    def test_no_count_ends_a_script(self, workspace: Path) -> None:
+        """CT3: a script may make more calls than the 500 the old budget allowed.
+
+        SABOTAGE: restore a budget of 500 in the dispatcher -> the 501st call raises -> red."""
         code = (
-            "out = []\n"
-            "for i in ('r1', 'r2', 'r3'):\n"
-            "    try:\n        await tools.records.get_record(record_id=i); out.append('ok')\n"
-            "    except ToolError as exc:\n        out.append(str(exc)[:30])\n"
-            "out"
+            "import asyncio\n"
+            "rows = await asyncio.gather(*(tools.records.get_record(record_id='r1') "
+            "for _ in range(520)))\n"
+            "len(rows)"
         )
-        value = _run(code)["value"]
-        assert value.startswith("['ok', 'ok', 'This script reached its limit")
+        outcome = _run(code)
+        assert outcome["status"] == "completed", outcome
+        assert outcome["value"] == "520" and outcome["calls"] == 520
 
     def test_tasks_a_failed_script_left_running_stop_with_it(self, workspace: Path) -> None:
         # A failed gather leaves its other coroutines running on the kernel's loop;
@@ -209,16 +211,10 @@ class TestKernel:
         assert after["status"] == "completed"
         assert after["calls"] == 1
 
-    def test_a_timeout_stops_the_kernel_and_the_next_script_starts_fresh(
-        self, workspace: Path, monkeypatch: Any
-    ) -> None:
-        assert _run("y = 1")["status"] == "completed"
-        monkeypatch.setattr(tool_module, "call_timeout_s", lambda: 1.0)
-        stopped = _run("import time\ntime.sleep(30)")
-        assert stopped["status"] == "timed_out"
-        monkeypatch.setattr(tool_module, "call_timeout_s", lambda: 60.0)
-        again = _run("'y' in globals()")
-        assert again["value"] == "False"
+    def test_no_clock_ends_a_script(self) -> None:
+        """CT3: nothing in run_code stops a script for running long; the person cancels it."""
+        assert not hasattr(tool_module, "call_timeout_s")
+        assert not hasattr(dispatch_module, "max_nested_calls")
 
     def test_the_output_limit_reaches_the_kernel(self, workspace: Path, monkeypatch: Any) -> None:
         # code.max_output_bytes is resolved where the kernel starts and passed to it.

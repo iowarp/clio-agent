@@ -1278,12 +1278,6 @@ resources.upload_chunk_bytes: 8388608
 # run_code execution bounds, HDF5 reference summaries and the MCP tool
 # fleet's discovery/cache/timeouts.
 
-# CLIO_CODE_CALL_TIMEOUT_S  (str)  <- src/clio_agent/gact/code_mode/tool.py
-# Seconds one run_code script may run (time waiting for a person's answer
-# excluded); past it the kernel is stopped and the next script starts fresh.
-# 0 means no limit.
-code.call_timeout_s: "600.0"
-
 # CLIO_CODE_COVERING_POSTURES  (list)  <- src/clio_agent/gact/code_mode/grants.py
 # Approval modes in which approving a run_code script also covers the non-
 # read tool calls it makes; in other modes each such call asks.
@@ -1298,11 +1292,6 @@ code.idle_minutes: "30.0"
 # Longest line of the tools index in run_code's description; a server with
 # more tools is listed in part with a count of the rest.
 code.index_line_chars: 320
-
-# CLIO_CODE_MAX_NESTED_CALLS  (int)  <- src/clio_agent/gact/code_mode/dispatch.py
-# Tool calls one run_code script may make; a call past it raises in the
-# script.
-code.max_nested_calls: 500
 
 # CLIO_CODE_MAX_OUTPUT_BYTES  (int)  <- src/clio_agent/gact/code_mode/kernels.py
 # Bytes of one run_code script's printed output the kernel returns; the rest

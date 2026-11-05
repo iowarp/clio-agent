@@ -1240,15 +1240,8 @@ KEY_NOTES: dict[str, str] = {
         "Release manifest the server reads to report the latest CLIO release to clients; point "
         "at a mirror or a fork's releases feed."
     ),
-    "code.call_timeout_s": (
-        "Seconds one run_code script may run (time waiting for a person's answer excluded); "
-        "past it the kernel is stopped and the next script starts fresh. 0 means no limit."
-    ),
     "code.idle_minutes": (
         "Minutes a run_code kernel keeps its variables without a script before it is stopped."
-    ),
-    "code.max_nested_calls": (
-        "Tool calls one run_code script may make; a call past it raises in the script."
     ),
     "artifacts.index_page_items": (
         "Ids per page of an artifact-index list (a session's transforms, an artifact's "

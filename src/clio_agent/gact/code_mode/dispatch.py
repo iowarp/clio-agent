@@ -13,8 +13,8 @@ its text), read from the observer's completed notification
 (:data:`clio_agent.tools.tool_observation.RESULT_SINK`), or a native tool's return
 value. The model never sees nested results; it sees what the script prints.
 
-Bounds: at most ``code.max_nested_calls`` calls per script, and the per-server limit
-a step's calls share (:mod:`clio_agent.gact.agents.tool_concurrency`).
+No count bounds a script's calls (taskable run_code CT3); the per-server limit applies
+to this script's own calls (:mod:`clio_agent.gact.agents.tool_concurrency`).
 """
 
 from __future__ import annotations
@@ -29,23 +29,15 @@ from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from typing import Any
 
-from clio_agent import conf
 from clio_agent.gact.agents.tool_concurrency import ServerGates, call_workers
 from clio_agent.gact.code_mode.stubs import tool_group
 
-__all__ = ["CONCURRENCY_GROUP_ATTR", "CallRecord", "Dispatcher", "max_nested_calls"]
+__all__ = ["CONCURRENCY_GROUP_ATTR", "CallRecord", "Dispatcher"]
 
 #: The attribute a native tool's callable sets to share a concurrency cap with other tools.
 CONCURRENCY_GROUP_ATTR = "_clio_concurrency_group"
 
 _SEARCH = "__search__"
-
-
-def max_nested_calls() -> int:
-    """Tool calls one script may make."""
-    return conf.resolve(
-        "code.max_nested_calls", env="CLIO_CODE_MAX_NESTED_CALLS", default=500, cast=conf.as_int
-    )
 
 
 @dataclass
@@ -116,13 +108,11 @@ class Dispatcher:
         self.servers = servers
         self.context = context
         self.search = search
-        self.budget = max_nested_calls()
         self.gates = ServerGates()
         self.pool = ThreadPoolExecutor(
             max_workers=call_workers(), thread_name_prefix="clio-code-call"
         )
         self.records: list[CallRecord] = []
-        self.started = 0
         self.lock = threading.Lock()
 
     def submit(self, message: Mapping[str, Any], reply: Callable[[dict[str, Any]], None]) -> None:
@@ -151,13 +141,6 @@ class Dispatcher:
     def _refusal(self, tool: str) -> str:
         if tool not in self.tools:  # direct-only and blocked tools are not given here
             return f"No tool named {tool!r} can be called from a script; see tools.search()."
-        with self.lock:
-            if self.started >= self.budget:
-                return (
-                    f"This script reached its limit of {self.budget} tool calls "
-                    "(code.max_nested_calls); split the work across scripts."
-                )
-            self.started += 1
         return ""
 
     def _run(self, tool: str, args: dict[str, Any]) -> tuple[bool, Any, str]:
