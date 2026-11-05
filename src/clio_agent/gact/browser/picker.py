@@ -121,6 +121,8 @@ def _anchor(record: Any, payload: dict[str, Any]) -> dict[str, Any] | None:
             "html_excerpt": _text(payload.get("html"), _MAX_HTML),
             "rect": rect,
             "viewport_width": int(viewport[0]),
+            "natural_width": int(viewport[0]),
+            "natural_height": int(viewport[1]),
             "source": {"page": page},
         }
     exact = _text(payload.get("exact"), _MAX_TEXT).strip()

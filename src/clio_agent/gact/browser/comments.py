@@ -66,31 +66,62 @@ async def _ax(page: Any, cdp: Any, selector: str) -> tuple[int, list[float] | No
     return count, rect, role, name
 
 
+def _marked_view(attachment: "CommentAttachment") -> dict[str, int] | None:
+    """The view size the person made the marks at (a region's or a pick's page view)."""
+
+    for mark in attachment.marks:
+        width, height = mark.anchor.natural_width, mark.anchor.natural_height
+        if mark.anchor.profile in ("region", "dom") and width and height:
+            return {"width": int(width), "height": int(height)}
+    return None
+
+
 def _capture(attachment: "CommentAttachment") -> Any:
     async def work(record: Any) -> dict[str, Any]:
         page = record.page
-        view = page.viewport_size or {"width": 1280, "height": 800}
-        out: dict[str, Any] = {"png": await page.screenshot(type="png"), "view": view, "marks": {}}
-        cdp = await page.context.new_cdp_session(page)
+        shown = page.viewport_size or {"width": 1280, "height": 800}
+        marked = _marked_view(attachment)
+        # The live view lays the page out at its own size, which may have changed since the
+        # marks were made (the canvas restored beside the conversation): the page is shown
+        # at the marks' size for the screenshot, so the boxes fall where the person drew them.
+        resized = marked is not None and marked != shown
+        if resized:
+            await page.set_viewport_size(marked)
+            await page.wait_for_timeout(300)
+        view = marked if resized else shown
         try:
-            for mark in attachment.marks:
-                anchor = mark.anchor
-                if anchor.profile == "dom" and anchor.selector:
-                    out["marks"][mark.label] = await _ax(page, cdp, anchor.selector)
-                elif anchor.profile == "region" and anchor.rect:
-                    x, y, w, h = anchor.rect
-                    box = [
-                        x * view["width"],
-                        y * view["height"],
-                        w * view["width"],
-                        h * view["height"],
-                    ]
-                    out["marks"][mark.label] = await page.evaluate(_UNDER_JS, box)
+            return await _measure(page, attachment, view)
         finally:
-            await cdp.detach()
-        return out
+            if resized:
+                await page.set_viewport_size(shown)
 
     return work
+
+
+async def _measure(
+    page: Any, attachment: "CommentAttachment", view: dict[str, int]
+) -> dict[str, Any]:
+    """The screenshot, and each mark resolved on the page at ``view``."""
+
+    out: dict[str, Any] = {"png": await page.screenshot(type="png"), "view": view, "marks": {}}
+    cdp = await page.context.new_cdp_session(page)
+    try:
+        for mark in attachment.marks:
+            anchor = mark.anchor
+            if anchor.profile == "dom" and anchor.selector:
+                out["marks"][mark.label] = await _ax(page, cdp, anchor.selector)
+            elif anchor.profile == "region" and anchor.rect:
+                x, y, w, h = anchor.rect
+                box = [
+                    x * view["width"],
+                    y * view["height"],
+                    w * view["width"],
+                    h * view["height"],
+                ]
+                out["marks"][mark.label] = await page.evaluate(_UNDER_JS, box)
+    finally:
+        await cdp.detach()
+    return out
 
 
 def _target_spec(role: str, name: str, selector: str) -> str:

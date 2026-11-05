@@ -139,3 +139,30 @@ def test_stopping_a_pick_gives_the_page_its_clicks_back(browser: Any, site: dict
 
     assert browser.run(record, "click", click)  # the page's own handler saw the click
     assert received == []
+
+
+def test_marks_are_rendered_at_the_view_size_they_were_made_at(
+    browser: Any, site: dict[str, Any], tmp_path: Path
+) -> None:
+    record = _open(browser, site, "/form")
+    browser.run(record, "resize", lambda r: r.page.set_viewport_size({"width": 400, "height": 800}))
+    page = {"id": record.id, "url": record.url(), "title": record.title}
+    attachment = CommentAttachment(
+        kind="browser-page",
+        marks=[
+            AttachmentMark(
+                label="S1",
+                anchor=DocumentAnchor(
+                    profile="dom",
+                    selector="button",
+                    tag="button",
+                    natural_width=1280,
+                    natural_height=800,
+                    source={"page": page},
+                ),
+            )
+        ],
+    )
+    rendered = render_page_comments(None, "sess_a", attachment, tmp_path, True)  # type: ignore[arg-type]
+    assert "in a 1280 px wide view" in rendered.text
+    assert record.page.viewport_size == {"width": 400, "height": 800}  # restored for the person
