@@ -3,8 +3,9 @@
 The script runs in the scope's kernel (:mod:`.kernels`) with ``tools`` bound to stubs
 of the agent's tools (:mod:`.stubs`); its tool calls go through :mod:`.dispatch`. The
 model sees only what the script prints, its error, and the value of a final
-expression, bounded like every result (12,000 characters, the rest spilled to a file),
-plus how many tool calls it made.
+expression, bounded like every result (the room one result has in the model's context
+window, :mod:`clio_agent.tools.result_room`; the rest is saved to a file), plus how many
+tool calls it made.
 
 Running a script is one non-read call, approved before it runs with the code shown
 (``run_code`` asks the permission gate itself, as native tools that act do). Its nested
@@ -34,6 +35,8 @@ from clio_agent.runtime import trace
 
 __all__ = [
     "CODE_PLAN_MODE_UNCONFINED",
+    "CODE_SCRIPT_DENIED",
+    "CODE_SCRIPT_NOT_ALLOWED",
     "build_run_code_tool",
     "finalize_run_code",
     "poll_s",
@@ -42,6 +45,12 @@ __all__ = [
 
 #: Typed refusal: plan mode, and the sandbox does not enforce the write fence.
 CODE_PLAN_MODE_UNCONFINED = "code_plan_mode_unconfined"
+#: Typed refusal: the gate denied the script with its own reason (a deny policy, the plan
+#: ACL, a read-only session), which the model is given.
+CODE_SCRIPT_DENIED = "code_script_denied"
+#: Typed refusal: the gate did not allow the script and gave no reason (the person
+#: declined it, or a rule denies run_code).
+CODE_SCRIPT_NOT_ALLOWED = "code_script_not_allowed"
 _DESCRIPTION = (
     "Run Python in a persistent kernel that can call your tools: `await "
     "tools.<group>.<tool>(arg=...)` returns the tool's structured result (a dict, list or "
@@ -54,12 +63,13 @@ _DESCRIPTION = (
     "One call or a short dependent chain is cheaper as direct calls. Its variables persist "
     "into the next script, and tasks it started stop when it ends. `tools.search('words')` "
     "finds tools; `help(tools.<group>.<tool>)` shows arguments; a failed call raises "
-    "ToolError. The script is approved before it runs."
+    "ToolError; call a tool it finds with `await tools.call(name, arg=...)`. The script is "
+    "approved before it runs."
 )
 
 
 def poll_s() -> float:
-    """Seconds between checks for cancellation and timeout while a script runs.
+    """Seconds between checks for cancellation while a script runs.
 
     Raises:
         ValueError: The configured interval is not positive.
@@ -85,8 +95,20 @@ def _approve(app: Any, code: str) -> None:
     first = next((line.strip() for line in code.splitlines() if line.strip()), "")
     summary = f"Run a Python script ({len(code.splitlines())} lines): {first}"[:500]
     context = {"kind": "native", "summary": summary}
-    if _invoke_permission_gate(gate, "run_code", {"code": code}, context) != "allow":
-        raise PermissionError("The script was not approved, so it did not run.")
+    decision = _invoke_permission_gate(gate, "run_code", {"code": code}, context)
+    if decision == "allow":
+        return
+    # The gate's own reason when it gave one (a deny policy, the plan ACL, a read-only
+    # session's ACL), as the execution boundary gives it for any other tool.
+    deny_message = str(getattr(decision, "deny_message", "") or "")
+    reason = CODE_SCRIPT_DENIED if deny_message else CODE_SCRIPT_NOT_ALLOWED
+    trace.event("CODE", "run_code refused reason=%s", reason)
+    raise PermissionError(
+        f"{deny_message} The script did not run ({reason})."
+        if deny_message
+        else "The script did not run: it was not approved, or a permission rule denies "
+        f"run_code ({reason})."
+    )
 
 
 def _plan_mode_refusal(app: Any, session_id: str) -> bool:

@@ -517,3 +517,26 @@ def test_a_call_that_raises_outside_its_own_handling_still_answers_the_script() 
     assert by_id[1]["ok"] is False and by_id[1]["error"] == "RuntimeError: gate unavailable"
     assert by_id[2]["ok"] is False and "host call gone" in by_id[2]["error"]
     assert [(r.tool, r.ok) for r in dispatcher.records] == [("records_get_record", False)]
+
+
+def test_a_refused_script_says_why_the_gate_refused_it() -> None:
+    """A3: the gate's own deny message (a deny policy, the plan ACL, a read-only session)
+    reaches the model with a typed reason; only a bare deny reads as not approved.
+    SABOTAGE: raise the fixed "not approved" text for every refusal -> red."""
+    from clio_agent.gact.permission_gate import DenyDecision
+
+    def app(decision: Any) -> Any:
+        gate = lambda name, args, context: decision  # noqa: E731
+        return SimpleNamespace(state=SimpleNamespace(pending_permission_gate=gate))
+
+    tool_module._approve(app("allow"), "print(1)")
+    acl = "run_code is not available in this read-only session."
+    with pytest.raises(PermissionError) as denied:
+        tool_module._approve(app(DenyDecision(acl)), "print(1)")
+    assert str(denied.value).startswith(acl)
+    assert tool_module.CODE_SCRIPT_DENIED in str(denied.value)
+    assert "not approved" not in str(denied.value)
+    with pytest.raises(PermissionError) as declined:
+        tool_module._approve(app("deny"), "print(1)")
+    assert "not approved, or a permission rule denies run_code" in str(declined.value)
+    assert tool_module.CODE_SCRIPT_NOT_ALLOWED in str(declined.value)
