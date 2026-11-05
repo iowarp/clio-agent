@@ -51,9 +51,7 @@ async function waitIdle(page, sessionId, log, minutes, options) {
 }
 
 async function send(page, text) {
-  const composer = page
-    .locator('form:has(button[type="submit"]) textarea, form:has(button[type="submit"]) [contenteditable="true"]')
-    .first();
+  const composer = page.locator('textarea[placeholder^="Ask"], [contenteditable="true"][aria-placeholder^="Ask"]').first();
   await composer.click();
   await page.keyboard.type(text);
   await page.keyboard.press("Enter");
@@ -81,8 +79,10 @@ export default async function (page, shot) {
   if (await activity.count()) await activity.first().click();
   await page.waitForTimeout(800);
   // Open the shell call rows so their results (and any sandbox notice) show.
-  const runs = page.getByRole("button", { name: /^Run\b/ });
-  for (let i = 0; i < (await runs.count()); i += 1) await runs.nth(i).click();
+  const runs = page.locator('[data-slot="tool-activity"]', { hasText: "Sandbox:" });
+  for (let i = 0; i < (await runs.count()); i += 1) {
+    await runs.nth(i).getByText("Run", { exact: true }).first().click();
+  }
   await page.waitForTimeout(800);
   await shot("activity");
   const allow = page.getByRole("button", { name: /^Allow / });

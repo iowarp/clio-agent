@@ -196,7 +196,7 @@ def standard_mcp_presentation(result: Any) -> dict[str, Any]:
             {
                 "id": "structured-result",
                 "type": "markdown",
-                "text": _structured_markdown(_structured(result)),
+                "text": _structured_markdown(_without_boundary(_structured(result))),
             }
         )
     if failed and not blocks:
@@ -217,6 +217,15 @@ def standard_mcp_presentation(result: Any) -> dict[str, Any]:
         "summary": "",
         "blocks": blocks,
     }
+
+
+def _without_boundary(value: Mapping[str, Any]) -> Mapping[str, Any]:
+    """The result less its sandbox diagnosis, which the client shows as its own notice
+    (#1905): a ``boundary`` field shaped like one, not any field of that name."""
+    boundary = value.get("boundary")
+    if isinstance(boundary, Mapping) and {"kind", "confidence", "message"} <= set(boundary):
+        return {key: item for key, item in value.items() if key != "boundary"}
+    return value
 
 
 def _structured_markdown(value: Mapping[str, Any]) -> str:
