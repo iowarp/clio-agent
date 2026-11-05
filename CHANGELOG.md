@@ -16,8 +16,69 @@ TUI/HTTP surface aren't tracked here.
   virtual datasets are followed only into the workspace
   (`403 hdf5_link_outside_workspace`, `hdf5_virtual_source_outside_workspace`)
   (#1834).
+- `run_code(code, background=False, label="")`: the agent writes a Python script that
+  calls its own tools (`await tools.<group>.<tool>(...)`) in a persistent kernel and
+  reads only what it prints. Running a script is one approved action; its nested calls
+  are decided by the permission gate under the script's grant (covered in the
+  `code.covering_postures` modes; in `ask`, one question per script with the answer
+  `allow_script`, "Allow for the rest of this script"). A script keeps the approval mode
+  it was approved under. In plan mode it runs read-only where the sandbox enforces the
+  write fence, else it is refused with `code_plan_mode_unconfined`.
+- Background scripts: `run_code(background=True)` returns a task handle of kind `Code`
+  at once. The task row reports elapsed time, nested calls, memory and `task.progress`;
+  `task.notify` wakes the owning conversation at most once per
+  `code.notify_min_interval_s` (30 s), coalescing and never dropping messages. A script
+  outlives its turn and a child that started it; its questions never expire; a clean
+  shutdown settles it as cancelled with its output kept, and it is not resumed.
+- Streams, shipped as the builtin `streaming` plugin (required by `core`):
+  `open_stream`, `read_stream`, `stop_stream` and a `stream` kernel binding. A stream
+  is a workspace artifact `<name>.parquet` whose latest rows live in server memory,
+  saved as versions on open, every `flush_s`, at stop and at a clean shutdown. Views
+  bound to `artifact://<workspace>/<name>.parquet@latest` read it through
+  `GET /v1/streams/{id}`, `POST /v1/streams/{id}/table-query` and a watch lease
+  (`POST /v1/streams/{id}/watch`); `stream.updated` is announced only to watching
+  sessions. A view names a live file as `artifact://<workspace>/<name>@latest`; a
+  background script's file versions are paced by `artifacts.version_interval_s`.
+- Deferred tools: some tools are named in the prompt without their schemas and loaded
+  with `search_tools` (`tools.deferral`, `tools.defer_share`, `tools.defer_tokens`,
+  `tools.defer_builtins`, `tools.never_defer`). Plugins declare `defer`, `callers` and
+  `permission` on `tool` / `native_tool` and on `servers.<name>` in `plugin.json`, and
+  `kernel_bindings` with optional `host` modules (`sdk.host_call`).
+- Per-tool settings: `GET`/`PUT /v1/settings/tools` and
+  `POST /v1/settings/tools/rules/remove` back a plugin's Tools tab; deployments set
+  `tools.permissions` and `tools.callers`. A `deny` default removes the tool from the
+  agent (`tool_permission_deny`).
+- `recall_context(ids | query, limit)` returns the recorded steps a compaction replaced,
+  or matching earlier steps; results above `tools.recall_result_chars` (16,000) go to a
+  file the agent can search and read.
+- The session plan: `plan_enter`, `plan_update` (whole plan, one passage, or status
+  `done` / `abandoned`) and `plan_exit`, statuses `draft`, `approved`, `active`, `done`,
+  `abandoned`; the Work rail shows it, and `PUT /v1/sessions/{sid}/plan` saves the
+  person's edit, offered to the agent at its next step. A stale-plan note, an explore
+  suggestion, session facts and child-report instructions join the reminders.
+- Reminders are listed in Settings > Prompts and commands > Reminders, where each can
+  be switched off, edited and previewed; required ones cannot be switched off.
 
 ### Changed
+
+- **Breaking:** ARC stores every segment-list chunk as raw msgpack records with a
+  length and CRC (`arc/chunk_records.py`) instead of base64 frames, and has no reader
+  for the old format: a chunk written by v0.9.5.1 or an earlier development build fails
+  typed `arc_chunk_format_unsupported`, and its transcript answers
+  `503 messages_unavailable` with `cause: transcript_corrupt`. Reset the state: stop
+  CLIO and delete the clio-core data folder (`<data dir>/cte`, or `arc.cte.dir`).
+- The compaction prompt is part of CLIO core (`gact/compaction_prompt.md`). A value
+  still set for the removed `compaction.prompt_file` / `CLIO_COMPACTION_PROMPT_FILE`
+  fails the compaction with `compaction_prompt_invalid`. What a compaction keeps
+  verbatim is `compaction.keep.*`: the person's typed messages within `user_chars`
+  (80,000), the open request, the newest step, the plan and the todos; session facts
+  are offered again after it.
+- Permission questions no longer expire after 600 s: a question waits until it is
+  answered or its work is cancelled. An explicit deadline (`hooks.defer_timeout`) still
+  expires with `permission_request_timeout`.
+- The browser lets a navigation the person or the page makes load; before an agent
+  call reads or acts on a page whose host it may not use yet, it asks. A page is
+  blocked only for a refused scheme or a gate error.
 
 - CLIO Desktop requires macOS 15 or newer (was 14). iowarp-core 2.4.0, now required,
   publishes macOS wheels for macOS 15 only; the installer, the bundle build

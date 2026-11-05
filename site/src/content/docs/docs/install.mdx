@@ -175,6 +175,21 @@ Running the script again upgrades or repairs the same installation. Install fold
 environment variables and the full command list are in
 [Server and terminal setup](/docs/server-setup/#install-script).
 
+<Aside type="caution" title="Development builds change how history is stored">
+Current development builds store conversation history in a new format and do not read
+history saved by v0.9.5.1 or by earlier development builds. There is no converter. After such an
+upgrade, conversations from before it cannot be opened: CLIO reports that their messages
+are unavailable because the stored transcript cannot be read (`transcript_corrupt`).
+
+To start clean, stop CLIO with `clio stop`, delete the `cte` folder in CLIO's data
+folder, and start CLIO again. The folder is `~/.local/share/clio-agent/cte` on Linux,
+`~/Library/Application Support/clio-agent/data/cte` on macOS, and
+`%LOCALAPPDATA%\clio-agent\data\cte` on Windows, or the folder set as `arc.cte.dir`
+in your configuration. An installation that still keeps its data under
+`~/.config/clio-agent` uses `~/.config/clio-agent/data/cte`. Deleting the folder removes
+the history CLIO kept there.
+</Aside>
+
 ### Choose a release
 
 Both the install script and its `--desktop` form take these options. On Windows, pass
