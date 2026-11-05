@@ -7,12 +7,14 @@
 //   node scripts/cloud/ui_check.mjs --send "List the plugins you have"
 //   node scripts/cloud/ui_check.mjs --steps scripts/cloud/checks/runs_view.mjs
 //   node scripts/cloud/ui_check.mjs --label plugins --width 390 --height 844   # phone width
+//   node scripts/cloud/ui_check.mjs --width 390 --height 844 --touch --steps FILE  # touch device
 //
 // --steps names a module whose default export is `async (page, shot) => {}`; call
 // `await shot("name")` to capture a screenshot at any point. Screenshots land in
 // .cloud-run/shots/<label>-<n>-<name>.png, and the script prints their paths, the
 // browser console errors and any failed requests so the agent can read the images
-// with its file reader and check the run for errors.
+// with its file reader and check the run for errors. --touch gives the page a touch
+// screen and mobile emulation (`hasTouch`, `isMobile`) so steps can use `locator.tap()`.
 
 import { createRequire } from "node:module";
 import { existsSync, mkdirSync, readdirSync } from "node:fs";
@@ -37,6 +39,7 @@ const height = Number(opt("height", 900));
 const send = opt("send", null);
 const stepsFile = opt("steps", null);
 const settleMs = Number(opt("settle", 60000));
+const touch = args.includes("--touch");
 
 function chromiumPath() {
   const base = "/opt/pw-browsers";
@@ -62,7 +65,10 @@ try {
 } catch {
   browser = await chromium.launch({ executablePath: chromiumPath() });
 }
-const page = await browser.newPage({ viewport: { width, height } });
+const page = await browser.newPage({
+  viewport: { width, height },
+  ...(touch ? { hasTouch: true, isMobile: true } : {}),
+});
 const consoleErrors = [];
 const failedRequests = [];
 page.on("console", (m) => m.type() === "error" && consoleErrors.push(m.text().slice(0, 300)));
