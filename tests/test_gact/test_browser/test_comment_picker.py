@@ -166,3 +166,19 @@ def test_marks_are_rendered_at_the_view_size_they_were_made_at(
     rendered = render_page_comments(None, "sess_a", attachment, tmp_path, True)  # type: ignore[arg-type]
     assert "in a 1280 px wide view" in rendered.text
     assert record.page.viewport_size == {"width": 400, "height": 800}  # restored for the person
+
+
+def test_a_pick_on_the_page_root_still_names_it(browser: Any, site: dict[str, Any]) -> None:
+    record = _open(browser, site, "/form")
+    received: list[dict[str, Any]] = []
+    assert browser.wait(
+        picker.handle(record, {"type": "pick.start", "mode": "element"}, received.append)
+    )
+
+    async def click_below_the_content(r: Any) -> None:
+        await r.page.mouse.click(600, 700)  # the empty page under the form: <html>
+
+    browser.run(record, "click", click_below_the_content)
+    _wait_for(received, 1)
+    browser.wait(picker.stop(record))
+    assert received and received[0]["anchor"]["selector"] in {"html", "body"}

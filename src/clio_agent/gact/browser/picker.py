@@ -17,6 +17,7 @@ from collections.abc import Callable
 from typing import Any
 
 from clio_agent.gact.browser.settings import page_errors
+from clio_agent.runtime import trace
 
 __all__ = ["handle", "install", "stop"]
 
@@ -51,7 +52,8 @@ _PICKER_JS = r"""
       const selector = parts.join(' > ');
       if (document.querySelectorAll(selector).length === 1) return selector;
     }
-    return parts.join(' > ');
+    // The page's root element has no path below it: it is named by its tag.
+    return parts.length ? parts.join(' > ') : el.tagName.toLowerCase();
   };
   const outline = (el) => {
     if (!box) {
@@ -143,16 +145,21 @@ def _on_pick(source: dict[str, Any], payload: Any) -> None:
     page = source.get("page")
     record = next((r for r in service().pages.values() if r.page is page), None)
     if record is None or not isinstance(payload, dict):
+        trace.event("BROWSER", "browser pick ignored reason=unknown_page")
         return
     mode = _MODES.get(record.id)
     if mode is None or payload.get("kind") != mode:
         # The page's own script can call the binding; only an active pick is accepted.
-        logger.info("browser pick ignored reason=no_active_pick page=%s", record.id)
+        trace.event("BROWSER", "browser pick ignored reason=no_active_pick page=%s", record.id)
         return
     anchor = _anchor(record, payload)
     sink = _SINKS.get(record.id)
-    if anchor is not None and sink is not None:
-        sink({"type": "pick", "anchor": anchor})
+    if anchor is None or sink is None:
+        reason = "malformed" if anchor is None else "no_viewer"
+        trace.event("BROWSER", "browser pick ignored reason=%s page=%s", reason, record.id)
+        return
+    trace.event("BROWSER", "browser pick page=%s kind=%s", record.id, mode)
+    sink({"type": "pick", "anchor": anchor})
 
 
 async def install(context: Any) -> None:
