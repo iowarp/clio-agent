@@ -270,7 +270,7 @@ def test_a_build_makes_a_paper_built_from_its_member_versions(
 # --------------------------------------------------------------------------- #
 
 
-def _paper_version(members: list[str], **producer):
+def _paper_version(members: list[str], names: dict[str, str] | None = None, **producer):
     from clio_agent.gact.artifacts.records import (
         ArtifactKind,
         ArtifactVersion,
@@ -279,6 +279,7 @@ def _paper_version(members: list[str], **producer):
         Mechanism,
     )
 
+    names = names or {}
     return ArtifactVersion(
         version=1,
         kind=ArtifactKind.REPORT,
@@ -292,7 +293,10 @@ def _paper_version(members: list[str], **producer):
             "venue": "IEEE conference",
             "page_count": 4,
             "format": "latex",
-            "members": [{"path": f"m{i}", "artifact_id": m} for i, m in enumerate(members)],
+            "members": [
+                {"path": f"m{i}", "artifact_id": m, "name": names.get(m, m)}
+                for i, m in enumerate(members)
+            ],
             **producer,
         },
         path="/ws/artifacts/document-previews/a/main.pdf",
@@ -303,9 +307,12 @@ def test_a_turns_sources_fold_into_the_paper_that_bundles_them(tmp_path: Path) -
     from clio_agent.gact.artifacts.presentation import response_deliverables
 
     app, session = _app(tmp_path)
-    [intro] = _write(app, session.id, tmp_path / "p/sections/intro.tex", "\\section{A}", call="c1")
+    intro_path = tmp_path / "p/sections/intro.tex"
+    [first] = _write(app, session.id, intro_path, "\\section{A}", call="c1")
     [notes] = _write(app, session.id, tmp_path / "notes.tex", "\\section{N}", call="c2")
-    paper = _paper_version([intro.artifact_id])
+    # The paper bundles a later version of intro.tex than the one written this turn (the
+    # build brought the changed file to its next version itself): the file is still inside.
+    paper = _paper_version(["artifact_intro_v2"], {"artifact_intro_v2": "p/sections/intro.tex"})
     entries = [
         *drain_turn_artifacts(app, session.id, "turn_1"),
         {"version": paper, "workspace_id": "ws1", "name": "p", "turn_id": "turn_1"},
@@ -313,6 +320,7 @@ def test_a_turns_sources_fold_into_the_paper_that_bundles_them(tmp_path: Path) -
     shown = [entry["version"].artifact_id for entry in response_deliverables(entries)]
     # The paper and the unbuilt notes.tex show; the section inside the paper does not.
     assert set(shown) == {paper.artifact_id, notes.artifact_id}
+    assert first.artifact_id not in shown
 
 
 def test_a_papers_link_carries_its_title_type_and_members() -> None:
