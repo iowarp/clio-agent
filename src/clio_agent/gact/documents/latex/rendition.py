@@ -106,9 +106,13 @@ def build_rendition(
     temporary = target.with_name(f".{target.name}.build")
     temporary.write_bytes(result.pdf)
     temporary.replace(target)
+    synctex = ""
     if result.synctex:
-        target.with_suffix(".synctex.gz").write_bytes(result.synctex)
+        synctex_path = target.with_suffix(".synctex.gz")
+        synctex_path.write_bytes(result.synctex)
+        synctex = str(synctex_path)
     return "tectonic", {
+        "synctex": synctex,
         "entry": result.entry,
         "source_files": dict(sorted(result.read.items())),
         "build_ok": result.ok,

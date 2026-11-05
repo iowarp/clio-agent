@@ -119,6 +119,11 @@ def _singles(agent_def: Any) -> dict[str, Callable[[], Any]]:
         build_goal_wait_tool,
         build_set_goal_tool,
     )
+    from clio_agent.gact.latex_tools import (  # noqa: PLC0415
+        build_latex_build_tool,
+        build_latex_locate_tool,
+        build_latex_outline_tool,
+    )
     from clio_agent.gact.loop_control import build_set_loop_tool  # noqa: PLC0415
     from clio_agent.gact.memory.tool_builders import BUILDERS as MEMORY_BUILDERS  # noqa: PLC0415
     from clio_agent.gact.plan_mode import build_plan_exit_tool  # noqa: PLC0415
@@ -152,7 +157,6 @@ def _singles(agent_def: Any) -> dict[str, Callable[[], Any]]:
         build_connected_data_status_tool,
         build_connected_data_write_tool,
     )
-    from clio_agent.gact.latex_tools import build_latex_build_tool  # noqa: PLC0415
     from clio_agent.gact.todos import build_write_todos_tool  # noqa: PLC0415
     from clio_agent.gact.view_image_tool import build_view_image_tool  # noqa: PLC0415
     from clio_agent.gact.view_pdf_tool import build_view_pdf_tool  # noqa: PLC0415
@@ -186,6 +190,8 @@ def _singles(agent_def: Any) -> dict[str, Callable[[], Any]]:
         "prepare_execution_runtime": build_prepare_execution_runtime_tool,
         "prepare_document": build_prepare_document_tool,
         "latex_build": build_latex_build_tool,
+        "latex_outline": build_latex_outline_tool,
+        "latex_locate": build_latex_locate_tool,
         "ssh_execute": build_ssh_execute_tool,
         "clio_search": build_clio_search_tool,
         "clio_search_read": build_clio_search_read_tool,
@@ -241,6 +247,8 @@ _SINGLE_NAMES = frozenset(
         "prepare_execution_runtime",
         "prepare_document",
         "latex_build",
+        "latex_outline",
+        "latex_locate",
         "ssh_execute",
         "clio_search",
         "clio_search_read",

@@ -173,6 +173,7 @@ def _load_builtins() -> None:
             anchor_text,
             office_map,
         )
+        from clio_agent.gact.documents.latex import anchor_source_map  # noqa: PLC0415
 
         for load in (
             anchor_text.register_builtin,
@@ -180,6 +181,7 @@ def _load_builtins() -> None:
             anchor_image.register_builtin,
             anchor_html.register_builtin,
             office_map.register_builtin,
+            anchor_source_map.register_builtin,
         ):
             load()
         _BUILTINS_LOADED = True

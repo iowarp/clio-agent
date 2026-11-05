@@ -40,6 +40,8 @@ FAILING_KINDS = frozenset(
         "unsupported_bibliography_backend",
     }
 )
+# "warning" is a file TeX went on without (a hyphenation pattern the bundle could not send):
+# reported, never failing.
 
 # Files TeX loads from the bundle, as opposed to the project's own files.
 _PACKAGE_SUFFIXES = (
@@ -131,15 +133,35 @@ def _locate_key(key: str, command: str, texts: Mapping[str, str]) -> tuple[str, 
     return "", 0
 
 
-def _missing(name: str, *, file: str, line: int, offline: bool) -> Diagnostic:
-    if name.lower().endswith(_PACKAGE_SUFFIXES):
-        message = (
-            _MISSING_PACKAGE_MESSAGE.format(name=name)
-            if offline
-            else f"{name} is not in the TeX bundle."
+def _referenced(name: str, texts: Mapping[str, str]) -> bool:
+    """Whether the project's sources ask for ``name`` (a figure, an input, a data file)."""
+    stem = name.rsplit("/", 1)[-1].rsplit(".", 1)[0]
+    return any(name in text or (stem and f"{{{stem}}}" in text) for text in texts.values())
+
+
+def _missing(
+    name: str,
+    *,
+    file: str,
+    line: int,
+    offline: bool,
+    severity: str = "error",
+    texts: Mapping[str, str] | None = None,
+) -> Diagnostic:
+    """A file TeX could not find: the project's, a package, or one TeX went on without."""
+    sources = texts or {}
+    if not name.lower().endswith(_PACKAGE_SUFFIXES) and (_referenced(name, sources) or not sources):
+        return Diagnostic("missing_file", f"{name} is not in the project.", file, line, detail=name)
+    if severity != "error":
+        return Diagnostic(
+            "warning", f"{name} was not found; TeX went on without it.", file, line, detail=name
         )
-        return Diagnostic("missing_package", message, file, line, detail=name)
-    return Diagnostic("missing_file", f"{name} is not in the project.", file, line, detail=name)
+    message = (
+        _MISSING_PACKAGE_MESSAGE.format(name=name)
+        if offline
+        else f"{name} is not in the TeX bundle."
+    )
+    return Diagnostic("missing_package", message, file, line, detail=name)
 
 
 def parse_diagnostics(
@@ -194,8 +216,9 @@ def parse_diagnostics(
                 )
             )
             continue
-        if fetch := _FETCH_FAILED.search(line):
-            add(_missing(fetch.group("name"), file="", line=0, offline=True))
+        if _FETCH_FAILED.search(line):
+            # Only marks the bundle unreachable; the file-not-found line that follows names
+            # the file and where it was asked for.
             continue
         if _BIBER in line:
             add(
@@ -227,7 +250,16 @@ def parse_diagnostics(
                 )
                 continue
             if missing := _FILE_NOT_FOUND.search(message) or _PICTURE.search(message):
-                add(_missing(missing.group("name"), file=file, line=number, offline=offline))
+                add(
+                    _missing(
+                        missing.group("name"),
+                        file=file,
+                        line=number,
+                        offline=offline,
+                        severity=severity,
+                        texts=sources,
+                    )
+                )
                 continue
             if overfull := _OVERFULL.search(message):
                 add(
@@ -269,7 +301,7 @@ def parse_diagnostics(
             add(Diagnostic("font_warning", font.group("message").strip()))
     for raw in blg.splitlines():
         if style := _BST.search(raw):
-            add(_missing(style.group("name"), file="", line=0, offline=offline))
+            add(_missing(style.group("name"), file="", line=0, offline=offline, texts=sources))
     return found
 
 

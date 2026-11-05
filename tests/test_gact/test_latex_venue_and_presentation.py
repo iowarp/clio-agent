@@ -350,3 +350,86 @@ def test_the_tool_reads_a_successful_builds_record(monkeypatch: pytest.MonkeyPat
     assert row["pdf"] == {"artifact_id": "art_pdf", "name": "main.tex.v2.pdf", "path": "/ws/p.pdf"}
     assert row["read"] == ["main.tex", "refs.bib"] and row["counts"] == {"overfull_box": 1}
     assert latex_tools.latex_build("notes.md")["reason"] == "latex_entry_not_tex"
+
+
+def test_the_outline_lists_each_part_at_its_source_line_and_page() -> None:
+    from clio_agent.gact.agents.native_presenters_latex import latex_outline_presentation
+
+    row = {
+        "status": "complete",
+        "entry": "paper/main.tex",
+        "synctex": True,
+        "counts": {"section": 2, "figure": 1},
+        "unresolved_citations": ["missing2020"],
+        "nodes": [
+            {
+                "kind": "section",
+                "file": "sections/eval.tex",
+                "start_line": 1,
+                "end_line": 9,
+                "title": "Evaluation",
+                "labels": ["sec:eval"],
+                "level": 2,
+                "places": [{"page": 3, "rect": [72, 90, 400, 300]}],
+                "children": [
+                    {
+                        "kind": "figure",
+                        "file": "sections/eval.tex",
+                        "start_line": 4,
+                        "end_line": 7,
+                        "title": "Throughput by block size",
+                        "labels": ["fig:tput"],
+                        "places": [{"page": 3, "rect": [72, 120, 200, 140]}],
+                    }
+                ],
+            },
+            {
+                "kind": "section",
+                "file": "sections/end.tex",
+                "start_line": 1,
+                "end_line": 2,
+                "title": "Conclusion",
+                "level": 2,
+            },
+        ],
+    }
+    view = _valid(latex_outline_presentation({"entry": "paper/main.tex"}, row, None))
+    assert view["summary"] == "2 sections, 1 figure"
+    blocks = {block["id"]: block for block in view["blocks"]}
+    assert blocks["node-0"]["uri"] == "paper/sections/eval.tex" and blocks["node-0"]["line"] == 1
+    assert blocks["node-0"]["label"] == "Evaluation (sec:eval, page 3) at sections/eval.tex:1"
+    assert blocks["node-1"]["label"].startswith("  Throughput by block size (figure, fig:tput")
+    assert blocks["unresolved"]["text"] == "missing2020"
+
+
+def test_locate_says_where_a_point_is_in_the_source_and_back() -> None:
+    from clio_agent.gact.agents.native_presenters_latex import latex_locate_presentation
+
+    forward = {
+        "status": "complete",
+        "entry": "main.tex",
+        "direction": "pdf_to_source",
+        "page": 6,
+        "x": 200,
+        "y": 300,
+        "file": "sections/eval.tex",
+        "line": 112,
+        "node": 'Section "Scaling" (sec:scaling)',
+    }
+    view = _valid(latex_locate_presentation({}, forward, None))
+    assert view["summary"] == "Page 6 is sections/eval.tex:112"
+    assert view["blocks"][1]["line"] == 112
+    back = {
+        "status": "complete",
+        "entry": "main.tex",
+        "direction": "source_to_pdf",
+        "file": "sections/eval.tex",
+        "line": 112,
+        "node": "",
+        "places": [{"page": 6, "rect": [72.0, 300.5, 410.2, 24.0]}],
+    }
+    view = _valid(latex_locate_presentation({}, back, None))
+    assert view["summary"] == "sections/eval.tex:112 is on page 6"
+    assert view["blocks"][2]["text"] == "Box at (72, 300), 410 x 24 pt"
+    failed = {"status": "failed", "entry": "main.tex", "error": "this build has no SyncTeX index"}
+    assert _valid(latex_locate_presentation({}, failed, None))["status"] == "failed"

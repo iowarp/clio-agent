@@ -27,7 +27,11 @@ _FORMATS: dict[str, DocumentFormat] = {
         "pdf", "application/pdf", ("text-quote", "pdf-quad", "region"), True, ()
     ),
     ".tex": DocumentFormat(
-        "latex", "application/x-tex", ("text-quote", "source-map"), True, ("pdf",)
+        "latex",
+        "application/x-tex",
+        ("text-quote", "pdf-quad", "region", "source-map"),
+        True,
+        ("pdf",),
     ),
     ".html": DocumentFormat(
         "html-static", "text/html", ("text-quote", "region", "dom"), True, ("pdf",)

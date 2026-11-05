@@ -96,7 +96,12 @@ def test_capability_and_format_profiles_are_explicit(tmp_path: Path) -> None:
     assert "embedded_editors" not in capability
     assert document_format("report.docx").profile == "ooxml-word"
     assert document_format("model.odp").rendition_formats == ("pdf",)
-    assert document_format("paper.tex").anchors == ("text-quote", "source-map")
+    assert document_format("paper.tex").anchors == (
+        "text-quote",
+        "pdf-quad",
+        "region",
+        "source-map",
+    )
 
 
 def test_manifest_and_static_html_content_block_script_execution(tmp_path: Path) -> None:

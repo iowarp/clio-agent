@@ -154,6 +154,16 @@ def test_shell_escape_biber_and_bibtex_styles_are_named() -> None:
     assert style.kind == "missing_package" and style.detail == "plain.bst"
 
 
+def test_a_bundle_file_tex_went_on_without_is_a_warning_not_a_failure() -> None:
+    output = (
+        'warning: failure fetching "hyph-nl.tex" from network (3/3)\n'
+        "warning: main.tex:1: File `hyph-nl.tex' not found."
+    )
+    [item] = parse_diagnostics(output, texts=_TEXTS)
+    assert item.kind == "warning" and item.detail == "hyph-nl.tex"
+    assert not build_failed([item])
+
+
 def test_a_clean_build_with_only_warnings_is_not_failed() -> None:
     found = parse_diagnostics(
         "warning: main.tex:4: Overfull \\hbox (11.99588pt too wide) in paragraph at lines 4--4"

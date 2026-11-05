@@ -55,6 +55,7 @@ __all__ = [
 logger = logging.getLogger(__name__)
 _LABEL = re.compile(r"^S([1-9][0-9]{0,3})$")
 _RENDITION_PROFILES = {
+    "latex",
     "ooxml-word",
     "ooxml-sheet",
     "ooxml-slides",

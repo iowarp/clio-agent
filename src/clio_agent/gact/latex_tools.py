@@ -10,7 +10,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
-__all__ = ["build_latex_build_tool"]
+__all__ = ["build_latex_build_tool", "build_latex_locate_tool", "build_latex_outline_tool"]
 
 
 def _context() -> tuple[Any, str, str]:
@@ -117,6 +117,167 @@ def latex_build(entry: str, venue: str = "") -> dict[str, Any]:
             f"{len(failing)} problem(s) make this build fail" if failing else "venue checks failed"
         )
     return row
+
+
+def _paper(entry: str) -> tuple[Any, dict[str, Any] | None]:
+    """The paper map of ``entry``'s current build, building it when needed."""
+    from clio_agent.gact.documents.latex.mapping import paper_map  # noqa: PLC0415
+
+    built = latex_build(entry)
+    pdf = built.get("pdf")
+    if not pdf:
+        return None, built
+    from clio_agent.gact.artifacts.registry import get_registry  # noqa: PLC0415
+
+    app, _sid, _workspace_id = _context()
+    registry = get_registry(app)
+    source = registry.get_by_artifact_id(str(built.get("source_artifact_id") or ""))
+    rendition = registry.get_by_artifact_id(str(pdf["artifact_id"]))
+    if source is None or rendition is None:
+        return None, {**built, "status": "failed", "error": "the build's records are missing"}
+    _record, version = source
+    _pdf_record, pdf_version = rendition
+    return paper_map(Path(version.path), pdf_version.producer, Path(pdf["path"])), built
+
+
+def latex_outline(entry: str) -> dict[str, Any]:
+    """The structure of a LaTeX paper, each part tied to its source lines and PDF pages.
+
+    Returns typed nodes in reading order: section (with level), figure, table, equation,
+    algorithm, listing, abstract and bibliography, each with its file, start_line and
+    end_line, title or caption, labels, and the pages and rectangles it occupies in the PDF.
+    Citations carry their key and whether the .bib defines it. Use it to name "Figure 3" or
+    "Section 4.2" and find both its source and its place on the page. It builds the paper
+    first when needed.
+    """
+    paper, built = _paper(entry)
+    if paper is None:
+        return {**(built or {}), "entry": entry, "status": "failed", "nodes": []}
+    nodes = [node.as_dict() for node in paper.outline]
+    counts: dict[str, int] = {}
+    unresolved: list[str] = []
+    for root in paper.outline:
+        for node in root.walk():
+            counts[node.kind] = counts.get(node.kind, 0) + 1
+            unresolved.extend(c["key"] for c in node.citations if not c["resolved"])
+    return {
+        "status": "complete",
+        "entry": entry,
+        "nodes": nodes,
+        "counts": counts,
+        "unresolved_citations": sorted(set(unresolved)),
+        "synctex": paper.index is not None,
+    }
+
+
+def latex_locate(
+    entry: str, page: int = 0, x: float = -1, y: float = -1, file: str = "", line: int = 0
+) -> dict[str, Any]:
+    """Map between a LaTeX paper's PDF and its source.
+
+    Give page (1-based) with x and y (points from the page's top-left corner, as a PDF viewer
+    reports them) to get the source file, line and the outline node there. Or give file
+    (relative to the entry's folder) and line to get the pages and rectangles that line
+    produces in the PDF. It builds the paper first when needed.
+    """
+    paper, built = _paper(entry)
+    if paper is None:
+        return {**(built or {}), "entry": entry, "status": "failed"}
+    if paper.index is None:
+        return {
+            "status": "failed",
+            "entry": entry,
+            "reason": "source_map_unavailable",
+            "error": "this build has no SyncTeX index",
+        }
+    from clio_agent.gact.documents.latex.mapping import describe  # noqa: PLC0415
+    from clio_agent.gact.documents.latex.outline import node_at  # noqa: PLC0415
+
+    if file:
+        places = paper.index.places(file, line, line)
+        node = node_at(paper.outline, file, line)
+        return {
+            "status": "complete" if places else "failed",
+            "entry": entry,
+            "direction": "source_to_pdf",
+            "file": file,
+            "line": line,
+            "node": describe(node) if node else "",
+            "places": [{"page": p + 1, "rect": [round(v, 1) for v in rect]} for p, rect in places],
+            **({} if places else {"error": f"{file} line {line} produces nothing in the PDF"}),
+        }
+    if page < 1 or x < 0 or y < 0:
+        return {
+            "status": "failed",
+            "entry": entry,
+            "reason": "latex_locate_arguments",
+            "error": "give page with x and y, or file with line",
+        }
+    found = paper.index.source_at(page - 1, x, y)
+    if found is None:
+        return {
+            "status": "failed",
+            "entry": entry,
+            "direction": "pdf_to_source",
+            "page": page,
+            "error": f"page {page} has no source text",
+        }
+    source_file, source_line = found
+    node = node_at(paper.outline, source_file, source_line)
+    return {
+        "status": "complete",
+        "entry": entry,
+        "direction": "pdf_to_source",
+        "page": page,
+        "x": x,
+        "y": y,
+        "file": source_file,
+        "line": source_line,
+        "node": describe(node) if node else "",
+    }
+
+
+def build_latex_outline_tool() -> Any:
+    """The ``latex_outline`` native tool."""
+    from clio_agent.gact.agents.native_presenters_latex import (  # noqa: PLC0415
+        latex_outline_presentation,
+    )
+    from clio_agent.gact.agents.tool_instrumentation import native_tool  # noqa: PLC0415
+
+    return native_tool(
+        latex_outline,
+        name="latex_outline",
+        domain="workspace",
+        title="Outline LaTeX paper",
+        desc=latex_outline.__doc__,
+        args={"entry": {"type": "string", "description": "Workspace path of the main .tex file."}},
+        presentation=latex_outline_presentation,
+    )
+
+
+def build_latex_locate_tool() -> Any:
+    """The ``latex_locate`` native tool."""
+    from clio_agent.gact.agents.native_presenters_latex import (  # noqa: PLC0415
+        latex_locate_presentation,
+    )
+    from clio_agent.gact.agents.tool_instrumentation import native_tool  # noqa: PLC0415
+
+    return native_tool(
+        latex_locate,
+        name="latex_locate",
+        domain="workspace",
+        title="Locate in LaTeX paper",
+        desc=latex_locate.__doc__,
+        args={
+            "entry": {"type": "string", "description": "Workspace path of the main .tex file."},
+            "page": {"type": "integer", "default": 0, "description": "PDF page, from 1."},
+            "x": {"type": "number", "default": -1, "description": "Points from the left."},
+            "y": {"type": "number", "default": -1, "description": "Points from the top."},
+            "file": {"type": "string", "default": "", "description": "Source file."},
+            "line": {"type": "integer", "default": 0, "description": "Source line."},
+        },
+        presentation=latex_locate_presentation,
+    )
 
 
 def build_latex_build_tool() -> Any:
