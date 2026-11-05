@@ -88,7 +88,7 @@ def _capture(attachment: "CommentAttachment") -> Any:
         if resized:
             await page.set_viewport_size(marked)
             await page.wait_for_timeout(300)
-        view = marked if resized else shown
+        view: dict[str, int] = marked if resized and marked is not None else dict(shown)
         try:
             return await _measure(page, attachment, view)
         finally:
