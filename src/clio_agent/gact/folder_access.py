@@ -18,6 +18,7 @@ from typing import TYPE_CHECKING, Any
 from clio_agent.gact import permission_timeout
 from clio_agent.gact.permission_delivery import publish_permission_event
 from clio_agent.gact.runtime.retention import enforce_dict_bound
+from clio_agent.runtime.check_scope import checked
 from clio_agent.tools.file_policy import FileAccessPolicy, FilePolicyError
 
 if TYPE_CHECKING:
@@ -49,6 +50,7 @@ def bind_folder_gate(app: FastAPI, gate: Callable[..., str]) -> Callable[..., st
     return grounded
 
 
+@checked
 def requested_folders(name: str, args: Mapping[str, Any]) -> list[str]:
     """Return denied folders for declared built-in path arguments, without reading files."""
     paths: list[tuple[str, bool]] = []
