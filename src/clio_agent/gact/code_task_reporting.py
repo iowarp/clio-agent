@@ -151,13 +151,12 @@ def handlers(
     from clio_agent.gact.native_code import status  # noqa: PLC0415
 
     def progress(args: Mapping[str, Any]) -> dict[str, Any]:
-        row = {
-            **status(live, float(live["started"])),
-            "type": "clio.code.progress",
+        live["last_progress"] = {
             "message": str(args.get("message") or ""),
             "done": args.get("done"),
             "total": args.get("total"),
         }
+        row = {**status(live, float(live["started"])), "type": "clio.code.progress"}
         report = live["progress"].report_progress(
             float(row["elapsed_s"]),
             None if args.get("total") is None else float(args["total"]),

@@ -121,15 +121,42 @@ def _memory_mb(pid: int | None) -> float | None:
         return None
 
 
+def _duration(seconds: float) -> str:
+    whole = int(seconds)
+    if whole < 60:
+        return f"{whole} s"
+    if whole < 3600:
+        return f"{whole // 60} min {whole % 60} s"
+    return f"{whole // 3600} h {whole % 3600 // 60} min"
+
+
+def status_summary(row: dict[str, Any]) -> str:
+    """One line for the task row: elapsed time, calls, memory, and the last progress."""
+    calls = int(row.get("calls") or 0)
+    parts = [
+        _duration(float(row.get("elapsed_s") or 0)),
+        f"{calls:,} call{'' if calls == 1 else 's'}",
+    ]
+    if row.get("memory_mb") is not None:
+        parts.append(f"{float(row['memory_mb']):.0f} MB")
+    done, total = row.get("done"), row.get("total")
+    if done is not None:
+        parts.append(f"{done} of {total}" if total is not None else f"{done} done")
+    text = ", ".join(parts)
+    message = str(row.get("message") or "").strip()
+    return f"{text}: {message}" if message else text
+
+
 def status(live: dict[str, Any], started: float) -> dict[str, Any]:
-    """The task row's view of a running script: elapsed time, nested calls, memory."""
+    """The task row's view of a running script: elapsed time, nested calls, memory and
+    its last ``task.progress`` (kept between status reports)."""
     import os  # noqa: PLC0415
     import time  # noqa: PLC0415
 
     dispatcher, kernel = live.get("dispatcher"), live.get("kernel")
     process = getattr(kernel, "process", None)
     path = str(live.get("output_path") or "")
-    return {
+    row = {
         "type": "clio.code.status",
         "state": "running",
         "elapsed_s": round(time.monotonic() - started, 1),
@@ -137,7 +164,10 @@ def status(live: dict[str, Any], started: float) -> dict[str, Any]:
         "memory_mb": _memory_mb(getattr(process, "pid", None)),
         "output_path": path,
         "output_bytes": os.path.getsize(path) if path and os.path.exists(path) else 0,
+        **(live.get("last_progress") or {}),
     }
+    row["summary"] = status_summary(row)
+    return row
 
 
 def _run(

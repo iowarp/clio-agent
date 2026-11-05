@@ -177,6 +177,7 @@ def test_task_progress_reaches_the_row_and_wakes_nobody(world: Any) -> None:
     )
     handle = str(_launch(app, sid, root, code)["handle"])
     found: dict[str, Any] = {}
+    line = ""
     deadline = time.monotonic() + 30
     while time.monotonic() < deadline and not found:
         task = app.state.task_history.task_snapshot(handle)
@@ -184,11 +185,24 @@ def test_task_progress_reaches_the_row_and_wakes_nobody(world: Any) -> None:
         if reference is not None:
             row = app.state.task_history.read_content(reference).get("output")
             if isinstance(row, dict) and row.get("type") == "clio.code.progress":
-                found = row
+                found, line, unit = row, task.progress.message, task.progress.unit
         time.sleep(0.05)
     assert found["message"] == "half way" and (found["done"], found["total"]) == (1, 2)
     assert "memory_mb" in found and found["state"] == "running"
+    # The row reads as the script's status, not as shell output (SABOTAGE: record code
+    # rows like shell chunks in NativeProgress -> "Shell output available", unit bytes).
+    assert line.endswith("1 of 2: half way") and " call" in line and unit == ""
     assert _settled(app, handle).status == "completed"
+
+
+def test_a_status_line_reads_time_calls_memory_and_the_last_progress() -> None:
+    from clio_agent.gact.native_code import status_summary
+
+    assert status_summary({"elapsed_s": 125.4, "calls": 1000, "memory_mb": 55.2}) == (
+        "2 min 5 s, 1,000 calls, 55 MB"
+    )
+    row = {"elapsed_s": 7200, "calls": 1, "memory_mb": None, "message": "sensor 4", "done": 3}
+    assert status_summary(row) == "2 h 0 min, 1 call, 3 done: sensor 4"
 
 
 def test_notifies_inside_the_window_arrive_together_and_none_is_lost(
