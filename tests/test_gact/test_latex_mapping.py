@@ -321,6 +321,33 @@ def test_a_region_on_the_figure_names_its_environment_and_graphics(built) -> Non
     assert mark.crop is not None
 
 
+@live
+def test_a_quote_made_on_the_papers_pdf_names_its_source_file(built) -> None:  # noqa: ANN001
+    """DS47: a text-quote from the PDF pane (no source_path) resolves on the PDF and names
+    the \\input file and line from SyncTeX, as a pdf-quad does."""
+    from clio_agent.gact.documents.anchors import MarkTarget
+    from clio_agent.gact.documents.latex.anchor_source_map import LatexTextResolver
+    from clio_agent.gact.documents.models import DocumentAnchor
+
+    paper, pdf, mapped = built
+    target = MarkTarget(
+        app=SimpleNamespace(state=SimpleNamespace(workspaces={})),
+        record=SimpleNamespace(name="main.tex", workspace_id="ws"),
+        version=SimpleNamespace(path=str(paper / "main.tex"), artifact_id="a", version=1),
+        path=paper / "main.tex",
+        profile="latex",
+        view_path=pdf,
+    )
+    target.cache["latex_paper"] = mapped
+    mark = LatexTextResolver().resolve(
+        target, DocumentAnchor(profile="text-quote", exact="3.2x speedup over the baseline")
+    )
+    lines = dict(mark.lines)
+    assert lines["Page"] == "1"
+    assert lines["Source"].startswith("sections/eval.tex, line 2")
+    assert not [note for note in mark.notes if note.startswith("quote_not_found")]
+
+
 def test_a_quote_on_any_project_file_names_that_file_and_its_section(tmp_path: Path) -> None:
     from clio_agent.gact.documents.anchors import MarkTarget
     from clio_agent.gact.documents.latex.anchor_source_map import LatexTextResolver
@@ -355,3 +382,84 @@ def test_a_quote_on_any_project_file_names_that_file_and_its_section(tmp_path: P
         target, DocumentAnchor(profile="text-quote", exact="We study burst buffers.")
     )
     assert dict(entry_mark.lines)["Source"].startswith("line 4 of main.tex, in abstract")
+
+
+def _paper_target(tmp_path: Path, texts: dict[str, str]) -> object:
+    from clio_agent.gact.documents.anchors import MarkTarget
+
+    paper = tmp_path / "paper"
+    (paper / "sections").mkdir(parents=True, exist_ok=True)
+    for name, text in texts.items():
+        (paper / name).write_text(text)
+    entry = paper / "main.tex"
+    return MarkTarget(
+        app=None,
+        record=SimpleNamespace(name="main.tex", workspace_id="ws"),
+        version=SimpleNamespace(path=str(entry), artifact_id="a", version=1),
+        path=entry,
+        profile="latex",
+        view_path=entry,
+    )
+
+
+def test_a_quote_naming_no_file_is_found_in_the_papers_input_files(tmp_path: Path) -> None:
+    """DS47: a quote from an \\input file, with no source_path, names that file and line."""
+    from clio_agent.gact.documents.latex.anchor_source_map import LatexTextResolver
+    from clio_agent.gact.documents.models import DocumentAnchor
+
+    target = _paper_target(tmp_path, _TEXTS)
+    mark = LatexTextResolver().resolve(
+        target, DocumentAnchor(profile="text-quote", exact="Throughput by block size")
+    )
+    assert dict(mark.lines)["Source"].startswith("line 6 of sections/eval.tex")
+    assert mark.notes == []
+
+
+def test_a_quote_whose_named_file_lost_it_is_found_elsewhere_and_says_so(
+    tmp_path: Path,
+) -> None:
+    from clio_agent.gact.documents.latex.anchor_source_map import LatexTextResolver
+    from clio_agent.gact.documents.models import DocumentAnchor
+
+    target = _paper_target(tmp_path, _TEXTS)
+    resolver = LatexTextResolver()
+    moved = resolver.resolve(
+        target,
+        DocumentAnchor(
+            profile="text-quote", exact="We study burst buffers.", source_path="sections/eval.tex"
+        ),
+    )
+    assert dict(moved.lines)["Source"].startswith("line 4 of main.tex")
+    assert moved.notes == ["quote_moved_file: the quote is no longer in sections/eval.tex"]
+    unknown = resolver.resolve(
+        target,
+        DocumentAnchor(profile="text-quote", exact="We compare", source_path="sections/gone.tex"),
+    )
+    assert dict(unknown.lines)["Source"].startswith("line 2 of sections/eval.tex")
+    assert unknown.notes[0].startswith("source_path_unknown: sections/gone.tex")
+    missing = resolver.resolve(target, DocumentAnchor(profile="text-quote", exact="Nowhere at all"))
+    assert missing.notes == [
+        "quote_not_found: the selected text is in none of this paper's source files"
+    ]
+
+
+def test_a_source_mark_follows_its_quote_to_the_file_it_moved_to(tmp_path: Path) -> None:
+    """Re-anchoring onto the next version: moved, with the file it is now in, not outdated."""
+    from clio_agent.gact.documents.latex.anchor_source_map import LatexTextResolver
+    from clio_agent.gact.documents.models import DocumentAnchor
+
+    old = _paper_target(tmp_path / "v1", _TEXTS)
+    texts = dict(_TEXTS)
+    texts["sections/eval.tex"] = (
+        "\\section{Evaluation}\nAn added line.\nWe compare~\\cite{knuth84}.\n"
+    )
+    new = _paper_target(tmp_path / "v2", texts)
+    anchor = DocumentAnchor(
+        profile="text-quote", exact="We compare", source_path="sections/eval.tex"
+    )
+    state, moved = LatexTextResolver().reanchor(old, new, anchor)
+    assert state == "moved" and moved.source_path == "sections/eval.tex"
+    state, _ = LatexTextResolver().reanchor(
+        old, new, DocumentAnchor(profile="text-quote", exact="Throughput by block size")
+    )
+    assert state == "outdated"
