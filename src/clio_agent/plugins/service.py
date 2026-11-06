@@ -42,7 +42,7 @@ DEFAULT_MARKETPLACE_URL = "https://github.com/iowarp/clio-agent-marketplace.git"
 # The commit an installed product fetches: the checkout's submodule pin, never the
 # repository's default branch. tests/test_plugins/test_default_marketplace_pin.py keeps
 # it equal to the pin.
-DEFAULT_MARKETPLACE_COMMIT = "07ba245d83c47c4f43c9f8fd6de7ff08c41d99f3"
+DEFAULT_MARKETPLACE_COMMIT = "7a7ddf00264468250aee9c4cb83fb74f2bac1307"
 _SUBMODULE = Path(__file__).resolve().parents[3] / "external" / "clio-agent-marketplace"
 
 
