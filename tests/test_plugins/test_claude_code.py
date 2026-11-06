@@ -239,3 +239,26 @@ def test_a_skill_a_folder_of_skills_and_one_claude_plugin_each_install(tmp_path:
         if r.marketplace in ("one-skill", "bundle", "solo")
     }
     assert skills == {"one-skill": ["one-skill"], "bundle": ["a"], "solo": ["b"]}
+
+
+def test_a_package_with_a_library_manifest_and_a_claude_form_loads_the_claude_form(
+    tmp_path: Path,
+) -> None:
+    """A root Clio Coder library ``plugin.json`` beside ``.claude-plugin/`` (PC1)."""
+
+    from clio_agent.plugins.marketplace import detect_format, read_marketplace
+
+    root = tmp_path / "wtfp"
+    library = {"name": "wtfp", "extensions": {"ai.iowarp.clio": {"manifestVersion": 1}}}
+    write(root / "plugin.json", json.dumps(library))
+    write(root / ".claude-plugin" / "plugin.json", '{"name": "wtfp"}')
+    write(root / "commands" / "new-paper.md", "Start a paper.")
+    write(root / "skills" / "plan" / "SKILL.md", "---\nname: plan\ndescription: Plan.\n---\nB")
+    assert detect_format(root) == "claude-code-plugin"
+    (record,) = read_marketplace(root, trusted=False).plugins
+    assert record.format == "claude-code"
+    assert [c.id for c in record.commands] == ["new-paper"]
+    assert "plugin_dialect_skipped" in {d.code for d in record.diagnostics}
+    # A native plugin.json (no library dialect) still wins.
+    write(root / "plugin.json", '{"name": "wtfp", "version": "1.0.0"}')
+    assert detect_format(root) == "plugin"

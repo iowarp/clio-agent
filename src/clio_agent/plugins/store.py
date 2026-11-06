@@ -40,6 +40,7 @@ from filelock import FileLock
 
 from clio_agent.platform_paths import rename_extended, rmtree_extended, win_extended_path
 from clio_agent.plugins.claude_code import import_claude_plugin
+from clio_agent.plugins.commands import BUILTIN_ROOT
 from clio_agent.plugins.loader import PluginLoadError, load_plugin, tree_digests
 from clio_agent.plugins.manifest import within
 from clio_agent.plugins.marketplace import (
@@ -55,7 +56,6 @@ from clio_agent.plugins.store_relocation import relocate_plugin_store
 from clio_agent.sdk.agent import AgentSpec
 from clio_agent.sdk.versions import PluginRef, valid_plugin_id
 
-BUILTIN_ROOT = Path(__file__).resolve().parent / "builtin"
 BUILTIN_MARKETPLACE = "clio-builtin"
 USER_MARKETPLACE = "user"
 #: ``trusted_digests`` key for a marketplace's ``agents/`` folder (not a valid plugin id).

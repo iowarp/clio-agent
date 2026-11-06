@@ -16,6 +16,7 @@ from pathlib import Path
 from typing import Any
 
 from clio_agent.injections.check import injection_diagnostics
+from clio_agent.plugins.commands import BUILTIN_ROOT, command_diagnostics
 from clio_agent.plugins.kernel_bindings import diagnostics as kernel_binding_diagnostics
 from clio_agent.plugins.loader import PluginLoadError
 from clio_agent.plugins.marketplace import read_marketplace
@@ -224,6 +225,14 @@ def check(
         target.diagnostics.extend(_undescribed_servers(record))
         target.diagnostics.extend(injection_diagnostics(record))
         target.diagnostics.extend(kernel_binding_diagnostics(record))
+        target.diagnostics.extend(
+            command_diagnostics(
+                record.id,
+                record.commands,
+                (skill.id for skill in record.skills),
+                builtin=Path(record.root).is_relative_to(BUILTIN_ROOT),
+            )
+        )
         if record.valid:
             seen = {(d.code, d.message) for d in target.diagnostics}
             for found in _resolve(service, _probe_spec(record), market, extra):

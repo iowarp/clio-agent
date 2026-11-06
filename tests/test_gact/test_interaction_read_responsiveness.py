@@ -11,8 +11,9 @@ import httpx
 import pytest
 from fastapi import FastAPI
 
-from clio_agent.gact.routes import catalog, interactions
+from clio_agent.gact.routes import commands, interactions
 from clio_agent.gact.routes.plugins import register_plugin_routes
+from clio_agent.gact.runtime.command_table import CommandTable
 from clio_agent.plugins.loader import load_plugin
 from tests._plugin_fixtures import FIXTURE
 
@@ -100,24 +101,21 @@ async def test_plugin_catalog_discovery_does_not_block_other_requests() -> None:
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("planner", [False, True])
 async def test_command_discovery_does_not_block_other_requests(
-    monkeypatch: pytest.MonkeyPatch, planner: bool
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Neither composer nor planner skill discovery may block stream delivery."""
+    """Reading command files from disk may not block stream delivery."""
     app = FastAPI()
     entered = threading.Event()
     release = threading.Event()
 
-    def discover(*args: Any, **kwargs: Any) -> list[dict[str, str]]:
+    def discover(*args: Any, **kwargs: Any) -> CommandTable:
         entered.set()
         assert release.wait(5), "test did not release command discovery"
-        return [{"id": "test-command"}]
+        return CommandTable(rows=[{"id": "test-command"}])
 
-    monkeypatch.setattr(catalog, "all_command_rows", discover)
-    monkeypatch.setattr(catalog, "planner_command_rows", discover)
-    monkeypatch.setattr(catalog, "command_context_for_request", lambda *a, **k: (None, []))
-    catalog.register_catalog_routes(app, SimpleNamespace(resolve_session_agent=None))
+    monkeypatch.setattr(commands, "command_table", discover)
+    commands.register_command_routes(app, SimpleNamespace(resolve_session_agent=None))
 
     @app.get("/probe")
     async def probe() -> dict[str, bool]:
@@ -126,7 +124,7 @@ async def test_command_discovery_does_not_block_other_requests(
     async with httpx.AsyncClient(
         transport=httpx.ASGITransport(app=app), base_url="http://testserver"
     ) as client:
-        pending = asyncio.create_task(client.get("/v1/commands", params={"planner": planner}))
+        pending = asyncio.create_task(client.get("/v1/commands"))
         try:
             assert await asyncio.to_thread(entered.wait, 2)
             response = await asyncio.wait_for(client.get("/probe"), 1)

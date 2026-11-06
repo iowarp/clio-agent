@@ -13,37 +13,6 @@ from clio_agent.gact.app import build_app
 # test's ``build_app(agent=...)`` host fake.
 pytestmark = pytest.mark.usefixtures("host_agent_executor")
 
-CALLER_AGENT = """
-from clio_agent.sdk import Agent
-
-
-class Caller(Agent):
-    id = "caller"
-    version = "1.0.0"
-    role = "an agent that calls commands"
-    plugins = Agent.plugins + ["workspace", "summaries"]
-"""
-
-
-def _write_agent_invocable_command(command_dir: Path, name: str, description: str) -> None:
-    """Write a minimal agent-invocable slash-command file to ``command_dir``."""
-
-    command_dir.mkdir(parents=True, exist_ok=True)
-    command_dir.joinpath(f"{name}.md").write_text(
-        "\n".join(
-            [
-                "---",
-                f"name: {name}",
-                f"title: {name.title()}",
-                f"description: {description}",
-                "agent-invocable: true",
-                "---",
-                f"Run {name}.",
-            ]
-        ),
-        encoding="utf-8",
-    )
-
 
 @pytest.fixture()
 def client(tmp_path: Path) -> TestClient:
@@ -81,9 +50,7 @@ _RENDER_ME = """Agents:
 {{ agents.available_tree }}
 Tools:
 {{ tools.available }}
-Memory: {{ memory.policy_summary }}
-Commands:
-{{ commands.agent_invocable }}"""
+Memory: {{ memory.policy_summary }}"""
 
 
 def test_prompt_render_expands_safe_dynamic_placeholders(client: TestClient) -> None:
@@ -96,7 +63,6 @@ def test_prompt_render_expands_safe_dynamic_placeholders(client: TestClient) -> 
             "context": {
                 "agents.available_tree": "- main: Main agent\n- data: Data expert",
                 "tools.available": "- hdf5_list_datasets: inspect HDF5 files",
-                "commands.agent_invocable": "- /summarize: summarize data",
                 "memory.policy_summary": "same-workspace memory allowed with user intent",
                 "permissions.policy_summary": "ask before destructive actions",
                 "provider.current": "provider=test model=fake",
@@ -250,54 +216,6 @@ def test_workspace_prompt_override_uses_workspace_root(tmp_path: Path) -> None:
     assert not (workspace / ".clio").exists()
     assert prompt["text"] == "Workspace chat prompt."
     assert prompt["scope"] == "workspace"
-
-
-def test_planner_render_context_uses_agent_scoped_commands(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """The render context's ``commands.agent_invocable`` is the session agent's
-    scoped subset: the agent-invocable commands its plugins ship, never every
-    agent-invocable command file on disk (#770 C1)."""
-
-    from tests._plugin_fixtures import custom_marketplace
-
-    monkeypatch.chdir(tmp_path)
-    # A workspace command file no plugin ships: not invocable by the agent.
-    _write_agent_invocable_command(tmp_path / ".clio" / "commands", "other", "Some other command")
-    plugin_commands = tmp_path / "plugin-commands"
-    _write_agent_invocable_command(plugin_commands, "summarize", "Summarize a dataset")
-    custom_marketplace(
-        tmp_path,
-        monkeypatch,
-        plugins={
-            "summaries": {
-                "files": {
-                    "ai.iowarp.clio/commands/summarize.md": (
-                        plugin_commands / "summarize.md"
-                    ).read_text(encoding="utf-8")
-                }
-            }
-        },
-        agents={"caller.py": CALLER_AGENT},
-    )
-
-    app = build_app(sessions_path=tmp_path / "sessions.json")
-    with TestClient(app) as c:
-        sid = c.post(
-            "/v1/sessions", json={"title": "t", "metadata": {"agent_ref": "clio/caller"}}
-        ).json()["id"]
-
-        saved = c.put("/v1/prompts/clio.render_me", json={"text": _RENDER_ME})
-        assert saved.status_code == 200, saved.text
-        rendered = c.post(
-            "/v1/prompts/clio.render_me/render",
-            json={"session_id": sid},
-        ).json()["prompt"]
-
-    text = rendered["text"]
-    assert "/summarize" in text
-    assert "/other" not in text
 
 
 def test_provider_summary_serializes_dict_lm_config(

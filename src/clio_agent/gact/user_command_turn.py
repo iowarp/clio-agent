@@ -17,7 +17,7 @@ from clio_agent.gact.hooks.dispatcher import dispatch_user_prompt_expansion
 from clio_agent.gact.message_contract import PostMessageRequest
 from clio_agent.gact.message_submission import accept_message_async
 from clio_agent.gact.parts import Part
-from clio_agent.gact.runtime.commands import command_cwd_for_request
+from clio_agent.gact.runtime.command_table import command_cwd_for_request
 
 if TYPE_CHECKING:
     from fastapi import FastAPI
@@ -78,7 +78,7 @@ async def submit_user_command(
     typed = f"{cmd_id} {user_input}".strip()
     submission = PostMessageRequest(
         parts=[Part(type="text", text=typed)],
-        agent_id=str(command_meta.get("agent_id") or "") or None,
+        agent_id=str(command_meta.get("agent") or "") or None,
     )
     acknowledgement, _status = await accept_message_async(
         app,
@@ -88,7 +88,8 @@ async def submit_user_command(
         internal_model_text=rendered,
         server_metadata={
             "command": cmd_id,
-            "command_source": str(command_meta.get("command_source") or ""),
+            "command_source": str(command_meta.get("source") or ""),
+            "command_kind": str(command_meta.get("kind") or ""),
             **({"plugin": str(command_meta["plugin"])} if command_meta.get("plugin") else {}),
         },
     )

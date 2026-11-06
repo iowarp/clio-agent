@@ -605,10 +605,6 @@ KEY_NOTES: dict[str, str] = {
         "Retention bound on one A2UI surface's message log; the oldest non-createSurface message "
         "is evicted first past it."
     ),
-    "gact.ledger_retention.command_audit.max": (
-        "Max entries kept in the in-memory command-audit ledger before the oldest is FIFO-evicted; "
-        "raise for more in-memory audit history."
-    ),
     "gact.ledger_retention.context_frames.max": (
         "Max per-session context-frame entries kept in memory before FIFO eviction; raise to "
         "retain more attached-context history."

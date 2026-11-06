@@ -28,11 +28,11 @@ from pathlib import Path
 from typing import Any
 
 from clio_agent.plugins.command_text import expand_plugin_text
+from clio_agent.plugins.commands import read_commands
 from clio_agent.plugins.frontmatter import FrontmatterError, split_frontmatter
 from clio_agent.plugins.loader import _skills, referenced_files, tree_digests
 from clio_agent.plugins.manifest import validate_server, within
 from clio_agent.plugins.records import (
-    CommandRecord,
     Diagnostic,
     HookRecord,
     PluginRecord,
@@ -317,24 +317,6 @@ def _subagents(root: Path, plugin: str) -> tuple[list[SubagentRecord], list[Diag
     return out, diagnostics
 
 
-def _commands(root: Path) -> list[CommandRecord]:
-    base = root / "commands"
-    if not base.is_dir():
-        return []
-    out = []
-    for path in sorted(base.glob("*.md")):
-        try:
-            meta, _ = split_frontmatter(path.read_text(encoding="utf-8"))
-        except (OSError, UnicodeDecodeError, FrontmatterError):
-            meta = None
-        out.append(
-            CommandRecord(
-                id=path.stem, description=str((meta or {}).get("description") or ""), path=str(path)
-            )
-        )
-    return out
-
-
 def import_claude_plugin(
     root: Path, *, entry: dict[str, Any] | None = None, marketplace: str = ""
 ) -> PluginRecord:
@@ -368,8 +350,8 @@ def import_claude_plugin(
     servers, server_diags = _servers(root, plugin)
     hooks, hook_diags, scripts = _hooks(root, plugin)
     subagents, subagent_diags = _subagents(root, plugin)
-    commands = _commands(root)
-    diagnostics += skill_diags + server_diags + hook_diags + subagent_diags
+    commands, command_diags = read_commands(root / "commands", plugin)
+    diagnostics += skill_diags + server_diags + hook_diags + subagent_diags + command_diags
     executable = list(_EXECUTABLE_GLOBS) + [p.relative_to(root).as_posix() for p in scripts]
     referenced = referenced_files(root, servers)
     exec_digest, text_digest = tree_digests(root, executable, referenced=referenced)

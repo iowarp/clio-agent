@@ -554,15 +554,6 @@ def test_goal_outcome_reasons_are_typed() -> None:
     assert "goal_llm_overridden" not in GOAL_OUTCOME_REASONS
 
 
-def test_goal_command_row_exists() -> None:
-    from clio_agent.gact.runtime.commands import BACKEND_COMMANDS
-
-    row = next((c for c in BACKEND_COMMANDS if c["id"] == "/goal"), None)
-    assert row is not None
-    assert row["status"] == "available"
-    assert row["enabled"] is True
-
-
 def test_evaluate_goal_returns_goal_decision_type() -> None:
     decision = evaluate_goal(
         {"condition": "c", "iters_elapsed": 0, "max_goal_iters": 3},

@@ -584,15 +584,6 @@ def test_loop_mutation_lock_concurrency_smoke(tmp_path: Path) -> None:
 # --------------------------------------------------------------------------- #
 # /loop command + tool registration                                            #
 # --------------------------------------------------------------------------- #
-def test_loop_command_row_exists() -> None:
-    from clio_agent.gact.runtime.commands import BACKEND_COMMANDS
-
-    row = next((c for c in BACKEND_COMMANDS if c["id"] == "/loop"), None)
-    assert row is not None
-    assert row["status"] == "available"
-    assert row["enabled"] is True
-
-
 def test_parse_loop_command_interval_and_bounds() -> None:
     interval_s, prompt, bounds = parse_loop_command(
         {"input": "5m keep triaging PRs", "args": {"max_iters": 10}}

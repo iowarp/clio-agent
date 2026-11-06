@@ -6,7 +6,7 @@ from pathlib import Path
 
 import pytest
 
-from clio_agent.gact.catalog import _load_command_files_from_disk
+from clio_agent.gact.runtime.command_table import file_row
 from clio_agent.plugins.claude_code import import_claude_plugin
 from clio_agent.plugins.command_text import MAX_INCLUDE_BYTES, expand_plugin_text
 from tests.test_plugins.helpers import write
@@ -50,14 +50,10 @@ def test_a_large_file_is_left_for_the_model_to_read(tmp_path: Path) -> None:
 
 def test_plugin_commands_and_subagents_are_expanded_where_they_load(tmp_path: Path) -> None:
     root = _plugin(tmp_path / "paper")
-    rows = _load_command_files_from_disk(
-        home=tmp_path / "home",
-        cwd=tmp_path / "cwd",
-        extra_roots=[(root / "commands", "plugin", {"plugin": "paper", "command_scope": "plugin"})],
-    )
-    (row,) = [r for r in rows if r["id"].endswith("new-paper")]
-    assert "Records live under project/." in row["prompt_template"]
     record = import_claude_plugin(root)
+    (command,) = record.commands
+    row = file_row(Path(command.path), label="", source="plugin", plugin="paper", root=record.root)
+    assert "Records live under project/." in row["prompt_template"]
     assert record.subagents[0].prompt == f"Read @{root}/x.md first."
 
 

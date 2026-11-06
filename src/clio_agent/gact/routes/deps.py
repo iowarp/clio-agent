@@ -95,9 +95,8 @@ class _PromptRenderContextForRequest(Protocol):
     """Callable seam building the template context for ``POST .../render``.
 
     ``_prompt_render_context_for_request`` (in :mod:`clio_agent.gact.app`)
-    assembles the live render context (the session agent and its subagents,
-    agent-invocable commands) used to render a prompt. It reads
-    sessions, the pinned resolution and the command catalog, so
+    assembles the live render context (the session agent and its subagents)
+    used to render a prompt. It reads sessions and the pinned resolution, so
     it stays built there and travels here.
     """
 

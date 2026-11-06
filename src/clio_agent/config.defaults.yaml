@@ -626,11 +626,6 @@ gact.interactions.projection_limit: 200
 # createSurface message is evicted first past it.
 gact.ledger_retention.a2ui_messages.max: 512
 
-# CLIO_LEDGER_COMMAND_AUDIT_MAX  (int)  <- src/clio_agent/gact/runtime/retention.py
-# Max entries kept in the in-memory command-audit ledger before the oldest
-# is FIFO-evicted; raise for more in-memory audit history.
-gact.ledger_retention.command_audit.max: 2000
-
 # CLIO_LEDGER_CONTEXT_FRAMES_MAX  (int)  <- src/clio_agent/gact/runtime/retention.py
 # Max per-session context-frame entries kept in memory before FIFO eviction;
 # raise to retain more attached-context history.

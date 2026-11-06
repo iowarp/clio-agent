@@ -24,6 +24,7 @@ from collections.abc import Iterable, Mapping, Sequence
 from pathlib import Path
 from typing import Any, Literal
 
+from clio_agent.plugins.commands import read_commands
 from clio_agent.plugins.frontmatter import FrontmatterError, split_frontmatter
 from clio_agent.plugins.library import is_library_manifest, library_skills
 from clio_agent.plugins.manifest import (
@@ -39,7 +40,6 @@ from clio_agent.plugins.records import (
     FRAGMENT_SECTIONS,
     FRAGMENT_SESSIONS,
     CatalogRecord,
-    CommandRecord,
     Diagnostic,
     FlowRecord,
     FragmentRecord,
@@ -324,29 +324,6 @@ def _fragments_and_texts(
     return fragments, texts, diagnostics
 
 
-def _commands(clio_dir: Path, plugin: str) -> list[CommandRecord]:
-    base = clio_dir / "commands"
-    out: list[CommandRecord] = []
-    if not base.is_dir():
-        return out
-    for path in sorted(base.glob("*.md")):
-        try:
-            meta, _ = split_frontmatter(path.read_text(encoding="utf-8"))
-        except (OSError, UnicodeDecodeError, FrontmatterError):
-            meta = None
-        meta = meta or {}
-        name = str(meta.get("slash_id") or meta.get("slash-id") or meta.get("name") or "")
-        out.append(
-            CommandRecord(
-                # The command's id, as command discovery names it (its ``name``).
-                id=name.strip().lstrip("/") or path.stem,
-                description=str((meta or {}).get("description") or ""),
-                path=str(path),
-            )
-        )
-    return out
-
-
 def _catalogs(clio_dir: Path) -> list[CatalogRecord]:
     base = clio_dir / "a2ui"
     if not base.is_dir():
@@ -598,7 +575,8 @@ def load_plugin(root: Path, *, marketplace: str = "", trusted: bool) -> PluginRe
         skill_diags += library_diags
     clio_dir = root / NAMESPACE
     fragments, texts, fragment_diags = _fragments_and_texts(clio_dir, plugin)
-    diagnostics += skill_diags + server_diags + fragment_diags
+    commands, command_diags = read_commands(clio_dir / "commands", plugin)
+    diagnostics += skill_diags + server_diags + fragment_diags + command_diags
     has_python = (
         any((clio_dir / name).is_dir() for name in _PYTHON_DIRS)
         or (clio_dir / "plugin.py").is_file()
@@ -694,7 +672,7 @@ def load_plugin(root: Path, *, marketplace: str = "", trusted: bool) -> PluginRe
         subagents=tuple(parts.subagents),
         flows=tuple(parts.flows),
         fragments=tuple(fragments),
-        commands=tuple(_commands(clio_dir, plugin)),
+        commands=tuple(commands),
         catalogs=tuple(
             [CatalogRecord(id=str(c), path="") for c in ext.get("catalogs") or ()]
             + _catalogs(clio_dir)

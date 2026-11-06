@@ -91,7 +91,6 @@ _ALLOWED_RENDER_PLACEHOLDERS = {
     "agents.available_tree",
     "agents.available_flat",
     "tools.available",
-    "commands.agent_invocable",
     "memory.policy_summary",
     "permissions.policy_summary",
     "provider.current",

@@ -276,7 +276,6 @@ def _dynamic_agent_runtime_provenance(
             {
                 "parent_id": agent_def.parent_id,
                 "skills": list(agent_def.skills),
-                "commands": list(agent_def.commands),
             }
         )
     return payload

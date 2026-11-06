@@ -129,6 +129,11 @@ class CommandRecord:
     id: str
     description: str
     path: str
+    #: The subfolder of ``commands/`` the file sits in (``frontend``), shown beside its name.
+    label: str = ""
+    #: A built-in handler the file names (core plugin only).
+    handler: str = ""
+    aliases: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -223,6 +228,7 @@ class PluginRecord:
                     "when_tools",
                     "when_plugins",
                     "requires",
+                    "aliases",
                 ):
                     if name in values and isinstance(values[name], list):
                         values[name] = tuple(values[name])

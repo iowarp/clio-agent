@@ -648,7 +648,6 @@ class AgentDef(BaseModel):
     fanout: dict[str, Any] = Field(default_factory=dict)
     tools: list[str] = Field(default_factory=list)
     skills: list[str] = Field(default_factory=list)
-    commands: list[str] = Field(default_factory=list)
     capability_refs: list[AgentCapabilityRef] = Field(default_factory=list)
     metadata: dict[str, Any] = Field(default_factory=dict)
     enabled: bool = True
