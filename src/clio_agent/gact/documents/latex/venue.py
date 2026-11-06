@@ -37,15 +37,19 @@ _NAME_COMMANDS = re.compile(
 )
 
 
-def session_template_roots() -> list[Path]:
-    """The ``templates`` folders of the active session's plugins."""
+def session_template_roots(app: Any = None, session_id: str = "") -> list[Path]:
+    """The ``templates`` folders of a session's plugins: the active turn's, or the one named.
+
+    A route (the paper's workspace) runs outside any turn, so it names its session.
+    """
     from clio_agent.gact import context as _ctx  # noqa: PLC0415
     from clio_agent.gact.agents.resolution import (  # noqa: PLC0415
         SessionAgentUnavailable,
         session_resolution,
     )
 
-    app, session_id = _ctx.active_app(), _ctx.active_session_id()
+    if app is None or not session_id:
+        app, session_id = _ctx.active_app(), _ctx.active_session_id()
     if app is None or not session_id:
         return []
     try:

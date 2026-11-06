@@ -7,6 +7,7 @@ an empty one, a failed build with and without a PDF, a missing result and the ru
 from __future__ import annotations
 
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -570,3 +571,23 @@ def test_locate_says_where_a_point_is_in_the_source_and_back() -> None:
     assert view["blocks"][2]["text"] == "Box at (72, 300), 410 x 24 pt"
     failed = {"status": "failed", "entry": "main.tex", "error": "this build has no SyncTeX index"}
     assert _valid(latex_locate_presentation({}, failed, None))["status"] == "failed"
+
+
+def test_a_route_names_its_session_to_find_the_templates(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Scenario L2: the paper's workspace runs outside a turn, so the active-turn lookup found
+    # no templates and every venue check read "No plugin in this session has a template".
+    from clio_agent.gact.agents import resolution
+    from clio_agent.gact.documents.latex.venue import session_template_roots
+
+    (tmp_path / "latex" / "templates").mkdir(parents=True)
+    seen: list[str] = []
+
+    def resolve(app, session_id):
+        seen.append(session_id)
+        return SimpleNamespace(plugins=[{"root": str(tmp_path / "latex")}])
+
+    monkeypatch.setattr(resolution, "session_resolution", resolve)
+    assert session_template_roots(object(), "sess_paper") == [tmp_path / "latex" / "templates"]
+    assert seen == ["sess_paper"]

@@ -271,7 +271,7 @@ def mint_paper(
     previous = registry.get(entry_record.workspace_id, name)
     before = previous.head.producer if previous is not None and previous.head else {}
     text = entry.read_text(encoding="utf-8", errors="replace")
-    roots = session_template_roots()
+    roots = session_template_roots(app, session_id)
     labels = (
         document_labels(text, roots)
         if roots

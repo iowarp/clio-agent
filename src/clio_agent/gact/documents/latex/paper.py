@@ -91,13 +91,17 @@ def build_row(
             "untracked": [str(item.get("path")) for item in members if not item.get("artifact_id")],
         }
     if venue:
-        from clio_agent.gact.documents.latex.venue import check_venue  # noqa: PLC0415
+        from clio_agent.gact.documents.latex.venue import (  # noqa: PLC0415
+            check_venue,
+            session_template_roots,
+        )
 
         row["venue"] = check_venue(
             venue,
             entry=Path(version.path),
             pdf=Path(row["pdf"]["path"]),
             page_count=row["page_count"],
+            roots=session_template_roots(app, session_id),
         )
         if row["venue"].get("status") == "failed":
             row["status"] = "failed"
