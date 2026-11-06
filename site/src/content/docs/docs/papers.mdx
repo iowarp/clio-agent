@@ -19,6 +19,11 @@ import marks from "../../../assets/captures/papers/paper-marks-on-both-panes.png
 import threads from "../../../assets/captures/papers/paper-threads-on-v2.png";
 import lineage from "../../../assets/captures/papers/paper-lineage.png";
 import phone from "../../../assets/captures/papers/latex-workspace-phone.png";
+import wtfpNew from "../../../assets/captures/papers/wtfp-new-paper.png";
+import wtfpCommands from "../../../assets/captures/papers/wtfp-commands.png";
+import wtfpRoles from "../../../assets/captures/papers/wtfp-roles.png";
+import wtfpFlow from "../../../assets/captures/papers/wtfp-plan-and-check.png";
+import wtfpComment from "../../../assets/captures/papers/wtfp-comment-applied.png";
 
 CLIO writes LaTeX papers as projects: a `main.tex` that brings in one file per section,
 a bibliography and figures. It builds the project to PDF and gives you the result as one
@@ -163,3 +168,58 @@ paper was built from.
   alt="The paper at phone width, with Source, PDF and Outline tabs"
   caption="At phone width the paper shows one pane at a time."
   sizes="(min-width: 50rem) 24rem, 100vw" />
+
+## Write with a method
+
+The `latex` plugin knows how to build a paper. How to write one is a separate plugin:
+WTF-P, a method for writing a scientific paper from evidence, by Anthony Kougkas. Add
+**wtfp** to the conversation's agent (**Customize**, then add the plugin), and the agent
+keeps the paper's plan and progress in validated records under `.planning/` while the
+manuscript stays the paper's LaTeX under `paper/`, one file per section.
+
+Ask in your own words. Asked for "a 6-page IEEE Cluster workshop paper … set it up,
+outline it, then plan, draft and review the introduction, and build it with the venue
+checks", the agent started the paper from the IEEE conference template, wrote the
+outline and section records, had the plan checked by an independent checker, drafted
+the introduction, counted its words, built it with the venue checks and had a reviewer
+read it.
+
+<Capture client:visible image={await captureImage(wtfpNew)}
+  alt="The agent's answer: what exists, the defaults it chose, and the review findings"
+  caption="What the agent made, the defaults it chose and what the reviewer found. The build passes the venue checks."
+  sizes="(min-width: 50rem) 46rem, 100vw" />
+
+Its actions are commands: type `/wtfp:` to see them, from `/wtfp:new-paper` and
+`/wtfp:plan-section` to `/wtfp:check-refs`. During `/wtfp:write-section`,
+`/wtfp:polish-prose`, `/wtfp:execute-outline` and `/wtfp:quick`, files can be written only
+under `paper/` and `.planning/`.
+
+<Capture client:visible image={await captureImage(wtfpCommands)}
+  alt="The / menu listing WTF-P's commands"
+  sizes="(min-width: 50rem) 46rem, 100vw" />
+
+Its roles are subagents you can name with `@`: `@wtfp-section-reviewer` to review a
+section, `@wtfp-citation-expert` to check the bibliography against the claims. The
+checker, reviewer and verifier roles only read.
+
+<Capture client:visible image={await captureImage(wtfpRoles)}
+  alt="The @ menu listing WTF-P's eleven roles"
+  sizes="(min-width: 50rem) 46rem, 100vw" />
+
+Two commands run a role after another as a workflow: `/wtfp:plan-and-check <section>`
+(a planner, then an independent plan checker) and `/wtfp:draft-and-review <section>` (the
+section writer, then a reviewer). The plan is approved only when you say so.
+
+<Capture client:visible image={await captureImage(wtfpFlow)}
+  alt="A workflow run with a plan step and a check step, both done"
+  caption="/wtfp:plan-and-check background: the planner wrote the plan and the checker reviewed it."
+  sizes="(min-width: 50rem) 46rem, 100vw" />
+
+A comment on the built PDF works as for any paper: the agent edits the section's file,
+counts the section again and rebuilds.
+
+<Capture client:visible image={await captureImage(wtfpComment)}
+  alt="A comment on the paper and the agent's edit to introduction.tex"
+  caption="The comment, and the one-sentence edit to the introduction it asked for."
+  sizes="(min-width: 50rem) 46rem, 100vw" />
+

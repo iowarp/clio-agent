@@ -12,6 +12,9 @@ import ambiguous from "../../../assets/captures/commands/slash-menu-same-name.pn
 import atPopover from "../../../assets/captures/commands/at-popover.png";
 import chip from "../../../assets/captures/commands/chip-in-draft.png";
 import phone from "../../../assets/captures/commands/two-chips-phone.png";
+import summoned from "../../../assets/captures/commands/summoned-subagent.png";
+import summonedServer from "../../../assets/captures/commands/summoned-server.png";
+import promptSent from "../../../assets/captures/commands/mcp-prompt-sent.png";
 
 Type `/` in the message box to run a command, or `@` to bring a subagent or a tool
 server into your message. Both menus list only what this conversation's agent has.
@@ -28,10 +31,9 @@ server into your message. Both menus list only what this conversation's agent ha
 
 </Steps>
 
-<Capture
+<Capture client:visible image={await captureImage(slashMenu)}
   alt="The / menu groups commands, skills and a tool server's prompts."
-  image={captureImage(slashMenu)}
-/>
+  sizes="(min-width: 50rem) 46rem, 100vw" />
 
 Each row says where it comes from (a plugin, this workspace or your own folder) and
 what it takes. A row that cannot run says why in words: **Reserved name**,
@@ -53,10 +55,14 @@ what it takes. A row that cannot run says why in words: **Reserved name**,
   open **Prompt … from …** under your message to read it. When a server adds a prompt
   while you work, it appears in the menu the next time you type `/`.
 
-<Capture
+<Capture client:visible image={await captureImage(promptSent)}
+  alt="A sent /mcp__fixture-docs__show_figure command with its image and the opened prompt text"
+  caption="The prompt's text, the resource it named and the assistant message it included, opened under the message that sent it."
+  sizes="(min-width: 50rem) 46rem, 100vw" />
+
+<Capture client:visible image={await captureImage(prompts)}
   alt="A tool server's prompts listed under its own heading in the / menu."
-  image={captureImage(prompts)}
-/>
+  sizes="(min-width: 50rem) 46rem, 100vw" />
 
 ### When two commands share a name
 
@@ -65,10 +71,9 @@ full names, such as `/commands-fixture:review-notes` and `/commands-clash:review
 marked **Same name elsewhere**. Type the full name to run one; the short name alone is
 refused and the refusal names both.
 
-<Capture
+<Capture client:visible image={await captureImage(ambiguous)}
   alt="Two plugins' commands of the same name, each listed under its full name."
-  image={captureImage(ambiguous)}
-/>
+  sizes="(min-width: 50rem) 46rem, 100vw" />
 
 ## Write your own commands
 
@@ -123,15 +128,13 @@ reason. See [Hooks](/docs/hooks/) and [Agents and plugins](/docs/agents-and-plug
 
 </Steps>
 
-<Capture
+<Capture client:visible image={await captureImage(atPopover)}
   alt="The @ menu lists the agent's subagents and tool servers."
-  image={captureImage(atPopover)}
-/>
+  sizes="(min-width: 50rem) 46rem, 100vw" />
 
-<Capture
+<Capture client:visible image={await captureImage(chip)}
   alt="A subagent chip at the start of a message."
-  image={captureImage(chip)}
-/>
+  sizes="(min-width: 50rem) 46rem, 100vw" />
 
 - **A subagent** you name starts at once on your message's text, as work you started.
   Under your message you see **You started explore on this message**, and the subagent
@@ -140,15 +143,32 @@ reason. See [Hooks](/docs/hooks/) and [Agents and plugins](/docs/agents-and-plug
 - **A tool server** you name has its tools loaded for this message, so the agent can use
   them straight away. Under your message: **You pointed this message at the hdf5
   tools**.
+
+<Capture client:visible image={await captureImage(summoned)}
+  alt="A sent message with an @explore chip and the line You started explore on this message"
+  caption="The subagent starts on the message; the agent waits for its report instead of searching again."
+  sizes="(min-width: 50rem) 46rem, 100vw" />
+
+<Capture client:visible image={await captureImage(summonedServer)}
+  alt="A message pointed at the fixture-docs tools, answered with two of its tools"
+  caption="The server's tools are loaded for the message, and the agent calls them without searching for them first."
+  sizes="(min-width: 50rem) 46rem, 100vw" />
 - Typing the full name also works: `@explore` as its own word becomes a chip when you
   send. An address such as `bob@example.org` stays text.
 - A name the agent has no subagent or server for never becomes a chip; it is sent as
   ordinary text.
 
-<Capture
+<Capture client:visible image={await captureImage(phone)}
   alt="Two chips and the rest of the message wrapping on a phone."
-  image={captureImage(phone)}
-/>
+  sizes="(min-width: 50rem) 24rem, 100vw" />
+
+## Plugins written for Claude Code
+
+A Claude Code plugin installs as it is: its `commands/`, `skills/`, `agents/` and
+`hooks/hooks.json` load, and `clio-agent plugin check` names anything that has no CLIO
+counterpart (an `output-styles/` folder, a tool a subagent names that CLIO lacks) instead
+of dropping it silently. The writing method in [Write a paper](/docs/papers/#write-with-a-method)
+is one such package, brought into CLIO.
 
 ## Related
 

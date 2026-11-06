@@ -255,3 +255,22 @@ collapsed where the composer is the subject. Sessions and checks are recorded in
 | `commands/at-popover.png` | 1440 x 900 | The @ menu's Agents and Tools groups. |
 | `commands/chip-in-draft.png` | 1440 x 900 | An `@explore` chip before the message text. |
 | `commands/two-chips-phone.png` | 390 x 844 | Two chips on one line and the text wrapping under them. |
+| `commands/summoned-subagent.png` | 1440 x 900 | A sent `@explore` chip and "You started explore on this message"; the agent waits for the report. |
+| `commands/summoned-server.png` | 1440 x 900 | "You pointed this message at the fixture-docs tools" and the answer from two of its tools. |
+| `commands/mcp-prompt-sent.png` | 1440 x 900 | A sent `/mcp__fixture-docs__show_figure` with its image and the opened prompt text. |
+
+## Writing a paper with WTF-P
+
+From the live run recorded as W7–W10 in `docs/design/sdk/summoning-ledger.md`
+(`sess_098491793925`, the `wtfp` plugin from `JaimeCernuda/wtf-p` `clio-plugin/`), at
+1440 x 900, dark mode, sidebar collapsed. The conversation is long, so each shot waits for
+its Markdown to render (`CAP_SETTLE` in `scripts/cloud/checks/site_capture.mjs`).
+
+| File | What to inspect |
+| --- | --- |
+| `papers/wtfp-new-paper.png` | The answer to the plain request: what exists, the defaults chosen, the review findings. |
+| `papers/wtfp-commands.png` | `/wtfp:` in the composer: WTF-P's commands. |
+| `papers/wtfp-roles.png` | `@wtfp` in the composer: the eleven roles. |
+| `papers/wtfp-plan-and-check.png` | `/wtfp:plan-and-check background` as a two-step workflow run. |
+| `papers/wtfp-comment-applied.png` | A comment on the paper and the edit to `introduction.tex`. |
+
