@@ -192,7 +192,7 @@ class TestScripts:
             "except ToolError as exc:\n    print(exc)"
         )
         outcome = tool_module.run_script(self._agent(), code, session_id="ts", scope="m")
-        assert "No tool named 'ask_user'" in outcome["output"]
+        assert "ask_user cannot be called from a script" in outcome["output"]
 
 
 @pytest.mark.parametrize(
