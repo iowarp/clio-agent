@@ -1,7 +1,7 @@
 """The session index answers the metrics, the controls and the boot reconciliation.
 
 ``/v1/metrics`` sums counters kept as index columns, the autonomy controls and the
-restart reconciliation select their sessions by index column, and the
+restart marking select their sessions by index column, and the
 ``session_record_columns`` store migration fills the columns of rows indexed before
 they existed -- none of them reads every session record.
 """
@@ -134,8 +134,8 @@ def test_reindex_ignores_unknown_sessions() -> None:
     assert len(astuple(columns)) > 10
 
 
-def test_restart_reconciliation_reads_only_running_rows() -> None:
-    from clio_agent.gact import session_store
+def test_restart_marking_reads_only_running_rows() -> None:
+    from clio_agent.gact import restart_interruptions
 
     backing = _CountingStore()
     store = SessionStore(store=backing)
@@ -143,21 +143,11 @@ def test_restart_reconciliation_reads_only_running_rows() -> None:
     store.update(ids[2], status="running")
     store.flush()
     cold = _cold(backing)
-    selected: list[str] = []
-    real = cold.select
-
-    def spy(query: PageQuery) -> list[Any]:
-        rows = real(query)
-        selected.extend(row.id for row in rows)
-        return rows
-
-    cold.select = spy  # type: ignore[method-assign]
     app = SimpleNamespace(state=SimpleNamespace(sessions=cold))
     import clio_agent.gact.transcript_file as transcript_file
 
     with pytest.MonkeyPatch.context() as patch:
         patch.setattr(transcript_file, "has_durable_transcript_store", lambda _app: True)
-        patch.setattr(transcript_file, "load_durable_transcript", lambda _app, _sid: [])
-        session_store._reconcile_restart_interrupted_sessions(app)
-    assert selected == [ids[2]]
+        restart_interruptions.mark_restart_interrupted(app)
+    assert backing.row_reads == [f"row/{ids[2]}"]
     assert cold.get(ids[2]).status == "error"
