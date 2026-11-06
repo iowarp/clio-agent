@@ -74,17 +74,21 @@ export default async function (page, shot) {
   await offline.goto(`file://${file}`);
   await offline.waitForTimeout(8000);
   await offline.screenshot({ path: file.replace(/\.html$/, "-conversation.png"), fullPage: false });
-  const body = await offline.locator("body").innerText();
-  log.push(`closed note: ${/Closed at .*showing its last entries/.test(body)}`);
-  log.push(`captured note: ${/Captured at .* while live/.test(body)}`);
+  // A stream's note is read from the conversation and, for a published dashboard, from
+  // the Saved results.
+  let body = await offline.locator("body").innerText();
   const results = offline.getByRole("tab", { name: /Results/ });
   if (await results.count()) {
     await results.first().click();
     await offline.waitForTimeout(6000);
     await offline.screenshot({ path: file.replace(/\.html$/, "-results.png"), fullPage: false });
+    const saved = await offline.locator("body").innerText();
+    body += `\n${saved}`;
     log.push(`dashboards shown: ${await offline.locator('section[aria-label^="Dashboard: "]').count()}`);
-    log.push(`no views recorded: ${(await offline.locator("body").innerText()).includes("No interactive views were recorded")}`);
+    log.push(`no views recorded: ${saved.includes("No interactive views were recorded")}`);
   }
+  log.push(`closed note: ${/Closed at .*showing its last entries/.test(body)}`);
+  log.push(`captured note: ${/Captured at .* while live/.test(body)}`);
   log.push(`offline console errors: ${errors.length}${errors.length ? ` (${errors[0].slice(0, 160)})` : ""}`);
   console.log(JSON.stringify({ session: sessionId, log }, null, 2));
 }
