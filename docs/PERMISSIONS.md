@@ -357,7 +357,11 @@ file to run. A confined stdio MCP server's failed call is diagnosed by the obser
 against the recomputed fleet roots at `possible` confidence, and its message is noted
 on the error (or appended to the returned error result). A narrowed territory (plan
 mode, a read-only task, a workflow step) names where the call may write instead of a
-retry. No automatic rerun, no automatic prompt, no elevated lane;
+retry. A confirmed `write_denied` with folders to ask for also raises the folder-access
+card (`gact/sandbox_folder_offer.py`, `origin: sandbox_boundary`): a pending permission
+that parks no call, so the session needs the person; allowing grants the folders, and a
+grant made another way (`POST /v1/workspaces/{wid}/grants`) settles the card (owner's
+review, CT41). No automatic rerun, no elevated lane;
 `artifact.policy_violation` reads the same diagnosis.
 
 ### Provenance tiers under the fence (#980)
