@@ -157,6 +157,14 @@ def _missing(
             "warning", f"{name} was not found; TeX went on without it.", file, line, detail=name
         )
     stem = name.rsplit(".", 1)[0].lower()
+    if name.lower().endswith((".sty", ".cls")):
+        # TeX names the line it was reading when it gave up, often the one after the
+        # \usepackage (it looks ahead for an optional argument); the request is the line.
+        asked = _locate_key(
+            name.rsplit(".", 1)[0], r"usepackage|RequirePackage|documentclass", sources
+        )
+        if asked[0]:
+            file, line = asked
     if stem in SHELL_ESCAPE_PACKAGES:
         # Fetching it would not help: the package runs programs, and builds never may.
         return Diagnostic(
@@ -248,6 +256,10 @@ def parse_diagnostics(
             message = message.removeprefix("! ").strip()
             if "-shell-escape" in message or "shell escape" in message.lower():
                 package = next((p for p in SHELL_ESCAPE_PACKAGES if p in message), "")
+                # The package's check fires at \begin{document}; the cause is its \usepackage.
+                asked = _locate_key(package, r"usepackage|RequirePackage", sources)
+                if package and asked[0]:
+                    file, number = asked
                 add(
                     Diagnostic(
                         "shell_escape_unsupported",

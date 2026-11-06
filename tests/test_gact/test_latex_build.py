@@ -154,6 +154,25 @@ def test_shell_escape_biber_and_bibtex_styles_are_named() -> None:
     assert style.kind == "missing_package" and style.detail == "plain.bst"
 
 
+def test_a_missing_or_shell_escape_package_is_placed_at_its_usepackage_line() -> None:
+    # Scenarios L4 and L15: TeX reported line 3 (the line after \usepackage, read ahead for
+    # an optional argument, and \begin{document} where minted checks for shell escape).
+    texts = {"main.tex": "\\documentclass{article}\n\\usepackage{hpcgauge}\n\\title{T}\n"}
+    missing = "error: main.tex:3: ! LaTeX Error: File `hpcgauge.sty' not found."
+    [item] = parse_diagnostics(missing, texts=texts)
+    assert item.kind == "missing_package" and (item.file, item.line) == ("main.tex", 2)
+    code = {
+        "main.tex": "\\documentclass{article}\n\\usepackage[cache=false]{minted}\n"
+        "\\begin{document}\n"
+    }
+    minted = (
+        "error: main.tex:3: Package minted Error: You must invoke LaTeX with the "
+        "-shell-escape flag."
+    )
+    [shell] = parse_diagnostics(minted, texts=code)
+    assert shell.kind == "shell_escape_unsupported" and (shell.file, shell.line) == ("main.tex", 2)
+
+
 def test_a_shell_escape_package_tex_could_not_fetch_is_named_as_shell_escape() -> None:
     # Fetching minted would not help (it runs programs), so the build says so, not "fetch it".
     output = "\n".join(
