@@ -61,5 +61,30 @@
         "sha256": "bdc10b81edc39554d7ccf58f0ff39ce7a6076951502885ad990cc64bd1dd5594"
       }
     ]
+  },
+  "sandbox_folders": {
+    "captured": "2026-11-06",
+    "theme": "light",
+    "scale": 2,
+    "model_run": true,
+    "source": "live verification, docs/design/sdk/tool-calling-ledger.md CT41-CT42 (tool-directed copy; mechanism only)",
+    "captures": [
+      {
+        "file": "docs-permissions-folder-card.png",
+        "sha256": "74fe88f715ce93f7403a35ad9abf0ae01ada39389795a67905a6ecac204986f6"
+      },
+      {
+        "file": "docs-permissions-blocked-notice.png",
+        "sha256": "40a646a61b5295c785bd2ec1607c6ab03b218b439b0f975df415348c880395c6"
+      },
+      {
+        "file": "docs-permissions-allow-dialog.png",
+        "sha256": "564b74f57afdd8d96d88aaa744659a7b633a781c5ad12c6ddb027b12e4cc73b1"
+      },
+      {
+        "file": "docs-permissions-allowed-folders.png",
+        "sha256": "9bfbacb1bd7eedaedf7a9561b61fddee036cb0f87b65e4f953fff744ed476bfe"
+      }
+    ]
   }
 }

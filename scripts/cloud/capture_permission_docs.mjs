@@ -41,6 +41,8 @@ async function api(method, route, body) {
 function chromiumPath() {
   const base = "/opt/pw-browsers";
   if (!existsSync(base)) return undefined;
+  // The cloud image links its browser here (as scripts/cloud/ui_check.mjs finds it).
+  if (existsSync(path.join(base, "chromium"))) return path.join(base, "chromium");
   const dirs = readdirSync(base).filter((d) => /^chromium-\d+$/.test(d)).sort().reverse();
   return dirs.map((d) => path.join(base, d, "chrome-linux/chrome")).find((exe) => existsSync(exe));
 }
@@ -71,22 +73,32 @@ try {
     await page.getByRole("button", { name: /Connect/ }).click();
     await name.waitFor({ state: "hidden", timeout: 30000 });
   }
-  const workspace = await api("POST", "/v1/workspaces", {
+  const created = await api("POST", "/v1/workspaces", {
     name: path.basename(workspaceRoot),
     root_path: workspaceRoot,
   });
+  // A rerun finds the workspace already made for this folder; use it.
+  const workspace = created.id ? created : { id: created.error?.details?.workspace_id };
+  if (!workspace.id) throw new Error(`no workspace: ${JSON.stringify(created)}`);
   const session = await api("POST", "/v1/sessions", { workspace_id: workspace.id });
   await page.goto(`${ui}/workspaces/${workspace.id}/sessions/${session.id}`, {
     waitUntil: "networkidle",
   });
   await page.waitForTimeout(3000);
-  await page.locator('[contenteditable="true"]').last().click();
+  const composer = page.locator('[contenteditable="true"]').last();
+  await composer.waitFor({ timeout: 90000 });
+  await composer.click();
   await page.keyboard.type(
     `Run exactly this shell command with shell_bash and no access_paths: cp counts.csv ${outside}/counts.csv, then tell me what happened in two sentences.`,
   );
   await page.keyboard.press("Enter");
   let quiet = 0;
   for (let i = 0; i < 120 && quiet < 3; i += 1) {
+    // Approve the command itself as a person would; the folder card is what is captured.
+    const pending = await api("GET", `/v1/permissions?session_id=${session.id}&status=pending`);
+    for (const row of pending.permissions || [])
+      if (row.kind !== "folder_access")
+        await api("POST", `/v1/permissions/${row.id}`, { action: "allow_session" });
     const status = (await api("GET", `/v1/sessions/${session.id}`)).status;
     quiet = ["idle", "completed"].includes(status) ? quiet + 1 : 0;
     await page.waitForTimeout(3000);
@@ -127,6 +139,9 @@ try {
   await folders.waitFor({ timeout: 30000 });
   await shot("allowed-folders", folders);
   console.log(JSON.stringify({ session: session.id, workspace: workspace.id, errors }));
+} catch (error) {
+  await page.screenshot({ path: path.join(out, "docs-permissions-failure.png") }).catch(() => {});
+  throw error;
 } finally {
   await browser.close();
 }

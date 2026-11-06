@@ -4,6 +4,12 @@ description: Review requested actions, choose an approval policy and understand 
 ---
 
 import { Aside } from '@astrojs/starlight/components';
+import Capture from '../../../components/overview/Capture';
+import { captureImage } from '../../../lib/captures';
+import folderCard from '../../../assets/captures/docs-permissions-folder-card.png';
+import blockedNotice from '../../../assets/captures/docs-permissions-blocked-notice.png';
+import allowDialog from '../../../assets/captures/docs-permissions-allow-dialog.png';
+import allowedFolders from '../../../assets/captures/docs-permissions-allowed-folders.png';
 
 CLIO checks protected actions such as writing a file, running a command or
 reaching the network. Start with **Ask first** when you want to review those
@@ -234,7 +240,30 @@ source access can require the process to be refused altogether.
 
 When a sandboxed process is stopped from writing outside its folders, the denial is recorded with the process, the path, and the time, and the agent's result names the folder and how to ask for it.
 
-You are asked too. A confirmed block raises the folder access request described above (the folder, the command, the working folder), so the conversation shows that it needs you and your usual notifications fire. The conversation also says **Blocked by the sandbox: <folder>** under the activity, with an **Allow <folder>** button that first shows what you would allow: the full path, write access for commands and scripts in every conversation of this workspace, and that it lasts until you remove it here. Allowing does not rerun the blocked command; ask the agent to try again. The folders you have allowed are listed in Observability, under Evidence.
+You are asked too. A confirmed block raises the folder access request described above, with the folder, the command and the working folder, so the conversation shows that it needs you and your usual notifications fire.
+
+<Capture client:visible image={await captureImage(folderCard)}
+  alt="A folder access request: the sandbox blocked a copy to Reports; the request names the command, the computer, the working folder bike-counts and read and write access to /home/user/Reports, with Deny, This workspace and Allow"
+  caption="The request a blocked write raises. Allow grants the folder to the workspace."
+  sizes="(min-width: 50rem) 46rem, 100vw" />
+
+The conversation also says what was blocked under its activity, with a button named after the folder.
+
+<Capture client:visible image={await captureImage(blockedNotice)}
+  alt="Blocked by the sandbox: Reports, with an Allow Reports button"
+  sizes="(min-width: 50rem) 46rem, 100vw" />
+
+The button first shows what you would allow: the full path, that commands and scripts in every conversation of this workspace may create, change and delete files there, and that it lasts until you remove it here.
+
+<Capture client:visible image={await captureImage(allowDialog)}
+  alt="A dialog titled Allow writing to Reports, listing the folder /home/user/Reports, what you allow, how long, and that the blocked command is not run again, with Cancel and Allow folder"
+  sizes="(min-width: 50rem) 30rem, 100vw" />
+
+Allowing does not rerun the blocked command; ask the agent to try again. The folders you have allowed are listed in Observability, under Evidence; hover a folder for its path, or click it to copy the path.
+
+<Capture client:visible image={await captureImage(allowedFolders)}
+  alt="Folders the agent may write: bike-counts, the workspace folder, and Reports, allowed by you"
+  sizes="(min-width: 50rem) 24rem, 100vw" />
 
 <Aside type="note">
 The sandbox and the permission rules are two layers. The rules produce clear errors for the agent on every platform. The sandbox enforces the boundary below them where it is available.
