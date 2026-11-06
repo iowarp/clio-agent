@@ -1,28 +1,28 @@
 """``/v1/streams``: a view's reads of a stream, and the lease that makes it watched.
 
-- ``GET /v1/streams/{id}``: the stream (state, rows held, writes, times, its view URI).
-- ``POST /v1/streams/{id}/table-query``: the rows in memory now, through the same
-  filter, aggregate, sort and page pipeline as an artifact (``schema``, ``columns``,
-  ``totalRows`` ...), plus ``stream`` (the state, so a view can say it stopped).
+A stream's content lives in clio-core (:mod:`clio_agent.gact.streams.store`); these
+routes read it as it is, with each entry's type. Any reshaping a chart wants it does in
+the browser, so there is no query pipeline here.
+
+- ``GET /v1/streams/{id}``: the stream (state, entries held, writes, times, view URI).
+- ``GET /v1/streams/{id}/content?limit=``: the stream and its newest entries, oldest
+  first: JSON entries as ``value``, text as ``text``, other types by ``size_bytes`` and
+  their ``entry_path``.
+- ``GET /v1/streams/{id}/entries/{seq}``: one entry's bytes, with its media type.
 - ``POST /v1/streams/{id}/watch``: ``{session_id, release?, lease_id?}`` holds or
   releases a view's lease (:mod:`clio_agent.gact.streams.push`); a view renews it while
-  shown, and names a ``lease_id`` of its own so that its release leaves the other views
-  of its session watching. The session must exist (404 ``session_not_found``) and be in
-  the stream's workspace (403 ``stream_not_in_session_workspace``).
+  shown. The session must exist (404 ``session_not_found``) and be in the stream's
+  workspace (403 ``stream_not_in_session_workspace``).
 """
 
 from __future__ import annotations
 
-import asyncio
-import tempfile
-import threading
-from pathlib import Path
 from typing import Any
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Response
 from pydantic import BaseModel
 
-from clio_agent.gact.artifacts.table_query_models import TableQueryError, TableQueryRequest
+from clio_agent.gact.off_loop import run_off_loop
 from clio_agent.gact.routes.artifact_table_preview import _error
 
 
@@ -36,84 +36,59 @@ class StreamWatchRequest(BaseModel):
 
 
 def _stream(app: Any, stream_id: str) -> Any:
-    from clio_agent.gact.streams.store import stream_store  # noqa: PLC0415
+    from clio_agent.gact.streams.store import StreamError, stream_store  # noqa: PLC0415
 
-    stream = stream_store(app).get(stream_id)
+    try:
+        stream = stream_store(app).get(stream_id)
+    except StreamError as exc:
+        raise _error(503, exc.code, str(exc)) from exc
     if stream is None:
-        raise _error(404, "stream_not_found", f"No stream {stream_id!r} on this server.")
+        raise _error(404, "stream_not_found", f"No stream {stream_id!r}.")
     return stream
 
 
-def stream_table_query(
-    app: Any, stream_id: str, request: TableQueryRequest, limit: int
-) -> dict[str, Any]:
-    """Run the table-query pipeline over the stream's rows now (off the loop)."""
-
-    import pyarrow.parquet as pq  # noqa: PLC0415
-
-    from clio_agent.gact.artifacts.table_query import (  # noqa: PLC0415
-        QueryCancellation,
-        compute_processed_table,
-        page_processed_table,
-    )
-    from clio_agent.gact.streams.persist import rows_with_columns  # noqa: PLC0415
+def stream_content(app: Any, stream_id: str, limit: int) -> dict[str, Any]:
+    """The stream and its newest ``limit`` entries, read from clio-core."""
+    from clio_agent.gact.streams.store import WINDOW_MAX, stream_store  # noqa: PLC0415
 
     stream = _stream(app, stream_id)
-    with stream.lock:
-        rows, columns, described = list(stream.rows), list(stream.columns), stream.describe()
-    table = rows_with_columns(rows, columns)
-    if table.num_columns == 0:
-        return {
-            "schema": [],
-            "columns": {},
-            "totalRows": 0,
-            "matchedRows": 0,
-            "returnedRows": 0,
-            "truncated": False,
-            "offset": request.offset or 0,
-            "downsample": {"mode": "none"},
-            "empty": "stream_empty",
-            "cached": False,
-            "stream": described,
-        }
-    with tempfile.TemporaryDirectory(prefix="clio-stream-") as folder:
-        path = Path(folder) / "stream.parquet"
-        pq.write_table(table, path)
-        try:
-            processed = compute_processed_table(
-                path,
-                "parquet",
-                request,
-                limit=limit,
-                cancellation=QueryCancellation(cancel_event=threading.Event()),
-            )
-            result = page_processed_table(processed, offset=request.offset or 0, limit=limit)
-        except TableQueryError as exc:
-            raise _error(
-                exc.status_code, exc.code, exc.message, stream=stream_id, **exc.details
-            ) from exc
-    return {**result, "cached": False, "stream": described}
+    entries = stream_store(app).read(stream, max(1, min(int(limit), WINDOW_MAX)))
+    for entry in entries:
+        if "value" not in entry and "text" not in entry:
+            entry["entry_path"] = f"/v1/streams/{stream_id}/entries/{entry['seq']}"
+    fresh = stream_store(app).get(stream_id, stream.workspace_id) or stream
+    return {"stream": fresh.describe(), "entries": entries}
 
 
 def register_stream_routes(app: FastAPI) -> None:
     """Register the stream reads and the watch lease."""
 
-    from clio_agent.gact.routes.artifact_table_query import _effective_limit  # noqa: PLC0415
-
     @app.get("/v1/streams/{stream_id}")
     async def get_stream(stream_id: str) -> dict[str, Any]:
-        return dict(_stream(app, stream_id).describe())
+        return dict((await run_off_loop(lambda: _stream(app, stream_id))).describe())
 
-    @app.post("/v1/streams/{stream_id}/table-query")
-    async def query_stream(stream_id: str, body: TableQueryRequest) -> dict[str, Any]:
-        limit = _effective_limit(body.limit)
-        return await asyncio.to_thread(stream_table_query, app, stream_id, body, limit)
+    @app.get("/v1/streams/{stream_id}/content")
+    async def get_stream_content(stream_id: str, limit: int = 1000) -> dict[str, Any]:
+        return await run_off_loop(lambda: stream_content(app, stream_id, limit))
+
+    @app.get("/v1/streams/{stream_id}/entries/{seq}")
+    async def get_stream_entry(stream_id: str, seq: int) -> Response:
+        from clio_agent.gact.streams.store import stream_store  # noqa: PLC0415
+
+        def read() -> tuple[str, bytes] | None:
+            return stream_store(app).entry(_stream(app, stream_id), seq)
+
+        found = await run_off_loop(read)
+        if found is None:
+            raise _error(404, "stream_entry_not_held", "The window no longer holds that entry.")
+        media_type, body = found
+        return Response(content=body, media_type=media_type or "application/octet-stream")
 
     @app.post("/v1/streams/{stream_id}/watch")
     async def watch_stream(stream_id: str, body: StreamWatchRequest) -> dict[str, Any]:
         from clio_agent.gact.streams.push import LEASE_S, watch  # noqa: PLC0415
 
-        stream = _stream(app, stream_id)
+        stream = await run_off_loop(lambda: _stream(app, stream_id))
         session = app.state.sessions.get(body.session_id) if body.session_id else None
         if session is None:
             raise _error(404, "session_not_found", f"No session {body.session_id!r}.")
@@ -127,4 +102,4 @@ def register_stream_routes(app: FastAPI) -> None:
         return {"stream_id": stream_id, "watchers": watchers, "lease_s": LEASE_S}
 
 
-__all__ = ["StreamWatchRequest", "register_stream_routes", "stream_table_query"]
+__all__ = ["StreamWatchRequest", "register_stream_routes", "stream_content"]

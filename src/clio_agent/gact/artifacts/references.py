@@ -136,22 +136,24 @@ def _artifact_resolution(
         "version": version.version,
         "custody": version.custody.value,
         "fetch_path": fetch_url_for(quote(version.artifact_id, safe="")),
+        **_stream_fields(version),
     }
 
 
-def _with_live_stream(app: "FastAPI", resolution: dict[str, Any]) -> dict[str, Any]:
-    """Add ``stream`` when the named artifact is a stream this server holds: a view then
-    reads its rows from memory and is told when they change."""
-    from clio_agent.gact.streams.store import stream_store  # noqa: PLC0415
+def _stream_fields(version: "ArtifactVersion") -> dict[str, Any]:
+    """A stream artifact's address: a view reads its entries (state included) from
+    ``content_path`` and is told when they change (``stream.updated``)."""
+    from clio_schemas import ArtifactKind  # noqa: PLC0415
 
-    stream = stream_store(app).by_name(
-        str(resolution.get("workspace_id") or ""), str(resolution.get("name") or "")
-    )
-    if stream is None:
-        return resolution
-    described = stream.describe()
-    keys = ("stream_id", "state", "window", "updated_at")
-    return {**resolution, "stream": {key: described[key] for key in keys}}
+    if version.kind != ArtifactKind.STREAM:
+        return {}
+    stream_id = str((version.producer or {}).get("stream_id") or "")
+    return {
+        "stream": {
+            "stream_id": stream_id,
+            "content_path": f"/v1/streams/{quote(stream_id, safe='')}/content",
+        }
+    }
 
 
 def _resolve_named(registry: Any, parsed: ParsedReference, uri: str) -> dict[str, Any]:
@@ -269,7 +271,7 @@ async def resolve_reference(
             )
         record, version = found
         return _artifact_resolution(uri, record, version)
-    return _with_live_stream(app, _resolve_named(registry, parsed, uri))
+    return _resolve_named(registry, parsed, uri)
 
 
 __all__ = [

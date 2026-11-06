@@ -199,6 +199,16 @@ def _validate_mesh_source(
     return None
 
 
+def _is_stream(app: "FastAPI", artifact_id: str) -> bool:
+    """Whether ``artifact_id`` is a stream (content in clio-core, no file to check)."""
+    from clio_schemas import ArtifactKind  # noqa: PLC0415
+
+    from clio_agent.gact.artifacts.registry import get_registry  # noqa: PLC0415
+
+    found = get_registry(app).get_by_artifact_id(artifact_id)
+    return found is not None and found[1].kind == ArtifactKind.STREAM
+
+
 def _resolve_artifact_path(
     app: "FastAPI", artifact_id: str
 ) -> "tuple[ArtifactRecord, ArtifactVersion, Path] | dict[str, Any]":
@@ -669,6 +679,8 @@ def validate_component_data_references(
                 artifact_id=artifact_id,
                 **({"version": latest[1]} if latest else {}),
             )
+        if _is_stream(app, artifact_id):
+            continue  # a stream's entries are read whole by the view; nothing to check here
         resolved = _resolve_artifact_path(app, artifact_id)
         if isinstance(resolved, dict):
             return resolved

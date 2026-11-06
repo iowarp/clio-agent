@@ -10,7 +10,7 @@ bounded window. With no lease held, a write announces nothing.
 A lease is held per view: ``(session, lease_id)``. Two views of one session that each
 name their own ``lease_id`` hold two leases, and one's release leaves the other's; a
 view that names none shares its session's single lease (the older clients). When a
-stream stops, its last state is announced at once and its watch is forgotten.
+stream closes, its last state is announced at once and its watch is forgotten.
 """
 
 from __future__ import annotations
@@ -96,10 +96,11 @@ def _publish(app: Any, stream: "Stream") -> int:
         payload = {
             "stream_id": stream.id,
             "workspace_id": stream.workspace_id,
-            "name": stream.artifact_name,
+            "name": stream.name,
             "state": stream.state,
             "writes": stream.seq,
             "updated_at": stream.updated_at,
+            "closed_at": stream.closed_at,
         }
     for session_id in sessions:
         bus.publish(

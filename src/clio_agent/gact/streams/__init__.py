@@ -1,1 +1,1 @@
-"""Streams: artifacts whose latest content lives in the server's memory (CT22, CT25)."""
+"""Streams: artifacts whose content lives in clio-core as typed entries (CT44)."""

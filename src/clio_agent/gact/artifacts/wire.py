@@ -69,6 +69,8 @@ _MIME_BY_SUFFIX: dict[str, str] = {
 }
 
 #: Fallback mime per kind when the path suffix is unrecognised.
+#: A stream artifact's type: its content is read through ``/v1/streams/{id}/content``.
+STREAM_MIME = "application/vnd.clio.stream+json"
 _MIME_BY_KIND: dict[ArtifactKind, str] = {
     ArtifactKind.IMAGE: "image/png",
     ArtifactKind.DATASET: "application/octet-stream",
@@ -77,6 +79,7 @@ _MIME_BY_KIND: dict[ArtifactKind, str] = {
     ArtifactKind.CONFIG: "text/plain",
     ArtifactKind.MODEL: "application/octet-stream",
     ArtifactKind.OTHER: "application/octet-stream",
+    ArtifactKind.STREAM: STREAM_MIME,
 }
 
 

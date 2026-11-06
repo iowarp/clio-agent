@@ -20,13 +20,24 @@ def _store() -> Any:
     return stream_store(app)
 
 
+def _unwire(value: Any) -> Any:
+    """A script's bytes arrive as ``{"$bytes": base64}`` (the call channel is JSON)."""
+    if isinstance(value, Mapping) and set(value) == {"$bytes"}:
+        import base64
+
+        return base64.b64decode(str(value["$bytes"]))
+    return value
+
+
 @host_call("__stream_write__")
 def write(args: Mapping[str, Any]) -> dict[str, Any]:
-    rows = args.get("rows")
     stream = _store().write(
-        str(args.get("stream_id") or ""), str(args.get("key") or ""), list(rows or [])
+        str(args.get("stream_id") or ""),
+        str(args.get("key") or ""),
+        [_unwire(value) for value in args.get("values") or []],
+        str(args.get("media_type") or ""),
     )
-    return {"writes": stream.seq, "rows": len(stream.rows)}
+    return {"writes": stream.seq, "entries": min(stream.seq, stream.window)}
 
 
 @host_call("__stream_stop__")

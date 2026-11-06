@@ -6,7 +6,8 @@ description: Watch something that keeps changing (a job, an instrument, a device
 # Live status
 
 The work is a background script that reads the source and writes what it sees
-into a stream, and a dashboard bound to that stream.
+into a stream. The stream shows in the side panel by itself, live while it is
+open; a dashboard bound to it gives a custom view.
 
 ## 1. Find how to read the source
 
@@ -17,11 +18,12 @@ errors). Keep the fields that change; constants belong in the dashboard text.
 ## 2. Start the watcher
 
 Run it with `run_code(background=True, label=...)`. One stream holds the
-current state. Give it a `window` when the history matters to the view, for
+current state: write each reading as a dict (one record per reading), or a
+line of text for a log. Give it a `window` when the history matters, for
 example the last few hundred readings for a chart.
 
 ```python
-s = await stream.open("printer", columns=["t", "state", "progress", "nozzle_c"], window=300)
+s = await stream.open("printer", window=300)
 while True:
     status = await read_status()            # however this source is read
     await s.write(t=now_iso(), **status)
@@ -32,25 +34,28 @@ while True:
     await asyncio.sleep(2)
 ```
 
-Each write goes straight to the stream. Wake the conversation with
-`task.notify` only for what the person should hear about. When the script
-ends, its stream stops: the last rows stay shown, marked stopped.
+Each write goes straight to the stream in clio-core. Wake the conversation
+with `task.notify` only for what the person should hear about. When the script
+ends, its stream closes: its entries stay, shown as closed.
 
 ## 3. Show it
 
-Build the dashboard with the create-dashboard skill. Bind its charts and
-tables to the stream's `view_uri` (the `artifact://…@latest` that
-`open_stream` returned) as their `dataUri`. Use a table of the latest row for
-the current state and a chart over the window for the trend. Publish it.
+The stream itself opens in the side panel with its newest entries. For a
+custom view, build a dashboard with the create-dashboard skill: bind its
+charts and tables to the stream's `view_uri` (the `artifact://…@latest` that
+`open_stream` returned) as their `dataUri`. The view reads the entries as
+they are; the chart's own spec reshapes them. Use a table of the latest
+record for the current state and a chart over the window for the trend.
 
 ## 4. Answer from the stream
 
-When asked how it is going, call `read_stream(name)`. Do not re-read the
-source, and do not start a second watcher. Say when the stream stopped if it
+When asked how it is going, call `read_stream(name)`: its state and newest
+entries (`read_stream()` lists the workspace's streams). Do not re-read the
+source, and do not start a second watcher. Say when the stream closed if it
 did.
 
 ## 5. Stop
 
-To stop watching, cancel the watcher's task: that stops its streams and keeps
-their last rows, shown as stopped. `stop_stream(name)` is for a stream no script
-writes to; a script that writes to a stopped stream fails.
+To stop watching, cancel the watcher's task: that closes its streams and
+keeps their entries, shown as closed. `stop_stream(name)` is for a stream no
+script writes to; a script that writes to a closed stream fails.

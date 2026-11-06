@@ -1,20 +1,21 @@
 """The stream tools the streaming plugin claims: open, read and stop a stream.
 
 ``open_stream`` is the one gated call a script makes before writing many times a second
-through the plugin's ``stream`` binding (CT25 (6)); its result carries the key the
-binding's writes present, and the ``view_uri`` a dashboard's chart or table binds to.
-``read_stream`` gives the agent the latest rows; ``stop_stream`` ends the writes and keeps
-the last rows, shown as stopped.
+through the plugin's ``stream`` binding; its result carries the key the binding's writes
+present, and the ``view_uri`` a dashboard's chart or table binds to. ``read_stream`` gives
+the agent (or a script) a stream's state and newest entries, or, with no name, the
+workspace's streams; ``stop_stream`` closes a stream, whose entries stay, shown as closed.
+The content is in clio-core (:mod:`clio_agent.gact.streams.store`).
 """
 
 from __future__ import annotations
 
 from typing import Any
 
-from clio_agent.gact.streams.store import StreamError, stream_store, window_max
+from clio_agent.gact.streams.store import WINDOW_MAX, StreamError, stream_store
 
 STREAM_TOOLS = ("open_stream", "read_stream", "stop_stream")
-_READ_ROWS = 50
+_READ_ENTRIES = 50
 
 
 def _session() -> tuple[Any, str, str]:
@@ -31,18 +32,15 @@ def _refusal(exc: StreamError) -> dict[str, Any]:
     return {"ok": False, "reason": exc.code, "detail": str(exc)}
 
 
-def open_stream(
-    name: str, columns: list[str] | None = None, window: int = 1, flush_s: float = 30.0
-) -> dict[str, Any]:
-    """Open a stream: a named table whose latest rows live in memory, written many times a
-    second by a script (``s = await stream.open(name)`` then ``await s.write(row)`` in
-    run_code) with no tool call per write. A dashboard's chart or table bound to the
-    returned view_uri updates by itself, only while someone is looking. window keeps the
-    last N rows (1: the latest only; at most as many rows as one view reads); the rows are
-    saved as the artifact's next version every flush_s seconds while they change and when
-    the stream stops. columns names the columns a view can bind to before the first write.
-    A background script's streams stop when it ends; their last rows stay readable and
-    show as stopped."""
+def open_stream(name: str, window: int = 1, media_type: str = "") -> dict[str, Any]:
+    """Open a stream: a named artifact whose entries live in clio-core, written many times
+    a second by a script (``s = await stream.open(name)`` then ``await s.write(...)`` in
+    run_code) with no tool call per write. An entry is a JSON record or row (a dict), a
+    line of text (a str), or bytes with a media_type. window keeps the newest N entries
+    (1: the latest only). The stream shows in the side panel with its latest entries,
+    live while open and closed after; a dashboard chart or table bound to the returned
+    view_uri updates by itself while someone looks. A background script's streams close
+    when it ends; their entries stay readable."""
 
     from clio_agent.gact.code_task_context import active_background_task  # noqa: PLC0415
 
@@ -53,9 +51,8 @@ def open_stream(
             session_id,
             workspace_id,
             name,
-            columns=list(columns or []),
             window=int(window),
-            flush_s=float(flush_s),
+            media_type=str(media_type or ""),
             task=task.handle if task is not None else "",
         )
     except StreamError as exc:
@@ -63,39 +60,41 @@ def open_stream(
     return {"ok": True, **stream.describe(), "write_key": stream.token}
 
 
-def read_stream(name: str, limit: int = _READ_ROWS) -> dict[str, Any]:
-    """Read a stream's latest rows (newest last) and its state: open with the time of the
-    last write, or stopped. For a stream this server no longer holds (it restarted), the
-    rows are in its artifact's last version (read it as a file or table)."""
+def read_stream(name: str = "", limit: int = _READ_ENTRIES) -> dict[str, Any]:
+    """Read a stream: its state (open, or closed and when), how many writes it had, and
+    its newest entries, oldest first (JSON as value, text as text, other types by size).
+    With no name, list the workspace's streams and their states."""
 
     app, _session_id, workspace_id = _session()
-    stream = stream_store(app).by_name(workspace_id, name)
-    if stream is None:
-        return {
-            "ok": False,
-            "reason": "stream_not_found",
-            "detail": f"No stream {name!r} is held by this server; its saved rows, if any, "
-            f"are the artifact {name.removesuffix('.parquet')}.parquet.",
-        }
-    rows = stream.snapshot()[-max(1, int(limit)) :]
+    store = stream_store(app)
+    try:
+        if not name:
+            return {"ok": True, "streams": [s.describe() for s in store.streams(workspace_id)]}
+        stream = store.by_name(workspace_id, name)
+        if stream is None:
+            return {"ok": False, "reason": "stream_not_found", "detail": f"No stream {name!r}."}
+        entries = store.read(stream, max(1, min(int(limit), WINDOW_MAX)))
+        fresh = store.get(stream.id, workspace_id) or stream
+    except StreamError as exc:
+        return _refusal(exc)
     return {
         "ok": True,
-        **stream.describe(),
-        "latest": rows[-1] if rows else None,
-        "rows_read": rows,
+        **fresh.describe(),
+        "latest": entries[-1] if entries else None,
+        "entries_read": entries,
     }
 
 
 def stop_stream(name: str) -> dict[str, Any]:
-    """Stop a stream this conversation writes: writes end, the last rows are saved as the
-    artifact's version and stay shown, marked stopped."""
+    """Stop a stream this conversation writes: writes end; its entries stay, shown as
+    closed."""
 
     app, session_id, workspace_id = _session()
     store = stream_store(app)
-    stream = store.by_name(workspace_id, name)
-    if stream is None:
-        return {"ok": False, "reason": "stream_not_found", "detail": f"No stream {name!r}."}
     try:
+        stream = store.by_name(workspace_id, name)
+        if stream is None:
+            return {"ok": False, "reason": "stream_not_found", "detail": f"No stream {name!r}."}
         stopped = store.stop(stream.id, session_id=session_id)
     except StreamError as exc:
         return _refusal(exc)
@@ -117,19 +116,22 @@ def _native(func: Any, fields: str, *, title: str, args: dict[str, Any], read_on
     )
 
 
-_NAME = {"type": "string", "description": "The stream's name (its artifact is <name>.parquet)."}
+_NAME = {"type": "string", "description": "The stream's name (its artifact's name)."}
 
 
 def build_open_stream_tool() -> Any:
     return _native(
         open_stream,
-        "name,state,view_uri,window,flush_s,reason,detail",
+        "name,state,view_uri,window,reason,detail",
         title="Open stream",
         args={
             "name": _NAME,
-            "columns": {"type": "array", "items": {"type": "string"}, "default": []},
-            "window": {"type": "integer", "minimum": 1, "maximum": window_max(), "default": 1},
-            "flush_s": {"type": "number", "minimum": 0, "default": 30.0},
+            "window": {"type": "integer", "minimum": 1, "maximum": WINDOW_MAX, "default": 1},
+            "media_type": {
+                "type": "string",
+                "default": "",
+                "description": "The entries' type when they are bytes (e.g. image/png).",
+            },
         },
         read_only=False,
     )
@@ -138,9 +140,12 @@ def build_open_stream_tool() -> Any:
 def build_read_stream_tool() -> Any:
     return _native(
         read_stream,
-        "name,state,rows,writes,updated_at,stopped_at,reason,detail",
+        "name,state,entries,writes,updated_at,closed_at,reason,detail",
         title="Read stream",
-        args={"name": _NAME, "limit": {"type": "integer", "minimum": 1, "default": _READ_ROWS}},
+        args={
+            "name": {**_NAME, "default": "", "description": "The stream; none lists them."},
+            "limit": {"type": "integer", "minimum": 1, "default": _READ_ENTRIES},
+        },
         read_only=True,
     )
 
@@ -148,7 +153,7 @@ def build_read_stream_tool() -> Any:
 def build_stop_stream_tool() -> Any:
     return _native(
         stop_stream,
-        "name,state,writes,stopped_at,reason,detail",
+        "name,state,writes,closed_at,reason,detail",
         title="Stop stream",
         args={"name": _NAME},
         read_only=False,

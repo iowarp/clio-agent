@@ -1,20 +1,34 @@
 # ruff: noqa: F821  (the kernel binds ``tools`` and ``ToolError`` into this module)
-"""``stream``: write a stream many times a second from a script.
+"""``stream``: write and read a stream from a script.
 
-    s = await stream.open("printer", columns=["state", "nozzle_c"])
+    s = await stream.open("sensor", window=60)
     while True:
-        await s.write(state="printing", nozzle_c=214.5)
+        await s.write(t=time.time(), temperature_c=21.4)   # a JSON record
+        await s.write("door opened")                      # a line of text
         await asyncio.sleep(1)
 
+    latest = await stream.read("sensor", limit=10)        # state and newest entries
+
 ``open`` is one ``open_stream`` call (asked about like any call); each ``write`` then goes
-straight to the stream, with no tool call of its own. A view bound to ``s.view_uri``
-shows the latest rows while someone looks at it. A write is sent when made; awaiting it
-waits for it, and a forgotten ``await`` still sends (the script ends after it is done).
+straight to the stream in clio-core, with no tool call of its own. An entry is a dict (or
+keyword fields), a str, or bytes with ``media_type`` (``s.write(png, media_type=
+"image/png")``). The stream shows in the side panel and in any view bound to
+``s.view_uri``. A write is sent when made; awaiting it waits for it, and a forgotten
+``await`` still sends (the script ends after it is done).
 """
 
 
+def _wire(value):
+    """Bytes cross to the server as base64 (the call channel is JSON)."""
+    if isinstance(value, (bytes, bytearray, memoryview)):
+        import base64
+
+        return {"$bytes": base64.b64encode(bytes(value)).decode("ascii")}
+    return value
+
+
 class Stream:
-    """One open stream: ``write`` rows to it, ``stop`` it."""
+    """One open stream: ``write`` entries to it, ``read`` it, ``stop`` it."""
 
     def __init__(self, opened):
         self.name = opened["name"]
@@ -26,34 +40,47 @@ class Stream:
     def __repr__(self):
         return f"<stream {self.name} -> {self.view_uri}>"
 
-    def write(self, row=None, **fields):
-        """Add one row (a dict, or keyword fields); the oldest leaves past the window."""
-        data = dict(row or {})
-        data.update(fields)
-        return tools.call("__stream_write__", stream_id=self._id, key=self._key, rows=[data])
+    def write(self, value=None, media_type="", **fields):
+        """Add one entry: a dict (or keyword fields), a str, or bytes with ``media_type``;
+        the oldest leaves past the window."""
+        if value is None:
+            value = dict(fields)
+        elif fields and isinstance(value, dict):
+            value = {**value, **fields}
+        return self.write_many([value], media_type=media_type)
 
-    def write_many(self, rows):
-        """Add several rows at once, the newest last."""
+    def write_many(self, values, media_type=""):
+        """Add several entries at once, the newest last."""
         return tools.call(
-            "__stream_write__", stream_id=self._id, key=self._key, rows=[dict(r) for r in rows]
+            "__stream_write__",
+            stream_id=self._id,
+            key=self._key,
+            values=[_wire(value) for value in values],
+            media_type=media_type,
         )
 
+    def read(self, limit=50):
+        """This stream's state and newest entries (one ``read_stream`` call)."""
+        return tools.call("read_stream", name=self.name, limit=limit)
+
     def stop(self):
-        """Stop writing: the last rows stay shown, marked stopped."""
+        """Stop writing: the entries stay, shown as closed."""
         return tools.call("__stream_stop__", stream_id=self._id, key=self._key)
 
 
 class _Streams:
-    """Open streams: ``await stream.open(name, columns=None, window=1, flush_s=30)``."""
+    """``await stream.open(name, window=1, media_type="")``; ``await stream.read(name)``."""
 
-    async def open(self, name, columns=None, window=1, flush_s=30.0):
-        opened = await tools.call(
-            "open_stream", name=name, columns=list(columns or []), window=window, flush_s=flush_s
-        )
+    async def open(self, name, window=1, media_type=""):
+        opened = await tools.call("open_stream", name=name, window=window, media_type=media_type)
         if not isinstance(opened, dict) or not opened.get("ok"):
             detail = opened.get("detail") if isinstance(opened, dict) else opened
             raise ToolError(f"open_stream: {detail}")
         return Stream(opened)
+
+    def read(self, name="", limit=50):
+        """A stream's state and newest entries; with no name, the workspace's streams."""
+        return tools.call("read_stream", name=name, limit=limit)
 
 
 export = _Streams()

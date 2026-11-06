@@ -1,4 +1,4 @@
-"""The stream tools: open a stream, read its latest rows, stop it."""
+"""The stream tools: open a stream, read its state and newest entries, stop it."""
 
 from clio_agent.sdk import native_tool
 

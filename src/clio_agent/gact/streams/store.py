@@ -1,43 +1,49 @@
-"""Streams: artifacts whose latest content lives in the server's memory (CT22, CT25).
+"""Streams: artifacts whose content lives in clio-core as typed entries (CT44).
 
-A stream is a named artifact of a workspace (``<name>.parquet``) that a script writes to
-many times a second. Its rows live here: the latest row, or the last ``window`` rows when
-the stream declares a window. Views bound to the artifact's name at ``@latest`` read the
-rows from memory while the stream is known to this server and are told when they change
-(:mod:`.push`); the rows are written to the artifact store as the artifact's next version
-on open, then every ``flush_s`` while they change, and when the stream stops. After a
-restart, a view reads the last version written, and the stream reads as stopped.
+A stream is a named ``stream`` artifact of a workspace, written many times a second by a
+script and read for its latest entry or its last ``window`` entries. Its content lives in
+clio-core, on the tag ``<namespace>/stream``, as plain blobs until clio-core's
+``clio_cte_stream`` has a Python binding (iowarp/clio-core#1342):
 
-One flush of a stream runs at a time (its ``flush_lock``), whoever asks: the timer, a
-stop, a dashboard's publish. A flush that fails leaves the rows unsaved for the next one,
-and is recorded on the stream as ``flush_error`` (``STREAM_FLUSH_FAILED``, traced). Only
-``open`` refuses on it; a stop, a script's end and shutdown stop the stream regardless
-and announce it, so a failed write never keeps a stream open or a script from settling.
+- ``<workspace>/<stream>/meta``: the stream's description (name, state open or closed,
+  entry type, window, last sequence number, times, the writing task, the write key);
+- ``<workspace>/<stream>/e/<seq % window>``: one entry, a header line (``seq``, ``at``,
+  ``media_type``) then its bytes;
+- ``<workspace>/name/<name>``: the stream's id, so a name finds its stream.
 
-The memory copy is the stream's content; the flushed versions are its persistence. Where a
-stream's content lives was decided in CT25 (5): GACT holds it until CLIO can use clio-core's
-stream module, ``clio_cte_stream``, from Python (``docs/design/clio-core-requests.md``,
-issue 7).
+An entry is bytes with a media type: ``application/json`` (a record or a row),
+``text/plain`` (a line) or any other type (an image, a frame; stored now, shown by later
+viewers). A write puts its entries, then the meta that counts them; a read gets the meta,
+then the entries it names, by sequence number. Nothing of a stream lives in this process
+but the handle of a writer it opened (a write-through copy of the meta, so a write does not
+read the meta first) and the views' leases (:mod:`.push`). After a restart every stream
+that was open is closed ("writer_ended"): its writer did not survive the restart.
 """
 
 from __future__ import annotations
 
+import json
+import re
 import secrets
 import threading
-import time
-from collections import deque
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Any
+from urllib.parse import quote
 
+from clio_agent import conf
 from clio_agent.runtime import trace
 
-#: A stream's name: what its artifact is called, without the ``.parquet`` it gets.
+#: A stream's name: what its artifact is called.
 NAME_PATTERN = r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,79}$"
-#: Typed failure: a flush could not write the stream's next version.
-STREAM_FLUSH_FAILED = "stream_flush_failed"
-#: What a failed version write raises (storage, Arrow, a typed StreamError, minting).
-FLUSH_ERRORS: tuple[type[BaseException], ...] = (OSError, ValueError, RuntimeError, TypeError)
+#: The clio-core kind (tag ``<namespace>/stream``) a stream's blobs live under.
+STREAM_KIND = "stream"
+JSON_TYPE = "application/json"
+TEXT_TYPE = "text/plain"
+#: The most entries a stream keeps and a read returns.
+WINDOW_MAX = 1000
+#: Typed reason: a stream was open when the server stopped, so its writer is gone.
+WRITER_ENDED = "writer_ended"
 
 
 class StreamError(ValueError):
@@ -52,60 +58,105 @@ def _now() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
-def _cell(value: Any) -> Any:
-    """A row value as a table cell: scalars stay, anything else becomes its JSON text."""
-    if value is None or isinstance(value, bool | int | float | str):
-        return value
-    import json  # noqa: PLC0415
+def stream_namespace() -> str:
+    """``streams``, nested under ARC's own namespace when one is configured (tests)."""
+    base = conf.resolve("arc.namespace", env="CLIO_ARC_NAMESPACE", default="", cast=conf.as_str)
+    base = base.strip().strip("/")
+    return f"{base}/streams" if base else "streams"
 
-    return json.dumps(value, default=str, ensure_ascii=False)
+
+def _meta_name(workspace_id: str, stream_id: str) -> str:
+    return f"{workspace_id}/{stream_id}/meta"
+
+
+def _entry_name(workspace_id: str, stream_id: str, slot: int) -> str:
+    return f"{workspace_id}/{stream_id}/e/{slot}"
+
+
+def _index_name(workspace_id: str, name: str) -> str:
+    return f"{workspace_id}/name/{name}"
+
+
+def encode_entry(value: Any, media_type: str = "") -> tuple[str, bytes]:
+    """``(media_type, bytes)`` for one written value: a dict or list is JSON, a str is
+    text, bytes keep the media type they are given (which they must name)."""
+    if isinstance(value, bytes | bytearray | memoryview):
+        if not media_type or media_type in (JSON_TYPE, TEXT_TYPE):
+            raise StreamError(
+                "stream_entry_type_missing",
+                "Binary entries name their media type, e.g. media_type='image/png'.",
+            )
+        return media_type, bytes(value)
+    if isinstance(value, str) and media_type in ("", TEXT_TYPE):
+        return TEXT_TYPE, value.encode("utf-8")
+    if media_type not in ("", JSON_TYPE):
+        raise StreamError(
+            "stream_entry_type_mismatch",
+            f"A {type(value).__name__} is written as JSON or text, not {media_type}.",
+        )
+    try:
+        return JSON_TYPE, json.dumps(value, ensure_ascii=False, default=str).encode("utf-8")
+    except (TypeError, ValueError) as exc:
+        raise StreamError("stream_entry_invalid", f"Not JSON-serializable: {exc}") from exc
+
+
+def decode_entry(blob: bytes) -> dict[str, Any]:
+    """One stored entry as a reader gets it: JSON and text inline, other types by size."""
+    head, _, body = blob.partition(b"\n")
+    header = json.loads(head)
+    entry: dict[str, Any] = {
+        "seq": int(header["seq"]),
+        "at": header.get("at", ""),
+        "media_type": header.get("media_type", ""),
+        "size_bytes": len(body),
+    }
+    if entry["media_type"] == JSON_TYPE:
+        entry["value"] = json.loads(body)
+    elif entry["media_type"] == TEXT_TYPE:
+        entry["text"] = body.decode("utf-8", errors="replace")
+    return entry
+
+
+def entry_bytes(blob: bytes) -> tuple[str, bytes]:
+    """``(media_type, body)`` of one stored entry."""
+    head, _, body = blob.partition(b"\n")
+    return str(json.loads(head).get("media_type") or ""), body
 
 
 @dataclass
 class Stream:
-    """One stream's state. ``rows`` is the content; ``seq`` counts writes."""
+    """One stream's description, as its meta blob holds it (the token is never shown)."""
 
     id: str
     workspace_id: str
     name: str
     session_id: str
     token: str
-    columns: list[str]
     window: int
-    flush_s: float
-    rows: deque[dict[str, Any]] = field(default_factory=deque)
+    media_type: str = ""
     seq: int = 0
     state: str = "open"
     opened_at: str = field(default_factory=_now)
     updated_at: str = ""
-    stopped_at: str = ""
-    #: The write count the last saved version holds (set only once the write succeeded).
-    flushed_seq: int = -1
-    #: When the last flush was attempted (monotonic), which paces the next one.
-    flushed_at: float = 0.0
-    artifact_id: str = ""
-    #: The last flush's failure (``reason``, ``code``, ``message``, ``at``); None once saved.
-    flush_error: dict[str, str] | None = None
-    #: The background script that opened it, which stops it when it ends ("" for none).
+    closed_at: str = ""
+    closed_reason: str = ""
     task: str = ""
-    timer: threading.Timer | None = None
-    lock: threading.RLock = field(default_factory=threading.RLock)
-    #: Held across one version write, so two flushes never write the same file at once.
-    flush_lock: threading.Lock = field(default_factory=threading.Lock)
-
-    @property
-    def artifact_name(self) -> str:
-        return f"{self.name}.parquet"
+    artifact_id: str = ""
+    lock: threading.RLock = field(default_factory=threading.RLock, repr=False, compare=False)
 
     @property
     def view_uri(self) -> str:
-        from urllib.parse import quote  # noqa: PLC0415
+        return f"artifact://{self.workspace_id}/{quote(self.name)}@latest"
 
-        return f"artifact://{self.workspace_id}/{quote(self.artifact_name)}@latest"
+    def meta(self) -> bytes:
+        data = {name: getattr(self, name) for name in self.__dataclass_fields__ if name != "lock"}
+        return json.dumps(data, sort_keys=True).encode("utf-8")
 
-    def snapshot(self) -> list[dict[str, Any]]:
-        with self.lock:
-            return list(self.rows)
+    @classmethod
+    def from_meta(cls, blob: bytes) -> Stream:
+        data = json.loads(blob)
+        known = {f for f in cls.__dataclass_fields__ if f != "lock"}
+        return cls(**{key: value for key, value in data.items() if key in known})
 
     def describe(self) -> dict[str, Any]:
         """What a tool, a route and a view say about the stream (no token)."""
@@ -116,40 +167,98 @@ class Stream:
                 "workspace_id": self.workspace_id,
                 "session_id": self.session_id,
                 "state": self.state,
+                "media_type": self.media_type,
                 "window": self.window,
-                "rows": len(self.rows),
+                "entries": min(self.seq, self.window),
                 "writes": self.seq,
-                "columns": list(self.columns),
                 "opened_at": self.opened_at,
                 "updated_at": self.updated_at,
-                "stopped_at": self.stopped_at,
-                "flush_s": self.flush_s,
-                "artifact_name": self.artifact_name,
+                "closed_at": self.closed_at,
+                "closed_reason": self.closed_reason,
                 "artifact_id": self.artifact_id,
                 "view_uri": self.view_uri,
-                "flush_error": dict(self.flush_error) if self.flush_error else None,
             }
 
 
 class StreamStore:
-    """The server's streams, by id and by ``(workspace, name)``."""
+    """The workspace streams in clio-core, and the writers this process holds."""
 
-    def __init__(self, app: Any) -> None:
+    def __init__(self, app: Any, backend: Any = None) -> None:
         self.app = app
-        self._streams: dict[str, Stream] = {}
-        self._names: dict[tuple[str, str], str] = {}
+        self._backend = backend
+        self._writers: dict[str, Stream] = {}  # open streams this process writes
         self._lock = threading.Lock()
+        self._orphans_closed = False
 
-    def get(self, stream_id: str) -> Stream | None:
+    # ---- clio-core --------------------------------------------------------------------
+
+    @property
+    def backend(self) -> Any:
+        if self._backend is None:
+            from clio_agent.arc import storage  # noqa: PLC0415 - patched by the test suite
+            from clio_agent.gact.server_boot import process_arc  # noqa: PLC0415
+
+            if process_arc(self.app) is None:
+                raise StreamError(
+                    "streams_unavailable", "Streams need clio-core, which this server lacks."
+                )
+            self._backend = storage.make_arc_store(
+                namespace=stream_namespace(), kinds=(STREAM_KIND,)
+            )
+        if not self._orphans_closed:
+            self._orphans_closed = True
+            self._close_orphans()
+        return self._backend
+
+    def _put_meta(self, stream: Stream) -> None:
+        self.backend.put(STREAM_KIND, _meta_name(stream.workspace_id, stream.id), stream.meta())
+
+    def _load(self, workspace_id: str, stream_id: str) -> Stream | None:
+        blob = self.backend.get(STREAM_KIND, _meta_name(workspace_id, stream_id))
+        return Stream.from_meta(blob) if blob else None
+
+    def _close_orphans(self) -> None:
+        """Close every stream left open by an earlier run of the server (no writer now)."""
+        for name in self._backend.query_names(STREAM_KIND, r".+/stream_[0-9a-f]+/meta"):
+            blob = self._backend.get(STREAM_KIND, name)
+            stream = Stream.from_meta(blob) if blob else None
+            if stream is None or stream.state != "open" or stream.id in self._writers:
+                continue
+            stream.state, stream.closed_at, stream.closed_reason = "closed", _now(), WRITER_ENDED
+            self._backend.put(STREAM_KIND, name, stream.meta())
+            trace.event(
+                "STREAM", "stream closed at start reason=%s stream=%s", WRITER_ENDED, stream.id
+            )
+
+    # ---- lookups ----------------------------------------------------------------------
+
+    def get(self, stream_id: str, workspace_id: str = "") -> Stream | None:
+        """The stream ``stream_id`` (the writer's handle when this process writes it)."""
         with self._lock:
-            return self._streams.get(stream_id)
+            held = self._writers.get(stream_id)
+        if held is not None:
+            return held
+        if workspace_id:
+            return self._load(workspace_id, stream_id)
+        for name in self.backend.query_names(STREAM_KIND, rf".+/{re.escape(stream_id)}/meta"):
+            blob = self.backend.get(STREAM_KIND, name)
+            if blob:
+                return Stream.from_meta(blob)
+        return None
 
     def by_name(self, workspace_id: str, name: str) -> Stream | None:
-        """The stream whose artifact is ``name`` (with or without ``.parquet``)."""
-        bare = name.removesuffix(".parquet")
-        with self._lock:
-            stream_id = self._names.get((workspace_id, bare))
-            return self._streams.get(stream_id) if stream_id else None
+        blob = self.backend.get(STREAM_KIND, _index_name(workspace_id, name))
+        return self.get(blob.decode("utf-8"), workspace_id) if blob else None
+
+    def streams(self, workspace_id: str) -> list[Stream]:
+        """The workspace's streams, newest first."""
+        names = self.backend.query_names(
+            STREAM_KIND, rf"{re.escape(workspace_id)}/stream_[0-9a-f]+/meta"
+        )
+        streams = [s for s in (self.get(n.split("/")[-2], workspace_id) for n in names) if s]
+        return sorted(streams, key=lambda s: s.updated_at or s.opened_at, reverse=True)
+
+    # ---- lifecycle --------------------------------------------------------------------
 
     def open(
         self,
@@ -157,277 +266,211 @@ class StreamStore:
         workspace_id: str,
         name: str,
         *,
-        columns: list[str] | None = None,
         window: int = 1,
-        flush_s: float = 30.0,
+        media_type: str = "",
         task: str = "",
     ) -> Stream:
-        """Open ``name`` for writing, or reopen it (same session, or a stopped stream).
+        """Open ``name`` for writing, or reopen it.
 
-        Reopening a stream that is open keeps its writer: its key, and the background
-        script that owns it unless ``task`` names one. Reopening a stopped stream starts a
-        new writer: a fresh key (the old writer's no longer writes) and ``task`` as its
-        owner. A version is written before the open is answered, so a view can bind to the
-        name; when none can be and none was saved before, the open is refused
-        (``stream_flush_failed``) and nothing stays registered or changed.
-        """
-        import re  # noqa: PLC0415
-
+        Reopening a stream open in this session keeps its writer (key and task, unless
+        ``task`` names a new one). Reopening a closed stream starts a new writer (a fresh
+        key) and keeps its entries. A stream open in another session is refused."""
         if not re.match(NAME_PATTERN, name or ""):
             raise StreamError(
                 "stream_name_invalid",
                 "A stream name is letters, digits, '-', '_' or '.', up to 80 characters.",
             )
-        if window < 1:
-            raise StreamError("stream_window_invalid", "window is the number of rows kept, ≥ 1.")
-        ceiling = window_max()
-        if window > ceiling:
+        if not 1 <= window <= WINDOW_MAX:
             raise StreamError(
-                "stream_window_too_large",
-                f"window keeps at most {ceiling:,} rows (a view reads at most that many).",
+                "stream_window_invalid", f"window is the entries kept, 1 to {WINDOW_MAX:,}."
             )
-        with self._lock:
-            existing = self._streams.get(self._names.get((workspace_id, name), ""))
-            if existing is not None and existing.state == "open":
-                if existing.session_id != session_id:
-                    raise StreamError(
-                        "stream_in_use",
-                        f"Stream {name!r} is open in another session; stop it there first.",
-                    )
-            stream = existing or Stream(
+        existing = self.by_name(workspace_id, name)
+        if existing is not None and existing.state == "open":
+            if existing.session_id != session_id:
+                raise StreamError(
+                    "stream_in_use",
+                    f"Stream {name!r} is open in another session; stop it there first.",
+                )
+            if task:
+                existing.task = task
+            if existing.window != window:
+                self._rewindow(existing, window)
+            self._put_meta(existing)
+            with self._lock:
+                self._writers[existing.id] = existing
+            return existing
+        if existing is not None:  # closed: a new writer, the entries stay
+            stream = existing
+            stream.token, stream.task, stream.session_id = (
+                secrets.token_urlsafe(16),
+                task,
+                session_id,
+            )
+            stream.state, stream.closed_at, stream.closed_reason = "open", "", ""
+            if stream.window != window:
+                self._rewindow(stream, window)
+        else:
+            stream = Stream(
                 id="stream_" + secrets.token_hex(6),
                 workspace_id=workspace_id,
                 name=name,
                 session_id=session_id,
                 token=secrets.token_urlsafe(16),
-                columns=list(dict.fromkeys(columns or [])),
                 window=window,
-                flush_s=max(0.0, flush_s),
+                media_type=media_type,
+                task=task,
             )
-            with stream.lock:
-                before = (stream.session_id, stream.state, stream.stopped_at, stream.token)
-                previous_task = stream.task
-                if existing is not None and existing.state != "open":
-                    stream.token = secrets.token_urlsafe(16)  # a new writer: the old key ends
-                    stream.task = task
-                elif task:
-                    stream.task = task  # a script reopening the stream owns it from now
-                stream.session_id, stream.state, stream.stopped_at = session_id, "open", ""
-                if stream.rows.maxlen != window:
-                    stream.window, stream.rows = window, deque(stream.rows, maxlen=window)
-                for column in columns or ():
-                    if column not in stream.columns:
-                        stream.columns.append(column)
-            self._streams[stream.id] = stream
-            self._names[(workspace_id, name)] = stream.id
-        try:
-            self.flush(stream)  # a view can be bound to the name as soon as it is open
-        except FLUSH_ERRORS as exc:
-            if stream.artifact_id:  # a saved version is there to bind to; flush_error says
-                return stream
-            self._undo_open(stream, existing is None, before, previous_task)
-            raise StreamError(
-                STREAM_FLUSH_FAILED, f"Stream {name!r} could not be saved, so it is not open: {exc}"
-            ) from exc
+            stream.artifact_id = self._mint(stream)
+            self.backend.put(
+                STREAM_KIND, _index_name(workspace_id, name), stream.id.encode("utf-8")
+            )
+        self._put_meta(stream)
+        with self._lock:
+            self._writers[stream.id] = stream
         return stream
 
-    def _undo_open(
-        self, stream: Stream, created: bool, before: tuple[str, str, str, str], task: str
-    ) -> None:
-        """A refused open leaves no trace: a new stream is dropped, a reopened one restored."""
-        if created:
-            self._forget(stream)
-            return
-        with stream.lock:
-            stream.session_id, stream.state, stream.stopped_at, stream.token = before
-            stream.task = task
+    def _rewindow(self, stream: Stream, window: int) -> None:
+        """Keep the newest entries under a new window (their slots move)."""
+        kept = self._entries(stream, min(stream.window, window))
+        for entry_seq, blob in kept:
+            self.backend.put(
+                STREAM_KIND, _entry_name(stream.workspace_id, stream.id, entry_seq % window), blob
+            )
+        stream.window = window
 
-    def write(self, stream_id: str, token: str, rows: list[dict[str, Any]]) -> Stream:
-        """Add ``rows`` (the newest last); the oldest leave past the window."""
+    def _mint(self, stream: Stream) -> str:
+        """Register the stream as a ``stream`` artifact: custody clio-core, no file."""
+        from clio_schemas import ArtifactKind, Custody, Mechanism  # noqa: PLC0415
+        from clio_schemas.models import EvidenceClass, IdentityEvidence  # noqa: PLC0415
+
+        from clio_agent.gact.artifacts.minting import mint_artifact_outcome  # noqa: PLC0415
+
+        outcome = mint_artifact_outcome(
+            self.app,
+            stream.session_id,
+            name=stream.name,
+            workspace_id=stream.workspace_id,
+            evidence=IdentityEvidence(
+                evidence_class=EvidenceClass.AUTHORITY_ASSERTED,
+                authority=f"clio-core:{stream_namespace()}/{STREAM_KIND}:{stream.id}",
+            ),
+            kind=ArtifactKind.STREAM,
+            mechanism=Mechanism.HARNESS,
+            producer={"designation": "stream", "stream_id": stream.id},
+            custody=Custody.CLIO_CORE,
+        )
+        return outcome.version.artifact_id if outcome is not None else ""
+
+    def write(self, stream_id: str, token: str, values: list[Any], media_type: str = "") -> Stream:
+        """Add ``values`` (the newest last) as entries; the oldest leave past the window."""
         stream = self._writable(stream_id, token)
-        clean = [
-            {str(k): _cell(v) for k, v in row.items()} for row in rows if isinstance(row, dict)
-        ]
-        if not clean:
-            raise StreamError("stream_row_invalid", "A stream write is a dict, or a list of dicts.")
+        entries = [encode_entry(value, media_type) for value in values]
+        if not entries:
+            raise StreamError("stream_entry_invalid", "A stream write needs at least one entry.")
         with stream.lock:
-            stream.rows.extend(clean)
-            stream.seq += len(clean)
+            for entry_type, body in entries:
+                stream.seq += 1
+                header = json.dumps(
+                    {"seq": stream.seq, "at": _now(), "media_type": entry_type}
+                ).encode("utf-8")
+                self.backend.put(
+                    STREAM_KIND,
+                    _entry_name(stream.workspace_id, stream.id, stream.seq % stream.window),
+                    header + b"\n" + body,
+                )
+            stream.media_type = stream.media_type or entries[-1][0]
             stream.updated_at = _now()
-            for row in clean:
-                for column in row:
-                    if column not in stream.columns:
-                        stream.columns.append(column)
+            self._put_meta(stream)
         from clio_agent.gact.streams.push import announce  # noqa: PLC0415
 
         announce(self.app, stream)
-        self._schedule_flush(stream)
         return stream
+
+    def _entries(self, stream: Stream, limit: int) -> list[tuple[int, bytes]]:
+        """``(seq, stored blob)`` of the newest ``limit`` entries, oldest first."""
+        count = min(stream.seq, stream.window, max(1, limit))
+        found: list[tuple[int, bytes]] = []
+        for entry_seq in range(stream.seq - count + 1, stream.seq + 1):
+            blob = self.backend.get(
+                STREAM_KIND, _entry_name(stream.workspace_id, stream.id, entry_seq % stream.window)
+            )
+            if blob:
+                found.append((entry_seq, blob))
+        return found
+
+    def read(self, stream: Stream, limit: int = WINDOW_MAX) -> list[dict[str, Any]]:
+        """The newest ``limit`` entries (oldest first), read from clio-core."""
+        fresh = self._load(stream.workspace_id, stream.id) or stream
+        return [decode_entry(blob) for _seq, blob in self._entries(fresh, limit)]
+
+    def entry(self, stream: Stream, seq: int) -> tuple[str, bytes] | None:
+        """One entry's ``(media_type, body)``, while the window still holds it."""
+        fresh = self._load(stream.workspace_id, stream.id) or stream
+        if not fresh.seq - min(fresh.seq, fresh.window) < seq <= fresh.seq:
+            return None
+        blob = self.backend.get(
+            STREAM_KIND, _entry_name(fresh.workspace_id, fresh.id, seq % fresh.window)
+        )
+        return entry_bytes(blob) if blob else None
 
     def stop(self, stream_id: str, token: str = "", *, session_id: str = "") -> Stream:
-        """Stop the stream: its last rows stay readable and are written as a version.
-
-        A version write that fails does not keep the stream open: it is stopped and
-        announced, and ``flush_error`` says the last rows were not saved."""
+        """Close the stream: no more writes; its entries stay, shown as closed."""
         stream = self.get(stream_id)
         if stream is None:
-            raise StreamError("stream_not_found", f"No stream {stream_id!r} on this server.")
+            raise StreamError("stream_not_found", f"No stream {stream_id!r}.")
         if token != stream.token and session_id != stream.session_id:
             raise StreamError("stream_not_owned", "Only the stream's session stops it.")
-        self._stop(stream)
+        self._close(stream, "stopped")
         return stream
 
-    def _stop(self, stream: Stream) -> bool:
-        """Stop ``stream`` (the caller checked who asks); False when it was not open."""
+    def _close(self, stream: Stream, reason: str) -> bool:
         from clio_agent.gact.streams.push import announce, forget  # noqa: PLC0415
 
         with stream.lock:
-            if stream.state == "stopped":
+            if stream.state != "open":
                 return False
-            stream.state, stream.stopped_at = "stopped", _now()
-            if stream.timer is not None:
-                stream.timer.cancel()
-                stream.timer = None
-        self._flush_recorded(stream)
+            stream.state, stream.closed_at, stream.closed_reason = "closed", _now(), reason
+            self._put_meta(stream)
+        with self._lock:
+            self._writers.pop(stream.id, None)
         announce(self.app, stream, now=True)
-        forget(stream.id)  # a stopped stream changes no more: its watch is done
+        forget(stream.id)
         return True
 
     def stop_session(self, session_id: str) -> int:
-        """The session was deleted: stop the streams it writes and forget them.
-
-        Their last rows were written as their artifact's version, which views read from
-        now on; how many were open."""
+        """The session was deleted: close the streams it writes."""
         with self._lock:
-            owned = [s for s in self._streams.values() if s.session_id == session_id]
-        stopped = sum(1 for stream in owned if self._stop(stream))
-        for stream in owned:
-            self._forget(stream)
-        return stopped
+            owned = [s for s in self._writers.values() if s.session_id == session_id]
+        return sum(1 for stream in owned if self._close(stream, "session_deleted"))
 
     def stop_task(self, handle: str) -> int:
-        """Stop the open streams a background script opened: it ended, so they did.
-
-        Never raises for a failed version write (``flush_error`` records it), so a
-        script's end is never turned into a failure by its streams."""
+        """A background script ended: close the streams it opened."""
         with self._lock:
-            owned = [s for s in self._streams.values() if handle and s.task == handle]
-        for stream in owned:
-            self._stop(stream)
-        return len(owned)
+            owned = [s for s in self._writers.values() if handle and s.task == handle]
+        return sum(1 for stream in owned if self._close(stream, "script_ended"))
 
     def close(self) -> None:
-        """A clean shutdown writes every open stream's rows as its last version.
-
-        Every stream is stopped even when one fails; the failures are raised together
-        after the last, for the shutdown's cleanup report."""
+        """A clean shutdown closes the streams this process writes; every one is tried."""
         with self._lock:
-            streams = list(self._streams.values())
+            streams = list(self._writers.values())
         failures: list[Exception] = []
         for stream in streams:
             try:
-                self._stop(stream)
+                self._close(stream, "server_stopped")
             except Exception as exc:  # noqa: BLE001 - forwards: raised together below
                 failures.append(exc)
         if failures:
-            raise ExceptionGroup("streams failed to stop at shutdown", failures)
-
-    def _forget(self, stream: Stream) -> None:
-        from clio_agent.gact.streams.push import forget  # noqa: PLC0415
-
-        with self._lock:
-            if self._streams.get(stream.id) is stream:
-                del self._streams[stream.id]
-            key = (stream.workspace_id, stream.name)
-            if self._names.get(key) == stream.id:
-                del self._names[key]
-        forget(stream.id)
+            raise ExceptionGroup("streams failed to close at shutdown", failures)
 
     def _writable(self, stream_id: str, token: str) -> Stream:
-        stream = self.get(stream_id)
+        with self._lock:
+            stream = self._writers.get(stream_id)
         if stream is None or not secrets.compare_digest(stream.token, str(token or "")):
             raise StreamError(
                 "stream_not_open",
                 "This stream is not open for this script; open it with open_stream first.",
             )
-        if stream.state != "open":
-            raise StreamError("stream_stopped", f"Stream {stream.name!r} was stopped.")
         return stream
-
-    def _schedule_flush(self, stream: Stream) -> None:
-        with stream.lock:
-            if stream.timer is not None or stream.flush_s <= 0 or stream.state != "open":
-                return
-            wait = max(0.0, stream.flushed_at + stream.flush_s - time.monotonic())
-            stream.timer = threading.Timer(wait, self._flush_due, args=(stream,))
-            stream.timer.daemon = True
-            stream.timer.start()
-
-    def _flush_due(self, stream: Stream) -> None:
-        with stream.lock:
-            stream.timer = None
-        if not self._flush_recorded(stream):
-            self._schedule_flush(stream)  # the rows are still unsaved: try again next interval
-
-    def _flush_recorded(self, stream: Stream) -> bool:
-        """Flush; a failure is recorded on the stream and traced, not raised."""
-        try:
-            self.flush(stream)
-        except FLUSH_ERRORS:
-            return False  # flush() recorded it
-        return True
-
-    def flush(self, stream: Stream) -> str:
-        """Write the rows as the artifact's next version (unchanged rows: nothing).
-
-        One flush of a stream at a time. The rows count as saved only once the write
-        succeeded; a failure is recorded as ``flush_error`` (and traced), then raised."""
-        from clio_agent.gact.streams.persist import write_version  # noqa: PLC0415
-
-        with stream.flush_lock:
-            with stream.lock:
-                if stream.flushed_seq == stream.seq and stream.artifact_id:
-                    return stream.artifact_id
-                rows, columns, seq = list(stream.rows), list(stream.columns), stream.seq
-                stream.flushed_at = time.monotonic()
-            try:
-                artifact_id = write_version(self.app, stream, rows, columns)
-            except FLUSH_ERRORS as exc:
-                _record_flush_error(stream, exc)
-                raise
-            with stream.lock:
-                stream.flushed_seq, stream.flush_error = seq, None
-                stream.artifact_id = artifact_id or stream.artifact_id
-                return stream.artifact_id
-
-
-def _record_flush_error(stream: Stream, exc: BaseException) -> None:
-    """Keep a failed flush on the stream (``describe`` shows it) and trace it."""
-    code = str(getattr(exc, "code", "") or type(exc).__name__)
-    with stream.lock:
-        stream.flush_error = {
-            "reason": STREAM_FLUSH_FAILED,
-            "code": code,
-            "message": str(exc)[:500],
-            "at": _now(),
-        }
-    trace.event(
-        "STREAM",
-        "stream flush failed reason=%s stream=%s name=%s code=%s error=%s",
-        STREAM_FLUSH_FAILED,
-        stream.id,
-        stream.name,
-        code,
-        exc,
-    )
-
-
-def window_max() -> int:
-    """The most rows a stream keeps: as many as one view's table query reads
-    (``artifacts.table_query_max_rows``), since rows past that no view could show."""
-    from clio_agent.gact.routes.artifact_table_query import table_query_max_rows  # noqa: PLC0415
-
-    return max(1, int(table_query_max_rows()))
 
 
 def stream_store(app: Any) -> StreamStore:
@@ -440,11 +483,18 @@ def stream_store(app: Any) -> StreamStore:
 
 
 __all__ = [
+    "JSON_TYPE",
     "NAME_PATTERN",
-    "STREAM_FLUSH_FAILED",
+    "STREAM_KIND",
+    "TEXT_TYPE",
+    "WINDOW_MAX",
+    "WRITER_ENDED",
     "Stream",
     "StreamError",
     "StreamStore",
+    "decode_entry",
+    "encode_entry",
+    "entry_bytes",
+    "stream_namespace",
     "stream_store",
-    "window_max",
 ]
