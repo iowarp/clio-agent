@@ -21,7 +21,7 @@ private format.
 
 The Comments view records CLIO and native-file comments. The History view selects
 immutable versions. The Policy view explains canonical bytes, derived renditions,
-HTML execution policy, and editor isolation.
+and HTML execution policy.
 
 ## Supported profiles
 
@@ -31,8 +31,8 @@ HTML execution policy, and editor isolation.
 | `.pdf` | PDF | PDF.js canvas plus selectable text layer | source artifact, when available |
 | `.tex` | LaTeX | source and derived PDF | agent or native editor |
 | `.html`, `.htm` | static HTML | sanitized, scripts disabled | agent or native editor |
-| `.docx`, `.xlsx`, `.pptx` | OOXML | optional derived PDF | native editor or ONLYOFFICE |
-| `.odt`, `.ods`, `.odp` | OpenDocument | optional derived PDF | native editor or Collabora |
+| `.docx`, `.xlsx`, `.pptx` | OOXML | optional derived PDF | native editor |
+| `.odt`, `.ods`, `.odp` | OpenDocument | optional derived PDF | native editor |
 
 Executable HTML is not a document profile. It moves to Live Web, retaining Live
 Web's untrusted-code consent, network, and provenance boundary. A2UI and MCP Apps
@@ -41,7 +41,7 @@ also remain distinct protocol paths.
 ## Wire and storage
 
 `GET /v1/capabilities` advertises `x_clio_document_artifacts`. The capability
-lists profiles, anchors, editor adapters, immutable history, floating comments,
+lists profiles, anchors, immutable history, floating comments,
 the `@clio` native-comment trigger, and the static-HTML policy.
 
 Important routes:
@@ -58,8 +58,6 @@ Important routes:
 - `POST /v1/artifacts/{id}/working-copies` creates one confined mutable copy. A
   stable save hashes the bytes and either mints a new immutable version or reports
   an explicit head conflict.
-- `/v1/document-working-copies/.../editor-sessions` issues short-lived,
-  working-copy-scoped editor access.
 
 Reviews are append-only JSONL projections under the workspace `.clio` area.
 Working-copy metadata is durable for the Host process and the files remain under
@@ -79,28 +77,14 @@ Document-production skills edit supported semantic parts with `python-docx`,
 before and after archives. If an editor cannot preserve an unknown or unsupported
 part, it must block rather than silently discard it.
 
-## Editor adapters
+## Opening in the desktop application
 
-Native open is the default. CLIO creates a working copy and asks the desktop shell
-to open its exact path in the registered system application. Stable saves
-checkpoint automatically.
-
-ONLYOFFICE is the optional OOXML embedded editor. CLIO serves one working copy to
-Document Server through a scoped token and accepts saved bytes only from the
-configured editor origin. Configure:
-
-- `CLIO_ONLYOFFICE_URL`
-- `CLIO_ONLYOFFICE_JWT_SECRET` when Document Server JWT validation is enabled
-- `CLIO_GACT_PUBLIC_URL`, reachable from the editor container
-
-Collabora is the optional OpenDocument embedded editor. CLIO exposes the minimal
-WOPI host surface for check/get/put and expiring lock, refresh, relock, get-lock,
-and unlock operations. Configure:
-
-- `CLIO_COLLABORA_URL`
-- `CLIO_GACT_PUBLIC_URL`
-
-Editor health is visible at `GET /v1/document-editors/health`. Missing editor or
+Native open is the only editing path in CLIO. CLIO creates a working copy and asks
+the desktop shell to open its exact path in the registered system application.
+Stable saves checkpoint automatically. The embedded ONLYOFFICE and Collabora
+editors this campaign first shipped were removed by the comments and visual
+feedback plan (`docs/design/sdk/comments-and-visual-feedback-plan.md`, ledger
+decision FB4); Office files are shown through their PDF rendition. Missing
 converter prerequisites are an explicit unavailable state; there is no fake
 renderer.
 
@@ -110,9 +94,6 @@ renderer.
 - Reviews are rejected when the selected version/hash is stale.
 - Working-copy paths are generated beneath a confined root.
 - Archive entry count, entry size, total size, and traversal are bounded.
-- Editor tokens are HMAC-signed, short lived, provider scoped, and write aware.
-- Editor callback downloads are restricted to the configured editor origin.
-- Collabora writes require a matching WOPI lock.
 - Static HTML strips active elements client-side and is served with a
   `sandbox; default-src 'none'` CSP.
 - PDF and Office previews are derived artifacts; they never replace native bytes.
@@ -125,14 +106,9 @@ inventory comparison and fail-closed editing are required.
 
 The automated gate covers profile negotiation, static HTML policy, exact-version
 reviews and idempotency, native comments, malformed archives, immutable saves,
-stale conflicts, editor tokens, WOPI locks, and coalesced autosave turns. The web
+stale conflicts, and coalesced autosave turns. The web
 gate covers selection, the floating composer, typed transcript presentation,
 comments, history, policy, production build, and Chromium recording.
-
-Real editor-container acceptance is separate from unit-level WOPI and callback
-coverage and must record the exact container image, CLIO commit, browser, saved
-artifact hashes, screenshots, and video. Do not describe a run as live
-ONLYOFFICE or Collabora acceptance unless those containers were actually used.
 
 The checked-in acceptance bundle at
 `acceptance/document-artifacts/acceptance-report.json` records a real Codex

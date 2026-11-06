@@ -44,7 +44,7 @@ const stepsFile = opt("steps", null);
 const settleMs = Number(opt("settle", 60000));
 // --video: record the whole session as <label>.webm in the shots folder (live updates).
 const video = args.includes("--video");
-// --touch: a touch device (hasTouch, isMobile), so steps can call locator.tap().
+// --touch: a touch device (hasTouch, isMobile), so steps can tap and drag with real touches.
 const touch = args.includes("--touch");
 
 function chromiumPath() {

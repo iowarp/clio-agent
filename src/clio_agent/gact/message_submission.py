@@ -107,6 +107,37 @@ def _effective_model(app: FastAPI, deps: "GactDeps") -> ModelRef:
     )
 
 
+def _model_takes_images(app: FastAPI, selected: ModelRef) -> bool:
+    """Whether ``selected`` may receive image parts: its own live modalities, or the active
+    model's vision when it is the active model (modality_evidence.image_input_capability)."""
+
+    capable, _reason = image_input_capability(app, selected)
+    return capable or (_model_ref_matches_active(selected, app) and _active_lm_supports_vision(app))
+
+
+def request_takes_images(app: FastAPI, session: Session, req: PostMessageRequest) -> bool:
+    """Whether ``req`` may carry image parts, by the test admission applies.
+
+    The model is the message's, else the session's, else the active one (as
+    ``_selected_model`` picks it). Server-built content (a comment session's overview and
+    crops) asks first, so it sends images exactly when admission accepts them and says so
+    in its text otherwise (comments ledger FB24).
+    """
+
+    from clio_agent.gact.providers.config import _active_lm_model_ref  # noqa: PLC0415
+
+    for candidate in (req.model, session.model):
+        if candidate is not None and not _model_ref_is_empty(candidate):
+            return _model_takes_images(app, ModelRef(**_model_ref_dict(candidate)))
+    raw = _active_lm_model_ref(app)
+    active = ModelRef(
+        provider_id=str(raw.get("provider_id", "")),
+        model_id=str(raw.get("model_id", "")),
+        variant=str(raw.get("variant", "")),
+    )
+    return _model_takes_images(app, active)
+
+
 def _selected_model(
     app: FastAPI,
     deps: "GactDeps",
@@ -302,14 +333,12 @@ def _validate_provider_and_payload(
     text = req.extract_text()
     images = req.image_parts()
     resources = req.resource_parts()
-    context_references = [part for part in req.parts if part.type == "context_ref"]
+    context_references = [
+        part for part in req.parts if part.type in {"context_ref", "comment_session"}
+    ]
     # One decision for the selected model (modality_evidence.image_input_capability):
     # known modalities decide, unknown is permitted under a typed reason.
-    selected_image_capable, _image_reason = image_input_capability(app, selected_model)
-    active_image_capable = _model_ref_matches_active(
-        selected_model, app
-    ) and _active_lm_supports_vision(app)
-    if images and not (selected_image_capable or active_image_capable):
+    if images and not _model_takes_images(app, selected_model):
         active_model = deps.active_lm_model_ref(app)
         raise HTTPException(
             status_code=501,
@@ -439,6 +468,7 @@ def prepare_references_sync(
     """
 
     parts = authorize_context_reference_parts_sync(app, session, list(req.parts))
+    parts, comments = _expand_comments(app, session, req, parts)
     text = req.extract_text()
     probe = Message(
         id="",
@@ -450,7 +480,40 @@ def prepare_references_sync(
         parts=_user_message_parts(request_parts=parts, user_text=text),
         metadata={},
     )
-    return PreparedReferences(parts=parts, model_text=_model_text(app, session.id, text, probe))
+    model_text = _model_text(app, session.id, text, probe)
+    return PreparedReferences(
+        parts=parts, model_text=f"{model_text}\n\n{comments}".strip() if comments else model_text
+    )
+
+
+def _expand_comments(
+    app: FastAPI, session: Session, req: PostMessageRequest, parts: list[Part]
+) -> tuple[list[Part], str]:
+    """Render attached comment sessions into image parts and model text, or a typed 422."""
+
+    if not any(part.type == "comment_session" for part in parts):
+        return parts, ""
+    from clio_agent.gact.documents.comment_attachments import (  # noqa: PLC0415
+        CommentAttachmentError,
+        expand_comment_sessions,
+    )
+
+    try:
+        return expand_comment_sessions(
+            app, session, parts, images=request_takes_images(app, session, req)
+        )
+    except CommentAttachmentError as exc:
+        raise HTTPException(
+            status_code=422,
+            detail=ErrorEnvelope(
+                error=ErrorInfo(
+                    error="invalid_comment_session",
+                    message=str(exc),
+                    details={"session_id": session.id},
+                    recoverable=True,
+                )
+            ).model_dump(exclude_none=True),
+        ) from exc
 
 
 async def prepare_references(app: FastAPI, sid: str, req: PostMessageRequest) -> PreparedReferences:

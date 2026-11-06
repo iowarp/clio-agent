@@ -37,7 +37,7 @@ from typing import Any
 from urllib.parse import urlsplit
 
 from clio_agent import paths
-from clio_agent.gact.browser import certificates, failures, install, settings
+from clio_agent.gact.browser import certificates, failures, install, picker, settings
 from clio_agent.gact.browser.driver_loop import driver_loop
 from clio_agent.gact.browser.settings import BrowserError, errors, page_errors
 from clio_agent.runtime import trace
@@ -257,6 +257,7 @@ class BrowserService:
             found = await self._connect(pw, name)
         else:
             found = await self._launch(pw, name, session_id)
+            await picker.install(found.context)  # comments on pages (comments plan, FB17)
         found.context.on("page", lambda page: asyncio.ensure_future(self._adopt(page)))
         self.profiles[name] = found
         return found

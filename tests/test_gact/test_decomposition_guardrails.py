@@ -223,7 +223,21 @@ from clio_agent.gact.app import build_app
 # 435 -> 439: the in-app browser, gact/browser/live.py: GET and POST
 # /v1/sessions/{sid}/browser/pages, POST .../pages/{page_id}/allow-host and
 # POST .../pages/{page_id}/trust-certificate (the live view is a WebSocket route).
-EXPECTED_ROUTE_METHOD_PAIRS = 442  # +3: /v1/streams/{id}, /table-query, /watch
+# 439 -> 431: the embedded ONLYOFFICE and Collabora editors are deleted (comments ledger
+# FB4): editor health, editor sessions, ONLYOFFICE content and callback, and Collabora
+# WOPI file info and contents, GET and POST each.
+# 431 -> 437: comment sessions (comments plan Phase 3), routes/comments.py: GET and POST
+# /v1/workspaces/{wid}/comment-targets, GET /v1/artifacts/{id}/threads, PUT
+# .../comment-drafts, POST /v1/sessions/{sid}/comment-sessions and GET
+# /v1/document-threads/{id}/crop.
+# 437 -> 435: the UI moved onto comment sessions, so GET /v1/artifacts/{id}/reviews and
+# POST /v1/sessions/{sid}/artifact-reviews are deleted (comments plan Phase 4).
+# 435 -> 434: GET /v1/html-renderer is deleted; HTML files open in the shared browser.
+# 434 -> 436: the LaTeX workspace (LaTeX plan), routes/latex.py: GET
+# /v1/artifacts/{id}/latex and GET /v1/artifacts/{id}/latex/locate.
+# 436 -> 439: streams and live sources (taskable run_code plan): GET /v1/streams/{id},
+# /v1/artifacts/{id}/table-query by latest, and the stream watch route.
+EXPECTED_ROUTE_METHOD_PAIRS = 439
 
 # app.py is build_app + lifecycle + re-export shims only. The ceiling is
 # the current size (~2892 lines) plus ~300 lines of headroom so ordinary
@@ -276,7 +290,7 @@ def test_build_app_registers_expected_route_count() -> None:
         ("/v1/sessions/{sid}/legacy-transcript", "GET"),
     } <= set(route_pairs)
     assert ("/v1/infrastructure/models/details", "GET") in route_pairs
-    assert ("/v1/html-renderer", "GET") in route_pairs
+    assert ("/v1/html-renderer", "GET") not in route_pairs
     assert ("/v1/infrastructure/targets/{target_id}/models/{job_id}/remove", "POST") in route_pairs
     assert ("/v1/workspaces/{wid}/ndp-endpoints/{identifier}/request", "POST") in route_pairs
     assert ("/v1/workspaces/{wid}/ndp-endpoints/{identifier}", "PATCH") in route_pairs

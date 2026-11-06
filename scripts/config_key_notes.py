@@ -86,6 +86,12 @@ SECTIONS: list[tuple[str, tuple[str, ...], str]] = [
         "action and page limits, the sandbox and the live view's frames.",
     ),
     (
+        "Comments",
+        ("comments",),
+        "What a comment session sends the agent: how much of the text under each mark an entry "
+        "carries, picked elements' HTML excerpts, text context, and the size of its images.",
+    ),
+    (
         "Web search",
         ("search",),
         "Which backend serves the web_search tool (CLIO's private SearXNG by default, a CLIO Web "
@@ -130,6 +136,16 @@ KEY_NOTES: dict[str, str] = {
     "browser.action_timeout_s": (
         "Seconds one browser action may take; time waiting for your answer to a site question "
         "is not counted."
+    ),
+    "comments.under_mark_chars": (
+        "Characters of what lies under one mark that its entry carries; the rest is written "
+        "to a session file the entry names."
+    ),
+    "comments.html_excerpt_chars": "Characters of a picked element's HTML kept on its comment.",
+    "comments.context_chars": "Characters of text kept before and after a text selection.",
+    "comments.max_image_side": (
+        "Longest side, in pixels, of an overview or crop sent to the agent; larger images are "
+        "scaled down."
     ),
     "browser.max_pages": "Pages open at once across the server; opening one more is refused.",
     "browser.idle_minutes": (

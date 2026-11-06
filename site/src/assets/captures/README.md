@@ -207,3 +207,34 @@ dialog its Allow button opens, and the folders listed in Observability after all
 Nothing is painted or composited. Reproduce with `scripts/cloud/capture_permission_docs.mjs`
 against `bash scripts/cloud/stack.sh start`, with the workspace folder inside
 `CLIO_ALLOWED_ROOTS` and the outside folder not.
+
+## Comments and papers
+
+Real development sessions on the cloud stack (`claude_code` provider, workspace
+`p0-figures`), 5 November 2026, at 1440 x 900 with the canvas maximized, or 390 x 844
+with touch input for the phone captures. The burst-buffer reports, figures and papers
+were written in those sessions from plain requests, from a fictional modelled throughput
+table; they are not measurements. The full record is in
+`docs/design/comments-ledger.md` and `docs/design/latex-and-comments-ledger.md`.
+
+| File | What it shows |
+| --- | --- |
+| `comments/comment-markdown-text-editor.png` | A text comment on a Markdown report, with the controls at the lower right. |
+| `comments/comment-pdf-three-marks.png` | Two text marks and a region on one PDF page, listed together. |
+| `comments/comment-text-on-markdown-sent.png` | The sent comment in the conversation. |
+| `comments/comment-human-note.png` | A comment kept as a note (Send to agent off). |
+| `comments/comment-browser-element-editor.png` | An element picked on a web page in the browser. |
+| `comments/comment-a2ui-map-region.png` | A region over three locations on a map in the conversation. |
+| `comments/comment-phone-touch-region-editor.png` | A region drawn by touch at phone width. |
+| `papers/paper-card-in-reply.png` | The paper's card at the end of CLIO's answer (`sess_b41dc2e302b5`). |
+| `papers/paper-opened.png` | The paper opened full width: outline, source and PDF. |
+| `papers/paper-outline-to-pdf.png` | Background chosen in the outline, outlined on the PDF. |
+| `papers/latex-workspace-source-to-pdf.png` | A source line outlined on the PDF (the IEEE sample paper, `sess_3ac39589848e`). |
+| `papers/latex-paper-pdf-only.png` | The PDF-only view. |
+| `papers/latex-workspace-problems.png` | The build's problems listed (font substitutions). |
+| `papers/paper-venue-checks.png` | An ACM double-blind paper's venue checks: the author's name found at `sections/body.tex` line 2 (`sess_9ccb9f12c1bb`). |
+| `papers/paper-comment-on-pdf.png` | A comment on a phrase of the PDF. |
+| `papers/paper-marks-on-both-panes.png` | Two text marks drawn where they were made: S1 on a source line, S2 on a PDF phrase. |
+| `papers/paper-threads-on-v2.png` | The two comment threads after CLIO's edit and version 2: one moved, one outdated, each with CLIO's reply. |
+| `papers/paper-lineage.png` | The paper's lineage: each source file, the build and the paper. |
+| `papers/latex-workspace-phone.png` | The paper at phone width, with Source, PDF and Outline tabs. |

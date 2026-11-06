@@ -197,6 +197,7 @@ def mint_artifact_outcome(
     # become versions of one another just because their basenames match.
     root = _workspace_root(app, workspace_id)
     if root is not None and path and Path(path).is_absolute() and name == Path(path).name:
+        from clio_agent.gact.artifacts.designation import PROJECT_SOURCE_SUFFIXES  # noqa: PLC0415
         from clio_agent.runtime.sandbox_roots import granted_write_roots
 
         resolved_path = Path(path).expanduser().resolve()
@@ -204,6 +205,12 @@ def mint_artifact_outcome(
             resolved_path.is_relative_to(folder) for folder in granted_write_roots(str(root))
         ):
             name = f"{name} ({resolved_path.parent})"
+        elif (
+            resolved_path.suffix.lower() in PROJECT_SOURCE_SUFFIXES
+            and resolved_path.is_relative_to(root)
+        ):
+            # A document project's files are its paths: sections/intro.tex, not intro.tex.
+            name = resolved_path.relative_to(root).as_posix()
 
     from clio_agent.gact.semantic_events import _event_id  # noqa: PLC0415
 

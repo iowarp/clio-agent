@@ -113,6 +113,10 @@ These resolve through `clio_agent.conf`: a value under the dotted key in `config
 | `CLIO_CODE_NOTIFY_MIN_INTERVAL_S` | `code.notify_min_interval_s` | str | `30.0` | `src/clio_agent/gact/code_task_reporting.py` |
 | `CLIO_CODE_POLL_S` | `code.poll_s` | float | `0.25` | `src/clio_agent/gact/code_mode/tool.py` |
 | `CLIO_CODE_START_TIMEOUT_S` | `code.start_timeout_s` | float | `60.0` | `src/clio_agent/gact/code_mode/kernels.py` |
+| `CLIO_COMMENTS_CONTEXT_CHARS` | `comments.context_chars` | int | `64` | `src/clio_agent/gact/documents/comment_settings.py` |
+| `CLIO_COMMENTS_HTML_EXCERPT_CHARS` | `comments.html_excerpt_chars` | int | `400` | `src/clio_agent/gact/documents/comment_settings.py` |
+| `CLIO_COMMENTS_MAX_IMAGE_SIDE` | `comments.max_image_side` | int | `2048` | `src/clio_agent/gact/documents/comment_settings.py` |
+| `CLIO_COMMENTS_UNDER_MARK_CHARS` | `comments.under_mark_chars` | int | `1200` | `src/clio_agent/gact/documents/comment_settings.py` |
 | `CLIO_COMPACTION_KEEP_HEAD` | `compaction.keep.head` | bool | `true` | `src/clio_agent/gact/compaction_policy.py` |
 | `CLIO_COMPACTION_KEEP_LAST_STEPS` | `compaction.keep.last_steps` | int | `1` | `src/clio_agent/gact/compaction_policy.py` |
 | `CLIO_COMPACTION_KEEP_LAST_TURNS` | `compaction.keep.last_turns` | int | `0` | `src/clio_agent/gact/compaction_policy.py` |
@@ -385,7 +389,6 @@ These deliberately bypass the config store (a shared file must not be able to re
 | `CLIO_BIN_DIR` | unmigrated | `src/clio_agent/gact/infrastructure/native_service_platform.py`, `src/clio_agent/gact/infrastructure/node_models.py` |
 | `CLIO_CODEX_RELEASE_TOKEN` | unmigrated | `src/clio_agent/runtime/codex_windows_helpers.py` |
 | `CLIO_CODEX_VARIANT` | unmigrated | `src/clio_agent/runtime/status.py` |
-| `CLIO_COLLABORA_URL` | unmigrated | `src/clio_agent/gact/documents/editors.py` |
 | `CLIO_CRED_<PROVIDER>_<ACCOUNT>` | secret | `src/clio_agent/providers/credentials.py` |
 | `CLIO_CTE_POOL` | unmigrated | `src/clio_agent/arc/clio_core_indexer.py` |
 | `CLIO_CTE_POOL_BOUND_BY` | unmigrated | `src/clio_agent/arc/clio_core_indexer.py` |
@@ -394,14 +397,12 @@ These deliberately bypass the config store (a shared file must not be able to re
 | `CLIO_DOCUMENT_OFFICE_ROOT` | unmigrated | `src/clio_agent/runtime/document_stack/process.py` |
 | `CLIO_DOCUMENT_SCRATCH` | unmigrated | `src/clio_agent/runtime/document_stack/process.py` |
 | `CLIO_DOCUMENT_SHORT_TEMP` | unmigrated | `src/clio_agent/runtime/document_stack/process.py` |
+| `CLIO_DOCUMENT_TECTONIC` | unmigrated | `src/clio_agent/runtime/tectonic.py` |
 | `CLIO_DOCUMENT_TYPST_FONT` | unmigrated | `src/clio_agent/gact/documents/renditions.py` |
 | `CLIO_ENV_FILE` | bootstrap | `src/clio_agent/config.py` |
 | `CLIO_FROM_SCRATCH` | unmigrated | `src/clio_agent/gact/infrastructure/node_service.py`, `src/clio_agent/gact/infrastructure/reuse.py` |
-| `CLIO_GACT_PUBLIC_URL` | unmigrated | `src/clio_agent/gact/documents/editors.py` |
 | `CLIO_KIT_CACHE_DIR` | unmigrated | `src/clio_agent/runtime/disk_gc.py`, `src/clio_agent/runtime/sandbox_cli.py`, `src/clio_agent/tools/desktop_mcp_runtime.py`, `src/clio_agent/tools/mcp_environment.py` |
 | `CLIO_LM_API_KEY` | secret | `src/clio_agent/config.py`, `src/clio_agent/providers/model_discovery/overlay.py`, `src/clio_agent/runtime/status.py` |
-| `CLIO_ONLYOFFICE_JWT_SECRET` | unmigrated | `src/clio_agent/gact/documents/editors.py` |
-| `CLIO_ONLYOFFICE_URL` | unmigrated | `src/clio_agent/gact/documents/editors.py` |
 | `CLIO_RUNTIME_STATE_DIR` | unmigrated | `src/clio_agent/arc/clio_core_config.py`, `src/clio_agent/arc/clio_core_effective_runtime.py` |
 | `CLIO_SECRET_VARIABLES` | unmigrated | `src/clio_agent/gact/infrastructure/node_service.py` |
 | `CLIO_SEMANTIC_TRACE_BACKEND` | unmigrated | `src/clio_agent/provenance_config.py` |

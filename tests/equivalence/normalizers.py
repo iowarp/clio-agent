@@ -19,6 +19,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any, Iterable, Optional
 
+from clio_agent.gact.highway_writer import DEFERRED_EVENT_TYPES
 from clio_agent.gact.types import Message
 
 # --------------------------------------------------------------------------- #
@@ -209,7 +210,32 @@ def normalize_sse(events: Iterable[Any]) -> list[dict[str, Any]]:
         if not _sse_included(etype):
             continue
         out.append({"type": etype, "payload": _mask(rec["payload"], SSE_MASK_FIELDS)})
-    return out
+    return served_order(out)
+
+
+def served_order(records: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """``records`` with the highway's deferred events moved after the rest, in their order.
+
+    The highway writer (``gact/highway_writer.py``) records ``DEFERRED_EVENT_TYPES`` behind
+    the call and publishes each one when clio-core confirms it, on the writer's thread. Their
+    order among themselves is kept, but their place among the events the turn's thread
+    publishes is not part of the contract (a ``routing.decision`` can reach the stream before
+    or after the turn's ``message.created``). Comparing them as their own ordered stream keeps
+    every event and both orders under test without asserting that interleaving.
+    """
+    turn = [rec for rec in records if not _deferred_highway(rec)]
+    deferred = [rec for rec in records if _deferred_highway(rec)]
+    return turn + deferred
+
+
+def _deferred_highway(rec: dict[str, Any]) -> bool:
+    """Whether an SSE record is a semantic event the highway writer records behind the call."""
+    payload = rec.get("payload")
+    return (
+        rec.get("type") == "semantic.event"
+        and isinstance(payload, dict)
+        and payload.get("event_type") in DEFERRED_EVENT_TYPES
+    )
 
 
 def sse_present_types(events: Iterable[Any]) -> list[str]:

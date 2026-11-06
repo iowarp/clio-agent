@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from pathlib import Path
 from typing import TYPE_CHECKING, Any, Callable, Mapping
 
 from clio_schemas.attention_evidence import AttentionEvidenceInspection
@@ -14,6 +13,7 @@ from clio_agent.gact.command_presentation import legacy_goal_receipt
 from clio_agent.gact.evidence import _bounded_tool_call_result
 from clio_agent.gact.memory.presentation import memory_used_projection
 from clio_agent.gact.protocol.v3 import utcnow_iso
+from clio_agent.gact.protocol.v3.artifact_projection import artifact_entity
 from clio_agent.gact.protocol.v3.tool_outcome import MISSING_EXECUTION_OUTCOME, tool_execution_state
 from clio_agent.gact.reasoning_timing import reasoning_timing
 from clio_agent.gact.summarization_record import legacy_compaction_block
@@ -613,34 +613,11 @@ def subagent_from_part(part: Mapping[str, Any], session_id: str) -> dict[str, An
 def _project_artifact(
     context: _TranscriptProjection, part: Mapping[str, Any], part_id: str
 ) -> None:
-    metadata = _mapping(part.get("metadata"))
-    artifact_id = str(metadata.get("artifact_id") or part.get("uri") or part_id)
-    context.artifacts[artifact_id] = {
-        "id": artifact_id,
-        "session_id": context.session_id,
-        "name": str(part.get("name") or Path(artifact_id).name or "Artifact"),
-        "media_type": str(
-            part.get("mime_type") or part.get("media_type") or "application/octet-stream"
-        ),
-        "uri": str(part.get("uri") or ""),
-        **(
-            {"version": metadata["version"]}
-            if isinstance(metadata.get("version"), int)
-            and not isinstance(metadata["version"], bool)
-            and metadata["version"] > 0
-            else {}
-        ),
-        **({"workspace_id": str(metadata["workspace_id"])} if metadata.get("workspace_id") else {}),
-        **({"fetch_path": str(metadata["fetch_url"])} if metadata.get("fetch_url") else {}),
-        **({"custody": str(metadata["custody"])} if metadata.get("custody") else {}),
-        **({"sha256": str(metadata["sha256"])} if metadata.get("sha256") else {}),
-        **(
-            {"size": int(metadata["size_bytes"])}
-            if isinstance(metadata.get("size_bytes"), int)
-            else {}
-        ),
-        "created_at": str(context.wire.get("created_at") or utcnow_iso()),
-    }
+    created_at = str(context.wire.get("created_at") or utcnow_iso())
+    artifact_id, entity = artifact_entity(
+        part, part_id, session_id=context.session_id, created_at=created_at
+    )
+    context.artifacts[artifact_id] = entity
 
 
 _ENTITY_PROJECTORS: dict[str, _EntityProjector] = {

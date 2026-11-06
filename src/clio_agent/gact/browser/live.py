@@ -32,12 +32,13 @@ import json
 import time
 from collections import deque
 from dataclasses import dataclass, field
+from functools import partial
 from typing import Any
 from urllib.parse import urlsplit
 
 from fastapi import WebSocket
 
-from clio_agent.gact.browser import settings
+from clio_agent.gact.browser import picker, settings
 from clio_agent.gact.browser.settings import BrowserError, page_errors
 from clio_agent.runtime import trace
 
@@ -85,6 +86,8 @@ class _Hub:
     #: The screencast's start while it runs (on the server's loop): a viewer who joins
     #: then waits for it rather than starting a second screencast.
     starting: Any = None
+    #: A start is under way on the browser loop: a second ``_start`` returns at once.
+    beginning: bool = False
 
 
 _HUBS: dict[str, _Hub] = {}
@@ -119,6 +122,13 @@ def _close_viewers(page_id: str) -> None:
         viewer.loop.call_soon_threadsafe(close)
 
 
+def _deliver_controllers(hub: _Hub, item: Any) -> None:
+    """Queue ``item`` for the viewers that send input to the page (the picker's results)."""
+    for viewer in list(hub.viewers):
+        if viewer.controls:
+            _deliver(viewer, item)
+
+
 def _state(service: Any, record: Any, hub: _Hub, viewer: _Viewer) -> dict[str, Any]:
     width, height = hub.viewport
     return {
@@ -149,6 +159,16 @@ def _style(accent: str) -> dict[str, str]:
 async def _start(service: Any, record: Any, hub: _Hub) -> None:
     """Start the screencast and the agent-action annotations (on the browser loop)."""
 
+    if hub.screencast is not None or hub.beginning:  # one screencast per page
+        return
+    hub.beginning = True  # set before the first await: _start runs on the browser loop
+    try:
+        await _begin(service, record, hub)
+    finally:
+        hub.beginning = False
+
+
+async def _begin(service: Any, record: Any, hub: _Hub) -> None:
     def on_frame(frame: dict[str, Any]) -> None:
         size = (int(frame.get("viewportWidth") or 0), int(frame.get("viewportHeight") or 0))
         if size != hub.viewport:
@@ -265,6 +285,8 @@ async def _play(service: Any, record: Any, hub: _Hub, message: dict[str, Any]) -
         return
     if kind == "resize":  # the view's size, not something the person did on the page
         await _resize(service, record, hub, message)
+        return
+    if await picker.handle(record, message, partial(_deliver_controllers, hub)):
         return
     record.person_acted = True
     record.last_person_input = time.monotonic()
@@ -395,14 +417,22 @@ async def _serve(app: Any, websocket: Any, session_id: str, page_id: str) -> Non
     finally:
         hub.viewers.remove(viewer)
         record.viewers -= 1
+        if viewer.controls:  # a pick it started would keep taking the page's clicks
+            await asyncio.wrap_future(svc.submit(picker.stop(record)))
         record.last_used = time.monotonic()
         if hub.viewers and not any(v.controls for v in hub.viewers):
             hub.viewers[0].controls = True  # the next viewer takes over input
             _broadcast_state(svc, record)
         if not hub.viewers:
-            _HUBS.pop(page_id, None)
+            # The hub stays registered until its screencast has stopped, so a viewer that
+            # joins meanwhile (a canvas remount) joins it rather than starting a second
+            # screencast on the page; if one did join, the screencast starts again for it.
             if not record.closed:
                 await asyncio.wrap_future(svc.submit(_stop(hub)))
+            if hub.viewers and not record.closed:
+                await _started(svc, record, hub)
+            elif not hub.viewers and _HUBS.get(page_id) is hub:
+                _HUBS.pop(page_id, None)
 
 
 async def _started(svc: Any, record: Any, hub: _Hub) -> None:
@@ -469,6 +499,9 @@ def _open_for_person(svc: Any, session_id: str, url: str) -> Any:
     (their navigation: its host is granted for the conversation)."""
     for record in svc.session_pages(session_id):
         if record.url().split("#", 1)[0] == url.split("#", 1)[0]:
+            if url.lower().startswith("file:"):  # opened again: show the file as it is now
+                record.last_person_input = time.monotonic()
+                svc.submit(record.page.reload())
             return record
     record = svc.wait(svc.open(session_id, ""))
     record.last_person_input = time.monotonic()
@@ -505,10 +538,34 @@ def register_browser_routes(app: Any) -> None:
     async def browser_open_for_person(session_id: str, body: dict[str, Any]) -> dict[str, Any]:
         """Open a link the person clicked in the conversation, as their own navigation."""
         url = str(body.get("url") or "")
-        if urlsplit(url).scheme.lower() not in ("http", "https"):
-            raise HTTPException(status_code=422, detail="only web links open in the browser")
+        if not url and (body.get("path") or body.get("artifact_id")):
+            from clio_agent.gact.browser.file_pages import url_for  # noqa: PLC0415
+
+            try:  # a workspace file or an artifact's file, opened as a local page
+                url = await asyncio.to_thread(
+                    lambda: url_for(
+                        app,
+                        session_id,
+                        path=str(body.get("path") or ""),
+                        artifact_id=str(body.get("artifact_id") or ""),
+                    )
+                )
+            except ValueError as exc:
+                raise HTTPException(status_code=422, detail=str(exc)) from exc
+        scheme = urlsplit(url).scheme.lower()
+        if scheme not in ("http", "https", "file"):
+            raise HTTPException(status_code=422, detail="only web pages and local files open")
         if app.state.sessions.get(session_id) is None:
             raise HTTPException(status_code=404, detail="session not found")
+        if scheme == "file":
+            from clio_agent.gact.browser.file_pages import refusal  # noqa: PLC0415
+
+            reason = await asyncio.to_thread(refusal, app, session_id, url)
+            if reason:
+                raise HTTPException(
+                    status_code=422,
+                    detail=f"{reason}: the file is outside what this conversation may read",
+                )
         svc = service()
         svc.app = app
         try:

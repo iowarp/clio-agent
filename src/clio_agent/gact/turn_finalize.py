@@ -525,6 +525,9 @@ def publish_finalized_turn(
     from clio_agent.gact.spotter_watcher import on_turn_finalized
 
     publication_step(steps, "spotter", lambda: on_turn_finalized(state.app, state.sid), retry=False)
+    from clio_agent.gact.documents.comment_replies import replies_step
+
+    publication_step(steps, "comment_replies", replies_step(state, assistant_msg), retry=False)
     if state.tools_called:
         from clio_agent.gact.hooks import fire_post_tool_batch
 
@@ -740,6 +743,9 @@ def publish_failed_finalize(
         )
     )
     close_turn_minter(app, sid)  # #1334: after the persist; the thread stops here
+    from clio_agent.gact.documents.comment_replies import on_turn_failed
+
+    on_turn_failed(app, sid, turn_id, assistant_msg)
     try:
         update_retry_attempt(
             "failed",

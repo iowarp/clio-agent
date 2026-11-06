@@ -71,6 +71,11 @@ RESULT_PATH_KEYS: frozenset[str] = frozenset(
     }
 )
 
+#: Source files of a multi-file document project (a LaTeX paper: its sections, bibliography
+#: and local classes). They are tracked like any output, but keyed by their workspace-relative
+#: path: ``sections/intro.tex`` in two papers, or two papers' ``main.tex``, are different files.
+PROJECT_SOURCE_SUFFIXES: frozenset[str] = frozenset({".tex", ".bib", ".sty", ".cls", ".bst"})
+
 ARTIFACT_SUFFIXES: frozenset[str] = frozenset(
     {
         ".png",
@@ -97,6 +102,7 @@ ARTIFACT_SUFFIXES: frozenset[str] = frozenset(
         ".npy",
         ".npz",
         ".xlsx",
+        *PROJECT_SOURCE_SUFFIXES,
     }
 )
 

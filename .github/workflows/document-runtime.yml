@@ -24,6 +24,10 @@ on:
       - "src/clio_agent/gact/artifacts/wire.py"
       - "src/clio_agent/gact/viewed_media.py"
       - "src/clio_agent/gact/builtin_skills/work-with-*/**"
+      - "src/clio_agent/runtime/tectonic.py"
+      - "tests/_tectonic.py"
+      - "tests/test_gact/test_latex_*.py"
+      - "tests/test_gact/test_scientific_documents.py"
       - ".github/workflows/document-runtime.yml"
 
 jobs:
@@ -60,7 +64,7 @@ jobs:
       - uses: astral-sh/setup-uv@v5
       - name: Install Linux OS libraries required by the private renderer
         if: runner.os == 'Linux'
-        run: sudo apt-get update && sudo apt-get install -y libcairo2 libx11-6 libx11-xcb1 libxext6 libxinerama1 libsm6 libice6 libfontconfig1 libcups2 libdbus-1-3 libnss3 libglib2.0-0t64 fonts-liberation
+        run: sudo apt-get update && sudo apt-get install -y libcairo2 libx11-6 libx11-xcb1 libxext6 libxinerama1 libsm6 libice6 libfontconfig1 libcups2 libdbus-1-3 libnss3 libglib2.0-0t64 fonts-liberation poppler-utils
       - name: Prepare the agent environment
         run: uv sync --frozen --python 3.14
       - name: Extract the Windows renderer into managed storage with spaces
@@ -73,6 +77,23 @@ jobs:
         run: uv run --frozen python -m clio_agent.runtime.document_install --workspace document-evidence/workspace
       - name: Verify managed shells, workspace scratch and all four document formats
         run: uv run --frozen python scripts/qualification/document_runtime/verify_install.py document-evidence/workspace
+      - name: Install poppler (PDF page images and word boxes for comments) on macOS
+        if: runner.os == 'macOS'
+        run: brew install poppler
+      - name: Install poppler (PDF page images and word boxes for comments) on Windows
+        if: runner.os == 'Windows'
+        run: choco install poppler -y --no-progress
+      - name: Provision the pinned Tectonic
+        # The tests run with isolated storage and no network for Python, so they are handed the
+        # verified binary this step installs (CLIO_DOCUMENT_TECTONIC), as a person's override is.
+        run: uv run --frozen python -c "import os; from clio_agent.runtime.tectonic import ensure_tectonic; path = ensure_tectonic(); print(path); open(os.environ['GITHUB_ENV'], 'a').write(f'CLIO_DOCUMENT_TECTONIC={path}\n')"
+      - name: Build LaTeX papers with it (live builds, SyncTeX, paper versions)
+        env:
+          # Provisioned above: a live LaTeX test that cannot find Tectonic fails, never skips.
+          CLIO_REQUIRE_TECTONIC: "1"
+        run: |
+          git submodule update --init --depth 1 external/clio-agent-marketplace
+          uv run --frozen --extra dev python -B scripts/run_tests.py tests/test_gact/test_latex_build.py tests/test_gact/test_latex_mapping.py tests/test_gact/test_latex_routes.py tests/test_gact/test_scientific_documents.py tests/test_runtime/test_tectonic_install.py -p no:cacheprovider -q -rs
       - uses: actions/upload-artifact@v4
         if: always()
         with:

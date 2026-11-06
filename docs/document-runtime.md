@@ -61,7 +61,7 @@ the active workspace, under the requested destination or
 `artifacts/document-previews/<source-artifact-id>/` for published PDF previews.
 These directories are visible to the existing `@` picker, which excludes CLIO
 service storage. Managed JavaScript script workspaces also live under `.tmp`.
-Native/embedded editor document copies live under
+Working copies opened in the desktop application live under
 `artifacts/document-working-copies/<working-copy-id>/`; their lease/review
 manifests stay in canonical state. Existing manifests remain readable.
 Backend retention under canonical state is

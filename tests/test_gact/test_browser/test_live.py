@@ -213,6 +213,79 @@ def test_a_link_the_person_opens_is_their_navigation(
     )
 
 
+def test_an_html_file_the_person_opens_loads_as_a_local_page(
+    browser: Any, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Files opens an HTML file in the shared browser by its path, inside the readable roots."""
+    client, app, sid = _client(tmp_path)
+    browser.app = app
+    root = tmp_path / "workspace"
+    root.mkdir()
+    workspace = client.post(
+        "/v1/workspaces", json={"name": "figures", "root_path": str(root)}
+    ).json()
+    sid = client.post(
+        "/v1/sessions", json={"title": "Figures", "workspace_id": workspace["id"]}
+    ).json()["id"]
+    (root / "figs").mkdir()
+    figure = root / "figs" / "scene.html"
+    figure.write_text("<title>Scene</title><p>three</p>")
+    opened = client.post(f"/v1/sessions/{sid}/browser/pages", json={"path": "figs/scene.html"})
+    assert opened.status_code == 200, opened.text
+    record = browser.owned(sid, opened.json()["page"]["id"])
+    for _ in range(100):
+        if record.url() == figure.as_uri():
+            break
+        time.sleep(0.05)
+    assert record.url() == figure.as_uri()
+    figure.write_text("<title>Scene v2</title><p>three</p>")  # the file changed on disk
+    again = client.post(f"/v1/sessions/{sid}/browser/pages", json={"path": "figs/scene.html"})
+    assert again.json()["page"]["id"] == record.id  # the same tab, reloaded
+    for _ in range(100):
+        if record.title == "Scene v2":
+            break
+        time.sleep(0.05)
+    assert record.title == "Scene v2"
+    missing = client.post(f"/v1/sessions/{sid}/browser/pages", json={"path": "figs/none.html"})
+    assert missing.status_code == 422 and "browser_file_missing" in missing.text
+
+
+def test_a_view_remounted_at_once_keeps_its_frames(
+    browser: Any, site: dict[str, Any], tmp_path: Path
+) -> None:
+    """Maximizing the canvas closes the live view and opens it again straight away."""
+    client, _app, sid = _client(tmp_path)
+    record = browser.wait(browser.open(sid, "Shared"))
+    browser.run(record, "goto", lambda r: r.page.goto(site["a"] + "/frames"))
+    url = f"/v1/sessions/{sid}/browser/{record.id}/live"
+    for _ in range(4):
+        with client.websocket_connect(url, subprotocols=["clio.browser.v1"]) as socket:
+            first = _until_state(socket, lambda s: s["type"] == "state")
+            frame, _viewport = _frame_and_viewport(socket, first)
+            assert frame[:2] == b"\xff\xd8"
+
+
+def test_two_views_joining_at_once_share_one_screencast(
+    browser: Any, site: dict[str, Any], tmp_path: Path
+) -> None:
+    """Two viewers joining an idle page together start one screencast between them."""
+    import asyncio
+
+    from clio_agent.gact.browser import live
+
+    _client_, _app, sid = _client(tmp_path)
+    record = browser.wait(browser.open(sid, "Shared"))
+    browser.run(record, "goto", lambda r: r.page.goto(site["a"] + "/frames"))
+    hub = live._Hub(record.id)
+
+    async def both() -> None:
+        await asyncio.gather(live._start(browser, record, hub), live._start(browser, record, hub))
+
+    browser.wait(both())  # the second start used to fail: "Screencast is already started"
+    assert hub.screencast is not None and hub.last_frame
+    browser.wait(live._stop(hub))
+
+
 class _Socket:
     """Records what is sent; a send yields, so two writers would interleave."""
 
