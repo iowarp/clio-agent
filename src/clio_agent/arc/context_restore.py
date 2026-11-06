@@ -106,8 +106,9 @@ def restore_folded_context(
         raise ValueError("Recovery segments belong to another session or scope")
     if not segments:
         return False
-    state = store._session(session_id)
-    with state.lock:
+    from clio_agent.arc.fold_sessions import live_session
+
+    with live_session(lambda: store._session(session_id)) as state:
         if scope in state.index.scopes:
             return False
         store._recover_clock(segments)

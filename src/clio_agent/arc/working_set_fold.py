@@ -39,7 +39,6 @@ from __future__ import annotations
 
 import logging
 import threading
-from dataclasses import dataclass, field
 from typing import Any, Callable
 
 import msgspec
@@ -53,9 +52,9 @@ from clio_agent.arc.context_view import (
     ViewSnapshot,
     fold_atoms,
 )
+from clio_agent.arc.fold_sessions import FoldSession, live_session, retire
 from clio_agent.arc.lane_index import (
     WS_CONTENT_FAMILY,
-    SessionIndex,
     chunks_holding,
     is_ws_content_scope,
     set_anchor,
@@ -179,15 +178,6 @@ def make_segment_store(
     return FoldingSegmentStore(store, search_indexed=predicate)
 
 
-@dataclass
-class _Session:
-    """One session's index and views (in memory, re-derivable from clio-core)."""
-
-    index: SessionIndex
-    lock: threading.RLock = field(default_factory=threading.RLock)
-    views: dict[str, ContextView] = field(default_factory=dict)
-
-
 class FoldingSegmentStore(LaneWriter, ContextSearch, SegmentStore):
     """A :class:`SegmentStore` whose working set is a fold of the canonical log.
 
@@ -206,7 +196,7 @@ class FoldingSegmentStore(LaneWriter, ContextSearch, SegmentStore):
         """
         super().__init__(store, search_indexed=search_indexed)
         self._search = SearchCompanion(store, self._record_name)
-        self._sessions: dict[str, _Session] = {}
+        self._sessions: dict[str, FoldSession] = {}
         self._sessions_lock = threading.Lock()
 
     # ---- scope routing -------------------------------------------------
@@ -219,7 +209,7 @@ class FoldingSegmentStore(LaneWriter, ContextSearch, SegmentStore):
 
     # ---- session index + views -----------------------------------------
 
-    def _session(self, session_id: str) -> _Session:
+    def _session(self, session_id: str) -> FoldSession:
         """The session's index (read, or migrated once) and views, loaded once."""
         with self._sessions_lock:
             state = self._sessions.get(session_id)
@@ -231,7 +221,7 @@ class FoldingSegmentStore(LaneWriter, ContextSearch, SegmentStore):
                 state = self._sessions.get(session_id)
             if state is not None:
                 return state
-            state = _Session(index=load_or_migrate(self, session_id))
+            state = FoldSession(index=load_or_migrate(self, session_id))
             with self._sessions_lock:
                 return self._sessions.setdefault(session_id, state)
 
@@ -580,8 +570,7 @@ class FoldingSegmentStore(LaneWriter, ContextSearch, SegmentStore):
             min_order=view.min_order,
             max_order=view.max_order,
         )
-        state = self._session(session_id)
-        with state.lock:
+        with live_session(lambda: self._session(session_id)) as state:
             set_anchor(state.index, view.scope, anchor)
             self._put_index(session_id, state.index)
         view.move_anchor(anchor)
@@ -790,11 +779,12 @@ class FoldingSegmentStore(LaneWriter, ContextSearch, SegmentStore):
     def clear(self) -> None:
         """Drop all in-memory scope state, indexes and views."""
         with self._sessions_lock:
-            self._sessions.clear()
+            session_ids = list(self._sessions)
+        for session_id in session_ids:
+            retire(self._sessions, self._sessions_lock, session_id)  # after in-flight puts
         self._search.clear()
         super().clear()
 
     def _forget(self, session_id: str) -> None:
-        with self._sessions_lock:
-            self._sessions.pop(session_id, None)
+        retire(self._sessions, self._sessions_lock, session_id)  # after any in-flight put
         self._search.forget(session_id)

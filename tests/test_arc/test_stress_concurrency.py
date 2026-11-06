@@ -702,12 +702,10 @@ def test_release_churn_never_splits_a_scope_lock(tmp_path):
 def test_fold_writers_racing_release_do_not_deadlock_and_leave_no_locks(tmp_path, monkeypatch):
     """Working-set writers hold a partition writer lock, then lane chunk locks (chunks
     roll every two atoms), and a renderer builds views from chunk locks, while other
-    threads release and clear: no deadlock, and once the session is released no scope,
-    writer or index-loader lock is left for it.
-
-    What the writers read back is NOT asserted: a release that forgets the session
-    index while a fold write is in flight can leave the stored index without that
-    write's chunk -- a separate fold race, reproduced unchanged before this fix."""
+    threads release and clear: no deadlock, every message written reads back after a
+    fresh load (a release racing a write once lost that write's chunk from the stored
+    index: ``arc.fold_sessions``), and once the session is released no scope, writer or
+    index-loader lock is left for it."""
     import time
 
     from clio_agent.arc.working_set_fold import make_segment_store
@@ -716,11 +714,14 @@ def test_fold_writers_racing_release_do_not_deadlock_and_leave_no_locks(tmp_path
     ss = make_segment_store(_cte_backend(), working_set_fold=True)
     sessions = ["fold-a", "fold-b"]
     stop = threading.Event()
+    written: dict[tuple[str, str], list[str]] = {}
 
     def writer(sess: str, scope: str) -> None:
         i = 0
+        texts = written.setdefault((sess, scope), [])
         while not stop.is_set():
             ss.append(sess, scope, "thought", {"text": f"{sess}-{scope}-{i}"}, step=i)
+            texts.append(f"{sess}-{scope}-{i}")
             ss.render(sess, scope)
             i += 1
 
@@ -742,6 +743,11 @@ def test_fold_writers_racing_release_do_not_deadlock_and_leave_no_locks(tmp_path
         for f in futs:
             f.result(timeout=30)
 
+    for sess in sessions:
+        ss.release(sess)  # the next reads load the stored index and chunks afresh
+    for (sess, scope), texts in written.items():
+        read = [s.content["text"] for s in ss.list_segments(sess, scope)]
+        assert read == texts, f"{sess}/{scope}: {len(texts) - len(read)} lost"
     for sess in sessions:
         ss.render(sess, "agentA")
         assert ss._scope_locks.keys(sess)  # cached again: its chunk locks stay
