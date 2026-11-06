@@ -17,9 +17,10 @@ SPEC §6.7 third-party MCP server surface the gact-tui MCP browser and the
 * ``POST /v1/mcp/servers/{sid}/reconnect`` -- re-probe a previously-installed
   server's stored transport spec (progress-bounded; non-destructive).
 * ``GET /v1/mcp/servers/{sid}`` -- detail row for one server.
-* ``GET /v1/mcp/servers/{sid}/(tools|resources|prompts)`` and ``POST .../prompts/get``
-  -- detail enumeration plus protocol prompt fetches (bundled via the in-process
-  gateway, external via a short-lived ``fastmcp.Client`` connection).
+* ``GET /v1/mcp/servers/{sid}/(tools|resources)`` -- detail enumeration (bundled via
+  the in-process gateway, external via a short-lived ``fastmcp.Client`` connection).
+  A server's prompts are ``/mcp__<server>__<prompt>`` commands over the agent's own
+  connection (``gact/mcp_prompt_commands.py``), not routes here.
 
 Handlers close over ``app`` and read/write the live third-party registry via
 ``app.state.external_mcp_servers``. The permission gate / tool observer use the

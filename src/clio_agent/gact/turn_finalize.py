@@ -261,7 +261,7 @@ def finalize_turn(
 
     state.assistant_metadata = {}
     if state.turn_agent_id:
-        state.assistant_metadata["agent_override"] = {
+        state.assistant_metadata["turn_agent"] = {
             "requested_agent_id": state.turn_agent_id,
             "session_agent_id": _session_agent_id(state.sess),
             "effective_agent_id": state.selected_agent or state.turn_agent_id,

@@ -8,7 +8,7 @@ const UI = process.env.CLIO_UI_URL || "http://127.0.0.1:5173";
 async function collapseSidebar(page) {
   // The sidebar lists the workspaces; its toggle sits in the conversation header.
   if (await page.getByText("Workspaces", { exact: true }).first().isVisible().catch(() => false)) {
-    await page.getByRole("button", { name: "Toggle Sidebar" }).first().click().catch(() => {});
+    await page.locator('[data-sidebar="trigger"]').first().click().catch(() => {});
     await page.waitForTimeout(600);
   }
 }

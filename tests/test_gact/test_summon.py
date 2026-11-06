@@ -178,6 +178,7 @@ def test_two_summoned_subagents_start_as_the_persons_children(market: Path) -> N
         )
         for role, handle in zip(("explore", "review"), handles, strict=True):
             assert f"The person started {role} as task {handle} on this message." in parent
+        assert "its report arrives as that task's result" in parent
         for child in children:
             # The task is the text without the summon tokens.
             assert _wait(lambda child=child: _task_of(c, child.id), "the child's task") == (
@@ -318,3 +319,13 @@ def test_a_summoned_message_projects_its_chips_and_children() -> None:
     assert row["metadata"]["summons"] == {"subagents": ["explore"], "servers": [], "failed": []}
     assert row["metadata"]["loaded_skill"] == "run-a-study"
     assert "task_abc" not in str(row)
+
+
+def test_a_handle_list_written_as_one_json_string_is_read_as_the_list() -> None:
+    """Live N12: a model passed wait_tasks its two handles as one JSON string."""
+
+    from clio_agent.gact.task_operations import _handles
+
+    assert _handles('["task_a", "task_b"]') == ("task_a", "task_b")
+    assert _handles("task_a") == ("task_a",)
+    assert _handles(["task_a", "task_a"]) == ("task_a",)

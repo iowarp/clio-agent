@@ -82,10 +82,17 @@ class Summons:
     def model_lines(self) -> str:
         """One line per child for the agent's own turn."""
 
-        return "\n".join(
+        lines = [
             f"The person started {child.role} as task {child.handle} on this message."
             for child in self.children
-        )
+        ]
+        if lines:
+            # What the state means: who has the work, and where its report arrives.
+            lines.append(
+                "Each was given this message's text and is working on it now; its report "
+                "arrives as that task's result, like a child you start yourself."
+            )
+        return "\n".join(lines)
 
     def metadata(self) -> dict[str, Any]:
         return {
