@@ -11,8 +11,8 @@ from clio_agent.providers import argonne_auth
 
 
 class _FakeAuthParams:
-    def __init__(self, session_required_single_domain: Any = None) -> None:
-        self.session_required_single_domain = session_required_single_domain
+    def __init__(self, session_required_policies: Any = None) -> None:
+        self.session_required_policies = session_required_policies
 
 
 class _FakeGare:
@@ -148,6 +148,9 @@ def test_interactive_get_access_token_drives_login(fake_globus) -> None:
     assert token == "fresh-token"
     assert _FakeUserApp.instances, "a UserApp should have been built"
     assert any(app.login_calls for app in _FakeUserApp.instances)
+    params = [p for app in _FakeUserApp.instances for p in app.login_calls]
+    # The ALCF policy alone: Globus refuses a second session_required_* parameter.
+    assert all(p.session_required_policies == argonne_auth.ALCF_SESSION_POLICIES for p in params)
 
 
 def test_check_auth_status_never_logs_in(fake_globus, monkeypatch) -> None:
@@ -238,7 +241,9 @@ def test_browser_auth_flow_exchanges_code_and_stores_tokens_on_agent(monkeypatch
     client = _NativeClient.instances[-1]
     assert client.start_kwargs["requested_scopes"] == [argonne_auth.GATEWAY_SCOPE, "openid"]
     assert client.start_kwargs["refresh_tokens"] is True
-    assert client.url_kwargs["session_required_single_domain"] == argonne_auth.ALLOWED_DOMAINS
+    # Globus refuses more than one session_required_* parameter (BAD_REQUEST).
+    assert client.url_kwargs["session_required_policies"] == argonne_auth.ALCF_SESSION_POLICIES
+    assert "session_required_single_domain" not in client.url_kwargs
     assert "prompt" not in client.url_kwargs
 
     argonne_auth.complete_authentication(pending.flow_id, "  one-time-code  ")

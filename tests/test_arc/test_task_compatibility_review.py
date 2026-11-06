@@ -286,7 +286,9 @@ async def test_transcript_injection_matches_the_committed_rendered_delegation(
             assert isinstance(rendered, dict)
             assert emitted == [rendered["text"]]
             assert emitted[0].startswith("Critique the original research")
-            assert "get_task_result" in emitted[0] and "cursor" in emitted[0]
+            # The delegation names the handle to read; no paging cursor (#1844).
+            assert '"tool": "get_task_result", "arguments": {"handle":' in emitted[0]
+            assert "cursor" not in emitted[0]
         finally:
             context.reset(token)
 

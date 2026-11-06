@@ -96,7 +96,7 @@ async def quiesce_gather(
                     if uncertain
                     else str(terminal.get("status") or "cleanup_uncertain"),
                     "cleanup_outcome": outcomes,
-                    **({"together": call.together} if call.together else {}),
+                    **call.group(),
                 },
             )
         except Exception:

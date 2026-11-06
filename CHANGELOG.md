@@ -6,6 +6,17 @@ TUI/HTTP surface aren't tracked here.
 
 ## Unreleased
 
+### Added
+
+- The workspace file viewer opens HDF5 files: `GET /v1/workspaces/{wid}/h5grove/`
+  `meta`, `attr`, `data`, `stats` and `paths` serve h5grove's API from clio-agent
+  itself (new dependency `h5grove`), advertised as `x_clio_hdf5_viewer`. Files
+  resolve as `/files/read` does, without its whole-file size cap; each slice is
+  bounded instead (`413 hdf5_selection_too_large`). External links, soft links and
+  virtual datasets are followed only into the workspace
+  (`403 hdf5_link_outside_workspace`, `hdf5_virtual_source_outside_workspace`)
+  (#1834).
+
 ### Changed
 
 - `max_concurrency` caps how many of a workflow's steps are in flight
@@ -14,6 +25,33 @@ TUI/HTTP surface aren't tracked here.
   `step_timeout`. A deadline on a tool target stalls `timeout_requires_task`.
   Merged `workflow_state` follows definition order, with
   `workflow_state_conflict` rows when two steps set the same key differently.
+- `get_task_result` returns a result too big to inline as a file: `result` is
+  `null`, `result_file` gives its path, size, media type and typed `reason`, and
+  `result_excerpt` its beginning. The bound is
+  `limits.agent_task_output_digest_chars`. Version-1 `next_cursor` values still
+  read their pages; no new cursors are issued (#1844).
+- One workspace per folder: creating a workspace on a folder another workspace
+  pins, or moving one onto it, answers `409 workspace_root_conflict` naming that
+  workspace. A rename that resends the current folder never does (#1771).
+- A workspace root with a control or invisible format character is a
+  `400 invalid_request`, the same as a root that cannot be created; POST trims
+  surrounding whitespace from `root_path` (#1804).
+- A mid-stream reload shows a streamed part only once `message.part.added` has
+  announced it (#1772).
+
+### Fixed
+
+- An unreadable stored transcript answers `503 messages_unavailable` with a
+  `cause` (`storage_unreachable`, retryable; `transcript_corrupt`, not) on both the
+  full and paged message reads, instead of a 500 (#1805).
+- ALCF sign-in links open: the Globus request carries only the ALCF session
+  policy. A signed-out provider's empty model list says why (#1885).
+- A workspace's `mcp.yaml` is read from the workspace root, not the folder the
+  server was launched from (#1803).
+- An expert whose task inputs match nothing it was offered is refused with
+  reason `expert_inputs_unmappable` (#1812).
+- Flow runs record and report their concurrency bounds (#1903); one-line MCP
+  commands on Windows keep their backslashes (#1904).
 
 ## [0.9.5.1] - 2026-10-28
 

@@ -19,11 +19,13 @@ from clio_agent.gact.infrastructure.controller_source import (
     controller_commit,
     deployment_version,
 )
+from clio_agent.gact.infrastructure.gpu_devices import LAUNCH_ACTIONS, check_gpu_devices
 from clio_agent.gact.infrastructure.gpu_share import share_launch
 from clio_agent.gact.infrastructure.model_instances import (
     ROUTER_SERVICE,
     engine_of,
     instance_label,
+    instance_name,
     is_named_instance,
     validate_service_id,
 )
@@ -228,18 +230,29 @@ def service_definitions(
             )
         ],
     )
-    named: list[ManagedServiceDefinition] = []
+    named: dict[str, list[ManagedServiceDefinition]] = {}
     for service_id in dict.fromkeys(instances):
         if is_named_instance(service_id) and engine_of(service_id) in MODEL_RUNTIME_SERVICES:
             engine = model_runtime_definition(engine_of(service_id), facts)
-            label = instance_label(engine.label, service_id)
-            named.append(engine.model_copy(update={"id": service_id, "label": label}))
+            named.setdefault(engine.id, []).append(
+                engine.model_copy(
+                    update={
+                        "id": service_id,
+                        "label": instance_label(engine.label, service_id),
+                        "supports_instances": False,
+                        "instance_of": engine.id,
+                        "instance_name": instance_name(service_id),
+                    }
+                )
+            )
     return [
         model_runtime_definition("vllm", facts),
-        *named,
+        *named.get("vllm", []),
         router_definition(facts),
         model_runtime_definition("llama_cpp", facts),
+        *named.get("llama_cpp", []),
         model_runtime_definition("ollama", facts),
+        *named.get("ollama", []),
         *monitoring_definitions(facts),
         web_search_definition(facts),
         searxng_definition(facts),
@@ -324,7 +337,11 @@ def build_driver_plan(
         # The model-runtime driver checks its own compatibility, so a missing
         # container runtime surfaces as the typed RuntimeUnavailableError. The
         # context is sized around it (context_sizing.deployment), and a vLLM
-        # GPU share is its memory utilization (gpu_share).
+        # GPU share is its memory utilization (gpu_share). A GPU pin must name
+        # this host's GPUs (gpu_devices), checked against the facts just probed.
+        if action in LAUNCH_ACTIONS:
+            check_gpu_devices(engine, configuration, facts.gpus)
+
         def model_plan(sized: dict[str, str]) -> DriverPlan:
             return build_model_runtime_plan(
                 service_id=service_id,

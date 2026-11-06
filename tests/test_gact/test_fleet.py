@@ -393,3 +393,60 @@ def test_a_childs_task_row_and_live_event_carry_its_model_choice(tmp_path: Path)
         finally:
             _ctx.reset(token)
         assert projected["payload"]["model_choice"] == choice
+
+
+def test_saved_custom_servers_are_fleet_accounts(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Each saved custom vLLM server is its own account, its models refs on it."""
+    from fastapi.testclient import TestClient
+
+    from clio_agent.gact import local_server_store as store
+    from clio_agent.gact.app import build_app
+
+    monkeypatch.setattr(store, "user_config_path", lambda: tmp_path / "config.yaml")
+    agent = store.add_server(address="http://gpu-a:8000", label="vLLM agent")
+    spotter = store.add_server(address="http://gpu-b:8001/v1", label="vLLM spotter")
+    served = {agent.address: ["Qwen3-32B"], spotter.address: ["Qwen3-8B"]}
+    probed: list[tuple[str, str]] = []
+
+    async def _discover(preset: Any, *, refresh: bool = False) -> dict[str, Any]:
+        probed.append((preset.id, preset.api_base))
+        models = served.get(preset.api_base) if preset.id.startswith("server-") else None
+        return {
+            "id": preset.id,
+            "name": preset.label,
+            "kind": preset.provider,
+            "endpoint": preset.api_base,
+            "auth": "not_required" if models is not None else "missing",
+            "health": "ready" if models is not None else "unavailable",
+            "models": [_model(model_id) for model_id in models or []],
+        }
+
+    monkeypatch.setattr("clio_agent.gact.provider_catalog_snapshot.discover_provider", _discover)
+    app = build_app(sessions_path=tmp_path / "sessions.json")
+    with TestClient(app) as client:
+        fleet = client.get("/v1/fleet").json()
+        accounts = {row["id"]: row for row in fleet["accounts"]}
+        assert set(accounts) == {"server-vllm-agent", "server-vllm-spotter"}
+        assert accounts["server-vllm-spotter"]["endpoint"] == "http://gpu-b:8001/v1"
+        assert accounts["server-vllm-spotter"]["billing"] == "free"
+        assert accounts["server-vllm-spotter"]["delegation_allowed"] is True
+        assert {row["ref"] for row in fleet["entries"]} == {
+            "server-vllm-agent/Qwen3-32B",
+            "server-vllm-spotter/Qwen3-8B",
+        }
+        assert ("server-vllm-spotter", "http://gpu-b:8001/v1") in probed
+
+        # A server forgotten since the snapshot was read leaves the fleet on the next read.
+        store.remove_server(agent.id)
+        probed.clear()
+        fleet = client.get("/v1/fleet").json()
+        assert [row["id"] for row in fleet["accounts"]] == ["server-vllm-spotter"]
+        assert probed == []
+        # One added since is discovered on its own.
+        served["http://gpu-c:8002/v1"] = ["Llama-4"]
+        store.add_server(address="http://gpu-c:8002", label="vLLM spare")
+        fleet = client.get("/v1/fleet").json()
+        assert probed == [("server-vllm-spare", "http://gpu-c:8002/v1")]
+        assert "server-vllm-spare/Llama-4" in {row["ref"] for row in fleet["entries"]}

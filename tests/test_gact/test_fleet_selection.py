@@ -151,3 +151,28 @@ def test_an_inherited_model_the_fleet_does_not_list_keeps_running_and_says_so() 
     choice = _choose(inherited={"provider_id": "lm_studio", "model_id": "local"})
     assert choice.ran == {"provider_id": "lm_studio", "model_id": "local"}
     assert choice.reasons and "inherited model not checked: model_unknown" in choice.reasons[0]
+
+
+def test_a_model_the_person_picked_is_recorded_as_theirs() -> None:
+    choice = choose_model(
+        FLEET,
+        explicit="haiku",
+        prefers_chain=[],
+        requires=Requires(),
+        attribution={},
+        inherited=PARENT,
+        explicit_source="person",
+    )
+    assert choice.source == "person" and choice.asked == "haiku"
+    assert choice.ran == {"provider_id": "claude_code", "model_id": "claude-haiku-5-5"}
+    with pytest.raises(ModelSelectionRefused) as refused:
+        choose_model(
+            FLEET,
+            explicit="nope",
+            prefers_chain=[],
+            requires=Requires(),
+            attribution={},
+            inherited=PARENT,
+            explicit_source="person",
+        )
+    assert refused.value.code == "model_unknown"

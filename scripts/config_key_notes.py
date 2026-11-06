@@ -444,8 +444,8 @@ KEY_NOTES: dict[str, str] = {
         "browse more of a large workspace at a glance."
     ),
     "gact.context_references.max_hashable_bytes": (
-        "Byte ceiling on a workspace file that may be attached as a context reference; admission "
-        "digests the whole file, so a larger one is refused with a typed context_ref_too_large."
+        "Largest workspace file a context reference pins by sha256 digest (which reads every "
+        "byte); a larger file is pinned by its stat revision (mtime + size) instead."
     ),
     "gact.context_references.search_limit": (
         "Total rows one reference search returns for a typed query; raise for very large "
@@ -612,8 +612,9 @@ KEY_NOTES: dict[str, str] = {
     "limits.agent_task_output_digest_chars": (
         "Character bound above which a completed spawned child's full output is digested "
         "(excerpt + a durable session/message reference) instead of inlined verbatim into the "
-        "parent's wait_agent_tasks result; raise to inline larger child answers, lower to bound "
-        "coordinator context growth sooner."
+        "parent's wait_agent_tasks result, and above which get_task_result saves a result to "
+        "a file in the session's spill folder instead of returning it whole; raise to inline "
+        "larger child answers, lower to bound coordinator context growth sooner."
     ),
     "limits.context_inline_bytes": (
         "Byte cap per attached file inlined into context injection; raise to inline larger "
@@ -1257,10 +1258,6 @@ KEY_NOTES: dict[str, str] = {
         "Start a session's MCP servers (its plugins' and any always-load service) in the "
         "background when the session is created or opened or its agent changes, so the first "
         "message does not wait for them; set false to start servers only when a turn needs them."
-    ),
-    "tools.mcp.turn_prepare_grace_s": (
-        "Seconds a turn waits for its agent's MCP servers that are still preparing; after it the "
-        "turn goes on and their tools join when ready (the agent can call wait_for_tools)."
     ),
     "tools.mcp.spawn_diet": (
         "Enables the learned direct-interpreter spawn shortcut for clio-kit servers (skips ~90MB "

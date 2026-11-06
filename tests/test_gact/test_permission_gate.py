@@ -374,7 +374,9 @@ def test_declared_mcp_mutation_blocks_before_transport_until_ui_resolution(
         thread = threading.Thread(target=call_tool)
         thread.start()
         try:
-            deadline = time.monotonic() + 2.0
+            # The loop ends as soon as the request is published; the bound only has to
+            # outlast a loaded CI worker under coverage, where 2s was not enough.
+            deadline = time.monotonic() + 30.0
             published = None
             while time.monotonic() < deadline:
                 published = next(
@@ -413,13 +415,17 @@ def test_declared_mcp_mutation_blocks_before_transport_until_ui_resolution(
         finally:
             try:
                 stopping.set()
-                for row in tuple(app.state.permissions.values()):
-                    if (
-                        row["status"] == "pending"
-                        and row["tool_call"]["tool_name"] == "relay_jarvis_run"
-                    ):
-                        client.post(f"/v1/permissions/{row['id']}", json={"action": "deny"})
-                thread.join(timeout=30.0)  # under coverage the allowed call can take seconds
+                # Deny until the call returns: a request published after one sweep (a late
+                # gate under load) would otherwise leave the thread in its permission wait.
+                deadline = time.monotonic() + 30.0  # under coverage the call can take seconds
+                while thread.is_alive() and time.monotonic() < deadline:
+                    for row in tuple(app.state.permissions.values()):
+                        if (
+                            row["status"] == "pending"
+                            and row["tool_call"]["tool_name"] == "relay_jarvis_run"
+                        ):
+                            client.post(f"/v1/permissions/{row['id']}", json={"action": "deny"})
+                    thread.join(timeout=0.2)
                 assert not thread.is_alive(), "".join(
                     traceback.format_stack(sys._current_frames().get(thread.ident or -1))
                 )

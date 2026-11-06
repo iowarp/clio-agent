@@ -40,10 +40,13 @@ def test_parent_activity_coalesces_only_uncommitted_core_mail(
         wake_on_parent_activity(
             app, parent, tool_name="fs_read_file", result={"paths": [str(index)]}
         )
+    # At most the wake under review plus one next wake, and no event lost, in order.
     pending = app.state.task_history.pending_mail(child)
-    assert len(pending) == 1 and pending[0].revision == 5
-    assert pending[0].kind == "spotter" and pending[0].sender_session == parent
-    assert app.state.task_history.read_content(pending[0].content)["text"] == _WAKE_COALESCED_TEXT
+    assert 1 <= len(pending) <= 2
+    assert all(item.kind == "spotter" and item.sender_session == parent for item in pending)
+    read = app.state.task_history.read_content
+    lines = [line for item in pending for line in read(item.content)["text"].split("\n")]
+    assert len(lines) == 5 and all("fs_read_file completed" in line for line in lines)
     assert pending[0].id not in app.state.task_history.acknowledged_notifications(child)
     assert app.state.task_history.pending_mail(parent) == ()
 
@@ -279,3 +282,201 @@ def test_no_wake_form_carries_a_directive(text: str) -> None:
 
     lowered = text.lower()
     assert not any(fragment in lowered for fragment in _FORBIDDEN_DIRECTIVE_FRAGMENTS), text
+
+
+def _watcher_reads_parent(app: Any, child: str, parent: str) -> bool:
+    from clio_agent.gact.routes.session_recall import _recall_tool_policy
+    from clio_agent.gact.task_access import TaskAccess
+
+    access = TaskAccess(app.state.task_history, app.state.conversations.caller(child))
+    in_candidates = parent in access.session_candidates("read")
+    policy = _recall_tool_policy(app, session_id=child, target_session_id=parent, body={})
+    assert policy["allowed"] is in_candidates
+    return in_candidates
+
+
+def test_arming_grants_the_watcher_read_on_its_parent_and_disarm_revokes_it(
+    watcher_world: tuple[Any, str, str],
+) -> None:
+    from clio_agent.gact.spotter_watcher import ensure_spotter_watcher
+
+    app, parent, child = watcher_world
+    assert not _watcher_reads_parent(app, child, parent)
+    session = app.state.sessions.get(parent)
+    task = ensure_spotter_watcher(app, session)
+    assert task is not None and task.owner.session_id == child
+    ensure_spotter_watcher(app, session)  # idempotent: one grant, no rewrite
+    grants = [
+        grant
+        for grant in app.state.task_history.coordination_grants(child)
+        if grant.id.startswith("spotter-read:")
+    ]
+    assert [(g.id, g.target_session, g.rights) for g in grants] == [
+        ("spotter-read:" + task.handle, parent, ("read", "observe"))
+    ]
+    assert grants[0].granting_human == task.owner.human_id and grants[0].revoked_at is None
+    assert _watcher_reads_parent(app, child, parent)
+
+    disarm_spotter_watcher(app, session)
+    [revoked] = [
+        grant
+        for grant in app.state.task_history.coordination_grants(child)
+        if grant.id == "spotter-read:" + task.handle
+    ]
+    assert revoked.revoked_at is not None
+    assert not _watcher_reads_parent(app, child, parent)
+
+
+def test_watcher_model_is_the_sessions_choice_then_the_default_then_inherited(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from types import SimpleNamespace
+
+    from clio_agent import conf
+    from clio_agent.gact.fleet.spotter_model import is_person_choice, watcher_model_ref
+
+    def session(**metadata: Any) -> Any:
+        return SimpleNamespace(id="s", approval_mode="spotter-ai", metadata=metadata)
+
+    monkeypatch.delenv("CLIO_FLEET_SPOTTER", raising=False)
+    conf.reload()
+    assert watcher_model_ref(None, session()) == ""  # type: ignore[arg-type]
+    monkeypatch.setenv("CLIO_FLEET_SPOTTER", '{"provider_id": "server-b", "model_id": "small"}')
+    conf.reload()
+    assert watcher_model_ref(None, session()) == "server-b/small"  # type: ignore[arg-type]
+    assert watcher_model_ref(None, session(spotter_model="  ")) == "server-b/small"  # type: ignore[arg-type]
+    own = session(spotter_model=" server-a/big ")
+    assert watcher_model_ref(None, own) == "server-a/big"  # type: ignore[arg-type]
+    # Only the watcher agent's spawn with exactly that model is the person's choice.
+    assert is_person_choice(None, own, "clio/spotter-ai", "server-a/big")  # type: ignore[arg-type]
+    assert not is_person_choice(None, own, "clio/other", "server-a/big")  # type: ignore[arg-type]
+    assert not is_person_choice(None, own, "clio/spotter-ai", "server-b/small")  # type: ignore[arg-type]
+    own.approval_mode = "ask"
+    assert not is_person_choice(None, own, "clio/spotter-ai", "server-a/big")  # type: ignore[arg-type]
+
+
+def test_turn_completed_wake_carries_the_new_answer(
+    watcher_world: tuple[Any, str, str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The wake names the answer and quotes it, so a review starts from what changed."""
+    from types import SimpleNamespace
+
+    app, parent, child = watcher_world
+    answer = SimpleNamespace(
+        id="msg_asst_9",
+        role="assistant",
+        parts=[SimpleNamespace(type="text", text="The count is 73.\n\nANSWER: 73")],
+    )
+    user = SimpleNamespace(id="u1", role="user", parts=[SimpleNamespace(type="text", text="Count")])
+    monkeypatch.setattr(
+        app.state.messages, "get_if_resident", lambda sid: [user, answer], raising=False
+    )
+    on_turn_finalized(app, parent)
+    [item] = app.state.task_history.pending_mail(child)
+    text = app.state.task_history.read_content(item.content)["text"]
+    assert text.startswith(_WAKE_TURN_FINAL_TEXT)
+    assert "message msg_asst_9: The count is 73. ANSWER: 73" in text
+
+
+def test_turn_completed_wake_without_a_resident_answer_is_the_plain_fact(
+    watcher_world: tuple[Any, str, str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    app, parent, child = watcher_world
+    monkeypatch.setattr(app.state.messages, "get_if_resident", lambda sid: None, raising=False)
+    on_turn_finalized(app, parent)
+    [item] = app.state.task_history.pending_mail(child)
+    assert app.state.task_history.read_content(item.content)["text"] == _WAKE_TURN_FINAL_TEXT
+
+
+def test_a_coalesced_turn_completed_wake_keeps_the_answer_fact(
+    watcher_world: tuple[Any, str, str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from types import SimpleNamespace
+
+    app, parent, child = watcher_world
+    answer = SimpleNamespace(
+        id="msg_asst_7", role="assistant", parts=[SimpleNamespace(type="text", text="Done: 42")]
+    )
+    monkeypatch.setattr(app.state.messages, "get_if_resident", lambda sid: [answer], raising=False)
+    wake_on_parent_activity(app, parent, tool_name="fs_read_file", result={"paths": ["a"]})
+    on_turn_finalized(app, parent)
+    history = app.state.task_history
+    text = "\n".join(history.read_content(i.content)["text"] for i in history.pending_mail(child))
+    first, last = text.split("\n")
+    assert "fs_read_file completed" in first
+    assert last.startswith(_WAKE_TURN_FINAL_TEXT)
+    assert "Its answer is message msg_asst_7: Done: 42" in last
+
+
+def test_a_later_tool_wake_keeps_a_pending_answer_fact(
+    watcher_world: tuple[Any, str, str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """An unread turn-completed wake keeps its answer when the next turn's tool lands."""
+    from types import SimpleNamespace
+
+    app, parent, child = watcher_world
+    answer = SimpleNamespace(
+        id="msg_asst_8", role="assistant", parts=[SimpleNamespace(type="text", text="Done: 8")]
+    )
+    monkeypatch.setattr(app.state.messages, "get_if_resident", lambda sid: [answer], raising=False)
+    on_turn_finalized(app, parent)
+    wake_on_parent_activity(app, parent, tool_name="fs_read_file", result={"paths": ["a"]})
+    history = app.state.task_history
+    text = "\n".join(history.read_content(i.content)["text"] for i in history.pending_mail(child))
+    first, last = text.split("\n")
+    assert "Its answer is message msg_asst_8: Done: 8" in first
+    assert "fs_read_file completed" in last
+
+
+def test_a_long_backlog_drops_the_oldest_events_and_says_so() -> None:
+    from clio_agent.gact.spotter_watcher import _WAKE_MAX_CHARS, _append_wake
+
+    text = ""
+    for index in range(400):
+        text = _append_wake(text, f"Watched session activity: tool_{index} completed.")
+    assert len(text) <= _WAKE_MAX_CHARS
+    first, *rest = text.split("\n")
+    assert first.startswith("(+") and "earlier watched-session events" in first
+    # The count adds up across trims: every event is either listed or counted.
+    assert int(first[2:].split(" ", 1)[0]) + len(rest) == 400
+    assert rest[-1] == "Watched session activity: tool_399 completed."
+
+
+def test_a_wake_during_a_review_is_queued_not_appended_to_the_wake_being_read(
+    watcher_world: tuple[Any, str, str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    app, parent, child = watcher_world
+    wake_on_parent_activity(app, parent, tool_name="first_tool")
+    monkeypatch.setattr(app.state.turn_runner, "busy", lambda sid: sid == child)
+    wake_on_parent_activity(app, parent, tool_name="second_tool")
+    pending = app.state.task_history.pending_mail(child)
+    texts = [app.state.task_history.read_content(item.content)["text"] for item in pending]
+    assert len(pending) == 2
+    assert "first_tool" in texts[0] and "second_tool" not in texts[0]
+    assert "second_tool" in texts[1]
+
+
+def test_the_turn_wake_names_the_request_the_answer_answers(
+    watcher_world: tuple[Any, str, str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from types import SimpleNamespace
+
+    app, parent, child = watcher_world
+    rows = [
+        SimpleNamespace(
+            id="u1", role="user", parts=[SimpleNamespace(type="text", text="ROUND 1 old")]
+        ),
+        SimpleNamespace(id="a1", role="assistant", parts=[SimpleNamespace(type="text", text="1")]),
+        SimpleNamespace(
+            id="u2", role="user", parts=[SimpleNamespace(type="text", text="ROUND 5 task")]
+        ),
+        SimpleNamespace(
+            id="a5", role="assistant", parts=[SimpleNamespace(type="text", text="ANSWER: 7")]
+        ),
+    ]
+    monkeypatch.setattr(app.state.messages, "get_if_resident", lambda sid: rows, raising=False)
+    on_turn_finalized(app, parent)
+    history = app.state.task_history
+    text = "\n".join(history.read_content(i.content)["text"] for i in history.pending_mail(child))
+    assert "Its answer is message a5: ANSWER: 7 It answers the request: ROUND 5 task" in text
+    assert "ROUND 1 old" not in text

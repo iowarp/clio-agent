@@ -11,7 +11,8 @@ a simple ``name: <command-or-url>`` map — no JSON, no nested objects required:
       weather: uvx weather-mcp serve
       notion: https://mcp.notion.com/mcp
 
-The value is either a **command string** (shlex-split into command + args; stdio)
+The value is either a **command string** (split into command + args, by Windows
+rules on Windows and POSIX shell rules elsewhere; stdio)
 or an **http(s) URL**. ``${VAR}`` / ``${VAR:-default}`` expansion is supported.
 For the rare case that needs env vars, headers, or OAuth, a mapping value is
 also accepted (``{command, args, env}`` or ``{url, headers, auth}``), but the string form is
@@ -28,7 +29,6 @@ from __future__ import annotations
 import logging
 import os
 import re
-import shlex
 import shutil
 import sys
 import threading
@@ -43,6 +43,7 @@ import yaml
 from clio_agent.errors import MCP_YAML_DECLARATION_UNREADABLE
 from clio_agent.tools import desktop_mcp_runtime as dmr
 from clio_agent.tools.mcp_cache import _mcp_uv_cache_dir
+from clio_agent.tools.mcp_command_line import split_command
 from clio_agent.tools.mcp_config_values import optional_int
 from clio_agent.tools.mcp_environment import stdio_environment
 
@@ -282,13 +283,13 @@ def _spec_from_string(
             name=name, transport="stdio", source=source, validation_errors=(str(exc),)
         )
 
-    declared_parts = shlex.split(value.strip())  # pre-expansion, split the SAME way
+    declared_parts = split_command(value.strip())  # pre-expansion, split the SAME way
     if text.startswith(_URL_PREFIXES):
         return MCPServerSpec(
             name=name, transport="http", url=text, source=source, declared={"url": value.strip()}
         )
 
-    parts = shlex.split(text)
+    parts = split_command(text)
     if not parts:
         errors.append("empty MCP command/url declaration")
         return MCPServerSpec(
@@ -339,7 +340,7 @@ def _spec_from_mapping(
                 errors.append("stdio MCP server requires a 'command'")
             raw_args = entry.get("args") or []
             if isinstance(raw_args, str):
-                raw_args = shlex.split(raw_args)
+                raw_args = split_command(raw_args)
             elif not isinstance(raw_args, Sequence):
                 errors.append("'args' must be a list or string")
                 raw_args = []
@@ -464,7 +465,7 @@ def unreadable_mcp_yaml_snapshot() -> list[dict[str, str]]:
 def load_mcp_servers(
     *,
     home: Path | None = None,
-    cwd: Path | None = None,
+    cwd: str | Path | None = None,
     plugin_servers: Mapping[str, Mapping[str, Any]] = (),  # type: ignore[assignment]
     env: Mapping[str, str] | None = None,
 ) -> dict[str, MCPServerSpec]:

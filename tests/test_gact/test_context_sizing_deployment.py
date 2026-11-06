@@ -230,6 +230,65 @@ def test_gpu_budget_follows_each_engines_memory_model() -> None:
     assert gpu_budget("vllm", "cuda", [], WEIGHTS, {}, request) is None
 
 
+def test_a_pinned_deployment_is_sized_against_its_own_gpus() -> None:
+    request = SizingRequest(choice="fit_to_gpu", strategy="fit_to_gpu")
+    gpus = [{"total": 40 * GIB, "free": 3 * GIB}, {"total": 40 * GIB, "free": 39 * GIB}]
+
+    pinned = gpu_budget("vllm", "cuda", gpus, WEIGHTS, {"param.cuda_devices": "1"}, request)
+    unpinned = gpu_budget("vllm", "cuda", gpus, WEIGHTS, {}, request)
+    assert pinned is not None and pinned.memory_bytes == int(40 * GIB * 0.9)
+    assert unpinned is not None and unpinned.memory_bytes == 3 * GIB  # GPU 0, nearly full
+    llama = gpu_budget("llama_cpp", "cuda", gpus, 1000, {"param.cuda_devices": "1"}, request)
+    assert llama is not None and llama.memory_bytes == 39 * GIB
+    assert gpu_budget("vllm", "cuda", gpus, WEIGHTS, {"param.cuda_devices": "5"}, request) is None
+
+
+def test_a_named_instance_pinned_to_gpu_1_fits_gpu_1_not_the_4096_floor() -> None:
+    """Live bug: vllm@spotter on GPU 1 launched at 4096, sized against GPU 0's free memory.
+
+    GPU 0 holds the default instance (3 GiB free); GPU 1 is idle. Sizing must
+    read GPU 1 -- the instance's own -- and give the same context an idle A100 does.
+    """
+    plan = _plan(
+        "vllm@spotter",
+        "cuda",
+        {"model": "/data/models/qwen3-4b", "port": "41001", "param.cuda_devices": "1"},
+    )
+    taken_then_idle = [{"total": 40 * GIB, "free": 3 * GIB}, {"total": 40 * GIB, "free": 39 * GIB}]
+    host = FakeHost({"gpus": taken_then_idle, "weights_bytes": WEIGHTS, "config": QWEN3_4B_CONFIG})
+    sized, _progress = _sized(plan, host)
+
+    args = _launch_args(sized)
+    assert args[args.index("--max-model-len") + 1] == "184320"
+    assert args[args.index("--gpus") + 1] == '"device=1"'
+    assert sized.configuration is not None
+    assert sized.configuration[EFFECTIVE_LENGTH] == "184320"
+
+
+def test_the_hosts_gpu_facts_size_a_launch_the_probe_could_not_read() -> None:
+    from clio_agent.gact.infrastructure.models import GpuFact  # noqa: PLC0415
+
+    facts = _facts().model_copy(
+        update={
+            "gpus": [
+                GpuFact(index=0, vendor="nvidia", memory_total_mib=40960),
+                GpuFact(index=1, vendor="nvidia", memory_total_mib=40960),
+            ]
+        }
+    )
+    plan = _plan(
+        "vllm",
+        "cuda",
+        {"model": "/data/models/qwen3-4b", "param.cuda_devices": "1"},
+        facts=facts,
+    )
+    host = FakeHost({"gpus": [], "weights_bytes": WEIGHTS, "config": QWEN3_4B_CONFIG})
+    sized, _progress = _sized(plan, host)
+
+    args = _launch_args(sized)
+    assert args[args.index("--max-model-len") + 1] == "184320"  # 0.9 of GPU 1's 40 GiB
+
+
 def test_decisions_name_their_reason() -> None:
     request = SizingRequest(choice="fit_to_gpu", strategy="fit_to_gpu")
     profile = ModelMemoryProfile(262144, 147_456)

@@ -244,7 +244,11 @@ def add_server(
 
     With ``preset_id`` naming a catalog runtime, the entry IS that runtime's
     saved address (id == preset id; replaces any earlier one). Without it, a
-    custom OpenAI-compatible server is added under a fresh ``server-<slug>`` id.
+    custom OpenAI-compatible server is added under a fresh ``server-<slug>`` id
+    -- unless ``credential_ref`` names a CLIO-managed deployment that already
+    has a custom entry (a named instance or the router redeployed on a new
+    port and bound again): that entry is the deployment's, so it moves to the
+    new address and keeps its id and label instead of a ``-2`` duplicate.
     ``credential_ref`` links a CLIO-managed deployment's key (see the module doc).
     """
     normalized = normalize_server_address(
@@ -263,6 +267,19 @@ def add_server(
                 credential_ref=credential_ref,
             )
             entries = [e for e in entries if e.id != preset_id] + [entry]
+        elif credential_ref and (
+            bound := next(
+                (e for e in entries if e.custom and e.credential_ref == credential_ref), None
+            )
+        ):
+            entry = LocalServerEntry(
+                id=bound.id,
+                preset_id=bound.preset_id,
+                label=bound.label,
+                address=normalized,
+                credential_ref=credential_ref,
+            )
+            entries = [entry if e.id == bound.id else e for e in entries]
         else:
             name = label.strip() or (_host_of(normalized) or "Server")
             base = f"server-{_slug(name)}"

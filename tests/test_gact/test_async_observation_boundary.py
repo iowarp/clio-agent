@@ -42,8 +42,12 @@ def observation_world(
         workspace = client.post(
             "/v1/workspaces", json={"name": "observations", "root_path": str(tmp_path)}
         )
-        assert workspace.status_code == 201
-        wid = workspace.json()["id"]
+        # One workspace per folder (#1771): reuse the workspace already pinning it.
+        assert workspace.status_code in (201, 409), workspace.text
+        body = workspace.json()
+        wid = (
+            body["error"]["details"]["workspace_id"] if workspace.status_code == 409 else body["id"]
+        )
         response = client.post("/v1/sessions", json={"workspace_id": wid})
         assert response.status_code == 200
         sid = response.json()["id"]

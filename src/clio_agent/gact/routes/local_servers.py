@@ -66,17 +66,25 @@ def _checks(app: FastAPI) -> dict[str, dict[str, Any]]:
     return checks
 
 
-async def check_address(preset: "LMProviderPreset", address: str) -> dict[str, Any]:
-    """One live handshake of ``preset`` at ``address``: reachability and served models."""
+async def check_address(
+    preset: "LMProviderPreset", address: str, server_id: str = ""
+) -> dict[str, Any]:
+    """One live handshake of ``preset`` at ``address``: reachability and served models.
+
+    ``server_id`` names a saved server whose own key (its linked deployment's, for a
+    custom entry such as ``vllm@<name>``) is sent instead of the preset's.
+    """
     from clio_agent.gact.provider_catalog import probe_api_key  # noqa: PLC0415
     from clio_agent.providers.handshake import HandshakeContext, run_handshake  # noqa: PLC0415
+    from clio_agent.providers.model_discovery import resolve_cloud_api_key  # noqa: PLC0415
 
+    own_key = resolve_cloud_api_key(server_id) if server_id and server_id != preset.id else ""
     report = await run_handshake(
         HandshakeContext(
             provider_id=preset.id,
             provider_kind=preset.provider,
             api_base=address,
-            api_key=probe_api_key(preset),
+            api_key=own_key or probe_api_key(preset),
             auth_mode="passive",
             allow_external_sources=True,
         ),
@@ -106,14 +114,13 @@ def register_local_server_routes(app: FastAPI, presets: "list[LMProviderPreset]"
         return preset
 
     def retire(entry: store.LocalServerEntry) -> None:
-        if entry.custom:
-            return
         from clio_agent.gact.provider_catalog_snapshot import invalidate_provider  # noqa: PLC0415
 
-        invalidate_provider(app, entry.preset_id)
+        # A custom server is its own catalog provider (and fleet account), keyed by its id.
+        invalidate_provider(app, entry.id if entry.custom else entry.preset_id)
 
     async def checked(entry: store.LocalServerEntry) -> dict[str, Any]:
-        result = await check_address(preset_for(entry.preset_id), entry.address)
+        result = await check_address(preset_for(entry.preset_id), entry.address, entry.id)
         _checks(app)[entry.id] = result
         return {**entry.to_wire(), "check": result}
 
@@ -186,11 +193,14 @@ def register_local_server_routes(app: FastAPI, presets: "list[LMProviderPreset]"
             preset_for(req.preset_id)
         preset_id, label = own_entry(req.preset_id, req.address, req.label)
         try:
+            # The key is matched through the preset the deployment was bound as
+            # (a llama.cpp instance's own), though it is saved as a custom server.
+            # Binding the same deployment again moves its entry (no ``-2`` copy).
             entry = store.add_server(
                 address=req.address,
                 label=label or (preset_for(preset_id).label if preset_id else ""),
                 preset_id=preset_id,
-                credential_ref=managed_key(preset_id, req.address),
+                credential_ref=managed_key(req.preset_id or preset_id, req.address),
             )
         except store.LocalServerStoreError as exc:
             raise _error(422, "invalid_server", str(exc)) from exc

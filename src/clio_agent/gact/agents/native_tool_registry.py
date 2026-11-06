@@ -128,6 +128,10 @@ def _singles(agent_def: Any) -> dict[str, Callable[[], Any]]:
         build_session_search_tool,
         build_session_summary_tool,
     )
+    from clio_agent.gact.spotter_tools import (  # noqa: PLC0415
+        build_attention_sources_tool,
+        build_review_activity_tool,
+    )
     from clio_agent.gact.ssh_tools import build_ssh_execute_tool  # noqa: PLC0415
     from clio_agent.gact.storage.connect_tool import (  # noqa: PLC0415
         build_connected_data_connect_tool,
@@ -177,6 +181,8 @@ def _singles(agent_def: Any) -> dict[str, Callable[[], Any]]:
         "session_search": lambda: build_session_search_tool(agent_def),
         "session_read_summary": lambda: build_session_summary_tool(agent_def),
         "session_read_context_frame": lambda: build_session_context_frame_tool(agent_def),
+        "review_activity": lambda: build_review_activity_tool(agent_def),
+        "attention_sources": lambda: build_attention_sources_tool(agent_def),
         "create_a2ui_surface": build_create_a2ui_surface_tool,
         "update_a2ui_components": build_update_a2ui_components_tool,
         "update_a2ui_data_model": build_update_a2ui_data_model_tool,
@@ -224,6 +230,8 @@ _SINGLE_NAMES = frozenset(
         "session_search",
         "session_read_summary",
         "session_read_context_frame",
+        "review_activity",
+        "attention_sources",
         "memory_search",
         "memory_read",
         "create_memory",

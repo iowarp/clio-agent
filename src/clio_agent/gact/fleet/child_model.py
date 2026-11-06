@@ -7,6 +7,7 @@ from typing import TYPE_CHECKING, Any
 from clio_agent.gact.fleet.entries import FleetEntry, project_fleet
 from clio_agent.gact.fleet.selection import (
     MODEL_CHOICE_KEY,
+    ChoiceSource,
     ModelChoice,
     ModelSelectionRefused,
     choose_model,
@@ -58,9 +59,11 @@ def choose_child_model(
     *,
     explicit: str,
     same_agent: bool,
+    chooser: ChoiceSource = "explicit",
 ) -> ModelChoice:
     """The child's model choice; ``same_agent`` (a flow run of the caller's own agent)
-    skips preferences, since the caller already runs that agent."""
+    skips preferences, since the caller already runs that agent. ``chooser`` is
+    who named ``explicit`` (``"person"`` for a model the person picked)."""
 
     section: dict[str, Any] = dict(getattr(child, "model", None) or {})
     chain = [] if same_agent else list(section.get("prefers_chain") or [])
@@ -71,6 +74,7 @@ def choose_child_model(
         requires=Requires.from_dict(section.get("requires") or {}),
         attribution=dict(section.get("attribution") or {}),
         inherited=caller_model(app, parent),
+        explicit_source=chooser,
     )
 
 

@@ -92,6 +92,27 @@ def http_get(url: str, key: str = "") -> tuple[int, bytes]:
         return 0, b""
 
 
+#: Unix socket paths are limited to 107 bytes; vLLM's tensor-parallel workers bind sockets
+#: under TMPDIR, and on a deep service root they fail to start without logging why.
+_SHORT_TMP_LIMIT = 64
+
+
+def service_tmp(root: Path) -> Path:
+    """The service's temp directory: ``root/tmp``, or a short private one when that is too deep."""
+    tmp = root / "tmp"
+    if len(str(tmp)) <= _SHORT_TMP_LIMIT:
+        return tmp
+    import hashlib  # noqa: PLC0415
+
+    short = Path("/tmp" if os.path.isdir("/tmp") else tempfile.gettempdir())
+    short = short / ("clio-svc-" + hashlib.sha256(str(root).encode()).hexdigest()[:16])
+    short.mkdir(mode=0o700, exist_ok=True)
+    info = short.stat()
+    if info.st_uid != os.getuid() or info.st_mode & 0o077:
+        raise RuntimeError(f"The short service temp directory {short} is not private to this user")
+    return short
+
+
 def worker_environment(
     root: Path, manifest: dict[str, Any], base: dict[str, str]
 ) -> dict[str, str]:
@@ -99,12 +120,13 @@ def worker_environment(
     env = {**base, **manifest.get("environment", {})}
     for name in ("UV_PROJECT_ENVIRONMENT", "VIRTUAL_ENV", "PYTHONPATH", "PYTHONHOME"):
         env.pop(name, None)
+    tmp = service_tmp(root)
     env.update(
         UV_CACHE_DIR=str(root / "cache/uv"),
         UV_PYTHON_INSTALL_DIR=str(root / "cache/python"),
-        TMPDIR=str(root / "tmp"),
-        TEMP=str(root / "tmp"),
-        TMP=str(root / "tmp"),
+        TMPDIR=str(tmp),
+        TEMP=str(tmp),
+        TMP=str(tmp),
         HF_HOME=str(root / "cache/huggingface"),
         PATH=os.pathsep.join(
             item for item in (str(python_path(root).parent), env.get("PATH", "")) if item

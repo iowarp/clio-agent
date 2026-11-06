@@ -288,7 +288,7 @@ def build_task_tools() -> list[Any]:
                     "default": None,
                 },
             },
-            "Collect retained terminal output and publish its completion notices, or report pending. Optional select lists JSON Pointers, e.g. ['/workflow_state'], returning a pointer-keyed result object without paging unrelated report text. Escape key / as ~1 and ~ as ~0. Unselected dictionary reads list result_keys. Missing paths are errors. Follow next_cursor for bounded output; concatenate JSON chunks before parsing. The cursor pins source, selection and recipient; omit select on continuation or repeat it unchanged. A delegated evidence cursor reads only its committed snapshot. Later explicit reads remain possible.",
+            "Collect retained terminal output and publish its completion notices, or report pending. Optional select lists JSON Pointers, e.g. ['/workflow_state'], returning a pointer-keyed result object without paging unrelated report text. Escape key / as ~1 and ~ as ~0. Unselected dictionary reads list result_keys. Missing paths are errors. A result too big to return whole comes back as result_file (path, size) with its beginning in result_excerpt; read the file for more. An old next_cursor still reads its pages. Delegated evidence reads only its committed snapshot. Later explicit reads remain possible.",
             read=True,
         ),
         _tool(

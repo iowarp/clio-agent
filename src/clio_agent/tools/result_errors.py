@@ -75,7 +75,11 @@ def structured_tool_result_error(result: Any) -> str | None:
                 code = str(error.get("code") or error.get("type") or "tool_error")
                 message = str(error.get("message") or "").strip()
                 return f"{code}: {message}" if message else code
-            return str(error)
+            # A typed code beside its message and next step: keep all three, not just the code.
+            parts = [str(decoded.get(key) or "").strip() for key in ("message", "hint")]
+            detail = " ".join(part for part in parts if part)
+            return f"{error}: {detail}" if detail else str(error)
+
         status = str(decoded.get("status") or "").strip().lower()
         if status in {"error", "failed", "failure"}:
             message = str(decoded.get("message") or decoded.get("detail") or "").strip()
@@ -111,7 +115,33 @@ def structured_tool_result_error(result: Any) -> str | None:
         explicitly_failed = getattr(
             result, "isError", result_map.get("isError", result_map.get("is_error"))
         )
-    return "tool_result_is_error" if explicitly_failed is True else None
+    if explicitly_failed is not True:
+        return None
+    # A failed result's own text (e.g. a ToolError's code and message) beats a bare flag.
+    return _first_text(result) or "tool_result_is_error"
+
+
+def _first_text(result: Any, limit: int = 500) -> str:
+    """The first non-empty text block of a result, decoded from a JSON envelope when it is one."""
+    result_map = result if isinstance(result, Mapping) else {}
+    blocks = getattr(result, "content", None)
+    if blocks is None:
+        blocks = result_map.get("content")
+    if isinstance(blocks, (str, bytes, bytearray)) or not isinstance(blocks, Sequence):
+        return ""
+    for block in blocks:
+        text = getattr(block, "text", None)
+        if text is None and isinstance(block, Mapping):
+            text = block.get("text")
+        if not isinstance(text, str) or not text.strip():
+            continue
+        stripped = text.strip()
+        with suppress(json.JSONDecodeError, TypeError, ValueError):
+            payload = json.loads(stripped)
+            if isinstance(payload, Mapping) and payload.get("code") and payload.get("message"):
+                return f"{payload['code']}: {payload['message']}"[:limit]
+        return stripped[:limit]
+    return ""
 
 
 __all__ = ["structured_tool_result_error"]
