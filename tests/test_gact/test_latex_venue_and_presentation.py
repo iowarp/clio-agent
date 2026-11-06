@@ -84,6 +84,33 @@ def test_a_planted_author_name_acknowledgments_and_urls_are_found(tmp_path: Path
     assert checks["Paper size"]["status"] == "passed"
 
 
+def test_an_author_name_the_source_breaks_across_lines_is_still_found(tmp_path: Path) -> None:
+    # Scenario L2: "Grace" ended one source line and "Hopper" began the next, and the check
+    # passed the paper as anonymous. A tie (~) between the words is found the same way.
+    roots = [_template(tmp_path / "templates", "acm-sigconf", "  double_blind: true\n")]
+    paper = tmp_path / "paper"
+    (paper / "sections").mkdir(parents=True)
+    (paper / "main.tex").write_text(
+        "\\documentclass[sigconf,review,anonymous]{acmart}\n\\begin{document}\n"
+        "\\author{Grace Hopper}\n\\input{sections/body}\n\\end{document}\n"
+    )
+    (paper / "sections" / "body.tex").write_text(
+        "\\section{Introduction}\nIn our earlier study, Grace\nHopper measured the drain.\n"
+        "As Grace~Hopper showed.\n"
+    )
+    report = check_venue(
+        "acm-sigconf",
+        entry=paper / "main.tex",
+        pdf=_pdf(tmp_path / "p.pdf", 1),
+        page_count=1,
+        roots=roots,
+    )
+    planted = {check["rule"]: check for check in report["checks"]}["Double-blind: author names"]
+    assert planted["status"] == "failed"
+    assert (planted["file"], planted["line"]) == ("sections/body.tex", 2)
+    assert "Grace Hopper" in planted["message"]
+
+
 def test_one_page_over_the_limit_and_the_wrong_paper_fail_with_the_numbers(
     tmp_path: Path,
 ) -> None:

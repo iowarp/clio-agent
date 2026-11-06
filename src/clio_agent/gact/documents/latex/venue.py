@@ -127,6 +127,23 @@ def _locations(texts: dict[str, str], pattern: re.Pattern[str]) -> list[tuple[st
     return found
 
 
+def _name_locations(texts: dict[str, str], name: str) -> list[tuple[str, int, str]]:
+    """Where ``name`` appears in ``texts``, also when the source breaks it across lines.
+
+    TeX reflows a paragraph, so "Grace" may end one source line and "Hopper" start the next;
+    the words may be separated by any whitespace or a tie (``~``). Each hit is reported at
+    the line where the name starts, with the name as written.
+    """
+    words = [re.escape(word) for word in name.split()]
+    pattern = re.compile(r"(?:\s|~)+".join(words), re.IGNORECASE)
+    found = []
+    for file, text in texts.items():
+        for match in pattern.finditer(text):
+            line = text.count("\n", 0, match.start()) + 1
+            found.append((file, line, " ".join(match.group(0).replace("~", " ").split())))
+    return found
+
+
 def _check(rule: str, status: str, message: str, file: str = "", line: int = 0) -> dict[str, Any]:
     row: dict[str, Any] = {"rule": rule, "status": status, "message": message}
     if file:
@@ -212,7 +229,7 @@ def _source_checks(rules: dict[str, Any], texts: dict[str, str]) -> list[dict[st
         outside = {name: _without_author_blocks(text) for name, text in texts.items()}
         planted: list[tuple[str, int, str]] = []
         for author in names:
-            planted.extend(_locations(outside, re.compile(re.escape(author), re.IGNORECASE)))
+            planted.extend(_name_locations(outside, author))
         if planted:
             file, number, text = planted[0]
             checks.append(
