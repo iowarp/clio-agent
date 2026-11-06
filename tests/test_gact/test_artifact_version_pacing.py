@@ -76,10 +76,13 @@ def test_a_call_outside_a_background_script_registers_at_once(interval: float) -
 
 
 def test_a_background_script_s_file_gets_one_version_per_interval(
-    tmp_path: Path, interval: float
+    tmp_path: Path, interval: float, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """Through ``create_artifact``: the deferred version holds the file's bytes when the
     interval ends."""
+
+    # Long enough that two tool calls on a loaded runner still land inside one interval.
+    monkeypatch.setenv("CLIO_ARTIFACTS_VERSION_INTERVAL_S", "3")
 
     root = tmp_path / "workspace"
     root.mkdir()
