@@ -22,6 +22,12 @@ memory, both on the execution host: the plan carries a ``before_launch`` step
 that runs :mod:`.target_probe` there and rebuilds the plan with the value. The
 sized parameter is a launch input, not the person's choice, so it is never
 persisted as ``param.*`` (a later reinstall sizes again).
+
+The budget is the deployment's OWN GPUs: a device pin (``param.cuda_devices``,
+``param.rocm_devices``; see :mod:`~clio_agent.gact.infrastructure.gpu_devices`)
+selects those GPUs' rows of the probe, by host index. Without it a named
+instance pinned to GPU 1 was sized against GPU 0 -- where another instance
+already held the memory -- and launched at the 4096-token floor.
 """
 
 from __future__ import annotations
@@ -56,6 +62,7 @@ from clio_agent.context_sizing.strategies import (
     size_with,
 )
 from clio_agent.gact.infrastructure.context_sizing import target_probe
+from clio_agent.gact.infrastructure.gpu_devices import fact_rows, select_gpu_rows
 from clio_agent.gact.infrastructure.models import CommandResult, CommandSpec, TargetFacts
 from clio_agent.gact.infrastructure.plan import DriverPlan
 from clio_agent.gact.infrastructure.server_parameters import (
@@ -261,13 +268,18 @@ def gpu_budget(
     vLLM reserves ``share`` (default: its ``--gpu-memory-utilization``) of each
     device it uses (tensor x pipeline parallel), never more than is free;
     llama.cpp splits layers over every visible GPU and gets ``share`` of their
-    free memory. None for a CPU variant or when no GPU memory is reported.
+    free memory. The GPUs are the deployment's pinned ones when it has a device
+    pin (``gpus`` is one row per host GPU, in host order), else the host's
+    first. None for a CPU variant or when no GPU memory is reported.
     """
 
     if variant_id not in GPU_VARIANTS or not gpus:
         return None
     factor, reserve = RESERVE[engine]
-    rows = [(int(row.get("total", 0)), int(row.get("free", 0))) for row in gpus]
+    selected = select_gpu_rows(configuration, gpus)
+    if not selected:
+        return None
+    rows = [(int(row.get("total", 0)), int(row.get("free", 0))) for row in selected]
     if engine == "vllm":
         devices = _positive_int(configuration, PARAMETER_PREFIX + "tensor_parallel_size")
         devices *= _positive_int(configuration, PARAMETER_PREFIX + "pipeline_parallel_size")
@@ -436,6 +448,9 @@ async def gather_inputs(
     )
     profile, why = profile_from_probe(engine, answer)
     gpus = answer.get("gpus") if isinstance(answer.get("gpus"), list) else None
+    if not gpus and facts.gpus:
+        # The host listed its GPUs at inspection; their totals still size the KV cache.
+        gpus = fact_rows(facts.gpus) or None
     weights = profile.weights_bytes if profile is not None else 0
     budget = gpu_budget(engine, variant_id, gpus, weights, configuration, request)
     return profile, budget, why

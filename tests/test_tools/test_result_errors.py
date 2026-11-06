@@ -102,3 +102,21 @@ def test_structured_lane_still_wins_and_is_error_still_counts() -> None:
     assert (
         structured_tool_result_error(_CallToolResult([], is_error=True)) == "tool_result_is_error"
     )
+
+
+def test_a_string_error_keeps_its_message_and_hint() -> None:
+    """A typed code without its message and next step leaves the reader nothing to act on."""
+    error = structured_tool_result_error(
+        {"error": "selection_not_located", "message": "Not found.", "hint": "Quote it exactly."}
+    )
+    assert error == "selection_not_located: Not found. Quote it exactly."
+
+
+def test_a_failed_mcp_result_reports_its_own_text() -> None:
+    """A ToolError envelope (code, message, details) is the error, not a bare failure flag."""
+    envelope = '{"code":"invalid_argument","message":"steps must be within 0..9","details":{}}'
+    result = {"content": [{"type": "text", "text": envelope}], "isError": True}
+    assert structured_tool_result_error(result) == "invalid_argument: steps must be within 0..9"
+    plain = {"content": [{"type": "text", "text": "upstream timed out"}], "isError": True}
+    assert structured_tool_result_error(plain) == "upstream timed out"
+    assert structured_tool_result_error({"content": [], "isError": True}) == "tool_result_is_error"

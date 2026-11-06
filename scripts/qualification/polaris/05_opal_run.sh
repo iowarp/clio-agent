@@ -35,7 +35,9 @@ if [ "$RUN_OPAL_CHAIN" = 1 ]; then
     for cond in $OPAL_CONDITIONS; do
       sid="$("${KIT_PY[@]}" session-id "chain_$cond")"
       out="$OPERATOR_DIR/chain-$OPAL_CHAIN_ID-$cond"   # operator-only: holds correct answers
-      run mkdir -p "$out"; run chmod 700 "$OPERATOR_DIR" "$out"
+      # The driver creates $out itself and refuses an existing one (no overwrite of another
+      # run's evidence), so only the operator parent is made here.
+      run mkdir -p "$OPERATOR_DIR"; run chmod 700 "$OPERATOR_DIR"
       log "chain $OPAL_CHAIN_ID condition $cond -> fresh session $sid (out $out)"
       run timeout "$(left)" uv run --frozen --no-sync python -m scripts.qualification.opal_chain_run \
         --endpoint "$endpoint" --session "$sid" --chains "$OPAL_CHAINS_CSV" \

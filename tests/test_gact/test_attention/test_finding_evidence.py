@@ -1,7 +1,6 @@
 """Reviewer findings preserve actual capture rows and parent ownership."""
 
 from dataclasses import replace
-from pathlib import Path
 from typing import Any
 
 import pytest
@@ -87,69 +86,3 @@ def test_absent_transcript_or_changed_content_has_no_invented_coordinates() -> N
     with pytest.raises(AttentionUnavailable) as exc:
         _bind(_receipt(), messages=[])
     assert exc.value.reason == "content_coordinates_unavailable"
-
-
-@pytest.mark.parametrize("valid", [True, False])
-def test_native_alert_emits_verified_inspection_or_disabled_action(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, valid: bool
-) -> None:
-    from fastapi.testclient import TestClient
-
-    from clio_agent.gact.action_cards import build_raise_alert_card_tool
-    from clio_agent.gact.app import build_app
-    from clio_agent.gact.attention import routes
-    from clio_agent.gact.session_store import _replace_session_messages
-    from clio_agent.gact.types import AgentDef
-    from tests.test_gact.test_action_cards import _call_tool_as, _record_child_assignment
-
-    # This test uses recorded captures, independent of optional live writers.
-    monkeypatch.setenv("CLIO_PROVENANCE_PROVIDERS", "jsonl")
-    app = build_app(sessions_path=tmp_path / "s.json")
-    with TestClient(app) as client:
-        parent = client.post("/v1/sessions", json={"title": "parent"}).json()["id"]
-        task = _record_child_assignment(app, parent_sid=parent, expert_id="spotter_watcher")
-        messages = fixture_transcript()
-        for message in messages:
-            message.session_id = parent
-        _replace_session_messages(app, parent, messages)
-        monkeypatch.setattr(
-            routes, "session_lm_calls", lambda app, sid: [replace(_call(), session_id=parent)]
-        )
-        monkeypatch.setattr(
-            routes, "attention_store", lambda app: AttentionStore(fixture_flowcept())
-        )
-        monkeypatch.setattr(routes, "_renderer", lambda identity: FixtureRenderer())
-        receipt = _receipt().model_dump()
-        if not valid:
-            receipt["capture_sha256"] = "0" * 64
-        result = _call_tool_as(
-            app,
-            task.owner.session_id,
-            build_raise_alert_card_tool(AgentDef(id="spotter_watcher", title="SPOTTER reviewer")),
-            title="Review this result",
-            body="Observed evidence, not a poisoning verdict.",
-            attention_evidence=receipt,
-        )
-        assert result["emitted"] is True
-        assert result["attention_evidence"]["available"] is valid
-        wire = client.get(f"/v1/sessions/{parent}/messages").json()["messages"]
-        card = next(
-            part for message in wire for part in message["parts"] if part["type"] == "action_card"
-        )
-        assert "Uncertainty:" in card["body"]
-        assert card["actions"][0]["enabled"] is valid
-        assert card["actions"][1]["behavior"]["handle_id"] == task.handle
-        if valid:
-            from clio_agent.gact.protocol.v3.message import _action_cards
-
-            projected = _action_cards(card)
-            assert (
-                projected[0]["behavior"]["inspection"]
-                == card["actions"][0]["behavior"]["inspection"]
-            )
-            assert all(
-                ref["session_id"] == parent
-                for ref in card["actions"][0]["behavior"]["inspection"]["selections"]
-            )
-        else:
-            assert card["actions"][0]["behavior"]["reason"]

@@ -130,3 +130,48 @@ def test_search_model_is_separate_and_survives_legacy_judge_updates(
     assert legacy["search"] == saved["search"]
     reset = save_fleet_settings(FleetUpdate(revision=legacy["revision"], judges={}, search=None))
     assert reset["search"] is None
+
+
+def test_spotter_default_is_its_own_slot_and_accepts_a_saved_server(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from clio_agent.gact import local_server_store as store
+    from clio_agent.gact.fleet.spotter_model import default_spotter_ref
+
+    monkeypatch.chdir(tmp_path)
+    conf.reload()
+    original = fleet_settings()
+    assert original["spotter"] is None and default_spotter_ref() == ""
+    server = store.add_server(address="http://gpu-node:8001", label="vLLM spotter")
+    app = FastAPI()
+    register_fleet_settings_routes(app)
+    with TestClient(app) as client:
+        unknown = client.patch(
+            "/v1/settings/fleet",
+            json={
+                "revision": original["revision"],
+                "judges": {},
+                "spotter": {"provider_id": "server-missing", "model_id": "m"},
+            },
+        )
+        assert unknown.status_code == 422
+        saved = client.patch(
+            "/v1/settings/fleet",
+            json={
+                "revision": original["revision"],
+                "judges": {},
+                "spotter": {"provider_id": server.id, "model_id": "Qwen3-8B"},
+            },
+        )
+        assert saved.status_code == 200, saved.text
+        assert saved.json()["spotter"] == {"provider_id": server.id, "model_id": "Qwen3-8B"}
+        assert saved.json()["judges"] == original["judges"]
+        assert client.get("/v1/settings/fleet").json() == saved.json()
+    assert default_spotter_ref() == "server-vllm-spotter/Qwen3-8B"
+    # A judges-only update leaves the SPOTTER default alone; null clears it.
+    kept = save_fleet_settings(
+        FleetUpdate(revision=saved.json()["revision"], judges={"goals": None})
+    )
+    assert kept["spotter"] == saved.json()["spotter"]
+    cleared = save_fleet_settings(FleetUpdate(revision=kept["revision"], judges={}, spotter=None))
+    assert cleared["spotter"] is None and default_spotter_ref() == ""

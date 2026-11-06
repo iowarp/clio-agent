@@ -1,5 +1,11 @@
 """Named instances of a managed model engine: several deployments of one engine on a target.
 
+Instances exist for vLLM and llama.cpp (:data:`INSTANCE_ENGINES`); Ollama stays
+one deployment per target (one server already serves many models, and its
+context hook and preview address the engine's own container). Each instance may
+be pinned to its own GPUs (:mod:`~clio_agent.gact.infrastructure.gpu_devices`).
+The router serves vLLM instances only.
+
 A target used to hold exactly one deployment per engine, identified by the
 engine's service id (``vllm``). That id stays the engine's *default instance*
 -- its records, keys, saved servers and URLs keep working unchanged. Further
@@ -23,8 +29,10 @@ from clio_agent.gact.infrastructure.models import CommandResult, CommandSpec, Se
 
 #: Separates an engine from an instance name in a service id.
 INSTANCE_SEPARATOR = "@"
-#: Engines that may run as several named instances on one target.
-INSTANCE_ENGINES = frozenset({"vllm"})
+#: Engines that may run as several named instances on one target (the catalog's
+#: ``supports_instances``): their container/service directory, port, key and
+#: ledger are all per service id.
+INSTANCE_ENGINES = frozenset({"vllm", "llama_cpp"})
 #: The managed router service (one per target), upstream LiteLLM Proxy.
 ROUTER_SERVICE = "model_router"
 #: The configuration key of a service's loopback port.

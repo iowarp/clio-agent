@@ -48,10 +48,20 @@ def enforce_spotter_clearance(
 
     if session is None or getattr(session, "approval_mode", "") != "spotter-ai":
         return ""
-    reason = wait_for_spotter_clearance(app, sid)
-    if not reason:
-        return ""
-    message = SPOTTER_CLEARANCE_REASONS[reason]
+    from clio_agent.gact.spotter_quarantine import (  # noqa: PLC0415
+        QUARANTINE_MESSAGE,
+        QUARANTINE_REASON,
+        active_quarantine,
+    )
+
+    # A quarantine SPOTTER raised holds every mutating call until the person lifts it.
+    if active_quarantine(session) is not None:
+        reason, message = QUARANTINE_REASON, QUARANTINE_MESSAGE
+    else:
+        reason = wait_for_spotter_clearance(app, sid)
+        if not reason:
+            return ""
+        message = SPOTTER_CLEARANCE_REASONS[reason]
     record_resolution(
         app,
         session_id=sid,

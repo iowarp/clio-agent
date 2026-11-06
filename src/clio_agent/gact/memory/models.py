@@ -23,22 +23,62 @@ def unconfigured_roles() -> tuple[MemoryRole, ...]:
     """The pass's roles with neither a fleet model nor a selected LM provider."""
     from clio_agent.gact.providers.boot_selection import explicit_lm_provider  # noqa: PLC0415
 
-    if explicit_lm_provider():
+    if explicit_lm_provider() or _host_agent_config() is not None:
         return ()
     judges = fleet_settings()["judges"]
     return tuple(role for role in ROLES if not judges.get(role))
 
 
+class MemoryModelUnconfigured(ValueError):
+    """No fleet role and no server default model: the background pass has nothing to run on."""
+
+    error_type = "memory_model_unconfigured"
+
+
+def _host_agent_config() -> Any:
+    """The running host agent's LM config (a saved model server keeps its ``server_id``)."""
+    from clio_agent.gact import context  # noqa: PLC0415
+
+    app = context.active_app()
+    agent = getattr(getattr(app, "state", None), "agent", None)
+    return getattr(agent, "_provider_config", None)
+
+
+def _server_default_config() -> Any:
+    """The server's running LM config: its host agent's, else an explicitly selected one.
+
+    The host agent is the server default whether it was built at boot from the
+    selected provider or from a session's own model (``session_host_agent``) -- a
+    saved model server keeps its ``server_id`` there. With neither, the committed
+    ``lm_studio`` base default is not a selection: refuse (typed) rather than retry
+    LM Studio on ``127.0.0.1:1234`` per call.
+    """
+    config = _host_agent_config()
+    if config is not None:
+        return config
+    # ``memory_model`` refuses an unconfigured role first (``unconfigured_roles``).
+    from clio_agent.config import load_config_from_env  # noqa: PLC0415
+
+    return load_config_from_env()
+
+
 def memory_model_identity(role: MemoryRole) -> dict[str, str]:
-    """``{"provider_id", "model_id", "source"}`` for ``role`` (``source``: fleet or default)."""
+    """``{"provider_id", "model_id", "source"}`` for ``role`` (``source``: fleet or default).
+
+    Raises:
+        MemoryModelUnconfigured: No fleet choice and no server default model.
+    """
     raw = fleet_settings()["judges"].get(role)
     if raw:
         choice = JudgeModel.model_validate(raw)
         return {"provider_id": choice.provider_id, "model_id": choice.model_id, "source": "fleet"}
-    from clio_agent.config import load_config_from_env  # noqa: PLC0415
-
-    config = load_config_from_env()
-    provider = str(getattr(config, "provider_id", "") or getattr(config, "provider", "") or "")
+    config = _server_default_config()
+    provider = str(
+        getattr(config, "server_id", "")
+        or getattr(config, "provider_id", "")
+        or getattr(config, "provider", "")
+        or ""
+    )
     return {"provider_id": provider, "model_id": str(config.model), "source": "server_default"}
 
 
@@ -75,6 +115,7 @@ def memory_model(role: MemoryRole) -> tuple[Any, Any, dict[str, str]]:
 
 __all__ = [
     "MEMORY_MODEL_UNCONFIGURED",
+    "MemoryModelUnconfigured",
     "MemoryRole",
     "memory_model",
     "memory_model_identity",

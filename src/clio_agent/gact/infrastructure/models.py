@@ -223,6 +223,25 @@ class TargetIdentity(BaseModel):
         return self.uid >= 0 and self.gid >= 0
 
 
+GpuVendor = Literal["nvidia", "amd", "intel"]
+
+
+class GpuFact(BaseModel):
+    """One accelerator the target reports, as its vendor tool numbers it.
+
+    ``index`` is the id a deployment pins with (``param.cuda_devices``,
+    ``param.rocm_devices``): ``nvidia-smi``'s index (PCI bus order, which CLIO
+    makes CUDA use too), ``rocm-smi``'s card number, ``xpu-smi``'s device id.
+    """
+
+    index: int = Field(ge=0)
+    name: str = ""
+    vendor: GpuVendor
+    #: The device's total memory; ``None`` when the tool did not report it.
+    memory_total_mib: int | None = None
+    uuid: str = ""
+
+
 class TargetFacts(BaseModel):
     """Observed host capabilities, never inferred from a profile label."""
 
@@ -242,6 +261,9 @@ class TargetFacts(BaseModel):
     #: The target's short hostname: per-host state (service directories on a
     #: home shared by many nodes, Apptainer instance logs) is namespaced by it.
     hostname: str = ""
+    #: Every GPU the target's vendor tools list (empty when none or no tool):
+    #: what a person pins a deployment to (see ``gpu_devices``).
+    gpus: list[GpuFact] = Field(default_factory=list)
 
 
 class ServiceConfigurationField(BaseModel):
@@ -366,6 +388,12 @@ class ManagedServiceDefinition(BaseModel):
     access: ServiceAccess | None = None
     definition_version: str = "1"
     observation: ServiceObservation | None = None
+    #: The engine can run further named instances (``<id>@<name>``) on one target.
+    supports_instances: bool = False
+    #: A named instance's engine row (``vllm`` for ``vllm@spotter``); ``None`` otherwise.
+    instance_of: str | None = None
+    #: A named instance's name (``spotter``); ``None`` for an engine's default row.
+    instance_name: str | None = None
 
 
 class ManagedServiceCatalog(BaseModel):

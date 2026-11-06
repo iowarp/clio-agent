@@ -41,6 +41,7 @@ from clio_agent.gact.infrastructure.models import (
     CommandResult,
     CommandSpec,
     ConnectionStrategy,
+    GpuFact,
     InfrastructureOperation,
     ManagedServiceCatalog,
     OwnedResource,
@@ -104,6 +105,9 @@ class InfrastructureRuntime(ExternalConnectionsMixin, ServerAccessMixin, ModelRo
         # Live progress and output of each operation (the SSE stream's source).
         self.events = OperationEventLog()
         self._streams_locally = local_executor is None
+        # Each target's GPUs as its last catalog listed them: a GPU pin naming
+        # another is refused before its operation is queued (``_admit``).
+        self._target_gpus: dict[str, list[GpuFact]] = {}
 
     async def stop_desktop_agents(self, desktop_id: str) -> list[str]:
         """Stop this Desktop's launches while its SSH bridges can still carry commands."""
@@ -158,6 +162,7 @@ class InfrastructureRuntime(ExternalConnectionsMixin, ServerAccessMixin, ModelRo
             return await self._execute(target_id, spec)
 
         facts = await probe_target(target, execute if target.kind == "ssh" else None)
+        self._target_gpus[target_id] = list(facts.gpus)
         services = service_definitions(facts, named_instance_ids(self.store.services(), target_id))
         for service in services:
             record = self.store.service(target_id, service.id)

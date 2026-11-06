@@ -150,3 +150,38 @@ UI defects observed in gact-tui (not fixed here):
 - **The native variant with managed databases will refuse on Polaris.** `native_monitoring_hook.mongo_platform` only lists Ubuntu 20.04, 22.04 and 24.04, Debian 12 and RHEL 8. Polaris compute runs SLES 15 (HPE Cray OS), so the install fails with "No verified managed MongoDB binary for this Linux distribution; choose site databases". Use Apptainer, or `database_mode: site`.
 - The download workarounds used here (GitHub archive blocked, Docker Hub 429) are specific to this cloud egress. On Polaris, set `http(s)_proxy` to the ALCF proxy.
 - `provenance.agentic.query_default` stays `native` unless it is set. Set it to `flowcept` if SPOTTER should query Flowcept, for example to read attention rows.
+
+## 8. Attention replay bundle (Polaris job 7795459, OPAL chain B)
+
+Captures are not in git. The bundle is one zip on Eagle, holding this run only:
+
+- Zip: `/lus/eagle/projects/GenesisHackathonOct26/jcernuda/clio-polaris-2026-10/exports/attention-replay-7795459-chainB.zip`
+  (611,259,391 bytes; unpacked 1,082,187,742 bytes).
+- Session: `chain_B` = `sess_2480c090acbb` (workspace `ws_f8315452c320`), 5 of 6 rounds correct.
+- Contents: the session export, `sess_2480c090acbb.semantic.jsonl`, the session's 6 Flowcept
+  `decode_attention` documents, its 6 byte-exact SafeTensors captures in their
+  `<workflow_id>/<request id>_g<group>` layout, `tokenizer.json`, `tokenizer_config.json`,
+  `chat_template.jinja`, and `metadata.json` (commits clio-agent 8d4f2130, gact-tui f333d67d,
+  marketplace 85a12152; `ibm-granite/granite-4.2-8b` at a7042144125c...).
+- Descriptor check: 6 of 6 descriptors of the session's model calls resolve to a capture with
+  matching byte count and sha256; no mismatches.
+- The job's 35 other documents and captures (not this session's) are left out.
+- Collector: `scripts/qualification/polaris/collect_attention_replay.py --job <job> --name <run> --session chain_B=<sid>`.
+
+## Attention replay bundle: Polaris job 7795566, B
+
+- Path: `/lus/eagle/projects/GenesisHackathonOct26/jcernuda/clio-polaris-2026-10/exports/attention-replay-7795566-B/` (1,669,161,797 bytes); zip `/lus/eagle/projects/GenesisHackathonOct26/jcernuda/clio-polaris-2026-10/exports/attention-replay-7795566-B.zip` (903,878,740 bytes). Not in git.
+- Sessions: `chain_B` = `sess_872f9770ea06`, `chain_B_spotter1` = `sess_858b46860ce5b0eaafa8ec2a42b1f5d5`
+- 52 Flowcept decode_attention documents (all of the job's), 6 captures copied byte-exact for these sessions.
+- Commits: clio-agent 8e4f58d1fd, gact-tui 658f60c345, marketplace 85a1215269, connector 95ab2acd6f (wheel sha256 bb8d1d033dc0..., local changes: M pyproject.toml).
+- Model: `ibm-granite/granite-4.2-8b` at `a7042144125ce5ae64f89610e8289647fc000b9a`.
+- Descriptor check: 6 of 6 descriptors resolve to a copied capture with matching bytes and sha256.
+
+## Attention replay bundle: Polaris job 7795948, B
+
+- Path: `/lus/eagle/projects/GenesisHackathonOct26/jcernuda/clio-polaris-2026-10/exports/attention-replay-7795948-B/` (906,902,947 bytes); zip `/lus/eagle/projects/GenesisHackathonOct26/jcernuda/clio-polaris-2026-10/exports/attention-replay-7795948-B.zip` (327,218,470 bytes). Not in git.
+- Sessions: `chain_B` = `sess_4bada8ecad38`, `chain_B_spotter1` = `sess_a10d38d9e602ac91b3b6b5f2d4fd6ae6`
+- 9 Flowcept decode_attention documents (all of the job's), 6 captures copied byte-exact for these sessions.
+- Commits: clio-agent a1c5e48756, gact-tui 658f60c345, marketplace 85a1215269, connector 95ab2acd6f (wheel sha256 bb8d1d033dc0..., local changes: M pyproject.toml).
+- Model: `ibm-granite/granite-4.2-8b` at `a7042144125ce5ae64f89610e8289647fc000b9a`.
+- Descriptor check: 6 of 6 descriptors resolve to a copied capture with matching bytes and sha256.
