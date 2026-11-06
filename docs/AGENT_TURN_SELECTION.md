@@ -14,11 +14,14 @@ A conversation runs one agent, the session agent:
   plugin delta and pins the new resolution.
 - There is no per-turn agent override. `POST /v1/sessions/{sid}/messages` with
   `agent` or `agent_id` is refused (HTTP 422). To bring one of the agent's
-  subagents into a message, the person summons it: a
-  `{"type": "summon", "target_kind": "subagent", "target": "<name>"}` part starts
-  that subagent as a child the person started, and the session agent answers the
-  message with the child's work in view. A command file's `agent:` field does
-  the same. See [the direct summoning plan](design/sdk/direct-summoning-plan.md).
+  subagents, declared workflows or flows into a message, the person summons it: a
+  `{"type": "summon", "target_kind": "subagent", "target": "<name>"}` part (or
+  `workflow`, `flow`) tells the session agent's turn that the person asked for it.
+  The agent writes the brief and parameters from the conversation and makes the
+  call (`spawn_agent_task`, `run_workflow`, `run_flow`) with every tool still
+  available; that call records the person as the child's starter. A command file's
+  `agent:` or `workflow:` field does the same. See
+  [the summoning ledger](design/sdk/summoning-ledger.md) (DS48).
 - A deep-research turn (`behavior.execution_mode: "deep_research"`) runs
   `clio/deep-researcher` for that turn only, without changing the pinned agent.
 
@@ -40,9 +43,11 @@ error (HTTP 422).
 
 A deep-research turn records `turn_agent` in the assistant message metadata:
 `requested_agent_id`, `session_agent_id`, `effective_agent_id` and
-`scope: "turn"`. A summoned subagent is recorded on the person's message as
-`summons` (the subagents and servers summoned, and any that failed to start),
-and the child session carries `started_by: {kind: "person", message_id}`.
+`scope: "turn"`. What the person summoned is recorded on their message as
+`summons` (`subagents`, `servers`, `workflows`, `flows`); the turn's answer
+records `summons_outcome` (which were started and which were not, with the
+reason), and a child the turn started for a summons carries
+`started_by: {kind: "person", message_id}`.
 
 The `agent.invocation.started` semantic event carries the turn's `agent_ref`,
 `resolution_digest` and `flow`. This metadata is the backend hook for TUI

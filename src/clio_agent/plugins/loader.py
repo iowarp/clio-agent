@@ -49,6 +49,7 @@ from clio_agent.plugins.records import (
     SubagentRecord,
     ToolRecord,
 )
+from clio_agent.plugins.workflows import read_workflows
 from clio_agent.sdk.hooks import HOOK_EVENTS, HookSpec
 from clio_agent.sdk.plugin import declaration_of
 from clio_agent.sdk.subagent import Subagent
@@ -576,6 +577,8 @@ def load_plugin(root: Path, *, marketplace: str = "", trusted: bool) -> PluginRe
     clio_dir = root / NAMESPACE
     fragments, texts, fragment_diags = _fragments_and_texts(clio_dir, plugin)
     commands, command_diags = read_commands(clio_dir / "commands", plugin)
+    workflows, workflow_diags = read_workflows(clio_dir / "workflows", plugin)
+    command_diags += workflow_diags
     # A native package's hooks/hooks.json is Claude Code's hook file, read the same way.
     from clio_agent.plugins.claude_code import _hooks as hooks_file  # noqa: PLC0415
 
@@ -677,6 +680,7 @@ def load_plugin(root: Path, *, marketplace: str = "", trusted: bool) -> PluginRe
         flows=tuple(parts.flows),
         fragments=tuple(fragments),
         commands=tuple(commands),
+        workflows=tuple(workflows),
         catalogs=tuple(
             [CatalogRecord(id=str(c), path="") for c in ext.get("catalogs") or ()]
             + _catalogs(clio_dir)

@@ -59,7 +59,7 @@ from clio_agent.gact.runtime.globals import (
     _emit_semantic_event,
     _session_agent_id,
 )
-from clio_agent.gact.summon import SUMMONS_KEY, server_summon_injections
+from clio_agent.gact.summon import SUMMONS_KEY, open_turn, summon_injections
 from clio_agent.gact.turn_state import (
     PROLOGUE_COMPLETED,
     PROLOGUE_FAILED,
@@ -163,6 +163,7 @@ def _prepare_turn_off_loop_steps(
         child_report = child_report_note(state.app, state.sid, state.sess)
         # CLIO's own additions: recorded by the agent loop as messages of their own,
         # ahead of the user's message, never glued into the user's text.
+        summoned = state.user_msg.metadata.get(SUMMONS_KEY)
         state.injections = [
             (source, block)
             for source, block in (
@@ -171,11 +172,13 @@ def _prepare_turn_off_loop_steps(
                 ("replan", replan),
                 (PLUGIN_CHANGE_SOURCE, plugin_change),
                 (CHILD_REPORT_SOURCE, child_report),
-                # Expanded by the agent loop, which holds the deferred catalog (summon.py).
-                *server_summon_injections(state.user_msg.metadata.get(SUMMONS_KEY)),
+                # What the person summoned; a server's marker is expanded by the agent
+                # loop, which holds the deferred catalog (summon.py).
+                *summon_injections(state.app, state.sid, summoned),
             )
             if block
         ]
+        open_turn(state.app, state.turn_id, state.user_msg.id, summoned)
     except _ContextFileAccessError as exc:
         state.enriched_text = state.user_text
         state.context_file_error = exc.error_info

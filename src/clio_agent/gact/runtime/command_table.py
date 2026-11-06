@@ -142,6 +142,7 @@ def file_row(
         "disabled_detail": detail,
         "unsupported_fields": [key for key in UNSUPPORTED_FIELDS if key in meta],
         "agent": str(meta.get("agent") or meta.get("agent_id") or "").strip(),
+        "workflow": str(meta.get("workflow") or "").strip(),
         "handler": str(meta.get("handler") or "").strip(),
         "path": path.as_posix(),
         "prompt_template": body,

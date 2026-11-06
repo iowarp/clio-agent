@@ -108,20 +108,31 @@ def build_spawn_runtime_tools(
         model: str = "",
         name: str = "",
     ) -> dict[str, Any]:
+        from clio_agent.gact import summon  # noqa: PLC0415
+
         local_placement(placement)
         app, caller = _runtime()
-        return await spawn_child(
-            app,
-            caller,
-            agent,
-            task,
-            invocation,
-            input_task_ids=input_task_ids,
-            strategy=strategy,
-            model=model,
-            name=name,
-            concurrency=concurrency,
-        )
+        # A subagent the person @-named this turn: the person is recorded as its starter.
+        claimed = summon.claim(summon.SUBAGENT, str(agent or "").strip())
+        try:
+            result = await spawn_child(
+                app,
+                caller,
+                agent,
+                task,
+                invocation,
+                input_task_ids=input_task_ids,
+                strategy=strategy,
+                model=model,
+                name=name,
+                concurrency=concurrency,
+                metadata=summon.child_metadata(claimed) or None,
+            )
+        except Exception as error:
+            summon.started(claimed, {"error": str(error)})
+            raise
+        summon.started(claimed, result)
+        return result
 
     async def spawn_agent_task(
         task: str,

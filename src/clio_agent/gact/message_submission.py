@@ -738,27 +738,23 @@ async def accept_message_async(
     *,
     internal_model_text: str | None = None,
     server_metadata: dict[str, Any] | None = None,
-    summon_task: str = "",
 ) -> tuple[PostMessageResponse, int]:
     """Prepare the selected runtime, then validate and confirm input off the application loop.
 
-    The message's ``summon`` parts are checked first (a refusal starts nothing); the
-    agent's turn is told each summoned child's handle, and the children start once the
-    message is accepted (:mod:`clio_agent.gact.summon`). ``summon_task`` is the
-    children's task when it is not the message text (a command file's ``agent:``).
+    The message's ``summon`` parts are checked first (a refusal accepts nothing) and
+    recorded on the message; its turn tells the agent what the person asked for
+    (:mod:`clio_agent.gact.summon`).
     """
     from clio_agent.gact import summon
     from clio_agent.gact.off_loop import join_off_loop
 
-    req, summons = await summon.plan_for_request(app, sid, req, summon_task)
+    summons = await summon.plan_for_request(app, sid, req)
     await ensure_host_agent(app, sid, req)
     await reprobe_for_message(app, sid, req)
     await refresh_for_selected_model(app, sid, req)
     prepared = await prepare_references(app, sid, req)
     if summons:
-        internal_model_text, server_metadata = await summon.start_for_request(
-            app, deps, sid, req, summons, prepared, internal_model_text, server_metadata
-        )
+        server_metadata = {**(server_metadata or {}), summon.SUMMONS_KEY: summons.metadata()}
     return await join_off_loop(
         accept_message,
         app,

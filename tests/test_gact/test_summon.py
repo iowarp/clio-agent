@@ -1,4 +1,4 @@
-"""The person summons a subagent or a server with a ``summon`` part."""
+"""The person summons a subagent, workflow, flow or server with a ``summon`` part."""
 
 from __future__ import annotations
 
@@ -39,6 +39,15 @@ review = Subagent("review", prompt="You review.", description="Reviews a change.
 
 COMMAND = "---\nname: ask-review\nagent: review\n---\nReview $ARGUMENTS carefully."
 
+WORKFLOW = """{
+  "description": "Look, then review.",
+  "inputs": [{"name": "target", "description": "What to review"}],
+  "steps": [
+    {"id": "look", "target": "explore", "input": "Look at {target}."},
+    {"id": "check", "target": "review", "after": ["look"], "input": "Review {target}: $look"}
+  ]
+}"""
+
 
 @dataclass
 class _Pred:
@@ -68,6 +77,7 @@ def market(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
                 "files": {
                     "ai.iowarp.clio/subagents/review.py": SUBAGENTS,
                     "ai.iowarp.clio/commands/ask-review.md": COMMAND,
+                    "ai.iowarp.clio/workflows/review-pass.json": WORKFLOW,
                 }
             }
         },
@@ -139,7 +149,33 @@ def test_an_unknown_summons_is_refused_and_nothing_starts(market: Path) -> None:
         assert c.get(f"/v1/sessions/{sid}/messages").json()["messages"] == []
 
 
-def test_two_summoned_subagents_start_as_the_persons_children(market: Path) -> None:
+def _user(client: TestClient, sid: str) -> dict[str, Any]:
+    return next(
+        m
+        for m in client.get(f"/v1/sessions/{sid}/messages").json()["messages"]
+        if m["role"] == "user"
+    )
+
+
+def _answer(client: TestClient, sid: str) -> dict[str, Any]:
+    return _wait(
+        lambda: next(
+            (
+                m
+                for m in client.app.state.messages.get(sid, [])
+                if m.role == "assistant" and m.metadata.get("summons_outcome")
+            ),
+            None,
+        ),
+        "the turn's answer",
+    )
+
+
+def test_summoned_subagents_start_nothing_and_are_told_to_the_agent(market: Path) -> None:
+    """No pre-start: the turn's agent reads who was asked for and writes the brief."""
+
+    from clio_agent.gact.summon import summon_injections
+
     agent = _Recorder()
     with TestClient(build_app(sessions_path=market / "s.json", agent=agent)) as c:
         sid = _session(c)
@@ -154,38 +190,63 @@ def test_two_summoned_subagents_start_as_the_persons_children(market: Path) -> N
             },
         )
         assert resp.status_code == 202, resp.text
-        children = _wait(lambda: len(_children(c, sid)) == 2 and _children(c, sid), "children")
-        message_id = resp.json()["message_id"]
-        for child in children:
-            assert child.metadata["started_by"] == {"kind": "person", "message_id": message_id}
-        user = next(
-            m
-            for m in c.get(f"/v1/sessions/{sid}/messages").json()["messages"]
-            if m["role"] == "user"
-        )
+        user = _user(c, sid)
         summons = user["metadata"]["summons"]
-        assert [row["role"] for row in summons["subagents"]] == ["explore", "review"]
-        assert "agent_override" not in user["metadata"]
-        # The chips stay on the person's message, where the transcript shows them.
+        assert summons["subagents"] == [{"role": "explore"}, {"role": "review"}]
         assert [p["target"] for p in user["parts"] if p["type"] == "summon"] == [
             "explore",
             "review",
         ]
-        handles = [row["handle"] for row in summons["subagents"]]
-        parent = _wait(
-            lambda: next((q for q in agent.questions if "The person started" in q), None),
-            "the parent's turn",
+        stored = c.app.state.messages[sid][0].metadata["summons"]
+        additions = summon_injections(c.app, sid, stored)
+        assert [source for source, _ in additions] == ["summon_subagent", "summon_subagent"]
+        text = additions[0][1]
+        assert text.startswith(
+            "The person asked for explore to work on this message (Finds where things are.)."
         )
-        for role, handle in zip(("explore", "review"), handles, strict=True):
-            assert f"The person started {role} as task {handle} on this message." in parent
-        assert "its report arrives as that task's result" in parent
-        for child in children:
-            # The task is the text without the summon tokens.
-            assert _wait(lambda child=child: _task_of(c, child.id), "the child's task") == (
-                "where is the spill folder written?"
-            )
-        # Each child's report reaches the agent that waits on it, the parent.
-        _wait(lambda: _reports(c, sid) == 2, "the children's reports")
+        assert 'call spawn_agent_task with agent="explore"' in text
+        assert 'agent="review"' in additions[1][1]
+        # The stub agent called nothing: no child, and the answer says what was not started.
+        outcome = _answer(c, sid).metadata["summons_outcome"]
+        assert outcome == {
+            "started": [],
+            "not_started": [
+                {"kind": "subagent", "target": "explore", "reason": "not_called"},
+                {"kind": "subagent", "target": "review", "reason": "not_called"},
+            ],
+        }
+        assert _children(c, sid) == []
+
+
+def test_a_call_naming_a_summoned_target_is_the_persons(market: Path) -> None:
+    from clio_agent.gact import context as _ctx
+    from clio_agent.gact import summon
+
+    app = SimpleNamespace(state=SimpleNamespace())
+    summon.open_turn(
+        app,
+        "turn_1",
+        "msg_1",
+        {"subagents": [{"role": "explore"}], "workflows": ["draft-review"], "flows": []},
+    )
+    app_token = _ctx.set_app(app)
+    turn_token = _ctx.set_turn_id_token("turn_1")
+    try:
+        claimed = summon.claim("subagent", "explore")
+        assert summon.child_metadata(claimed) == {
+            "started_by": {"kind": "person", "message_id": "msg_1"}
+        }
+        assert summon.claim("subagent", "explore") is None, "claimed once"
+        assert summon.claim("subagent", "review") is None, "not summoned"
+        summon.started(claimed, {"handle": "task_1"})
+    finally:
+        _ctx.reset(turn_token)
+        _ctx.reset(app_token)
+    assert summon.settle_turn(app, "turn_1") == {
+        "started": [{"kind": "subagent", "target": "explore", "handle": "task_1"}],
+        "not_started": [{"kind": "workflow", "target": "draft-review", "reason": "not_called"}],
+    }
+    assert summon.settle_turn(app, "turn_1") is None
 
 
 def test_a_deny_rule_on_spawning_refuses_the_summons(market: Path) -> None:
@@ -213,28 +274,53 @@ def test_a_deny_rule_on_spawning_refuses_the_summons(market: Path) -> None:
         assert c.get(f"/v1/sessions/{sid}/messages").json()["messages"] == []
 
 
-def test_a_command_files_agent_summons_that_subagent_on_the_recipe(market: Path) -> None:
+def test_a_command_files_agent_summons_that_subagent_with_the_recipe(market: Path) -> None:
     agent = _Recorder()
     with TestClient(build_app(sessions_path=market / "s.json", agent=agent)) as c:
         sid = _session(c)
         resp = c.post(f"/v1/sessions/{sid}/commands/ask-review", json={"input": "the diff"})
         assert resp.status_code == 200, resp.text
-        (child,) = _wait(lambda: _children(c, sid), "the review child")
-        assert child.metadata["started_by"]["kind"] == "person"
-        assert _wait(lambda: _task_of(c, child.id), "the child's task") == (
-            "Review the diff carefully."
-        )
-        parent = _wait(
-            lambda: next((q for q in agent.questions if q.startswith("/ask-review")), None),
-            "the parent's turn",
-        )
-        assert parent.startswith("/ask-review the diff\n\nThe person started review as task task_")
-        user = next(
-            m
-            for m in c.get(f"/v1/sessions/{sid}/messages").json()["messages"]
-            if m["role"] == "user"
-        )
+        # The agent reads the recipe and writes the reviewer's brief from it.
+        _wait(lambda: "Review the diff carefully." in agent.questions, "the parent's turn")
+        user = _user(c, sid)
+        assert user["metadata"]["summons"]["subagents"] == [{"role": "review"}]
         assert "agent_override" not in user["metadata"]
+        assert _children(c, sid) == []
+
+
+def test_a_declared_workflow_is_summonable_and_runs_by_id(market: Path) -> None:
+    from clio_agent.gact.agents.resolution import session_resolution
+    from clio_agent.gact.summon import summon_injections
+    from clio_agent.plugins.workflows import bind_inputs, find_workflow
+
+    with TestClient(build_app(sessions_path=market / "s.json", agent=_Recorder())) as c:
+        sid = _session(c)
+        body = c.get(f"/v1/sessions/{sid}/summon-targets").json()
+        (row,) = body["workflows"]
+        assert row["id"] == "review-pass" and row["plugin"] == "review"
+        assert row["inputs"] == [
+            {"name": "target", "description": "What to review", "required": True}
+        ]
+        assert all(flow["id"] not in {"react", "workflow"} for flow in body["flows"])
+        resp = c.post(
+            f"/v1/sessions/{sid}/messages",
+            json={"parts": [{"type": "text", "text": "go"}, _summon("review-pass", "workflow")]},
+        )
+        assert resp.status_code == 202, resp.text
+        additions = dict(
+            summon_injections(c.app, sid, c.app.state.messages[sid][0].metadata["summons"])
+        )
+        assert (
+            'Call run_workflow with workflow="review-pass" and inputs for target'
+            in (additions["summon_workflow"])
+        )
+        _plugin, record = find_workflow(session_resolution(c.app, sid), "review/review-pass")
+        steps = bind_inputs(record, {"target": "the diff"})
+        assert steps[0]["input"] == "Look at the diff." and steps[1]["after"] == ["look"]
+        with pytest.raises(ValueError, match="needs input 'target'"):
+            bind_inputs(record, {})
+        with pytest.raises(ValueError, match="has no input 'other'"):
+            bind_inputs(record, {"target": "x", "other": "y"})
 
 
 def _catalog() -> ToolCatalog:
@@ -288,7 +374,7 @@ def test_the_summon_targets_are_the_agents_subagents_and_servers(market: Path) -
         assert c.get("/v1/sessions/sess_nope/summon-targets").status_code == 404
 
 
-def test_a_summoned_message_projects_its_chips_and_children() -> None:
+def test_a_summoned_message_projects_its_chips_and_the_answer_its_outcome() -> None:
     from clio_agent.gact.protocol.v3.message import message_to_v3
 
     wire = {
@@ -302,9 +388,10 @@ def test_a_summoned_message_projects_its_chips_and_children() -> None:
         ],
         "metadata": {
             "summons": {
-                "subagents": [{"role": "explore", "handle": "task_abc"}],
+                "subagents": [{"role": "explore"}],
                 "servers": [],
-                "failed": [],
+                "workflows": ["draft-review"],
+                "flows": [],
             },
             "loaded_skill": "run-a-study",
         },
@@ -316,9 +403,35 @@ def test_a_summoned_message_projects_its_chips_and_children() -> None:
         "target_kind": "subagent",
         "target": "explore",
     }
-    assert row["metadata"]["summons"] == {"subagents": ["explore"], "servers": [], "failed": []}
+    assert row["metadata"]["summons"] == {
+        "subagents": ["explore"],
+        "servers": [],
+        "workflows": ["draft-review"],
+        "flows": [],
+        "failed": [],
+    }
     assert row["metadata"]["loaded_skill"] == "run-a-study"
-    assert "task_abc" not in str(row)
+    answer = message_to_v3(
+        {
+            **wire,
+            "id": "asst_1",
+            "role": "assistant",
+            "parts": [{"id": "p3", "type": "text", "text": "done"}],
+            "metadata": {
+                "summons_outcome": {
+                    "started": [{"kind": "subagent", "target": "explore", "handle": "task_abc"}],
+                    "not_started": [
+                        {"kind": "workflow", "target": "draft-review", "reason": "not_called"}
+                    ],
+                }
+            },
+        }
+    )
+    assert answer["metadata"]["summons_outcome"] == {
+        "started": [{"kind": "subagent", "target": "explore"}],
+        "not_started": [{"kind": "workflow", "target": "draft-review", "reason": "not_called"}],
+    }
+    assert "task_abc" not in str(answer)
 
 
 def test_a_handle_list_written_as_one_json_string_is_read_as_the_list() -> None:

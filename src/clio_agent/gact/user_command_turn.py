@@ -80,18 +80,18 @@ async def submit_user_command(
     if expansion.additional_context:
         rendered = f"{rendered}\n\n{expansion.additional_context}"
     typed = f"{cmd_id} {user_input}".strip()
-    subagent = str(command_meta.get("agent") or "")
     parts = [Part(type="text", text=typed), *(parts or [])]
-    if subagent:
-        # ``agent:`` summons that subagent on the rendered recipe, as ``@<subagent>`` does.
-        parts.append(Part(type="summon", target_kind="subagent", target=subagent))
+    # ``agent:`` and ``workflow:`` summon their target as ``@<name>`` does: the agent
+    # reads the rendered recipe and writes the brief for it.
+    for kind, key in (("subagent", "agent"), ("workflow", "workflow")):
+        if str(command_meta.get(key) or "").strip():
+            parts.append(Part(type="summon", target_kind=kind, target=str(command_meta[key])))
     acknowledgement, _status = await accept_message_async(
         app,
         deps,
         sid,
         PostMessageRequest(parts=parts),
-        internal_model_text=typed if subagent else rendered,
-        summon_task=rendered if subagent else "",
+        internal_model_text=rendered,
         server_metadata={
             "command": cmd_id,
             "command_source": str(command_meta.get("source") or ""),
