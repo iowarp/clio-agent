@@ -262,6 +262,7 @@ def _registry(target: MarkTarget, images: dict[str, bytes]) -> None:
         capture_released=None,
         list_for_workspace=lambda _ws: records,
         transforms_generating=lambda _id: [],
+        get_by_artifact_id=lambda _id: None,
     )
 
 

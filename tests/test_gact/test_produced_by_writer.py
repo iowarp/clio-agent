@@ -121,3 +121,40 @@ def test_the_shell_command_and_the_registered_inputs_name_the_script(tmp_path: P
         "made from scripts/plot_fig.py, throughput_model.csv."
     )
     assert both.script == "scripts/plot_fig.py"
+
+
+def test_a_rerun_version_says_how_the_files_earlier_version_was_made(tmp_path: Path) -> None:
+    # Scenario L20: the agent reran its script four times; the paper's builds recorded the
+    # new figure versions with no producing call, so a comment on version 5 said only
+    # "Producer unknown". It now says how version 1 was made, as version 1's.
+    t0 = datetime(2026, 11, 5, 12, 0, tzinfo=timezone.utc)
+    register = _record(
+        "call_reg",
+        "create_artifact",
+        t0,
+        t0 + timedelta(seconds=1),
+        used=["scripts/plot_fig.py", "throughput_model.csv"],
+    )
+    first = SimpleNamespace(artifact_id="artifact_v1", version=1, path="", sha256="")
+    fifth = SimpleNamespace(artifact_id="artifact_v5", version=5, path="", sha256="")
+    logical = SimpleNamespace(versions=[first, fifth])
+    registry = SimpleNamespace(
+        capture_released=None,
+        transforms_generating=lambda artifact_id: [register]
+        if artifact_id == "artifact_v1"
+        else [],
+        transforms_for_session=lambda _session_id: [register],
+        get_by_artifact_id=lambda artifact_id: (logical, fifth),
+    )
+    app = SimpleNamespace(
+        state=SimpleNamespace(
+            artifact_registry=registry,
+            workspaces={"ws": SimpleNamespace(root_path=str(tmp_path))},
+        )
+    )
+    made = produced_by(app, fifth, workspace_id="ws")
+    assert made.lines[0] == (
+        "Producer unknown for this version (5); version 1 of this file was made this way:"
+    )
+    assert "as made from scripts/plot_fig.py, throughput_model.csv" in made.lines[1]
+    assert made.script == "scripts/plot_fig.py" and not made.known

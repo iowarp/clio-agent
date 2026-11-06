@@ -157,8 +157,38 @@ def _cell(record: Any, noun: str, registered: str = "") -> ProducedBy:
 def produced_by(
     app: "FastAPI", version: "ArtifactVersion", *, workspace_id: str, noun: str = "image"
 ) -> ProducedBy:
-    """The "Produced by" lines for ``version``; ``noun`` names what not to edit by hand."""
+    """The "Produced by" lines for ``version``; ``noun`` names what not to edit by hand.
 
+    A version no call is recorded for (a rerun the server observed on disk, a paper build's
+    member) still says how the file's latest earlier version with a producer was made, as
+    that: the entry does not claim the same call made this one.
+    """
+    made = _produced_by(app, version, workspace_id=workspace_id, noun=noun)
+    if made.known:
+        return made
+    found = get_registry(app).get_by_artifact_id(version.artifact_id)
+    earlier = [
+        row
+        for row in (getattr(found[0], "versions", None) or [] if found else [])
+        if row.version < version.version
+    ]
+    for row in sorted(earlier, key=lambda row: -row.version):
+        before = _produced_by(app, row, workspace_id=workspace_id, noun=noun)
+        if before.known:
+            return ProducedBy(
+                (
+                    f"Producer unknown for this version ({version.version}); version "
+                    f"{row.version} of this file was made this way:",
+                    *before.lines,
+                ),
+                script=before.script,
+            )
+    return made
+
+
+def _produced_by(
+    app: "FastAPI", version: "ArtifactVersion", *, workspace_id: str, noun: str
+) -> ProducedBy:
     registry = get_registry(app)
     records = list(registry.transforms_generating(version.artifact_id))
     if not records:
