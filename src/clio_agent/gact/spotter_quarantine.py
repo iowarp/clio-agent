@@ -15,9 +15,9 @@ import logging
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
 
-from clio_agent.runtime import trace
 from clio_agent.gact.events import Event
 from clio_agent.gact.types import Session
+from clio_agent.runtime import trace
 
 if TYPE_CHECKING:
     from fastapi import FastAPI

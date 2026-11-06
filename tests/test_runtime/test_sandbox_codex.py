@@ -491,7 +491,9 @@ def test_detect_linux_wheel_precedes_path(tmp_path: Path) -> None:
     assert detection.binary_path == str(binary)
 
 
-def test_wheel_binary_name_follows_platform(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_wheel_binary_name_follows_platform(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     """The wheel ships ``codex`` on POSIX and ``codex.exe`` on Windows."""
     package = tmp_path / "codex_cli_bin"
     (package / "bin").mkdir(parents=True)
