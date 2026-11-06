@@ -19,14 +19,13 @@ class _ScopeProbe:
         self.lock = threading.RLock()
         self.attempted = threading.Event()
 
-    def acquire(self) -> bool:
+    def acquire(self, blocking: bool = True, timeout: float = -1) -> bool:
         if threading.current_thread().name == "cache-drop":
             self.attempted.set()
             if not self.lock.acquire(timeout=3):
                 raise TimeoutError("cache drop blocked the writer's registry lookup")
-        else:
-            self.lock.acquire()
-        return True
+            return True
+        return self.lock.acquire(blocking, timeout)
 
     def release(self) -> None:
         self.lock.release()
@@ -52,7 +51,8 @@ def test_drop_allows_nested_lookup_and_rechecks_new_scope(
     store = SegmentStore(_MemoryStore())
     store.append("session", "base", "thought", {"text": "committed"})
     probe = _ScopeProbe()
-    monkeypatch.setitem(store._scope_locks, ("session", "base"), cast(Any, probe))
+    entry = store._scope_locks._entries[("session", "base")]  # cached: its lock stays
+    monkeypatch.setattr(entry, "lock", cast(Any, probe))
     errors: list[BaseException] = []
 
     def drop() -> None:
@@ -75,7 +75,8 @@ def test_drop_allows_nested_lookup_and_rechecks_new_scope(
     worker.join(3)
     assert not worker.is_alive(), "cache drop did not retire"
     assert errors == []
-    assert not store._scopes
+    assert not store._scopes  # a scope first cached during the release is dropped too
+    assert len(store._scope_locks) == 0
     assert store.render("session", "base")[0].content["text"] == "committed"
     if new_scope:
         assert store.render("session", "base/chunk")[0].content["text"] == "later"

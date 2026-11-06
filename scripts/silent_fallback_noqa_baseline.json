@@ -6,7 +6,7 @@
  "arc/context_compiler.py": 2,
  "arc/live.py": 2,
  "arc/lsm.py": 3,
- "arc/memory.py": 6,
+ "arc/memory.py": 5,
  "arc/pid_identity.py": 2,
  "arc/rpc_liveness.py": 2,
  "arc/segments.py": 6,

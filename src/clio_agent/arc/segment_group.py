@@ -18,9 +18,9 @@ thread, an append is staged instead of put:
 * **Concurrent writers.** A scope another thread appended to after it was staged (the
   shared ``_events`` log) is rebased: the staged segments go after the other thread's
   with new ``order`` values; their ``logical_time`` and identity are unchanged. The
-  scopes of a rank stay locked (in sorted order, as :meth:`ScopeCache.release` takes
-  them) from planning until their puts are installed, so no other append plans against
-  the same stored end.
+  scopes of a rank stay locked (in sorted order, so two flushes never invert) from
+  planning until their puts are installed, so no other append plans against the same
+  stored end.
 * **Failure.** A lost or unconfirmed append abandons its chunk exactly as a single append
   does (``_abandon_chunk``: the chunk is sealed and the next append rolls). Every other
   staged scope that was not installed is dropped from the cache, so the next read
@@ -44,6 +44,7 @@ from clio_agent.arc.segment_errors import ArcPersistError
 
 if TYPE_CHECKING:
     from clio_agent.arc.schema import Segment
+    from clio_agent.arc.scope_locks import ScopeLock
     from clio_agent.arc.segments import SegmentStore
 
 __all__ = [
@@ -177,9 +178,9 @@ class SegmentGroup:
 
     def _flush_rank(self, keys: list[Key]) -> None:
         store = self.store
-        held: list[threading.RLock] = []
+        held: list[ScopeLock] = []
         try:
-            for key in keys:  # sorted, as release() takes them: no lock-order inversion
+            for key in keys:  # sorted: two flushes never take them in opposite orders
                 lock = store._lock_for(*key)
                 lock.acquire()
                 held.append(lock)

@@ -550,15 +550,26 @@ def test_concurrent_insert_head_unique_orders(tmp_path):
 
 
 def test_per_scope_locks_are_distinct(tmp_path):
-    """Each (session, scope) gets its OWN lock; different scopes get different lock
-    objects (so they don't contend), and the same scope returns the same lock."""
+    """Each (session, scope) gets its OWN lock; different scopes get different locks
+    (so they don't contend), and the same scope resolves to the same lock."""
     ss = _fresh_store(tmp_path)
     la = ss._lock_for(SID, "agentA/x")
     la2 = ss._lock_for(SID, "agentA/x")
     lb = ss._lock_for(SID, "agentB/y")
     lc = ss._lock_for("other", "agentA/x")  # different session, same scope addr
-    assert la is la2
-    assert la is not lb and la is not lc and lb is not lc
+    assert la == la2
+    assert la != lb and la != lc and lb != lc
+    with la:
+        assert la2.acquire(blocking=False)  # the same re-entrant lock
+        la2.release()
+        held_elsewhere: list[bool] = []
+        t = threading.Thread(target=lambda: held_elsewhere.append(la2.acquire(blocking=False)))
+        t.start()
+        t.join()
+        assert held_elsewhere == [False]
+        assert lb.acquire(blocking=False) and lc.acquire(blocking=False)
+        lb.release()
+        lc.release()
 
 
 def test_different_scopes_do_not_serialize(tmp_path):
@@ -639,6 +650,105 @@ def test_concurrent_ops_with_release_and_clear_no_deadlock(tmp_path):
     live = ss.render(SID, "agentA/exp")
     _assert_render_well_formed(live)
     assert any(s.content.get("text") == "after" for s in live)
+
+
+def test_release_churn_never_splits_a_scope_lock(tmp_path):
+    """Scope locks leave the registry when their scope is released; a release racing
+    the scope's users must never let two threads hold two different locks for one
+    scope. Every worker holds the scope's lock (and writes under it, which caches the
+    scope) while a churner keeps releasing the session; an in-section counter proves
+    mutual exclusion. Once everything settles, a release leaves no lock behind."""
+    import time
+
+    ss = _fresh_store(tmp_path)
+    scopes = ["agentA/x", "agentB/y"]
+    inside = dict.fromkeys(scopes, 0)
+    guard = threading.Lock()
+    overlaps: list[str] = []
+    stop = threading.Event()
+
+    def worker(n: int) -> None:
+        i = 0
+        while not stop.is_set():
+            scope = scopes[(n + i) % len(scopes)]
+            with ss._lock_for(SID, scope):
+                with guard:
+                    inside[scope] += 1
+                    if inside[scope] != 1:
+                        overlaps.append(scope)
+                ss.append(SID, scope, "thought", {"text": f"{n}-{i}"}, step=i)
+                with guard:
+                    inside[scope] -= 1
+            i += 1
+
+    def churner() -> None:
+        while not stop.is_set():
+            ss.release(SID)
+
+    with ThreadPoolExecutor(max_workers=6) as ex:
+        futs = [ex.submit(worker, n) for n in range(4)]
+        futs += [ex.submit(churner) for _ in range(2)]
+        time.sleep(1.5)
+        stop.set()
+        for f in futs:
+            f.result(timeout=30)
+
+    assert overlaps == [], f"two threads held two locks for one scope: {overlaps[:3]}"
+    ss.release(SID)
+    assert len(ss._scope_locks) == 0
+    assert not ss._loaded and not ss._generations
+
+
+def test_fold_writers_racing_release_do_not_deadlock_and_leave_no_locks(tmp_path, monkeypatch):
+    """Working-set writers hold a partition writer lock, then lane chunk locks (chunks
+    roll every two atoms), and a renderer builds views from chunk locks, while other
+    threads release and clear: no deadlock, and once the session is released no scope,
+    writer or index-loader lock is left for it.
+
+    What the writers read back is NOT asserted: a release that forgets the session
+    index while a fold write is in flight can leave the stored index without that
+    write's chunk -- a separate fold race, reproduced unchanged before this fix."""
+    import time
+
+    from clio_agent.arc.working_set_fold import make_segment_store
+
+    monkeypatch.setenv("CLIO_ARC_WS_CHUNK_SEGMENTS", "2")
+    ss = make_segment_store(_cte_backend(), working_set_fold=True)
+    sessions = ["fold-a", "fold-b"]
+    stop = threading.Event()
+
+    def writer(sess: str, scope: str) -> None:
+        i = 0
+        while not stop.is_set():
+            ss.append(sess, scope, "thought", {"text": f"{sess}-{scope}-{i}"}, step=i)
+            ss.render(sess, scope)
+            i += 1
+
+    def churner(sess: str) -> None:
+        while not stop.is_set():
+            ss.release(sess)
+
+    def clearer() -> None:
+        while not stop.is_set():
+            ss.clear()
+            time.sleep(0.01)
+
+    with ThreadPoolExecutor(max_workers=8) as ex:
+        futs = [ex.submit(writer, s, sc) for s in sessions for sc in ("agentA", "agentB")]
+        futs += [ex.submit(churner, s) for s in sessions]
+        futs.append(ex.submit(clearer))
+        time.sleep(2.0)
+        stop.set()
+        for f in futs:
+            f.result(timeout=30)
+
+    for sess in sessions:
+        ss.render(sess, "agentA")
+        assert ss._scope_locks.keys(sess)  # cached again: its chunk locks stay
+    for sess in sessions:
+        ss.release(sess)
+    assert len(ss._scope_locks) == 0
+    assert not ss._loaded and not ss._generations and not ss._sessions
 
 
 def test_release_does_not_iterate_locator_dict_deterministic(tmp_path):

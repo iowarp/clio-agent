@@ -13,7 +13,6 @@ and it is bounded at ``arc.search_chunk_atoms`` (16) atoms, so that re-put is sm
 
 from __future__ import annotations
 
-import threading
 from collections.abc import Sequence
 from typing import TYPE_CHECKING, Any, cast
 
@@ -23,6 +22,7 @@ from clio_agent.arc.lane_chunking import chunks_for_append
 from clio_agent.arc.lane_index import INDEX_SCOPE, SessionIndex, encode_index, note_atom
 from clio_agent.arc.loop_guard import LoopThreadStoreWrite, assert_store_write_off_loop
 from clio_agent.arc.schema import Segment, SegmentKind
+from clio_agent.arc.scope_locks import ScopeLock, pseudo_scope
 from clio_agent.arc.search_companion import SearchCompanion, SearchCompanionError
 from clio_agent.arc.segment_index import SegmentIndex
 from clio_agent.arc.segments import ArcPersistError, SegmentStore
@@ -32,6 +32,11 @@ if TYPE_CHECKING:
     from clio_agent.arc.working_set_fold import _Session
 
 __all__ = ["LaneWriter"]
+
+# A content-lane partition's writer lock (chunk choice + persist as one step) is this
+# pseudo-scope of the store's lock registry (gone once no writer holds it), plus the
+# partition. It is never a cached scope, so a release never waits on a writer.
+_WRITER_SCOPE = pseudo_scope("writer/")
 
 
 def _chunk_capacity() -> int:
@@ -51,8 +56,6 @@ class LaneWriter:
 
     _store: ARCStore
     _search: SearchCompanion
-    _sessions_lock: threading.Lock
-    _partition_locks: dict[tuple[str, str], threading.Lock]
     _scopes: dict[tuple[str, str], list[Segment]]
     _loaded: set[tuple[str, str]]
     _index: SegmentIndex
@@ -64,7 +67,7 @@ class LaneWriter:
         @staticmethod
         def _record_name(session_id: str, scope: str) -> str: ...
 
-        def _lock_for(self, session_id: str, scope: str) -> threading.RLock: ...
+        def _lock_for(self, session_id: str, scope: str) -> ScopeLock: ...
 
         def _segs(self, session_id: str, scope: str) -> list[Segment]: ...
 
@@ -193,10 +196,8 @@ class LaneWriter:
             ArcPersistError: A lane chunk was not stored (its atoms are not folded in).
         """
         state = self._session(session_id)
-        with self._sessions_lock:
-            writer = self._partition_locks.setdefault((session_id, partition), threading.Lock())
         late: SearchCompanionError | None = None
-        with writer:
+        with self._lock_for(session_id, _WRITER_SCOPE + partition):
             with state.lock:
                 if partition not in state.index.chunks:
                     self._mark_absent(session_id, partition)

@@ -153,7 +153,8 @@ RATCHET_BASELINE: dict[str, int] = {
     # comment lines explaining why the stamp is deliberately absent here.
     # MERGE (PR #1298 x #1310): 1030 -> 1032. Both campaigns' call-site lines
     # coexist; neither side's additions were dropped.
-    "src/clio_agent/arc/memory.py": 1065,  # 11a: the segment-plane surface moved to arc/memory_segments.py
+    # Scope-lock port (c3fbe965): get_session_invocations (no caller) deleted, 1065 -> 1012.
+    "src/clio_agent/arc/memory.py": 1012,  # 11a: the segment-plane surface moved to arc/memory_segments.py
     # #900: +4 for the CREATE_BREAKAWAY_FROM_JOB daemon-spawn flag + its rationale.
     # owner ruling 2026-07-14: +3 to route explicit =local through the loud
     # DEGRADED banner (owner module: arc/init_degradation.py).
@@ -171,13 +172,6 @@ RATCHET_BASELINE: dict[str, int] = {
     # #1439 (C1): 863 -> 843. The version gate + config adoption live in the owner
     # module arc/clio_core_daemon_version.py; the PID-identity helpers moved to
     # arc/pid_identity.py (re-exported here under their old names).
-    # #737 S2 fold owner module. Crossed the 800 new-file cap restoring the FROZEN
-    # arc.op reproducibility contract (§2 / GOAL.md DoD #4): the five working-set write
-    # overrides now emit a per-op arc.op via _emit_op so arc.replay rebuilds the live
-    # plane byte-identically (the S2 slice had dropped these, breaking replay). Footprint
-    # minimized to concise docstrings; the per-op payload passing is irreducible. Ratchet
-    # down with the #714/#767 decomposition.
-    "src/clio_agent/arc/working_set_fold.py": 802,  # 11a: view/index/companion/search in owner modules
     # #948 S4: +14 for the children-must-be-react hierarchy rule (a predict/CoT
     # parent would silently strand its children now that the settle loop routing
     # for it is deleted; typed validation error instead).

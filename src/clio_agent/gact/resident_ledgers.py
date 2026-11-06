@@ -404,14 +404,6 @@ class ResidentLedgerSet(MutableMapping[str, list["Message"]]):
                 if not entry.scopes:
                     del self._arc[session_id]
 
-    def session_released(self, session_id: str) -> None:
-        """ARC dropped every cached scope of ``session_id``."""
-
-        with self._lock:
-            entry = self._arc.pop(session_id, None)
-            if entry is not None:
-                self._arc_bytes -= entry.nbytes
-
     def scope_touched(self, session_id: str) -> None:
         """A cached ARC scope of ``session_id`` was read."""
 

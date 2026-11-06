@@ -38,6 +38,7 @@ from clio_agent.arc.context_view import ViewSnapshot, next_generation, order_at
 from clio_agent.arc.loop_guard import assert_store_write_off_loop
 from clio_agent.arc.replay import logged_segments, logs_context_op
 from clio_agent.arc.schema import WORKING_SET_KINDS, Segment, SegmentKind, segment_text
+from clio_agent.arc.scope_locks import ScopeLock, ScopeLockRegistry
 from clio_agent.arc.segment_cache import _SCOPE_SEP as _SCOPE_SEP
 from clio_agent.arc.segment_cache import _SLASH_SUB as _SLASH_SUB
 from clio_agent.arc.segment_cache import ScopeCache
@@ -167,13 +168,12 @@ class SegmentStore(ScopeCache, PlainContextRestore):
         self._search_indexed = search_indexed
         # PER-SCOPE locking: one lock per (session_id, scope) so ops on different
         # scopes (overlapping experts) run concurrently instead of serializing on a
-        # single store-wide lock held through disk I/O. The lock-registry itself is
-        # guarded by a tiny ``_registry_lock`` (held only to look up / create a scope
-        # lock and for store-wide structural ops, never through disk I/O). LOCK ORDER
-        # lookup is brief. Structural drops acquire scope locks outside the
-        # registry, then recheck its keys, so nested lane lookups cannot deadlock.
+        # single store-wide lock held through disk I/O. A scope's lock lives while the
+        # scope is cached or the lock is held or awaited (``arc.scope_locks``). LOCK
+        # ORDER is scope -> clock. ``_registry_lock`` guards only the invocation counts.
         self._registry_lock = threading.RLock()
-        self._scope_locks: dict[tuple[str, str], threading.RLock] = {}
+        self._loaded: set[tuple[str, str]] = set()  # the cached keys: their locks stay
+        self._scope_locks = ScopeLockRegistry(self._loaded.__contains__)
         # The shared logical-time clock gets its OWN tiny lock so the brief tick is
         # serialized across all scopes without serializing the scopes themselves.
         self._clock_lock = threading.Lock()
@@ -181,7 +181,6 @@ class SegmentStore(ScopeCache, PlainContextRestore):
         # tombstoned). A write commits to clio-core first, then replaces the entry
         # (``ScopeCache._commit_scope``). Touched only under that scope's lock.
         self._scopes: dict[tuple[str, str], list[Segment]] = {}
-        self._loaded: set[tuple[str, str]] = set()
         self._chunk_marks: dict[tuple[str, str], ChunkMark] = {}  # stored end per cached record
         # Per-scope B-tree locator built in parallel with the scope lists (additive;
         # NOT yet on the render/op read path — those still scan). Lets a scope's
@@ -189,7 +188,8 @@ class SegmentStore(ScopeCache, PlainContextRestore):
         self._index = SegmentIndex()
         # Store-wide monotonic logical clock, recovered past the persisted max.
         self._next_lt = 1
-        # Per-scope op generation (bumped by every op but append): see context_view.
+        # View generation of a CACHED scope (context_view): renewed by every op but
+        # append, dropped with the scope (a reload mints a fresh one).
         self._generations: dict[tuple[str, str], int] = {}
         self._invocation_counts: dict[str, int] = {}  # counted by the residency owner
 
@@ -203,17 +203,10 @@ class SegmentStore(ScopeCache, PlainContextRestore):
         self._op_logger = op_logger
         logger.debug("segments: op_logger %s", "attached" if op_logger else "cleared")
 
-    def _lock_for(self, session_id: str, scope: str) -> threading.RLock:
-        """Return the per-scope lock for ``(session_id, scope)``, creating it once.
-        The registry lock is held only for the brief lookup/create — never through any
-        op body or disk I/O."""
-        key = (session_id, scope)
-        with self._registry_lock:
-            lk = self._scope_locks.get(key)
-            if lk is None:
-                lk = threading.RLock()
-                self._scope_locks[key] = lk
-            return lk
+    def _lock_for(self, session_id: str, scope: str) -> ScopeLock:
+        """The per-scope (re-entrant) lock handle for ``(session_id, scope)``; the lock
+        leaves the registry once nobody holds it and the scope is not cached."""
+        return self._scope_locks.handle(session_id, scope)
 
     def _recover_clock(self, segs: Iterable[Segment]) -> None:
         """Advance the shared clock past persisted segments (scope -> clock lock order)."""
@@ -621,8 +614,9 @@ class SegmentStore(ScopeCache, PlainContextRestore):
             except Exception as exc:  # noqa: BLE001 - re-raised typed; nothing was cached
                 raise ContextOpLogError(op=op, scope=scope, cause=exc) from exc
         self._commit_scope(session_id, scope, staged, extends=extends)
-        if op != "append":  # an op may rewrite the prefix: a new view generation
-            self._generations[(session_id, scope)] = next_generation()
+        key = (session_id, scope)
+        if op != "append" and key in self._loaded:  # a rewritten prefix: a new generation
+            self._generations[key] = next_generation()  # (uncached: the next view mints)
         for seg in written:  # parallel locator: index every newly-written segment
             self._index.add(session_id, scope, seg)
         logger.debug(
@@ -702,10 +696,16 @@ class SegmentStore(ScopeCache, PlainContextRestore):
             return sorted(pool, key=lambda s: (s.order, s.logical_time))
 
     def context_view(self, session_id: str, scope: str) -> ViewSnapshot:
-        """The scope's live segments with their op generation (appends keep it)."""
+        """The scope's live segments with their op generation (appends keep it); an
+        uncached (transient) read has none to keep, so it gets a fresh one."""
+        key = (session_id, scope)
         with self._lock_for(session_id, scope):
             live = self._live_sorted(self._segs(session_id, scope))
-            return ViewSnapshot(self._generations.get((session_id, scope), 0), tuple(live))
+            if key in self._loaded:
+                generation = self._generations.setdefault(key, next_generation())
+            else:
+                generation = next_generation()
+            return ViewSnapshot(generation, tuple(live))
 
     def has_segments(self, session_id: str, scope: str) -> bool:
         """Whether anything was ever recorded in the scope (any status)."""
@@ -794,7 +794,6 @@ class SegmentStore(ScopeCache, PlainContextRestore):
             count = len(self._segs(session_id, scope))
             assert_store_write_off_loop("segments.delete", scope=scope)
             self._store.delete("segments", self._record_name(session_id, scope))  # store first
-            self._discard_scope(session_id, scope)
-            self._generations[(session_id, scope)] = next_generation()  # no reader keeps a prefix
+            self._discard_scope(session_id, scope)  # a reload takes a fresh view generation
             logger.debug("segments: drop_scope %s/%s dropped=%d", session_id, scope, count)
             return count
