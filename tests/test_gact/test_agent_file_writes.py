@@ -271,6 +271,10 @@ def test_writes_are_recorded_as_applied_diffs_and_undo_restores(tmp_path: Path, 
         assert {d["message_id"] for d in diffs} == {assistant["id"]}
         assert {d["part_id"] for d in diffs} == {p["id"] for p in parts}
         assert "+B" in diffs[0]["unified_diff"]
+        # A created file's tool result carries no diff (the model wrote the content), but
+        # the person sees the whole new file as added lines, on the part and the row.
+        assert diffs[1]["unified_diff"].splitlines()[-1] == "+fresh"
+        assert parts[1]["unified_diff"] == diffs[1]["unified_diff"]
         # The previous text never rides a wire or the tool-call ledger.
         assert "previous_content" not in json.dumps(diffs)
         assert "_clio_previous_content" not in json.dumps(assistant)

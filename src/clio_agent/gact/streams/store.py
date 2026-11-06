@@ -269,6 +269,7 @@ class StreamStore:
         window: int = 1,
         media_type: str = "",
         task: str = "",
+        turn_id: str = "",
     ) -> Stream:
         """Open ``name`` for writing, or reopen it.
 
@@ -320,7 +321,7 @@ class StreamStore:
                 media_type=media_type,
                 task=task,
             )
-            stream.artifact_id = self._mint(stream)
+            stream.artifact_id = self._mint(stream, turn_id)
             self.backend.put(
                 STREAM_KIND, _index_name(workspace_id, name), stream.id.encode("utf-8")
             )
@@ -338,8 +339,13 @@ class StreamStore:
             )
         stream.window = window
 
-    def _mint(self, stream: Stream) -> str:
-        """Register the stream as a ``stream`` artifact: custody clio-core, no file."""
+    def _mint(self, stream: Stream, turn_id: str = "") -> str:
+        """Register the stream as a ``stream`` artifact: custody clio-core, no file.
+
+        ``turn_id`` is the turn that opened it (directly or from its background script):
+        the stream then rides that turn's answer as an artifact card, as a file the turn
+        wrote does.
+        """
         from clio_schemas import ArtifactKind, Custody, Mechanism  # noqa: PLC0415
         from clio_schemas.models import EvidenceClass, IdentityEvidence  # noqa: PLC0415
 
@@ -362,6 +368,7 @@ class StreamStore:
                 "session_id": stream.session_id,
             },
             custody=Custody.CLIO_CORE,
+            turn_id=turn_id,
         )
         return outcome.version.artifact_id if outcome is not None else ""
 

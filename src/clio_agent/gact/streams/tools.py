@@ -42,6 +42,7 @@ def open_stream(name: str, window: int = 1, media_type: str = "") -> dict[str, A
     view_uri updates by itself while someone looks. A background script's streams close
     when it ends; their entries stay readable."""
 
+    from clio_agent.gact import context  # noqa: PLC0415
     from clio_agent.gact.code_task_context import active_background_task  # noqa: PLC0415
 
     app, session_id, workspace_id = _session()
@@ -54,6 +55,7 @@ def open_stream(name: str, window: int = 1, media_type: str = "") -> dict[str, A
             window=int(window),
             media_type=str(media_type or ""),
             task=task.handle if task is not None else "",
+            turn_id=context.active_turn_id(),
         )
     except StreamError as exc:
         return _refusal(exc)

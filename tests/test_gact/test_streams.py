@@ -26,6 +26,7 @@ from clio_agent.gact import context
 from clio_agent.gact.agents.tool_settings import apply_tool_settings
 from clio_agent.gact.app import build_app
 from clio_agent.gact.artifacts.registry import get_registry
+from clio_agent.gact.artifacts.turn_outputs import drain_turn_artifacts
 from clio_agent.gact.code_mode import kernels
 from clio_agent.gact.code_mode import tool as tool_module
 from clio_agent.gact.streams import push
@@ -269,6 +270,20 @@ def test_the_agent_reads_a_stream_or_lists_them_and_stops_one(session: Any) -> N
     assert sid and workspace_id
 
 
+def test_a_stream_opened_in_a_turn_rides_that_turn_s_answer(session: Any) -> None:
+    """The turn that opens a stream lists it on its answer, as a file it wrote is.
+
+    SABOTAGE: drop ``turn_id`` from the stream's mint -> the turn's drain is empty -> red."""
+    app, _workspace_id, sid, *_ = session
+    token = context.set_turn_id_token("turn_streams_1")
+    try:
+        assert open_stream("gauge")["ok"]
+    finally:
+        context.reset(token)
+    drained = drain_turn_artifacts(app, sid, "turn_streams_1")
+    assert [e["name"] for e in drained] == ["gauge"]
+
+
 @pytest.fixture
 def kernel_workspace(tmp_path: Path) -> Iterator[Path]:
     with tool_workspace_context(str(tmp_path)):
@@ -285,7 +300,7 @@ def test_a_script_writes_and_reads_through_the_binding_with_no_call_per_write(
     SABOTAGE: leave ``_clio_host_calls`` out of ``execute_script``'s reserved calls and
     every write fails as an unknown tool."""
 
-    app, workspace_id, *_ = session
+    app, workspace_id, sid, *_ = session
     calls: list[str] = []
 
     def open_tool(name: str, window: int = 1, media_type: str = "") -> Any:
@@ -317,6 +332,7 @@ def test_a_script_writes_and_reads_through_the_binding_with_no_call_per_write(
         agent._clio_kernel_bindings["stream"]["digest"]
         == hashlib.sha256(source.encode()).hexdigest()
     )
+    turn = context.set_turn_id_token("turn_streams_2")
     outcome = tool_module.run_script(
         agent,
         "import asyncio\n"
@@ -331,7 +347,10 @@ def test_a_script_writes_and_reads_through_the_binding_with_no_call_per_write(
         session_id="streams",
         scope="main",
     )
+    context.reset(turn)
     assert outcome["status"] == "completed", outcome
+    # The script's stream rides the turn that ran the script.
+    assert [e["name"] for e in drain_turn_artifacts(app, sid, "turn_streams_2")] == ["kiln"]
     assert calls == ["open_stream", "read_stream"]  # the twenty writes were host calls
     writes, latest_type, uri = outcome["output"].split()
     assert writes == "20" and latest_type == "image/png" and uri.endswith("/kiln@latest")
