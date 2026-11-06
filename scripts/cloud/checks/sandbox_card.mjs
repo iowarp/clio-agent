@@ -53,6 +53,19 @@ export default async function (page, shot) {
   }
   const before = await folderCards(session.id);
   log.push(`folder cards pending after the turn: ${before.length} (${before.map((r) => r.origin).join(",")})`);
+  if (process.env.CARD_ELSEWHERE) {
+    // Viewing another conversation (CARD_ELSEWHERE = "<workspace>/<session>"): the card in
+    // this one should raise the "Response needed" toast there.
+    const [ws, sid] = process.env.CARD_ELSEWHERE.split("/");
+    await page.goto(new URL(`/workspaces/${ws}/sessions/${sid}`, page.url()).toString());
+    await page.waitForTimeout(4000);
+    await shot("toast-elsewhere");
+    log.push(`toast shown elsewhere: ${(await page.getByText("Response needed").count()) > 0}`);
+    await page.goto(
+      new URL(`/workspaces/${workspace.id}/sessions/${session.id}`, page.url()).toString(),
+    );
+    await page.waitForTimeout(4000);
+  }
   await page.waitForTimeout(2000);
   await shot("card-and-notice");
   const notice = page.locator('[data-slot="turn-sandbox-notices"]').first();
