@@ -19,6 +19,12 @@ TUI/HTTP surface aren't tracked here.
 
 ### Changed
 
+- `max_concurrency` caps how many of a workflow's steps are in flight
+  (`0` means no step cap; model-call admission is separate),
+  and `timeout_s` is that step's deadline. A deadline is offered to editors as
+  `step_timeout`. A deadline on a tool target stalls `timeout_requires_task`.
+  Merged `workflow_state` follows definition order, with
+  `workflow_state_conflict` rows when two steps set the same key differently.
 - `get_task_result` returns a result too big to inline as a file: `result` is
   `null`, `result_file` gives its path, size, media type and typed `reason`, and
   `result_excerpt` its beginning. The bound is

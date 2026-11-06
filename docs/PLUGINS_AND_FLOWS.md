@@ -636,8 +636,12 @@ the handle cancels the flow and its subtree.
 
 A workflow is steps as data: each has an `id`, a `target` (a subagent, an
 installed agent, a flow, a tool or `self`), an optional `input`, the steps it
-waits on (`after`), a `description`, `options` (for a flow target only) and a
-`model`.
+waits on (`after`), an optional `timeout_s`
+deadline, a `description`, `options` (for a flow target only) and a `model`.
+The workflow may set `max_concurrency`. `0` means no cap on how many of this
+workflow's steps exist at once, including steps that have finished their model
+call and are still in a tool. The process-wide inference limiter still bounds
+child model calls on its own.
 
 ```python
 from clio_agent.sdk import Step, Workflow
@@ -662,7 +666,13 @@ empty unless the tool returns a mapping with `answer`, so `$<tool step>` and
 `inputs` pass empty text for other tool results.
 
 Every step whose dependencies completed starts at once, with no barrier. A
-step that waits on a failed or cancelled step is skipped. A step whose target
+positive `max_concurrency` is how many of those steps may be in flight; `0`
+starts every ready step. A step that waits on a failed or cancelled step is
+skipped. A `timeout_s` deadline cancels that step's assignment; the
+editors may repair it, and if nobody does the run ends `FlowStall("step_timeout")`.
+A deadline on a tool target stalls `timeout_requires_task`, because a tool call
+has no assignment to cancel. A cancellation that is not the deadline still ends
+the run cancelled. A step whose target
 is a named editor runs with `workflow_add_step(step_id, target, input, after,
 reason, options)` and `workflow_cancel_step(step_id, reason)`; these only
 propose, and the workflow reads the proposals from the editor's settled result,
@@ -679,7 +689,11 @@ an editor adds replaces the failed step for its dependents. If none repairs it,
 the workflow ends with `FlowStall("step_failed")`. A cancelled step ends the run
 cancelled. A completed workflow returns the answers of its final steps (then
 the earlier ones), `results` (each step's answer), `workflow` (steps with
-status and handle) and the merged `workflow_state`.
+status and handle) and the merged `workflow_state`. That merge walks completed
+steps in definition order, so the winner of a key does not depend on which
+child finished first. A key two steps set differently is a `conflicts` row and
+a `workflow_state_conflict` event (`key`, `earlier`, `later`, and the winner's
+definition `index`). `gather` still merges in call order.
 
 ### council and arena
 

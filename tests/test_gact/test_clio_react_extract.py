@@ -66,6 +66,25 @@ def test_outputs_the_loop_did_not_produce_are_extracted_after_enough_steps(
     assert "look 3" in str(engine.requests[-1].messages), "the extract sees the trajectory"
 
 
+def test_a_workflow_step_extracts_only_workflow_state_on_a_short_answer(
+    extract_config: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    extract_config()
+    monkeypatch.setattr(
+        "clio_agent.gact.agents.clio_react.active_workflow_step",
+        lambda: {"run": "r", "step": "a"},
+    )
+    pred, engine = _run(
+        [Reply(text="from-a"), _extracted(workflow_state='{"shared": "from-a"}')],
+        "question -> answer, summary, workflow_state",
+    )
+
+    assert pred.answer == "from-a"
+    assert pred.workflow_state == '{"shared": "from-a"}'
+    assert not getattr(pred, "summary", None)
+    assert len(engine.requests) == 2
+
+
 def test_a_short_loop_does_not_extract(extract_config: Any) -> None:
     extract_config()
     pred, engine = _run([*_steps(2), Reply(text="The answer.")], "question -> answer, summary")

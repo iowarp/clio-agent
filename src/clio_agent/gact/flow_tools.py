@@ -292,6 +292,11 @@ def build_run_workflow_tool() -> Any:
             },
             "input": {"description": "Text or an object; $task and $<step> refer to inputs."},
             "after": {"type": "array", "items": {"type": "string"}},
+            "timeout_s": {
+                "type": "number",
+                "minimum": 0,
+                "description": "Seconds before this step is cancelled for its deadline. 0 means none.",
+            },
             "options": {
                 "type": "object",
                 "description": "For a flow target: its options, e.g. arena contestants.",
@@ -311,7 +316,9 @@ def build_run_workflow_tool() -> Any:
         desc=(
             "Start a workflow (steps with targets, inputs and dependencies) as owned work and return "
             "its task handle at acceptance. Each step starts as soon as the steps it waits on "
-            "finish. Named editors may add or cancel steps while it runs, within max_added_steps and "
+            "finish. max_concurrency limits how many run at once, and "
+            "timeout_s is a step's deadline. Named editors may add or cancel steps while it runs, "
+            "within max_added_steps and "
             "max_edit_rounds when set; approve_edits asks the user before each added step runs. "
             "A step may run a flow that is installed but not trusted yet (run_flow lists them): "
             "starting the workflow asks the person about it first."
@@ -319,7 +326,17 @@ def build_run_workflow_tool() -> Any:
         args={
             "workflow": {
                 "type": "object",
-                "properties": {"steps": {"type": "array", "items": step_schema}},
+                "properties": {
+                    "steps": {"type": "array", "items": step_schema},
+                    "max_concurrency": {
+                        "type": "integer",
+                        "minimum": 0,
+                        "description": (
+                            "How many of this workflow's steps may be in flight at once. "
+                            "0 means no step cap. Model-call admission is separate."
+                        ),
+                    },
+                },
                 "required": ["steps"],
             },
             "task": {"type": "string", "default": ""},

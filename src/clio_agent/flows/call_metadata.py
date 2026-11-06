@@ -50,6 +50,24 @@ def child_session_metadata(call: "FlowCall", depth: int, run_id: str) -> dict[st
     return metadata
 
 
+def active_workflow_step() -> dict[str, Any] | None:
+    """The workflow step the active session was spawned as, if this turn is one.
+
+    The flow records that on the child as ``workflow_step_of``. A repair call is
+    not a step, so it does not carry the marker.
+    """
+
+    from clio_agent.gact import context as gact_context  # noqa: PLC0415
+
+    app = gact_context.active_app()
+    sessions = getattr(getattr(app, "state", None), "sessions", None)
+    if sessions is None:
+        return None
+    session = sessions.get(gact_context.active_session_id())
+    step = (getattr(session, "metadata", None) or {}).get("workflow_step_of")
+    return dict(step) if isinstance(step, dict) else None
+
+
 def child_model(app: Any, handle: str) -> str:
     """``account/model`` the child of task ``handle`` runs on, or ``""`` when unknown."""
 
@@ -61,4 +79,4 @@ def child_model(app: Any, handle: str) -> str:
     return ""
 
 
-__all__ = ["child_model", "child_session_metadata"]
+__all__ = ["active_workflow_step", "child_model", "child_session_metadata"]
