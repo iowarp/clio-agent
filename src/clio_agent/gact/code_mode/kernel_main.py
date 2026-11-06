@@ -52,6 +52,24 @@ class ToolError(Exception):
     """A tool call made by the script failed; the message is the tool's error."""
 
 
+def _wire(value: Any) -> Any:
+    """A value JSON cannot hold, as one it can: a path as its string, a numpy scalar as
+    its Python number.
+
+    Raises:
+        TypeError: Anything else (it reaches the script, which can convert it).
+    """
+    if isinstance(value, os.PathLike):
+        return os.fspath(value)
+    numpy = sys.modules.get("numpy")
+    if numpy is not None and isinstance(value, numpy.generic):
+        return value.item()
+    raise TypeError(
+        f"a {type(value).__name__} cannot be sent to a tool; pass text, numbers, booleans, "
+        "lists or dicts"
+    )
+
+
 class _Host:
     """The protocol channel: writes to the saved stdout, futures for pending calls."""
 
@@ -62,20 +80,30 @@ class _Host:
         self.next_id = 0
 
     def send(self, message: dict[str, Any]) -> None:
-        line = json.dumps(message, default=repr)
+        line = json.dumps(message, default=_wire)
         with self.lock:
             self.out.write(line + "\n")
             self.out.flush()
 
-    async def call(self, tool: str, args: dict[str, Any]) -> Any:
-        loop = asyncio.get_running_loop()
+    def call(self, tool: str, args: dict[str, Any]) -> asyncio.Future[Any]:
+        """Send the call now; the future settles with its answer. A call is made when the
+        script makes it, so one it does not await still happens (and is waited for)."""
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:  # a script with no await runs outside the loop; the kernel's
+            loop = asyncio.get_event_loop()
         future: asyncio.Future[Any] = loop.create_future()
         with self.lock:
             self.next_id += 1
             call_id = self.next_id
             self.pending[call_id] = (loop, future)
-        self.send({"type": "call", "id": call_id, "tool": tool, "args": args})
-        return await future
+        try:
+            self.send({"type": "call", "id": call_id, "tool": tool, "args": args})
+        except TypeError:  # an argument JSON cannot hold: the script's error, nothing sent
+            with self.lock:
+                self.pending.pop(call_id, None)
+            raise
+        return future
 
     def answer(self, message: dict[str, Any]) -> None:
         with self.lock:
@@ -104,8 +132,8 @@ class _Host:
 def _function(host: _Host, tool: str, spec: dict[str, Any]) -> Any:
     """One callable tool: ``await tools.fs.read_file(path=...)``."""
 
-    async def stub(**kwargs: Any) -> Any:
-        return await host.call(tool, kwargs)
+    def stub(**kwargs: Any) -> asyncio.Future[Any]:
+        return host.call(tool, kwargs)
 
     stub.__name__ = stub.__qualname__ = str(spec.get("function") or tool)
     stub.__doc__ = f"{spec.get('signature') or tool}\n\n{spec.get('doc') or ''}".strip()
@@ -137,13 +165,13 @@ class _Tools(_Namespace):
             if group:
                 setattr(self, group, target)
 
-    async def search(self, query: str, limit: int = 5) -> Any:
+    def search(self, query: str, limit: int = 5) -> asyncio.Future[Any]:
         """Find tools by name or keywords (the same catalog as search_tools)."""
-        return await self._host.call("__search__", {"query": query, "limit": limit})
+        return self._host.call("__search__", {"query": query, "limit": limit})
 
-    async def call(self, name: str, **args: Any) -> Any:
+    def call(self, name: str, /, **args: Any) -> asyncio.Future[Any]:
         """Call a tool by its full name, for names found with tools.search."""
-        return await self._host.call(name, args)
+        return self._host.call(name, args)
 
 
 class _Bindings:
@@ -199,7 +227,9 @@ def _compile(code: str) -> tuple[Any, Any]:
 
 def _run(loop: asyncio.AbstractEventLoop, code_object: Any, namespace: dict[str, Any]) -> Any:
     result = eval(code_object, namespace)  # noqa: S307 - running the agent's script is the point
-    if inspect.iscoroutine(result):
+    # A final call left un-awaited (``tools.call``, ``task.notify`` return futures) is
+    # awaited like a coroutine, so its value is the call's result, not a pending future.
+    if inspect.iscoroutine(result) or isinstance(result, asyncio.Future):
         result = loop.run_until_complete(result)
     return result
 
@@ -208,7 +238,7 @@ def _stop_leftovers(loop: asyncio.AbstractEventLoop) -> int:
     """Cancel the tasks a script started and left running; how many there were.
 
     The loop outlives the script, so a task a failed ``gather`` left behind would
-    otherwise keep calling tools during the next script, against that script's budget.
+    otherwise keep calling tools while the next script runs, as if that script made them.
     A script's tasks end with it; its variables persist.
     """
     pending = [task for task in asyncio.all_tasks(loop) if not task.done()]
@@ -237,13 +267,16 @@ def _restore(saved: tuple[int, int]) -> None:
     os.close(saved[1])
 
 
-def _read_output(capture: Any, limit: int = OUTPUT_LIMIT) -> str:
+def _read_output(capture: Any, limit: int = OUTPUT_LIMIT, *, keep: bool = False) -> str:
+    """The script's output, its first ``limit`` bytes; a kept file (a background script's
+    output file) is left whole for the person and the agent to read."""
     capture.flush()
     size = capture.seek(0, os.SEEK_END)
     capture.seek(0)
     data = capture.read(limit)
-    capture.seek(0)
-    capture.truncate()
+    if not keep:
+        capture.seek(0)
+        capture.truncate()
     text = data.decode("utf-8", errors="replace")
     if size > limit:
         text += f"\n[output cut at {limit:,} of {size:,} bytes]"
@@ -267,6 +300,8 @@ def _execute(
     capture: Any,
     host: _Host | None = None,
     output_limit: int = OUTPUT_LIMIT,
+    *,
+    keep: bool = False,
 ) -> dict[str, Any]:
     saved = _redirect(capture.fileno())
     ok, value, error = True, None, ""
@@ -288,7 +323,7 @@ def _execute(
         if host is not None:
             host.forget_settled()
         _restore(saved)
-    output = _read_output(capture, output_limit)
+    output = _read_output(capture, output_limit, keep=keep)
     if stopped:
         output += (
             f"\n[{stopped} task{'s' if stopped != 1 else ''} this script started "
@@ -331,7 +366,12 @@ def main() -> None:
             host.send({"type": "bound", "failed": bindings.bind(message)})
         elif message.get("type") == "exec":
             code = str(message.get("code") or "")
-            done = _execute(loop, namespace, code, capture, host, output_limit)
+            path = str(message.get("output_path") or "")
+            if path:  # a background script: output goes to its file as it is written
+                with open(path, "ab+") as written:
+                    done = _execute(loop, namespace, code, written, host, output_limit, keep=True)
+            else:
+                done = _execute(loop, namespace, code, capture, host, output_limit)
             host.send({"type": "done", "id": message.get("id"), **done})
 
 

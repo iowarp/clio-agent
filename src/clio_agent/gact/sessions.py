@@ -20,7 +20,7 @@ import threading
 import uuid
 import weakref
 from collections import OrderedDict
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Iterable, Mapping
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -605,12 +605,12 @@ class SessionStore:
         with self._lock:
             return self._sessions(self._records.select(query))
 
-    def related(self, *, family_of: str = "") -> "builtins.list[Session]":
-        """``family_of``'s conversation tree, else the sessions waiting on a person
-        and their ancestors (:meth:`SessionRecords.related_ids`), by index only."""
-
+    def related(
+        self, *, family_of: str = "", waiting: Iterable[str] = ()
+    ) -> "builtins.list[Session]":
+        """``family_of``'s tree, else who waits on a person (:meth:`SessionRecords.related_ids`)."""
         with self._lock:
-            return self._sessions(self._records.related_ids(family_of))
+            return self._sessions(self._records.related_ids(family_of, waiting))
 
     def import_legacy(self) -> dict[str, Any]:
         """Import the legacy ``sessions.json`` (the store migration's body; idempotent)."""

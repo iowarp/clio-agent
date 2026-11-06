@@ -13,6 +13,7 @@ from urllib.parse import quote
 
 from clio_agent import paths
 from clio_agent.platform_paths import path_is_within
+from clio_agent.runtime.check_scope import once
 
 
 def _read_only_database_uri(database: PurePath) -> str:
@@ -59,6 +60,11 @@ def _ledger_signature(database: Path) -> tuple[Any, ...]:
 
 
 def _source_records() -> list[dict]:
+    """The ledger's source records, read once per access decision (``check_scope``)."""
+    return list(once(("storage.ledger",), _read_source_records))
+
+
+def _read_source_records() -> list[dict]:
     global _LEDGER
     database = paths.user_data_dir() / "connected-sources" / "sources.sqlite3"
     if not database.exists():
@@ -84,6 +90,12 @@ def _source_records() -> list[dict]:
 
 def materialized_read_roots(workspace_root: Path) -> tuple[Path, ...]:
     """Grant read access to approved copies for this workspace without granting writes."""
+    return once(
+        ("storage.materialized", str(workspace_root)), lambda: _materialized(workspace_root)
+    )
+
+
+def _materialized(workspace_root: Path) -> tuple[Path, ...]:
     roots = []
     for row in _source_records():
         source = row["source"]
@@ -111,8 +123,12 @@ def storage_access_roots() -> tuple[tuple[Path, ...], tuple[Path, ...]]:
 
     Read the durable owner ledger so separately spawned filesystem servers see
     the same decisions. An unreadable ledger refuses access instead of silently
-    dropping a read-only decision.
+    dropping a read-only decision. Derived once per access decision (``check_scope``).
     """
+    return once(("storage.roots",), _storage_access_roots)
+
+
+def _storage_access_roots() -> tuple[tuple[Path, ...], tuple[Path, ...]]:
     try:
         private = paths.user_config_dir() / "storage-auth"
         data = paths.user_data_dir() / "connected-sources"

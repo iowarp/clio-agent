@@ -89,4 +89,4 @@ def test_summary_passes_the_pinned_lm_and_fails_typed_when_unresolvable(
 def _plan(transcript: str) -> Any:
     from clio_agent.gact import compaction
 
-    return compaction._ScopePlan("main", (), frozenset(), transcript)
+    return compaction._ScopePlan("main", (), frozenset(), frozenset(), transcript)

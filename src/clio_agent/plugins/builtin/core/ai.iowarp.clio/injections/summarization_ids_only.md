@@ -8,4 +8,4 @@ x_trigger: source summarization; ends the summary text of every compaction (auto
 x_variables: recall_tool, compaction_id
 x_required: a summary stands in for the history it folded; this line is the only way the agent learns that the originals still exist and how to get them back
 ---
-[The steps this summary replaced are kept in full: {{recall_tool}}(ids=["{{compaction_id}}"]) returns them byte-exact; text search is unavailable here. Use ids, not a query.]
+[The steps this summary replaced are kept in full: {{recall_tool}}(ids=["{{compaction_id}}"]) returns the text they recorded; text search is unavailable here. Use ids, not a query.]

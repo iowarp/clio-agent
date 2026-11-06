@@ -3,8 +3,9 @@
 The script runs in the scope's kernel (:mod:`.kernels`) with ``tools`` bound to stubs
 of the agent's tools (:mod:`.stubs`); its tool calls go through :mod:`.dispatch`. The
 model sees only what the script prints, its error, and the value of a final
-expression, bounded like every result (12,000 characters, the rest spilled to a file),
-plus how many tool calls it made.
+expression, bounded like every result (the room one result has in the model's context
+window, :mod:`clio_agent.tools.result_room`; the rest is saved to a file), plus how many
+tool calls it made.
 
 Running a script is one non-read call, approved before it runs with the code shown
 (``run_code`` asks the permission gate itself, as native tools that act do). Its nested
@@ -13,8 +14,10 @@ it runs only where the sandbox enforces the write fence, in a kernel that may wr
 the session's scratch folder and temp (its nested calls still meet the plan ACL), else
 it refuses with ``code_plan_mode_unconfined``.
 
-A script that runs past ``code.call_timeout_s`` (waiting for a person's answer does
-not count), or is cancelled, stops its kernel: the next script starts a fresh one.
+Nothing bounds a script's time or its number of calls: it ends when it finishes or when
+the agent or the person cancels it (taskable run_code CT3; CLIO is a human-observed
+agent, so stopping work is the person's decision). A cancelled script stops its kernel,
+and the next script starts a fresh one.
 """
 
 from __future__ import annotations
@@ -22,7 +25,8 @@ from __future__ import annotations
 import contextvars
 import queue
 import time
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
@@ -31,15 +35,23 @@ from clio_agent.runtime import trace
 
 __all__ = [
     "CODE_PLAN_MODE_UNCONFINED",
+    "CODE_SCRIPT_DENIED",
+    "CODE_SCRIPT_NOT_ALLOWED",
     "build_run_code_tool",
-    "call_timeout_s",
     "finalize_run_code",
     "poll_s",
+    "run_code_unavailable",
     "run_script",
 ]
 
 #: Typed refusal: plan mode, and the sandbox does not enforce the write fence.
 CODE_PLAN_MODE_UNCONFINED = "code_plan_mode_unconfined"
+#: Typed refusal: the gate denied the script with its own reason (a deny policy, the plan
+#: ACL, a read-only session), which the model is given.
+CODE_SCRIPT_DENIED = "code_script_denied"
+#: Typed refusal: the gate did not allow the script and gave no reason (the person
+#: declined it, or a rule denies run_code).
+CODE_SCRIPT_NOT_ALLOWED = "code_script_not_allowed"
 _DESCRIPTION = (
     "Run Python in a persistent kernel that can call your tools: `await "
     "tools.<group>.<tool>(arg=...)` returns the tool's structured result (a dict, list or "
@@ -49,16 +61,16 @@ _DESCRIPTION = (
     "output, the value of a final expression and the call count, not the tools' results. "
     "The kernel is ordinary Python that can read your workspace, so a script can also open "
     "and parse many files itself (pathlib, ast, json, csv) in one process. "
-    "One call or a short dependent chain is cheaper as direct calls. A script makes at most "
-    "{budget} tool calls; its variables persist into the next script, so larger work "
-    "continues there, and tasks it started stop when it ends. `tools.search('words')` "
+    "One call or a short dependent chain is cheaper as direct calls. Its variables persist "
+    "into the next script, and tasks it started stop when it ends. `tools.search('words')` "
     "finds tools; `help(tools.<group>.<tool>)` shows arguments; a failed call raises "
-    "ToolError. The script is approved before it runs."
+    "ToolError; call a tool it finds with `await tools.call(name, arg=...)`. The script is "
+    "approved before it runs."
 )
 
 
 def poll_s() -> float:
-    """Seconds between checks for cancellation and timeout while a script runs.
+    """Seconds between checks for cancellation while a script runs.
 
     Raises:
         ValueError: The configured interval is not positive.
@@ -67,13 +79,6 @@ def poll_s() -> float:
     if not value > 0:
         raise ValueError(f"code.poll_s must be positive, not {value}")
     return value
-
-
-def call_timeout_s() -> float:
-    """Seconds one script may run (time waiting for a person's answer excluded)."""
-    return conf.resolve(
-        "code.call_timeout_s", env="CLIO_CODE_CALL_TIMEOUT_S", default=600.0, cast=float
-    )
 
 
 class CodeError(RuntimeError):
@@ -91,25 +96,47 @@ def _approve(app: Any, code: str) -> None:
     first = next((line.strip() for line in code.splitlines() if line.strip()), "")
     summary = f"Run a Python script ({len(code.splitlines())} lines): {first}"[:500]
     context = {"kind": "native", "summary": summary}
-    if _invoke_permission_gate(gate, "run_code", {"code": code}, context) != "allow":
-        raise PermissionError("The script was not approved, so it did not run.")
+    decision = _invoke_permission_gate(gate, "run_code", {"code": code}, context)
+    if decision == "allow":
+        return
+    # The gate's own reason when it gave one (a deny policy, the plan ACL, a read-only
+    # session's ACL), as the execution boundary gives it for any other tool.
+    deny_message = str(getattr(decision, "deny_message", "") or "")
+    reason = CODE_SCRIPT_DENIED if deny_message else CODE_SCRIPT_NOT_ALLOWED
+    trace.event("CODE", "run_code refused reason=%s", reason)
+    raise PermissionError(
+        f"{deny_message} The script did not run ({reason})."
+        if deny_message
+        else "The script did not run: it was not approved, or a permission rule denies "
+        f"run_code ({reason})."
+    )
+
+
+def run_code_unavailable(app: Any, session_id: str) -> str:
+    """Why ``run_code`` cannot run a script in this session now (``""`` when it can):
+    :data:`CODE_PLAN_MODE_UNCONFINED` in plan mode on a host whose sandbox does not
+    enforce the write fence. The tool settings then offer ``code`` tools directly."""
+    from clio_agent.runtime import sandbox  # noqa: PLC0415
+
+    sessions = getattr(getattr(app, "state", None), "sessions", None)
+    session = sessions.get(session_id) if sessions is not None and session_id else None
+    if str(getattr(session, "mode", "") or "") != "plan" or sandbox.fence_enforced():
+        return ""
+    return CODE_PLAN_MODE_UNCONFINED
 
 
 def _plan_mode_refusal(app: Any, session_id: str) -> bool:
     """Whether the session is in plan mode (the script then runs read-only); refuses when
     plan mode has no enforced fence."""
-    from clio_agent.runtime import sandbox  # noqa: PLC0415
-
+    if run_code_unavailable(app, session_id):
+        raise CodeError(
+            "run_code is not available in Plan mode here: this host's sandbox does not "
+            "enforce the write fence, so nothing would keep a script read-only. Call the "
+            "read tools directly; tools offered only to scripts can be called directly too.",
+            CODE_PLAN_MODE_UNCONFINED,
+        )
     session = app.state.sessions.get(session_id)
-    if str(getattr(session, "mode", "") or "") != "plan":
-        return False
-    if sandbox.fence_enforced():
-        return True
-    raise CodeError(
-        "run_code is not available in Plan mode here: this host's sandbox does not enforce "
-        "the write fence, so nothing would keep a script read-only. Use the read tools.",
-        CODE_PLAN_MODE_UNCONFINED,
-    )
+    return str(getattr(session, "mode", "") or "") == "plan"
 
 
 def _workspace() -> Path:
@@ -144,24 +171,39 @@ def _callers(agent: Any) -> tuple[frozenset[str], frozenset[str]]:
     )
 
 
-def run_script(
-    agent: Any, code: str, *, session_id: str, scope: str, read_only: bool = False
-) -> dict[str, Any]:
-    """Run ``code`` in the scope's kernel (a read-only one in plan mode); the outcome."""
-    from clio_agent.agent import cancellation_requested  # noqa: PLC0415
+@dataclass(frozen=True)
+class PreparedScript:
+    """A script ready to run: its code, its tools and the context its nested calls use
+    (the ``run_code`` call's grant and parent call id are bound in it)."""
+
+    agent: Any
+    code: str
+    context: contextvars.Context
+    servers: tuple[str, ...]
+    direct_only: frozenset[str]
+    code_only: frozenset[str]
+
+
+def _session_approval_mode() -> str:
+    """The approval mode of the session approving the script now ("" without one)."""
+    from clio_agent.gact import context as gact_context  # noqa: PLC0415
+
+    app, sid = gact_context.active_app(), gact_context.active_session_id()
+    session = app.state.sessions.get(sid) if app is not None and sid else None
+    return str(getattr(session, "approval_mode", "") or "")
+
+
+def prepare_script(agent: Any, code: str) -> PreparedScript:
+    """Capture the calling ``run_code`` call's grant and context for ``code``'s nested calls."""
     from clio_agent.gact.artifacts.observer_bridge import current_call_id  # noqa: PLC0415
-    from clio_agent.gact.code_mode import kernels  # noqa: PLC0415
-    from clio_agent.gact.code_mode.dispatch import Dispatcher  # noqa: PLC0415
     from clio_agent.gact.code_mode.grants import (  # noqa: PLC0415
         ScriptGrant,
         bind_grant,
         reset_grant,
     )
-    from clio_agent.gact.code_mode.stubs import stub_table  # noqa: PLC0415
     from clio_agent.gact.tool_call_nesting import PARENT_CALL_ID  # noqa: PLC0415
 
-    servers = tuple(getattr(agent, "_clio_tool_servers", ()) or ())
-    grant = ScriptGrant(current_call_id(), code)
+    grant = ScriptGrant(current_call_id(), code, approval_mode=_session_approval_mode())
     grant_token, parent_token = bind_grant(grant), PARENT_CALL_ID.set(grant.call_id)
     try:
         context = contextvars.copy_context()
@@ -169,32 +211,65 @@ def run_script(
         PARENT_CALL_ID.reset(parent_token)
         reset_grant(grant_token)
     direct_only, code_only = _callers(agent)
-    callable_tools = {n: t for n, t in agent.tools.items() if n not in direct_only}
-    dispatcher = Dispatcher(callable_tools, servers, context, _search(callable_tools))
-    kernel = kernels.kernel_for(session_id, scope, _workspace(), read_only=read_only)
+    servers = tuple(getattr(agent, "_clio_tool_servers", ()) or ())
+    return PreparedScript(agent, code, context, servers, direct_only, code_only)
+
+
+def execute_script(
+    prepared: PreparedScript,
+    kernel: Any,
+    cancelled: Callable[[], bool],
+    live: dict[str, Any] | None = None,
+    *,
+    bindings: Mapping[str, dict[str, str]] | None = None,
+    reserved: Mapping[str, Callable[[Mapping[str, Any]], Any]] | None = None,
+    output_path: str = "",
+) -> dict[str, Any]:
+    """Run a prepared script in ``kernel`` until it finishes or ``cancelled()`` turns true;
+    a cancelled or exited kernel is discarded. The outcome, never raising for a cancel."""
+    from clio_agent.gact.agents.tool_settings import call_refusal  # noqa: PLC0415
+    from clio_agent.gact.code_mode import kernels  # noqa: PLC0415
+    from clio_agent.gact.code_mode.dispatch import Dispatcher  # noqa: PLC0415
+    from clio_agent.gact.code_mode.stubs import stub_table  # noqa: PLC0415
+
+    agent, code = prepared.agent, prepared.code
+    callable_tools = {n: t for n, t in agent.tools.items() if n not in prepared.direct_only}
+    # A plugin binding's host calls (``_clio_host_calls``) answer beside the task's own.
+    host_calls = {**dict(getattr(agent, "_clio_host_calls", None) or {}), **(reserved or {})}
+    dispatcher = Dispatcher(
+        callable_tools,
+        prepared.servers,
+        prepared.context,
+        _search(callable_tools),
+        host_calls,
+        direct_only=prepared.direct_only,
+        refuse=lambda name: call_refusal(agent, name),
+    )
+    if live is not None:
+        live["dispatcher"] = dispatcher  # a background task's status reads its call count
     outcome: dict[str, Any] = {"status": "failed", "output": "", "value": None, "error": ""}
+    finished = False
     started = time.monotonic()
-    limit, poll = call_timeout_s(), poll_s()
+    poll = poll_s()
     try:
         with kernel.lock:
             kernel.bind(
-                stub_table(agent.tools, servers, direct_only=direct_only, code_only=code_only),
-                dict(getattr(agent, "_clio_kernel_bindings", None) or {}),
+                stub_table(
+                    agent.tools,
+                    prepared.servers,
+                    direct_only=prepared.direct_only,
+                    code_only=prepared.code_only,
+                ),
+                {**dict(getattr(agent, "_clio_kernel_bindings", None) or {}), **(bindings or {})},
             )
-            kernel.send({"type": "exec", "id": 1, "code": code})
+            kernel.send(
+                {"type": "exec", "id": 1, "code": code}
+                | ({"output_path": output_path} if output_path else {})
+            )
             while True:
-                if cancellation_requested():
+                if cancelled():
                     kernels.discard(kernel, "cancelled")
                     outcome.update(status="cancelled", error="The script was stopped.")
-                    break
-                elapsed = time.monotonic() - started - grant.waited_s
-                if limit > 0 and elapsed > limit and not grant.waiting:
-                    kernels.discard(kernel, "timeout")
-                    outcome.update(
-                        status="timed_out",
-                        error=f"The script ran past {limit:g} s (code.call_timeout_s) and was "
-                        "stopped; its variables are gone, so the next script starts fresh.",
-                    )
                     break
                 try:
                     message = kernel.receive(poll)
@@ -207,6 +282,7 @@ def run_script(
                 if message.get("type") == "call":
                     dispatcher.submit(message, kernel.send)
                 elif message.get("type") == "done":
+                    finished = True
                     outcome.update(
                         status="completed" if message.get("ok") else "failed",
                         output=str(message.get("output") or ""),
@@ -215,7 +291,7 @@ def run_script(
                     )
                     break
     finally:
-        dispatcher.close()
+        dispatcher.close(finished=finished, cancelled=cancelled)  # a Cancel ends its wait
         kernel.last_used = time.monotonic()
     calls = list(dispatcher.records)
     outcome.update(
@@ -226,6 +302,12 @@ def run_script(
         duration_ms=int((time.monotonic() - started) * 1000),
         python=kernel.python,
     )
+    if outcome["status"] == "failed" and (boundary := _boundary(kernel, outcome)):
+        outcome["boundary"] = boundary  # the fence refused a write: which folder, and how
+    if kernel.replaced:  # the scope's earlier kernel, and its variables, are gone
+        outcome["new_kernel"], kernel.replaced = kernel.replaced, ""
+    if kernel.read_only:  # plan mode: a write elsewhere is refused by the fence
+        outcome["write_roots"] = [str(root) for root in kernel.write_roots]
     trace.event(
         "CODE",
         "run_code status=%s calls=%d failed=%d ms=%d",
@@ -234,6 +316,35 @@ def run_script(
         outcome["failed_calls"],
         outcome["duration_ms"],
     )
+    return outcome
+
+
+def _boundary(kernel: Any, outcome: Mapping[str, Any]) -> dict[str, Any] | None:
+    """A failed script's sandbox-boundary diagnosis (#1905), against the roots its kernel's
+    fence was given; a plan-mode kernel's territory is narrowed, so no grant is offered."""
+    from clio_agent.runtime.sandbox_diagnosis import diagnose_confined  # noqa: PLC0415
+
+    return diagnose_confined(
+        getattr(kernel, "confinement", None),
+        exit_code=None,
+        stderr=str(outcome.get("error") or ""),
+        command=str(outcome.get("code") or ""),
+        cwd=getattr(kernel, "workspace", None),
+        seam="script",
+        narrowed=bool(getattr(kernel, "read_only", False)),
+    )
+
+
+def run_script(
+    agent: Any, code: str, *, session_id: str, scope: str, read_only: bool = False
+) -> dict[str, Any]:
+    """Run ``code`` in the scope's kernel (a read-only one in plan mode); the outcome."""
+    from clio_agent.agent import cancellation_requested  # noqa: PLC0415
+    from clio_agent.gact.code_mode import kernels  # noqa: PLC0415
+
+    prepared = prepare_script(agent, code)
+    kernel = kernels.kernel_for(session_id, scope, _workspace(), read_only=read_only)
+    outcome = execute_script(prepared, kernel, cancellation_requested)
     if outcome["status"] == "cancelled":
         from clio_agent.gact.agents.clio_react import _turn_cancelled  # noqa: PLC0415
 
@@ -241,13 +352,63 @@ def run_script(
     return outcome
 
 
+def launch_background(
+    app: Any, agent: Any, code: str, label: str, *, session_id: str, read_only: bool
+) -> dict[str, Any]:
+    """Hand an approved script to the code root; the task's acceptance receipt (CT2)."""
+    import asyncio  # noqa: PLC0415
+
+    from clio_agent.gact.native_code import CodeLaunch, stage_launch, take_launch  # noqa: PLC0415
+
+    prepared = prepare_script(agent, code)
+    key = stage_launch(CodeLaunch(prepared, session_id, _workspace(), read_only))
+    name = label.strip() or next((ln.strip() for ln in code.splitlines() if ln.strip()), "")
+    arguments = {
+        "code": code,
+        "launch": key,
+        "label": name[:80],  # the task row's title and the name its notifies carry
+        "_clio_task_description": f"Background script: {name}"[:200],
+    }
+    boundary = app.state.builtin_boundary
+    coroutine = boundary.native_call("run_code", arguments, contextvars.copy_context())
+    try:
+        receipt = asyncio.run_coroutine_threadsafe(coroutine, boundary._loop).result()
+    except BaseException:
+        take_launch(key)  # never accepted: the staged script must not linger
+        raise
+    return dict(receipt) if isinstance(receipt, Mapping) else {"receipt": receipt}
+
+
+def background_text(receipt: Mapping[str, Any], label: str) -> str:
+    """What the model reads when a background script is accepted."""
+    handle = str(receipt.get("handle") or "")
+    named = f" ({label})" if label else ""
+    return (
+        f"Started in the background as task {handle}{named}. It runs in its own kernel until "
+        "it finishes or is cancelled; wait_tasks, observe_tasks, get_task_result and "
+        "cancel_tasks take its handle, and its result arrives when it settles."
+    )
+
+
+#: Why a script ran in a new kernel, in words (:attr:`.kernels.Kernel.replaced`).
+_NEW_KERNEL_WORDS = {
+    "replaced_dead": "the previous one had stopped",
+    "replaced_mode_changed": "Plan mode began or ended",
+    "replaced_workspace_changed": "the workspace changed",
+}
+
+
 def model_text(outcome: Mapping[str, Any]) -> str:
-    """What the model reads: output, error, final value, then the call count."""
+    """What the model reads: output, error (and why the sandbox refused it), final value,
+    then the call count; first that a new kernel replaced the earlier one, and in plan mode
+    where the script may write."""
     parts = []
     if outcome.get("output"):
         parts.append(str(outcome["output"]).rstrip())
     if outcome.get("error"):
         parts.append(f"Error:\n{str(outcome['error']).rstrip()}")
+    if isinstance(boundary := outcome.get("boundary"), Mapping) and boundary.get("message"):
+        parts.append(str(boundary["message"]))  # why the sandbox refused, and the next step
     if outcome.get("value") is not None:
         parts.append(f"Value: {outcome['value']}")
     calls, failed = int(outcome.get("calls") or 0), int(outcome.get("failed_calls") or 0)
@@ -258,8 +419,14 @@ def model_text(outcome: Mapping[str, Any]) -> str:
         f", {failed} failed" if failed else ""
     )
     parts.append(f"({status}; {count}.)")
+    if "write_roots" in outcome:
+        roots = " and ".join(f"`{root}`" for root in outcome["write_roots"]) or "nowhere"
+        parts.append(f"(Plan mode: this script may write only in {roots}.)")
     if not outcome.get("output") and outcome.get("value") is None and not outcome.get("error"):
         parts.insert(0, "The script printed nothing.")
+    if new := str(outcome.get("new_kernel") or ""):
+        words = _NEW_KERNEL_WORDS.get(new, new)
+        parts.insert(0, f"(New kernel: {words}; earlier variables are gone.)")
     return "\n\n".join(parts)
 
 
@@ -271,11 +438,10 @@ def build_run_code_tool() -> Any:
         declare_structured_content,
         native_tool,
     )
-    from clio_agent.gact.code_mode.dispatch import max_nested_calls  # noqa: PLC0415
     from clio_agent.gact.code_mode.presentation import present, starting  # noqa: PLC0415
     from clio_agent.tools.tool_settings import self_gated  # noqa: PLC0415
 
-    def run_code(code: str) -> str:
+    def run_code(code: str, background: bool = False, label: str = "") -> str:
         """Run a Python script that can call this agent's tools."""
         app, session_id = _ctx.active_app(), _ctx.active_session_id() or ""
         loop = active_loop()
@@ -285,6 +451,12 @@ def build_run_code_tool() -> Any:
             raise CodeError("code is empty.", "code_empty")
         read_only = _plan_mode_refusal(app, session_id)
         _approve(app, code)
+        if background:
+            receipt = launch_background(
+                app, loop.agent, code, label, session_id=session_id, read_only=read_only
+            )
+            declare_structured_content(receipt)
+            return background_text(receipt, label)
         scope = _ctx.run_keyed_scope(_ctx.active_react_scope() or "")
         outcome = run_script(
             loop.agent, code, session_id=session_id, scope=scope, read_only=read_only
@@ -301,9 +473,22 @@ def build_run_code_tool() -> Any:
             presentation_start=starting,
             domain="workflows",
             title="Run code",
-            desc=_DESCRIPTION.format(budget=max_nested_calls()),
+            desc=_DESCRIPTION,
             args={
-                "code": {"type": "string", "description": "Python source; top-level await works."}
+                "code": {"type": "string", "description": "Python source; top-level await works."},
+                "background": {
+                    "type": "boolean",
+                    "description": (
+                        "Run it as a background task for work that outlives this turn "
+                        "(watching a job, a device or a running computation): returns a "
+                        "task handle at once, and the script runs in its own kernel until "
+                        "it finishes or is cancelled."
+                    ),
+                },
+                "label": {
+                    "type": "string",
+                    "description": "A short name for the background task; default its first line.",
+                },
             },
         )
     )

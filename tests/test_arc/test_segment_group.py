@@ -178,3 +178,35 @@ def test_ranks_put_cited_records_first_then_lane_chunks_then_the_log(
         ["_events~t~log~10"],
         ["_events"],
     ]
+
+
+def test_an_append_never_walks_the_record_it_extends(
+    arc: ARCMemory, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """An append names the list it extends, so neither the group's check nor the chunk
+    mark's compares every stored segment (a session's log holds thousands: the walk made
+    each append cost its length, the highway writer's top self time in a profile of a
+    300-call script). A rewrite still takes the full check.
+
+    SABOTAGE: drop ``extends=segs`` from ``SegmentStore.append`` -> the walks run -> red."""
+    from clio_agent.arc import segment_cache
+    from clio_agent.arc import segment_group as group_module
+
+    store = arc._segments
+    sid = "sess_append_no_walk"
+    for n in range(5):
+        store.append(sid, "_events", "semantic_event", {"n": n})
+
+    def walked(*_args: Any, **_kwargs: Any) -> bool:
+        raise AssertionError("an append walked the record")
+
+    monkeypatch.setattr(segment_cache, "appendable", walked)
+    monkeypatch.setattr(group_module, "_extends", walked)
+    calls = _counting(arc, monkeypatch)
+    store.append(sid, "_events", "semantic_event", {"n": 5})
+    assert calls == [("put_at", "segments")]  # one put of the new record at the stored end
+    with segment_group(store, lambda scope: (0,)) as group:
+        store.append(sid, "_events", "semantic_event", {"n": 6})
+        store.append(sid, "_events", "semantic_event", {"n": 7})
+        group.flush()
+    assert _reloaded(arc, sid, "_events") == [{"n": n} for n in range(8)]

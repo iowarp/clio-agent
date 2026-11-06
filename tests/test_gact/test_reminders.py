@@ -64,12 +64,13 @@ def test_a_source_without_a_template_cannot_render() -> None:
 
 
 def test_switching_off_keeps_the_wording_and_silences_it(caplog: Any) -> None:
-    """``update`` writes the person's own copy; the text survives, the switch is off.
-    SABOTAGE: make ``render`` ignore ``active`` and the ``None`` assertion fails."""
+    """``update`` writes the person's settings overlay: the switch and the setting, never
+    the text. SABOTAGE: make ``render`` ignore ``active`` and the ``None`` assertion fails."""
     saved = injections.update("plan_stale", active=False, params={"steps": 40})
     assert not saved.active and saved.scope == "global" and saved.params["steps"] == "40"
     stored = _override("plan_stale").read_text(encoding="utf-8")
-    assert "x_kind: reminder" in stored and "{{path}}" in stored
+    assert "x_overlay: true" in stored and "x_active: false" in stored
+    assert "{{path}}" not in stored  # the text stays the shipped one
     assert injections.render("plan_stale", {"path": "p", "steps": 1}) is None
     assert not injections.active("plan_stale")
     assert injections.param("plan_stale", "steps", 25, int) == 40
@@ -77,23 +78,25 @@ def test_switching_off_keeps_the_wording_and_silences_it(caplog: Any) -> None:
     assert injections.render("plan_stale", {"path": "p", "steps": 1})
 
 
-def test_an_edit_on_disk_is_seen_at_once() -> None:
-    """The resolution cache is keyed by the override files' modification times."""
-    injections.update("plan_stale", active=True)
-    path = _override("plan_stale")
-    head, _, _ = path.read_text(encoding="utf-8").rpartition("---")
-    path.write_text(f"{head}---\nPlan {{{{path}}}} is quiet.\n", encoding="utf-8")
+def _edit(source: str, body: str) -> None:
+    """The person's text edit of ``source`` (the Prompts page), read at once."""
+    shipped = PromptRegistry().resolve(f"{injections.PREFIX}{source}")
+    assert shipped is not None
+    PromptRegistry().save(shipped.id, text=body, metadata=dict(shipped.metadata))
+    path = _override(source)
     stamp = path.stat().st_mtime_ns + 1_000_000
     os.utime(path, ns=(stamp, stamp))
+
+
+def test_an_edit_on_disk_is_seen_at_once() -> None:
+    """The resolution cache is keyed by the override files' modification times."""
+    _edit("plan_stale", "Plan {{path}} is quiet.")
     assert injections.render("plan_stale", {"path": "x", "steps": 1}) == "Plan x is quiet."
 
 
 def test_an_override_with_an_undeclared_placeholder_falls_back_to_the_builtin() -> None:
     """A typo cannot reach the agent: the invalid copy is reported, the built-in is used."""
-    injections.update("plan_stale", active=True)
-    path = _override("plan_stale")
-    head, _, _ = path.read_text(encoding="utf-8").rpartition("---")
-    path.write_text(f"{head}---\nPlan {{{{nope}}}}.\n", encoding="utf-8")
+    _edit("plan_stale", "Plan {{nope}}.")
     text = injections.render("plan_stale", {"path": "x", "steps": 3})
     assert text is not None and text.startswith("The plan (x)")
 
@@ -143,7 +146,7 @@ def test_an_override_cannot_clear_required() -> None:
     injections.update(source, active=False)
     path = _override(source)
     text = path.read_text(encoding="utf-8")
-    text = re.sub(r"(?m)^x_required:.*$", 'x_required: ""', text)
+    text = re.sub(r"(?m)^x_active:.*$", 'x_active: false\nx_required: ""', text)
     path.write_text(text, encoding="utf-8")
     stamp = path.stat().st_mtime_ns + 1_000_000
     os.utime(path, ns=(stamp, stamp))

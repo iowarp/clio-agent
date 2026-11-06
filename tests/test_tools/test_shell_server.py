@@ -86,7 +86,11 @@ def test_shell_argument_rules_live_on_their_arguments():
     props = listed.input_schema["properties"]
     assert "or an approved downloaded source directory" in props["cwd"]["description"]
     assert "0 means no per-command deadline" in props["timeout_s"]["description"]
-    assert "Include both source and destination" in props["access_paths"]["description"]
+    access = props["access_paths"]["description"]
+    # The parameter contract only: how to recover from a blocked write is said by the
+    # blocked call's own result (its ``boundary``, #1905), not here.
+    assert "for a move, both source and destination" in access and "approve" in access
+    assert "derivatives" not in access
     description = listed.description or ""
     assert "CLIO_ALLOWED_ROOTS" not in description and "access_paths" not in description
 

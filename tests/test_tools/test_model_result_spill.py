@@ -97,8 +97,43 @@ def test_the_note_names_the_read_that_continues_a_text_result(tmp_path: Path) ->
     assert lines[: len(shown)] == shown and lines[following - 1] not in shown
 
 
-def test_a_json_result_is_searched_rather_than_paged(tmp_path: Path) -> None:
+def test_a_json_result_is_saved_indented_for_reading_on(tmp_path: Path) -> None:
+    """A9: a JSON result is saved one value a line, so its rest can be paged and searched
+    within the file tools' line limits. SABOTAGE: write the text as given -> one line."""
     set_config("tools.unknown_window_result_tokens", 500)
+    value = {"rows": ["x" * 50] * 100}
     with tool_workspace_context(str(tmp_path)), injections.collect():
-        result = bounded_model_tool_result(json.dumps({"rows": ["x" * 50] * 100}))
-    assert "one JSON document, so search it with fs_search_text" in result
+        result = bounded_model_tool_result(json.dumps(value))
+    assert "one indented JSON document; search it with fs_search_text" in result
+    assert "where you can run scripts, load it in one" in result
+    saved = _spilled_path(result).read_text(encoding="utf-8")
+    assert json.loads(saved) == value and len(saved.splitlines()) == 104
+
+
+def test_text_that_only_looks_like_json_is_saved_as_text(tmp_path: Path) -> None:
+    set_config("tools.unknown_window_result_tokens", 500)
+    rows = "{not json}\n" + "\n".join(f"row-{i:05d},{'x' * 40}" for i in range(500))
+    with tool_workspace_context(str(tmp_path)), injections.collect():
+        result = bounded_model_tool_result(rows)
+    assert _spilled_path(result).suffix == ".txt" and "fs_read_file(path=" in result
+
+
+def test_a_spill_that_cannot_be_written_is_traced(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A24: the typed reason reaches the trace, not only the log.
+    SABOTAGE: drop the ``trace.event`` in the spill's ``except`` -> red."""
+    from clio_agent.runtime import trace
+
+    events: list[str] = []
+    monkeypatch.setattr(trace, "event", lambda _area, message, *a: events.append(message % a))
+
+    def full(*args: object, **kwargs: object) -> Path:
+        raise OSError("disk full")
+
+    monkeypatch.setattr(mcp_result_projection, "_spill", full)
+    set_config("tools.unknown_window_result_tokens", 500)
+    with injections.collect():
+        result = bounded_model_tool_result("y" * 10_000)
+    assert "could not be saved (disk full)" in result
+    assert any(e.startswith("model_tool_result_spill_failed") for e in events)

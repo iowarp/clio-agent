@@ -48,12 +48,14 @@ def stale_steps() -> int:
     return injections.param(PLAN_STALE_SOURCE, "steps", 25, int)
 
 
-def _quiet_steps(app: Any, loop: Any) -> dict[str, int]:
+def _quiet_steps(app: Any, loop: Any, session_id: str) -> dict[str, int]:
     """The session's quiet-step counts, kept on the app so they run across turns.
 
     A session of many short turns (a person asking one thing at a time) would otherwise
     restart the count at every turn and never be told. In memory only: a server restart
-    restarts the count, which costs at most one later note.
+    restarts the count, which costs at most one later note. When a session first gets a
+    count, the counts of sessions that no longer exist (deleted) are dropped, so the map
+    holds only live sessions.
     """
     if app is None:
         counts = getattr(loop, "_clio_plan_quiet_steps", None)
@@ -63,21 +65,31 @@ def _quiet_steps(app: Any, loop: Any) -> dict[str, int]:
     counts = getattr(app.state, "plan_quiet_steps", None)
     if counts is None:
         counts = app.state.plan_quiet_steps = {}
+    if session_id not in counts:
+        for gone in [sid for sid in counts if app.state.sessions.get(sid) is None]:
+            del counts[gone]
     return counts
 
 
 def note_stale_plan(loop: Any, call_names: list[str]) -> None:
-    """Count a recorded step; after the reminder's ``steps`` quiet ones, say the plan exists.
+    """Count a step that called tools; after the reminder's ``steps`` quiet ones, say the
+    plan exists.
 
     A fact, not a decision: the agent judges whether the plan needs updating. The count
     runs across the session's turns and restarts after each note and whenever the step
-    wrote the plan or the todos.
+    wrote the plan or the todos. A step without tool calls (a direct answer, a proposal a
+    person's message superseded) is not counted. In plan mode the plan is being written,
+    so nothing is said; the count restarts when plan mode ends (``plan_exit``). The note
+    is an event note (:func:`clio_agent.injections.fired`): a second note in the same
+    words is recorded too.
     """
+    if not call_names:
+        return
     from clio_agent.gact import context as _ctx  # noqa: PLC0415
     from clio_agent.gact.session_plan import ACTIVE_STATUSES, plan_state  # noqa: PLC0415
 
     app, session_id = _ctx.active_app(), _ctx.active_session_id() or ""
-    counts = _quiet_steps(app, loop)
+    counts = _quiet_steps(app, loop, session_id)
     if _WORKING_STATE_WRITES & set(call_names):
         counts[session_id] = 0
         return
@@ -91,13 +103,15 @@ def note_stale_plan(loop: Any, call_names: list[str]) -> None:
     if limit <= 0 or quiet < limit:
         return
     session = app.state.sessions.get(session_id) if app is not None and session_id else None
-    state = plan_state(session) if session is not None else {}
+    if session is None or str(getattr(session, "mode", "") or "") == "plan":
+        return
+    state = plan_state(session)
     if state.get("status") not in ACTIVE_STATUSES or not state.get("exists"):
         return
     counts[session_id] = 0
     text = injections.render(PLAN_STALE_SOURCE, {"path": state["path"], "steps": quiet})
     if text:
-        loop.recorder.injections([(PLAN_STALE_SOURCE, text)])
+        loop.recorder.injections([(PLAN_STALE_SOURCE, injections.fired(text))])
 
 
 def working_state_injections(
@@ -116,7 +130,9 @@ def working_state_injections(
     )
     from clio_agent.gact.todos import todo_recitation  # noqa: PLC0415
 
-    plan = take_person_edit(app, session_id) or plan_injection(app, session_id, session)
+    plan = take_person_edit(app, session_id) or plan_injection(
+        app, session_id, session, force_full=force_full
+    )
     blocks = (
         (SESSION_FACTS_SOURCE, _runtime_active_workspace_context(app, session_id=session_id)),
         ("plan_mode", plan_mode_reminder(app, session_id, session, force_full=force_full)),

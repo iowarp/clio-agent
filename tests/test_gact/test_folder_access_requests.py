@@ -45,7 +45,6 @@ def setup_workspace(
     external.mkdir()
     monkeypatch.setenv("CLIO_ALLOWED_ROOTS", str(root))
     monkeypatch.setitem(conf.store().data["tools"]["file_policy"], "allowed_roots", [str(root)])
-    monkeypatch.setattr("clio_agent.gact.permission_timeout.PERMISSION_REQUEST_TIMEOUT_S", 8)
     app = build_app(sessions_path=tmp_path / "sessions.json")
     client = TestClient(app)
     wid = client.post(

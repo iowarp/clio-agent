@@ -47,7 +47,7 @@ reader = Subagent(
 
 #: What every task-capable agent is told on every request (the short ``core.tasks``).
 LIFECYCLE = (
-    "Ending a turn does not itself complete your assignment",
+    "A direct final answer yields while work you started is still pending",
     "eligible messages and results enter before the next model call",
     "while idle they wake you without another human message",
     'wait_tasks(tasks=handle, return_when="all")',
@@ -70,7 +70,7 @@ PROTOCOL = (
     "Accepted background tasks continue and their results may wake you after Stop",
     "Stop also cancels a foreground shell command",
     "waits for its actual process-tree cleanup",
-    "Subagent, Session, MCP, Download, Indexing, Shell and Question",
+    "Subagent, Session, MCP, Download, Indexing, Shell, Code and Question",
     "Stopping or expiring the wait leaves the question open",
     "Model-written intent grants nothing",
     "Peer collection never consumes the owner's delivery",

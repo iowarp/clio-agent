@@ -258,6 +258,10 @@ async def _apply_root_kind_grant(app: FastAPI, workspace_id: str, pattern: str) 
             reason=result["reason"],
         )
     )
+    # A folder allowed here answers any open sandbox card that asked for it.
+    from clio_agent.gact.sandbox_folder_offer import settle_offers_for_grant  # noqa: PLC0415
+
+    settle_offers_for_grant(app, workspace_id, result["pattern"])
     return result
 
 

@@ -92,14 +92,3 @@ def test_an_inline_stall_climbs_the_ladder_to_the_typed_degrade(
         rpc_liveness.guarded_store_rpc(store, "put", stall, inline_kind="segments")
     assert store.reconnects >= 1
     assert store.stalled == [rpc_liveness.RPC_STALLED_REASON]
-
-
-def test_the_first_poll_is_configurable(monkeypatch: pytest.MonkeyPatch) -> None:
-    from clio_agent.arc import clio_core_async_ops
-
-    clio_core_async_ops._first_poll_s.cache_clear()
-    monkeypatch.setenv("CLIO_ARC_LIVENESS_FIRST_POLL_S", "0.002")
-    try:
-        assert clio_core_async_ops._first_poll_s() == 0.002
-    finally:
-        clio_core_async_ops._first_poll_s.cache_clear()

@@ -10,10 +10,11 @@ write rate does not grow with the poll rate.
 
 from __future__ import annotations
 
+import json
 from datetime import datetime
 from typing import Any
 
-__all__ = ["REFRESH_S", "unchanged_reply"]
+__all__ = ["REFRESH_S", "reply_status_line", "unchanged_reply"]
 
 #: Longest a running task's snapshot goes unrefreshed while its replies change
 #: nothing (fastmcp's default poll ceiling, the cadence before faster polling).
@@ -44,3 +45,23 @@ def unchanged_reply(current: Any, observed: Any, at: str) -> bool:
     except (TypeError, ValueError):
         return False
     return 0 <= age < REFRESH_S
+
+
+def reply_status_line(message: str | None) -> str | None:
+    """A reply's status message as the task's progress line, or ``None`` to keep it.
+
+    A native shell reports each output chunk through the SDK progress path as a typed
+    ``clio.terminal.chunk`` envelope (live terminal deltas decode it), and the task's
+    ``statusMessage`` repeats it. That is output, not a status: :class:`NativeProgress`
+    records the chunk as task output with its own line ("Shell output available"), so a
+    chunk recorded here as the progress message showed raw JSON as the task's status.
+    """
+    if message is None or not message.startswith("{"):
+        return message
+    try:
+        payload = json.loads(message)
+    except ValueError:
+        return message
+    if isinstance(payload, dict) and payload.get("type") == "clio.terminal.chunk":
+        return None
+    return message

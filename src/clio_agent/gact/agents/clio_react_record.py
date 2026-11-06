@@ -307,8 +307,13 @@ class StepRecorder:
     def injections(self, injections: Sequence[tuple[str, str]]) -> None:
         """Record changed CLIO additions; retain identical existing context for prefix reuse.
 
-        A source whose reminder is switched off is not recorded (traced
-        ``injection_inactive``; :mod:`clio_agent.injections`).
+        State (the plan, the todos, the session's facts) is recorded only when it differs
+        from the copy of its source still in context. An event note
+        (:func:`clio_agent.injections.marks.fired`) is recorded once per firing, even when
+        its words repeat an earlier one; state the agent wrote itself
+        (:func:`~clio_agent.injections.marks.held_by`) is skipped while the call that
+        wrote it is in context. A source whose reminder is switched off is not recorded
+        (traced ``injection_inactive``; :mod:`clio_agent.injections`).
         """
         from clio_agent.injections import active  # noqa: PLC0415
 
@@ -319,20 +324,31 @@ class StepRecorder:
             return
         latest: dict[str, str] = {}
         included_ids: set[str] = set()
+        firings: set[str] = set()
+        called: set[str] = set()
         for seg in self.arc.render_working_set(self.session, self.scope):
             content = getattr(seg, "content", None) or {}
             included_ids.update(content.get("notification_ids", []))
-            if getattr(seg, "kind", "") == "user" and content.get("actor") == "algorithm":
+            if getattr(seg, "kind", "") == "tool_call":
+                called.add(str(content.get("name") or ""))
+            elif getattr(seg, "kind", "") == "user" and content.get("actor") == "algorithm":
                 latest[str(content.get("source"))] = str(content.get("text"))
+                firings.add(str(content.get("firing_id") or ""))
         for source, text in injections:
             identities = getattr(text, "notification_ids", ())
             if identities and all(identity in included_ids for identity in identities):
                 continue
-            if text and latest.get(source) != text:
+            firing, holder = getattr(text, "firing_id", ""), getattr(text, "held_by", "")
+            if (firing and firing in firings) or (holder and holder in called):
+                continue
+            if text and (firing or latest.get(source) != text):
                 record: dict[str, Any] = {"text": str(text), "source": source, "actor": "algorithm"}
                 identities = getattr(text, "notification_ids", ())
                 if identities:
                     record["notification_ids"] = list(identities)
+                if firing:
+                    record["firing_id"] = firing
+                    firings.add(firing)
                 self._write("user", record, 0, "")
                 included_ids.update(identities)
                 emit_injection(source, str(text), agent_id=self.expert_id)

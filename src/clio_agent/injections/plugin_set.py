@@ -16,7 +16,7 @@ from typing import Any
 
 from clio_agent.injections.declarations import Injection, read_dir
 
-__all__ = ["plugin_injections"]
+__all__ = ["plugin_injections", "plugin_set_key"]
 
 _CORE = "core"
 
@@ -25,6 +25,18 @@ _CORE = "core"
 def _read(root: str, plugin: str, digest: str) -> tuple[Injection, ...]:
     del digest  # the cache key: a new plugin version is read again
     return tuple(read_dir(Path(root) / "ai.iowarp.clio" / "injections", plugin=plugin))
+
+
+def plugin_set_key(app: Any, session_id: str) -> str:
+    """The session's pinned resolution digest (``""`` before its first turn): it changes
+    whenever the session's plugins, or one plugin's version, change."""
+    sessions = getattr(getattr(app, "state", None), "sessions", None)
+    session = sessions.get(session_id) if sessions is not None and session_id else None
+    if session is None:
+        return ""
+    from clio_agent.gact.agents.resolution import AGENT_RESOLUTION_KEY  # noqa: PLC0415
+
+    return str((getattr(session, "metadata", None) or {}).get(AGENT_RESOLUTION_KEY) or "")
 
 
 def plugin_injections(app: Any, session_id: str) -> list[Injection]:

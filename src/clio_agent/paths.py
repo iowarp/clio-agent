@@ -103,6 +103,16 @@ def _root(
     env: Mapping[str, str] | None = None,
     legacy: bool = True,
 ) -> Path:
+    if home is None and env is None:  # the process's own folders: once per access decision
+        from clio_agent.runtime.check_scope import once  # noqa: PLC0415 - leaf import
+
+        return once(("paths.root", role, legacy), lambda: _resolved_root(role, None, None, legacy))
+    return _resolved_root(role, home, env, legacy)
+
+
+def _resolved_root(
+    role: Role, home: Path | None, env: Mapping[str, str] | None, legacy: bool
+) -> Path:
     source = os.environ if env is None else env
     override_names = (f"CLIO_AGENT_{role.upper()}_DIR", "CLIO_AGENT_HOME", "CLIO_USER_DIR")
     explicit = next((source[name] for name in override_names if source.get(name, "").strip()), "")

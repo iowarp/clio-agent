@@ -12,11 +12,13 @@ redirect the other. The raw evidence itself is never rewritten by either.
 
 from __future__ import annotations
 
+import json
 import logging
 import uuid
 from collections.abc import Mapping
 from pathlib import Path
 
+from clio_agent.runtime import trace
 from clio_agent.tools.result_room import ResultRoom, result_room
 
 logger = logging.getLogger(__name__)
@@ -91,6 +93,13 @@ def bounded_model_tool_result(
             len(text),
             exc,
         )
+        trace.event(
+            "TOOLS",
+            "%s chars=%d error=%r",
+            MODEL_TOOL_RESULT_SPILL_FAILED_REASON,
+            len(text),
+            exc,
+        )
         unsaved = _say("result_spilled_unsaved", {"error": exc})
 
     def note(head: str, whole: bool) -> str:
@@ -122,8 +131,24 @@ def _continuation(path: Path, head: str, whole: bool) -> str:
     return _say("result_spilled_read_on", {"path": path, "offset": offset})
 
 
+def _json_pages(text: str) -> str | None:
+    """``text`` as indented JSON (one value a line, so it can be paged and searched line
+    by line), or ``None`` when it is not JSON."""
+    if text.lstrip()[:1] not in ("{", "["):
+        return None
+    try:
+        return json.dumps(json.loads(text), indent=1, ensure_ascii=False)
+    except ValueError:
+        return None
+
+
 def _spill(text: str, *, root: str | Path | None = None, session_id: str | None = None) -> Path:
-    """Write ``text`` to the session's tool-output folder; return the file."""
+    """Write ``text`` to the session's tool-output folder; return the file.
+
+    A JSON result is saved indented (``.json``): as one line, the rest of a long line
+    could not be read on with the file tools' line limits. Anything else is saved as
+    given (``.txt``).
+    """
     from clio_agent.tools.execution import get_active_tool_workspace_root  # noqa: PLC0415
     from clio_agent.tools.servers.shell_spill_store import (  # noqa: PLC0415
         active_session_id,
@@ -133,7 +158,7 @@ def _spill(text: str, *, root: str | Path | None = None, session_id: str | None 
     root = root or get_active_tool_workspace_root() or str(Path.cwd())
     folder = spill_directory(root, session_id=session_id or active_session_id())
     folder.mkdir(parents=True, exist_ok=True)
-    suffix = ".json" if text.lstrip()[:1] in ("{", "[") else ".txt"
-    path = folder / f"result-{uuid.uuid4().hex[:12]}{suffix}"
-    path.write_text(text, encoding="utf-8")
+    pages = _json_pages(text)
+    path = folder / f"result-{uuid.uuid4().hex[:12]}{'.json' if pages is not None else '.txt'}"
+    path.write_text(text if pages is None else pages, encoding="utf-8")
     return path

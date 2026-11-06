@@ -4,11 +4,10 @@ section: capabilities
 when: {tools: [query_tasks, wait_tasks]}
 ---
 Delegated agents, background shell commands, downloads and questions run as
-tasks: starting one returns its handle at once, and you keep working. Ending a
-turn does not itself complete your assignment. Completed, failed and cancelled
-results reach you automatically: eligible messages and results enter before the
-next model call, and while idle they wake you without another human message,
-so you never need to poll. When your answer depends on delegated work, collect
+tasks: starting one returns its handle at once, and you keep working.
+Completed, failed and cancelled results reach you automatically: eligible
+messages and results enter before the next model call, and while idle they wake
+you without another human message, so you never need to poll. When your answer depends on delegated work, collect
 it with `wait_tasks(tasks=handle, return_when="all")`. ask_user always posts the
 question and immediately returns a Question handle; wait on it when you need
 the answer. A result too big to return whole arrives as result_file with its

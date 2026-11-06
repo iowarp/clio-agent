@@ -69,7 +69,7 @@ def test_builtin_prompts_are_listed_and_resolvable(client: TestClient) -> None:
     resolved = client.get("/v1/prompts/clio.reminder.child_report").json()["prompt"]
     assert resolved["id"] == "clio.reminder.child_report"
     assert resolved["profile"] == "default"
-    assert resolved["text"].startswith("Your final answer is passed as written")
+    assert resolved["text"].startswith("Your final answer reaches the agent that started you")
     assert resolved["scope"] == "builtin"
     assert resolved["source_path"] == (
         "package://clio_agent.plugins.builtin/core/ai.iowarp.clio/injections/child_report.md"

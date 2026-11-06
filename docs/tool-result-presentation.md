@@ -213,6 +213,8 @@ The completion gate is this entire inventory, not three illustrative tools:
 | `plan_exit`, `ask_user`, `raise_alert_card`, `create_a2ui_surface`      | Existing dedicated review/interaction surface                               | Real rendered surface and controls                                              |
 | MCP standard text/resource/media                                        | Bounded standard content; JSON in technical details                         | Text/resource/media preview                                                     |
 | `web_search/fetch/fetch_events`                                         | Sources, conversion progress, saved outputs, degradation                    | Ready service and real asynchronous PDF conversion                              |
+| `run_code`                                                              | Script block; "N calls, M failed"; output, value or "The script printed nothing."; a failed or interrupted status; nested calls as rows under it (`parent_call_id`); a background launch: "Started in the background: <label>" and a `task` link to its row | Gathered calls, a failed script, a cancelled script, a background launch opening its task |
+| `search_tools`                                                          | The query; "Loaded N tools" with each tool's signature and description; a server's instructions; "Not found" names; "No matching tools" (degraded); "No tools are deferred" | Exact `select:`, keywords, a miss and an agent with nothing deferred            |
 
 Registration tests are a coverage floor. Each row additionally needs meaningful
 result assertions and live inspection; an unavailable path stays unqualified.
@@ -220,3 +222,13 @@ The readability guard also rejects a string-only presenter on a structured-retur
 native callback. Contract tests must exercise real result shapes, errors and empty
 results, with unchanged model observations and consistent history, paging and export
 views. A declared presenter with empty output is still an incomplete implementation.
+
+What the model reads is a separate lane from these presentations. A result too long for
+the room one result has in the model's context window (`tools.result_share`, capped by the
+room left; `tools/result_room.py`) reaches the model as its first characters after a note
+marked `[clio: result_spilled]`: the result's length, how much is shown, and the saved file
+with the exact read that continues it (`tools/mcp_result_projection.py`, reminder
+`clio.reminder.result_spilled`). The note with the head is recorded as an injection
+(`injections.note`), so the cut the model saw is on the record; the stored evidence and
+the presentation keep the whole result, and the transport preview above has its own
+bound.

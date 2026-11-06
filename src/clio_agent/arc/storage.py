@@ -388,8 +388,8 @@ class ClioCoreStore(ClioCoreWrites):
     (``put_at``/``get_raw``) is raw append-only records (:mod:`clio_agent.arc.chunk_records`).
 
     A standalone host-global daemon serves process clients on the configured RPC
-    port. Default durability is a DRAM hot tier spilling to a file cold tier;
-    see :func:`default_cte_config_path` and :meth:`_ensure_runtime`.
+    port. By default data lives on one durable file tier, with a bounded RAM working
+    arena; see :func:`default_cte_config_path` and :meth:`_ensure_runtime`.
     """
 
     _namespace = ""  # the default (bare-tag) namespace; set per instance in __init__
@@ -455,7 +455,7 @@ class ClioCoreStore(ClioCoreWrites):
         self._tag_ids.prewarm(self._kinds)
         logger.info(
             "ClioCoreStore active: clio-core is the ARC backend (shared daemon runtime). "
-            "The DEFAULT config is a DRAM hot tier + file cold tier; durable + "
+            "The DEFAULT config is one file data tier with a bounded RAM working arena; durable + "
             "fault-tolerant tiers (replication, erasure coding) are configured in the "
             "CTE config via CLIO_ARC_STORE_CONFIG."
         )

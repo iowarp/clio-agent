@@ -1,13 +1,13 @@
 ---
 id: clio.reminder.replan
 title: Suggest replanning after a stall
-description: When recent turns show little progress, suggest that the agent consider replanning; the agent decides.
+description: While an approved playbook plan is being carried out and recent turns show little progress, suggest that the agent consider replanning; the agent decides.
 x_kind: reminder
 x_active: true
-x_trigger: at the next turn start after the stall monitor records little progress (no plan or checklist advancement, or the same tool call repeated across turns); once per suggestion, never in plan mode
+x_trigger: at the next turn start after the stall monitor records little progress while an approved operator playbook is being carried out (no playbook step or checklist advanced, or the same tool call repeated across turns); once per suggestion, never in plan mode
 ---
-## Replanning suggestion — sustained lack of progress detected
+## Replanning suggestion: little progress in recent turns
 
-Your recent turns have shown little measurable progress — no plan-step or checklist advancement, and/or the same tool call repeated across turns. Consider whether the current approach is working.
-- If it is NOT, revise the approach in the plan with plan_update and carry on, or use plan mode (the `planning` skill) when the person should approve the new approach. This is your decision — nothing is forced.
-- If you ARE making progress, disregard this notice and continue.
+While carrying out the approved playbook, your recent turns have shown little measurable progress: no playbook step or checklist item advanced, or the same tool call repeated across turns. Consider whether the current approach is working.
+- If it is not, revise the approach in the plan with plan_update and carry on, or call plan_enter when the person should approve the new approach. The choice is yours.
+- If you are making progress, carry on; this note changes nothing by itself.

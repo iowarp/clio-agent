@@ -3,9 +3,10 @@
 clio-core holds everything. A compaction changes only the MODEL's context view of one
 agent scope: the live segments :func:`~clio_agent.gact.compaction_policy.
 post_compaction_context` picks are replaced (``summarize_segments``, a recorded op) by
-one summary that renders first, ahead of what the policy keeps verbatim (by default the
-current user question). Every replaced step stays in clio-core, searchable and
-recallable byte-exact (``recall_context``).
+one summary that renders first, ahead of what the policy keeps verbatim (by default
+every message the person typed within ``compaction.keep.user_chars``, the newest step
+and the latest working state). Every replaced step stays in clio-core, searchable, and
+``recall_context`` returns the text it recorded.
 
 Both triggers run :func:`compact_session_context`: ``POST /v1/sessions/{sid}/compact``
 (``trigger="manual"``; the context panel passes ``?scope=``) and the threshold check
@@ -17,7 +18,8 @@ same forward: the next ones are a typed skip with one ``notice``
 Per compacted scope:
 
 1. ``compaction.started`` (highway semantic event, served to the UI);
-2. the summary (one LM call over what is replaced);
+2. the summary (one LM call: the agent's next request, or the scope's context between
+   turns, with the compaction prompt appended);
 3. the record, written durably where it happened (:mod:`clio_agent.gact.
    compaction_record`): mid-turn a summarization injection in the open turn's
    assistant message at this step boundary, between turns its own row;
@@ -25,6 +27,10 @@ Per compacted scope:
    retracts the record;
 5. ``compaction.completed`` -- or ``compaction.failed`` for any failure after
    ``started`` (always paired), then the typed :class:`CompactionError`.
+
+A manual compaction holds the session's slot (409 ``session_busy`` while a turn runs),
+and a fold marks the scope's stored usage estimated (:mod:`~clio_agent.gact.
+compaction_session`).
 """
 
 from __future__ import annotations
@@ -39,7 +45,12 @@ from clio_agent import injections
 from clio_agent.arc import history_mode
 from clio_agent.errors import ClioError
 from clio_agent.gact import context as _ctx
-from clio_agent.gact.compaction_policy import keep_policy, post_compaction_context
+from clio_agent.gact.compaction_policy import (
+    keep_policy,
+    post_compaction_context,
+    transcript_rows,
+)
+from clio_agent.gact.compaction_session import compaction_slot, usage_after_fold
 from clio_agent.gact.compaction_summarizer import Summarize
 from clio_agent.gact.conversation_projection import model_context_messages
 from clio_agent.gact.delegation import _compact_exact_evidence_index
@@ -201,7 +212,8 @@ class _ScopePlan:
 
     scope: str
     summarize: tuple[str, ...]
-    kept_turns: frozenset[str]
+    folded_rows: frozenset[tuple[str, str]]  # (turn, role) rows with folded segments
+    kept_rows: frozenset[tuple[str, str]]  # rows with segments kept verbatim
     transcript: str
 
 
@@ -228,38 +240,47 @@ def _scopes(app: Any, sid: str, scope: str) -> list[str]:
 
 def _plan(app: Any, sid: str, scope: str, open_turn: str) -> _ScopePlan | None:
     """What the policy summarizes in ``scope`` (``None``: nothing to compact)."""
-    from clio_agent.gact.agents.clio_react_record import (  # noqa: PLC0415
+    from clio_agent.gact.agents.clio_react_record import fold_steps  # noqa: PLC0415
+    from clio_agent.gact.agents.context_errors import (  # noqa: PLC0415
         ContextFoldError,
-        fold_steps,
+        ContextReadError,
     )
+    from clio_agent.gact.agents.context_reader import model_context_segments  # noqa: PLC0415
 
     live = list(app.state.arc.render_working_set(sid, scope))
-    decision = post_compaction_context(live, open_turn_id=open_turn, policy=keep_policy())
-    replaced = [s for s in live if s.id in set(decision.summarize)]
-    if not replaced or all(s.kind == "summary" for s in replaced):
-        return None
-    try:
-        from clio_agent.gact.agents.context_reader import model_context_segments
-
-        rendered = model_context_segments(
-            replaced, getattr(app.state, "task_history", None), sid, scope
+    history = getattr(app.state, "task_history", None)
+    read = history.read_content if history is not None else None
+    try:  # the budget measures a confirmed input's content, not its reference
+        decision = post_compaction_context(
+            live, open_turn_id=open_turn, policy=keep_policy(), read_content=read
         )
+        replaced = [s for s in live if s.id in set(decision.summarize)]
+        if not replaced or all(s.kind == "summary" for s in replaced):
+            return None
+        rendered = model_context_segments(replaced, history, sid, scope)
         lines = [line for m in fold_steps(rendered) for line in _message_lines(m)]
-    except ContextFoldError as exc:
+    except (ContextFoldError, ContextReadError) as exc:
         raise CompactionError(409, exc.reason, str(exc), dict(exc.details or {})) from exc
     if not lines:
         return None
-    kept = frozenset(s.turn_id for s in live if s.id in set(decision.keep))
+    folded = transcript_rows(live, decision.summarize)
+    kept = transcript_rows(live, decision.keep)
     # The summarizer reads the agent's own context; these lines feed the exact-evidence
     # index computed by code and the pre-compact hook's size.
-    return _ScopePlan(scope, decision.summarize, kept, "\n".join(lines))
+    return _ScopePlan(scope, decision.summarize, folded, kept, "\n".join(lines))
 
 
-def _covered_rows(app: Any, sid: str, open_turn: str, kept_turns: frozenset[str]) -> list[str]:
-    """The transcript rows the summary stands in for in a summarizer prompt."""
+def _covered_rows(app: Any, sid: str, open_turn: str, plan: _ScopePlan) -> list[str]:
+    """The transcript rows the summary stands in for in a summarizer prompt: each row
+    some of whose segments it folded and none of which stay verbatim."""
     rows = model_context_messages(list(app.state.messages.get(sid, [])))
-    skip = set(kept_turns) | {open_turn}
-    return [m.id for m in rows if (getattr(m, "turn_id", "") or m.id) not in skip]
+    keys = (((getattr(m, "turn_id", "") or m.id), _role(m), m.id) for m in rows)
+    covered = plan.folded_rows - plan.kept_rows
+    return [i for t, r, i in keys if (t, r) in covered and t != open_turn]
+
+
+def _role(row: Any) -> str:
+    return "user" if getattr(row, "role", "") == "user" else "assistant"
 
 
 # ---------------------------------------------------------------------------
@@ -295,7 +316,8 @@ def compact_session_context(
         ``part_id``, ``replaced_count``, ``summary``); ``reason`` on a typed skip.
 
     Raises:
-        CompactionError: session not found (404), History mode (409), no clio-core
+        CompactionError: session not found (404), History mode (409), a manual
+            compaction while a turn runs (409 ``session_busy``), no clio-core
             context (503), a fold-unreadable context (409), no LM agent (503), the LM
             call failed (502) or the record / fold could not be written (500).
     """
@@ -314,25 +336,27 @@ def compact_session_context(
         )
     from clio_agent.gact.agents.prompt_basis import settle_basis  # noqa: PLC0415
 
-    open_turn = _open_turn_id(app, sid)
-    scopes = _scopes(app, sid, scope)
-    skipped = ""
-    if not any(app.state.arc.render_working_set(sid, s) for s in scopes):
-        skipped = SKIP_NO_LIVE_CONTEXT
-    plans = [] if skipped else [p for p in (_plan(app, sid, s, open_turn) for s in scopes) if p]
-    if not skipped and not plans:
-        skipped = SKIP_NOTHING_NEW
-    if skipped:
-        # Asked to compact with nothing to fold: no cached history is worth keeping,
-        # so plugin changes held as a note join the prompt now.
-        if trigger == "manual":
-            settle_basis(app, sid)
-        return _skip(sid, skipped)
-    done = [_compact_scope(app, sid, plan, trigger, focus, open_turn, summarize) for plan in plans]
-    # The history's cache restarts here: plugin changes held as a note join the prompt.
-    # Loaded tools stay off the list, which keeps the cached system prompt and tools.
-    settle_basis(app, sid, promote_loaded=False)
-    return {"session_id": sid, "compacted": True, "compactions": done}
+    with compaction_slot(app, sid, trigger):  # manual: 409 session_busy while a turn runs
+        open_turn = _open_turn_id(app, sid)
+        scopes = _scopes(app, sid, scope)
+        skipped = ""
+        if not any(app.state.arc.render_working_set(sid, s) for s in scopes):
+            skipped = SKIP_NO_LIVE_CONTEXT
+        plans = [] if skipped else [p for p in (_plan(app, sid, s, open_turn) for s in scopes) if p]
+        if not skipped and not plans:
+            skipped = SKIP_NOTHING_NEW
+        if skipped:
+            # Asked to compact with nothing to fold: no cached history is worth keeping,
+            # so plugin changes held as a note join the prompt now.
+            if trigger == "manual":
+                settle_basis(app, sid)
+            return _skip(sid, skipped)
+        done = [_compact_scope(app, sid, p, trigger, focus, open_turn, summarize) for p in plans]
+        usage_after_fold(app, sid, [p.scope for p in plans])  # its stored usage is stale
+        # The history's cache restarts here: plugin changes held as a note join the prompt.
+        # Loaded tools stay off the list, which keeps the cached system prompt and tools.
+        settle_basis(app, sid, promote_loaded=False)
+        return {"session_id": sid, "compacted": True, "compactions": done}
 
 
 def _event(app: Any, sid: str, kind: str, turn_id: str, payload: dict[str, Any]) -> None:
@@ -447,7 +471,7 @@ def _summarize_record_fold(
         trigger=trigger,
         compaction_id=base["compaction_id"],
         derived_from=plan.summarize,
-        compacted_message_ids=_covered_rows(app, sid, base["turn_id"], plan.kept_turns),
+        compacted_message_ids=_covered_rows(app, sid, base["turn_id"], plan),
         agent_id=plan.scope,
     )
     try:

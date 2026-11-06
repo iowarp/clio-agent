@@ -16,6 +16,7 @@ from clio_agent.tools.file_policy import validate_read_path
 from clio_agent.tools.fs_edit import PreviousContent, capture_previous_content
 from clio_agent.tools.result_errors import structured_tool_result_error
 from clio_agent.tools.shell_spill_presentation import saved_output_blocks
+from clio_agent.tools.task_envelope import settled_tool_result
 
 logger = logging.getLogger(__name__)
 Adapter = Callable[[Mapping[str, Any], Any, Any], dict[str, Any]]
@@ -196,7 +197,7 @@ def standard_mcp_presentation(result: Any) -> dict[str, Any]:
             {
                 "id": "structured-result",
                 "type": "markdown",
-                "text": _structured_markdown(_structured(result)),
+                "text": _structured_markdown(_without_boundary(_structured(result))),
             }
         )
     if failed and not blocks:
@@ -217,6 +218,15 @@ def standard_mcp_presentation(result: Any) -> dict[str, Any]:
         "summary": "",
         "blocks": blocks,
     }
+
+
+def _without_boundary(value: Mapping[str, Any]) -> Mapping[str, Any]:
+    """The result less its sandbox diagnosis, which the client shows as its own notice
+    (#1905): a ``boundary`` field shaped like one, not any field of that name."""
+    boundary = value.get("boundary")
+    if isinstance(boundary, Mapping) and {"kind", "confidence", "message"} <= set(boundary):
+        return {key: item for key, item in value.items() if key != "boundary"}
+    return value
 
 
 def _structured_markdown(value: Mapping[str, Any]) -> str:
@@ -413,7 +423,8 @@ def _diff(args: Mapping[str, Any], result: Any, snapshot: Any) -> dict[str, Any]
 
 def _terminal(args: Mapping[str, Any], result: Any, snapshot: Any) -> dict[str, Any]:
     del snapshot
-    row = _structured(result)
+    # A native shell call settles as a task envelope; its output is the reply inside.
+    row = _structured(settled_tool_result(result) or result)
     exit_code = row.get("exit_code")
     timed_out = bool(row.get("timed_out"))
     return {

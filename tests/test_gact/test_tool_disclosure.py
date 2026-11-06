@@ -218,6 +218,33 @@ class TestApply:
         assert "home_tool_0" not in program._clio_deferred_catalog
         assert "home_new" in program._clio_unlisted
 
+    def test_a_loaded_tool_stays_listed_when_its_server_refreshes(self) -> None:
+        """A1: a tool loaded with search_tools (listed once the prompt was rebuilt) is not
+        deferred again, nor announced as new, when its deferred server refreshes; nor is
+        a never-deferred tool of a server deferred whole. SABOTAGE: drop the ``known`` and
+        never-defer checks in ``sync_deferred_catalog`` and both are re-deferred."""
+        names = [f"home_tool_{i}" for i in range(40)]
+        program = SimpleNamespace(tools=_tools(SEARCH_TOOLS, *names, "memory_read", "memory_x"))
+        resolution = _resolution(home={}, memory={"defer": True})
+        apply_disclosure(
+            program, resolution, context_tokens=10_000, loaded=frozenset({"home_tool_1"})
+        )
+        assert "home_tool_1" not in program._clio_unlisted
+        program.tools["home_new"] = _tool("home_new")
+        program.tools["memory_search"] = _tool("memory_search")
+        assert sync_deferred_catalog(program) == ["home_new"]
+        for listed in ("home_tool_1", "memory_read", "memory_search"):
+            assert listed not in program._clio_unlisted
+            assert listed not in program._clio_deferred_catalog
+        assert sync_deferred_catalog(program) == []  # nothing is new the second time
+
+    def test_a_tool_belongs_to_the_longest_matching_server(self) -> None:
+        """A23: ``home_lab_scan`` is ``home_lab``'s, as the stubs and tool settings say.
+        SABOTAGE: take the first prefix match in ``_owner`` and it is ``home``'s."""
+        tools = _tools(SEARCH_TOOLS, "home_lab_scan")
+        plan = plan_disclosure(_resolution(home={}, home_lab={"defer": True}), tools)
+        assert [e.owner for e in plan.catalog.by_owner()["home_lab"]] == ["home_lab"]
+
 
 class TestSearchResult:
     def test_loaded_schemas_reach_the_model(self) -> None:

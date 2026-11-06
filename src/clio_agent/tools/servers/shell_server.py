@@ -25,6 +25,7 @@ from pydantic import Field
 
 from clio_agent import conf
 from clio_agent.runtime import trace
+from clio_agent.runtime.sandbox_diagnosis import diagnose_confined
 from clio_agent.tools.builtin_annotations import (
     _BASH_ANNOTATIONS,
 )
@@ -461,7 +462,7 @@ async def bash(
     access_paths: Annotated[
         list[str] | None,
         Field(
-            description="Files or folders outside permitted folders; CLIO asks the user before running. Include both source and destination for a move. Already approved downloaded source paths need none for reads and stay read-only; save derivatives in the workspace."
+            description="Files or folders outside the permitted folders this command reads or writes (for a move, both source and destination); CLIO asks the person to approve them before it runs. Approved downloaded sources need none for reads."
         ),
     ] = None,
     access_reason: Annotated[
@@ -736,6 +737,16 @@ async def execute_shell(
                         "timed_out": timed_out,
                         "timeout_s": timeout,
                     }
+                    # #1905: why the fence refused, against the roots it was given.
+                    err = captures[1]
+                    if boundary := diagnose_confined(
+                        confined.result,
+                        exit_code=base["exit_code"],
+                        stderr=err.full_text() + "\n" + err.tail_excerpt(8192),
+                        command=command,
+                        cwd=safe_cwd,
+                    ):
+                        base["boundary"] = boundary  # budgeted with the output below
                     result = compose_output_fields(
                         base, captures, root=spill_root, budget=shell_result_room()
                     )

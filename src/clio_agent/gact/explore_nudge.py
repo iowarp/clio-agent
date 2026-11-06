@@ -107,5 +107,5 @@ def note_reading_run(loop: Any, call_names: list[str]) -> None:
         EXPLORE_NUDGE_SOURCE,
         {"calls": count, "explore_model": _explore_model(), "spawn_tool": f"`{spawn}`"},
     )
-    if text:
-        loop.recorder.injections([(EXPLORE_NUDGE_SOURCE, text)])
+    if text:  # an event note: recorded even when an earlier turn's note had these words
+        loop.recorder.injections([(EXPLORE_NUDGE_SOURCE, injections.fired(text))])

@@ -24,7 +24,10 @@ Applying the settings to a program:
 - a ``code`` tool leaves the tool list and the deferred catalog; it is a kernel stub
   and a line in the ``run_code`` index, and a direct call is refused. Without
   ``run_code`` it falls back to ``direct`` with the typed reason
-  ``tool_callers_code_unavailable``.
+  ``tool_callers_code_unavailable``; so it does, per session, while ``run_code`` cannot
+  run there (plan mode on a host without an enforced write fence,
+  ``code_plan_mode_unconfined``): it is listed and may be called directly
+  (:func:`unlisted_tools`, :func:`call_refusal`).
 - a ``direct`` tool has no stub; a script calling it gets the typed refusal.
 """
 
@@ -54,6 +57,7 @@ __all__ = [
     "declared_permission",
     "plugin_declaration",
     "reapply_tool_settings",
+    "unlisted_tools",
 ]
 
 logger = logging.getLogger(__name__)
@@ -75,10 +79,10 @@ class Declared:
 
 
 def _server_for(name: str, servers: Mapping[str, Any]) -> tuple[str, str]:
-    for server in sorted(servers, key=len, reverse=True):
-        if name.startswith(f"{server}_") and len(name) > len(server) + 1:
-            return server, name[len(server) + 1 :]
-    return "", ""
+    from clio_agent.gact.code_mode.stubs import owning_server  # noqa: PLC0415
+
+    server = owning_server(name, servers)
+    return (server, name[len(server) + 1 :]) if server else ("", "")
 
 
 def plugin_declaration(resolution: Any, name: str, setting: str) -> str | None:
@@ -186,12 +190,46 @@ def call_refusal(program: Any, name: str) -> str:
             f"{name} is blocked by a permission setting ({TOOL_PERMISSION_DENY}); "
             "it cannot be called."
         )
-    if name in (getattr(program, "_clio_code_only", frozenset()) or frozenset()):
+    code_only = getattr(program, "_clio_code_only", frozenset()) or frozenset()
+    if name in code_only and not _code_unavailable(program):
         return (
             f"{name} can only be called from a run_code script "
             f"(await tools.<group>.<tool>(...)); see the run_code tool's index."
         )
     return ""
+
+
+def _code_unavailable(program: Any) -> str:
+    """Why the active session cannot run scripts now (``""`` when it can, or when the
+    program has no ``code`` tools)."""
+    from clio_agent.gact import context as _ctx  # noqa: PLC0415
+    from clio_agent.gact.code_mode.tool import run_code_unavailable  # noqa: PLC0415
+
+    if not getattr(program, "_clio_code_only", None):
+        return ""
+    app, session_id = _ctx.active_app(), _ctx.active_session_id() or ""
+    return run_code_unavailable(app, session_id) if app is not None and session_id else ""
+
+
+def unlisted_tools(program: Any) -> frozenset[str]:
+    """The program's tools left out of this step's tool list (``_clio_unlisted``), less
+    its ``code`` tools while the session cannot run scripts, which are then offered
+    directly (traced ``tool_callers_code_unavailable`` with the reason)."""
+    from clio_agent.runtime import trace  # noqa: PLC0415
+
+    unlisted = frozenset(getattr(program, "_clio_unlisted", frozenset()) or frozenset())
+    reason = _code_unavailable(program)
+    if not reason:
+        return unlisted
+    code_only = frozenset(getattr(program, "_clio_code_only", frozenset()))
+    trace.event(
+        "TOOLS",
+        "%s reason=%s tools=%s",
+        TOOL_CALLERS_CODE_UNAVAILABLE,
+        reason,
+        ",".join(sorted(code_only)),
+    )
+    return unlisted - code_only
 
 
 def reapply_tool_settings(program: Any) -> None:

@@ -4,7 +4,9 @@ The rendered prompt is the last user message of a request that is otherwise the 
 own context (:mod:`clio_agent.gact.compaction_summarizer`), so the model already sees
 the history it replaces; the template (``gact/compaction_prompt.md``) only says what to
 write. Placeholders: ``{{focus}}`` (``""`` or ``"\n\nFocus the summary on: <text>"``,
-manual compaction) and ``{{files}}`` (``""`` or the attached-file block). The former
+manual compaction), ``{{files}}`` (``""`` or the attached-file block) and ``{{kept}}``
+(what comes back verbatim, from the configured ``compaction.keep.*`` policy:
+:func:`~clio_agent.gact.compaction_policy.kept_verbatim`). The former
 ``compaction.prompt_file`` key is gone: a value still set for it fails the compaction
 typed, so an old override is never ignored silently.
 """
@@ -34,7 +36,7 @@ __all__ = [
 PROMPT_ID = "clio.compaction"
 _TEMPLATE = Path(__file__).parent / "gact" / "compaction_prompt.md"
 #: The placeholders the template may use.
-PLACEHOLDERS = frozenset({"focus", "files"})
+PLACEHOLDERS = frozenset({"focus", "files", "kept"})
 _PLACEHOLDER = re.compile(r"\{\{\s*([^{}]*?)\s*\}\}")
 #: The removed setting; still set, it is reported, never ignored.
 _REMOVED_KEY, _REMOVED_ENV = "compaction.prompt_file", "CLIO_COMPACTION_PROMPT_FILE"
@@ -83,8 +85,11 @@ def render_compaction_prompt(
     Raises:
         CompactionPromptError: the template cannot be used.
     """
+    from clio_agent.gact.compaction_policy import keep_policy, kept_verbatim  # noqa: PLC0415
+
     _scope, template = load_prompt_template(app=app, session_id=session_id)
     values = {
+        "kept": kept_verbatim(keep_policy()),
         "focus": f"\n\nFocus the summary on: {focus}" if focus else "",
         "files": f"\n\n--- attached session files ---\n{files}\n--- end files ---" if files else "",
     }

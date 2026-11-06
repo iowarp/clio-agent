@@ -8,6 +8,9 @@
 //   node scripts/cloud/ui_check.mjs --steps scripts/cloud/checks/runs_view.mjs
 //   node scripts/cloud/ui_check.mjs --label plugins --width 390 --height 844   # phone width
 //
+// --video records the whole session to .cloud-run/shots/<label>.webm (live updates,
+// not just stills).
+//
 // --steps names a module whose default export is `async (page, shot) => {}`; call
 // `await shot("name")` to capture a screenshot at any point. Screenshots land in
 // .cloud-run/shots/<label>-<n>-<name>.png, and the script prints their paths, the
@@ -37,6 +40,8 @@ const height = Number(opt("height", 900));
 const send = opt("send", null);
 const stepsFile = opt("steps", null);
 const settleMs = Number(opt("settle", 60000));
+// --video: record the whole session as <label>.webm in the shots folder (live updates).
+const video = args.includes("--video");
 
 function chromiumPath() {
   const base = "/opt/pw-browsers";
@@ -62,7 +67,11 @@ try {
 } catch {
   browser = await chromium.launch({ executablePath: chromiumPath() });
 }
-const page = await browser.newPage({ viewport: { width, height } });
+const context = await browser.newContext({
+  viewport: { width, height },
+  ...(video ? { recordVideo: { dir: path.join(root, ".cloud-run/video-tmp"), size: { width, height } } } : {}),
+});
+const page = await context.newPage();
 const consoleErrors = [];
 const failedRequests = [];
 page.on("console", (m) => m.type() === "error" && consoleErrors.push(m.text().slice(0, 300)));
@@ -133,6 +142,14 @@ try {
   await shot("failure").catch(() => {});
   process.exitCode = 1;
 } finally {
+  const recording = video ? page.video() : null;
+  await context.close(); // flushes the recording
+  if (recording) {
+    const file = path.join(shotsDir, `${label}.webm`);
+    await recording.saveAs(file);
+    await recording.delete();
+    shots.push(file);
+  }
   await browser.close();
 }
 

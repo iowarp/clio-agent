@@ -859,7 +859,7 @@ RATCHET_BASELINE: dict[str, int] = {
     # #1201 (adversarial review, PR #1202): +4 to register the mcp_yaml doctor
     # sub-check (import + the probe_mcp_yaml_declarations() call); the probe
     # logic lives in the owner module runtime/mcp_launcher.py.
-    "src/clio_agent/runtime/status.py": 1103,  # +2: the browser doctor row (BR22)
+    "src/clio_agent/runtime/status.py": 1101,  # optional rows moved to runtime/doctor_rows.py
     # #932: +62 for preloaded tool definitions (start() without the list_tools
     # fan-out) and namespace-direct call routing with lazy per-namespace
     # clients — the executor IS the owner module for this.
@@ -926,7 +926,9 @@ RATCHET_BASELINE: dict[str, int] = {
     # on-demand mount (gact/agents/builders.py).
     # -11: the hook and circuit-breaker notes moved to reminder templates
     # (tools/harness_notes.py).
-    "src/clio_agent/tools/execution.py": 985,  # the circuit breaker no longer blocks (2026-11-02)
+    # -2: a raised call's sandbox-boundary note (#1905) added 4 lines; a magic trailing
+    # comma dropped from one observer call freed 6.
+    "src/clio_agent/tools/execution.py": 983,
     # #1201 (adversarial review, PR #1202): not previously baselined (under the
     # 800 default cap). +24 for the unreadable-mcp.yaml snapshot (a reset-per-
     # call list + lock, mirroring the existing per-server MCPServerSpec.

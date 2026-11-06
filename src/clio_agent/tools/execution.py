@@ -718,18 +718,16 @@ class SyncMCPToolExecutor(SyncNamespacePreparationMixin):
                     name, effective_args, cast(float, timeout)
                 )
                 error_text = repr(uncertain)
-                notify_tool_observer(
-                    tool_observer,
-                    name,
-                    effective_args,
-                    "completed",
-                    error_text,
-                )
+                notify_tool_observer(tool_observer, name, effective_args, "completed", error_text)
                 raise uncertain from exc
             error_text = repr(exc)
             if hint := missing_path_hint(effective_args):
                 exc.add_note(hint)
                 injections.note("path_hint", hint)
+            from clio_agent.tools.tool_hooks import boundary_error_note  # noqa: PLC0415
+
+            if note := boundary_error_note(error_text):  # #1905: why a fenced server refused
+                exc.add_note(note)
             if not isinstance(exc, UncertainMutatingToolOutcomeError):
                 if warning := self._record_tool_failure(name, error_text):
                     exc.add_note(warning)

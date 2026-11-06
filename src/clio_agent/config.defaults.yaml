@@ -725,6 +725,23 @@ gact.resident_ledgers.max_sessions: 512
 # Seconds between the idle sweeps that release unused sessions from memory.
 gact.resident_ledgers.sweep_interval_s: 15.0
 
+# CLIO_TASKS_CODE_CONCURRENCY  (int)  <- src/clio_agent/tools/native_roots.py
+# Worker slots for background run_code scripts; each running script holds
+# one for its life. Default 10000: nothing bounds how many scripts run, the
+# person stops them.
+# gact.tasks.code.concurrency:  # computed at runtime: _DEFAULT_CONCURRENCY['code']
+
+# CLIO_TASKS_CODE_QUEUE  (str)  <- src/clio_agent/tools/native_roots.py
+# Background run_code queue identity; empty selects an automatic clio-code
+# name. Keep it separate from Shell and storage.
+# gact.tasks.code.queue:  # default unset; resolved in code
+
+# CLIO_TASKS_CODE_URL  (str)  <- src/clio_agent/tools/native_roots.py
+# Native backend URL for background run_code scripts, independent of Shell
+# and storage. memory:// is ephemeral: a script does not survive a restart
+# in any case.
+gact.tasks.code.url: "memory://"
+
 # CLIO_TASKS_HEALTH_TIMEOUT_S  (float)  <- src/clio_agent/tools/task_client.py
 # Timeout in seconds for task transport discovery/cancellation RPC delivery;
 # accepted execution, result waits and physical cleanup retain their own
@@ -733,7 +750,7 @@ gact.tasks.health_timeout_s: 10.0
 
 # CLIO_TASKS_SHELL_CONCURRENCY  (int)  <- src/clio_agent/tools/native_roots.py
 # Native Shell worker concurrency; positive, default 10.
-gact.tasks.shell.concurrency: 10
+# gact.tasks.shell.concurrency:  # computed at runtime: _DEFAULT_CONCURRENCY['shell']
 
 # CLIO_TASKS_SHELL_QUEUE  (str)  <- src/clio_agent/tools/native_roots.py
 # Shell queue identity; empty selects an automatic clio-shell name, with an
@@ -749,7 +766,7 @@ gact.tasks.shell.url: "memory://"
 # CLIO_TASKS_STORAGE_CONCURRENCY  (int)  <- src/clio_agent/tools/native_roots.py
 # Native Download/Indexing worker concurrency; positive, default 10,
 # independent of Shell.
-gact.tasks.storage.concurrency: 10
+# gact.tasks.storage.concurrency:  # computed at runtime: _DEFAULT_CONCURRENCY['storage']
 
 # CLIO_TASKS_STORAGE_QUEUE  (str)  <- src/clio_agent/tools/native_roots.py
 # Storage queue identity; empty selects an automatic clio-storage name, with
@@ -917,11 +934,6 @@ arc.liveness.backoff_initial_s: 2.0
 # lower to fail faster overall, raise to tolerate longer hiccups.
 arc.liveness.backoff_max_s: 15.0
 
-# CLIO_ARC_LIVENESS_FIRST_POLL_S  (float)  <- src/clio_agent/arc/clio_core_async_ops.py
-# Seconds of the first sleep while a clio-core write is pending; later
-# checks back off to 10 ms. Read once per process.
-arc.liveness.first_poll_s: 0.0001
-
 # CLIO_ARC_LIVENESS_MAX_WAIT_S  (float)  <- src/clio_agent/arc/daemon_progress.py
 # Ceiling (seconds) on waiting for a clio-core answer while the daemon is
 # visibly working (its CPU or I/O advancing); a daemon making no progress is
@@ -934,9 +946,9 @@ arc.liveness.max_wait_s: 180.0
 arc.liveness.retries: 3
 
 # CLIO_ARC_LIVENESS_SAMPLE_AFTER_S  (float)  <- src/clio_agent/arc/clio_core_async_ops.py
-# How long a pending clio-core call is polled before the daemon's progress
-# is first measured; a stall is still decided a whole stall window after
-# that.
+# How long a pending clio-core call is waited for before the daemon's
+# progress is first measured; a stall is still decided a whole stall window
+# after that.
 arc.liveness.sample_after_s: 0.1
 
 # CLIO_ARC_LIVENESS_STALL_AFTER_S  (float)  <- src/clio_agent/arc/rpc_liveness.py
@@ -1002,8 +1014,9 @@ arc.ws_chunk_segments: 32
 # ==========================================================================
 # Artifacts
 # ==========================================================================
-# Artifact minting, the content-addressed store, lineage, exports and
-# artifact-provenance backends.
+# Artifact minting, the content-addressed store, lineage, exports, artifact-
+# provenance backends and streams (artifacts whose latest rows live in
+# memory).
 
 # CLIO_ARTIFACT_CAS_BUDGET_BYTES  (int)  <- src/clio_agent/gact/artifacts/cas.py
 # Byte budget for the content-addressed artifact store; over it, GC evicts
@@ -1127,6 +1140,19 @@ artifacts.table_query_no_progress_s: 30.0
 # through one large result reuse the same processed table instead of re-
 # reading it per page.
 artifacts.table_query_processed_cache_entries: 8
+
+# CLIO_ARTIFACTS_VERSION_INTERVAL_S  (str)  <- src/clio_agent/gact/artifacts/version_pacing.py
+# Seconds between two versions of one file registered from a background
+# script; a registration inside the interval is recorded when it ends, with
+# the file as it is then (the latest wins, nothing is dropped). 0 records
+# every one. Default 5.
+artifacts.version_interval_s: "5.0"
+
+# CLIO_STREAMS_PUSH_INTERVAL_S  (str)  <- src/clio_agent/gact/streams/push.py
+# Shortest gap in seconds between two announcements of one stream to the
+# sessions watching it; writes inside it are announced together with the
+# latest state. Default 0.1.
+streams.push_interval_s: "0.1"
 
 # ==========================================================================
 # Workspace resources
@@ -1278,11 +1304,17 @@ resources.upload_chunk_bytes: 8388608
 # run_code execution bounds, HDF5 reference summaries and the MCP tool
 # fleet's discovery/cache/timeouts.
 
-# CLIO_CODE_CALL_TIMEOUT_S  (str)  <- src/clio_agent/gact/code_mode/tool.py
-# Seconds one run_code script may run (time waiting for a person's answer
-# excluded); past it the kernel is stopped and the next script starts fresh.
-# 0 means no limit.
-code.call_timeout_s: "600.0"
+# CLIO_CODE_BACKGROUND_RECORD_WINDOW_S  (str)  <- src/clio_agent/gact/code_task_records.py
+# Seconds one counted record covers for a background run_code script's
+# repeated successful calls to one tool (errors and calls that asked are
+# recorded on their own). Default 60.
+code.background_record_window_s: "60.0"
+
+# CLIO_CODE_BACKGROUND_STATUS_S  (str)  <- src/clio_agent/gact/native_code.py
+# Seconds between a background run_code script's status reports on its task
+# row (elapsed time, nested calls, memory); a display cadence, not a limit.
+# Default 5.
+code.background_status_s: "5.0"
 
 # CLIO_CODE_COVERING_POSTURES  (list)  <- src/clio_agent/gact/code_mode/grants.py
 # Approval modes in which approving a run_code script also covers the non-
@@ -1299,11 +1331,6 @@ code.idle_minutes: "30.0"
 # more tools is listed in part with a count of the rest.
 code.index_line_chars: 320
 
-# CLIO_CODE_MAX_NESTED_CALLS  (int)  <- src/clio_agent/gact/code_mode/dispatch.py
-# Tool calls one run_code script may make; a call past it raises in the
-# script.
-code.max_nested_calls: 500
-
 # CLIO_CODE_MAX_OUTPUT_BYTES  (int)  <- src/clio_agent/gact/code_mode/kernels.py
 # Bytes of one run_code script's printed output the kernel returns; the rest
 # is cut with a note. Read when a kernel starts.
@@ -1313,6 +1340,12 @@ code.max_output_bytes: 2000000
 # Characters of a run_code script that a permission question shows the
 # person.
 code.max_script_chars: 20000
+
+# CLIO_CODE_NOTIFY_MIN_INTERVAL_S  (str)  <- src/clio_agent/gact/code_task_reporting.py
+# Minimum seconds between two wakes of one conversation by its background
+# scripts' task.notify; notifies inside the window arrive together at its
+# end, never dropped. Default 30.
+code.notify_min_interval_s: "30.0"
 
 # CLIO_CODE_POLL_S  (float)  <- src/clio_agent/gact/code_mode/tool.py
 # Seconds between checks for cancellation and the time limit while a

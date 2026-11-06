@@ -18,6 +18,10 @@ calls: it never holds a client, a socket or a credential (browser plan rules 1 a
   ``sys.stdlib_module_names`` (:func:`diagnostics`): the kernel is standard library only.
 - An agent gets a binding only when every tool it requires can be called from a script
   (:func:`attach`), so a denied or removed tool removes the binding with it.
+- A binding may name a ``host`` module: plugin Python whose ``@host_call`` functions
+  answer the binding's reserved calls (``__<binding>_<name>__``) in the server, without a
+  tool call each (the extension point a stream's writes use, CT25 (6)). It is imported
+  only for a trusted plugin; a name outside the binding's prefix is not bound.
 """
 
 from __future__ import annotations
@@ -57,11 +61,14 @@ def check_shape(value: Any, plugin: str) -> None:
             raise ManifestError(
                 f"{where}.{name}: a binding name is a Python identifier, not reserved"
             )
-        if not isinstance(entry, dict) or set(entry) - {"source", "requires"}:
-            raise ManifestError(f"{where}.{name} may set only source and requires")
-        source = entry.get("source")
-        if not isinstance(source, str) or not source.startswith(_PREFIX) or ".." in source:
-            raise ManifestError(f"{where}.{name}.source is a path under {_PREFIX}")
+        if not isinstance(entry, dict) or set(entry) - {"source", "requires", "host"}:
+            raise ManifestError(f"{where}.{name} may set only source, requires and host")
+        for key in ("source", "host"):
+            path = entry.get(key, "" if key == "host" else None)
+            if key == "host" and path == "":
+                continue
+            if not isinstance(path, str) or not path.startswith(_PREFIX) or ".." in path:
+                raise ManifestError(f"{where}.{name}.{key} is a path under {_PREFIX}")
         requires = entry.get("requires", [])
         if not isinstance(requires, list) or not all(isinstance(t, str) for t in requires):
             raise ManifestError(f"{where}.{name}.requires is a list of tool names")
@@ -92,6 +99,7 @@ def load(
                 text=text,
                 digest=hashlib.sha256(text.encode("utf-8")).hexdigest(),
                 requires=tuple(entry.get("requires") or ()),
+                host=str(entry.get("host") or ""),
             )
         )
     return tuple(records), problems
@@ -167,6 +175,8 @@ def resolution_rows(records: Iterable[Any]) -> list[dict[str, Any]]:
                     "digest": binding.digest,
                     "requires": list(binding.requires),
                     "text": binding.text,
+                    "host": getattr(binding, "host", ""),
+                    "root": str(getattr(record, "root", "") or ""),
                 }
             )
     return rows
@@ -179,6 +189,7 @@ def attach(program: Any, resolution: Any) -> None:
     blocked = frozenset(getattr(program, "_clio_blocked", ()) or ())
     callable_names = {n for n in tools if n not in direct_only and n not in blocked}
     bound: dict[str, dict[str, str]] = {}
+    host_calls: dict[str, Any] = {}
     for row in getattr(resolution, "kernel_bindings", None) or ():
         name = str(row.get("name") or "")
         missing = [t for t in row.get("requires") or () if t not in callable_names]
@@ -193,4 +204,31 @@ def attach(program: Any, resolution: Any) -> None:
             )
             continue
         bound[name] = {"source": str(row.get("text") or ""), "digest": str(row.get("digest") or "")}
+        host_calls.update(_host_calls(name, row))
     object.__setattr__(program, "_clio_kernel_bindings", bound)
+    object.__setattr__(program, "_clio_host_calls", host_calls)
+
+
+def _host_calls(binding: str, row: Mapping[str, Any]) -> dict[str, Any]:
+    """The ``@host_call`` functions of a bound binding's ``host`` module, by call name."""
+    host, root = str(row.get("host") or ""), str(row.get("root") or "")
+    if not host or not root:
+        return {}
+    from clio_agent.plugins.loader import PluginImportError, import_plugin_module  # noqa: PLC0415
+    from clio_agent.sdk.tools import HostCallSpec  # noqa: PLC0415
+
+    try:
+        module = import_plugin_module(Path(root), host.removeprefix(_PREFIX))
+    except PluginImportError as exc:
+        trace.event("CODE", "kernel_binding_host_unloaded name=%s error=%s", binding, exc)
+        return {}
+    calls: dict[str, Any] = {}
+    prefix = f"__{binding}_"
+    for value in vars(module).values():
+        if not isinstance(value, HostCallSpec):
+            continue
+        if not (value.name.startswith(prefix) and value.name.endswith("__")):
+            trace.event("CODE", "host_call_outside_binding name=%s binding=%s", value.name, binding)
+            continue
+        calls[value.name] = value.function
+    return calls

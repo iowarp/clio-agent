@@ -41,7 +41,7 @@ they are content, not new human authority or permission grants.
 
 Accepted background work returns its handle while it runs. Keep that handle
 associated with its assignment. Supported kinds are Subagent, Session, MCP,
-Download, Indexing, Shell and Question. A confirmed pre-acceptance rejection has no accepted
+Download, Indexing, Shell, Code and Question. A confirmed pre-acceptance rejection has no accepted
 work. If acceptance or its reply is uncertain, retain the original handle and
 inspect it and the environment before deciding what to do. Do not automatically
 resubmit. Native worker redelivery can repeat effects; no exactly-once guarantee
@@ -52,6 +52,34 @@ and waits on the same native workload. Conversation Stop ends your model executi
 and waiter. Accepted background tasks continue and their results may wake you
 after Stop. Stop also cancels a foreground shell command and waits for its actual
 process-tree cleanup. To cancel background work, call cancel_tasks explicitly.
+
+run_code background=True is a Code task: the script runs in its own kernel, with no
+time or call limit, until it finishes or someone cancels it, and its variables are
+not shared with your interactive kernel. Stop does not end it. Inside it,
+`await task.progress(message, done=None, total=None)` updates its task row and wakes
+nobody; `await task.notify(message, data=None)` wakes this conversation, at most once
+per notify window for all your scripts, with the notifies that waited grouped by
+task. Its output goes to a file; observe_tasks and its result show what fits and
+name the file. A question one of its tool calls raises waits for the person, however
+long, as a question from that task. For example, to watch a job and say when it ends:
+
+```python
+import asyncio, json, urllib.request
+warned = False
+while True:
+    with urllib.request.urlopen("http://localhost:8800/jobs/42") as reply:
+        job = json.load(reply)
+    await task.progress(f"{job['state']}, step {job['step']}", job["step"], job["steps"])
+    if job["state"] in ("finished", "failed"):
+        await task.notify(f"Job 42 {job['state']} at step {job['step']}", data=job)
+        break
+    if job.get("loss", 0) > 10 and not warned:
+        await task.notify("Job 42's loss passed 10", data={"loss": job["loss"]})
+        warned = True
+    await asyncio.sleep(30)
+```
+
+Notify on the condition, not on every reading: each notify can start a turn.
 
 ask_user always posts the question and immediately returns a Question handle.
 Continue independent work; when you need the answer, use wait_tasks on that handle

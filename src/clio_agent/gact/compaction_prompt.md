@@ -1,6 +1,6 @@
 The context window is nearly full, so the work so far is being compacted. Write the checkpoint that replaces the history above: the work continues from it with no other memory of that history. Reply with the checkpoint as text; no tool runs in this reply.
 
-What comes back verbatim after your checkpoint, so you need not restate it: the system instructions, the messages the person typed (the newest ones, as many as fit), the newest step of work, and the session plan, todo checklist and session facts when they exist. Record what happened against them instead. If the history starts with an earlier checkpoint, update it with what happened since rather than summarizing it again.
+What comes back verbatim after your checkpoint, so you need not restate it: {{kept}}. Record what happened against them instead. If the history starts with an earlier checkpoint, update it with what happened since rather than summarizing it again.
 
 Use these sections, in this order, each a short list of bullets (write "none" when a section has nothing):
 

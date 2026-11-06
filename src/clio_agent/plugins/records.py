@@ -146,6 +146,9 @@ class KernelBindingRecord:
     text: str
     digest: str
     requires: tuple[str, ...] = ()
+    #: Plugin Python (under ``ai.iowarp.clio/``) whose ``@host_call`` functions answer the
+    #: binding's reserved calls in the server (trusted plugins only); empty: none.
+    host: str = ""
 
 
 @dataclass(frozen=True)

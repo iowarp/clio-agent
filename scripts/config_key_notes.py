@@ -62,9 +62,9 @@ SECTIONS: list[tuple[str, tuple[str, ...], str]] = [
     ),
     (
         "Artifacts",
-        ("artifacts",),
-        "Artifact minting, the content-addressed store, lineage, exports and artifact-provenance "
-        "backends.",
+        ("artifacts", "streams"),
+        "Artifact minting, the content-addressed store, lineage, exports, artifact-provenance "
+        "backends and streams (artifacts whose latest rows live in memory).",
     ),
     (
         "Workspace resources",
@@ -213,6 +213,18 @@ KEY_NOTES: dict[str, str] = {
     "gact.tasks.storage.concurrency": (
         "Native Download/Indexing worker concurrency; positive, default 10, independent of Shell."
     ),
+    "gact.tasks.code.url": (
+        "Native backend URL for background run_code scripts, independent of Shell and storage. "
+        "memory:// is ephemeral: a script does not survive a restart in any case."
+    ),
+    "gact.tasks.code.queue": (
+        "Background run_code queue identity; empty selects an automatic clio-code name. Keep "
+        "it separate from Shell and storage."
+    ),
+    "gact.tasks.code.concurrency": (
+        "Worker slots for background run_code scripts; each running script holds one for its "
+        "life. Default 10000: nothing bounds how many scripts run, the person stops them."
+    ),
     "plugins.store_root": (
         "Folder holding installed marketplaces, plugin snapshots, user agents and pinned session "
         "resolutions; unset uses <config>/plugins. Set it for an isolated or shared store."
@@ -309,10 +321,6 @@ KEY_NOTES: dict[str, str] = {
         "Retry attempts after a clio-core RPC stalls (no response) before the store is quarantined "
         "as runtime-lost; raise for a flakier daemon."
     ),
-    "arc.liveness.first_poll_s": (
-        "Seconds of the first sleep while a clio-core write is pending; later checks back off "
-        "to 10 ms. Read once per process."
-    ),
     "arc.liveness.stall_after_s": (
         "Seconds one clio-core RPC may run with no response before it's treated as a stalled "
         "zombie peer; raise for very large blob ops."
@@ -406,6 +414,11 @@ KEY_NOTES: dict[str, str] = {
     "artifacts.proposals_per_turn": (
         "Ceiling on new artifact promotions one turn may make via create_artifact; re-designating "
         "identical bytes is free."
+    ),
+    "artifacts.version_interval_s": (
+        "Seconds between two versions of one file registered from a background script; a "
+        "registration inside the interval is recorded when it ends, with the file as it is "
+        "then (the latest wins, nothing is dropped). 0 records every one. Default 5."
     ),
     "artifacts.table_export_max_rows": (
         "Ceiling on the processed row count a table-export (current-view or full-dataset) "
@@ -1236,19 +1249,31 @@ KEY_NOTES: dict[str, str] = {
         "Installed agent (marketplace/id) that runs as the SPOTTER standing watcher child "
         "session; change to point spotter-ai at a custom watcher agent."
     ),
+    "streams.push_interval_s": (
+        "Shortest gap in seconds between two announcements of one stream to the sessions "
+        "watching it; writes inside it are announced together with the latest state. "
+        "Default 0.1."
+    ),
     "system.release_manifest_url": (
         "Release manifest the server reads to report the latest CLIO release to clients; point "
         "at a mirror or a fork's releases feed."
     ),
-    "code.call_timeout_s": (
-        "Seconds one run_code script may run (time waiting for a person's answer excluded); "
-        "past it the kernel is stopped and the next script starts fresh. 0 means no limit."
+    "code.background_status_s": (
+        "Seconds between a background run_code script's status reports on its task row "
+        "(elapsed time, nested calls, memory); a display cadence, not a limit. Default 5."
+    ),
+    "code.notify_min_interval_s": (
+        "Minimum seconds between two wakes of one conversation by its background scripts' "
+        "task.notify; notifies inside the window arrive together at its end, never dropped. "
+        "Default 30."
+    ),
+    "code.background_record_window_s": (
+        "Seconds one counted record covers for a background run_code script's repeated "
+        "successful calls to one tool (errors and calls that asked are recorded on their own). "
+        "Default 60."
     ),
     "code.idle_minutes": (
         "Minutes a run_code kernel keeps its variables without a script before it is stopped."
-    ),
-    "code.max_nested_calls": (
-        "Tool calls one run_code script may make; a call past it raises in the script."
     ),
     "artifacts.index_page_items": (
         "Ids per page of an artifact-index list (a session's transforms, an artifact's "
@@ -1259,7 +1284,7 @@ KEY_NOTES: dict[str, str] = {
         "workers, so concurrent writes stop queueing on one. Read when the daemon starts."
     ),
     "arc.liveness.sample_after_s": (
-        "How long a pending clio-core call is polled before the daemon's progress is first "
+        "How long a pending clio-core call is waited for before the daemon's progress is first "
         "measured; a stall is still decided a whole stall window after that."
     ),
     "tools.defer_builtins": (

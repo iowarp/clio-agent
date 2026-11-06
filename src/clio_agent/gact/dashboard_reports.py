@@ -124,6 +124,9 @@ def publish_dashboard_report(
     }
     payload = json.dumps(report, ensure_ascii=False, indent=2).encode()
     artifact_id = _store(app, sid, report, payload=payload, extension="json")
+    from clio_agent.gact.call_effects import SCIENCE_VIEW_EVENT, notify_study  # noqa: PLC0415
+
+    notify_study(app, sid, SCIENCE_VIEW_EVENT, {"dashboard_id": report_id})
     return {
         "id": report_id,
         "report_id": report_id,

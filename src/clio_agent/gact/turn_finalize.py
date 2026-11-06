@@ -190,6 +190,11 @@ def finalize_turn(
                 if v
             },
         )
+        # Deferred: recorded (then published) by the highway writer. Wait for it so the
+        # wire keeps the decision ahead of the answer message; a lost record is reported.
+        from clio_agent.gact.highway_writer import flush_session_reported  # noqa: PLC0415
+
+        flush_session_reported(state.app, state.sid, "routing_decision")
     # Mechanism 2 replaced: there is no finalize rebuild-from-rows — delegation
     # appended its expert_handoff parts once, at emit time; the
     # ``expert_handoffs`` rows stay message METADATA only (design §4 row 6).
@@ -403,7 +408,7 @@ def publish_finalized_turn(
     update_retry_attempt: "Callable[..., None]",
 ) -> None:
     """Publish one already-recorded result; never rebuild the prediction or execute it again."""
-    from clio_agent.gact.highway_writer import flush_session
+    from clio_agent.gact.highway_writer import flush_session_reported
     from clio_agent.gact.transcript_recording import publication_step
 
     steps = state.publication_steps
@@ -465,7 +470,7 @@ def publish_finalized_turn(
     publication_step(
         steps,
         "highway_records",  # the turn's deferred tool and model records are in clio-core
-        lambda: flush_session(state.app, state.sid),
+        lambda: flush_session_reported(state.app, state.sid, "highway_records"),
         retry=False,
     )
     publication_step(

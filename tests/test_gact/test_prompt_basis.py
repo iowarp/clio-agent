@@ -142,7 +142,9 @@ def test_a_completed_compaction_settles_a_held_note(monkeypatch: pytest.MonkeyPa
     monkeypatch.setattr(compaction, "_open_turn_id", lambda app, sid: "")
     monkeypatch.setattr(compaction, "_scopes", lambda app, sid, scope: ["main"])
     app.state.arc = SimpleNamespace(render_working_set=lambda sid, scope: ["segment"])
-    monkeypatch.setattr(compaction, "_plan", lambda app, sid, scope, turn: object())
+    monkeypatch.setattr(
+        compaction, "_plan", lambda app, sid, scope, turn: SimpleNamespace(scope=scope)
+    )
     monkeypatch.setattr(compaction, "_compact_scope", lambda *args: {"compaction_id": "c1"})
 
     result = compaction.compact_session_context(app, "sess_1", trigger="auto")

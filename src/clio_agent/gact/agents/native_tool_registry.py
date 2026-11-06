@@ -28,6 +28,7 @@ _NONE: Sequence[str] = ()
 from clio_agent.gact.agents import toolset_inventory
 from clio_agent.gact.browser.tools import BROWSER_TOOLS
 from clio_agent.gact.science_log.tools import SCIENCE_LOG_TOOLS
+from clio_agent.gact.streams.tools import STREAM_TOOLS
 from clio_agent.gact.task_declarations import (
     TASK_COMPATIBILITY_ALIASES,
     TASK_TOOL_NAMES,
@@ -152,6 +153,7 @@ def _singles(agent_def: Any) -> dict[str, Callable[[], Any]]:
         build_connected_data_status_tool,
         build_connected_data_write_tool,
     )
+    from clio_agent.gact.streams.tools import BUILDERS as STREAM_BUILDERS  # noqa: PLC0415
     from clio_agent.gact.todos import build_write_todos_tool  # noqa: PLC0415
     from clio_agent.gact.view_image_tool import build_view_image_tool  # noqa: PLC0415
     from clio_agent.gact.view_pdf_tool import build_view_pdf_tool  # noqa: PLC0415
@@ -190,6 +192,7 @@ def _singles(agent_def: Any) -> dict[str, Callable[[], Any]]:
         **MEMORY_BUILDERS,
         **SCIENCE_LOG_BUILDERS,
         **BROWSER_BUILDERS,
+        **STREAM_BUILDERS,
         "session_search": lambda: build_session_search_tool(agent_def),
         "session_read_summary": lambda: build_session_summary_tool(agent_def),
         "session_read_context_frame": lambda: build_session_context_frame_tool(agent_def),
@@ -263,6 +266,7 @@ _SINGLE_NAMES = frozenset(
         *_A2UI_PRODUCERS,
         *SCIENCE_LOG_TOOLS,
         *BROWSER_TOOLS,
+        *STREAM_TOOLS,
     }
 )
 

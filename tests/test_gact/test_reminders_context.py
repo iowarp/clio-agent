@@ -23,11 +23,11 @@ from tests._result_room import pin_result_room
 # --------------------------------------------------------------------------- #
 _RECALL_SEARCH = (
     '[The steps this summary replaced are kept in full: recall_context(ids=["cmp_1"]) '
-    'returns them byte-exact; recall_context(query="...") searches them.]'
+    'returns the text they recorded; recall_context(query="...") searches them.]'
 )
 _RECALL_IDS = (
     '[The steps this summary replaced are kept in full: recall_context(ids=["cmp_1"]) '
-    "returns them byte-exact; text search is unavailable here. Use ids, not a query.]"
+    "returns the text they recorded; text search is unavailable here. Use ids, not a query.]"
 )
 
 
@@ -203,8 +203,9 @@ def _bounded(monkeypatch: pytest.MonkeyPatch, spilled: Path | Exception) -> tupl
         ),
         (
             Path("/w/out.json"),
-            "the full result is in `/w/out.json`; it is one JSON document, so search it with "
-            "fs_search_text or load it in a script",
+            "the full result is in `/w/out.json`, saved as one indented JSON document; search "
+            "it with fs_search_text, read it with fs_read_file, or, where you can run scripts, "
+            "load it in one",
         ),
         (
             OSError("disk full"),

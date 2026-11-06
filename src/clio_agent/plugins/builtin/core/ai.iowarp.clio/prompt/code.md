@@ -25,8 +25,13 @@ module's docstring under a folder, in one process; a shell loop that starts a
 program per file does the same work far more slowly.
 
 The field names here are illustrative; when you do not know a tool's result shape,
-print one result first. Variables persist between scripts, so work larger than one
-script's call limit continues in the next.
+print one result first. Variables persist between scripts.
+
+For work that outlives this turn, such as watching a job, a device or a running
+computation, call run_code with background=True: you get a task handle at once and
+the script runs in its own kernel until it finishes or is cancelled. In it,
+`task.notify(message)` wakes this conversation; call it only on a condition worth
+the person's or your attention, such as a job finishing or a value crossing a limit.
 
 One call, or a short chain where each call depends on what you read in the last,
 is cheaper as direct calls.

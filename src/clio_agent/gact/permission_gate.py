@@ -68,6 +68,7 @@ from clio_agent.gact.cancellation_check import (
     make_cancellation_checker as _make_cancellation_checker,  # noqa: F401 - compatibility export
 )
 from clio_agent.gact.code_mode import grants as script_grants
+from clio_agent.gact.code_task_context import question_cancel_token
 from clio_agent.gact.folder_access import bind_folder_gate
 from clio_agent.gact.permission_context import (
     _external_mcp_permission_context as _external_mcp_permission_context,
@@ -625,8 +626,8 @@ def _make_permission_gate(app: "FastAPI"):
         # Prefer the session currently driving the turn. Recency is
         # only a fallback for truly out-of-band tool calls.
         sid, current = _resolve_tool_session(app)
-        cancelled = app.state.cancel_events.get(sid)
-        approval_mode = getattr(current, "approval_mode", "ask") if current is not None else "ask"
+        cancelled = question_cancel_token(app, sid)
+        approval_mode = script_grants.approval_mode(current)  # a script keeps its accepted mode
         default = layers.tool_default(app, sid, name)
         if is_read_only("tool", name, args, context):
             # TD53: a deny from any layer, or an ask rule or default, holds for reads too.

@@ -40,7 +40,7 @@ from clio_agent.tools.execution import tool_workspace_context
 pytestmark = pytest.mark.usefixtures("host_agent_executor")
 
 # Sentinels distinguishing the full contract from the sparse one-liner.
-_FULL_ONLY = "Turn-ending contract"
+_FULL_ONLY = "Ending the turn:"
 _SPARSE_ONLY = "Keep the plan current with plan_update"
 _USER_TEXT = "investigate the failing test"
 
@@ -144,8 +144,8 @@ def test_suppression_state_lives_on_session_metadata(tmp_path: Path) -> None:
 
 _LEDGER_HEADERS = "Keep what you know apart from what you still must find out"
 _STRUCTURE_HINT = "Fit the plan to the task"
-_STALENESS = "evaluate whether it is still relevant to THIS task"
-_SHOW_THE_PLAN = "Show the plan to the user"
+_STALENESS = "judge whether it still fits this task"
+_SHOW_THE_PLAN = "Show the plan to the person in your reply"
 _CREATE_ONLY = "No plan file exists yet"
 _EDIT_ONLY = "already exists at"
 
@@ -305,12 +305,9 @@ def test_full_reminder_distinguishes_plan_artifact_from_requested_target(tmp_pat
 
     out = plan_mode_reminder(app, sess.id, sess)
 
-    assert "The plan file is NOT the user's requested target" in out
-    assert "Never copy the requested target contents alone into the plan file" in out
-    assert (
-        "describe how the requested result will be implemented and verified after approval" in out
-    )
-    assert "Never infer a requested filename from the plan-file path or its generated slug" in out
+    assert "The plan file holds your plan, not the deliverable the person asked for" in out
+    assert "how the requested result will be made and checked after approval" in out
+    assert "The deliverable's names and places come from the person's request" in out
 
 
 def test_sparse_reminder_stays_a_one_liner(tmp_path: Path) -> None:

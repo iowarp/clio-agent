@@ -702,7 +702,7 @@ async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
         app.state.scheduler_task = task
 
     server_boot.start(app)  # clio-core attach + first doctor pass, both off-loop (typed rows)
-    from clio_agent.gact import task_runtime
+    from clio_agent.gact import highway_writer, task_runtime
 
     readiness: asyncio.Future[None] = asyncio.get_running_loop().create_future()
     app.state.task_runtime_start = readiness
@@ -749,7 +749,7 @@ async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
         # Settle turns and task owners while their durable stores are still alive.
         runtime_stop.set()
         task_cleanup_errors = await asyncio.shield(runtime_task)
-
+        await asyncio.to_thread(highway_writer.close_app_writer, app)  # bounded; Core still up
         # Release Core after verified worker retirement and before later executor joins.
         await desktop_lifecycle.release_runtime_after_drain(app)
 

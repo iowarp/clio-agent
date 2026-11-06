@@ -19,8 +19,10 @@ SABOTAGE (each turns the named test red):
 from __future__ import annotations
 
 from types import SimpleNamespace
+from typing import Any
 
-from dspy.lm15 import Config, FunctionTool, Message, Request
+import pytest
+from dspy.lm15 import Config, FunctionTool, Message, Request, ToolChoice
 
 from clio_agent.gact.compaction_summarizer import loop_summarizer
 from clio_agent.providers import claude_code_conversation
@@ -90,3 +92,53 @@ def test_a_kept_conversation_is_continued_with_only_the_new_messages() -> None:
 
 def _text(message: Message) -> str:
     return "".join(getattr(part, "text", "") for part in message.parts)
+
+
+class _ToolCallFirstLM:
+    """Answers the first request with only a tool call, then with ``text``."""
+
+    model = "test/summary"
+
+    def __init__(self, text: str) -> None:
+        self.text = text
+        self.requests: list[Request] = []
+
+    async def acall(self, request: Request) -> Any:
+        from dspy.lm15 import Response, TextPart, ToolCallPart, Usage
+
+        self.requests.append(request)
+        part: Any = (
+            ToolCallPart(id="c1", name="search", input={"q": "more"})
+            if len(self.requests) == 1
+            else TextPart(text=self.text)
+        )
+        return Response(
+            id=None,
+            model=self.model,
+            message=Message(role="assistant", parts=(part,)),
+            finish_reason="tool_call" if len(self.requests) == 1 else "stop",
+            usage=Usage(),
+        )
+
+
+def test_a_reply_that_is_only_a_tool_call_is_asked_again_with_tool_use_off(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The summarizer request declares the agent's tools (cache reuse), so a model may
+    answer with a call and no text: that was an ``empty_summary`` that failed the turn.
+    It is asked once more with ``tool_choice`` none, the tools still declared, and the
+    retry is traced typed.
+
+    SABOTAGE: return the first reply's text as is -> the summary is empty."""
+    from clio_agent.gact import compaction_summarizer
+    from clio_agent.runtime import trace
+
+    events: list[str] = []
+    monkeypatch.setattr(trace, "event", lambda tag, msg, *args: events.append(msg % args))
+    lm = _ToolCallFirstLM("CHECKPOINT")
+    assert loop_summarizer(lambda: lm, _base)("write the checkpoint") == "CHECKPOINT"
+    first, retry = lm.requests
+    assert first.config.tool_choice is None and retry.tools == first.tools
+    assert retry.config.tool_choice == ToolChoice(mode="none")
+    assert retry.config.max_tokens == 123 and retry.messages == first.messages
+    assert any(compaction_summarizer.TOOL_CALL_REASON in e for e in events)

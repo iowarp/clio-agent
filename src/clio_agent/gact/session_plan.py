@@ -13,11 +13,15 @@ The plan is the file plan mode writes under CLIO's state folder, its path on
 ``plan_update`` writes the whole plan or replaces one exact passage, in plan mode and
 outside it, so the agent replans at any step without a mode switch. While a plan is
 ``draft``, ``approved`` or ``active`` it is offered as working state (:func:`plan_injection`) at
-turn start and after a compaction; todos stay separate (``write_todos``).
+turn start and after a compaction; todos stay separate (``write_todos``). A plan the agent
+wrote itself is already in its context as its ``plan_update`` calls, so it is offered again
+only once those calls are gone (a compaction, a rebuilt context) or the text changed under
+it (the person's edit).
 """
 
 from __future__ import annotations
 
+import hashlib
 import re
 from pathlib import Path
 from typing import Any
@@ -39,6 +43,9 @@ __all__ = [
 ]
 
 PLAN_STATUS_KEY = "plan_status"
+#: Digest of the plan text as the agent's last ``plan_update`` call left it (a person's
+#: edit through the Work rail does not set it: the agent has not seen that text).
+WRITTEN_KEY = "plan_written_digest"
 #: The person edited the plan on the Work rail; it is offered to the agent at its next step.
 PERSON_EDIT_KEY = "plan_person_edit"
 #: Injection source of the plan offered as working state, and its reminder.
@@ -113,13 +120,21 @@ def set_plan_status(app: Any, session_id: str, status: str) -> None:
     app.state.sessions.update(session_id, metadata_patch={PLAN_STATUS_KEY: status})
 
 
-def plan_injection(app: Any, session_id: str, session: Any) -> str:
+def _digest(text: str) -> str:
+    return hashlib.sha256(text.strip().encode("utf-8")).hexdigest()
+
+
+def plan_injection(app: Any, session_id: str, session: Any, *, force_full: bool = False) -> str:
     """The plan as working state, while it is active (:data:`ACTIVE_STATUSES`) outside plan mode.
 
     In plan mode the plan-mode reminder already names the file. The model judges whether
     the plan still applies; CLIO only says it exists and shows it. A plan the person edited
     on the Work rail is offered in any mode, once, marked as theirs. The wording is the
     reminders ``plan``, ``plan_person_edit`` and ``plan_truncated``.
+
+    A plan whose text is what the agent's last ``plan_update`` wrote is returned
+    :func:`~clio_agent.injections.held_by` ``plan_update``: the recorder skips it while
+    such a call is in context. ``force_full`` (right after a compaction) offers it plainly.
     """
     from clio_agent import injections  # noqa: PLC0415
 
@@ -140,7 +155,11 @@ def plan_injection(app: Any, session_id: str, session: Any) -> str:
     if str(getattr(session, "mode", "") or "") == "plan" or state["status"] not in ACTIVE_STATUSES:
         return ""
     variables = {"status": state["status"], "path": state["path"], "plan_text": text}
-    return injections.render(PLAN_SOURCE, variables, **where) or ""
+    offered = injections.render(PLAN_SOURCE, variables, **where) or ""
+    written = (getattr(session, "metadata", None) or {}).get(WRITTEN_KEY)
+    if offered and not force_full and written == _digest(state["text"]):
+        return injections.held_by(offered, "plan_update")
+    return offered
 
 
 def mark_person_edit(app: Any, session_id: str) -> None:
@@ -255,12 +274,32 @@ def update_plan(
         # A fact for a plan closed as done: threads its own text still marks open or
         # active (the states core.plan names). On L1P two of seven runs closed a plan
         # this way, its finished work never recorded. The agent decides what to do.
-        "unfinished_threads": len(_UNFINISHED.findall(text)) if next_status == "done" else 0,
+        **(_thread_counts(text) if next_status == "done" else _NO_COUNT),
     }
 
 
-#: A thread line marked open or active, as ``core.plan`` describes threads.
-_UNFINISHED = re.compile(r"(?im)^\s*(?:[-*]|\d+[.)])\s*\[(?:open|active)\]")
+_NO_COUNT = {"unfinished_threads": 0, "marked_threads": 0}
+_STATE = r"(open|active|closed|dropped)"
+#: A list item's state marker, in the forms plans are written in: ``- [open] x`` (the
+#: form ``core.plan`` and the plan structure name), ``- x: open``, ``- x (open)`` and
+#: ``- x (closed: why)``. A colon form needs the state word to end the phrase, so
+#: ``- note: open questions remain`` is not a marker.
+_MARKER = re.compile(
+    rf"(?i)\[{_STATE}\]|\({_STATE}\b[^)\n]*\)|:\s*{_STATE}\s*(?=$|[(\-\u2013\u2014,.;])"
+)
+_ITEM = re.compile(r"(?m)^\s*(?:[-*+]|\d+[.)])\s+(.*)$")
+
+
+def _thread_counts(text: str) -> dict[str, int]:
+    """``unfinished_threads`` (marked open or active) and ``marked_threads`` (marked any
+    state) among the plan's list items; the first marker on a line is its state."""
+    states = []
+    for item in _ITEM.findall(text):
+        found = _MARKER.search(item)
+        if found:
+            states.append(next(group for group in found.groups() if group).lower())
+    unfinished = sum(1 for state in states if state in {"open", "active"})
+    return {"unfinished_threads": unfinished, "marked_threads": len(states)}
 
 
 def _publish_work(app: Any, session_id: str) -> None:
@@ -321,12 +360,20 @@ def build_plan_update_tool() -> Any:
         """Write the whole plan, replace one exact passage, or mark it done or abandoned."""
         app, session_id = _active("plan_update")
         result = update_plan(app, session_id, content=content, old=old, new=new, status=status)
+        if result["change"] != "status":  # the agent holds this text as this call
+            text = Path(result["plan_file"]).read_text(encoding="utf-8")
+            app.state.sessions.update(session_id, metadata_patch={WRITTEN_KEY: _digest(text)})
         declare_structured_content(result)
         what = {"whole": "Plan written", "passage": "Plan passage replaced"}.get(
             result["change"], "Plan status set"
         )
         reply = f"{what} ({result['status']}, {result['plan_file']})."
-        if result["unfinished_threads"]:
+        if result["status"] == "done" and not result["marked_threads"]:
+            reply += (
+                " No thread in the plan carries a state marker such as [open] or [closed],"
+                " so CLIO cannot tell whether any is still open."
+            )
+        elif result["unfinished_threads"]:
             count = result["unfinished_threads"]
             reply += (
                 f" The plan still marks {count} thread{'s' if count != 1 else ''} open or active."

@@ -125,11 +125,23 @@ def _assert_mints_real_violation(
     mechanism: str,
     outside: Path,
 ) -> None:
-    """F7: feed the REAL fenced stderr through the observer + assert a real PolicyViolation."""
+    """F7: diagnose the REAL fenced stderr as the shell seam does (#1905), feed the result
+    through the observer, and assert a real PolicyViolation."""
     from fastapi import FastAPI
+
+    from clio_agent.runtime.sandbox_diagnosis import diagnose_boundary
 
     roots = sandbox.effective_write_roots(sandbox.PROFILE_SHELL, workspace_root=str(tmp_path))
     monkeypatch.setattr(v, "_effective_roots", lambda _app, _ws: roots)
+    diagnosis = diagnose_boundary(
+        exit_code=result.returncode,
+        stderr=result.stderr,
+        command=None,
+        cwd=tmp_path,
+        write_roots=roots,
+        mechanism=mechanism,
+    )
+    assert diagnosis is not None, result.stderr
     app = FastAPI()
     out = v.observe_policy_violations(
         app,
@@ -137,7 +149,11 @@ def _assert_mints_real_violation(
         tool_name="bash",
         args={},
         call_id="c1",
-        result={"stderr": result.stderr, "exit_code": result.returncode},
+        result={
+            "stderr": result.stderr,
+            "exit_code": result.returncode,
+            "boundary": diagnosis.to_payload(),
+        },
         workspace_id="ws",
         state=sandbox.SandboxResult(
             mechanism=mechanism, active=True, reason=sandbox.REASON_FENCE_ACTIVE

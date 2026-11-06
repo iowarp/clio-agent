@@ -13,15 +13,14 @@ would ask, the approval mode decides (the plan's table):
 
 The grant lives in a ``ContextVar`` that ``run_code`` binds for its nested calls, so
 the gate (which runs in the nested call's thread) sees it, and nothing outside the
-script does. Time spent waiting for an answer does not count against the script's
-timeout.
+script does. Nothing bounds a script's time, so waiting for an answer costs it nothing
+but the wait.
 """
 
 from __future__ import annotations
 
 import contextlib
 import threading
-import time
 from collections.abc import Iterator, Mapping, Sequence
 from contextvars import ContextVar
 from dataclasses import dataclass, field
@@ -34,6 +33,7 @@ __all__ = [
     "REASON_SCRIPT_GRANT",
     "ScriptGrant",
     "active_grant",
+    "approval_mode",
     "bind_grant",
     "covering_postures",
     "covers",
@@ -87,13 +87,22 @@ class ScriptGrant:
     covered: bool = False
     #: One open question per script: other calls that need an answer wait behind it.
     asking: threading.Lock = field(default_factory=threading.Lock)
-    #: Seconds spent waiting for answers (not counted against the script's timeout).
-    waited_s: float = 0.0
-    #: A question is open now (the row says "Script paused, waiting for you").
-    waiting: bool = False
+    #: The session's approval mode when the script was approved: its nested calls keep
+    #: it, so changing the mode while a background script runs does not change what the
+    #: script may do (CK10). Empty: the session's current mode applies.
+    approval_mode: str = ""
 
 
 _ACTIVE: ContextVar[ScriptGrant | None] = ContextVar("clio_run_code_grant", default=None)
+
+
+def approval_mode(current: Any) -> str:
+    """The approval mode a call is decided under: its script's, when it is a script's
+    nested call, else the session's (``ask`` when there is no session)."""
+    grant = _ACTIVE.get()
+    if grant is not None and grant.approval_mode:
+        return grant.approval_mode
+    return str(getattr(current, "approval_mode", "ask") or "ask") if current is not None else "ask"
 
 
 def active_grant() -> ScriptGrant | None:
@@ -136,13 +145,7 @@ def question() -> Iterator[None]:
         yield
         return
     with grant.asking:
-        started = time.monotonic()
-        grant.waiting = True
-        try:
-            yield
-        finally:
-            grant.waiting = False
-            grant.waited_s += time.monotonic() - started
+        yield
 
 
 def answered(row: Mapping[str, Any]) -> None:

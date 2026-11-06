@@ -29,6 +29,9 @@ def injection_diagnostics(record: PluginRecord) -> list[Diagnostic]:
             message = f"{row.name}: unknown event {row.event!r}"
             found.append(Diagnostic("error", "injection_event_unknown", message, record.id))
             continue
+        if row.required:
+            message = f"{row.name}: x_required is core's alone; a person can switch it off"
+            found.append(Diagnostic("warning", "injection_required_ignored", message, record.id))
         if row.tool and row.event != "tool_result":
             message = f"{row.name}: tool: only narrows the tool_result event"
             found.append(Diagnostic("warning", "injection_tool_ignored", message, record.id))

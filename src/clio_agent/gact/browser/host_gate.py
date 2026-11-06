@@ -316,6 +316,9 @@ def allow_blocked(service: "BrowserService", record: "PageRecord") -> str:
     if not blocked or blocked.get("reason") == "browser_scheme_refused":
         return ""
     host, url = str(blocked["host"]), str(blocked["url"])
+    if not host:
+        # A gate error names no host (BR42): there is nothing the person could allow.
+        return ""
     grant(service.app, record.session_id, host, grantor="user")
     record.navigation_blocked = None
     record.last_person_input = time.monotonic()

@@ -85,6 +85,7 @@ class PresentationBlock(BaseModel):
             "surface",
             "connected_data",
             "memory",
+            "task",  # a background task, by its handle: opens its row among the tasks
         ]
         | None
     ) = None

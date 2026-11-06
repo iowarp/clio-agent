@@ -36,7 +36,6 @@ These resolve through `clio_agent.conf`: a value under the dotted key in `config
 | `CLIO_ARC_HIGHWAY_DEFERRED` | `arc.highway_deferred` | bool | `true` | `src/clio_agent/gact/highway_writer.py` |
 | `CLIO_ARC_LIVENESS_BACKOFF_INITIAL_S` | `arc.liveness.backoff_initial_s` | float | `2.0` | `src/clio_agent/arc/rpc_liveness.py` |
 | `CLIO_ARC_LIVENESS_BACKOFF_MAX_S` | `arc.liveness.backoff_max_s` | float | `15.0` | `src/clio_agent/arc/rpc_liveness.py` |
-| `CLIO_ARC_LIVENESS_FIRST_POLL_S` | `arc.liveness.first_poll_s` | float | `0.0001` | `src/clio_agent/arc/clio_core_async_ops.py` |
 | `CLIO_ARC_LIVENESS_MAX_WAIT_S` | `arc.liveness.max_wait_s` | float | `180.0` | `src/clio_agent/arc/daemon_progress.py` |
 | `CLIO_ARC_LIVENESS_RETRIES` | `arc.liveness.retries` | int | `3` | `src/clio_agent/arc/rpc_liveness.py` |
 | `CLIO_ARC_LIVENESS_SAMPLE_AFTER_S` | `arc.liveness.sample_after_s` | float | `0.1` | `src/clio_agent/arc/clio_core_async_ops.py` |
@@ -69,6 +68,7 @@ These resolve through `clio_agent.conf`: a value under the dotted key in `config
 | `CLIO_ARTIFACTS_TABLE_QUERY_MAX_WAIT_S` | `artifacts.table_query_max_wait_s` | float | `180.0` | `src/clio_agent/gact/routes/artifact_table_query.py` |
 | `CLIO_ARTIFACTS_TABLE_QUERY_NO_PROGRESS_S` | `artifacts.table_query_no_progress_s` | float | `30.0` | `src/clio_agent/gact/routes/artifact_table_query.py` |
 | `CLIO_ARTIFACTS_TABLE_QUERY_PROCESSED_CACHE_ENTRIES` | `artifacts.table_query_processed_cache_entries` | int | `8` | `src/clio_agent/gact/routes/artifact_table_query.py` |
+| `CLIO_ARTIFACTS_VERSION_INTERVAL_S` | `artifacts.version_interval_s` | str | `5.0` | `src/clio_agent/gact/artifacts/version_pacing.py` |
 | `CLIO_ARTIFACT_CAS_BUDGET_BYTES` | `artifacts.cas_budget_bytes` | int | `536870912` | `src/clio_agent/gact/artifacts/cas.py` |
 | `CLIO_ARTIFACT_CAS_MAX_FILE_BYTES` | `artifacts.cas_max_file_bytes` | int | `16777216` | `src/clio_agent/gact/artifacts/cas.py` |
 | `CLIO_ARTIFACT_HASH_STAT_CACHE` | `artifacts.hash_stat_cache` | bool | `false` | `src/clio_agent/gact/artifacts/cas.py` |
@@ -103,13 +103,14 @@ These resolve through `clio_agent.conf`: a value under the dotted key in `config
 | `CLIO_CMF_SERVER_URL` | `provenance.artifacts.cmf.server_url` | str | _(unset)_ | `src/clio_agent/gact/artifacts/provenance/cmf_mode.py` |
 | `CLIO_CMF_WORKER_URL` | `provenance.artifacts.cmf.worker_url` | str | _(unset)_ | `src/clio_agent/gact/artifacts/provenance/cmf_mode.py` |
 | `CLIO_CODEX_TRANSPORT` | `lm.codex_transport` | str | _(unset)_ | `src/clio_agent/config.py` |
-| `CLIO_CODE_CALL_TIMEOUT_S` | `code.call_timeout_s` | str | `600.0` | `src/clio_agent/gact/code_mode/tool.py` |
+| `CLIO_CODE_BACKGROUND_RECORD_WINDOW_S` | `code.background_record_window_s` | str | `60.0` | `src/clio_agent/gact/code_task_records.py` |
+| `CLIO_CODE_BACKGROUND_STATUS_S` | `code.background_status_s` | str | `5.0` | `src/clio_agent/gact/native_code.py` |
 | `CLIO_CODE_COVERING_POSTURES` | `code.covering_postures` | list | `auto-edits,ai-review,spotter-ai,spotter-watcher` | `src/clio_agent/gact/code_mode/grants.py` |
 | `CLIO_CODE_IDLE_MINUTES` | `code.idle_minutes` | str | `30.0` | `src/clio_agent/gact/code_mode/kernels.py` |
 | `CLIO_CODE_INDEX_LINE_CHARS` | `code.index_line_chars` | int | `320` | `src/clio_agent/gact/code_mode/stubs.py` |
-| `CLIO_CODE_MAX_NESTED_CALLS` | `code.max_nested_calls` | int | `500` | `src/clio_agent/gact/code_mode/dispatch.py` |
 | `CLIO_CODE_MAX_OUTPUT_BYTES` | `code.max_output_bytes` | int | `2000000` | `src/clio_agent/gact/code_mode/kernels.py` |
 | `CLIO_CODE_MAX_SCRIPT_CHARS` | `code.max_script_chars` | int | `20000` | `src/clio_agent/gact/code_mode/grants.py` |
+| `CLIO_CODE_NOTIFY_MIN_INTERVAL_S` | `code.notify_min_interval_s` | str | `30.0` | `src/clio_agent/gact/code_task_reporting.py` |
 | `CLIO_CODE_POLL_S` | `code.poll_s` | float | `0.25` | `src/clio_agent/gact/code_mode/tool.py` |
 | `CLIO_CODE_START_TIMEOUT_S` | `code.start_timeout_s` | float | `60.0` | `src/clio_agent/gact/code_mode/kernels.py` |
 | `CLIO_COMPACTION_KEEP_HEAD` | `compaction.keep.head` | bool | `true` | `src/clio_agent/gact/compaction_policy.py` |
@@ -328,12 +329,16 @@ These resolve through `clio_agent.conf`: a value under the dotted key in `config
 | `CLIO_SPOTTER_MAX_CLEARANCE_EVENTS` | `spotter.max_clearance_events` | int | `256` | `src/clio_agent/gact/spotter_clearance.py` |
 | `CLIO_SSE_EVENT_LOG` | `debug.sse_event_log` | str | _(unset)_ | `src/clio_agent/gact/routes/misc.py` |
 | `CLIO_SSE_WIRE_TAP` | `debug.sse_wire_tap` | str | _(unset)_ | `src/clio_agent/gact/routes/misc.py` |
+| `CLIO_STREAMS_PUSH_INTERVAL_S` | `streams.push_interval_s` | str | `0.1` | `src/clio_agent/gact/streams/push.py` |
 | `CLIO_STREAM_AUDIT_LOG` | `debug.stream_audit_log` | str | _(unset)_ | `src/clio_agent/runtime/stream_audit.py` |
+| `CLIO_TASKS_CODE_CONCURRENCY` | `gact.tasks.code.concurrency` | int | `_DEFAULT_CONCURRENCY['code']` _(computed)_ | `src/clio_agent/tools/native_roots.py` |
+| `CLIO_TASKS_CODE_QUEUE` | `gact.tasks.code.queue` | str | _(unset)_ | `src/clio_agent/tools/native_roots.py` |
+| `CLIO_TASKS_CODE_URL` | `gact.tasks.code.url` | str | `memory://` | `src/clio_agent/tools/native_roots.py` |
 | `CLIO_TASKS_HEALTH_TIMEOUT_S` | `gact.tasks.health_timeout_s` | float | `10.0` | `src/clio_agent/tools/task_client.py` |
-| `CLIO_TASKS_SHELL_CONCURRENCY` | `gact.tasks.shell.concurrency` | int | `10` | `src/clio_agent/tools/native_roots.py` |
+| `CLIO_TASKS_SHELL_CONCURRENCY` | `gact.tasks.shell.concurrency` | int | `_DEFAULT_CONCURRENCY['shell']` _(computed)_ | `src/clio_agent/tools/native_roots.py` |
 | `CLIO_TASKS_SHELL_QUEUE` | `gact.tasks.shell.queue` | str | _(unset)_ | `src/clio_agent/tools/native_roots.py` |
 | `CLIO_TASKS_SHELL_URL` | `gact.tasks.shell.url` | str | `memory://` | `src/clio_agent/tools/native_roots.py` |
-| `CLIO_TASKS_STORAGE_CONCURRENCY` | `gact.tasks.storage.concurrency` | int | `10` | `src/clio_agent/tools/native_roots.py` |
+| `CLIO_TASKS_STORAGE_CONCURRENCY` | `gact.tasks.storage.concurrency` | int | `_DEFAULT_CONCURRENCY['storage']` _(computed)_ | `src/clio_agent/tools/native_roots.py` |
 | `CLIO_TASKS_STORAGE_QUEUE` | `gact.tasks.storage.queue` | str | _(unset)_ | `src/clio_agent/tools/native_roots.py` |
 | `CLIO_TASKS_STORAGE_URL` | `gact.tasks.storage.url` | str | `memory://` | `src/clio_agent/tools/native_roots.py` |
 | `CLIO_TEXT_TOOL_PROTOCOL` | `lm.text_tool_protocol` | str | `invoke` | `src/clio_agent/lm/engines/invoke_calls.py` |

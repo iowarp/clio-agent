@@ -15,6 +15,10 @@ logger = logging.getLogger(__name__)
 RESULT_SINK: ContextVar[list[tuple[str | None, Any]] | None] = ContextVar(
     "clio_tool_result_sink", default=None
 )
+#: Set only in a background ``run_code`` script's context: an object whose ``observe``
+#: records repeated successful nested calls as one counted record per window
+#: (:mod:`clio_agent.gact.code_task_records`). Unset, every call is recorded as it happens.
+OBSERVATION_GROUP: ContextVar[Any | None] = ContextVar("clio_observation_group", default=None)
 
 ToolObserver = Callable[
     [str, Mapping[str, Any], Optional[str], Optional[str], Any | None],
@@ -43,6 +47,9 @@ def notify_tool_observer(
         sink.append((error, result))
     if observer is None:
         return None
+    group = OBSERVATION_GROUP.get()
+    if group is not None:  # a background script's nested call: recorded grouped (CT5)
+        return group.observe(observer, name, args, phase, error, result)
     if result is None:
         return observer(name, dict(args), phase, error)  # type: ignore[misc, call-arg, no-any-return]
     try:

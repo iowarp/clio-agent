@@ -59,7 +59,7 @@ def test_a_history_writer_job_reports_its_queue_wait_and_run_time(audit: Path) -
 def test_the_highway_barrier_reports_its_wait(audit: Path) -> None:
     from clio_agent.gact.highway_writer import flush_session
 
-    writer = SimpleNamespace(flush=lambda sid, timeout=None: time.sleep(0.02))
+    writer = SimpleNamespace(flush=lambda sid, timeout=None, report=True: time.sleep(0.02))
     flush_session(SimpleNamespace(state=SimpleNamespace(highway_writer=writer)), "sess_1")
     [row] = _rows(audit, "highway.flush")
     assert row["session_id"] == "sess_1" and row["ms"] >= 15

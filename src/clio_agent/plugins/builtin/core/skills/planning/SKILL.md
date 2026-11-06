@@ -22,9 +22,11 @@ or data has been verified.
 ## Phase 1 — Ground (explore before you ask)
 Do not ask the user what the repository can answer. Investigate first: read the
 relevant files and use the available read-only inspection tools. When the work spans
-several areas and this agent can delegate, start one `explore` child per area in a
-single `spawn_agents_parallel` call with `wait=true` and plan from their reports; a
-small task in one place needs none.
+several areas that each need judgement to read and this agent can delegate, `explore`
+children (one per area, in one `spawn_agents_parallel` call with `wait=true`) read
+them in parallel and report back; a survey a script can do mechanically, such as
+listing every module's docstring, is faster as one script, and a small task in one
+place needs neither.
 Discover the checkout's actual directories with `fs_list_directory` before guessing
 paths. Use `fs_search_text` for definitions, callers and regression tests, then read
 the relevant files. Narrow searches when a result is truncated; an incomplete
@@ -43,9 +45,9 @@ decisions, not for facts you can look up.
 ## Phase 2 — Consult (depth proportional to complexity)
 Match consultation to the task's size. A small, unambiguous change needs little or
 no back-and-forth; a large or architectural one needs an explicit strategy
-proposal the user weighs in on. Propose the strategy and open questions FIRST, and
-draft the full plan in a later turn than the strategy proposal, so the user can
-steer before you commit detail to the plan.
+proposal the user weighs in on. For those, the strategy and open questions come
+before the detailed plan, in an earlier turn, because the user's answer can change
+what the detail should be.
 
 ## Phase 3 — Draft (write incrementally with plan_update)
 Write the plan with `plan_update(content=...)` and revise it as you learn
@@ -53,8 +55,9 @@ Write the plan with `plan_update(content=...)` and revise it as you learn
 only Changes and Verification. Larger or open-ended work:
 - **Objective**: the question, what a complete answer contains, what counts as done.
 - **Approach**: how you will get there.
-- **Threads**: each open, active, closed or dropped, with a one-line reason when it
-  ends and the handles of any children working on it.
+- **Threads**: one per line, each marked at the start `[open]`, `[active]`, `[closed]`
+  or `[dropped]` (`- [open] name: what it asks`), so CLIO can count what is left; a
+  one-line reason when it ends and the handles of any children working on it.
 - **Findings**: each a claim with its references (`call:` refs, paths and lines,
   handles); a corrected finding is marked superseded rather than deleted.
 - Checking your claims is the last thread.

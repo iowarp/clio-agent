@@ -13,8 +13,8 @@ its text), read from the observer's completed notification
 (:data:`clio_agent.tools.tool_observation.RESULT_SINK`), or a native tool's return
 value. The model never sees nested results; it sees what the script prints.
 
-Bounds: at most ``code.max_nested_calls`` calls per script, and the per-server limit
-a step's calls share (:mod:`clio_agent.gact.agents.tool_concurrency`).
+No count bounds a script's calls (taskable run_code CT3); the per-server limit applies
+to this script's own calls (:mod:`clio_agent.gact.agents.tool_concurrency`).
 """
 
 from __future__ import annotations
@@ -25,27 +25,23 @@ import json
 import threading
 import time
 from collections.abc import Callable, Mapping
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import FIRST_COMPLETED, Future, ThreadPoolExecutor, wait
 from dataclasses import dataclass
 from typing import Any
 
-from clio_agent import conf
 from clio_agent.gact.agents.tool_concurrency import ServerGates, call_workers
 from clio_agent.gact.code_mode.stubs import tool_group
+from clio_agent.runtime import trace
 
-__all__ = ["CONCURRENCY_GROUP_ATTR", "CallRecord", "Dispatcher", "max_nested_calls"]
+__all__ = ["CODE_CALL_UNANSWERED", "CONCURRENCY_GROUP_ATTR", "CallRecord", "Dispatcher"]
 
 #: The attribute a native tool's callable sets to share a concurrency cap with other tools.
 CONCURRENCY_GROUP_ATTR = "_clio_concurrency_group"
+#: Typed trace reason: a nested call failed outside its own error handling (entering its
+#: server's gate, say); the script gets the error instead of waiting for a reply.
+CODE_CALL_UNANSWERED = "code_call_failed_outside_call"
 
 _SEARCH = "__search__"
-
-
-def max_nested_calls() -> int:
-    """Tool calls one script may make."""
-    return conf.resolve(
-        "code.max_nested_calls", env="CLIO_CODE_MAX_NESTED_CALLS", default=500, cast=conf.as_int
-    )
 
 
 @dataclass
@@ -111,19 +107,29 @@ class Dispatcher:
         servers: tuple[str, ...],
         context: contextvars.Context,
         search: Callable[[str, int], Any],
+        reserved: Mapping[str, Callable[[Mapping[str, Any]], Any]] | None = None,
+        *,
+        direct_only: frozenset[str] = frozenset(),
+        refuse: Callable[[str], str] | None = None,
     ) -> None:
         self.tools = tools
+        #: Tools the agent calls directly, never from a script (``callers="direct"``).
+        self.direct_only = direct_only
+        #: Why the agent may not call a tool at all (a blocked tool's typed refusal).
+        self.refuse = refuse
+        #: Host calls a binding makes by a reserved name (a background task's ``task``).
+        self.reserved = dict(reserved or {})
         self.servers = servers
         self.context = context
         self.search = search
-        self.budget = max_nested_calls()
         self.gates = ServerGates()
         self.pool = ThreadPoolExecutor(
             max_workers=call_workers(), thread_name_prefix="clio-code-call"
         )
         self.records: list[CallRecord] = []
-        self.started = 0
         self.lock = threading.Lock()
+        #: The calls sent and not yet ended, which a finished script's close waits for.
+        self.pending: set[Future[Any]] = set()
 
     def submit(self, message: Mapping[str, Any], reply: Callable[[dict[str, Any]], None]) -> None:
         """Start one call; ``reply`` gets the kernel's ``result`` message when it ends."""
@@ -132,33 +138,97 @@ class Dispatcher:
         raw_args = message.get("args")
         args: Mapping[str, Any] = raw_args if isinstance(raw_args, Mapping) else {}
         if tool == _SEARCH:
-            query = str(args.get("query") or "")
-            reply({"type": "result", "id": call_id, "ok": True, "value": self.search(query, 5)})
+            reply({"type": "result", "id": call_id, **self._search(args)})
+            return
+        if tool in self.reserved:
+            self._reserved(call_id, self.reserved[tool], dict(args), reply)
             return
         refusal = self._refusal(tool)
         if refusal:
             reply({"type": "result", "id": call_id, "ok": False, "error": refusal})
             return
-        context = self.context.copy()
+        future = self.pool.submit(self.context.copy().run, self._run, tool, dict(args))
+        future.add_done_callback(lambda f: self._settle(call_id, tool, f, reply))
+        self._track(future)  # after the reply: close waits until it is answered
 
-        def done(outcome: tuple[bool, Any, str]) -> None:
-            ok, value, error = outcome
-            reply({"type": "result", "id": call_id, "ok": ok, "value": value, "error": error})
+    def _search(self, args: Mapping[str, Any]) -> dict[str, Any]:
+        """``tools.search(query, limit)``: the script's limit, within the search bounds
+        ``search_tools`` has (``tools.search_limit`` when none, ``tools.search_max`` at most)."""
+        from clio_agent.gact.search_tools import search_limit, search_max  # noqa: PLC0415
 
-        future = self.pool.submit(context.run, self._run, tool, dict(args))
-        future.add_done_callback(lambda f: done(f.result()))
+        try:
+            requested = int(args.get("limit") or 0)
+        except (TypeError, ValueError):
+            return {"ok": False, "error": f"limit must be a whole number, not {args['limit']!r}"}
+        limit = max(1, min(requested or search_limit(), search_max()))
+        try:
+            return {"ok": True, "value": self.search(str(args.get("query") or ""), limit)}
+        except Exception as exc:  # noqa: BLE001 - forwards: the script, as its ToolError
+            return {"ok": False, "error": f"{type(exc).__name__}: {exc}"}
+
+    def _settle(
+        self,
+        call_id: Any,
+        tool: str,
+        future: Future[tuple[bool, Any, str]],
+        reply: Callable[[dict[str, Any]], None],
+    ) -> None:
+        """Answer the script when a call's future settles, also when it raised."""
+        if future.cancelled():
+            return  # dropped by ``close(finished=False)``: the script stopped, none awaits it
+        exc = future.exception()
+        if exc is None:
+            ok, value, error = future.result()
+        else:
+            ok, value, error = False, None, f"{type(exc).__name__}: {exc}"
+            trace.event(
+                "CODE", "%s tool=%s error=%s", CODE_CALL_UNANSWERED, tool or "(host)", error[:300]
+            )
+            if tool:  # a tool call counts among the script's calls; a host call does not
+                with self.lock:
+                    self.records.append(CallRecord(tool, False, 0, error[:500]))
+        reply({"type": "result", "id": call_id, "ok": ok, "value": value, "error": error})
+
+    def _reserved(
+        self,
+        call_id: Any,
+        handler: Callable[[Mapping[str, Any]], Any],
+        args: dict[str, Any],
+        reply: Callable[[dict[str, Any]], None],
+    ) -> None:
+        def run() -> tuple[bool, Any, str]:
+            try:
+                return True, handler(args), ""
+            except Exception as exc:  # noqa: BLE001 - forwards: the script, as its ToolError
+                return False, None, str(exc)
+
+        future = self.pool.submit(self.context.copy().run, run)
+        future.add_done_callback(lambda f: self._settle(call_id, "", f, reply))
+        self._track(future)
+
+    def _track(self, future: Future[Any]) -> None:
+        """Count the call as sent until it ends (a finished script's close waits for it)."""
+        with self.lock:
+            self.pending.add(future)
+
+        def ended(done: Future[Any]) -> None:
+            with self.lock:
+                self.pending.discard(done)
+
+        future.add_done_callback(ended)
 
     def _refusal(self, tool: str) -> str:
-        if tool not in self.tools:  # direct-only and blocked tools are not given here
-            return f"No tool named {tool!r} can be called from a script; see tools.search()."
-        with self.lock:
-            if self.started >= self.budget:
-                return (
-                    f"This script reached its limit of {self.budget} tool calls "
-                    "(code.max_nested_calls); split the work across scripts."
-                )
-            self.started += 1
-        return ""
+        """Why a script may not call ``tool`` (``""`` when it may): direct-only, blocked
+        (the typed refusal a direct call gets) or not one of the agent's tools."""
+        if tool in self.tools:
+            return ""
+        if tool in self.direct_only:
+            return (
+                f"{tool} cannot be called from a script: call {tool} directly, not from a script."
+            )
+        if self.refuse is not None and (why := self.refuse(tool)):
+            return why
+        return f"No tool named {tool!r} can be called from a script; see tools.search()."
 
     def _run(self, tool: str, args: dict[str, Any]) -> tuple[bool, Any, str]:
         from clio_agent.gact.artifacts.observer_bridge import MODEL_CALL_SLOT  # noqa: PLC0415
@@ -204,5 +274,27 @@ class Dispatcher:
             self.records.append(CallRecord(tool, ok, duration, error[:500]))
         return ok, value if ok else None, error
 
-    def close(self) -> None:
-        self.pool.shutdown(wait=False, cancel_futures=True)
+    def close(
+        self,
+        *,
+        finished: bool = False,
+        cancelled: Callable[[], bool] | None = None,
+        poll_s: float = 0.1,
+    ) -> None:
+        """End the script's calls. A script that finished waits for the calls it sent (a
+        call is made when the script makes it, awaited or not); a stopped one drops those
+        not yet started. A finished script stopped while it waits (``cancelled``) stops
+        waiting then and drops the calls not yet started, so its task settles."""
+        if not finished:
+            self.pool.shutdown(wait=False, cancel_futures=True)
+            return
+        self.pool.shutdown(wait=False)  # no new calls; the ones sent keep running
+        while True:
+            with self.lock:
+                pending = set(self.pending)
+            if not pending:
+                return
+            if cancelled is not None and cancelled():
+                self.pool.shutdown(wait=False, cancel_futures=True)
+                return
+            wait(pending, timeout=poll_s, return_when=FIRST_COMPLETED)

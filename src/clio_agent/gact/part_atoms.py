@@ -604,7 +604,7 @@ def _append_segment_raw(
             logical_time=store._new_lt(),
         )
         if persist:  # clio-core first, then the cache
-            store._commit_scope(session_id, scope, [*segs, seg])
+            store._commit_scope(session_id, scope, [*segs, seg], extends=segs)
         else:  # an unpublished generation: committed by the batch, before its pointer
             segs.append(seg)
         store._index.add(session_id, scope, seg)

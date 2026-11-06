@@ -11,10 +11,10 @@ server (event loop, health endpoint) froze with it.
 The async methods submit with the GIL released (``core_bindings.cc``:
 ``AsyncPutBlob``, ``AsyncGetBlob``, ``AsyncGetBlobSize``, ``AsyncDelBlob``,
 ``AsyncTagQuery``; measured for puts and deletes: the main thread ran ~300 times in the
-same 3 s) and are used for every put, get, size and delete. :func:`await_future` polls
-``Future.done()`` (it returns at once) and sleeps in between, GIL released, so a stall
-still ends typed (``rpc_stalled``); once a kind's tag id is cached these run inline on
-the caller thread instead of the pooled stall-watch worker.
+same 3 s) and are used for every put, get, size and delete. :func:`await_future` waits
+in the native ``Future.wait(max_sec)``, GIL released, one bounded slice at a time, so a
+stall still ends typed (``rpc_stalled``); once a kind's tag id is cached these run
+inline on the caller thread instead of the pooled stall-watch worker.
 
 Still blocking: ``Tag(name)`` (GetOrCreateTag, cached here once per kind),
 ``Tag.GetContainedBlobs`` and ``SemanticSearch``; these keep the pooled stall watch.
@@ -33,7 +33,10 @@ from typing import Any
 from clio_agent.arc.native_threads import run_on_native_thread
 from clio_agent.arc.rpc_liveness import resolve_liveness_policy
 
-# ``Future.done()`` returns at once; the sleep between checks releases the GIL.
+# A future without a native ``wait`` (a test double) is polled: ``Future.done()``
+# returns at once, and the sleep between checks (from 0.1 ms, doubling to 10 ms)
+# releases the GIL.
+_FIRST_POLL_S = 0.0001
 _POLL_S = 0.01
 # How much later than the caller's stall watch this worker-side wait decides: the stall
 # watch (rpc_liveness) owns the typed ladder (reconnect, retry, quarantine), so on a
@@ -67,24 +70,8 @@ class ClioCoreFutureTimeout(TimeoutError):
 
 
 @functools.cache
-def _first_poll_s() -> float:
-    """The first sleep while an async RPC is pending (``arc.liveness.first_poll_s``).
-
-    Read once per process: it is on every small RPC's path, and config reads are not free.
-    """
-    from clio_agent import conf  # noqa: PLC0415 - avoid import cycle at module load
-
-    return conf.resolve(
-        "arc.liveness.first_poll_s",
-        env="CLIO_ARC_LIVENESS_FIRST_POLL_S",
-        default=0.0001,
-        cast=conf.as_float,
-    )
-
-
-@functools.cache
 def _sample_after_s() -> float:
-    """How long a pending RPC is polled before the daemon's progress is first sampled.
+    """How long a pending RPC is waited for before the daemon's progress is first sampled.
 
     ``arc.liveness.sample_after_s``. Locating the daemon and reading its CPU and I/O
     counters costs pidfile and ``/proc`` reads; taken after a 1 ms miss it ran on most
@@ -106,10 +93,9 @@ def _polled(future: Any) -> Callable[[float], bool]:
 
     The native ``Future.wait(max_sec)`` blocks without the interpreter lock and returns
     when the task completes. Polling ``done()`` instead woke a pending put up to eight
-    times (sleeps from ``arc.liveness.first_poll_s``, doubling to 10 ms), each wake
-    retaking the lock from the threads doing the agent's own work: a script's nested
-    call waited on those hand-offs (2026-11-05 profile). A future without ``wait`` (a
-    test double) is polled as before.
+    times (sleeps doubling to 10 ms), each wake retaking the lock from the threads doing
+    the agent's own work: a script's nested call waited on those hand-offs (2026-11-05
+    profile). A future without ``wait`` (a test double) is polled (``_FIRST_POLL_S``).
     """
 
     def done_within(timeout: float) -> bool:
@@ -119,7 +105,7 @@ def _polled(future: Any) -> Callable[[float], bool]:
             wait(timeout)
             if future.done():
                 return True
-        interval = min(_first_poll_s(), _POLL_S)
+        interval = _FIRST_POLL_S
         while not future.done():
             remaining = deadline - time.monotonic()
             if remaining <= 0:
@@ -154,7 +140,7 @@ def await_future(future: Any, *, op_name: str, ceiling_s: float | None = None) -
     if future.done():  # the common case: no bound to resolve (config reads are not free)
         return future
     # A native submission usually finishes within milliseconds, also while the daemon
-    # is busy. Poll that long before resolving configuration and sampling daemon
+    # is busy. Wait that long before resolving configuration and sampling daemon
     # processes. Pending work still enters the same health/progress policy; this is no
     # execution deadline or alternate backend.
     polled = _polled(future)

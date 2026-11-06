@@ -47,6 +47,7 @@ from clio_agent.gact.task_history_group import GroupedOperation
 __all__ = [
     "READ_ONLY_OUTCOME_DEFERRED",
     "READ_ONLY_OUTCOME_UNRECORDED",
+    "READ_ONLY_OUTCOME_UNSETTLED",
     "ReadOnlyOutcomes",
     "outcomes_recorded",
 ]
@@ -57,6 +58,9 @@ logger = logging.getLogger(__name__)
 READ_ONLY_OUTCOME_DEFERRED = "read_only_outcome_deferred"
 #: Typed reason: recovery could not record a read-only call's outcome; it is unknown.
 READ_ONLY_OUTCOME_UNRECORDED = "read_only_outcome_unrecorded"
+#: Typed reason: a record's outcome could not be handed back to its caller's event loop
+#: (the loop closed); the record itself is as confirmed or failed as the group says.
+READ_ONLY_OUTCOME_UNSETTLED = "read_only_outcome_unsettled"
 
 
 @dataclass
@@ -142,7 +146,16 @@ class ReadOnlyOutcomes:
         except BaseException as error:  # noqa: BLE001 - forwards: each waiter, then recovery
             results = [(False, error)] * len(items)
         for item, (ok, value) in zip(items, results, strict=True):
-            item.loop.call_soon_threadsafe(_settle, item.done, ok, value)
+            try:  # one item's closed loop must not leave the rest of the group unsettled
+                item.loop.call_soon_threadsafe(_settle, item.done, ok, value)
+            except RuntimeError as error:  # the caller's loop closed: nothing awaits it
+                logger.error(
+                    "Task boundary reason=%s identity=%s error_type=%s",
+                    READ_ONLY_OUTCOME_UNSETTLED,
+                    item.identity,
+                    type(error).__name__,
+                    exc_info=error,
+                )
 
     def _finished(
         self,

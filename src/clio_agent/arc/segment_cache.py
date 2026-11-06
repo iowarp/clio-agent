@@ -214,10 +214,21 @@ class ScopeCache:
             search_text = None
         return self._record_name(session_id, scope), plan_write(segs, mark), search_text
 
-    def _append_mark(self, key: tuple[str, str], staged: list[Segment]) -> Optional[ChunkMark]:
-        """The stored end ``staged`` can be appended at, or ``None`` (a full rewrite)."""
+    def _append_mark(
+        self,
+        key: tuple[str, str],
+        staged: list[Segment],
+        extends: Optional[list[Segment]] = None,
+    ) -> Optional[ChunkMark]:
+        """The stored end ``staged`` can be appended at, or ``None`` (a full rewrite).
+
+        ``extends`` (the list ``staged`` was built from) settles it at once when it is the
+        record the mark belongs to; otherwise every stored segment is compared."""
         mark = self._chunk_marks.get(key)
-        return mark if appendable(mark, self._scopes.get(key), staged) else None
+        cached = self._scopes.get(key)
+        if mark is not None and extends is not None and extends is cached is mark.segs:
+            return mark
+        return mark if appendable(mark, cached, staged) else None
 
     def _abandon_chunk(self, session_id: str, scope: str, exc: BaseException) -> None:
         """An append failed and may still land: drop the cached copy and never append to
@@ -235,7 +246,14 @@ class ScopeCache:
             type(exc).__name__,
         )
 
-    def _commit_scope(self, session_id: str, scope: str, staged: list[Segment]) -> None:
+    def _commit_scope(
+        self,
+        session_id: str,
+        scope: str,
+        staged: list[Segment],
+        *,
+        extends: Optional[list[Segment]] = None,
+    ) -> None:
         """Put ``staged`` to clio-core, THEN make it the cached copy (write-through).
 
         ``staged`` that only adds segments to the cached record is appended at its stored
@@ -243,11 +261,13 @@ class ScopeCache:
         rewrite raises :class:`ArcPersistError` and leaves the cache at the last committed
         record; a refused append also abandons the chunk (:meth:`_abandon_chunk`). Called
         under this scope's per-scope lock. Inside this thread's :func:`segment_group`
-        an append is staged instead and put with the group's other appends."""
+        an append is staged instead and put with the group's other appends. ``extends``
+        names the list ``staged`` was built from (an append), so neither check has to
+        walk the record."""
         group = active_group(self)
-        if group is not None and group.stage((session_id, scope), staged):
+        if group is not None and group.stage((session_id, scope), staged, extends=extends):
             return
-        mark = self._append_mark((session_id, scope), staged)
+        mark = self._append_mark((session_id, scope), staged, extends)
         try:
             committed = self._put_scope(session_id, scope, staged, mark=mark)
         except LoopThreadStoreWrite:

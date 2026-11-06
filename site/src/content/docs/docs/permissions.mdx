@@ -4,6 +4,12 @@ description: Review requested actions, choose an approval policy and understand 
 ---
 
 import { Aside } from '@astrojs/starlight/components';
+import Capture from '../../../components/overview/Capture';
+import { captureImage } from '../../../lib/captures';
+import folderCard from '../../../assets/captures/docs-permissions-folder-card.png';
+import blockedNotice from '../../../assets/captures/docs-permissions-blocked-notice.png';
+import allowDialog from '../../../assets/captures/docs-permissions-allow-dialog.png';
+import allowedFolders from '../../../assets/captures/docs-permissions-allowed-folders.png';
 
 CLIO checks protected actions such as writing a file, running a command or
 reaching the network. Start with **Ask first** when you want to review those
@@ -17,7 +23,8 @@ For each action that is not a read, CLIO decides in this order:
 
 1. Mode. In Plan and Deep research, tools that write are refused. Plan mode may still write plan files in Markdown. No rule can override this.
 2. Rules. An access rule can `allow`, `deny`, or `ask`. A matching `deny` blocks the action. A matching `allow` lets it through, and the decision is recorded.
-3. The conversation's confirmation policy, if nothing above settled it. **Ask first** prompts you; **AI review** uses the risk reviewer described below.
+3. The tool's default permission, if no rule matched. A plugin can declare one for each of its tools, and a deployment can set it with `tools.permissions`; see [Tool settings for a plugin](#tool-settings-for-a-plugin). A default `deny` blocks the tool even under **Bypass checks**, and a default `ask` asks in every confirmation policy except **Bypass checks**.
+4. The conversation's confirmation policy, if nothing above settled it. **Ask first** prompts you; **AI review** uses the risk reviewer described below. A call made inside a script can be covered by the script's approval; see [Scripts](#scripts).
 
 The agent writes files with `fs_write_file` and `fs_edit_file`. Both are writes, so they follow this order: **Ask first** asks before each write and **Workspace edits** allows writes without asking. [Hooks](/docs/hooks/) see every write before it happens, and a hook can refuse it. Each change can be undone from **Changed files** in Evidence; see [Evidence](/docs/evidence/#changed-files-and-diffs).
 
@@ -36,9 +43,29 @@ When an agent needs your decision, the session shows a request that describes th
 | Allow for session | Allows matching actions for the rest of this session. |
 | Allow for workspace | Allows matching actions in this workspace from now on. |
 
-If nobody answers within 10 minutes, the request is denied. A request from an agent that has no session to ask is denied at once. A denial is reported back to the agent, so it can try another approach or ask you.
+A request waits until you answer it or its work is cancelled, however long that takes, so you can answer a request from a long run when you come back. A request from an agent that has no session to ask is denied at once. A denial is reported back to the agent, so it can try another approach or ask you.
 
 The **Confirmation policy** control in the composer changes how often CLIO pauses. See [Start and steer a conversation](/docs/sessions/).
+
+## Scripts
+
+The agent can write a Python script that calls its tools; see
+[Scripts and background work](/docs/scripts/). Running the script is one action that
+asks first like a command, and the request shows the script.
+
+The calls the script then makes are decided one by one. Reads run, and rules and Plan
+mode still apply. For a call that would otherwise ask:
+
+- **Ask first**: it asks, showing the script, one question per script at a time. The
+  request adds **Allow for the rest of this script**, which covers that script's later
+  calls.
+- **Workspace edits**, **AI review** and **SPOTTER review**: the approval of the script
+  covers it (`code.covering_postures`).
+- **Bypass checks**: it runs.
+
+A rule or a tool's default permission set to `ask` still asks inside a script; the
+script's approval does not cover it. A script keeps the confirmation policy it was
+approved under, even if you change the conversation's policy while it runs.
 
 ## AI review (Automode)
 
@@ -65,6 +92,32 @@ Open Settings and choose **Permissions** to see your access rules and add new on
 A higher priority wins. At the same priority, the more restrictive decision wins. Saving replaces the whole rule set in one step, and an invalid rule leaves the existing rules unchanged, so a typo cannot silently drop a rule.
 
 The same rules are available over the HTTP API at `GET` and `PUT /v1/policies`.
+
+## Tool settings for a plugin
+
+Open a plugin, for example from the **Plugins** tab of the Agent panel, and choose its
+**Tools** tab. It lists the plugin's tools in two groups, **Read-only tools** and
+**Write and delete tools**, with two settings for each:
+
+| Column | Choices |
+|---|---|
+| **Permission** | **Always allow**: used without asking. **Needs approval**: asks before each use, in every confirmation policy. **Blocked**: hidden from the agent, and any call to it is refused. Or the plugin's default. |
+| **I/O** | **Direct**: the agent calls it itself, its scripts cannot. **Code**: only scripts call it, and its description stays out of the agent's instructions. **Both**. Or the plugin's default. |
+
+**Show what happens in** picks a confirmation policy, and each row then says what a
+call does under it, for a direct call and for a call from a script, for example
+**Asks you** or **Covered by the script's approval**. A tool of a tool server appears
+once a conversation has connected that server.
+
+Your permission choice is saved as a rule for every workspace, listed with your other
+rules under **Permissions**. Your I/O choice is saved as `tools.callers` in your user
+`config.yaml`.
+
+Plugins can declare these defaults for their tools; see
+[Plugin reference](/docs/sdk/plugins/#tools). A deployment can override them in
+[Configuration](/docs/configuration/) with `tools.permissions` and `tools.callers`,
+mappings from tool name to value (`CLIO_TOOLS_PERMISSIONS` and `CLIO_TOOLS_CALLERS` as
+JSON). A `deny` there removes the tool from every agent.
 
 ## File access
 
@@ -101,10 +154,17 @@ The grant persists after restart; remove it from **Additional permitted folders*
 Workspaces with the same primary folder share that boundary.
 
 For shell commands, the agent declares `access_paths` and `access_reason` before
-execution. A move includes both source and destination. An undeclared write that
-hits the OS fence returns instructions for requesting access through that same
-approval flow. Arbitrary shell reads are not universally restricted by the write
-sandbox. Folder approval cannot override connected-source credential protection,
+execution. A move includes both source and destination. When an undeclared write
+hits the OS fence, the failed call's result says so: it names the folder that was
+refused and tells the agent to run the command again with that folder in
+`access_paths` and a reason, which brings you the same approval request. Nothing is
+retried or requested on its own; the agent decides, since the command may have
+partly run. A Python script (`run_code`) refused the same way is told to make that
+write through a shell command with `access_paths`, and a tool server's refusal gets
+the same advice, worded as a likely cause. A command that needs administrator
+rights, such as an installer, cannot be approved from CLIO: the agent tells you the
+exact file to run yourself. Arbitrary shell reads are not universally restricted by
+the write sandbox. Folder approval cannot override connected-source credential protection,
 read-only source storage, or disabled symlinks.
 
 Remove a folder in the editor and save to withdraw that additional grant. This
@@ -178,7 +238,32 @@ and the next action. On hosts where no fence is available, tool-level rules stil
 apply. Any permitted unfenced process is explicitly recorded as such; protected
 source access can require the process to be refused altogether.
 
-When a sandboxed process is stopped from writing outside its folders, the denial is recorded with the process, the path, and the time. The agent is given a way to ask for access, and you decide.
+When a sandboxed process is stopped from writing outside its folders, the denial is recorded with the process, the path, and the time, and the agent's result names the folder and how to ask for it.
+
+You are asked too. A confirmed block raises the folder access request described above, with the folder, the command and the working folder, so the conversation shows that it needs you and your usual notifications fire.
+
+<Capture client:visible image={await captureImage(folderCard)}
+  alt="A folder access request: the sandbox blocked a copy to Reports; the request names the command, the computer, the working folder bike-counts and read and write access to /home/user/Reports, with Deny, This workspace and Allow"
+  caption="The request a blocked write raises. Allow grants the folder to the workspace."
+  sizes="(min-width: 50rem) 46rem, 100vw" />
+
+The conversation also says what was blocked under its activity, with a button named after the folder.
+
+<Capture client:visible image={await captureImage(blockedNotice)}
+  alt="Blocked by the sandbox: Reports, with an Allow Reports button"
+  sizes="(min-width: 50rem) 46rem, 100vw" />
+
+The button first shows what you would allow: the full path, that commands and scripts in every conversation of this workspace may create, change and delete files there, and that it lasts until you remove it here.
+
+<Capture client:visible image={await captureImage(allowDialog)}
+  alt="A dialog titled Allow writing to Reports, listing the folder /home/user/Reports, what you allow, how long, and that the blocked command is not run again, with Cancel and Allow folder"
+  sizes="(min-width: 50rem) 30rem, 100vw" />
+
+Allowing does not rerun the blocked command; ask the agent to try again. The folders you have allowed are listed in Observability, under Evidence; hover a folder for its path, or click it to copy the path.
+
+<Capture client:visible image={await captureImage(allowedFolders)}
+  alt="Folders the agent may write: bike-counts, the workspace folder, and Reports, allowed by you"
+  sizes="(min-width: 50rem) 24rem, 100vw" />
 
 <Aside type="note">
 The sandbox and the permission rules are two layers. The rules produce clear errors for the agent on every platform. The sandbox enforces the boundary below them where it is available.

@@ -211,3 +211,70 @@ def test_a_link_the_person_opens_is_their_navigation(
         ).status_code
         == 422
     )
+
+
+class _Socket:
+    """Records what is sent; a send yields, so two writers would interleave."""
+
+    def __init__(self) -> None:
+        self.sent: list[Any] = []
+        self.closed: tuple[int, str] | None = None
+        self.writing = False
+
+    async def _write(self, item: Any) -> None:
+        import asyncio
+
+        assert not self.writing, "two coroutines wrote to the socket at once"
+        self.writing = True
+        await asyncio.sleep(0)
+        self.sent.append(item)
+        self.writing = False
+
+    async def send_bytes(self, data: bytes) -> None:
+        await self._write(data)
+
+    async def send_text(self, text: str) -> None:
+        await self._write(json.loads(text))
+
+    async def close(self, code: int, reason: str) -> None:
+        self.closed = (code, reason)
+
+
+@pytest.mark.asyncio
+async def test_a_burst_of_frames_never_pushes_a_state_out_and_a_closed_page_closes() -> None:
+    """#1918: a viewer is sent the latest state and the latest frame (a burst of frames
+    neither drops the state nor queues without bound), replies go through the one
+    sender, and when the page closes the viewer gets its last state and then the
+    socket is closed.
+
+    SABOTAGE: keep one queue trimmed by frame count (the old ``_deliver``) -> the state
+    between the frames is dropped -> red. Skip ``_close_viewers`` -> the socket stays
+    open -> red."""
+    import asyncio
+
+    from clio_agent.gact.browser import live
+
+    socket = _Socket()
+    viewer = live._Viewer(socket, asyncio.get_running_loop())
+    live._HUBS["p1"] = live._Hub("p1", viewers=[viewer])
+    sender = asyncio.create_task(live._send(viewer))
+    try:
+        live._deliver(viewer, b"frame-1")
+        live._deliver(viewer, {"type": "state", "url": "https://a/"})
+        for n in range(2, 50):
+            live._deliver(viewer, f"frame-{n}".encode())
+        live._put(viewer, {"type": "ignored", "reason": "view_only"})
+        await asyncio.sleep(0.05)
+        states = [m for m in socket.sent if isinstance(m, dict) and m["type"] == "state"]
+        frames = [m for m in socket.sent if isinstance(m, bytes)]
+        assert states == [{"type": "state", "url": "https://a/"}]
+        assert frames[-1] == b"frame-49" and len(frames) < 10  # coalesced, not 49 sends
+        assert {"type": "ignored", "reason": "view_only"} in socket.sent
+        live._deliver(viewer, {"type": "state", "url": "https://a/", "closed": True})
+        live._close_viewers("p1")
+        await asyncio.wait_for(sender, timeout=2)
+        assert socket.sent[-1] == {"type": "state", "url": "https://a/", "closed": True}
+        assert socket.closed == (live.PAGE_CLOSED_CODE, "page_closed")
+    finally:
+        sender.cancel()
+        live._HUBS.pop("p1", None)

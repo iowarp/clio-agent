@@ -197,3 +197,13 @@ development session on 4 November 2026: CLIO read the test fixture site's datase
 and the link in its answer opened the page in the side panel's Browser tab. The browser
 was the installed-browser channel (`browser.channel: chrome`); the panel looks the same
 with CLIO's own browser. The table is synthetic test data.
+
+The `docs-permissions-*` images are light-mode browser captures at two device pixels per
+CSS pixel (1200 × 820 viewport) of a real model run on 6 November 2026: in a fictional
+`bike-counts` workspace the agent was asked, with a tool-directed prompt, to copy
+`counts.csv` to `/home/user/Reports` without declaring the folder, so the sandbox blocked
+it. They show the folder access request the block raised, the notice on the message, the
+dialog its Allow button opens, and the folders listed in Observability after allowing.
+Nothing is painted or composited. Reproduce with `scripts/cloud/capture_permission_docs.mjs`
+against `bash scripts/cloud/stack.sh start`, with the workspace folder inside
+`CLIO_ALLOWED_ROOTS` and the outside folder not.

@@ -223,7 +223,7 @@ from clio_agent.gact.app import build_app
 # 435 -> 439: the in-app browser, gact/browser/live.py: GET and POST
 # /v1/sessions/{sid}/browser/pages, POST .../pages/{page_id}/allow-host and
 # POST .../pages/{page_id}/trust-certificate (the live view is a WebSocket route).
-EXPECTED_ROUTE_METHOD_PAIRS = 439
+EXPECTED_ROUTE_METHOD_PAIRS = 442  # +3: /v1/streams/{id}, /table-query, /watch
 
 # app.py is build_app + lifecycle + re-export shims only. The ceiling is
 # the current size (~2892 lines) plus ~300 lines of headroom so ordinary

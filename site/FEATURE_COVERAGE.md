@@ -1,7 +1,8 @@
 # Feature documentation coverage
 
 Task rows updated on 2026-10-19 against the replacement feature branch and its
-recorded qualification. Other rows retain their stated review dates. This is
+recorded qualification; the script, stream, deferred-tool, compaction, plan and
+reminder rows on 2026-11-05 against the development branch. Other rows retain their stated review dates. This is
 the website maintenance map, not a release announcement. Publishing site content
 does not release product functionality.
 
@@ -20,9 +21,15 @@ does not release product functionality.
 | Final artifacts and review evidence | Exports guide | Latest deliverable selection and purpose-labelled retained evidence in PR 1666/UI 566. Requested images/PDFs remain deliverables. Not beta 5.2. |
 | Questions and visual answers | `docs/questions.mdx`; sessions; widget interaction guide | The replacement implements always-async `ask_user` with a Question handle and shared explicit waiting; Stop leaves the Question open. Actual-model Question acceptance and idle/post-Stop answer wakes have recorded evidence. Permission/external-input safeguards remain distinct. Captions identify earlier and replacement-service captures; current UI control qualification remains incomplete. This is not a published installer claim. |
 | Tools, tasks, and todos | `docs/following-work.mdx`; sessions; long-running work | Source checked 2026-10-12: task waits default to no deadline; terminal state does not establish assignment success; current todos differ from execution. Screenshot replays the actual command, output, and presentation from the public fictional workflow qualification. Development layout, unmerged local changes. |
-| Context injections | `docs/injections.mdx`; long-running work | All named injection labels in the current UI are mapped to user-facing purposes, including tool-use guidance. A real recorded loop wake is replayed in the current production row. Development grouping is distinguished from older display. |
+| Context injections | `docs/injections.mdx` (including Reminders); long-running work; `docs/following-work` | Source checked 2026-11-05 against the development branch: the sources it adds (session plan, plan edited by you, plan not updated lately, explore suggestion, session facts, report instructions, compaction failed and skipped, plan mode) have named labels in gact-tui `7fd8a3614` on the matching branch. No site captures yet for those. Earlier: tool-use guidance mapped. A real recorded loop wake is replayed in the current production row. Development grouping is distinguished from older display. |
 | In-app browser and marimo | `docs/browser`; `docs/sdk/available` (the `browser` and `marimo` plugins); sidebar | Agent PR1915/UI709/marketplace PR119 (draft), recorded in `docs/design/sdk/browser-ledger.md`: W1-W20 live runs, the marimo runs M1-M2 (M2 partial), and BR54 for `browser.channel` and `browser.cdp_url` against Chrome for Testing (branded Chrome and its consent prompt are local phase). The capture is a real development session on the fixture site. Not in beta 5.2. |
 | Right-hand panels | `docs/workspace-panels.mdx`; evidence; sessions | Compact Data/Work, full Work, Observability's Evidence/Timeline/Gantt/Context, and opened content tabs checked in current source. Existing authentic captures retained with stated provenance. No claim of fresh OPAL inference, release, or deployment. |
+| Scripts and background tasks | `docs/scripts`; `docs/tasks/tools-and-sources` (Script kind); `docs/permissions#scripts`; sidebar | Development branch, evidence in `docs/design/sdk/tool-calling-ledger.md` (CT/TD rows; CT29-CT34, CT38 for plain-request and mechanism runs). Task links ("Show the task in Work", "Show the script in Work") in gact-tui `525dfeb03`/`c999b5b07` on the matching branch. No site captures yet. Not released. |
+| Streams and live sources | `docs/live-sources`; `docs/dashboards#live-sources`; `docs/sdk/available` (`streaming`); `docs/sdk/plugins#script-bindings` | Development branch, evidence in `docs/design/sdk/tool-calling-ledger.md` (CT/TD rows; printer showcase CT29, CK21 in CT38). Offline export of a stream's state and Saved results in gact-tui `4e1c147bc` on the matching branch. No site captures yet. Not released. |
+| Deferred tools | `docs/scripts#tools-loaded-when-needed`; `docs/sdk/reference`; `docs/sdk/plugins` (`defer`, `servers`); `docs/permissions#tool-settings-for-a-plugin` | Development branch, evidence in `docs/design/sdk/tool-calling-ledger.md` (CT/TD rows). No site captures yet. Not released. |
+| Compaction and recall | `docs/memory#when-the-context-fills`; `docs/injections` | Development branch, evidence in `docs/design/sdk/tool-calling-ledger.md` (CT/TD rows). What `recall_context` returns is described from the code at the branch head (2026-11-05). No site captures yet. Not released. |
+| Session plan | `docs/following-work#follow-the-session-plan`; `docs/injections` | Development branch, evidence in `docs/design/sdk/tool-calling-ledger.md` (CT/TD rows). No site captures yet. Not released. |
+| Reminders | `docs/injections#reminders` | Development branch, evidence in `docs/design/sdk/tool-calling-ledger.md` (CT/TD rows). Settings > Prompts and commands > Reminders, checked in gact-tui source. No site captures yet. Not released. |
 
 When one of these changes ships:
 

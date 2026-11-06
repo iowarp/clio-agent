@@ -1,4 +1,8 @@
-"""Recall exposes supported modes rather than inviting known-unavailable searches."""
+"""Recall exposes supported modes rather than inviting known-unavailable searches.
+
+What recall reads back (real segment shapes on real clio-core) is pinned in
+``test_recall_context_reads.py``; this stand-in plane only toggles the search capability.
+"""
 
 from __future__ import annotations
 
@@ -16,7 +20,7 @@ from clio_agent.gact.summarization_record import recall_line
 def test_recall_schema_and_summary_match_the_actual_context_capability(
     monkeypatch: pytest.MonkeyPatch, search_enabled: bool
 ) -> None:
-    """ID recall remains available and byte-exact with or without an indexer."""
+    """ID recall remains available with or without an indexer."""
     segment = SimpleNamespace(
         id="step1",
         scope="main",
@@ -35,7 +39,7 @@ def test_recall_schema_and_summary_match_the_actual_context_capability(
     )
     app = SimpleNamespace(state=SimpleNamespace(arc=arc))
     monkeypatch.setattr(context, "active_app", lambda: app)
-    monkeypatch.setattr(recall, "_plane", lambda: (arc, "session"))
+    monkeypatch.setattr(recall, "_plane", lambda: (arc, "session", None))
     tool: Any = recall.build_recall_context_tool()
     assert set(tool.args) == ({"ids", "query", "limit"} if search_enabled else {"ids"})
     assert tool(ids=["step1"]).endswith("--- step1 (result, compacted)\nretained original evidence")
@@ -47,91 +51,3 @@ def test_recall_schema_and_summary_match_the_actual_context_capability(
     else:
         assert "unavailable" in tool.desc
         assert "recall_context(query=" not in footer
-
-
-def _seg(atom_id: str, kind: str, content: dict[str, Any], lt: int) -> SimpleNamespace:
-    return SimpleNamespace(
-        id=atom_id, scope="main", kind=kind, status="tombstoned", content=content,
-        derived_from=[], logical_time=lt,
-    )  # fmt: skip
-
-
-def _arc(segments: list[SimpleNamespace], chunks: list[list[str]]) -> SimpleNamespace:
-    """A store whose search returns ``chunks`` (atom ids each), best first."""
-    return SimpleNamespace(
-        list_segment_scopes=lambda _sid: ["main"],
-        list_segments=lambda _sid, _scope, **_kwargs: segments,
-        search_context=lambda *_args, **_kwargs: [
-            SimpleNamespace(atoms=[SimpleNamespace(atom_id=i) for i in chunk]) for chunk in chunks
-        ],
-    )
-
-
-def test_a_query_returns_the_steps_with_its_words_oldest_first() -> None:
-    """A hit is a chunk of many atoms: only the ones with the query's words come back,
-    the most words first within ``limit``, then shown oldest first; delivery records
-    (no text) and reasoning-only thoughts are left out and counted.
-
-    SABOTAGE: return every atom of the hit chunks and the bookkeeping record, the
-    reasoning and the unrelated call all come back, past the limit of 2."""
-    segments = [
-        _seg("first", "thought", {"text": "The two snapshots are identical for fc1."}, 1),
-        _seg("call", "tool_call", {"name": "shell_bash", "args": {"command": "ls"}}, 2),
-        _seg("deliv", "recipient_input", {"schema_version": 1, "content": []}, 3),
-        _seg("why", "thought", {"text": "", "thinking": [{"text": "snapshot musing"}]}, 4),
-        _seg("later", "thought", {"text": "Leaving out the second snapshot changes nothing."}, 5),
-        _seg("ask", "user", {"text": "What did you say about the second snapshot?"}, 6),
-    ]
-    arc = _arc(segments, [["ask", "deliv", "why", "later"], ["first", "call"]])
-    rows, left_out, rest = recall.recall_atoms(arc, "s", query="second snapshot", limit=2)
-    assert [r["id"] for r in rows] == ["later", "ask"]
-    assert rest == ["first"] and left_out == 2
-    text = recall.recall_text(rows, left_out=left_out, rest=rest)
-    assert text.startswith("2 of 3 steps, oldest first. 2 records without text left out")
-    assert 'recall_context(ids=["first"])' in text
-    assert text.index("--- later (said, compacted)") < text.index("--- ask (message, compacted)")
-    assert "musing" not in text and "schema_version" not in text
-
-
-def test_a_compaction_id_past_the_cap_names_the_rest() -> None:
-    """SABOTAGE: drop ``rest`` and the steps past 50 vanish without a word."""
-    segments = [_seg(f"s{i:02d}", "observation", {"text": f"out {i}"}, i) for i in range(53)]
-    summary = SimpleNamespace(
-        id="sum", scope="main", kind="summary", status="live", logical_time=99,
-        content={"text": "summary", "compaction_id": "cmp_1"},
-        derived_from=[s.id for s in segments],
-    )  # fmt: skip
-    rows, left_out, rest = recall.recall_atoms(_arc([*segments, summary], []), "s", ids=["cmp_1"])
-    assert len(rows) == 50 and rest == ["s50", "s51", "s52"] and left_out == 0
-    assert "50 of 53 steps" in recall.recall_text(rows, left_out=0, rest=rest)
-
-
-def test_a_long_recall_goes_to_a_file_the_agent_can_search(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Any
-) -> None:
-    """A fixed size, not a share of the window: on a large window a whole compaction
-    came back inline. Past ``tools.recall_result_chars`` the agent gets the head, the
-    cut note and the file holding every step.
-
-    SABOTAGE: size the recall by the window's room alone and the 40 KB text returns whole."""
-    import re
-
-    from clio_agent.tools import result_room
-
-    monkeypatch.chdir(tmp_path)
-    monkeypatch.setenv("CLIO_TOOLS_RECALL_RESULT_CHARS", "2000")
-    big = result_room.ResultRoom(tokens=250_000, chars=1_000_000, reason="test", window=1_000_000)
-    monkeypatch.setattr(result_room, "_measure", lambda: big)
-    segments = [
-        _seg(f"s{i:02d}", "observation", {"text": f"step {i} " + "x" * 1000}, i) for i in range(40)
-    ]
-    rows, left_out, rest = recall.recall_atoms(
-        _arc(segments, []), "s", ids=[s.id for s in segments]
-    )
-    full = recall.recall_text(rows, left_out=left_out, rest=rest)
-    shown = recall.bounded_recall(full)
-    assert len(shown) < 2_000 < len(full)
-    assert shown.startswith("[clio: result_spilled]") and "fs_search_text" in shown
-    path = re.search(r"`([^`]+\.txt)`", shown)
-    assert path is not None and open(path.group(1), encoding="utf-8").read() == full
-    assert recall.bounded_recall("1 of 1 steps") == "1 of 1 steps"

@@ -24,6 +24,7 @@ from fastmcp import FastMCP
 from fastmcp.tools import ToolResult
 from pydantic import Field
 
+from clio_agent.runtime.check_scope import checked
 from clio_agent.tools import fs_edit
 from clio_agent.tools.builtin_annotations import (
     _FILE_WRITE_ANNOTATIONS,
@@ -51,6 +52,7 @@ fs_server = FastMCP("fs")
 
 
 @fs_server.tool(annotations=_READ_FILE_ANNOTATIONS)
+@checked
 def list_directory(path: str, limit: Annotated[int, Field(ge=1, le=1_000)] = 200) -> dict[str, Any]:
     """List immediate entries in an absolute approved directory; does not follow links.
 
@@ -61,6 +63,7 @@ def list_directory(path: str, limit: Annotated[int, Field(ge=1, le=1_000)] = 200
 
 
 @fs_server.tool(annotations=_READ_FILE_ANNOTATIONS)
+@checked
 def search_text(
     path: str,
     query: Annotated[str, Field(min_length=1, max_length=1_000)],
@@ -104,6 +107,7 @@ def search_text(
 
 
 @fs_server.tool(annotations=_READ_FILE_ANNOTATIONS)
+@checked
 def glob(
     pattern: Annotated[
         str, Field(min_length=1, description="A file pattern such as **/*.py or docs/*.md.")
@@ -123,6 +127,7 @@ _READ_LINES = read_lines()
 
 
 @fs_server.tool(annotations=_READ_FILE_ANNOTATIONS)
+@checked
 def read_file(
     path: str,
     offset: Annotated[int, Field(ge=1, description="1-based line to start from.")] = 1,
@@ -149,6 +154,7 @@ def read_file(
 
 
 @fs_server.tool(annotations=_FILE_WRITE_ANNOTATIONS)
+@checked
 def write_file(
     path: str,
     content: str,
@@ -169,6 +175,7 @@ def write_file(
 
 
 @fs_server.tool(annotations=_FILE_WRITE_ANNOTATIONS)
+@checked
 def edit_file(
     path: str,
     old_string: str,

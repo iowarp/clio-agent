@@ -22,7 +22,7 @@ from typing import Any
 
 from clio_agent import conf
 
-__all__ = ["index_text", "stub_table", "tool_group"]
+__all__ = ["index_text", "owning_server", "stub_table", "tool_group"]
 
 
 def _index_line_chars() -> int:
@@ -40,11 +40,23 @@ def _identifier(text: str) -> str:
     return f"_{name}" if name[:1].isdigit() else name
 
 
-def tool_group(name: str, servers: Iterable[str]) -> tuple[str, str]:
-    """``(group, function)`` for a tool: its server's identifier, or ``""``."""
+def owning_server(name: str, servers: Iterable[str]) -> str:
+    """The server a tool named ``<server>_<name>`` belongs to, ``""`` for none.
+
+    The longest matching prefix wins (``home_lab_x`` is ``home_lab``'s, not ``home``'s);
+    the one rule for the stubs, the tool settings and the deferred catalog's owners.
+    """
     for server in sorted(servers, key=len, reverse=True):
         if name.startswith(f"{server}_") and len(name) > len(server) + 1:
-            return _identifier(server), _identifier(name[len(server) + 1 :])
+            return server
+    return ""
+
+
+def tool_group(name: str, servers: Iterable[str]) -> tuple[str, str]:
+    """``(group, function)`` for a tool: its server's identifier, or ``""``."""
+    server = owning_server(name, servers)
+    if server:
+        return _identifier(server), _identifier(name[len(server) + 1 :])
     return "", _identifier(name)
 
 

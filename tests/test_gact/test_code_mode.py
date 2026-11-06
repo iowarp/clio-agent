@@ -15,7 +15,7 @@ from clio_agent.gact.agents.tool_settings import apply_tool_settings
 from clio_agent.gact.code_mode import dispatch as dispatch_module
 from clio_agent.gact.code_mode import grants, kernels
 from clio_agent.gact.code_mode import tool as tool_module
-from clio_agent.gact.code_mode.presentation import present, starting
+from clio_agent.gact.code_mode.presentation import present, script_name, starting
 from clio_agent.gact.code_mode.stubs import index_text, stub_table, tool_group
 from clio_agent.gact.runtime.permission_actions import ALLOW_SCRIPT, allows, offered
 from clio_agent.tools.execution import tool_workspace_context
@@ -172,24 +172,49 @@ class TestKernel:
         outcome = _run("(await tools.fs.stat(path='a.txt'))['lines']")
         assert outcome["value"] == "3"
 
-    def test_control_tools_and_unknown_names_are_refused(self, workspace: Path) -> None:
-        outcome = _run(
-            "try:\n    await tools.call('submit', answer='x')\n"
-            "except ToolError as exc:\n    print(exc)"
-        )
-        assert "No tool named 'submit'" in outcome["output"]
-
-    def test_the_nested_call_budget(self, workspace: Path, monkeypatch: Any) -> None:
-        monkeypatch.setattr(dispatch_module, "max_nested_calls", lambda: 2)
+    def test_direct_only_blocked_and_unknown_names_are_refused_apart(self, workspace: Path) -> None:
+        """A5: a direct-only tool says to call it directly, a blocked one gives the typed
+        permission refusal, and only an unknown name is "No tool named". SABOTAGE: drop
+        the direct-only or ``refuse`` branch of ``Dispatcher._refusal`` -> red."""
+        agent = _agent()
+        agent.tools["records_drop"] = dspy.Tool(_finish, name="records_drop", desc="Drop.")
+        deny = SimpleNamespace(tools=[{"name": "records_drop", "permission": "deny"}])
+        apply_tool_settings(agent, SimpleNamespace(mcp_servers={}, **vars(deny)))
         code = (
-            "out = []\n"
-            "for i in ('r1', 'r2', 'r3'):\n"
-            "    try:\n        await tools.records.get_record(record_id=i); out.append('ok')\n"
-            "    except ToolError as exc:\n        out.append(str(exc)[:30])\n"
-            "out"
+            "for name in ('submit', 'records_drop', 'nothing_here'):\n"
+            "    try:\n        await tools.call(name, answer='x')\n"
+            "    except ToolError as exc:\n        print(exc)"
         )
-        value = _run(code)["value"]
-        assert value.startswith("['ok', 'ok', 'This script reached its limit")
+        lines = tool_module.run_script(agent, code, session_id="s", scope="main")["output"]
+        direct, blocked, unknown = lines.strip().splitlines()
+        assert direct == "submit cannot be called from a script: call submit directly, " + (
+            "not from a script."
+        )
+        assert "records_drop is blocked by a permission setting (tool_permission_deny)" in blocked
+        assert unknown.startswith("No tool named 'nothing_here' can be called from a script")
+
+    def test_a_script_search_takes_its_limit(self, workspace: Path) -> None:
+        """A2: ``tools.search(query, limit)`` returns at most ``limit`` tools, bounded by
+        ``tools.search_max``. SABOTAGE: search with a fixed 5 again -> two results -> red."""
+        outcome = _run(
+            "(len(await tools.search('record', limit=1)), "
+            "len(await tools.search('record', limit=99)))"
+        )
+        assert outcome["value"] == "(1, 2)", outcome
+
+    def test_no_count_ends_a_script(self, workspace: Path) -> None:
+        """CT3: a script may make more calls than the 500 the old budget allowed.
+
+        SABOTAGE: restore a budget of 500 in the dispatcher -> the 501st call raises -> red."""
+        code = (
+            "import asyncio\n"
+            "rows = await asyncio.gather(*(tools.records.get_record(record_id='r1') "
+            "for _ in range(520)))\n"
+            "len(rows)"
+        )
+        outcome = _run(code)
+        assert outcome["status"] == "completed", outcome
+        assert outcome["value"] == "520" and outcome["calls"] == 520
 
     def test_tasks_a_failed_script_left_running_stop_with_it(self, workspace: Path) -> None:
         # A failed gather leaves its other coroutines running on the kernel's loop;
@@ -209,16 +234,10 @@ class TestKernel:
         assert after["status"] == "completed"
         assert after["calls"] == 1
 
-    def test_a_timeout_stops_the_kernel_and_the_next_script_starts_fresh(
-        self, workspace: Path, monkeypatch: Any
-    ) -> None:
-        assert _run("y = 1")["status"] == "completed"
-        monkeypatch.setattr(tool_module, "call_timeout_s", lambda: 1.0)
-        stopped = _run("import time\ntime.sleep(30)")
-        assert stopped["status"] == "timed_out"
-        monkeypatch.setattr(tool_module, "call_timeout_s", lambda: 60.0)
-        again = _run("'y' in globals()")
-        assert again["value"] == "False"
+    def test_no_clock_ends_a_script(self) -> None:
+        """CT3: nothing in run_code stops a script for running long; the person cancels it."""
+        assert not hasattr(tool_module, "call_timeout_s")
+        assert not hasattr(dispatch_module, "max_nested_calls")
 
     def test_the_output_limit_reaches_the_kernel(self, workspace: Path, monkeypatch: Any) -> None:
         # code.max_output_bytes is resolved where the kernel starts and passed to it.
@@ -226,6 +245,42 @@ class TestKernel:
         outcome = _run("print('x' * 100)", scope="limited")
         assert outcome["status"] == "completed", outcome
         assert outcome["output"].startswith("x" * 10 + "\n[output cut at 10 of 101 bytes]")
+
+    def test_a_replaced_kernel_tells_the_model_its_variables_are_gone(
+        self, workspace: Path
+    ) -> None:
+        """A6: the first script in a kernel that replaced a stopped one says so, once.
+        SABOTAGE: drop ``kernel.replaced = replaced`` in ``kernel_for`` -> no note -> red."""
+        assert _run("x = 1")["status"] == "completed"
+        old = kernels._KERNELS[("s", "main")]
+        assert old.process is not None
+        old.process.kill()
+        old.process.wait()
+        outcome = _run("print('x' in globals())")
+        assert outcome["new_kernel"] == "replaced_dead"
+        text = tool_module.model_text(outcome)
+        assert text.startswith("(New kernel: the previous one had stopped; earlier variables")
+        assert "new_kernel" not in _run("x = 2")
+
+    def test_a_plan_mode_script_is_told_where_it_may_write(
+        self, workspace: Path, monkeypatch: Any
+    ) -> None:
+        """A7: a read-only kernel's outcome names the folders it may write.
+        SABOTAGE: drop ``write_roots`` from ``execute_script``'s outcome -> red."""
+        from clio_agent.runtime import session_scratch
+
+        scratch = workspace / "scratch"
+        monkeypatch.setattr(session_scratch, "active_scratch_dir", lambda: scratch)
+        monkeypatch.setattr(session_scratch, "system_temp_roots", lambda: (Path("/tmp"),))
+        agent = _agent()
+        outcome = tool_module.run_script(
+            agent, "print(1)", session_id="s", scope="plan", read_only=True
+        )
+        assert outcome["write_roots"] == [str(scratch), "/tmp"]
+        assert f"(Plan mode: this script may write only in `{scratch}` and `/tmp`.)" in (
+            tool_module.model_text(outcome)
+        )
+        assert "write_roots" not in _run("print(1)")
 
     def test_closing_the_session_stops_its_kernels(self, workspace: Path) -> None:
         _run("z = 1")
@@ -270,7 +325,7 @@ class TestGrants:
             assert fields["script"] == {"call_id": "call_1", "code": "print(1)"}
             assert fields["actions"] == ["allow", "deny", ALLOW_SCRIPT]
             with grants.question():
-                assert grants.active_grant().waiting
+                assert grants.active_grant().asking.locked()
             grants.answered({"action": ALLOW_SCRIPT})
             assert grants.covers("ask")
         finally:
@@ -307,7 +362,10 @@ class TestPresentation:
         }
         view = present({}, "", row)
         assert view["summary"] == "14 calls, 1 failed"
-        assert view["blocks"][0]["language"] == "python"
+        blocks = {block["id"]: block for block in view["blocks"]}
+        # The row names the script; on expansion the script itself comes first.
+        assert view["subject"] == "target" and blocks["target"]["label"] == "print(1)"
+        assert view["blocks"][1]["language"] == "python"
         assert "status" not in view
         # The calls are nested rows; the result does not list their tool identifiers.
         assert all("records_get_record" not in str(b.get("text")) for b in view["blocks"])
@@ -317,7 +375,19 @@ class TestPresentation:
         assert timed["status"] == "failed" and timed["summary"].startswith("Stopped")
         cancelled = present({}, "", {"code": "x", "status": "cancelled", "calls": 2})
         assert cancelled["status"] == "interrupted"
-        assert starting({"code": "x = 1"})["blocks"][0]["text"] == "x = 1"
+        assert starting({"code": "x = 1"})["blocks"][1]["text"] == "x = 1"
+
+    def test_the_row_names_the_script(self) -> None:
+        """Label, else first comment, else first statement that is not an import.
+
+        SABOTAGE: return "" from ``script_name`` -> the row has no target -> red."""
+        assert script_name({"label": "printer watch"}, "import x\nrun()") == "printer watch"
+        assert script_name({}, "import csv\n# Log the printer\nrun()") == "Log the printer"
+        assert (
+            script_name({}, "import csv, json\nfrom a import b\nrows = load()") == "rows = load()"
+        )
+        assert script_name({}, "import csv") == "import csv"
+        assert starting({"code": "import csv\nrows = load()"})["subject"] == "target"
 
 
 def test_nested_calls_carry_their_parent_into_the_live_and_v3_views() -> None:
@@ -337,6 +407,26 @@ def test_nested_calls_carry_their_parent_into_the_live_and_v3_views() -> None:
     event = Event(type="tool.call.started", session_id="s", payload=payload)
     projection = _tool_started(event, payload, None)
     assert projection.payload["parent_call_id"] == "call_run"
+
+
+def test_a_nested_calls_completion_carries_its_parent_too() -> None:
+    """A background script's calls are recorded behind the call (CT5), so a live view can
+    meet a call first through its completion; that event must name the parent as well,
+    or the call shows as a row of its own (CK21: stray "Created version" rows).
+
+    SABOTAGE: drop ``parent_call_id`` from ``_tool_completed`` -> red."""
+    from clio_agent.gact.events import Event
+    from clio_agent.gact.protocol.v3.event import _tool_completed
+
+    payload = {"call_id": "call_child", "tool": "create_artifact", "ok": True}
+    payload["parent_call_id"] = "call_run"
+    event = Event(type="tool.call.completed", session_id="s", payload=payload)
+    projection = _tool_completed(event, payload, None)
+    assert projection.payload["parent_call_id"] == "call_run"
+    assert (
+        "parent_call_id"
+        not in _tool_completed(event, {**payload, "parent_call_id": ""}, None).payload
+    )
 
 
 def test_plan_mode_runs_scripts_only_behind_an_enforced_fence(monkeypatch: Any) -> None:
@@ -398,3 +488,171 @@ def test_a_plan_mode_kernel_writes_only_scratch_and_temp(monkeypatch: Any, tmp_p
         assert stopped == ["replaced_mode_changed (read_only=True)"]
     finally:
         kernels._KERNELS.pop(("sess_x", "scope"), None)
+
+
+def test_a_background_launch_reads_as_a_started_task_not_as_a_script_without_calls() -> None:
+    """The launch row links to the task's row by its handle (the ``task`` target).
+
+    SABOTAGE: drop the background branch in ``present`` -> "No tool calls". Drop the
+    ``open-task`` link, or target ``work`` again -> red."""
+    view = present(
+        {"code": "while True:\n    pass", "background": True, "label": "Counter watch"},
+        "Started",
+        {"handle": "task_abc", "status": "working"},
+    )
+    assert view["summary"] == "Started in the background"
+    blocks = {block["id"]: block for block in view["blocks"]}
+    assert view["subject"] == "target" and blocks["target"]["label"] == "Counter watch"
+    assert "task_abc" in blocks["task"]["text"]
+    assert blocks["open-task"] | {"label": ""} == {
+        "id": "open-task",
+        "type": "link",
+        "target": "task",
+        "uri": "task_abc",
+        "label": "",
+    }
+    unnamed = present({"code": "\nimport time\n", "background": True}, "", {"handle": "t"})
+    assert {b["id"]: b for b in unnamed["blocks"]}["target"]["label"] == "import time"
+
+
+def test_a_finished_script_waits_for_the_calls_it_sent(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Calls queued behind a busy pool when the script ends still run and are answered;
+    only a stopped script drops them (``close(finished=False)``).
+
+    SABOTAGE: close a finished script's dispatcher with ``cancel_futures`` -> the queued
+    call never runs -> red."""
+    import contextvars
+    import time
+
+    from clio_agent.gact.code_mode.dispatch import Dispatcher
+
+    monkeypatch.setenv("CLIO_TOOLS_CALL_WORKERS", "1")
+    ran: list[str] = []
+
+    def slow(args: Any) -> str:
+        time.sleep(0.3)
+        ran.append(str(args["name"]))
+        return "ok"
+
+    dispatcher = Dispatcher({}, (), contextvars.copy_context(), lambda q, n: [], {"__w__": slow})
+    replies: list[dict[str, Any]] = []
+    for call_id, name in ((1, "first"), (2, "queued")):
+        dispatcher.submit({"id": call_id, "tool": "__w__", "args": {"name": name}}, replies.append)
+    dispatcher.close(finished=True)
+    assert ran == ["first", "queued"]
+    assert sorted(r["id"] for r in replies if r["ok"]) == [1, 2]
+
+
+def test_a_call_that_raises_outside_its_own_handling_still_answers_the_script() -> None:
+    """A11: a call (or a host call) whose worker raises before its own try (entering its
+    server's gate) answers the script with the error instead of leaving it waiting.
+    SABOTAGE: settle with ``f.result()`` again -> no reply -> red."""
+    import contextvars
+
+    from clio_agent.gact.code_mode.dispatch import Dispatcher
+
+    def gone(args: Any) -> str:
+        raise SystemExit("host call gone")
+
+    tools = {"records_get_record": object()}
+    dispatcher = Dispatcher(tools, (), contextvars.copy_context(), lambda q, n: [], {"__h__": gone})
+
+    def broken(tool: str, args: dict[str, Any]) -> Any:
+        raise RuntimeError("gate unavailable")
+
+    dispatcher._run = broken  # type: ignore[method-assign]
+    replies: list[dict[str, Any]] = []
+    dispatcher.submit({"id": 1, "tool": "records_get_record", "args": {}}, replies.append)
+    dispatcher.submit({"id": 2, "tool": "__h__", "args": {}}, replies.append)
+    dispatcher.close(finished=True)
+    by_id = {r["id"]: r for r in replies}
+    assert by_id[1]["ok"] is False and by_id[1]["error"] == "RuntimeError: gate unavailable"
+    assert by_id[2]["ok"] is False and "host call gone" in by_id[2]["error"]
+    assert [(r.tool, r.ok) for r in dispatcher.records] == [("records_get_record", False)]
+
+
+def test_a_refused_script_says_why_the_gate_refused_it() -> None:
+    """A3: the gate's own deny message (a deny policy, the plan ACL, a read-only session)
+    reaches the model with a typed reason; only a bare deny reads as not approved.
+    SABOTAGE: raise the fixed "not approved" text for every refusal -> red."""
+    from clio_agent.gact.permission_gate import DenyDecision
+
+    def app(decision: Any) -> Any:
+        gate = lambda name, args, context: decision  # noqa: E731
+        return SimpleNamespace(state=SimpleNamespace(pending_permission_gate=gate))
+
+    tool_module._approve(app("allow"), "print(1)")
+    acl = "run_code is not available in this read-only session."
+    with pytest.raises(PermissionError) as denied:
+        tool_module._approve(app(DenyDecision(acl)), "print(1)")
+    assert str(denied.value).startswith(acl)
+    assert tool_module.CODE_SCRIPT_DENIED in str(denied.value)
+    assert "not approved" not in str(denied.value)
+    with pytest.raises(PermissionError) as declined:
+        tool_module._approve(app("deny"), "print(1)")
+    assert "not approved, or a permission rule denies run_code" in str(declined.value)
+    assert tool_module.CODE_SCRIPT_NOT_ALLOWED in str(declined.value)
+
+
+def test_code_tools_are_offered_directly_where_plan_mode_cannot_run_scripts(
+    monkeypatch: Any,
+) -> None:
+    """A4: in plan mode on a host whose sandbox does not enforce the write fence run_code
+    refuses, so a ``code`` tool is listed and callable directly; behind the fence it
+    stays script-only. SABOTAGE: drop the ``_code_unavailable`` check in ``call_refusal``
+    or ``unlisted_tools`` -> red."""
+    from clio_agent.gact import context as gact_context
+    from clio_agent.gact.agents.tool_settings import call_refusal, unlisted_tools
+    from clio_agent.runtime import sandbox
+
+    def read_page(url: str) -> str:
+        return url
+
+    setattr(read_page, CALLERS_ATTR, "code")
+    agent = _agent()
+    agent.tools["browser_read"] = dspy.Tool(read_page, name="browser_read", desc="Read.")
+    agent.tools["run_code"] = dspy.Tool(_finish, name="run_code", desc="Run.")
+    apply_tool_settings(agent, SimpleNamespace(tools=[], mcp_servers={}))
+    agent._clio_unlisted = frozenset(agent._clio_code_only)
+    assert agent._clio_code_only == {"browser_read"}
+    sessions = {"s": SimpleNamespace(mode="plan")}
+    app = SimpleNamespace(state=SimpleNamespace(sessions=SimpleNamespace(get=sessions.get)))
+    monkeypatch.setattr(gact_context, "active_app", lambda: app)
+    monkeypatch.setattr(gact_context, "active_session_id", lambda: "s")
+    monkeypatch.setattr(sandbox, "current_state", lambda: None)
+    assert call_refusal(agent, "browser_read") == ""
+    assert "browser_read" not in unlisted_tools(agent)
+    enforced = sandbox.SandboxResult(
+        mechanism=sandbox.MECHANISM_LANDLOCK, active=True, reason=sandbox.REASON_FENCE_ACTIVE
+    )
+    monkeypatch.setattr(sandbox, "current_state", lambda: enforced)
+    assert "only be called from a run_code script" in call_refusal(agent, "browser_read")
+    assert "browser_read" in unlisted_tools(agent)
+
+
+def test_a_script_sends_paths_as_text_and_refuses_what_json_cannot_hold() -> None:
+    """A10: a path argument reaches the tool as its string (not ``PosixPath('/a')``), a
+    numpy scalar as its number, and anything else raises TypeError in the script with
+    nothing sent. SABOTAGE: send with ``default=repr`` again -> red."""
+    import asyncio
+    import io
+
+    from clio_agent.gact.code_mode import kernel_main
+
+    out = io.StringIO()
+    host = kernel_main._Host(out)
+    loop = asyncio.new_event_loop()
+    try:
+        asyncio.set_event_loop(loop)
+        host.call("fs_stat", {"path": Path("/a/b.txt")})
+        sent = json.loads(out.getvalue())
+        assert sent["args"] == {"path": "/a/b.txt"}
+        numpy = pytest.importorskip("numpy")
+        host.call("records_get_record", {"n": numpy.int64(3)})
+        assert json.loads(out.getvalue().splitlines()[-1])["args"] == {"n": 3}
+        with pytest.raises(TypeError, match="a object cannot be sent to a tool"):
+            host.call("fs_stat", {"path": object()})
+        assert len(out.getvalue().splitlines()) == 2 and len(host.pending) == 2
+    finally:
+        asyncio.set_event_loop(None)
+        loop.close()

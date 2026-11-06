@@ -30,6 +30,7 @@ STANDARD_PLUGINS = [
     "delegation",
     "document-runtime",
     "fleet",
+    "streaming",
 ]
 
 
@@ -169,6 +170,7 @@ def test_installed_marketplace_is_untrusted_until_the_trust_step(
         "memory",
         "notes",
         "fleet",
+        "streaming",
         "shell",
     ]
 
@@ -220,9 +222,10 @@ def test_resolve_preview_applies_add_and_remove(client: TestClient) -> None:
     )
     assert added.status_code == 200, added.text
     assert [row["id"] for row in added.json()["plugins"]] == [
-        *STANDARD_PLUGINS[:-1],
+        *STANDARD_PLUGINS[:-2],
         "orchestration",
         "fleet",
+        "streaming",
     ]
     assert {"run_workflow", "run_flow"} <= set(added.json()["tool_names"])
 

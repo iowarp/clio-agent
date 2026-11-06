@@ -320,10 +320,19 @@ class BuiltinBoundary:
         root, kind, tool = (
             ("shell", "Shell", "bash")
             if name in {"bash", "shell_bash"}
+            else ("code", "Code", "run_code_task")
+            if name == "run_code"
             else ("storage", "Download", name)
             if name == "connected_data_download"
             else ("storage", "Indexing", name)
         )
+        if kind == "Code":
+            from clio_agent.gact.native_code import staged  # noqa: PLC0415
+
+            # run_code asked the person with the script shown before staging it; only an
+            # approved, staged script reaches this root (taskable run_code CT2).
+            if not staged(str(public.get("launch") or "")):
+                raise PermissionError("A background script needs an approved launch")
         component = await self.app.state.native_tools.roots[root].server.get_tool(tool)
         if component is None:
             raise ValueError("Native workload is unavailable")
@@ -395,7 +404,7 @@ class BuiltinBoundary:
             ) = await self.app.state.task_history.io.run(
                 connection_approval, self.app.state.connected_storage, session.workspace_id, public
             )
-        if approved is None and not inherited_approval:
+        if approved is None and not inherited_approval and kind != "Code":
             metadata = {"kind": "native"}
             if name == "connected_data_connect":
                 metadata["summary"] = f"Connect {public['label']}"

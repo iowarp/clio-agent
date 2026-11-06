@@ -168,7 +168,7 @@ async def start(app: Any) -> None:
                 "status": settled.status,
                 "settlement": settled.settlement,
             }
-        if current.kind in {"Shell", "Download", "Indexing"} or (
+        if current.kind in {"Shell", "Download", "Indexing", "Code"} or (
             current.backend is not None and current.backend.owner == "native"
         ):
             return await app.state.native_tools.cancel(current.handle, caller=caller)
@@ -440,6 +440,24 @@ async def close(app: Any) -> tuple[BaseException, ...]:
     errors: list[BaseException] = []
     if native is not None:
         errors.extend(await native.settle_shutdown())
+    from clio_agent.gact import code_task_reporting  # noqa: PLC0415
+    from clio_agent.gact.artifacts.version_pacing import flush_pending  # noqa: PLC0415
+
+    # A file version a background script's registration deferred is recorded, not lost,
+    # a script's queued notifies are sent, and an open stream's rows are written as its
+    # last version. Each runs even when another failed; their errors are reported.
+    streams = getattr(app.state, "streams", None)
+    for name, retire in (
+        ("deferred_versions", flush_pending),
+        ("queued_notifies", partial(code_task_reporting.flush_all, app)),
+        ("streams", streams.close if streams is not None else None),
+    ):
+        if retire is not None:
+            try:
+                await asyncio.to_thread(retire)
+            except BaseException as error:
+                logger.exception("Task runtime retirement failed step=%s", name)
+                errors.append(error)
     question_events = getattr(app.state, "question_events", None)
     stack = getattr(app.state, "task_resource_stack", None)
     external = getattr(app.state, "external_tasks", None)

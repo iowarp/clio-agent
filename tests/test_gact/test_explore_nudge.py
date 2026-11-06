@@ -67,9 +67,12 @@ def test_the_note_is_a_template_and_runs_nothing(tmp_path: Any) -> None:
     from clio_agent import paths
 
     path = paths.user_config_dir() / "prompts" / "clio.reminder.explore_nudge--default.md"
-    text = path.read_text(encoding="utf-8")
-    body = text.split("---", 2)[2]
-    path.write_text(text.replace(body, "\n{{calls}} reads; $(whoami) ${unknown}\n"), "utf-8")
+    path.write_text(  # the person's text edit (the fixture's settings overlay replaced)
+        "---\nid: clio.reminder.explore_nudge\nx_kind: reminder\n"
+        "x_variables: calls, explore_model, spawn_tool\nx_param_after: 4\n---\n"
+        "{{calls}} reads; $(whoami) ${unknown}\n",
+        "utf-8",
+    )
     loop = _loop()
     explore_nudge.note_reading_run(loop, ["fs_read_file"] * 4)
     assert loop.recorder.notes == [
