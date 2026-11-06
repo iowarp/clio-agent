@@ -279,3 +279,20 @@ def test_route_pages_relations_and_search() -> None:
     assert client.get("/v1/sessions?limit=0").status_code == 422
     assert client.get("/v1/sessions?limit=2&cursor=garbage").status_code == 422
     assert client.get("/v1/sessions?limit=2&kinds=nonsense").status_code == 422
+
+
+def test_route_waiting_includes_a_request_that_parks_no_turn() -> None:
+    """A sandbox folder card leaves its session idle; the notifier still needs it.
+
+    SABOTAGE: drop the pending-permission union -> the idle session is missing -> red.
+    """
+    store, ids = _store(_MemoryStore(), 3)
+    child = store.create(workspace_id="ws", title="kid", parent_session_id=ids[1], agent={})
+    client = _client(store)
+    assert client.get("/v1/sessions?waiting_on_person=true").json()["sessions"] == []
+    client.app.state.permissions = {
+        "perm_a": {"id": "perm_a", "status": "pending", "session_id": child.id},
+        "perm_b": {"id": "perm_b", "status": "resolved", "session_id": ids[2]},
+    }
+    waiting = client.get("/v1/sessions?waiting_on_person=true").json()["sessions"]
+    assert {row["id"] for row in waiting} == {ids[1], child.id}

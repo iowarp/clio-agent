@@ -579,13 +579,15 @@ class SessionRecords:
                 tree.update(dict.fromkeys(frontier))
         return [*tree, *(sid for sid in chain if sid not in tree)]
 
-    def related_ids(self, family_of: str = "") -> list[str]:
+    def related_ids(self, family_of: str = "", waiting: Iterable[str] = ()) -> list[str]:
         """``family_of``'s tree (:meth:`family`); without it, the sessions waiting on a
-        person (:data:`WAITING_ON_PERSON`) and every ancestor of them."""
+        person (:data:`WAITING_ON_PERSON`, plus ``waiting``: sessions with an open request
+        that parks no turn, such as a sandbox folder card) and every ancestor of them."""
 
         if family_of:
             return self.family(family_of)
-        return self.ancestors(self.select(PageQuery(archived=None, statuses=WAITING_ON_PERSON)))
+        by_status = self.select(PageQuery(archived=None, statuses=WAITING_ON_PERSON))
+        return self.ancestors(dict.fromkeys([*by_status, *waiting]))
 
     # ---- legacy import (the session_records_import store migration) -------
 
