@@ -12,7 +12,6 @@ from __future__ import annotations
 from collections.abc import Mapping
 from typing import Any
 
-STALL_PREDICATE_UNSATISFIED = "predicate_unsatisfied"
 STALL_STEP_TIMEOUT = "step_timeout"
 STALL_TIMEOUT_REQUIRES_TASK = "timeout_requires_task"
 

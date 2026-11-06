@@ -636,7 +636,7 @@ the handle cancels the flow and its subtree.
 
 A workflow is steps as data: each has an `id`, a `target` (a subagent, an
 installed agent, a flow, a tool or `self`), an optional `input`, the steps it
-waits on (`after`), an optional `when_state` gate, an optional `timeout_s`
+waits on (`after`), an optional `timeout_s`
 deadline, a `description`, `options` (for a flow target only) and a `model`.
 The workflow may set `max_concurrency`. `0` means no cap on how many of this
 workflow's steps exist at once, including steps that have finished their model
@@ -665,13 +665,10 @@ when it has neither a description nor dependencies. A tool step's `answer` is
 empty unless the tool returns a mapping with `answer`, so `$<tool step>` and
 `inputs` pass empty text for other tool results.
 
-Every step whose dependencies completed starts once its `when_state` holds, with
-no barrier. A positive `max_concurrency` is how many of those steps may be in
-flight; `0` starts every ready step. `when_state` reads
-the `workflow_state` of the steps named in `after`, folded in definition order.
-A gate that does not hold while nothing else can run ends the workflow with
-`FlowStall("predicate_unsatisfied")`. A step that waits on a failed or cancelled
-step is skipped. A `timeout_s` deadline cancels that step's assignment; the
+Every step whose dependencies completed starts at once, with no barrier. A
+positive `max_concurrency` is how many of those steps may be in flight; `0`
+starts every ready step. A step that waits on a failed or cancelled step is
+skipped. A `timeout_s` deadline cancels that step's assignment; the
 editors may repair it, and if nobody does the run ends `FlowStall("step_timeout")`.
 A deadline on a tool target stalls `timeout_requires_task`, because a tool call
 has no assignment to cancel. A cancellation that is not the deadline still ends

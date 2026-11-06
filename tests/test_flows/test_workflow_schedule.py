@@ -1,6 +1,6 @@
 """Workflow scheduling that the data flow adds on top of replay.
 
-The fold, the gate and the cap are pure functions of the definition and the
+The fold and the cap are pure functions of the definition and the
 recorded child results. These tests drive the workflow flow with scripted
 calls so completion order is chosen by the test.
 """
@@ -98,9 +98,7 @@ def test_a_deadline_cancel_is_at_or_after_the_stored_deadline() -> None:
     assert not cancellation_is_deadline(None, "2026-10-30T00:00:02+00:00")
 
 
-def test_workflow_rejects_a_malformed_gate_cap_or_deadline() -> None:
-    with pytest.raises(WorkflowError, match="exactly one"):
-        Workflow.from_dict({"steps": [{"id": "a", "target": "t", "when_state": {"flag": {}}}]})
+def test_workflow_rejects_a_bad_cap_or_a_bad_deadline() -> None:
     with pytest.raises(WorkflowError, match="max_concurrency"):
         Workflow.from_dict({"steps": [{"id": "a", "target": "t"}], "max_concurrency": True})
     with pytest.raises(WorkflowError, match="timeout_s"):
@@ -202,31 +200,8 @@ async def test_workflow_state_folds_in_definition_order(finish_first: str) -> No
     assert not hasattr(ctx, "_state_sources")
 
 
-async def test_a_gate_reads_its_dependencies_and_stalls_when_nothing_can_run() -> None:
-    ctx = ScriptedCtx()
-    module = _flow_module()
-    with pytest.raises(FlowStall) as raised:
-        await module.WorkflowFlow().forward(
-            {
-                "workflow": {
-                    "steps": [
-                        {
-                            "id": "a",
-                            "target": "writer",
-                            "when_state": {"flag.ready": {"equals": True}},
-                        }
-                    ]
-                }
-            },
-            ctx,
-        )
-    assert raised.value.stall == "predicate_unsatisfied"
-    assert raised.value.details["step"] == "a"
-    assert ctx.started == []
-
-
 @pytest.mark.concurrency
-async def test_a_gate_ignores_an_unrelated_sibling_that_finishes_first() -> None:
+async def test_a_dependent_waits_on_its_dependency_not_a_sibling() -> None:
     ctx = ScriptedCtx()
     module = _flow_module()
     task = asyncio.create_task(
@@ -236,12 +211,7 @@ async def test_a_gate_ignores_an_unrelated_sibling_that_finishes_first() -> None
                     "steps": [
                         {"id": "a", "target": "writer"},
                         {"id": "b", "target": "writer"},
-                        {
-                            "id": "c",
-                            "target": "reader",
-                            "after": ["a"],
-                            "when_state": {"shared": {"equals": "from-a"}},
-                        },
+                        {"id": "c", "target": "reader", "after": ["a"]},
                     ]
                 }
             },

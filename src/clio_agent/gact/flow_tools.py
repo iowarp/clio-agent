@@ -292,13 +292,6 @@ def build_run_workflow_tool() -> Any:
             },
             "input": {"description": "Text or an object; $task and $<step> refer to inputs."},
             "after": {"type": "array", "items": {"type": "string"}},
-            "when_state": {
-                "type": "object",
-                "description": (
-                    "Run this step only when each field path exists or equals the given "
-                    "value, read from the workflow_state of the steps it waits on."
-                ),
-            },
             "timeout_s": {
                 "type": "number",
                 "minimum": 0,
@@ -323,7 +316,7 @@ def build_run_workflow_tool() -> Any:
         desc=(
             "Start a workflow (steps with targets, inputs and dependencies) as owned work and return "
             "its task handle at acceptance. Each step starts as soon as the steps it waits on "
-            "finish and its when_state holds. max_concurrency limits how many run at once, and "
+            "finish. max_concurrency limits how many run at once, and "
             "timeout_s is a step's deadline. Named editors may add or cancel steps while it runs, "
             "within max_added_steps and "
             "max_edit_rounds when set; approve_edits asks the user before each added step runs. "

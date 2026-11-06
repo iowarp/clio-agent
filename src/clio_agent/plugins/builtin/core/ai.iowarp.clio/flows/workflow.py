@@ -45,14 +45,12 @@ from clio_agent.flows.outcomes import (
 )
 from clio_agent.flows.values import CallResult
 from clio_agent.flows.workflow_fold import (
-    STALL_PREDICATE_UNSATISFIED,
     STALL_STEP_TIMEOUT,
     STALL_TIMEOUT_REQUIRES_TASK,
     deadline_cancelled,
     fold_workflow_state,
 )
 from clio_agent.sdk import Flow, Step, Workflow, WorkflowError
-from clio_agent.sdk.workflow import evaluate_when_state
 
 _EDIT_TOOLS = ("workflow_add_step", "workflow_cancel_step")
 
@@ -185,44 +183,13 @@ class _WorkflowRun:
         self.forks: dict[str, dict[str, Any]] = {}
 
     # ------------------------------------------------------------ helpers
-    def _eligible(self) -> list[Step]:
+    def _ready(self) -> list[Step]:
         return [
             step
             for step_id, step in self.steps.items()
             if self.status[step_id] == "pending"
             and all(self.status.get(dep) == "completed" for dep in step.after)
         ]
-
-    def _dependency_state(self, step: Step) -> dict[str, Any]:
-        """The fold of this step's dependencies, in definition order.
-
-        The gate reads only those steps. An unrelated sibling that finishes first
-        must not change whether this step starts: replay settles calls in
-        definition order, and a live run does not.
-        """
-
-        wanted = set(step.after)
-        ordered = [
-            self.results[step_id]
-            for step_id in self.steps
-            if step_id in wanted and step_id in self.results
-        ]
-        state, _, _ = fold_workflow_state(ordered)
-        return state
-
-    def _ready(self) -> list[Step]:
-        return [
-            step
-            for step in self._eligible()
-            if evaluate_when_state(step.predicates, self._dependency_state(step)).satisfied
-        ]
-
-    def _predicate_wait(self) -> tuple[Step, Any] | None:
-        for step in self._eligible():
-            gate = evaluate_when_state(step.predicates, self._dependency_state(step))
-            if not gate.satisfied:
-                return step, gate
-        return None
 
     async def _fold_state(self, *, record: bool) -> None:
         """Replace the run's merged state from completed steps, in definition order."""
@@ -346,17 +313,6 @@ class _WorkflowRun:
                 self.status[step.id] = "running"
                 running[asyncio.ensure_future(self._run_step(step))] = step.id
             if not running:
-                waiting = self._predicate_wait()
-                if waiting is not None:
-                    step, gate = waiting
-                    await self._fold_state(record=True)
-                    raise FlowStall(
-                        STALL_PREDICATE_UNSATISFIED,
-                        f"workflow step {step.id!r} is waiting on a state predicate that does not hold",
-                        step=step.id,
-                        predicate=gate.predicate,
-                        observed=gate.observed,
-                    )
                 break
             done, _ = await asyncio.wait(running, return_when=asyncio.FIRST_COMPLETED)
             for future in sorted(done, key=lambda f: list(self.steps).index(running[f])):
@@ -700,8 +656,6 @@ class _WorkflowRun:
                         [step_id if a == repairing else a for a in other.after],
                         other.description,
                         other.options,
-                        other.model,
-                        when_state=other.when_state or None,
                         timeout_s=other.timeout_s,
                     )
             self.status[repairing] = "repaired"

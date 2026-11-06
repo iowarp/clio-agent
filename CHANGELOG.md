@@ -8,9 +8,8 @@ TUI/HTTP surface aren't tracked here.
 
 ### Changed
 
-- A workflow step starts when the steps it waits on have completed and its
-  `when_state` gate holds. `max_concurrency` caps how many of that workflow's
-  steps are in flight (`0` means no step cap; model-call admission is separate),
+- `max_concurrency` caps how many of a workflow's steps are in flight
+  (`0` means no step cap; model-call admission is separate),
   and `timeout_s` is that step's deadline. A deadline is offered to editors as
   `step_timeout`. A deadline on a tool target stalls `timeout_requires_task`.
   Merged `workflow_state` follows definition order, with
