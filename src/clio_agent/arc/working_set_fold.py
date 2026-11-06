@@ -385,8 +385,7 @@ class FoldingSegmentStore(LaneWriter, ContextSearch, SegmentStore):
                 expert_span_id=expert_span_id,
                 run_span_id=run_span_id,
             )
-        view = self._view(session_id, scope)
-        with view.lock:
+        with self._write_view(session_id, scope) as view:
             atom = self._make_atom(
                 session_id,
                 scope,
@@ -450,8 +449,7 @@ class FoldingSegmentStore(LaneWriter, ContextSearch, SegmentStore):
                 expert_span_id=expert_span_id,
                 run_span_id=run_span_id,
             )
-        view = self._view(session_id, scope)
-        with view.lock:
+        with self._write_view(session_id, scope) as view:
             atom = self._make_atom(
                 session_id,
                 scope,
@@ -479,8 +477,7 @@ class FoldingSegmentStore(LaneWriter, ContextSearch, SegmentStore):
         """
         if not self._is_working_set_scope(scope):
             return super().delete(session_id, scope, ids)
-        view = self._view(session_id, scope)
-        with view.lock:
+        with self._write_view(session_id, scope) as view:
             require_live(ids, {s.id for s in view.live}, op="delete", scope=scope)
             targets = list(dict.fromkeys(ids))
             op = self._make_atom(
@@ -524,8 +521,7 @@ class FoldingSegmentStore(LaneWriter, ContextSearch, SegmentStore):
                 run_span_id=run_span_id,
                 position=position,
             )
-        view = self._view(session_id, scope)
-        with view.lock:
+        with self._write_view(session_id, scope) as view:
             require_live(ids, {s.id for s in view.live}, op="summarize", scope=scope)
             target = set(ids)
             replaced = [s for s in view.live if s.id in target]
@@ -604,8 +600,7 @@ class FoldingSegmentStore(LaneWriter, ContextSearch, SegmentStore):
                 expert_span_id=expert_span_id,
                 run_span_id=run_span_id,
             )
-        view = self._view(session_id, scope)
-        with view.lock:
+        with self._write_view(session_id, scope) as view:
             require_live([target_id], {s.id for s in view.live}, op="replace", scope=scope)
             original = next(s for s in view.live if s.id == target_id)
             atom = self._make_atom(
@@ -653,8 +648,7 @@ class FoldingSegmentStore(LaneWriter, ContextSearch, SegmentStore):
         """
         if not self._is_working_set_scope(scope):
             return None
-        view = self._view(session_id, scope)
-        with view.lock:
+        with self._write_view(session_id, scope):
             atom = self._make_atom(
                 session_id,
                 scope,
