@@ -84,9 +84,9 @@ def _acquire(app: Any, sid: str) -> None:
         logger.warning("%s session=%s root=%s error=%s", VIEW_HOLD_REFUSED, sid, root, error)
         return
     with _lock:
-        hold = _holds.get(sid)
-        if hold is not None and hold.views > 0 and hold.lease is None:
-            hold.agent, hold.root, hold.lease = agent, root, scope
+        current = _holds.get(sid)
+        if current is not None and current.views > 0 and current.lease is None:
+            current.agent, current.root, current.lease = agent, root, scope
             scope = None
     if scope is not None:  # every view left while the lease was being taken
         scope.__exit__(None, None, None)
