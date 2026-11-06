@@ -108,12 +108,10 @@ def _wait(predicate: Any, what: str) -> Any:
     raise AssertionError(f"timed out waiting for {what}")
 
 
-def _children(client: TestClient, sid: str) -> list[dict[str, Any]]:
-    return [
-        row
-        for row in client.app.state.sessions.list()
-        if row.parent_session_id == sid and row.metadata.get("started_by")
-    ]
+def _children(client: TestClient, sid: str) -> list[Any]:
+    sessions = client.app.state.sessions
+    rows = [sessions.get(child) for child in sessions.child_ids_by_parent().get(sid, [])]
+    return [row for row in rows if row is not None and row.metadata.get("started_by")]
 
 
 def _task_of(client: TestClient, child_id: str) -> str:
