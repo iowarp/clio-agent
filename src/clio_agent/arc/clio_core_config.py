@@ -125,9 +125,9 @@ def runtime_state_dir() -> Path:
 # Default clio-core CTE config: a RAM working arena (the ``ram`` bdev, clio-core's
 # working memory, not a data tier) and ONE file data tier (score 1.0) on the OS data
 # dir, durable across daemon restarts (``restart``, the metadata log and
-# ``persistence_level``; see :mod:`clio_agent.arc.clio_core_durability`). There is no
-# in-memory data tier, so a put cannot be placed in memory and ``ReorganizeBlob`` has no
-# faster tier to move a blob to.
+# ``persistence_level``; see :mod:`clio_agent.arc.clio_core_durability`). A blob is in
+# memory by default; clio-core moves it to the file tier under memory pressure or when it
+# goes unused.
 #
 # MEMORY BUDGET (#906, owner ruling 2026-07-13 — release-gating): a desktop
 # clio-agent must NEVER be able to grow to clio-core's HPC default of 80% of

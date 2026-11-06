@@ -16,7 +16,7 @@ Nothing goes in `iowarp/clio-agent`. The clio-core team decides how to solve eac
 | 4 | The idle daemon uses most of a core | — | not filed |
 | 5 | Build the macOS wheels for macOS 14 again | — | not filed |
 | 6 | Conditional puts in a batch, and a conditional put that replaces | — | not filed |
-| 7 | Keep a blob in memory by choice, for streams | — | not filed |
+| 7 | A Python binding for `clio_cte_stream` | — | not filed |
 
 The numbers match the sections below. The parent issue lists them by priority: 3, 2, 1, 4, 6, 5, 7.
 
@@ -35,7 +35,7 @@ Sub-issues, in priority order:
 4. Idle daemon CPU (busy-poll)
 5. macOS 14 wheels (2.4.0 publishes macOS 15 wheels only, so CLIO Desktop's floor moved to macOS 15 with it)
 6. Conditional puts in a batch, and a conditional put that replaces (so the 2.4.0 conditional writes reach CLIO's grouped writes and shared index rows)
-7. Keep a blob in memory by choice, for streams (last: CLIO holds stream content in its own process until then)
+7. A Python binding for `clio_cte_stream` (last: CLIO holds stream content in its own process until then)
 
 Already in 2.4.0 and used by CLIO: `AsyncPutBlobIfAbsent` creates each content-addressed task record in one round trip instead of a read and a put, and decides which of two writers creates it. `AsyncPutBlobIfVersion` and `AsyncGetBlobVersioned` are not used yet; issue 6 says what CLIO needs to use them.
 
@@ -147,14 +147,12 @@ This matters for CLIO because it runs a local daemon per user on desktops and la
 
 ---
 
-## clio-core issue 7: Keep a blob in memory by choice, for streams
+## clio-core issue 7: A Python binding for `clio_cte_stream`
 
-**What CLIO needs.** A stream is an artifact whose content is rewritten often (a device's status, a feed of recent readings) and read mostly for its latest value. Its content should live in memory and reach disk only by a flush policy: every update, or only the latest content and a bounded window. CLIO's clio-core configuration (`clio_core_config.py:144-173`) has data on file tiers only; the RAM pool is the working arena. A put cannot choose a tier (`PutBlob`/`AsyncPutBlob` take no score), `Tag.ReorganizeBlob` moves a blob after the fact, and `clio_cte_stream` (page blobs, deferred appends) has no Python binding.
+**What CLIO needs.** A stream is an artifact whose content is rewritten often (a device's status, a feed of recent readings) and read mostly for its latest value, kept as its latest content or a bounded window and flushed by a policy. clio-core already keeps blobs in memory by default (a blob reaches disk under memory pressure or when it goes unused), so placement is not the gap. The gap is the stream module: iowarp-core ships `clio_cte_stream` (page blobs, deferred appends) with no Python binding, so CLIO cannot use it.
 
 **Until then.** CLIO keeps a stream's latest content and window in its server process and writes them to clio-core on the stream's flush policy (taskable `run_code` plan, Part 4, decision CT25).
 
-**Ask.** Either:
-1. a put with a placement hint (a score or a target), with a RAM data target that the durability check can tell apart from the working arena, and a flush of a memory-placed blob to a persistent target on demand; or
-2. a Python binding for `clio_cte_stream`: create a stream on a tag with a retention (latest, or a window of N pages), append, read the latest and the window, and flush.
+**Ask.** A Python binding for `clio_cte_stream`: create a stream on a tag with a retention (latest only, or a window of N pages), append, read the latest and the window, and flush.
 
-**Acceptance.** From Python, CLIO can write a blob that stays in memory, read it back without a disk read, and flush it to a persistent target when its policy says, with a per-write confirmation.
+**Acceptance.** From Python, CLIO creates a stream on a tag with either retention, appends many times a second, reads the latest entry and the window back, and flushes on demand with a per-flush confirmation.

@@ -15,8 +15,9 @@ and is recorded on the stream as ``flush_error`` (``STREAM_FLUSH_FAILED``, trace
 and announce it, so a failed write never keeps a stream open or a script from settling.
 
 The memory copy is the stream's content; the flushed versions are its persistence. Where a
-stream's content lives was decided in CT25 (5): GACT holds it until clio-core can place a
-blob in memory (``docs/design/clio-core-requests.md``, issue 7).
+stream's content lives was decided in CT25 (5): GACT holds it until CLIO can use clio-core's
+stream module, ``clio_cte_stream``, from Python (``docs/design/clio-core-requests.md``,
+issue 7).
 """
 
 from __future__ import annotations
