@@ -37,7 +37,7 @@ def write(args: Mapping[str, Any]) -> dict[str, Any]:
         [_unwire(value) for value in args.get("values") or []],
         str(args.get("media_type") or ""),
     )
-    return {"writes": stream.seq, "entries": min(stream.seq, stream.window)}
+    return {"writes": stream.seq, "held": min(stream.seq, stream.window)}
 
 
 @host_call("__stream_stop__")

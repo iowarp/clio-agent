@@ -169,7 +169,7 @@ class Stream:
                 "state": self.state,
                 "media_type": self.media_type,
                 "window": self.window,
-                "entries": min(self.seq, self.window),
+                "held": min(self.seq, self.window),
                 "writes": self.seq,
                 "opened_at": self.opened_at,
                 "updated_at": self.updated_at,
@@ -356,7 +356,11 @@ class StreamStore:
             ),
             kind=ArtifactKind.STREAM,
             mechanism=Mechanism.HARNESS,
-            producer={"designation": "stream", "stream_id": stream.id},
+            producer={
+                "designation": "stream",
+                "stream_id": stream.id,
+                "session_id": stream.session_id,
+            },
             custody=Custody.CLIO_CORE,
         )
         return outcome.version.artifact_id if outcome is not None else ""

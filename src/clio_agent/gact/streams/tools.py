@@ -61,9 +61,11 @@ def open_stream(name: str, window: int = 1, media_type: str = "") -> dict[str, A
 
 
 def read_stream(name: str = "", limit: int = _READ_ENTRIES) -> dict[str, Any]:
-    """Read a stream: its state (open, or closed and when), how many writes it had, and
-    its newest entries, oldest first (JSON as value, text as text, other types by size).
-    With no name, list the workspace's streams and their states."""
+    """Read a stream: its state (open, or closed and when), how many writes it had and
+    how many entries it holds (``held``), and its newest ``limit`` entries (``entries``,
+    oldest first; a record as ``value``, text as ``text``, other types by size;
+    ``latest`` is the newest). With no name, list the workspace's streams and their
+    states."""
 
     app, _session_id, workspace_id = _session()
     store = stream_store(app)
@@ -81,7 +83,7 @@ def read_stream(name: str = "", limit: int = _READ_ENTRIES) -> dict[str, Any]:
         "ok": True,
         **fresh.describe(),
         "latest": entries[-1] if entries else None,
-        "entries_read": entries,
+        "entries": entries,
     }
 
 
@@ -140,7 +142,7 @@ def build_open_stream_tool() -> Any:
 def build_read_stream_tool() -> Any:
     return _native(
         read_stream,
-        "name,state,entries,writes,updated_at,closed_at,reason,detail",
+        "name,state,latest,entries,held,writes,updated_at,closed_at,reason,detail",
         title="Read stream",
         args={
             "name": {**_NAME, "default": "", "description": "The stream; none lists them."},

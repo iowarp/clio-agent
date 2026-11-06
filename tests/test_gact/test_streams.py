@@ -193,6 +193,9 @@ def test_a_view_reads_the_content_as_it_is_and_the_reference_names_the_stream(
     }
     refused = client.get(f"/v1/artifacts/{stream.artifact_id}/bytes")
     assert refused.status_code == 409
+    # The conversation that opened it lists it among its artifacts (the side panel's list).
+    listed = client.get(f"/v1/sessions/{sid}/artifacts").json()["artifacts"]
+    assert [(a["name"], a["kind"]) for a in listed] == [("readings", "stream")]
 
 
 def test_a_watch_names_a_session_of_the_streams_workspace(session: Any, tmp_path: Path) -> None:
@@ -236,8 +239,8 @@ def test_the_agent_reads_a_stream_or_lists_them_and_stops_one(session: Any) -> N
     assert opened["ok"] and opened["view_uri"].endswith("/feed@latest")
     stream_store(app).write(opened["stream_id"], opened["write_key"], [{"v": 1}, "line"])
     read = read_stream("feed")
-    assert read["state"] == "open" and read["writes"] == 2
-    assert read["latest"]["text"] == "line" and read["entries_read"][0]["value"] == {"v": 1}
+    assert read["state"] == "open" and read["writes"] == 2 and read["held"] == 2
+    assert read["latest"]["text"] == "line" and read["entries"][0]["value"] == {"v": 1}
     listed = read_stream()
     assert [s["name"] for s in listed["streams"]] == ["feed"]
     stopped = stop_stream("feed")
