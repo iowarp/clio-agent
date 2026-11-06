@@ -22,6 +22,8 @@
 #   clio doctor          check prerequisites and install layout
 #   clio sandbox status  show the OS write-fence (sandbox) status row
 #   clio sandbox setup   provision the OS write fence (one UAC prompt on Windows; idempotent)
+#   clio store-check     say whether your data was written by CLIO 0.9.5.1 or older
+#   clio reset-store [--yes]  move that data aside, unchanged (never deleted); CLIO starts empty
 #   clio report          print a diagnostics bundle for GitHub issues
 #   clio completion SH   print shell completion (bash|zsh)
 #   clio uninstall [...] run the uninstaller
@@ -330,7 +332,7 @@ report() {
 }
 
 completion() {
-  local cmds="web start stop restart status ps logs sandbox doctor report completion uninstall help"
+  local cmds="web start stop restart status ps logs sandbox store-check reset-store doctor report completion uninstall help"
   case "${1:-}" in
     bash)
       cat <<EOF
@@ -467,6 +469,13 @@ main() {
       shift || true
       [[ -x "$SERVER_BIN" ]] || { err "server binary not found: $SERVER_BIN"; return 1; }
       exec "$SERVER_BIN" sandbox "$@"
+      ;;
+    store-check|reset-store)
+      # Passthrough to the installed clio-agent CLI: data an older CLIO wrote, found and
+      # moved aside (it refuses while CLIO runs; `clio stop` first).
+      shift || true
+      [[ -x "$SERVER_BIN" ]] || { err "server binary not found: $SERVER_BIN"; return 1; }
+      exec "$SERVER_BIN" "$cmd" "$@"
       ;;
     doctor)       doctor ;;
     report)       report ;;

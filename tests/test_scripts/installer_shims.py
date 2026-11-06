@@ -116,11 +116,15 @@ def run_installer(
     env: dict[str, str] | None = None,
     system: str = "Linux",
     real_git: bool = False,
+    terminal_input: str | None = None,
 ) -> tuple[subprocess.CompletedProcess[str], list[str]]:
     """Run the installer with the shims; return the result and the logged calls.
 
     ``real_git`` leaves git unshimmed (the host's git on ``/usr/bin``), for tests that
     read what the installer does to a real clone; its calls are then not logged.
+    ``terminal_input`` runs it on a terminal of its own (a pseudo-terminal that is its
+    controlling terminal, so ``/dev/tty`` answers) with that text typed ahead; the
+    result's ``stdout`` is everything the terminal showed.
     """
     bash = "C:/Program Files/Git/bin/bash.exe" if os.name == "nt" else shutil.which("bash")
     assert bash is not None
@@ -149,15 +153,18 @@ def run_installer(
         CLIO_BIN_DIR=shell_path(tmp_path / "bin"),
     )
     base.update(env or {})
+    command = [
+        bash,
+        "-c",
+        'export PATH="$TEST_PATH"; exec bash "$@"',
+        "installer-test",
+        shell_path(script or ROOT / "install/install.sh"),
+        *args,
+    ]
+    if terminal_input is not None:
+        return _on_a_terminal(command, base, terminal_input), log.read_text().splitlines()
     result = subprocess.run(
-        [
-            bash,
-            "-c",
-            'export PATH="$TEST_PATH"; exec bash "$@"',
-            "installer-test",
-            shell_path(script or ROOT / "install/install.sh"),
-            *args,
-        ],
+        command,
         env=base,
         capture_output=True,
         text=True,
@@ -165,3 +172,41 @@ def run_installer(
         check=False,
     )
     return result, log.read_text().splitlines()
+
+
+def _on_a_terminal(
+    command: list[str], env: dict[str, str], typed: str
+) -> subprocess.CompletedProcess[str]:
+    """Run ``command`` with a pseudo-terminal as its controlling terminal (POSIX only)."""
+    import fcntl  # noqa: PLC0415 - POSIX only
+    import pty  # noqa: PLC0415
+    import termios  # noqa: PLC0415
+
+    leader, follower = pty.openpty()
+
+    def take_terminal() -> None:  # in the child, after setsid: the pty becomes /dev/tty
+        fcntl.ioctl(0, termios.TIOCSCTTY, 0)
+
+    process = subprocess.Popen(  # noqa: S603 - the test's own command
+        command,
+        env=env,
+        stdin=follower,
+        stdout=follower,
+        stderr=follower,
+        start_new_session=True,
+        preexec_fn=take_terminal,  # noqa: PLW1509 - single-threaded child setup
+    )
+    os.close(follower)
+    os.write(leader, typed.encode())
+    shown = bytearray()
+    while True:
+        try:
+            chunk = os.read(leader, 65536)
+        except OSError:  # EIO: the terminal's last writer exited
+            break
+        if not chunk:
+            break
+        shown += chunk
+    os.close(leader)
+    code = process.wait(timeout=60)
+    return subprocess.CompletedProcess(command, code, shown.decode(errors="replace"), "")

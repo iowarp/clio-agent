@@ -6,6 +6,8 @@
 #   install.ps1 --dev --source   source at `develop`
 #   install.ps1 -Desktop         the desktop app, bundled with its agent (x64 setup;
 #                                runs under emulation on ARM); -Dev/-Version pick the release
+#   install.ps1 -ResetOldData    move data CLIO 0.9.5.1 or older wrote aside without asking
+#                                (this release cannot open it; it is kept, never deleted)
 #
 # -Source/-Dev/-Version/-Ref are the same options. From a URL:
 #   & ([scriptblock]::Create((irm <url>/install.ps1))) --dev
@@ -176,6 +178,7 @@ $OptVersion = ''
 $OptRef = ''
 $OptDesktop = $false
 $OptDownloadOnly = ''
+$OptResetOldData = $false
 for ($i = 0; $i -lt $args.Count; $i++) {
     switch -Regex ([string]$args[$i]) {
         '^(--source|-Source)$' { $OptSource = $true; continue }
@@ -186,6 +189,7 @@ for ($i = 0; $i -lt $args.Count; $i++) {
         '^--ref=' { $OptRef = ([string]$args[$i]).Substring(6); continue }
         '^(--desktop|-Desktop)$' { $OptDesktop = $true; continue }
         '^(--download-only|-DownloadOnly)$' { $i++; $OptDownloadOnly = [string]$args[$i]; continue }
+        '^(--reset-old-data|-ResetOldData)$' { $OptResetOldData = $true; continue }
         default { Write-Host "clio installer: unknown option '$($args[$i])'" -ForegroundColor Red; Exit-Installer 2 }
     }
 }
@@ -440,6 +444,16 @@ try {
 $Venv = Join-Path $Prefix 'clio-agent\.venv'
 $Src = $null
 $ClioVersion = $null
+# The CLIO this install replaces, named if the data check below cannot tell.
+$PreviousVersion = $null
+$PreviousPython = Join-Path $Venv 'Scripts\python.exe'
+if (Test-Path $PreviousPython) {
+    try {
+        $PreviousVersion = (& $PreviousPython -c "from importlib.metadata import version; print(version('clio-agent'))").Trim()
+    } catch {
+        $PreviousVersion = $null
+    }
+}
 
 if ($OptSource) {
     $AppDir = Join-Path $Prefix 'clio-agent'
@@ -558,6 +572,65 @@ if (Test-Path $VenvPython) {
     }
 }
 
+# ---------- data an older CLIO wrote: moved aside, never deleted ------
+# This release cannot open what CLIO 0.9.5.1 or older stored. `store-check` reads the
+# store itself and says so in plain words (exit 5: written by 0.9.5.1 or older; 6 or
+# 4: cannot tell; 3: CLIO is running). Old data is moved aside after a yes (without
+# asking with -ResetOldData or when no console can ask); data whose writer cannot be
+# told is moved only after a yes. `reset-store --yes` renames it, keeping every byte.
+function Test-CanAsk {
+    try {
+        return [Environment]::UserInteractive -and -not [Console]::IsInputRedirected -and -not [Console]::IsOutputRedirected
+    } catch {
+        return $false
+    }
+}
+function Read-YesNo([string]$Question, [string]$Default) {
+    $answer = Read-Host $Question
+    if (-not $answer) { $answer = $Default }
+    return @('y', 'yes') -contains $answer.Trim().ToLower()
+}
+function Move-OldDataAside {
+    & $VenvPython -m clio_agent.gact.store_reset_command reset --yes
+    $moved = $LASTEXITCODE
+    if ($moved -ne 0) {
+        Warn "Your data was not moved (exit $moved, the reason is above). CLIO reports it when it starts; 'clio reset-store' moves it later."
+    }
+}
+function Invoke-OldDataCheck {
+    & $VenvPython -c "import importlib.util, sys; sys.exit(0 if importlib.util.find_spec('clio_agent.gact.store_reset_command') else 3)"
+    if ($LASTEXITCODE -ne 0) { return }  # a release before the check: its store is its own
+    Say 'Checking which CLIO version wrote your data'
+    & $VenvPython -m clio_agent.gact.store_reset_command check
+    $checkStatus = $LASTEXITCODE
+    if ($checkStatus -eq 0) { return }
+    if ($checkStatus -eq 3) {
+        Warn "CLIO is running, so your data was not checked. This release cannot open data written by CLIO 0.9.5.1 or older: stop CLIO ('clio stop', or quit CLIO Desktop) and run this installer again, or run 'clio reset-store' if CLIO says your data is from an older version."
+        return
+    }
+    if ($checkStatus -eq 5) {
+        if ($OptResetOldData) {
+            Say 'Moving it aside (-ResetOldData)'
+        } elseif (Test-CanAsk) {
+            if (-not (Read-YesNo 'Move it aside now? [Y/n]' 'y')) {
+                Warn "Your data was left in place. CLIO $InstalledClioVersion cannot open it and says so when it starts. To move it later: 'clio stop', then 'clio reset-store'."
+                return
+            }
+        } else {
+            Say 'No console to ask on: moving it aside (pass -ResetOldData to say so explicitly)'
+        }
+    } else {
+        Warn 'The installer cannot tell whether your data must be moved aside, so it does not move it on its own.'
+        if ($PreviousVersion) { Say "The CLIO this install replaced was $PreviousVersion." }
+        if (-not ((Test-CanAsk) -and (Read-YesNo 'Move it aside anyway? [y/N]' 'n'))) {
+            Warn "Your data was left in place. If CLIO says it was written by CLIO 0.9.5.1 or older, stop CLIO and run 'clio reset-store'."
+            return
+        }
+    }
+    Move-OldDataAside
+}
+Invoke-OldDataCheck
+
 # ---------- upgrade the store: migrations run here, never at boot ------
 # Idempotent; a second run is a no-op. A running CLIO refuses it (store_in_use): its
 # next boot runs the owed migrations once and reports them in the health rows.
@@ -569,6 +642,8 @@ if ($LASTEXITCODE -eq 0) {
     $MigrateStatus = $LASTEXITCODE
     if ($MigrateStatus -eq 3) {
         Warn "store in use by a running CLIO: its next start runs the owed migrations once (or run 'clio stop' then 'clio-agent migrate')"
+    } elseif ($MigrateStatus -eq 5) {
+        Warn "clio-agent migrate did not run: your data was written by CLIO 0.9.5.1 or older (above); 'clio reset-store' moves it aside"
     } elseif ($MigrateStatus -ne 0) {
         Warn "clio-agent migrate failed (exit $MigrateStatus, see the lines above): CLIO's next start retries the owed migrations once and reports them in 'clio doctor'"
     }
