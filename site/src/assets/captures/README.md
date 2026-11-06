@@ -252,10 +252,12 @@ collapsed where the composer is the subject. Sessions and checks are recorded in
 | `commands/slash-menu.png` | 1440 x 900 | The / menu's Commands, Skills and prompt groups, with sources. |
 | `commands/slash-menu-prompts.png` | 1440 x 900 | `fixture-docs prompts`, including `summarize_notes` added while the server ran. |
 | `commands/slash-menu-same-name.png` | 1440 x 900 | Two plugins' `review-notes`, each under its full name, marked Same name elsewhere. |
-| `commands/at-popover.png` | 1440 x 900 | The @ menu's Agents and Tools groups. |
+| `commands/at-popover.png` | 1440 x 900 | The @ menu as it opens: workspace files listed, Agents, Workflows, Flows and Tools collapsed. |
+| `commands/at-popover-typed.png` | 1440 x 900 | `@dr`: the matches in every category, including the `draft-review` workflow. |
 | `commands/chip-in-draft.png` | 1440 x 900 | An `@explore` chip before the message text. |
 | `commands/two-chips-phone.png` | 390 x 844 | Two chips on one line and the text wrapping under them. |
-| `commands/summoned-subagent.png` | 1440 x 900 | A sent `@explore` chip and "You started explore on this message"; the agent waits for the report. |
+| `commands/summoned-subagent.png` | 1440 x 900 | The answer to an `@explore` message, with "Started explore as you asked". |
+| `commands/summon-not-started.png` | 1440 x 900 | An `@review` the agent did not start, and "review was not started" under the answer. |
 | `commands/summoned-server.png` | 1440 x 900 | "You pointed this message at the fixture-docs tools" and the answer from two of its tools. |
 | `commands/mcp-prompt-sent.png` | 1440 x 900 | A sent `/mcp__fixture-docs__show_figure` with its image and the opened prompt text. |
 

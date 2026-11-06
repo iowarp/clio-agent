@@ -1,6 +1,6 @@
 ---
 title: "Commands and @ mentions"
-description: Run a command with /, bring in a subagent or a tool server with @, and write your own commands.
+description: Run a command with /, bring in a subagent, workflow, flow or tool server with @, and write your own commands.
 ---
 
 import { Aside, Steps } from "@astrojs/starlight/components";
@@ -10,14 +10,17 @@ import slashMenu from "../../../assets/captures/commands/slash-menu.png";
 import prompts from "../../../assets/captures/commands/slash-menu-prompts.png";
 import ambiguous from "../../../assets/captures/commands/slash-menu-same-name.png";
 import atPopover from "../../../assets/captures/commands/at-popover.png";
+import atTyped from "../../../assets/captures/commands/at-popover-typed.png";
+import notStarted from "../../../assets/captures/commands/summon-not-started.png";
 import chip from "../../../assets/captures/commands/chip-in-draft.png";
 import phone from "../../../assets/captures/commands/two-chips-phone.png";
 import summoned from "../../../assets/captures/commands/summoned-subagent.png";
 import summonedServer from "../../../assets/captures/commands/summoned-server.png";
 import promptSent from "../../../assets/captures/commands/mcp-prompt-sent.png";
 
-Type `/` in the message box to run a command, or `@` to bring a subagent or a tool
-server into your message. Both menus list only what this conversation's agent has.
+Type `/` in the message box to run a command, or `@` to bring a subagent, a workflow, a
+flow or a tool server into your message. Both menus list only what this conversation's
+agent has.
 
 ## Run a command
 
@@ -103,50 +106,66 @@ Write a three-line standup: yesterday, today, blockers. Yesterday: $ARGUMENTS
   the others are listed as **Shadowed**, naming the file that wins.
 - A built-in name, such as `goal`, is reserved: a file named `goal.md` is listed as
   **Reserved name** and `/goal` still runs the built-in.
-- `agent: <subagent>` in the frontmatter hands the command to that subagent, the same as
-  writing `@<subagent>` in the message.
+- `agent: <subagent>` or `workflow: <workflow>` in the frontmatter asks for that subagent
+  or workflow, the same as writing `@<name>` in the message.
 - `model` and `allowed-tools` from Claude Code commands are read but not used. The menu
   says **Some fields ignored**.
 
 <Aside>
-Plugins written for Claude Code work as they are: their commands, skills, subagents and
-hooks load. A hook can stop a command before it runs; the refusal shows the hook's
+Plugins written for Claude Code install as they are: CLIO translates their commands,
+skills, subagents and hooks ([what maps](#plugins-written-for-claude-code)). A hook can stop a command before it runs; the refusal shows the hook's
 reason. See [Hooks](/docs/hooks/) and [Agents and plugins](/docs/agents-and-plugins/).
 </Aside>
 
-## Bring in a subagent or a tool server with @
+## Bring in a subagent, a workflow, a flow or a tool server with @
 
 <Steps>
 
-1. Type `@`. Under **Agents** are the subagents this agent can start; under **Tools**
-   are its tool servers, each saying how many tools it has or that they load when used.
+1. Type `@`. Your workspace's files are listed; **Agents** (the subagents this agent can
+   start), **Workflows** (with the inputs they take), **Flows** and **Tools** (its tool
+   servers) are collapsed, each with its count. Open one to browse it.
 
-2. Keep typing and press Enter. The name becomes a chip in your message. You can add
-   several.
+2. Keep typing: every category shows what matches. Press Enter, and the name becomes a
+   chip in your message. You can add several.
 
 3. Send the message.
 
 </Steps>
 
 <Capture client:visible image={await captureImage(atPopover)}
-  alt="The @ menu lists the agent's subagents and tool servers."
+  alt="The @ menu with the workspace files listed and Agents, Workflows, Flows and Tools collapsed with their counts."
+  sizes="(min-width: 50rem) 46rem, 100vw" />
+
+<Capture client:visible image={await captureImage(atTyped)}
+  alt="The @ menu after typing @dr: a matching agent, the draft-review workflow, files and conversations."
+  caption="A few letters show the matches in every category."
   sizes="(min-width: 50rem) 46rem, 100vw" />
 
 <Capture client:visible image={await captureImage(chip)}
   alt="A subagent chip at the start of a message."
   sizes="(min-width: 50rem) 46rem, 100vw" />
 
-- **A subagent** you name starts at once on your message's text, as work you started.
-  Under your message you see **You started explore on this message**, and the subagent
-  appears with its progress like any other. The agent reads its report when it arrives.
-  Two names start two subagents side by side.
+- **A subagent, workflow or flow** you name is what you ask the agent to use for this
+  message. Nothing starts before the agent reads it: the agent writes the brief from
+  the whole conversation (so "the folder we talked about" becomes the folder's path),
+  sets what the work needs (a model, a workflow's inputs, a flow's options), and
+  starts it. Under your message you see **You asked for explore on this message**;
+  under the answer, **Started explore as you asked**, and the work appears with its
+  progress like any other, started by you. If the agent did not start it, the answer
+  says so: **explore was not started**, with the reason. The agent keeps every tool
+  while it works.
 - **A tool server** you name has its tools loaded for this message, so the agent can use
   them straight away. Under your message: **You pointed this message at the hdf5
   tools**.
 
 <Capture client:visible image={await captureImage(summoned)}
-  alt="A sent message with an @explore chip and the line You started explore on this message"
-  caption="The subagent starts on the message; the agent waits for its report instead of searching again."
+  alt="An answer that reports what explore found, with the line Started explore as you asked under it."
+  caption="The agent wrote explore's brief from the conversation, waited for its report and used it."
+  sizes="(min-width: 50rem) 46rem, 100vw" />
+
+<Capture client:visible image={await captureImage(notStarted)}
+  alt="A message with an @review chip that says never mind, a one-line answer, and the line review was not started."
+  caption="Nothing is forced: when the agent does not start what you asked for, the answer says so."
   sizes="(min-width: 50rem) 46rem, 100vw" />
 
 <Capture client:visible image={await captureImage(summonedServer)}
@@ -164,11 +183,28 @@ reason. See [Hooks](/docs/hooks/) and [Agents and plugins](/docs/agents-and-plug
 
 ## Plugins written for Claude Code
 
-A Claude Code plugin installs as it is: its `commands/`, `skills/`, `agents/` and
-`hooks/hooks.json` load, and `clio-agent plugin check` names anything that has no CLIO
-counterpart (an `output-styles/` folder, a tool a subagent names that CLIO lacks) instead
-of dropping it silently. The writing method in [Write a paper](/docs/papers/#write-with-a-method)
-is one such package, brought into CLIO.
+CLIO installs a Claude Code plugin as it is, through a translation: an importer reads
+its files into CLIO's own plugin records, and a hook adapter runs its hooks on the same
+wire Claude Code uses. `clio-agent plugin check` names anything that has no CLIO
+counterpart instead of dropping it silently. The writing method in
+[Write a paper](/docs/papers/#write-with-a-method) is one such package, brought into
+CLIO.
+
+| In the Claude Code plugin | In CLIO | How it maps |
+| --- | --- | --- |
+| `commands/*.md` | `/` commands, `/<plugin>:<name>` | exactly, with `$ARGUMENTS` and `$1`, `$2` |
+| `skills/*/SKILL.md` | skills, also `/` commands | exactly |
+| `agents/*.md` | subagents | exactly; each tool it names maps by the table below |
+| `hooks/hooks.json` | hooks on the same events: `PreToolUse`, `PostToolUse`, `UserPromptSubmit`, `UserPromptExpansion`, `Stop`, `SubagentStop`, `SessionStart`, `SessionEnd`, `PreCompact` | exactly; another event is reported as unmapped |
+| `.mcp.json` | tool servers | exactly, with `${CLAUDE_PLUGIN_ROOT}` |
+| `Read`, `Glob`, `Edit`, `MultiEdit`, `Write` | the workspace file tools | exactly |
+| `Bash` | the shell tool | exactly |
+| `WebFetch`, `WebSearch` | the web tools | exactly |
+| `Task`, `Agent` | `spawn_agent_task` | exactly |
+| `Grep` | the workspace text search | in part: its regex, glob and files, content and count modes map; multiline mode and split `-A`/`-B` context do not, and `plugin check` says so |
+| another tool a subagent names | left out of that subagent | `plugin check` warns |
+| `model`, `allowed-tools`, `disable-model-invocation` in a command | read, not used | the menu says **Some fields ignored** |
+| `output-styles/`, `outputStyles`, `lspServers` | not used | `plugin check` warns |
 
 ## Related
 
