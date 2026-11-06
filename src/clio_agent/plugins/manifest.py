@@ -270,8 +270,10 @@ def read_mcp_config(root: Path, plugin: str) -> tuple[dict[str, dict[str, Any]],
 def validate_server(root: Path, name: str, entry: Any) -> str:
     """Return why one ``mcpServers`` entry is invalid, or an empty string."""
 
-    if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_-]*", name):
-        return f"server {name!r}: names use letters, digits, '-' and '_'"
+    # The gateway's rule (``tools.mcp_config``): a name prefixes its tools, and ``_``
+    # separates that prefix, so a name with ``_`` or capitals never mounts.
+    if not re.fullmatch(r"[a-z0-9][a-z0-9-]*", name):
+        return f"server {name!r}: names use lowercase letters, digits and '-' (no '_')"
     if not isinstance(entry, dict):
         return f"server {name!r}: must be an object"
     kind = entry.get("type")

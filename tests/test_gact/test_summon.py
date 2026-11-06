@@ -166,6 +166,11 @@ def test_two_summoned_subagents_start_as_the_persons_children(market: Path) -> N
         summons = user["metadata"]["summons"]
         assert [row["role"] for row in summons["subagents"]] == ["explore", "review"]
         assert "agent_override" not in user["metadata"]
+        # The chips stay on the person's message, where the transcript shows them.
+        assert [p["target"] for p in user["parts"] if p["type"] == "summon"] == [
+            "explore",
+            "review",
+        ]
         handles = [row["handle"] for row in summons["subagents"]]
         parent = _wait(
             lambda: next((q for q in agent.questions if "The person started" in q), None),
@@ -235,8 +240,8 @@ def _catalog() -> ToolCatalog:
     schema = {"type": "object", "properties": {"term": {"type": "string"}}}
     return ToolCatalog(
         [
-            CatalogEntry("fixture_docs_lookup_term", "fixture_docs", "Look a term up.", schema),
-            CatalogEntry("fixture_docs_count_words", "fixture_docs", "Count words.", schema),
+            CatalogEntry("fixture-docs_lookup_term", "fixture-docs", "Look a term up.", schema),
+            CatalogEntry("fixture-docs_count_words", "fixture-docs", "Count words.", schema),
             CatalogEntry("hdf5_list", "hdf5", "List datasets.", schema),
         ]
     )
@@ -252,14 +257,14 @@ def test_a_server_summons_loads_that_servers_deferred_tools(
         search_tools, "_record_loaded", lambda app, sid, names: loaded.append(names)
     )
     program = SimpleNamespace(_clio_deferred_catalog=_catalog())
-    entries = [("memory", "M"), (SERVER_SUMMON_SOURCE, '{"server": "fixture_docs"}')]
+    entries = [("memory", "M"), (SERVER_SUMMON_SOURCE, '{"server": "fixture-docs"}')]
     (memory, (source, text)) = expand_server_summons(entries, program)
     assert memory == ("memory", "M") and source == SERVER_SUMMON_SOURCE
     assert text.startswith(
-        "The person pointed this message at the fixture_docs tools.\n\nLoaded 2 tools"
+        "The person pointed this message at the fixture-docs tools.\n\nLoaded 2 tools"
     )
-    assert "## fixture_docs_lookup_term" in text and "hdf5_list" not in text
-    assert loaded == [["fixture_docs_count_words", "fixture_docs_lookup_term"]]
+    assert "## fixture-docs_lookup_term" in text and "hdf5_list" not in text
+    assert loaded == [["fixture-docs_count_words", "fixture-docs_lookup_term"]]
 
 
 def test_a_server_whose_tools_are_listed_gets_the_note_only() -> None:

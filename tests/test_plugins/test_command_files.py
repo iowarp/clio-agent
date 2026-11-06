@@ -156,3 +156,12 @@ def test_positional_arguments_keep_quoted_words_whole() -> None:
     assert render_command("", "just text") == "just text"
     # An unbalanced quote still splits on spaces rather than failing.
     assert render_command("$1|$2", "it's fine") == "it's|fine"
+
+
+def test_a_server_name_the_gateway_refuses_is_a_load_error(tmp_path: Path) -> None:
+    """``_`` separates a server's tool prefix, so ``fixture_docs`` would never mount."""
+
+    from clio_agent.plugins.manifest import validate_server
+
+    assert "no '_'" in validate_server(tmp_path, "fixture_docs", {"type": "stdio", "command": "x"})
+    assert validate_server(tmp_path, "fixture-docs", {"type": "stdio", "command": "x"}) == ""

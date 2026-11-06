@@ -82,10 +82,10 @@ async def test_prompts_are_cached_per_connection_and_relisted_after_a_change() -
             return await real()
 
         client.list_prompts = counted  # type: ignore[method-assign]
-        first = await mcp_prompts.list_prompts(client, "fixture_docs", cache)
-        again = await mcp_prompts.list_prompts(client, "fixture_docs", cache)
-        mcp_prompts.mark_prompts_changed("fixture_docs")
-        after = await mcp_prompts.list_prompts(client, "fixture_docs", cache)
+        first = await mcp_prompts.list_prompts(client, "fixture-docs", cache)
+        again = await mcp_prompts.list_prompts(client, "fixture-docs", cache)
+        mcp_prompts.mark_prompts_changed("fixture-docs")
+        after = await mcp_prompts.list_prompts(client, "fixture-docs", cache)
     assert sorted(p.name for p in first) == ["define_term", "show_figure"]
     assert [p.name for p in again] == [p.name for p in first]
     assert len(after) == 2 and len(calls) == 2
@@ -103,12 +103,12 @@ def test_rows_come_only_from_connected_servers(monkeypatch: pytest.MonkeyPatch) 
     arg = SimpleNamespace(name="term", description="The term.", required=True)
     listed = [SimpleNamespace(name="define_term", title="", description="Define.", arguments=[arg])]
     executor = SimpleNamespace(
-        is_namespace_prepared=lambda name: name == "fixture_docs",
+        is_namespace_prepared=lambda name: name == "fixture-docs",
         list_namespace_prompts=lambda name: listed,
     )
     monkeypatch.setattr(prompts, "session_executor", lambda app, sid: executor)
-    monkeypatch.setattr(prompts, "_servers", lambda app, sid: ["fixture_docs", "cold"])
+    monkeypatch.setattr(prompts, "_servers", lambda app, sid: ["fixture-docs", "cold"])
     (row,) = prompts.prompt_rows(SimpleNamespace(), "sess_1")
-    assert row["id"] == "/mcp__fixture_docs__define_term" and row["kind"] == "mcp_prompt"
-    assert row["label"] == "fixture_docs" and row["argument_hint"] == "<term>"
+    assert row["id"] == "/mcp__fixture-docs__define_term" and row["kind"] == "mcp_prompt"
+    assert row["label"] == "fixture-docs" and row["argument_hint"] == "<term>"
     assert row["arguments"] == [{"name": "term", "description": "The term.", "required": True}]

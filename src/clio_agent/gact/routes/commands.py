@@ -80,7 +80,9 @@ def register_command_routes(app: FastAPI, deps: "GactDeps") -> None:
         if sess is None:
             _refuse(404, "not_found", f"session not found: {sid}")
         cmd_id = cmd if cmd.startswith("/") else f"/{cmd}"
-        table = command_table(app, sid)
+        # Off the loop: the table reads command files and lists MCP prompts over the
+        # agent's connections, whose executor answers on this loop.
+        table = await run_off_loop(command_table, app, sid)
         if cmd_id in table.ambiguous:
             _refuse(
                 409,
