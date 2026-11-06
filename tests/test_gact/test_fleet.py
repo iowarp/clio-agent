@@ -342,7 +342,12 @@ def test_a_runs_model_shares_count_the_tokens_read_and_written_not_cache_reads()
         session("step", "run", {"a/small": {"tokens_input": 50, "tokens_output": 250}}),
         session("other", "", {"a/elsewhere": {"tokens_input": 999}}),
     ]
-    app = SimpleNamespace(state=SimpleNamespace(sessions=SimpleNamespace(list=lambda: sessions)))
+    index = SimpleNamespace(
+        # The session index's parent column, and the rows a tree reads.
+        child_ids_by_parent=lambda: {"run": ["step"]},
+        select=lambda query: [s for s in sessions if s.id in query.ids],
+    )
+    app = SimpleNamespace(state=SimpleNamespace(sessions=index))
     USAGE_BOARD.record(
         claude_snapshot("a", {"unifiedWindows": {"five_hour": {"utilization": 0.4}}})
     )

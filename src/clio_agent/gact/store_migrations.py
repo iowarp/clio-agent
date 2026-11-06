@@ -182,14 +182,40 @@ def _run_session_records(app: Any) -> dict[str, Any]:
     return app.state.sessions.import_legacy()
 
 
+_COLUMNS = "session_record_columns"
+
+
+def _session_record_columns_owed(app: Any) -> bool:
+    # Owed without its marker, and again while any index row is unfilled: a row an
+    # older CLIO indexed after the migration ran (a downgrade, then this CLIO again).
+    if app.state.task_history.index.done_marker(_COLUMNS) is None:
+        return True
+    sessions = getattr(app.state, "sessions", None)
+    if sessions is not None:
+        return bool(sessions.index.unfilled_ids())  # the bound index: no record read
+    from clio_agent.gact.session_index_columns import unfilled_in_store  # noqa: PLC0415
+    from clio_agent.gact.session_records import INDEX_BUCKETS, KIND  # noqa: PLC0415
+
+    store = getattr(app.state.task_history.arc, "_store", None)  # `clio-agent migrate`
+    return store is not None and unfilled_in_store(store, KIND, INDEX_BUCKETS) > 0
+
+
 def _run_session_record_columns(app: Any) -> dict[str, Any]:
-    # Rows indexed before a column existed carry its default: recompute every row's
-    # columns from its record once (a batch of rows at a time), here and never at a
-    # request. Idempotent; the runner's marker ends it for good.
+    # Fill the extension columns of every unfilled index row from its record (a batch
+    # at a time), here and never at a request; an interrupted run leaves the rest
+    # unfilled for the next. The marker is written last.
     sessions = app.state.sessions
-    ids = sessions.ids()
-    changed = sum(sessions.reindex(ids[at : at + 64]) for at in range(0, len(ids), 64))
-    return {"sessions": len(ids), "reindexed": changed}
+    unfilled = sessions.index.unfilled_ids()
+    changed = sum(sessions.reindex(unfilled[at : at + 64]) for at in range(0, len(unfilled), 64))
+    return _mark_session_record_columns(app, {"filled": len(unfilled), "reindexed": changed})
+
+
+def _mark_session_record_columns(app: Any, details: dict[str, Any] | None = None) -> dict[str, Any]:
+    history = app.state.task_history
+    details = details or {"filled": 0, "reindexed": 0}
+    value = {"completed_at": datetime.now(UTC).isoformat(), **details}
+    history.confirm_write(partial(history.index.put_done_marker, _COLUMNS, value))
+    return details
 
 
 def _session_records_input(app: Any) -> bool:
@@ -269,11 +295,13 @@ MIGRATIONS: tuple[StoreMigration, ...] = (
         has_input=_session_records_input,
     ),
     StoreMigration(
-        "session_record_columns",
+        _COLUMNS,
         "Fill the session index's counter and control columns from each session record",
         _run_session_record_columns,
+        _session_record_columns_owed,
         boot_reason="session_record_columns_owed",
         has_input=_holds_conversation,
+        mark_empty=_mark_session_record_columns,
     ),
     StoreMigration(
         "task_event_lane",

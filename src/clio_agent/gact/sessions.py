@@ -30,7 +30,6 @@ from clio_agent.gact.message_marks import merge_session_metadata
 from clio_agent.gact.session_records import (
     ROW_UNREADABLE_REASON,
     PageQuery,
-    RecordColumns,
     SessionRecords,
     cache_capacity,
     record_columns,
@@ -611,18 +610,16 @@ class SessionStore:
         with self._lock:
             return self._records.ids() if query is None else self._records.select(query)
 
-    def columns(self, query: PageQuery) -> "builtins.list[RecordColumns]":
-        """The index columns of the sessions matching ``query``; no row is read."""
-        return self._records.columns(query)
-
-    def totals(self) -> dict[str, Any]:
-        """Counts by status and summed counters (:meth:`SessionRecords.totals`), no row read."""
-        return self._records.totals()
+    @property
+    def index(self) -> SessionRecords:
+        """The session index: columns, totals and unfilled rows, without a row read."""
+        return self._records
 
     def reindex(self, ids: "builtins.list[str]") -> int:
-        """Recompute the index columns of the named sessions from their rows."""
+        """Recompute (fill) the named sessions' index columns from their rows."""
         with self._lock:
-            return self._records.reindex(record_columns(row) for row in self._sessions(ids))
+            rows = [record_columns(row) for row in self._sessions(ids)]
+            return self._records.reindex(rows, attempted=ids)
 
     def child_ids_by_parent(self) -> dict[str, "builtins.list[str]"]:
         """``{parent id: [child ids]}`` from the parent column, without reading rows."""

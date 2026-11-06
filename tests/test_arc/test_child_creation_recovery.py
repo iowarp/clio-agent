@@ -68,7 +68,9 @@ async def test_spawn_retry_reuses_the_child_address_without_replaying_creation_h
         assert fired and owner.history.requires_recovery
         children = [
             child
-            for child in await asyncio.to_thread(app.state.sessions.list)
+            for child in await asyncio.to_thread(
+                app.state.sessions.select, PageQuery(archived=None)
+            )
             if child.parent_session_id == root.owner.session_id
         ]
         assert len(children) == 1
@@ -99,7 +101,9 @@ async def test_spawn_retry_reuses_the_child_address_without_replaying_creation_h
         assert current.terminal_at is None and current.activity == "queued"
         children = [
             child
-            for child in await asyncio.to_thread(app.state.sessions.list)
+            for child in await asyncio.to_thread(
+                app.state.sessions.select, PageQuery(archived=None)
+            )
             if child.parent_session_id == root.owner.session_id
         ]
         assert [child.id for child in children] == [child_id]

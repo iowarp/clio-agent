@@ -26,7 +26,9 @@ from fastapi.testclient import TestClient
 from clio_agent.arc.live import _MemoryStore
 from clio_agent.gact import store_migrations
 from clio_agent.gact.routes.session_list import register_session_list_route
+from clio_agent.gact.session_index_columns import extension_name
 from clio_agent.gact.session_records import (
+    INDEX_BUCKETS,
     KIND,
     InvalidCursorError,
     PageQuery,
@@ -72,7 +74,13 @@ def test_one_update_writes_one_record_and_moves_one_bucket() -> None:
     backing.puts.clear()
     store.update(ids[3], title="renamed")
     store.flush()
-    assert sorted(backing.puts) == sorted([f"row/{ids[3]}", bucket_of(ids[3])])
+    # The bucket and its extension, whose checksum names the new bucket body.
+    bucket = bucket_of(ids[3])
+    assert sorted(backing.puts) == sorted([f"row/{ids[3]}", bucket, extension_name(bucket)])
+    backing.puts.clear()
+    store.update(ids[3], model={"provider_id": "p", "model_id": "m"})  # an extension column
+    store.flush()
+    assert sorted(backing.puts) == sorted([f"row/{ids[3]}", extension_name(bucket)])
     assert SessionStore(store=backing).get(ids[3]).title == "renamed"
 
 
@@ -144,7 +152,9 @@ def test_a_restart_loads_the_index_and_reads_no_record_up_front() -> None:
     _, ids = _store(backing, 3)
     backing.gets.clear()
     restarted = SessionStore(store=backing)
-    assert all(name.startswith("index/") for name in backing.gets)
+    # The index buckets and their extension columns: no session record.
+    assert all(name.startswith(("index/", "columns/")) for name in backing.gets)
+    assert len(backing.gets) == 2 * INDEX_BUCKETS
     assert restarted.resident_count() == 0 and restarted.count() == 3
     first = restarted.get(ids[1])
     assert first is restarted.get(ids[1])

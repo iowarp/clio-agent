@@ -646,7 +646,7 @@ def register_system_routes(app: FastAPI, deps: "GactDeps") -> None:
         # counts and the iowarp/clio-agent#655 per-tool + overall "tool_call" latency
         # buckets are this process's running counters (app.state.metrics_counters), so
         # a poll never re-walks history and boot never replays it.
-        totals = app.state.sessions.totals()
+        totals = app.state.sessions.index.totals()
         by_status: dict[str, int] = totals["by_status"]
         active = by_status.get("running", 0) + by_status.get("idle", 0)
         counters = app.state.metrics_counters

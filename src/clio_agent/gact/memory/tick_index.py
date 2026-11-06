@@ -11,9 +11,11 @@ only:
 * the root conversations and forks that are idle by status and by their last
   interaction, and whose skip is not settled.
 
-A settled session is counted under its reason from the index, without a read. The
-verdict a tick records (``metadata.memory_checked``) is keyed by what changes when the
-conversation does, so excluding a settled session never skips a pass that is due.
+Every other session is counted under the skip its columns settle (not a conversation,
+busy, not idle yet, a curator, memory off, a settled transcript verdict), without a
+read, so ``/v1/memory/summary`` still says why nothing ran. The verdict a tick records
+(``metadata.memory_checked``) is keyed by what changes when the conversation does, so
+excluding a settled session never skips a pass that is due.
 """
 
 from __future__ import annotations
@@ -27,6 +29,8 @@ __all__ = ["settled_reason", "tick_sessions"]
 #: Stored statuses of a session the pass may read (``skip_reason``'s idle statuses).
 _IDLE_STATUSES = frozenset({"idle", "error", "cancelled"})
 _CONVERSATION_KINDS = frozenset({"conversation", "branch"})
+#: Settled skips that do not depend on the transcript (:func:`settled_reason`).
+_POLICY_SKIPS = frozenset({"session_memory_off", "curator_session"})
 
 
 def settled_reason(session: Any) -> str:
@@ -62,7 +66,11 @@ def settled_reason(session: Any) -> str:
 def tick_sessions(
     app: Any, now: datetime, idle: timedelta, minimum: int
 ) -> tuple[list[Any], dict[str, int]]:
-    """The session rows this tick reads, and the settled sessions counted by reason.
+    """The session rows this tick reads, and the sessions it skips counted by reason.
+
+    The skips the index answers are counted from it, in :func:`skip_reason`'s order
+    (not a conversation, a curator or memory-off session, busy, not idle yet, a
+    settled transcript verdict); every other session is read.
 
     Args:
         app: The GACT app (its session store).
@@ -74,24 +82,33 @@ def tick_sessions(
     from clio_agent.gact.session_records import PageQuery  # noqa: PLC0415
 
     sessions = app.state.sessions
-    open_passes = sessions.ids(PageQuery(archived=None, memory_pass_open=True))
-    settled = {"session_memory_off", "curator_session"} | {
-        f"{reason}@{minimum}" for reason in TRANSCRIPT_REASONS
-    }
-    idle_query = PageQuery(
-        archived=None,
-        kinds=_CONVERSATION_KINDS,
-        statuses=_IDLE_STATUSES,
-        recent_before=(now - idle).isoformat(),
-        memory_pass_open=False,
-    )
+    verdicts = {f"{reason}@{minimum}" for reason in TRANSCRIPT_REASONS}
     counted: dict[str, int] = {}
     due: list[str] = []
-    for row in sessions.columns(idle_query):
-        if row.memory_settled in settled:
-            key = row.memory_settled.split("@", 1)[0]
-            counted[key] = counted.get(key, 0) + 1
+    for row in sessions.index.columns(PageQuery(archived=None)):
+        reason = "" if row.memory_pass_open else _index_skip(row, now - idle, verdicts)
+        if reason:
+            counted[reason] = counted.get(reason, 0) + 1
         else:
-            due.append(row.id)
-    ids = list(dict.fromkeys([*open_passes, *due]))
-    return sessions.select(PageQuery(archived=None, ids=frozenset(ids))), counted
+            due.append(row.id)  # a pass to collect, or a session only its record decides
+    return sessions.select(PageQuery(archived=None, ids=frozenset(due))), counted
+
+
+def _index_skip(row: Any, cutoff: datetime, verdicts: set[str]) -> str:
+    """The skip ``row``'s index columns settle (``""``: its record decides)."""
+    from clio_agent.gact.memory.background import _parse  # noqa: PLC0415
+
+    if row.kind not in _CONVERSATION_KINDS:
+        return "not_a_conversation"
+    if row.memory_settled in _POLICY_SKIPS:
+        return str(row.memory_settled)
+    if row.status not in _IDLE_STATUSES:
+        return "session_busy"
+    # The index recency is the last interaction, else creation: never later than what
+    # skip_reason judges by, so a session counted here as not idle is not idle there.
+    recent = _parse(row.recent_at)
+    if recent is not None and recent > cutoff:
+        return "not_idle_yet"
+    if row.memory_settled in verdicts:
+        return str(row.memory_settled).split("@", 1)[0]
+    return ""
