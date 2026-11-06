@@ -38,8 +38,8 @@ from clio_agent.arc.clio_core_async_ops import (
     TagIds,
     store_blob_size,
     store_blob_sizes,
-    store_delete,
     store_delete_many,
+    store_delete_together,
     store_read,
 )
 
@@ -630,8 +630,8 @@ class ClioCoreStore(ClioCoreWrites):
     def delete(self, kind: str, name: str) -> None:
         # Tag has no per-blob delete; go through the Client + TagId (async: GIL-free). A
         # missing blob answers a non-zero code (no raise), satisfying the no-op contract.
-        store_delete(self, kind, name)
-        store_delete(self, kind, name + _SEARCH_SUFFIX)  # companion (no-op if absent)
+        # The record and its search companion (no-op if absent) go in one round trip.
+        store_delete_together(self, kind, (name, name + _SEARCH_SUFFIX))
         companion_sizes(self).forget(kind, name + _SEARCH_SUFFIX)
 
     def clear(self) -> None:

@@ -215,6 +215,61 @@ def test_non_segment_kinds_are_untouched_by_the_policy() -> None:
     assert [op for op, _n in cte.calls] == ["PutBlob", "DelBlob"]
 
 
+def test_a_delete_sends_the_record_and_its_companion_in_one_round_trip() -> None:
+    """Both ``DelBlob`` are issued before either reply is awaited (one round trip, not
+    two in a row); each is still awaited, so a stalled reply ends the delete typed.
+
+    SABOTAGE: await the record's delete before issuing the companion's and the calls
+    interleave (issue, await, issue, await).
+    """
+    cte = _RecordingCte()
+    store = _store(cte)
+
+    class _Awaited(_Ready):
+        def __init__(self, name: str) -> None:
+            super().__init__(0)
+            self.name = name
+            self.seen = False
+
+        def done(self) -> bool:
+            if not self.seen:
+                self.seen = True
+                cte.calls.append(("Await", self.name))
+            return True
+
+    class _Deletes(_Client):
+        def AsyncDelBlob(self, _tag_id: int, name: str) -> _Ready:  # noqa: N802
+            cte.calls.append(("DelBlob", name))
+            return _Awaited(name)
+
+    store._client = _Deletes(cte.calls)
+    store.delete("segments", "sess__agentA")
+    assert cte.calls == [
+        ("DelBlob", "sess__agentA"),
+        ("DelBlob", "sess__agentA.text"),
+        ("Await", "sess__agentA"),
+        ("Await", "sess__agentA.text"),
+    ]
+
+
+def test_a_delete_removes_the_record_and_its_companion_on_clio_core(tmp_path: Any) -> None:
+    """Against the real store: the record and its search companion are gone, a record
+    without a companion deletes too, and deleting what is absent is a no-op.
+
+    SABOTAGE: delete only ``name`` in ``ClioCoreStore.delete`` and the companion stays.
+    """
+    store = _clio_core(str(tmp_path / "deletes"))
+    indexed, plain = _events_name("agentA"), _events_name("_events/m")
+    store.put("segments", indexed, b"x", search_text="hello")
+    store.put("segments", plain, b"y")
+    assert store.exists("segments", indexed + ".text")
+    for name in (indexed, plain):
+        store.delete("segments", name)
+        assert store.get("segments", name) is None
+    assert not store.exists("segments", indexed + ".text")
+    store.delete("segments", indexed)  # absent now: a no-op, not an error
+
+
 # --------------------------------------------------------------------------- #
 # #1339 review F4: the live-lane audit evidence -- one append re-puts ONLY the
 # active chunk record, never a sibling. Against the REAL clio-core store (not the
