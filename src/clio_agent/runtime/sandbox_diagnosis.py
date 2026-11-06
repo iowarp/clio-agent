@@ -75,7 +75,9 @@ _ELEVATION_TEXT = re.compile(r"requires elevation|\bERROR_ELEVATION_REQUIRED\b",
 #: Quoted text in a denial line (straight and typographic quotes, as GNU tools print).
 _QUOTED = re.compile(r"'([^'\r\n]+)'|\"([^\"\r\n]+)\"|‘([^’\r\n]+)’|“([^”\r\n]+)”")
 #: Each quote kind alone, so a path quoted inside another quote (a ``repr``) is found too.
-_QUOTE_KINDS = tuple(re.compile(f"{a}([^{b}\r\n]+){b}") for a, b in ("''", '""', "‘’", "“”"))
+_QUOTE_KINDS = tuple(
+    re.compile(f"{a}([^{b}\r\n]+){b}") for a, b in (("'", "'"), ('"', '"'), ("‘", "’"), ("“", "”"))
+)
 #: The token right before an OS error text ("bash: line 1: /p: Read-only file system").
 _BEFORE_STRERROR = re.compile(
     r"(\S+): (?:permission denied|read-only file system|operation not permitted|access is denied)",

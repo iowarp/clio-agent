@@ -128,6 +128,7 @@ class SegmentGroup:
                 del self.pending[key]
             return False
         if entry is None:
+            assert base is not None  # the returns above leave only a known base
             self.pending[key] = _Staged(base, staged, self.rank(key[1]))
         else:
             entry.staged = staged

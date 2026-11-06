@@ -268,10 +268,10 @@ class PromptRegistry:
                 if _is_frontmatter_scalar(value):
                     frontmatter[f"x_{key}"] = str(value)
         path.write_text(_render_prompt_file(frontmatter, text), encoding="utf-8")
-        row = self.get(clean_id)
-        if row is None:  # pragma: no cover - save then read should normally succeed
+        saved = self.get(clean_id)
+        if saved is None:  # pragma: no cover - save then read should normally succeed
             raise ValueError(f"prompt was not saved: {clean_id}")
-        return row
+        return saved
 
     def _save_settings(
         self, prompt_id: str, profile: str, path: Path, metadata: dict[str, Any]

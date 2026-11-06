@@ -84,12 +84,12 @@ def offer_blocked_folders(
     if session is None or workspace is None:
         return None
     folders = list(dict.fromkeys(boundary.request_roots))
-    for row in list(app.state.permissions.values()):
+    for open_row in list(app.state.permissions.values()):
         if (
-            row.get("kind") == FOLDER_ACCESS_KIND
-            and row.get("status") == "pending"
-            and row.get("session_id") == sid
-            and set(folders) <= set((row.get("access") or {}).get("folders") or [])
+            open_row.get("kind") == FOLDER_ACCESS_KIND
+            and open_row.get("status") == "pending"
+            and open_row.get("session_id") == sid
+            and set(folders) <= set((open_row.get("access") or {}).get("folders") or [])
         ):
             return None
     from clio_agent.gact.runtime.grant_resolver import resolve  # noqa: PLC0415

@@ -68,7 +68,12 @@ class LaneWriter:
 
         def _segs(self, session_id: str, scope: str) -> list[Segment]: ...
 
-        def _append_mark(self, key: tuple[str, str], staged: list[Segment]) -> ChunkMark | None: ...
+        def _append_mark(
+            self,
+            key: tuple[str, str],
+            staged: list[Segment],
+            extends: list[Segment] | None = None,
+        ) -> ChunkMark | None: ...
 
         def _abandon_chunk(self, session_id: str, scope: str, exc: BaseException) -> None: ...
 

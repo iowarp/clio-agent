@@ -222,9 +222,9 @@ def flush_all(app: Any) -> int:
     for owner, entries in batches:
         if not _deliver(app, owner, entries):
             with _WINDOWS_LOCK:  # no retry after shutdown: the failure was traced
-                window = _WINDOWS.pop(owner, None)
-                if window is not None and window.timer is not None:
-                    window.timer.cancel()
+                left = _WINDOWS.pop(owner, None)
+                if left is not None and left.timer is not None:
+                    left.timer.cancel()
             unsent += len(entries)
     return unsent
 

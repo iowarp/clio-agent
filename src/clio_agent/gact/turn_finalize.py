@@ -154,11 +154,10 @@ def finalize_turn(
 
     # Take the canonical-answer channel FIRST: its exactly-once identity seeds
     # from the pre-append ledger (the still-open streamed answer part included).
-    # It covers the responder PLUS the stream tap's attribution fallback label
-    # (``emit_chunk``'s chat-path default) — the same top-level LM call's
-    # answer can stream under either; a delegated child's channel is NOT
-    # covered (its deliverable settled at its LM-call site and must never
-    # suppress the responder's distinct final answer).
+    # It covers the responder and the stream tap's fallback label (``emit_chunk``'s
+    # chat-path default): one top-level LM call's answer can stream under either. A
+    # delegated child's channel is not covered (its deliverable settled at its LM-call
+    # site and must never suppress the responder's own final answer).
     answer_channel = state.transcript.turn_answer_stream(
         responder_agent_id,
         state.active_agent_id or state.invocation_agent_id or "main",
@@ -195,10 +194,8 @@ def finalize_turn(
         from clio_agent.gact.highway_writer import flush_session_reported  # noqa: PLC0415
 
         flush_session_reported(state.app, state.sid, "routing_decision")
-    # Mechanism 2 replaced: there is no finalize rebuild-from-rows — delegation
-    # appended its expert_handoff parts once, at emit time; the
-    # ``expert_handoffs`` rows stay message METADATA only (design §4 row 6).
-    #
+    # No rebuild from rows: delegation appended its expert_handoff parts at emit time;
+    # ``expert_handoffs`` rows stay message metadata only (design §4 row 6).
     state.transcript.close_open_text()
     if state.thinking_text and not state.transcript.has_closed_text(
         responder_agent_id, "reasoning"

@@ -109,7 +109,12 @@ def build_create_artifact_tool(agent_def: "AgentDef") -> Any:
                     declare_structured_content,
                 )
 
-                result = {"artifacts": [deferred], "created": 0, "deduplicated": 0, "rejected": 0}
+                result: dict[str, Any] = {
+                    "artifacts": [deferred],
+                    "created": 0,
+                    "deduplicated": 0,
+                    "rejected": 0,
+                }
                 message = f"next version of {deferred['name']} at {deferred['version_at']}"
                 declare_structured_content({"message": message, **result})
                 return result
