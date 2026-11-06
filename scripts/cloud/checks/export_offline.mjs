@@ -6,7 +6,7 @@
 // for the session, and the turn awaited. The step then exports the conversation from its
 // actions menu (Export session › Download HTML), opens the file offline, captures the
 // conversation and the Saved results tab, and prints what the offline page says about the
-// stream (Stopped / Captured) and how many dashboards it shows.
+// stream (Closed / Captured) and how many dashboards it shows.
 import path from "node:path";
 
 const AGENT = process.env.AGENT_URL || "http://127.0.0.1:8787";
@@ -75,7 +75,7 @@ export default async function (page, shot) {
   await offline.waitForTimeout(8000);
   await offline.screenshot({ path: file.replace(/\.html$/, "-conversation.png"), fullPage: false });
   const body = await offline.locator("body").innerText();
-  log.push(`stopped note: ${/Stopped at .*showing its last rows/.test(body)}`);
+  log.push(`closed note: ${/Closed at .*showing its last entries/.test(body)}`);
   log.push(`captured note: ${/Captured at .* while live/.test(body)}`);
   const results = offline.getByRole("tab", { name: /Results/ });
   if (await results.count()) {
