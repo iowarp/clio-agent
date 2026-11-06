@@ -43,7 +43,7 @@ def test_only_a_child_is_told_who_reads_its_answer() -> None:
     child = SimpleNamespace(parent_session_id="sess_parent")
     assert child_report_fit.child_report_note(None, "sess_root", root) == ""
     note = child_report_fit.child_report_note(None, "sess_child", child)
-    assert note.startswith("Your final answer is passed as written to the agent that started")
+    assert note.startswith("Your final answer reaches the agent that started you as written")
     assert "succinct" in note
     injections.update(child_report_fit.CHILD_REPORT_SOURCE, active=False)
     assert child_report_fit.child_report_note(None, "sess_child", child) == ""
