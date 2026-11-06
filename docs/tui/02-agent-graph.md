@@ -1,5 +1,9 @@
 # 02 - Agent Graph: The Message Loop
 
+> The legacy TUI is frozen and unsupported as of 0.9.5.1. Do not install or run
+> it for current CLIO. This reference is retained for a future upgrade; use
+> Desktop or Web today. See [TUI status](README.md).
+
 > How a single user turn traverses CLIO from input to output. Everything cited against `src/clio_agent/`.
 
 ## Single-Turn Call Flow

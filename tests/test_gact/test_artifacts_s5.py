@@ -888,7 +888,8 @@ def test_used_edge_note_auto_revision_when_lease_clean(
     from clio_agent.gact import tool_observer
 
     app = clio_core_plane
-    workspace = app.state.workspaces.create(name="Artifact lease", root_path=str(tmp_path))
+    workspace = app.state.workspaces.get("ws_default")  # already pins tmp_path (#1771)
+    assert workspace is not None
     sess = app.state.sessions.create(workspace_id=workspace.id, title="Producer")
     path, version = _register_file(app, sess, tmp_path, "in.csv", b"v1", "call_p1")
     path.write_bytes(b"v2-changed")

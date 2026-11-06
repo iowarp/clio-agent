@@ -244,9 +244,10 @@ providers.model_catalog_ttl_s: 86400.0
 # CLIO_AGENT_TASK_OUTPUT_DIGEST_CHARS  (int)  <- src/clio_agent/gact/agents/agent_task_output_digest.py
 # Character bound above which a completed spawned child's full output is
 # digested (excerpt + a durable session/message reference) instead of
-# inlined verbatim into the parent's wait_agent_tasks result; raise to
-# inline larger child answers, lower to bound coordinator context growth
-# sooner.
+# inlined verbatim into the parent's wait_agent_tasks result, and above
+# which get_task_result saves a result to a file in the session's spill
+# folder instead of returning it whole; raise to inline larger child
+# answers, lower to bound coordinator context growth sooner.
 limits.agent_task_output_digest_chars: 8000
 
 # CLIO_CTX_MAX_BYTES  (int)  <- src/clio_agent/gact/runtime/constants.py
@@ -546,9 +547,9 @@ compaction.keep.last_turns: 0
 gact.context_references.browse_limit_per_kind: 20
 
 # CLIO_CONTEXT_REFERENCE_MAX_HASHABLE_BYTES  (int)  <- src/clio_agent/gact/context_references.py
-# Byte ceiling on a workspace file that may be attached as a context
-# reference; admission digests the whole file, so a larger one is refused
-# with a typed context_ref_too_large.
+# Largest workspace file a context reference pins by sha256 digest (which
+# reads every byte); a larger file is pinned by its stat revision (mtime +
+# size) instead.
 gact.context_references.max_hashable_bytes: 67108864
 
 # CLIO_CONTEXT_REFERENCE_SEARCH_LIMIT  (int)  <- src/clio_agent/gact/context_reference_search.py
@@ -1365,12 +1366,6 @@ tools.mcp.spawn_diet: true
 # Hours a learned spawn-diet shortcut plan stays valid before the launcher
 # chain is relearned; lower to pick up upstream env changes sooner.
 tools.mcp.spawn_diet_ttl_h: 24.0
-
-# CLIO_MCP_TURN_PREPARE_GRACE_S  (float)  <- src/clio_agent/gact/mcp_background_prepare.py
-# Seconds a turn waits for its agent's MCP servers that are still preparing;
-# after it the turn goes on and their tools join when ready (the agent can
-# call wait_for_tools).
-tools.mcp.turn_prepare_grace_s: 2.0
 
 # CLIO_MCP_WORKSPACE_MAX_RESIDENT  (int)  <- src/clio_agent/tools/reaper.py
 # LRU cap on how many per-workspace MCP tool-executor fleets stay resident

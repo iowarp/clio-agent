@@ -117,7 +117,13 @@ async def prepare_sandbox_before_tools(app: Any) -> None:
         return
     task = getattr(app.state, "sandbox_boot_task", None)
     if task is None or (task.done() and (task.cancelled() or task.exception() is not None)):
-        task = asyncio.create_task(asyncio.to_thread(prepare_sandbox_at_startup, app))
+        from clio_agent.gact import boot_timing  # noqa: PLC0415
+
+        task = asyncio.create_task(
+            boot_timing.timed(
+                app, "protected_execution", asyncio.to_thread(prepare_sandbox_at_startup, app)
+            )
+        )
         app.state.sandbox_boot_task = task
     await asyncio.shield(task)
 

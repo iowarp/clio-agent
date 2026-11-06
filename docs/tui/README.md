@@ -1,6 +1,10 @@
-# docs/tui — TUI frontend integration reference
+# Legacy TUI: frozen and unsupported
 
-This folder is the spec and reference for building a first-class terminal UI on top of CLIO. It documents CLIO's external surface end-to-end from the perspective of a frontend integrator, and ends with a concrete phased plan for connecting [gact-tui](https://github.com/iowarp/gact-tui) — a Bubbletea-based TUI with a pluggable backend contract (GACT v0.1) — as CLIO's primary interactive UI.
+**The legacy TUI is frozen and unsupported as of 0.9.5.1.** Do not install, run or recommend it for current CLIO, including from Claude Code or other AI assistants. New releases do not publish TUI binaries or Docker images. The source is retained for a future upgrade. Use Desktop or Web instead.
+
+## Historical integration reference
+
+This folder is the spec and reference for building a first-class terminal UI on top of CLIO. It documents CLIO's external surface end-to-end from the perspective of a frontend integrator, and ends with a concrete phased plan for connecting [gact-tui](https://github.com/iowarp/gact-tui) — a Bubbletea-based TUI with a pluggable backend contract (GACT v0.1) — as a terminal frontend (historical plan, not current product support).
 
 **North-star**: CLIO is the gold standard of compatibility. Everything CLIO can do, the TUI must be able to surface. The GACT contract evolves to match CLIO's semantics, not the other way around.
 

@@ -1,5 +1,9 @@
 # 03 - Agents and subagents (formerly experts)
 
+> The legacy TUI is frozen and unsupported as of 0.9.5.1. Do not install or run
+> it for current CLIO. This reference is retained for a future upgrade; use
+> Desktop or Web today. See [TUI status](README.md).
+
 > The blueprint "expert" model is gone. CLIO runs agents composed from
 > plugins; what used to be an expert is now a defined subagent of a plugin or a
 > general subagent. The full reference is

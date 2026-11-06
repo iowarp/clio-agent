@@ -1,5 +1,9 @@
 # Contributor Quickstart
 
+Desktop and Web are the supported CLIO interfaces. The legacy TUI is frozen and
+unsupported as of 0.9.5.1; its source remains for a future upgrade. Do not use it
+for current installation or release qualification.
+
 This is the shortest path to make safe, reviewable changes.
 
 ## 1) Set up local environment
@@ -64,7 +68,7 @@ producer contract and shared frontend readers rather than another tool viewer.
 
 clio-agent ships two pinned git submodules:
 
-- `external/gact-tui` — the TUI/web/desktop frontend.
+- `external/gact-tui` — Web and Desktop, plus the frozen legacy TUI source.
 - `external/clio-agent-marketplace` — the default marketplace: plugins, packs and
   agent classes ([PLUGINS_AND_FLOWS.md](PLUGINS_AND_FLOWS.md)).
 

@@ -20,15 +20,15 @@ import pytest
 import yaml
 
 ROOT = Path(__file__).resolve().parents[2]
-EXPECTED_VERSION = "0.9.5b8"
+EXPECTED_VERSION = "0.9.5.1"
 #: The release the install docs name: the latest stable one. A beta changes the
 #: package version only; users opt into it explicitly.
-DOCUMENTED_VERSION = "0.9.4.24"
+DOCUMENTED_VERSION = "0.9.5.1"
 EXPECTED_DSPY = "dspy==3.4.0"
-EXPECTED_FASTMCP = "fastmcp==4.1.0"
-EXPECTED_FASTMCP_SLIM = "fastmcp-slim==4.1.0"
-EXPECTED_FASTMCP_TASKS = "fastmcp-tasks==4.1.0"
-EXPECTED_LITELLM = "litellm==1.102.1"
+EXPECTED_FASTMCP = "fastmcp==4.1.2"
+EXPECTED_FASTMCP_SLIM = "fastmcp-slim==4.1.2"
+EXPECTED_FASTMCP_TASKS = "fastmcp-tasks==4.1.2"
+EXPECTED_LITELLM = "litellm==1.102.2"
 
 
 def _text(relative_path: str) -> str:
@@ -66,7 +66,7 @@ def test_release_installers_explicitly_root_intentional_prereleases() -> None:
             "'export', '--quiet', '--frozen', '--no-hashes', '--no-emit-project'",
             "$syncArgs = @('sync', '--locked', '--python', $py, '--extra', 'argonne', '--extra', 'flowcept')",
         ),
-        "install/clio": ('"dspy==3.4.0" "fastmcp==4.1.0" "fastmcp-slim==4.1.0"',),
+        "install/clio": ('"dspy==3.4.0" "fastmcp==4.1.2" "fastmcp-slim==4.1.2"',),
     }
     # The bundled-runtime builders root nothing themselves: they install
     # clio-agent[BUNDLE_EXTRAS] against the lock export, whose exact prerelease
@@ -191,9 +191,9 @@ def test_release_builds_follow_the_current_gact_workspace_layout() -> None:
     assert 'gact_build_time="${GACT_TUI_BUILD_TIME:-}"' in tui_builder
     assert "ARG GACT_TUI_REVISION" in tui_image
     assert "ARG GACT_TUI_BUILD_TIME" in tui_image
-    assert "Resolve GACT source identity" in docker_workflow
-    assert "GACT_TUI_REVISION=${{ steps.gact_source.outputs.revision }}" in docker_workflow
-    assert "GACT_TUI_BUILD_TIME=${{ steps.gact_source.outputs.build_time }}" in docker_workflow
+    assert "Resolve GACT source identity" not in docker_workflow
+    assert "docker/Dockerfile.clio-tui" not in docker_workflow
+    assert "  tui:" not in bundles
     assert 'go version -m "$OUT"' in tui_builder
     assert '"$target_goos" == "$(go env GOHOSTOS)"' in tui_builder
     assert '"$target_goarch" == "$(go env GOHOSTARCH)"' in tui_builder
@@ -276,32 +276,26 @@ def test_release_workflow_smokes_the_published_registry_tool() -> None:
 
     assert publish < registry_job < registry_install
     assert "needs: pypi" in workflow[registry_job:registry_install]
-    assert "--with fastmcp==4.1.0" in workflow[registry_install:]
-    assert "--with fastmcp-slim==4.1.0" in workflow[registry_install:]
-    assert "--with fastmcp-tasks==4.1.0" in workflow[registry_install:]
+    assert "--with fastmcp==4.1.2" in workflow[registry_install:]
+    assert "--with fastmcp-slim==4.1.2" in workflow[registry_install:]
+    assert "--with fastmcp-tasks==4.1.2" in workflow[registry_install:]
     assert "assert dspy.__version__ == '3.4.0'" in workflow
     assert "assert hasattr(dspy, 'lm15')" in workflow
 
 
 def test_documented_persistent_uv_tool_install_has_the_same_policy() -> None:
-    """Historical released-version examples retain that release's exact dependency roots."""
+    """Stable installation examples use the current release's exact SDK roots."""
 
     command = (
-        f"uv tool install --python 3.13 --with {EXPECTED_DSPY} --with fastmcp==4.0.0b5 "
-        f"--with fastmcp-slim==4.0.0b5 "
-        f"--with fastmcp-tasks==4.0.0b5 clio-agent=={DOCUMENTED_VERSION}"
+        f"uv tool install --python 3.14 --with {EXPECTED_DSPY} --with {EXPECTED_FASTMCP} "
+        f"--with {EXPECTED_FASTMCP_TASKS} --with mcp==2.2.0 clio-agent=={DOCUMENTED_VERSION}"
     )
     for relative_path in ("docs/INSTALL.md", "install/README.md"):
         contents = _text(relative_path)
         assert command in contents
         assert "uvx" in contents or "uv tool run" in contents
 
-    # The release README retains the broader, still-valid command
-    # published to PyPI. Official installers and current install docs use the narrower
-    # exact-root policy above.
-    assert (
-        f"uv tool install --python 3.13 --prerelease allow --with dspy==3.4.0 clio-agent=={DOCUMENTED_VERSION}"
-    ) in _text("README.md")
+    assert command in _text("README.md")
 
 
 def test_package_init_and_lock_share_the_release_version() -> None:
@@ -443,7 +437,7 @@ def test_release_is_a_draft_until_release_check_publishes_it() -> None:
         for name, job in jobs.items()
         if any("upload_release_assets.sh" in str(step.get("run", "")) for step in job["steps"])
     ]
-    assert sorted(uploaders) == ["desktop", "installers", "tui", "web"]
+    assert sorted(uploaders) == ["desktop", "installers", "web"]
     for name in uploaders:
         assert jobs[name]["needs"] == "release", name
 

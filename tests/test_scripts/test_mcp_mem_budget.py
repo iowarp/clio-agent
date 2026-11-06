@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import subprocess
 import sys
 import threading
 from argparse import Namespace
@@ -257,6 +258,107 @@ def test_a_run_that_cannot_measure_fails_the_gate(
     monkeypatch.setattr(_mod, "_run_once", lambda args: next(results))
     monkeypatch.setattr(sys, "argv", _argv(tmp_path, "--runs", "3"))
     assert _mod.main() == 2
+
+
+def _private_sample_args(root: Path) -> Namespace:
+    """Use the real release load when exercising isolated sample dispatch."""
+    return Namespace(
+        private_core_root=root,
+        agent="clio/clio-data",
+        workspace=root / "workspace",
+        data="sensor_readings.csv",
+        sessions=3,
+        port=8195,
+        model="haiku",
+        provider="claude_code",
+        settle_s=180,
+        marketplace=None,
+        children_agent=None,
+        xdg=None,
+    )
+
+
+def test_each_private_sample_gets_a_fresh_core_process_and_store(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Reusing one Core across runs must not contaminate the next fresh-data check."""
+    roots: list[Path] = []
+
+    def run(command: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
+        assert Path(command[2]).name == "run_with_private_cte.py"
+        assert "--assert-budget" not in command
+        assert "--private-core-root" not in command
+        assert command[command.index("--runs") + 1] == "1"
+        root = Path(command[command.index("--runtime-root") + 1])
+        assert root.is_relative_to(tmp_path.resolve())
+        roots.append(root)
+        output = Path(command[command.index("--measurement-out") + 1])
+        output.write_text('{"peak_gb": 2.4, "final_gb": 0.9}', encoding="utf-8")
+        return subprocess.CompletedProcess(command, 0)
+
+    monkeypatch.setattr(_mod.subprocess, "run", run)
+    for _ in range(3):
+        assert _mod._run_with_fresh_core(_private_sample_args(tmp_path)) == RunMeasurement(2.4, 0.9)
+    assert len(set(roots)) == 3
+    assert all(not root.exists() for root in roots)
+
+
+@pytest.mark.parametrize("returncode", [0, 7])
+def test_missing_private_measurement_cannot_pass(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, returncode: int
+) -> None:
+    """A failed child or a successful child with no data is never a zero-memory pass."""
+    monkeypatch.setattr(
+        _mod.subprocess,
+        "run",
+        lambda command, **kwargs: subprocess.CompletedProcess(command, returncode),
+    )
+    assert _mod._run_with_fresh_core(_private_sample_args(tmp_path)) == (returncode or 2)
+
+
+def test_sample_output_cannot_bypass_three_run_budget_guard(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Internal sample output never claims an asserted one-run budget verdict."""
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        _argv(
+            tmp_path,
+            "--runs",
+            "3",
+            "--settle-s",
+            "180",
+            "--assert-budget",
+            "--measurement-out",
+            str(tmp_path / "sample.json"),
+        ),
+    )
+    monkeypatch.setattr(_mod, "_run_once", MagicMock(side_effect=AssertionError("must not boot")))
+    assert _mod.main() == 2
+
+
+def test_private_service_cleanup_uses_its_controller_generation(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Detached services retire through their actual owner, after FINAL is measured."""
+    from clio_agent.gact.infrastructure import node_service
+
+    service = tmp_path / "services" / "DESKTOP" / "searxng"
+    service.mkdir(parents=True)
+    (service / "owner.json").write_text('{"owner":"private-run"}', encoding="utf-8")
+    (service / "receipt.json").write_text('{"operation_id":"generation-1"}', encoding="utf-8")
+    control = MagicMock(return_value={"phase": "stopped", "running": False})
+    monkeypatch.setattr(node_service, "control", control)
+    _mod._stop_private_services({"CLIO_AGENT_DATA_DIR": str(tmp_path)})
+    control.assert_called_once_with(
+        {
+            "action": "stop",
+            "root": str(service.resolve()),
+            "owner": "private-run",
+            "require_operation_id": "generation-1",
+        }
+    )
 
 
 def test_all_blueprints_are_prepared_before_any_turn(

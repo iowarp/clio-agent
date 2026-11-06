@@ -100,6 +100,8 @@ class CapabilityFlags(DocumentCapabilityFields):
     x_clio_message_delivery: bool = False
     x_clio_pending_steers: bool = False
     x_clio_queued_messages: bool = False
+    # GET /v1/workspaces/{wid}/h5grove/* for the HDF5 file viewer.
+    x_clio_hdf5_viewer: bool = False
     x_clio_resources: dict[str, Any] = Field(default_factory=dict)
 
 

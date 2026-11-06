@@ -558,8 +558,50 @@ async def test_interrupted_download_removes_its_temporary_archive(
 
     with pytest.raises(failure, match="browser download closed"):
         await _ExportFileResponse(path)(
-            {"type": "http", "method": "GET", "headers": []}, receive, send
+            {
+                "type": "http",
+                "method": "GET",
+                "headers": [],
+                # ASGI 2.4 reports disconnections through send failures. Older
+                # versions use a concurrent receive listener instead.
+                "asgi": {"version": "3.0", "spec_version": "2.4"},
+            },
+            receive,
+            send,
         )
+    assert not path.exists()
+
+
+@pytest.mark.asyncio
+async def test_disconnected_download_removes_its_temporary_archive(tmp_path: Path) -> None:
+    """An ASGI 2.0 disconnect cancels a partial transfer and removes its archive."""
+    path = tmp_path / "large-export.zip"
+    content = b"zip" * 100_000
+    path.write_bytes(content)
+    disconnected = asyncio.Event()
+    chunks: list[bytes] = []
+
+    async def receive() -> ASGIMessage:
+        await disconnected.wait()
+        return {"type": "http.disconnect"}
+
+    async def send(message: ASGIMessage) -> None:
+        if message["type"] == "http.response.body":
+            chunks.append(message.get("body", b""))
+            disconnected.set()
+            await asyncio.sleep(0)
+
+    await _ExportFileResponse(path)(
+        {
+            "type": "http",
+            "method": "GET",
+            "headers": [],
+            "asgi": {"version": "3.0", "spec_version": "2.0"},
+        },
+        receive,
+        send,
+    )
+    assert 0 < sum(map(len, chunks)) < len(content)
     assert not path.exists()
 
 

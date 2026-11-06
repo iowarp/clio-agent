@@ -214,28 +214,30 @@ exit $LASTEXITCODE
     )
 
 
-def test_shell_release_parser_accepts_bsd_whitespace(tmp_path: Path) -> None:
-    """The real installer's release fallback parses the pretty JSON from GitHub on BSD sed."""
+def test_shell_desktop_release_parser_skips_drafts() -> None:
+    """Exercise the shipped Desktop parser on GitHub's pretty JSON using native awk."""
     source = (ROOT / "install/install.sh").read_text()
-    expression = next(
-        line.split("sed -nE ", 1)[1].strip().rstrip("\\").strip()
-        for line in source.splitlines()
-        if "sed -nE" in line and "tag_name" in line
+    function = (
+        "desktop_tag() {" + source.split("desktop_tag() {", 1)[1].split("\n}\n", 1)[0] + "\n}\n"
     )
-    assert r"\s" not in expression  # BSD sed does not implement GNU's whitespace extension.
-    bash = shutil.which("bash")
-    if os.name == "nt":
-        bash = "C:/Program Files/Git/bin/bash.exe"
+    bash = "C:/Program Files/Git/bin/bash.exe" if os.name == "nt" else shutil.which("bash")
     assert bash
+    listing = (
+        '[\n  {\n    "tag_name": "v0.9.5-beta.9",\n    "draft": true\n  },\n'
+        '  {\n    "tag_name": "v0.9.5-beta.2",\n    "draft": false\n  }\n]\n'
+    )
     result = subprocess.run(
         [
             bash,
             "-c",
-            f"printf '%s\\n' {shlex.quote('  "tag_name": "v0.9.5-beta.2",')} | sed -nE {expression}",
+            "set -euo pipefail\n"
+            "OPT_DEV=1\nOPT_VERSION=\nCLIO_VERSION=\n"
+            f"curl() {{ printf '%s' {shlex.quote(listing)}; }}\n" + function + "desktop_tag\n",
         ],
         capture_output=True,
         text=True,
         timeout=10,
+        check=False,
     )
     assert result.returncode == 0, result.stderr
     assert result.stdout.strip() == "v0.9.5-beta.2"

@@ -49,6 +49,7 @@ class FlowJournal:
         declaration: str,
         request: Any,
         depth: int,
+        max_concurrency: int = 0,
     ) -> None:
         self.app = app
         self.history = app.state.task_history
@@ -69,6 +70,8 @@ class FlowJournal:
             "declaration": declaration,
             "request": request if _jsonable(request) else repr(request),
             "depth": depth,
+            # The flow's own bound on its calls running at once; 0 for none.
+            "max_concurrency": max_concurrency,
             "status": "running",
             "entries": 0,
             "calls": {},

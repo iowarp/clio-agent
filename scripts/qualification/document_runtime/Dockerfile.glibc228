@@ -3,7 +3,7 @@ FROM rockylinux:8
 RUN dnf install -y python3.12 python3.12-pip ca-certificates \
     nss fontconfig cups-libs cairo libX11-xcb libXinerama libSM libICE \
     && dnf clean all
-RUN python3.12 -m pip install uv==0.12.23
+RUN python3.12 -m pip install uv==0.13.6
 COPY src/clio_agent/runtime/document_stack /stack
 ENV UV_PROJECT_ENVIRONMENT=/runtime
 ENV CLIO_DOCUMENT_OFFICE_ROOT=/tmp/clio-office-cache/renderer

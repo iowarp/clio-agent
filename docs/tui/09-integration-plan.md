@@ -1,8 +1,12 @@
 # 09 - Integration Plan: gact-tui <-> clio-agent
 
-> Current integration status for using `gact-tui` as CLIO's primary terminal UI.
+> The legacy TUI is frozen and unsupported as of 0.9.5.1. Do not install or run
+> it for current CLIO. This reference is retained for a future upgrade; use
+> Desktop or Web today. See [TUI status](README.md).
 
-## Goal
+> Historical integration plan for the deferred terminal UI.
+
+## Deferred goal
 
 Let an operator run:
 
@@ -15,7 +19,7 @@ and land in the GACT TUI conversation view against a live CLIO agent.
 
 `gact agent deploy clio my-clio` remains the desired packaging UX, but the runtime contract is no longer a planned `/query` translator. CLIO now ships a native GACT backend.
 
-## Current Topology
+## Historical topology
 
 ```text
 gact-tui (Go/Bubble Tea)

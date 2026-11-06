@@ -189,18 +189,29 @@ def _workspace_path_block(part: Part, metadata: Mapping[str, Any]) -> str:
     """Expose a verified binary workspace file as an agent-usable path."""
 
     delivery = metadata["delivery"]
-    return (
+    pin = (
+        f"sha256={delivery['sha256']}"
+        if delivery.get("sha256")
+        else f"revision_basis={delivery.get('revision_basis', 'stat')}"
+    )
+    block = (
         f"### {part.ref_kind}: {part.label} "
         f"[{part.ref_id}@{part.revision}]\n"
         f"media_type={metadata['media_type']}; delivery=workspace-path; "
         f"workspace_path={delivery.get('workspace_path', part.ref_id)!r}; "
-        f"agent_host_path={delivery.get('agent_host_path', '')!r}; "
-        f"sha256={delivery.get('sha256', '')}. "
+        f"agent_host_path={delivery.get('agent_host_path', '')!r}; {pin}. "
         "This is an existing workspace file, not an uploaded-resource catalog entry. "
         "Use agent_host_path directly with workspace-scoped filesystem, shell, document, "
         "or image tools. Do not call workspace_resource_list to locate it, and do not ask "
         "the user to upload it again merely because it is absent from that resource catalog."
     )
+    if delivery.get("locator"):
+        # @file.h5::/path: the person pointed at one object inside the file.
+        block += (
+            f"\nThe reference is to the object {delivery['locator']!r} inside this HDF5 file: "
+            f"{json.dumps(delivery.get('object') or {}, ensure_ascii=False)}"
+        )
+    return block
 
 
 def _reference_block(app: "FastAPI", workspace_id: str, part: Part) -> str:

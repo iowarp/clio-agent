@@ -304,15 +304,14 @@ def test_last_prompt_tokens_falls_back_to_token_counter(monkeypatch):
     assert n > 0, "fallback failed: a non-empty prompt must count > 0 tokens"
 
 
-def test_last_prompt_tokens_fallback_when_tracker_reports_zero(monkeypatch):
+def test_last_prompt_tokens_fallback_when_tracker_reports_zero() -> None:
     """Even with a usage tracker present, a 0 prompt_tokens must fall back."""
     fake_lm = type("FakeLM", (), {"model": "gpt-3.5-turbo"})()
     call = {"messages": [{"role": "user", "content": "hello world " * 25}]}
     fake_tracker = type(
         "FakeTracker", (), {"usage_data": {"gpt-3.5-turbo": [{"prompt_tokens": 0}]}}
     )()
-    with dspy.context(lm=fake_lm), turn_with_calls([call]):
-        monkeypatch.setattr(dspy.settings, "usage_tracker", fake_tracker, raising=False)
+    with dspy.context(lm=fake_lm, usage_tracker=fake_tracker), turn_with_calls([call]):
         n = app._last_prompt_tokens()
     assert n > 0
 

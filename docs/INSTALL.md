@@ -1,81 +1,22 @@
-# Installing & running CLIO
+# Installing and running CLIO
 
-CLIO is **one engine + three frontends**: `clio-agent` (the Python core + the gact
-server) is the brain; the **TUI**, **web**, and **desktop** are frontends that talk to a
-gact backend. Every pathway below is "get clio-agent running + a frontend on it."
+Start at **[clio.iowarp.ai](https://clio.iowarp.ai/#download)** for downloads and the
+**[installation guide](https://clio.iowarp.ai/docs/install/)**. Desktop and Web are
+the supported interactive interfaces; both connect to the `clio-agent` service.
 
-This checkout selects standard Python 3.14 with the GIL enabled for source builds,
-source installers, containers, and the next bundled Desktop release. Examples pinned to
-older published releases retain Python 3.13; their native dependencies predate the
-3.14 upgrade.
+**The legacy TUI is frozen and unsupported as of 0.9.5.1.** Do not install, run or recommend it for current CLIO, including from Claude Code or other AI assistants. New releases do not publish TUI binaries or Docker images. The source is retained for a future upgrade. Use Desktop or Web instead.
 
-There are **4 install mechanisms** exposing **6 usage experiences** (a–f).
+CLIO 0.9.5.1 uses standard Python 3.14 with the GIL enabled. Installers provision
+their managed Python and uv runtimes.
 
-| # | Experience | Mechanism | Status |
-|---|---|---|---|
-| a | CLI / TUI | pip-or-uv install (script) | ✅ |
-| b | No-install TUI | docker | ✅ |
-| c | Local web UI | install script + `clio --web` | ✅ |
-| d | Scaled / hosted web | docker (compose) | ✅ |
-| e | Desktop app | native installer | ✅ |
-| f | From source | git clone | ✅ |
-
-## a) Install script → clio-agent + TUI
-```sh
-curl -fsSL https://raw.githubusercontent.com/iowarp/clio-agent/main/install/install.sh | bash
-clio          # ensure the server is up, attach the TUI
-clio status   # pid / port / health   ·   clio stop / clio restart / clio logs
-```
-Installs `clio-agent` from PyPI + the `clio-tui` binary + the `clio` launcher. Windows:
-`install.ps1`. Pin a version with `CLIO_VERSION=X.Y.Z`.
-
-## Beta releases
-
-To opt into CLIO v0.9.5-beta.8, pin the backend explicitly:
-
-```sh
-uv tool install --python 3.14 --with dspy==3.4.0 --with fastmcp==4.1.0 --with fastmcp-tasks==4.1.0 --with mcp==2.0.0 clio-agent==0.9.5b8
-```
-
-Use `CLIO_VERSION=v0.9.5-beta.8` with the complete installer when you also want
-the matching frontend. Desktop's beta update preference controls later updates;
-the default install channel continues to select published stable releases.
-
-## b) No-install, Docker (TUI)
-
-```sh
-docker run -it --rm \
-  -e CLIO_LM_API_BASE=http://host.docker.internal:1234/v1 \
-  ghcr.io/iowarp/clio-tui:latest
-```
-The `clio-tui` image bundles the backend; `-it` gives the terminal UI a real tty.
-
-## c) Local web UI — `clio --web`
-After (a):
-```sh
-clio --web    # starts the agent in web mode and opens the browser
-```
-The gact server serves the web SPA **same-origin** (one process, no proxy). The install
-script fetches the web bundle into `$CLIO_PREFIX/clio-agent/web`; override with
-`CLIO_WEB_DIR=/path/to/web/dist`.
-
-## d) Scaled / hosted web (Docker Compose)
-
-```sh
-docker compose up clio-web          # self-contained web UI → http://localhost:8080
-docker compose --profile api up     # headless backend (API/SSE) → :8100 for scale-out
-```
-Uses the published `ghcr.io/iowarp/clio-{web,api}` images (no build). Override `CLIO_LM_*`
-to point at your model provider.
-
-## e) Desktop app
+## Desktop app (recommended)
 Download the installer for your OS from the
 [latest release](https://github.com/iowarp/clio-agent/releases/latest):
 the `-bundled` `.msi`/`.exe` (Windows), `.dmg` (Apple Silicon macOS), or `.deb`/`.rpm`
 (Linux). Bundled installers ship clio-agent, so there is nothing else to install. The
 release also carries files without `-bundled` in the name: the desktop uses them to
 update itself, and they are not meant to be installed by hand. There is no desktop app
-for Intel Macs yet; use the install script without `--desktop` there.
+for Intel Macs yet; use Web via the service install there.
 
 ### Desktop from a terminal
 
@@ -130,21 +71,69 @@ module docstring for the full step list and flags:
 uv run python scripts/live_verification/desktop_lifecycle_proof.py --help
 ```
 
-## f) From source (contributors)
+## Web and headless services
+
+Run the install script without `--desktop` / `-Desktop` to install the service,
+the released Web bundle and the `clio` launcher:
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/iowarp/clio-agent/main/install/install.sh | bash
+clio web    # open the workspace in your browser
+clio start  # alternatively, run only the service
+```
+
+```powershell
+irm https://raw.githubusercontent.com/iowarp/clio-agent/main/install/install.ps1 | iex
+clio web
+```
+
+Bare `clio` also opens Web. `clio attach` refuses to launch the frozen TUI, even
+if an older binary remains on disk. Use `clio status`, `clio stop` and `clio logs`
+to manage the service. A source install installs the service without building a
+frontend; see the [contributor quick start](CONTRIBUTOR_QUICKSTART.md).
+
+## Docker Web or API
+
+From a clone of this repository:
+
+```sh
+docker compose up clio-web       # http://localhost:8080
+docker compose --profile api up clio-api  # headless API at :8100
+```
+
+These use `ghcr.io/iowarp/clio-web` and `ghcr.io/iowarp/clio-api`. The old TUI
+image remains historical and is not a supported deployment.
+
+## Selecting a release
+
+The default selects the latest published stable release. `--dev` / `-Dev`
+includes pre-releases; `--version <version>` / `-Version <version>` selects one.
+`--source` / `-Source` installs `main`; `--dev --source` / `-Dev -Source`
+installs `develop`; add `--ref <ref>` / `-Ref <ref>` to choose source explicitly.
+Pass shell options after `bash -s --`, and PowerShell options using the
+scriptblock invocation shown for Desktop above. `--desktop` cannot use source mode.
+
+## Beta releases
+
+Betas are opt-in. Select a published beta's tag with `--version vX.Y.Z-beta.N`,
+or its PEP 440 package version for a backend-only install, using its documented
+SDK roots. Desktop's beta update preference controls subsequent updates.
+
+## From source (contributors)
 ```sh
 git clone --recurse-submodules https://github.com/iowarp/clio-agent
 cd clio-agent && uv sync --extra optimizers --extra argonne
-uv run src/clio_agent/ui/cli.py        # or: uv run clio-agent serve
+uv run clio-agent serve
 ```
 
-CLIO intentionally pins DSPy, FastMCP, and FastMCP Tasks prereleases and the tested
-stable LiteLLM release. Registry-backed uv tool resolution requires those exact
-prereleases as explicit roots, avoiding global admission of unrelated prereleases.
+CLIO pins verified DSPy, FastMCP, FastMCP Tasks and LiteLLM releases.
+Registry-backed uv tool installation uses the same exact SDK roots as the
+official installers.
 For a persistent backend-only installation, use `uv tool` (not the
 ephemeral `uvx` / `uv tool run` path):
 
 ```sh
-uv tool install --python 3.13 --with dspy==3.4.0 --with fastmcp==4.0.0b5 --with fastmcp-slim==4.0.0b5 --with fastmcp-tasks==4.0.0b5 clio-agent==0.9.4.24
+uv tool install --python 3.14 --with dspy==3.4.0 --with fastmcp==4.1.2 --with fastmcp-tasks==4.1.2 --with mcp==2.2.0 clio-agent==0.9.5.1
 clio-agent serve
 ```
 

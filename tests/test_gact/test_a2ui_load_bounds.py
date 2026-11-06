@@ -32,9 +32,13 @@ _flush_locked`` re-serializes and rewrites a session's WHOLE message ledger
 to disk on every append (unrelated to A2UI at all, a general transcript-
 persistence property) -- NOT fixed here, out of this item's scope. These
 tests exercise the store/dispatcher directly (or with ``message_store``
-swapped to ``MessageStore(path=None)``, an in-memory no-disk-write
-instance) specifically to isolate (1), the property this deliverable is
-actually about, from (2)'s separate, pre-existing cost. 1,000 calls in a tight loop through the FULL persisted-ledger path
+backed by the existing in-process ARC store and ``MessageStore(path=None)``)
+specifically to isolate (1), the property this deliverable is actually about,
+from general transcript persistence. Core-first transcripts now require the
+in-memory ARC backing too; swapping the legacy JSON writer alone no longer
+provides that isolation. These tests retain the real dispatcher, atom writer,
+projection and input-confirmation paths; they do not qualify native Core
+throughput. 1,000 calls in a tight loop through the FULL persisted-ledger path
 would still run into (2) and take minutes; each test below uses the
 smallest N that still crosses its own bound with a clear margin (60
 updates against a lowered 8-message cap; 260 actions against the
@@ -56,6 +60,8 @@ from typing import Any
 import pytest
 from fastapi.testclient import TestClient
 
+from clio_agent.arc.live import _MemoryStore
+from clio_agent.arc.memory import ARCMemory
 from clio_agent.gact import a2ui as a2ui_module
 from clio_agent.gact.a2ui_catalogs.builtin import workspace_catalog_id
 from clio_agent.gact.a2ui_catalogs.reasons import A2UI_CATALOG_REASON_RING_MAXLEN
@@ -77,11 +83,15 @@ def _isolated_app(tmp_path: Path, **kwargs: Any) -> Any:
     load test passing ``None`` was both non-isolated (a real, if
     project-relative, directory) AND paying (2)'s disk-flush cost on every
     write (module docstring). ``tmp_path`` isolates the session registry;
-    swapping ``message_store`` to ``MessageStore(path=None)`` (a real no-op
-    instance, not a mock) skips (2) outright so these tests measure (1).
+    the existing in-process ARC store isolates canonical transcript persistence,
+    and ``MessageStore(path=None)`` disables its optional JSON mirror. Both
+    keep the real serialization/projection paths so these tests measure (1).
     """
 
-    app = build_app(sessions_path=tmp_path / "sessions.json", **kwargs)
+    # Core now owns transcripts; replacing only the legacy JSON writer no
+    # longer isolates these retention tests from native persistence costs.
+    arc = ARCMemory(data_dir=str(tmp_path / "arc"), store=_MemoryStore())
+    app = build_app(sessions_path=tmp_path / "sessions.json", arc=arc, **kwargs)
     app.state.message_store = MessageStore(path=None)
     return app
 
@@ -246,7 +256,7 @@ def test_sustained_actions_keep_the_per_session_reason_ring_at_256(
 ) -> None:
     app = _isolated_app(tmp_path)
     with TestClient(app) as client:
-        _capture_inputs(app)
+        captured = _capture_inputs(app)
         session = app.state.sessions.create(workspace_id="ws_default", title="reason ring")
         sid = session.id
         app.state.a2ui_store.apply_batch(sid, _create_batch("ring_surface"))
@@ -314,6 +324,8 @@ def test_sustained_actions_keep_the_per_session_reason_ring_at_256(
                         flush=True,
                     )
 
+        assert len(captured) == attempts
+        assert all(item.kind == "human" for item in captured)
         reasons = app.state.a2ui_catalogs.session_reasons(sid)
         undeclared = [r for r in reasons if r["reason"] == "a2ui_event_destination_undeclared"]
         assert attempts > A2UI_CATALOG_REASON_RING_MAXLEN

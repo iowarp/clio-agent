@@ -681,16 +681,13 @@ async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
     # #975: resolve the OS write-confinement backend (floor-first `none` + typed reason;
     # owner module runtime/sandbox.py). The boot `sandbox.state` event fires once ARC is
     # live (in _construct_agent_async).
-    from clio_agent.runtime.sandbox import install_sandbox  # noqa: PLC0415
-
-    app.state.sandbox = install_sandbox()
-
     # Reap proven CLIO orphans off-loop; cache pruning is install/doctor --gc work (B4).
+    # Windows overlaps the independent native census and fence detection; the fence
+    # is still selected before agent startup; the protected-execution barrier before
+    # Core attachment remains in server_boot.process_arc_off_loop.
     # The direct Codex provider owns one durable credential file,
     # not a spawned CLI's scratch home, so there is nothing here for it to reap.
-    app.state.orphan_reap_task = asyncio.create_task(
-        boot_timing.timed(app, "orphans", server_boot.reap_orphans(app))
-    )
+    await server_boot.prepare_protection(app, windows=sys.platform == "win32")
     # Install or refresh the shipped default marketplace off the loop; a turn that
     # resolves before it finishes waits on the same lock (PluginService.ready).
     app.state.plugin_sync_task = asyncio.create_task(

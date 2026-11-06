@@ -47,6 +47,36 @@ async def reap_orphans(app: FastAPI) -> None:
     await _prime_orphan_scan_cache(app)
 
 
+async def prepare_protection(app: FastAPI, *, windows: bool) -> None:
+    """Select the fence before agent startup and start the owned orphan census.
+
+    Windows detection and the process census are independent native operations.
+    Overlap them without letting agent startup precede fence selection. Core's
+    existing protected-execution preparation barrier remains unchanged. Other
+    platforms keep their existing order.
+    """
+    from clio_agent.gact import boot_timing  # noqa: PLC0415
+    from clio_agent.runtime.sandbox import install_sandbox  # noqa: PLC0415
+
+    if not windows:
+        app.state.sandbox = install_sandbox()
+        app.state.orphan_reap_task = asyncio.create_task(
+            boot_timing.timed(app, "orphans", reap_orphans(app))
+        )
+        return
+
+    app.state.orphan_reap_task = asyncio.create_task(
+        boot_timing.timed(app, "orphans", reap_orphans(app))
+    )
+    try:
+        app.state.sandbox = await boot_timing.timed(
+            app, "sandbox", asyncio.to_thread(install_sandbox)
+        )
+    except (Exception, asyncio.CancelledError):
+        await stop_producers(app.state.orphan_reap_task)
+        raise
+
+
 def start_provider_catalog(app: FastAPI) -> asyncio.Task | None:
     """Refresh provider discovery off the request path when enabled for this server."""
     if not getattr(app.state, "refresh_provider_catalog_on_startup", False):

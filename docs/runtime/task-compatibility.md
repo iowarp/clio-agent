@@ -61,9 +61,14 @@ marker; it does not pretend a partial excerpt is the entire match. No background
 poller or mutable cursor store is added.
 
 Historical IDs resolve only when unambiguous. Result reads return pending state
-or bounded stored content with its exact reference and `next_cursor`. A paginated
-fragment is stored once at `result.preview`, identified by `chunk_field`; offsets
-and serialization describe how to reconstruct it. Explicit
+or the stored content with its exact reference. A result whose JSON is larger
+than `limits.agent_task_output_digest_chars` is not returned inline: it is
+written once to the reading session's spill folder (deleted with the session)
+and the read returns `result_file` (path, size, media type, typed `reason`)
+and the head of the content in `result_excerpt`, with `result: null` (#1844).
+A string result is saved as text, anything else as indented JSON. Version-1
+`next_cursor` values from earlier releases still read paginated fragments at
+`result.preview`, identified by `chunk_field`; no new cursors are issued. Explicit
 collection is acknowledged through the recipient-input commitment used by
 automatic delivery. Readable results remain available afterward.
 
@@ -72,16 +77,16 @@ RFC 6901 JSON Pointer paths into a pointer-keyed result object. Escape `/` in a
 dictionary key as `~1` and `~` as `~0`; array positions use canonical zero-based
 indices. Missing paths fail explicitly. Selection does not change the immutable
 source reference or authorization; both normal and committed delegated-evidence
-reads retain their original scope. A continuation pins the selection: omit
-`select` or repeat the same list. Selected large values still use the existing
-page bound. Unselected dictionary reads include bounded `result_keys` metadata.
+reads retain their original scope. A selected value too large to return inline
+is saved to a file the same way. Unselected dictionary reads include bounded
+`result_keys` metadata.
 The REST result route accepts repeated `select` query parameters.
 
 `input_task_ids` selects readable finished task results in the spawning session's
 own same-human tree, including a child's completed tool results. A read grant
 for an unrelated peer does not make its result shareable. The
-child receives bounded quoted evidence and a pinned `get_task_result` cursor.
-That cursor reads only the exact snapshot in its confirmed delegation input,
+child receives bounded quoted evidence and the source handle to read with
+`get_task_result`. That read returns only the exact snapshot in its confirmed delegation input,
 including after a successor continues the stable session. It grants no sibling
 task rights and cannot consume the source's completion notification. A separate
 task grant changing later cannot silently switch those pinned result bytes.

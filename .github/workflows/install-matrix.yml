@@ -190,6 +190,10 @@ jobs:
 
   script:
     name: Install script (${{ matrix.os }})
+    env:
+      # The existing helper verifier uses this only for public release metadata.
+      # Shared hosted-runner IPs exhaust GitHub's anonymous quota during installs.
+      CLIO_CODEX_RELEASE_TOKEN: ${{ github.token }}
     strategy:
       fail-fast: false
       matrix:

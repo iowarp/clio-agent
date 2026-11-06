@@ -135,7 +135,10 @@ def test_pending_goal_timeout_or_cancel_closes_owned_resources(
         return lm, dspy.ChatAdapter()
 
     monkeypatch.setattr("clio_agent.gact.fleet_settings.model_route", route)
-    monkeypatch.setattr(goal, "DEFAULT_JUDGE_TIMEOUT_S", 5 if cancel else 0.1)
+    # The timeout must outlast reaching the held endpoint on a busy runner (0.1s did
+    # not: it fired inside dspy's capability prep) and stay under the endpoint's 3s
+    # recv, so the close it detects is the client's own.
+    monkeypatch.setattr(goal, "DEFAULT_JUDGE_TIMEOUT_S", 5 if cancel else 1.0)
     app = _app(tmp_path, arc)
     sid = _session(app)
 

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from collections.abc import Iterator
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -11,6 +12,7 @@ from typing import Any
 import pytest
 from fastapi.testclient import TestClient
 
+from clio_agent.gact import app as app_module
 from clio_agent.gact import context
 from clio_agent.gact.app import build_app
 from clio_agent.gact.memory import background
@@ -29,7 +31,13 @@ def _memory_models_configured(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 @pytest.fixture()
-def client(tmp_path: Path) -> Iterator[TestClient]:
+def client(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[TestClient]:
+    async def parked_scheduler(_app: Any) -> None:
+        await asyncio.Event().wait()
+
+    # These tests call the real memory tick explicitly. The lifespan scheduler
+    # must not run a second tick while the fixture is staging idle conversations.
+    monkeypatch.setattr(app_module, "_scheduler_tick", parked_scheduler)
     with TestClient(build_app(sessions_path=tmp_path / "sessions.json")) as started:
         yield started
 

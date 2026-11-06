@@ -293,7 +293,11 @@ async def test_queued_connect_does_not_burn_the_per_call_sdk_timeout(
         assert not task_b.cancelled()
 
         await entry_a._areset_client()  # free the slot
-        result = await asyncio.wait_for(task_b, timeout=1.0)
+        # Once the slot frees, entry_b polls for it (0.2s), connects and streams through
+        # the threaded fake SDK; under coverage + xdist that can exceed a second. The
+        # property is "queued, not timed out" (asserted above), not how fast it drains,
+        # so the bound only guards a hang -- wait_for returns as soon as it completes.
+        result = await asyncio.wait_for(task_b, timeout=15.0)
     finally:
         if not task_b.done():
             task_b.cancel()

@@ -54,8 +54,8 @@ def test_restore_preserves_every_version_tag_and_exact_manifest_bytes() -> None:
     registry = FakeRegistry()
     originals = {key: value for key, value in registry.entries.items() if key[1] != "latest"}
     results = restore_latest(registry, "0.9.4.24", "0.9.5-beta.5")
-    assert len(results) == 3
-    assert len(registry.writes) == 3
+    assert len(results) == 2
+    assert len(registry.writes) == 2
     for image in IMAGES:
         assert registry.entries[image, "latest"] is originals[image, "0.9.4.24"]
     assert all(registry.entries[key] is value for key, value in originals.items())
@@ -77,7 +77,7 @@ def test_requested_version_must_equal_the_published_github_stable() -> None:
 
 def test_all_images_are_validated_before_any_pointer_is_written() -> None:
     registry = FakeRegistry()
-    registry.entries["clio-tui", "latest"] = _manifest("unrelated-concurrent-release")
+    registry.entries["clio-web", "latest"] = _manifest("unrelated-concurrent-release")
     with pytest.raises(RuntimeError, match="unrelated image"):
         restore_latest(registry, "0.9.4.24", "0.9.5-beta.5")
     assert registry.writes == []
@@ -87,7 +87,7 @@ def test_completed_or_partial_recovery_is_idempotent() -> None:
     registry = FakeRegistry()
     registry.entries["clio-api", "latest"] = registry.entries["clio-api", "0.9.4.24"]
     restore_latest(registry, "0.9.4.24", "0.9.5-beta.5")
-    assert [image for image, _ in registry.writes] == ["clio-web", "clio-tui"]
+    assert [image for image, _ in registry.writes] == ["clio-web"]
     registry.writes.clear()
     restore_latest(registry, "0.9.4.24", "0.9.5-beta.5")
     assert registry.writes == []

@@ -22,6 +22,7 @@ from datetime import datetime, timezone
 from pathlib import Path, PurePosixPath, PureWindowsPath
 from typing import Any, Optional
 
+from clio_agent.gact.workspace_roots import WorkspaceRootConflict, canonical_root, same_root
 from clio_agent.gact.workspace_scope import resolve_workspace_storage_root
 
 _WORKSPACE_ID_PREFIX = "ws_"
@@ -232,6 +233,7 @@ class WorkspaceStore:
             self._seed_default()
         else:
             self._report_unapplied_default_root()
+            self._report_shared_roots()
 
     # ---- persistence -------------------------------------------------
 
@@ -294,6 +296,47 @@ class WorkspaceStore:
                 existing.root_path,
             )
 
+    def _report_shared_roots(self) -> None:
+        """Warn about stored workspaces that already share a root.
+
+        Rows written before roots were unique are kept as they are, so their
+        sessions stay attached; the store only refuses new duplicates.
+        """
+
+        by_root: dict[tuple[str, str], list[str]] = {}
+        for ws in self._workspaces.values():
+            key = canonical_root(ws.root_path)
+            if key:
+                by_root.setdefault((ws.connection_id, key), []).append(ws.id)
+        for (_, root), ids in by_root.items():
+            if len(ids) > 1:
+                logger.warning(
+                    "workspaces share a root: reason=shared_root_predates_uniqueness "
+                    "root=%s workspace_ids=%s",
+                    root,
+                    ",".join(sorted(ids)),
+                )
+
+    def _root_owner_locked(
+        self, root_path: str, *, connection_id: str, exclude: str = ""
+    ) -> Optional[Workspace]:
+        """The workspace already pinning ``root_path``'s folder, if any. Caller holds the lock."""
+
+        for ws in self._workspaces.values():
+            if ws.id == exclude or ws.connection_id != connection_id:
+                continue
+            if same_root(ws.root_path, root_path):
+                return ws
+        return None
+
+    def root_owner(
+        self, root_path: str, *, connection_id: str = "local", exclude: str = ""
+    ) -> Optional[Workspace]:
+        """The workspace already pinning ``root_path``'s folder, if any."""
+
+        with self._lock:
+            return self._root_owner_locked(root_path, connection_id=connection_id, exclude=exclude)
+
     # ---- public API --------------------------------------------------
 
     def create(
@@ -304,7 +347,11 @@ class WorkspaceStore:
         storage_root: str = "",
         metadata: Optional[dict[str, Any]] = None,
     ) -> Workspace:
-        """Create a new workspace + persist."""
+        """Create a new workspace + persist.
+
+        Raises:
+            WorkspaceRootConflict: Another workspace already pins this folder.
+        """
 
         wid = _WORKSPACE_ID_PREFIX + uuid.uuid4().hex[:12]
         now = _utcnow_iso()
@@ -320,6 +367,9 @@ class WorkspaceStore:
             metadata=dict(metadata or {}),
         )
         with self._lock:
+            existing = self._root_owner_locked(root_path, connection_id=ws.connection_id)
+            if existing is not None:
+                raise WorkspaceRootConflict(root_path, existing)
             self._workspaces[wid] = ws
             self._flush()
         return ws
@@ -361,10 +411,25 @@ class WorkspaceStore:
         storage_root: Optional[str] = None,
         metadata_patch: Optional[dict[str, Any]] = None,
     ) -> Optional[Workspace]:
+        """Apply a partial update + persist. Returns None for an unknown id.
+
+        Raises:
+            WorkspaceRootConflict: ``root_path`` is another workspace's folder.
+                Nothing is changed.
+        """
+
         with self._lock:
             ws = self._workspaces.get(wid)
             if ws is None:
                 return None
+            # Only a real move is checked: a rename resends the current root, and a
+            # legacy duplicate must stay editable.
+            if root_path is not None and not same_root(ws.root_path, root_path):
+                existing = self._root_owner_locked(
+                    root_path, connection_id=ws.connection_id, exclude=wid
+                )
+                if existing is not None:
+                    raise WorkspaceRootConflict(root_path, existing)
             if name is not None:
                 # A default/derived display label follows a rename. Preserve a
                 # deliberately distinct display name, but never leave the old

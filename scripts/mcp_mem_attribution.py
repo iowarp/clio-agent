@@ -52,7 +52,9 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 import os
+import shutil
 import statistics
 import subprocess
 import sys
@@ -552,6 +554,12 @@ def main() -> int:
         ),
     )
     parser.add_argument("--assert-budget", action="store_true")
+    parser.add_argument(
+        "--private-core-root",
+        type=Path,
+        help="start and retire a fresh private Core daemon and store for every run",
+    )
+    parser.add_argument("--measurement-out", type=Path, help=argparse.SUPPRESS)
     args = parser.parse_args()
 
     if args.sessions < 1:
@@ -573,6 +581,19 @@ def main() -> int:
         # One run's noise spans the tolerance band (final 0.97 vs 0.95 on one commit).
         print(f"FAIL: --assert-budget compares a median; it needs --runs >= {MIN_ASSERT_RUNS}")
         return 2
+
+    if args.measurement_out is not None:
+        if args.assert_budget or args.runs != 1 or args.private_core_root is not None:
+            print("FAIL: an isolated sample cannot assert or recursively aggregate a budget")
+            return 2
+        sample = _run_once(args)
+        if isinstance(sample, int):
+            return sample
+        args.measurement_out.write_text(
+            json.dumps({"peak_gb": sample.peak_gb, "final_gb": sample.final_gb}),
+            encoding="utf-8",
+        )
+        return 0
 
     measurements: list[RunMeasurement] = []
     for run_index in range(args.runs):
@@ -625,6 +646,62 @@ def main() -> int:
     return 0
 
 
+def _run_with_fresh_core(args: argparse.Namespace) -> RunMeasurement | int:
+    """Measure in a fresh process/Core store; the parent alone judges the median."""
+    root = args.private_core_root.resolve()
+    root.mkdir(parents=True, exist_ok=True)
+    with tempfile.TemporaryDirectory(prefix="memory-sample-", dir=root) as temporary:
+        sample_root = Path(temporary).resolve()
+        if not sample_root.is_relative_to(root):
+            raise RuntimeError("Private memory sample escaped its owned root")
+        output = sample_root / "measurement.json"
+        command = [
+            sys.executable,
+            "-B",
+            str(REPO / "scripts/live_verification/run_with_private_cte.py"),
+            "--runtime-root",
+            str(sample_root),
+            str(Path(__file__).resolve()),
+            "--runs",
+            "1",
+            "--measurement-out",
+            str(output),
+        ]
+        for name in (
+            "agent",
+            "workspace",
+            "data",
+            "sessions",
+            "port",
+            "model",
+            "provider",
+            "settle_s",
+        ):
+            command.extend(["--" + name.replace("_", "-"), str(getattr(args, name))])
+        for name in ("marketplace", "children_agent", "xdg"):
+            value = getattr(args, name, None)
+            if value is not None:
+                command.extend(["--" + name.replace("_", "-"), str(value)])
+        result = subprocess.run(command, cwd=REPO, check=False)
+        if result.returncode:
+            return result.returncode
+        if not output.is_file():
+            print("FAIL: isolated run returned no measurement")
+            return 2
+        recorded = json.loads(output.read_text(encoding="utf-8"))
+        values = [recorded.get("peak_gb"), recorded.get("final_gb")]
+        if any(
+            isinstance(value, bool)
+            or not isinstance(value, (int, float))
+            or not math.isfinite(value)
+            or value <= 0
+            for value in values
+        ):
+            print("FAIL: isolated run returned an invalid measurement")
+            return 2
+        return RunMeasurement(peak_gb=values[0], final_gb=values[1])
+
+
 def _gate_environment(args: argparse.Namespace, xdg: Path) -> dict[str, str]:
     """Keep every CLIO role private on Windows as well as XDG-based hosts."""
     instance = xdg / "clio-home"
@@ -644,6 +721,29 @@ def _gate_environment(args: argparse.Namespace, xdg: Path) -> dict[str, str]:
     }
 
 
+def _stop_private_services(env: Mapping[str, str]) -> None:
+    """Retire controllers belonging to this run's freshly generated private home."""
+    from clio_agent.gact.infrastructure import node_service
+
+    root = (Path(env["CLIO_AGENT_DATA_DIR"]) / "services").resolve()
+    for marker in root.glob("*/*/owner.json"):
+        service = marker.parent.resolve()
+        if not service.is_relative_to(root):
+            raise RuntimeError("Private service escaped its owned data directory")
+        owner = json.loads(marker.read_text(encoding="utf-8"))["owner"]
+        receipt = json.loads((service / "receipt.json").read_text(encoding="utf-8"))
+        outcome = node_service.control(
+            {
+                "action": "stop",
+                "root": str(service),
+                "owner": owner,
+                "require_operation_id": receipt.get("operation_id"),
+            }
+        )
+        if outcome.get("running") or outcome.get("phase") != "stopped":
+            raise RuntimeError(f"Private service did not settle: {service}")
+
+
 def _run_once(args: argparse.Namespace) -> RunMeasurement | int:
     """One complete gate run: boot, verify substrate, drive the load, settle, measure.
 
@@ -653,6 +753,8 @@ def _run_once(args: argparse.Namespace) -> RunMeasurement | int:
         or a children run that never spawned its children).
     """
 
+    if getattr(args, "private_core_root", None) is not None:
+        return _run_with_fresh_core(args)
     xdg = args.xdg or Path(tempfile.mkdtemp(prefix="clio-mem-gate-xdg-"))
     # The gate config is fresh: the default marketplace installs into it on first
     # use, and a pinned session's plugin servers form its fleet. --marketplace
@@ -851,23 +953,30 @@ def _run_once(args: argparse.Namespace) -> RunMeasurement | int:
     finally:
         if sampler is not None:
             sampler.stop()
-        server.terminate()
         try:
-            server.wait(timeout=20)
-        except Exception:  # noqa: BLE001 - hard-kill fallback on teardown
-            server.kill()
-        if listener_pid is not None:
+            if args.xdg is None:
+                _stop_private_services(env)
+        finally:
+            server.terminate()
             try:
-                root = psutil.Process(listener_pid)
-                for child in root.children(recursive=True):
-                    try:
-                        child.kill()
-                    except psutil.Error:
-                        pass
-                root.kill()
-            except psutil.Error:
-                pass  # already gone with the wrapper
-        log.close()
+                server.wait(timeout=20)
+            except subprocess.TimeoutExpired:
+                server.kill()
+            if listener_pid is not None:
+                try:
+                    root = psutil.Process(listener_pid)
+                    for child in root.children(recursive=True):
+                        try:
+                            child.kill()
+                        except psutil.Error:
+                            pass
+                    root.kill()
+                except psutil.Error:
+                    pass  # already gone with the wrapper
+            log.close()
+            retained = args.workspace / f"mem-gate-server-{os.getpid()}-{time.time_ns()}.log"
+            shutil.copyfile(log.name, retained)
+            print(f"retained complete server log: {retained}")
 
 
 if __name__ == "__main__":

@@ -70,7 +70,7 @@ from clio_agent.gact.infrastructure.store import InfrastructureStore
 from clio_agent.gact.infrastructure.supervised_service import supervised_plan
 
 #: Kept equal to CLIO's own ``litellm`` pin (pyproject.toml).
-LITELLM_VERSION = "1.102.1"
+LITELLM_VERSION = "1.102.2"
 ROUTER_VARIANT = "native-litellm"
 DEFINITION_VERSION = f"litellm-proxy-{LITELLM_VERSION}-1"
 CONTAINER_NAME = "clio-model-router"

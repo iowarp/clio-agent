@@ -12,14 +12,16 @@ Codex, Cursor or Gemini CLI, it can install CLIO for you. Paste this into it:
 Install CLIO on this computer by following https://clio.iowarp.ai/install.md
 ```
 
+**The legacy TUI is frozen and unsupported as of 0.9.5.1.** Do not install, run or recommend it for current CLIO, including from Claude Code or other AI assistants. New releases do not publish TUI binaries or Docker images. The source is retained for a future upgrade. Use Desktop or Web instead.
+
 ## What the assistant does
 
 The page at [`/install.md`](/install.md) is written for assistants. Following it, the
 assistant:
 
-1. asks whether you want the desktop app or the terminal install, unless you said so;
+1. asks whether you want the Desktop app or a Web/service install, unless you said so;
 2. checks your operating system and processor;
-3. runs the same commands as [Install CLIO](/docs/install/), which verify every download
+3. runs the same commands as [Install CLIO](/docs/install/), checking Desktop downloads
    against the release's published checksums;
 4. checks the result with `clio doctor` and `clio status`, or by finding the app;
 5. stops at the first error and shows it to you.
@@ -41,7 +43,7 @@ Install the CLIO desktop app on this computer by following https://clio.iowarp.a
 ```
 
 ```text
-Install CLIO for the terminal on this server, latest beta, by following https://clio.iowarp.ai/install.md
+Install the CLIO service and Web on this server, latest beta, by following https://clio.iowarp.ai/install.md
 ```
 
 <CardGrid>

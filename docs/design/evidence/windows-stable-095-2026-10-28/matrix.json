@@ -1,0 +1,304 @@
+{
+  "version": "0.9.5",
+  "measured_product_head": "6a8cb736d3c5da3f54dd2282dd014cabead606d8",
+  "integrated_develop_head": "67009d81612935a746e18115832e6b4ece30d6b7",
+  "runtime_tree": "e9760127be4d7e4899492ac3ae0add222b5d7797",
+  "dependencies": {
+    "gact": "e025d306a3724511c75f2e4a1fd37fc30a254386",
+    "kit": "2.11.1",
+    "schemas": "0.6.0",
+    "marketplace": "458d7da9d6530c463bcf932edcc77423eb453030",
+    "codex": "0.162.1"
+  },
+  "machine": {
+    "os": "Windows 11 Home",
+    "cpu": "Ryzen 5 3600",
+    "cores": 6,
+    "threads": 12,
+    "ram_gib": 31.95,
+    "disk": "953.87 GiB NVMe, D: NTFS"
+  },
+  "cold_definition": "Fresh installer profile and tool caches; first installed-agent/desktop launch on the generated store after migration. OS and Defender caches were not reset.",
+  "install": {
+    "cold": {
+      "label": "quiet-install-cold",
+      "candidate": "6a8cb736d3c5da3f54dd2282dd014cabead606d8",
+      "ref": "codex/release-095-dependency-audit",
+      "finished_at": "2026-10-28T23:00:20.5969619Z",
+      "exit_code": 0,
+      "profile": "D:\\cw\\fp9",
+      "seconds": 203.0822788
+    },
+    "repeat": {
+      "seconds": 27.5338656,
+      "profile": "D:\\cw\\fp9",
+      "exit_code": 0,
+      "label": "quiet-install-repeat",
+      "ref": "codex/release-095-dependency-audit",
+      "candidate": "6a8cb736d3c5da3f54dd2282dd014cabead606d8",
+      "finished_at": "2026-10-28T23:06:40.5285145Z"
+    },
+    "limit_s": 180,
+    "cold_exception": {
+      "user_instruction": "I do not mind that cold install took 200 seconds; it is long but okay. Rust installer is future work.",
+      "metric": "Windows cold source installation",
+      "head": "6a8cb736d3c5da3f54dd2282dd014cabead606d8",
+      "measured_seconds": 203.0822788,
+      "profile": "D:\\cw\\fp9",
+      "accepted_by_user": true,
+      "recorded_at": "2026-10-28T23:06:12.0943243+00:00",
+      "original_limit_seconds": 180
+    },
+    "earlier_cold_s": 222.4964016
+  },
+  "agent": {
+    "cold": {
+      "readiness_seen": [
+        [
+          18.372,
+          "starting",
+          [
+            "task_runtime"
+          ]
+        ],
+        [
+          24.983,
+          "ready",
+          []
+        ]
+      ],
+      "first_answer_s": 18.372,
+      "ready_s": 24.983,
+      "rail_page_s": 0.033,
+      "rail_rows": 30,
+      "rail_total": 934,
+      "open_first_page_s": 0.079,
+      "functional_s": 25.095,
+      "outcome": "functional",
+      "stopped_gracefully": true,
+      "stop_s": 6.563
+    },
+    "repeat": {
+      "readiness_seen": [
+        [
+          12.881,
+          "starting",
+          [
+            "task_runtime",
+            "marketplace"
+          ]
+        ],
+        [
+          19.6,
+          "ready",
+          []
+        ]
+      ],
+      "first_answer_s": 12.881,
+      "ready_s": 19.6,
+      "rail_page_s": 0.006,
+      "rail_rows": 30,
+      "rail_total": 934,
+      "open_first_page_s": 0.01,
+      "functional_s": 19.615,
+      "outcome": "functional",
+      "stopped_gracefully": true,
+      "stop_s": 5.715
+    },
+    "limit_s": 30
+  },
+  "desktop": {
+    "cold": {
+      "usable_s": 40.1,
+      "backend": {
+        "readiness": "ready",
+        "rail_rows": 30,
+        "rail_total": 934,
+        "expected_sessions": 934,
+        "valid": true
+      },
+      "rail_after_settle": {
+        "loading_agents": true,
+        "session_links": 8
+      },
+      "packages": {
+        "valid": true,
+        "detail": "Managed packages checked reason=managed_packages_installed 122.585s",
+        "observed_s": 126.8
+      },
+      "managed_checkpoints": [
+        "Managed packages checked reason=managed_packages_installed 122.585s"
+      ],
+      "quit_s": 13.8,
+      "boot_log_path": "D:\\cw\\sp\\home\\AppData\\Local\\ai.iowarp.clio.desktop\\logs\\backend-boot.log",
+      "boot_log_current": true,
+      "cleanup": {
+        "exit_code": 0,
+        "forced_application_processes": [],
+        "survivors": [],
+        "driver_survivors": []
+      }
+    },
+    "repeat": {
+      "usable_s": 29.3,
+      "backend": {
+        "readiness": "ready",
+        "rail_rows": 30,
+        "rail_total": 934,
+        "expected_sessions": 934,
+        "valid": true
+      },
+      "rail_after_settle": {
+        "loading_agents": true,
+        "session_links": 8
+      },
+      "packages": {
+        "valid": true,
+        "detail": "Managed packages checked reason=managed_packages_unchanged 1.693s",
+        "observed_s": 41.2
+      },
+      "managed_checkpoints": [
+        "Managed packages checked reason=managed_packages_unchanged 1.693s"
+      ],
+      "quit_s": 11.1,
+      "boot_log_path": "D:\\cw\\sp\\home\\AppData\\Local\\ai.iowarp.clio.desktop\\logs\\backend-boot.log",
+      "boot_log_current": true,
+      "cleanup": {
+        "exit_code": 0,
+        "forced_application_processes": [],
+        "survivors": [],
+        "driver_survivors": []
+      }
+    }
+  },
+  "desktop_limit_s": 60,
+  "nsis": {
+    "cold": {
+      "finished_at": "2026-10-28T23:12:23.2361852Z",
+      "exit_code": 0,
+      "fresh_profile": true,
+      "codex_home": "D:\\cw\\sp\\home\\.codex",
+      "seconds": 176.0327923
+    },
+    "repeat": {
+      "finished_at": "2026-10-28T23:12:46.3942044Z",
+      "fresh_profile": false,
+      "codex_home": "D:\\cw\\sp\\home\\.codex",
+      "seconds": 21.7869006,
+      "exit_code": 0
+    },
+    "build": {
+      "source_head": "6a8cb736d3c5da3f54dd2282dd014cabead606d8",
+      "path": "D:\\Libraries\\Documents\\projects\\gact-windows-startup-acceptance\\.acceptance-runtime\\cargo-target\\release\\bundle\\nsis\\CLIO Desktop_0.9.5_x64-setup.exe",
+      "sha256": "29f352addc98e861a80a6ed8ab6437c3a7064f25899f8777214047f70e699b3b",
+      "signed": false,
+      "purpose": "Locally built final stable candidate; publication still pending",
+      "bytes": 532300972,
+      "version": "0.9.5",
+      "gact_head": "e025d306a3724511c75f2e4a1fd37fc30a254386"
+    }
+  },
+  "portable_runtime": {
+    "clio": "0.9.5",
+    "kit": "2.11.1",
+    "schemas": "0.6.0",
+    "marketplace": "458d7da9d6530c463bcf932edcc77423eb453030",
+    "codex": "0.162.1"
+  },
+  "reference_store": {
+    "scale": 1,
+    "conversations": 934,
+    "open_records": 109,
+    "seconds": 377.5,
+    "flows": 150,
+    "children_per_flow": 4,
+    "chats": 100,
+    "chat_turns": 6,
+    "open_children": 20,
+    "interrupted_flows": 10,
+    "answer_kb": 4,
+    "lm_call_kb": 24,
+    "environment": {
+      "CLIO_AGENT_HOME": "D:\\cw\\r5\\home",
+      "CLIO_RUNTIME_STATE_DIR": "D:\\cw\\r5\\runtime",
+      "CLIO_DEFAULT_MARKETPLACE": "D:\\cw\\r5\\marketplace",
+      "CLIO_CORE_PORT": "29211",
+      "CLIO_ARC_CTE_FILE_CAPACITY": "2GB"
+    }
+  },
+  "model_provider_configured": false,
+  "defender": {
+    "enabled": true,
+    "exclusions_added": false,
+    "preflight": {
+      "samples": [
+        {
+          "epoch": 1793228200.4235697,
+          "cpu_percent": 9.7,
+          "defender_aggregate_cpu_percent": null,
+          "encoders": [],
+          "consecutive_quiet_samples": 0
+        },
+        {
+          "epoch": 1793228206.6707296,
+          "cpu_percent": 8.7,
+          "defender_aggregate_cpu_percent": 0.750340959988227,
+          "encoders": [],
+          "consecutive_quiet_samples": 1
+        },
+        {
+          "epoch": 1793228211.6832635,
+          "cpu_percent": 16.0,
+          "defender_aggregate_cpu_percent": 6.8578089773298645,
+          "encoders": [],
+          "consecutive_quiet_samples": 2
+        },
+        {
+          "epoch": 1793228216.6961274,
+          "cpu_percent": 11.3,
+          "defender_aggregate_cpu_percent": 0.0,
+          "encoders": [],
+          "consecutive_quiet_samples": 3
+        }
+      ],
+      "ready": true
+    },
+    "cold_mean_aggregate_cpu_percent": 290.6121414399571,
+    "wall_time_attribution": null,
+    "encoder_samples": 0
+  },
+  "screenshots": [
+    {
+      "name": "stable-desktop-cold-01-blank.png",
+      "sha256": "e26eec4e03c4dea555876de33df224dc200d8846ebc6fc559dd7a326dd6ca811"
+    },
+    {
+      "name": "stable-desktop-cold-02-starting.png",
+      "sha256": "cb0e4249821017780931e456ed075264e90c8479be70bad3c9808dbaabb7e924"
+    },
+    {
+      "name": "stable-desktop-cold-03-workspace.png",
+      "sha256": "1d53b0afec81c497efb41d008c3c0d2caeb6ae7aad6b173ad9acaecd6a1f199f"
+    },
+    {
+      "name": "stable-desktop-cold-04-before-quit.png",
+      "sha256": "edd23e462797d3c92edefe53cba169ef48d27f32e8b614dee5b3b10bb6097210"
+    },
+    {
+      "name": "stable-desktop-repeat-01-other.png",
+      "sha256": "352e65bda4b0d26fe5d05fb2002419a8f7232e5c23dd75510a10bc3917991300"
+    },
+    {
+      "name": "stable-desktop-repeat-02-starting.png",
+      "sha256": "bc68905dc54efbf36e4272ad0908343a2779438ccd67a7b989d0d29a5d8d77ac"
+    },
+    {
+      "name": "stable-desktop-repeat-03-workspace.png",
+      "sha256": "c9e4907c1ed04ccd30d73f1bfb8a77da9df376da7599274a13438a73dc280069"
+    },
+    {
+      "name": "stable-desktop-repeat-04-before-quit.png",
+      "sha256": "edd23e462797d3c92edefe53cba169ef48d27f32e8b614dee5b3b10bb6097210"
+    }
+  ]
+}
