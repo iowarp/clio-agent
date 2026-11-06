@@ -701,11 +701,12 @@ def test_release_churn_never_splits_a_scope_lock(tmp_path):
 
 def test_fold_writers_racing_release_do_not_deadlock_and_leave_no_locks(tmp_path, monkeypatch):
     """Working-set writers hold a partition writer lock, then lane chunk locks (chunks
-    roll every two atoms), and a renderer builds views from chunk locks, while other
-    threads release and clear: no deadlock, every message written reads back after a
-    fresh load (a release racing a write once lost that write's chunk from the stored
-    index: ``arc.fold_sessions``), and once the session is released no scope, writer or
-    index-loader lock is left for it."""
+    roll every two atoms), and renderers build views from chunk locks, while other
+    threads release and clear: no deadlock; every message written renders from the live
+    store, from a fresh store over the same backend (render and raw lane reads) and
+    after a final release (a release racing a write once lost that write's chunk from
+    the stored index, or its atom from the live view: ``arc.fold_sessions``); and once
+    the session is released no scope, writer or index-loader lock is left for it."""
     import time
 
     from clio_agent.arc.working_set_fold import make_segment_store
@@ -734,19 +735,40 @@ def test_fold_writers_racing_release_do_not_deadlock_and_leave_no_locks(tmp_path
             ss.clear()
             time.sleep(0.01)
 
-    with ThreadPoolExecutor(max_workers=8) as ex:
+    def renderer(sess: str) -> None:
+        # Builds a scope's view in whatever state a release just installed, racing
+        # the writer of that scope: the writer's atom must reach the live view too.
+        while not stop.is_set():
+            for scope in ("agentA", "agentB"):
+                ss.render(sess, scope)
+
+    with ThreadPoolExecutor(max_workers=10) as ex:
         futs = [ex.submit(writer, s, sc) for s in sessions for sc in ("agentA", "agentB")]
         futs += [ex.submit(churner, s) for s in sessions]
+        futs += [ex.submit(renderer, s) for s in sessions]
         futs.append(ex.submit(clearer))
         time.sleep(2.0)
         stop.set()
         for f in futs:
             f.result(timeout=30)
 
+    def texts_of(atoms: list) -> list[str]:
+        return [s.content["text"] for s in atoms if "text" in s.content]
+
+    # The live store, without a release: every write folded into its current view.
+    for (sess, scope), texts in written.items():
+        assert texts_of(ss.render(sess, scope)) == texts, f"live {sess}/{scope}"
+    # A fresh store over the same backend sees exactly what the stored index lists.
+    fresh = make_segment_store(ss._store, working_set_fold=True)
+    for (sess, scope), texts in written.items():
+        assert texts_of(fresh.render(sess, scope)) == texts, f"fresh render {sess}/{scope}"
+        lane = [s for s in fresh.raw_lane_atoms(sess) if s.scope == scope]
+        assert texts_of(lane) == texts, f"fresh lane {sess}/{scope}"
     for sess in sessions:
         ss.release(sess)  # the next reads load the stored index and chunks afresh
     for (sess, scope), texts in written.items():
-        read = [s.content["text"] for s in ss.list_segments(sess, scope)]
+        assert texts_of(ss.render(sess, scope)) == texts, f"released {sess}/{scope}"
+        read = texts_of(ss.list_segments(sess, scope))
         assert read == texts, f"{sess}/{scope}: {len(texts) - len(read)} lost"
     for sess in sessions:
         ss.render(sess, "agentA")

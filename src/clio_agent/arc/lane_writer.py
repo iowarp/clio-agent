@@ -13,13 +13,14 @@ and it is bounded at ``arc.search_chunk_atoms`` (16) atoms, so that re-put is sm
 
 from __future__ import annotations
 
-from collections.abc import Sequence
+from collections.abc import Iterator, Sequence
+from contextlib import contextmanager
 from functools import partial
 from typing import TYPE_CHECKING, Any, cast
 
 from clio_agent.arc.batch_put import BatchPutError, PutRecord
 from clio_agent.arc.chunk_records import ChunkMark, plan_write
-from clio_agent.arc.fold_sessions import live_session
+from clio_agent.arc.fold_sessions import live_session, pinned_session
 from clio_agent.arc.lane_chunking import chunks_for_append
 from clio_agent.arc.lane_index import INDEX_SCOPE, SessionIndex, encode_index, note_atom
 from clio_agent.arc.loop_guard import LoopThreadStoreWrite, assert_store_write_off_loop
@@ -31,6 +32,7 @@ from clio_agent.arc.segments import ArcPersistError, SegmentStore
 from clio_agent.arc.storage import ARCStore
 
 if TYPE_CHECKING:
+    from clio_agent.arc.context_view import ContextView
     from clio_agent.arc.fold_sessions import FoldSession
 
 __all__ = ["LaneWriter"]
@@ -65,6 +67,8 @@ class LaneWriter:
     if TYPE_CHECKING:
 
         def _session(self, session_id: str) -> FoldSession: ...
+
+        def _view(self, session_id: str, scope: str) -> ContextView: ...
 
         @staticmethod
         def _record_name(session_id: str, scope: str) -> str: ...
@@ -116,6 +120,19 @@ class LaneWriter:
                 self._scopes[key] = []
                 self._loaded.add(key)
 
+    @contextmanager
+    def _write_view(self, session_id: str, scope: str) -> Iterator[ContextView]:
+        """The scope's view, locked, for ONE write; the session state stays pinned.
+
+        A release waits until the write ends (:mod:`clio_agent.arc.fold_sessions`), so
+        the view the atom folds into, the index it notes and the chunk it lands in all
+        belong to the state a reload replaces only after the write.
+        """
+        with pinned_session(partial(self._session, session_id)):
+            view = self._view(session_id, scope)
+            with view.lock:
+                yield view
+
     def append_many(
         self,
         session_id: str,
@@ -145,8 +162,7 @@ class LaneWriter:
             ]  # fmt: skip
         from clio_agent.arc.lane_index import ws_content_partition  # noqa: PLC0415
 
-        view = store._view(session_id, scope)
-        with view.lock:
+        with self._write_view(session_id, scope) as view:
             base = view.next_order
             atoms = [
                 store._make_atom(session_id, scope, kind, content, order=base + number,
@@ -207,8 +223,8 @@ class LaneWriter:
                 cast("SegmentStore", self), session_id, partition, len(atoms),
                 capacity=_chunk_capacity(),
             )  # fmt: skip
-            # A release may retire the state in between: the index change goes to the
-            # current one (fold_sessions), never to a dropped copy a reload cannot see.
+            # Pinned (fold_sessions): a release waits for this write, so the index change
+            # lands in the state a reload reads only after the put below.
             with live_session(load) as state:
                 changed = False
                 for chunk, atom in zip(placed, atoms, strict=True):
