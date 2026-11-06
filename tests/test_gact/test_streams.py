@@ -171,14 +171,18 @@ def test_only_a_watched_stream_announces_and_a_watcher_gets_the_latest(
         store.write(stream.id, stream.token, [{"n": n}])
     assert [e for e in bus.events if e.type == push.STREAM_UPDATED_EVENT] == []
     push.watch(stream.id, "sess_viewer")
+    started = time.monotonic()
     for n in range(3, 10):
         store.write(stream.id, stream.token, [{"n": n}])
+    # At most one announcement per push interval the writes spanned (plus the last):
+    # seven unthrottled writes would announce seven times.
+    intervals = int((time.monotonic() - started) / 0.3)
     deadline = time.monotonic() + 3
     while time.monotonic() < deadline and not bus.events:
         time.sleep(0.05)
     time.sleep(0.4)
     events = [e for e in bus.events if e.type == push.STREAM_UPDATED_EVENT]
-    assert 1 <= len(events) <= 2 and all(e.transient for e in events)
+    assert 1 <= len(events) <= 2 + intervals and all(e.transient for e in events)
     assert events[-1].payload["writes"] == 10 and events[-1].payload["name"] == "status"
     store.stop(stream.id, session_id=sid)
     assert bus.events[-1].payload["state"] == "closed"  # the close is announced at once
