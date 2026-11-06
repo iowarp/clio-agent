@@ -4,6 +4,9 @@
 // list of {"text": "...", "minutes": N, "after_s": N}: each text is typed into the
 // conversation as a person would, every question is allowed for the session, the turn is
 // waited for, then the page stays on screen after_s seconds (the stream keeps updating).
+// A turn with "wait_closed": true is sent only once the conversation's streams have closed
+// (at most 8 minutes); "scroll": true then scrolls the canvas down through a dashboard and
+// back, so every chart is seen.
 // The left navigation is closed and the canvas opened to DEMO_CANVAS of the width (0.5),
 // so a stream or dashboard the agent opens fills the right half. It prints the session id.
 import path from "node:path";
@@ -41,6 +44,32 @@ async function waitIdle(page, sessionId, minutes) {
   return false;
 }
 
+async function streamsClosed(sessionId) {
+  const listed = await api("GET", `/v1/sessions/${sessionId}/artifacts`);
+  const streams = (listed.artifacts || []).filter((a) => a.kind === "stream");
+  if (!streams.length) return false;
+  for (const record of streams) {
+    const id = record.versions?.at(-1)?.producer?.stream_id;
+    const stream = id ? await api("GET", `/v1/streams/${id}`) : {};
+    if (stream.state !== "closed") return false;
+  }
+  return true;
+}
+
+async function scrollCanvas(page) {
+  const viewport = page.viewportSize();
+  if (!viewport) return;
+  await page.mouse.move(viewport.width * 0.75, viewport.height * 0.6);
+  for (const [delta, pause] of [[500, 9000], [500, 9000], [600, 9000], [-1600, 3000]]) {
+    const steps = 20;
+    for (let i = 0; i < steps; i += 1) {
+      await page.mouse.wheel(0, delta / steps);
+      await page.waitForTimeout(40);
+    }
+    await page.waitForTimeout(pause);
+  }
+}
+
 export default async function (page, shot) {
   const root = process.env.DEMO_ROOT;
   const turns = JSON.parse(process.env.DEMO_TURNS || "[]");
@@ -73,11 +102,20 @@ export default async function (page, shot) {
     .locator('form:has(button[type="submit"]) textarea, form:has(button[type="submit"]) [contenteditable="true"]')
     .last();
   for (const [index, turn] of turns.entries()) {
+    if (turn.wait_closed) {
+      const until = Date.now() + 8 * 60_000;
+      while (Date.now() < until && !(await streamsClosed(session.id))) {
+        await allowPending(session.id);
+        await page.waitForTimeout(3000);
+      }
+      await page.waitForTimeout(4000);
+    }
     await composer.click();
     await page.keyboard.type(turn.text, { delay: 18 });
     await page.waitForTimeout(600);
     await page.keyboard.press("Enter");
     await waitIdle(page, session.id, turn.minutes || 10);
+    if (turn.scroll) await scrollCanvas(page);
     await page.waitForTimeout((turn.after_s || 0) * 1000);
     await shot(`turn-${index + 1}`);
   }

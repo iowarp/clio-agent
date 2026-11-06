@@ -1,7 +1,8 @@
 """A fixture bioreactor for the stream demos: a fed-batch culture compressed into minutes.
 
 ``GET /status`` answers the vessel's state as JSON: the phase (``lag``, ``exponential``,
-``fed-batch``, ``stationary``, then ``harvested``), the culture's optical density
+``fed-batch``, ``stationary``, then ``harvested``; ``run_state`` reads ``complete`` once the
+run is over), the culture's optical density
 (``od600``), temperature, pH, dissolved oxygen, agitation, glucose, the feed rate, the
 culture age in hours, and the alarms raised now. Growth follows a logistic curve; oxygen
 falls as the culture grows and the controller raises agitation to hold it; glucose runs
@@ -47,7 +48,7 @@ def status(run_s: float, hours: float) -> dict[str, object]:
     feed_rate = 0.0 if not feeding else round(4 + 14 * min(1.0, (age_h - 10) / 6), 1)
     agitation = round(200 + 700 * min(1.0, growth * 1.3))
     oxygen = max(12.0, 95 - 80 * growth + 18 * (agitation - 200) / 700 + 2 * wobble)
-    ph = 7.0 - 0.18 * growth + 0.05 * wobble
+    ph = 7.0 - 0.22 * growth + 0.01 * wobble
     temperature = 37.0 + 0.15 * wobble + (0.6 if 15 < age_h < 16.5 else 0.0)
     if share >= 1.0:
         phase = "harvested"
@@ -74,6 +75,7 @@ def status(run_s: float, hours: float) -> dict[str, object]:
     return {
         "t": time.strftime("%Y-%m-%dT%H:%M:%S"),
         "vessel": "BR-2 (5 L, E. coli BL21)",
+        "run_state": "complete" if share >= 1.0 else "running",
         "phase": phase,
         "age_h": round(age_h, 2),
         "od600": round(od, 2),
