@@ -320,9 +320,40 @@ class SyncIndex:
                         max(box.extent()[3] for box in chosen),
                     )
                 )
+            extents.extend(
+                graphic.extent()
+                for graphic in self._graphics(page, by_page[page], file, start, end)
+            )
             for x0, y0, x1, y1 in _columns(extents):
                 places.append((page, (x0, y0, x1 - x0, y1 - y0)))
         return places
+
+    def _graphics(
+        self, page: int, words: Sequence[Box], file: str, start: int, end: int
+    ) -> list[Box]:
+        """Boxes of lines ``start``..``end`` taller than a text line that hold no text rows.
+
+        An ``\\includegraphics`` is one such hbox: its only records sit on its bottom edge, so
+        the rows alone would place a figure at its caption and a strip under the picture.
+        """
+
+        def holds_text(box: Box) -> bool:
+            bottom = box.top + box.height
+            return any(
+                box.x <= word.x <= box.x + box.width and box.top + 1 < word.baseline < bottom - 4
+                for word in words
+            )
+
+        return [
+            box
+            for box in self.boxes
+            if box.page == page
+            and box.kind == "("
+            and box.height > _INLINE_BOX_MAX_HEIGHT
+            and box.file == file
+            and start <= box.line <= end
+            and not holds_text(box)
+        ]
 
     def files(self) -> list[str]:
         """The project files the PDF has boxes from."""

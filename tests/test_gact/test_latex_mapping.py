@@ -47,6 +47,43 @@ _SYNCTEX = "\n".join(
 ).encode()
 
 
+_FIGURE = "\n".join(
+    [
+        "SyncTeX Version:1",
+        "Input:1:/tmp/latex-x/src/sections/body.tex",
+        "Content:",
+        "{1",
+        # The text above the figure: sections/body.tex line 8.
+        f"(1,8:{_sp(50)},{_sp(100)}:{_sp(250)},{_sp(7)},{_sp(2)}",
+        f"g1,8:{_sp(90)},{_sp(100)}",
+        # The \\includegraphics on line 12: a 180 bp tall hbox with records only on its
+        # bottom edge, as Tectonic writes it.
+        f"(1,12:{_sp(60)},{_sp(300)}:{_sp(230)},{_sp(180)},0",
+        f"k1,12:{_sp(60)},{_sp(300)}:{_sp(-230)}",
+        f"g1,12:{_sp(290)},{_sp(300)}",
+        # The caption on line 13.
+        f"(1,13:{_sp(50)},{_sp(318)}:{_sp(250)},{_sp(7)},{_sp(2)}",
+        f"g1,13:{_sp(80)},{_sp(318)}",
+        f"g1,13:{_sp(200)},{_sp(318)}",
+        "}1",
+        "Postamble:",
+    ]
+).encode()
+
+
+def test_a_figures_place_covers_its_picture_not_only_its_caption() -> None:
+    # Scenario L20: the figure's outline entry outlined its caption and a strip under the
+    # picture, because the picture's hbox is taller than a text line and holds no text.
+    index = SyncIndex.parse(_FIGURE, ["sections/body.tex"])
+    [(page, (x, top, width, height))] = index.places("sections/body.tex", 10, 15)
+    assert page == 0
+    assert top == pytest.approx(120, abs=0.5)  # the picture's top: 300 - 180
+    assert top + height >= 318  # down through the caption
+    assert x <= 60 and x + width >= 290
+    # The text above the figure is not part of it.
+    assert top > 100
+
+
 def test_a_point_maps_to_the_words_line_not_the_paragraphs_end() -> None:
     index = SyncIndex.parse(gzip.compress(_SYNCTEX), ["main.tex", "sections/eval.tex"])
     assert index.files() == ["main.tex", "sections/eval.tex"]
