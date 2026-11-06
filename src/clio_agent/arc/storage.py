@@ -602,18 +602,19 @@ class ClioCoreStore(ClioCoreWrites):
         that prefix only, never the whole kind); no blob body is read."""
         yield from self.query_names(kind, (re.escape(prefix) + ".*") if prefix else "")
 
-    def query_names(self, kind: str, name_re: str = "") -> list[str]:
+    def query_names(self, kind: str, name_re: str = "", *, limit: int = 0) -> list[str]:
         """Record names of ``kind`` fully matching ``name_re`` (``""``: all), asked of
-        clio-core by pattern (``BlobQuery``); search companions are skipped."""
+        clio-core by pattern (``BlobQuery``); search companions are skipped. ``limit``
+        bounds how many names clio-core returns (``0``: all)."""
         self._live()
         tag = self.tag(kind)
 
         def _list() -> list[str]:
             try:  # the binding decodes every name; one corrupt name fails the listing
-                if not name_re:
+                if not name_re and not limit:
                     return list(self._cte.Tag(tag).GetContainedBlobs())
                 pool = self._cte.PoolQuery.Dynamic()
-                rows = self._client.BlobQuery(re.escape(tag), name_re, 0, pool)
+                rows = self._client.BlobQuery(re.escape(tag), name_re or ".*", limit, pool)
                 return [blob for _tag, blob in rows]
             except UnicodeDecodeError as exc:
                 raise BlobNameDecodeError(tag, exc) from exc

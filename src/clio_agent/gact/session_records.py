@@ -106,10 +106,11 @@ class InvalidCursorError(ValueError):
 
 
 class SessionRecordsNotReadyError(TranscriptNotReadyError):
-    """The session records' clio-core store is still attaching (a retryable 503)."""
+    """The session records' clio-core store is still attaching (a retryable 503), or
+    was refused at boot with a typed ``reason`` the message explains."""
 
-    def __init__(self, detail: str) -> None:
-        super().__init__("", NOT_BOUND_REASON, detail)
+    def __init__(self, detail: str, reason: str = NOT_BOUND_REASON) -> None:
+        super().__init__("", reason, detail)
 
 
 @dataclass(frozen=True)
@@ -311,6 +312,8 @@ class SessionRecords:
         self._writer = _Writer(self._memory, inline=True)
         self._bound = threading.Event()
         self._expected = False
+        #: ``(reason, message)`` once boot refused the store (it will never bind).
+        self._refused: Optional[tuple[str, str]] = None
         self._columns: dict[str, RecordColumns] = {}
         self._recent: SortedList = SortedList()  # (recent_at, id)
         self._created: SortedList = SortedList()  # (created_at, id)
@@ -330,11 +333,15 @@ class SessionRecords:
     @property
     def readable(self) -> bool:
         """Whether a read returns now instead of waiting for the store to attach."""
-        return not self._expected or self._bound.is_set()
+        return not self._expected or self._bound.is_set() or self._refused is not None
 
     def expect_store(self) -> None:
         """Announce that a clio-core store will be bound: reads wait for it."""
         self._expected = True
+
+    def refuse_store(self, reason: str, message: str) -> None:
+        """Boot refused the store (typed ``reason``): reads fail at once with ``message``."""
+        self._refused = (reason, message)
 
     def bind(self, store: Any) -> None:
         """Move the records into ``store`` and load its index (off the server loop)."""
@@ -380,6 +387,8 @@ class SessionRecords:
     def _ready(self) -> None:
         if not self._expected or self._bound.is_set():
             return
+        if self._refused is not None:
+            raise SessionRecordsNotReadyError(self._refused[1], self._refused[0])
         if _on_server_loop():
             raise SessionRecordsNotReadyError(
                 "Conversations are stored in clio-core, which is still attaching. Retry shortly."

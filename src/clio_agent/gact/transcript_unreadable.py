@@ -8,8 +8,11 @@ existing :class:`~clio_agent.gact.messages.LedgerReadError` with one of two caus
 
 * ``storage_unreachable`` -- the store did not answer the read; retrying may work;
 * ``transcript_corrupt`` -- the stored bytes cannot be decoded even after the
-  framed-length retry (or a message chunk is not a readable chunk record, including
-  one in the retired format, ``arc_chunk_format_unsupported``); retrying will not help.
+  framed-length retry (or a message chunk is not a readable chunk record); retrying
+  will not help;
+* ``arc_store_format_old`` -- a message chunk is in the format of CLIO 0.9.5.1 or older
+  (``arc_chunk_format_unsupported``), which this CLIO cannot open: the message says
+  how to move the old data aside (:mod:`clio_agent.gact.store_format_boot`).
 
 :func:`install_unreadable_transcript_handler` answers ``503 messages_unavailable``
 with that cause on every route that reads a transcript. Blob and tag names stay in
@@ -24,7 +27,9 @@ from contextlib import contextmanager
 from typing import TYPE_CHECKING
 
 from clio_agent.arc.blob_frame import CORRUPT_BLOB_ERRORS, TRANSIENT_BLOB_ERRORS
+from clio_agent.arc.chunk_records import ChunkFormatUnsupportedError
 from clio_agent.arc.segment_errors import SegmentReadError
+from clio_agent.arc.store_format import ARC_STORE_FORMAT_OLD
 from clio_agent.gact.messages import LedgerReadError
 
 #: Stored bytes that cannot become the record, or a segment that cannot be read.
@@ -39,6 +44,8 @@ logger = logging.getLogger(__name__)
 STORAGE_UNREACHABLE = "storage_unreachable"
 #: The stored transcript cannot be decoded; retrying will not help.
 TRANSCRIPT_CORRUPT = "transcript_corrupt"
+#: The stored transcript is in the format of CLIO 0.9.5.1 or older (not readable here).
+STORE_FORMAT_OLD = ARC_STORE_FORMAT_OLD
 #: The GACT error code a client sees.
 MESSAGES_UNAVAILABLE = "messages_unavailable"
 
@@ -64,8 +71,12 @@ def typed_transcript_read(session_id: str) -> Iterator[None]:
         yield
     except TRANSIENT_BLOB_ERRORS as exc:
         raise _unreadable(session_id, STORAGE_UNREACHABLE, exc) from exc
+    except ChunkFormatUnsupportedError as exc:  # before its base class, SegmentReadError
+        raise _unreadable(session_id, STORE_FORMAT_OLD, exc) from exc
     except _CORRUPT_ERRORS as exc:
-        raise _unreadable(session_id, TRANSCRIPT_CORRUPT, exc) from exc
+        # A reader that wrapped the old-format failure keeps it as the cause.
+        old = isinstance(exc.__cause__, ChunkFormatUnsupportedError)
+        raise _unreadable(session_id, STORE_FORMAT_OLD if old else TRANSCRIPT_CORRUPT, exc) from exc
 
 
 def install_unreadable_transcript_handler(app: "FastAPI") -> None:
@@ -79,17 +90,22 @@ def install_unreadable_transcript_handler(app: "FastAPI") -> None:
     from fastapi import Request  # noqa: PLC0415
     from fastapi.responses import JSONResponse  # noqa: PLC0415
 
+    from clio_agent.gact.store_format_boot import conversation_message  # noqa: PLC0415
     from clio_agent.gact.types import ErrorEnvelope, ErrorInfo  # noqa: PLC0415
+
+    messages = {
+        TRANSCRIPT_CORRUPT: "This conversation's stored messages are damaged and cannot be read.",
+        STORE_FORMAT_OLD: conversation_message(),
+    }
 
     @app.exception_handler(LedgerReadError)
     async def _messages_unavailable(request: Request, exc: LedgerReadError) -> JSONResponse:
-        corrupt = exc.cause == TRANSCRIPT_CORRUPT
+        corrupt = exc.cause in messages  # retrying will not help
         info = ErrorInfo(
             error=MESSAGES_UNAVAILABLE,
-            message=(
-                "This conversation's stored messages are damaged and cannot be read."
-                if corrupt
-                else "This conversation's stored messages cannot be read right now. Retry shortly."
+            message=messages.get(
+                exc.cause or "",
+                "This conversation's stored messages cannot be read right now. Retry shortly.",
             ),
             details={"session_id": request.path_params.get("sid"), "cause": exc.cause or None},
             recoverable=not corrupt,
@@ -104,6 +120,7 @@ def install_unreadable_transcript_handler(app: "FastAPI") -> None:
 __all__ = [
     "MESSAGES_UNAVAILABLE",
     "STORAGE_UNREACHABLE",
+    "STORE_FORMAT_OLD",
     "TRANSCRIPT_CORRUPT",
     "install_unreadable_transcript_handler",
     "typed_transcript_read",

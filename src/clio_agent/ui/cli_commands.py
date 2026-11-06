@@ -19,6 +19,11 @@ def handle_local_command(arguments: Sequence[str]) -> bool:
         from clio_agent.gact.store_migrate_command import main as store_migrate_main
 
         exit_released(store_migrate_main(arguments[1:]))
+    if arguments[0] in ("store-check", "reset-store"):
+        from clio_agent.gact.store_migrate_command import exit_released
+        from clio_agent.gact.store_reset_command import main as store_reset_main
+
+        exit_released(store_reset_main(arguments[0], arguments[1:]))
     if arguments[0] == "plugin":
         from clio_agent.plugins.cli import run_plugin_cli
 
