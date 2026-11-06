@@ -100,6 +100,7 @@ export default defineConfig({
 						{ label: 'Follow work in progress', slug: 'docs/following-work' },
 						{ label: 'Flows and workflows', slug: 'docs/flows' },
 						{ label: 'Subagents', slug: 'docs/subagents' },
+						{ label: 'Commands and @ mentions', slug: 'docs/commands' },
 						{ label: 'Science log', slug: 'docs/science-log' },
 						{ label: 'Models and usage', slug: 'docs/models-and-usage' },
 						{ label: 'Updates during a conversation', slug: 'docs/injections' },

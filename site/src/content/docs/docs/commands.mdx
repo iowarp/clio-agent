@@ -1,0 +1,157 @@
+---
+title: "Commands and @ mentions"
+description: Run a command with /, bring in a subagent or a tool server with @, and write your own commands.
+---
+
+import { Aside, Steps } from "@astrojs/starlight/components";
+import Capture from "../../../components/overview/Capture";
+import { captureImage } from "../../../lib/captures";
+import slashMenu from "../../../assets/captures/commands/slash-menu.png";
+import prompts from "../../../assets/captures/commands/slash-menu-prompts.png";
+import ambiguous from "../../../assets/captures/commands/slash-menu-same-name.png";
+import atPopover from "../../../assets/captures/commands/at-popover.png";
+import chip from "../../../assets/captures/commands/chip-in-draft.png";
+import phone from "../../../assets/captures/commands/two-chips-phone.png";
+
+Type `/` in the message box to run a command, or `@` to bring a subagent or a tool
+server into your message. Both menus list only what this conversation's agent has.
+
+## Run a command
+
+<Steps>
+
+1. Type `/`. The menu groups what you can run: **Commands**, then **Skills**, then each
+   tool server's prompts.
+
+2. Keep typing to narrow it, use the arrow keys to choose, and press Enter. Words after
+   the command are its arguments, for example `/component Button primary`.
+
+</Steps>
+
+<Capture
+  alt="The / menu groups commands, skills and a tool server's prompts."
+  image={captureImage(slashMenu)}
+/>
+
+Each row says where it comes from (a plugin, this workspace or your own folder) and
+what it takes. A row that cannot run says why in words: **Reserved name**,
+**Shadowed** or **Unavailable**. Hover the label for the reason.
+
+### Commands, skills and prompts
+
+- **Commands** run as a message to the agent: the command file's text, with your
+  arguments filled in, becomes what you sent. The built-in ones (`/clear`, `/goal`,
+  `/loop`, `/cron` and its alias `/schedule`, `/cache-stats` and `/dump-trace`) do
+  their job at once.
+- **Skills** load a skill for the agent before it reads your message, so it works from
+  that skill's procedure. Your message records that you loaded it. A skill marked
+  `user-invocable: false` is not listed; the agent can still load it when it needs it.
+- **Prompts** come from a tool server the agent is connected to, named
+  `/mcp__<server>__<prompt>`. Your words fill the prompt's arguments in order, the last
+  argument taking the rest. If a required argument is missing, the command says which
+  one. The fetched prompt becomes your message, with any image or document it includes;
+  open **Prompt … from …** under your message to read it. When a server adds a prompt
+  while you work, it appears in the menu the next time you type `/`.
+
+<Capture
+  alt="A tool server's prompts listed under its own heading in the / menu."
+  image={captureImage(prompts)}
+/>
+
+### When two commands share a name
+
+Two plugins can ship a command of the same name. The menu then lists both under their
+full names, such as `/commands-fixture:review-notes` and `/commands-clash:review-notes`,
+marked **Same name elsewhere**. Type the full name to run one; the short name alone is
+refused and the refusal names both.
+
+<Capture
+  alt="Two plugins' commands of the same name, each listed under its full name."
+  image={captureImage(ambiguous)}
+/>
+
+## Write your own commands
+
+A command is a Markdown file. Its name is the file name, and its text is what the agent
+receives:
+
+```markdown title=".clio/commands/standup.md"
+---
+description: Summarize what changed since yesterday.
+argument-hint: "<what you did>"
+---
+Write a three-line standup: yesterday, today, blockers. Yesterday: $ARGUMENTS
+```
+
+| Where the file goes | Who sees it | Full name |
+| --- | --- | --- |
+| `.clio/commands/` in the workspace | this workspace | `/project:<name>` |
+| `.claude/commands/` in the workspace | this workspace | `/project:<name>` |
+| `~/.config/clio-agent/commands/` | you, in every workspace | `/user:<name>` |
+| `~/.claude/commands/` | you, in every workspace | `/user:<name>` |
+| a plugin's `commands/` folder | conversations whose agent has the plugin | `/<plugin>:<name>` |
+
+- `$ARGUMENTS` is everything typed after the command; `$1`, `$2` and so on are its
+  words, and quotes keep words together.
+- A file in a subfolder keeps its name; the folder becomes its label in the menu.
+- When the same name exists in several of these folders, the first in the table wins and
+  the others are listed as **Shadowed**, naming the file that wins.
+- A built-in name, such as `goal`, is reserved: a file named `goal.md` is listed as
+  **Reserved name** and `/goal` still runs the built-in.
+- `agent: <subagent>` in the frontmatter hands the command to that subagent, the same as
+  writing `@<subagent>` in the message.
+- `model` and `allowed-tools` from Claude Code commands are read but not used. The menu
+  says **Some fields ignored**.
+
+<Aside>
+Plugins written for Claude Code work as they are: their commands, skills, subagents and
+hooks load. A hook can stop a command before it runs; the refusal shows the hook's
+reason. See [Hooks](/docs/hooks/) and [Agents and plugins](/docs/agents-and-plugins/).
+</Aside>
+
+## Bring in a subagent or a tool server with @
+
+<Steps>
+
+1. Type `@`. Under **Agents** are the subagents this agent can start; under **Tools**
+   are its tool servers, each saying how many tools it has or that they load when used.
+
+2. Keep typing and press Enter. The name becomes a chip in your message. You can add
+   several.
+
+3. Send the message.
+
+</Steps>
+
+<Capture
+  alt="The @ menu lists the agent's subagents and tool servers."
+  image={captureImage(atPopover)}
+/>
+
+<Capture
+  alt="A subagent chip at the start of a message."
+  image={captureImage(chip)}
+/>
+
+- **A subagent** you name starts at once on your message's text, as work you started.
+  Under your message you see **You started explore on this message**, and the subagent
+  appears with its progress like any other. The agent reads its report when it arrives.
+  Two names start two subagents side by side.
+- **A tool server** you name has its tools loaded for this message, so the agent can use
+  them straight away. Under your message: **You pointed this message at the hdf5
+  tools**.
+- Typing the full name also works: `@explore` as its own word becomes a chip when you
+  send. An address such as `bob@example.org` stays text.
+- A name the agent has no subagent or server for never becomes a chip; it is sent as
+  ordinary text.
+
+<Capture
+  alt="Two chips and the rest of the message wrapping on a phone."
+  image={captureImage(phone)}
+/>
+
+## Related
+
+- [Subagents](/docs/subagents/): what subagents are and how their work appears.
+- [Tool servers](/docs/mcp-servers/): connect the servers whose tools and prompts you use.
+- [Agents and plugins](/docs/agents-and-plugins/): where commands, skills and subagents come from.

@@ -238,3 +238,20 @@ table; they are not measurements. The full record is in
 | `papers/paper-threads-on-v2.png` | The two comment threads after CLIO's edit and version 2: one moved, one outdated, each with CLIO's reply. |
 | `papers/paper-lineage.png` | The paper's lineage: each source file, the build and the paper. |
 | `papers/latex-workspace-phone.png` | The paper at phone width, with Source, PDF and Outline tabs. |
+
+## Commands and @ mentions
+
+Captured on 6 November 2026 from the development UI against a live CLIO with the
+marketplace's `testing/` fixtures (`commands-fixture`, `commands-clash`,
+`prompts-fixture`), at one device pixel per CSS pixel, in dark mode, with the sidebar
+collapsed where the composer is the subject. Sessions and checks are recorded in
+`docs/design/sdk/summoning-ledger.md` (N1, N6, N11, N16, N19).
+
+| File | Viewport | What to inspect |
+| --- | --- | --- |
+| `commands/slash-menu.png` | 1440 x 900 | The / menu's Commands, Skills and prompt groups, with sources. |
+| `commands/slash-menu-prompts.png` | 1440 x 900 | `fixture-docs prompts`, including `summarize_notes` added while the server ran. |
+| `commands/slash-menu-same-name.png` | 1440 x 900 | Two plugins' `review-notes`, each under its full name, marked Same name elsewhere. |
+| `commands/at-popover.png` | 1440 x 900 | The @ menu's Agents and Tools groups. |
+| `commands/chip-in-draft.png` | 1440 x 900 | An `@explore` chip before the message text. |
+| `commands/two-chips-phone.png` | 390 x 844 | Two chips on one line and the text wrapping under them. |
