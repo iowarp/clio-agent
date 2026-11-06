@@ -125,6 +125,35 @@ def _pin_from_source(source: Any, entry: dict[str, Any]) -> GitPin | None:
     return None
 
 
+def _add_git_plugin(contents: MarketplaceContents, entry: dict[str, Any]) -> None:
+    """Record one index entry's git source as a pinned plugin, or say why it is not."""
+
+    plugin_name = str(entry.get("name") or "")
+    source = entry.get("source")
+    pin = _pin_from_source(source, entry)
+    if pin is None or not pin.url:
+        contents.diagnostics.append(
+            Diagnostic(
+                "error",
+                "plugin_source_unsupported",
+                f"unsupported plugin source {source!r}",
+                plugin_name,
+            )
+        )
+        return
+    if not pin.commit:
+        contents.diagnostics.append(
+            Diagnostic(
+                "error",
+                "plugin_source_unpinned",
+                f"git source {pin.url} is not pinned by commit; it is not followed",
+                plugin_name,
+            )
+        )
+        return
+    contents.git_plugins.append(pin)
+
+
 def read_claude_marketplace(root: Path, name_hint: str = "") -> MarketplaceContents:
     data = json.loads((root / CLAUDE_INDEX).read_text(encoding="utf-8"))
     # The install name (the store's key, e.g. a federation pin's name) wins over the index's own.
@@ -151,28 +180,7 @@ def read_claude_marketplace(root: Path, name_hint: str = "") -> MarketplaceConte
                 continue
             contents.plugins.append(import_claude_plugin(path, entry=entry, marketplace=name))
             continue
-        pin = _pin_from_source(source, entry)
-        if pin is None or not pin.url:
-            contents.diagnostics.append(
-                Diagnostic(
-                    "error",
-                    "plugin_source_unsupported",
-                    f"unsupported plugin source {source!r}",
-                    plugin_name,
-                )
-            )
-            continue
-        if not pin.commit:
-            contents.diagnostics.append(
-                Diagnostic(
-                    "error",
-                    "plugin_source_unpinned",
-                    f"git source {pin.url} is not pinned by commit; it is not followed",
-                    plugin_name,
-                )
-            )
-            continue
-        contents.git_plugins.append(pin)
+        _add_git_plugin(contents, entry)
     federation = root / CLAUDE_FEDERATION
     if federation.is_file():
         try:
@@ -273,6 +281,11 @@ def read_native_marketplace(
         format="agent-plugins",
         description=str(index.get("description") or ""),
     )
+    # A package kept in another repository is listed in the index, pinned by commit,
+    # in the same shape a Claude Code marketplace uses ({"source": "git-subdir", ...}).
+    for entry in index.get("plugins") or []:
+        if isinstance(entry, dict):
+            _add_git_plugin(contents, entry)
     plugins_dir = root / "plugins"
     for child in sorted(plugins_dir.iterdir()) if plugins_dir.is_dir() else []:
         kind = detect_format(child) if child.is_dir() else ""
