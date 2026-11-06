@@ -5,31 +5,22 @@ Every agent CLIO runs is resolved from plugins (see
 reference: `<marketplace>/<id>` (`clio/standard`), a bare id when it is
 unambiguous, or `user/<id>` for a user agent, optionally with `@<range>`.
 
-CLIO supports two levels of agent selection for GACT sessions:
+A conversation runs one agent, the session agent:
 
-- Session agent: `POST /v1/sessions` with `agent: {"id": "<ref>"}` resolves and
-  pins that agent for the session; without one, the session defaults'
-  `agent_ref`, else `clio/standard`. `PATCH /v1/sessions/{sid}/agent` with
+- `POST /v1/sessions` with `agent: {"id": "<ref>"}` resolves and pins that agent
+  for the session; without one, the session defaults' `agent_ref`, else
+  `clio/standard`. `PATCH /v1/sessions/{sid}/agent` with
   `{"ref": ..., "add": [...], "remove": [...]}` changes the agent or its live
   plugin delta and pins the new resolution.
-- Turn override: `POST /v1/sessions/{sid}/messages` with either
-  `agent: {"id": "<ref>"}` or legacy-friendly `agent_id: "<ref>"`.
-
-The turn override is intentionally scoped to one user message. It resolves the
-named agent for that turn (with no delta) and does not change the session's
-pinned agent. A deep-research turn with no override runs `clio/deep-researcher`
-the same way.
-
-## Request Shape
-
-```json
-{
-  "parts": [{"type": "text", "text": "review this plan"}],
-  "agent": {"id": "clio/deep-researcher"}
-}
-```
-
-`agent.id` takes precedence over `agent_id` when both are present.
+- There is no per-turn agent override. `POST /v1/sessions/{sid}/messages` with
+  `agent` or `agent_id` is refused (HTTP 422). To bring one of the agent's
+  subagents into a message, the person summons it: a
+  `{"type": "summon", "target_kind": "subagent", "target": "<name>"}` part starts
+  that subagent as a child the person started, and the session agent answers the
+  message with the child's work in view. A command file's `agent:` field does
+  the same. See [the direct summoning plan](design/sdk/direct-summoning-plan.md).
+- A deep-research turn (`behavior.execution_mode: "deep_research"`) runs
+  `clio/deep-researcher` for that turn only, without changing the pinned agent.
 
 ## Execution Semantics
 
@@ -38,21 +29,20 @@ another) with its composed prompt, tools, servers and skills. A skill id is NOT
 an agent id (skills stopped materializing as agents in the #916 skill-semantics
 change).
 
-If the requested agent is not installed or does not resolve (a missing,
+If the session's agent is not installed or does not resolve (a missing,
 untrusted or colliding plugin), CLIO still records the user message and then
 emits an assistant error turn with `error_info.error` set to
 `agent_unavailable`; `details` carries the agent ref, the typed reason and every
 resolution error. Creating a session with such an agent is refused with the same
-error (HTTP 422). The session's pinned agent remains unchanged.
+error (HTTP 422).
 
 ## Provenance
 
-When a turn override is present, CLIO records provenance in both messages:
-
-- User message metadata includes `agent_override.requested_agent_id`,
-  `session_agent_id`, and `scope: "turn"`.
-- Assistant message metadata also includes `effective_agent_id`, using the
-  agent that ran when available and otherwise the requested id.
+A deep-research turn records `turn_agent` in the assistant message metadata:
+`requested_agent_id`, `session_agent_id`, `effective_agent_id` and
+`scope: "turn"`. A summoned subagent is recorded on the person's message as
+`summons` (the subagents and servers summoned, and any that failed to start),
+and the child session carries `started_by: {kind: "person", message_id}`.
 
 The `agent.invocation.started` semantic event carries the turn's `agent_ref`,
 `resolution_digest` and `flow`. This metadata is the backend hook for TUI
