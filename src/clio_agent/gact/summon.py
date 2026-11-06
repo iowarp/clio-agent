@@ -98,6 +98,55 @@ def summon_parts(parts: Iterable["Part"]) -> list["Part"]:
     return [part for part in parts if part.type == SUMMON]
 
 
+def summon_targets(app: "FastAPI", sid: str) -> dict[str, Any]:
+    """What the person can ``@``-summon in this conversation: its agent's subagents and servers.
+
+    A server's tool count is known once the agent's connection has listed it (``None``
+    before that); ``deferred`` says its tools load on demand.
+    """
+
+    from clio_agent.gact.agents.resolution import (  # noqa: PLC0415
+        SessionAgentUnavailable,
+        delegable_subagents,
+        session_resolution,
+    )
+    from clio_agent.gact.code_mode.stubs import owning_server  # noqa: PLC0415
+    from clio_agent.gact.mcp_prompt_commands import session_executor  # noqa: PLC0415
+
+    try:
+        resolution = session_resolution(app, sid)
+    except SessionAgentUnavailable:
+        return {"subagents": [], "servers": []}
+    servers = dict(resolution.mcp_servers or {})
+    executor = session_executor(app, sid)
+    prepared = getattr(executor, "is_namespace_prepared", None)
+    names = getattr(executor, "get_tool_names", None)
+    counts: dict[str, int] = {}
+    if callable(names):
+        for tool in names():
+            owner = owning_server(tool, servers)
+            if owner:
+                counts[owner] = counts.get(owner, 0) + 1
+    return {
+        "subagents": [
+            {"id": row["id"], "plugin": row["plugin"], "description": row["description"]}
+            for row in delegable_subagents(resolution)
+        ],
+        "servers": [
+            {
+                "name": name,
+                "plugin": str(row.get("plugin") or ""),
+                "description": str(row.get("description") or ""),
+                "deferred": bool(row.get("defer")),
+                "tools": counts.get(name)
+                if counts.get(name) or (callable(prepared) and prepared(name))
+                else None,
+            }
+            for name, row in sorted(servers.items())
+        ],
+    }
+
+
 def _strip_tokens(text: str, names: Iterable[str]) -> str:
     for name in sorted(set(names), key=len, reverse=True):
         text = re.sub(rf"(?<![\w@.]){re.escape('@' + name)}(?![\w.-])", "", text)
@@ -349,6 +398,7 @@ def expand_server_summons(entries: list[tuple[str, str]], program: Any) -> list[
 
 __all__ = [
     "SERVER_SUMMON_SOURCE",
+    "summon_targets",
     "SUMMONS_KEY",
     "Summons",
     "expand_server_summons",

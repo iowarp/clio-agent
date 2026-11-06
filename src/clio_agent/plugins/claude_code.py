@@ -365,6 +365,31 @@ def _subagents(
     return out, diagnostics
 
 
+#: Claude Code plugin parts with no CLIO counterpart: named, never dropped silently.
+_UNMAPPED_FOLDERS = {"output-styles": "output styles"}
+_UNMAPPED_MANIFEST_KEYS = {"outputStyles": "output styles", "lspServers": "language servers"}
+
+
+def _unmapped_components(root: Path, manifest: dict[str, Any], plugin: str) -> list[Diagnostic]:
+    found = [
+        f"{folder}/ ({what})"
+        for folder, what in _UNMAPPED_FOLDERS.items()
+        if (root / folder).is_dir()
+    ]
+    found += [
+        f"{key} ({what})" for key, what in _UNMAPPED_MANIFEST_KEYS.items() if manifest.get(key)
+    ]
+    return [
+        Diagnostic(
+            "warning",
+            "component_unmapped",
+            f"{item} has no CLIO equivalent and does not load",
+            plugin,
+        )
+        for item in found
+    ]
+
+
 def import_claude_plugin(
     root: Path, *, entry: dict[str, Any] | None = None, marketplace: str = ""
 ) -> PluginRecord:
@@ -399,6 +424,7 @@ def import_claude_plugin(
     hooks, hook_diags, scripts = _hooks(root, plugin)
     subagents, subagent_diags = _subagents(root, plugin, {skill.id: skill for skill in skills})
     commands, command_diags = read_commands(root / "commands", plugin)
+    command_diags += _unmapped_components(root, manifest, plugin)
     diagnostics += skill_diags + server_diags + hook_diags + subagent_diags + command_diags
     executable = list(_EXECUTABLE_GLOBS) + [p.relative_to(root).as_posix() for p in scripts]
     referenced = referenced_files(root, servers)

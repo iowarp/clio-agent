@@ -14,6 +14,7 @@ from clio_agent.gact.evidence import _bounded_tool_call_result
 from clio_agent.gact.memory.presentation import memory_used_projection
 from clio_agent.gact.protocol.v3 import utcnow_iso
 from clio_agent.gact.protocol.v3.artifact_projection import artifact_entity
+from clio_agent.gact.protocol.v3.summon_presentation import summon_presentation
 from clio_agent.gact.protocol.v3.tool_outcome import MISSING_EXECUTION_OUTCOME, tool_execution_state
 from clio_agent.gact.reasoning_timing import reasoning_timing
 from clio_agent.gact.summarization_record import legacy_compaction_block
@@ -76,6 +77,7 @@ def _message_presentation_metadata(metadata: Mapping[str, Any]) -> dict[str, Any
         execution_mode = behavior.get("execution_mode")
         if execution_mode in {"plan", "deep_research"}:
             projected["behavior"] = {"execution_mode": execution_mode}
+    projected.update(summon_presentation(metadata))  # summons, loaded skill, MCP prompt
     if metadata.get("plan_exit_resume") is True:
         projected["plan_exit_resume"] = True
     if metadata.get("ask_user_resume") is True:
@@ -275,6 +277,15 @@ def part_to_v3_block(part: Mapping[str, Any]) -> dict[str, Any]:
             "name": str(part.get("name") or "Attachment"),
             "media_type": str(part.get("media_type") or "application/octet-stream"),
             **({"delivery": delivery} if delivery is not None else {}),
+            **common,
+        }
+    if part_type == "summon":
+        # The person named what handles the message: a subagent or an MCP server.
+        return {
+            "id": part_id,
+            "type": "summon",
+            "target_kind": str(part.get("target_kind") or ""),
+            "target": str(part.get("target") or ""),
             **common,
         }
     if part_type == "context_ref":

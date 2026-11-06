@@ -62,6 +62,16 @@ def register_command_routes(app: FastAPI, deps: "GactDeps") -> None:
         table = command_table(app, session_id or "", workspace_id or "")
         return {"commands": table.wire(), "ambiguous": table.ambiguous}
 
+    @app.get("/v1/sessions/{sid}/summon-targets")
+    def list_summon_targets(sid: str) -> dict[str, Any]:
+        """The subagents and MCP servers a person can ``@``-summon in this conversation."""
+
+        from clio_agent.gact.summon import summon_targets  # noqa: PLC0415
+
+        if app.state.sessions.get(sid) is None:
+            _refuse(404, "not_found", f"session not found: {sid}")
+        return summon_targets(app, sid)
+
     @app.post("/v1/sessions/{sid}/commands/{cmd}")
     async def dispatch_command(sid: str, cmd: str, request: Request) -> dict[str, Any]:
         """Run one row of the session's command table."""
@@ -159,6 +169,7 @@ def register_command_routes(app: FastAPI, deps: "GactDeps") -> None:
                     "server": row["server"],
                     "prompt": row["prompt"],
                     "arguments": values,
+                    "text": text,
                 }
             },
         )

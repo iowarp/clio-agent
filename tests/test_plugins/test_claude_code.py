@@ -288,3 +288,31 @@ def test_an_agents_skills_are_preloaded_into_its_prompt(tmp_path: Path) -> None:
     assert "Draft from the plan." in writer.prompt
     [missing] = [d for d in record.diagnostics if d.code == "skill_unmapped"]
     assert missing.severity == "warning" and "other:thing" in missing.message
+
+
+def test_unmapped_parts_are_named_and_injections_are_read_like_any_plugin(tmp_path: Path) -> None:
+    """PC5: ``output-styles/`` is reported; ``ai.iowarp.clio/injections`` loads for either format."""
+
+    from clio_agent.injections.check import injection_diagnostics
+    from clio_agent.injections.plugin_set import _read
+
+    root = _claude_plugin(
+        tmp_path,
+        "paper",
+        {"version": "1.0.0", "lspServers": {"tex": {}}},
+        {
+            "output-styles/terse.md": "Be terse.",
+            "ai.iowarp.clio/injections/remind.md": (
+                "---\nevent: turn_start\n---\nKeep sections in paper/.\n"
+            ),
+        },
+    )
+    record = import_claude_plugin(root)
+    unmapped = sorted(d.message for d in record.diagnostics if d.code == "component_unmapped")
+    assert unmapped == [
+        "lspServers (language servers) has no CLIO equivalent and does not load",
+        "output-styles/ (output styles) has no CLIO equivalent and does not load",
+    ]
+    assert injection_diagnostics(record) == []
+    (injection,) = _read(record.root, record.id, record.text_digest)
+    assert injection.event == "turn_start" and "Keep sections" in injection.text

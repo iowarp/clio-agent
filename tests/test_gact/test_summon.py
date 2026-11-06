@@ -175,7 +175,7 @@ def test_two_summoned_subagents_start_as_the_persons_children(market: Path) -> N
             assert f"The person started {role} as task {handle} on this message." in parent
         for child in children:
             # The task is the text without the summon tokens.
-            assert _wait(lambda: _task_of(c, child.id), "the child's task") == (
+            assert _wait(lambda child=child: _task_of(c, child.id), "the child's task") == (
                 "where is the spill folder written?"
             )
         # Each child's report reaches the agent that waits on it, the parent.
@@ -268,3 +268,48 @@ def test_a_server_whose_tools_are_listed_gets_the_note_only() -> None:
         [(SERVER_SUMMON_SOURCE, '{"server": "workspace"}')], program
     )
     assert text == "The person pointed this message at the workspace tools."
+
+
+def test_the_summon_targets_are_the_agents_subagents_and_servers(market: Path) -> None:
+    with TestClient(build_app(sessions_path=market / "s.json", agent=_Recorder())) as c:
+        sid = _session(c)
+        body = c.get(f"/v1/sessions/{sid}/summon-targets").json()
+        assert [row["id"] for row in body["subagents"]] == ["explore", "review"]
+        assert body["subagents"][0]["description"] == "Finds where things are."
+        assert all(
+            {"name", "description", "deferred", "tools"} <= set(row) for row in body["servers"]
+        )
+        assert c.get("/v1/sessions/sess_nope/summon-targets").status_code == 404
+
+
+def test_a_summoned_message_projects_its_chips_and_children() -> None:
+    from clio_agent.gact.protocol.v3.message import message_to_v3
+
+    wire = {
+        "id": "user_1",
+        "session_id": "sess_1",
+        "role": "user",
+        "created_at": "2026-11-06T00:00:00Z",
+        "parts": [
+            {"id": "p1", "type": "text", "text": "@explore where is it?"},
+            {"id": "p2", "type": "summon", "target_kind": "subagent", "target": "explore"},
+        ],
+        "metadata": {
+            "summons": {
+                "subagents": [{"role": "explore", "handle": "task_abc"}],
+                "servers": [],
+                "failed": [],
+            },
+            "loaded_skill": "run-a-study",
+        },
+    }
+    row = message_to_v3(wire)
+    assert row["blocks"][1] == {
+        "id": "p2",
+        "type": "summon",
+        "target_kind": "subagent",
+        "target": "explore",
+    }
+    assert row["metadata"]["summons"] == {"subagents": ["explore"], "servers": [], "failed": []}
+    assert row["metadata"]["loaded_skill"] == "run-a-study"
+    assert "task_abc" not in str(row)

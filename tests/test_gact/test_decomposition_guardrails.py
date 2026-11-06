@@ -242,7 +242,8 @@ from clio_agent.gact.app import build_app
 # /v1/streams/{id}/entries/{seq} read the entries as stored.
 # 440 -> 438: an agent's MCP prompts are commands over its own connection (direct
 # summoning plan), so GET /v1/mcp/servers/{sid}/prompts and POST .../prompts/get go.
-EXPECTED_ROUTE_METHOD_PAIRS = 438
+# 438 -> 439: GET /v1/sessions/{sid}/summon-targets (routes/commands.py), for @ summons.
+EXPECTED_ROUTE_METHOD_PAIRS = 439
 
 # app.py is build_app + lifecycle + re-export shims only. The ceiling is
 # the current size (~2892 lines) plus ~300 lines of headroom so ordinary
