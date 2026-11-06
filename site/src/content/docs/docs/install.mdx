@@ -175,19 +175,27 @@ Running the script again upgrades or repairs the same installation. Install fold
 environment variables and the full command list are in
 [Server and terminal setup](/docs/server-setup/#install-script).
 
-<Aside type="caution" title="Development builds change how history is stored">
-Current development builds store conversation history in a new format and do not read
-history saved by v0.9.5.1 or by earlier development builds. There is no converter. After such an
-upgrade, conversations from before it cannot be opened: CLIO reports that their messages
-are unavailable because the stored transcript cannot be read (`transcript_corrupt`).
+<Aside type="caution" title="Upgrading from 0.9.5.1 or earlier">
+This release cannot open the conversations, memory and artifacts that CLIO 0.9.5.1, or an
+earlier development build, saved. There is no converter. Files in your workspaces are
+not affected.
 
-To start clean, stop CLIO with `clio stop`, delete the `cte` folder in CLIO's data
-folder, and start CLIO again. The folder is `~/.local/share/clio-agent/cte` on Linux,
+The install script checks before it changes anything. If your data was written by
+0.9.5.1 or older, it says so and asks **Move it aside now?** The answer is yes by
+default. Without a terminal, or with `--reset-old-data` (`-ResetOldData` on Windows), it
+moves the data and prints where. If it cannot tell which version wrote the data, it moves
+nothing unless you answer yes.
+
+Nothing is deleted. The data is renamed, on the same disk, to a `cte-before-<version>-<date>`
+folder in CLIO's data folder, so it can be moved back or converted later.
+
+If you upgraded another way, CLIO says so when it starts. Stop CLIO with `clio stop` (or
+quit CLIO Desktop) and run `clio reset-store`. To do it by hand instead, rename the `cte`
+folder in CLIO's data folder, for example to `cte-before-upgrade`. The folder is
+`~/.local/share/clio-agent/cte` on Linux,
 `~/Library/Application Support/clio-agent/data/cte` on macOS, and
-`%LOCALAPPDATA%\clio-agent\data\cte` on Windows, or the folder set as `arc.cte.dir`
-in your configuration. An installation that still keeps its data under
-`~/.config/clio-agent` uses `~/.config/clio-agent/data/cte`. Deleting the folder removes
-the history CLIO kept there.
+`%LOCALAPPDATA%\clio-agent\data\cte` on Windows, or the folder set as `arc.cte.dir` in
+your configuration. `clio store-check` prints the exact folders.
 </Aside>
 
 ### Choose a release

@@ -109,8 +109,9 @@ _ENCODER = msgspec.msgpack.Encoder()
 class ChunkFormatUnsupportedError(SegmentReadError):
     """A stored segment-list blob is not in the append-only record format.
 
-    The pre-release base64-framed format is not read: the record is reported typed and
-    the remedy is to reset the CLIO state. A :class:`SegmentReadError`, so every reader
+    The base64-framed format of CLIO 0.9.5.1 and older is not read: the record is
+    reported typed and the remedy is to move the old store aside
+    (:mod:`clio_agent.gact.store_reset_command`). A :class:`SegmentReadError`, so every reader
     that already reports an unreadable scope reports this one too.
     """
 
@@ -122,8 +123,9 @@ class ChunkFormatUnsupportedError(SegmentReadError):
         # SegmentReadError's own message names a scope; this one names the blob.
         ClioError.__init__(
             self,
-            f"ARC record {name!r} is stored in a retired format this CLIO cannot read; "
-            "reset the CLIO state (stop CLIO, remove its clio-core store, start again)",
+            f"ARC record {name!r} was stored by CLIO 0.9.5.1 or older, which this CLIO "
+            "cannot read; stop CLIO and run `clio reset-store` to move the old data aside "
+            "(nothing is deleted)",
             error_type=self.reason,
             details={"name": name, "recovery": "reset_clio_state"},
         )

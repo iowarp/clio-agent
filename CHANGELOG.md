@@ -6,8 +6,47 @@ TUI/HTTP surface aren't tracked here.
 
 ## Unreleased
 
+### Upgrading from 0.9.5.1 or earlier
+
+**This release cannot open the data CLIO 0.9.5.1 or older saved.** Conversations,
+memory and artifacts kept in CLIO's store (clio-core) by 0.9.5.1, or by an earlier
+development build, do not show after the upgrade, and there is no converter. Files in
+your workspaces are not affected.
+
+- **The installer handles it.** `install.sh` and `install.ps1` check the store itself
+  before changing it. If 0.9.5.1 or older wrote it, they say so, show where it will be
+  kept, and ask "Move it aside now?" (yes by default). Without a terminal, or with
+  `--reset-old-data` (`-ResetOldData`), they move it and print what moved where. If
+  they cannot tell, they say so and move nothing unless you answer yes. If CLIO is
+  running, they move nothing and tell you to stop it and run the installer again.
+- **By hand**, for an upgrade made without the installer: stop CLIO (`clio stop`, or
+  quit CLIO Desktop), then run `clio reset-store` (or `clio-agent reset-store`).
+  `clio store-check` only says which version wrote your data. To do it without the
+  command, rename the `cte` folder in CLIO's data folder (for example to
+  `cte-before-<version>`) and any `sessions.json` the message names; `/v1/health`,
+  `clio-agent doctor` and `clio store-check` print the exact paths.
+- **Nothing is deleted.** The store is renamed on the same disk, to
+  `<data dir>/cte-before-<version>-<date>/hosts/<host>` (or beside the folder set as
+  `arc.cte.dir`); an old `sessions.json` conversation list, if there is one, is renamed
+  beside itself so the new store does not list conversations whose messages moved. If
+  a converter is ever written, the old data is still there; moved back, it opens
+  in CLIO 0.9.5.1 again.
+- **If CLIO starts on old data anyway**, it does not open it and writes nothing into
+  it: `/v1/health` and `clio-agent doctor` show an `arc_store_format` row (reason
+  `arc_store_format_old`) that says the data is from CLIO 0.9.5.1 or older and how to
+  move it aside, and the conversation list answers with the same message.
+  `clio-agent migrate` refuses such a store (exit 5).
+
 ### Added
 
+- `clio-agent store-check` and `clio-agent reset-store [--yes]` (also `clio
+  store-check` / `clio reset-store`): which CLIO wrote this machine's store, and moving
+  it aside unchanged. Exit status of `store-check`: 0 nothing to do, 3 CLIO is running,
+  4 the store would not open, 5 written by 0.9.5.1 or older, 6 cannot tell.
+- `GET /v1/health` and `clio-agent doctor` carry an `arc_store_format` row; a server
+  started on a store written by 0.9.5.1 or older refuses it typed
+  (`arc_store_format_old`), and session reads answer `503 transcript_not_ready` with
+  that reason and the same message.
 - The workspace file viewer opens HDF5 files: `GET /v1/workspaces/{wid}/h5grove/`
   `meta`, `attr`, `data`, `stats` and `paths` serve h5grove's API from clio-agent
   itself (new dependency `h5grove`), advertised as `x_clio_hdf5_viewer`. Files
@@ -65,8 +104,9 @@ TUI/HTTP surface aren't tracked here.
   length and CRC (`arc/chunk_records.py`) instead of base64 frames, and has no reader
   for the old format: a chunk written by v0.9.5.1 or an earlier development build fails
   typed `arc_chunk_format_unsupported`, and its transcript answers
-  `503 messages_unavailable` with `cause: transcript_corrupt`. Reset the state: stop
-  CLIO and delete the clio-core data folder (`<data dir>/cte`, or `arc.cte.dir`).
+  `503 messages_unavailable` with `cause: arc_store_format_old` and a message saying
+  what to do. Move the old store aside as described in
+  [Upgrading from 0.9.5.1 or earlier](#upgrading-from-0951-or-earlier).
 - The compaction prompt is part of CLIO core (`gact/compaction_prompt.md`). A value
   still set for the removed `compaction.prompt_file` / `CLIO_COMPACTION_PROMPT_FILE`
   fails the compaction with `compaction_prompt_invalid`. What a compaction keeps

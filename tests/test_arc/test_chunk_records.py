@@ -219,7 +219,7 @@ def test_the_retired_base64_frame_is_a_typed_error_with_its_remedy() -> None:
         parse_chunk("sess__events", old)
     assert caught.value.error_type == "arc_chunk_format_unsupported"
     assert isinstance(caught.value, SegmentReadError)
-    assert "reset the CLIO state" in caught.value.message
+    assert "clio reset-store" in caught.value.message
     assert caught.value.details == {"name": "sess__events", "recovery": "reset_clio_state"}
 
 

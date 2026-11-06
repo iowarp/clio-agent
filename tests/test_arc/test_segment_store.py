@@ -96,7 +96,7 @@ def test_a_retired_format_record_has_typed_read_error(tmp_path) -> None:
         segments.list_segments(SID, SCOPE)
     assert isinstance(caught.value, SegmentReadError)  # every unreadable-scope path reports it
     assert caught.value.error_type == "arc_chunk_format_unsupported"
-    assert "reset the CLIO state" in caught.value.message
+    assert "clio reset-store" in caught.value.message
 
 
 def test_append_renders_in_write_order_content_preserved(tmp_path):

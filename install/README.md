@@ -25,6 +25,19 @@ Installs to `$HOME\AppData\Local\clio-agent\data\app`, drops `clio.cmd` + `clio.
 into `$HOME\AppData\Local\Microsoft\WindowsApps` (already on PATH on
 Windows 10/11).
 
+## Upgrading from 0.9.5.1 or earlier
+
+This release cannot open the conversations, memory and artifacts CLIO 0.9.5.1 or older
+saved in its store. The installer checks the store before changing it: if 0.9.5.1 or
+older wrote it, it says so and asks **Move it aside now? [Y/n]**. Without a terminal, or
+with `--reset-old-data` (`-ResetOldData` on Windows), it moves it and prints what moved
+where. If it cannot tell, it moves nothing unless you answer yes. Nothing is deleted:
+the store is renamed to `<data dir>/cte-before-<version>-<date>`, on the same disk, so
+it can be moved back or converted later.
+
+Upgraded another way? Stop CLIO (`clio stop`, or quit CLIO Desktop) and run
+`clio reset-store`. `clio store-check` only reports which version wrote your data.
+
 ## What gets installed (default: release mode)
 
 - `clio-agent` (server, Python) — latest from **PyPI**, installed into a
