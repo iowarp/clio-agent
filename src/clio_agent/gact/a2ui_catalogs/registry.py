@@ -191,6 +191,7 @@ class CatalogRegistry:
         }
         self._lock = threading.Lock()
         self._pack_cache: list[CatalogEntry] | None = None
+        self._pack_revision: tuple[int, int, int] | None = None
         # S8 review round (issue #1374 item B): a cheap integer callers can
         # compare against to know "has the installed-catalog set possibly
         # changed" without re-walking anything -- A2UIStore's projection
@@ -393,23 +394,34 @@ class CatalogRegistry:
         return self._generation
 
     def _packs(self) -> list[CatalogEntry]:
-        with self._lock:
-            if self._pack_cache is not None:
-                return self._pack_cache
         from clio_agent.gact.a2ui_catalogs.plugin import installed_plugin_catalogs  # noqa: PLC0415
         from clio_agent.gact.a2ui_catalogs.reasons import (  # noqa: PLC0415
             record_a2ui_catalog_reason,
         )
         from clio_agent.plugins.service import PluginService  # noqa: PLC0415
 
+        # An install or update made by another process (the CLI) never calls
+        # invalidate() here, so the store's own revision decides freshness.
         try:
-            records = PluginService().store.records()
+            store = PluginService().store
+            revision = store.revision()
+        except Exception as exc:  # noqa: BLE001 - typed, recorded, never silent
+            record_a2ui_catalog_reason("a2ui_plugin_discovery_failed", detail=str(exc))
+            return []
+        with self._lock:
+            if self._pack_cache is not None and self._pack_revision == revision:
+                return self._pack_cache
+        try:
+            records = store.records()
         except Exception as exc:  # noqa: BLE001 - typed, recorded, never silent
             record_a2ui_catalog_reason("a2ui_plugin_discovery_failed", detail=str(exc))
             records = []
         entries = installed_plugin_catalogs(records)
         with self._lock:
+            if self._pack_cache is not None and self._pack_revision != revision:
+                self._generation += 1
             self._pack_cache = entries
+            self._pack_revision = revision
             return entries
 
     def builtin(self) -> list[CatalogEntry]:

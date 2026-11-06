@@ -437,12 +437,15 @@ class ClioAgent(dspy.Module):
                 )
             executor = executors.get(root)
             stale = executor is not None and getattr(executor, "closed", False)
-            # #1236: a resident executor minted while the relay federation was
-            # ABSENT (or under an older catalog) must not outlive a successful
-            # refresh — the run-15/17 brick: the per-turn refresh rebuilt the
-            # DEFAULT executor while the workspace's resident one kept serving
-            # a toolless (or partial) snapshot, so the ACL bricked with
-            # federation=present.
+            # #1236: a resident executor minted under an older MCP configuration (the
+            # run-15/17 brick) or a plugin's older snapshot must not outlive the change.
+            from clio_agent.tools.fleet_server_merge import (  # noqa: PLC0415
+                _mounted_server_sets,
+                merge_server_set_namespaces,
+                server_set_spec_changed,
+                stamp_fresh_fleet,
+            )
+
             current_epoch = getattr(self, "_mcp_configuration_revision", 0)
             executor_epoch = (
                 getattr(executor, "_clio_mcp_configuration_revision", current_epoch)
@@ -450,7 +453,12 @@ class ClioAgent(dspy.Module):
                 else current_epoch
             )
             configuration_switched = (
-                executor is not None and not stale and executor_epoch != current_epoch
+                executor is not None
+                and not stale
+                and (
+                    executor_epoch != current_epoch
+                    or server_set_spec_changed(self, executor, root, server_set)
+                )
             )
             reaper = getattr(self, "_workspace_reaper", None)
             if (
@@ -462,12 +470,6 @@ class ClioAgent(dspy.Module):
                 configuration_switched = False
             # Additive server-set semantics (#1244): an unmounted set merges in
             # below; ``server_set == ""`` reuses the fleet as-is.
-            from clio_agent.tools.fleet_server_merge import (  # noqa: PLC0415
-                _mounted_server_sets,
-                merge_server_set_namespaces,
-                stamp_fresh_fleet,
-            )
-
             server_set_missing = (
                 executor is not None
                 and not stale
@@ -496,9 +498,8 @@ class ClioAgent(dspy.Module):
                         executor_epoch,
                         current_epoch,
                     )
-                # First use for this root, the #933 reaper reclaimed the fleet, or
-                # the configuration changed — rebuild lazily (spawns nothing
-                # until a tool call).
+                # First use, a reaped fleet (#933) or a changed configuration or
+                # plugin snapshot: rebuild lazily (spawns nothing until a tool call).
                 gateway = self._build_tool_gateway(cwd=root, server_set=server_set)
                 preloaded = self._tool_definitions
                 # Every per-workspace gateway includes user-configured MCP

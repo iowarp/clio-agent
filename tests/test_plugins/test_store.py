@@ -372,3 +372,41 @@ def test_legacy_user_agent_cycle_has_a_typed_lookup_failure(tmp_path: Path) -> N
     with pytest.raises(LookupError) as caught:
         service.lookup("user/cycle")
     assert getattr(caught.value, "reason", "") == "user_agent_cycle"
+
+
+def test_the_store_revision_changes_on_every_write(tmp_path: Path) -> None:
+    """DS40: another process's install or update is visible to a running server."""
+
+    store = PluginStore(tmp_path / "store")
+    before = store.revision()
+    store.install(str(_market(tmp_path / "m")))
+    installed = store.revision()
+    store.trust("demo")
+    trusted = store.revision()
+    assert len({before, installed, trusted}) == 3
+    assert PluginStore(tmp_path / "store").revision() == trusted
+
+
+def test_a2ui_catalogs_follow_a_write_made_through_another_store(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from clio_agent.gact.a2ui_catalogs import plugin as plugin_catalogs
+    from clio_agent.gact.a2ui_catalogs.registry import CatalogRegistry
+
+    monkeypatch.setenv("CLIO_PLUGIN_STORE", str(tmp_path / "store"))
+    seen: list[int] = []
+    monkeypatch.setattr(
+        plugin_catalogs,
+        "installed_plugin_catalogs",
+        lambda records: seen.append(len(records)) or [],
+    )
+    registry = CatalogRegistry()
+    registry.installed()
+    registry.installed()
+    assert len(seen) == 1, "an unchanged store is served from the cache"
+    generation = registry.generation
+
+    # A second store on the same root, as the CLI process opens it.
+    PluginStore(tmp_path / "store").install(str(_market(tmp_path / "m")))
+    registry.installed()
+    assert len(seen) == 2 and registry.generation == generation + 1

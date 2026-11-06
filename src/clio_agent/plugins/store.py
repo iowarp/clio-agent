@@ -185,6 +185,21 @@ class PluginStore:
         temporary.write_text(json.dumps(state, indent=1, sort_keys=True), encoding="utf-8")
         os.replace(temporary, self.state_path)
 
+    def revision(self) -> tuple[int, int, int]:
+        """An identity of the stored state that changes on every write.
+
+        Every write replaces ``state.json`` (``_write_state``), so its inode, size
+        and modification time change with it, whichever process wrote it. Readers
+        that cache what they derived from the store (A2UI catalogs) compare this
+        instead of relying on the writer to tell them.
+        """
+
+        try:
+            stat = self.state_path.stat()
+        except FileNotFoundError:
+            return (0, 0, 0)
+        return (stat.st_ino, stat.st_size, stat.st_mtime_ns)
+
     # ---------------------------------------------------------------- reading
     def marketplaces(self) -> dict[str, dict[str, Any]]:
         return dict(self.read_state()["marketplaces"])
