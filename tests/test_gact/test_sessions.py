@@ -12,7 +12,7 @@ from pathlib import Path
 import pytest
 
 from clio_agent.arc.live import _MemoryStore
-from clio_agent.gact.session_records import KIND
+from clio_agent.gact.session_records import KIND, PageQuery
 from clio_agent.gact.sessions import SessionStore
 
 
@@ -95,13 +95,13 @@ def test_list_newest_first_and_filter_by_workspace(mem_store: SessionStore) -> N
     s3 = mem_store.create(workspace_id="ws_a", title="a2")
 
     # Unfiltered: newest first (by created_at).
-    rows = mem_store.list()
+    rows = mem_store.select(PageQuery(archived=None))
     assert [s.id for s in rows[:3]] == [s3.id, s2.id, s1.id], (
         f"expected newest-first, got {[s.id for s in rows]}"
     )
 
     # Filter by workspace.
-    ws_a = mem_store.list(workspace_id="ws_a")
+    ws_a = mem_store.select(PageQuery(workspace_id="ws_a", archived=None))
     assert {s.id for s in ws_a} == {s1.id, s3.id}
 
 
@@ -221,7 +221,7 @@ def test_persistence_roundtrip(tmp_path: Path, backing: _MemoryStore) -> None:
     _ = a  # drop reference
 
     b = SessionStore(path=path, store=backing)
-    got = b.list()
+    got = b.select(PageQuery(archived=None))
     assert {s.id for s in got} == {s1.id, s2.id}
 
 
@@ -248,7 +248,7 @@ def test_corrupted_store_file_starts_empty(tmp_path: Path, backing: _MemoryStore
     store = SessionStore(path=path, store=backing)
     with pytest.raises(ValueError, match="session_records_legacy_unreadable"):
         store.import_legacy()
-    assert store.list() == []
+    assert store.ids() == []
 
     sess = store.create(workspace_id="ws", title="recovered")
     assert store.get(sess.id) is not None
@@ -291,8 +291,8 @@ def test_a_session_whose_creation_cannot_be_recorded_is_not_created(store: Sessi
     with pytest.raises(_RecordFailed, match="session.created"):
         store.create(workspace_id="ws_default", title="unrecorded")
 
-    assert store.list() == []
-    assert SessionStore(store=store._records._writer.store).list() == []
+    assert store.ids() == []
+    assert SessionStore(store=store._records._writer.store).ids() == []
 
 
 def test_a_deletion_that_cannot_be_recorded_is_the_callers_error(store: SessionStore) -> None:

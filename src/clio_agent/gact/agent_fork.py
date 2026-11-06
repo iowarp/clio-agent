@@ -49,10 +49,13 @@ async def fork_caller(
 
 def _agent_forks(app: Any, session_id: str) -> list[Any]:
     from clio_agent.gact.conversation_origin import FORK_ORIGIN_KEY  # noqa: PLC0415
+    from clio_agent.gact.session_records import PageQuery  # noqa: PLC0415
 
+    # The caller's children, from the index's parent column: only their rows are read.
+    children = PageQuery(archived=None, parent_session_id=session_id)
     return [
         row
-        for row in app.state.sessions.list()
+        for row in app.state.sessions.select(children)
         if row.parent_session_id == session_id
         and (row.metadata.get(FORK_ORIGIN_KEY) or {}).get("author", {}).get("kind") == "agent"
     ]

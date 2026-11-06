@@ -256,7 +256,7 @@ def test_observer_skip_no_session_is_typed_not_silent(tmp_path: Path) -> None:
     app = build_app(sessions_path=tmp_path / "sessions.json", agent=agent)
     tool = executor.definitions["vigil_open"]
 
-    # No session is ever created -- app.state.sessions.list() is empty, and no
+    # No session is ever created -- app.state.sessions.select(PageQuery(archived=None)) is empty, and no
     # _tool_session_context is bound, so _resolve_tool_session(app) yields "".
     with _gact_app_context(app):
         app.state.pending_mcp_app_observer(

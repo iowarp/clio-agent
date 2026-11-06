@@ -180,8 +180,10 @@ def _recall_search_response(
         )
 
     limit = max(1, min(int(limit or 20), 100))
+    from clio_agent.gact.session_records import PageQuery  # noqa: PLC0415
+
     sessions = (
-        app.state.sessions.list(workspace_id=workspace_id or None)
+        app.state.sessions.select(PageQuery(workspace_id=workspace_id or None, archived=None))
         if allowed_session_ids is None
         else [
             session

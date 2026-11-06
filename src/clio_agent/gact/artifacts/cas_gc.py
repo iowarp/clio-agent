@@ -174,13 +174,11 @@ def retained_session_ids(app: "FastAPI", workspace_id: str) -> set[str]:
     store = getattr(app.state, "sessions", None) or getattr(app.state, "session_store", None)
     if store is None:
         return set()
-    try:
-        sessions = store.list(workspace_id=workspace_id)
-    except TypeError:
-        sessions = [s for s in store.list() if getattr(s, "workspace_id", "") == workspace_id]
-    except Exception:  # noqa: BLE001 — an unreadable session store yields no retained roots
-        return set()
-    return {str(getattr(s, "id", "") or "") for s in sessions if getattr(s, "id", "")}
+    from clio_agent.gact.session_records import PageQuery  # noqa: PLC0415
+
+    # The ids come from the session index (no row is read). A store that cannot answer
+    # raises: an empty root set would let GC evict artifacts a session still holds.
+    return set(store.ids(PageQuery(workspace_id=workspace_id, archived=None)))
 
 
 def sha_used_by_retained_session(

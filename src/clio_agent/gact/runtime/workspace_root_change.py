@@ -18,9 +18,10 @@ if TYPE_CHECKING:
 def require_idle_workspace(app: FastAPI, workspace_id: str) -> None:
     """Refuse a primary-folder change while a turn still owns the old folder."""
     runner = app.state.turn_runner
-    busy = [
-        row.id for row in app.state.sessions.list(workspace_id=workspace_id) if runner.busy(row.id)
-    ]
+    from clio_agent.gact.session_records import PageQuery  # noqa: PLC0415
+
+    query = PageQuery(workspace_id=workspace_id, archived=None)
+    busy = [sid for sid in app.state.sessions.ids(query) if runner.busy(sid)]
     if busy:
         raise HTTPException(
             status_code=409,

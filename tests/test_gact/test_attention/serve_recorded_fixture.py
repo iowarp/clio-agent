@@ -22,6 +22,7 @@ import uvicorn
 from clio_agent.gact.app import build_app
 from clio_agent.gact.attention import routes
 from clio_agent.gact.parts import Part
+from clio_agent.gact.session_records import PageQuery
 from tests.test_gact.test_attention._support import (
     FIXTURES,
     FixtureRenderer,
@@ -44,7 +45,9 @@ def main() -> None:
     os.environ["CLIO_GACT_CORS_ORIGINS"] = "http://127.0.0.1:4394"
     app = build_app(agent=None, sessions_path=root / "sessions.json")
     title = "Recorded attention replay (no inference)"
-    session = next((s for s in app.state.sessions.list() if s.title == title), None)
+    session = next(
+        (s for s in app.state.sessions.select(PageQuery(archived=None)) if s.title == title), None
+    )
     if session is None:
         session = app.state.sessions.create(workspace_id="ws_default", title=title)
     messages = fixture_transcript()

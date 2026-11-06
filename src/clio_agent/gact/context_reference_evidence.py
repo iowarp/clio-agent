@@ -35,7 +35,9 @@ __all__ = [
 def _workspace_sessions(app: "FastAPI", workspace_id: str) -> list[Any]:
     """Return the authoritative sessions whose evidence belongs to one workspace."""
 
-    return list(app.state.sessions.list(workspace_id=workspace_id))
+    from clio_agent.gact.session_records import PageQuery  # noqa: PLC0415
+
+    return app.state.sessions.select(PageQuery(workspace_id=workspace_id, archived=None))
 
 
 def _snapshot_revision(payload: Mapping[str, Any]) -> str:

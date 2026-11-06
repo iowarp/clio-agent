@@ -12,6 +12,7 @@ import pytest
 from clio_agent.arc.memory import ARCMemory
 from clio_agent.gact.assignment_evidence import render_delegation, select_assignment_evidence
 from clio_agent.gact.native_work import now
+from clio_agent.gact.session_records import PageQuery
 from clio_agent.gact.task_access import TaskCaller
 from tests.test_arc.conftest import core_arc as core_arc
 from tests.test_arc.test_assignment_evidence_contracts import evidence_children
@@ -45,10 +46,10 @@ async def test_evidence_selection_refuses_invalid_members_without_creating_a_chi
         selection = {"handle": source.handle}
     else:
         selection = [source.handle, 42]
-    before = len(app.state.sessions.list())
+    before = len(app.state.sessions.select(PageQuery(archived=None)))
     with pytest.raises(ValueError):
         await asyncio.to_thread(select_assignment_evidence, owner.history, caller, selection)
-    assert len(app.state.sessions.list()) == before
+    assert len(app.state.sessions.select(PageQuery(archived=None))) == before
     await owner.recovery.drain()
 
 

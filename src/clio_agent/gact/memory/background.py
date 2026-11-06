@@ -606,7 +606,9 @@ def memory_tick(app: Any, now: datetime | None = None) -> None:
     collected = started = 0
     skipped: dict[str, int] = {}
     blocked = ""  # a pass failed to start this tick: start no other (the model is shared)
-    for session in list(app.state.sessions.list()):
+    from clio_agent.gact.session_records import PageQuery  # noqa: PLC0415
+
+    for session in app.state.sessions.select(PageQuery(archived=None)):
         try:
             if (session.metadata or {}).get(IN_FLIGHT):
                 collected += 1
