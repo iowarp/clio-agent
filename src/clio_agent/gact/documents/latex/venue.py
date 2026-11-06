@@ -76,6 +76,26 @@ def find_template(name: str, roots: Sequence[Path]) -> tuple[Path, dict[str, Any
     return None
 
 
+def _project_template(name: str, entry: Path) -> tuple[Path, dict[str, Any]] | None:
+    """The project's own copy of template ``name``, when the paper's folder has one.
+
+    start-a-paper copies the template into the project and has the agent set the call for
+    papers' limits in that copy, so the copy's rules are the ones the paper answers to.
+    """
+    import yaml  # noqa: PLC0415 - only for a venue build
+
+    manifest = entry.parent / "template.yaml"
+    if not manifest.is_file():
+        return None
+    try:
+        data = yaml.safe_load(manifest.read_text(encoding="utf-8")) or {}
+    except (OSError, yaml.YAMLError):
+        return None
+    if isinstance(data, dict) and str(data.get("name") or "") == name:
+        return entry.parent, data
+    return None
+
+
 def _strip_comments(text: str) -> str:
     return "\n".join(re.sub(r"(?<!\\)%.*$", "", line) for line in text.splitlines())
 
@@ -299,7 +319,7 @@ def check_venue(
 ) -> dict[str, Any]:
     """Every rule of template ``name`` checked against the build's PDF and its sources."""
     folders = list(roots) if roots is not None else session_template_roots()
-    found = find_template(name, folders)
+    found = _project_template(name, entry) or find_template(name, folders)
     if found is None:
         # Name the templates there are, so a venue given in other words can be corrected.
         names = sorted(

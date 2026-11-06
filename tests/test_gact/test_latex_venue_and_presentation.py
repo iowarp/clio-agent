@@ -148,6 +148,28 @@ def test_a_venue_no_plugin_ships_is_a_failed_check_not_a_guess(tmp_path: Path) -
     assert "No plugin in this session has a template" in report["checks"][0]["message"]
 
 
+def test_the_projects_copy_of_the_template_sets_the_limits(tmp_path: Path) -> None:
+    # Scenario L20: the agent set page_limit: 2 in the project's template.yaml, as
+    # start-a-paper says to for a call for papers, and the check used the plugin's 8.
+    roots = [_template(tmp_path / "templates", "ieee-conference", "  page_limit: 8\n")]
+    paper = tmp_path / "paper"
+    paper.mkdir()
+    (paper / "main.tex").write_text("\\documentclass[conference]{IEEEtran}\n")
+    (paper / "template.yaml").write_text(
+        "name: ieee-conference\ntitle: IEEE conference\nrules:\n  page_limit: 2\n"
+    )
+    report = check_venue(
+        "ieee-conference",
+        entry=paper / "main.tex",
+        pdf=_pdf(tmp_path / "p.pdf", 3),
+        page_count=3,
+        roots=roots,
+    )
+    limit = {check["rule"]: check for check in report["checks"]}["Page limit"]
+    assert limit["status"] == "failed"
+    assert limit["message"] == "3 pages, references included; the limit is 2."
+
+
 def test_a_venue_named_in_other_words_lists_the_templates_there_are(tmp_path: Path) -> None:
     # Scenario L2: the agent passed "ACM sigconf" and, told only that no template had that
     # name, asked the person for it. The failure now names the templates to choose from.
