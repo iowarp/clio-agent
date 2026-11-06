@@ -216,7 +216,12 @@ from clio_agent.gact.app import build_app
 # 423 -> 424: GET /v1/plugins/local, private local folders and saved agent definitions.
 # 424 -> 431: the HDF5 viewer's h5grove data route (#1834), routes/workspace_h5grove.py:
 # GET+HEAD on its root plus GET meta, attr, data, stats and paths.
-EXPECTED_ROUTE_METHOD_PAIRS = 431
+# 431 -> 432: POST /v1/sessions/{sid}/spotter/quarantine/lift (#1927, landed without a
+# bump), a person's way out of a SPOTTER quarantine. 432 -> 430: the per-item attention
+# view and its CSV export are removed (POST
+# /v1/sessions/{sid}/messages/{mid}/attention/items[/export]); answer-item splitting is
+# for automated scripts, and a person selects the part of the answer they want.
+EXPECTED_ROUTE_METHOD_PAIRS = 430
 
 # app.py is build_app + lifecycle + re-export shims only. The ceiling is
 # the current size (~2892 lines) plus ~300 lines of headroom so ordinary

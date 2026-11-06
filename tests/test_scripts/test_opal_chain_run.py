@@ -1,4 +1,4 @@
-"""The OPAL chain driver exports each round's answer items and scores answers locally."""
+"""The OPAL chain driver reads each round's ANSWER: line and scores answers locally."""
 
 from __future__ import annotations
 
@@ -6,13 +6,10 @@ import csv
 import json
 from pathlib import Path
 
-import httpx
 import pytest
 
 from scripts.qualification.beta3_opal_inputs import prepare
-from scripts.qualification.opal_chain_run import answer_span, export_attention, normalize, score
-
-HEADER = "chain_id,round_no,task_type,model,segment_index,segment_text,decode_steps,n_prompt_tokens,prompt_token_ids,scores"
+from scripts.qualification.opal_chain_run import answer_span, normalize, score
 
 
 def _reply(mid: str, text: str) -> dict:
@@ -39,47 +36,6 @@ def test_answer_span_takes_the_last_answer_line_of_the_text_parts() -> None:
     assert (part_id, text) == ("a", "NIL 373; DIVERGES")
     assert reply["parts"][1]["text"][start:end] == text
     assert answer_span(_reply("x", "no answer here")) is None
-
-
-def test_export_posts_items_split_at_semicolon_and_joins_one_csv() -> None:
-    posted: list[dict] = []
-
-    def server(request: httpx.Request) -> httpx.Response:
-        body = json.loads(request.content)
-        posted.append({"path": request.url.path, **body})
-        if "m2" in request.url.path:
-            return httpx.Response(
-                200,
-                json={"available": False, "reason": "output_alignment_mismatch", "message": "no"},
-            )
-        row = f"exp,{body['round_no']},{body['task_type']},model,0,x,1,2,3 4,0.5 1"
-        return httpx.Response(200, json={"available": True, "rows": 1, "csv": f"{HEADER}\n{row}\n"})
-
-    manifest = {
-        "chain_id": "exp",
-        "rounds": [{"task": "dose"}, {"task": "peak"}, {"task": "search"}],
-    }
-    receipt = {
-        "turns": [
-            {"reply": _reply("m1", "ANSWER: 100")},
-            {"reply": _reply("m2", "ANSWER: 100; AGREES")},
-            {"reply": _reply("m3", "I could not decide.")},
-        ]
-    }
-    with httpx.Client(transport=httpx.MockTransport(server), base_url="http://clio") as client:
-        table, records = export_attention(
-            client, session_id="s", manifest=manifest, receipt=receipt
-        )
-    assert table.splitlines() == [HEADER, "exp,1,dose,model,0,x,1,2,3 4,0.5 1"]
-    assert posted[0]["path"] == "/v1/sessions/s/messages/m1/attention/items/export"
-    assert posted[0]["split"] == ";" and posted[0]["items"] == [
-        {"part_id": "p-m1", "field": "text", "start": 8, "end": 11}
-    ]
-    assert posted[1]["round_no"] == "2" and posted[1]["task_type"] == "peak"
-    assert [r["exported"] for r in records] == [True, False, False]
-    assert records[1]["reason_code"] == "output_alignment_mismatch"
-    assert records[2]["reason"] == "the reply has no ANSWER: line"
-    assert len(posted) == 2
 
 
 def test_score_compares_normalized_answers() -> None:

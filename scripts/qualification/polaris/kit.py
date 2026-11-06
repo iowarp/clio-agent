@@ -1241,18 +1241,6 @@ def step_smoke():
         dry={"available": True},
     )
     write_json(os.path.join(JOB_EVIDENCE, "smoke-attention.json"), attention)
-    # The per-item view (default profile attn-analytics, Bogdan's formula) on the answer's
-    # first sentence: what OPAL's chain export reads for each answer item.
-    answer = (text.get("text") or "").strip()
-    item = answer.split(".")[0][:200] or answer[:200]
-    items = call(
-        "POST",
-        "/v1/sessions/%s/messages/%s/attention/items" % (session["id"], reply["id"]),
-        {"items": [{"text": item}]},
-        timeout=600,
-        dry={"available": True},
-    )
-    write_json(os.path.join(JOB_EVIDENCE, "smoke-attention-items.json"), items)
     write_json(os.path.join(JOB_EVIDENCE, "smoke-reply.json"), reply)
     captures = []
     if vllm.get("captures") and not DRY:
@@ -1267,7 +1255,7 @@ def step_smoke():
             except (OSError, ValueError, struct.error) as exc:
                 row["header_error"] = str(exc)
             captures.append(row)
-    available = attention.get("available") is True and items.get("available") is True
+    available = attention.get("available") is True
     details = {
         "session_id": session["id"],
         "workspace_id": workspace["id"],
@@ -1281,9 +1269,6 @@ def step_smoke():
         "attention_available": available,
         "attention_reason": attention.get("reason"),
         "attention_message": attention.get("message"),
-        "items_available": items.get("available"),
-        "items_reason": items.get("reason"),
-        "items_profile": (items.get("profile") or {}).get("name"),
         "response_id": attention.get("response_id"),
         "capture_sha256": attention.get("capture_sha256"),
         "lm_call_id": attention.get("lm_call_id"),

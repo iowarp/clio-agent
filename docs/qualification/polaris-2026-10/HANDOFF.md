@@ -81,14 +81,14 @@ Paths: `ROOT=/eagle/$PBS_ACCOUNT/$USER/clio-polaris-2026-10`, `K=$ROOT/src/clio-
 
    Check `vllm-context-sizing.json` and the effective `max_model_len` in `06-vllm.json`.
 5. **Attention smoke (1-3 min).** `bash $K/03_attention_smoke.sh`. Pass:
-   - `09-attention-smoke.json` has `status: ok`, `attention_available: true` and `items_available: true` (profile `attn-analytics`);
+   - `09-attention-smoke.json` has `status: ok`, `attention_available: true` (profile `attn-analytics`);
    - `thinking_separated: true`;
    - `recent_capture_files[].metadata` shows global head counts (32 query / 8 KV heads; at stage 2 also TP=2), not one rank's slice.
 
    **Do not start OPAL if this fails.**
 6. **OPAL data (2-10 min).** `bash $K/04_stage_opal_data.sh`. Pass: `11-opal-data.json` is `ok` with 139 files and 1,237,266,797 bytes.
 7. **OPAL (chain: 6 rounds x 2 conditions, about 0.5-2 h; broad: up to 3 x 40 min).** `bash $K/05_opal_run.sh`.
-   - Outputs: `$ROOT/operator/chain-exp32-chain-0020-hard-{A,B}/attention-<cond>.csv` and `score-<cond>.json`, plus `evidence/opal/broad.json`.
+   - Outputs: `$ROOT/operator/chain-exp32-chain-0020-hard-{A,B}/score-<cond>.json`, plus `evidence/opal/broad.json`.
    - Sessions are in `evidence/opal/opal-sessions.json`.
    - The operator directory holds correct answers. Never put it in a workspace, a prompt or git.
 8. **Hand the UI to the user.** `bash $K/tunnel.sh` and report the printed command (UNIX-socket forward through
@@ -165,8 +165,8 @@ The user shares their own screen; only their laptop connects to CLIO.
 
 - Which steps passed, with receipt paths.
 - Timings and the effective context length.
-- Smoke details: `response_id`, `capture_sha256`, capture metadata (TP, heads), and the items view.
-- Chain A/B scores and the CSV paths (not the answers), plus the broad-run status.
+- Smoke details: `response_id`, `capture_sha256`, capture metadata (TP, heads).
+- Chain A/B scores (not the answers), plus the broad-run status.
 - SPOTTER availability and alerts.
 - Deviations (fallbacks, env overrides), new defects with fixes and commits, the cleanup record, and the tunnel command.
 
@@ -200,5 +200,4 @@ All paths are under `src/clio_agent/gact/`. The attention line numbers move whil
 | `GET`/`POST /v1/sessions/{sid}/messages` | routes/messages.py:294, :254 |
 | `GET /v1/sessions/{sid}/attention/availability` | attention/routes.py:212 |
 | `POST /v1/sessions/{sid}/messages/{mid}/attention` | attention/routes.py:226 |
-| `POST /v1/sessions/{sid}/messages/{mid}/attention/items` (`/export` is used by the chain driver) | attention/routes.py:271, :281 |
 | `GET /v1/spotter/availability` | spotter_availability.py:193 |
