@@ -51,6 +51,7 @@ from clio_agent.plugins.marketplace import (
 from clio_agent.plugins.package_files import ignored_package_names, source_stamp
 from clio_agent.plugins.records import Diagnostic, PluginRecord
 from clio_agent.plugins.sources import SourceError, fetch
+from clio_agent.plugins.store_relocation import relocate_plugin_store
 from clio_agent.sdk.agent import AgentSpec
 from clio_agent.sdk.versions import PluginRef, valid_plugin_id
 
@@ -154,6 +155,7 @@ class PluginStore:
         self.root.mkdir(parents=True, exist_ok=True)
         self.state_path = root / "state.json"
         self.lock = FileLock(str(root / "state.lock"))
+        relocate_plugin_store(root, self.lock)  # a moved store: its recorded paths point here
 
     # ------------------------------------------------------------------ state
     def _empty(self) -> dict[str, Any]:

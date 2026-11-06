@@ -110,6 +110,12 @@ def prepare_desktop_stdio(
         command, resolved_args, launcher_env = launcher
     child_env = stdio_environment(dict(env) if env else {}, command=command, args=resolved_args)
     child_env.update(launcher_env)
+    if "CLIO_KIT_CACHE_DIR" in launcher_env:
+        from clio_agent.tools.mcp_environment_relocation import (  # noqa: PLC0415
+            remove_stale_environments,
+        )
+
+        remove_stale_environments(Path(launcher_env["CLIO_KIT_CACHE_DIR"]))
     return command, resolved_args, child_env
 
 

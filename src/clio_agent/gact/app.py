@@ -1729,10 +1729,10 @@ def run_server(
     """
     import uvicorn
 
-    # Resolve trace verbosity (file→env→default) and install the formatted log
-    # handler for the server process, now that the environment is settled.
-    trace.configure()
+    trace.configure()  # trace verbosity (file -> env -> default) + the formatted log handler
+    from clio_agent.home_relocation import relocate_home  # noqa: PLC0415
 
+    relocate_home()  # a moved home: its records point here before any store opens them
     # Always build a fresh app here — the module-level ``app`` symbol is
     # intentionally lazy (see __getattr__ above) so that just importing
     # ``clio_agent.gact.app`` doesn't pay build_app's cost. When the env

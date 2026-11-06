@@ -229,6 +229,12 @@ def resolve(
     if not all(Path(part).exists() for part in argv[:2]):
         _drop("env_vanished")
         return None
+    from clio_agent.tools import mcp_environment_relocation as relocation  # noqa: PLC0415
+
+    if not relocation.plan_targets_this_cache(argv, relocation.kit_cache_root()):
+        # A plan learned before the cache moved names the old location's interpreter.
+        _drop("env_relocated")
+        return None
     env = plan.get("env")
     if not isinstance(env, dict) or not all(str(k).startswith(_REPLAY_ENV_PREFIX) for k in env):
         # Enforced at APPLY, not just capture: a plan env key outside the
