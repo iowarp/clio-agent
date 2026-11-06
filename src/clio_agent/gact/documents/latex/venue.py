@@ -188,10 +188,11 @@ def _page_checks(rules: dict[str, Any], pdf: Path, page_count: int) -> list[dict
                 if _REFERENCE_HEADINGS.search(page.extract_text() or ""):
                     counted = index + 1
                     break
+        noun = "page" if counted == 1 else "pages"
         what = (
-            "pages, references included"
+            f"{noun}, references included"
             if rules.get("references_count", True)
-            else "pages before the references"
+            else f"{noun} before the references"
         )
         checks.append(
             _check(
