@@ -12,6 +12,7 @@ import opened from "../../../assets/captures/papers/paper-opened.png";
 import outline from "../../../assets/captures/papers/paper-outline-to-pdf.png";
 import sourceToPdf from "../../../assets/captures/papers/latex-workspace-source-to-pdf.png";
 import problems from "../../../assets/captures/papers/latex-workspace-problems.png";
+import venueChecks from "../../../assets/captures/papers/paper-venue-checks.png";
 import pdfOnly from "../../../assets/captures/papers/latex-paper-pdf-only.png";
 import comment from "../../../assets/captures/papers/paper-comment-on-pdf.png";
 import marks from "../../../assets/captures/papers/paper-marks-on-both-panes.png";
@@ -100,6 +101,15 @@ Problems are also marked beside their lines in the source.
 <Capture client:visible image={await captureImage(problems)}
   alt="The build summary open, listing font substitution warnings"
   caption="The build's problems, listed by kind with their messages."
+  sizes="(min-width: 50rem) 46rem, 100vw" />
+
+When the paper is written for one of the venues above, the list also has that venue's
+checks: the page limit, the paper size and, for double-blind review, author names outside
+the title block and acknowledgments. A check that names a place opens it.
+
+<Capture client:visible image={await captureImage(venueChecks)}
+  alt="The build summary of an ACM paper: page limit and paper size passed, double-blind author names failed at sections/body.tex line 2"
+  caption="An ACM double-blind paper whose body still names its author, at sections/body.tex, line 2."
   sizes="(min-width: 50rem) 46rem, 100vw" />
 
 <Aside type="caution">

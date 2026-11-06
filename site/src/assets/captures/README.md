@@ -222,6 +222,7 @@ table; they are not measurements. The full record is in
 | `papers/latex-workspace-source-to-pdf.png` | A source line outlined on the PDF (the IEEE sample paper, `sess_3ac39589848e`). |
 | `papers/latex-paper-pdf-only.png` | The PDF-only view. |
 | `papers/latex-workspace-problems.png` | The build's problems listed (font substitutions). |
+| `papers/paper-venue-checks.png` | An ACM double-blind paper's venue checks: the author's name found at `sections/body.tex` line 2 (`sess_9ccb9f12c1bb`). |
 | `papers/paper-comment-on-pdf.png` | A comment on a phrase of the PDF. |
 | `papers/paper-marks-on-both-panes.png` | Two text marks drawn where they were made: S1 on a source line, S2 on a PDF phrase. |
 | `papers/paper-threads-on-v2.png` | The two comment threads after CLIO's edit and version 2: one moved, one outdated, each with CLIO's reply. |
