@@ -165,8 +165,18 @@ def mark(app: Any, name: str) -> None:
 
 
 def snapshot(app: Any) -> dict[str, Any]:
-    """The ``boot`` block served by ``GET /v1/health``."""
-    return timeline(app).snapshot()
+    """The ``boot`` block served by ``GET /v1/health``.
+
+    What this start relocated after its home or data folder moved (each with its typed
+    reason, :mod:`clio_agent.path_relocation`) is listed as ``relocations``.
+    """
+    from clio_agent.path_relocation import recorded  # noqa: PLC0415
+
+    block = timeline(app).snapshot()
+    relocations = recorded()
+    if relocations:
+        block["relocations"] = relocations
+    return block
 
 
 def readiness(app: Any) -> tuple[Literal["starting", "ready"], list[str]]:

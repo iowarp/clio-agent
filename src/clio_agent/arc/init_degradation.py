@@ -39,6 +39,8 @@ ARC_INIT_DEGRADE_REASONS = (
     CLIO_CORE_DAEMON_VERSION_UNKNOWN,  # daemon has no version record: refused
     CLIO_CORE_DAEMON_CONFIG_UNKNOWN,  # daemon's recorded config is unreadable: refused
     "clio_core_not_durable",  # no durable tier: a restart would lose every record
+    "cte_store_location_in_use",  # a moved store's old or new location is still in use
+    "cte_store_location_mismatch",  # the store names a location that cannot be relocated
     "clio_core_init_error",  # any other clio-core initialization failure
 )
 
