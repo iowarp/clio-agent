@@ -1,22 +1,19 @@
 # clio-core requests from CLIO (to file upstream)
 
-Status (2026-11-05): **not filed yet.** The texts are ready, but this session's GitHub integration cannot write to `iowarp/clio-core` (`403 Resource not accessible by integration`). The owner will grant access later. When it is granted:
-- file the parent issue first, in `iowarp/clio-core`;
-- file each of the others as its sub-issue;
-- record the issue numbers in the table below.
+Status (2026-11-06): **filed** in `iowarp/clio-core` once the owner granted access: the parent is iowarp/clio-core#1335 and each request is its sub-issue (numbers below).
 
 Nothing goes in `iowarp/clio-agent`. The clio-core team decides how to solve each issue.
 
 | # | Issue (in iowarp/clio-core) | Filed as | State |
 | --- | --- | --- | --- |
-| parent | CLIO agent parent request: clio-core changes for the next release | — | not filed |
-| 1 | Scope BlobQuery / GetContainedBlobs to the tag | — | not filed |
-| 2 | Expose the existing native write and read primitives to Python | — | not filed |
-| 3 | Document, or make awaitable, when a deferred put is durable | — | not filed |
-| 4 | The idle daemon uses most of a core | — | not filed |
-| 5 | Build the macOS wheels for macOS 14 again | — | not filed |
-| 6 | Conditional puts in a batch, and a conditional put that replaces | — | not filed |
-| 7 | A Python binding for `clio_cte_stream` | — | not filed |
+| parent | CLIO agent parent request: clio-core changes for the next release | iowarp/clio-core#1335 | open |
+| 1 | Scope BlobQuery / GetContainedBlobs to the tag | iowarp/clio-core#1336 | open |
+| 2 | Expose the existing native write and read primitives to Python | iowarp/clio-core#1337 | open |
+| 3 | Document, or make awaitable, when a deferred put is durable | iowarp/clio-core#1338 | open |
+| 4 | The idle daemon uses most of a core | iowarp/clio-core#1339 | open |
+| 5 | Build the macOS wheels for macOS 14 again | iowarp/clio-core#1340 | open |
+| 6 | Conditional puts in a batch, and a conditional put that replaces | iowarp/clio-core#1341 | open |
+| 7 | A Python binding for `clio_cte_stream` | iowarp/clio-core#1342 | open |
 
 The numbers match the sections below. The parent issue lists them by priority: 3, 2, 1, 4, 6, 5, 7.
 
@@ -35,7 +32,7 @@ Sub-issues, in priority order:
 4. Idle daemon CPU (busy-poll)
 5. macOS 14 wheels (2.4.0 publishes macOS 15 wheels only, so CLIO Desktop's floor moved to macOS 15 with it)
 6. Conditional puts in a batch, and a conditional put that replaces (so the 2.4.0 conditional writes reach CLIO's grouped writes and shared index rows)
-7. A Python binding for `clio_cte_stream` (last: CLIO holds stream content in its own process until then)
+7. A Python binding for `clio_cte_stream` (CLIO stores streams as plain blobs on a tag until then)
 
 Already in 2.4.0 and used by CLIO: `AsyncPutBlobIfAbsent` creates each content-addressed task record in one round trip instead of a read and a put, and decides which of two writers creates it. `AsyncPutBlobIfVersion` and `AsyncGetBlobVersioned` are not used yet; issue 6 says what CLIO needs to use them.
 
@@ -151,7 +148,7 @@ This matters for CLIO because it runs a local daemon per user on desktops and la
 
 **What CLIO needs.** A stream is an artifact whose content is rewritten often (a device's status, a feed of recent readings) and read mostly for its latest value, kept as its latest content or a bounded window and flushed by a policy. clio-core already keeps blobs in memory by default (a blob reaches disk under memory pressure or when it goes unused), so placement is not the gap. The gap is the stream module: iowarp-core ships `clio_cte_stream` (page blobs, deferred appends) with no Python binding, so CLIO cannot use it.
 
-**Until then.** CLIO keeps a stream's latest content and window in its server process and writes them to clio-core on the stream's flush policy (taskable `run_code` plan, Part 4, decision CT25).
+**Until then.** CLIO stores a stream as plain blobs on a tag: one meta blob (state, entry type, window, last sequence number, times) and a ring of entry blobs named by sequence number modulo the window. A write is two puts and a window read is one get per entry, behind one module that `clio_cte_stream` would replace.
 
 **Ask.** A Python binding for `clio_cte_stream`: create a stream on a tag with a retention (latest only, or a window of N pages), append, read the latest and the window, and flush.
 
