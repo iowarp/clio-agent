@@ -7,7 +7,8 @@
 // the page waits after_s seconds (counting the stream requests it sends meanwhile) and is
 // captured as label. FEED_OPEN_STREAM names a stream to open in the side panel after the
 // first turn (from the conversation's artifacts), captured live and after each later turn.
-// It prints the calls the agent made, the stream requests per wait and the session id.
+// FEED_SESSION and FEED_WORKSPACE continue an existing conversation. It prints the calls
+// the agent made, the stream requests per wait and the session id.
 import path from "node:path";
 
 const AGENT = process.env.AGENT_URL || "http://127.0.0.1:8787";
@@ -68,12 +69,17 @@ export default async function (page, shot) {
     if (request.url().includes("/v1/streams/")) streamRequests.push(request.url());
   });
   const log = [];
-  const workspace = await api("POST", "/v1/workspaces", {
-    name: path.basename(root),
-    root_path: root,
-  });
-  const workspaceId = workspace.id || workspace.error?.details?.workspace_id;
-  const session = await api("POST", "/v1/sessions", { workspace_id: workspaceId });
+  // FEED_SESSION and FEED_WORKSPACE continue an earlier conversation instead.
+  let workspaceId = process.env.FEED_WORKSPACE;
+  let session = { id: process.env.FEED_SESSION };
+  if (!session.id) {
+    const workspace = await api("POST", "/v1/workspaces", {
+      name: path.basename(root),
+      root_path: root,
+    });
+    workspaceId = workspace.id || workspace.error?.details?.workspace_id;
+    session = await api("POST", "/v1/sessions", { workspace_id: workspaceId });
+  }
   await page.goto(new URL(`/workspaces/${workspaceId}/sessions/${session.id}`, page.url()).toString());
   await page.waitForTimeout(5000);
   const waits = [];
