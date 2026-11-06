@@ -100,6 +100,11 @@ def register_latex_routes(app: FastAPI, deps: GactDeps) -> None:
     def report(artifact_id: str, session_id: str) -> dict[str, Any]:
         record, version, entry = _paper_version(app, artifact_id, session_id)
         row = build_row(app, session_id, record, version, entry=entry)
+        # The paper answers to the template its class matches (the venue its card shows), so
+        # the workspace lists that venue's checks, as the agent's build with it did.
+        template = str((row.get("paper") or {}).get("template") or "")
+        if template:
+            row = build_row(app, session_id, record, version, entry=entry, venue=template)
         paper = paper_of(app, row)
         texts: dict[str, str] = {}
         if paper is not None:

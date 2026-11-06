@@ -86,6 +86,7 @@ def build_row(
             "title": str(producer.get("title") or ""),
             "document_type": str(producer.get("document_type") or "Paper"),
             "venue": str(producer.get("venue") or ""),
+            "template": str(producer.get("template") or ""),
             "members": [str(item.get("path") or "") for item in members],
             "untracked": [str(item.get("path")) for item in members if not item.get("artifact_id")],
         }

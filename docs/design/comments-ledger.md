@@ -131,7 +131,7 @@ stays `open` until it is run live on a fresh stack (Phase 6); the mechanisms are
 | K22 | A region over a dense table in an HTML artifact | The text under the mark is cut at the limit and the entry names the session file holding the rest | passed: a region over a 300-row table on an HTML page arrived with `Under` cut and `Cut: at 1,200 of 1,301 characters. The rest is in .../S2-under.txt`; a long selection is now cut the same way (`S1-selected.txt`). Screenshot `comment-browser-dense-table-region.png` |
 | K23 | Close the panel with two unsent marks on a document, reopen the document | Both marks come back as a draft with their labels and comments | passed: a mark left unsent on report.md came back as a draft when the controls opened again |
 | K24 | A second session on the same artifact version after a session with `S1` to `S3` | The new marks start at `S4` | passed: the next mark on report.md version 2 after S1 was S2; a new version starts again at S1 (throughput.png version 2) |
-| — | The Tauri desktop and Windows and macOS installs | Not reachable from a cloud session | local phase |
+| — | The Tauri desktop and Windows and macOS installs | The document runtime workflow runs the LaTeX build, SyncTeX and figure-region comment tests on Windows and macOS as well as Linux (LaTeX ledger L39, 36 passed on each). The Tauri desktop serves the same web UI; gact-tui's `tauri debug` builds pass on macOS and Windows | done |
 
 ## Known gaps
 

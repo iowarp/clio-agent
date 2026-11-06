@@ -88,3 +88,35 @@ def test_the_report_and_click_through_both_ways(
         refused = client.get(f"/v1/artifacts/{notes}/latex", params={"session_id": session_id})
         assert refused.status_code == 422
         assert refused.json()["error"]["error"] == "latex_entry_not_tex"
+
+
+def test_the_workspace_lists_the_checks_of_the_template_the_paper_matches(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Scenario L2: the agent's build with acm-sigconf failed the double-blind check, but the
+    # paper's workspace rebuilt without a venue and said "The paper built".
+    from clio_agent.gact.routes import latex as routes
+
+    calls: list[str] = []
+
+    def build_row(app, session_id, record, version, *, entry, venue=""):
+        calls.append(venue)
+        row = {
+            "status": "complete",
+            "pdf": None,
+            "diagnostics": [],
+            "paper": {"template": "acm-sigconf"},
+        }
+        if venue:
+            row["status"] = "failed"
+            row["venue"] = {"venue": venue, "status": "failed", "checks": []}
+        return row
+
+    monkeypatch.setattr(routes, "build_row", build_row)
+    monkeypatch.setattr(routes, "_paper_version", lambda app, a, s: (None, None, "paper/main.tex"))
+    with TestClient(build_app(sessions_path=tmp_path / "sessions.json")) as client:
+        report = client.get("/v1/artifacts/artifact_x/latex", params={"session_id": "sess_x"})
+    assert report.status_code == 200, report.text
+    assert calls == ["", "acm-sigconf"]
+    build = report.json()["build"]
+    assert build["venue"]["venue"] == "acm-sigconf" and build["status"] == "failed"
