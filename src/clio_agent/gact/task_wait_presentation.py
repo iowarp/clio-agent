@@ -102,9 +102,15 @@ def wait_start_presentation(args: Mapping[str, Any]) -> dict[str, Any]:
 
 
 def _result_text(value: Any) -> str:
-    """Use returned text when available; retain structured results otherwise."""
+    """Use returned text when available; retain structured results otherwise.
+
+    A child agent's result is its run (``answer``, ``selected_expert``, ``tools_called``,
+    ...): its report is the ``answer``; the whole run stays in the technical details.
+    """
     if isinstance(value, str):
         return value
+    if isinstance(value, Mapping) and isinstance(value.get("answer"), str):
+        return value["answer"]
     if isinstance(value, Mapping) and isinstance(value.get("output"), str):
         return "\n".join(filter(None, (value["output"], str(value.get("error_reason") or ""))))
     return json.dumps(value, ensure_ascii=False, indent=2, default=str)

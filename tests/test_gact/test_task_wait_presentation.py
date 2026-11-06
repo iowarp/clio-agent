@@ -132,6 +132,29 @@ def test_any_wait_shows_selection_policy_and_each_result() -> None:
     assert shown["blocks"][3]["status"] == "pending"
 
 
+def test_a_child_agents_report_is_its_answer_not_its_run() -> None:
+    """A child's result is its run record; its tab shows the answer, never the JSON.
+
+    SABOTAGE: drop the ``answer`` branch in ``_result_text`` -> the run's JSON -> red."""
+    run = {
+        "selected_expert": "explore",
+        "route_source": "flow:react",
+        "answer": "The folder holds one file, notes.txt.",
+        "tools_called": [{"name": "fs_list_directory", "ok": True}],
+    }
+    shown = wait_presentation(
+        {"tasks": ["child_a"]},
+        {
+            "outcomes": [
+                {"handle": "child_a", "kind": "Session", "status": "completed", "result": run}
+            ]
+        },
+    )
+    report = shown["blocks"][2]
+    assert report["text"] == "The folder holds one file, notes.txt."
+    assert "selected_expert" not in report["text"]
+
+
 def test_wait_surfaces_failed_result_and_collection_error() -> None:
     """A returned receipt must not hide task failure behind a successful call badge."""
     shown = wait_presentation(
