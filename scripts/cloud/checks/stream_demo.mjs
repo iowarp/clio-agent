@@ -57,15 +57,21 @@ async function streamsClosed(sessionId) {
 }
 
 async function scrollCanvas(page) {
+  // Scroll the canvas's own scroll container (the wheel over a chart is the chart's), down
+  // through a dashboard in three steps and back to the top.
   const viewport = page.viewportSize();
   if (!viewport) return;
-  await page.mouse.move(viewport.width * 0.75, viewport.height * 0.6);
-  for (const [delta, pause] of [[500, 9000], [500, 9000], [600, 9000], [-1600, 3000]]) {
-    const steps = 20;
-    for (let i = 0; i < steps; i += 1) {
-      await page.mouse.wheel(0, delta / steps);
-      await page.waitForTimeout(40);
-    }
+  const at = { x: viewport.width - 220, y: viewport.height * 0.6 };
+  for (const [fraction, pause] of [[0.35, 9000], [0.7, 9000], [1, 9000], [0, 3000]]) {
+    await page.evaluate(
+      ({ x, y, fraction }) => {
+        let node = document.elementFromPoint(x, y);
+        while (node && !(node.scrollHeight > node.clientHeight + 4 && /(auto|scroll)/.test(getComputedStyle(node).overflowY)))
+          node = node.parentElement;
+        if (node) node.scrollTo({ top: (node.scrollHeight - node.clientHeight) * fraction, behavior: "smooth" });
+      },
+      { ...at, fraction },
+    );
     await page.waitForTimeout(pause);
   }
 }
