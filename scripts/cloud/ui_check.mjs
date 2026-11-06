@@ -7,6 +7,7 @@
 //   node scripts/cloud/ui_check.mjs --send "List the plugins you have"
 //   node scripts/cloud/ui_check.mjs --steps scripts/cloud/checks/runs_view.mjs
 //   node scripts/cloud/ui_check.mjs --label plugins --width 390 --height 844   # phone width
+//   node scripts/cloud/ui_check.mjs --width 390 --height 844 --touch --steps FILE  # touch device
 //
 // --video records the whole session to .cloud-run/shots/<label>.webm (live updates,
 // not just stills).
@@ -15,7 +16,8 @@
 // `await shot("name")` to capture a screenshot at any point. Screenshots land in
 // .cloud-run/shots/<label>-<n>-<name>.png, and the script prints their paths, the
 // browser console errors and any failed requests so the agent can read the images
-// with its file reader and check the run for errors.
+// with its file reader and check the run for errors. --touch gives the page a touch
+// screen and mobile emulation (`hasTouch`, `isMobile`) so steps can use `locator.tap()`.
 
 import { createRequire } from "node:module";
 import { existsSync, mkdirSync, readdirSync } from "node:fs";
@@ -42,6 +44,8 @@ const stepsFile = opt("steps", null);
 const settleMs = Number(opt("settle", 60000));
 // --video: record the whole session as <label>.webm in the shots folder (live updates).
 const video = args.includes("--video");
+// --touch: a touch device (hasTouch, isMobile), so steps can call locator.tap().
+const touch = args.includes("--touch");
 
 function chromiumPath() {
   const base = "/opt/pw-browsers";
@@ -69,6 +73,7 @@ try {
 }
 const context = await browser.newContext({
   viewport: { width, height },
+  ...(touch ? { hasTouch: true, isMobile: true } : {}),
   ...(video ? { recordVideo: { dir: path.join(root, ".cloud-run/video-tmp"), size: { width, height } } } : {}),
 });
 const page = await context.newPage();
