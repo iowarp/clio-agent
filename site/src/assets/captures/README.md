@@ -223,6 +223,7 @@ table; they are not measurements. The full record is in
 | `papers/latex-paper-pdf-only.png` | The PDF-only view. |
 | `papers/latex-workspace-problems.png` | The build's problems listed (font substitutions). |
 | `papers/paper-comment-on-pdf.png` | A comment on a phrase of the PDF. |
-| `papers/paper-threads-on-v2.png` | The two comment threads after CLIO's edit and version 2: one moved, one outdated. |
+| `papers/paper-marks-on-both-panes.png` | Two text marks drawn where they were made: S1 on a source line, S2 on a PDF phrase. |
+| `papers/paper-threads-on-v2.png` | The two comment threads after CLIO's edit and version 2: one moved, one outdated, each with CLIO's reply. |
 | `papers/paper-lineage.png` | The paper's lineage: each source file, the build and the paper. |
 | `papers/latex-workspace-phone.png` | The paper at phone width, with Source, PDF and Outline tabs. |

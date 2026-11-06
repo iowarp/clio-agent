@@ -147,7 +147,11 @@ def _page_checks(rules: dict[str, Any], pdf: Path, page_count: int) -> list[dict
                 if _REFERENCE_HEADINGS.search(page.extract_text() or ""):
                     counted = index + 1
                     break
-        what = "pages" if rules.get("references_count", True) else "pages before the references"
+        what = (
+            "pages, references included"
+            if rules.get("references_count", True)
+            else "pages before the references"
+        )
         checks.append(
             _check(
                 "Page limit",

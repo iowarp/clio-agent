@@ -78,7 +78,9 @@ jobs:
       - name: Verify managed shells, workspace scratch and all four document formats
         run: uv run --frozen python scripts/qualification/document_runtime/verify_install.py document-evidence/workspace
       - name: Provision the pinned Tectonic
-        run: uv run --frozen python -c "from clio_agent.runtime.tectonic import ensure_tectonic; print(ensure_tectonic())"
+        # The tests run with isolated storage and no network for Python, so they are handed the
+        # verified binary this step installs (CLIO_DOCUMENT_TECTONIC), as a person's override is.
+        run: uv run --frozen python -c "import os; from clio_agent.runtime.tectonic import ensure_tectonic; path = ensure_tectonic(); print(path); open(os.environ['GITHUB_ENV'], 'a').write(f'CLIO_DOCUMENT_TECTONIC={path}\n')"
       - name: Build LaTeX papers with it (live builds, SyncTeX, paper versions)
         env:
           # Provisioned above: a live LaTeX test that cannot find Tectonic fails, never skips.

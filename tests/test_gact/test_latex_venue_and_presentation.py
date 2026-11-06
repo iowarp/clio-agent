@@ -103,7 +103,7 @@ def test_one_page_over_the_limit_and_the_wrong_paper_fail_with_the_numbers(
     assert checks["Page limit"] == {
         "rule": "Page limit",
         "status": "failed",
-        "message": "5 pages; the limit is 4.",
+        "message": "5 pages, references included; the limit is 4.",
     }
     assert checks["Paper size"]["status"] == "failed"
     assert "a4 is 595 x 842 pt" in checks["Paper size"]["message"]
@@ -205,7 +205,11 @@ def test_a_failed_build_lists_each_problem_at_its_file_and_line() -> None:
             "venue": "ieee-conference",
             "status": "failed",
             "checks": [
-                {"rule": "Page limit", "status": "failed", "message": "9 pages; the limit is 8."}
+                {
+                    "rule": "Page limit",
+                    "status": "failed",
+                    "message": "9 pages, references included; the limit is 8.",
+                }
             ],
         },
         "network": "unrestricted: no egress channel (sandbox_not_installed)",

@@ -14,6 +14,7 @@ import sourceToPdf from "../../../assets/captures/papers/latex-workspace-source-
 import problems from "../../../assets/captures/papers/latex-workspace-problems.png";
 import pdfOnly from "../../../assets/captures/papers/latex-paper-pdf-only.png";
 import comment from "../../../assets/captures/papers/paper-comment-on-pdf.png";
+import marks from "../../../assets/captures/papers/paper-marks-on-both-panes.png";
 import threads from "../../../assets/captures/papers/paper-threads-on-v2.png";
 import lineage from "../../../assets/captures/papers/paper-lineage.png";
 import phone from "../../../assets/captures/papers/latex-workspace-phone.png";
@@ -118,6 +119,14 @@ falls in, so the change is made in the source.
   caption="A comment on the PDF. CLIO receives it as sections/background.tex, line 4, in the Background section."
   sizes="(min-width: 50rem) 46rem, 100vw" />
 
+Each mark stays drawn where you made it, on the source or on the PDF, with its label, and
+follows the text as you scroll. Choose the label to change the comment.
+
+<Capture client:visible image={await captureImage(marks)}
+  alt="S1 drawn on a phrase in sections/background.tex and S2 on a phrase of the PDF, with Send 2 comments at the lower right"
+  caption="Two marks before sending: S1 on the source, S2 on the PDF."
+  sizes="(min-width: 50rem) 46rem, 100vw" />
+
 See [Comment on results](/docs/comments/) for the comment controls.
 
 ## Follow its versions
@@ -129,7 +138,7 @@ version 2** or was changed.
 
 <Capture client:visible image={await captureImage(threads)}
   alt="Two comment threads on the paper: one moved to version 2, one outdated because version 2 changed it"
-  caption="After CLIO edited the section, one comment's text moved to version 2 and the other was rewritten."
+  caption="After CLIO edited the section, one comment's text moved to version 2 and the other was rewritten. CLIO's reply is kept on each comment."
   sizes="(min-width: 50rem) 46rem, 100vw" />
 
 **Lineage**, beside the paper's name, shows which version of each source file the
