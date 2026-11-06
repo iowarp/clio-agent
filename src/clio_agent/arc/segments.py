@@ -790,7 +790,7 @@ class SegmentStore(ScopeCache, PlainContextRestore):
         eraser for reserved/ephemeral scopes (e.g. the observer's ``_events`` log scope),
         which must return to baseline on session release / wholesale clear rather than
         persist for replay. Held under this scope's per-scope lock."""
-        with self._lock_for(session_id, scope):
+        with self._lock_for(session_id, scope), self._observed(session_id, scope):
             count = len(self._segs(session_id, scope))
             assert_store_write_off_loop("segments.delete", scope=scope)
             self._store.delete("segments", self._record_name(session_id, scope))  # store first

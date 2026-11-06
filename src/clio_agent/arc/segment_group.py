@@ -32,7 +32,7 @@ from __future__ import annotations
 
 import threading
 from collections.abc import Callable, Iterable, Iterator
-from contextlib import contextmanager
+from contextlib import ExitStack, contextmanager
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
@@ -184,42 +184,50 @@ class SegmentGroup:
                 lock = store._lock_for(*key)
                 lock.acquire()
                 held.append(lock)
-            plans = []
-            for key in keys:
-                staged, extends = self._rebased(key, self.pending[key])
-                mark = store._append_mark(key, staged, extends)
-                name, write, text = store._planned_put(key[0], key[1], staged, mark)
-                plans.append((key, staged, mark, name, write, text))
-            lost: set[str] = set()
-            error: BaseException | None = None
-            try:
-                store._store.put_many(
-                    "segments",
-                    [
-                        PutRecord(name, write.data, text, write.offset)
-                        for *_, name, write, text in plans
-                    ],
-                )
-            except LoopThreadStoreWrite:
-                raise
-            except BatchPutError as exc:
-                lost, error = set(exc.failed), exc
-            except Exception as exc:  # noqa: BLE001 - forwards: re-raised typed (ArcPersistError)
-                lost, error = {plan[3] for plan in plans}, exc
-            for key, staged, mark, name, write, _text in plans:
-                del self.pending[key]
-                if error is None or name not in lost:
-                    store._install_committed(key[0], key[1], staged, write.committed(staged))
-                elif mark is not None:  # an append that may still land: never extend it again
-                    store._abandon_chunk(key[0], key[1], error)
-                else:
-                    store._discard_scope(*key)
-            if error is not None:
-                first = next((plan[0] for plan in plans if plan[3] in lost), keys[0])
-                raise ArcPersistError(first[0], first[1], error) from error
+            with ExitStack() as observed:  # the write observer sees the puts and installs
+                for key in keys:
+                    observed.enter_context(store._observed(*key))
+                self._put_rank(keys)
         finally:
             for lock in reversed(held):
                 lock.release()
+
+    def _put_rank(self, keys: list[Key]) -> None:
+        """Put the rank's planned records in one batch and install what landed (locked)."""
+        store = self.store
+        plans = []
+        for key in keys:
+            staged, extends = self._rebased(key, self.pending[key])
+            mark = store._append_mark(key, staged, extends)
+            name, write, text = store._planned_put(key[0], key[1], staged, mark)
+            plans.append((key, staged, mark, name, write, text))
+        lost: set[str] = set()
+        error: BaseException | None = None
+        try:
+            store._store.put_many(
+                "segments",
+                [
+                    PutRecord(name, write.data, text, write.offset)
+                    for *_, name, write, text in plans
+                ],
+            )
+        except LoopThreadStoreWrite:
+            raise
+        except BatchPutError as exc:
+            lost, error = set(exc.failed), exc
+        except Exception as exc:  # noqa: BLE001 - forwards: re-raised typed (ArcPersistError)
+            lost, error = {plan[3] for plan in plans}, exc
+        for key, staged, mark, name, write, _text in plans:
+            del self.pending[key]
+            if error is None or name not in lost:
+                store._install_committed(key[0], key[1], staged, write.committed(staged))
+            elif mark is not None:  # an append that may still land: never extend it again
+                store._abandon_chunk(key[0], key[1], error)
+            else:
+                store._discard_scope(*key)
+        if error is not None:
+            first = next((plan[0] for plan in plans if plan[3] in lost), keys[0])
+            raise ArcPersistError(first[0], first[1], error) from error
 
 
 def cache_absent(store: SegmentStore, keys: Iterable[Key], *, minted: Iterable[Key] = ()) -> None:

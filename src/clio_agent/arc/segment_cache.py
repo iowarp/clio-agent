@@ -14,6 +14,11 @@ clio-core is the record; this cache is only a read copy of it. Three rules hold 
 * **Reads that leave nothing behind.** Inside :func:`transient_reads` a cold scope is
   decoded and returned without entering the cache, so a search over every stored
   conversation does not make every conversation resident.
+* **One write observer.** Every committed change of a scope record (a put with its
+  cache install, a group flush, an erase) runs inside the injected
+  :class:`ScopeWriteObserver`'s :meth:`~ScopeWriteObserver.writing` (the gact recall
+  index, which keeps per-conversation search digests current). The observer is told
+  before the record changes and after the cached copy shows it; it adds no store work.
 
 Listing is by prefix: a session's scopes and the sessions holding one scope are asked
 of clio-core by name pattern (:meth:`ARCStore.scan_names` with a prefix, and
@@ -26,7 +31,7 @@ import logging
 import re
 import threading
 from collections.abc import Iterator
-from contextlib import contextmanager
+from contextlib import AbstractContextManager, contextmanager, nullcontext
 from typing import TYPE_CHECKING, Callable, Iterable, Optional, Protocol
 
 import msgspec
@@ -67,6 +72,7 @@ __all__ = [
     "INVOCATION_INDEX_SCOPE",
     "ScopeCache",
     "ScopeResidency",
+    "ScopeWriteObserver",
     "reads_are_transient",
     "transient_reads",
 ]
@@ -85,6 +91,15 @@ class ScopeResidency(Protocol):
         """A cached scope of the session was read (keeps it from going idle)."""
 
 
+class ScopeWriteObserver(Protocol):
+    """Told of every committed change of a scope record (an injected index)."""
+
+    def writing(self, session_id: str, scope: str) -> AbstractContextManager[object]:
+        """Enclose one change of ``(session_id, scope)``: entered before the store is
+        written, exited once the cached copy shows the change (or the write failed)."""
+
+
+_UNOBSERVED: AbstractContextManager[object] = nullcontext()
 _TRANSIENT = threading.local()
 
 
@@ -118,6 +133,7 @@ class ScopeCache:
     _search_indexed: Optional[Callable[[str], bool]]
     _invocation_counts: dict[str, int]
     _residency: Optional[ScopeResidency] = None
+    _write_observer: Optional[ScopeWriteObserver] = None
 
     if TYPE_CHECKING:
 
@@ -135,6 +151,15 @@ class ScopeCache:
     def set_residency(self, residency: Optional[ScopeResidency]) -> None:
         """Inject (or clear) the residency owner every cached scope is reported to."""
         self._residency = residency
+
+    def set_write_observer(self, observer: Optional[ScopeWriteObserver]) -> None:
+        """Inject (or clear) the observer every committed scope change passes through."""
+        self._write_observer = observer
+
+    def _observed(self, session_id: str, scope: str) -> AbstractContextManager[object]:
+        """The observer's enclosure of one change of ``(session_id, scope)``."""
+        observer = self._write_observer
+        return _UNOBSERVED if observer is None else observer.writing(session_id, scope)
 
     # ---- load ----------------------------------------------------------
 
@@ -270,15 +295,16 @@ class ScopeCache:
         if group is not None and group.stage((session_id, scope), staged, extends=extends):
             return
         mark = self._append_mark((session_id, scope), staged, extends)
-        try:
-            committed = self._put_scope(session_id, scope, staged, mark=mark)
-        except LoopThreadStoreWrite:
-            raise  # a write from the event loop is a caller bug, typed as itself
-        except Exception as exc:  # noqa: BLE001 - re-raised typed; the cache is unchanged
-            if mark is not None:
-                self._abandon_chunk(session_id, scope, exc)
-            raise ArcPersistError(session_id, scope, exc) from exc
-        self._install_committed(session_id, scope, staged, committed)
+        with self._observed(session_id, scope):
+            try:
+                committed = self._put_scope(session_id, scope, staged, mark=mark)
+            except LoopThreadStoreWrite:
+                raise  # a write from the event loop is a caller bug, typed as itself
+            except Exception as exc:  # noqa: BLE001 - re-raised typed; the cache is unchanged
+                if mark is not None:
+                    self._abandon_chunk(session_id, scope, exc)
+                raise ArcPersistError(session_id, scope, exc) from exc
+            self._install_committed(session_id, scope, staged, committed)
 
     def _install_committed(
         self, session_id: str, scope: str, staged: list[Segment], mark: ChunkMark
@@ -299,17 +325,18 @@ class ScopeCache:
         key = (session_id, scope)
         segs = self._scopes[key]
         mark = self._append_mark(key, segs)
-        try:
-            committed = self._put_scope(session_id, scope, segs, mark=mark)
-        except Exception as exc:  # noqa: BLE001 - re-raised typed after the memory is discarded
-            if mark is not None and not isinstance(exc, LoopThreadStoreWrite):  # may land
-                self._abandon_chunk(session_id, scope, exc)
-            else:
-                self._discard_scope(session_id, scope)
-            if isinstance(exc, LoopThreadStoreWrite):
-                raise
-            raise ArcPersistError(session_id, scope, exc) from exc
-        self._chunk_marks[key] = committed
+        with self._observed(session_id, scope):
+            try:
+                committed = self._put_scope(session_id, scope, segs, mark=mark)
+            except Exception as exc:  # noqa: BLE001 - re-raised typed after the memory is discarded
+                if mark is not None and not isinstance(exc, LoopThreadStoreWrite):  # may land
+                    self._abandon_chunk(session_id, scope, exc)
+                else:
+                    self._discard_scope(session_id, scope)
+                if isinstance(exc, LoopThreadStoreWrite):
+                    raise
+                raise ArcPersistError(session_id, scope, exc) from exc
+            self._chunk_marks[key] = committed
         if self._residency is not None:
             self._residency.scope_resident(session_id, scope, committed.end)
 
