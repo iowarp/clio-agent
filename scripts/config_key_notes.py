@@ -551,6 +551,10 @@ KEY_NOTES: dict[str, str] = {
         "Rows returned per reference kind when the picker opens with no query typed; raise to "
         "browse more of a large workspace at a glance."
     ),
+    "gact.context_references.evidence_sessions": (
+        "Most conversations one plan or evidence-source reference search reads (the most "
+        "recently active); past it the cut is reported as a typed degradation."
+    ),
     "gact.context_references.max_hashable_bytes": (
         "Largest workspace file a context reference pins by sha256 digest (which reads every "
         "byte); a larger file is pinned by its stat revision (mtime + size) instead."
@@ -668,6 +672,14 @@ KEY_NOTES: dict[str, str] = {
     ),
     "gact.resident_ledgers.sweep_interval_s": (
         "Seconds between the idle sweeps that release unused sessions from memory."
+    ),
+    "gact.recall_index.rebuild_delay_s": (
+        "Seconds a conversation's transcript must be quiet before its recall search digest is "
+        "rebuilt; until then searches read that conversation's transcript instead."
+    ),
+    "gact.session_recall.max_sessions": (
+        "Most conversations one recall search reads (the most recently active); the response "
+        "names the cut when more were eligible."
     ),
     "goal.judge_model": (
         "Legacy goal judge model override on the caller provider; Fleet goals selection takes "
