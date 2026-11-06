@@ -231,9 +231,9 @@ def build_outline(
                 env = match.group("end")
                 for index_ in range(len(open_envs) - 1, -1, -1):
                     if open_envs[index_][0] == env:
-                        _, node = open_envs.pop(index_)
-                        if node is not None:
-                            node.end_line = number
+                        ended = open_envs.pop(index_)[1]
+                        if ended is not None:
+                            ended.end_line = number
                         break
             elif match.group("label"):
                 target = innermost()

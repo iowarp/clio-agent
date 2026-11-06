@@ -17,6 +17,7 @@ import pytest
 from clio_agent.gact.artifacts.minting import mint_tool_declared_outputs
 from clio_agent.gact.artifacts.registry import get_registry
 from clio_agent.gact.artifacts.turn_outputs import drain_turn_artifacts
+from tests._tectonic import live_tectonic
 
 
 class _Arc:
@@ -166,19 +167,8 @@ def test_the_type_and_venue_come_from_the_template_the_class_matches(tmp_path: P
 # --------------------------------------------------------------------------- #
 
 
-def _tectonic_available() -> bool:
-    import os
-
-    from clio_agent.runtime.tectonic import installed_tectonic
-
-    override = os.environ.get("CLIO_DOCUMENT_TECTONIC", "").strip()
-    return bool(override and Path(override).is_file()) or installed_tectonic() is not None
-
-
 @pytest.mark.usefixtures("host_agent_executor")
-@pytest.mark.skipif(
-    not _tectonic_available(), reason="no pinned Tectonic is installed (CLIO_DOCUMENT_TECTONIC)"
-)
+@live_tectonic
 def test_a_build_makes_a_paper_built_from_its_member_versions(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

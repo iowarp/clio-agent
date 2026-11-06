@@ -171,7 +171,7 @@ def latex_build_presentation(
     pages = int(row.get("page_count") or 0)
     diagnostics = [item for item in row.get("diagnostics") or [] if isinstance(item, Mapping)]
     diagnostics.sort(
-        key=lambda item: _ORDER.index(item.get("kind"))
+        key=lambda item: _ORDER.index(str(item.get("kind")))
         if item.get("kind") in _ORDER
         else len(_ORDER)
     )

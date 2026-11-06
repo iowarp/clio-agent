@@ -197,9 +197,10 @@ def _members(
             record, version = register_target(
                 app, session_id, workspace_id, workspace_path, designation="paper-member"
             )
+            registered = version.sha256 == digest
         except CommentTargetError:
-            record = version = None
-        if record is not None and version is not None and version.sha256 == digest:
+            registered = False  # not a file the workspace serves: named by its path only
+        if registered:
             members.append(
                 {
                     "path": relative,

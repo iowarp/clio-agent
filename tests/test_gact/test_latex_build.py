@@ -7,7 +7,6 @@ or the managed install) and skip otherwise, as the Chromium-backed tests do.
 
 from __future__ import annotations
 
-import os
 from pathlib import Path
 
 import pytest
@@ -20,6 +19,7 @@ from clio_agent.gact.documents.latex.project import (
     find_entry,
     stage_project,
 )
+from tests._tectonic import live_tectonic
 
 # --- entry and staging -------------------------------------------------------------------
 
@@ -205,16 +205,7 @@ def test_the_read_set_comes_from_tectonics_dependency_list(tmp_path: Path) -> No
 # --- live builds ---------------------------------------------------------------------------
 
 
-def _tectonic_available() -> bool:
-    from clio_agent.runtime.tectonic import installed_tectonic
-
-    override = os.environ.get("CLIO_DOCUMENT_TECTONIC", "").strip()
-    return bool(override and Path(override).is_file()) or installed_tectonic() is not None
-
-
-live = pytest.mark.skipif(
-    not _tectonic_available(), reason="no pinned Tectonic is installed (CLIO_DOCUMENT_TECTONIC)"
-)
+live = live_tectonic
 
 
 @live

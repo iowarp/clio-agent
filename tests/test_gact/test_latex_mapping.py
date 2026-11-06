@@ -8,7 +8,6 @@ line. The live tests build a real paper and resolve marks on its PDF.
 from __future__ import annotations
 
 import gzip
-import os
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -16,6 +15,7 @@ import pytest
 
 from clio_agent.gact.documents.latex.outline import build_outline, node_at
 from clio_agent.gact.documents.latex.synctex import SP_PER_BP, SyncIndex
+from tests._tectonic import live_tectonic
 
 
 def _sp(points: float) -> int:
@@ -176,16 +176,7 @@ def test_the_outline_follows_inputs_and_attaches_labels_and_citations() -> None:
 # --- live: a real build, and marks on its PDF -----------------------------------------------
 
 
-def _tectonic_available() -> bool:
-    from clio_agent.runtime.tectonic import installed_tectonic
-
-    override = os.environ.get("CLIO_DOCUMENT_TECTONIC", "").strip()
-    return bool(override and Path(override).is_file()) or installed_tectonic() is not None
-
-
-live = pytest.mark.skipif(
-    not _tectonic_available(), reason="no pinned Tectonic is installed (CLIO_DOCUMENT_TECTONIC)"
-)
+live = live_tectonic
 
 
 def _png(path: Path, width: int = 120, height: int = 60) -> None:

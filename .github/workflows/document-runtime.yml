@@ -24,6 +24,10 @@ on:
       - "src/clio_agent/gact/artifacts/wire.py"
       - "src/clio_agent/gact/viewed_media.py"
       - "src/clio_agent/gact/builtin_skills/work-with-*/**"
+      - "src/clio_agent/runtime/tectonic.py"
+      - "tests/_tectonic.py"
+      - "tests/test_gact/test_latex_*.py"
+      - "tests/test_gact/test_scientific_documents.py"
       - ".github/workflows/document-runtime.yml"
 
 jobs:
@@ -73,6 +77,15 @@ jobs:
         run: uv run --frozen python -m clio_agent.runtime.document_install --workspace document-evidence/workspace
       - name: Verify managed shells, workspace scratch and all four document formats
         run: uv run --frozen python scripts/qualification/document_runtime/verify_install.py document-evidence/workspace
+      - name: Provision the pinned Tectonic
+        run: uv run --frozen python -c "from clio_agent.runtime.tectonic import ensure_tectonic; print(ensure_tectonic())"
+      - name: Build LaTeX papers with it (live builds, SyncTeX, paper versions)
+        env:
+          # Provisioned above: a live LaTeX test that cannot find Tectonic fails, never skips.
+          CLIO_REQUIRE_TECTONIC: "1"
+        run: |
+          git submodule update --init --depth 1 external/clio-agent-marketplace
+          uv run --frozen --extra dev python -B scripts/run_tests.py tests/test_gact/test_latex_build.py tests/test_gact/test_latex_mapping.py tests/test_gact/test_latex_routes.py tests/test_gact/test_scientific_documents.py tests/test_runtime/test_tectonic_install.py -p no:cacheprovider -q -rs
       - uses: actions/upload-artifact@v4
         if: always()
         with:

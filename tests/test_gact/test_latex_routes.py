@@ -6,27 +6,18 @@ managed install) and skips otherwise.
 
 from __future__ import annotations
 
-import os
 from pathlib import Path
 
 import pytest
 from fastapi.testclient import TestClient
 
 from clio_agent.gact.app import build_app
+from tests._tectonic import live_tectonic
 
 pytestmark = pytest.mark.usefixtures("host_agent_executor")
 
 
-def _tectonic_available() -> bool:
-    from clio_agent.runtime.tectonic import installed_tectonic
-
-    override = os.environ.get("CLIO_DOCUMENT_TECTONIC", "").strip()
-    return bool(override and Path(override).is_file()) or installed_tectonic() is not None
-
-
-@pytest.mark.skipif(
-    not _tectonic_available(), reason="no pinned Tectonic is installed (CLIO_DOCUMENT_TECTONIC)"
-)
+@live_tectonic
 def test_the_report_and_click_through_both_ways(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
