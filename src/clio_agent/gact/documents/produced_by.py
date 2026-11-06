@@ -26,6 +26,8 @@ __all__ = ["ProducedBy", "produced_by"]
 
 _SCRIPT_SUFFIXES = {".py", ".sh", ".r", ".jl", ".js", ".ts", ".m"}
 _CELL_LINES = 12
+#: How much of a shell command the entry repeats.
+_COMMAND_CHARS = 200
 #: A file's write time may land just after its call's recorded end.
 _WRITE_SLACK = timedelta(seconds=2)
 
@@ -82,6 +84,24 @@ def _reads(record: Any, script: str, root: Path | None) -> list[str]:
         if name and name != script and name not in names:
             names.append(name)
     return names[:3]
+
+
+def _declared(record: Any, root: Path | None) -> list[str]:
+    """The inputs a ``create_artifact`` call said the file was made from, as it named them.
+
+    A ``used`` ref that names no registered file records no edge (declared_used_edges), but
+    it is what the agent said; the entry repeats it as that, with the call that wrote the file.
+    """
+    from clio_agent.gact.artifacts.declared_used_edges import (  # noqa: PLC0415
+        create_artifact_used_refs,
+    )
+
+    names: list[str] = []
+    for ref in create_artifact_used_refs(record.instrument.args):
+        name = _display(ref, root)
+        if name and name not in names:
+            names.append(name)
+    return names[:4]
 
 
 def _parse_time(value: str) -> datetime | None:
@@ -165,12 +185,29 @@ def produced_by(
         registered = f" (the file was then registered with create_artifact call {call})"
         if writer is not None and writer.instrument.tool.endswith("run_code"):
             return _cell(writer, noun, registered)
+        declared = _declared(record, root)
+        named = next((n for n in declared if Path(n).suffix.lower() in _SCRIPT_SUFFIXES), "")
+        made_from = [f"Registered as made from {', '.join(declared)}."] if declared else []
         if writer is not None:
+            command = " ".join(str(writer.instrument.args.get("command") or "").split())
+            ran = [f"It ran: {command[:_COMMAND_CHARS]}"] if command else []
             return ProducedBy(
                 (
                     f"Produced by: {writer.instrument.tool} call {writer.call_id}{registered}.",
-                    f"Change what that call ran, not the {noun}.",
-                )
+                    *ran,
+                    *made_from,
+                    f"Change {'the script' if named else 'what that call ran'}, not the {noun}.",
+                ),
+                script=named,
+            )
+        if named:
+            return ProducedBy(
+                (
+                    f"Produced by: the agent registered this file with create_artifact call "
+                    f"{call}, as made from {', '.join(declared)}.",
+                    f"Change the script, not the {noun}.",
+                ),
+                script=named,
             )
         return ProducedBy(
             (

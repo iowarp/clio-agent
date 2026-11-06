@@ -80,3 +80,44 @@ def test_no_writer_is_guessed_when_two_calls_ran_or_the_file_changed(tmp_path: P
     Path(version.path).write_bytes(b"changed since")  # the write time no longer says who wrote it
     changed = produced_by(_app(tmp_path, [one, register], [register]), version, workspace_id="ws")
     assert "no script is recorded for it" in changed.lines[0]
+
+
+def test_the_shell_command_and_the_registered_inputs_name_the_script(tmp_path: Path) -> None:
+    # Scenario L20: the figure was drawn by a shell call and registered with
+    # used=[the script, the CSV]. Neither was a registered file, so no used edge exists;
+    # the entry still repeats the command and what the agent said the figure was made from.
+    t0 = datetime(2026, 11, 5, 12, 0, tzinfo=timezone.utc)
+    shell = _record(
+        "call_sh",
+        "shell_bash",
+        t0,
+        t0 + timedelta(seconds=5),
+        command="cd paper && python3 scripts/plot_fig.py\n  && ls figs",
+    )
+    register = _record(
+        "call_reg",
+        "create_artifact",
+        t0 + timedelta(seconds=9),
+        t0 + timedelta(seconds=10),
+        used=[str(tmp_path / "scripts" / "plot_fig.py"), "throughput_model.csv"],
+    )
+    version = _figure(tmp_path, t0 + timedelta(seconds=3))
+    made = produced_by(_app(tmp_path, [shell, register], [register]), version, workspace_id="ws")
+    assert made.lines == (
+        "Produced by: shell_bash call call_sh (the file was then registered with "
+        "create_artifact call call_reg).",
+        "It ran: cd paper && python3 scripts/plot_fig.py && ls figs",
+        "Registered as made from scripts/plot_fig.py, throughput_model.csv.",
+        "Change the script, not the image.",
+    )
+    assert made.script == "scripts/plot_fig.py"
+    # With no single writer, the registered inputs still name the script.
+    other = _record("call_x", "shell_bash", t0, t0 + timedelta(seconds=5), command="x")
+    both = produced_by(
+        _app(tmp_path, [shell, other, register], [register]), version, workspace_id="ws"
+    )
+    assert both.lines[0] == (
+        "Produced by: the agent registered this file with create_artifact call call_reg, as "
+        "made from scripts/plot_fig.py, throughput_model.csv."
+    )
+    assert both.script == "scripts/plot_fig.py"
