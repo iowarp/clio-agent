@@ -6,7 +6,8 @@ Rows come from four kinds of source:
 * ``command``: a resolved plugin's ``commands/`` files, and the workspace and user
   command files (``.clio``/``.claude`` in the workspace, then the user's).
 * ``skill``: every skill the session's agent resolves (:mod:`clio_agent.gact.skill_commands`).
-* ``mcp_prompt``: every prompt the agent's MCP servers offer.
+* ``mcp_prompt``: every prompt the agent's MCP servers offer
+  (:mod:`clio_agent.gact.mcp_prompt_commands`).
 
 Every plugin command answers to ``/<plugin>:<name>`` as well as ``/<name>``; a
 workspace file to ``/project:<name>`` and a user file to ``/user:<name>``. Clashes
@@ -300,9 +301,11 @@ def command_table(
     rows += _file_command_rows(home or Path.home(), cwd or Path.cwd())
     rows += _plugin_command_rows(plugin_rows)
     if session_id:
+        from clio_agent.gact.mcp_prompt_commands import prompt_rows  # noqa: PLC0415 - owner
         from clio_agent.gact.skill_commands import skill_rows  # noqa: PLC0415 - owner module
 
         rows += skill_rows(app, session_id)
+        rows += prompt_rows(app, session_id)
     return place(rows)
 
 

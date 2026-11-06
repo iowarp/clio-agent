@@ -240,7 +240,9 @@ from clio_agent.gact.app import build_app
 # 439 -> 440: streams in clio-core (CT44), routes/streams.py: POST
 # /v1/streams/{id}/table-query is deleted; GET /v1/streams/{id}/content and GET
 # /v1/streams/{id}/entries/{seq} read the entries as stored.
-EXPECTED_ROUTE_METHOD_PAIRS = 440
+# 440 -> 438: an agent's MCP prompts are commands over its own connection (direct
+# summoning plan), so GET /v1/mcp/servers/{sid}/prompts and POST .../prompts/get go.
+EXPECTED_ROUTE_METHOD_PAIRS = 438
 
 # app.py is build_app + lifecycle + re-export shims only. The ceiling is
 # the current size (~2892 lines) plus ~300 lines of headroom so ordinary

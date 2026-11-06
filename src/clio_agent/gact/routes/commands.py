@@ -107,6 +107,8 @@ def register_command_routes(app: FastAPI, deps: "GactDeps") -> None:
                 rendered=f"{user_input}\n\n{loaded}" if user_input else loaded,
                 command_meta=row,
             )
+        if row["kind"] == "mcp_prompt":
+            return await _run_prompt(sid, row, user_input)
         required = required_arguments(row)
         missing = required[len(split_words(user_input)) :]
         if missing:
@@ -126,6 +128,39 @@ def register_command_routes(app: FastAPI, deps: "GactDeps") -> None:
             user_input=user_input,
             rendered=render_command(row["prompt_template"], user_input),
             command_meta=row,
+        )
+
+    async def _run_prompt(sid: str, row: dict[str, Any], user_input: str) -> dict[str, Any]:
+        from clio_agent.gact import mcp_prompt_commands as prompts  # noqa: PLC0415
+
+        values, missing = prompts.map_arguments(row["arguments"], split_words(user_input))
+        if missing:
+            _refuse(
+                422,
+                "invalid_arguments",
+                f"{row['name']} needs {', '.join(missing)}",
+                command=row["name"],
+                missing=missing,
+                argument_hint=row["argument_hint"],
+            )
+        result = await run_off_loop(prompts.fetch_prompt, app, sid, row, values)
+        text, images = prompts.prompt_message(result)
+        return await submit_user_command(
+            app,
+            deps,
+            sid,
+            cmd_id=row["name"],
+            user_input=user_input,
+            rendered=text or row["name"],
+            command_meta=row,
+            parts=images,
+            metadata={
+                "mcp_prompt": {
+                    "server": row["server"],
+                    "prompt": row["prompt"],
+                    "arguments": values,
+                }
+            },
         )
 
     async def _run_builtin(sess: Any, row: dict[str, Any], body: dict[str, Any]) -> dict[str, Any]:

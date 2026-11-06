@@ -46,6 +46,8 @@ async def submit_user_command(
     user_input: str,
     rendered: str,
     command_meta: dict[str, Any],
+    parts: list[Part] | None = None,
+    metadata: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Admit ``cmd_id`` as the person's message whose model text is ``rendered``.
 
@@ -79,7 +81,7 @@ async def submit_user_command(
         rendered = f"{rendered}\n\n{expansion.additional_context}"
     typed = f"{cmd_id} {user_input}".strip()
     subagent = str(command_meta.get("agent") or "")
-    parts = [Part(type="text", text=typed)]
+    parts = [Part(type="text", text=typed), *(parts or [])]
     if subagent:
         # ``agent:`` summons that subagent on the rendered recipe, as ``@<subagent>`` does.
         parts.append(Part(type="summon", target_kind="subagent", target=subagent))
@@ -100,6 +102,7 @@ async def submit_user_command(
                 if command_meta.get("skill_id")
                 else {}
             ),
+            **(metadata or {}),
         },
     )
     return {

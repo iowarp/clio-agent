@@ -210,6 +210,30 @@ class AsyncNamespacePreparationMixin:
                 record_definitive_capability(namespace, client, listed)
         return listed
 
+    async def list_namespace_prompts(self, namespace: str) -> list[Any]:
+        """``namespace``'s prompts over its persistent connection (:mod:`.mcp_prompts`)."""
+
+        from clio_agent.tools.mcp_prompts import list_prompts  # noqa: PLC0415
+
+        client = await self._prompt_client(namespace)
+        return await list_prompts(client, namespace, self.__dict__.setdefault("_clio_prompts", {}))
+
+    async def get_namespace_prompt(
+        self, namespace: str, name: str, arguments: Mapping[str, str]
+    ) -> Any:
+        """``prompts/get`` over ``namespace``'s persistent connection."""
+
+        client = await self._prompt_client(namespace)
+        return await client.get_prompt(name, dict(arguments))
+
+    async def _prompt_client(self, namespace: str) -> Any:
+        if self._closed or self._client is None:
+            raise RuntimeError("AsyncMCPToolExecutor is not running")
+        proxy = self._namespace_servers.get(namespace)
+        if proxy is None:
+            raise ValueError(f"unknown MCP namespace {namespace!r}")
+        return await self._namespace_client(namespace, proxy)
+
     async def reset_namespace(self, namespace: str) -> None:
         """Close ``namespace``'s persistent connection so the next use starts it again."""
 
@@ -359,6 +383,22 @@ class SyncNamespacePreparationMixin:
         return self._run_while_server_works(
             self._async_executor.list_namespace_tools(namespace),
             action=f"namespace {namespace!r} connect and list",
+        )
+
+    def list_namespace_prompts(self, namespace: str) -> list[Any]:
+        """``namespace``'s prompts over its persistent connection."""
+
+        return self._run_while_server_works(
+            self._async_executor.list_namespace_prompts(namespace),
+            action=f"namespace {namespace!r} prompt list",
+        )
+
+    def get_namespace_prompt(self, namespace: str, name: str, arguments: Mapping[str, str]) -> Any:
+        """``prompts/get`` over ``namespace``'s persistent connection."""
+
+        return self._run_while_server_works(
+            self._async_executor.get_namespace_prompt(namespace, name, arguments),
+            action=f"prompt {namespace}/{name}",
         )
 
     def reset_namespace(self, namespace: str) -> None:
