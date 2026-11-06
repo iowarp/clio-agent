@@ -7,7 +7,12 @@ from collections.abc import Mapping
 from contextlib import suppress
 from typing import Any
 
-from clio_agent.tools.mcp_task_routing import record_route_healed, resolve_namespace_route
+from clio_agent.runtime import trace
+from clio_agent.tools.mcp_task_routing import (
+    MCP_PLAIN_SERVER_ON_PROXY,
+    record_route_healed,
+    resolve_namespace_route,
+)
 
 
 class AsyncNamespacePreparationMixin:
@@ -186,6 +191,11 @@ class AsyncNamespacePreparationMixin:
         The one start of a cold server serves both the connection and the listing: a
         first start connects directly (``mcp_task_routing.first_start_direct``) and
         records the server's capability from that connection, so no heal restarts it.
+
+        A server that turns out not to support tasks has its tool calls served by the
+        proxy's one kept-alive backend, so the direct client is closed and the next
+        use connects through the proxy: prompts, resources and tool-list refreshes then
+        reach the same process the calls changed (DS34).
         """
 
         from clio_agent.tools.mcp_task_routing import (  # noqa: PLC0415
@@ -207,7 +217,10 @@ class AsyncNamespacePreparationMixin:
             listed = list(await client.list_tools())
             if self._namespace_direct_routes.get(namespace, False):
                 # A direct connection sees the server itself: its capability is definitive.
-                record_definitive_capability(namespace, client, listed)
+                capability = record_definitive_capability(namespace, client, listed)
+                if not capability.task_capable:
+                    await self._evict_namespace_client(namespace)
+                    trace.event("TOOLS", "%s namespace=%s", MCP_PLAIN_SERVER_ON_PROXY, namespace)
         return listed
 
     async def list_namespace_prompts(self, namespace: str) -> list[Any]:

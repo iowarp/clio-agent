@@ -93,6 +93,10 @@ logger = logging.getLogger(__name__)
 #: A first start connected directly while the server's task capability was unknown.
 MCP_PREPARE_FIRST_START_DIRECT = "mcp_prepare_first_start_direct"
 
+#: A first start showed a server without tasks: its direct client was closed so every
+#: later use reaches the proxy's backend, the process its tool calls run on (DS34).
+MCP_PLAIN_SERVER_ON_PROXY = "mcp_plain_server_on_proxy"
+
 #: Namespaces whose connect in this context is their first start (see
 #: :func:`first_start_direct`).
 _FIRST_START_DIRECT: ContextVar[frozenset[str]] = ContextVar(
@@ -112,6 +116,7 @@ def first_start_direct(namespace: str) -> Iterator[None]:
 
 
 __all__ = [
+    "MCP_PLAIN_SERVER_ON_PROXY",
     "MCP_PREPARE_FIRST_START_DIRECT",
     "NamespaceRouteDecision",
     "capability_cache_fields",
