@@ -302,7 +302,7 @@ def _order_hooks(entries: list[Entry], builder: _Builder) -> list[dict[str, Any]
         for hook in entry.record.hooks:
             row = {**_hook_dict(hook), "plugin": entry.record.id, "root": entry.record.root}
             # A Claude Code plugin's command hook reads and answers on that wire.
-            row["dialect"] = entry.record.format if hook.kind == "command" else ""
+            row["dialect"] = (hook.dialect or entry.record.format) if hook.kind == "command" else ""
             hooks.append((len(hooks), row))
     ids = {row["id"]: index for index, row in hooks}
     edges: dict[int, set[int]] = {index: set() for index, _ in hooks}

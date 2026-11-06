@@ -3,7 +3,9 @@
 A user or plugin command (a Markdown recipe) is the person asking for that
 procedure, so it is admitted exactly like a message they sent: their
 transcript shows what they typed (``/new-paper a workshop paper ...``), while
-the model receives the command's rendered recipe. As a turn it streams, can
+the model receives the command's rendered recipe. A file's ``agent:`` summons that
+subagent on the recipe instead, through the same path as ``@<subagent>``. As a turn
+it streams, can
 ask the person questions and can be stopped, like any other.
 """
 
@@ -14,10 +16,10 @@ from typing import TYPE_CHECKING, Any
 
 from clio_agent.gact import context as gact_context
 from clio_agent.gact.hooks.dispatcher import dispatch_user_prompt_expansion
-from clio_agent.gact.message_contract import PostMessageRequest
 from clio_agent.gact.message_submission import accept_message_async
 from clio_agent.gact.parts import Part
 from clio_agent.gact.runtime.command_table import command_cwd_for_request
+from clio_agent.gact.types import PostMessageRequest
 
 if TYPE_CHECKING:
     from fastapi import FastAPI
@@ -76,21 +78,28 @@ async def submit_user_command(
     if expansion.additional_context:
         rendered = f"{rendered}\n\n{expansion.additional_context}"
     typed = f"{cmd_id} {user_input}".strip()
-    submission = PostMessageRequest(
-        parts=[Part(type="text", text=typed)],
-        agent_id=str(command_meta.get("agent") or "") or None,
-    )
+    subagent = str(command_meta.get("agent") or "")
+    parts = [Part(type="text", text=typed)]
+    if subagent:
+        # ``agent:`` summons that subagent on the rendered recipe, as ``@<subagent>`` does.
+        parts.append(Part(type="summon", target_kind="subagent", target=subagent))
     acknowledgement, _status = await accept_message_async(
         app,
         deps,
         sid,
-        submission,
-        internal_model_text=rendered,
+        PostMessageRequest(parts=parts),
+        internal_model_text=typed if subagent else rendered,
+        summon_task=rendered if subagent else "",
         server_metadata={
             "command": cmd_id,
             "command_source": str(command_meta.get("source") or ""),
             "command_kind": str(command_meta.get("kind") or ""),
             **({"plugin": str(command_meta["plugin"])} if command_meta.get("plugin") else {}),
+            **(
+                {"loaded_skill": str(command_meta["skill_id"])}
+                if command_meta.get("skill_id")
+                else {}
+            ),
         },
     )
     return {

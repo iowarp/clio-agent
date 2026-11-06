@@ -93,12 +93,15 @@ def test_agents_map_tools_and_model_preference(tmp_path: Path) -> None:
         },
     )
     record = import_claude_plugin(root)
-    [reviewer] = record.subagents
+    notebook, reviewer = record.subagents
     assert reviewer.tools == ("fs_read_file", "fs_glob", "fs_search_text")
     assert reviewer.plugins == ("clio-agents", "workspace")
     assert reviewer.prefers == {"model": "claude-sonnet-5"}
-    [error] = record.errors
-    assert error.code == "tool_unmapped" and "NotebookEdit" in error.message
+    # An unmapped tool leaves only itself out, with a typed warning (PC4); core's tools stay.
+    assert notebook.id == "notebook" and notebook.tools == ()
+    assert not record.errors
+    [unmapped] = [d for d in record.diagnostics if d.code == "tool_unmapped"]
+    assert unmapped.severity == "warning" and "NotebookEdit" in unmapped.message
     # Glob maps onto fs_glob whole; Grep's multiline mode has no counterpart, and the
     # import says so with a typed warning, never silently.
     [lossy] = [d for d in record.diagnostics if d.code == "tool_mapped_lossy"]
@@ -262,3 +265,26 @@ def test_a_package_with_a_library_manifest_and_a_claude_form_loads_the_claude_fo
     # A native plugin.json (no library dialect) still wins.
     write(root / "plugin.json", '{"name": "wtfp", "version": "1.0.0"}')
     assert detect_format(root) == "plugin"
+
+
+def test_an_agents_skills_are_preloaded_into_its_prompt(tmp_path: Path) -> None:
+    """``skills:`` injects each skill's text, as Claude Code does; an unknown one is named."""
+
+    root = _claude_plugin(
+        tmp_path,
+        "paper",
+        {"version": "1.0.0"},
+        {
+            "skills/write-section/SKILL.md": "---\nname: write-section\ndescription: W.\n---\nDraft from the plan.\n",
+            "agents/writer.md": (
+                "---\nname: writer\ntools: Read\nskills:\n  - paper:write-section\n  - other:thing\n"
+                "---\nYou write sections.\n"
+            ),
+        },
+    )
+    record = import_claude_plugin(root)
+    (writer,) = record.subagents
+    assert writer.prompt.startswith("You write sections.\n\n# Skill: write-section\n")
+    assert "Draft from the plan." in writer.prompt
+    [missing] = [d for d in record.diagnostics if d.code == "skill_unmapped"]
+    assert missing.severity == "warning" and "other:thing" in missing.message

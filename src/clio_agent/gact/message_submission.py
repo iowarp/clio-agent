@@ -156,6 +156,18 @@ def _idempotency_key(req: PostMessageRequest) -> str:
     return req.idempotency_key.strip() or req.client_message_id.strip()
 
 
+def _message_identity(sid: str, req: PostMessageRequest) -> str:
+    """The accepted message's id: derived from its idempotency key, else a new id."""
+    import hashlib
+
+    key = _idempotency_key(req)
+    return (
+        "user_" + hashlib.sha256((sid + "\0" + key).encode()).hexdigest()
+        if key
+        else _new_message_id("user")
+    )
+
+
 def _acceptance_replay(response: PostMessageResponse) -> PostMessageResponse:
     return response.model_copy(update={"idempotent_replay": True})
 
@@ -602,7 +614,6 @@ def accept_message(
     server_metadata: dict[str, Any] | None = None,
 ) -> tuple[PostMessageResponse, int]:
     """Validate and confirm one Core mailbox input, regardless of current activity."""
-    import hashlib
 
     from clio_agent.gact.turn import _start_background_user_turn
 
@@ -619,12 +630,7 @@ def accept_message(
     session, selected, text, _images, parts = _validate_provider_and_payload(
         app, deps, sid, req, prepared=prepared
     )
-    key = _idempotency_key(req)
-    identity = (
-        "user_" + hashlib.sha256((sid + "\0" + key).encode()).hexdigest()
-        if key
-        else _new_message_id("user")
-    )
+    identity = _message_identity(sid, req)
     with owner.history.serialized():
         previous = next(
             (row for row in app.state.messages.get(sid, []) if row.id == identity), None
@@ -706,7 +712,6 @@ def accept_message(
             request_parts=parts,
             model_text=prepared.model_text,
             metadata=metadata,
-            turn_agent_id=req.extract_agent_id(),
             user_msg_id=identity,
         )
         if req.model is not None and not _model_ref_is_empty(req.model):
@@ -733,14 +738,27 @@ async def accept_message_async(
     *,
     internal_model_text: str | None = None,
     server_metadata: dict[str, Any] | None = None,
+    summon_task: str = "",
 ) -> tuple[PostMessageResponse, int]:
-    """Prepare the selected runtime, then validate and confirm input off the application loop."""
+    """Prepare the selected runtime, then validate and confirm input off the application loop.
+
+    The message's ``summon`` parts are checked first (a refusal starts nothing); the
+    agent's turn is told each summoned child's handle, and the children start once the
+    message is accepted (:mod:`clio_agent.gact.summon`). ``summon_task`` is the
+    children's task when it is not the message text (a command file's ``agent:``).
+    """
+    from clio_agent.gact import summon
     from clio_agent.gact.off_loop import join_off_loop
 
+    req, summons = await summon.plan_for_request(app, sid, req, summon_task)
     await ensure_host_agent(app, sid, req)
     await reprobe_for_message(app, sid, req)
     await refresh_for_selected_model(app, sid, req)
     prepared = await prepare_references(app, sid, req)
+    if summons:
+        internal_model_text, server_metadata = await summon.start_for_request(
+            app, deps, sid, req, summons, prepared, internal_model_text, server_metadata
+        )
     return await join_off_loop(
         accept_message,
         app,

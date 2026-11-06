@@ -5,8 +5,8 @@ Rows come from four kinds of source:
 * ``builtin``: the core plugin's command files that name a ``handler:``.
 * ``command``: a resolved plugin's ``commands/`` files, and the workspace and user
   command files (``.clio``/``.claude`` in the workspace, then the user's).
-* ``skill``: every skill the session's agent resolves (added by the skill owner).
-* ``mcp_prompt``: every prompt the agent's MCP servers offer (added by the MCP owner).
+* ``skill``: every skill the session's agent resolves (:mod:`clio_agent.gact.skill_commands`).
+* ``mcp_prompt``: every prompt the agent's MCP servers offer.
 
 Every plugin command answers to ``/<plugin>:<name>`` as well as ``/<name>``; a
 workspace file to ``/project:<name>`` and a user file to ``/user:<name>``. Clashes
@@ -22,7 +22,7 @@ from __future__ import annotations
 import os
 import re
 import shlex
-from collections.abc import Callable, Iterable, Mapping
+from collections.abc import Iterable, Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
@@ -278,10 +278,6 @@ def place(rows: Iterable[dict[str, Any]]) -> CommandTable:
 
 _PLACED = ("command_name_reserved", "command_shadowed")
 
-#: Extra row sources (skills, MCP prompts): ``(app, session_id) -> rows``.
-RowSource = Callable[["FastAPI", str], list[dict[str, Any]]]
-ROW_SOURCES: list[RowSource] = []
-
 
 def command_table(
     app: "FastAPI",
@@ -304,8 +300,9 @@ def command_table(
     rows += _file_command_rows(home or Path.home(), cwd or Path.cwd())
     rows += _plugin_command_rows(plugin_rows)
     if session_id:
-        for source in ROW_SOURCES:
-            rows += source(app, session_id)
+        from clio_agent.gact.skill_commands import skill_rows  # noqa: PLC0415 - owner module
+
+        rows += skill_rows(app, session_id)
     return place(rows)
 
 
@@ -351,7 +348,6 @@ def required_arguments(row: Mapping[str, Any]) -> list[str]:
 
 
 __all__ = [
-    "ROW_SOURCES",
     "CommandTable",
     "command_cwd_for_request",
     "command_table",

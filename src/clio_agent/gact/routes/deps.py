@@ -172,7 +172,6 @@ class _StartBackgroundUserTurn(Protocol):
         request_parts: "list[Part] | None" = ...,
         metadata: "dict[str, Any] | None" = ...,
         prev_status: str = ...,
-        turn_agent_id: str = ...,
         user_msg_id: str = ...,
         user_created_at: str = ...,
         supersedes_input: str = ...,

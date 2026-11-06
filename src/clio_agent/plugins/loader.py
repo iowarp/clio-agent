@@ -576,7 +576,11 @@ def load_plugin(root: Path, *, marketplace: str = "", trusted: bool) -> PluginRe
     clio_dir = root / NAMESPACE
     fragments, texts, fragment_diags = _fragments_and_texts(clio_dir, plugin)
     commands, command_diags = read_commands(clio_dir / "commands", plugin)
-    diagnostics += skill_diags + server_diags + fragment_diags + command_diags
+    # A native package's hooks/hooks.json is Claude Code's hook file, read the same way.
+    from clio_agent.plugins.claude_code import _hooks as hooks_file  # noqa: PLC0415
+
+    file_hooks, hook_diags, _scripts = hooks_file(root, plugin)
+    diagnostics += skill_diags + server_diags + fragment_diags + command_diags + hook_diags
     has_python = (
         any((clio_dir / name).is_dir() for name in _PYTHON_DIRS)
         or (clio_dir / "plugin.py").is_file()
@@ -668,7 +672,7 @@ def load_plugin(root: Path, *, marketplace: str = "", trusted: bool) -> PluginRe
         skills=tuple(skills),
         mcp_servers=servers,
         tools=tuple(parts.tools),
-        hooks=tuple(parts.hooks),
+        hooks=(*parts.hooks, *file_hooks),
         subagents=tuple(parts.subagents),
         flows=tuple(parts.flows),
         fragments=tuple(fragments),

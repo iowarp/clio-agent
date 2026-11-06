@@ -75,6 +75,8 @@ class HookRecord:
     before: tuple[str, ...] = ()
     after: tuple[str, ...] = ()
     fail_closed: bool = False
+    #: ``claude-code``: a ``hooks/hooks.json`` command, run on Claude Code's wire.
+    dialect: str = ""
 
 
 @dataclass(frozen=True)

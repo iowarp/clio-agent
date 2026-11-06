@@ -94,6 +94,19 @@ def register_command_routes(app: FastAPI, deps: "GactDeps") -> None:
         if row["kind"] == "builtin":
             return await _run_builtin(sess, row, body)
         user_input = _user_input(body)
+        if row["kind"] == "skill":
+            from clio_agent.gact.skill_commands import load_skill_for_person  # noqa: PLC0415
+
+            loaded = await run_off_loop(load_skill_for_person, app, sid, row["skill_id"])
+            return await submit_user_command(
+                app,
+                deps,
+                sid,
+                cmd_id=row["name"],
+                user_input=user_input,
+                rendered=f"{user_input}\n\n{loaded}" if user_input else loaded,
+                command_meta=row,
+            )
         required = required_arguments(row)
         missing = required[len(split_words(user_input)) :]
         if missing:
@@ -104,14 +117,6 @@ def register_command_routes(app: FastAPI, deps: "GactDeps") -> None:
                 command=cmd_id,
                 missing=missing,
                 argument_hint=row["argument_hint"],
-            )
-        if row["agent"] and deps.resolve_session_agent(row["agent"], session_id=sid) is None:
-            _refuse(
-                404,
-                "command_agent_unknown",
-                f"{cmd_id} names subagent {row['agent']}, which this agent does not define",
-                command=cmd_id,
-                agent=row["agent"],
             )
         return await submit_user_command(
             app,

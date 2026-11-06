@@ -371,7 +371,10 @@ class _Loop:
                 allow_transcript=self.scope == _ctx.run_keyed_scope(primary),
             )
         start = injections.fire("turn_start", {}, session_id=self.session)
-        self.recorder.injections([*_ctx.turn_injections(), *start])
+        from clio_agent.gact.summon import expand_server_summons  # noqa: PLC0415
+
+        added = expand_server_summons([*_ctx.turn_injections(), *start], self.agent)
+        self.recorder.injections(added)
         # The continuing flag is this forward's alone: anything it starts opens its own task.
         continue_token = _CONTINUING.set(False) if _CONTINUING.get() else None
         if continue_token is None:

@@ -19,6 +19,59 @@ from clio_agent.tools.task_call_context import TASK_CALL
 logger = logging.getLogger(__name__)
 
 
+async def spawn_child(
+    app: Any,
+    caller: Any,
+    agent: str,
+    task: str,
+    invocation: str,
+    *,
+    input_task_ids: list[str] | None = None,
+    strategy: dict[str, Any] | None = None,
+    model: str = "",
+    name: str = "",
+    concurrency: int | None = None,
+    metadata: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Start ``agent`` on ``task`` for ``caller``: the spawn tools' path, and the person's.
+
+    Only who ``caller`` is differs between the two: the spawn tools resolve the calling
+    agent, a person's summons name the conversation they wrote in (``metadata`` then
+    says the person started it).
+    """
+    from clio_agent.gact.assignment_evidence import select_assignment_evidence
+
+    target = str(agent or "").strip() or "self"
+    if not isinstance(name, str):
+        raise ValueError("name must be a string")
+    child_name = name.strip()
+    session_metadata: dict[str, Any] = dict(metadata or {})
+    if child_name:
+        session_metadata["subagent_name"] = child_name
+    if target == "self":
+        # A copy of the caller runs react, never the caller's selected flow (D14).
+        session_metadata["agent_flow"] = {"id": "react", "options": {}}
+    pins = await app.state.task_history.io.run(
+        select_assignment_evidence, app.state.task_history, caller, input_task_ids
+    )
+    result = await app.state.conversations.spawn(
+        caller,
+        task,
+        target,
+        invocation,
+        inference_concurrency=concurrency,
+        strategy=strategy,
+        launch_context={"input_task_refs": [pin.model_dump(mode="json") for pin in pins]},
+        session_metadata=session_metadata or None,
+        model=str(model or "").strip(),
+    )
+    return {
+        **result,
+        **({"task_id": result["handle"]} if "handle" in result else {}),
+        **accepted_model(app, result),
+    }
+
+
 def build_spawn_runtime_tools(
     base_agent: Any, agent_def: Any, *, resolution: Any = None, **options: Any
 ) -> list[Any]:
@@ -57,35 +110,18 @@ def build_spawn_runtime_tools(
     ) -> dict[str, Any]:
         local_placement(placement)
         app, caller = _runtime()
-        from clio_agent.gact.assignment_evidence import select_assignment_evidence
-
-        target = str(agent or "").strip() or "self"
-        if not isinstance(name, str):
-            raise ValueError("name must be a string")
-        child_name = name.strip()
-        metadata: dict[str, Any] = {"subagent_name": child_name} if child_name else {}
-        if target == "self":
-            # A copy of the caller runs react, never the caller's selected flow (D14).
-            metadata["agent_flow"] = {"id": "react", "options": {}}
-        pins = await app.state.task_history.io.run(
-            select_assignment_evidence, app.state.task_history, caller, input_task_ids
-        )
-        result = await app.state.conversations.spawn(
+        return await spawn_child(
+            app,
             caller,
+            agent,
             task,
-            target,
             invocation,
-            inference_concurrency=concurrency,
+            input_task_ids=input_task_ids,
             strategy=strategy,
-            launch_context={"input_task_refs": [pin.model_dump(mode="json") for pin in pins]},
-            session_metadata=metadata or None,
-            model=str(model or "").strip(),
+            model=model,
+            name=name,
+            concurrency=concurrency,
         )
-        return {
-            **result,
-            **({"task_id": result["handle"]} if "handle" in result else {}),
-            **accepted_model(app, result),
-        }
 
     async def spawn_agent_task(
         task: str,

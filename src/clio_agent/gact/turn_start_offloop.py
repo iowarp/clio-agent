@@ -59,6 +59,7 @@ from clio_agent.gact.runtime.globals import (
     _emit_semantic_event,
     _session_agent_id,
 )
+from clio_agent.gact.summon import SUMMONS_KEY, server_summon_injections
 from clio_agent.gact.turn_state import (
     PROLOGUE_COMPLETED,
     PROLOGUE_FAILED,
@@ -170,6 +171,8 @@ def _prepare_turn_off_loop_steps(
                 ("replan", replan),
                 (PLUGIN_CHANGE_SOURCE, plugin_change),
                 (CHILD_REPORT_SOURCE, child_report),
+                # Expanded by the agent loop, which holds the deferred catalog (summon.py).
+                *server_summon_injections(state.user_msg.metadata.get(SUMMONS_KEY)),
             )
             if block
         ]
