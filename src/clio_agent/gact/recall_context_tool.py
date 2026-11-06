@@ -307,6 +307,7 @@ def build_recall_context_tool() -> Any:
     from clio_agent.arc.history_plane import plane_for  # noqa: PLC0415
     from clio_agent.gact import context as ctx  # noqa: PLC0415
     from clio_agent.gact.agents.tool_instrumentation import native_tool  # noqa: PLC0415
+    from clio_agent.gact.recall_presentation import present_recall  # noqa: PLC0415
 
     search_enabled = context_search_available(plane_for(ctx.active_app()))
 
@@ -346,7 +347,7 @@ def build_recall_context_tool() -> Any:
     return native_tool(
         recall_context if search_enabled else recall_ids,
         name="recall_context",
-        presentation="memory",
+        presentation=present_recall,
         domain="memory",
         title="Recall context",
         representation="row",

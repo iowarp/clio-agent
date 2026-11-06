@@ -4,18 +4,20 @@
 // OPEN_LINK=1 it then follows the last "Show the task in Work" link and captures it;
 // with OPEN_COLLAPSED=1 it leaves the activity groups as a person first sees them, and
 // OPEN_FOCUS (a CSS selector) scrolls that element into view for the capture.
+// OPEN_ROW names the action of the rows to open (default "Run code").
 export default async function (page, shot) {
   const ws = process.env.OPEN_WORKSPACE;
   const sid = process.env.OPEN_SESSION;
+  const action = process.env.OPEN_ROW || "Run code";
   await page.goto(new URL(`/workspaces/${ws}/sessions/${sid}`, page.url()).toString());
   await page.waitForTimeout(6000);
   if (process.env.OPEN_COLLAPSED !== "1")
     for (const group of await page.getByRole("button", { name: /used tools|ran commands/i }).all())
       await group.click().catch(() => undefined);
   await page.waitForTimeout(800);
-  const rows = page.locator('[data-slot="tool-activity"]', { hasText: "Run code" });
+  const rows = page.locator('[data-slot="tool-activity"]', { hasText: action });
   for (let i = 0; i < (await rows.count()); i += 1)
-    await rows.nth(i).getByText("Run code", { exact: true }).first().click().catch(() => undefined);
+    await rows.nth(i).getByText(action, { exact: true }).first().click().catch(() => undefined);
   await page.waitForTimeout(1500);
   const repeats = page.getByText(/Called \d+ times/);
   if (await repeats.count()) await repeats.first().scrollIntoViewIfNeeded();
