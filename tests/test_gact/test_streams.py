@@ -94,6 +94,26 @@ def test_a_stream_is_a_clio_core_artifact_and_keeps_typed_entries(session: Any) 
     assert newest[0] == {**newest[0], "media_type": TEXT_TYPE, "text": "door opened"}
     assert newest[1]["media_type"] == "image/png" and "value" not in newest[1]
     assert store.entry(stream, stream.seq) == ("image/png", PNG)  # byte-exact
+    # One write of more entries than the window keeps its newest, in order, and puts only
+    # those (a batch has no order, so two entries for one slot could land either way).
+    batches: list[int] = []
+    put_many = store.backend.put_many
+
+    def counted(kind: str, records: Any) -> None:
+        batches.append(len(records))
+        put_many(kind, records)
+
+    store.backend.put_many = counted  # type: ignore[method-assign]
+    store.write(stream.id, stream.token, [{"n": n} for n in range(10, 15)])
+    store.backend.put_many = put_many  # type: ignore[method-assign]
+    assert batches == [3]
+    assert [(e["seq"], e["value"]["n"]) for e in store.read(stream)] == [
+        (10, 12),
+        (11, 13),
+        (12, 14),
+    ]
+    store.write(stream.id, stream.token, [{"n": 15}, {"n": 16}])
+    assert [e["value"]["n"] for e in store.read(stream)] == [14, 15, 16]
     record = get_registry(app).get(workspace_id, "sensor")
     version = record.versions[-1]
     assert version.kind == ArtifactKind.STREAM and version.custody == Custody.CLIO_CORE
@@ -101,8 +121,8 @@ def test_a_stream_is_a_clio_core_artifact_and_keeps_typed_entries(session: Any) 
     assert not any(p.name == "streams" for p in root.rglob("streams"))  # no file anywhere
     restarted = StreamStore(app)  # a fresh process reading clio-core
     again = restarted.by_name(workspace_id, "sensor")
-    assert again is not None and again.seq == 7
-    assert [e["seq"] for e in restarted.read(again)] == [5, 6, 7]
+    assert again is not None and again.seq == 14
+    assert [e["seq"] for e in restarted.read(again)] == [12, 13, 14]
 
 
 def test_a_stream_left_open_by_an_earlier_run_reads_as_closed(session: Any) -> None:

@@ -371,17 +371,27 @@ class StreamStore:
         entries = [encode_entry(value, media_type) for value in values]
         if not entries:
             raise StreamError("stream_entry_invalid", "A stream write needs at least one entry.")
+        from clio_agent.arc.batch_put import PutRecord  # noqa: PLC0415
+
         with stream.lock:
-            for entry_type, body in entries:
-                stream.seq += 1
-                header = json.dumps(
-                    {"seq": stream.seq, "at": _now(), "media_type": entry_type}
-                ).encode("utf-8")
-                self.backend.put(
-                    STREAM_KIND,
-                    _entry_name(stream.workspace_id, stream.id, stream.seq % stream.window),
-                    header + b"\n" + body,
+            first = stream.seq + 1
+            stream.seq += len(entries)
+            at = _now()
+            # One batch for the write's entries (their slots differ: only the newest
+            # ``window`` of a large write are put, the rest would be overwritten anyway),
+            # then the meta that makes them readable.
+            kept = range(max(first, stream.seq - stream.window + 1), stream.seq + 1)
+            records = []
+            for seq in kept:
+                entry_type, body = entries[seq - first]
+                header = json.dumps({"seq": seq, "at": at, "media_type": entry_type})
+                records.append(
+                    PutRecord(
+                        name=_entry_name(stream.workspace_id, stream.id, seq % stream.window),
+                        data=header.encode("utf-8") + b"\n" + body,
+                    )
                 )
+            self.backend.put_many(STREAM_KIND, records)
             stream.media_type = stream.media_type or entries[-1][0]
             stream.updated_at = _now()
             self._put_meta(stream)
