@@ -64,7 +64,7 @@ jobs:
       - uses: astral-sh/setup-uv@v5
       - name: Install Linux OS libraries required by the private renderer
         if: runner.os == 'Linux'
-        run: sudo apt-get update && sudo apt-get install -y libcairo2 libx11-6 libx11-xcb1 libxext6 libxinerama1 libsm6 libice6 libfontconfig1 libcups2 libdbus-1-3 libnss3 libglib2.0-0t64 fonts-liberation
+        run: sudo apt-get update && sudo apt-get install -y libcairo2 libx11-6 libx11-xcb1 libxext6 libxinerama1 libsm6 libice6 libfontconfig1 libcups2 libdbus-1-3 libnss3 libglib2.0-0t64 fonts-liberation poppler-utils
       - name: Prepare the agent environment
         run: uv sync --frozen --python 3.14
       - name: Extract the Windows renderer into managed storage with spaces
@@ -77,6 +77,12 @@ jobs:
         run: uv run --frozen python -m clio_agent.runtime.document_install --workspace document-evidence/workspace
       - name: Verify managed shells, workspace scratch and all four document formats
         run: uv run --frozen python scripts/qualification/document_runtime/verify_install.py document-evidence/workspace
+      - name: Install poppler (PDF page images and word boxes for comments) on macOS
+        if: runner.os == 'macOS'
+        run: brew install poppler
+      - name: Install poppler (PDF page images and word boxes for comments) on Windows
+        if: runner.os == 'Windows'
+        run: choco install poppler -y --no-progress
       - name: Provision the pinned Tectonic
         # The tests run with isolated storage and no network for Python, so they are handed the
         # verified binary this step installs (CLIO_DOCUMENT_TECTONIC), as a person's override is.
