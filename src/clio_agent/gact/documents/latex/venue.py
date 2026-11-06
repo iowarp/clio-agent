@@ -298,13 +298,23 @@ def check_venue(
     roots: Iterable[Path] | None = None,
 ) -> dict[str, Any]:
     """Every rule of template ``name`` checked against the build's PDF and its sources."""
-    found = find_template(name, list(roots) if roots is not None else session_template_roots())
+    folders = list(roots) if roots is not None else session_template_roots()
+    found = find_template(name, folders)
     if found is None:
+        # Name the templates there are, so a venue given in other words can be corrected.
+        names = sorted(
+            {path.parent.name for root in folders for path in root.glob("*/template.yaml")}
+        )
+        known = f" The templates are: {', '.join(names)}." if names else ""
         return {
             "venue": name,
             "status": "failed",
             "checks": [
-                _check("Template", "failed", f"No plugin in this session has a template {name!r}.")
+                _check(
+                    "Template",
+                    "failed",
+                    f"No plugin in this session has a template {name!r}.{known}",
+                )
             ],
         }
     _, template = found
