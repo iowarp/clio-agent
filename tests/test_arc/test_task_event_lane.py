@@ -205,3 +205,32 @@ def test_the_provenance_timeline_reads_the_lane_too(arc: ARCMemory) -> None:
     types = [event["event_type"] for event in events]
     assert degradations == []
     assert "session.mail.accepted" in types and "lm.call" in types
+
+
+def test_a_store_written_by_v0951_fails_the_copy_typed_and_stays_owed(arc: ARCMemory) -> None:
+    """A store from v0.9.5.1 or older holds its ``_events`` log in the retired base64
+    frame (a whole framed put of ``encode_segments``). The copy does not read it: it
+    fails typed ``arc_chunk_format_unsupported`` (reset the CLIO state) and writes no
+    marker, so an upgraded store never passes as migrated with its task events lost.
+
+    SABOTAGE: read a record without the chunk magic as an empty chunk in
+    ``chunk_records.parse_chunk`` and the copy writes its marker over zero events.
+    """
+    from clio_agent.arc.chunk_records import CHUNK_FORMAT_UNSUPPORTED, read_chunk
+    from clio_agent.arc.schema import encode_segments
+    from clio_agent.errors import ClioError
+
+    history = TaskHistory(arc)
+    history.record_mail(_mail(history, "old"))
+    _as_before_the_lane(arc, "owner")
+    raw = arc._segments._store
+    name = arc._segments._record_name("owner", "_events")
+    parsed = read_chunk(raw, "segments", name)
+    assert parsed is not None and parsed.segments
+    raw.put("segments", name, encode_segments(parsed.segments))  # as v0.9.5.1 stored it
+
+    older = TaskHistory(ARCMemory(store=raw))
+    with pytest.raises(ClioError) as failure:
+        migrate_task_event_lane(older)
+    assert failure.value.error_type == CHUNK_FORMAT_UNSUPPORTED
+    assert migration_owed(older)
