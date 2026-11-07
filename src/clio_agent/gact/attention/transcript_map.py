@@ -164,6 +164,22 @@ def heat_runs(
     return runs
 
 
+def token_starts(anchor: Anchor, encoded: Encoded) -> list[int]:
+    """Where each of the text's prompt tokens starts, kept by the capture or not.
+
+    Runs list only the tokens the capture kept (its top N% per segment), so a
+    segment's mean over *all* its tokens needs every token's place, not just
+    the kept ones. Offsets are in the same transcript-text coordinates as runs.
+    """
+    starts: list[int] = []
+    for token in range(anchor.token_lo, anchor.token_hi):
+        a, b = encoded.offsets[token]
+        span = anchor.hit.from_haystack(a, b)
+        if span is not None and span[1] > span[0]:
+            starts.append(span[0])
+    return starts
+
+
 def block_stats(anchor: Anchor, mass: Mass) -> dict[str, float]:
     """Total and mean-per-token retained mass for one located transcript text."""
     width = max(1, anchor.token_hi - anchor.token_lo)
