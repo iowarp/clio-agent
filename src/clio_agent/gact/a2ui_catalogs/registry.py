@@ -405,7 +405,10 @@ class CatalogRegistry:
         try:
             store = PluginService().store
             revision = store.revision()
-        except Exception as exc:  # noqa: BLE001 - typed, recorded, never silent
+        except (OSError, ValueError, RuntimeError) as exc:
+            # The store cannot be opened or stat'ed: its directory, lock or state file
+            # (OSError), a bad store_root or relocated JSON (ValueError), no home
+            # directory or an unreadable state (HomeDirectoryUnavailable, StoreError).
             record_a2ui_catalog_reason("a2ui_plugin_discovery_failed", detail=str(exc))
             return []
         with self._lock:
