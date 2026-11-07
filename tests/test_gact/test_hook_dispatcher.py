@@ -1091,6 +1091,10 @@ def test_subagent_start_and_stop_fire_exactly_once(tmp_path: Path) -> None:
         with TestClient(app) as client:
             parent = client.post("/v1/sessions", json={"title": "p"}).json()["id"]
             record_assignment_fixture(app, parent)
+            # Spawn reads the provider catalog; its first discovery imports the
+            # provider SDKs (several seconds on a cold, loaded worker). Pay that
+            # here so the bound below guards spawn and hooks, not import cost.
+            assert client.get("/v1/provider-catalog").status_code == 200
             owner = app.state.conversations
             receipt = asyncio.run_coroutine_threadsafe(
                 owner.spawn(owner.caller(parent), "analyze", "clio/standard", "hook-child"),
