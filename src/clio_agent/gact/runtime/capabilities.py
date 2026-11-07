@@ -57,6 +57,19 @@ _STREAM_FALLBACK_REASON_DEFINITIONS: dict[str, dict[str, Any]] = {
             "The text still streamed; the attachment did not ride the request."
         ),
     },
+    "diffusion_stream_shape_mismatch": {
+        "category": "stream_shape_mismatch",
+        # The text still streamed live (as canvases); what degraded is the stream's
+        # SHAPE -- a diffusing request answered in a shape the snapshot lane cannot own.
+        "synthetic_posthoc": False,
+        "live_streaming": True,
+        "recovery_actions": ["turn_show_diffusion_off", "check_the_model_stream_shape", "retry"],
+        "description": (
+            "The model was asked to stream its diffusion steps as whole snapshots but "
+            "answered with appended deltas (the concatenated text is kept) or streamed "
+            "tool calls across steps (the calls the stream assembled are kept)."
+        ),
+    },
     "sync_execution_path": {
         "category": "non_streamed_execution",
         "synthetic_posthoc": True,
