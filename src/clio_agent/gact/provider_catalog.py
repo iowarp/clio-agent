@@ -333,6 +333,9 @@ def model_catalog_row(
             preset.id, preset.provider, report.provider_id, report.api_base, profile.id, effective
         ),
         "native_tool_calling": bool(effective.tools.value),
+        # How the model streams: "append" (deltas) or "snapshot" (a diffusion
+        # model's whole current text per step); null when no source states it.
+        "stream_shape": effective.stream_shape.value,
         # context_window + loaded/native + the basis it rests on (catalog_context).
         **context_wire(effective, deployment),
         # The working-context control (number / Max; no Fit to GPU for a server
@@ -372,6 +375,7 @@ def model_catalog_row(
             "free": _provenance_row(effective.free),
             "router": _provenance_row(effective.router),
             "reasoning": _provenance_row(effective.thinking),
+            "stream_shape": _provenance_row(effective.stream_shape),
         },
         "failure": report.error or "",
     }
