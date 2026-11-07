@@ -51,6 +51,12 @@ PROVIDER_COMPONENTS: dict[str, ProviderComponents] = {
         modules=("claude_agent_sdk",),
         release_notes_url="https://github.com/anthropics/claude-agent-sdk-python/releases",
     ),
+    "copilot": ProviderComponents(
+        provider_kind="copilot",
+        distributions=("github-copilot-sdk",),
+        modules=("copilot",),
+        release_notes_url="https://github.com/github/copilot-sdk/releases",
+    ),
 }
 
 #: Every user-updatable distribution name (PEP 503 normalized).

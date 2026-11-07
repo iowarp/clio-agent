@@ -314,6 +314,9 @@ class ClaudeCodeEngine(AsyncClaudeCodeEngine):
 class _Turn:
     """Folds the SDK's messages into lm15 deltas, usage and the final reply."""
 
+    #: Names the transport in this turn's own errors.
+    label = "claude agent sdk"
+
     def __init__(
         self,
         model: str,
@@ -365,20 +368,7 @@ class _Turn:
                 )
             text = stream_event_text(message.event)
             if text:
-                cutoff = self._progress.cutoff(text)
-                if cutoff is not None:
-                    self.protocol_error = "formatting_only_repetition"
-                    self.reply = (self.reply + text[:cutoff])[:4096]
-                    self._held = ""  # never shown
-                    return out
-                self.reply += text
-                if self._progress.undecided:
-                    self._held += text
-                    return out
-                release, self._held = self._without_word_preamble(self._held, text), ""
-                shown = self._splitter.push(release)
-                if shown:
-                    out.append(StreamDeltaEvent(delta=TextDelta(text=shown, part_index=1)))
+                self._on_text(text, out)
             return out
         if kind == "AssistantMessage":
             self.assistant_error = getattr(message, "error", None) or self.assistant_error
@@ -410,6 +400,23 @@ class _Turn:
         else:
             _audit_message("provider.message_unhandled", self.model, message)
         return []
+
+    def _on_text(self, text: str, out: list[Any]) -> None:
+        """Fold one streamed text delta: held back while undecided, split at the fence."""
+        cutoff = self._progress.cutoff(text)
+        if cutoff is not None:
+            self.protocol_error = "formatting_only_repetition"
+            self.reply = (self.reply + text[:cutoff])[:4096]
+            self._held = ""  # never shown
+            return
+        self.reply += text
+        if self._progress.undecided:
+            self._held += text
+            return
+        release, self._held = self._without_word_preamble(self._held, text), ""
+        shown = self._splitter.push(release)
+        if shown:
+            out.append(StreamDeltaEvent(delta=TextDelta(text=shown, part_index=1)))
 
     def _without_word_preamble(self, held: str, text: str) -> str:
         """Text released to the splitter. In the reply's first release, opening lines of
@@ -446,7 +453,7 @@ class _Turn:
             self.protocol_error = "formatting_only_repetition"
             reply = reply[:4096]
         if not reply.strip():
-            raise ServerError(f"claude agent sdk returned empty content (model={self.model})")
+            raise ServerError(f"{self.label} returned empty content (model={self.model})")
         out: list[Any] = []
         if not self.reply and not self.protocol_error:
             shown = self._splitter.push(self.fallback)

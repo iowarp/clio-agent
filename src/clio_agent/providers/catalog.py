@@ -386,6 +386,30 @@ PROVIDERS: tuple[Provider, ...] = (
         # default) so the ruling is documented on the record itself.
         inner_loop_owner="clio",
     ),
+    Provider(
+        id="copilot",
+        billing="subscription",
+        label="GitHub Copilot",
+        description=(
+            "Uses your GitHub Copilot plan through the GitHub Copilot SDK, signed in "
+            "with CLIO's GitHub account (never this machine's own Copilot login). The "
+            "models your plan and organization policy allow are listed live; premium "
+            "models draw on the monthly premium-request allowance."
+        ),
+        provider_kind="copilot",
+        litellm_prefix="copilot",
+        api_base="copilot://sdk",
+        # The plan's models come from the runtime's live list_models(); no bundled list.
+        suggested_model="",
+        requires_api_key=False,
+        auth_method="subscription",
+        auth_label="GitHub",
+        is_kind_default=True,
+        supports_live_catalog=False,
+        # The SDK runs with every built-in tool excluded (copilot/options.py):
+        # CLIO's own loop drives each turn and every tool goes through CLIO's gateway.
+        inner_loop_owner="clio",
+    ),
     # ----- argonne ALCF ----------------------------------------------
     # NB: api_key for argonne presets is resolved lazily via
     # providers.argonne_auth (Globus OAuth), not from the registry.

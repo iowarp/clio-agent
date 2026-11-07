@@ -37,6 +37,9 @@ from clio_agent.gact.storage.oauth_clients import (
 from clio_agent.gact.storage.oauth_return import StorageOAuthReturn
 from clio_agent.tools.atomic_json_store import AtomicJsonFileStore
 
+#: Lifetime reported for a grant with no expiry, so a consumer still re-reads it hourly.
+NON_EXPIRING_TOKEN_LIFETIME_S = 3600
+
 
 @dataclass(frozen=True)
 class OAuthApplication:
@@ -712,6 +715,24 @@ class StorageAuth:
                     tokens["refresh_token"] = refresh
                 self._vault.write_entries(entries)
             return str(tokens["access_token"])
+
+    def account_token(self, principal: str, clio_id: str, provider: str) -> tuple[str, int]:
+        """The account's own credential and its remaining seconds, for a model provider.
+
+        The same :meth:`token` path sources use (refresh included); there is no
+        source record, so the account itself is the lookup key. A non-expiring
+        grant reports :data:`NON_EXPIRING_TOKEN_LIFETIME_S`.
+        """
+        record = self.account_login(principal, clio_id, provider)
+        with self._lock:
+            if not self.connected(record):
+                raise PermissionError(f"Sign in to {provider} on this CLIO")
+            token = self.token(record)
+            entry = self._account(self._entries(), record) or {}
+            tokens = entry.get("tokens")
+            if not isinstance(tokens, dict) or tokens.get("non_expiring"):
+                return token, NON_EXPIRING_TOKEN_LIFETIME_S
+            return token, max(1, int(float(tokens.get("expires_at", 0)) - time.time()))
 
     def cancel(self, record: SourceRecord, flow_id: str) -> None:
         """Cancel only this owner's pending device flow without signing out other sources."""

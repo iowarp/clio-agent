@@ -13,6 +13,7 @@ ProviderKind = Literal[
     "argonne",
     "codex",
     "claude_code",
+    "copilot",
 ]
 AuthMethod = Literal["none", "api_key", "oauth", "subscription"]
 #: How an account pays for calls: a plan with usage windows, prepaid credit,

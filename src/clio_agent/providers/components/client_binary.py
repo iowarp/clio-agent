@@ -299,6 +299,10 @@ def provider_client(provider_kind: str) -> ClientSelection | None:
     """The selection for a provider kind that runs a CLI, else ``None``."""
     if provider_kind == "claude_code":
         return claude_client()
+    if provider_kind == "copilot":
+        from clio_agent.providers.copilot.runtime import copilot_client  # noqa: PLC0415
+
+        return copilot_client()
     return None
 
 

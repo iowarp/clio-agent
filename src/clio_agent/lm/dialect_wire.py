@@ -89,6 +89,7 @@ _DIALECT_NATIVE_TOP_LEVEL_FIELDS: dict[str, frozenset[str]] = {
     "anthropic": frozenset({"reasoning_effort", "thinking"}),
     "codex": frozenset({"codex_reasoning_effort"}),
     "claude_code": frozenset({"claude_code_thinking"}),
+    "copilot": frozenset({"copilot_reasoning_effort"}),
 }
 
 
@@ -227,6 +228,8 @@ def _unknown_levels_wire(dialect: str, level: str) -> dict[str, Any]:
         return {"reasoning_effort": level}
     if dialect == "codex":
         return {"codex_reasoning_effort": level}
+    if dialect == "copilot":
+        return {"copilot_reasoning_effort": level}
     if dialect == "openrouter":
         return {"reasoning": {"effort": level}}
     if dialect == "claude_code":
@@ -384,6 +387,14 @@ def thinking_wire(
             return {"codex_reasoning_effort": "none"}
         value = _effort_value(decision, wire_level)
         return {"codex_reasoning_effort": value} if value is not None else {}
+
+    if dialect == "copilot":
+        # The SDK's per-session reasoning_effort; off is sent only for a model
+        # that lists "none" itself (off_sendable, above).
+        if off:
+            return {"copilot_reasoning_effort": "none"}
+        value = _effort_value(decision, wire_level)
+        return {"copilot_reasoning_effort": value} if value is not None else {}
 
     if dialect == "claude_code":
         if off:
