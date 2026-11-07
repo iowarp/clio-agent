@@ -14,6 +14,7 @@ from dataclasses import asdict, dataclass, field
 from typing import Any
 
 from clio_agent.providers.catalog import get_provider
+from clio_agent.providers.catalog_types import Provider
 
 #: Catalog ``auth`` states that mean the account's credential is in place.
 _SIGNED_IN = frozenset({"ok", "not_required"})
@@ -64,6 +65,30 @@ class FleetEntry:
         return {**asdict(self), "ref": self.ref}
 
 
+def account_provider(account_id: str) -> Provider | None:
+    """The catalog provider ``account_id`` is, or is reached through.
+
+    A saved custom server (``server-<slug>``) is its own account, reached
+    through the preset it was saved with (the OpenAI-compatible ``vllm`` one),
+    whose billing it shares. ``None`` for an id that is neither.
+    """
+
+    preset = get_provider(account_id)
+    if preset is not None or not account_id:
+        return preset
+    from clio_agent import paths  # noqa: PLC0415
+    from clio_agent.gact.local_server_store import (  # noqa: PLC0415
+        LocalServerStoreError,
+        get_server,
+    )
+
+    try:
+        entry = get_server(account_id)
+    except (LocalServerStoreError, paths.HomeDirectoryUnavailable):
+        return None
+    return get_provider(entry.preset_id) if entry is not None and entry.custom else None
+
+
 def _account(row: dict[str, Any]) -> FleetAccount | None:
     """``row`` as an account, or ``None`` when it is not connected.
 
@@ -80,7 +105,7 @@ def _account(row: dict[str, Any]) -> FleetAccount | None:
         return None
     if auth == "not_required" and health != "ready":
         return None
-    preset = get_provider(provider_id)
+    preset = get_provider(provider_id) or get_provider(str(row.get("preset_id") or ""))
     return FleetAccount(
         id=provider_id,
         label=str(row.get("name") or provider_id),
@@ -161,4 +186,4 @@ def project_fleet(catalog: dict[str, Any]) -> tuple[list[FleetAccount], list[Fle
     return accounts, entries
 
 
-__all__ = ["FleetAccount", "FleetEntry", "project_fleet"]
+__all__ = ["FleetAccount", "FleetEntry", "account_provider", "project_fleet"]

@@ -10,8 +10,10 @@ the context it is sized to and the memory it reserves agree.
 
 Starting (or installing a container of) a GPU deployment is refused, typed,
 when the shares of the target's running vLLM deployments plus its own exceed
-1.0. The sum is per target: CLIO does not pin instances to devices, so every
-GPU variant counts against the same budget.
+1.0. The sum is per device set: deployments pinned to disjoint devices
+(``param.cuda_devices`` / ``param.rocm_devices`` / ``param.xpu_devices``) never
+compete, while an unpinned deployment may use every device of the target and
+so counts against all of them.
 """
 
 from __future__ import annotations
@@ -31,6 +33,10 @@ from clio_agent.gact.infrastructure.server_parameters import PARAMETER_PREFIX
 from clio_agent.gact.infrastructure.store import InfrastructureStore
 
 UTILIZATION_KEY = PARAMETER_PREFIX + "gpu_memory_utilization"
+#: Device pins: a deployment that names its devices shares memory only with ones that overlap.
+DEVICE_KEYS = tuple(
+    PARAMETER_PREFIX + pid for pid in ("cuda_devices", "rocm_devices", "xpu_devices")
+)
 #: Shares may sum to 1.0 exactly; this absorbs float noise (0.45 + 0.55).
 _TOLERANCE = 1e-6
 
@@ -116,27 +122,67 @@ def check_gpu_share(
 
     if engine_of(service_id) != "vllm":
         return
-    installed = store.service(target_id, service_id)
-    if installed is not None and action != "install":
-        # As the runtime merges it: a start runs what is installed, a
-        # reinstall lets the values the person typed override it.
-        typed = {k: v for k, v in configuration.items() if v.strip()}
-        variant_id = installed.variant_id
-        configuration = (
-            {**installed.configuration, **typed}
-            if action == "reinstall"
-            else {**configuration, **installed.configuration}
-        )
+    variant_id, configuration = launch_view(
+        store, target_id, service_id, action, variant_id, configuration
+    )
     requested = gpu_share(variant_id, configuration)
     if requested is None or not _launches(action, variant_id):
         return
-    running = _running_shares(store.services(), target_id, service_id)
+    running = _running_shares(store.services(), target_id, service_id, devices(configuration))
     if requested + sum(running.values()) > 1.0 + _TOLERANCE:
         raise GpuShareExceededError(service_id, requested, running)
 
 
+def launch_view(
+    store: InfrastructureStore,
+    target_id: str,
+    service_id: str,
+    action: str,
+    variant_id: str,
+    configuration: dict[str, str],
+) -> tuple[str, dict[str, str]]:
+    """The variant and configuration an action will launch with, as the runtime merges them.
+
+    A start runs what is installed (llama.cpp: with the person's model edits),
+    a reinstall lets the values the person typed override it; an install, or
+    an action on nothing installed, is the request itself.
+    """
+
+    installed = store.service(target_id, service_id)
+    if installed is None or action == "install":
+        return variant_id, configuration
+    typed = {k: v for k, v in configuration.items() if v.strip()}
+    if action == "start" and engine_of(service_id) == "llama_cpp":
+        merged = {**installed.configuration}
+        merged.update(
+            {
+                k: v
+                for k, v in configuration.items()
+                if not k.startswith("storage.") and k != "container_runtime"
+            }
+        )
+        return installed.variant_id, merged
+    return installed.variant_id, (
+        {**installed.configuration, **typed}
+        if action == "reinstall"
+        else {**configuration, **installed.configuration}
+    )
+
+
+def devices(configuration: dict[str, str]) -> frozenset[str] | None:
+    """The devices a deployment is pinned to, or ``None`` when it may use all of them."""
+    for key in DEVICE_KEYS:
+        raw = str(configuration.get(key, "") or "").strip()
+        if raw:
+            return frozenset(part.strip() for part in raw.split(",") if part.strip())
+    return None
+
+
 def _running_shares(
-    records: list[ServiceRecord], target_id: str, service_id: str
+    records: list[ServiceRecord],
+    target_id: str,
+    service_id: str,
+    pinned: frozenset[str] | None = None,
 ) -> dict[str, float]:
     shares: dict[str, float] = {}
     for row in records:
@@ -147,6 +193,9 @@ def _running_shares(
             or row.state != "running"
         ):
             continue
+        other = devices(row.configuration)
+        if pinned is not None and other is not None and not pinned & other:
+            continue  # disjoint devices: their memory does not compete
         share = gpu_share(row.variant_id, row.configuration)
         if share is not None:
             shares[row.service_id] = share
@@ -185,5 +234,6 @@ __all__ = [
     "GpuShareExceededError",
     "check_gpu_share",
     "gpu_share",
+    "launch_view",
     "share_launch",
 ]

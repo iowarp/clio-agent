@@ -187,3 +187,28 @@ def test_list_models_marks_the_providers_fast_family_and_selection_ignores_it() 
     assert fleet_tools._is_fast(HAIKU) and not fleet_tools._is_fast(OPUS)
     unset = _choose(prefers_chain=[{"source": "subagent:explore", "role": "explore"}])
     assert unset.source == "inherited" and unset.ran["model_id"] == "claude-opus-5-5"
+
+
+def test_a_model_the_person_picked_is_recorded_as_theirs() -> None:
+    choice = choose_model(
+        FLEET,
+        explicit="haiku",
+        prefers_chain=[],
+        requires=Requires(),
+        attribution={},
+        inherited=PARENT,
+        explicit_source="person",
+    )
+    assert choice.source == "person" and choice.asked == "haiku"
+    assert choice.ran == {"provider_id": "claude_code", "model_id": "claude-haiku-5-5"}
+    with pytest.raises(ModelSelectionRefused) as refused:
+        choose_model(
+            FLEET,
+            explicit="nope",
+            prefers_chain=[],
+            requires=Requires(),
+            attribution={},
+            inherited=PARENT,
+            explicit_source="person",
+        )
+    assert refused.value.code == "model_unknown"

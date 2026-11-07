@@ -296,6 +296,18 @@ def assemble(
                     detail=f"{parameter.name} as launched by CLIO",
                 )
             )
+        elif parameter.value_format == "device_list" and parameter.id in requested:
+            # Docker/Podman map a CUDA pin to the runtime's own device list
+            # (renumbered inside), so the variable is not in the container.
+            rows.append(
+                EffectiveParameter(
+                    id=parameter.id,
+                    label=parameter.label,
+                    value=requested[parameter.id],
+                    source="launch_request",
+                    detail="GPUs passed to the container by the runtime's device mapping",
+                )
+            )
         else:
             rows.append(
                 EffectiveParameter(

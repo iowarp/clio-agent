@@ -28,7 +28,7 @@ def _print(data: Any, as_json: bool, text: str) -> None:
 
 
 def run_plugin_cli(arguments: Sequence[str]) -> int:
-    from clio_agent.config import load_project_env_file  # noqa: PLC0415
+    from clio_agent.env_file import load_project_env_file  # noqa: PLC0415
     from clio_agent.plugins.check import check  # noqa: PLC0415
     from clio_agent.plugins.service import AgentNotFound, PluginService  # noqa: PLC0415
     from clio_agent.plugins.store import StoreError  # noqa: PLC0415

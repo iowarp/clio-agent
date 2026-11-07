@@ -234,7 +234,53 @@ def _resolve_presets(app: "FastAPI") -> dict[str, "LMProviderPreset"]:
     override = _configured_preset_override(app)
     if override is not None:
         presets[override[0]] = override[1]
+    for _, preset in _saved_servers():
+        presets.setdefault(preset.id, preset)
     return presets
+
+
+def _saved_servers() -> list[tuple[str, "LMProviderPreset"]]:
+    """Each saved custom server as its own catalog provider, keyed by its server id.
+
+    A custom server (``server-<slug>``) is reached through the preset it was
+    saved with (the OpenAI-compatible ``vllm`` one), at its own address and
+    under its own id, so discovery lists its models and the fleet sees it as an
+    account. Its key is resolved by id (``providers.api_key_store``). Returns
+    ``(id of the preset it is reached through, its own preset)`` pairs. Never
+    raises: an unreadable configuration lists no servers.
+    """
+
+    from clio_agent import paths  # noqa: PLC0415
+    from clio_agent.gact.local_server_store import (  # noqa: PLC0415
+        LocalServerStoreError,
+        list_servers,
+    )
+
+    try:
+        servers = [entry for entry in list_servers() if entry.custom]
+    except (LocalServerStoreError, paths.HomeDirectoryUnavailable) as exc:
+        logger.warning("saved_servers_unreadable reason=%s -- catalog lists no saved servers", exc)
+        return []
+    bases = {preset.id: preset for preset in as_lm_presets()}
+    return [
+        (
+            entry.preset_id,
+            bases[entry.preset_id].model_copy(
+                update={
+                    "id": entry.id,
+                    "label": entry.label,
+                    "api_base": entry.address,
+                    "managed_service_id": "",
+                }
+            ),
+        )
+        for entry in servers
+        if entry.preset_id in bases
+    ]
+
+
+def _is_saved_server_row(row: Any) -> bool:
+    return isinstance(row, dict) and bool(row.get("saved_server"))
 
 
 async def discover(
@@ -248,15 +294,21 @@ async def discover(
     """
 
     presets = _resolve_presets(app)
-    return list(
-        await asyncio.gather(
-            *(
-                discover_provider(presets[provider_id], refresh=refresh)
-                for provider_id in provider_ids
-                if provider_id in presets
-            )
+    saved = {preset.id: preset_id for preset_id, preset in _saved_servers()}
+    records = await asyncio.gather(
+        *(
+            discover_provider(presets[provider_id], refresh=refresh)
+            for provider_id in provider_ids
+            if provider_id in presets
         )
     )
+    # A saved server's row names the preset it is reached through.
+    return [
+        {**record, "saved_server": True, "preset_id": saved[str(record.get("id"))]}
+        if str(record.get("id")) in saved
+        else record
+        for record in records
+    ]
 
 
 def _keep_newer(
@@ -336,6 +388,26 @@ def _with_checking_overlay(app: "FastAPI", payload: dict[str, Any]) -> dict[str,
     }
 
 
+def _with_saved_servers(
+    app: "FastAPI", cached: dict[str, Any], presets: dict[str, "LMProviderPreset"]
+) -> tuple[dict[str, Any], set[str]]:
+    """Drop the rows of saved servers since removed; name the ones added since.
+
+    Saving or forgetting a server changes the providers the snapshot covers,
+    so the next plain read picks that up without a full refresh.
+    """
+
+    rows = [row for row in cached.get("providers") or [] if isinstance(row, dict)]
+    ids = {str(row.get("id")) for row in rows}
+    builtin = {preset.id for preset in as_lm_presets()}
+    added = {pid for pid in presets if pid not in builtin and pid not in ids}
+    kept = [row for row in rows if not _is_saved_server_row(row) or row.get("id") in presets]
+    if len(kept) != len(rows):
+        cached = _payload(kept)
+        commit(app, cached, [])
+    return cached, added
+
+
 async def _read_catalog_snapshot(
     app: "FastAPI", *, refresh: bool = False, provider_id: str = ""
 ) -> dict[str, Any]:
@@ -351,7 +423,8 @@ async def _read_catalog_snapshot(
         UnknownCatalogProviderError: ``provider_id`` names no registered preset.
     """
 
-    preset_ids = [preset.id for preset in as_lm_presets()]
+    presets = _resolve_presets(app)
+    preset_ids = list(presets)
     if provider_id and provider_id not in preset_ids:
         raise UnknownCatalogProviderError(provider_id)
     cached = getattr(app.state, "provider_catalog", None)
@@ -359,7 +432,6 @@ async def _read_catalog_snapshot(
     # Only the invalidations seen NOW are answered by this read; one that
     # arrives while discovery is awaited stays pending for the next read.
     taken = set(pending)
-    presets = _resolve_presets(app)
     seqs = {
         endpoint_key(pid, presets[pid].api_base): provider_seq(app, pid, presets[pid].api_base)
         for pid in preset_ids
@@ -390,7 +462,8 @@ async def _read_catalog_snapshot(
         _schedule_reprobe(app, payload)
         return payload
 
-    targets = sorted(taken & set(preset_ids))
+    cached, added = _with_saved_servers(app, cached, presets)
+    targets = sorted((taken & set(preset_ids)) | added)
     if provider_id and (refresh or provider_id in taken) and provider_id not in targets:
         targets.append(provider_id)
     if not targets:

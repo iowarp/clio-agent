@@ -691,6 +691,11 @@ KEY_NOTES: dict[str, str] = {
         "mapping. Null inherits the current conversation model, then service defaults. "
         "CLIO_FLEET_SEARCH accepts JSON. Settings Fleet writes this choice independently of judges."
     ),
+    "fleet.spotter": (
+        "Provider and model a SPOTTER watcher runs on when its session names none "
+        "(metadata.spotter_model), as a provider_id/model_id mapping. Null inherits the watched "
+        "session's model. CLIO_FLEET_SPOTTER accepts JSON. Settings Fleet writes this choice."
+    ),
     "fleet.usage_poll_seconds": (
         "How old an account's usage reading may be before reading the fleet asks the provider "
         "again (OpenRouter's key endpoint). Subscriptions report usage on every call instead."

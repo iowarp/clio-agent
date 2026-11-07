@@ -106,6 +106,29 @@ def _section_at(sections: list[Section], token: int) -> int:
     return -1
 
 
+def transcript_locations(prompt: str, source: str) -> list[Located]:
+    """Map exact content after chat-template boundary trimming, retaining source offsets.
+
+    Full verbatim/JSON matches take precedence. Only exterior whitespace may be
+    omitted; internal text is never normalized and ambiguous matches stay ambiguous.
+    Omitted characters map to the nearest retained boundary, not inferred heat.
+    """
+    matches = locate_all(prompt, source)
+    trimmed = source.strip()
+    if matches or not trimmed or trimmed == source:
+        return matches
+    left = len(source) - len(source.lstrip())
+    right = len(source) - left - len(trimmed)
+    return [
+        Located(
+            hit.start,
+            [hit.start] * left + hit.index + [hit.end] * right,
+            hit.encoding + "+boundary-trim",
+        )
+        for hit in locate_all(prompt, trimmed)
+    ]
+
+
 def anchor_texts(
     texts: list[TranscriptText], encoded: Encoded, sections: list[Section]
 ) -> list[Anchor]:
@@ -114,7 +137,7 @@ def anchor_texts(
     for item in texts:
         allowed = _ALLOWED_DOMAINS.get(item.kind, frozenset())
         matches: list[Anchor] = []
-        for hit in locate_all(encoded.text, item.text):
+        for hit in transcript_locations(encoded.text, item.text):
             tok_lo, tok_hi = encoded.token_span(hit.start, hit.end)
             index = _section_at(sections, tok_lo)
             if index >= 0 and sections[index].domain in allowed:
@@ -139,6 +162,22 @@ def heat_runs(
         if span is not None:
             runs.append([span[0], span[1], value])
     return runs
+
+
+def token_starts(anchor: Anchor, encoded: Encoded) -> list[int]:
+    """Where each of the text's prompt tokens starts, kept by the capture or not.
+
+    Runs list only the tokens the capture kept (its top N% per segment), so a
+    segment's mean over *all* its tokens needs every token's place, not just
+    the kept ones. Offsets are in the same transcript-text coordinates as runs.
+    """
+    starts: list[int] = []
+    for token in range(anchor.token_lo, anchor.token_hi):
+        a, b = encoded.offsets[token]
+        span = anchor.hit.from_haystack(a, b)
+        if span is not None and span[1] > span[0]:
+            starts.append(span[0])
+    return starts
 
 
 def block_stats(anchor: Anchor, mass: Mass) -> dict[str, float]:

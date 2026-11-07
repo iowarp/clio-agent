@@ -146,6 +146,7 @@ These resolve through `clio_agent.conf`: a value under the dotted key in `config
 | `CLIO_FLEET_DELEGATION` | `fleet.delegation` | str | `{}` _(computed)_ | `src/clio_agent/gact/fleet/guard.py` |
 | `CLIO_FLEET_JUDGES` | `fleet.judges` | str | `{}` _(computed)_ | `src/clio_agent/gact/fleet_settings.py` |
 | `CLIO_FLEET_SEARCH` | `fleet.search` | str | _(unset)_ | `src/clio_agent/gact/fleet_settings.py` |
+| `CLIO_FLEET_SPOTTER` | `fleet.spotter` | str | _(unset)_ | `src/clio_agent/gact/fleet_settings.py` |
 | `CLIO_FLEET_USAGE_POLL_SECONDS` | `fleet.usage_poll_seconds` | int | `300` | `src/clio_agent/providers/usage/openrouter.py` |
 | `CLIO_FLOWCEPT_CAMPAIGN_ID` | `provenance.agentic.flowcept.campaign_id` | str | _(unset)_ | `src/clio_agent/gact/provenance/factory.py` |
 | `CLIO_FLOWCEPT_CAMPAIGN_SCOPE` | `provenance.agentic.flowcept.campaign_scope` | str | `session` | `src/clio_agent/gact/provenance/factory.py` |

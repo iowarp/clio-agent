@@ -252,7 +252,7 @@ def main(verb: str, arguments: Sequence[str] = ()) -> int:
     if verb == "reset-store":
         parser.add_argument("--yes", action="store_true", help="Move it without asking.")
     args = parser.parse_args(list(arguments))
-    from clio_agent.config import load_project_env_file  # noqa: PLC0415
+    from clio_agent.env_file import load_project_env_file  # noqa: PLC0415
 
     load_project_env_file()
     stream = sys.stderr if args.json else sys.stdout  # --json: the words on stderr

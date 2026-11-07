@@ -33,3 +33,12 @@ def test_rendering_maps_back_to_the_exact_source_span(selected: str, source_span
 def test_text_that_is_not_there_is_none() -> None:
     assert find_rendered(SOURCE, "west: 9") is None
     assert find_rendered(SOURCE, "   ") is None
+
+
+def test_a_selection_across_paragraphs_and_painted_tokens_maps_back() -> None:
+    """The browser joins paragraphs with nothing and token spans may split a word."""
+    source = "ANSWER: 73; MATCHES\n\n**Explanation (not part of answer):**\n\n- Round 1 peaked."
+    span = find_rendered(
+        source, "ANSWER: 73; MAT CHESExplanation (not part of answer):Round 1 peaked."
+    )
+    assert span == (0, len(source))

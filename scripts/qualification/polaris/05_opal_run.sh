@@ -5,8 +5,8 @@
 #   (1) Bogdan's chain OPAL_CHAIN_ID, round by round, once per condition in OPAL_CONDITIONS
 #       (A = plain; B = the round-5 injection, exp32-chain-0020-hard only), each in its own
 #       fresh session: python -m scripts.qualification.opal_chain_run (prepares the inputs,
-#       runs the rounds, writes OUT/attention-<cond>.csv in attn_analytics.py columns and
-#       OUT/score-<cond>.json). OUT is operator-only: it holds the correct answers.
+#       runs the rounds and writes OUT/score-<cond>.json). OUT is operator-only: it holds the
+#       correct answers. Attention is inspected afterwards in the UI by selecting answer text.
 #   (2) the broad SPOTTER investigation (scripts/qualification/beta3_opal_run.py over
 #       docs/qualification/beta3/opal-live-inputs.json)
 # Both drivers keep resumable receipts under $EVIDENCE/opal/: rerunning continues where a
@@ -35,7 +35,9 @@ if [ "$RUN_OPAL_CHAIN" = 1 ]; then
     for cond in $OPAL_CONDITIONS; do
       sid="$("${KIT_PY[@]}" session-id "chain_$cond")"
       out="$OPERATOR_DIR/chain-$OPAL_CHAIN_ID-$cond"   # operator-only: holds correct answers
-      run mkdir -p "$out"; run chmod 700 "$OPERATOR_DIR" "$out"
+      # The driver creates $out itself and refuses an existing one (no overwrite of another
+      # run's evidence), so only the operator parent is made here.
+      run mkdir -p "$OPERATOR_DIR"; run chmod 700 "$OPERATOR_DIR"
       log "chain $OPAL_CHAIN_ID condition $cond -> fresh session $sid (out $out)"
       run timeout "$(left)" uv run --frozen --no-sync python -m scripts.qualification.opal_chain_run \
         --endpoint "$endpoint" --session "$sid" --chains "$OPAL_CHAINS_CSV" \

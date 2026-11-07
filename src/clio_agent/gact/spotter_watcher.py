@@ -13,7 +13,8 @@ from collections.abc import Mapping
 from typing import TYPE_CHECKING, Any
 from uuid import uuid4
 
-from clio_agent.arc.task_types import MailItem, TaskSnapshot
+from clio_agent.arc.task_types import CoordinationGrant, MailItem, TaskSnapshot
+from clio_agent.gact.fleet.spotter_model import model_refusal, watcher_model_ref
 from clio_agent.gact.native_work import now
 from clio_agent.gact.spotter_clearance import release_clearance_event, signal_clearance
 
@@ -28,6 +29,7 @@ SPOTTER_APPROVAL_MODE = "spotter-ai"
 WATCHER_RUN_LABEL = "SPOTTER AI"
 _WAKE_TURN_FINAL_TEXT = "Watched session activity: the session's turn completed. The provenance store may have new entries."
 _WAKE_COALESCED_TEXT = "Watched session activity: multiple tool calls completed. The provenance store may have new entries."
+_WAKE_ANSWER_MARKER = " Its answer is message "
 
 
 def _structural_item_identity(value: Any) -> str:
@@ -168,7 +170,7 @@ def sync_watcher_for_mode(
             validate_watcher_arming,
         )
 
-        refusal = validate_watcher_arming(app, session_id=session.id)
+        refusal = validate_watcher_arming(app, session_id=session.id) or model_refusal(app, session)
         if refusal is not None:
             refuse_watcher_arming(app, session, refusal, prior_approval_mode=prior_approval_mode)
         task = ensure_spotter_watcher(app, session)
@@ -207,6 +209,66 @@ def _live_watcher_tasks(app: "FastAPI", parent_session_id: str) -> list[TaskSnap
     return live
 
 
+def _watcher_read_grant_id(task: TaskSnapshot) -> str:
+    """The configuration grant identity for one armed watcher assignment."""
+    return "spotter-read:" + task.handle
+
+
+def _grant_watcher_read(app: "FastAPI", parent_session_id: str, task: TaskSnapshot) -> None:
+    """Let one armed watcher read/observe its protected parent (idempotent, off-loop).
+
+    Arming is a human configuration act, so it may convey the content rights a
+    delegation-reply grant deliberately withholds; the grant is scoped to the
+    parent session and to this exact watcher handle's lifetime (disarm revokes
+    it). An existing grant with the same identity — live or revoked — or any
+    live SPOTTER read grant on the same parent is kept and nothing is written.
+    """
+    history = app.state.task_history
+    grant_id = _watcher_read_grant_id(task)
+    with history.serialized(writing=True):
+        if any(
+            grant.id == grant_id
+            or (
+                grant.id.startswith("spotter-read:")
+                and grant.target_session == parent_session_id
+                and grant.revoked_at is None
+            )
+            for grant in history.coordination_grants(task.owner.session_id)
+        ):
+            return
+        history.record_grant(
+            CoordinationGrant(
+                id=grant_id,
+                granting_human=task.owner.human_id,
+                recipient_session=task.owner.session_id,
+                target_session=parent_session_id,
+                rights=("read", "observe"),
+                created_at=now(),
+            ),
+            observation_id=uuid4().hex,
+        )
+
+
+def _revoke_watcher_read(app: "FastAPI", watcher_session_id: str, parent_session_id: str) -> None:
+    """Revoke every live SPOTTER read grant a watcher session holds on its parent.
+
+    Each grant is re-recorded with ``revoked_at`` (its identity, rights and
+    target unchanged), so the revocation is a durable historical observation.
+    """
+    history = app.state.task_history
+    with history.serialized(writing=True):
+        for grant in history.coordination_grants(watcher_session_id):
+            if (
+                grant.id.startswith("spotter-read:")
+                and grant.target_session == parent_session_id
+                and grant.revoked_at is None
+            ):
+                history.record_grant(
+                    grant.model_copy(update={"revoked_at": now()}),
+                    observation_id=uuid4().hex,
+                )
+
+
 def ensure_spotter_watcher(app: "FastAPI", session: "Session") -> TaskSnapshot | None:
     """Arm one idle watcher through Conversations, without launching a check."""
     if session.approval_mode != SPOTTER_APPROVAL_MODE:
@@ -215,6 +277,7 @@ def ensure_spotter_watcher(app: "FastAPI", session: "Session") -> TaskSnapshot |
     with history.serialized():
         existing = _live_watcher_tasks(app, session.id)
         if existing:
+            _grant_watcher_read(app, session.id, existing[0])  # backfill pre-grant arms
             return existing[0]
         parent = history.latest_assignment(session.id)
         if parent is None or parent.terminal_at is not None:
@@ -225,7 +288,10 @@ def ensure_spotter_watcher(app: "FastAPI", session: "Session") -> TaskSnapshot |
                 predecessor=parent,
                 invocation_id="spotter-arm:" + uuid4().hex,
             )
-        invocation = "spotter:" + parent.handle
+        # A re-arm after a disarm (or a changed watcher model) is a new invocation,
+        # never the cancelled watcher's identity.
+        armed = len(history.resource_handles("spotter:" + session.id))
+        invocation = "spotter:" + parent.handle + (f":{armed}" if armed else "")
     # Route callers run this finite adapter off the application loop.
     receipt = asyncio.run_coroutine_threadsafe(
         owner.spawn(
@@ -238,15 +304,34 @@ def ensure_spotter_watcher(app: "FastAPI", session: "Session") -> TaskSnapshot |
             approval_profile="spotter-watcher",
             start=False,
             standing=True,
+            model=watcher_model_ref(app, session),
         ),
         owner._loop,
     ).result()
     task = history.task_snapshot(receipt["handle"])
     if task is None:
         raise RuntimeError("Watcher acceptance was not recorded")
+    _grant_watcher_read(app, session.id, task)
     app.state.sessions.update(task.owner.session_id, title=WATCHER_RUN_LABEL)
     signal_clearance(app, session.id)
     return task
+
+
+#: Bound on one coalesced wake's text; the oldest events are summarized away first.
+_WAKE_MAX_CHARS = 6000
+
+
+def _append_wake(previous: str, text: str) -> str:
+    """``previous`` then ``text`` as one wake, each event on its own line, bounded."""
+    lines = (previous.split("\n") if previous else []) + [text]
+    dropped = 0
+    if lines and lines[0].startswith("(+"):
+        dropped = int(lines.pop(0)[2:].split(" ", 1)[0])
+    while len(lines) > 1 and len("\n".join(lines)) > _WAKE_MAX_CHARS - 80:
+        lines.pop(0)
+        dropped += 1
+    note = [f"(+{dropped} earlier watched-session events; review_activity lists them)"]
+    return "\n".join((note if dropped else []) + lines)
 
 
 def _push_wake(app: "FastAPI", parent_id: str, task: TaskSnapshot, text: str) -> None:
@@ -254,17 +339,26 @@ def _push_wake(app: "FastAPI", parent_id: str, task: TaskSnapshot, text: str) ->
     history = app.state.task_history
     with history.serialized():
         app.state.conversations.require_admission(task)
-        pending = next(
-            (
-                item
-                for item in history.pending_mail(task.owner.session_id)
-                if item.kind == "spotter" and item.sender_session == parent_id
-            ),
-            None,
-        )
-        content = history.write_content(
-            task.owner.session_id, {"text": _WAKE_COALESCED_TEXT if pending is not None else text}
-        )
+        wakes = [
+            item
+            for item in history.pending_mail(task.owner.session_id)
+            if item.kind == "spotter" and item.sender_session == parent_id
+        ]
+        # A watcher mid-review has already read its oldest pending wake (committed when
+        # that turn ends): appending to it would hide this event. Append to the next
+        # pending wake instead, or queue one, which starts the next review.
+        if wakes and app.state.turn_runner.busy(task.owner.session_id):
+            wakes = wakes[1:]
+        pending = wakes[-1] if wakes else None
+        # One unread mail per watched session, but no event is dropped: each new
+        # wake is appended to the pending one, in order, up to a bounded size.
+        if pending is not None:
+            previous = history.read_content(pending.content)
+            previous_text = (
+                str((previous or {}).get("text") or "") if isinstance(previous, dict) else ""
+            )
+            text = _append_wake(previous_text, text)
+        content = history.write_content(task.owner.session_id, {"text": text})
         if pending is None:
             history.record_mail(
                 MailItem(
@@ -289,6 +383,7 @@ def disarm_spotter_watcher(app: "FastAPI", session: "Session") -> None:
     """Request targeted cancellation from the real conversation owner."""
     owner = app.state.conversations
     for task in _live_watcher_tasks(app, session.id):
+        _revoke_watcher_read(app, task.owner.session_id, session.id)
         asyncio.run_coroutine_threadsafe(
             owner.cancel(owner.caller(session.id), task.handle), owner._loop
         ).result()
@@ -317,13 +412,73 @@ def wake_on_parent_activity(
         )
 
 
+#: Bound on the answer excerpt a turn-completed wake carries.
+_WAKE_ANSWER_CHARS = 600
+#: Bound on the request excerpt a turn-completed wake carries.
+_WAKE_REQUEST_CHARS = 3000
+
+
+def _latest_answer_fact(app: "FastAPI", session_id: str) -> str:
+    """The turn's final answer as a wake fact: its message id and a bounded excerpt.
+
+    Read only from the resident transcript (never a store read on this path); empty
+    when the answer is not resident or has no text.
+    """
+    messages = app.state.messages
+    get_if_resident = getattr(messages, "get_if_resident", None)
+    rows = (
+        get_if_resident(session_id)
+        if callable(get_if_resident)
+        else messages.get(session_id)
+        if isinstance(messages, dict)
+        else None
+    ) or []
+
+    def text_of(message: Any) -> str:
+        return " ".join(
+            " ".join(
+                str(getattr(part, "text", "") or "")
+                for part in getattr(message, "parts", [])
+                if getattr(part, "type", "") == "text"
+            ).split()
+        )
+
+    rows = list(rows)
+    for index in range(len(rows) - 1, -1, -1):
+        message = rows[index]
+        if getattr(message, "role", "") != "assistant":
+            continue
+        excerpt = text_of(message)
+        if not excerpt:
+            return ""
+        if len(excerpt) > _WAKE_ANSWER_CHARS:
+            excerpt = "..." + excerpt[-_WAKE_ANSWER_CHARS:]
+        fact = f"Its answer is message {message.id}: {excerpt}"
+        # The person's request it answers, so the answer can be judged against it.
+        request = next(
+            (text_of(row) for row in reversed(rows[:index]) if getattr(row, "role", "") == "user"),
+            "",
+        )
+        if request:
+            if len(request) > _WAKE_REQUEST_CHARS:
+                request = request[:_WAKE_REQUEST_CHARS] + "..."
+            fact += f" It answers the request: {request}"
+        return fact
+    return ""
+
+
 def on_turn_finalized(app: "FastAPI", session_id: str) -> None:
     """Publish parent evidence; child settlement remains conversation-owned."""
     session = app.state.sessions.get(session_id)
     if session is None:
         return
     if session.approval_mode == SPOTTER_APPROVAL_MODE:
-        wake_on_parent_activity(app, session_id)
+        tasks = _live_watcher_tasks(app, session_id)
+        if tasks:
+            # The new answer itself, so a review starts from what changed, not memory.
+            fact = _latest_answer_fact(app, session_id)
+            text = f"{_WAKE_TURN_FINAL_TEXT} {fact}" if fact else _WAKE_TURN_FINAL_TEXT
+            _push_wake(app, session_id, tasks[0], text)
     elif session.metadata.get("spotter_parent_session"):
         signal_clearance(app, str(session.metadata["spotter_parent_session"]))
 

@@ -201,15 +201,16 @@ def _bundled_codex_root() -> Optional[Path]:
     return resolve_bundled_runtime_root()
 
 
-def _wheel_codex_binary() -> Optional[Path]:
-    """Find the active Python wheel's Windows binary without importing or running it."""
+def _wheel_codex_binary(platform: str = sys.platform) -> Optional[Path]:
+    """Find the active Python wheel's codex binary without importing or running it."""
     try:
         spec = importlib.util.find_spec("codex_cli_bin")
     except (ImportError, ValueError):
         return None
     if spec is None or not spec.origin:
         return None
-    binary = Path(spec.origin).parent / "bin" / "codex.exe"
+    name = "codex.exe" if platform.startswith("win") else CODEX_BINARY_NAME
+    binary = Path(spec.origin).parent / "bin" / name
     return binary if binary.is_file() else None
 
 
@@ -229,7 +230,7 @@ def detect_codex(
     defaults to :func:`_bundled_codex_root`); when this process runs from that bundled runtime
     AND the bundled binary exists on disk, it is preferred FIRST (:data:`CODEX_SOURCE_BUNDLED`) —
     a desktop install must not depend on the user separately installing codex on PATH. Otherwise
-    checks the active Python wheel on Windows (:data:`CODEX_SOURCE_BUNDLED`), including
+    checks the active Python wheel on every platform (:data:`CODEX_SOURCE_BUNDLED`), including
     source/venv installs without a Desktop runtime manifest. Only installations without
     their own runtime use PATH (:data:`CODEX_SOURCE_PATH`); an older ambient client must
     not mask CLIO's qualified native backend. On win32 the
@@ -258,7 +259,9 @@ def detect_codex(
             if platform.startswith("win")
             else (CODEX_BINARY_NAME,)
         )
-        wheel = wheel_binary() if platform.startswith("win") else None
+        # CLIO's own dependency ships the binary on every platform; prefer it over PATH so a
+        # source/venv install (e.g. a Linux HPC node) never depends on a separate codex install.
+        wheel = wheel_binary()
         if wheel is not None:
             binary = str(wheel)
             source = CODEX_SOURCE_BUNDLED

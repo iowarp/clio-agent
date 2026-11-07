@@ -254,10 +254,36 @@ def _wait_agent_ready(log_path, timeout):
             health = call("GET", "/v1/health", timeout=15, allow=(503,))
             if health.get("tool_hooks_installed") is True:
                 return "health"
+            # CLIO builds its agent at boot only for a user-selected provider; before the
+            # scripts bind vLLM there is none, so "agent ready" never comes: stop waiting.
+            for row in health.get("integrations") or []:
+                if (
+                    row.get("name") == "lm_provider"
+                    and row.get("reason") == "lm_provider_unconfigured"
+                ):
+                    return "no-boot-agent"
         except KitError:
             pass
         time.sleep(5)
     return ""
+
+
+#: Settings these scripts read that must not reach CLIO (or the vLLM processes it spawns).
+_SCRIPT_ONLY_ENV = frozenset(
+    [
+        "CLIO_PORT",
+        "VLLM_VARIANT",
+        "VLLM_TP",
+        "VLLM_GPU_UTIL",
+        "VLLM_MAX_NUM_SEQS",
+        "VLLM_MAX_MODEL_LEN",
+    ]
+)
+SPOTTER_SERVICE = "vllm@spotter"
+
+
+def _dedicated_spotter():
+    return env("SPOTTER_MODE", "shared") == "dedicated"
 
 
 def serve_start():
@@ -285,10 +311,15 @@ def serve_start():
     workspace = os.path.join(ROOT, "workspace-default")
     os.makedirs(workspace, exist_ok=True)
     command = [clio_bin, "serve", "--host", "127.0.0.1", "--port", str(chosen)]
+    # The clio-core runtime daemon CLIO spawns reads CLIO_PORT as ITS listen port: these scripts'
+    # CLIO_PORT (CLIO's HTTP port, given by --port) would make it collide with CLIO itself.
+    # These scripts' VLLM_* settings are not vLLM variables: keep them out of the vLLMs CLIO spawns.
+    child_env = {k: v for k, v in os.environ.items() if k not in _SCRIPT_ONLY_ENV}
     with open(log_path, "ab") as log:
         process = subprocess.Popen(
             command,
             cwd=workspace,
+            env=child_env,
             stdout=log,
             stderr=subprocess.STDOUT,
             stdin=subprocess.DEVNULL,
@@ -665,6 +696,7 @@ def step_vllm():
         "param.dtype": "bfloat16",
         "param.gpu_memory_utilization": env("VLLM_GPU_UTIL", "0.9"),
         "param.max_num_seqs": env("VLLM_MAX_NUM_SEQS", "1"),
+        "param.cuda_devices": env("VLLM_GPUS", ",".join(str(i) for i in range(int(tp)))),
     }
     if env("VLLM_MAX_MODEL_LEN"):
         configuration["param.max_model_len"] = env("VLLM_MAX_MODEL_LEN")
@@ -686,6 +718,7 @@ def step_vllm():
             held.get("model") == model
             and held.get("param.tensor_parallel_size", "1") == tp
             and held.get("flowcept_settings") == flowcept["settings_path"]
+            and held.get("param.cuda_devices", "") == configuration["param.cuda_devices"]
         )
 
     row, steps = ensure_service("vllm", variant, configuration, "vllm", 5400, matches)
@@ -827,11 +860,7 @@ def step_bind():
     }
     servers = call("GET", "/v1/providers/servers", dry={"servers": []}).get("servers", [])
     held = next(
-        (
-            s
-            for s in servers
-            if s.get("preset_id") == "vllm" and (s.get("address") or "").rstrip("/") == address
-        ),
+        (s for s in servers if (s.get("address") or "").rstrip("/") == address),
         None,
     )
     if held:  # rerun: recheck the saved server instead of saving it twice
@@ -865,6 +894,125 @@ def step_bind():
         model={"provider_id": saved.get("id", "vllm"), "model_id": model_id},
         credential_ref=saved.get("credential_ref"),
     )
+
+
+def step_spotter_vllm():
+    """SPOTTER_MODE=dedicated: a second vLLM (no attention connector) on its own GPU for SPOTTER."""
+    if not _dedicated_spotter():
+        return receipt("06b-spotter-vllm", "skipped", mode=env("SPOTTER_MODE", "shared"))
+    model = prior("04-model", {"path": "<dry:model snapshot>"}).get("path")
+    if not model:
+        raise KitError("run the model step first (04-model receipt)")
+    configuration = {
+        "model": model,
+        "model_revision": env("MODEL_REVISION"),
+        "param.tensor_parallel_size": env("SPOTTER_TP", "1"),
+        "param.dtype": "bfloat16",
+        "param.gpu_memory_utilization": env("SPOTTER_GPU_UTIL", "0.9"),
+        "param.max_num_seqs": env("SPOTTER_MAX_NUM_SEQS", "4"),
+        "param.cuda_devices": env("SPOTTER_GPU", "1"),
+        # A named instance is not sized by Fit to GPU: without this it served 4096 tokens,
+        # less than SPOTTER's own prompt.
+        "param.max_model_len": env("SPOTTER_MAX_MODEL_LEN", "65536"),
+    }
+    variant = env("SPOTTER_VLLM_VARIANT", "native-cuda")
+
+    def matches(row):
+        held = row.get("configuration") or {}
+        return (
+            held.get("model") == model
+            and held.get("param.cuda_devices") == configuration["param.cuda_devices"]
+            and held.get("param.max_model_len") == configuration["param.max_model_len"]
+            and held.get("param.tensor_parallel_size")
+            == configuration["param.tensor_parallel_size"]
+        )
+
+    row, steps = ensure_service(
+        SPOTTER_SERVICE, variant, configuration, "spotter-vllm", 5400, matches
+    )
+    return receipt(
+        "06b-spotter-vllm",
+        "ok",
+        service_id=SPOTTER_SERVICE,
+        variant=variant,
+        steps=steps,
+        url=row.get("connection_url"),
+        model=model,
+        cuda_devices=configuration["param.cuda_devices"],
+        effective_parameters=row.get("effective_parameters"),
+    )
+
+
+def step_spotter_bind():
+    """Save the SPOTTER vLLM as its own model server and record its fleet ref."""
+    if not _dedicated_spotter():
+        return receipt("08b-spotter-bind", "skipped", mode=env("SPOTTER_MODE", "shared"))
+    spotter = prior("06b-spotter-vllm", {"url": "http://127.0.0.1:41235", "model": "<dry:model>"})
+    url = service_row(catalog(), SPOTTER_SERVICE).get("connection_url") or spotter.get("url")
+    url = url or ("http://127.0.0.1:41235" if DRY else "")
+    if not url:
+        raise KitError("the SPOTTER vLLM has no connection URL in the catalog")
+    address = url.rstrip("/") + ("" if url.rstrip("/").endswith("/v1") else "/v1")
+    dry_saved = {"id": "server-vllm-spotter", "check": {"reachable": True, "models": ["<m>"]}}
+    servers = call("GET", "/v1/providers/servers", dry={"servers": []}).get("servers", [])
+    held = next((s for s in servers if (s.get("address") or "").rstrip("/") == address), None)
+    if held:
+        saved = call("POST", "/v1/providers/servers/%s/check" % held["id"], dry=dry_saved)
+    else:
+        saved = call(
+            "POST",
+            "/v1/providers/servers",
+            {"address": address, "preset_id": "vllm"},
+            dry=dry_saved,
+        )
+    write_json(os.path.join(JOB_EVIDENCE, "bind-spotter-server.json"), saved)
+    check = saved.get("check") or {}
+    models = check.get("models") or []
+    if not check.get("reachable") or not models:
+        raise KitError(
+            "the SPOTTER vLLM is not reachable or lists no model: %s" % json.dumps(check)[:600]
+        )
+    model_id = next((m for m in models if m == spotter.get("model")), models[0])
+    fleet = call(
+        "GET",
+        "/v1/fleet",
+        timeout=300,
+        dry={"entries": [{"account": saved.get("id"), "model": model_id}]},
+    )
+    write_json(os.path.join(JOB_EVIDENCE, "fleet.json"), fleet)
+    ref = next(
+        (
+            e.get("ref") or "%s/%s" % (e.get("account"), e.get("model"))
+            for e in fleet.get("entries", [])
+            if e.get("account") == saved.get("id") and e.get("model") == model_id
+        ),
+        "",
+    )
+    if not ref:
+        raise KitError(
+            "the SPOTTER server %s is not a fleet account; GET /v1/fleet lists %s"
+            % (saved.get("id"), sorted({e.get("account") for e in fleet.get("entries", [])}))
+        )
+    return receipt(
+        "08b-spotter-bind",
+        "ok",
+        server_id=saved.get("id"),
+        address=address,
+        spotter_model=ref,
+        credential_ref=saved.get("credential_ref"),
+    )
+
+
+def _spotter_model():
+    """The fleet ref SPOTTER runs on: the dedicated instance, else the conversation's model."""
+    if not _dedicated_spotter():
+        return ""
+    bound = prior("08b-spotter-bind", {"spotter_model": "server-vllm-spotter/<dry:model>"})
+    if not bound.get("spotter_model"):
+        raise KitError(
+            "SPOTTER_MODE=dedicated but no 08b-spotter-bind receipt; run 02_services_up.sh"
+        )
+    return bound["spotter_model"]
 
 
 def _session_model():
@@ -902,6 +1050,8 @@ def _session(workspace_id, title, agent_ref, approval):
     }
     if agent_ref:
         body["agent"] = {"id": agent_ref}
+    if approval == "spotter-ai" and _spotter_model():
+        body["metadata"] = {"spotter_model": _spotter_model()}
     return call("POST", "/v1/sessions", body, dry={"id": "sess_dry_" + uuid.uuid4().hex[:8]})
 
 
@@ -980,6 +1130,80 @@ def _safetensors_header(path):
     }
 
 
+def step_spotter_smoke():
+    """ONE watched turn with a tool call: SPOTTER must finish a real review on its chosen model.
+
+    The gate before OPAL: it catches a SPOTTER that cannot reach its model (context, key,
+    provider resolution) in minutes instead of a whole chain run.
+    """
+    workspace = _workspace("spotter-smoke", os.path.join(ROOT, "workspace-smoke"))
+    session = _session(
+        workspace["id"],
+        "Polaris SPOTTER smoke (%s)" % env("SPOTTER_MODE", "shared"),
+        "clio/appl-core",
+        "spotter-ai",
+    )
+    sid = session["id"]
+    ack = _post(
+        sid,
+        "Run 'ls -la' in this workspace's root with the shell tool and tell me how many "
+        "entries there are.",
+        "spotter-ai",
+    )
+    reply = _settled(sid, ack.get("message_id", ""), int(env("SPOTTER_SMOKE_TURN_S", "900")))
+    deadline = time.time() + int(env("SPOTTER_SMOKE_REVIEW_S", "900"))
+    task, review = {}, {}
+    while time.time() < deadline:
+        tasks = call("GET", "/v1/sessions/%s/agent-tasks" % sid, dry={"tasks": []}).get("tasks", [])
+        task = tasks[0] if tasks else {}
+        if task.get("child_session_id"):
+            rows = call(
+                "GET", "/v1/sessions/%s/messages" % task["child_session_id"], dry={"messages": []}
+            ).get("messages", [])
+            done = [r for r in rows if r.get("role") == "assistant" and r.get("stop_reason")]
+            if done:
+                review = done[-1]
+                break
+        if DRY:
+            break
+        time.sleep(10)
+    parts = review.get("parts") or []
+    calls = [p.get("tool_name") or "" for p in parts if p.get("type") == "tool_call"]
+    errors = [
+        p.get("tool_name") or ""
+        for p in parts
+        if p.get("type") == "tool_result" and p.get("is_error")
+    ]
+    choice = task.get("model_choice") or {}
+    wanted = _spotter_model()
+    problems = []
+    if not review:
+        problems.append("SPOTTER finished no review in time")
+    elif review.get("stop_reason") != "end_turn":
+        problems.append("SPOTTER review stopped with %s" % review.get("stop_reason"))
+    if review and not calls:
+        problems.append("SPOTTER called no tool")
+    if review and "review_activity" not in calls:
+        problems.append("SPOTTER did not call review_activity")
+    if wanted and (choice.get("ran") or {}).get("provider_id") != wanted.split("/", 1)[0]:
+        problems.append("SPOTTER ran on %s, not %s" % (choice.get("ran"), wanted))
+    return receipt(
+        "09b-spotter-smoke",
+        "failed" if problems and not DRY else "ok",
+        session_id=sid,
+        spotter_session_id=task.get("child_session_id"),
+        model_choice=choice,
+        main_stop_reason=(reply or {}).get("stop_reason"),
+        review_stop_reason=review.get("stop_reason"),
+        tool_calls=calls,
+        tool_errors=errors,
+        problems=problems,
+        review_excerpt=" ".join(
+            "".join(p.get("text", "") for p in parts if p.get("type") == "text").split()
+        )[:600],
+    )
+
+
 def step_smoke():
     """ONE attention turn on the TP deployment: the gate before any OPAL work."""
     vllm = prior(
@@ -1017,18 +1241,6 @@ def step_smoke():
         dry={"available": True},
     )
     write_json(os.path.join(JOB_EVIDENCE, "smoke-attention.json"), attention)
-    # The per-item view (default profile attn-analytics, Bogdan's formula) on the answer's
-    # first sentence: what OPAL's chain export reads for each answer item.
-    answer = (text.get("text") or "").strip()
-    item = answer.split(".")[0][:200] or answer[:200]
-    items = call(
-        "POST",
-        "/v1/sessions/%s/messages/%s/attention/items" % (session["id"], reply["id"]),
-        {"items": [{"text": item}]},
-        timeout=600,
-        dry={"available": True},
-    )
-    write_json(os.path.join(JOB_EVIDENCE, "smoke-attention-items.json"), items)
     write_json(os.path.join(JOB_EVIDENCE, "smoke-reply.json"), reply)
     captures = []
     if vllm.get("captures") and not DRY:
@@ -1043,7 +1255,7 @@ def step_smoke():
             except (OSError, ValueError, struct.error) as exc:
                 row["header_error"] = str(exc)
             captures.append(row)
-    available = attention.get("available") is True and items.get("available") is True
+    available = attention.get("available") is True
     details = {
         "session_id": session["id"],
         "workspace_id": workspace["id"],
@@ -1057,9 +1269,6 @@ def step_smoke():
         "attention_available": available,
         "attention_reason": attention.get("reason"),
         "attention_message": attention.get("message"),
-        "items_available": items.get("available"),
-        "items_reason": items.get("reason"),
-        "items_profile": (items.get("profile") or {}).get("name"),
         "response_id": attention.get("response_id"),
         "capture_sha256": attention.get("capture_sha256"),
         "lm_call_id": attention.get("lm_call_id"),
@@ -1101,7 +1310,10 @@ def step_opal_setup():
         raise KitError("OPAL export %s is missing; run 04_stage_opal_data.sh" % export)
     sessions_file = os.path.join(EVIDENCE, "opal", "opal-sessions.json")
     held = read_json(sessions_file, {}) or {}
-    workspace = _workspace("opal-polaris", os.path.join(ROOT, "workspace-opal"))
+    # OPAL_WORKSPACE names a separate workspace (e.g. a clean one for a recorded demo).
+    name = env("OPAL_WORKSPACE", "opal-polaris")
+    folder = "workspace-opal" if name == "opal-polaris" else "workspace-" + name
+    workspace = _workspace(name, os.path.join(ROOT, folder))
     sources = call("GET", "/v1/workspaces/%s/sources" % workspace["id"], dry={"sources": []})
     # CLIO stores the resolved root, so compare resolved paths (Eagle paths hold symlinks).
     real_export = os.path.realpath(export)
@@ -1360,7 +1572,10 @@ COMMANDS = {
     "vllm": lambda a: step_vllm(),
     "provenance": lambda a: step_provenance(),
     "bind": lambda a: step_bind(),
+    "spotter-vllm": lambda a: step_spotter_vllm(),
+    "spotter-bind": lambda a: step_spotter_bind(),
     "smoke": lambda a: step_smoke(),
+    "spotter-smoke": lambda a: step_spotter_smoke(),
     "opal-setup": lambda a: step_opal_setup(),
     "opal-report": lambda a: step_opal_report(a[0]),
     "stage-opal": lambda a: stage_opal(a[0], a[1]),

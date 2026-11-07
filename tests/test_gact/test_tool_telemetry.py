@@ -904,7 +904,10 @@ def test_live_tool_observer_marks_native_semantic_error_failed(tmp_path: Path) -
         event for event in _settled_history(app, sid) if event.type == "tool.call.completed"
     ]
     assert completed[-1].payload["ok"] is False
-    assert completed[-1].payload["error"] == "alert_card_no_parent"
+    # The typed code keeps its own message beside it (f3b0d888a), not a bare code.
+    assert completed[-1].payload["error"] == (
+        "alert_card_no_parent: This session has no parent session."
+    )
     assert completed[-1].payload["presentation"]["status"] == "failed"
     assert completed[-1].payload["presentation"]["summary"] == ""
     assert completed[-1].payload["presentation"]["blocks"][-1]["text"] == (

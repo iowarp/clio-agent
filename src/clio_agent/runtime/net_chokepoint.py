@@ -47,10 +47,17 @@ import atexit
 import logging
 import socket
 import threading
-from collections.abc import Callable, Iterable
+from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Optional
+
+from clio_agent.runtime.net_child_hosts import (  # re-exported for callers
+    _child_host_allowed,
+    release_child_hosts,
+    restrict_child_hosts,
+)
+from clio_agent.runtime.net_upstream import _dial_tunnel, _upstream_proxy
 
 logger = logging.getLogger(__name__)
 
@@ -151,31 +158,6 @@ def set_egress_gate(gate: Optional[Callable[[EgressRecord], str]]) -> None:
     global _GATE
     with _GATE_LOCK:
         _GATE = gate
-
-
-#: Per-child host allowlists (LaTeX ledger L6). A child registered here may reach only
-#: these hosts, whatever the workspace gate says: a LaTeX build reaches its pinned bundle and
-#: nothing else. Keyed by the child's channel id; cleared when the child is released.
-_CHILD_HOSTS: dict[str, frozenset[str]] = {}
-_CHILD_HOSTS_LOCK = threading.Lock()
-
-
-def restrict_child_hosts(child_id: str, hosts: Iterable[str]) -> None:
-    """Limit ``child_id``'s egress to ``hosts`` (exact, case-insensitive host names)."""
-    with _CHILD_HOSTS_LOCK:
-        _CHILD_HOSTS[child_id] = frozenset(host.lower() for host in hosts)
-
-
-def release_child_hosts(child_id: str) -> None:
-    """Drop ``child_id``'s host allowlist (idempotent)."""
-    with _CHILD_HOSTS_LOCK:
-        _CHILD_HOSTS.pop(child_id, None)
-
-
-def _child_host_allowed(child_id: str, host: str) -> bool:
-    with _CHILD_HOSTS_LOCK:
-        allowed = _CHILD_HOSTS.get(child_id) if child_id else None
-    return allowed is None or host.lower() in allowed
 
 
 class ChokepointStartError(RuntimeError):
@@ -351,7 +333,7 @@ class Chokepoint:
                 if not self._gate_allows(child_id, host, port, "connect"):
                     client.sendall(b"HTTP/1.1 403 Forbidden\r\n\r\n")
                     return
-                upstream = socket.create_connection((host, port), timeout=_CONNECT_READ_TIMEOUT_S)
+                upstream = _dial_tunnel(host, port, _CONNECT_READ_TIMEOUT_S)
                 upstream.settimeout(None)  # the dial is bounded; the tunnel waits on the peers
                 self._record_open(child_id, host, port, upstream, "connect")
                 client.sendall(b"HTTP/1.1 200 Connection established\r\n\r\n")
@@ -371,7 +353,14 @@ class Chokepoint:
             if not self._gate_allows(child_id, host, port, "http", method):
                 client.sendall(b"HTTP/1.1 403 Forbidden\r\n\r\n")
                 return
-            upstream = socket.create_connection((host, port), timeout=_CONNECT_READ_TIMEOUT_S)
+            relay = _upstream_proxy(host, "http")
+            if relay is not None:
+                # Behind a site proxy the origin is unreachable directly: hand the proxy the
+                # request in its original absolute form.
+                upstream = socket.create_connection(relay, timeout=_CONNECT_READ_TIMEOUT_S)
+                origin_head = header
+            else:
+                upstream = socket.create_connection((host, port), timeout=_CONNECT_READ_TIMEOUT_S)
             upstream.settimeout(None)  # the dial is bounded; the tunnel waits on the peers
             self._record_open(child_id, host, port, upstream, "http", method)
             upstream.sendall(origin_head)
@@ -770,6 +759,8 @@ __all__ = [
     "current_chokepoint",
     "install_chokepoint",
     "open_child_channel",
+    "release_child_hosts",
+    "restrict_child_hosts",
     "set_egress_gate",
     "set_egress_recorder",
     "shutdown_chokepoint",

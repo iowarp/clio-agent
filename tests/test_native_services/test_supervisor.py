@@ -171,7 +171,7 @@ def test_identity_and_environment_use_the_execution_hosts_interpreter(tmp_path: 
     )
     assert "VIRTUAL_ENV" not in env
     assert env["PATH"].split(os.pathsep)[0] == str(platform.python_path(tmp_path).parent)
-    assert env["TMP"] == env["TEMP"] == str(tmp_path / "tmp")
+    assert env["TMP"] == env["TEMP"] == str(platform.service_tmp(tmp_path))
 
 
 @pytest.mark.skipif(sys.platform != "win32", reason="Windows Job Object hard-kill contract")
