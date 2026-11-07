@@ -12,8 +12,9 @@ from clio_agent.tools.reaper import RESTART_NO_RESIDENT, RESTART_RESTARTED_LIVE
 def source_policy_change(agent: Any) -> Iterator[None]:
     """Exclude concurrent turn leases while recycling children with compiled permissions.
 
-    Source exclusions are host-wide. Refuse a change while any workspace is
-    using its fleet; an old child must never outlive a newly claimed restriction.
+    Source exclusions are host-wide. Refuse a change while any live turn leases a
+    fleet or a tool call is in flight; an old child must never outlive a newly
+    claimed restriction. Residency holds (views, waiting sessions) do not refuse.
     The no-agent server supports trusted setup without starting an agent.
     """
     if agent is None:
@@ -27,10 +28,18 @@ def source_policy_change(agent: Any) -> Iterator[None]:
         yield
         return
     lock, executors, leases = agent._workspace_state()
+    reaper = getattr(agent, "_workspace_reaper", None)
     with lock:
+        # A conversation on screen or waiting on its user holds only residency; its
+        # idle fleet is restarted below like any other. A live turn still refuses.
+        turn_leased = (
+            any(reaper.turn_leased(root) for root in leases)
+            if reaper is not None
+            else any(leases.values())
+        )
         if (
             getattr(agent, "_source_policy_changing", False)
-            or any(leases.values())
+            or turn_leased
             or any(executor.busy for executor in executors.values())
         ):
             raise ValueError("Wait for active CLIO turns to finish before changing data access")

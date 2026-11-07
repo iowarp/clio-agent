@@ -21,8 +21,8 @@ import asyncio
 import logging
 import threading
 import time
-from contextlib import AbstractContextManager, ExitStack
-from typing import Any, cast
+from contextlib import ExitStack
+from typing import Any
 
 from clio_agent.gact.warmup_revision import start_revision_warmup
 from clio_agent.runtime import trace
@@ -224,7 +224,8 @@ def hold_session_fleet(app: Any, sid: str) -> None:
     """Keep ``sid``'s workspace fleet while the session waits on its user."""
 
     state = getattr(app, "state", None)
-    lease = getattr(getattr(state, "agent", None), "lease_workspace_fleet", None)
+    agent = getattr(state, "agent", None)
+    lease = getattr(agent, "lease_workspace_fleet", None)
     sessions = getattr(state, "sessions", None)
     workspaces = getattr(state, "workspaces", None)
     sess = sessions.get(sid) if sessions is not None else None
@@ -237,7 +238,15 @@ def hold_session_fleet(app: Any, sid: str) -> None:
         if sid in _holds:
             return
         stack = ExitStack()
-        stack.enter_context(cast(AbstractContextManager[None], lease(root)))
+        from clio_agent.tools.reaper import residency_lease  # noqa: PLC0415
+
+        try:
+            stack.enter_context(residency_lease(agent, root))
+        except RuntimeError as error:  # connected-data access is being reconfigured
+            logger.warning(
+                "session_fleet_hold_refused session=%s root=%s error=%s", sid, root, error
+            )
+            return
         timer = threading.Timer(hold_while_waiting_s(), release_session_fleet, args=(sid,))
         timer.daemon = True
         _holds[sid] = (stack, timer)
