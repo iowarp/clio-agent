@@ -70,8 +70,10 @@ async def test_single_and_batch_spawn_share_child_preparation_and_preserve_names
         assert copy.metadata["spawn_target"] == "self"
         assert copy.metadata["agent_flow"] == {"id": "react", "options": {}}
         assert batch["outcomes"][3]["accepted"] is True
-        # Invalid evidence fails before any child is prepared.
-        assert prepared == ["writer", "critic", "self", "writer"]
+        # Invalid evidence fails before any child is prepared. Batch members start
+        # together, so their preparation order is not part of the contract.
+        assert prepared[0] == "writer"
+        assert sorted(prepared[1:]) == ["critic", "self", "writer"]
         children = {
             row["session_id"]: app.state.sessions.get(row["session_id"]).agent["id"]
             for row in (single, batch["outcomes"][0], batch["outcomes"][3])
