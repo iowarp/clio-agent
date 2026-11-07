@@ -40,6 +40,7 @@ from clio_agent.gact.streaming import (
     _pop_stream_fallback_notes,
     _stream_fallback_payload,
 )
+from clio_agent.gact.summon import stamp_summon_outcome
 from clio_agent.gact.tool_observer import (
     _sanitize_handoff_tool_metadata,
     _sanitize_tools_called_metadata,
@@ -260,8 +261,9 @@ def finalize_turn(
             ledger.pop(state.sid, None)
 
     state.assistant_metadata = {}
+    stamp_summon_outcome(state.app, state.turn_id, state.assistant_metadata)
     if state.turn_agent_id:
-        state.assistant_metadata["agent_override"] = {
+        state.assistant_metadata["turn_agent"] = {
             "requested_agent_id": state.turn_agent_id,
             "session_agent_id": _session_agent_id(state.sess),
             "effective_agent_id": state.selected_agent or state.turn_agent_id,
@@ -275,10 +277,8 @@ def finalize_turn(
         current_stream_part_id=current_stream_part_id,
         has_live_parts=has_live_parts,
     )
-    # Degradations that did NOT change the delivery path (native model inputs the
-    # executing agent could not accept) ride here rather than in the single
-    # delivery slot above, which a clean live stream discards -- so a dropped
-    # attachment stays on the turn's record instead of vanishing with it.
+    # Degradations that did NOT change the delivery path (inputs the agent could not
+    # accept) ride here, so a dropped attachment stays on the turn's record.
     stream_degradations = _pop_stream_fallback_notes(state.app, state.sid)
     if stream_degradations:
         state.assistant_metadata["stream_degradations"] = stream_degradations

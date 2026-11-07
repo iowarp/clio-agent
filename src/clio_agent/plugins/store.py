@@ -40,6 +40,7 @@ from filelock import FileLock
 
 from clio_agent.platform_paths import rename_extended, rmtree_extended, win_extended_path
 from clio_agent.plugins.claude_code import import_claude_plugin
+from clio_agent.plugins.commands import BUILTIN_ROOT
 from clio_agent.plugins.loader import PluginLoadError, load_plugin, tree_digests
 from clio_agent.plugins.manifest import within
 from clio_agent.plugins.marketplace import (
@@ -55,7 +56,6 @@ from clio_agent.plugins.store_relocation import relocate_plugin_store
 from clio_agent.sdk.agent import AgentSpec
 from clio_agent.sdk.versions import PluginRef, valid_plugin_id
 
-BUILTIN_ROOT = Path(__file__).resolve().parent / "builtin"
 BUILTIN_MARKETPLACE = "clio-builtin"
 USER_MARKETPLACE = "user"
 #: ``trusted_digests`` key for a marketplace's ``agents/`` folder (not a valid plugin id).
@@ -184,6 +184,21 @@ class PluginStore:
         temporary = self.state_path.with_suffix(".tmp")
         temporary.write_text(json.dumps(state, indent=1, sort_keys=True), encoding="utf-8")
         os.replace(temporary, self.state_path)
+
+    def revision(self) -> tuple[int, int, int]:
+        """An identity of the stored state that changes on every write.
+
+        Every write replaces ``state.json`` (``_write_state``), so its inode, size
+        and modification time change with it, whichever process wrote it. Readers
+        that cache what they derived from the store (A2UI catalogs) compare this
+        instead of relying on the writer to tell them.
+        """
+
+        try:
+            stat = self.state_path.stat()
+        except FileNotFoundError:
+            return (0, 0, 0)
+        return (stat.st_ino, stat.st_size, stat.st_mtime_ns)
 
     # ---------------------------------------------------------------- reading
     def marketplaces(self) -> dict[str, dict[str, Any]]:

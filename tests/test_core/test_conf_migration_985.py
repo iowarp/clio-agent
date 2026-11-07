@@ -58,7 +58,6 @@ def _nest(dotted: str, value: Any) -> dict[str, Any]:
 # (env var, config subkey under gact.ledger_retention, ledger name, LedgerBound attr,
 #  in-code default)
 _LEDGER_KNOBS = [
-    ("CLIO_LEDGER_COMMAND_AUDIT_MAX", "command_audit.max", "command_audit", "max_entries", 2000),
     (
         "CLIO_LEDGER_SESSION_RECALL_AUDIT_MAX",
         "session_recall_audit.max",

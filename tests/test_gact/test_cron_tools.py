@@ -180,19 +180,6 @@ def test_cron_tools_require_active_session() -> None:
     _in_ctx(body)
 
 
-def test_cron_command_row_exists() -> None:
-    """The built-in /cron command row is present and available."""
-
-    from clio_agent.gact.runtime.commands import BACKEND_COMMANDS
-
-    rows = {row["id"]: row for row in BACKEND_COMMANDS}
-    assert "/cron" in rows
-    cron_row = rows["/cron"]
-    assert cron_row["status"] == "available"
-    assert cron_row["enabled"] is True
-    assert "/schedule" in cron_row.get("aliases", [])
-
-
 # --------------------------------------------------------------------------- #
 # run_cron_command — the /cron user-command dispatch (P4.3 #1081 gap fix).      #
 # Mirrors run_loop_command / run_goal_command: same body-parse + typed errors. #

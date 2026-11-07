@@ -52,6 +52,25 @@ A marketplace needs one file that names it:
 
 Agents in this marketplace are addressed as `spectro-lab/<agent id>`.
 
+A plugin kept in another repository can be listed too, pinned by commit; installing the
+marketplace fetches it at that commit:
+
+```json title="spectro-lab/ai.iowarp.clio/marketplace.json"
+{
+  "name": "spectro-lab",
+  "description": "Our lab's spectroscopy plugin and agent.",
+  "plugins": [
+    {
+      "name": "wtfp",
+      "source": {"source": "git-subdir", "url": "https://github.com/JaimeCernuda/wtf-p",
+                 "path": "clio-plugin", "sha": "e23d3cf8f1967053ecedade0522b1a7dff6fe180"}
+    }
+  ]
+}
+```
+
+A source without a commit is reported and not followed.
+
 ## 2. Describe the plugin
 
 `plugin.json` is the plugin's manifest. `name` is its id: lowercase letters, digits, `-` and `.`. CLIO's own settings go under `extensions["ai.iowarp.clio"]`. Here the plugin requires `workspace`, the plugin that reads and writes files, because its reviewer reads the raw spectra.

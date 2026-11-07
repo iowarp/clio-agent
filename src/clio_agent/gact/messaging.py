@@ -334,6 +334,7 @@ def _user_message_parts(
             "resource_ref",
             "context_ref",
             "comment_session",
+            "summon",
         }:
             continue
         metadata = dict(part.metadata)

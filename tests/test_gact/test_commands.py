@@ -40,24 +40,13 @@ class Reviewer(Agent):
     id = "reviewer"
     version = "1.0.0"
     role = "a code reviewer"
-    plugins = Agent.plugins + ["workspace", "review"]
-
-
-class Caller(Agent):
-    id = "caller"
-    version = "1.0.0"
-    role = "an agent that calls commands"
-    plugins = Agent.plugins + ["workspace", "summaries"]
+    plugins = Agent.plugins + ["workspace", "review", "summaries"]
 """
-
-#: Command dispatch runs the resolved agent through this seam.
-RUNNER = "clio_agent.gact.routes.catalog.run_resolved_agent"
 
 
 def _command(name: str, body: str, **meta: Any) -> str:
     lines = ["---", f"name: {name}"]
     for key, value in meta.items():
-        key = key.replace("_", "-") if key in {"agent_invocable"} else key
         if isinstance(value, list):
             lines.append(f"{key}:")
             lines.extend(f"- {item}" for item in value)
@@ -67,32 +56,20 @@ def _command(name: str, body: str, **meta: Any) -> str:
 
 
 def _command_marketplace(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    """Plugins that ship commands (``review``, ``summaries``) and agents that carry them."""
+    """Plugins that ship commands (``review``, ``summaries``) and an agent that carries both."""
 
     summaries = {
-        "ai.iowarp.clio/commands/summarize.md": _command(
-            "summarize",
-            "Summarize {{args.path}}.",
-            description="Summarize a dataset",
-            agent_invocable="true",
-            arguments=["path"],
+        "ai.iowarp.clio/commands/data/summarize.md": _command(
+            "summarize", "Summarize $1 as $2.", description="Summarize a dataset"
         ),
-        "ai.iowarp.clio/commands/user_only.md": _command(
-            "user-only", "User only.", agent_invocable="false"
-        ),
-        "ai.iowarp.clio/commands/future.md": _command(
-            "future",
-            "Later.",
-            status="unavailable",
-            enabled="false",
-            error="not_implemented",
-            disabled_reason="not ready yet",
-        ),
+        "ai.iowarp.clio/commands/notes.md": _command("notes", "Summaries notes."),
+        "ai.iowarp.clio/commands/goal.md": _command("goal", "Not the built-in."),
     }
     review = {
         "ai.iowarp.clio/commands/review.md": _command(
-            "review", "Review this: {{input}}", description="Review the supplied change"
-        )
+            "review", "Review this: $ARGUMENTS", description="Review the supplied change"
+        ),
+        "ai.iowarp.clio/commands/notes.md": _command("notes", "Review notes."),
     }
     custom_marketplace(
         tmp_path,
@@ -166,20 +143,25 @@ def test_goal_command_retains_a_clickable_notice_without_starting_twice(
 
 
 def test_commands_listed(client: TestClient) -> None:
-    body = client.get("/v1/commands").json()
-    ids = {c["id"] for c in body["commands"]}
-    assert "/clear" in ids
-    assert "/cache-stats" in ids
-    clear = next(c for c in body["commands"] if c["id"] == "/clear")
-    assert clear["status"] == "available"
-    assert clear["enabled"] is True
-    assert clear["error"] == ""
-    optimize = next(c for c in body["commands"] if c["id"] == "/optimize")
-    assert optimize["status"] == "unavailable"
-    assert optimize["enabled"] is False
-    # #801: uniform structured not-implemented — shared reason code + #633 pointer.
-    assert optimize["error"] == "optimizer_not_implemented"
-    assert "633" in optimize["disabled_reason"]
+    """The built-ins are the core plugin's command files; ``/optimize`` is gone."""
+
+    rows = {c["id"]: c for c in client.get("/v1/commands").json()["commands"]}
+    assert {"/clear", "/cache-stats", "/dump-trace", "/cron", "/loop", "/goal"} <= set(rows)
+    assert "/optimize" not in rows
+    clear = rows["/clear"]
+    assert clear["kind"] == "builtin" and clear["handler"] == "clear"
+    assert clear["qualified_id"] == "/core:clear" and clear["plugin"] == "core"
+    assert clear["status"] == "available" and clear["enabled"] is True
+    assert clear["path"].endswith("core/ai.iowarp.clio/commands/clear.md")
+    assert rows["/cron"]["aliases"] == ["/schedule"]
+    assert "prompt_template" not in clear and "root" not in clear
+
+
+def test_an_alias_runs_its_builtin(client: TestClient) -> None:
+    sid = client.post("/v1/sessions", json={"title": "t"}).json()["id"]
+    resp = client.post(f"/v1/sessions/{sid}/commands/schedule", json={"input": "list"})
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["command"] == "/cron"
 
 
 def test_commands_capability_advertised(client: TestClient) -> None:
@@ -291,8 +273,8 @@ def test_plugin_command_listed_and_runs_as_a_turn_of_the_conversation(
 
         listed = c.get("/v1/commands", params={"session_id": sid}).json()["commands"]
         review = next(command for command in listed if command["id"] == "/review")
-        assert review["source"] == "user"
-        assert review["command_scope"] == "plugin" and review["plugin"] == "review"
+        assert review["kind"] == "command" and review["source"] == "plugin"
+        assert review["plugin"] == "review" and review["qualified_id"] == "/review:review"
         assert review["status"] == "available"
         # Without a session, no agent's plugins are in scope.
         assert "/review" not in {row["id"] for row in c.get("/v1/commands").json()["commands"]}
@@ -333,41 +315,6 @@ def test_a_command_turn_is_accepted_at_once_while_the_agent_works(
         assert any(p.get("text") == "SLOW_OK" for p in answer["parts"])
 
 
-def test_skill_frontmatter_command_is_listed(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    skill_dir = tmp_path / ".codex" / "skills" / "explain"
-    skill_dir.mkdir(parents=True)
-    (skill_dir / "SKILL.md").write_text(
-        "\n".join(
-            [
-                "---",
-                "name: explain-skill",
-                "description: Explain a selected topic",
-                "command: /explain",
-                "prompt-template: Explain {{input}}",
-                "---",
-                "Use concise explanations.",
-            ]
-        ),
-        encoding="utf-8",
-    )
-    monkeypatch.chdir(tmp_path)
-    c = TestClient(build_app(sessions_path=tmp_path / "s.json", agent=_Agent()))
-
-    commands = c.get("/v1/commands").json()["commands"]
-
-    command = next(row for row in commands if row["id"] == "/explain")
-    # Since #918 skills are not agents: skill commands dispatch to `main`, and
-    # the declared template is COMPOSED with the skill body (the procedure the
-    # old skill-agent carried as its system prompt) — never instead of it.
-    assert command["agent_id"] == "main"
-    assert command["agent_source"] == "skill"
-    assert command["prompt_template"].startswith("Explain {{input}}")
-    assert "Use concise explanations." in command["prompt_template"]
-
-
 def test_workspace_command_file_is_listed_and_dispatches_to_the_session_agent(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -386,9 +333,10 @@ def test_workspace_command_file_is_listed_and_dispatches_to_the_session_agent(
                 "description: Review a supplied path",
                 "argument-hint: <path>",
                 "arguments:",
-                "- path",
+                "- name: path",
+                "  required: true",
                 "---",
-                "Review $ARGUMENTS at {{args.path}} with {{agent_id}}.",
+                "Review $1 ($ARGUMENTS).",
             ]
         ),
         encoding="utf-8",
@@ -398,121 +346,22 @@ def test_workspace_command_file_is_listed_and_dispatches_to_the_session_agent(
 
         listed = c.get("/v1/commands").json()["commands"]
         command = next(row for row in listed if row["id"] == "/review")
-        assert command["agent_source"] == "command_file"
-        assert command["command_source"] == "clio_workspace"
+        assert command["source"] == "clio_workspace"
+        assert command["qualified_id"] == "/project:review"
         assert command["argument_hint"] == "<path>"
 
-        missing = c.post(f"/v1/sessions/{sid}/commands/review", json={"args": {}})
+        missing = c.post(f"/v1/sessions/{sid}/commands/review", json={})
         assert missing.status_code == 422
         assert missing.json()["error"]["details"]["missing"] == ["path"]
 
         resp = c.post(
-            f"/v1/sessions/{sid}/commands/review",
-            json={"args": {"path": "src/app.py"}},
+            f"/v1/sessions/{sid}/commands/review", json={"input": '"src/my app.py" fast'}
         ).json()
 
         assert resp["result"]["type"] == "turn"
         _answer(c, sid)
         # No ``agent:`` field: the command runs on the session's agent.
-        assert agent.questions == ["Review src/app.py at src/app.py with standard."]
-
-
-def test_agent_invocable_command_planner_visibility_and_allowed_call(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """An agent may invoke exactly the agent-invocable commands its plugins ship."""
-
-    calls: list[tuple[str, str, str]] = []
-
-    def fake_runner(base_agent: Any, agent_def: Any, question: str, session_id: str) -> Any:
-        calls.append((agent_def.id, question, session_id))
-        return _Pred(answer="SUMMARY_OK", selected_expert=agent_def.id)
-
-    _command_marketplace(tmp_path, monkeypatch)
-    monkeypatch.setattr(RUNNER, fake_runner)
-    c = TestClient(build_app(sessions_path=tmp_path / "s.json", agent=_Agent()))
-    sid = _session(c, "clio/caller")
-
-    for params in ({"agent_id": "clio/caller"}, {"session_id": sid}):
-        planner = c.get("/v1/commands", params={"planner": "true", **params}).json()["commands"]
-        visible_ids = {row["id"] for row in planner}
-        assert "/summarize" in visible_ids
-        assert "/user-only" not in visible_ids
-    other = c.get("/v1/commands", params={"planner": "true", "agent_id": "clio/reviewer"})
-    assert "/summarize" not in {row["id"] for row in other.json()["commands"]}
-
-    resp = c.post(
-        f"/v1/sessions/{sid}/commands/summarize",
-        json={
-            "caller": {"type": "agent", "agent_id": "caller"},
-            "args": {"path": "data.csv"},
-        },
-    ).json()
-
-    assert resp["result"]["text"] == "SUMMARY_OK"
-    assert resp["result"]["audit"]["caller_type"] == "agent"
-    assert resp["result"]["audit"]["caller_agent_id"] == "caller"
-    assert resp["result"]["audit"]["args"] == {"path": "data.csv"}
-    assert calls == [("caller", "Summarize data.csv.", sid)]
-    assert c.app.state.command_audit[-1]["status"] == "completed"
-
-
-def test_agent_invocable_command_denies_missing_allowlist_and_records_audit(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    monkeypatch.chdir(tmp_path)
-    command_dir = tmp_path / ".clio" / "commands"
-    command_dir.mkdir(parents=True)
-    (command_dir / "summarize.md").write_text(
-        "\n".join(
-            [
-                "---",
-                "name: summarize",
-                "agent-invocable: true",
-                "---",
-                "Summarize.",
-            ]
-        ),
-        encoding="utf-8",
-    )
-    c = TestClient(build_app(sessions_path=tmp_path / "s.json", agent=_Agent()))
-    # The session's agent ships no commands, so it may invoke none.
-    sid = c.post("/v1/sessions", json={"title": "t"}).json()["id"]
-
-    resp = c.post(
-        f"/v1/sessions/{sid}/commands/summarize",
-        json={"caller": {"type": "agent", "agent_id": "standard"}},
-    )
-
-    assert resp.status_code == 403
-    body = resp.json()["error"]
-    assert body["error"] == "command_denied"
-    assert body["details"]["audit"]["status"] == "denied"
-    assert (
-        c.app.state.command_audit[-1]["error"]
-        == "command /summarize is not allowed for agent standard"
-    )
-
-
-def test_agent_invocable_command_invalid_args_records_audit(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    _command_marketplace(tmp_path, monkeypatch)
-    c = TestClient(build_app(sessions_path=tmp_path / "s.json", agent=_Agent()))
-    sid = _session(c, "clio/caller")
-
-    resp = c.post(
-        f"/v1/sessions/{sid}/commands/summarize",
-        json={"caller": {"type": "agent", "agent_id": "caller"}, "args": {}},
-    )
-
-    assert resp.status_code == 422
-    assert resp.json()["error"]["error"] == "invalid_arguments"
-    assert c.app.state.command_audit[-1]["status"] == "failed"
-    assert c.app.state.command_audit[-1]["error"] == "invalid_arguments"
+        assert agent.questions == ['Review src/my app.py ("src/my app.py" fast).']
 
 
 def test_workspace_commands_do_not_leak_between_workspace_requests(tmp_path: Path) -> None:
@@ -526,8 +375,6 @@ def test_workspace_commands_do_not_leak_between_workspace_requests(tmp_path: Pat
                 [
                     "---",
                     f"name: {command_id}",
-                    "agent: main",
-                    "agent-invocable: true",
                     "---",
                     f"Run {command_id}.",
                 ]
@@ -571,11 +418,12 @@ def test_compatible_claude_command_file_is_listed(
         "\n".join(
             [
                 "---",
-                "name: summarize",
-                "user-invocable: true",
-                "agent-invocable: false",
+                "description: Summarize a file",
+                "argument-hint: <file>",
+                "allowed-tools: Read, Grep",
+                "model: claude-sonnet",
                 "---",
-                "Summarize {{input}}",
+                "Summarize $ARGUMENTS",
             ]
         ),
         encoding="utf-8",
@@ -585,9 +433,11 @@ def test_compatible_claude_command_file_is_listed(
     listed = c.get("/v1/commands").json()["commands"]
 
     command = next(row for row in listed if row["id"] == "/summarize")
-    assert command["command_source"] == "claude_workspace"
-    assert command["user_invocable"] is True
-    assert command["agent_invocable"] is False
+    assert command["source"] == "claude_workspace"
+    assert command["argument_hint"] == "<file>"
+    # Listed, never acted on: they do not change the turn's model or tools.
+    assert command["unsupported_fields"] == ["model", "allowed-tools"]
+    assert "user_invocable" not in command and "agent_invocable" not in command
 
 
 def test_command_file_with_shell_field_is_visible_but_disabled(
@@ -618,29 +468,109 @@ def test_command_file_with_shell_field_is_visible_but_disabled(
     assert command["status"] == "unsupported"
     assert command["enabled"] is False
 
+    assert command["disabled_reason"] == "command_shell_unsupported"
+
     resp = c.post(f"/v1/sessions/{sid}/commands/unsafe")
 
-    assert resp.status_code == 501
-    assert resp.json()["error"]["error"] == "not_supported"
+    assert resp.status_code == 409
+    assert resp.json()["error"]["error"] == "command_shell_unsupported"
 
 
-def test_disabled_plugin_command_is_visible_but_not_runnable(
+def test_plugin_commands_clash_reserve_and_label_their_subfolders(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Two plugins' ``/notes`` are ambiguous; a plugin's ``/goal`` is reserved; subfolders label."""
+
+    _command_marketplace(tmp_path, monkeypatch)
+    agent = _Recorder("OK")
+    with TestClient(build_app(sessions_path=tmp_path / "s.json", agent=agent)) as c:
+        sid = _session(c, "clio/reviewer")
+        body = c.get("/v1/commands", params={"session_id": sid}).json()
+        rows = body["commands"]
+        assert body["ambiguous"] == {"/notes": ["/review:notes", "/summaries:notes"]}
+        notes = [row for row in rows if row["name"] == "/notes"]
+        assert {row["id"] for row in notes} == {"/review:notes", "/summaries:notes"}
+        assert all(row["ambiguous"] for row in notes)
+        goal = next(row for row in rows if row["plugin"] == "summaries" and row["name"] == "/goal")
+        assert goal["enabled"] is False and goal["disabled_reason"] == "command_name_reserved"
+        summarize = next(row for row in rows if row["id"] == "/summarize")
+        assert summarize["label"] == "data"
+
+        refused = c.post(f"/v1/sessions/{sid}/commands/notes", json={})
+        assert refused.status_code == 409
+        assert refused.json()["error"]["error"] == "command_ambiguous"
+        assert refused.json()["error"]["details"]["qualified"] == [
+            "/review:notes",
+            "/summaries:notes",
+        ]
+
+        ran = c.post(f"/v1/sessions/{sid}/commands/summaries:notes", json={})
+        assert ran.status_code == 200, ran.text
+        _answer(c, sid)
+        assert agent.questions == ["Summaries notes."]
+        user = next(
+            m
+            for m in c.get(f"/v1/sessions/{sid}/messages").json()["messages"]
+            if m["role"] == "user"
+        )
+        assert [p["text"] for p in user["parts"] if p["type"] == "text"] == ["/notes"]
+
+
+def test_positional_arguments_fill_a_subfolder_command(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     _command_marketplace(tmp_path, monkeypatch)
+    agent = _Recorder("OK")
+    with TestClient(build_app(sessions_path=tmp_path / "s.json", agent=agent)) as c:
+        sid = _session(c, "clio/reviewer")
+        ran = c.post(
+            f"/v1/sessions/{sid}/commands/summarize", json={"input": "'runs/a b.h5' a table"}
+        )
+        assert ran.status_code == 200, ran.text
+        _answer(c, sid)
+        assert agent.questions == ["Summarize runs/a b.h5 as a."]
+
+
+def test_a_workspace_goal_file_is_reserved_and_goal_still_runs_the_builtin(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("HOME", str(tmp_path / "home"))
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / ".clio" / "commands").mkdir(parents=True)
+    (tmp_path / ".clio" / "commands" / "goal.md").write_text("Not the goal.", encoding="utf-8")
     c = TestClient(build_app(sessions_path=tmp_path / "s.json", agent=_Agent()))
-    sid = _session(c, "clio/caller")
+    rows = c.get("/v1/commands").json()["commands"]
+    mine = next(row for row in rows if row["source"] == "clio_workspace")
+    assert mine["name"] == "/goal" and mine["disabled_reason"] == "command_name_reserved"
+    goal = next(row for row in rows if row["id"] == "/goal" and row["kind"] == "builtin")
+    assert goal["enabled"] is True
 
-    listed = c.get("/v1/commands", params={"session_id": sid}).json()["commands"]
-    command = next(row for row in listed if row["id"] == "/future")
-    assert command["enabled"] is False
 
-    resp = c.post(f"/v1/sessions/{sid}/commands/future")
-
-    assert resp.status_code == 501
-    body = resp.json()
-    assert body["error"]["error"] == "not_implemented"
-    assert body["error"]["details"]["disabled_reason"] == "not ready yet"
+def test_workspace_clio_file_shadows_claude_file_and_user_files_list(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    home = tmp_path / "home"
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.chdir(tmp_path)
+    for folder, text in (
+        (tmp_path / ".clio" / "commands", "From clio."),
+        (tmp_path / ".claude" / "commands", "From claude."),
+    ):
+        folder.mkdir(parents=True)
+        (folder / "hello.md").write_text(text, encoding="utf-8")
+    (home / ".claude" / "commands").mkdir(parents=True)
+    (home / ".claude" / "commands" / "standup.md").write_text("Standup.", encoding="utf-8")
+    c = TestClient(build_app(sessions_path=tmp_path / "s.json", agent=_Agent()))
+    rows = c.get("/v1/commands").json()["commands"]
+    hello = [row for row in rows if row["name"] == "/hello"]
+    winner = next(row for row in hello if row["enabled"])
+    loser = next(row for row in hello if not row["enabled"])
+    assert winner["source"] == "clio_workspace"
+    assert loser["source"] == "claude_workspace"
+    assert loser["disabled_reason"] == "command_shadowed"
+    assert loser["shadowed_by"] == winner["path"]
+    standup = next(row for row in rows if row["id"] == "/standup")
+    assert standup["source"] == "claude_user" and standup["qualified_id"] == "/user:standup"
 
 
 def test_dispatch_cache_stats_arc_failure_returns_structured_error(
@@ -675,35 +605,12 @@ def test_dispatch_cache_stats_arc_failure_returns_structured_error(
         assert msgs == []
 
 
-def test_dispatch_optimize_returns_structured_not_implemented(
-    client: TestClient,
-) -> None:
-    sid = client.post("/v1/sessions", json={"title": "t"}).json()["id"]
-
-    resp = client.post(f"/v1/sessions/{sid}/commands/optimize")
-
-    assert resp.status_code == 501
-    body = resp.json()
-    # #801: uniform structured not-implemented — shared reason code + #633 pointer.
-    assert body["error"]["error"] == "optimizer_not_implemented"
-    assert "633" in body["error"]["message"]
-    assert body["error"]["details"]["command"] == "/optimize"
-    assert body["error"]["details"]["status"] == "unavailable"
-    assert "633" in body["error"]["details"]["disabled_reason"]
-    assert body["error"]["details"]["recovery_actions"] == [
-        "retry_after_optimizer_support_lands",
-        "exit",
-    ]
-    msgs = client.get(f"/v1/sessions/{sid}/messages").json()["messages"]
-    assert msgs == []
-
-
 def test_dispatch_unknown_command_404s(client: TestClient) -> None:
     sid = client.post("/v1/sessions", json={"title": "t"}).json()["id"]
-    resp = client.post(f"/v1/sessions/{sid}/commands/nonsense")
-    assert resp.status_code == 404
-    body = resp.json()
-    assert body["error"]["error"] == "not_found"
+    for name in ("nonsense", "optimize"):
+        resp = client.post(f"/v1/sessions/{sid}/commands/{name}")
+        assert resp.status_code == 404
+        assert resp.json()["error"]["error"] == "command_unknown"
 
 
 def test_dispatch_unknown_session_404s(client: TestClient) -> None:

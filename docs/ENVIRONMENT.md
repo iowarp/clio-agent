@@ -177,7 +177,6 @@ These resolve through `clio_agent.conf`: a value under the dotted key in `config
 | `CLIO_HOOKS_TRUST_STORE` | `hooks.trust_store` | str | _(unset)_ | `src/clio_agent/gact/hooks/dispatcher.py` |
 | `CLIO_INTERACTIONS_PROJECTION_LIMIT` | `gact.interactions.projection_limit` | int | `200` | `src/clio_agent/gact/routes/interactions.py` |
 | `CLIO_LEDGER_A2UI_MESSAGES_MAX` | `gact.ledger_retention.a2ui_messages.max` | int | `512` | `src/clio_agent/gact/a2ui.py` |
-| `CLIO_LEDGER_COMMAND_AUDIT_MAX` | `gact.ledger_retention.command_audit.max` | int | `2000` | `src/clio_agent/gact/runtime/retention.py` |
 | `CLIO_LEDGER_CONTEXT_FRAMES_MAX` | `gact.ledger_retention.context_frames.max` | int | `200` | `src/clio_agent/gact/runtime/retention.py` |
 | `CLIO_LEDGER_FILE_CHANGES_MAX` | `gact.ledger_retention.file_changes.max` | int | `500` | `src/clio_agent/gact/runtime/retention.py` |
 | `CLIO_LEDGER_NATIVE_DELIVERY_NOTES_MAX` | `gact.ledger_retention.native_delivery_notes.max` | int | `256` | `src/clio_agent/gact/native_delivery_outcome.py` |

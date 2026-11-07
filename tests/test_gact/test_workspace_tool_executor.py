@@ -143,3 +143,96 @@ def test_workspace_gateway_reads_that_workspace_mcp_yaml(tmp_path, monkeypatch) 
     assert agent._build_tool_gateway(cwd=str(workspace)) == "gateway"
     assert "ws_only" in seen["specs"]
     assert seen["cwd"] == str(workspace)
+
+
+class _Fleet(SimpleNamespace):
+    """A resident fleet double that records whether it was closed."""
+
+    def close(self) -> None:
+        self.closed = True
+
+
+def _two_snapshot_agent(monkeypatch, *, defer: bool):
+    """An agent whose server sets ``old`` and ``new`` declare ``docs`` differently."""
+
+    agent = _bare_agent()
+    agent._tool_definitions = {}
+    agent._workspace_reaper = SimpleNamespace(
+        defer_restart_if_active=lambda _root, _executor, _leases: defer,
+        note_resolved=lambda *_a, **_kw: None,
+    )
+    old = SimpleNamespace(transport="stdio", command="/plugins/docs/1.0/run", args=(), env={})
+    new = SimpleNamespace(transport="stdio", command="/plugins/docs/1.1/run", args=(), env={})
+    specs = {"old": {"docs": old}, "new": {"docs": new}, "same": {"docs": old}}
+    built: list[_Fleet] = []
+
+    def specs_of(gateway):
+        return specs[gateway.server_set]
+
+    def create(_gateway, **_kwargs):
+        built.append(_Fleet(closed=False, _async_executor=SimpleNamespace(_namespace_servers={})))
+        return built[-1]
+
+    monkeypatch.setattr(
+        agent, "_build_tool_gateway", lambda **kw: SimpleNamespace(server_set=kw["server_set"])
+    )
+    for owner in ("clio_agent.agent", "clio_agent.tools.fleet_server_merge"):
+        monkeypatch.setattr(f"{owner}.namespace_specs", specs_of)
+        monkeypatch.setattr(f"{owner}.namespace_proxies", lambda _gateway: {})
+    monkeypatch.setattr(
+        "clio_agent.tools.fleet_server_merge.namespace_direct_factories", lambda _gateway: {}
+    )
+    monkeypatch.setattr("clio_agent.agent.create_sync_tool_executor", create)
+    monkeypatch.setattr("clio_agent.tools.listing_cache.load_listing", lambda *_a, **_kw: None)
+    return agent, built, old, new
+
+
+def _resolve(agent, server_set: str):
+    from clio_agent.tools.execution import tool_server_set_context
+
+    with tool_workspace_context("/ws/paper"), tool_server_set_context(server_set):
+        return agent._active_tool_executor()
+
+
+def test_an_updated_plugin_snapshot_rebuilds_an_idle_fleet(monkeypatch) -> None:
+    """DS40: a new session on an updated plugin gets the new snapshot, not the first mounted."""
+
+    agent, built, _old, new = _two_snapshot_agent(monkeypatch, defer=False)
+    first = _resolve(agent, "old")
+    events: list[str] = []
+    monkeypatch.setattr(
+        "clio_agent.tools.fleet_server_merge.trace.event",
+        lambda _cat, fmt, *args: events.append(fmt % args),
+    )
+
+    second = _resolve(agent, "new")
+
+    assert second is not first and first.closed
+    assert second._clio_namespace_specs == {"docs": new}
+    assert len(built) == 2
+    assert any("workspace_fleet_namespace_spec_changed" in e and "docs" in e for e in events)
+
+
+def test_an_updated_plugin_snapshot_waits_for_a_live_turn(monkeypatch) -> None:
+    """A leased fleet is never closed under a turn; the reaper rebuilds it at idle."""
+
+    agent, built, old, _new = _two_snapshot_agent(monkeypatch, defer=True)
+    first = _resolve(agent, "old")
+
+    second = _resolve(agent, "new")
+
+    assert second is first and not first.closed
+    assert first._clio_namespace_specs == {"docs": old}
+    assert len(built) == 1
+
+
+def test_a_server_set_declaring_the_same_spec_merges_without_a_rebuild(monkeypatch) -> None:
+    agent, built, old, _new = _two_snapshot_agent(monkeypatch, defer=False)
+    first = _resolve(agent, "old")
+
+    second = _resolve(agent, "same")
+
+    assert second is first and not first.closed
+    assert first._clio_mounted_server_sets == {"old", "same"}
+    assert first._clio_namespace_specs == {"docs": old}
+    assert len(built) == 1

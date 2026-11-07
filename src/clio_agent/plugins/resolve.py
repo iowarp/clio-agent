@@ -20,7 +20,7 @@ from __future__ import annotations
 
 import heapq
 from collections.abc import Callable, Iterable, Mapping, Sequence
-from dataclasses import dataclass, field
+from dataclasses import asdict, dataclass, field
 from typing import Any
 
 from clio_agent.plugins.compose import PRODUCT_MARKETPLACES, ComposedPrompt, compose
@@ -302,7 +302,7 @@ def _order_hooks(entries: list[Entry], builder: _Builder) -> list[dict[str, Any]
         for hook in entry.record.hooks:
             row = {**_hook_dict(hook), "plugin": entry.record.id, "root": entry.record.root}
             # A Claude Code plugin's command hook reads and answers on that wire.
-            row["dialect"] = entry.record.format if hook.kind == "command" else ""
+            row["dialect"] = (hook.dialect or entry.record.format) if hook.kind == "command" else ""
             hooks.append((len(hooks), row))
     ids = {row["id"]: index for index, row in hooks}
     edges: dict[int, set[int]] = {index: set() for index, _ in hooks}
@@ -522,14 +522,9 @@ def _collect(builder: _Builder, entries: list[Entry]) -> dict[str, Any]:
         for catalog in record.catalogs:
             catalogs.append({"id": catalog.id, "plugin": record.id, "path": catalog.path})
         for command in record.commands:
-            commands.append(
-                {
-                    "id": command.id,
-                    "plugin": record.id,
-                    "path": command.path,
-                    "description": command.description,
-                }
-            )
+            # ``root``: the plugin folder ``${CLAUDE_PLUGIN_ROOT}`` and ``@`` lines resolve in.
+            row = {**asdict(command), "aliases": list(command.aliases), "root": record.root}
+            commands.append({**row, "plugin": record.id, "format": record.format})
         if record.workflow_state is not None:
             if workflow_state is not None:
                 builder.error(

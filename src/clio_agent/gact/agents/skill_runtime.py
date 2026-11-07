@@ -29,6 +29,7 @@ agent can produce surfaces. Nothing else is declared implicitly.
 
 from __future__ import annotations
 
+import contextvars
 import hashlib
 from collections.abc import Mapping
 from dataclasses import dataclass, field
@@ -63,6 +64,12 @@ _A2UI_PRODUCER_TOOL_NAMES = frozenset(
         "delete_a2ui_surface",
         "publish_dashboard_report",
     }
+)
+
+
+#: Set while a person's ``/<skill>`` command loads the skill: the load is theirs.
+LOADED_BY_PERSON: contextvars.ContextVar[bool] = contextvars.ContextVar(
+    "clio_skill_loaded_by_person", default=False
 )
 
 
@@ -444,10 +451,14 @@ def build_load_skill_tool(agent_def: "AgentDef", runtime: SkillRuntime) -> Any:
                     trace_id=_active_semantic_trace_id(),
                     status="completed",
                     summary=(
-                        f"{agent_id} loaded skill {skill_id}"
-                        + (f" file {bundled_file}" if bundled_file else "")
+                        f"{'the person' if LOADED_BY_PERSON.get() else agent_id} loaded skill "
+                        f"{skill_id}" + (f" file {bundled_file}" if bundled_file else "")
                     ),
-                    actor={"agent_id": agent_id, "role": "expert"},
+                    actor=(
+                        {"role": "person"}
+                        if LOADED_BY_PERSON.get()
+                        else {"agent_id": agent_id, "role": "expert"}
+                    ),
                     subject={"skill_id": skill_id, "scope": ref.scope},
                     payload=payload,
                 )

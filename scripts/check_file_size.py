@@ -444,7 +444,7 @@ RATCHET_BASELINE: dict[str, int] = {
     # Ratchet down 2469 -> 2467 (naming reversal): removed the now-unneeded
     # codex->chatgpt boot migration call (the provider id never changed).
     # Ratchet down 2435 -> 2419: the transcript-store boot moved to gact/transcript_file.py.
-    "src/clio_agent/gact/app.py": 1815,  # -9: the provider swap's model-ref clear moved to providers/config.py
+    "src/clio_agent/gact/app.py": 1789,  # -9 (provider swap) and the command table moved to runtime/command_table.py
     # #971 GAP A (S5 live gate): the artifact mint funnel was at the 800 cap; +24
     # adds the designation-by-RESULT channel (ndp_stage_resource writes an
     # intermediate whose path rides only ``local_path`` in the result — the arg
@@ -562,7 +562,7 @@ RATCHET_BASELINE: dict[str, int] = {
     # builders.py above (owner module tools/mcp_header_mismatch.py).
     # MERGE (PR #1298 x #1310): 962 -> 972. The two campaigns' route additions are
     # disjoint and both survive intact.
-    "src/clio_agent/gact/routes/mcp.py": 903,  # declared MCP assembly moved to routes/mcp_specs.py
+    "src/clio_agent/gact/routes/mcp.py": 850,  # -53: the MCP prompt routes became commands
     # #947 DEBT (recorded 2026-07-18, #948 S4 branch): the MCP-apps landing grew
     # these files past their baselines without a ratchet update (it merged to
     # develop with the check job red). Recording current counts makes the debt

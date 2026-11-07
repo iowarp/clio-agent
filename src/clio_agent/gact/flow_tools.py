@@ -99,15 +99,42 @@ async def permit_flow(
 
 
 async def start_flow(
-    flow_id: str, flow_input: Any, options: dict[str, Any] | None, model: str = ""
+    flow_id: str,
+    flow_input: Any,
+    options: dict[str, Any] | None,
+    model: str = "",
+    *,
+    summoned: tuple[str, str] | None = None,
 ) -> dict[str, Any]:
     """Accept a child assignment that runs ``flow_id`` on ``model`` and return its handle.
 
     The flow's own model steps (a council's synthesis, an arena's judge) run on
-    ``model``; empty runs the flow on this conversation's model.
+    ``model``; empty runs the flow on this conversation's model. ``summoned`` is the
+    ``(kind, target)`` a person may have ``@``-named: started now, the person is
+    recorded as its starter (:func:`clio_agent.gact.summon.claim`).
     """
 
+    from clio_agent.gact import summon  # noqa: PLC0415
+
+    claimed = summon.claim(*summoned) if summoned else None
+    try:
+        result = await _start_flow(flow_id, flow_input, options, model, claimed)
+    except Exception as error:
+        summon.started(claimed, {"error": str(error)})
+        raise
+    summon.started(claimed, result)
+    return result
+
+
+async def _start_flow(
+    flow_id: str,
+    flow_input: Any,
+    options: dict[str, Any] | None,
+    model: str,
+    claimed: dict[str, Any] | None,
+) -> dict[str, Any]:
     from clio_agent.flows.values import _plain, render_input  # noqa: PLC0415
+    from clio_agent.gact.summon import child_metadata  # noqa: PLC0415
 
     app, caller = _runtime()
     refused = await permit_flow(app, caller, flow_id, flow_input, options)
@@ -140,7 +167,8 @@ async def start_flow(
                 "options": _plain(options or {}),
                 "input": _plain(flow_input),
                 "depth": int(parent_flow.get("depth") or 0) + 1,
-            }
+            },
+            **child_metadata(claimed),
         },
         model=str(model or "").strip(),
     )
@@ -215,7 +243,8 @@ def build_run_flow_tool() -> Any:
         options: dict[str, Any] | None = None,  # noqa: A002
         model: str = "",
     ) -> dict[str, Any]:
-        return await start_flow(str(flow or "").strip(), input, options, model)
+        flow_id = str(flow or "").strip()
+        return await start_flow(flow_id, input, options, model, summoned=("flow", flow_id))
 
     return native_tool(
         run_flow,
@@ -237,10 +266,69 @@ def build_run_flow_tool() -> Any:
     )
 
 
+def _declared(ref: str, inputs: dict[str, Any] | None) -> dict[str, Any]:
+    """A declared workflow's steps with ``inputs`` bound, or a typed refusal."""
+
+    from clio_agent.gact.agents.resolution import session_resolution  # noqa: PLC0415
+    from clio_agent.plugins.workflows import (  # noqa: PLC0415
+        bind_inputs,
+        find_workflow,
+        resolution_workflows,
+    )
+
+    app, caller = _runtime()
+    resolution = session_resolution(app, caller.session_id)
+    found = find_workflow(resolution, ref)
+    if found is None:
+        names = ", ".join(sorted(r.id for _p, r in resolution_workflows(resolution))) or "none"
+        return {
+            "reason": "workflow_not_declared",
+            "error": f"this agent declares no workflow {ref!r}; declared: {names}",
+        }
+    _plugin, record = found
+    try:
+        steps = bind_inputs(record, inputs)
+    except ValueError as exc:
+        return {"reason": "workflow_input_missing", "error": str(exc)}
+    return {"id": record.id, "description": record.description, "steps": steps}
+
+
+def _declared_description() -> str:
+    """The declared workflows of this session's agent, for run_workflow's description."""
+
+    from clio_agent.gact.agents.resolution import (  # noqa: PLC0415
+        SessionAgentUnavailable,
+        session_resolution,
+    )
+    from clio_agent.plugins.workflows import resolution_workflows  # noqa: PLC0415
+
+    try:
+        app, caller = _runtime()
+        rows = resolution_workflows(session_resolution(app, caller.session_id))
+    except (ValueError, SessionAgentUnavailable):
+        return ""
+    if not rows:
+        return ""
+    listed = [
+        f"- {record.id}: {record.description}"
+        + (
+            " Inputs: " + ", ".join(row["name"] for row in record.inputs) + "."
+            if record.inputs
+            else ""
+        )
+        for _plugin, record in rows
+    ]
+    return (
+        "\nDeclared workflows (pass the id as workflow and their inputs as inputs):\n"
+        + "\n".join(listed)
+    )
+
+
 def build_run_workflow_tool() -> Any:
     async def run_workflow(
-        workflow: dict[str, Any],
+        workflow: dict[str, Any] | str,
         task: str = "",
+        inputs: dict[str, Any] | None = None,
         editors: list[str] | None = None,
         max_added_steps: int | None = None,
         max_edit_rounds: int | None = None,
@@ -255,6 +343,14 @@ def build_run_workflow_tool() -> Any:
         if isolate and (refused := isolation_refusal()) is not None:
             return refused
 
+        declared = ""
+        if isinstance(workflow, str):
+            # A declared workflow by id: its steps with the inputs filled in.
+            found = _declared(workflow, inputs)
+            if "error" in found:
+                return {"accepted": False, **found}
+            declared, workflow = found["id"], {"steps": found["steps"]}
+            task = task or found["description"]
         try:
             normalized = Workflow.from_dict(workflow).to_dict()
         except WorkflowError as exc:
@@ -280,7 +376,15 @@ def build_run_workflow_tool() -> Any:
             "approve_edits": approve_edits,
             "isolate": isolate,
         }
-        return await start_flow("workflow", flow_input, None, model)
+        if declared:
+            flow_input["declared"] = declared
+        return await start_flow(
+            "workflow",
+            flow_input,
+            None,
+            model,
+            summoned=("workflow", declared) if declared else None,
+        )
 
     step_schema = {
         "type": "object",
@@ -314,15 +418,28 @@ def build_run_workflow_tool() -> Any:
             "finish. Named editors may add or cancel steps while it runs, within max_added_steps and "
             "max_edit_rounds when set; approve_edits asks the user before each added step runs. "
             "A step may run a flow that is installed but not trusted yet (run_flow lists them): "
-            "starting the workflow asks the person about it first."
+            "starting the workflow asks the person about it first." + _declared_description()
         ),
         args={
             "workflow": {
-                "type": "object",
-                "properties": {"steps": {"type": "array", "items": step_schema}},
-                "required": ["steps"],
+                "anyOf": [
+                    {
+                        "type": "object",
+                        "properties": {"steps": {"type": "array", "items": step_schema}},
+                        "required": ["steps"],
+                    },
+                    {
+                        "type": "string",
+                        "description": "A declared workflow's id (or plugin/id); see below.",
+                    },
+                ]
             },
             "task": {"type": "string", "default": ""},
+            "inputs": {
+                "anyOf": [{"type": "object"}, {"type": "null"}],
+                "default": None,
+                "description": "A declared workflow's inputs, by name.",
+            },
             "editors": {
                 "anyOf": [{"type": "array", "items": {"type": "string"}}, {"type": "null"}],
                 "default": None,

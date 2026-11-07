@@ -46,7 +46,7 @@
  "gact/artifacts/violations.py": 4,
  "gact/artifacts/wire.py": 1,
  "gact/autonomous_loop.py": 1,
- "gact/catalog.py": 4,
+ "gact/catalog.py": 3,
  "gact/claude_code_auth_reprobe.py": 1,
  "gact/diagnostics.py": 5,
  "gact/evidence.py": 1,

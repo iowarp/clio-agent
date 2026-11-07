@@ -38,6 +38,37 @@ from clio_agent.runtime import trace
 from clio_agent.tools.gateway import namespace_direct_factories, namespace_proxies, namespace_specs
 
 
+def server_set_spec_changed(agent: Any, executor: Any, root: str, server_set: str) -> bool:
+    """Whether ``server_set`` declares a namespace the resident fleet mounted differently.
+
+    A plugin updated under a running server keeps its server's name, but its spec now points
+    at the new snapshot (``PLUGIN_ROOT``, command paths). Keeping the first-mounted spec would
+    run the old snapshot for every new session, so the fleet is rebuilt instead, through the
+    same evict-or-defer path as a configuration change (a leased fleet is never closed
+    under a live turn). A set already mounted, or no set, changes nothing.
+    """
+
+    if not server_set or server_set in _mounted_server_sets(executor):
+        return False
+    existing = getattr(executor, "_clio_namespace_specs", None) or {}
+    gateway = agent._build_tool_gateway(cwd=root, server_set=server_set)
+    changed = [
+        namespace
+        for namespace, spec in namespace_specs(gateway).items()
+        if namespace in existing and not _specs_equal(existing[namespace], spec)
+    ]
+    if changed:
+        trace.event(
+            "TOOLS",
+            "workspace_fleet_namespace_spec_changed root=%s namespaces=%s server set=%s "
+            "resolution=rebuild",
+            root,
+            ",".join(sorted(changed)),
+            server_set,
+        )
+    return bool(changed)
+
+
 def merge_server_set_namespaces(
     executor: Any,
     gateway: Any,

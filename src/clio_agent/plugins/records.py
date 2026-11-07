@@ -75,6 +75,8 @@ class HookRecord:
     before: tuple[str, ...] = ()
     after: tuple[str, ...] = ()
     fail_closed: bool = False
+    #: ``claude-code``: a ``hooks/hooks.json`` command, run on Claude Code's wire.
+    dialect: str = ""
 
 
 @dataclass(frozen=True)
@@ -129,6 +131,24 @@ class CommandRecord:
     id: str
     description: str
     path: str
+    #: The subfolder of ``commands/`` the file sits in (``frontend``), shown beside its name.
+    label: str = ""
+    #: A built-in handler the file names (core plugin only).
+    handler: str = ""
+    aliases: tuple[str, ...] = ()
+
+
+@dataclass(frozen=True)
+class WorkflowRecord:
+    """A declared workflow (``ai.iowarp.clio/workflows/<id>.json``, :mod:`.workflows`)."""
+
+    id: str
+    description: str
+    path: str
+    #: ``{"name", "description", "required"}`` per input the steps' ``{name}`` use.
+    inputs: tuple[dict[str, Any], ...] = ()
+    #: The steps as :class:`clio_agent.sdk.workflow.Workflow` validates them.
+    steps: tuple[dict[str, Any], ...] = ()
 
 
 @dataclass(frozen=True)
@@ -174,6 +194,7 @@ class PluginRecord:
     flows: tuple[FlowRecord, ...] = ()
     fragments: tuple[FragmentRecord, ...] = ()
     commands: tuple[CommandRecord, ...] = ()
+    workflows: tuple[WorkflowRecord, ...] = ()
     catalogs: tuple[CatalogRecord, ...] = ()
     kernel_bindings: tuple[KernelBindingRecord, ...] = ()
     workflow_state: dict[str, Any] | None = None
@@ -223,6 +244,9 @@ class PluginRecord:
                     "when_tools",
                     "when_plugins",
                     "requires",
+                    "aliases",
+                    "inputs",
+                    "steps",
                 ):
                     if name in values and isinstance(values[name], list):
                         values[name] = tuple(values[name])
@@ -251,6 +275,7 @@ class PluginRecord:
             flows=rows("flows", FlowRecord),
             fragments=rows("fragments", FragmentRecord),
             commands=rows("commands", CommandRecord),
+            workflows=rows("workflows", WorkflowRecord),
             catalogs=rows("catalogs", CatalogRecord),
             kernel_bindings=rows("kernel_bindings", KernelBindingRecord),
             workflow_state=data.get("workflow_state"),

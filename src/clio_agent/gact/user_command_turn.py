@@ -3,7 +3,9 @@
 A user or plugin command (a Markdown recipe) is the person asking for that
 procedure, so it is admitted exactly like a message they sent: their
 transcript shows what they typed (``/new-paper a workshop paper ...``), while
-the model receives the command's rendered recipe. As a turn it streams, can
+the model receives the command's rendered recipe. A file's ``agent:`` summons that
+subagent on the recipe instead, through the same path as ``@<subagent>``. As a turn
+it streams, can
 ask the person questions and can be stopped, like any other.
 """
 
@@ -14,10 +16,10 @@ from typing import TYPE_CHECKING, Any
 
 from clio_agent.gact import context as gact_context
 from clio_agent.gact.hooks.dispatcher import dispatch_user_prompt_expansion
-from clio_agent.gact.message_contract import PostMessageRequest
 from clio_agent.gact.message_submission import accept_message_async
 from clio_agent.gact.parts import Part
-from clio_agent.gact.runtime.commands import command_cwd_for_request
+from clio_agent.gact.runtime.command_table import command_cwd_for_request
+from clio_agent.gact.types import PostMessageRequest
 
 if TYPE_CHECKING:
     from fastapi import FastAPI
@@ -44,6 +46,8 @@ async def submit_user_command(
     user_input: str,
     rendered: str,
     command_meta: dict[str, Any],
+    parts: list[Part] | None = None,
+    metadata: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Admit ``cmd_id`` as the person's message whose model text is ``rendered``.
 
@@ -76,20 +80,29 @@ async def submit_user_command(
     if expansion.additional_context:
         rendered = f"{rendered}\n\n{expansion.additional_context}"
     typed = f"{cmd_id} {user_input}".strip()
-    submission = PostMessageRequest(
-        parts=[Part(type="text", text=typed)],
-        agent_id=str(command_meta.get("agent_id") or "") or None,
-    )
+    parts = [Part(type="text", text=typed), *(parts or [])]
+    # ``agent:`` and ``workflow:`` summon their target as ``@<name>`` does: the agent
+    # reads the rendered recipe and writes the brief for it.
+    for kind, key in (("subagent", "agent"), ("workflow", "workflow")):
+        if str(command_meta.get(key) or "").strip():
+            parts.append(Part(type="summon", target_kind=kind, target=str(command_meta[key])))
     acknowledgement, _status = await accept_message_async(
         app,
         deps,
         sid,
-        submission,
+        PostMessageRequest(parts=parts),
         internal_model_text=rendered,
         server_metadata={
             "command": cmd_id,
-            "command_source": str(command_meta.get("command_source") or ""),
+            "command_source": str(command_meta.get("source") or ""),
+            "command_kind": str(command_meta.get("kind") or ""),
             **({"plugin": str(command_meta["plugin"])} if command_meta.get("plugin") else {}),
+            **(
+                {"loaded_skill": str(command_meta["skill_id"])}
+                if command_meta.get("skill_id")
+                else {}
+            ),
+            **(metadata or {}),
         },
     )
     return {

@@ -360,6 +360,7 @@ from clio_agent.gact.providers.lmstudio import (  # noqa: E402,F401
 from clio_agent.gact.routes import artifact_workspace  # noqa: E402
 from clio_agent.gact.routes.a2ui import register_a2ui_routes  # noqa: E402
 from clio_agent.gact.routes.catalog import register_catalog_routes  # noqa: E402
+from clio_agent.gact.routes.commands import register_command_routes  # noqa: E402
 from clio_agent.gact.routes.connected_storage import register_connected_storage_routes  # noqa: E402
 from clio_agent.gact.routes.context import (  # noqa: E402
     register_context_routes,
@@ -420,17 +421,6 @@ from clio_agent.gact.runtime.capabilities import (  # noqa: E402,F401
     _capability_gap_metadata,
     _latency_stat,
     _stream_fallback_reason_capabilities,
-)
-
-# Slash-command table assembly moved to gact/runtime/commands.py (#714
-# decomposition) so routes/catalog.py and the prompt-render-context closure here
-# share one source. Imported under the legacy underscore names the render-context
-# closure already used.
-from clio_agent.gact.runtime.commands import (  # noqa: E402
-    command_context_for_request as _command_context_for_request,
-)
-from clio_agent.gact.runtime.commands import (  # noqa: E402
-    planner_command_rows as _planner_command_rows,
 )
 
 # Server-wide wire + limit constants (contract/backend version, inline-context
@@ -550,14 +540,9 @@ from typing import Protocol
 from clio_agent.gact import agent_initialization
 from clio_agent.gact.browser.live import register_browser_routes
 from clio_agent.gact.catalog import (  # noqa: E402, F401
-    _command_search_roots,
-    _load_command_files_from_disk,
-    _normalize_file_command_id,
-    _parse_skill_frontmatter,
     _tool_owner_for_catalog,
     _tool_tags_for_catalog,
     _tool_visible_to_for_catalog,
-    _truthy_command_field,
 )
 from clio_agent.gact.events import EventBus
 from clio_agent.gact.permission_gate import (  # noqa: E402,F401
@@ -1005,7 +990,6 @@ def build_app(
         write_root=prompt_write_root,
     )
     app.state.memory_events = {}
-    app.state.command_audit = []
     # per-session pub/sub. POST /messages
     # publishes; /v1/sessions/{sid}/events subscribers consume.
     app.state.bus = EventBus()
@@ -1366,14 +1350,6 @@ def build_app(
             "\n".join(f"- {t['id']}: {t['description']}" for t in targets)
             or "(no defined subagents)"
         )
-        agent_def = resolve_session_agent(app, "", session_id=session_id)
-        commands = [
-            f"- {row.get('id')}: {row.get('description') or row.get('title')}"
-            for row in _planner_command_rows(
-                app, agent_def, *_command_context_for_request(app, session_id)
-            )
-        ]
-        context["commands.agent_invocable"] = "\n".join(commands) or "(no agent-invocable commands)"
         return context
 
     # ---- /v1/sessions CRUD + delete -----------------------------------
@@ -1602,13 +1578,11 @@ def build_app(
     # the direct-destructive-action guard through ``deps``.
     register_misc_routes(app, deps)
 
-    # ---- /v1/catalog/tools + /v1/tools + /v1/commands + dispatch -----
-    # The tool catalog (built-in + unified live) and the slash-command catalog +
-    # dispatch are owned by routes/catalog.py. The command-table assembly lives in
-    # runtime/commands.py (shared with the prompt-render-context closure here); the
-    # dispatch route reaches the message-ledger primitives, agent runner, and
-    # destructive-action guard through ``deps``.
+    # ---- /v1/catalog/tools + /v1/tools, then /v1/commands + dispatch -----
+    # The tool catalog is routes/catalog.py; the command table and its dispatch are
+    # routes/commands.py (the table itself is runtime/command_table.py).
     register_catalog_routes(app, deps)
+    register_command_routes(app, deps)
 
     # ---- /v1/providers (#15) + /v1/providers/lm ---
     # The LM-provider catalog (list/detail/auth/models/handshake) and the runtime

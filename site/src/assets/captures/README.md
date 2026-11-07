@@ -238,3 +238,41 @@ table; they are not measurements. The full record is in
 | `papers/paper-threads-on-v2.png` | The two comment threads after CLIO's edit and version 2: one moved, one outdated, each with CLIO's reply. |
 | `papers/paper-lineage.png` | The paper's lineage: each source file, the build and the paper. |
 | `papers/latex-workspace-phone.png` | The paper at phone width, with Source, PDF and Outline tabs. |
+
+## Commands and @ mentions
+
+Captured on 6 November 2026 from the development UI against a live CLIO with the
+marketplace's `testing/` fixtures (`commands-fixture`, `commands-clash`,
+`prompts-fixture`), at one device pixel per CSS pixel, in dark mode, with the sidebar
+collapsed where the composer is the subject. Sessions and checks are recorded in
+`docs/design/sdk/summoning-ledger.md` (N1, N6, N11, N16, N19).
+
+| File | Viewport | What to inspect |
+| --- | --- | --- |
+| `commands/slash-menu.png` | 1440 x 900 | The / menu's Commands, Skills and prompt groups, with sources. |
+| `commands/slash-menu-prompts.png` | 1440 x 900 | `fixture-docs prompts`, including `summarize_notes` added while the server ran. |
+| `commands/slash-menu-same-name.png` | 1440 x 900 | Two plugins' `review-notes`, each under its full name, marked Same name elsewhere. |
+| `commands/at-popover.png` | 1440 x 900 | The @ menu as it opens: workspace files listed, Agents, Workflows, Flows and Tools collapsed. |
+| `commands/at-popover-typed.png` | 1440 x 900 | `@dr`: the matches in every category, including the `draft-review` workflow. |
+| `commands/chip-in-draft.png` | 1440 x 900 | An `@explore` chip before the message text. |
+| `commands/two-chips-phone.png` | 390 x 844 | Two chips on one line and the text wrapping under them. |
+| `commands/summoned-subagent.png` | 1440 x 900 | The answer to an `@explore` message, with "Started explore as you asked". |
+| `commands/summon-not-started.png` | 1440 x 900 | An `@review` the agent did not start, and "review was not started" under the answer. |
+| `commands/summoned-server.png` | 1440 x 900 | "You pointed this message at the fixture-docs tools" and the answer from two of its tools. |
+| `commands/mcp-prompt-sent.png` | 1440 x 900 | A sent `/mcp__fixture-docs__show_figure` with its image and the opened prompt text. |
+
+## Writing a paper with WTF-P
+
+From the live run recorded as W7–W10 in `docs/design/sdk/summoning-ledger.md`
+(`sess_098491793925`, the `wtfp` plugin from `JaimeCernuda/wtf-p` `clio-plugin/`), at
+1440 x 900, dark mode, sidebar collapsed. The conversation is long, so each shot waits for
+its Markdown to render (`CAP_SETTLE` in `scripts/cloud/checks/site_capture.mjs`).
+
+| File | What to inspect |
+| --- | --- |
+| `papers/wtfp-new-paper.png` | The answer to the plain request: what exists, the defaults chosen, the review findings. |
+| `papers/wtfp-commands.png` | `/wtfp:` in the composer: WTF-P's commands. |
+| `papers/wtfp-roles.png` | `@wtfp` in the composer: the eleven roles. |
+| `papers/wtfp-plan-and-check.png` | `/wtfp:plan-and-check background` as a two-step workflow run. |
+| `papers/wtfp-comment-applied.png` | A comment on the paper and the edit to `introduction.tex`. |
+

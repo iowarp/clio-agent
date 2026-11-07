@@ -25,11 +25,12 @@ Avenues (see ``LEG_C2.md`` for the full per-avenue writeup + citations):
                          then answers it -- needs a model in the loop, like 1/5/11.
  3. mrtr-methods      -- C1-S4 (#1284) landed: the exerciser gained an
                          MRTR-capable ``guarded_prompt``/``guarded_resource``.
-                         REAL, headless assertion via the REST-install lane
-                         (``POST /v1/mcp/servers`` + ``.../prompts/get``):
-                         proves MRTR genuinely dispatches on ``prompts/get``
-                         (a typed, terminal-fast refusal -- this lane's client
-                         wires no elicitation handler) and that
+                         Headless check of the REST-install lane
+                         (``POST /v1/mcp/servers``): its ``.../prompts/get``
+                         route is deleted (a server's prompts are
+                         ``/mcp__<server>__<prompt>`` commands over the agent's
+                         own connection, direct-summoning plan), so it must
+                         answer a typed 404/405, never hang; and that
                          ``resources/read`` genuinely has NO REST route in
                          this repo (``gact/routes/mcp.py`` only lists
                          resources) -- the full round-trip for both methods,
@@ -233,9 +234,9 @@ AVENUE_PLAN: list[dict[str, Any]] = [
         "needs_lm": False,
         "expect": "pass",
         "summary": (
-            "C1-S4 (#1284) landed: prompts/get dispatches a typed MRTR refusal through "
-            "the REST-install lane; resources/read genuinely has no REST route (proven "
-            "at the SDK conformance-suite layer instead)"
+            "the REST-install lane's prompts/get route is deleted (prompts are commands "
+            "over the agent's connection) and answers a typed 404/405; resources/read has "
+            "no REST route either (MRTR on both is proven in the SDK conformance suite)"
         ),
     },
     {
@@ -494,49 +495,24 @@ def _status_and_body(error_message: str) -> tuple[int | None, str]:
         return None, error_message
 
 
-def _prompts_get_dispatched_typed_mrtr_refusal(status: int | None, body: str) -> bool:
-    """True when ``body`` is the TYPED 502 ``upstream_error`` shape MRTR's
-    unsupported-elicitation dispatch produces (Opus review, C1-S4 B2).
-
-    Keys on the STRUCTURED ``error.error`` field (a stable typed error class,
-    ``ErrorInfo.error``) plus the JSON-RPC ``-32600`` (Invalid Request) code
-    the SDK's refusal carries -- NEVER on the free-text "Elicitation not
-    supported" prose, which upstream could reword at any time and silently
-    flip this avenue false-red (the forbidden prose-keyword class this leg
-    must not repeat -- see ⚑ SUPERSEDING PRINCIPLES #1 in CLAUDE.md).
-    """
-
-    if status != 502:
-        return False
-    try:
-        parsed = json.loads(body)
-    except (json.JSONDecodeError, TypeError):
-        return False
-    error = parsed.get("error") if isinstance(parsed, dict) else None
-    if not isinstance(error, dict) or error.get("error") != "upstream_error":
-        return False
-    return "-32600" in str(error.get("message") or "")
-
-
 def avenue_mrtr_methods(call: Any) -> dict[str, Any]:
     """C1-S4 (#1284): prompts/get + resources/read, headless and LM-free.
 
     The exerciser gained an MRTR-capable ``guarded_prompt``/``guarded_resource``
     (build item, mirroring ``guarded_input``'s one-round shape). Installs the
     SAME exerciser server through the REST-install lane
-    (``POST /v1/mcp/servers`` -- a bare ``make_mcp_client(transport,
-    server_id=sid)`` with NO elicitation handler wired, ``gact/routes/mcp.py::
-    _external_mcp_inventory``) and calls ``POST .../prompts/get``: proves the
-    SDK's MRTR loop genuinely fires on ``prompts/get`` for real (a typed,
-    terminal-fast 502 ``upstream_error`` -- never a hang, because this lane's
-    client never wires a callback).
+    (``POST /v1/mcp/servers``) and calls ``POST .../prompts/get``. That route is
+    deleted (direct-summoning plan): a server's prompts are
+    ``/mcp__<server>__<prompt>`` commands fetched over the agent's own
+    connection. The call must answer a typed 404/405 at once, never hang and
+    never return an untyped status.
 
     ``resources/read`` is INFORMATIONAL ONLY (Opus review, C1-S4 B1): this
     repo currently has no ``resources/read`` REST route at all (only
     ``GET .../resources`` LISTS), but a future route existing is a GOOD
     change, not a regression -- ``pass``/``fail`` here NEVER keys on that
-    route's presence or absence either way. Only ``prompts/get`` dispatching
-    a typed refusal decides pass; ``resources/read`` fails this avenue ONLY
+    route's presence or absence either way. Only ``prompts/get`` answering
+    a typed 404/405 decides pass; ``resources/read`` fails this avenue ONLY
     on a genuine hang or an untyped status (neither 404 nor 200) -- see
     ``pass_means`` in the returned verdict.
 
@@ -549,10 +525,9 @@ def avenue_mrtr_methods(call: Any) -> dict[str, Any]:
     """
 
     pass_means = (
-        "pass = the REST-install lane's declared session/turn surface "
-        "correctly REFUSES an MRTR-embedded prompts/get, typed and "
-        "terminal-fast (never a hang, never an untyped 500) -- because that "
-        "lane's client never wires an elicitation handler, BY DESIGN. This is "
+        "pass = the REST-install lane no longer serves prompts/get (deleted "
+        "by the direct-summoning plan: prompts are commands over the agent's "
+        "connection) and answers a typed 404/405 at once. This is "
         "NOT evidence MRTR-on-prompts/resources works end to end; the full "
         "round trip (asked -> answered -> terminal), for both methods, on "
         "BOTH the direct and proxy routes, is proven separately (offline) in "
@@ -590,7 +565,7 @@ def avenue_mrtr_methods(call: Any) -> dict[str, Any]:
         prompt_status = 200
     except RuntimeError as exc:
         prompt_status, prompt_body = _status_and_body(str(exc))
-    prompt_dispatched_mrtr = _prompts_get_dispatched_typed_mrtr_refusal(prompt_status, prompt_body)
+    prompt_route_gone = prompt_status in (404, 405)
 
     resource_status: int | None = None
     resource_body = ""
@@ -628,7 +603,7 @@ def avenue_mrtr_methods(call: Any) -> dict[str, Any]:
             "presence/absence, an untyped status here IS a real finding."
         )
 
-    pass_ = bool(prompt_dispatched_mrtr and not resource_untyped_failure)
+    pass_ = bool(prompt_route_gone and not resource_untyped_failure)
     return {
         "avenue": "mrtr-methods",
         "status": "pass" if pass_ else "fail",
@@ -638,7 +613,7 @@ def avenue_mrtr_methods(call: Any) -> dict[str, Any]:
             "prompts_get": {
                 "status_code": prompt_status,
                 "body": prompt_body,
-                "dispatched_mrtr_typed_refusal": prompt_dispatched_mrtr,
+                "route_deleted_typed": prompt_route_gone,
             },
             "resources_read": {
                 "status_code": resource_status,
@@ -650,7 +625,7 @@ def avenue_mrtr_methods(call: Any) -> dict[str, Any]:
         "error": None
         if pass_
         else (
-            "prompts/get did not dispatch a typed MRTR refusal, or "
+            "the deleted prompts/get route did not answer a typed 404/405, or "
             "resources/read hung/failed with an untyped status"
         ),
     }

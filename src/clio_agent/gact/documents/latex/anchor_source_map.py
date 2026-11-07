@@ -27,7 +27,7 @@ from clio_agent.gact.documents.anchor_text import TextResolver, find_quote, quot
 from clio_agent.gact.documents.anchors import ResolvedMark, register
 
 if TYPE_CHECKING:
-    from clio_agent.gact.documents.anchors import MarkTarget
+    from clio_agent.gact.documents.anchors import AnchorState, MarkTarget
     from clio_agent.gact.documents.latex.mapping import PaperMap
     from clio_agent.gact.documents.models import DocumentAnchor
 
@@ -171,55 +171,80 @@ class SourceMapResolver(PdfResolver):
 
 
 class LatexTextResolver(TextResolver):
-    """Text quotes on any file of a LaTeX paper's project, with the outline node they fall in."""
+    """Text quotes on any file of a LaTeX paper's project, with the outline node they fall in.
 
-    def _project_file(self, target: MarkTarget, anchor: DocumentAnchor) -> tuple[Path, str]:
-        entry = Path(target.version.path) if target.version.path else target.path
-        name = (anchor.source_path or "").strip().replace("\\", "/")
-        if not name or name == entry.name:
-            return target.path, entry.name
-        root = entry.parent.resolve()
-        candidate = (root / name).resolve()
-        if not candidate.is_relative_to(root) or not candidate.is_file():
-            return target.path, entry.name
-        return candidate, candidate.relative_to(root).as_posix()
+    A quote is looked for in the file its ``source_path`` names; one that names no file and was
+    made on a paper's PDF is resolved on the PDF, like a ``pdf-quad`` without its quads; and
+    otherwise, or when the named file no longer holds it, in every source file of the paper in
+    reading order (the entry, then each ``\\input``). Each step taken is said in a note.
+    """
 
-    def _node(self, target: MarkTarget, file: str, line: int) -> str:
-        from clio_agent.gact.documents.latex.mapping import describe  # noqa: PLC0415
-        from clio_agent.gact.documents.latex.outline import build_outline, node_at  # noqa: PLC0415
+    @staticmethod
+    def _entry(target: MarkTarget) -> Path:
+        return Path(target.version.path) if target.version.path else target.path
 
-        if "latex_outline" not in target.cache:
-            entry = Path(target.version.path) if target.version.path else target.path
+    def _texts(self, target: MarkTarget) -> dict[str, str]:
+        """The project's ``.tex`` and ``.bib`` files by path, the entry as this version has it."""
+        if "latex_texts" not in target.cache:
+            entry = self._entry(target)
             root = entry.parent
             texts: dict[str, str] = {}
-            for path in sorted(root.rglob("*")):
+            for path in sorted(root.rglob("*")) if root.is_dir() else []:
                 if path.suffix.lower() in {".tex", ".bib"} and path.is_file():
                     relative = path.relative_to(root)
                     if not any(part.startswith(".") for part in relative.parts):
                         texts[relative.as_posix()] = path.read_text(
                             encoding="utf-8", errors="replace"
                         )
-            target.cache["latex_outline"] = build_outline(entry.name, texts)
+            texts[entry.name] = target.path.read_bytes().decode("utf-8", errors="replace")
+            target.cache["latex_texts"] = texts
+        return target.cache["latex_texts"]
+
+    def _members(self, target: MarkTarget) -> list[str]:
+        """The paper's source files in reading order: the entry, then what it inputs."""
+        from clio_agent.gact.documents.latex.outline import _reading_order  # noqa: PLC0415
+
+        files: list[str] = []
+        for file, _line, _text in _reading_order(self._entry(target).name, self._texts(target)):
+            if file not in files:
+                files.append(file)
+        return files
+
+    def _named(self, target: MarkTarget, anchor: DocumentAnchor) -> tuple[str, list[str]]:
+        """The project file ``source_path`` names, or ``""`` with a note when it names none."""
+        name = (anchor.source_path or "").strip().replace("\\", "/").removeprefix("./")
+        if not name:
+            return "", []
+        if name in self._texts(target):
+            return name, []
+        return "", [f"source_path_unknown: {name} is not a source file of this paper"]
+
+    def _find(self, target: MarkTarget, file: str, anchor: DocumentAnchor) -> ResolvedMark | None:
+        mapped = text_map(self._texts(target)[file], "plain")
+        near = anchor.start if file == (anchor.source_path or "").strip() else None
+        found = find_quote(mapped, anchor.exact, anchor.prefix, anchor.suffix, near)
+        if found is None:
+            return None
+        start, end = found
+        mark = ResolvedMark(
+            mode="text",
+            lines=quote_lines(mapped, start, end, source_name=file),
+            under=mapped.text[start:end],
+        )
+        return self._with_node(target, mark, file)
+
+    def _node(self, target: MarkTarget, file: str, line: int) -> str:
+        from clio_agent.gact.documents.latex.mapping import describe  # noqa: PLC0415
+        from clio_agent.gact.documents.latex.outline import build_outline, node_at  # noqa: PLC0415
+
+        if "latex_outline" not in target.cache:
+            target.cache["latex_outline"] = build_outline(
+                self._entry(target).name, self._texts(target)
+            )
         node = node_at(target.cache["latex_outline"], file, line)
         return describe(node) if node else ""
 
-    def resolve(self, target: MarkTarget, anchor: DocumentAnchor) -> ResolvedMark:
-        path, name = self._project_file(target, anchor)
-        if path == target.path:
-            mark = super().resolve(target, anchor)
-            file = name
-        else:
-            mapped = text_map(path.read_text(encoding="utf-8", errors="replace"), "plain")
-            found = find_quote(mapped, anchor.exact, anchor.prefix, anchor.suffix, anchor.start)
-            if found is None:
-                return super().resolve(target, anchor)
-            start, end = found
-            mark = ResolvedMark(
-                mode="text",
-                lines=quote_lines(mapped, start, end, source_name=name),
-                under=mapped.text[start:end],
-            )
-            file = name
+    def _with_node(self, target: MarkTarget, mark: ResolvedMark, file: str) -> ResolvedMark:
         lines = []
         for label, value in mark.lines:
             if label == "Source":
@@ -229,6 +254,68 @@ class LatexTextResolver(TextResolver):
             lines.append((label, value))
         mark.lines = lines
         return mark
+
+    def resolve(self, target: MarkTarget, anchor: DocumentAnchor) -> ResolvedMark:
+        named, notes = self._named(target, anchor)
+        if named:
+            mark = self._find(target, named, anchor)
+            if mark is not None:
+                return mark
+            notes.append(f"quote_moved_file: the quote is no longer in {named}")
+        if not anchor.source_path and target.via_rendition:
+            # A quote made on the paper's PDF: resolve it there, and its Source line names
+            # the file and lines from the build's SyncTeX index.
+            on_pdf = SourceMapResolver().resolve(target, anchor)
+            if not any(note.startswith("quote_not_found") for note in on_pdf.notes):
+                on_pdf.notes = notes + on_pdf.notes
+                return on_pdf
+        for file in self._members(target):
+            if file == named:
+                continue
+            mark = self._find(target, file, anchor)
+            if mark is not None:
+                mark.notes = notes + mark.notes
+                return mark
+        selected = " ".join(anchor.exact.split())
+        return ResolvedMark(
+            mode="text",
+            lines=[("Selected", f'"{selected}"')],
+            under=selected,
+            notes=[
+                *notes,
+                "quote_not_found: the selected text is in none of this paper's source files",
+            ],
+        )
+
+    def reanchor(
+        self, old: MarkTarget, new: MarkTarget, anchor: DocumentAnchor
+    ) -> tuple[AnchorState, DocumentAnchor]:
+        """The quote on the new version: in its file, else wherever it moved among the sources."""
+        from clio_agent.gact.documents.comment_settings import context_chars  # noqa: PLC0415
+
+        del old
+        named, _notes = self._named(new, anchor)
+        order = [named] if named else []
+        order += [file for file in self._members(new) if file != named]
+        for file in order:
+            mapped = text_map(self._texts(new)[file], "plain")
+            near = anchor.start if file == named else None
+            found = find_quote(mapped, anchor.exact, anchor.prefix, anchor.suffix, near)
+            if found is None:
+                continue
+            start, end = found
+            width = context_chars()
+            moved = {
+                "start": start,
+                "end": end,
+                "prefix": mapped.text[max(0, start - width) : start],
+                "suffix": mapped.text[end : end + width],
+            }
+            if anchor.source_path:
+                # A mark made on a source file follows its text to the file it is in now.
+                moved["source_path"] = file
+            return "moved", anchor.model_copy(update=moved)
+        return "outdated", anchor
 
 
 def register_builtin() -> None:
