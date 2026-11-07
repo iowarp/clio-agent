@@ -78,8 +78,14 @@ def test_fired_schedule_is_registered_and_cancellable(
     gets caught by the ``in_flight_turns`` poll.
     """
 
+    import clio_agent.gact.scheduler_runtime as scheduler_runtime
+
     app, client, sid = _make(tmp_path, _SlowAgent(sleep_s=1.0), request)
     app.state.schedules.add(session_id=sid, cron="* * * * *", question="scheduled q")
+    # One occurrence: a test fired late in a wall-clock minute would otherwise see the
+    # tick's boundary-aligned second iteration rightly fire this every-minute cron again.
+    monkeypatch = request.getfixturevalue("monkeypatch")
+    monkeypatch.setattr(scheduler_runtime, "_seconds_until_next_minute", lambda _now: 3600.0)
 
     async def drive() -> None:
         tick = asyncio.create_task(_scheduler_tick(app))
