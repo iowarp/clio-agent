@@ -118,6 +118,45 @@ def set_live_chunk_emitter(
     _LIVE_CHUNK_EMITTER.set((loop, emit_coro, record_dedup, begin_call))
 
 
+#: The turn's async canvas publisher (``emit_canvas(text, agent_id, step)``): the
+#: REPLACE lane next to the append-only answer lane, for snapshot-shaped (diffusion)
+#: streams. Bound beside the chunk emitter and scheduled on the chunk emitter's loop.
+_LIVE_CANVAS_EMITTER: ContextVar[Any] = ContextVar("clio_live_canvas_emitter", default=None)
+
+
+def set_live_canvas_emitter(emit_canvas: Any) -> None:
+    """Bind the turn's async canvas publisher (dies with the turn's context)."""
+    _LIVE_CANVAS_EMITTER.set(emit_canvas)
+
+
+def note_lm_answer_canvas(text: str, step: int) -> bool:
+    """Show the whole current answer canvas of a snapshot stream (replace, never append).
+
+    A diffusion model streams each denoising step as the full current text. The
+    canvas is display-only: it is never recorded in the transcript, ARC or the
+    session store -- the stream's FINAL text reaches them once through
+    :func:`note_lm_answer_delta`. ``False`` (nothing shown) off-turn, while deltas
+    are redirected to a variant's own lane (which receives only the final text),
+    or when no canvas publisher is bound.
+    """
+    chunks = _LIVE_CHUNK_EMITTER.get()
+    emit_canvas = _LIVE_CANVAS_EMITTER.get()
+    if not text or chunks is None or chunks[3] is None or emit_canvas is None:
+        return False
+    from clio_agent.gact.context import active_react_scope  # noqa: PLC0415
+
+    agent_id = active_react_scope() or ""
+    stream_audit(
+        "bridge.answer_canvas",
+        agent_id=agent_id,
+        step=step,
+        canvas_len=len(text),
+        head=text[:120],
+    )
+    asyncio.run_coroutine_threadsafe(emit_canvas(text, agent_id or None, step), chunks[0])
+    return True
+
+
 def redirect_live_chunks(emit_coro: Any) -> Token[tuple[Any, Any, Any, Any] | None] | None:
     """Send this context's streamed deltas to ``emit_coro`` instead of the turn's lane.
 
