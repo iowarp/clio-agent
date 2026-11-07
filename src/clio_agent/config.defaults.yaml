@@ -260,6 +260,11 @@ providers.component_updates.index_url: "https://pypi.org/pypi"
 # asks again.
 providers.component_updates.ttl_s: 3600.0
 
+# CLIO_COPILOT_SESSION_IDLE_TTL_S  (float)  <- src/clio_agent/providers/copilot/sessions.py
+# Seconds an idle GitHub Copilot runtime entry is kept before the reaper
+# closes it; an entry whose session has a running turn is never reaped.
+providers.copilot.session_idle_ttl_s: 300.0
+
 # CLIO_MODEL_CATALOG_TTL_S  (float)  <- src/clio_agent/providers/model_discovery/overlay.py
 # Seconds a discovered provider model catalog is served as fresh before
 # every read marks it typed-stale (it is still served, never cleared); 0
