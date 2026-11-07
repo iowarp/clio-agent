@@ -201,7 +201,7 @@ def main(arguments: Sequence[str] = ()) -> int:
     )
     parser.add_argument("--json", action="store_true", help="Print one JSON result object.")
     args = parser.parse_args(list(arguments))
-    from clio_agent.config import load_project_env_file  # noqa: PLC0415
+    from clio_agent.env_file import load_project_env_file  # noqa: PLC0415
 
     load_project_env_file()
     stream = sys.stderr if args.json else sys.stdout  # --json: progress on stderr
