@@ -17,6 +17,7 @@ class LMProviderConfigurationField(BaseModel):
     description: str = ""
     placeholder: str = ""
     required: bool = False
+    options: list[str] = Field(default_factory=list)
 
 
 class LMProviderPreset(BaseModel):

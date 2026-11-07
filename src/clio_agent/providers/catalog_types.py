@@ -29,6 +29,9 @@ class ProviderConfigurationField:
     description: str = ""
     placeholder: str = ""
     required: bool = False
+    #: The closed set of values the field accepts (a client renders a select).
+    #: Empty: free text.
+    options: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
