@@ -208,13 +208,21 @@ def load_overlay_entries(*, cwd: "str | Path | None" = None) -> list[OverlayEntr
     Load order is NOT precedence order by itself -- :func:`best_overlay_match`
     is what applies the longest-match/later-root-wins rule across the combined
     list.
-    """
 
-    return [
-        *_fetched_entries(),
-        *_entries_from_dir(user_overlay_dir(), root="user"),
-        *_entries_from_dir(project_overlay_dir(cwd), root="project"),
-    ]
+    Read once per catalog check (:mod:`clio_agent.providers.handshake_memo`):
+    every row of one handshake shares the same entries; callers must not mutate them.
+    """
+    from clio_agent.providers.handshake_memo import read_once  # noqa: PLC0415
+
+    root = Path(cwd) if cwd is not None else Path.cwd()
+    return read_once(
+        ("overlay_entries", str(root)),
+        lambda: [
+            *_fetched_entries(),
+            *_entries_from_dir(user_overlay_dir(), root="user"),
+            *_entries_from_dir(project_overlay_dir(root), root="project"),
+        ],
+    )
 
 
 @dataclass(frozen=True)
