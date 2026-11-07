@@ -329,7 +329,11 @@ def test_user_updatable_components_are_exact_floors_in_pyproject() -> None:
     from packaging.requirements import Requirement
 
     project = tomllib.loads((REPO_ROOT / "pyproject.toml").read_text(encoding="utf-8"))["project"]
-    declared = [*project["dependencies"], *project["optional-dependencies"]["claude-code"]]
+    declared = [
+        *project["dependencies"],
+        *project["optional-dependencies"]["claude-code"],
+        *project["optional-dependencies"]["copilot"],
+    ]
     specs = {Requirement(item).name: Requirement(item).specifier for item in declared}
     for name in cbl.USER_UPDATABLE_COMPONENTS:
         operators = {spec.operator for spec in specs[name]}
