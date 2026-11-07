@@ -535,6 +535,11 @@ def load_config_from_env() -> LMProviderConfig:
     presence_penalty = conf.resolve(
         "lm.presence_penalty", env="CLIO_LM_PRESENCE_PENALTY", default=None, cast=conf.as_float
     )
+    # The person's non-secret provider options (show_diffusion, api_version, ...),
+    # written by the model picker's bind; validated against the preset at construction.
+    provider_options = conf.resolve(
+        "lm.provider_options", env="CLIO_LM_PROVIDER_OPTIONS", default=None, cast=conf.as_mapping
+    )
 
     kwargs: dict = {
         "provider": provider,
@@ -559,6 +564,8 @@ def load_config_from_env() -> LMProviderConfig:
         kwargs["min_p"] = min_p
     if presence_penalty is not None:
         kwargs["presence_penalty"] = presence_penalty
+    if provider_options:
+        kwargs["provider_options"] = {str(k): str(v) for k, v in provider_options.items()}
     if codex_transport:
         kwargs["codex_transport"] = codex_transport
     if claude_code_transport:

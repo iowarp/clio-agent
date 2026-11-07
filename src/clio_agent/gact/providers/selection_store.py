@@ -8,8 +8,8 @@ selection that lived only in memory was lost on every restart and the service
 came back "unconfigured" (A2 follow-up, 2026-09-27).
 
 This module writes the bound selection into the user config file's ``lm``
-section, the one layer boot already reads; no new store. Only the selection's
-identity is written:
+section, the one layer boot already reads; no new store. The selection's identity
+and its provider options are written:
 
 * ``lm.provider`` -- the provider **preset id** (``claude_code``,
   ``argonne_metis``, ``vllm``); ``LMProviderConfig`` resolves a preset id before
@@ -18,7 +18,10 @@ identity is written:
 * ``lm.model``, and ``lm.api_base`` when the bind named one (otherwise the key is
   removed so the preset default applies);
 * the transport keys of the bound provider (``lm.claude_code_transport`` /
-  ``lm.codex_transport``); a previous provider's transport keys are removed.
+  ``lm.codex_transport``); a previous provider's transport keys are removed;
+* ``lm.provider_options`` -- the person's non-secret provider options (for example
+  ``show_diffusion``) when the bind set any; otherwise the key is removed, so a
+  provider switch never carries the previous provider's options.
 
 A removed key (:data:`clio_agent.removed_config_keys.REMOVED_CONFIG_KEYS`) still set anywhere is
 never rewritten around: the write is refused with the typed reason below and the
@@ -53,6 +56,7 @@ OWNED_LM_KEYS = (
     "api_base",
     "claude_code_transport",
     "codex_transport",
+    "provider_options",
 )
 
 #: Typed reason recorded when the selection could not be written.
@@ -95,6 +99,9 @@ def selection_entries(cfg: Any, *, requested_api_base: str) -> dict[str, Any]:
         entries["claude_code_transport"] = str(cfg.claude_code_transport)
     elif provider == "codex":
         entries["codex_transport"] = str(cfg.codex_transport)
+    options = getattr(cfg, "provider_options", None)
+    if options:
+        entries["provider_options"] = {str(key): str(value) for key, value in options.items()}
     return entries
 
 

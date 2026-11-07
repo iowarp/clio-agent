@@ -206,6 +206,7 @@ These resolve through `clio_agent.conf`: a value under the dotted key in `config
 | `CLIO_LM_MODEL` | `lm.model` | str | _(unset)_ | `src/clio_agent/config.py` |
 | `CLIO_LM_PRESENCE_PENALTY` | `lm.presence_penalty` | float | _(unset)_ | `src/clio_agent/config.py` |
 | `CLIO_LM_PROVIDER` | `lm.provider` | str | `lm_studio` | `src/clio_agent/config.py` |
+| `CLIO_LM_PROVIDER_OPTIONS` | `lm.provider_options` | mapping | _(unset)_ | `src/clio_agent/config.py` |
 | `CLIO_LM_REQUEST_QUEUE_S` | `limits.lm_request_queue_s` | float | `120.0` | `src/clio_agent/lm/admission.py` |
 | `CLIO_LM_SENT_PROMPT_SESSIONS` | `lm.sent_prompt_sessions` | int | `64` | `src/clio_agent/lm/sent_prompt.py` |
 | `CLIO_LM_STOP_SEQUENCES` | `lm.stop_sequences` | str | _(unset)_ | `src/clio_agent/lm/request_builder.py` |
