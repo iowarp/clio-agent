@@ -153,10 +153,28 @@ class TaskProcessTree:
                 raise OSError("Could not terminate the owned shell Job")
             return
         if sys.platform != "win32":
+            # A fence can start its sandbox in a session of its own (bwrap --new-session),
+            # out of this group's reach but still a descendant of the owned process.
+            escaped = self._descendants()
             try:
                 os.killpg(self.pid, signal.SIGKILL)
             except ProcessLookupError:
                 pass
+            for process in escaped:
+                try:
+                    process.kill()
+                except psutil.NoSuchProcess:
+                    pass  # it ended with its group
+
+    def _descendants(self) -> list[psutil.Process]:
+        """The owned process's live descendants, wherever their group or session."""
+        try:
+            process = psutil.Process(self.pid)
+            if self.birth is None or process.create_time() != self.birth:
+                return []  # not the process this tree was given
+            return process.children(recursive=True)
+        except psutil.NoSuchProcess:
+            return []
 
     def close(self) -> None:
         """Release an already-settled Job; closing a live Job also reaps its tree."""
