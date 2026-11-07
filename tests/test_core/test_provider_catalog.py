@@ -176,6 +176,7 @@ class TestDerivedViews:
             "argonne",
             "codex",
             "claude_code",
+            "copilot",
         }
 
     def test_provider_defaults_have_required_keys(self) -> None:
