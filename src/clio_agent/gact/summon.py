@@ -165,6 +165,18 @@ def summon_targets(app: "FastAPI", sid: str) -> dict[str, Any]:
     }
 
 
+def _target_names(rows: list[dict[str, Any]]) -> list[str]:
+    """One kind's summonable names, sorted: a row's ``id``, a server's ``name``."""
+
+    names: list[str] = []
+    for row in rows:
+        name = row.get("id") or row.get("name")
+        if not isinstance(name, str):
+            raise TypeError(f"a summon target has no name: {row!r}")
+        names.append(name)
+    return sorted(names)
+
+
 def plan_summons(app: "FastAPI", sid: str, parts: Sequence["Part"]) -> Summons:
     """Check ``parts``' summonses against the session's agent; raise a typed refusal."""
 
@@ -179,10 +191,7 @@ def plan_summons(app: "FastAPI", sid: str, parts: Sequence["Part"]) -> Summons:
         raise _refuse(
             409, "summon_unknown_target", f"this conversation has no agent: {exc}"
         ) from exc
-    names = {
-        kind: sorted(row.get("id") or row.get("name") for row in rows)
-        for kind, rows in known.items()
-    }
+    names = {kind: _target_names(rows) for kind, rows in known.items()}
     unknown = [
         {"target_kind": p.target_kind, "target": p.target}
         for p in wanted
@@ -246,6 +255,7 @@ def summon_injections(app: "FastAPI", sid: str, summons_metadata: Any) -> list[t
     expands (:func:`expand_server_summons`).
     """
 
+    from clio_agent.gact.agents.resolution import SessionAgentUnavailable  # noqa: PLC0415
     from clio_agent.injections.resolution import render  # noqa: PLC0415
 
     record = summons_metadata if isinstance(summons_metadata, dict) else {}
@@ -253,7 +263,9 @@ def summon_injections(app: "FastAPI", sid: str, summons_metadata: Any) -> list[t
         return []
     try:
         _resolution, known = _known(app, sid)
-    except Exception as exc:  # noqa: BLE001 - typed: the turn's own resolution reports it
+    except (SessionAgentUnavailable, OSError, ValueError) as exc:
+        # The agent cannot resolve, or its pinned resolution cannot be read; the
+        # turn's own resolution reports it.
         trace.event("SUMMON", "summon_injections_unavailable reason=%s", exc)
         known = {}
     rows = {kind: {row.get("id"): row for row in known.get(kind, [])} for kind in DELEGATED}
@@ -323,7 +335,9 @@ def claim(kind: str, target: str) -> dict[str, Any] | None:
         return None
     with _CLAIMS_LOCK:
         record = _turns(app).get(turn_id)
-        for row in (record or {}).get("rows", ()):
+        if record is None:
+            return None
+        for row in record.get("rows", ()):
             if row["kind"] == kind and row["target"] == target and "claimed" not in row:
                 row["claimed"] = True
                 person = {**STARTED_BY_PERSON, "message_id": record["message_id"]}

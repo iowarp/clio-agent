@@ -79,12 +79,17 @@ def read_workflows(folder: Path, plugin: str) -> tuple[list[WorkflowRecord], lis
             diagnostics.append(_diag(plugin, "workflow_invalid", "not a JSON object", path))
             continue
         steps = data.get("steps")
+        if not isinstance(steps, list):
+            diagnostics.append(
+                _diag(plugin, "workflow_invalid", "a workflow is {'steps': [...]}", path)
+            )
+            continue
         try:
             Workflow.from_dict({"steps": steps})
         except WorkflowError as exc:
             diagnostics.append(_diag(plugin, "workflow_invalid", str(exc), path))
             continue
-        inputs = [
+        inputs: list[dict[str, Any]] = [
             {
                 "name": str(row.get("name") or "").strip(),
                 "description": str(row.get("description") or ""),

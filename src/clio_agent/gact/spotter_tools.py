@@ -71,7 +71,7 @@ def _watched_session() -> tuple[Any, str, str] | dict[str, Any]:
 
     app, sid = context.active_app(), context.active_session_id()
     session = app.state.sessions.get(sid) if app is not None and sid else None
-    if session is None:
+    if app is None or session is None:
         return _error(
             "no_active_session",
             "SPOTTER review tools run only inside an active watcher session.",
@@ -250,7 +250,8 @@ def summarize_activity(
             **({"error": _clip(row["error"])} if row.get("error") else {}),
         }
         tool_rows.append(entry)
-        args = row.get("input") if isinstance(row.get("input"), Mapping) else {}
+        raw_input = row.get("input")
+        args: Mapping[str, Any] = raw_input if isinstance(raw_input, Mapping) else {}
         if tool in _WRITE_TOOLS and args.get("path"):
             writes.append({"source": tool, "path": str(args["path"]), "call_id": cid, "at": stamp})
     lm_rows: list[dict[str, Any]] = []
@@ -261,7 +262,8 @@ def summarize_activity(
         stamp = event.get("occurred_at", "")
         if not fresh(stamp):
             continue
-        payload = event.get("payload") if isinstance(event.get("payload"), Mapping) else {}
+        raw_payload = event.get("payload")
+        payload: Mapping[str, Any] = raw_payload if isinstance(raw_payload, Mapping) else {}
         if kind == "lm.call":
             turn = str(event.get("turn_id") or "")
             lm_rows.append(
@@ -275,7 +277,8 @@ def summarize_activity(
                 }
             )
         elif kind in {"artifact.created", "artifact.version.added"}:
-            subject = event.get("subject") if isinstance(event.get("subject"), Mapping) else {}
+            raw_subject = event.get("subject")
+            subject: Mapping[str, Any] = raw_subject if isinstance(raw_subject, Mapping) else {}
             path = payload.get("path") or payload.get("uri") or subject.get("path") or ""
             name = payload.get("name") or subject.get("name") or ""
             writes.append(
