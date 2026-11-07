@@ -255,6 +255,7 @@ def summon_injections(app: "FastAPI", sid: str, summons_metadata: Any) -> list[t
     expands (:func:`expand_server_summons`).
     """
 
+    from clio_agent.gact.agents.resolution import SessionAgentUnavailable  # noqa: PLC0415
     from clio_agent.injections.resolution import render  # noqa: PLC0415
 
     record = summons_metadata if isinstance(summons_metadata, dict) else {}
@@ -262,7 +263,9 @@ def summon_injections(app: "FastAPI", sid: str, summons_metadata: Any) -> list[t
         return []
     try:
         _resolution, known = _known(app, sid)
-    except Exception as exc:  # noqa: BLE001 - typed: the turn's own resolution reports it
+    except (SessionAgentUnavailable, OSError, ValueError) as exc:
+        # The agent cannot resolve, or its pinned resolution cannot be read; the
+        # turn's own resolution reports it.
         trace.event("SUMMON", "summon_injections_unavailable reason=%s", exc)
         known = {}
     rows = {kind: {row.get("id"): row for row in known.get(kind, [])} for kind in DELEGATED}
