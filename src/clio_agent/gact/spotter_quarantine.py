@@ -83,11 +83,18 @@ def quarantine_session(
     trace.event("SPOTTER", "spotter_quarantine_started session=%s part=%s", sid, part_id)
     if sess is not None:
         _publish(app, sid, sess, "spotter_quarantine_started")
+    from fastapi import HTTPException  # noqa: PLC0415
+
+    from clio_agent.errors import ClioError  # noqa: PLC0415
     from clio_agent.gact.routes.session_cancellation import cancel_session_state  # noqa: PLC0415
 
     try:
         cancel_session_state(app, None, sid)
-    except Exception as exc:  # noqa: BLE001 - the hold stands even if the stop fails
+    except (HTTPException, ValueError, RuntimeError, OSError, ClioError) as exc:
+        # The hold stands even if the stop fails: the session is gone (HTTPException
+        # 404), its task is no longer controllable (TaskAccessDenied, a ValueError), the
+        # application loop is closed or this turn was stopped (RuntimeError), or the
+        # store refused the write (OSError, ClioError).
         logger.warning("spotter_quarantine_stop_failed session=%s error=%s", sid, exc)
     return True
 
