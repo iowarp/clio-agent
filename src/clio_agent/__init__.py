@@ -60,12 +60,17 @@ def _avoid_windows_wmi_platform_probe() -> None:
         import platform
 
         if getattr(platform, "_uname_cache", None) is None:
+            # ``machine`` is Python's own non-WMI answer; the Copilot SDK names its
+            # runtime from it and refuses an empty one.
+            machine = os.environ.get("PROCESSOR_ARCHITEW6432", "") or os.environ.get(
+                "PROCESSOR_ARCHITECTURE", ""
+            )
             platform._uname_cache = platform.uname_result(  # type: ignore[attr-defined]
                 "Windows",
                 os.environ.get("COMPUTERNAME", ""),
                 "",
                 "",
-                "",
+                machine,
             )
         processor = os.environ.get("PROCESSOR_IDENTIFIER", "") or os.environ.get(
             "PROCESSOR_ARCHITECTURE",

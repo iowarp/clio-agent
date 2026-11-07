@@ -40,16 +40,29 @@ def _wrapper_name() -> str:
 
 
 def staged_runtime_path() -> str | None:
-    """The complete staged runtime bundle's entrypoint for the pinned version, or ``None``."""
+    """The staged runtime wrapper when the pinned bundle is complete, or ``None``.
+
+    ``python -m copilot download-runtime`` stages the wrapper, ``runtime.node`` and the
+    assets marker but not the ``copilot`` alias ``get_cached_cli_path`` also requires,
+    so completeness is the SDK's own bundle rule for the wrapper it spawns.
+    """
     try:
-        from copilot._cli_download import get_cached_cli_path  # noqa: PLC0415
+        from copilot._cli_download import (  # noqa: PLC0415
+            _runtime_bundle_is_complete,
+            get_cache_dir,
+        )
+        from copilot._cli_version import CLI_VERSION, get_runtime_platform  # noqa: PLC0415
     except ImportError:
         return None
-    cached = get_cached_cli_path()
-    if not cached:
+    if not CLI_VERSION:
         return None
-    wrapper = Path(cached).with_name(_wrapper_name())
-    return str(wrapper) if wrapper.is_file() else None
+    try:
+        pair_dir = get_cache_dir(CLI_VERSION) / "prebuilds" / get_runtime_platform()
+    except RuntimeError:
+        return None
+    if not _runtime_bundle_is_complete(pair_dir, _wrapper_name()):
+        return None
+    return str(pair_dir / _wrapper_name())
 
 
 def pinned_runtime_version() -> str:

@@ -291,6 +291,58 @@ def test_no_runtime_at_all_is_a_typed_refusal_never_a_download(
         runtime.runtime_path()
 
 
+def _staged_bundle(*, with_runtime: bool = True) -> Path:
+    """The bundle ``python -m copilot download-runtime`` leaves: no ``copilot`` alias."""
+    from copilot._cli_download import get_cache_dir  # noqa: PLC0415
+    from copilot._cli_version import CLI_VERSION, get_runtime_platform  # noqa: PLC0415
+
+    pair = get_cache_dir(CLI_VERSION) / "prebuilds" / get_runtime_platform()
+    pair.mkdir(parents=True)
+    names = [runtime._wrapper_name(), ".hostless-runtime-assets-v2"]
+    names += ["runtime.node"] if with_runtime else []
+    for name in names:
+        (pair / name).write_bytes(b"x")
+    return pair
+
+
+def test_a_runtime_staged_by_download_runtime_is_found(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """SABOTAGE: require the ``copilot`` alias (``get_cached_cli_path``) -> None -> red."""
+    monkeypatch.setenv("COPILOT_CLI_EXTRACT_DIR", str(tmp_path))
+    pair = _staged_bundle()
+    assert runtime.staged_runtime_path() == str(pair / runtime._wrapper_name())
+
+
+def test_an_incomplete_staged_bundle_is_not_a_runtime(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    monkeypatch.setenv("COPILOT_CLI_EXTRACT_DIR", str(tmp_path))
+    _staged_bundle(with_runtime=False)
+    assert runtime.staged_runtime_path() is None
+
+
+def test_staging_the_runtime_drops_a_selection_cached_before_it(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import subprocess  # noqa: PLC0415
+
+    from clio_agent.providers import dependencies, support_record  # noqa: PLC0415
+
+    _candidates(monkeypatch, staged=None, installed=None)
+    assert runtime.copilot_client().reason == "copilot_no_runtime"
+    monkeypatch.setattr(dependencies, "ensure_provider_extra", lambda **_kwargs: False)
+    monkeypatch.setattr(support_record, "record_support", lambda _kind: None)
+
+    def download(command: list[str]) -> subprocess.CompletedProcess[str]:
+        monkeypatch.setattr(runtime, "staged_runtime_path", lambda: "/cache/copilot-runtime")
+        return subprocess.CompletedProcess(command, 0, "", "")
+
+    monkeypatch.setattr(dependencies, "_run_install_command", download)
+    assert dependencies.ensure_copilot_support() is True
+    assert runtime.copilot_client().path == "/cache/copilot-runtime"
+
+
 def test_the_staged_runtime_wins_unless_the_installed_one_is_newer(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

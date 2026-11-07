@@ -316,6 +316,10 @@ def ensure_copilot_support(*, python_executable: str | None = None) -> bool:
         raise ProviderDependencyInstallError(
             f"GitHub Copilot runtime could not be staged: {_bounded_install_error(result)}"
         )
+    from clio_agent.providers.components.client_binary import reset_client_cache  # noqa: PLC0415
+
+    # A selection cached before staging (``copilot_no_runtime``) must not outlive it.
+    reset_client_cache()
     return _recorded("copilot", True)
 
 
