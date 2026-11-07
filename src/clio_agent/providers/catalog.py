@@ -49,6 +49,7 @@ _SHOW_DIFFUSION_FIELD = ProviderConfigurationField(
     "Only the final answer is stored.",
     "off",
     options=("off", "on"),
+    affects_connection=False,
 )
 
 #: Canonical provider list. Ordered roughly local-first -> cloud -> ALCF
