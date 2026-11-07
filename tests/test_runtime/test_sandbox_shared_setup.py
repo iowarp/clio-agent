@@ -67,14 +67,16 @@ def test_elevation_permission_does_not_force_native_requalification(allow_elevat
     """Allowing first-time account creation must not discard a valid native receipt."""
 
     def native(*args: object, **kwargs: object) -> dict[str, str]:
-        assert kwargs["force"] is False
+        # An explicit setup may re-probe a cached failure, never discard a valid proof.
+        assert kwargs.get("force", False) is False
+        assert kwargs["retry_unavailable"] is allow_elevation
         return {"status": "verified", "reason": "cached_native_proof"}
 
     result = sandbox_cli.provision_codex_windows(
         platform="win32",
         allow_elevation=allow_elevation,
         detection=sandbox_codex.CodexDetection(
-            True, "test-codex", "0.162.1", sandbox_codex.REASON_CODEX_DETECTED
+            True, "test-codex", "0.167.0", sandbox_codex.REASON_CODEX_DETECTED
         ),
         mxc_preparer=native,
     )

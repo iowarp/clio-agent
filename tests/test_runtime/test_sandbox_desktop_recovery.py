@@ -2,14 +2,13 @@
 
 from __future__ import annotations
 
-import subprocess
 import tempfile
 from pathlib import Path
 from typing import Any
 
 import pytest
 
-from clio_agent.runtime import sandbox, sandbox_cli, sandbox_codex
+from clio_agent.runtime import sandbox, sandbox_cli, sandbox_codex, sandbox_codex_probe
 from clio_agent.runtime.sandbox_codex_profile import synthesize_codex_profile
 from clio_agent.runtime.storage_access import require_storage_fence
 from clio_agent.tools import desktop_mcp_runtime
@@ -133,10 +132,8 @@ def test_probe_requires_child_write_and_outside_denial(
     monkeypatch.setenv("CLIO_AGENT_HOME", str(tmp_path / "isolated-agent"))
     monkeypatch.setattr(sandbox_codex, "write_codex_layer", lambda *_args, **_kwargs: "test-layer")
 
-    def run(argv: list[str], **kwargs: Any) -> subprocess.CompletedProcess[str]:
+    def run(argv: list[str], **kwargs: Any) -> sandbox_codex_probe.ProbeRun:
         assert kwargs["timeout"] == sandbox_codex._CODEX_PROBE_TIMEOUT_S
-        assert kwargs["stdout"] == subprocess.DEVNULL
-        assert kwargs["stderr"] == subprocess.DEVNULL
         allow = Path(argv[argv.index("-C") + 1])
         assert allow.parent == parent
         assert argv[-4:-1] == ["cmd", "/d", "/c"]
@@ -150,9 +147,15 @@ def test_probe_requires_child_write_and_outside_denial(
             (allow / "started.txt").write_text("", encoding="utf-8")
         if escaped:
             outside.write_text("", encoding="utf-8")
-        return subprocess.CompletedProcess(argv, returncode, stdout="", stderr="profile failure")
+        return sandbox_codex_probe.ProbeRun(returncode, False, "profile failure")
 
-    monkeypatch.setattr(subprocess, "run", run)
-    ok, reason = sandbox_codex._run_codex_enforcement_probe("test-codex", str(tmp_path))
+    monkeypatch.setattr(sandbox_codex_probe, "run_probe", run)
+    verdict = sandbox_codex._run_codex_enforcement_probe("test-codex", str(tmp_path))
+    ok, reason = verdict
     assert reason == expected
     assert ok is (expected == sandbox_codex.REASON_CODEX_ENFORCEMENT_VERIFIED)
+    if not ok:
+        # Codex's own explanation reaches the person instead of a bare reason token.
+        assert "profile failure" in verdict.detail
+    if not started:
+        assert verdict.detail.startswith("Codex did not start the test command")
