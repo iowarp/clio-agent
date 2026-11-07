@@ -223,12 +223,18 @@ async def emit_chunk(
 
 
 async def emit_canvas(
-    state: "TurnState", text: str, agent_id: Optional[str] = None, step: int = 0
+    state: "TurnState",
+    text: str,
+    agent_id: Optional[str] = None,
+    step: int = 0,
+    shape: str = "snapshot",
 ) -> None:
     """Publish one diffusion step's whole answer canvas as ``message.canvas``.
 
     Replace semantics: the client overwrites the message's live canvas with ``text``
-    and drops it when the stream's final text arrives as an ordinary part. The event
+    and drops it when the stream's final text arrives as an ordinary part. ``shape``
+    is ``snapshot`` for a diffusion step, or ``append`` when the steps read as
+    appended deltas and ``text`` is the accumulated answer so far. The event
     is ``transient`` -- never written to the transcript ledger, the replay history or
     any store -- so reloads and exports carry only the final text.
     """
@@ -245,6 +251,7 @@ async def emit_canvas(
         "message_id": transcript.ensure_message(),
         "agent_id": label,
         "step": int(step),
+        "shape": shape,
         "text": text,
     }
     state.app.state.bus.publish(

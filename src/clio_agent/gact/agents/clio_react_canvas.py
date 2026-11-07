@@ -14,7 +14,11 @@ diffusion (:func:`clio_agent.lm.diffusion.diffusion_requested`) is read here ins
   and reaches the transcript once through the ordinary answer lane;
 * the stream's shape is checked, never assumed. A ``diffusing`` request answered with
   appended deltas, or with tool calls streamed across steps, records the typed
-  ``diffusion_stream_shape_mismatch`` note and keeps what DSPy assembled.
+  ``diffusion_stream_shape_mismatch`` note and keeps what DSPy assembled;
+* the shape is also voted on live, step by step: while the steps read as appended
+  deltas the canvas shows the text accumulated so far, marked ``append``, so a route
+  that ignores ``diffusing`` streams like an ordinary answer instead of flashing one
+  fragment at a time.
 
 The step count and step timings go to the stream audit trace.
 """
@@ -39,7 +43,13 @@ from clio_agent.gact.reasoning_extract import (
     field_text,
 )
 
-__all__ = ["SHAPE_MISMATCH_REASON", "SnapshotStream", "step_is_snapshot", "with_answer_text"]
+__all__ = [
+    "SHAPE_MISMATCH_REASON",
+    "SnapshotStream",
+    "live_step_is_snapshot",
+    "step_is_snapshot",
+    "with_answer_text",
+]
 
 logger = logging.getLogger(__name__)
 
@@ -52,6 +62,9 @@ _JUDGE_MIN_CHARS = 24
 _JUDGE_HEAD_CHARS = 512
 #: Similarity at or above which two consecutive canvases are versions of one text.
 _SNAPSHOT_SIMILARITY = 0.5
+#: Stricter similarity for the live vote on steps too short to judge: short appended
+#: tokens share characters by chance far more often than long fragments do.
+_SHORT_SNAPSHOT_SIMILARITY = 0.6
 #: Step timings kept for the trace.
 _MAX_TIMED_STEPS = 256
 
@@ -72,15 +85,32 @@ def step_is_snapshot(previous: str, current: str) -> bool | None:
     return ratio >= _SNAPSHOT_SIMILARITY
 
 
+def live_step_is_snapshot(previous: str, current: str) -> bool:
+    """The display's vote on one step: :func:`step_is_snapshot`, or a short-text guess.
+
+    Unlike the audited judgement, the live vote never abstains -- the canvas must show
+    either the latest step or the accumulated text right now.
+    """
+    verdict = step_is_snapshot(previous, current)
+    if verdict is not None:
+        return verdict
+    if current.startswith(previous):
+        return True
+    ratio = difflib.SequenceMatcher(None, previous, current, autojunk=False).ratio()
+    return ratio > _SHORT_SNAPSHOT_SIMILARITY
+
+
 @dataclasses.dataclass
 class SnapshotStream:
     """One diffusing call's stream: the latest canvas, the shape check, the timings."""
 
     canvas: str = ""
     steps: int = 0
-    concatenated: list[str] = dataclasses.field(default_factory=list)
+    concatenated: str = ""
     judged: int = 0
     append_like: int = 0
+    live_votes: int = 0
+    live_append: int = 0
     tool_call_chunks: int = 0
     _started: float = dataclasses.field(default_factory=time.monotonic)
     _step_ms: list[int] = dataclasses.field(default_factory=list)
@@ -109,13 +139,23 @@ class SnapshotStream:
             if verdict is not None:
                 self.judged += 1
                 self.append_like += not verdict
+            self.live_votes += 1
+            self.live_append += not live_step_is_snapshot(self.canvas, text)
         self.steps += 1
         self.canvas = text
-        self.concatenated.append(text)
+        self.concatenated += text
         if len(self._step_ms) < _MAX_TIMED_STEPS:
             self._step_ms.append(int((time.monotonic() - self._started) * 1000))
-        note_lm_answer_canvas(text, self.steps)
+        if self.live_appending:
+            note_lm_answer_canvas(self.concatenated, self.steps, "append")
+        else:
+            note_lm_answer_canvas(text, self.steps, "snapshot")
         return pieces
+
+    @property
+    def live_appending(self) -> bool:
+        """Whether the steps so far mostly read as appended deltas (the display's view)."""
+        return self.live_append * 2 > self.live_votes
 
     @property
     def shaped_as_snapshots(self) -> bool:
@@ -153,7 +193,7 @@ class SnapshotStream:
             _record_mismatch(app, session_id, "; ".join(mismatches))
         if not self.steps:
             return response
-        final = self.canvas if snapshots else "".join(self.concatenated)
+        final = self.canvas if snapshots else self.concatenated
         splitter = InlineThinkSplitter()
         pieces = splitter.feed(final) + splitter.finish()
         route_pieces(pieces, unclosed=splitter.found and not splitter.complete)

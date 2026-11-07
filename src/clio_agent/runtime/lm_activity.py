@@ -118,7 +118,7 @@ def set_live_chunk_emitter(
     _LIVE_CHUNK_EMITTER.set((loop, emit_coro, record_dedup, begin_call))
 
 
-#: The turn's async canvas publisher (``emit_canvas(text, agent_id, step)``): the
+#: The turn's async canvas publisher (``emit_canvas(text, agent_id, step, shape)``): the
 #: REPLACE lane next to the append-only answer lane, for snapshot-shaped (diffusion)
 #: streams. Bound beside the chunk emitter and scheduled on the chunk emitter's loop.
 _LIVE_CANVAS_EMITTER: ContextVar[Any] = ContextVar("clio_live_canvas_emitter", default=None)
@@ -129,10 +129,12 @@ def set_live_canvas_emitter(emit_canvas: Any) -> None:
     _LIVE_CANVAS_EMITTER.set(emit_canvas)
 
 
-def note_lm_answer_canvas(text: str, step: int) -> bool:
+def note_lm_answer_canvas(text: str, step: int, shape: str = "snapshot") -> bool:
     """Show the whole current answer canvas of a snapshot stream (replace, never append).
 
-    A diffusion model streams each denoising step as the full current text. The
+    A diffusion model streams each denoising step as the full current text. ``shape``
+    says what the canvas holds: ``snapshot`` (the latest diffusion step) or ``append``
+    (the text accumulated so far, when the steps read as appended deltas). The
     canvas is display-only: it is never recorded in the transcript, ARC or the
     session store -- the stream's FINAL text reaches them once through
     :func:`note_lm_answer_delta`. ``False`` (nothing shown) off-turn, while deltas
@@ -150,10 +152,11 @@ def note_lm_answer_canvas(text: str, step: int) -> bool:
         "bridge.answer_canvas",
         agent_id=agent_id,
         step=step,
+        shape=shape,
         canvas_len=len(text),
         head=text[:120],
     )
-    asyncio.run_coroutine_threadsafe(emit_canvas(text, agent_id or None, step), chunks[0])
+    asyncio.run_coroutine_threadsafe(emit_canvas(text, agent_id or None, step, shape), chunks[0])
     return True
 
 

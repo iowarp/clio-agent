@@ -162,6 +162,11 @@ class MessageCanvas(StreamEvent):
         return int(self.payload.get("step") or 0)
 
     @property
+    def shape(self) -> str:
+        """``snapshot`` (one diffusion step) or ``append`` (the accumulated answer)."""
+        return str(self.payload.get("shape") or "snapshot")
+
+    @property
     def text(self) -> str:
         return str(self.payload.get("text", ""))
 

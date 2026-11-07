@@ -33,6 +33,7 @@ from clio_agent.gact.agents import clio_react_stream
 from clio_agent.gact.agents.clio_react_canvas import (
     SHAPE_MISMATCH_REASON,
     SnapshotStream,
+    live_step_is_snapshot,
     step_is_snapshot,
     with_answer_text,
 )
@@ -66,12 +67,20 @@ def _response(*parts: Any) -> Response:
 def lanes(monkeypatch: pytest.MonkeyPatch) -> dict[str, list[Any]]:
     """Capture the canvas lane, the append lane and the typed fallback note."""
 
-    seen: dict[str, list[Any]] = {"canvas": [], "pieces": [], "notes": [], "audit": []}
-    monkeypatch.setattr(
-        lm_activity,
-        "note_lm_answer_canvas",
-        lambda text, step: seen["canvas"].append((step, text)) or True,
-    )
+    seen: dict[str, list[Any]] = {
+        "canvas": [],
+        "shapes": [],
+        "pieces": [],
+        "notes": [],
+        "audit": [],
+    }
+
+    def canvas(text: str, step: int, shape: str = "snapshot") -> bool:
+        seen["canvas"].append((step, text))
+        seen["shapes"].append(shape)
+        return True
+
+    monkeypatch.setattr(lm_activity, "note_lm_answer_canvas", canvas)
     monkeypatch.setattr(
         clio_react_stream,
         "route_pieces",
@@ -126,6 +135,7 @@ def test_snapshots_replace_and_the_final_canvas_is_the_only_answer(lanes) -> Non
         (2, DRAFT.replace("P####", "Paris")),
         (3, FINAL),
     ]
+    assert lanes["shapes"] == ["snapshot"] * 3
     # Nothing reached the append lane while streaming.
     assert lanes["pieces"] == []
 
@@ -169,6 +179,12 @@ def test_appended_deltas_are_reported_typed_and_the_concatenation_is_kept(lanes)
         stream.feed(_chunk(fragment))
     assert not stream.shaped_as_snapshots
 
+    # Live, the canvas grows like an ordinary stream instead of flashing each fragment.
+    assert lanes["canvas"] == [
+        (step, "".join(fragments[:step])) for step in range(1, len(fragments) + 1)
+    ]
+    assert lanes["shapes"] == ["snapshot", "append", "append", "append"]
+
     original = _response(TextPart(text="".join(fragments)))
     settled = stream.finish(original, app=object(), session_id="sid-1")
 
@@ -179,6 +195,24 @@ def test_appended_deltas_are_reported_typed_and_the_concatenation_is_kept(lanes)
     assert sid == "sid-1"
     assert reason == SHAPE_MISMATCH_REASON
     assert "appended deltas" in message
+
+
+def test_token_sized_deltas_too_short_to_judge_still_accumulate_live(lanes) -> None:
+    tokens = ["Once", " upon", " a", " time", ",", " a", " lighthouse"]
+    stream = SnapshotStream()
+    for token in tokens:
+        stream.feed(_chunk(token))
+
+    assert stream.judged == 0  # the audited judgement abstains on text this short
+    assert lanes["canvas"][-1] == (len(tokens), "".join(tokens))
+    assert lanes["shapes"][-1] == "append"
+
+
+def test_the_live_vote_reads_short_growth_and_rewrites_as_snapshots() -> None:
+    assert live_step_is_snapshot("He", "Hel") is True
+    assert live_step_is_snapshot("Hel#o", "Hello") is True
+    assert live_step_is_snapshot(" upon", " a") is False
+    assert live_step_is_snapshot(DRAFT, FINAL) is True
 
 
 def test_tool_calls_streamed_across_steps_are_reported(lanes) -> None:
@@ -317,7 +351,7 @@ def test_canvas_frames_are_transient_and_only_the_final_text_is_kept(tmp_path: P
         )
         lm_activity.set_live_canvas_emitter(partial(emit_canvas, state))
         assert lm_activity.note_lm_answer_canvas(DRAFT, 1) is True
-        assert lm_activity.note_lm_answer_canvas(FINAL, 2) is True
+        assert lm_activity.note_lm_answer_canvas(FINAL, 2, "append") is True
         _wait(lambda: sum(e.type == "message.canvas" for e in published) == 2)
         lm_activity.note_lm_answer_delta(FINAL, field="next_thought")
         _wait(lambda: any(p.type == "text" for p in transcript.snapshot()))
@@ -331,6 +365,7 @@ def test_canvas_frames_are_transient_and_only_the_final_text_is_kept(tmp_path: P
 
     frames = [e for e in published if e.type == "message.canvas"]
     assert [(e.payload["step"], e.payload["text"]) for e in frames] == [(1, DRAFT), (2, FINAL)]
+    assert [e.payload["shape"] for e in frames] == ["snapshot", "append"]
     assert all(e.transient for e in frames)
     assert frames[0].payload["message_id"] == transcript.message_id
     assert frames[0].payload["turn_id"] == "turn_d1"
@@ -358,3 +393,14 @@ def test_client_parses_message_canvas() -> None:
     )
     assert isinstance(event, MessageCanvas)
     assert (event.message_id, event.step, event.text) == ("m1", 3, FINAL)
+    assert event.shape == "snapshot"  # absent shape: an older server's diffusion step
+
+    appended = parse_event(
+        1,
+        {
+            "type": "message.canvas",
+            "session_id": "s1",
+            "payload": {"message_id": "m1", "step": 4, "shape": "append", "text": FINAL},
+        },
+    )
+    assert isinstance(appended, MessageCanvas) and appended.shape == "append"
