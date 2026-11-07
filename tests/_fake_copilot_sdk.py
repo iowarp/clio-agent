@@ -275,12 +275,17 @@ def _modules(state: FakeSDK) -> dict[str, ModuleType]:
 def install(
     monkeypatch: pytest.MonkeyPatch, *, token: str | None = TOKEN, **config: Any
 ) -> FakeSDK:
-    """Install the fake SDK, a runtime path and (unless ``token=None``) a GitHub sign-in."""
+    """Install the fake SDK, a runtime path and (unless ``token=None``) a GitHub sign-in.
+
+    Support counts as installed: a refresh never stages the real runtime from a test.
+    """
+    from clio_agent.providers import dependencies  # noqa: PLC0415
     from clio_agent.providers.copilot import auth, sessions  # noqa: PLC0415
 
     state = FakeSDK(**config)
     for name, module in _modules(state).items():
         monkeypatch.setitem(sys.modules, name, module)
+    monkeypatch.setattr(dependencies, "ensure_copilot_support", lambda **_kwargs: False)
     monkeypatch.setattr(sessions, "runtime_path", lambda: RUNTIME)
     monkeypatch.setattr("clio_agent.providers.copilot.runtime.runtime_path", lambda: RUNTIME)
     if token is None:
