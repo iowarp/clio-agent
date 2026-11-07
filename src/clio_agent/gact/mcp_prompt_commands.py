@@ -147,12 +147,12 @@ def _block(content: Any) -> tuple[str, Part | None]:
         return "", Part(
             type="image",
             data=str(getattr(content, "data", "")),
-            media_type=str(getattr(content, "mimeType", "") or getattr(content, "mime_type", "")),
+            media_type=str(getattr(content, "mime_type", "") or ""),
         )
     if kind == "resource":
         resource = getattr(content, "resource", None)
         uri = str(getattr(resource, "uri", ""))
-        mime = str(getattr(resource, "mimeType", "") or "")
+        mime = str(getattr(resource, "mime_type", "") or "")
         text = getattr(resource, "text", None)
         if text is not None:
             return f'<resource uri="{uri}">\n{text}\n</resource>', None
