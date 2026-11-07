@@ -38,6 +38,19 @@ from clio_agent.providers.codex.constants import LITELLM_PROVIDER as _CODEX_LITE
 # (`providers.capabilities.accessor.get_effective_capabilities`, Part 5.5),
 # never a static per-provider flag.
 
+#: ``show_diffusion``: stream a diffusion model's denoising steps. A
+#: provider-level switch; it reaches the wire only for a model whose record
+#: states a ``snapshot`` stream shape (:mod:`clio_agent.lm.diffusion`).
+SHOW_DIFFUSION_OPTION = "show_diffusion"
+_SHOW_DIFFUSION_FIELD = ProviderConfigurationField(
+    SHOW_DIFFUSION_OPTION,
+    "Show diffusion",
+    "Stream each denoising step of a diffusion model (such as Mercury) in place. "
+    "Only the final answer is stored.",
+    "off",
+    options=("off", "on"),
+)
+
 #: Canonical provider list. Ordered roughly local-first -> cloud -> ALCF
 #: so gact's modal lists them in a sensible order.
 PROVIDERS: tuple[Provider, ...] = (
@@ -242,6 +255,24 @@ PROVIDERS: tuple[Provider, ...] = (
         api_key_env="OPENROUTER_API_KEY",
         # GET /api/v1/key describes the calling key; 401 for a bad one.
         key_check_path="/key",
+        configuration_fields=(_SHOW_DIFFUSION_FIELD,),
+    ),
+    Provider(
+        id="inception",
+        label="Inception (Mercury)",
+        description=(
+            "Inception's Mercury diffusion language models. Requires an "
+            "INCEPTION_API_KEY. Turn on Show diffusion to watch an answer "
+            "denoise in place while it streams."
+        ),
+        provider_kind="openai",
+        # LiteLLM's native inception provider (InceptionChatConfig) forwards
+        # reasoning_effort and diffusing as request-body fields.
+        litellm_prefix="inception",
+        api_base="https://api.inceptionlabs.ai/v1",
+        suggested_model="",
+        api_key_env="INCEPTION_API_KEY",
+        configuration_fields=(_SHOW_DIFFUSION_FIELD,),
     ),
     Provider(
         id="amsc_mag",
@@ -503,6 +534,11 @@ def normalize_provider_options(provider_id: str, options: dict[str, Any]) -> dic
         value = str(raw_value).strip()
         if len(value) > 512 or "\x00" in value or "\n" in value or "\r" in value:
             raise ValueError(f"invalid value for provider option: {key}")
+        allowed = fields[key].options
+        if value and allowed and value not in allowed:
+            raise ValueError(
+                f"invalid value for provider option {key}: expected one of {', '.join(allowed)}"
+            )
         if value:
             normalized[key] = value
     missing = [
@@ -612,6 +648,7 @@ def as_lm_presets() -> list[Any]:
                     description=field.description,
                     placeholder=field.placeholder,
                     required=field.required,
+                    options=list(field.options),
                 )
                 for field in p.configuration_fields
             ],

@@ -1,0 +1,39 @@
+# Inception Mercury 3 (diffusion LLM). Source: https://docs.inceptionlabs.ai
+# (models page and chat-completions reference, read 2026-10). Matches the
+# direct inception/ route and OpenRouter's inception/mercury-3.
+- family: mercury-3
+  matchPatterns:
+    - mercury-3
+  capabilities:
+    chat: true
+    tools: true
+    toolCallFormat: openai
+    reasoning: true
+    structuredOutputs: json-schema
+    vision: false
+    audio: false
+    embeddings: false
+    rerank: false
+    fim: false
+    contextWindow: 1000000
+    maxTokens: 131072
+    streamShape: snapshot
+    description: >-
+      Inception's Mercury 3, a diffusion language model that refines a whole
+      answer in parallel denoising steps instead of writing token by token.
+  quirks:
+    thinking:
+      mechanism: effort-levels
+      # Mercury's own effort vocabulary is instant/low/medium/high; CLIO's
+      # lightest level, "minimal", is sent as "instant".
+      effortByLevel:
+        minimal: instant
+        low: low
+        medium: medium
+        high: high
+      guidance: |
+        Reasoning is always on. reasoning_effort instant/low/medium/high trades
+        latency for depth. With diffusing=true a stream carries the whole
+        current answer on every chunk (a snapshot), not an appended delta.
+    serving:
+      temperatureRange: [0.5, 1.0]

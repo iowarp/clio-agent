@@ -53,6 +53,7 @@ from clio_agent.providers.capabilities.model_facts import (
 )
 from clio_agent.providers.capabilities.records import (
     DOMAINS,
+    STREAM_SHAPES,
     Fact,
     ModelCapabilities,
     ThinkingSpec,
@@ -353,6 +354,17 @@ def _int_fact(capabilities: dict[str, Any], key: str, *, observed_at: str, detai
     return Fact(value=value, source="overlay", observed_at=observed_at, detail=detail)
 
 
+def _stream_shape_fact(capabilities: dict[str, Any], *, observed_at: str, detail: str) -> Fact:
+    """``streamShape`` (``append``/``snapshot``) when the entry states it."""
+    value = capabilities.get("streamShape")
+    if value is None:
+        return unknown()
+    if value not in STREAM_SHAPES:
+        logger.warning("model_overlay: reason=malformed_streamShape value=%r %s", value, detail)
+        return unknown()
+    return Fact(value=value, source="overlay", observed_at=observed_at, detail=detail)
+
+
 def _descriptive_facts(
     capabilities: dict[str, Any], *, observed_at: str, detail: str
 ) -> dict[str, Fact]:
@@ -503,6 +515,7 @@ def entry_to_model_capabilities(
         description=descriptive.get("description", unknown()),
         released_at=descriptive.get("released_at", unknown()),
         parameters=descriptive.get("parameters", unknown()),
+        stream_shape=_stream_shape_fact(capabilities, observed_at=observed_at, detail=detail),
     )
 
 
