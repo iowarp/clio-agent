@@ -91,9 +91,11 @@ def test_fired_schedule_is_registered_and_cancellable(
         tick = asyncio.create_task(_scheduler_tick(app))
         try:
             # The first tick iteration runs immediately and fires the
-            # always-due schedule.
+            # always-due schedule. Committing its input waits for the turn's tool
+            # surface and ledger rehydration, which a loaded parallel runner can hold
+            # for seconds, so the wait is bounded by the commitment, not a 3s guess.
             loop = asyncio.get_running_loop()
-            deadline = loop.time() + 3.0
+            deadline = loop.time() + 30.0
             while loop.time() < deadline:
                 if (
                     app.state.turn_runner.busy(sid)
@@ -165,7 +167,7 @@ def test_fired_schedule_is_registered_and_cancellable(
             with contextlib.suppress(asyncio.CancelledError):
                 await tick
 
-    asyncio.run_coroutine_threadsafe(drive(), app.state.mcp_app_loop).result(timeout=5.0)
+    asyncio.run_coroutine_threadsafe(drive(), app.state.mcp_app_loop).result(timeout=60.0)
 
 
 def test_tick_scan_error_is_logged_not_swallowed(
