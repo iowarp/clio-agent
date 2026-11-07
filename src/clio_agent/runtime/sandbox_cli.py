@@ -477,7 +477,6 @@ def provision_codex_windows(
 
     mxc: dict[str, Any] = {}
     if scx.parse_version(det.version) >= MXC_MIN_VERSION:
-        # An explicit setup re-probes a cached failure: the host may have changed since.
         mxc = (mxc_preparer or prepare_mxc)(
             det.binary_path, det.version, progress=progress, retry_unavailable=allow_elevation
         )
@@ -597,8 +596,9 @@ def provision_codex_windows(
         progress("Verifying protected execution...")
     from clio_agent import paths  # noqa: PLC0415 - avoid import cycle at module load
 
-    verdict = verify(det.binary_path, str(paths.user_cache_dir()), platform=platform)
-    enforced, enforce_reason = verdict
+    enforced, enforce_reason = verdict = verify(
+        det.binary_path, str(paths.user_cache_dir()), platform=platform
+    )
     (marker_writer if marker_writer is not None else scx.write_codex_provision_marker)(
         det.version, enforcement_verified=enforced, enforcement_reason=enforce_reason
     )
