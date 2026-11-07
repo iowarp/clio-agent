@@ -1,4 +1,4 @@
-"""Run one OPAL chain through a prepared CLIO session, then export its attention and score it.
+"""Run one OPAL chain through a prepared CLIO session, then score it.
 
 Invoke as a module from the checkout root (it imports its sibling runners)::
 
@@ -10,13 +10,11 @@ explicit model (see ``beta3_opal_run.py``). Steps, each resumable from the outpu
 
 1. prepare the prompts-only inputs and the operator-only manifest (``beta3_opal_inputs``);
 2. send the chosen condition's rounds through the session (``beta3_opal_run``);
-3. for each round, read the reply's ``ANSWER:`` line and export its ``;``-separated items as
-   ``attn_analytics.py`` CSV rows (the SPOTTER per-item attention view), one CSV per run;
-4. compare each parsed answer with the manifest's correct answer, locally. Answers never
+3. compare each parsed answer with the manifest's correct answer, locally. Answers never
    leave this computer; only the prompts are sent.
 
-The answer convention (``ANSWER:`` prefix, ``;`` between items) is the OPAL benchmark's own
-output format, read here in the bench driver, never inside CLIO.
+The ``ANSWER:`` prefix is the OPAL benchmark's own output format, read here in the bench
+driver, never inside CLIO. Attention is inspected in the CLIO UI by selecting answer text.
 """
 
 from __future__ import annotations
@@ -34,7 +32,6 @@ from scripts.qualification.beta3_opal_inputs import prepare
 from scripts.qualification.beta3_opal_run import run, save
 
 ANSWER_RE = re.compile(r"ANSWER\s*:\s*(.+?)\s*$", re.IGNORECASE | re.MULTILINE)
-ITEM_DELIMITER = ";"
 
 
 def answer_span(reply: dict[str, Any]) -> tuple[str, int, int, str] | None:
@@ -51,53 +48,6 @@ def answer_span(reply: dict[str, Any]) -> tuple[str, int, int, str] | None:
 def normalize(answer: str) -> str:
     """Compare answers the way ``e2e_example.parse_answer`` reports them."""
     return re.sub(r"\s+", " ", answer.strip().rstrip(".")).casefold()
-
-
-def export_attention(
-    client: httpx.Client,
-    *,
-    session_id: str,
-    manifest: dict[str, Any],
-    receipt: dict[str, Any],
-) -> tuple[str, list[dict[str, Any]]]:
-    """One CSV for the run plus a per-round record of what was exported or why not."""
-    header: list[str] | None = None
-    rows: list[str] = []
-    records = []
-    for index, turn in enumerate(receipt["turns"]):
-        reply = turn.get("reply") or {}
-        record: dict[str, Any] = {"round": index + 1, "message_id": reply.get("id")}
-        span = answer_span(reply)
-        if span is None:
-            record["exported"] = False
-            record["reason"] = "the reply has no ANSWER: line"
-            records.append(record)
-            continue
-        part_id, start, end, text = span
-        round_info = manifest["rounds"][index]
-        body = {
-            "items": [{"part_id": part_id, "field": "text", "start": start, "end": end}],
-            "split": ITEM_DELIMITER,
-            "chain_id": manifest["chain_id"],
-            "round_no": str(index + 1),
-            "task_type": round_info["task"],
-        }
-        response = client.post(
-            f"/v1/sessions/{session_id}/messages/{reply['id']}/attention/items/export", json=body
-        )
-        response.raise_for_status()
-        result = response.json()
-        record.update({"answer": text, "exported": bool(result.get("available"))})
-        if not result.get("available"):
-            record["reason"] = result.get("message")
-            record["reason_code"] = result.get("reason")
-        else:
-            lines = result["csv"].splitlines()
-            header = header or lines[:1]
-            rows.extend(lines[1:])
-            record["items"] = result["rows"]
-        records.append(record)
-    return "\n".join([*(header or []), *rows]) + ("\n" if header else ""), records
 
 
 def score(manifest: dict[str, Any], receipt: dict[str, Any]) -> dict[str, Any]:
@@ -124,7 +74,7 @@ def score(manifest: dict[str, Any], receipt: dict[str, Any]) -> dict[str, Any]:
 
 
 def main() -> None:
-    """Prepare, run, export and score one condition of one chain."""
+    """Prepare, run and score one condition of one chain."""
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--endpoint", required=True)
     parser.add_argument("--session", required=True)
@@ -154,21 +104,14 @@ def main() -> None:
             receipt_path=args.out / f"receipt-{args.condition}.json",
             timeout=args.timeout,
         )
-        table, records = export_attention(
-            client, session_id=args.session, manifest=manifest, receipt=receipt
-        )
-    (args.out / f"attention-{args.condition}.csv").write_text(table, encoding="utf-8")
     result = score(manifest, receipt)
-    result["attention"] = records
     save(args.out / f"score-{args.condition}.json", result)
-    exported = sum(r.get("exported", False) for r in records)
     print(
         json.dumps(
             {
                 "chain_id": args.chain_id,
                 "condition": args.condition,
                 "correct": f"{result['correct']}/{len(result['rounds'])}",
-                "attention_rounds_exported": f"{exported}/{len(records)}",
                 "out": str(args.out),
             }
         )
