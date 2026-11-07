@@ -11,7 +11,11 @@ import contextlib
 import socket
 import urllib.parse
 import urllib.request
+from collections.abc import Callable
 from typing import Optional
+
+# The stdlib's ``no_proxy`` matcher; typeshed does not declare it, so bind its signature here.
+_bypass_environment: Callable[[str], bool] = vars(urllib.request)["proxy_bypass_environment"]
 
 
 def _upstream_proxy(host: str, scheme: str) -> Optional[tuple[str, int]]:
@@ -23,7 +27,7 @@ def _upstream_proxy(host: str, scheme: str) -> Optional[tuple[str, int]]:
     proxies = urllib.request.getproxies_environment()
     url = proxies.get(scheme) or proxies.get("https" if scheme == "http" else "http")
     url = url or proxies.get("all")
-    if not url or urllib.request.proxy_bypass_environment(host):
+    if not url or _bypass_environment(host):
         return None
     parsed = urllib.parse.urlsplit(url if "://" in url else "http://" + url)
     if not parsed.hostname:
