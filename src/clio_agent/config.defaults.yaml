@@ -422,6 +422,13 @@ agents.react_extract.enabled: true
 # Fleet writes this choice independently of judges.
 # fleet.search:  # default unset; resolved in code
 
+# CLIO_FLEET_SPOTTER  (str)  <- src/clio_agent/gact/fleet_settings.py
+# Provider and model a SPOTTER watcher runs on when its session names none
+# (metadata.spotter_model), as a provider_id/model_id mapping. Null inherits
+# the watched session's model. CLIO_FLEET_SPOTTER accepts JSON. Settings
+# Fleet writes this choice.
+# fleet.spotter:  # default unset; resolved in code
+
 # CLIO_FLEET_USAGE_POLL_SECONDS  (int)  <- src/clio_agent/providers/usage/openrouter.py
 # How old an account's usage reading may be before reading the fleet asks
 # the provider again (OpenRouter's key endpoint). Subscriptions report usage

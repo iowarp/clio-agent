@@ -95,12 +95,15 @@ def http_get(url: str, key: str = "") -> tuple[int, bytes]:
 #: Unix socket paths are limited to 107 bytes; vLLM's tensor-parallel workers bind sockets
 #: under TMPDIR, and on a deep service root they fail to start without logging why.
 _SHORT_TMP_LIMIT = 64
+#: The limit is a Unix-socket one, and the privacy check needs a POSIX owner id.
+_POSIX = os.name == "posix"
 
 
 def service_tmp(root: Path) -> Path:
-    """The service's temp directory: ``root/tmp``, or a short private one when that is too deep."""
+    """The service's temp directory: ``root/tmp``, or on POSIX a short private one when that is
+    too deep for the Unix sockets its workers bind."""
     tmp = root / "tmp"
-    if len(str(tmp)) <= _SHORT_TMP_LIMIT:
+    if not _POSIX or len(str(tmp)) <= _SHORT_TMP_LIMIT:
         return tmp
     import hashlib  # noqa: PLC0415
 

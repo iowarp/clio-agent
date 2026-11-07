@@ -44,7 +44,7 @@ def _declaration(args: argparse.Namespace) -> dict[str, Any]:
 
 
 def run_mcp_cli(arguments: Sequence[str]) -> int:
-    from clio_agent.config import load_project_env_file  # noqa: PLC0415
+    from clio_agent.env_file import load_project_env_file  # noqa: PLC0415
     from clio_agent.gact import mcp_user_configuration as saved  # noqa: PLC0415
     from clio_agent.tools.mcp_redaction import redact_mcp_spec  # noqa: PLC0415
 

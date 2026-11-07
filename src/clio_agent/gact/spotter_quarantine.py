@@ -107,7 +107,36 @@ def lift_quarantine(app: "FastAPI", sid: str) -> dict[str, Any] | None:
     return lifted
 
 
+def register_quarantine_routes(app: "FastAPI") -> None:
+    """Register ``POST /v1/sessions/{sid}/spotter/quarantine/lift``: the person lifts it."""
+    from fastapi import HTTPException  # noqa: PLC0415
+
+    from clio_agent.gact.types import ErrorEnvelope, ErrorInfo  # noqa: PLC0415
+
+    @app.post("/v1/sessions/{sid}/spotter/quarantine/lift")
+    async def lift_spotter_quarantine(sid: str) -> dict[str, Any]:
+        """Returns the lifted record. 404 for an unknown session; 409 when no quarantine
+        is active (already lifted, or never raised)."""
+        if app.state.sessions.get(sid) is None:
+            raise HTTPException(status_code=404, detail="Session unavailable")
+        lifted = await app.state.task_history.io.run(lift_quarantine, app, sid)
+        if lifted is None:
+            raise HTTPException(
+                status_code=409,
+                detail=ErrorEnvelope(
+                    error=ErrorInfo(
+                        error="spotter_quarantine_not_active",
+                        message="This session is not in quarantine.",
+                        details={"session_id": sid},
+                        recoverable=True,
+                    )
+                ).model_dump(exclude_none=True),
+            )
+        return {"session_id": sid, "quarantine": lifted}
+
+
 __all__ = [
+    "register_quarantine_routes",
     "QUARANTINE_KEY",
     "QUARANTINE_MESSAGE",
     "QUARANTINE_REASON",

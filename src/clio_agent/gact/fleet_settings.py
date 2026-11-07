@@ -65,13 +65,11 @@ class FleetUpdate(BaseModel):
     spotter: JudgeModel | None = None
 
 
-def _model_setting(key: str, env: str) -> dict[str, Any] | None:
-    raw = conf.resolve(
-        key,
-        env=env,
-        default=None,
-        cast=lambda value: json.loads(value) if isinstance(value, str) else value,
-    )
+def _json(value: Any) -> Any:
+    return json.loads(value) if isinstance(value, str) else value
+
+
+def _model_choice(raw: Any) -> dict[str, Any] | None:
     return JudgeModel.model_validate(raw).model_dump() if raw else None
 
 
@@ -90,8 +88,13 @@ def fleet_settings() -> dict[str, Any]:
         for role in ROLES
         for value in [raw.get(role)]
     }
-    search = _model_setting("fleet.search", "CLIO_FLEET_SEARCH")
-    spotter = _model_setting("fleet.spotter", "CLIO_FLEET_SPOTTER")
+    # Literal keys, so the configuration reference finds both knobs.
+    search = _model_choice(
+        conf.resolve("fleet.search", env="CLIO_FLEET_SEARCH", default=None, cast=_json)
+    )
+    spotter = _model_choice(
+        conf.resolve("fleet.spotter", env="CLIO_FLEET_SPOTTER", default=None, cast=_json)
+    )
     # An unset SPOTTER default leaves the revision every earlier client computed.
     revision = hashlib.sha256(
         json.dumps(

@@ -963,7 +963,7 @@ def main() -> None:
     )
 
     args = parser.parse_args()
-    from clio_agent.config import load_project_env_file  # noqa: PLC0415
+    from clio_agent.env_file import load_project_env_file  # noqa: PLC0415
     from clio_agent.runtime import trace  # noqa: PLC0415
 
     load_project_env_file()

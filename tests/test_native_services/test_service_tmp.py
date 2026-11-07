@@ -4,6 +4,9 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
+
+from clio_agent.gact.infrastructure import native_service_platform
 from clio_agent.gact.infrastructure.native_service_platform import service_tmp, worker_environment
 
 
@@ -20,3 +23,12 @@ def test_a_deep_service_root_gets_a_short_private_tmp(tmp_path: Path) -> None:
     assert service_tmp(root) == short  # stable for the same root
     env = worker_environment(root, {}, {"PATH": "/usr/bin"})
     assert env["TMPDIR"] == env["TMP"] == env["TEMP"] == str(short)
+
+
+def test_a_deep_root_keeps_its_own_tmp_where_there_are_no_unix_sockets(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Windows has neither the socket path limit nor a POSIX owner id to check."""
+    monkeypatch.setattr(native_service_platform, "_POSIX", False)
+    root = tmp_path / ("deep-" * 20) / "clio-vllm-spotter"
+    assert service_tmp(root) == root / "tmp"

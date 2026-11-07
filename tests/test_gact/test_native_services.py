@@ -631,7 +631,7 @@ def test_service_worker_exposes_its_environment_tools_first(tmp_path: Path) -> N
         "/bin",
     ]
     assert "VIRTUAL_ENV" not in env and "PYTHONPATH" not in env
-    assert env["TMPDIR"] == str(tmp_path / "tmp")
+    assert env["TMPDIR"] == str(node_service.platform_helper().service_tmp(tmp_path))
     assert env["VLLM_CPU_KVCACHE_SPACE"] == "4"
 
 
