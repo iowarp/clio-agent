@@ -4,7 +4,9 @@ from __future__ import annotations
 
 import argparse
 import json
+import logging
 import os
+import sys
 from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
@@ -202,8 +204,30 @@ def collect_snapshots_after_install() -> dict[str, Any]:
     }
 
 
+def _report_warnings() -> None:
+    """Send CLIO's warnings to stderr, where Desktop and the installers keep them.
+
+    Without a handler Python prints only bare messages of WARNING and above, losing
+    their logger and the typed ``reason=`` they carry.
+    """
+    handler = logging.StreamHandler(sys.stderr)
+    handler.setFormatter(logging.Formatter("%(levelname)s %(name)s: %(message)s"))
+    owner = logging.getLogger("clio_agent")
+    owner.addHandler(handler)
+    owner.setLevel(logging.WARNING)
+
+
 def main() -> None:
-    """Run the shared installer step; an incomplete setup exits unsuccessfully."""
+    """Run the installer step; a failed step exits 1 with its message, not a traceback."""
+    _report_warnings()
+    try:
+        _main()
+    except DocumentRuntimeError as error:
+        print(f"CLIO runtime setup failed: {error}", file=sys.stderr, flush=True)
+        raise SystemExit(1) from None
+
+
+def _main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--workspace", type=Path, default=paths.user_data_dir() / "workspace")
     parser.add_argument(

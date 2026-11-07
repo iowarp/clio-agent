@@ -51,6 +51,7 @@ from typing import Any, Callable, Optional, Sequence
 # naming) lives in the sibling :mod:`sandbox_codex_profile` module (extracted to keep this file under
 # its size ratchet). Re-exported below so this module's public surface is unchanged — callers keep
 # importing these names from ``sandbox_codex``.
+from .sandbox_codex_probe import EnforcementVerdict
 from .sandbox_codex_profile import (
     CODEX_LAYER_GLOB,
     CODEX_LAYER_KEEP,
@@ -562,12 +563,14 @@ def verify_codex_enforcement(
     try:
         return run(binary, write_root)
     except Exception as exc:  # noqa: BLE001 — any failure ⇒ enforcement unproven, never a false-green
-        logger.info(
+        logger.warning(
             "codex enforcement verify failed reason=%s error=%r",
             REASON_CODEX_ENFORCEMENT_UNVERIFIED,
             exc,
         )
-        return False, REASON_CODEX_ENFORCEMENT_UNVERIFIED
+        return EnforcementVerdict(
+            False, REASON_CODEX_ENFORCEMENT_UNVERIFIED, f"the check could not run: {exc!r}"
+        )
 
 
 def _run_codex_enforcement_probe(binary: str, write_root: str) -> tuple[bool, str]:
@@ -585,12 +588,19 @@ def _run_codex_enforcement_probe(binary: str, write_root: str) -> tuple[bool, st
     ``write_root`` is the caller's declared territory (threaded for parity
     with :func:`verify_codex_enforcement`); the probe self-provisions its temp allow dir.
     """
-    import subprocess  # noqa: PLC0415 - only on this path
-    import tempfile  # noqa: PLC0415
+    import tempfile  # noqa: PLC0415 - only on this path
 
+    from .sandbox_codex_probe import run_probe  # noqa: PLC0415
+
+    # Cleanup never replaces the outcome: a helper killed at the deadline may still
+    # hold a handle for a moment.
     with (
-        tempfile.TemporaryDirectory(prefix="clio-agent-codex-allow-") as allow,
-        tempfile.TemporaryDirectory(prefix="clio-agent-codex-out-") as outside,
+        tempfile.TemporaryDirectory(
+            prefix="clio-agent-codex-allow-", ignore_cleanup_errors=True
+        ) as allow,
+        tempfile.TemporaryDirectory(
+            prefix="clio-agent-codex-out-", ignore_cleanup_errors=True
+        ) as outside,
     ):
         outside_target = Path(outside) / "denied.txt"
         started_target = Path(allow) / "started.txt"
@@ -604,29 +614,30 @@ def _run_codex_enforcement_probe(binary: str, write_root: str) -> tuple[bool, st
             "/c",
             f"type nul > started.txt && type nul > {relative_outside}",
         ]
-        # Codex delegates ACL work to background helpers. Captured pipe handles
-        # can outlive the command on Windows; file witnesses provide the proof.
-        proc = subprocess.run(
-            argv,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-            timeout=_CODEX_PROBE_TIMEOUT_S,
-            check=False,
-        )
+        # Codex delegates ACL work to background helpers, so stderr goes to a file
+        # (a pipe can outlive the command on Windows); file witnesses provide the proof.
+        run = run_probe(argv, timeout=_CODEX_PROBE_TIMEOUT_S)
         if outside_target.exists():
             # The confined child wrote OUTSIDE its territory — the fence did not hold.
-            return False, REASON_CODEX_ENFORCEMENT_ESCAPED
-        if not started_target.is_file() or proc.returncode == 0:
+            return EnforcementVerdict(False, REASON_CODEX_ENFORCEMENT_ESCAPED, run.describe())
+        if not started_target.is_file() or run.returncode == 0:
             # Missing outside output alone is not proof: the launcher may never
             # have started the child or the command may not have executed.
-            logger.info(
-                "codex verification unproven child_started=%s returncode=%s",
-                started_target.is_file(),
-                proc.returncode,
+            started = started_target.is_file()
+            detail = (
+                f"the test command ran but its outside write was not refused ({run.describe()})"
+                if started
+                else f"Codex did not start the test command ({run.describe()})"
             )
-            return False, REASON_CODEX_ENFORCEMENT_UNVERIFIED
+            logger.warning(
+                "codex verification unproven reason=%s child_started=%s %s",
+                REASON_CODEX_ENFORCEMENT_UNVERIFIED,
+                started,
+                run.describe(),
+            )
+            return EnforcementVerdict(False, REASON_CODEX_ENFORCEMENT_UNVERIFIED, detail)
         # Child spawned and the out-of-root write did not land ⇒ the fence is genuinely in force.
-        return True, REASON_CODEX_ENFORCEMENT_VERIFIED
+        return EnforcementVerdict(True, REASON_CODEX_ENFORCEMENT_VERIFIED)
 
 
 def _codex_marker_path() -> Path:

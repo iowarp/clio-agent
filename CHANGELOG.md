@@ -140,6 +140,16 @@ your workspaces are not affected.
 
 ### Fixed
 
+- Windows protected execution qualifies on machines with a mapped network drive
+  or the OpenAI Codex app installed. The bundled Codex runtime moves to 0.167.0, and
+  native MXC requires 0.166.0 or later: earlier clients rejected CLIO's policy when
+  any mount could not be opened, and their legacy setup refresh failed while the
+  Codex app was running. A failed check now reports each backend's typed reason with
+  Codex's own error (`codex_mxc_launch_failed`, `codex_mxc_probe_timeout`, ...)
+  instead of `codex_enforcement_unverified` alone. A timeout is reported as itself,
+  not as a cleanup error. An explicit setup rechecks a cached failure. The installer
+  prints the failure without a Python traceback. The MXC receipt records the
+  installed Windows build.
 - An unreadable stored transcript answers `503 messages_unavailable` with a
   `cause` (`storage_unreachable`, retryable; `transcript_corrupt`, not) on both the
   full and paged message reads, instead of a 500 (#1805).

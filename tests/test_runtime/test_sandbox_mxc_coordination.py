@@ -34,7 +34,7 @@ def probe(binary: str) -> bool:
     sys.stdin.readline()
     return verified
 
-mxc.prepare_mxc('codex.exe', '0.162.1', probe=probe)
+mxc.prepare_mxc('codex.exe', '0.167.0', probe=probe)
 """
 
 
@@ -95,7 +95,7 @@ def test_processes_share_the_completed_verification(receipt: Path, verified: boo
                 follower = workers.submit(
                     mxc.prepare_mxc,
                     "codex.exe",
-                    "0.162.1",
+                    "0.167.0",
                     probe=duplicate_probe,
                     progress=progress,
                 )
@@ -104,7 +104,7 @@ def test_processes_share_the_completed_verification(receipt: Path, verified: boo
                 assert process.returncode == 0, stderr
                 result = follower.result(timeout=10)
                 assert result["status"] == ("verified" if verified else "unavailable")
-                assert mxc.mxc_ready("codex.exe", version="0.162.1") is verified
+                assert mxc.mxc_ready("codex.exe", version="0.167.0") is verified
             finally:
                 # Unblock both pipe and lock waiters before the executor joins them.
                 _stop(process)
@@ -129,12 +129,12 @@ def test_busy_owner_does_not_publish_failure_or_start_another_probe(
             started = workers.submit(process.stdout.readline)
             try:
                 assert started.result(timeout=10) == "probing\n"
-                assert mxc.prepare_mxc("codex.exe", "0.162.1", probe=duplicate_probe) == {
+                assert mxc.prepare_mxc("codex.exe", "0.167.0", probe=duplicate_probe) == {
                     "status": "busy",
                     "reason": "codex_mxc_setup_in_progress",
                 }
                 assert json.loads(receipt.read_text(encoding="utf-8")) == previous
-                assert not mxc.mxc_ready("codex.exe", version="0.162.1")
+                assert not mxc.mxc_ready("codex.exe", version="0.167.0")
             finally:
                 _stop(process)
     finally:
@@ -153,7 +153,7 @@ def test_failed_owner_releases_setup_for_the_next_process(receipt: Path) -> None
                 _stop(process)
         assert not receipt.exists()
         assert (
-            mxc.prepare_mxc("codex.exe", "0.162.1", probe=lambda binary: True)["status"]
+            mxc.prepare_mxc("codex.exe", "0.167.0", probe=lambda binary: True)["status"]
             == "verified"
         )
     finally:
@@ -169,7 +169,7 @@ def test_busy_native_setup_cannot_start_legacy_repair() -> None:
         detection=sandbox_codex.CodexDetection(
             True,
             "codex.exe",
-            "0.162.1",
+            "0.167.0",
             sandbox_codex.REASON_CODEX_DETECTED,
             source=sandbox_codex.CODEX_SOURCE_BUNDLED,
         ),
