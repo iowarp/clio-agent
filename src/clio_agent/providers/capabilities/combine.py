@@ -29,6 +29,7 @@ from clio_agent.providers.capabilities.records import (
     EndpointCapabilities,
     Fact,
     ModelCapabilities,
+    StreamShape,
     ThinkingMechanism,
     ThinkingSpec,
 )
@@ -202,7 +203,7 @@ class EffectiveCapabilities:
     )
     #: How the model streams when its intermediate steps are requested
     #: (``append``/``snapshot``; a model-record fact).
-    stream_shape: Decision[str] = field(
+    stream_shape: Decision[StreamShape] = field(
         default_factory=lambda: _unknown("no source states a stream shape")
     )
 
