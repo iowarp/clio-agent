@@ -153,8 +153,9 @@ def _block(content: Any) -> tuple[str, Part | None]:
         resource = getattr(content, "resource", None)
         uri = str(getattr(resource, "uri", ""))
         mime = str(getattr(resource, "mimeType", "") or "")
-        if getattr(resource, "text", None) is not None:
-            return f'<resource uri="{uri}">\n{resource.text}\n</resource>', None
+        text = getattr(resource, "text", None)
+        if text is not None:
+            return f'<resource uri="{uri}">\n{text}\n</resource>', None
         if mime.startswith("image/"):
             return "", Part(type="image", data=str(getattr(resource, "blob", "")), media_type=mime)
         return f'<resource uri="{uri}" mime="{mime}">(binary content not shown)</resource>', None
