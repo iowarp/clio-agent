@@ -168,6 +168,7 @@ class SnapshotStream:
         from clio_agent.runtime.stream_audit import stream_audit  # noqa: PLC0415
 
         snapshots = self.shaped_as_snapshots
+        final = self.canvas if snapshots else self.concatenated
         stream_audit(
             "diffusion.stream",
             steps=self.steps,
@@ -176,7 +177,7 @@ class SnapshotStream:
             append_like_steps=self.append_like,
             tool_call_chunks=self.tool_call_chunks,
             shape="snapshot" if snapshots else "append",
-            final_len=len(self.canvas),
+            final_len=len(final),
         )
         mismatches: list[str] = []
         if not snapshots:
@@ -193,7 +194,6 @@ class SnapshotStream:
             _record_mismatch(app, session_id, "; ".join(mismatches))
         if not self.steps:
             return response
-        final = self.canvas if snapshots else self.concatenated
         splitter = InlineThinkSplitter()
         pieces = splitter.feed(final) + splitter.finish()
         route_pieces(pieces, unclosed=splitter.found and not splitter.complete)
