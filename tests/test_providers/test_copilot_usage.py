@@ -85,6 +85,26 @@ async def test_all_unlimited_quotas_are_unmetered_not_unknown() -> None:
     assert usage.premium_resets_at() is None
 
 
+@pytest.mark.parametrize(
+    ("reply", "keys"),
+    [
+        ({}, "none"),
+        ({"premiumInteractions": {"isUnlimitedEntitlement": False}}, "premiumInteractions"),
+        ({"premium_interactions": {"is_unlimited_entitlement": False}}, "premium_interactions"),
+    ],
+)
+async def test_a_quota_reply_it_cannot_read_is_never_called_unmetered(
+    reply: dict[str, Any], keys: str
+) -> None:
+    """SABOTAGE: record ``unmetered`` whenever no window was read -> state unmetered -> red."""
+    await usage.read_copilot_quota(_client(reply), "ghu_token")
+    snapshot = USAGE_BOARD.latest(COPILOT_ACCOUNT)
+    assert snapshot is not None and snapshot.state != "unmetered"
+    assert snapshot.read_failure == (
+        f"copilot_quota_unreadable: no metered or unlimited quota (keys: {keys})"
+    )
+
+
 async def test_a_failed_read_keeps_the_last_reading_and_says_why(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

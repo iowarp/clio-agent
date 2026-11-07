@@ -289,10 +289,26 @@ def copilot_snapshot(account: str, snapshots: Mapping[str, Any]) -> UsageSnapsho
     )
 
 
+def copilot_quota_unrecognised(snapshots: Mapping[str, Any]) -> str | None:
+    """Why ``snapshots`` (with no metered window) is not an all-unlimited account, if not.
+
+    Unmetered is claimed only when a known quota is present and every known quota
+    present says it is unlimited. An empty reply, unknown keys or a limited quota
+    without a readable remainder is an unreadable quota, never "unmetered".
+    """
+
+    known = [snapshots[key] for key in _COPILOT_QUOTAS if snapshots.get(key) is not None]
+    if known and all(_field(row, "is_unlimited_entitlement") is True for row in known):
+        return None
+    keys = ", ".join(sorted(str(key) for key in snapshots)) or "none"
+    return f"copilot_quota_unreadable: no metered or unlimited quota (keys: {keys})"
+
+
 __all__ = [
     "claude_snapshot",
     "codex_snapshot_from_event",
     "codex_snapshot_from_headers",
+    "copilot_quota_unrecognised",
     "copilot_snapshot",
     "openrouter_snapshot",
 ]
