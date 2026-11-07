@@ -170,24 +170,32 @@ def test_one_native_vllm_spans_its_pinned_gpus_in_nvidia_smi_order() -> None:
 
 
 @pytest.mark.parametrize(
-    ("engine", "backend", "pid", "variable"),
+    ("engine", "system", "backend", "pid", "variable"),
     [
-        ("llama_cpp", "cuda", "cuda_devices", "CUDA_VISIBLE_DEVICES"),
-        ("llama_cpp", "rocm", "rocm_devices", "HIP_VISIBLE_DEVICES"),
-        ("ollama", "cuda", "cuda_devices", "CUDA_VISIBLE_DEVICES"),
-        ("ollama", "rocm", "rocm_devices", "ROCR_VISIBLE_DEVICES"),
+        ("llama_cpp", "linux", "cuda", "cuda_devices", "CUDA_VISIBLE_DEVICES"),
+        # llama.cpp's native ROCm build is the Windows one; Linux ROCm hosts use the container.
+        ("llama_cpp", "windows", "rocm", "rocm_devices", "HIP_VISIBLE_DEVICES"),
+        ("ollama", "linux", "cuda", "cuda_devices", "CUDA_VISIBLE_DEVICES"),
+        ("ollama", "linux", "rocm", "rocm_devices", "ROCR_VISIBLE_DEVICES"),
     ],
 )
 def test_native_llama_and_ollama_get_their_pin_in_the_launch_environment(
-    engine: str, backend: str, pid: str, variable: str
+    engine: str, system: str, backend: str, pid: str, variable: str
 ) -> None:
     from clio_agent.gact.infrastructure.native_model_services import (  # noqa: PLC0415
         native_model_plan,
     )
 
     accelerator = "amd" if backend == "rocm" else "nvidia"
+    root = "C:/data" if system == "windows" else "/data"
+    # Native Windows installs run beside the active CLIO, so that host is the local one.
+    host = (
+        {"os": system, "target_id": "local", "agent_data_root": f"{root}/clio"}
+        if system == "windows"
+        else {}
+    )
     model = (
-        {"model_path": "/data/models/q.gguf", "param.split_mode": "layer"}
+        {"model_path": f"{root}/models/q.gguf", "param.split_mode": "layer"}
         if engine == "llama_cpp"
         else {"model": "qwen2.5:0.5b"}
     )
@@ -195,9 +203,9 @@ def test_native_llama_and_ollama_get_their_pin_in_the_launch_environment(
         engine,  # type: ignore[arg-type]
         "clio-llama-cpp" if engine == "llama_cpp" else "clio-ollama",
         "start",
-        f"native-linux-{backend}",
+        f"native-{system}-{backend}",
         {**model, "port": "41010", f"param.{pid}": "1,2", "native_owner": "o"},
-        facts(accelerator=accelerator),
+        facts(accelerator=accelerator, **host),
         None,
         None,
     )
