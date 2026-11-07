@@ -58,6 +58,8 @@ def _usage_line(snapshot: UsageSnapshot | None, billing: str) -> str:
 def _row(entry: FleetEntry, fleet: Fleet) -> dict[str, Any]:
     account = fleet.account(entry.account)
     facts = [name for name, on in (("tools", entry.tool_calling), ("vision", entry.vision)) if on]
+    if _is_fast(entry):
+        facts.append("fast")
     row: dict[str, Any] = {
         "model": entry.ref,
         "facts": ", ".join(facts) or "text only",
@@ -72,6 +74,16 @@ def _row(entry: FleetEntry, fleet: Fleet) -> dict[str, Any]:
     if not entry.available:
         row["unavailable"] = entry.unavailable_reason
     return row
+
+
+def _is_fast(entry: Any) -> bool:
+    """Whether the entry belongs to its provider's declared fast, cheap family (a fact
+    for the agent to weigh; nothing is chosen by it)."""
+    from clio_agent.providers.catalog import get_provider  # noqa: PLC0415
+
+    provider = get_provider(entry.account)
+    family = getattr(provider, "fast_model_family", "") if provider is not None else ""
+    return bool(family) and family in entry.model
 
 
 def _caller_root(app: Any, sid: str) -> str:
@@ -101,8 +113,9 @@ async def list_models(
     ``model`` to spawn_agent_task, spawn_agents_parallel, run_flow, run_workflow or a
     workflow step), with tool calling and vision, context size, price and the
     account's usage. Filter by what the work needs, an account or a billing kind
-    (subscription, credit, metered, free). Prefer a smaller or free model for simple
-    subtasks; check usage before a long fan-out."""
+    (subscription, credit, metered, free). A model marked ``fast`` is its provider's
+    fast, cheap family. Prefer a smaller, fast or free model for simple subtasks; check
+    usage before a long fan-out."""
 
     fleet = await read_fleet(_app())
     need = Requires(

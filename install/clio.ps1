@@ -14,6 +14,8 @@
 #   clio doctor          check prerequisites and install layout
 #   clio sandbox status  show the OS write-fence (sandbox) status row
 #   clio sandbox setup   provision the OS write fence (one UAC prompt; idempotent re-run no-ops)
+#   clio store-check     say whether your data was written by CLIO 0.9.5.1 or older
+#   clio reset-store [--yes]  move that data aside, unchanged (never deleted); CLIO starts empty
 #   clio report          print a diagnostics bundle for GitHub issues
 #   clio completion SH   print shell completion (powershell)
 #   clio uninstall [...] run the uninstaller
@@ -247,7 +249,7 @@ function Write-Completion ($shell) {
 @'
 Register-ArgumentCompleter -CommandName clio -ScriptBlock {
     param($wordToComplete, $commandAst, $cursorPosition)
-    @('web','start','stop','restart','status','ps','logs','sandbox','doctor','report','completion','uninstall','help') |
+    @('web','start','stop','restart','status','ps','logs','sandbox','store-check','reset-store','doctor','report','completion','uninstall','help') |
         Where-Object { $_ -like "$wordToComplete*" } |
         ForEach-Object { [System.Management.Automation.CompletionResult]::new($_, $_, 'ParameterValue', $_) }
 }
@@ -319,6 +321,13 @@ switch ($Command) {
         # Windows `clio sandbox setup` self-elevates once (one UAC) to provision the write fence.
         if (-not (Test-Path $ServerBin)) { Err "server binary not found: $ServerBin"; exit 1 }
         & $ServerBin sandbox @Rest
+        exit $LASTEXITCODE
+    }
+    { $_ -eq "store-check" -or $_ -eq "reset-store" } {
+        # Passthrough to the installed clio-agent CLI: data an older CLIO wrote, found and
+        # moved aside (it refuses while CLIO runs; `clio stop` first).
+        if (-not (Test-Path $ServerBin)) { Err "server binary not found: $ServerBin"; exit 1 }
+        & $ServerBin $Command @Rest
         exit $LASTEXITCODE
     }
     "doctor"  { exit (Invoke-Doctor) }

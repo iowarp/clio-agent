@@ -363,7 +363,6 @@ def test_rebuilt_registered_agents_reuse_clients_and_refresh_credentials(
     monkeypatch.setattr(builders, "_dynamic_agent_lm_config", lambda *args: spec)
     monkeypatch.setattr(builders, "_agent_tools", lambda *args, **kwargs: [])
     monkeypatch.setattr(builders, "build_spawn_runtime_tools", lambda *args, **kwargs: [])
-    monkeypatch.setattr(builders, "_runtime_active_workspace_context", lambda *args, **kwargs: "")
     monkeypatch.setattr(
         skill_runtime,
         "skill_runtime_for_agent",

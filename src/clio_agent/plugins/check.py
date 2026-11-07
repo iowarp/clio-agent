@@ -15,6 +15,9 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+from clio_agent.injections.check import injection_diagnostics
+from clio_agent.plugins.commands import BUILTIN_ROOT, command_diagnostics
+from clio_agent.plugins.kernel_bindings import diagnostics as kernel_binding_diagnostics
 from clio_agent.plugins.loader import PluginLoadError
 from clio_agent.plugins.marketplace import read_marketplace
 from clio_agent.plugins.records import Diagnostic, PluginRecord
@@ -120,6 +123,29 @@ def _syntax(root: Path) -> list[Diagnostic]:
     return found
 
 
+def _undescribed_servers(record: PluginRecord) -> list[Diagnostic]:
+    """Servers the prompt may defer that it could only name, not describe.
+
+    A deferred server appears in the prompt as its name, a description and its tool
+    names: the server's ``servers.<name>.description``, or the plugin's own description
+    when the plugin has one server. Without either the agent sees bare tool names.
+    """
+    declared = record.disclosure.get("servers") or {}
+    shared = record.description if len(record.mcp_servers) == 1 else ""
+    return [
+        Diagnostic(
+            "warning",
+            "deferred_server_undescribed",
+            f"MCP server {name!r} has no description for the prompt when its tools are "
+            "deferred unless it sends MCP instructions; set extensions.ai.iowarp.clio."
+            f"servers.{name}.description in plugin.json",
+            record.id,
+        )
+        for name in record.mcp_servers
+        if not (declared.get(name) or {}).get("description") and not shared
+    ]
+
+
 def check(
     path: Path | None = None,
     *,
@@ -196,6 +222,17 @@ def check(
     for record in records:
         target = CheckTarget("plugin", f"{record.id}@{record.version}")
         target.diagnostics.extend(record.diagnostics)
+        target.diagnostics.extend(_undescribed_servers(record))
+        target.diagnostics.extend(injection_diagnostics(record))
+        target.diagnostics.extend(kernel_binding_diagnostics(record))
+        target.diagnostics.extend(
+            command_diagnostics(
+                record.id,
+                record.commands,
+                (skill.id for skill in record.skills),
+                builtin=Path(record.root).is_relative_to(BUILTIN_ROOT),
+            )
+        )
         if record.valid:
             seen = {(d.code, d.message) for d in target.diagnostics}
             for found in _resolve(service, _probe_spec(record), market, extra):

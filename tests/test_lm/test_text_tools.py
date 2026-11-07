@@ -33,6 +33,13 @@ SEARCH = FunctionTool(
 )
 
 
+@pytest.fixture(autouse=True)
+def _json_protocol(monkeypatch: pytest.MonkeyPatch) -> None:
+    """These tests cover the fenced JSON call protocol (``lm.text_tool_protocol: json``);
+    the invoke protocol, the default, has its own (``tests/test_lm/test_invoke_calls.py``)."""
+    monkeypatch.setenv("CLIO_TEXT_TOOL_PROTOCOL", "json")
+
+
 def _block(calls: list[dict[str, object]]) -> str:
     return f"{FENCE}\n{json.dumps(calls)}\n```"
 
@@ -73,8 +80,11 @@ def test_one_block_retains_every_parallel_call_in_its_original_order() -> None:
 
 def test_system_carries_the_rules_and_every_tool_schema() -> None:
     system = render_system("You are clio.", [SEARCH])
-    assert system.startswith("You are clio.\n\n# How you act")
-    assert "NOT function calls of your own runtime" in system
+    # The stable tool text comes first and the (per-session) system prompt last,
+    # so sessions share the provider's prompt-cache prefix.
+    assert system.startswith("# How you act")
+    assert system.endswith("You are clio.")
+    assert "You call them by writing plain text" in system
     assert "# Available tools" in system
     assert "- search: Search the corpus." in system
     assert json.dumps(SEARCH.parameters, sort_keys=True) in system
@@ -229,9 +239,11 @@ def test_bracket_tags_around_anything_but_a_whole_call_remain_answers(
     assert (split.text, split.calls) == (raw.strip(), [])
 
 
-def test_corrupted_tool_fence_is_a_protocol_error_without_submitting_work() -> None:
-    """The live Haiku reply replaced its opening fence with an underscore."""
-    raw = '_tool_calls\n[{"name":"spawn_agent_task","arguments":{"agent":"worker"}}]\n```'
+@pytest.mark.parametrize("opener", ["_tool_calls", "tool_calls"])
+def test_corrupted_tool_fence_is_a_protocol_error_without_submitting_work(opener: str) -> None:
+    """Live replies lost the opening fence's backticks: Haiku wrote ``_tool_calls``, and
+    Sonnet (H3, 2026-11-01) wrote ``tool_calls`` and then ended the turn on it."""
+    raw = opener + '\n[{"name":"spawn_agent_task","arguments":{"agent":"worker"}}]\n```'
     split = split_reply(raw, call_prefix="t", available_tools={"spawn_agent_task"})
     [call] = split.calls
     assert call.name == INVALID_TOOL_CALL
@@ -567,10 +579,10 @@ def test_markup_around_anything_but_a_declared_tool_or_call_remains_an_answer(
     assert (split.text, split.calls) == (reply, [])
 
 
-def test_turn_reminder_requires_both_fences_without_opening_a_block() -> None:
+def test_turn_reminder_states_both_fences_and_asks_for_wide_steps() -> None:
     assert FENCE not in TURN_REMINDER
     assert "opening line" in TURN_REMINDER and "closing line" in TURN_REMINDER
-    assert "JSON list alone or XML invoke/parameter tags are not calls" in TURN_REMINDER
+    assert "every call that does not depend on another's result" in TURN_REMINDER
 
 
 def test_reply_with_a_block_splits_text_and_calls() -> None:
@@ -679,3 +691,22 @@ def test_words_that_merely_start_like_the_fence_word_are_shown() -> None:
     assert splitter.push("_tool") == ""
     assert splitter.push("_calls_are documented here\n") == "_tool_calls_are documented here"
     assert splitter.dropped_fence_words == 0
+
+
+def test_a_broken_block_calling_a_loaded_unlisted_tool_is_still_recognized() -> None:
+    """P8 (2026-11-01): after search_tools loaded the climate tools, the reply was the call
+    list and a closing fence; the loaded tool is not listed, so only the agent's whole
+    callable set lets the block be recognized instead of ending the turn as an answer."""
+    from clio_agent.lm.engines.text_tools import CALLABLE_TOOLS, callable_tools
+
+    raw = '[{"name": "home_climate_list", "arguments": {"area": "guest"}}]\n```'
+    listed = {"search_tools"}
+    assert split_reply(raw, call_prefix="t", available_tools=listed).calls == []
+    token = CALLABLE_TOOLS.set(frozenset({"search_tools", "home_climate_list"}))
+    try:
+        tools = callable_tools(listed)
+    finally:
+        CALLABLE_TOOLS.reset(token)
+    [call] = split_reply(raw, call_prefix="t", available_tools=tools).calls
+    assert call.name == INVALID_TOOL_CALL and "opening" in str(call.input["error"])
+    assert callable_tools(listed) == frozenset(listed)  # nothing leaks past the step

@@ -552,6 +552,26 @@ def _restore_clio_logger():
 
 
 @pytest.fixture(autouse=True)
+def _restore_trace_gates():
+    """Snapshot + restore ``clio_agent.runtime.trace``'s module gates around every test.
+
+    ``trace.configure`` sets ``EVENT_ON`` / ``ROUTE_ON`` / ``HF_ON`` and the tag whitelist as
+    process globals; a test that configures ``level="off"`` or a whitelist silences
+    ``trace.event`` for every later test in the same xdist worker (an order-dependent
+    flake: ``test_provider_summary_typed_fallback_survives_bad_input`` lost its record).
+    """
+    from clio_agent.runtime import trace  # noqa: PLC0415
+
+    names = ("EVENT_ON", "ROUTE_ON", "HF_ON", "_ONLY")
+    saved = {name: getattr(trace, name) for name in names}
+    try:
+        yield
+    finally:
+        for name, value in saved.items():
+            setattr(trace, name, value)
+
+
+@pytest.fixture(autouse=True)
 def _restore_dspy_process_default():
     """Snapshot + restore dspy's process-default LM and adapter around every test.
 

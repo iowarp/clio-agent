@@ -42,6 +42,7 @@ import logging
 from typing import TYPE_CHECKING, Any, Callable
 
 from clio_agent.gact.agents.prompt_basis import PLUGIN_CHANGE_SOURCE, plugin_change_note
+from clio_agent.gact.child_report_fit import CHILD_REPORT_SOURCE, child_report_note
 from clio_agent.gact.enrichment import (
     _context_file_turn_provenance,
     _record_context_frame,
@@ -51,7 +52,6 @@ from clio_agent.gact.events import _publish_transcript_event
 from clio_agent.gact.memory.snapshot import SOURCE as MEMORY_SOURCE
 from clio_agent.gact.memory.snapshot import memory_snapshot_text
 from clio_agent.gact.part_atom_minter import open_turn_minter
-from clio_agent.gact.plan_mode import plan_mode_reminder
 from clio_agent.gact.replanning import replan_suggestion
 from clio_agent.gact.runtime import bringup_timing
 from clio_agent.gact.runtime.globals import (
@@ -59,7 +59,7 @@ from clio_agent.gact.runtime.globals import (
     _emit_semantic_event,
     _session_agent_id,
 )
-from clio_agent.gact.todos import todo_recitation
+from clio_agent.gact.summon import SUMMONS_KEY, open_turn, summon_injections
 from clio_agent.gact.turn_state import (
     PROLOGUE_COMPLETED,
     PROLOGUE_FAILED,
@@ -67,6 +67,7 @@ from clio_agent.gact.turn_state import (
     TurnCancelledDuringPrologue,
 )
 from clio_agent.gact.turn_watchdog import cancel_requested
+from clio_agent.gact.working_state import working_state_injections
 
 if TYPE_CHECKING:
     from clio_agent.gact.turn_state import TurnState
@@ -147,28 +148,37 @@ def _prepare_turn_off_loop_steps(
         state.enriched_text = enrich_turn_context(
             state.app, state.sid, state.user_text, state.user_msg
         )
+        timer = bringup_timing.timer_for_session(state.app, state.sid)
         # Long-term memory: the session's pinned snapshot (built on its first turn).
-        memory = memory_snapshot_text(state.app, state.sid, state.sess, state.turn_id)
-        # P1.2 #1064: surface plan mode to the model each turn (survives compaction; no-op otherwise).
-        reminder = plan_mode_reminder(state.app, state.sid, state.sess)
-        todos = todo_recitation(state.app, state.sid, state.sess)
+        with timer.phase("prologue.memory"):
+            memory = memory_snapshot_text(state.app, state.sid, state.sess, state.turn_id)
+        # Working state: plan mode, the plan (draft/approved) and the todos (empty when absent).
+        with timer.phase("prologue.working_state"):
+            working = working_state_injections(state.app, state.sid, state.sess)
         # P1.6d #1068: surface a pending stall-triggered replanning suggestion once (no-op otherwise).
         replan = replan_suggestion(state.app, state.sid, state.sess)
         # Plugin changes applied as a note, until a compaction folds them into the prompt.
         plugin_change = plugin_change_note(state.app, state.sid)
+        # A session another agent started: its answer goes to that agent, whole.
+        child_report = child_report_note(state.app, state.sid, state.sess)
         # CLIO's own additions: recorded by the agent loop as messages of their own,
         # ahead of the user's message, never glued into the user's text.
+        summoned = state.user_msg.metadata.get(SUMMONS_KEY)
         state.injections = [
             (source, block)
             for source, block in (
                 (MEMORY_SOURCE, memory),
-                ("plan_mode", reminder),
-                ("todos", todos),
+                *working,
                 ("replan", replan),
                 (PLUGIN_CHANGE_SOURCE, plugin_change),
+                (CHILD_REPORT_SOURCE, child_report),
+                # What the person summoned; a server's marker is expanded by the agent
+                # loop, which holds the deferred catalog (summon.py).
+                *summon_injections(state.app, state.sid, summoned),
             )
             if block
         ]
+        open_turn(state.app, state.turn_id, state.user_msg.id, summoned)
     except _ContextFileAccessError as exc:
         state.enriched_text = state.user_text
         state.context_file_error = exc.error_info
@@ -176,16 +186,17 @@ def _prepare_turn_off_loop_steps(
             state.app, state.sid, status="error"
         )
     _check_not_cancelled(state)
-    state.context_frame = _record_context_frame(
-        state.app,
-        state.sid,
-        state.sess,
-        state.user_msg,
-        user_text=state.user_text,
-        enriched_text=state.enriched_text,
-        context_error=state.context_file_error,
-        injections=state.injections,
-    )
+    with bringup_timing.timer_for_session(state.app, state.sid).phase("prologue.context_frame"):
+        state.context_frame = _record_context_frame(
+            state.app,
+            state.sid,
+            state.sess,
+            state.user_msg,
+            user_text=state.user_text,
+            enriched_text=state.enriched_text,
+            context_error=state.context_file_error,
+            injections=state.injections,
+        )
     # P2.2 #1070 / P2.6 #1074: UserPromptSubmit hooks (the ported ``pre_message``
     # consumer). A deny VETOES the turn (session -> error); a ``defer`` SUSPENDS it for
     # out-of-band approval (waiting_user, resume as a new turn). The whole finalize-
@@ -196,7 +207,8 @@ def _prepare_turn_off_loop_steps(
     _check_not_cancelled(state)
     from clio_agent.gact.hooks.user_prompt import run_user_prompt_submit  # noqa: PLC0415
 
-    return run_user_prompt_submit(state, update_retry_attempt=update_retry_attempt)
+    with bringup_timing.timer_for_session(state.app, state.sid).phase("prologue.prompt_hooks"):
+        return run_user_prompt_submit(state, update_retry_attempt=update_retry_attempt)
 
 
 def prepare_turn_off_loop(state: "TurnState", *, update_retry_attempt: Callable[..., Any]) -> str:

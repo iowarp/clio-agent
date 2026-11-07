@@ -12,7 +12,6 @@ must run off the application event loop.
 from __future__ import annotations
 
 import hashlib
-import logging
 import threading
 from collections.abc import Callable, Iterator
 from contextlib import contextmanager
@@ -22,6 +21,7 @@ from uuid import uuid4
 from pydantic import JsonValue, TypeAdapter
 
 from clio_agent.arc.loop_guard import assert_store_write_off_loop
+from clio_agent.arc.segment_create import create_scope_once
 from clio_agent.arc.task_types import (
     CoordinationGrant,
     CoreReference,
@@ -37,6 +37,8 @@ from clio_agent.arc.task_types import (
 from clio_agent.errors import ClioError
 from clio_agent.gact import (
     task_event_lane,
+    task_event_reconcile,
+    task_history_group,
     task_history_projection,
     task_history_queries,
     task_index_build,
@@ -55,7 +57,6 @@ CONTENT_SCOPE = "_events/t/content/"
 OUTPUT_SCOPE = "_events/t/output/"
 _CONTENT_SCOPES = (CONTENT_SCOPE, "_task_content/")
 _OUTPUT_SCOPES = (OUTPUT_SCOPE, "_task_output/")
-logger = logging.getLogger(__name__)
 _JSON_VALUE: TypeAdapter[JsonValue] = TypeAdapter(JsonValue)
 
 
@@ -68,6 +69,14 @@ def owns_output_reference(handle: str, reference: CoreReference) -> bool:
     """Bind current and retained output addresses to their original exact task."""
     suffix = hashlib.sha256(handle.encode()).hexdigest() + "/" + reference.content_id
     return any(reference.scope == prefix + suffix for prefix in _OUTPUT_SCOPES)
+
+
+def content_reference(session_id: str, value: object, scope: str = CONTENT_SCOPE) -> CoreReference:
+    """The content-addressed reference ``value`` has (or will have once written)."""
+    digest = hashlib.sha256(_encoded(_JSON_VALUE.validate_python(value, strict=True))).hexdigest()
+    return CoreReference(
+        session_id=session_id, scope=scope + digest, content_id=digest, sha256=digest
+    )
 
 
 class MailboxFull(ValueError):
@@ -134,27 +143,20 @@ class TaskHistory:
     def _write_content(self, session_id: str, value: object, scope: str) -> CoreReference:
         assert_store_write_off_loop("task.content")
         value = _JSON_VALUE.validate_python(value, strict=True)
-        digest = hashlib.sha256(_encoded(value)).hexdigest()
-        content_id = digest
-        reference = CoreReference(
-            session_id=session_id,
-            scope=scope + content_id,
-            content_id=content_id,
-            sha256=digest,
-        )
-        with self._writing():
-            existing = self.arc.list_segments(session_id, reference.scope)
-            if existing:
-                self.read_content(reference)
-                return reference
-            self.confirm_write(
-                lambda: self.arc.append_segment(
+        reference = content_reference(session_id, value, scope)
+        content_id = digest = reference.content_id
+        with self._writing():  # one atomic create (iowarp-core 2.4) instead of probe + put
+            created = self.confirm_write(
+                lambda: create_scope_once(
+                    self.arc._segments,
                     session_id,
                     reference.scope,
                     "task_content",
                     {"content_id": content_id, "sha256": digest, "value": value},
                 )
             )
+            if not created:  # held already (this process, an earlier one, another writer)
+                self.read_content(reference)
         return reference
 
     def read_content(self, reference: CoreReference) -> JsonValue:
@@ -235,13 +237,9 @@ class TaskHistory:
             )
             self._project(state, "task.observed", stored)
             task_index_writes.close_task(self, previous, snapshot)
-            if self.observation_committed is not None:
-                try:
-                    self.observation_committed(snapshot)
-                except Exception:
-                    logger.exception(
-                        "Task UI hint failed after confirmed observation handle=%s", snapshot.handle
-                    )
+            task_history_group.after_commit(
+                self, lambda: task_history_group.observation_hint(self, snapshot)
+            )
 
     def record_mail(self, item: MailItem, *, max_pending_messages: int = 0) -> MailItem:
         """Accept durable session mail; only pending peer messages count toward a cap."""
@@ -273,7 +271,8 @@ class TaskHistory:
             if existing is not None:
                 if self.read_content(existing) != context.model_dump(mode="json"):
                     raise ValueError("Submission reference cannot be reused")
-                return existing
+                if not task_event_reconcile.active(self):  # a retry completes its events
+                    return existing
             state = self._session_state(context.owner.session_id)
             content = self.write_content(context.owner.session_id, context.model_dump(mode="json"))
             payload = {"reference": context.reference, "content": content.model_dump(mode="json")}
@@ -573,6 +572,7 @@ class TaskHistory:
     tree_handles = task_history_queries.tree_handles
     descendant_handles = task_history_queries.descendant_handles
     direct_child_by_invocation = task_history_queries.direct_child_by_invocation
+    invocation_handles = task_history_queries.invocation_handles
     session_handles = task_history_queries.session_handles
     task_handles = task_history_queries.task_handles
     open_handles = task_history_queries.open_handles
@@ -587,6 +587,7 @@ class TaskHistory:
     reconcile_open = task_index_writes.reconcile_open
     release_session_tree = task_index_writes.release_session_tree
     complete_index_build = task_index_build.complete_index_build
+    run_grouped = task_history_group.run_grouped
 
     def latest_assignment(self, session_id: str) -> TaskSnapshot | None:
         """Resolve a stable session's latest finite assignment from its passive Core index."""
@@ -779,8 +780,11 @@ class TaskHistory:
             with self._view_lock:
                 task_history_projection._project(state, event_type, payload, snapshot=snapshot)
 
-        self.confirm_write(project)
-        task_history_queries.notify_projected(self, state, event_type, payload)
+        def commit() -> None:  # in a group, once its records are confirmed
+            self.confirm_write(project)
+            task_history_queries.notify_projected(self, state, event_type, payload)
+
+        task_history_group.after_commit(self, commit)
 
     def context_inputs(self, session_id: str, scope: str) -> dict[str, RecipientInput]:
         """Read proven model inputs for one fixed Core context scope."""

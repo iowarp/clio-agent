@@ -28,6 +28,7 @@ import os
 from pathlib import Path
 from typing import Any
 
+import pytest
 from fastapi.testclient import TestClient
 
 from tests._harness import emit_live_text, install_scripted_module
@@ -39,6 +40,8 @@ from .test_turn_transcript_equivalence import (
     _PlainAgent,
     _Pred,
 )
+
+pytestmark = pytest.mark.usefixtures("no_session_facts")
 
 GOLDEN_DIR = Path(__file__).parent / "goldens" / "turn_transcript_pr2"
 _GOLDEN_REGEN = os.environ.get("CLIO_TURN_TRANSCRIPT_GOLDEN_REGEN") == "1"

@@ -26,6 +26,7 @@ from clio_agent.arc.memory import ARCMemory
 from clio_agent.arc.storage import make_arc_store
 from clio_agent.gact.agents.clio_react_record import StepRecorder, fold_steps, result_part
 from clio_agent.gact.agents.media_cache import clear_media_cache
+from tests._compaction_summary import keep_open_request_only
 
 SCOPE = "agentA"
 
@@ -136,7 +137,9 @@ def test_compacting_confirmed_input_removes_prompt_text_but_keeps_delivery_proof
         assert "Original question verbatim." in str(reader.read())
         live = arc.render_working_set("owner", "main")
         [receipt] = [segment for segment in live if segment.kind == "recipient_input"]
-        decision = post_compaction_context(live, open_turn_id="next-turn", policy=KeepPolicy())
+        # No typed-message budget: the default keeps the person's input verbatim.
+        policy = KeepPolicy(keep_user_chars=0)
+        decision = post_compaction_context(live, open_turn_id="next-turn", policy=policy)
         assert receipt.id in decision.summarize
         assert not decision.keep
         arc.summarize_segments("owner", "main", list(decision.summarize), {"text": "A summary."})
@@ -151,3 +154,9 @@ def test_compacting_confirmed_input_removes_prompt_text_but_keeps_delivery_proof
     assert restored.recipient_input("owner", proof.id) == proof
     assert restored.acknowledged_notifications("owner") == frozenset({item.id})
     assert restored.pending_mail("owner") == ()
+
+
+@pytest.fixture(autouse=True)
+def _open_request_only(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The keep rule these mechanics tests were written for (see the helper)."""
+    keep_open_request_only(monkeypatch)

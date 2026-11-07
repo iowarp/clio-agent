@@ -27,6 +27,7 @@ from fastapi.testclient import TestClient
 from clio_agent.arc import clio_core_attach, storage
 from clio_agent.gact.app import build_app
 from clio_agent.gact.providers.boot_selection import explicit_lm_provider
+from clio_agent.gact.session_records import PageQuery
 from tests._config_layer import delete_config, set_config
 
 # The native client's WaitForLocalServer default: the stall this test simulates.
@@ -136,7 +137,7 @@ def test_health_answers_within_a_second_while_clio_core_attach_stalls(
             refusal = conn.getresponse()
             assert refusal.status == 503
             assert json.loads(refusal.read())["error"]["error"] == "task_runtime_starting"
-            assert app.state.sessions.list() == []
+            assert app.state.sessions.select(PageQuery(archived=None)) == []
         finally:
             conn.close()
 

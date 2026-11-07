@@ -26,7 +26,7 @@ class LMCallTrace(BaseCallback):
 
     def __init__(self) -> None:
         self._lock = threading.Lock()
-        self._open: dict[str, tuple[Any, dict[str, Any]]] = {}
+        self._open: dict[str, tuple[Any, dict[str, Any], Any]] = {}
 
     def on_lm_start(self, call_id: str, instance: Any, inputs: dict[str, Any]) -> None:
         """Remember the call's LM and inputs until it ends.
@@ -34,28 +34,36 @@ class LMCallTrace(BaseCallback):
         The LM's history goes to the turn ledger, not DSPy's process-wide histories
         (:func:`clio_agent.runtime.turn_lm_ledger.route_history`).
         """
+        from clio_agent.lm import call_timing, sent_prompt  # noqa: PLC0415
         from clio_agent.runtime.turn_lm_ledger import route_history  # noqa: PLC0415
 
         route_history(instance)
+        clock = call_timing.start()
+        request = _typed_request(inputs)
+        if request is not None:
+            sent_prompt.remember(clock.session_id, str(getattr(instance, "model", "")), request)
         with self._lock:
-            self._open[call_id] = (instance, inputs)
+            self._open[call_id] = (instance, inputs, clock)
 
     def on_lm_end(
         self, call_id: str, outputs: Any | None, exception: BaseException | None = None
     ) -> None:
         """Record the finished (or failed) call."""
+        from clio_agent.lm import call_timing  # noqa: PLC0415
+
         with self._lock:
-            instance, inputs = self._open.pop(call_id, (None, {}))
+            instance, inputs, clock = self._open.pop(call_id, (None, {}, None))
         try:
-            _emit(
-                call_record(
-                    str(getattr(instance, "model", "") or ""),
-                    inputs,
-                    outputs,
-                    exception,
-                    response=_adapter_response(outputs),
-                )
+            record = call_record(
+                str(getattr(instance, "model", "") or ""),
+                inputs,
+                outputs,
+                exception,
+                response=_adapter_response(outputs),
             )
+            if clock is not None:
+                record.update(call_timing.finish(clock))
+            _emit(record)
         except Exception as exc:  # noqa: BLE001 - recording must never fail a call
             from clio_agent.runtime import trace  # noqa: PLC0415
 
@@ -80,11 +88,13 @@ def call_record(
     (:func:`_adapter_response`): the list carries only text, so its finish reason and
     usage -- how the model ended and how much it generated -- come from the Response.
     """
-    request = inputs.get("prompt") or inputs.get("kwargs", {}).get("request")
-    if hasattr(request, "messages") and hasattr(request, "model"):
+    request = _typed_request(inputs)
+    if request is not None:
         messages: Any = _request_messages(request)
     else:
-        messages = inputs.get("messages") or request
+        messages = inputs.get("messages") or (
+            inputs.get("prompt") or inputs.get("kwargs", {}).get("request")
+        )
     content, reasoning, finish, usage = _outputs(outputs)
     if response is not None and getattr(response, "message", None) is not None:
         finish = str(response.finish_reason or "")
@@ -114,9 +124,21 @@ def call_record(
         record["attention"] = declaration
     if (wire_messages := current_wire_messages()) is not None:
         record["attention_messages"] = wire_messages
+    if request is not None:
+        from clio_agent.lm.sent_prompt import shape  # noqa: PLC0415
+
+        record["prompt_shape"] = shape(request)
     if exception is not None:
         record["error"] = f"{type(exception).__name__}: {exception}"
     return record
+
+
+def _typed_request(inputs: Mapping[str, Any]) -> Any:
+    """The typed ``Request`` of an agent-loop call, or ``None`` for an adapter call."""
+    request = inputs.get("prompt") or inputs.get("kwargs", {}).get("request")
+    if hasattr(request, "messages") and hasattr(request, "model"):
+        return request
+    return None
 
 
 def _adapter_response(outputs: Any) -> Any:
@@ -198,7 +220,13 @@ def _usage(usage: Any) -> dict[str, Any] | None:
         return None
     return {
         name: getattr(usage, name)
-        for name in ("input_tokens", "output_tokens", "cache_read_tokens", "reasoning_tokens")
+        for name in (
+            "input_tokens",
+            "output_tokens",
+            "cache_read_tokens",
+            "cache_write_tokens",
+            "reasoning_tokens",
+        )
         if getattr(usage, name, None) is not None
     }
 
@@ -238,7 +266,12 @@ def _emit(record: dict[str, Any]) -> None:
 
     from clio_agent.arc.loop_guard import on_server_loop  # noqa: PLC0415
     from clio_agent.gact.runtime.globals import _emit_semantic_event  # noqa: PLC0415
+    from clio_agent.lm.call_messages_delta import delta  # noqa: PLC0415
 
+    # Only what the session's chain has not recorded yet (readers rebuild the rest).
+    messages, prefix = delta(session, record.get("messages"))
+    if prefix:
+        record = {**record, "messages": messages, "messages_prefix": prefix}
     status = "failed" if "error" in record else "completed"
 
     def emit() -> Any:

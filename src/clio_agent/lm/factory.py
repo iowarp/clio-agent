@@ -97,6 +97,9 @@ def create_lm(config: LMProviderConfig) -> dspy.LM:
     Returns:
         Configured dspy.LM instance
     """
+    from clio_agent.lm.pool_liveness import install_pool_liveness  # noqa: PLC0415
+
+    install_pool_liveness()  # pooled connections stay reusable past fd 1024
     if config.provider == "codex":
         return _record_identity(_codex_direct_lm(config), config)
     if config.provider == "claude_code":
@@ -150,6 +153,8 @@ def create_lm(config: LMProviderConfig) -> dspy.LM:
     lm._clio_tool_result_media = (
         "native" if _resolved_litellm_prefix(config) == "anthropic" else "user_message"
     )
+    # The Messages API caches only what a block mark covers: mark the growing history.
+    lm._clio_cache_history = _resolved_litellm_prefix(config) == "anthropic"
     # These stateless chat requests propose local function calls; the loop
     # executes them only after receiving a complete response. SDK/native-tool
     # engines retain their own recovery policy.
@@ -196,12 +201,13 @@ def _claude_code_lm(config: LMProviderConfig) -> Any:
         AsyncClaudeCodeEngine,
         ClaudeCodeEngine,
     )
+    from clio_agent.providers.claude_code_options import with_output_cap  # noqa: PLC0415
 
     if not config.model.strip():
         raise ValueError("No model configured for LM provider 'claude_code'")
     bare = _claude_code_bare_model(config)
     extras = build_request_kwargs(config)
-    thinking = extras.pop("claude_code_thinking", None)
+    thinking = with_output_cap(extras.pop("claude_code_thinking", None), config.max_tokens)
     generation = {k: v for k, v in extras.items() if not k.startswith("claude_code_")}
     if config.max_tokens:
         generation["max_tokens"] = config.max_tokens

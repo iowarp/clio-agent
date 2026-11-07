@@ -30,9 +30,10 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Optional
 
+from clio_agent.arc.chunk_records import read_segments
 from clio_agent.arc.lane_chunking import chunk_scope
 from clio_agent.arc.lane_generations import current_base
-from clio_agent.arc.schema import Segment, decode_segments
+from clio_agent.arc.schema import Segment
 from clio_agent.gact.part_atoms import (
     MESSAGE_PART_SCOPE,
     fully_retracted,
@@ -123,8 +124,9 @@ def _read_chunk(store: Any, session_id: str, scope: str) -> list[Segment]:
     with store._lock_for(session_id, scope):
         if key in store._loaded:
             return list(store._scopes.get(key) or [])
-        raw = store._store.get("segments", store._record_name(session_id, scope))
-    return decode_segments(raw) if raw else []
+        name = store._record_name(session_id, scope)
+    # Lock-free: a chunk read mid-append ends at its last whole record (chunk_records).
+    return read_segments(store._store, session_id, scope, name)
 
 
 def _assemble(contents: list[dict[str, Any]], *, drop_leading: int) -> list[Message]:

@@ -193,17 +193,22 @@ async def test_failed_restore_keeps_the_last_confirmed_control_identity(
     history = native.history
     original = history.task_snapshot("task_cancel")
     assert original is not None
-    segments = history.arc._live.iter_session_event_segments
+    # Restore and tree loads read a session's task events from its lane only (the lane
+    # is their one record): lose Core visibility part-way through that read.
+    from clio_agent.gact import task_event_lane, task_tree_state
+
+    events = task_event_lane.session_task_events
     failures = iter([True])
 
-    def interrupted_load(session_id: str) -> Iterator[Any]:
-        stream = iter(segments(session_id))
+    def interrupted_load(arc: Any, session_id: str) -> Iterator[Any]:
+        stream = iter(events(arc, session_id))
         if next(failures, False):
             yield next(stream)
             raise OSError("Load visibility lost after its first segment")
         yield from stream
 
-    monkeypatch.setattr(history.arc._live, "iter_session_event_segments", interrupted_load)
+    monkeypatch.setattr(task_event_lane, "session_task_events", interrupted_load)
+    monkeypatch.setattr(task_tree_state, "session_task_events", interrupted_load)
 
     def restore_then_read() -> Any:
         # Before the one-time index build, restore itself replays; after it, the

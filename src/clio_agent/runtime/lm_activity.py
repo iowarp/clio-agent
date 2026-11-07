@@ -256,7 +256,6 @@ def note_lm_answer_delta(text: str, *, field: str = "answer") -> None:
                 duplicate_suppressed=False,
                 duplicate_reason="react_kind_unresolved",
                 head=text[:120],
-                full_text=text[:12000],
             )
         # #878: a `kind: react` expert's redundant EXTRACT reasoning/answer is
         # gated STRUCTURALLY on the declared module.kind (never the field name).
@@ -281,7 +280,6 @@ def note_lm_answer_delta(text: str, *, field: str = "answer") -> None:
                 duplicate_suppressed=True,
                 duplicate_reason="nonvisible_contract_field",
                 head=text[:120],
-                full_text=text[:12000],
             )
             trace.HF_ON and trace.hot(
                 "STREAM-SSE",
@@ -328,7 +326,6 @@ def note_lm_answer_delta(text: str, *, field: str = "answer") -> None:
             normalized_event="turn.text.delta",
             duplicate_suppressed=False,
             head=text[:120],
-            full_text=text[:12000],
         )
         trace.HF_ON and trace.hot(
             "STREAM-SSE",
@@ -375,7 +372,6 @@ def note_lm_provider_thinking_delta(text: str, *, provider: str = "") -> None:
             normalized_event="turn.trace.delta",
             duplicate_suppressed=False,
             head=text[:120],
-            full_text=text[:12000],
         )
         asyncio.run_coroutine_threadsafe(emit_coro(text, agent_id or None, field), loop)
     except Exception:  # noqa: BLE001,S110 - live streaming is best-effort, never break the call
@@ -460,53 +456,6 @@ def inter_token_idle_seconds() -> float:
     except (ValueError, TypeError):
         return _DEFAULT_INTER_TOKEN_IDLE_S
     return value if value > 0 else _DEFAULT_INTER_TOKEN_IDLE_S
-
-
-def _emit_lm_call_started(call_id: Any, instance: Any, inputs: Any) -> None:
-    """Emit a durable ``lm.call.started`` BEFORE the call returns.
-
-    The ``lm.call`` capture (``lm/call_trace.py``) records on ``on_lm_end``, AFTER
-    the call returns, so a HUNG call (LM Studio stall) is never recorded -- a
-    hole in the canonical trace. This start-marker carries the full request
-    ``messages`` up front, so a stall shows up as a ``lm.call.started`` with no
-    matching ``lm.call`` (completed): the wedged call and its exact input are
-    first-class in the trace, not reconstructed. Durable-only (detail off),
-    best-effort, never breaks a call.
-    """
-
-    try:
-        from clio_agent.gact.context import (  # noqa: PLC0415
-            active_app,
-            active_session_id,
-            active_trace_id,
-            active_turn_id,
-        )
-        from clio_agent.gact.runtime.globals import _emit_semantic_event  # noqa: PLC0415
-    except Exception:  # noqa: BLE001 - app may be unavailable (CLI/optimizer paths)
-        return
-    app = active_app()
-    sid = active_session_id()
-    if app is None or not sid:
-        return
-    model = str(getattr(instance, "model", "") or "")
-    messages: Any = None
-    if isinstance(inputs, dict):
-        messages = inputs.get("messages") or inputs.get("prompt")
-    try:
-        _emit_semantic_event(
-            app,
-            sid,
-            "lm.call.started",
-            turn_id=active_turn_id(),
-            trace_id=active_trace_id(),
-            status="running",
-            summary=f"LM call started ({model or 'lm'}).",
-            provider={"model_id": model},
-            payload={"call_id": str(call_id), "model": model, "messages": messages},
-            detail_level="off",
-        )
-    except Exception:  # noqa: BLE001,S110 - capture must never break a call
-        pass
 
 
 def note_lm_start() -> None:

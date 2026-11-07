@@ -47,54 +47,59 @@ _PLAN = "/tmp/plans/x.md"
 
 _GOLDEN_FULL_CREATE = (
     "## Plan Mode active — read-only except the plan file\n\n"
-    "You are in PLAN MODE. Investigate freely, but do NOT modify the system: every write, "
-    "edit, and file-mutating tool is blocked.\n"
-    "- No plan file exists yet. Create your plan at /tmp/plans/x.md (write a *.md there — it "
-    "is the ONLY writable path in plan mode).\n"
-    "- Structure the plan to fit the task: Simple change → Changes + Verification; Standard "
-    "task → Objective, Key Files & Context, Implementation Steps, Verification; Complex / "
-    "architectural → Background, Scope, Proposed Solution, Alternatives, a phased Plan, "
-    "Verification, Migration/Rollback.\n"
-    "- The plan file is NOT the user's requested target or final deliverable. Never copy "
-    "the requested target contents alone into the plan file; the plan must describe how "
-    "the requested result will be implemented and verified after approval. Never infer "
-    "a requested filename from the plan-file path or its generated slug; preserve targets "
-    "from the user's request exactly.\n"
-    "- Keep an epistemic ledger of what you know vs. must find out, under the headers: "
-    "Given / Learned / To look up / To derive.\n"
-    "- If a plan already exists, evaluate whether it is still relevant to THIS task before "
-    "editing; treat a new task as a fresh plan.\n"
-    "- Show the plan to the user in your response — don't just write it to disk.\n"
-    "- Turn-ending contract: when the plan is complete, call plan_exit to hand the saved plan "
-    "back for approval, then END YOUR TURN — do NOT try to execute the plan while in plan mode."
+    "You are in plan mode. Investigate freely; nothing else changes until the plan is "
+    "approved, so every write, edit and file-mutating tool is blocked except plan_update.\n"
+    "- No plan file exists yet. Write your plan with plan_update(content=...); it is saved "
+    "at /tmp/plans/x.md, the only writable path in plan mode.\n"
+    "- Fit the plan to the task. A small change needs only Changes and Verification. Larger or "
+    "open-ended work: Objective (the question, what a complete answer contains, what counts "
+    "as done); Approach; Threads, one per line, each marked `[open]`, `[active]`, `[closed]` "
+    "or `[dropped]` at the start (`- [open] name: what it asks`), with a one-line reason "
+    "when it ends and the handles of any children working on it; Findings, each a claim with "
+    "its references (call: refs, paths and lines, handles), a corrected finding marked "
+    "superseded rather than deleted; checking your claims as the last thread.\n"
+    "- The plan file holds your plan, not the deliverable the person asked for: it says how "
+    "the requested result will be made and checked after approval. The deliverable's names "
+    "and places come from the person's request; the plan file's path is CLIO's own.\n"
+    "- Keep what you know apart from what you still must find out: findings carry their "
+    "references, and what is unknown stays an open thread until you look it up.\n"
+    "- If a plan already exists, judge whether it still fits this task before editing it; "
+    "a new task gets a fresh plan.\n"
+    "- Show the plan to the person in your reply as well; they read your reply, not the file.\n"
+    "- Ending the turn: when the plan is complete, call plan_exit to hand the saved plan back "
+    "for approval and end your turn there. Nothing is carried out in plan mode; the work "
+    "starts after approval."
 )
 
 _GOLDEN_FULL_EDIT = (
     "## Plan Mode active — read-only except the plan file\n\n"
-    "You are in PLAN MODE. Investigate freely, but do NOT modify the system: every write, "
-    "edit, and file-mutating tool is blocked.\n"
-    "- A plan file already exists at /tmp/plans/x.md. Make incremental edits to it as you learn.\n"
-    "- Structure the plan to fit the task: Simple change → Changes + Verification; Standard "
-    "task → Objective, Key Files & Context, Implementation Steps, Verification; Complex / "
-    "architectural → Background, Scope, Proposed Solution, Alternatives, a phased Plan, "
-    "Verification, Migration/Rollback.\n"
-    "- The plan file is NOT the user's requested target or final deliverable. Never copy "
-    "the requested target contents alone into the plan file; the plan must describe how "
-    "the requested result will be implemented and verified after approval. Never infer "
-    "a requested filename from the plan-file path or its generated slug; preserve targets "
-    "from the user's request exactly.\n"
-    "- Keep an epistemic ledger of what you know vs. must find out, under the headers: "
-    "Given / Learned / To look up / To derive.\n"
-    "- If a plan already exists, evaluate whether it is still relevant to THIS task before "
-    "editing; treat a new task as a fresh plan.\n"
-    "- Show the plan to the user in your response — don't just write it to disk.\n"
-    "- Turn-ending contract: when the plan is complete, call plan_exit to hand the saved plan "
-    "back for approval, then END YOUR TURN — do NOT try to execute the plan while in plan mode."
+    "You are in plan mode. Investigate freely; nothing else changes until the plan is "
+    "approved, so every write, edit and file-mutating tool is blocked except plan_update.\n"
+    "- A plan file already exists at /tmp/plans/x.md. Update it with plan_update as you "
+    "learn (old and new replace one passage).\n"
+    "- Fit the plan to the task. A small change needs only Changes and Verification. Larger or "
+    "open-ended work: Objective (the question, what a complete answer contains, what counts "
+    "as done); Approach; Threads, one per line, each marked `[open]`, `[active]`, `[closed]` "
+    "or `[dropped]` at the start (`- [open] name: what it asks`), with a one-line reason "
+    "when it ends and the handles of any children working on it; Findings, each a claim with "
+    "its references (call: refs, paths and lines, handles), a corrected finding marked "
+    "superseded rather than deleted; checking your claims as the last thread.\n"
+    "- The plan file holds your plan, not the deliverable the person asked for: it says how "
+    "the requested result will be made and checked after approval. The deliverable's names "
+    "and places come from the person's request; the plan file's path is CLIO's own.\n"
+    "- Keep what you know apart from what you still must find out: findings carry their "
+    "references, and what is unknown stays an open thread until you look it up.\n"
+    "- If a plan already exists, judge whether it still fits this task before editing it; "
+    "a new task gets a fresh plan.\n"
+    "- Show the plan to the person in your reply as well; they read your reply, not the file.\n"
+    "- Ending the turn: when the plan is complete, call plan_exit to hand the saved plan back "
+    "for approval and end your turn there. Nothing is carried out in plan mode; the work "
+    "starts after approval."
 )
 
 _GOLDEN_SPARSE = (
-    "## Plan Mode active — read-only except the plan file (/tmp/plans/x.md). Keep writing "
-    "your plan there; end your turn to hand it back for approval with plan_exit rather than executing it "
+    "## Plan Mode active — read-only except the plan file (/tmp/plans/x.md). Keep the plan "
+    "current with plan_update; end your turn to hand it back for approval with plan_exit rather than executing it "
     "yourself."
 )
 
@@ -133,7 +138,7 @@ def test_plan_workflow_full_reminder_is_workflow_scaffold(tmp_path: Path) -> Non
     assert "numbered" in out.lower()
     assert "Risks & Dependencies" in out
     # The generic default structure sentence is REPLACED by the workflow one.
-    assert "Structure the plan to fit the task: Simple change" not in out
+    assert "Fit the plan to the task. A small change" not in out
     assert _USER_TEXT not in out  # the reminder is its own block, no user text glued on
 
 
@@ -143,7 +148,7 @@ def test_plan_small_full_reminder_is_lightweight(tmp_path: Path) -> None:
     assert "short and lightweight" in out
     # No workflow scaffold and no heavy default structure sentence.
     assert "Risks & Dependencies" not in out
-    assert "Structure the plan to fit the task: Simple change" not in out
+    assert "Fit the plan to the task. A small change" not in out
 
 
 def test_plan_small_full_reminder_cadence_is_sparser(tmp_path: Path) -> None:
@@ -158,8 +163,8 @@ def test_plan_small_full_reminder_cadence_is_sparser(tmp_path: Path) -> None:
 _BETWEEN_INTERVALS_DELTA = 15
 
 # Sentinels distinguishing the FULL contract from the SPARSE one-liner at the inject boundary.
-_FULL_ONLY = "Turn-ending contract"
-_SPARSE_ONLY = "Keep writing your plan there"
+_FULL_ONLY = "Ending the turn:"
+_SPARSE_ONLY = "Keep the plan current with plan_update"
 
 
 def _seed_reminder_window(app: Any, sid: str, *, delta: int) -> None:

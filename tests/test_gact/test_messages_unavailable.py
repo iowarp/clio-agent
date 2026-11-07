@@ -28,23 +28,38 @@ from clio_agent.gact.transcript_unreadable import (
 )
 
 
-class _UnreadableTag:
-    def __init__(self, name: str) -> None:
-        self.name = name
+class _Done:
+    """A completed native future whose ``wait`` is ``code`` and ``result`` is ``value``."""
 
-    def GetBlobSize(self, _blob: str) -> int:  # noqa: N802 - binding name
-        return 128
+    def __init__(self, code: int, value: Any = None) -> None:
+        self._code, self._value = code, value
 
-    def GetBlob(self, _blob: str, _size: int, _offset: int) -> bytes:  # noqa: N802
-        raise RuntimeError("GetBlob operation failed")
+    def done(self) -> bool:
+        return True
+
+    def wait(self, _max_sec: float = -1.0) -> int:
+        return self._code
+
+    def result(self, _max_sec: float = -1.0) -> Any:
+        return self._value
+
+
+class _UnreadableClient:
+    """The size probe reports a stored blob; the read of it is refused (code 2)."""
+
+    def AsyncGetBlobSize(self, _tag_id: Any, _blob: str) -> _Done:  # noqa: N802
+        return _Done(0, 128)
+
+    def AsyncGetBlob(self, _tag_id: Any, _blob: str, _size: int, _offset: int) -> _Done:  # noqa: N802
+        return _Done(2)
 
 
 def test_store_get_types_a_present_but_unreadable_blob(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(rpc_liveness, "call_with_liveness", lambda fn, **_: fn())
     stub: Any = SimpleNamespace(
         _live=lambda: None,
-        _cte=SimpleNamespace(Tag=_UnreadableTag),
-        tag=lambda kind: f"ns/{kind}",
+        _client=_UnreadableClient(),
+        _tag_ids=SimpleNamespace(get=lambda kind: 1, cached=lambda kind: True),
         _gate=SimpleNamespace(port=9413, note_rpc_stalled=lambda *a, **k: None),
         _reconnect=lambda: None,
     )
@@ -52,7 +67,10 @@ def test_store_get_types_a_present_but_unreadable_blob(monkeypatch: pytest.Monke
     with pytest.raises(BlobReadError) as info:
         storage.ClioCoreStore.get(stub, "_events", "sess_x~m~0")
 
-    assert info.value.details == {"name": "sess_x~m~0", "cause": "GetBlob operation failed"}
+    assert info.value.details == {
+        "name": "sess_x~m~0",
+        "cause": "GetBlob operation failed (return code 2)",
+    }
     assert isinstance(info.value.__cause__, RuntimeError)
 
 

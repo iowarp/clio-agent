@@ -52,6 +52,19 @@ def test_gact_app_import_with_cli_args_does_not_load_hdf5() -> None:
     assert result.stdout.strip() == "ok"
 
 
+def test_gact_app_import_does_not_load_playwright() -> None:
+    """The browser's Playwright is imported when the first page opens, not at startup."""
+
+    result = _run_import_probe(
+        "import sys; "
+        "import clio_agent.gact.app; "
+        "from clio_agent.gact.browser.install import probe_browser; probe_browser(); "
+        "assert 'playwright' not in sys.modules, 'playwright imported at startup'; "
+        "print('ok')"
+    )
+    assert result.stdout.strip() == "ok"
+
+
 def test_tool_execution_import_does_not_load_dspy() -> None:
     """Agent-less desktop startup must not pay DSPy's model runtime cost."""
 

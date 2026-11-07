@@ -87,3 +87,48 @@ async def test_store_helpers_use_sdk_resource_and_preserve_context() -> None:
         marker.reset(token)
         loop._default_executor = previous
         default.shutdown(wait=True)
+
+
+@pytest.mark.asyncio
+async def test_batched_items_coalesce_without_passing_a_later_operation() -> None:
+    """Items queued behind a busy writer run in one call, in order, and never before an
+    operation submitted after them (group commit keeps the writer FIFO).
+
+    SABOTAGE: drop ``self._tail = None`` from ``CoreIO.submit`` and item ``c`` joins the
+    first batch, running before ``plain``.
+    """
+    io = CoreIO()
+    release = threading.Event()
+    ran: list[object] = []
+
+    def runner(items: list[str]) -> None:
+        ran.append(tuple(items))
+
+    io.submit(release.wait, 10)  # the writer is busy
+    try:
+        io.submit_batch(runner, "a")
+        io.submit_batch(runner, "b")
+        plain = io.submit(ran.append, "plain")
+        io.submit_batch(runner, "c")
+        release.set()
+        await asyncio.wrap_future(plain)
+        await io.run(lambda: None)
+        assert ran == [("a", "b"), "plain", ("c",)]
+        # A batch that already started takes no more items.
+        started, finish = threading.Event(), threading.Event()
+
+        def slow(items: list[str]) -> None:
+            ran.append(tuple(items))
+            started.set()
+            assert finish.wait(10)
+
+        ran.clear()
+        io.submit_batch(slow, "x")
+        assert await asyncio.to_thread(started.wait, 10)
+        io.submit_batch(slow, "y")
+        finish.set()
+        await io.run(lambda: None)
+        assert ran == [("x",), ("y",)]
+    finally:
+        release.set()
+        await io.close()

@@ -73,7 +73,18 @@ def test_write_file_creates_a_new_file_and_records_the_change(
     assert result["sha256"] == hashlib.sha256(b"hello\n").hexdigest()
     assert result["lines_added"] == 1
     assert result["lines_removed"] == 0
-    assert "+hello" in result["unified_diff"]
+    # A new file's content is what the caller wrote: not echoed back as a diff (L1).
+    # SABOTAGE: return the whole-file diff for a created file and this reads it back.
+    assert result["unified_diff"] == ""
+    from clio_agent.tools.fs_edit import PreviousContent
+    from clio_agent.tools.tool_presentation import present_mcp_result
+
+    snapshot = PreviousContent(path=str(target), existed=False, content="")
+    view = present_mcp_result(
+        "fs_write_file", {"path": str(target)}, {"structuredContent": result}, snapshot
+    )
+    diffs = [block["text"] for block in view["blocks"] if block["type"] == "diff"]
+    assert diffs and "+hello" in diffs[0]  # the person still sees the new file's diff
 
 
 def test_write_file_overwrites_and_reports_both_hashes(
@@ -184,9 +195,7 @@ def test_write_diff_has_exact_line_spacing(
     expected = "--- a/spacing.py\n+++ b/spacing.py\n" + body
     assert result["unified_diff"] == expected
     assert target.read_bytes() == after.encode()
-    view = present_mcp_result(
-        "fs_write_file", {"filepath": str(target)}, {"structuredContent": result}
-    )
+    view = present_mcp_result("fs_write_file", {"path": str(target)}, {"structuredContent": result})
     assert next(block["text"] for block in view["blocks"] if block["type"] == "diff") == expected
     assert result["unified_diff"] == expected
 
@@ -280,7 +289,7 @@ def test_gateway_write_respects_late_fallback_permission_gate(
         )
         executor.call_tool(
             "fs_write_file",
-            {"filepath": str(target), "content": "allowed\n"},
+            {"path": str(target), "content": "allowed\n"},
         )
         assert target.read_text(encoding="utf-8") == "allowed\n"
 
@@ -290,7 +299,7 @@ def test_gateway_write_respects_late_fallback_permission_gate(
         with pytest.raises(PermissionError, match="denied"):
             executor.call_tool(
                 "fs_edit_file",
-                {"filepath": str(target), "old_string": "allowed", "new_string": "denied"},
+                {"path": str(target), "old_string": "allowed", "new_string": "denied"},
             )
 
         assert target.read_text(encoding="utf-8") == "allowed\n"

@@ -6,11 +6,14 @@ import json
 import os
 import sqlite3
 import sys
+import threading
 from pathlib import Path, PurePath, PureWindowsPath
+from typing import Any
 from urllib.parse import quote
 
 from clio_agent import paths
 from clio_agent.platform_paths import path_is_within
+from clio_agent.runtime.check_scope import once
 
 
 def _read_only_database_uri(database: PurePath) -> str:
@@ -29,23 +32,70 @@ def _read_only_database_uri(database: PurePath) -> str:
     return database.as_uri() + "?mode=ro"
 
 
+#: The last decoded ledger, keyed by its file signature. Every permission check of a
+#: path argument reads the ledger (twice: the storage roots and the materialized read
+#: roots), and a script's nested calls are checked one by one: opening SQLite per check
+#: was a third of a script's own time per call (2026-11-05 profile, 1,000 listings).
+_LEDGER: tuple[tuple[Any, ...], list[dict]] | None = None
+_LEDGER_LOCK = threading.Lock()
+
+
+def _ledger_signature(database: Path) -> tuple[Any, ...]:
+    """What changes on every commit: SQLite's file change counter, and each file's stat."""
+    parts: list[Any] = [str(database)]
+    for path in (database, Path(f"{database}-wal"), Path(f"{database}-journal")):
+        try:
+            stat = path.stat()
+        except OSError:
+            parts.append(None)
+            continue
+        parts.append((stat.st_ino, stat.st_size, stat.st_mtime_ns, stat.st_ctime_ns))
+    try:
+        with database.open("rb") as handle:
+            handle.seek(24)  # the header's file change counter, bumped by every commit
+            parts.append(handle.read(4))
+    except OSError:
+        parts.append(None)
+    return tuple(parts)
+
+
 def _source_records() -> list[dict]:
+    """The ledger's source records, read once per access decision (``check_scope``)."""
+    return list(once(("storage.ledger",), _read_source_records))
+
+
+def _read_source_records() -> list[dict]:
+    global _LEDGER
     database = paths.user_data_dir() / "connected-sources" / "sources.sqlite3"
     if not database.exists():
         return []
+    signature = _ledger_signature(database)
+    cached = _LEDGER
+    if cached is not None and cached[0] == signature:
+        return list(cached[1])
     try:
         db = sqlite3.connect(_read_only_database_uri(database), uri=True, timeout=5)
         try:
             rows = db.execute("SELECT body FROM records WHERE kind='source'").fetchall()
         finally:
             db.close()
-        return [json.loads(row[0]) for row in rows]
+        records = [json.loads(row[0]) for row in rows]
     except (sqlite3.Error, ValueError, KeyError, TypeError) as exc:
         raise PermissionError("Connected-source access decisions could not be read") from exc
+    if _ledger_signature(database) == signature:  # unchanged while it was read
+        with _LEDGER_LOCK:
+            _LEDGER = (signature, records)
+    return list(records)
 
 
 def materialized_read_roots(workspace_root: Path) -> tuple[Path, ...]:
     """Grant read access to approved copies for this workspace without granting writes."""
+    return once(
+        ("storage.materialized", str(workspace_root)), lambda: _materialized(workspace_root)
+    )
+
+
+def _materialized(workspace_root: Path) -> tuple[Path, ...]:
     roots = []
     for row in _source_records():
         source = row["source"]
@@ -73,8 +123,12 @@ def storage_access_roots() -> tuple[tuple[Path, ...], tuple[Path, ...]]:
 
     Read the durable owner ledger so separately spawned filesystem servers see
     the same decisions. An unreadable ledger refuses access instead of silently
-    dropping a read-only decision.
+    dropping a read-only decision. Derived once per access decision (``check_scope``).
     """
+    return once(("storage.roots",), _storage_access_roots)
+
+
+def _storage_access_roots() -> tuple[tuple[Path, ...], tuple[Path, ...]]:
     try:
         private = paths.user_config_dir() / "storage-auth"
         data = paths.user_data_dir() / "connected-sources"

@@ -38,11 +38,6 @@ from clio_agent.errors import (
     MCP_RESULT_DOWNGRADED_TO_COMPLETE,
     MCP_WIRE_CANCELLATION_UNAVAILABLE,
 )
-from clio_agent.optimizer.stub import (
-    OPTIMIZER_NOT_IMPLEMENTED_MESSAGE,
-    OPTIMIZER_NOT_IMPLEMENTED_REASON,
-    OPTIMIZER_TRACKING_ISSUE,
-)
 
 _STREAM_FALLBACK_REASON_DEFINITIONS: dict[str, dict[str, Any]] = {
     "native_model_inputs_dropped": {
@@ -155,24 +150,6 @@ _CAPABILITY_GAP_DEFINITIONS: dict[str, dict[str, Any]] = {
         "client_behavior": "render_disabled",
         "recovery_actions": ["use_files_and_diffs", "hide_or_disable_lsp_controls"],
         "related_endpoints": ["/v1/lsp/*"],
-    },
-    "optimizer_command": {
-        # #801: SPEC §3.3.1 capability-gap row — /optimize stays advertised as
-        # a planned research surface while carrying the uniform structured
-        # not-implemented stub (reason code + #633 pointer).
-        "status": "unavailable",
-        "advertised": True,
-        "category": "deferred_command",
-        "reason": OPTIMIZER_NOT_IMPLEMENTED_REASON,
-        "tracking_issue": OPTIMIZER_TRACKING_ISSUE,
-        "description": OPTIMIZER_NOT_IMPLEMENTED_MESSAGE,
-        "client_behavior": "render_disabled",
-        "recovery_actions": [
-            "render_optimize_disabled",
-            "retry_after_optimizer_support_lands",
-        ],
-        "related_commands": ["/optimize"],
-        "related_endpoints": ["/v1/sessions/{sid}/commands/optimize"],
     },
 }
 

@@ -36,7 +36,6 @@ from clio_agent.gact.runtime.grant_resolver import (
     PLAN_ACL_ALLOW_TOOL_PRIORITY,
     PLAN_ACL_ARCHITECT_TOOLS,
     PLAN_ACL_DENY_PRIORITY,
-    PLAN_ACL_PLAN_FILE_PRIORITY,
     PLAN_ACL_PLAN_TOOLS,
     GrantRecord,
     default_plan_acl_rows,
@@ -134,7 +133,7 @@ def test_read_only_fast_allows_before_mode_lock(tmp_path: Path, mode: str) -> No
         sid = c.post("/v1/sessions", json={"title": "t", "mode": mode}).json()["id"]
         gate = _make_permission_gate(app)
         with _tool_session_context(sid):
-            assert gate("fs_read_file", {"filepath": "x"}) == "allow"
+            assert gate("fs_read_file", {"path": "x"}) == "allow"
             assert gate("fs_list_directory", {"path": "x"}) == "allow"
             assert gate("fs_search_text", {"path": "x", "query": "callback"}) == "allow"
         # And no permission row was recorded for the read (it never reached the lock/prompt).
@@ -831,31 +830,39 @@ def test_validate_rejects_malformed_modes_and_on() -> None:
 _WRITE_TOOL = "fs_write_file"
 
 
-def test_default_plan_acl_rows_shape() -> None:
-    """The engine ships banded plan_acl defaults: deny-all @40, a plan-tool allow-band @50, plan-file @70."""
+def test_default_plan_acl_rows_shape(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The engine ships banded plan_acl defaults: deny-all @40 and a plan-tool allow-band @50.
+
+    No row lets a file tool write in plan mode: plan_update writes the plan. A fenced
+    host also re-allows the shell for read_only (its writes reach only scratch and temp).
+    """
+    from clio_agent.runtime import sandbox
+
+    monkeypatch.setattr(sandbox, "fence_enforced", lambda: True)
+    fenced = [r for r in default_plan_acl_rows() if "read_only" in r["modes"]][1:]
+    assert [(r["action"], r["tool_name_pattern"], r["modes"]) for r in fenced] == [
+        ("allow", "shell_bash", ["read_only"])
+    ]
+    monkeypatch.setattr(sandbox, "fence_enforced", lambda: False)  # an unfenced host
     rows = default_plan_acl_rows()
-    # 1 deny + one allow row per plan tool + 1 plan-file carve-out.
-    assert len(rows) == 2 + len(PLAN_ACL_PLAN_TOOLS) + len(PLAN_ACL_ARCHITECT_TOOLS)
+    # 1 deny + one allow row per plan tool + one per architect tool.
+    assert len(rows) == 1 + len(PLAN_ACL_PLAN_TOOLS) + len(PLAN_ACL_ARCHITECT_TOOLS)
+    assert not [r for r in rows if r.get("path_pattern")]
     deny = rows[0]
-    allow = rows[-1]
     assert deny["action"] == "deny"
     assert deny["priority"] == PLAN_ACL_DENY_PRIORITY == 40
     # read_only (a side session) shares the deny-all row and has no allow band at all.
     assert set(deny["modes"]) == {"plan", "architect", "read_only"}
     assert not [r for r in rows if r["action"] == "allow" and "read_only" in r["modes"]]
-    assert allow["action"] == "allow"
-    assert allow["priority"] == PLAN_ACL_PLAN_FILE_PRIORITY == 70
-    assert allow["modes"] == ["plan"]
-    assert allow["path_pattern"].endswith(".md")
-    # The middle band re-allows exactly the plan-safe tools, scoped to plan mode, @50 (above deny).
-    allow_tools = [r for r in rows[1:-1] if r["modes"] == ["plan"]]
+    # The allow band re-allows exactly the plan-safe tools, scoped to plan mode, @50 (above deny).
+    allow_tools = [r for r in rows[1:] if r["modes"] == ["plan"]]
     assert {r["tool_name_pattern"] for r in allow_tools} == set(PLAN_ACL_PLAN_TOOLS)
     for r in allow_tools:
         assert r["action"] == "allow"
         assert r["priority"] == PLAN_ACL_ALLOW_TOOL_PRIORITY == 50
         assert r["modes"] == ["plan"]
 
-    architect_tools = [r for r in rows[1:-1] if r["modes"] == ["architect"]]
+    architect_tools = [r for r in rows[1:] if r["modes"] == ["architect"]]
     assert {r["tool_name_pattern"] for r in architect_tools} == set(PLAN_ACL_ARCHITECT_TOOLS)
     for r in architect_tools:
         assert r["action"] == "allow"
@@ -894,6 +901,13 @@ def test_plan_acl_allows_plan_safe_tools_in_plan_mode() -> None:
         )
     # A write/edit tool is still denied by the @40 deny band (the allow-band is name-scoped).
     assert resolve("tool", _WRITE_TOOL, policies=[], session_id="s", mode="plan") == "deny"
+
+
+def test_run_code_is_allowed_in_plan_mode_and_the_shell_is_not() -> None:
+    """TD47: a script runs in plan mode (read-only kernel, nested calls gated one by one).
+    SABOTAGE: drop ``run_code`` from ``PLAN_ACL_PLAN_TOOLS`` and this fails."""
+    assert resolve("tool", "run_code", policies=[], session_id="s", mode="plan") == "allow"
+    assert resolve("tool", "shell_bash", policies=[], session_id="s", mode="plan") == "deny"
 
 
 @pytest.mark.parametrize("mode", ["plan", "architect"])
@@ -1005,11 +1019,11 @@ def test_plan_acl_denies_write_tool_in_plan_and_architect(mode: str, expected: s
     )
 
 
-def test_plan_acl_carve_out_allows_plan_file_md_in_plan_mode() -> None:
-    """The SOLE writable path in plan mode: a ``*.md`` write under the plans dir (@70 beats @40)."""
+def test_plan_mode_denies_file_tool_writes_to_the_plans_dir() -> None:
+    """No file-mutating tool writes in plan mode, the plans dir included: plan_update owns it."""
     target = str(plans_dir() / "2026-07-25-my-plan.md")
     assert resolve("tool", _WRITE_TOOL, policies=[], session_id="s", path=target, mode="plan") == (
-        "allow"
+        "deny"
     )
 
 
@@ -1124,12 +1138,11 @@ def test_plan_acl_deny_unbypassable_by_large_legacy_migrated_priority() -> None:
     # Outside a plan-restricted mode, the SAME store resolves the legacy allow unchanged (P0's
     # golden migration behavior is untouched by this fix).
     assert resolve("tool", _WRITE_TOOL, policies=rows, session_id="s", path="src/x.py") == "allow"
-    # The plans-dir carve-out is still the sole writable path in plan mode: it beats the (now
-    # dynamically-raised) deny even with this same large legacy list present.
+    # The plans dir is no exception: the plan is written by plan_update, not a file tool.
     target = str(plans_dir() / "foo.md")
     assert (
         resolve("tool", _WRITE_TOOL, policies=rows, session_id="s", path=target, mode="plan")
-        == "allow"
+        == "deny"
     )
 
 
@@ -1142,7 +1155,7 @@ def test_plan_mode_deny_message_names_plan_mode_and_plan_file() -> None:
     """The model-facing message states Plan Mode, points at the plan file, and names the tool."""
     message = plan_mode_deny_message("plan", _WRITE_TOOL)
     assert "Plan Mode" in message
-    assert str(plans_dir()) in message
+    assert "plan_update" in message
     assert _WRITE_TOOL in message
 
 
@@ -1153,7 +1166,7 @@ def test_resolve_detail_plan_acl_deny_carries_mode_message() -> None:
     )
     assert action == "deny"
     assert "Plan Mode" in deny_message
-    assert str(plans_dir()) in deny_message
+    assert "plan_update" in deny_message
 
 
 def test_resolve_detail_user_deny_has_no_plan_message() -> None:
@@ -1173,14 +1186,15 @@ def test_resolve_detail_user_deny_has_no_plan_message() -> None:
     assert deny_message == ""
 
 
-def test_resolve_detail_plan_file_carveout_allows_with_no_message() -> None:
-    """The @70 plans-dir carve-out resolves to allow (no deny message) in plan mode."""
+def test_resolve_detail_plan_file_write_is_denied_toward_plan_update() -> None:
+    """A file-tool write to the plans dir is denied in plan mode; the message names plan_update,
+    the tool that writes the plan."""
     target = str(plans_dir() / "plan.md")
     action, deny_message = resolve_detail(
         "tool", _WRITE_TOOL, policies=[], session_id="s", path=target, mode="plan"
     )
-    assert action == "allow"
-    assert deny_message == ""
+    assert action == "deny"
+    assert "plan_update" in deny_message
 
 
 def test_plan_mode_deny_message_architect_is_not_plan_text() -> None:

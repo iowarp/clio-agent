@@ -47,12 +47,17 @@ import atexit
 import logging
 import socket
 import threading
-import urllib.parse
-import urllib.request
 from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Optional
+
+from clio_agent.runtime.net_child_hosts import (  # re-exported for callers
+    _child_host_allowed,
+    release_child_hosts,
+    restrict_child_hosts,
+)
+from clio_agent.runtime.net_upstream import _dial_tunnel, _upstream_proxy
 
 logger = logging.getLogger(__name__)
 
@@ -328,7 +333,7 @@ class Chokepoint:
                 if not self._gate_allows(child_id, host, port, "connect"):
                     client.sendall(b"HTTP/1.1 403 Forbidden\r\n\r\n")
                     return
-                upstream = _dial_tunnel(host, port)
+                upstream = _dial_tunnel(host, port, _CONNECT_READ_TIMEOUT_S)
                 upstream.settimeout(None)  # the dial is bounded; the tunnel waits on the peers
                 self._record_open(child_id, host, port, upstream, "connect")
                 client.sendall(b"HTTP/1.1 200 Connection established\r\n\r\n")
@@ -436,6 +441,11 @@ class Chokepoint:
         (an unrecognised/foreign gate, or record construction) — equivalent to unwired — so a
         total wiring failure degrades to the B4 default rather than severing all egress.
         """
+        if not _child_host_allowed(child_id, host):
+            logger.info(
+                "net egress refused reason=child_host_not_allowed child=%s host=%s", child_id, host
+            )
+            return False
         gate = _GATE
         if gate is None:
             return True
@@ -598,46 +608,6 @@ def _safe_close(sock: socket.socket) -> None:
         pass
 
 
-def _upstream_proxy(host: str, scheme: str) -> Optional[tuple[str, int]]:
-    """The site proxy CLIO itself must use to reach ``host`` (``*_proxy``/``no_proxy``), or None.
-
-    On networks without direct egress (e.g. HPC compute nodes) the chokepoint chains through
-    the proxy the CLIO process was given, so a confined child reaches the same hosts CLIO can.
-    """
-    proxies = urllib.request.getproxies_environment()
-    url = proxies.get(scheme) or proxies.get("https" if scheme == "http" else "http")
-    url = url or proxies.get("all")
-    if not url or urllib.request.proxy_bypass_environment(host):
-        return None
-    parsed = urllib.parse.urlsplit(url if "://" in url else "http://" + url)
-    if not parsed.hostname:
-        return None
-    return parsed.hostname, parsed.port or 8080
-
-
-def _dial_tunnel(host: str, port: int) -> socket.socket:
-    """A socket carrying bytes to ``host:port``: direct, or CONNECT through the site proxy."""
-    relay = _upstream_proxy(host, "https")
-    if relay is None:
-        return socket.create_connection((host, port), timeout=_CONNECT_READ_TIMEOUT_S)
-    upstream = socket.create_connection(relay, timeout=_CONNECT_READ_TIMEOUT_S)
-    try:
-        upstream.sendall(f"CONNECT {host}:{port} HTTP/1.1\r\nHost: {host}:{port}\r\n\r\n".encode())
-        reply = b""
-        while b"\r\n\r\n" not in reply and len(reply) < 16 * 1024:
-            chunk = upstream.recv(4096)
-            if not chunk:
-                break
-            reply += chunk
-        status = reply.split(b"\r\n", 1)[0].split()
-        if len(status) < 2 or status[1] != b"200":
-            raise OSError(f"site proxy refused CONNECT {host}:{port}: {reply[:80]!r}")
-    except BaseException:
-        _safe_close(upstream)
-        raise
-    return upstream
-
-
 def _parse_connect_target(header: bytes) -> Optional[tuple[str, int]]:
     """Parse ``CONNECT host:port HTTP/1.1`` → ``(host, port)``; ``None`` when not a CONNECT.
 
@@ -789,6 +759,8 @@ __all__ = [
     "current_chokepoint",
     "install_chokepoint",
     "open_child_channel",
+    "release_child_hosts",
+    "restrict_child_hosts",
     "set_egress_gate",
     "set_egress_recorder",
     "shutdown_chokepoint",

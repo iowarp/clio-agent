@@ -384,37 +384,6 @@ def test_capabilities_advertises_mcp(client: TestClient) -> None:
     assert body["capabilities"]["mcp"] is True
 
 
-def test_mcp_prompt_get_round_trips_arguments_and_messages(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """An external in-memory prompt honors arguments and returns parsed messages."""
-    server = FastMCP("prompt-test")
-
-    @server.prompt(name="welcome")
-    def welcome_prompt(person: str, punctuation: str) -> str:
-        return f"Welcome, {person}{punctuation}"
-
-    app = build_app(sessions_path=tmp_path / "prompts.json")
-    sid = "mcp_ext_prompt"
-    with TestClient(app) as prompt_client:
-        prompt_client.app.state.external_mcp_servers = {
-            sid: {"spec": {"transport": "stdio", "command": "unused"}}
-        }
-        monkeypatch.setattr("clio_agent.gact.routes.mcp.transport_from_spec", lambda _spec: server)
-        response = prompt_client.post(
-            f"/v1/mcp/servers/{sid}/prompts/get",
-            json={
-                "name": "welcome",
-                "arguments": {"person": "Alice", "punctuation": "!"},
-            },
-        )
-
-    assert response.status_code == 200, response.text
-    assert response.json()["prompt"]["messages"] == [
-        {"role": "user", "content": {"type": "text", "text": "Welcome, Alice!"}}
-    ]
-
-
 def test_stdio_install_retains_environment_and_redacts_response(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

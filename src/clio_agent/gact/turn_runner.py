@@ -13,6 +13,7 @@ from typing import TYPE_CHECKING, Any
 
 from clio_agent.gact.owner_loop import on_owner_loop
 from clio_agent.gact.turn_revision_gate import TurnRevisionGate
+from clio_agent.providers import turn_activity
 
 if TYPE_CHECKING:
     pass
@@ -58,6 +59,8 @@ class _TurnResources:
     thread: threading.Thread | None = None
     worker_exit: asyncio.Task[None] | None = None
     before_release: Callable[[bool], Awaitable[None]] | None = None
+    failed: bool = False  # the segment raised: release the provider connection
+    active: bool = False  # marked in providers.turn_activity
 
 
 AdmitSegment = Callable[[str], Awaitable[tuple[str, Coroutine[Any, Any, Any]] | None]]
@@ -128,6 +131,8 @@ class TurnRunner:
                         coroutine.close()
                         continue  # Retirement holds this trigger; buffered work is rechecked next.
                     resources.handle = TurnHandle(sid, turn_id, resources.handle.started_at)
+                    turn_activity.started(sid)
+                    resources.active = True
                     resources.task = asyncio.create_task(self.revision_gate.run(coroutine))
                     try:
                         await asyncio.shield(resources.task)
@@ -138,6 +143,7 @@ class TurnRunner:
                         if pump is not None and pump.cancelling():
                             raise
                     except Exception:
+                        resources.failed = True
                         logger.exception("Conversation segment failed session=%s", sid)
                     await self._retire(resources)
                 except Exception:
@@ -159,13 +165,20 @@ class TurnRunner:
                             recording.result()
                     finally:
                         try:
-                            if resources.thread is not None:
+                            # A clean turn end keeps the provider connection for the next
+                            # turn (its conversation and prompt cache); Stop and failure
+                            # release it.
+                            abnormal = resources.stop.is_set() or resources.failed
+                            if resources.thread is not None and abnormal:
                                 from clio_agent.providers.session_lifecycle import (
                                     release_session_resources,
                                 )
 
                                 await asyncio.to_thread(release_session_resources, sid)
                         finally:
+                            if resources.active:
+                                resources.active = False
+                                turn_activity.ended(sid)
                             with self._lock:
                                 if self._turns.get(sid) is resources:
                                     self._turns.pop(sid)

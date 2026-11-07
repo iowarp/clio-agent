@@ -197,3 +197,40 @@ def test_search_follows_the_client_binding_not_a_later_environment(
     environment does not turn search off for stores opened afterwards."""
     monkeypatch.delenv("CLIO_CTE_POOL", raising=False)
     assert MemoryService(open_memory_store()).store.supports_search()
+
+
+def test_a_skill_shown_every_turn_counts_as_loaded_once_a_session(
+    service: MemoryService, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The skill index is composed every turn; counting it each time wrote two records
+    per listed skill at every turn's end (100 puts a turn on X2). A read still counts
+    every time. SABOTAGE: drop the ``first_shown`` check in ``note_skill`` and the
+    second turn writes the counter again (loaded 2)."""
+    from types import SimpleNamespace
+
+    from clio_agent.gact import context
+    from clio_agent.gact.memory import turn_use
+    from clio_agent.gact.memory.usage import skill_subject
+
+    usage = UsageCounters(service.store)
+    app = SimpleNamespace(state=SimpleNamespace(memory_usage=usage))
+    monkeypatch.setattr(context, "active_app", lambda: app)
+    monkeypatch.setattr(context, "active_session_id", lambda: "sess_1")
+    puts: list[str] = []
+    original = service.store.put
+    monkeypatch.setattr(
+        service.store,
+        "put",
+        lambda kind, key, value: (puts.append(key), original(kind, key, value)),
+    )
+    for turn in ("turn_1", "turn_2"):
+        monkeypatch.setattr(context, "active_turn_id", lambda turn=turn: turn)
+        turn_use.note_skill("loaded", "planning", "core")
+        usage.finish(turn, completed=True)
+        if turn == "turn_1":
+            assert puts and (written := len(puts))
+    assert len(puts) == written  # the second turn wrote nothing
+    turn_use.note_skill("read", "planning", "core")
+    usage.finish("turn_2", completed=True)
+    counted = usage.get(skill_subject("core", "planning"))
+    assert (counted.loaded, counted.read) == (1, 1)

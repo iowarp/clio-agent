@@ -19,11 +19,12 @@ _TURN_OWNED_EXECUTION_LIFECYCLES = frozenset(
     {"agent.invocation.started", "expert.lifecycle.started", "llm.request.started"}
 )
 _TOOL_INPUT_FIELDS: dict[str, tuple[str, ...]] = {
-    "fs_write_file": ("filepath",),
-    "fs_edit_file": ("filepath",),
-    "fs_read_file": ("filepath",),
+    "fs_write_file": ("path",),
+    "fs_edit_file": ("path",),
+    "fs_read_file": ("path",),
     "fs_list_directory": ("path",),
-    "fs_search_text": ("query", "path", "file_glob"),
+    "fs_search_text": ("query", "path", "file_glob", "mode"),
+    "fs_glob": ("pattern", "path"),
     "web_search": ("query", "count"),
     "web_fetch": ("target", "to_file"),
     "workspace_resource_inspect": ("resource_id",),

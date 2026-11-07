@@ -42,6 +42,9 @@ def test_gather_runs_children_as_tasks_and_checkpoints_them(flow_app: TestClient
     assert len(calls) == 3 and {c["status"] for c in calls} == {"completed"}
     history = flow_app.app.state.task_history
     owner = history.latest_assignment(sid)
+    # The answer is delivered before the owning turn settles; compare the projection
+    # with the snapshots once the owner has its terminal time, as both then read it.
+    wait_until(lambda: history.task_snapshot(owner.handle).terminal_at)
     for row in calls:
         child = history.task_snapshot(row["handle"])
         assert child.kind == "Subagent" and child.owner.parent_handle == owner.handle
@@ -94,12 +97,21 @@ def test_arbitrary_spawn_error_quiesces_only_accepted_gather_children(
     sid = new_session(flow_app, "clio/crashfanouter")
     post(flow_app, sid, "trigger")
     history = flow_app.app.state.task_history
-    parent = wait_until(
-        lambda: (task if task is not None and task.terminal_at is not None else None)
-        if (task := history.latest_assignment(sid))
-        else None,
-        timeout=60,
-    )
+
+    def flow_assignment() -> Any:
+        # The flow's own assignment is the session's first. The cancelled children's
+        # outcomes can wake the session after the flow failed; that wake opens a second
+        # assignment that ends at once without running the flow again, and waiting on
+        # "the latest" assignment raced it.
+        sessions = [
+            task
+            for handle in history.tree_handles(sid)
+            if (task := history.task_snapshot(handle)) is not None and task.kind == "Session"
+        ]
+        first = min(sessions, key=lambda task: task.created_at) if sessions else None
+        return first if first is not None and first.terminal_at is not None else None
+
+    parent = wait_until(flow_assignment, timeout=60)
     assert parent.status == "failed"
     assert len(accepted) == 3
 

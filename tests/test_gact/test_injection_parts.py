@@ -18,6 +18,7 @@ import dspy
 import pytest
 from fastapi.testclient import TestClient
 
+from clio_agent import injections
 from clio_agent.arc.memory import ARCMemory
 from clio_agent.gact import context as ctx
 from clio_agent.gact.agents import clio_react, clio_react_record
@@ -25,9 +26,8 @@ from clio_agent.gact.agents.clio_react import ClioReAct
 from clio_agent.gact.app import build_app
 from clio_agent.gact.injection_parts import emit_injection
 from clio_agent.gact.protocol.v3.message import part_to_v3_block
-from clio_agent.tools import injections
 from clio_agent.tools.mcp_result_projection import bounded_model_tool_result
-from tests._config_layer import set_config
+from tests._result_room import pin_result_room
 from tests._scripted_engine import Reply, calls, scripted_lm
 
 SESSION, SCOPE = "s1", "agentA"
@@ -91,7 +91,7 @@ def test_every_clio_addition_the_agent_sees_is_shown_to_the_user(
     seen_by_agent = _clio_messages(engine.requests[-1])
     shown = [f"[clio: {row['source']}]\n{row['text']}" for row in emitted]
     assert seen_by_agent == shown
-    assert [row["source"] for row in emitted] == ["tool_use", "todos", "plan_mode", "task_result"]
+    assert [row["source"] for row in emitted] == ["todos", "plan_mode", "task_result"]
     assert "child: done" in shown[-1]
 
 
@@ -139,8 +139,9 @@ def test_an_injection_lands_in_the_transcript_and_on_the_wire(tmp_path: Path) ->
 def test_spill_details_match_the_result_prefix_the_loop_gives_the_model(
     tmp_path: Path,
     emitted: list[dict[str, Any]],
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    set_config("limits", {"model_tool_result_chars": 2_000})
+    pin_result_room(monkeypatch, 2_000)
     arc = ARCMemory(data_dir=str(tmp_path / "arc"))
     original = "first row: measured leaf area\n" + "measurement\n" * 500 + "unshown-last-row"
 
@@ -163,8 +164,10 @@ def test_spill_details_match_the_result_prefix_the_loop_gives_the_model(
     assert not any("result_spilled" in text for text in _clio_messages(engine.requests[1]))
 
 
-def test_spill_prefix_survives_transcript_and_v3_projection(tmp_path: Path) -> None:
-    set_config("limits", {"model_tool_result_chars": 2_000})
+def test_spill_prefix_survives_transcript_and_v3_projection(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    pin_result_room(monkeypatch, 2_000)
     original = "first row: retained prefix\n" + "measurement\n" * 500 + "unshown-last-row"
     with injections.collect() as told:
         result = bounded_model_tool_result(original, root=tmp_path, session_id=SESSION)

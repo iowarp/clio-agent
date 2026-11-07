@@ -20,7 +20,7 @@ import threading
 import uuid
 import weakref
 from collections import OrderedDict
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Iterable, Mapping
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -334,6 +334,8 @@ class SessionStore:
         """A clio-core store will be bound: reads wait for it (a server's boot)."""
         self._records.expect_store()
 
+    readable = property(lambda self: self._records.readable)  # a read returns without waiting
+
     def flush(self, timeout: float = 120.0) -> bool:
         """Wait until every session write has landed in the store."""
         return self._records.flush(timeout)
@@ -578,17 +580,6 @@ class SessionStore:
                 return "SessionStart process settlement is unconfirmed; no replay or successor was launched."
         return None
 
-    def list(
-        self,
-        *,
-        workspace_id: Optional[str] = None,
-    ) -> list[Session]:
-        """Every session (reads every record: prefer :meth:`page` / :meth:`ids`)."""
-
-        with self._lock:
-            ids = self._records.select(PageQuery(workspace_id=workspace_id, archived=None))
-            return self._sessions(ids)
-
     def page(self, query: PageQuery) -> tuple["builtins.list[Session]", Optional[str], int]:
         """One page newest interaction first, the next cursor, the total (bad cursor:
         :class:`~clio_agent.gact.session_records.InvalidCursorError`)."""
@@ -603,22 +594,32 @@ class SessionStore:
         with self._lock:
             return self._sessions(self._records.select(query))
 
-    def related(self, *, family_of: str = "") -> "builtins.list[Session]":
-        """``family_of``'s conversation tree, else the sessions waiting on a person
-        and their ancestors (:meth:`SessionRecords.related_ids`), by index only."""
-
+    def related(
+        self, *, family_of: str = "", waiting: Iterable[str] = ()
+    ) -> "builtins.list[Session]":
+        """``family_of``'s tree, else who waits on a person (:meth:`SessionRecords.related_ids`)."""
         with self._lock:
-            return self._sessions(self._records.related_ids(family_of))
+            return self._sessions(self._records.related_ids(family_of, waiting))
 
     def import_legacy(self) -> dict[str, Any]:
         """Import the legacy ``sessions.json`` (the store migration's body; idempotent)."""
         return self._records.import_legacy(self._path)
 
-    def ids(self) -> "builtins.list[str]":
-        """Every session id, without reading a row."""
-
+    def ids(self, query: PageQuery | None = None) -> "builtins.list[str]":
+        """Every session id (matching ``query``), from the index: no row is read."""
         with self._lock:
-            return self._records.ids()
+            return self._records.ids() if query is None else self._records.select(query)
+
+    @property
+    def index(self) -> SessionRecords:
+        """The session index: columns, totals and unfilled rows, without a row read."""
+        return self._records
+
+    def reindex(self, ids: "builtins.list[str]") -> int:
+        """Recompute (fill) the named sessions' index columns from their rows."""
+        with self._lock:
+            rows = [record_columns(row) for row in self._sessions(ids)]
+            return self._records.reindex(rows, attempted=ids)
 
     def child_ids_by_parent(self) -> dict[str, "builtins.list[str]"]:
         """``{parent id: [child ids]}`` from the parent column, without reading rows."""

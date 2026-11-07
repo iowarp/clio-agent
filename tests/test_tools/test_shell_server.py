@@ -46,8 +46,8 @@ def test_shell_bash_declares_open_world_destructive_annotations() -> None:
     assert "write" not in tags
 
 
-def test_shell_description_windows_warns_off_wsl_and_steers_pandas():
-    """On Windows the tool description pins PowerShell, no-WSL, and pandas steering (#898)."""
+def test_shell_description_windows_warns_off_wsl():
+    """On Windows the tool description pins PowerShell and no-WSL (#898)."""
     facts = ShellEnvFacts(
         is_windows=True,
         system_label="Windows",
@@ -58,15 +58,13 @@ def test_shell_description_windows_warns_off_wsl_and_steers_pandas():
     assert "Windows" in text
     assert "PowerShell 5.1" in text
     assert "-NoProfile -NonInteractive -Command" in text
-    assert "Do NOT assume WSL exists" in text
+    assert "WSL may not exist here" in text
     assert "wsl" in text.lower()
-    assert "pandas" in text
-    assert "NOT available" in text  # POSIX text tools absent
-    assert "or an approved downloaded source directory" in text
+    assert "are not available" in text  # POSIX text tools absent
 
 
-def test_shell_description_posix_has_no_wsl_and_steers_pandas():
-    """On POSIX the description carries no WSL warning but keeps pandas steering (#898)."""
+def test_shell_description_posix_has_no_wsl():
+    """On POSIX the description carries no WSL warning (#898)."""
     facts = ShellEnvFacts(
         is_windows=False,
         system_label="Linux",
@@ -77,9 +75,24 @@ def test_shell_description_posix_has_no_wsl_and_steers_pandas():
     assert "Linux" in text
     assert "wsl" not in text.lower()
     assert "POSIX conventions" in text
-    assert "pandas" in text
-    assert "ARE available" in text  # POSIX text tools present
-    assert "or an approved downloaded source directory" in text
+    assert "are available" in text  # POSIX text tools present
+
+
+def test_shell_argument_rules_live_on_their_arguments():
+    """The cwd, timeout and access rules are said once, on the arguments they govern."""
+    from clio_agent.tools.gateway import _list_tools_sync
+
+    listed = next(tool for tool in _list_tools_sync(shell_server) if tool.name == "bash")
+    props = listed.input_schema["properties"]
+    assert "or an approved downloaded source directory" in props["cwd"]["description"]
+    assert "0 means no per-command deadline" in props["timeout_s"]["description"]
+    access = props["access_paths"]["description"]
+    # The parameter contract only: how to recover from a blocked write is said by the
+    # blocked call's own result (its ``boundary``, #1905), not here.
+    assert "for a move, both source and destination" in access and "approve" in access
+    assert "derivatives" not in access
+    description = listed.description or ""
+    assert "CLIO_ALLOWED_ROOTS" not in description and "access_paths" not in description
 
 
 def test_detect_shell_env_platform_is_monkeypatchable(monkeypatch):

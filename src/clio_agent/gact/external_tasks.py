@@ -28,8 +28,12 @@ from clio_agent.arc.task_types import (
     argument_digest,
 )
 from clio_agent.gact import context, external_task_connections, external_task_inputs
+from clio_agent.gact.external_read_only import LazyAdmission, skips_write_ahead
 from clio_agent.gact.native_work import now
+from clio_agent.gact.read_only_outcomes import ReadOnlyOutcomes
 from clio_agent.gact.task_access import TaskAccessDenied, TaskCaller
+from clio_agent.gact.task_history import RecordingUnconfirmed, content_reference
+from clio_agent.gact.task_index_records import minted_names
 from clio_agent.gact.task_publication import publish_task_notice
 from clio_agent.tools.caller_scope import caller_meta
 from clio_agent.tools.mcp_runtime import enter_connection
@@ -63,6 +67,8 @@ class ExternalConnection:
     invocation: SubmissionContext | None = None
     rpcs: set[asyncio.Task[Any]] = field(default_factory=set)
     closing: bool = False
+    #: This connection's tool listing, read once per connected client (reset on reconnect).
+    tools: dict[str, Any] | None = None
 
 
 class ExternalTasks:
@@ -74,6 +80,10 @@ class ExternalTasks:
         self._opening: dict[tuple[str, str, str], asyncio.Task[ExternalConnection]] = {}
         self._retiring: set[asyncio.Task[None]] = set()
         self._closing = False
+        # Read-only calls sent before their admission is written (external_read_only),
+        # and their records, written behind their replies (read_only_outcomes).
+        self._lazy: dict[str, LazyAdmission] = {}
+        self.outcomes = ReadOnlyOutcomes(self.history, self.recovery)
 
     connection = external_task_connections.connection
     _retire_connection = external_task_connections.retire_connection
@@ -259,12 +269,16 @@ class ExternalTasks:
     ) -> Any:
         """Submit one call using its captured schema and trusted invocation identity."""
         assert host.client is not None
-        tools = await host.client.list_tools()
-        component = next((tool for tool in tools if tool.name == name), None)
+        if host.tools is None or name not in host.tools:
+            # Listed once per connected client; a name it lacked is re-listed, since a
+            # server may have added it (tools/list_changed) since the listing.
+            host.tools = {tool.name: tool for tool in await host.client.list_tools()}
+        component = host.tools.get(name)
         if component is None:
             raise ValueError("Tool is unavailable on the selected server")
         sid, invocation = context.active_session_id(), TASK_CALL.get().invocation_id or uuid4().hex
-        assignment = await self.history.io.run(self.history.latest_assignment, sid)
+        # A view read: it never waits behind queued writes on the history writer.
+        assignment = await asyncio.to_thread(self.history.latest_assignment, sid)
         if assignment is None:
             raise ValueError("MCP calls require an owning assignment")
         session = self.app.state.sessions.get(sid)
@@ -297,32 +311,49 @@ class ExternalTasks:
             backend=host.backend,
         )
 
-        def confirm() -> Any:
+        def confirm(
+            settle: Callable[[str], dict[str, Any]] | None = None, observation: str = ""
+        ) -> Any:
+            # ``settle`` (a read-only call's inline outcome) makes the first snapshot
+            # the terminal one: nothing could observe the task before it was recorded.
+            # Admission was checked before that call was sent; its record is history.
+            # ``observation`` and ``settle`` are fixed when that record is queued, so a
+            # retry re-derives the same events (task_event_reconcile).
             with self.history.serialized():
-                self.app.state.conversations.require_admission(assignment)
+                if settle is None:
+                    self.app.state.conversations.require_admission(assignment)
                 content = self.history.record_submission(submission)
-                self.history.record_snapshot(
-                    TaskSnapshot(
-                        handle=handle,
-                        kind="MCP",
-                        owner=submission.owner,
-                        description=description,
-                        description_missing=False,
-                        label=name,
-                        tool=name,
-                        invocation_id=invocation,
-                        created_at=stamp,
-                        updated_at=stamp,
-                        submission=content,
-                        supported_actions=("observe", "wait", "cancel"),
-                    ),
-                    observation_id=uuid4().hex,
+                snapshot = TaskSnapshot(
+                    handle=handle,
+                    kind="MCP",
+                    owner=submission.owner,
+                    description=description,
+                    description_missing=False,
+                    label=name,
+                    tool=name,
+                    invocation_id=invocation,
+                    created_at=stamp,
+                    updated_at=stamp,
+                    submission=content,
+                    supported_actions=("observe", "wait", "cancel"),
                 )
+                if settle is not None:
+                    snapshot = snapshot.model_copy(update=settle(sid))
+                self.history.record_snapshot(snapshot, observation_id=observation or uuid4().hex)
                 return content
 
         if self._closing:
             raise ValueError("External task observation is closing")
-        content = await self.history.io.run(confirm)
+        lazy = LazyAdmission(confirm) if skips_write_ahead(component) else None
+        if lazy is None:
+            content = await self.history.io.run(confirm)
+        else:  # read-only: sent now, admitted with its outcome (external_read_only)
+            await asyncio.to_thread(self.app.state.conversations.require_admission, assignment)
+            if self.history.requires_recovery:
+                raise RecordingUnconfirmed("Core observations require reconciliation")
+            content = content_reference(sid, submission.model_dump(mode="json"))
+            self._lazy[handle] = lazy
+        admitted = lazy.then if lazy is not None else (lambda write: write)
         if host.isolated:
             if host.invocation is not None:
                 raise ValueError("An invocation-bound transport cannot serve another submission")
@@ -341,7 +372,7 @@ class ExternalTasks:
         ) -> None:
             await self._record_or_defer(
                 "external-progress:" + handle,
-                partial(self._record_progress, handle, progress, total, message),
+                admitted(partial(self._record_progress, handle, progress, total, message)),
             )
             if progress_handler is not None and not self.history.requires_recovery:
                 await progress_handler(progress, total, message)
@@ -385,7 +416,7 @@ class ExternalTasks:
                 if failure == "rejected":
                     await self._record_or_defer(
                         "external-rejected:" + handle,
-                        partial(self._rejected, handle, reason),
+                        admitted(partial(self._rejected, handle, reason)),
                         retire=lambda: self._retire_connection(host),
                     )
                     return mcp_types.CallToolResult(
@@ -406,7 +437,7 @@ class ExternalTasks:
                         is_error=True,
                     )
                 await self._record_or_defer(
-                    "external-call:" + handle, partial(self._attention, handle, reason)
+                    "external-call:" + handle, admitted(partial(self._attention, handle, reason))
                 )
                 return accepted_result(
                     {
@@ -417,12 +448,27 @@ class ExternalTasks:
                         "retry_safe": False,
                     }
                 )
-        accepted = (
-            await self.history.io.run(self.history.task_snapshot, handle)
-        ).backend is not None or any(
-            call.submission.handle == handle for call in host.calls.values()
+        accepted = any(call.submission.handle == handle for call in host.calls.values()) or (
+            lazy is None
+            and (await self.history.io.run(self.history.task_snapshot, handle)).backend is not None
         )
-        if not accepted:
+        if lazy is not None and (lazy.recorded or not accepted):
+            self._lazy.pop(handle, None)  # admitted, or about to be with its result
+        if not accepted and lazy is not None and not lazy.recorded:
+            # Nothing was recorded before the reply (and nothing can be now): its admission,
+            # already settled, is its one record, written behind it (read_only_outcomes).
+            self.outcomes.record(
+                "external-inline:" + handle,
+                partial(confirm, partial(self._inline_updates, reply=reply, at=now()), uuid4().hex),
+                minted=minted_names(handle, reference),
+                creates=lambda: (
+                    (sid, content_reference(sid, description).scope),
+                    (sid, content_reference(sid, self._inline_value(reply)).scope),
+                ),
+                minted_scopes=((sid, content.scope),),  # it embeds the minted reference
+                recorded=partial(self._recorded_behind, host),
+            )
+        elif not accepted:
             await self._record_or_defer(
                 "external-inline:" + handle,
                 partial(self._inline_result, handle, reply),
@@ -434,6 +480,9 @@ class ExternalTasks:
 
     def _adopt(self, host: ExternalConnection, accepted: AcceptedNativeCall) -> Any:
         with self.history.serialized():
+            lazy = self._lazy.pop(accepted.submission.handle, None)
+            if lazy is not None:  # a read-only call the server made a task of anyway
+                lazy.ensure()
             current = self.history.task_snapshot(accepted.submission.handle)
             observed = current.model_copy(
                 update={
@@ -521,6 +570,11 @@ class ExternalTasks:
         driver = asyncio.create_task(result())
         host.drivers[call.task.task_id] = driver
         driver.add_done_callback(lambda finished: self._schedule_retirement(host, call))
+
+    def _recorded_behind(self, host: ExternalConnection) -> None:
+        """A record written behind its reply landed; the connection may retire now."""
+        if not self._closing:
+            self._schedule_retirement(host)
 
     def _rpc_retired(self, host: ExternalConnection, rpc: asyncio.Task[Any]) -> None:
         host.rpcs.discard(rpc)
@@ -640,26 +694,35 @@ class ExternalTasks:
                 observation_id=uuid4().hex,
             )
 
+    @staticmethod
+    def _inline_value(reply: Any) -> dict[str, Any]:
+        """The recorded content of an inline reply."""
+        return {
+            "content": [part.model_dump(mode="json") for part in reply.content],
+            "structuredContent": reply.structured_content,
+            "isError": reply.is_error,
+        }
+
+    def _inline_updates(self, session_id: str, *, reply: Any, at: str = "") -> dict[str, Any]:
+        """Confirm an inline reply's content; the snapshot fields that settle the call
+        (at ``at``, or now)."""
+        result = self.history.write_content(session_id, self._inline_value(reply))
+        return {
+            "status": "failed" if reply.is_error else "completed",
+            "raw_status": "inline",
+            "activity": "",
+            "terminal_at": at or now(),
+            "updated_at": at or now(),
+            "settlement": "external_acknowledged",
+            "result": result,
+            "backend_observation": result,
+            "supported_actions": ("get_result",),
+        }
+
     def _inline_result(self, handle: str, reply: Any) -> None:
         with self.history.serialized():
             current = self.history.task_snapshot(handle)
-            value = {
-                "content": [part.model_dump(mode="json") for part in reply.content],
-                "structuredContent": reply.structured_content,
-                "isError": reply.is_error,
-            }
-            result = self.history.write_content(current.owner.session_id, value)
-            updates = {
-                "status": "failed" if reply.is_error else "completed",
-                "raw_status": "inline",
-                "activity": "",
-                "terminal_at": now(),
-                "updated_at": now(),
-                "settlement": "external_acknowledged",
-                "result": result,
-                "backend_observation": result,
-                "supported_actions": ("get_result",),
-            }
+            updates = self._inline_updates(current.owner.session_id, reply=reply)
             # An actual inline result settles this invocation, even if cancellation
             # was requested while it ran. It is not a remote cleanup receipt.
             observed = current.model_copy(update=updates)
@@ -716,4 +779,6 @@ class ExternalTasks:
 
     async def close(self) -> None:
         """Retire observation without claiming surviving external jobs were cancelled."""
+        await self.outcomes.recorded()  # replies already returned; their records land
         await external_task_connections.close_connections(self)
+        await self.outcomes.recorded()  # calls that answered while closing

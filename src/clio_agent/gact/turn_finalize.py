@@ -40,6 +40,7 @@ from clio_agent.gact.streaming import (
     _pop_stream_fallback_notes,
     _stream_fallback_payload,
 )
+from clio_agent.gact.summon import stamp_summon_outcome
 from clio_agent.gact.tool_observer import (
     _sanitize_handoff_tool_metadata,
     _sanitize_tools_called_metadata,
@@ -154,11 +155,10 @@ def finalize_turn(
 
     # Take the canonical-answer channel FIRST: its exactly-once identity seeds
     # from the pre-append ledger (the still-open streamed answer part included).
-    # It covers the responder PLUS the stream tap's attribution fallback label
-    # (``emit_chunk``'s chat-path default) — the same top-level LM call's
-    # answer can stream under either; a delegated child's channel is NOT
-    # covered (its deliverable settled at its LM-call site and must never
-    # suppress the responder's distinct final answer).
+    # It covers the responder and the stream tap's fallback label (``emit_chunk``'s
+    # chat-path default): one top-level LM call's answer can stream under either. A
+    # delegated child's channel is not covered (its deliverable settled at its LM-call
+    # site and must never suppress the responder's own final answer).
     answer_channel = state.transcript.turn_answer_stream(
         responder_agent_id,
         state.active_agent_id or state.invocation_agent_id or "main",
@@ -190,10 +190,13 @@ def finalize_turn(
                 if v
             },
         )
-    # Mechanism 2 replaced: there is no finalize rebuild-from-rows — delegation
-    # appended its expert_handoff parts once, at emit time; the
-    # ``expert_handoffs`` rows stay message METADATA only (design §4 row 6).
-    #
+        # Deferred: recorded (then published) by the highway writer. Wait for it so the
+        # wire keeps the decision ahead of the answer message; a lost record is reported.
+        from clio_agent.gact.highway_writer import flush_session_reported  # noqa: PLC0415
+
+        flush_session_reported(state.app, state.sid, "routing_decision")
+    # No rebuild from rows: delegation appended its expert_handoff parts at emit time;
+    # ``expert_handoffs`` rows stay message metadata only (design §4 row 6).
     state.transcript.close_open_text()
     if state.thinking_text and not state.transcript.has_closed_text(
         responder_agent_id, "reasoning"
@@ -258,8 +261,9 @@ def finalize_turn(
             ledger.pop(state.sid, None)
 
     state.assistant_metadata = {}
+    stamp_summon_outcome(state.app, state.turn_id, state.assistant_metadata)
     if state.turn_agent_id:
-        state.assistant_metadata["agent_override"] = {
+        state.assistant_metadata["turn_agent"] = {
             "requested_agent_id": state.turn_agent_id,
             "session_agent_id": _session_agent_id(state.sess),
             "effective_agent_id": state.selected_agent or state.turn_agent_id,
@@ -273,10 +277,8 @@ def finalize_turn(
         current_stream_part_id=current_stream_part_id,
         has_live_parts=has_live_parts,
     )
-    # Degradations that did NOT change the delivery path (native model inputs the
-    # executing agent could not accept) ride here rather than in the single
-    # delivery slot above, which a clean live stream discards -- so a dropped
-    # attachment stays on the turn's record instead of vanishing with it.
+    # Degradations that did NOT change the delivery path (inputs the agent could not
+    # accept) ride here, so a dropped attachment stays on the turn's record.
     stream_degradations = _pop_stream_fallback_notes(state.app, state.sid)
     if stream_degradations:
         state.assistant_metadata["stream_degradations"] = stream_degradations
@@ -403,6 +405,7 @@ def publish_finalized_turn(
     update_retry_attempt: "Callable[..., None]",
 ) -> None:
     """Publish one already-recorded result; never rebuild the prediction or execute it again."""
+    from clio_agent.gact.highway_writer import flush_session_reported
     from clio_agent.gact.transcript_recording import publication_step
 
     steps = state.publication_steps
@@ -463,6 +466,12 @@ def publish_finalized_turn(
     )
     publication_step(
         steps,
+        "highway_records",  # the turn's deferred tool and model records are in clio-core
+        lambda: flush_session_reported(state.app, state.sid, "highway_records"),
+        retry=False,
+    )
+    publication_step(
+        steps,
         "semantic",
         lambda: _emit_semantic_event(
             state.app,
@@ -513,6 +522,9 @@ def publish_finalized_turn(
     from clio_agent.gact.spotter_watcher import on_turn_finalized
 
     publication_step(steps, "spotter", lambda: on_turn_finalized(state.app, state.sid), retry=False)
+    from clio_agent.gact.documents.comment_replies import replies_step
+
+    publication_step(steps, "comment_replies", replies_step(state, assistant_msg), retry=False)
     if state.tools_called:
         from clio_agent.gact.hooks import fire_post_tool_batch
 
@@ -728,6 +740,9 @@ def publish_failed_finalize(
         )
     )
     close_turn_minter(app, sid)  # #1334: after the persist; the thread stops here
+    from clio_agent.gact.documents.comment_replies import on_turn_failed
+
+    on_turn_failed(app, sid, turn_id, assistant_msg)
     try:
         update_retry_attempt(
             "failed",

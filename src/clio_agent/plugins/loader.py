@@ -24,6 +24,7 @@ from collections.abc import Iterable, Mapping, Sequence
 from pathlib import Path
 from typing import Any, Literal
 
+from clio_agent.plugins.commands import read_commands
 from clio_agent.plugins.frontmatter import FrontmatterError, split_frontmatter
 from clio_agent.plugins.library import is_library_manifest, library_skills
 from clio_agent.plugins.manifest import (
@@ -39,7 +40,6 @@ from clio_agent.plugins.records import (
     FRAGMENT_SECTIONS,
     FRAGMENT_SESSIONS,
     CatalogRecord,
-    CommandRecord,
     Diagnostic,
     FlowRecord,
     FragmentRecord,
@@ -49,6 +49,7 @@ from clio_agent.plugins.records import (
     SubagentRecord,
     ToolRecord,
 )
+from clio_agent.plugins.workflows import read_workflows
 from clio_agent.sdk.hooks import HOOK_EVENTS, HookSpec
 from clio_agent.sdk.plugin import declaration_of
 from clio_agent.sdk.subagent import Subagent
@@ -324,29 +325,6 @@ def _fragments_and_texts(
     return fragments, texts, diagnostics
 
 
-def _commands(clio_dir: Path, plugin: str) -> list[CommandRecord]:
-    base = clio_dir / "commands"
-    out: list[CommandRecord] = []
-    if not base.is_dir():
-        return out
-    for path in sorted(base.glob("*.md")):
-        try:
-            meta, _ = split_frontmatter(path.read_text(encoding="utf-8"))
-        except (OSError, UnicodeDecodeError, FrontmatterError):
-            meta = None
-        meta = meta or {}
-        name = str(meta.get("slash_id") or meta.get("slash-id") or meta.get("name") or "")
-        out.append(
-            CommandRecord(
-                # The command's id, as command discovery names it (its ``name``).
-                id=name.strip().lstrip("/") or path.stem,
-                description=str((meta or {}).get("description") or ""),
-                path=str(path),
-            )
-        )
-    return out
-
-
 def _catalogs(clio_dir: Path) -> list[CatalogRecord]:
     base = clio_dir / "a2ui"
     if not base.is_dir():
@@ -427,10 +405,21 @@ def _python_parts(root: Path, plugin: str, texts: dict[str, str]) -> _PythonPart
                             attr=attr,
                             description=value.description,
                             read_only=value.read_only,
+                            defer=value.defer,
+                            callers=value.callers,
+                            permission=value.permission,
                         )
                     )
                 elif folder == "tools" and isinstance(value, NativeToolRef):
-                    parts.tools.append(ToolRecord(name=value.name, kind="native"))
+                    parts.tools.append(
+                        ToolRecord(
+                            name=value.name,
+                            kind="native",
+                            defer=value.defer,
+                            callers=value.callers,
+                            permission=value.permission,
+                        )
+                    )
                 elif folder == "hooks" and isinstance(value, HookSpec):
                     parts.hooks.append(
                         HookRecord(
@@ -587,7 +576,14 @@ def load_plugin(root: Path, *, marketplace: str = "", trusted: bool) -> PluginRe
         skill_diags += library_diags
     clio_dir = root / NAMESPACE
     fragments, texts, fragment_diags = _fragments_and_texts(clio_dir, plugin)
-    diagnostics += skill_diags + server_diags + fragment_diags
+    commands, command_diags = read_commands(clio_dir / "commands", plugin)
+    workflows, workflow_diags = read_workflows(clio_dir / "workflows", plugin)
+    command_diags += workflow_diags
+    # A native package's hooks/hooks.json is Claude Code's hook file, read the same way.
+    from clio_agent.plugins.claude_code import _hooks as hooks_file  # noqa: PLC0415
+
+    file_hooks, hook_diags, _scripts = hooks_file(root, plugin)
+    diagnostics += skill_diags + server_diags + fragment_diags + command_diags + hook_diags
     has_python = (
         any((clio_dir / name).is_dir() for name in _PYTHON_DIRS)
         or (clio_dir / "plugin.py").is_file()
@@ -660,6 +656,10 @@ def load_plugin(root: Path, *, marketplace: str = "", trusted: bool) -> PluginRe
                     plugin,
                 )
             )
+    from clio_agent.plugins import kernel_bindings  # noqa: PLC0415
+
+    bindings, binding_problems = kernel_bindings.load(root, ext.get("kernel_bindings"), plugin)
+    diagnostics += binding_problems
     record = PluginRecord(
         id=plugin,
         version=version,
@@ -675,21 +675,24 @@ def load_plugin(root: Path, *, marketplace: str = "", trusted: bool) -> PluginRe
         skills=tuple(skills),
         mcp_servers=servers,
         tools=tuple(parts.tools),
-        hooks=tuple(parts.hooks),
+        hooks=(*parts.hooks, *file_hooks),
         subagents=tuple(parts.subagents),
         flows=tuple(parts.flows),
         fragments=tuple(fragments),
-        commands=tuple(_commands(clio_dir, plugin)),
+        commands=tuple(commands),
+        workflows=tuple(workflows),
         catalogs=tuple(
             [CatalogRecord(id=str(c), path="") for c in ext.get("catalogs") or ()]
             + _catalogs(clio_dir)
         ),
         workflow_state=workflow_state,
+        kernel_bindings=bindings,
         diagnostics=tuple(diagnostics),
         executable_digest=exec_digest,
         text_digest=text_digest,
         keywords=tuple(manifest.get("keywords") or ()),
         python_pending=has_python and not trusted,
+        disclosure={key: ext[key] for key in ("defer", "servers") if key in ext},
     )
     if kind == "pack":
         content = [

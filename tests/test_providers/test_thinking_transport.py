@@ -18,7 +18,7 @@ import pytest
 
 from clio_agent.config import LMProviderConfig, load_config_from_env
 from clio_agent.lm.request_builder import build_request_kwargs
-from clio_agent.providers import claude_code_engine
+from clio_agent.providers import claude_code_conversation
 from clio_agent.providers.capabilities import invalidation
 from clio_agent.providers.capabilities.accessor import clear_cache
 from clio_agent.providers.capabilities.records import (
@@ -134,7 +134,7 @@ def test_the_thinking_config_reaches_the_sdk_client_options(monkeypatch) -> None
     from tests import _fake_claude_sdk as fake
 
     _reset_sessions_for_tests()
-    claude_code_engine._CONVERSATIONS.clear_for_tests()
+    claude_code_conversation.forward_resets().clear_for_tests()
     try:
         sdk = fake.install(monkeypatch)
         config = LMProviderConfig(provider="claude_code", model="claude-sonnet-4-6")
@@ -150,7 +150,55 @@ def test_the_thinking_config_reaches_the_sdk_client_options(monkeypatch) -> None
         assert options["effort"] == thinking["effort"] == "medium"
     finally:
         _reset_sessions_for_tests()
-        claude_code_engine._CONVERSATIONS.clear_for_tests()
+        claude_code_conversation.forward_resets().clear_for_tests()
+
+
+def test_lm_max_tokens_caps_the_claude_cli_reply(monkeypatch) -> None:
+    """``lm.max_tokens`` reaches the Claude CLI as its per-reply output cap; unset, the
+    CLI default governs. A runaway reply (P10 final run 2: 128,092 tokens of empty
+    fences in one step) is then bounded by the operator's choice.
+    SABOTAGE: drop ``with_output_cap`` in ``factory._claude_code_lm`` and this fails."""
+    import asyncio
+
+    from dspy.lm15 import Message, Request
+
+    from clio_agent.lm.factory import create_lm
+    from clio_agent.providers.claude_code_options import MAX_OUTPUT_ENV
+    from tests import _fake_claude_sdk as fake
+
+    for max_tokens, expected in ((16000, "16000"), (0, None)):
+        _reset_sessions_for_tests()
+        claude_code_conversation.forward_resets().clear_for_tests()
+        try:
+            sdk = fake.install(monkeypatch)
+            config = LMProviderConfig(
+                provider="claude_code", model="claude-sonnet-4-6", max_tokens=max_tokens
+            )
+            lm = create_lm(config)
+            request = Request(model=lm.model, messages=(Message.user("hi"),))
+            asyncio.run(lm._async_engine_spec.complete(request))
+            options = sdk.clients[0].options.kwargs
+            assert options["env"].get(MAX_OUTPUT_ENV) == expected
+            assert "max_output_tokens" not in (options.get("thinking") or {})
+        finally:
+            _reset_sessions_for_tests()
+            claude_code_conversation.forward_resets().clear_for_tests()
+
+
+def test_the_output_cap_alone_sends_no_thinking_config() -> None:
+    pytest.importorskip("claude_agent_sdk")
+    from clio_agent.providers.claude_code_options import MAX_OUTPUT_ENV, with_output_cap
+
+    opts = build_sdk_options(
+        model="haiku", cwd=None, stream=False, thinking=with_output_cap(None, 8000)
+    )
+    assert opts.thinking is None and opts.env[MAX_OUTPUT_ENV] == "8000"
+    disabled = with_output_cap({"type": "disabled"}, 8000)
+    assert build_sdk_options(model="haiku", cwd=None, stream=False, thinking=disabled).thinking == {
+        "type": "disabled"
+    }
+    assert with_output_cap(None, 0) is None
+    assert thinking_key(with_output_cap(None, 8000)) != thinking_key(with_output_cap(None, 9000))
 
 
 # --------------------------------------------------------------------------- #

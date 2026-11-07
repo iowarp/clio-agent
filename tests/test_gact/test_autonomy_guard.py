@@ -29,6 +29,7 @@ from clio_agent.gact.goal import (
     parse_goal_command,
     run_goal_command,
 )
+from clio_agent.gact.goal_evidence import JudgeRoom
 from clio_agent.gact.scheduler_runtime import _fire_schedule
 from clio_agent.gact.task_history import TaskHistory
 from tests.test_arc.conftest import core_arc as core_arc
@@ -595,7 +596,7 @@ def test_judge_retains_precise_artifact_facts_and_recent_chronology(
             parts=[SimpleNamespace(type="text", text="An older instruction")],
         ),
     ]
-    recent = goal_mod._build_transcript(app, sid, max_messages=1)
+    recent = goal_mod._build_transcript(app, sid, room=JudgeRoom(tokens=40, window=100))
     assert "paced-2.md" in recent and "older instruction" not in recent
     full = goal_mod._build_transcript(app, sid)
     assert full.index("older instruction") < full.index("paced-2.md")

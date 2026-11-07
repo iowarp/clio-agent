@@ -153,9 +153,14 @@ class ConflictFields(_Fields):
 
 
 class ViewFields(_Fields):
-    """A dashboard of the writing session attached to the study (Addendum B)."""
+    """A dashboard of the writing session attached to the study (CT19).
 
-    surface_id: str = Field(min_length=1)
+    ``dashboard_id`` names a published dashboard report; ``surface_id`` is how views
+    were attached before (a chat surface), kept so those entries still read.
+    """
+
+    dashboard_id: str = ""
+    surface_id: str = ""
     title: str = Field(min_length=1)
     purpose: str = Field(min_length=1)
 
@@ -197,13 +202,21 @@ LINKS: dict[str, dict[str, tuple[frozenset[str], int, int | None]]] = {
 }
 
 
+#: Fields still read on older entries but no longer written (a view's chat surface).
+_READ_ONLY_FIELDS = {"view": {"surface_id"}}
+#: Fields the write gate requires although older entries may lack them.
+_REQUIRED_ON_WRITE = {"view": {"dashboard_id"}}
+
+
 def type_signatures() -> str:
     """One line per entry type: its fields (``?`` optional) and its links, from the models."""
 
     lines = []
     for name, model in FIELDS.items():
         fields = ", ".join(
-            key + ("" if info.is_required() else "?") for key, info in model.model_fields.items()
+            key + ("" if info.is_required() or key in _REQUIRED_ON_WRITE.get(name, ()) else "?")
+            for key, info in model.model_fields.items()
+            if key not in _READ_ONLY_FIELDS.get(name, ())
         )
         links = ", ".join(
             f"{rel}: {'|'.join(sorted(targets))}{'' if least else '?'}{'[]' if most != 1 else ''}"

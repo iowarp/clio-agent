@@ -15,6 +15,7 @@ from clio_agent.arc.task_types import (
 )
 from clio_agent.gact.plan_exit_resume import approved_plan_resume_text, rejected_plan_resume_text
 from clio_agent.gact.planning import PLAN_VARIANT_METADATA_KEY, transition_playbook_to_execution
+from clio_agent.gact.session_plan import PLAN_STATUS_KEY
 
 if TYPE_CHECKING:
     from fastapi import FastAPI
@@ -295,7 +296,7 @@ def _resolve_plan_exit_answer(app: "FastAPI", deps: "GactDeps", sid: str, questi
         sid,
         mode="edit",
         approval_mode=approval_mode,
-        metadata_patch={PLAN_VARIANT_METADATA_KEY: ""},
+        metadata_patch={PLAN_VARIANT_METADATA_KEY: "", PLAN_STATUS_KEY: "approved"},
     )
     app.state.bus.publish(
         Event(

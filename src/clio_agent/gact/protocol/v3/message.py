@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from pathlib import Path
 from typing import TYPE_CHECKING, Any, Callable, Mapping
 
 from clio_schemas.attention_evidence import AttentionEvidenceInspection
@@ -14,6 +13,8 @@ from clio_agent.gact.command_presentation import legacy_goal_receipt
 from clio_agent.gact.evidence import _bounded_tool_call_result
 from clio_agent.gact.memory.presentation import memory_used_projection
 from clio_agent.gact.protocol.v3 import utcnow_iso
+from clio_agent.gact.protocol.v3.artifact_projection import artifact_entity
+from clio_agent.gact.protocol.v3.summon_presentation import summon_presentation
 from clio_agent.gact.protocol.v3.tool_outcome import MISSING_EXECUTION_OUTCOME, tool_execution_state
 from clio_agent.gact.reasoning_timing import reasoning_timing
 from clio_agent.gact.summarization_record import legacy_compaction_block
@@ -76,6 +77,7 @@ def _message_presentation_metadata(metadata: Mapping[str, Any]) -> dict[str, Any
         execution_mode = behavior.get("execution_mode")
         if execution_mode in {"plan", "deep_research"}:
             projected["behavior"] = {"execution_mode": execution_mode}
+    projected.update(summon_presentation(metadata))  # summons, loaded skill, MCP prompt
     if metadata.get("plan_exit_resume") is True:
         projected["plan_exit_resume"] = True
     if metadata.get("ask_user_resume") is True:
@@ -275,6 +277,15 @@ def part_to_v3_block(part: Mapping[str, Any]) -> dict[str, Any]:
             "name": str(part.get("name") or "Attachment"),
             "media_type": str(part.get("media_type") or "application/octet-stream"),
             **({"delivery": delivery} if delivery is not None else {}),
+            **common,
+        }
+    if part_type == "summon":
+        # The person named what handles the message: a subagent or an MCP server.
+        return {
+            "id": part_id,
+            "type": "summon",
+            "target_kind": str(part.get("target_kind") or ""),
+            "target": str(part.get("target") or ""),
             **common,
         }
     if part_type == "context_ref":
@@ -513,9 +524,9 @@ def _project_tool(context: _TranscriptProjection, part: Mapping[str, Any], part_
         tool_name=str(part.get("tool_name") or current.get("name") or ""),
     ) or current.get("presentation")
     metadata = _mapping(part.get("metadata"))
-    timing = {
+    carried = {  # timing, and the call a nested call was made from (run_code)
         key: str(metadata.get(key) or current.get(key))
-        for key in ("started_at", "completed_at")
+        for key in ("started_at", "completed_at", "parent_call_id")
         if metadata.get(key) or current.get(key)
     }
     context.tools[tool_id] = {
@@ -537,7 +548,7 @@ def _project_tool(context: _TranscriptProjection, part: Mapping[str, Any], part_
             if part.get("duration_ms") is not None
             else current.get("duration_ms")
         ),
-        **timing,
+        **carried,
         **({"error": str(part.get("text") or "Tool failed")} if failed else {}),
         **({"error": MISSING_EXECUTION_OUTCOME} if state == "unknown" else {}),
     }
@@ -613,34 +624,11 @@ def subagent_from_part(part: Mapping[str, Any], session_id: str) -> dict[str, An
 def _project_artifact(
     context: _TranscriptProjection, part: Mapping[str, Any], part_id: str
 ) -> None:
-    metadata = _mapping(part.get("metadata"))
-    artifact_id = str(metadata.get("artifact_id") or part.get("uri") or part_id)
-    context.artifacts[artifact_id] = {
-        "id": artifact_id,
-        "session_id": context.session_id,
-        "name": str(part.get("name") or Path(artifact_id).name or "Artifact"),
-        "media_type": str(
-            part.get("mime_type") or part.get("media_type") or "application/octet-stream"
-        ),
-        "uri": str(part.get("uri") or ""),
-        **(
-            {"version": metadata["version"]}
-            if isinstance(metadata.get("version"), int)
-            and not isinstance(metadata["version"], bool)
-            and metadata["version"] > 0
-            else {}
-        ),
-        **({"workspace_id": str(metadata["workspace_id"])} if metadata.get("workspace_id") else {}),
-        **({"fetch_path": str(metadata["fetch_url"])} if metadata.get("fetch_url") else {}),
-        **({"custody": str(metadata["custody"])} if metadata.get("custody") else {}),
-        **({"sha256": str(metadata["sha256"])} if metadata.get("sha256") else {}),
-        **(
-            {"size": int(metadata["size_bytes"])}
-            if isinstance(metadata.get("size_bytes"), int)
-            else {}
-        ),
-        "created_at": str(context.wire.get("created_at") or utcnow_iso()),
-    }
+    created_at = str(context.wire.get("created_at") or utcnow_iso())
+    artifact_id, entity = artifact_entity(
+        part, part_id, session_id=context.session_id, created_at=created_at
+    )
+    context.artifacts[artifact_id] = entity
 
 
 _ENTITY_PROJECTORS: dict[str, _EntityProjector] = {

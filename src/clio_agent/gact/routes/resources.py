@@ -17,6 +17,7 @@ from fastapi import BackgroundTasks, FastAPI, HTTPException, Request, Response
 from fastapi.responses import FileResponse, JSONResponse
 
 from clio_agent import conf
+from clio_agent.gact.off_loop import run_off_loop
 from clio_agent.gact.resource_custody import (
     ResourceConflictError,
     ResourceDeleteError,
@@ -66,11 +67,9 @@ _QUERY_ERROR_STATUS: dict[str, int] = {
     "invalid_request": 400,
     "search_unavailable": 415,
     "resource_not_decodable": 415,
-    "search_input_too_large": 413,
-    "read_input_too_large": 413,
     "derivative_not_found": 404,
     "structure_node_not_found": 404,
-    "structure_node_too_large": 413,
+    "structure_invalid": 500,
 }
 
 
@@ -475,10 +474,21 @@ def register_resource_routes(app: FastAPI, deps: "GactDeps") -> None:
         return _inline_response(path, media_type=record.detected_mime, filename=record.name)
 
     @app.get("/v1/workspaces/{workspace_id}/resources/{resource_id}/search")
-    async def search_resource(workspace_id: str, resource_id: str, q: str) -> dict[str, Any]:
+    async def search_resource(
+        workspace_id: str, resource_id: str, q: str, offset: int = 0, limit: int = 0
+    ) -> dict[str, Any]:
         _resource(app, workspace_id, resource_id)
         try:
-            return search_workspace_resource(app, workspace_id, resource_id, q)
+            # The whole text is streamed, so the scan runs off the event loop.
+            return await run_off_loop(
+                search_workspace_resource,
+                app,
+                workspace_id,
+                resource_id,
+                q,
+                offset=offset,
+                limit=limit,
+            )
         except ResourceQueryError as exc:
             raise _query_error(exc) from exc
 

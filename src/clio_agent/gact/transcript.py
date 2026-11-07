@@ -60,6 +60,7 @@ from clio_agent.gact.runtime.globals import (
     _new_part_id,
 )
 from clio_agent.gact.tap_step_verdicts import resolve_tap_step_verdict
+from clio_agent.gact.transcript_call_index import ToolCallIndex
 from clio_agent.gact.transcript_drops import report_dropped_empty_part
 from clio_agent.gact.types import Message, Part
 from clio_agent.runtime.stream_audit import stream_audit
@@ -182,6 +183,7 @@ class TurnTranscript:
         # in place (never rebound) and closed text parts must mutate
         # ``Part.text`` in place (design §9 alias-view aliasing).
         self._parts: list[Part] = []
+        self._call_index = ToolCallIndex()  # a result's call, without a scan
         self._buffers: dict[str, list[str]] = {}
         self._open_part: Optional[Part] = None
         self._open_agent: str = ""
@@ -336,12 +338,10 @@ class TurnTranscript:
             if not part.id:
                 part.id = _new_part_id()
             self._parts.append(part)
-            # #1337: a tool_call is final once its result lands (presentation deltas
-            # mutate it until then); the result itself is final only at finalize.
+            # #1337: a tool_call is final at its result; the result only at finalize.
             if part.type == "tool_result" and part.call_id:
-                for call_part in self._parts:
-                    if call_part.type == "tool_call" and call_part.call_id == part.call_id:
-                        self._seal_locked(call_part, "live")
+                for call_part in self._call_index.parts(self._parts, part.call_id):
+                    self._seal_locked(call_part, "live")
             effective_source = str(part.metadata.get("stream_source") or stream_source)
             self._publisher.publish(
                 "message.part.added",

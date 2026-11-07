@@ -187,7 +187,7 @@ class ScienceLog:
                 clean = observation_sources(self.app, session_id, clean)
                 self._charge(study, visible, clean)
             if entry_type == "view":
-                self._check_view_surface(session_id, clean["surface_id"])
+                clean["dashboard_id"] = self._check_view_dashboard(session_id, clean)
             entry = {
                 "id": identity,
                 "study": study,
@@ -237,18 +237,28 @@ class ScienceLog:
         )
 
     # ------------------------------------------------------------- internals
-    def _check_view_surface(self, session_id: str, surface_id: str) -> None:
-        """A view attaches a surface of the writing session: only its owner edits it."""
+    def _check_view_dashboard(self, session_id: str, fields: dict[str, Any]) -> str:
+        """A view attaches a dashboard the writing session published: its report id."""
 
-        store = getattr(getattr(self.app, "state", None), "a2ui_store", None)
-        record = store.get(session_id, surface_id) if store is not None else None
-        if record is None or getattr(record, "state", "") == "deleted":
+        from clio_agent.gact.dashboard_reports import list_dashboard_reports  # noqa: PLC0415
+
+        wanted = str(fields.get("dashboard_id") or "").removeprefix("artifact://").strip()
+        if not wanted:
             raise EntryRejected(
-                "view_surface_missing",
-                f"this session has no surface {surface_id!r}: create it with "
-                "create_a2ui_surface first; a view attaches a surface of the session "
-                "that writes it",
+                "view_needs_dashboard",
+                "a view attaches a dashboard: build it with the create-dashboard skill, "
+                "publish it with publish_dashboard_report, and give its report id as "
+                "dashboard_id",
             )
+        for report in list_dashboard_reports(self.app, session_id):
+            if wanted in (report["id"], report["artifact_id"]):
+                return str(report["id"])
+        raise EntryRejected(
+            "view_dashboard_missing",
+            f"this session published no dashboard {wanted!r}: publish it with "
+            "publish_dashboard_report first; a view attaches a dashboard of the session "
+            "that writes it",
+        )
 
     def _meta(
         self,

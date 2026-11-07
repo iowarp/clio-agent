@@ -1,6 +1,6 @@
 ---
 title: Task-capable tools and sources
-description: Understand background MCP calls, downloads, folder indexing, shell commands and subagent work.
+description: Understand background MCP calls, downloads, folder indexing, shell commands, scripts and subagent work.
 ---
 
 import TasksGuideNav from '../../../../components/TasksGuideNav.astro';
@@ -23,6 +23,7 @@ original tool or service remains responsible for executing and cancelling the wo
 | **Download** | An approved connected-source transfer returns a handle with available byte progress. |
 | **Indexing** | Connecting or refreshing a source starts persisted indexing with enumeration progress. |
 | **Shell** | An explicitly backgrounded command returns a handle and incremental output. Foreground execution remains the default. |
+| **Script** | A `run_code` script started in the background returns a handle at once. Its row shows elapsed time, tool calls, memory and its last progress. An ordinary script runs within the response. |
 | **Subagent** | Asynchronous spawning returns the child's assignment handle. |
 | **Session** | Human-started work has an assignment handle before inference. The session remains its stable address across assignments. |
 | **Question** | Asking posts a question and returns a handle immediately. Waiting for its answer is a separate action. |
@@ -83,6 +84,16 @@ On service shutdown, CLIO stops admission, cancels or withdraws owned local work
 and waits for physical settlement. Pending settlement remains visible. If a process is force-closed before settlement,
 its outcome remains uncertain.
 It does not reattach to a process using only a PID or automatically replay the command.
+
+## Background scripts
+
+A background script is Python the agent writes that calls its own tools, for example
+to watch a job and report when it ends. It runs in its own process until it finishes
+or its task is cancelled. It keeps running after the response, and after the child
+agent that started it ends. Its messages wake the conversation that owns it, at most
+once every 30 seconds, and its questions wait in that conversation until answered.
+A clean shutdown settles it as cancelled with its output so far; CLIO does not start
+it again. See [Scripts and background work](/docs/scripts/).
 
 ## Recovering uncertain work
 

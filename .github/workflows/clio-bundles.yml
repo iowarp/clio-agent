@@ -20,7 +20,7 @@ on:
         type: boolean
         default: false
       verify_macos:
-        description: Boot the existing release DMG on macOS 14, 15 and 26 before publication
+        description: Boot the existing release DMG on macOS 15 and 26 before publication
         type: boolean
         default: false
       allow_pending_macos:
@@ -650,7 +650,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [macos-14, macos-15, macos-26]
+        os: [macos-15, macos-26]
     runs-on: ${{ matrix.os }}
     timeout-minutes: 12
     steps:

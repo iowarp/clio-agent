@@ -58,6 +58,7 @@ def _old_seed(tmp_path: Path) -> Path:
     cfg.write_text(
         clio_core_config._DEFAULT_CTE_CONFIG_TEMPLATE.format(
             core_port=9413,
+            core_threads=4,
             conf_dir=clio_core_config._cte_yaml_path(tmp_path / "cte" / "conf"),
             file_tier=clio_core_config._cte_yaml_path(tmp_path / "cte" / "storage.bin"),
             file_capacity="50GB",

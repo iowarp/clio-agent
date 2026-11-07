@@ -27,6 +27,45 @@ logger = logging.getLogger(__name__)
 ARC_OP_EVENT_TYPE = "arc.op"
 
 
+# A ``semantic_event`` segment's content is a semantic event the trace already holds as
+# its own event, and clio-core holds the segment itself (the highway's source of
+# truth), so its ``arc.op`` names it instead of copying it a third time (the copies were
+# 21 of 31.6 MB of one session's trace). Replay skips these references.
+REFERENCED_KINDS = frozenset({"semantic_event"})
+
+
+def logs_context_op(scope: str) -> bool:
+    """Whether a write to ``scope`` is logged as an ``arc.op``.
+
+    ``arc.op`` replays the live context. The highway lanes (the ``_events`` chunks, the
+    task lanes and content under ``_events/t``, message parts, state ops) are not
+    context: clio-core holds them as the source of truth, and the trace already holds
+    each semantic event, so their ``arc.op`` was a fourth copy and about 11 trace events
+    per MCP call (P7, 2026-11-02). The working-set partitions (``_events/w``) are
+    context and stay logged.
+    """
+    if scope == "_events":
+        return False
+    return not scope.startswith("_events/") or scope.startswith("_events/w")
+
+
+def logged_segments(written: Iterable[Segment]) -> list[dict[str, Any]]:
+    """The ``segments_written`` an ``arc.op`` carries: full dicts, references for events."""
+    return [
+        {
+            "id": s.id,
+            "kind": s.kind,
+            "scope": s.scope,
+            "logical_time": s.logical_time,
+            "event_id": s.content.get("event_id", ""),
+            "stored_in": "clio-core",
+        }
+        if s.kind in REFERENCED_KINDS
+        else msgspec.to_builtins(s)
+        for s in written
+    ]
+
+
 def _segment_from_dict(data: dict[str, Any], *, trace_ref: str) -> Optional[Segment]:
     """Build a Segment from a logged ``segments_written`` dict, stamping its
     ``trace_ref`` to the replaying event's id (so a replayed segment is identical
@@ -71,6 +110,8 @@ def reconstruct_arc_segments(
         event_id = str(ev.get("event_id", "") or "")
         op_lt = int(payload.get("logical_time") or 0)
         for sd in payload.get("segments_written") or []:
+            if sd.get("stored_in") == "clio-core":
+                continue  # a highway event: the trace and clio-core hold it
             seg = _segment_from_dict(sd, trace_ref=event_id)
             if seg is not None:
                 state[seg.id] = seg

@@ -246,12 +246,14 @@ def present_task_family(
             submission.get("status", ""),
             "task-submission",
         )
-    if declaration == "wait":
+    # A spawn that waited for its batch returns a wait's result: present it as one.
+    batch_wait = declaration == "tasks" and args.get("wait") is True and "pending" in payload
+    if declaration == "wait" or batch_wait:
         presentation = wait_presentation(args, payload)
         return (
             str(presentation.get("summary") or "Waiting for tasks"),
             list(presentation.get("blocks") or []),
-            "Wait",
+            "Delegate and wait" if batch_wait else "Wait",
             str(presentation.get("status") or ""),
             str(presentation.get("subject") or ""),
         )

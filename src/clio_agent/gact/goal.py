@@ -19,6 +19,7 @@ from typing import Any, Literal, Optional
 from clio_agent import conf
 from clio_agent.gact.autonomy_limits import normalize_limits, parse_limit_options
 from clio_agent.gact.goal_evidence import _build_transcript as _build_transcript
+from clio_agent.gact.goal_evidence import judge_room
 from clio_agent.gact.goal_steering import pending_steer
 from clio_agent.gact.off_loop import run_off_loop
 from clio_agent.gact.work_state import work_record_patch
@@ -155,7 +156,7 @@ def _judge_signature() -> Any:
         "progress": (
             str,
             dspy.OutputField(
-                desc="Compact cumulative ledger of verified milestones and unresolved gaps. Retain earlier verified facts; do not promote assertions to evidence. Up to 6000 characters."
+                desc="Compact cumulative ledger of verified milestones and unresolved gaps. Retain earlier verified facts; do not promote assertions to evidence."
             ),
         ),
         "met": (bool, dspy.OutputField(desc="True ONLY if the transcript shows it satisfied.")),
@@ -218,7 +219,11 @@ def _judge_route(app: Any) -> tuple[Any, Any]:
 
 
 async def run_llm_judge(app: Any, sid: str, goal: Mapping[str, Any]) -> "GoalJudgement":
-    """Read bounded evidence and retained progress to judge the objective.
+    """Read the recorded evidence and retained progress to judge the objective.
+
+    The evidence is whole up to the judge model's context window
+    (:mod:`clio_agent.gact.goal_evidence`); the window is the judge's own, so the
+    transcript is built after the judge is resolved.
 
     A separate judge model (``dspy.context``) that ONLY reads the transcript — it never acts.
     Its verdict is the sole completion decision (the deterministic tier was deleted, A4); the
@@ -232,8 +237,8 @@ async def run_llm_judge(app: Any, sid: str, goal: Mapping[str, Any]) -> "GoalJud
     (codex), crashed outright as ``judge unavailable``."""
 
     condition = str(goal.get("condition") or "")
+    previous_progress = str(goal.get("progress") or "")
     try:
-        transcript = _build_transcript(app, sid)
         import dspy  # noqa: PLC0415
 
         async with async_model_resources():
@@ -252,6 +257,10 @@ async def run_llm_judge(app: Any, sid: str, goal: Mapping[str, Any]) -> "GoalJud
             with dspy.context(lm=lm, adapter=adapter):
                 from clio_agent.runtime.stream_audit import stream_audit
 
+                room = judge_room(
+                    lm, other_inputs="\n".join((_JUDGE_INSTRUCTIONS, condition, previous_progress))
+                )
+                transcript = _build_transcript(app, sid, room=room)
                 stream_audit(
                     "goal.judge.started",
                     goal_id=goal.get("goal_id"),
@@ -268,7 +277,7 @@ async def run_llm_judge(app: Any, sid: str, goal: Mapping[str, Any]) -> "GoalJud
                     pred = await judge.acall(
                         goal_condition=condition,
                         transcript=transcript,
-                        previous_progress=str(goal.get("progress") or ""),
+                        previous_progress=previous_progress,
                     )
                 stream_audit(
                     "goal.judge.returned", goal_id=goal.get("goal_id"), session_id=sid, met=pred.met
@@ -282,7 +291,7 @@ async def run_llm_judge(app: Any, sid: str, goal: Mapping[str, Any]) -> "GoalJud
             met=pred.met,
             reason=str(getattr(pred, "reason", "") or ""),
             next_action=getattr(pred, "next_action", "continue"),
-            progress=str(getattr(pred, "progress", "") or "")[:6000],
+            progress=str(getattr(pred, "progress", "") or ""),
         )
     except Exception as exc:  # noqa: BLE001 - retain the objective and expose judge failure
         logger.warning("goal LLM judge failed: %s", exc, exc_info=True)
@@ -353,7 +362,7 @@ def evaluate_goal(
             outcome="capped", reason="goal_judge_unavailable", guidance=guidance, new_state=state
         )
     if llm.progress:
-        state["progress"] = llm.progress[:6000]
+        state["progress"] = llm.progress
     if met:
         state.update(
             {

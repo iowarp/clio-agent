@@ -46,7 +46,6 @@ import threading
 import traceback
 import uuid
 from collections.abc import Iterable, Iterator
-from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from typing import Any
 
@@ -67,6 +66,7 @@ from dspy.lm15 import (
 )
 from dspy.utils.exceptions import AdapterParseError, ContextWindowExceededError
 
+from clio_agent import injections
 from clio_agent.errors import ClioError, MCPProtocolError
 from clio_agent.gact.agents import clio_react_extract as extract
 from clio_agent.gact.agents import clio_react_record as record
@@ -78,12 +78,15 @@ from clio_agent.gact.agents.clio_react_recovery import recover_stream
 from clio_agent.gact.agents.clio_react_stream_call import call_lm as _call_lm
 from clio_agent.gact.agents.clio_react_submit import active_react_scope_safe, record_submit_audit
 from clio_agent.gact.agents.clio_react_submit import submit_tool as _submit_tool
+from clio_agent.gact.agents.step_clock import StepClock as _StepClock
+from clio_agent.gact.agents.tool_concurrency import run_bounded
+from clio_agent.gact.context import active_app
+from clio_agent.gact.highway_writer import flush_session
 from clio_agent.gact.injection_parts import emit_injection
-from clio_agent.lm.engines.text_tools import INVALID_TOOL_CALL
+from clio_agent.lm.engines.text_tools import CALLABLE_TOOL_DEFS, CALLABLE_TOOLS, INVALID_TOOL_CALL
 from clio_agent.lm.request_builder import sendable_lm_kwargs
 from clio_agent.lm.request_config import config_from_lm_kwargs
 from clio_agent.runtime.fresh_loop import run_in_new_loop
-from clio_agent.tools import injections
 
 __all__ = ["ClioReAct"]
 
@@ -92,15 +95,6 @@ REACT_SUBMIT_FIELD_SUPPRESSED = "react_submit_field_suppressed"
 #: The ``submit`` tool rejected a typed/missing final-output arg: the value did not flow.
 REACT_SUBMIT_INVALID_OUTPUT = "react_submit_invalid_output"
 _log = logging.getLogger(__name__)
-
-
-#: Recorded once per agent context (an injection the user sees): a step's calls run at
-#: the same time, and each extra step is a whole model round trip.
-TOOL_USE_NOTE = (
-    "You can make several tool calls in one step; the calls of a step run at the same "
-    "time. When calls do not depend on each other's results -- loading several skills, "
-    "reading several files, independent lookups -- make them together in one step."
-)
 
 
 #: The loop running in this context (a tool reads it: ``draft_alternatives`` runs the
@@ -248,16 +242,23 @@ def _media_part(item: Any) -> ImagePart | DocumentPart:
 
 
 def _with_cache_key(config: Config, lm: Any) -> Config:
-    """Route this conversation's calls to one prompt cache, where the LM takes a key.
+    """Ask the provider to cache this conversation's growing prefix.
 
     ``prompt_cache_key`` (OpenAI Responses, Codex direct) is a routing hint: calls
     with the same key and prefix land on the same cache. The key is the
     conversation (GACT session + agent scope), so parallel agents never share one.
     Only an LM that declares ``_clio_prompt_cache_key`` gets it -- lm15 raises for a
-    provider without the field.
+    provider without the field. The Anthropic Messages API caches only what a block
+    mark covers, so an LM that declares ``_clio_cache_history`` marks the last message
+    of every request (``prefix="history"``): each step, and the compaction summarizer
+    that continues it, reads the prefix the previous step wrote.
     """
     from clio_agent.gact import context as _ctx  # noqa: PLC0415
 
+    if getattr(lm, "_clio_cache_history", False):
+        config = dataclasses.replace(
+            config, cache=dataclasses.replace(config.cache or CacheConfig(), prefix="history")
+        )
     session = _ctx.active_session_id()
     scope = _ctx.run_keyed_scope(_ctx.active_react_scope())
     if not getattr(lm, "_clio_prompt_cache_key", False) or not session or not scope:
@@ -344,9 +345,12 @@ class _Loop:
         self.variant_outcome: Any = None
         self.variant_claim = threading.Lock()
         from clio_agent.gact.compaction import AutoCompactionGuard  # noqa: PLC0415
+        from clio_agent.gact.compaction_summarizer import loop_summarizer  # noqa: PLC0415
 
-        # Auto compaction stops for this forward once one leaves it over the threshold.
-        self.autocompact = AutoCompactionGuard()
+        # The checkpoint continues this loop's own request, so it reuses the cached prefix.
+        self.autocompact = AutoCompactionGuard(
+            summarize=loop_summarizer(lambda: self.lm, self._next_request)
+        )
 
     def run(self) -> dspy.Prediction:
         from clio_agent.gact import context as _ctx  # noqa: PLC0415
@@ -366,7 +370,11 @@ class _Loop:
                 ledger.get(self.session, []) or [],
                 allow_transcript=self.scope == _ctx.run_keyed_scope(primary),
             )
-        self.recorder.injections([*self._tool_use_note(), *_ctx.turn_injections()])
+        start = injections.fire("turn_start", {}, session_id=self.session)
+        from clio_agent.gact.summon import expand_server_summons  # noqa: PLC0415
+
+        added = expand_server_summons([*_ctx.turn_injections(), *start], self.agent)
+        self.recorder.injections(added)
         # The continuing flag is this forward's alone: anything it starts opens its own task.
         continue_token = _CONTINUING.set(False) if _CONTINUING.get() else None
         if continue_token is None:
@@ -399,7 +407,9 @@ class _Loop:
                 _CONTINUING.reset(continue_token)
 
     def _listed_tools(self) -> tuple[FunctionTool, ...]:
-        unlisted: frozenset[str] = getattr(self.agent, "_clio_unlisted", frozenset())
+        from clio_agent.gact.agents.tool_settings import unlisted_tools  # noqa: PLC0415
+
+        unlisted = unlisted_tools(self.agent)
         return tuple(_function_tool(t) for t in self.agent.tools.values() if t.name not in unlisted)
 
     def _refresh_tools(self) -> None:
@@ -410,11 +420,16 @@ class _Loop:
         """
         refresh = getattr(self.agent, "_clio_tool_refresh", None)
         if refresh is not None and refresh(self.agent.tools):
-            self.tools = self._listed_tools()
+            from clio_agent.gact.agents.deferred_tools import sync_deferred_catalog  # noqa: PLC0415
+            from clio_agent.gact.agents.prompt_basis import (
+                note_deferred_added_in_turn,  # noqa: PLC0415
+            )
+            from clio_agent.gact.agents.tool_settings import reapply_tool_settings  # noqa: PLC0415
 
-    def _tool_use_note(self) -> list[tuple[str, str]]:
-        """Tell an agent with tools, once, that one step may call several at once."""
-        return [("tool_use", TOOL_USE_NOTE)] if set(self.agent.tools) - {"submit"} else []
+            reapply_tool_settings(self.agent)
+            if added := sync_deferred_catalog(self.agent):  # named by the next note (TD11)
+                note_deferred_added_in_turn(self.session, added)
+            self.tools = self._listed_tools()
 
     def _arrivals(self, *, human_only: bool = False) -> bool:
         """Inspect Core-pending arrivals; only the next input commit delivers them."""
@@ -433,27 +448,40 @@ class _Loop:
         from clio_agent.gact.compaction import maybe_autocompact  # noqa: PLC0415
 
         _raise_if_cancelled()
+        clock = _StepClock()  # CLIO's own time around the model call (stream audit)
         self._arrivals()
         self._refresh_tools()
+        compacted = self.autocompact.compaction_id
         maybe_autocompact(self.autocompact)
+        from clio_agent.gact import working_state  # noqa: PLC0415
+
+        if self.autocompact.compaction_id != compacted:
+            working_state.reinject_after_compaction(self.recorder)
+        working_state.offer_person_edit(self.recorder)
+        clock.mark("prep")
         attempt = 0
 
         def request() -> Request:
             nonlocal attempt
+            clock.mark("")
+            flush_session(active_app(), self.recorder.session)  # last step's records first
+            clock.mark("flush")
             self.recorder.commit_input(self.step, attempt=attempt)
+            clock.mark("commit")
             attempt += 1
-            return Request(
-                model=self.lm.model,
-                system=self.system,
-                messages=tuple(_place_tool_media(self._context(), self.tool_media)),
-                tools=self.tools,
-                config=self.config,
-            )
+            built = self._next_request()
+            clock.mark("build")
+            return built
 
+        callable_token = CALLABLE_TOOLS.set(frozenset(self.agent.tools))
+        defs_token = CALLABLE_TOOL_DEFS.set(self.agent.tools)
         try:
             response = recover_stream(self.lm, request, _call_lm, _raise_if_cancelled)
         except (ContextWindowExceededError, ContextLengthError):
             return self._stop("context_window_exceeded")
+        finally:
+            CALLABLE_TOOLS.reset(callable_token)
+            CALLABLE_TOOL_DEFS.reset(defs_token)
         if response.finish_reason == "length":
             # A cut-off reply is not an answer or a complete call: a typed turn failure.
             from clio_agent.lm.policy import LMOutputTruncatedError  # noqa: PLC0415
@@ -462,7 +490,10 @@ class _Loop:
         thinking, text, origin = stream.reply_thinking_and_text(response)
         calls = [p for p in response.message.parts if isinstance(p, ToolCallPart)]
         if not calls:
+            clock.mark("")
             self._record(text, thinking, calls, {}, origin)
+            clock.mark("record")
+            clock.report(self.recorder.session, self.step, 0)
             if (self.max_iters <= 0 or self.step + 1 < self.max_iters) and self._arrivals():
                 # Feedback accepted during this model call must be considered
                 # before closing the turn, even if that call chose no tools.
@@ -485,7 +516,10 @@ class _Loop:
             _ctx.reset(thought_token)
         results = {c.id: (o.value, o.is_error) for c, o in zip(calls, outcomes, strict=True)}
         refs = {c.id: o.call_ref for c, o in zip(calls, outcomes, strict=True) if o.call_ref}
+        clock.mark("")
         self._record(text, thinking, calls, results, origin, refs)
+        clock.mark("record")
+        clock.report(self.recorder.session, self.step, len(calls))
         for outcome in outcomes:
             if outcome.escalate is not None:
                 raise outcome.escalate
@@ -512,13 +546,24 @@ class _Loop:
     def _context(self) -> list[Message]:
         return self.recorder.read_steps()
 
+    def _next_request(self) -> Request:
+        """The request for the context as it stands (commits and records nothing)."""
+        return Request(
+            model=self.lm.model,
+            system=self.system,
+            messages=tuple(_place_tool_media(self._context(), self.tool_media)),
+            tools=self.tools,
+            config=self.config,
+        )
+
     def _execute(self, calls: list[ToolCallPart]) -> list[_CallOutcome]:
-        """Run the step's calls concurrently; outcomes in call order."""
+        """Run the step's calls concurrently within the per-server bound; in call order."""
         if len(calls) == 1:
             return [self._call(calls[0])]
-        with ThreadPoolExecutor(max_workers=len(calls), thread_name_prefix="clio-tool") as pool:
-            futures = [pool.submit(contextvars.copy_context().run, self._call, c) for c in calls]
-            return [f.result() for f in futures]
+        servers = getattr(self.agent, "_clio_tool_servers", ()) or ()
+        return run_bounded(
+            calls, self._call, lambda c: c.name, servers, thread_name_prefix="clio-tool"
+        )
 
     def _call(self, call: ToolCallPart) -> _CallOutcome:
         if call.name == INVALID_TOOL_CALL:
@@ -527,19 +572,38 @@ class _Loop:
                 f"{call.input.get('error')}. Send the calls again as one valid block.",
                 True,
             )
+        from clio_agent.gact.agents.tool_settings import call_refusal  # noqa: PLC0415
+        from clio_agent.gact.runtime.tool_permission_layers import native_gate  # noqa: PLC0415
+
+        if refusal := call_refusal(self.agent, call.name):
+            return _CallOutcome(refusal, True)
         tool = self.agent.tools.get(call.name)
         if tool is None:
             return _CallOutcome(f"Unknown tool: {call.name}", True)
         from clio_agent.gact.artifacts.observer_bridge import MODEL_CALL_SLOT  # noqa: PLC0415
         from clio_agent.gact.science_log.lineage import call_reference  # noqa: PLC0415
+        from clio_agent.gact.tool_observation import (  # noqa: PLC0415
+            INLINE_COLLECTION,
+            collected_observation,
+        )
+        from clio_agent.injections.tool_guidance import after_tool_result  # noqa: PLC0415
 
         slot: dict[str, str] = {}
+        carried: list[Any] = []
         slot_token = MODEL_CALL_SLOT.set(slot)
+        carried_token = INLINE_COLLECTION.set(carried)  # task outcomes the reply carries
         try:
-            with injections.collect() as told:
-                outcome = self._run_tool(call, tool)
+            with injections.collect() as told, native_gate(tool, call.name, call.input) as no:
+                outcome = _CallOutcome(no, True) if no else self._run_tool(call, tool)
         finally:
+            INLINE_COLLECTION.reset(carried_token)
             MODEL_CALL_SLOT.reset(slot_token)
+        if not outcome.is_error:
+            outcome.value = collected_observation(outcome.value, carried)
+        outcome.value, guidance = after_tool_result(
+            call.name, dict(call.input), outcome.value, outcome.is_error
+        )
+        told.extend(guidance)
         if slot.get("call_id"):
             outcome.call_ref = call_reference(self.recorder.session, slot["call_id"])
         # What the harness told the agent about this call is shown to the user too.
@@ -548,6 +612,7 @@ class _Loop:
         return outcome
 
     def _run_tool(self, call: ToolCallPart, tool: dspy.Tool) -> _CallOutcome:
+        from clio_agent.gact.agents.dspy_native_tool import ToolArgumentError  # noqa: PLC0415
         from clio_agent.gact.runtime.globals import _TurnCancelled  # noqa: PLC0415
         from clio_agent.tools.file_policy import FilePolicyError  # noqa: PLC0415
         from clio_agent.tools.mcp_errors import typed_mcp_protocol_error  # noqa: PLC0415
@@ -564,7 +629,7 @@ class _Loop:
                 if refusal is not None
                 else (err if isinstance(err, _TurnCancelled) else None)
             )
-            if isinstance(err, FilePolicyError):
+            if isinstance(err, (FilePolicyError, ToolArgumentError)):
                 # An expected, typed refusal: the model needs the reason, not our stack.
                 detail = f"{type(err).__name__}: {err}"
             else:
@@ -620,6 +685,12 @@ class _Loop:
             thinking_complete=origin[1],
             refs=refs,
         )
+        from clio_agent.gact.explore_nudge import note_reading_run  # noqa: PLC0415
+        from clio_agent.gact.working_state import note_stale_plan  # noqa: PLC0415
+
+        names = [call.name for call in calls]
+        note_stale_plan(self, names)
+        note_reading_run(self, names)
 
     def _stop(self, reason: str) -> dspy.Prediction:
         steps = self.max_iters if reason == "max_iters" and self.max_iters > 0 else self.step + 1

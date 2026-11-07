@@ -155,3 +155,48 @@ def test_initial_http_listing_honors_saved_sign_in_and_account_isolation(tmp_pat
             receipt.write_text(
                 json.dumps({"owner_pid": os.getpid(), "port": port, "state": "retired"})
             )
+
+
+@pytest.mark.usefixtures("clio_core_plane")
+def test_a_deferred_server_is_listed_before_the_first_request_and_named_in_its_entry() -> None:
+    """TD8: the listing before the first request covers deferred servers too, so the
+    deferred prompt entry carries the real tool names. SABOTAGE: skip deferred servers in
+    ``_gateway_and_namespace_tools`` and the entry has no tool names."""
+    from types import SimpleNamespace
+
+    from clio_agent.gact.agents.deferred_tools import SEARCH_TOOLS, plan_disclosure
+
+    server = FastMCP("deferred-fixture")
+
+    @server.tool(annotations={"readOnlyHint": True})
+    def find_station(station: str) -> dict[str, str]:
+        """Find a station by its identifier."""
+        return {"station": station}
+
+    @server.tool(annotations={"readOnlyHint": True})
+    def list_stations() -> list[str]:
+        """List the stations."""
+        return []
+
+    with create_sync_tool_executor(
+        FastMCP("deferred-gateway"), preloaded_tools={}, namespace_servers={"survey": server}
+    ) as executor:
+        executor._clio_namespace_specs = {
+            "survey": MCPServerSpec(name="survey", transport="http", url="http://fixture.test/mcp")
+        }
+        try:
+            tools, failures = _gateway_and_namespace_tools(executor, [], ["survey"])
+        finally:
+            mcp_prepare.forget("survey")
+    assert failures == {}
+    assert {"survey_find_station", "survey_list_stations"} <= set(tools)
+
+    search = dspy.Tool(lambda query: query, name=SEARCH_TOOLS, desc="Search tools.")
+    resolution = SimpleNamespace(
+        mcp_servers={"survey": {"defer": True, "description": "Station survey."}},
+        tools=[],
+        plugins=[],
+    )
+    plan = plan_disclosure(resolution, {**tools, SEARCH_TOOLS: search})
+    assert {"survey_find_station", "survey_list_stations"} <= plan.deferred
+    assert "find_station" in plan.entry and "list_stations" in plan.entry

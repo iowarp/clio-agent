@@ -18,7 +18,6 @@ value of :data:`grant_resolver.KIND_PLAN_ACL`, the vocabulary owner) to keep thi
 from __future__ import annotations
 
 import fnmatch
-import os
 from pathlib import Path
 from typing import Any
 
@@ -58,7 +57,16 @@ _TASK_CONTROLS: tuple[str, ...] = (
     "restart_agent",
     "cancel_tasks",
 )
-PLAN_ACL_PLAN_TOOLS: tuple[str, ...] = ("plan_exit", "ask_user", "web_fetch", *_TASK_CONTROLS)
+#: ``run_code`` runs in plan mode only behind an enforced fence, in a kernel whose write roots
+#: are the session's scratch folder and temp (TD47, :mod:`clio_agent.gact.code_mode.tool`); its
+#: nested calls still meet this ACL one by one, so a script's writes are denied like direct ones.
+PLAN_ACL_PLAN_TOOLS: tuple[str, ...] = (
+    "plan_exit",
+    "ask_user",
+    "web_fetch",
+    "run_code",
+    *_TASK_CONTROLS,
+)
 
 #: The registered-publication tool Architect mode ALLOWS despite the @40 deny-everything default.
 #: ``create_artifact`` remains subject to workspace containment, overwrite, custody, and registry
@@ -76,6 +84,19 @@ READ_ONLY_POLICY_MODE = "read_only"
 #: registered artifact, but direct file/edit/shell tools remain blocked and it has no ``plan_exit``.
 #: ``read_only`` has no allow band at all.
 PLAN_ACL_MODES = frozenset({"plan", "architect", READ_ONLY_POLICY_MODE})
+#: Effectful tools a read-only session may still run when this host enforces the write
+#: fence: its shell writes only its scratch and temp (``sandbox_roots.read_only_write_roots``),
+#: so an explore child can grep, count and list (owner, 2026-11-04). Unfenced, it stays denied.
+READ_ONLY_FENCED_TOOLS = frozenset({"shell_bash"})
+
+
+def read_only_fenced_allows(tool_name: str) -> bool:
+    """Whether a read-only session may run ``tool_name`` because the fence contains it."""
+    if tool_name not in READ_ONLY_FENCED_TOOLS:
+        return False
+    from clio_agent.runtime import sandbox  # noqa: PLC0415 - keep this data module light
+
+    return sandbox.fence_enforced()
 
 
 def plans_dir() -> Path:
@@ -129,9 +150,9 @@ def default_plan_acl_rows() -> list[dict[str, Any]]:
       non-write tools plan mode needs, re-allowed one band above the deny (P1.4 #1066).
     * ``allow create_artifact @50 modes=[architect]`` — registered report publication only;
       arbitrary file/edit/shell tools remain denied.
-    * ``allow "*" path=<plans>/*.md @70 modes=[plan]`` — the SOLE writable carve-out (a ``.md``
-      write under the plans dir), matched against the CALLER-NORMALIZED target so ``..`` traversal
-      can't satisfy it (see :func:`grant_resolver._plan_acl_default_matches`).
+
+    The plan itself is not a file-tool write: ``plan_update`` writes it, so no file-mutating
+    tool is allowed anywhere in plan mode.
 
     Consulted directly by :func:`grant_resolver.resolve`; not stored in
     ``app.state.permission_policies``, so they never migrate, flush, or affect user-row priorities.
@@ -140,7 +161,6 @@ def default_plan_acl_rows() -> list[dict[str, Any]]:
         A fresh list of plan-ACL policy-row dicts (``kind="plan_acl"``).
     """
 
-    plans = str(plans_dir())
     # The literal ``"plan_acl"`` == ``grant_resolver.KIND_PLAN_ACL`` (the vocabulary owner); kept a
     # literal so this data module stays a leaf (no import cycle back into grant_resolver).
     rows: list[dict[str, Any]] = [
@@ -175,17 +195,20 @@ def default_plan_acl_rows() -> list[dict[str, Any]]:
         }
         for tool_name in PLAN_ACL_ARCHITECT_TOOLS
     )
-    rows.append(
+    rows.extend(
         {
             "kind": "plan_acl",
             "action": "allow",
-            "tool_name_pattern": "*",
-            "path_pattern": f"{plans}{os.sep}*.md",
-            "modes": ["plan"],
-            "priority": PLAN_ACL_PLAN_FILE_PRIORITY,
-            "band": "plan_file",
+            "tool_name_pattern": tool_name,
+            "modes": [READ_ONLY_POLICY_MODE],
+            "priority": PLAN_ACL_ALLOW_TOOL_PRIORITY,
+            "band": "allow_tool",
         }
+        for tool_name in sorted(READ_ONLY_FENCED_TOOLS)
+        if read_only_fenced_allows(tool_name)
     )
+    # The plan itself is written with plan_update (gact/session_plan.py), a CLIO tool that
+    # owns the plans folder; no file-mutating tool reaches it in plan mode.
     return rows
 
 
@@ -251,9 +274,8 @@ def plan_mode_deny_message(mode: str, tool_name: str = "") -> str:
     when a plan_acl deny wins. ``mode`` selects the surface-accurate wording, since ``plan`` and
     ``architect`` are read-only for DIFFERENT reasons and must not be conflated:
 
-    * ``mode == "plan"``: names the restriction (Plan Mode is read-only), points at the sole
-      writable path (the plan file), and says what IS allowed (write the plan, or exit plan mode
-      to execute).
+    * ``mode == "plan"``: names the restriction (Plan Mode is read-only) and says what IS
+      allowed (write the plan with ``plan_update``, or hand it back with ``plan_exit``).
     * ``mode == "architect"`` (or any other plan-restricted mode): architect has NO direct-file
       carve-out — it may publish registered artifacts, but proposes source changes as diffs — so
       the message does not point at a plan-file path or tell the model to "exit plan mode".
@@ -279,11 +301,10 @@ def plan_mode_deny_message(mode: str, tool_name: str = "") -> str:
             "Answer from what you have read and from read-only tools."
         )
     if mode == "plan":
-        plan_glob = f"{plans_dir()}{os.sep}*.md"
         return (
-            f"You are in Plan Mode: read-only except the plan file at {plan_glob}. "
+            "You are in Plan Mode: read-only, except the plan, which plan_update writes. "
             f"This tool{tool_ref} would modify the system, so it is blocked. "
-            "Write your plan to the plan file, or exit plan mode to execute."
+            "Write the plan with plan_update, or hand it back with plan_exit to execute."
         )
     return (
         f"You are in Architect Mode: direct file modification is blocked except registered "

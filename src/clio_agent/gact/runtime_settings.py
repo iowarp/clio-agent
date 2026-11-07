@@ -54,7 +54,10 @@ class SettingDefinition:
     unlimited_value: int | None = None
     choices: tuple[tuple[str, str], ...] = ()  # (value, label) for a choice setting
     presets: tuple[tuple[int, str], ...] = ()  # (value, label) for common numeric choices
+    text: bool = False  # free text, such as an address; empty means unset
 
+
+BROWSER_EFFECT = "Applies at once: open pages close, and the next page opens in the chosen browser."
 
 _DEFINITIONS = (
     SettingDefinition(
@@ -284,6 +287,43 @@ _DEFINITIONS = (
             (365, "1 year"),
         ),
     ),
+    SettingDefinition(
+        "browser.backend",
+        "CLIO_BROWSER_BACKEND",
+        "Which browser",
+        "The browser that shows the pages the agent opens. A separate browser keeps its own sign-ins; your running Chrome or Edge has yours.",
+        "Browser",
+        "managed",
+        BROWSER_EFFECT,
+        choices=(
+            ("managed", "A separate browser"),
+            ("cdp", "Your running Chrome or Edge"),
+        ),
+    ),
+    SettingDefinition(
+        "browser.channel",
+        "CLIO_BROWSER_CHANNEL",
+        "Separate browser",
+        "Used with a separate browser: the bundled Chromium, downloaded on first use, or the Chrome or Edge installed on that computer, with a profile of its own.",
+        "Browser",
+        "chromium",
+        BROWSER_EFFECT,
+        choices=(
+            ("chromium", "Bundled Chromium"),
+            ("chrome", "Installed Google Chrome"),
+            ("msedge", "Installed Microsoft Edge"),
+        ),
+    ),
+    SettingDefinition(
+        "browser.cdp_url",
+        "CLIO_BROWSER_CDP_URL",
+        "Running browser to connect to",
+        "Used with your running Chrome or Edge: chrome or msedge for the one on that computer, after you turn on remote debugging at chrome://inspect/#remote-debugging (Chrome 144 or later), or a DevTools address such as http://127.0.0.1:9222.",
+        "Browser",
+        "",
+        BROWSER_EFFECT,
+        text=True,
+    ),
 )
 _BY_KEY = {definition.key: definition for definition in _DEFINITIONS}
 
@@ -297,7 +337,7 @@ class RuntimeSetting(BaseModel):
     group: str
     value: SettingValue
     default_value: SettingValue
-    kind: Literal["boolean", "number", "integer", "choice"]
+    kind: Literal["boolean", "number", "integer", "choice", "text"]
     minimum: float | None
     maximum: float | None
     unit: str | None
@@ -328,6 +368,11 @@ class UpdateRuntimeSettings(BaseModel):
 
 
 def _validate(definition: SettingDefinition, value: Any) -> bool | int | float | str:
+    if definition.text:
+        value = "" if value is None else value
+        if not isinstance(value, str) or len(value) > 2048 or not value.isprintable():
+            raise RuntimeSettingsError(f"{definition.title} must be one line of text.")
+        return value.strip()
     if definition.choices:
         if value not in {choice for choice, _label in definition.choices}:
             raise RuntimeSettingsError(f"{definition.title} must be one of the listed choices.")
@@ -365,7 +410,7 @@ def _snapshot(document: dict[str, Any]) -> RuntimeSettings:
     for definition in _DEFINITIONS:
         cast = (
             conf.as_str
-            if definition.choices
+            if definition.choices or definition.text
             else conf.as_bool
             if isinstance(definition.default, bool)
             else conf.as_float
@@ -395,7 +440,9 @@ def _snapshot(document: dict[str, Any]) -> RuntimeSettings:
                 group=definition.group,
                 value=value,
                 default_value=definition.default,
-                kind="choice"
+                kind="text"
+                if definition.text
+                else "choice"
                 if definition.choices
                 else "boolean"
                 if isinstance(definition.default, bool)

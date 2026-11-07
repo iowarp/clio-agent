@@ -6,7 +6,8 @@ on EVERY message, and the producibility resolver added a SECOND, independent
 discovery per production door. Measured before the fix: POST updateComponents
 #30 = 2.0s, transcript GET = 2.0s. The cache doctrine: caches accelerate, never
 own truth; staleness is explicit (``CatalogRegistry.invalidate`` after a plugin
-install), never implicit re-validation per call.
+install) or the plugin store's revision (one stat of its state file, so an
+install made by another process is seen), never a re-scan per call.
 
 Discovery is now ``a2ui_catalogs.plugin.installed_plugin_catalogs`` over the
 plugin store's records; loading one shipped catalog folder is

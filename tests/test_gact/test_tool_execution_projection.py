@@ -320,6 +320,41 @@ def test_receipt_and_task_custody_must_agree(world: tuple[Any, TestClient, str])
     assert tool["state"] == "unknown"
     assert tool["execution_problem"] == "submission_task_mismatch"
     assert "execution_task" not in tool
+    status = tool["presentation"]["blocks"][-1]
+    # Uncertain, not failed: the box matches the row's Unknown, and the call's own
+    # view (what was asked) stays above it.
+    assert status["id"] == "task-execution-status" and status["severity"] == "warning"
+
+
+def test_an_execution_problem_keeps_what_was_asked(
+    world: tuple[Any, TestClient, str],
+) -> None:
+    """SABOTAGE: return the bare diagnostic from ``_with_request`` -> the script is gone."""
+    from clio_agent.gact.tool_execution_projection import _diagnostic, _with_request
+
+    asked = {"subject": "target", "summary": "", "blocks": [{"id": "script", "type": "code"}]}
+    view = _with_request({"presentation": asked}, _diagnostic("Unclear.", uncertain=True))
+    assert [block["id"] for block in view["blocks"]] == ["script", "task-execution-status"]
+    assert view["subject"] == "target"
+    assert _with_request({}, _diagnostic("x", failed=True))["blocks"][0]["severity"] == "error"
+
+
+def test_a_script_call_is_not_joined_to_its_nested_calls_tasks(
+    world: tuple[Any, TestClient, str],
+) -> None:
+    """A script's tool calls claim the script call's invocation (they nest under it);
+    none of them is that call's execution, so the launch row keeps its own outcome."""
+    app, client, sid = world
+    _transcript(app, sid)
+    for part in app.state.messages[sid][0].parts:
+        part.tool_name = "run_code"
+    _task(app, sid, "completed", tool_name="bash")  # a nested shell call from the script
+    receipt = app.state.messages[sid][0].parts[1].structured_content
+    receipt.update(kind="Code", handle="task_the_script")
+    tool = _read(client, sid)
+    assert "execution_problem" not in tool
+    assert "execution_task" not in tool
+    assert tool["state"] != "unknown"
 
 
 def test_completed_task_without_result_cannot_be_success(

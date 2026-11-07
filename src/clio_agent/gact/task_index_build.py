@@ -67,12 +67,18 @@ def restore(history: TaskHistory) -> None:
 
 def _full_replay(history: TaskHistory) -> TreeState:
     """The pre-build projection over every session (the build's only global read)."""
-    live = history.arc._live
+    from clio_agent.gact.task_event_lane import (  # noqa: PLC0415
+        TASK_EVENT_LANE,
+        session_task_events,
+    )
+
+    store = history.arc._segments
     candidate = TreeState(history, "", ())
+    # Task events are recorded in their lane only (the lane migration runs first).
     events = (
-        (session_id, segment.content)
-        for session_id in live._event_session_ids()
-        for segment in live.iter_session_event_segments(session_id)
+        event
+        for session_id in store.sessions_with_scope(TASK_EVENT_LANE)
+        for event in session_task_events(history.arc, session_id)
     )
     replay(candidate, events, owner_filed_subscriptions=False)
     return candidate

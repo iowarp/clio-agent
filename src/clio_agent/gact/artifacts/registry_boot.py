@@ -454,6 +454,18 @@ async def boot_fold_artifact_registry_offloop(
             flush=True,
         )
         return False
+    except Exception as exc:
+        # Any other failure leaves the agent FAILED with its reason (then propagates),
+        # never "starting" forever with no error: nothing above this step records it.
+        from clio_agent.gact.agent_initialization import record_init_failure  # noqa: PLC0415
+
+        logger.error(
+            "artifact registry boot failed reason=artifact_registry_boot_failed: %r",
+            exc,
+            exc_info=exc,
+        )
+        record_init_failure(app, exc, stage="artifact_registry")
+        raise
     return True
 
 

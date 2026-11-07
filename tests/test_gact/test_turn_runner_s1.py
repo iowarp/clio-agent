@@ -190,3 +190,49 @@ async def test_unreserved_sync_execution_is_refused() -> None:
     with pytest.raises(TurnAdmissionError):
         await runner.run_sync("unreserved", lambda: "must not run")
     await runner.drain()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(("failure", "released"), [(False, []), (True, ["session"])])
+async def test_a_clean_turn_keeps_the_provider_connection(
+    monkeypatch: pytest.MonkeyPatch, failure: bool, released: list[str]
+) -> None:
+    """A clean turn end keeps the pooled connection (the next turn sends only new
+    messages); a failed segment releases it. While the turn runs it is marked active.
+
+    SABOTAGE: release unconditionally again and the clean case records a release.
+    """
+    from clio_agent.providers import turn_activity
+
+    provider_releases: list[str] = []
+    monkeypatch.setattr(
+        "clio_agent.providers.session_lifecycle.release_session_resources",
+        lambda sid: provider_releases.append(sid),
+    )
+    seen_active: list[bool] = []
+    offered = False
+    runner: TurnRunner
+
+    def work() -> str:
+        seen_active.append(turn_activity.active("session"))
+        if failure:
+            raise RuntimeError("owned model failure")
+        return "settled"
+
+    async def segment() -> None:
+        await runner.run_sync("session", work)
+
+    async def admit(sid: str) -> tuple[str, Coroutine[Any, Any, Any]] | None:
+        nonlocal offered
+        if offered:
+            return None
+        offered = True
+        return "turn", segment()
+
+    runner = TurnRunner(SimpleNamespace(state=SimpleNamespace()), admit)
+    runner.bind_loop(asyncio.get_running_loop())
+    runner.signal("session")
+    await wait_until(lambda: seen_active and not runner.busy("session"))
+    await runner.drain()
+    assert seen_active == [True] and not turn_activity.active("session")
+    assert provider_releases == released

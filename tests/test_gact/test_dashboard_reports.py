@@ -103,6 +103,28 @@ def test_edit_and_publish_preserves_old_artifact(dashboard: tuple[Any, str, Path
     assert list_dashboard_reports(app, sid)[0]["artifact_id"] == second["artifact_id"]
 
 
+def test_each_publish_tells_the_study_its_view_may_have_changed(
+    dashboard: tuple[Any, str, Path], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A study view is a dashboard: every publish (and revision) is announced to the
+    study (``science.view``), so its views tab re-reads instead of polling.
+
+    SABOTAGE: drop the ``notify_study`` call in ``publish_dashboard_report`` -> red."""
+
+    from clio_agent.gact import call_effects
+
+    app, sid, path = dashboard
+    told: list[tuple[str, str, dict[str, Any]]] = []
+    monkeypatch.setattr(
+        call_effects,
+        "notify_study",
+        lambda _app, session, event, payload: told.append((session, event, payload)) or "e_1",
+    )
+    first = publish_dashboard_report(app, sid, definition_path=str(path))
+    publish_dashboard_report(app, sid, definition_path=str(path), report_id=first["id"])
+    assert told == [(sid, "science.view", {"dashboard_id": first["id"]})] * 2
+
+
 def test_dashboard_names_are_readable_distinct_and_stable_on_rename(
     dashboard: tuple[Any, str, Path],
 ) -> None:

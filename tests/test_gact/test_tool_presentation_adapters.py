@@ -12,6 +12,7 @@ from clio_agent.arc.task_types import TaskSnapshot
 from clio_agent.gact.agents import tool_instrumentation
 from clio_agent.gact.agents.native_presenters import native_presentation
 from clio_agent.tools.tool_presentation import present_mcp_result
+from tests._fs_results import read_result
 
 
 def _common_task_row(
@@ -316,13 +317,7 @@ def test_wait_start_without_context_is_private_and_distinguishes_status_checks(
 
 def test_markdown_file_presents_readable_frontmatter_and_body() -> None:
     content = "---\nname: imagegen\ndescription: Create images\n---\n# Image generation\n\nRead the **procedure**."
-    result = {
-        "structuredContent": {
-            "path": r"D:\skills\SKILL.md",
-            "size_bytes": len(content),
-            "content": content,
-        }
-    }
+    result = read_result(r"D:\skills\SKILL.md", content)
     before = json.dumps(result)
     view = present_mcp_result("fs_read_file", {}, result)
     blocks = {block["id"]: block for block in view["blocks"]}
@@ -343,12 +338,11 @@ def test_markdown_file_presents_readable_frontmatter_and_body() -> None:
     ],
 )
 def test_file_format_is_declared_by_read_presenter(path: str, content: str, kind: str) -> None:
-    view = present_mcp_result(
-        "fs_read_file", {}, {"structuredContent": {"path": path, "content": content}}
-    )
+    view = present_mcp_result("fs_read_file", {}, read_result(path, content))
     block = next(block for block in view["blocks"] if block["id"] == "file")
     assert block["type"] == kind
     assert block["text"] == content
+    assert block.get("start_line") == (None if kind == "markdown" else 1)
 
 
 def test_resource_outline_exposes_the_returned_collections() -> None:
@@ -412,6 +406,67 @@ def test_resource_truncation_is_not_mistaken_for_a_complete_document() -> None:
     view = native_presentation("resource", {}, result, None)
     assert view["blocks"][-1]["text"] == "Result truncated by the resource tool"
     assert result == {"resource_id": "paper", "content": "First passage", "truncated": True}
+
+
+def test_a_large_resource_read_page_says_where_the_text_continues() -> None:
+    content = "".join(f"line {n}: " + "measurement " * 12 + "\n" for n in range(600))[:65536]
+    first = {
+        "resource_id": "paper",
+        "content": content,
+        "offset": 0,
+        "next_offset": 65536,
+        "total_chars": None,
+        "total_bytes": 9_000_000,
+        "truncated": True,
+    }
+    view = native_presentation("resource", {"resource_id": "paper"}, first, None)
+    assert view["blocks"][0] == {"id": "content", "type": "text", "text": content}
+    assert view["blocks"][-1] == {
+        "id": "coverage",
+        "type": "text",
+        "text": "Characters 1–65,536 of a 9,000,000-byte text; more from character offset 65,536",
+    }
+    last = {**first, "offset": 65536, "content": "tail", "next_offset": None}
+    last["total_chars"] = 65540
+    view = native_presentation("resource", {}, last, None)
+    assert view["blocks"][-1]["text"] == "Characters 65,537–65,540 of 65,540"
+    past = {**last, "offset": 70000, "content": ""}
+    view = native_presentation("resource", {}, past, None)
+    assert view["blocks"][-1]["text"] == (
+        "No text at character offset 70,000; the text has 65,540 characters"
+    )
+
+
+def test_a_whole_resource_read_has_no_coverage_note() -> None:
+    result = {"resource_id": "paper", "content": "Body", "offset": 0, "next_offset": None}
+    view = native_presentation("resource", {}, {**result, "total_chars": 4}, None)
+    assert [block["id"] for block in view["blocks"]] == ["content"]
+
+
+def test_a_resource_search_page_names_its_matches_and_the_next_page() -> None:
+    matches = [
+        {"line": 10 + n, "char_offset": 400 * n, "text": f"hit {n} " + "context " * 50}
+        for n in range(50)
+    ]
+    matches[0]["line_chars"] = 90_000
+    result = {"resource_id": "paper", "matches": matches, "offset": 50, "next_offset": 100}
+    view = native_presentation("resource", {"query": "hit"}, result, None)
+    assert view["summary"] == "50 matches for “hit”"
+    lines = view["blocks"][0]["text"].splitlines()
+    assert lines[0].startswith("10: hit 0") and lines[0].endswith("…")
+    assert not lines[1].endswith("…") and len(lines) == 50
+    assert view["blocks"][-1]["text"] == "Matches 51–100; more from match offset 100"
+
+
+def test_a_resource_list_page_counts_every_resource() -> None:
+    rows = [
+        {"id": f"res_{n}", "name": f"survey-{n:03d}-long-instrument-name.csv"} for n in range(100)
+    ]
+    result = {"resources": rows, "offset": 0, "next_offset": 100, "total": 240}
+    view = native_presentation("resource", {}, result, None)
+    assert len([block for block in view["blocks"] if block["type"] == "link"]) == 100
+    coverage = next(block for block in view["blocks"] if block["id"] == "coverage")
+    assert coverage["text"] == "Resources 1–100 of 240; more from resource offset 100"
 
 
 def test_observation_keeps_incremental_events_in_technical_result() -> None:
@@ -652,23 +707,16 @@ def test_web_document_identity_and_degraded_empty_search_are_visible() -> None:
 def test_file_result_has_one_portable_filename_link() -> None:
     path = r"D:\workspace\evidence.txt"
     view = present_mcp_result(
-        "fs_read_file",
-        {},
-        {
-            "structuredContent": {
-                "path": path,
-                "size_bytes": 12,
-                "content": "Evidence body",
-            }
-        },
+        "fs_read_file", {}, read_result(path, "Evidence body", start=40, total=90)
     )
-    assert view["summary"] == "12 bytes"
+    assert view["summary"] == "Lines 40–40 of 90"
     assert view["blocks"][0] == {
         "id": "file-link",
         "type": "link",
         "target": "file",
         "uri": path,
         "label": "evidence.txt",
+        "line": 40,
         "text": "",
         "language": "",
         "command": "",

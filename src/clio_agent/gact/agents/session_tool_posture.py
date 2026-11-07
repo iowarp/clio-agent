@@ -9,7 +9,11 @@ they are removed from the toolset before the agent ever sees them:
 
 * a gate-routed tool (an MCP-bridged or external-MCP tool, whose callable the
   execution boundary marks observed and which carries no native presenter) is
-  kept; the gate decides each call from its annotations;
+  kept, and the gate decides each call from its annotations, unless the tool
+  catalog (whose tags project those annotations) already says it is not
+  read-only: the gate would refuse every call, so it is not offered (an explore
+  child was listed ``shell_bash`` and spent up to five calls learning it was
+  blocked, prompt1 P4);
 * a native tool is kept only when its construction DECLARED ``read_only``
   (:data:`~clio_agent.gact.agents.tool_instrumentation.READ_ONLY_ATTR`);
 * anything else (an undeclared native, an unrecognised shape) is removed,
@@ -29,6 +33,20 @@ from clio_agent.runtime import trace
 
 #: Typed reason on a native tool withheld from a read-only side session.
 REASON_NOT_DECLARED_READ_ONLY = "native_tool_not_declared_read_only"
+#: Typed reason on a gate-routed tool the catalog says the read-only gate refuses.
+REASON_CATALOG_NOT_READ_ONLY = "gate_tool_not_read_only"
+
+
+def _catalog_refuses(name: str) -> bool:
+    """Whether the catalog knows ``name`` and the read-only gate would refuse it (a
+    fenced shell is allowed: ``plan_acl.read_only_fenced_allows``)."""
+    from clio_agent.gact.runtime.plan_acl import read_only_fenced_allows  # noqa: PLC0415
+    from clio_agent.tools.catalog import get_tool_entry  # noqa: PLC0415
+
+    if read_only_fenced_allows(name):
+        return False
+    entry = get_tool_entry(name)
+    return entry is not None and not ("read" in entry.tags and "write" not in entry.tags)
 
 
 def _active_session() -> Any:
@@ -61,22 +79,32 @@ def restrict_tools_to_session_posture(tools: Iterable[Any]) -> list[Any]:
     if not is_read_only_side_session(session):
         return listed
     kept: list[Any] = []
-    withheld: list[str] = []
+    withheld: dict[str, list[str]] = {}
     for tool in listed:
         func = getattr(tool, "func", None)
-        if _gate_routed(func) or bool(getattr(func, READ_ONLY_ATTR, False)):
+        name = str(getattr(tool, "name", "") or "<unnamed>")
+        if _gate_routed(func):
+            if _catalog_refuses(name):
+                withheld.setdefault(REASON_CATALOG_NOT_READ_ONLY, []).append(name)
+            else:
+                kept.append(tool)
+        elif bool(getattr(func, READ_ONLY_ATTR, False)):
             kept.append(tool)
         else:
-            withheld.append(str(getattr(tool, "name", "") or "<unnamed>"))
-    if withheld:
+            withheld.setdefault(REASON_NOT_DECLARED_READ_ONLY, []).append(name)
+    for reason, names in withheld.items():
         trace.event(
             "SIDE-SESSION",
             "side_session_tools_withheld session=%s reason=%s tools=%s",
             getattr(session, "id", ""),
-            REASON_NOT_DECLARED_READ_ONLY,
-            ",".join(sorted(withheld)),
+            reason,
+            ",".join(sorted(names)),
         )
     return kept
 
 
-__all__ = ["REASON_NOT_DECLARED_READ_ONLY", "restrict_tools_to_session_posture"]
+__all__ = [
+    "REASON_CATALOG_NOT_READ_ONLY",
+    "REASON_NOT_DECLARED_READ_ONLY",
+    "restrict_tools_to_session_posture",
+]

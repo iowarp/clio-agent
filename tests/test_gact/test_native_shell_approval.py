@@ -47,6 +47,8 @@ async def test_bridge_native_shell_uses_one_exact_approval(
     """Exercise actual sync-to-async dispatch and native admission without an OS process."""
     app, owner, root = await create_environment(arc, tmp_path)
     set_config("tools.file_policy.allowed_roots", [str(tmp_path)])
+    monkeypatch.setattr("clio_agent.gact.context.active_react_context_window", lambda: 64_000)
+    monkeypatch.setattr("clio_agent.gact.runtime.context_tokens._last_prompt_tokens", lambda: 1_000)
     sid = root.owner.session_id
     app.state.workspaces = SimpleNamespace(
         get=lambda _wid: SimpleNamespace(root_path=str(tmp_path))
@@ -184,6 +186,13 @@ async def test_bridge_native_shell_uses_one_exact_approval(
             assert metadata["owner"].assignment_id == root.handle
             assert metadata["invocation_id"] == "approved-shell-invocation"
             assert metadata["workspace"] == str(tmp_path)
+            # The room the caller's model has, recorded for the work that runs apart.
+            assert metadata["execution_limits"] == {
+                "result_tokens": 8_000,
+                "result_chars": 32_000,
+                "result_reason": "window_share",
+                "result_window": 64_000,
+            }
         assert len(outer) == 1
         assert len(inner) == (
             1 if change in {"command", "folder", "playbook"} or change.startswith("policy") else 0

@@ -74,9 +74,14 @@ The gate decides in this order:
 
 3. **Interactive** — for an un-resolved non-read call (e.g. an LM-driven ReAct
    loop calling `fs_write_file` or `shell_bash` mid-turn), the gate
-   publishes a `permission.requested` event and blocks on a `threading.Event`
-   for up to `DEFAULT_TIMEOUT_S = 600.0` s (a timeout fails safe: `deny`; a call
-   with no driving session also fails closed to `deny` immediately). The TUI
+   publishes a `permission.requested` event and waits for the answer with no
+   expiry: the wait counts as the turn's progress, and only the answer or
+   cancelling the work ends it (`gact/permission_timeout.py`; the old 600 s
+   timeout is removed, taskable `run_code` CT13). A caller given an explicit
+   deadline (the PreToolUse hook defer, `hooks.defer_timeout`) is denied with
+   `permission_request_timeout` when it passes, which is not the same as the
+   person refusing. A call with no driving session fails closed to `deny`
+   immediately. The TUI
    renders a banner; the user resolves with a/d/s/w; the backend POSTs the
    resolution back; the gate returns `allow` or `deny`.
 
@@ -85,6 +90,60 @@ The gate decides in this order:
 > treated as non-read and routes to steps 2–3. Closing the headless case (no
 > interactive approver) for such calls is the job of the approval-mode work
 > (#1034); until then, give such tools a `read` tag or `readOnlyHint`.
+
+## Scripts and per-tool settings
+
+**A script is approved before it runs.** `run_code` is one non-read call: it asks the
+gate itself, with the script shown ("Run a Python script (N lines): ..."), in every
+approval mode except `bypass` (`gact/code_mode/tool.py`). That approval covers what the
+script does directly (`open()`, subprocesses) inside the write fence, as a shell
+approval covers its command.
+
+**Each call a script makes still meets the gate** with its own annotations
+(`gact/code_mode/grants.py`). Reads do not ask unless a rule or a default says so;
+denies hold. A nested non-read call that would ask is decided by the approval mode the
+script was accepted with (a change of mode while it runs does not change it):
+
+| Approval mode | Nested non-read calls |
+| --- | --- |
+| `bypass` | Run |
+| `auto-edits`, `ai-review`, `spotter-ai`, `spotter-watcher` (`code.covering_postures`) | Covered by the script's approval, recorded with `run_code_script_grant` |
+| `ask` | Each asks, one question per script at a time, showing the script; denial raises in the script |
+
+In `ask` mode the question offers "Allow for the rest of this script"
+(`allow_script`), which covers that script's remaining calls; the next `run_code` asks
+again. A tool whose rule or default is `ask` asks even under a covering mode. A
+background script's question belongs to its task: it is asked in the owner's
+conversation with the task's handle, and only an answer or cancelling the task ends
+the wait. In plan mode a script runs only where the sandbox enforces the write fence:
+its kernel may write only the session's scratch folder and temp, and its nested calls
+meet the plan-mode rules like direct calls; elsewhere `run_code` refuses with
+`code_plan_mode_unconfined`.
+
+**Every tool has a default permission** (`allow`, `ask` or `deny`), declared by its
+plugin (`native_tool(permission=...)`, `tool(permission=...)`,
+`servers.<name>.permission`, `servers.<name>.tools.<tool>.permission`) and replaced by
+the deployment's `tools.permissions` (tool name to permission; `CLIO_TOOLS_PERMISSIONS`
+as JSON). Undeclared, the tool's annotations and the approval mode decide. The gate's
+order lives in one place (`gact/runtime/tool_permission_layers.py`): a deny from any
+layer wins; then the person's rules (`/v1/policies`); then the tool's default; then the
+approval mode and a script's grant. So a plugin can keep `send_email` on `ask` in
+`auto-edits`; `bypass` skips a default's question but never a deny.
+
+**Deny hides the tool.** A tool whose default is `deny`, or that a person's rule names
+exactly and denies, is left out of the agent's tools: the tool list, the deferred
+catalog and the `run_code` stubs, traced `tool_permission_deny`; a call to it by name is
+refused with that reason (`gact/agents/tool_settings.py`). A wildcard deny rule keeps
+denying at the gate, call by call.
+
+**The plugin's Tools settings page** (`GET`/`PUT /v1/settings/tools`,
+`POST /v1/settings/tools/rules/remove`; `gact/tool_settings_page.py`) lists a plugin's
+tools grouped into read-only and write tools by their flags, with each tool's plugin
+default, the deployment value, the person's saved rules and their scope, and what
+happens in each approval mode for a direct call and for a call from a script. The
+person's permission is saved as a policy rule in `/v1/policies`; the I/O choice
+(`callers`: `direct`, `code` or `both`) is saved as `tools.callers` in the user
+`config.yaml`.
 
 ## TUI surface
 
@@ -277,8 +336,33 @@ A root grant widens the fence `write_roots` and restarts the workspace's residen
 fleet so an already-spawned, workspace-shared child picks up the new territory at a
 safe boundary (a busy fleet is never torn down mid-call — the restart defers and is
 reported as a typed `grant_restart_deferred_busy`, never silently — #1033). A denied
-`policy_violation` carries a
-static grant affordance (`next_action`) so the model may *ask* and the user decides.
+`policy_violation` carries the boundary diagnosis' message as its `next_action`, so
+the model may *ask* and the user decides.
+
+**Boundary feedback in the result (#1905).** A denial is diagnosed once, in the
+confinement layer (`runtime/sandbox_diagnosis.py`): a per-platform denial signature
+in stderr (PowerShell "Access to the path … is denied", `UnauthorizedAccessException`,
+`WinError 5`, `0x80070005`, errno 13/30/1, "Read-only file system", "Operation not
+permitted"; numeric codes match localized text), the denied paths from the denial
+lines or the command, and the territory check against the write roots that seam gave
+its fence. The shell and `run_code` attach it to their result as a typed `boundary`
+field (`kind`, `confidence`, `mechanism`, `paths`, `request_roots`, `message`,
+`signature`) only when there is one, and the model reads its `message`: the folder
+(nearest existing parent) and the retry with `access_paths` + `access_reason`.
+`confidence` is `confirmed` with paths outside the roots and `possible` with none
+found; a path inside the roots, or one the server's own account cannot write either,
+gets nothing, as does the floor (mechanism `none`). Exit 740 or "requires elevation"
+is `elevation_required`: no grant applies, and the agent tells the person the exact
+file to run. A confined stdio MCP server's failed call is diagnosed by the observer
+against the recomputed fleet roots at `possible` confidence, and its message is noted
+on the error (or appended to the returned error result). A narrowed territory (plan
+mode, a read-only task, a workflow step) names where the call may write instead of a
+retry. A confirmed `write_denied` with folders to ask for also raises the folder-access
+card (`gact/sandbox_folder_offer.py`, `origin: sandbox_boundary`): a pending permission
+that parks no call, so the session needs the person; allowing grants the folders, and a
+grant made another way (`POST /v1/workspaces/{wid}/grants`) settles the card (owner's
+review, CT41). No automatic rerun, no elevated lane;
+`artifact.policy_violation` reads the same diagnosis.
 
 ### Provenance tiers under the fence (#980)
 

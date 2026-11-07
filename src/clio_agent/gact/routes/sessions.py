@@ -38,6 +38,7 @@ from clio_agent.gact.routes.session_fork import register_session_fork_route
 from clio_agent.gact.routes.session_list import register_session_list_route
 from clio_agent.gact.routes.side_sessions import register_side_session_routes
 from clio_agent.gact.routes.turn_retry import register_turn_retry_routes
+from clio_agent.gact.session_processes import close_session_processes
 from clio_agent.gact.session_tool_output import delete_session_tool_output
 from clio_agent.gact.turn_reasoning import forget_session_reasoning
 from clio_agent.gact.types import (
@@ -222,6 +223,7 @@ def register_sessions_routes(app: FastAPI, deps: "GactDeps") -> None:
         await run_off_loop(close_session_model_clients, app, sid)
         deps.delete_session_context_files(app, sid)
         await run_off_loop(delete_session_tool_output, app, sess.workspace_id, sid)
+        await run_off_loop(close_session_processes, app, sid)  # its kernels and pages (BR23)
         await run_off_loop(deps.release_session_arc, app, sid)  # #1334: drops _events scopes
         await run_off_loop(app.state.task_history.restore)
         app.state.a2ui_catalogs.forget_session(sid)

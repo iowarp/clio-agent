@@ -28,6 +28,8 @@ from clio_agent.gact.task_history import RecordingUnconfirmed, TaskHistory
 from clio_agent.gact.task_publication import publish_task_notice, task_owner_recipient
 
 if TYPE_CHECKING:
+    from concurrent.futures import Future
+
     from clio_agent.gact.conversation_assignments import ConversationSegment
     from clio_agent.gact.conversations import (
         Conversations,
@@ -251,7 +253,7 @@ async def _restore_assignment(self: Conversations, handle: str) -> None:
         return
     if await self.history.io.run(self.history.latest_assignment, task.owner.session_id) != task:
         return
-    session = self.sessions.get(task.owner.session_id)
+    session = await self.history.io.run(self.sessions.get, task.owner.session_id)  # a Core read
     try:
         details = (
             AssignmentDetails.model_validate(
@@ -524,7 +526,9 @@ async def _retired_segment(
 ) -> None:
     """Reconcile Stop once, after physical retirement and before slot release."""
     from clio_agent.gact.conversation_assignments import observe_child_lifecycle
+    from clio_agent.gact.read_only_outcomes import outcomes_recorded
 
+    await outcomes_recorded(self.app)  # read-only calls' records, written behind replies
     task = self.history.task_snapshot(segment.assignment.handle)
     if task is not None and task.kind == "Subagent" and task.terminal_at is not None:
         await self.history.io.run(observe_child_lifecycle, self, task, started=False)
@@ -581,3 +585,28 @@ async def _retired_segment(
     except Exception:
         logger.exception("Stopped input recording remains unconfirmed session=%s", sid)
         self.recovery.defer("conversation-stopped:" + handle + ":" + segment.turn_id, confirm)
+
+
+#: Typed reason of a pending-mail recheck whose Core read failed (no silent fallback).
+PENDING_RECHECK_FAILED = "pending_mail_recheck_failed"
+
+
+def signal_pending_sessions(self: Conversations, loop: asyncio.AbstractEventLoop) -> None:
+    """Signal every conversation with indexed pending mail.
+
+    The index is a Core read, so it runs on the history's Core IO lane; the signals are
+    delivered on the owner loop once it lands. Callable from the loop or any thread."""
+
+    def deliver(done: Future[tuple[str, ...]]) -> None:
+        if done.cancelled():
+            return
+        error = done.exception()
+        if error is not None:
+            logger.error("%s error=%r", PENDING_RECHECK_FAILED, error)
+            return
+        if not self._closing:
+            for sid in done.result():
+                self.runner.signal(sid)
+
+    pending = self.history.io.submit(self.history.pending_sessions)
+    pending.add_done_callback(lambda done: loop.call_soon_threadsafe(deliver, done))

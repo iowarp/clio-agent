@@ -21,15 +21,15 @@ for Intel Macs yet; use Web via the service install there.
 ### Desktop from a terminal
 
 The install script installs the desktop app, bundled with its agent, with `--desktop`
-(macOS 14+ and Linux; Windows uses `install.ps1 -Desktop`). No Python, uv or Node is
+(macOS 15+ and Linux; Windows uses `install.ps1 -Desktop`). No Python, uv or Node is
 needed:
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/iowarp/clio-agent/main/install/install.sh | bash -s -- --desktop
+curl -fsSL https://clio.iowarp.ai/desktop.sh | bash
 ```
 
 ```powershell
-& ([scriptblock]::Create((irm https://raw.githubusercontent.com/iowarp/clio-agent/main/install/install.ps1))) -Desktop
+irm https://clio.iowarp.ai/desktop.ps1 | iex
 ```
 
 `--dev` picks the newest release including pre-releases, and `--version <v>` pins one,
@@ -56,7 +56,7 @@ disables security settings or removes quarantine. Invalid checksums/signatures f
 before replacing an installed app.
 
 The macOS CI builds a DMG from source and boots its relocated application and packaged
-backend on macOS 14, 15, and 26. The same checks gate release publication. These checks
+backend on macOS 15 and 26. The same checks gate release publication. These checks
 validate package integrity and startup, separately from Apple notarization.
 
 **Proving a release candidate's desktop lifecycle (Windows).** `scripts/
@@ -77,13 +77,13 @@ Run the install script without `--desktop` / `-Desktop` to install the service,
 the released Web bundle and the `clio` launcher:
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/iowarp/clio-agent/main/install/install.sh | bash
+curl -fsSL https://clio.iowarp.ai/install.sh | bash
 clio web    # open the workspace in your browser
 clio start  # alternatively, run only the service
 ```
 
 ```powershell
-irm https://raw.githubusercontent.com/iowarp/clio-agent/main/install/install.ps1 | iex
+irm https://clio.iowarp.ai/install.ps1 | iex
 clio web
 ```
 
@@ -110,8 +110,9 @@ The default selects the latest published stable release. `--dev` / `-Dev`
 includes pre-releases; `--version <version>` / `-Version <version>` selects one.
 `--source` / `-Source` installs `main`; `--dev --source` / `-Dev -Source`
 installs `develop`; add `--ref <ref>` / `-Ref <ref>` to choose source explicitly.
-Pass shell options after `bash -s --`, and PowerShell options using the
-scriptblock invocation shown for Desktop above. `--desktop` cannot use source mode.
+Pass shell options after `bash -s --`, and PowerShell options with
+`& ([scriptblock]::Create((irm https://clio.iowarp.ai/install.ps1))) -Dev`.
+`--desktop` cannot use source mode.
 
 ## Beta releases
 

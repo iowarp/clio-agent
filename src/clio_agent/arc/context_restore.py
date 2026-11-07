@@ -8,7 +8,8 @@ from typing import Any
 
 import msgspec
 
-from clio_agent.arc.schema import Segment, encode_segments
+from clio_agent.arc.chunk_records import full_body
+from clio_agent.arc.schema import Segment
 
 
 def unanswered_calls(segments: Sequence[Segment]) -> list[tuple[int, Segment]]:
@@ -105,8 +106,9 @@ def restore_folded_context(
         raise ValueError("Recovery segments belong to another session or scope")
     if not segments:
         return False
-    state = store._session(session_id)
-    with state.lock:
+    from clio_agent.arc.fold_sessions import live_session
+
+    with live_session(lambda: store._session(session_id)) as state:
         if scope in state.index.scopes:
             return False
         store._recover_clock(segments)
@@ -138,7 +140,8 @@ def restore_folded_context(
             batch = atoms[start : start + 128]
             for atom in batch:
                 note_atom(index, chunk, atom)
-            records.append(PutRecord(store._record_name(session_id, chunk), encode_segments(batch)))
+            name = store._record_name(session_id, chunk)
+            records.append(PutRecord(name, full_body(batch), offset=0))  # a new chunk record
         # The private staging chunks are not reachable through the current index.
         # Use an independent staging companion. A failed recovery cannot mutate
         # the live writer's active search chunks; successful recovery stays searchable.

@@ -17,7 +17,7 @@ from clio_agent.gact.task_declarations import build_ask_user_tool
 from clio_agent.tools.execution import current_tool_runtime
 from tests.turn_signals import wait_for_terminal_status
 
-pytestmark = pytest.mark.usefixtures("host_agent_executor")
+pytestmark = pytest.mark.usefixtures("host_agent_executor", "no_session_facts")
 
 
 @pytest.mark.parametrize("disposition", [None, "yield"], ids=["default", "explicit-yield"])

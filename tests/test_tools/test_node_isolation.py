@@ -192,3 +192,14 @@ def test_a_tree_copy_counts_the_methods_and_keeps_symlinks(tmp_path: Path) -> No
     assert os.readlink(tmp_path / "dst" / "link") == "d/f.txt"
     # On this Linux host the real FICLONE path either clones or falls back to a copy.
     assert file_clone.clone_or_copy_tree(source, tmp_path / "dst2")["method"] in {"clone", "copy"}
+
+
+def test_a_call_without_an_output_path_does_not_build_the_file_policy(monkeypatch) -> None:
+    """``node_output_refusal`` builds the policy (filesystem-resolved roots) only for outputs."""
+    from clio_agent.tools import file_policy
+
+    def refuse(*_a, **_k):
+        raise AssertionError("the file policy was built for a call with no output path")
+
+    monkeypatch.setattr(file_policy.FileAccessPolicy, "from_env", classmethod(refuse))
+    assert node_output_refusal({"record_id": "R1", "output_path": "  "}) == ""

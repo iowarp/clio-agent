@@ -286,7 +286,7 @@ def build_refresh_provider_models_tool() -> Any:
     from clio_agent.gact.agents.tool_instrumentation import native_tool  # noqa: PLC0415
 
     def refresh_provider_models() -> dict[str, Any]:
-        """Refresh the LM provider model catalogs against each account's REAL
+        """Refresh the LM provider model catalogs against each account's real
         current state (codex's live backend model list, claude_code's maintained
         catalog plus a CLI sign-in check, every configured HTTP backend's live
         models endpoint) and report what changed. Returns

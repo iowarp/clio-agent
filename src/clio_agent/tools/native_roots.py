@@ -15,7 +15,12 @@ from fastmcp_tasks import TasksExtension
 
 from clio_agent import conf
 
-NativeRootKind = Literal["shell", "storage"]
+NativeRootKind = Literal["shell", "storage", "code"]
+#: Docket worker slots per root. A background ``run_code`` script holds its slot for its whole
+#: life, and nothing may bound how many scripts run (taskable run_code CT3), so the code root
+#: has room no person-observed session approaches; a slot is an asyncio task, not a thread.
+_DEFAULT_CONCURRENCY: dict[str, int] = {"shell": 10, "storage": 10, "code": 10_000}
+_ROOT_KINDS: tuple[NativeRootKind, ...] = ("shell", "storage", "code")
 ToolBody = TypeVar("ToolBody", bound=Callable[..., Awaitable[Any]])
 
 
@@ -79,7 +84,7 @@ def _weak_forwarder(body: Callable[..., Awaitable[Any]]) -> Callable[..., Awaita
 
 def resolve_native_root(kind: NativeRootKind) -> NativeRootSettings:
     """Keep native URL/queue/capacity settings and distinct default queue identities."""
-    if kind not in {"shell", "storage"}:
+    if kind not in _DEFAULT_CONCURRENCY:
         raise ValueError("Unknown native root")
     if kind == "shell":
         url = conf.resolve(
@@ -91,10 +96,10 @@ def resolve_native_root(kind: NativeRootKind) -> NativeRootSettings:
         concurrency = conf.resolve(
             "gact.tasks.shell.concurrency",
             env="CLIO_TASKS_SHELL_CONCURRENCY",
-            default=10,
+            default=_DEFAULT_CONCURRENCY["shell"],
             cast=conf.as_int,
         )
-    else:
+    elif kind == "storage":
         url = conf.resolve(
             "gact.tasks.storage.url", env="CLIO_TASKS_STORAGE_URL", default="memory://", cast=str
         )
@@ -104,7 +109,20 @@ def resolve_native_root(kind: NativeRootKind) -> NativeRootSettings:
         concurrency = conf.resolve(
             "gact.tasks.storage.concurrency",
             env="CLIO_TASKS_STORAGE_CONCURRENCY",
-            default=10,
+            default=_DEFAULT_CONCURRENCY["storage"],
+            cast=conf.as_int,
+        )
+    else:
+        url = conf.resolve(
+            "gact.tasks.code.url", env="CLIO_TASKS_CODE_URL", default="memory://", cast=str
+        )
+        queue = conf.resolve(
+            "gact.tasks.code.queue", env="CLIO_TASKS_CODE_QUEUE", default="", cast=str
+        )
+        concurrency = conf.resolve(
+            "gact.tasks.code.concurrency",
+            env="CLIO_TASKS_CODE_CONCURRENCY",
+            default=_DEFAULT_CONCURRENCY["code"],
             cast=conf.as_int,
         )
     if not url or concurrency < 1:
@@ -118,14 +136,13 @@ def resolve_native_root(kind: NativeRootKind) -> NativeRootSettings:
 
 def build_native_roots() -> dict[NativeRootKind, NativeRoot]:
     """Build separate native roots; starting their SDK lifespans remains app-owned."""
-    shell, storage = resolve_native_root("shell"), resolve_native_root("storage")
-    if (shell.url, shell.queue) == (storage.url, storage.queue):
-        raise ValueError("Shell and storage must use independent native queue identities")
-    roots: dict[NativeRootKind, NativeRoot] = {}
-    configured: tuple[tuple[NativeRootKind, NativeRootSettings], ...] = (
-        ("shell", shell),
-        ("storage", storage),
+    configured: tuple[tuple[NativeRootKind, NativeRootSettings], ...] = tuple(
+        (kind, resolve_native_root(kind)) for kind in _ROOT_KINDS
     )
+    identities = {(settings.url, settings.queue) for _, settings in configured}
+    if len(identities) != len(configured):
+        raise ValueError("Native roots must use independent native queue identities")
+    roots: dict[NativeRootKind, NativeRoot] = {}
     for kind, settings in configured:
         server = FastMCP(f"CLIO {kind}", tasks=True, strict_input_validation=True)
         extension = TasksExtension(

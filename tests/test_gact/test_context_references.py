@@ -82,10 +82,10 @@ class _Sessions:
     def get(self, session_id: str) -> SimpleNamespace | None:
         return self._rows.get(session_id)
 
-    def list(self, *, workspace_id: str | None = None) -> list[SimpleNamespace]:
+    def select(self, query: Any) -> list[SimpleNamespace]:
         rows = list(self._rows.values())
-        if workspace_id:
-            rows = [row for row in rows if row.workspace_id == workspace_id]
+        if query.workspace_id:
+            rows = [row for row in rows if row.workspace_id == query.workspace_id]
         return rows
 
 
@@ -1101,7 +1101,15 @@ def test_context_only_busy_steer_idle_redrive_preserves_parts_and_model_text(
         assert started.status_code == 202, started.text
         assert started.json()["task_handle"]
         try:
-            assert agent.entered.wait(timeout=3), diagnostic(session_id)
+            # Wait for the turn's first model input, with no wall-clock budget: a cold
+            # first turn on a loaded runner can take seconds to load its prompts. A turn
+            # that ends without reaching the model fails here at once; a real hang is the
+            # per-test hang guard's (tests/_hang_guard.py dumps every thread's stack).
+            seen_busy = False
+            while not agent.entered.wait(timeout=0.05):
+                busy = app.state.turn_runner.busy(session_id)
+                assert busy or not seen_busy, diagnostic(session_id)
+                seen_busy = seen_busy or busy
             assert len(agent.calls) == 1, "Steering must arrive after the first model input"
             assert app.state.turn_runner.busy(session_id)
             steer = client.post(

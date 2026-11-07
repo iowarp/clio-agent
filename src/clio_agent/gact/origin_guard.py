@@ -200,11 +200,6 @@ class OriginGuardMiddleware:
         self._state = state
 
     async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
-        from clio_agent.gact.html_renderer import is_public_html_renderer
-
-        if is_public_html_renderer(scope):
-            await self._app(scope, receive, send)
-            return
         if scope["type"] not in ("http", "websocket"):
             await self._app(scope, receive, send)
             return

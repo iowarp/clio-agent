@@ -104,7 +104,7 @@ def test_runtime_marker_probe_does_not_fall_back_to_the_host(tmp_path: Path) -> 
 @pytest.mark.parametrize("python_version", [(3, 12), (3, 13), (3, 14)])
 @pytest.mark.parametrize(
     "platform",
-    ["win_amd64", "macosx_14_0_arm64", "manylinux_2_28_x86_64", "manylinux_2_28_aarch64"],
+    ["win_amd64", "macosx_15_0_arm64", "manylinux_2_28_x86_64", "manylinux_2_28_aarch64"],
 )
 def test_locked_storage_dependencies_have_native_wheels(
     package_name: str, python_version: tuple[int, int], platform: str
@@ -113,8 +113,8 @@ def test_locked_storage_dependencies_have_native_wheels(
     lock = tomllib.loads((REPO_ROOT / "uv.lock").read_text(encoding="utf-8"))
     package = next(package for package in lock["package"] if package["name"] == package_name)
     platforms = (
-        mac_platforms(version=(14, 0), arch="arm64")
-        if platform == "macosx_14_0_arm64"
+        mac_platforms(version=(15, 0), arch="arm64")
+        if platform == "macosx_15_0_arm64"
         else [platform]
     )
     supported = set(cpython_tags(python_version, platforms=platforms))
@@ -128,18 +128,18 @@ def test_locked_storage_dependencies_have_native_wheels(
     )
 
 
-def test_locked_rasterio_has_a_bundled_macos_14_wheel() -> None:
-    """The macOS 14 bundle must not compile against a runner-local GDAL install."""
+def test_locked_rasterio_has_a_bundled_macos_15_wheel() -> None:
+    """The macOS 15 bundle must not compile against a runner-local GDAL install."""
     lock = tomllib.loads((REPO_ROOT / "uv.lock").read_text(encoding="utf-8"))
     rasterio = next(package for package in lock["package"] if package["name"] == "rasterio")
-    supported = set(cpython_tags((3, 14), platforms=mac_platforms(version=(14, 0), arch="arm64")))
+    supported = set(cpython_tags((3, 14), platforms=mac_platforms(version=(15, 0), arch="arm64")))
     compatible = []
     for wheel in rasterio["wheels"]:
         filename = unquote(urlparse(wheel["url"]).path.rsplit("/", 1)[-1])
         _, _, _, tags = parse_wheel_filename(filename)
         if supported.intersection(tags):
             compatible.append(filename)
-    assert compatible, f"Rasterio {rasterio['version']} has no Python 3.14/macOS 14 ARM wheel"
+    assert compatible, f"Rasterio {rasterio['version']} has no Python 3.14/macOS 15 ARM wheel"
 
 
 def _code_lines(path: Path) -> list[str]:

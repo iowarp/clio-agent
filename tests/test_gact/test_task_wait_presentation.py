@@ -132,6 +132,29 @@ def test_any_wait_shows_selection_policy_and_each_result() -> None:
     assert shown["blocks"][3]["status"] == "pending"
 
 
+def test_a_child_agents_report_is_its_answer_not_its_run() -> None:
+    """A child's result is its run record; its tab shows the answer, never the JSON.
+
+    SABOTAGE: drop the ``answer`` branch in ``_result_text`` -> the run's JSON -> red."""
+    run = {
+        "selected_expert": "explore",
+        "route_source": "flow:react",
+        "answer": "The folder holds one file, notes.txt.",
+        "tools_called": [{"name": "fs_list_directory", "ok": True}],
+    }
+    shown = wait_presentation(
+        {"tasks": ["child_a"]},
+        {
+            "outcomes": [
+                {"handle": "child_a", "kind": "Session", "status": "completed", "result": run}
+            ]
+        },
+    )
+    report = shown["blocks"][2]
+    assert report["text"] == "The folder holds one file, notes.txt."
+    assert "selected_expert" not in report["text"]
+
+
 def test_wait_surfaces_failed_result_and_collection_error() -> None:
     """A returned receipt must not hide task failure behind a successful call badge."""
     shown = wait_presentation(
@@ -149,3 +172,24 @@ def test_wait_surfaces_failed_result_and_collection_error() -> None:
     assert shown["blocks"][2]["text"] == "Bad input"
     assert shown["blocks"][3]["text"] == "Unknown task handle"
     assert shown["blocks"][3]["severity"] == "error"
+
+
+def test_each_child_report_names_the_child_and_its_model(monkeypatch) -> None:
+    """A wait's per-child block carries the task's label and the model its session ran on,
+    so the UI can show one named tab per child."""
+    from types import SimpleNamespace
+
+    from clio_agent.gact import task_wait_presentation as presentation
+
+    task = SimpleNamespace(label="explore arc", backend=SimpleNamespace(session="sess_child"))
+    child = SimpleNamespace(model={"provider_id": "claude_code", "model_id": "claude-haiku-5-5"})
+    app = SimpleNamespace(
+        state=SimpleNamespace(
+            task_history=SimpleNamespace(task_snapshot=lambda handle: task),
+            sessions=SimpleNamespace(get=lambda sid: child if sid == "sess_child" else None),
+        )
+    )
+    monkeypatch.setattr("clio_agent.gact.context.active_app", lambda: app)
+    assert presentation._child("task_a") == {"title": "explore arc", "model": "claude-haiku-5-5"}
+    monkeypatch.setattr("clio_agent.gact.context.active_app", lambda: None)
+    assert presentation._child("task_a") == {"title": "task_a"}

@@ -71,6 +71,11 @@ RESULT_PATH_KEYS: frozenset[str] = frozenset(
     }
 )
 
+#: Source files of a multi-file document project (a LaTeX paper: its sections, bibliography
+#: and local classes). They are tracked like any output, but keyed by their workspace-relative
+#: path: ``sections/intro.tex`` in two papers, or two papers' ``main.tex``, are different files.
+PROJECT_SOURCE_SUFFIXES: frozenset[str] = frozenset({".tex", ".bib", ".sty", ".cls", ".bst"})
+
 ARTIFACT_SUFFIXES: frozenset[str] = frozenset(
     {
         ".png",
@@ -97,6 +102,7 @@ ARTIFACT_SUFFIXES: frozenset[str] = frozenset(
         ".npy",
         ".npz",
         ".xlsx",
+        *PROJECT_SOURCE_SUFFIXES,
     }
 )
 
@@ -234,12 +240,17 @@ def node_output_refusal(effective_args: Mapping[str, Any]) -> str:
 
     from clio_agent.tools.file_policy import FileAccessPolicy, FilePolicyError  # noqa: PLC0415
 
+    outputs = {
+        key: value
+        for key, value in effective_args.items()
+        if key in OUTPUT_PATH_ARG_NAMES and isinstance(value, str) and value.strip()
+    }
+    if not outputs:
+        return ""  # nothing to check: the policy (filesystem-resolved roots) is not built
     policy = FileAccessPolicy.from_env()
     if not policy.write_roots:
         return ""
-    for key, value in effective_args.items():
-        if key not in OUTPUT_PATH_ARG_NAMES or not isinstance(value, str) or not value.strip():
-            continue
+    for key, value in outputs.items():
         try:
             policy._ensure_writable(Path(value).expanduser().resolve(strict=False), field=key)
         except FilePolicyError as refused:

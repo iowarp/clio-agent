@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import math
 import re
@@ -39,6 +40,15 @@ logger = logging.getLogger(__name__)
 
 def _handles(tasks: str | list[str]) -> tuple[str, ...]:
     values = [tasks] if isinstance(tasks, str) else tasks
+    if isinstance(tasks, str) and tasks.lstrip().startswith("["):
+        # Format-only repair: a handle list a model wrote as one JSON string.
+        try:
+            parsed = json.loads(tasks)
+        except ValueError:
+            parsed = None
+        if isinstance(parsed, list):
+            logger.info("Task handles reason=handle_list_json_string count=%d", len(parsed))
+            values = parsed
     if (
         not isinstance(values, list)
         or not values

@@ -10,6 +10,7 @@ from clio_agent.gact.agents.tool_instrumentation import native_tool
 from clio_agent.gact.permission_gate import _invoke_permission_gate
 from clio_agent.gact.storage.models import CreateSource, SourceConfiguration, SourceRecord
 from clio_agent.gact.storage.setup_tool import session_data_status, setup_presentation
+from clio_agent.tools.tool_settings import self_gated
 
 if TYPE_CHECKING:
     from clio_agent.gact.storage.service import StorageService
@@ -253,36 +254,52 @@ def _index_request(
 
 def build_connected_data_connect_tool() -> Any:
     """Declare source attachment as an effectful, observed native tool."""
-    return native_tool(
-        _native_connect,
-        name="connected_data_connect",
-        desc="Connect and index an approved source folder. Returns an Indexing task handle immediately; files are downloaded only by connected_data_download. Use observe_tasks/wait_tasks or continue independent work; completion wakes an idle agent. cancel_tasks cancels explicitly. Stop leaves accepted indexing running. Existing links return their status; a sign-in requirement returns its connection status directly.",
-        args={
-            "provider": {"type": "string", "description": "Provider reported by source status."},
-            "root": {"type": "string", "description": "Requested folder or repository location."},
-            "label": {"type": "string", "description": "User-facing name for this source."},
-            "mode": {"type": "string", "description": "read_only, working_copy or write_enabled."},
-            "configuration": {
-                "anyOf": [
-                    SourceConfiguration.model_json_schema(),
-                    {
-                        "type": "object",
-                        "properties": {
-                            "endpoint_id": {"type": "string"},
-                            "resource_ids": {"type": "array", "items": {"type": "string"}},
+    return self_gated(
+        native_tool(
+            _native_connect,
+            name="connected_data_connect",
+            desc=(
+                "Connect and index an approved source folder. Returns an Indexing task handle "
+                "immediately (the task-protocol skill covers handles); files are downloaded "
+                "only by connected_data_download. Existing links return their status; a "
+                "sign-in requirement returns its connection status directly."
+            ),
+            args={
+                "provider": {
+                    "type": "string",
+                    "description": "Provider reported by source status.",
+                },
+                "root": {
+                    "type": "string",
+                    "description": "Requested folder or repository location.",
+                },
+                "label": {"type": "string", "description": "User-facing name for this source."},
+                "mode": {
+                    "type": "string",
+                    "description": "read_only, working_copy or write_enabled.",
+                },
+                "configuration": {
+                    "anyOf": [
+                        SourceConfiguration.model_json_schema(),
+                        {
+                            "type": "object",
+                            "properties": {
+                                "endpoint_id": {"type": "string"},
+                                "resource_ids": {"type": "array", "items": {"type": "string"}},
+                            },
+                            "required": ["endpoint_id", "resource_ids"],
+                            "additionalProperties": False,
                         },
-                        "required": ["endpoint_id", "resource_ids"],
-                        "additionalProperties": False,
-                    },
-                    {"type": "null"},
-                ],
-                "description": "Nonsecret provider settings. For NDP use discovered endpoint_id and selected resource_ids; public resources require no sign-in.",
+                        {"type": "null"},
+                    ],
+                    "description": "Nonsecret provider settings. For NDP use discovered endpoint_id and selected resource_ids; public resources require no sign-in.",
+                },
             },
-        },
-        presentation=setup_presentation,
-        title="Connect source",
-        domain="resources",
-        read_only=False,
+            presentation=setup_presentation,
+            title="Connect source",
+            domain="resources",
+            read_only=False,
+        )
     )
 
 
@@ -316,13 +333,15 @@ def build_connected_data_index_tool() -> Any:
 
         return await submit_native_tool("connected_data_index", {"source_id": source_id})
 
-    return native_tool(
-        index,
-        name="connected_data_index",
-        desc="Refresh a connected folder's index and immediately receive an Indexing handle. Continue work or wait_tasks; Stop leaves it running. Failure or cancellation retains the previous manifest.",
-        args={"source_id": {"type": "string"}},
-        presentation=setup_presentation,
-        title="Refresh folder index",
-        domain="resources",
-        read_only=False,
+    return self_gated(
+        native_tool(
+            index,
+            name="connected_data_index",
+            desc="Refresh a connected folder's index and immediately receive an Indexing handle. Continue work or wait_tasks; Stop leaves it running. Failure or cancellation retains the previous manifest.",
+            args={"source_id": {"type": "string"}},
+            presentation=setup_presentation,
+            title="Refresh folder index",
+            domain="resources",
+            read_only=False,
+        )
     )

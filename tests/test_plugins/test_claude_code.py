@@ -93,17 +93,20 @@ def test_agents_map_tools_and_model_preference(tmp_path: Path) -> None:
         },
     )
     record = import_claude_plugin(root)
-    [reviewer] = record.subagents
-    assert reviewer.tools == ("fs_read_file", "fs_list_directory", "fs_search_text")
+    notebook, reviewer = record.subagents
+    assert reviewer.tools == ("fs_read_file", "fs_glob", "fs_search_text")
     assert reviewer.plugins == ("clio-agents", "workspace")
     assert reviewer.prefers == {"model": "claude-sonnet-5"}
-    [error] = record.errors
-    assert error.code == "tool_unmapped" and "NotebookEdit" in error.message
-    # Glob and Grep map onto CLIO's bounded inspection tools, which do not carry their
-    # full behavior: the import says so with a typed warning, never silently.
+    # An unmapped tool leaves only itself out, with a typed warning (PC4); core's tools stay.
+    assert notebook.id == "notebook" and notebook.tools == ()
+    assert not record.errors
+    [unmapped] = [d for d in record.diagnostics if d.code == "tool_unmapped"]
+    assert unmapped.severity == "warning" and "NotebookEdit" in unmapped.message
+    # Glob maps onto fs_glob whole; Grep's multiline mode has no counterpart, and the
+    # import says so with a typed warning, never silently.
     [lossy] = [d for d in record.diagnostics if d.code == "tool_mapped_lossy"]
     assert lossy.severity == "warning" and "reviewer" in lossy.message
-    assert "Glob" in lossy.message and "Grep" in lossy.message
+    assert "Grep" in lossy.message and "Glob" not in lossy.message
 
 
 def test_lossy_hook_matcher_is_reported(tmp_path: Path) -> None:
@@ -239,3 +242,77 @@ def test_a_skill_a_folder_of_skills_and_one_claude_plugin_each_install(tmp_path:
         if r.marketplace in ("one-skill", "bundle", "solo")
     }
     assert skills == {"one-skill": ["one-skill"], "bundle": ["a"], "solo": ["b"]}
+
+
+def test_a_package_with_a_library_manifest_and_a_claude_form_loads_the_claude_form(
+    tmp_path: Path,
+) -> None:
+    """A root Clio Coder library ``plugin.json`` beside ``.claude-plugin/`` (PC1)."""
+
+    from clio_agent.plugins.marketplace import detect_format, read_marketplace
+
+    root = tmp_path / "wtfp"
+    library = {"name": "wtfp", "extensions": {"ai.iowarp.clio": {"manifestVersion": 1}}}
+    write(root / "plugin.json", json.dumps(library))
+    write(root / ".claude-plugin" / "plugin.json", '{"name": "wtfp"}')
+    write(root / "commands" / "new-paper.md", "Start a paper.")
+    write(root / "skills" / "plan" / "SKILL.md", "---\nname: plan\ndescription: Plan.\n---\nB")
+    assert detect_format(root) == "claude-code-plugin"
+    (record,) = read_marketplace(root, trusted=False).plugins
+    assert record.format == "claude-code"
+    assert [c.id for c in record.commands] == ["new-paper"]
+    assert "plugin_dialect_skipped" in {d.code for d in record.diagnostics}
+    # A native plugin.json (no library dialect) still wins.
+    write(root / "plugin.json", '{"name": "wtfp", "version": "1.0.0"}')
+    assert detect_format(root) == "plugin"
+
+
+def test_an_agents_skills_are_preloaded_into_its_prompt(tmp_path: Path) -> None:
+    """``skills:`` injects each skill's text, as Claude Code does; an unknown one is named."""
+
+    root = _claude_plugin(
+        tmp_path,
+        "paper",
+        {"version": "1.0.0"},
+        {
+            "skills/write-section/SKILL.md": "---\nname: write-section\ndescription: W.\n---\nDraft from the plan.\n",
+            "agents/writer.md": (
+                "---\nname: writer\ntools: Read\nskills:\n  - paper:write-section\n  - other:thing\n"
+                "---\nYou write sections.\n"
+            ),
+        },
+    )
+    record = import_claude_plugin(root)
+    (writer,) = record.subagents
+    assert writer.prompt.startswith("You write sections.\n\n# Skill: write-section\n")
+    assert "Draft from the plan." in writer.prompt
+    [missing] = [d for d in record.diagnostics if d.code == "skill_unmapped"]
+    assert missing.severity == "warning" and "other:thing" in missing.message
+
+
+def test_unmapped_parts_are_named_and_injections_are_read_like_any_plugin(tmp_path: Path) -> None:
+    """PC5: ``output-styles/`` is reported; ``ai.iowarp.clio/injections`` loads for either format."""
+
+    from clio_agent.injections.check import injection_diagnostics
+    from clio_agent.injections.plugin_set import _read
+
+    root = _claude_plugin(
+        tmp_path,
+        "paper",
+        {"version": "1.0.0", "lspServers": {"tex": {}}},
+        {
+            "output-styles/terse.md": "Be terse.",
+            "ai.iowarp.clio/injections/remind.md": (
+                "---\nevent: turn_start\n---\nKeep sections in paper/.\n"
+            ),
+        },
+    )
+    record = import_claude_plugin(root)
+    unmapped = sorted(d.message for d in record.diagnostics if d.code == "component_unmapped")
+    assert unmapped == [
+        "lspServers (language servers) has no CLIO equivalent and does not load",
+        "output-styles/ (output styles) has no CLIO equivalent and does not load",
+    ]
+    assert injection_diagnostics(record) == []
+    (injection,) = _read(record.root, record.id, record.text_digest)
+    assert injection.event == "turn_start" and "Keep sections" in injection.text

@@ -19,6 +19,7 @@ from clio_agent.gact.runtime.session_recall_search import (
     _recall_search_response,
     _recall_search_terms,
 )
+from clio_agent.gact.session_records import PageQuery
 from clio_agent.gact.side_sessions import is_read_only_side_session
 
 SEARCH_AGENT = "clio/clio-search"
@@ -116,7 +117,9 @@ async def search_connected_service(
     limitations: list[dict[str, Any]] = []
     needle = query.casefold()
     if kind in {"all", "sessions"}:
-        for session in app.state.sessions.list(workspace_id=workspace_id or None):
+        # The index matches the titles; only the matching rows are read, off the loop.
+        titled = PageQuery(workspace_id=workspace_id or None, archived=None, search=query)
+        for session in await asyncio.to_thread(app.state.sessions.select, titled):
             if session.metadata.get("search_session") or session.metadata.get("side_session"):
                 continue
             if needle in session.title.casefold():
@@ -139,8 +142,10 @@ async def search_connected_service(
             include_cross_session=True,
             limit=100,
         )
+        found = PageQuery(archived=None, ids=frozenset(hit.session_id for hit in response.hits))
+        sessions = {s.id: s for s in await asyncio.to_thread(app.state.sessions.select, found)}
         for hit in response.hits:
-            session = app.state.sessions.get(hit.session_id)
+            session = sessions.get(hit.session_id)
             if (
                 session
                 and not session.metadata.get("search_session")

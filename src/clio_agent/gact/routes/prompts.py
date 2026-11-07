@@ -40,7 +40,8 @@ from fastapi import FastAPI, HTTPException, Request
 
 from clio_agent.gact.routes._body import json_body
 from clio_agent.gact.types import ErrorEnvelope, ErrorInfo
-from clio_agent.prompts import parse_prompt_text
+from clio_agent.injections.listing import with_plugin_reminders
+from clio_agent.prompts import REMINDER_PREFIX, parse_prompt_text
 
 if TYPE_CHECKING:
     from clio_agent.gact.routes.deps import GactDeps
@@ -71,7 +72,7 @@ def register_prompts_routes(app: FastAPI, deps: "GactDeps") -> None:
             session_id=session_id or "",
             workspace_id=workspace_id or "",
         )
-        rows = registry.list()
+        rows = with_plugin_reminders(registry, app).list()
         payload: dict[str, Any] = {
             "prompts": [asdict(row) for row in rows],
             "sources": [
@@ -91,7 +92,7 @@ def register_prompts_routes(app: FastAPI, deps: "GactDeps") -> None:
             session_id=session_id or "",
             workspace_id=workspace_id or "",
         )
-        resolved = registry.resolve(prompt_id, profile=profile)
+        resolved = with_plugin_reminders(registry, app).resolve(prompt_id, profile=profile)
         if resolved is None:
             raise HTTPException(
                 status_code=404,
@@ -192,7 +193,9 @@ def register_prompts_routes(app: FastAPI, deps: "GactDeps") -> None:
     async def save_prompt(prompt_id: str, request: Request) -> dict[str, Any]:
         body = await json_body(request, route="PUT /v1/prompts/{prompt_id}")
         text = str(body.get("text") or "")
-        if not text.strip():
+        # A reminder may be saved with settings only (its switch, x_param_*): its text then
+        # stays the shipped one, as it does when the shipped text is sent back unchanged.
+        if not text.strip() and not prompt_id.startswith(REMINDER_PREFIX):
             raise HTTPException(
                 status_code=422,
                 detail=ErrorEnvelope(
@@ -213,7 +216,7 @@ def register_prompts_routes(app: FastAPI, deps: "GactDeps") -> None:
                 workspace_id=workspace_id,
                 write_scope=scope,
             )
-            row = registry.save(
+            row = with_plugin_reminders(registry, app).save(
                 prompt_id,
                 text=text,
                 profile=str(body.get("profile") or "default"),

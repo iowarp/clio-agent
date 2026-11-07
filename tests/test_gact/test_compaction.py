@@ -22,6 +22,11 @@ from clio_agent.gact.context_rollback import rolled_back_compactions
 from clio_agent.gact.conversation_projection import model_context_messages
 from clio_agent.gact.summarization_record import as_summarization
 from clio_agent.gact.types import Message, Part, Tokens
+from tests._compaction_summary import (
+    auto_guard,
+    keep_open_request_only,
+    summary_lm,
+)
 
 from .test_post_messages import _create_session
 
@@ -71,7 +76,11 @@ class _CapturingAgent:
         self.prompts: list[str] = []
         self._summaries = list(summaries or [])
 
-    def _run_chat_agent(self, question: str, _session_id: str) -> str:
+    @property
+    def _main_lm(self) -> Any:
+        return summary_lm(self.checkpoint)
+
+    def checkpoint(self, question: str) -> str:
         self.prompts.append(question)
         return self._summaries.pop(0) if self._summaries else "a summary"
 
@@ -227,7 +236,7 @@ def test_auto_trigger_uses_durable_usage_when_new_lm_binding_has_no_history(
     import clio_agent.gact.context as gact_context
     import clio_agent.gact.runtime.context_tokens as context_tokens
     from clio_agent.gact import context as _ctx
-    from clio_agent.gact.compaction import AutoCompactionGuard, maybe_autocompact
+    from clio_agent.gact.compaction import maybe_autocompact
 
     agent = _CapturingAgent(["durable usage summary"])
     app = build_app(sessions_path=tmp_path / "s.json", agent=agent)
@@ -244,7 +253,7 @@ def test_auto_trigger_uses_durable_usage_when_new_lm_binding_has_no_history(
 
         token = _ctx.set_app(app)
         try:
-            maybe_autocompact(AutoCompactionGuard())
+            maybe_autocompact(auto_guard())
         finally:
             _ctx.reset(token)
 
@@ -262,7 +271,7 @@ def test_a_measured_count_wins_over_the_previous_turns_usage(
     import clio_agent.gact.context as gact_context
     import clio_agent.gact.runtime.context_tokens as context_tokens
     from clio_agent.gact import context as _ctx
-    from clio_agent.gact.compaction import AutoCompactionGuard, maybe_autocompact
+    from clio_agent.gact.compaction import maybe_autocompact
 
     agent = _CapturingAgent()
     app = build_app(sessions_path=tmp_path / "s.json", agent=agent)
@@ -278,7 +287,7 @@ def test_a_measured_count_wins_over_the_previous_turns_usage(
 
         token = _ctx.set_app(app)
         try:
-            maybe_autocompact(AutoCompactionGuard())
+            maybe_autocompact(auto_guard())
         finally:
             _ctx.reset(token)
 
@@ -294,7 +303,6 @@ def test_maybe_autocompact_skips_typed_with_no_active_app(
     from clio_agent.gact.agents import clio_react_record
     from clio_agent.gact.compaction import (
         AUDIT_AUTO_SKIPPED,
-        AutoCompactionGuard,
         maybe_autocompact,
     )
 
@@ -305,7 +313,7 @@ def test_maybe_autocompact_skips_typed_with_no_active_app(
     monkeypatch.setattr(clio_react_record, "arc_scope", lambda: (object(), "sess-no-app", "scope"))
 
     assert _ctx.active_app() is None
-    maybe_autocompact(AutoCompactionGuard())
+    maybe_autocompact(auto_guard())
 
     skipped = [f for stage, f in audits if stage == AUDIT_AUTO_SKIPPED]
     assert skipped and skipped[-1]["reason"] == "no_active_app"
@@ -446,7 +454,7 @@ def test_compaction_summarizes_the_scopes_own_steps(
     import clio_agent.gact.context as gact_context
     import clio_agent.gact.runtime.context_tokens as context_tokens
     from clio_agent.gact import context as _ctx
-    from clio_agent.gact.compaction import AutoCompactionGuard, maybe_autocompact
+    from clio_agent.gact.compaction import maybe_autocompact
 
     agent = _CapturingAgent(["mid-turn summary"])
     app = build_app(sessions_path=tmp_path / "s.json", agent=agent)
@@ -467,7 +475,7 @@ def test_compaction_summarizes_the_scopes_own_steps(
 
         token = _ctx.set_app(app)
         try:
-            maybe_autocompact(AutoCompactionGuard())
+            maybe_autocompact(auto_guard())
         finally:
             _ctx.reset(token)
 
@@ -476,3 +484,9 @@ def test_compaction_summarizes_the_scopes_own_steps(
         live = arc.render_working_set(sid, _SCOPE)
         assert [s.kind for s in live] == ["summary"]
         assert live[0].content["text"].startswith("mid-turn summary")
+
+
+@pytest.fixture(autouse=True)
+def _open_request_only(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The keep rule these mechanics tests were written for (see the helper)."""
+    keep_open_request_only(monkeypatch)

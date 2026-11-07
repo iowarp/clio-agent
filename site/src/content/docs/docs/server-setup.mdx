@@ -39,7 +39,7 @@ The script installs the CLIO service, a Web UI bundle, and the `clio` command. I
 <TabItem label="macOS and Linux">
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/iowarp/clio-agent/main/install/install.sh | bash
+curl -fsSL https://clio.iowarp.ai/install.sh | bash
 ```
 
 Run it under `bash`, not `sh`. Unpacking the web bundle needs `unzip`. If that step fails, the installer warns and `clio --web` is disabled.
@@ -48,7 +48,7 @@ Run it under `bash`, not `sh`. Unpacking the web bundle needs `unzip`. If that s
 <TabItem label="Windows">
 
 ```powershell
-irm https://raw.githubusercontent.com/iowarp/clio-agent/main/install/install.ps1 | iex
+irm https://clio.iowarp.ai/install.ps1 | iex
 ```
 
 </TabItem>
@@ -80,14 +80,14 @@ Pass options after `bash -s --`, or on Windows with the scriptblock form:
 <TabItem label="macOS and Linux">
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/iowarp/clio-agent/main/install/install.sh | bash -s -- --dev
+curl -fsSL https://clio.iowarp.ai/install.sh | bash -s -- --dev
 ```
 
 </TabItem>
 <TabItem label="Windows">
 
 ```powershell
-& ([scriptblock]::Create((irm https://raw.githubusercontent.com/iowarp/clio-agent/main/install/install.ps1))) -Dev
+& ([scriptblock]::Create((irm https://clio.iowarp.ai/install.ps1))) -Dev
 ```
 
 PowerShell also accepts `-Source`, `-Version`, `-Ref` and `-Desktop`.

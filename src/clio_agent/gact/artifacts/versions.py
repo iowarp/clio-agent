@@ -334,19 +334,22 @@ def emit_version_added(
     version: ArtifactVersion,
     turn_id: str = "",
     trace_id: str = "",
+    event_id: str = "",
 ) -> None:
     """Emit the durable ``artifact.version.added`` event for a v2+ revision.
 
     The sole emitter of the version-added event; carries the ``wasRevisionOf`` edge
     and any custody-gap / kind-warning markers. Guarded — a wire emit must never
-    break a live mint.
+    break a live mint. ``event_id`` is the id the registry wrote the version under
+    (its index record is pending on it): the event must carry that id, or the record's
+    pending mark is never confirmed and the version is later undone as an orphan.
     """
     try:
         from clio_agent.gact.artifacts.registry import ARTIFACT_VERSION_ADDED_EVENT  # noqa: PLC0415
         from clio_agent.gact.runtime.globals import _emit_semantic_event  # noqa: PLC0415
         from clio_agent.gact.semantic_events import _event_id  # noqa: PLC0415
 
-        event_id = _event_id()
+        event_id = event_id or _event_id()
         payload = version_record_payload(event_id, workspace_id, name, version, revision_edge=True)
         summary = f"Artifact {name} v{version.version} added"
         if version.prior_version is not None:

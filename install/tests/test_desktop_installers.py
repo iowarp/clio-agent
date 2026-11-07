@@ -105,6 +105,8 @@ function Invoke-WebRequest {{
     else {{ return @{{Content = (Get-Content -Raw -LiteralPath {quote(manifest)})}} }}
 }}
 function Start-Process {{ throw 'DownloadOnly must never start setup' }}
+# Downloads use curl.exe when Windows has it; hide it so the stub above serves them.
+$env:PATH = (($env:PATH -split ';') | Where-Object {{ $_ -and -not (Test-Path (Join-Path $_ 'curl.exe')) }}) -join ';'
 & {quote(ROOT / "install/install.ps1")} -Desktop -Version '{version}' -DownloadOnly {quote(output)}
 exit $LASTEXITCODE
 """,
@@ -121,7 +123,7 @@ exit $LASTEXITCODE
             + "; fi",
             "dpkg": "exit 0",
             "sysctl": "echo 1",
-            "sw_vers": "echo 14.0",
+            "sw_vers": "echo 15.0",
             "curl": """out=""; url=""
 while [ "$#" -gt 0 ]; do
   case "$1" in
@@ -251,7 +253,7 @@ def test_intel_mac_desktop_is_refused_before_any_download(tmp_path: Path) -> Non
     for name, contents in {
         "uname": 'if [ "$1" = -s ]; then echo Darwin; else echo x86_64; fi',
         "sysctl": "echo 0",
-        "sw_vers": "echo 14.0",
+        "sw_vers": "echo 15.0",
         "curl": "echo 'nothing may be downloaded' >&2; exit 99",
     }.items():
         path = bin_dir / name
@@ -267,6 +269,33 @@ def test_intel_mac_desktop_is_refused_before_any_download(tmp_path: Path) -> Non
     )
     assert result.returncode != 0
     assert "not available for Intel Macs" in result.stdout + result.stderr
+    assert "nothing may be downloaded" not in result.stderr
+
+
+@pytest.mark.skipif(os.name == "nt", reason="install.sh runs on macOS and Linux")
+def test_macos_14_desktop_is_refused_before_any_download(tmp_path: Path) -> None:
+    """macOS 15 is the floor (iowarp-core 2.4 ships macOS 15 wheels): say so, fetch nothing."""
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    for name, contents in {
+        "uname": 'if [ "$1" = -s ]; then echo Darwin; else echo arm64; fi',
+        "sysctl": "echo 1",
+        "sw_vers": "echo 14.7",
+        "curl": "echo 'nothing may be downloaded' >&2; exit 99",
+    }.items():
+        path = bin_dir / name
+        path.write_text("#!/bin/bash\nset -eu\n" + contents + "\n")
+        path.chmod(0o755)
+    env = dict(os.environ, PATH=f"{bin_dir}:{os.environ['PATH']}", CLIO_VERSION="0.9.4.24")
+    result = subprocess.run(
+        ["bash", str(ROOT / "install/install.sh"), "--desktop"],
+        env=env,
+        text=True,
+        capture_output=True,
+        timeout=30,
+    )
+    assert result.returncode != 0
+    assert "requires macOS 15 or newer" in result.stdout + result.stderr
     assert "nothing may be downloaded" not in result.stderr
 
 

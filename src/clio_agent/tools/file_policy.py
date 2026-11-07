@@ -16,7 +16,6 @@ import json
 import os
 import re
 import sys
-import tempfile
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
@@ -58,9 +57,11 @@ def _default_allowed_roots() -> tuple[Path, ...]:
     allowed roots'. Defer evaluation so each FileAccessPolicy instance
     sees the current cwd at the moment it's constructed. The temp root is
     the platform temp dir (a literal ``/tmp`` resolved to ``<drive>:\\tmp``
-    on Windows — issue #765).
+    on Windows — issue #765), unless ``paths.allow_system_temp`` is off (TD56).
     """
-    return (Path.cwd(), Path(tempfile.gettempdir()))
+    from clio_agent.runtime.session_scratch import system_temp_roots  # noqa: PLC0415
+
+    return (Path.cwd(), *system_temp_roots())
 
 
 def _active_workspace_root() -> Path | None:
@@ -114,8 +115,20 @@ def _granted_roots_for(workspace: Path | None) -> tuple[Path, ...]:
         return ()
 
 
+def _active_scratch_root() -> Path | None:
+    """The active session's own scratch folder (TD56), ``None`` off-session or on failure."""
+    try:
+        from clio_agent.runtime.session_scratch import active_scratch_dir  # noqa: PLC0415
+
+        return active_scratch_dir()
+    except OSError as exc:  # resolving the folder's path failed: no scratch root
+        trace.event("FILE-POLICY", "session_scratch_root_unavailable error=%r", exc)
+        return None
+
+
 def _with_active_workspace(resolved: list[Path]) -> tuple[Path, ...]:
-    """Prepend the active workspace root + its recorded root grants (deduped) when bound."""
+    """Prepend the active workspace root, its recorded root grants and the session's
+    scratch folder (deduped) when bound."""
     workspace = _active_workspace_root()
     extra: list[Path] = []
     if workspace is not None and workspace not in resolved:
@@ -132,6 +145,9 @@ def _with_active_workspace(resolved: list[Path]) -> tuple[Path, ...]:
     for granted in _granted_roots_for(workspace):
         if granted not in resolved and granted not in extra:
             extra.append(granted)
+    scratch = _active_scratch_root()
+    if scratch is not None and scratch not in resolved and scratch not in extra:
+        extra.append(scratch)
     if extra:
         return (*extra, *resolved)
     return tuple(resolved)
@@ -262,9 +278,17 @@ class FileAccessPolicy:
             "write_mode": "explicit output paths under allowed roots",
         }
 
-    def validate_read(self, filepath: str, *, field: str = "filepath") -> Path:
-        """Validate a read-only file path and return its resolved path."""
-        resolved = self._validate_read_location(filepath, field=field)
+    def validate_read(
+        self, path: str, *, field: str = "path", loads_whole_file: bool = False
+    ) -> Path:
+        """Validate a read-only file path and return its resolved path.
+
+        ``max_file_size_bytes`` guards memory, so it applies only to a caller that
+        loads the whole file (``loads_whole_file=True``: an edit, a diff capture, an
+        image or document viewer). A reader that streams the file (ranged reads,
+        search) holds only what it returns and may read a file of any size.
+        """
+        resolved = self._validate_read_location(path, field=field)
         if not resolved.is_file():
             raise self._error(
                 code="not_a_file",
@@ -273,14 +297,24 @@ class FileAccessPolicy:
                 path=str(resolved),
                 next_action="Provide a regular file path.",
             )
+        if not loads_whole_file:
+            return resolved
         size = resolved.stat().st_size
         if size > self.max_file_size_bytes:
             raise self._error(
                 code="file_too_large",
-                message=f"File size {size} exceeds policy limit {self.max_file_size_bytes}: {resolved}",
+                message=(
+                    f"File size {size} exceeds the limit {self.max_file_size_bytes} for "
+                    f"loading a whole file into memory: {resolved}"
+                ),
                 field=field,
                 path=str(resolved),
-                next_action="Raise CLIO_MAX_FILE_SIZE_BYTES or use a smaller file sample.",
+                next_action=(
+                    "fs_read_file reads any part of it (offset and limit) and fs_search "
+                    "searches it; neither has this limit. To change or convert it, stream it "
+                    "with a script through the shell. An operator can raise "
+                    "tools.file_policy.max_file_size_bytes (CLIO_MAX_FILE_SIZE_BYTES)."
+                ),
                 details={"size_bytes": size, "max_file_size_bytes": self.max_file_size_bytes},
             )
         return resolved
@@ -298,9 +332,9 @@ class FileAccessPolicy:
             )
         return resolved
 
-    def _validate_read_location(self, filepath: str, *, field: str) -> Path:
+    def _validate_read_location(self, path: str, *, field: str) -> Path:
         """Resolve one approved existing read target before checking its entry type."""
-        raw_path = _coerce_path(filepath, field=field)
+        raw_path = _coerce_path(path, field=field)
         self._check_connected_storage(raw_path, field=field)
         if not self.allow_symlinks and _has_symlink(raw_path):
             raise self._error(
@@ -348,13 +382,13 @@ class FileAccessPolicy:
 
     def validate_write(
         self,
-        filepath: str,
+        path: str,
         *,
         field: str = "output_path",
         create_parent: bool = False,
     ) -> Path:
         """Validate an explicit output path and return its resolved path."""
-        raw_path = _coerce_path(filepath, field=field)
+        raw_path = _coerce_path(path, field=field)
         self._check_connected_storage(raw_path, field=field, write=True)
         parent = raw_path.parent
         if not self.allow_symlinks and (_has_symlink(parent) or raw_path.is_symlink()):
@@ -446,20 +480,26 @@ class FileAccessPolicy:
         )
 
 
-def validate_read_path(filepath: str, *, field: str = "filepath") -> Path:
-    """Validate a read path with policy loaded from the environment."""
-    return FileAccessPolicy.from_env().validate_read(filepath, field=field)
+def validate_read_path(path: str, *, field: str = "path", loads_whole_file: bool = False) -> Path:
+    """Validate a read path with policy loaded from the environment.
+
+    Pass ``loads_whole_file=True`` when the caller holds the whole file in memory
+    (see :meth:`FileAccessPolicy.validate_read`).
+    """
+    return FileAccessPolicy.from_env().validate_read(
+        path, field=field, loads_whole_file=loads_whole_file
+    )
 
 
 def validate_write_path(
-    filepath: str,
+    path: str,
     *,
     field: str = "output_path",
     create_parent: bool = False,
 ) -> Path:
     """Validate a write path with policy loaded from the environment."""
     return FileAccessPolicy.from_env().validate_write(
-        filepath,
+        path,
         field=field,
         create_parent=create_parent,
     )
@@ -511,16 +551,16 @@ def validate_non_empty_string(value: str, *, field: str) -> None:
     )
 
 
-def _coerce_path(filepath: str, *, field: str) -> Path:
-    if not isinstance(filepath, str) or not filepath.strip():
+def _coerce_path(raw: str, *, field: str) -> Path:
+    if not isinstance(raw, str) or not raw.strip():
         raise FilePolicyError(
             code="invalid_argument",
             message=f"{field} must be a non-empty string path.",
             field=field,
             next_action=f"Provide a non-empty {field}.",
-            details={"received": filepath},
+            details={"received": raw},
         )
-    path = Path(filepath).expanduser()
+    path = Path(raw).expanduser()
     if not path.is_absolute():
         # Pin a relative fs_read/fs_write/fs_edit path to the active session's
         # workspace root (when a tool call has one bound) rather than the OS

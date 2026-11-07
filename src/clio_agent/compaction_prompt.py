@@ -1,30 +1,21 @@
-"""The compaction summarizer prompt: a Markdown template file researchers can swap.
+"""The compaction prompt: part of CLIO core, next to the compaction code.
 
-The prompt the summarizer LM gets is read from ``compaction.prompt_file``
-(``CLIO_COMPACTION_PROMPT_FILE``) at EVERY compaction, so an edit applies without a
-restart. Unset, it is the packaged default ``prompt_packs/builtin/compaction.md``.
-
-The template is formatted with exactly three placeholders:
-
-* ``{transcript}`` (required) -- what the summary replaces, one line per message part;
-* ``{focus}`` -- ``""``, or a paragraph ``"\\n\\nFocus the summary on: <text>"`` when the
-  user asked for a focus (manual compaction);
-* ``{files}`` -- ``""``, or the block ``"\\n\\n--- attached session files ---\\n...\\n---
-  end files ---"`` listing the session's attached files.
-
-``{focus}`` and ``{files}`` carry their own leading blank line, so a template that puts
-them right after the rules renders no empty section. Any other ``{...}`` is an error;
-write a literal brace as ``{{`` or ``}}``. A configured file that is missing,
-unreadable or invalid is a typed :class:`CompactionPromptError` naming the path and
-the problem -- never a fallback to the packaged default.
+The rendered prompt is the last user message of a request that is otherwise the agent's
+own context (:mod:`clio_agent.gact.compaction_summarizer`), so the model already sees
+the history it replaces; the template (``gact/compaction_prompt.md``) only says what to
+write. Placeholders: ``{{focus}}`` (``""`` or ``"\n\nFocus the summary on: <text>"``,
+manual compaction), ``{{files}}`` (``""`` or the attached-file block) and ``{{kept}}``
+(what comes back verbatim, from the configured ``compaction.keep.*`` policy:
+:func:`~clio_agent.gact.compaction_policy.kept_verbatim`). The former
+``compaction.prompt_file`` key is gone: a value still set for it fails the compaction
+typed, so an old override is never ignored silently.
 """
 
 from __future__ import annotations
 
-import string
-from importlib import resources
+import re
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from clio_agent import conf
 from clio_agent.errors import ClioError
@@ -34,129 +25,99 @@ if TYPE_CHECKING:
 
 __all__ = [
     "PLACEHOLDERS",
+    "PROMPT_ID",
     "CompactionPromptError",
-    "configured_prompt_path",
     "load_prompt_template",
     "probe_compaction_prompt",
     "render_compaction_prompt",
 ]
 
-#: The placeholders a template may use (``transcript`` is required).
-PLACEHOLDERS = frozenset({"transcript", "focus", "files"})
+#: The prompt's name in errors and the doctor row.
+PROMPT_ID = "clio.compaction"
+_TEMPLATE = Path(__file__).parent / "gact" / "compaction_prompt.md"
+#: The placeholders the template may use.
+PLACEHOLDERS = frozenset({"focus", "files", "kept"})
+_PLACEHOLDER = re.compile(r"\{\{\s*([^{}]*?)\s*\}\}")
+#: The removed setting; still set, it is reported, never ignored.
+_REMOVED_KEY, _REMOVED_ENV = "compaction.prompt_file", "CLIO_COMPACTION_PROMPT_FILE"
 
 
 class CompactionPromptError(ClioError):
-    """The compaction prompt file cannot be used (missing, unreadable or invalid)."""
+    """The compaction prompt cannot be used (missing, invalid, or set the removed way)."""
 
     reason = "compaction_prompt_invalid"
 
-    def __init__(self, path: Path, problem: str) -> None:
-        self.path = path
+    def __init__(self, scope: str, problem: str) -> None:
+        self.scope = scope
         self.problem = problem
         super().__init__(
-            f"the compaction prompt file {path} cannot be used: {problem}",
+            f"the compaction prompt {PROMPT_ID} ({scope}) cannot be used: {problem}",
             error_type=self.reason,
-            details={"path": str(path), "problem": problem},
+            details={"prompt_id": PROMPT_ID, "scope": scope, "problem": problem},
         )
 
 
-def _packaged_default() -> Path:
-    return Path(str(resources.files("clio_agent.prompt_packs.builtin") / "compaction.md"))
+def _removed_setting() -> str:
+    value = conf.resolve(_REMOVED_KEY, env=_REMOVED_ENV, default="", cast=conf.as_str)
+    return value.strip()
 
 
-def configured_prompt_path() -> tuple[Path, str]:
-    """``(path, source)``: the configured prompt file, or the packaged default."""
-    value = conf.resolve(
-        "compaction.prompt_file",
-        env="CLIO_COMPACTION_PROMPT_FILE",
-        default="",
-        cast=conf.as_str,
-    )
-    if value.strip():
-        return Path(value.strip()).expanduser(), "compaction.prompt_file"
-    return _packaged_default(), "packaged default"
-
-
-def _validate(path: Path, template: str) -> None:
-    try:
-        parsed = list(string.Formatter().parse(template))
-    except ValueError as exc:  # unbalanced braces
-        raise CompactionPromptError(path, f"invalid template: {exc}") from exc
-    names = {name for _text, name, _spec, _conv in parsed if name is not None}
-    for _text, name, spec, conversion in parsed:
-        if name is not None and (name not in PLACEHOLDERS or spec or conversion):
-            raise CompactionPromptError(
-                path,
-                f"unknown placeholder {{{name}}}; use {{transcript}}, {{focus}}, {{files}} "
-                "(write a literal brace as {{ or }})",
-            )
-    if "transcript" not in names:
-        raise CompactionPromptError(path, "the template has no {transcript} placeholder")
-
-
-def load_prompt_template() -> tuple[Path, str]:
-    """Read and validate the configured template (fresh from disk on every call).
+def load_prompt_template(*, app: Any = None, session_id: str = "") -> tuple[str, str]:
+    """``("core", text)``: the core template.
 
     Raises:
-        CompactionPromptError: the file is missing, unreadable, not UTF-8, or invalid.
+        CompactionPromptError: the removed file setting is still set.
     """
-    path, _source = configured_prompt_path()
-    try:
-        template = path.read_text(encoding="utf-8")
-    except FileNotFoundError as exc:
-        raise CompactionPromptError(path, "the file does not exist") from exc
-    except (OSError, UnicodeDecodeError) as exc:
-        raise CompactionPromptError(path, f"the file cannot be read: {exc}") from exc
-    _validate(path, template)
-    return path, template
+    if old := _removed_setting():
+        raise CompactionPromptError(
+            "settings",
+            f"{_REMOVED_KEY} ({_REMOVED_ENV}) was removed; it is set to {old!r}. "
+            "Unset it: the compaction prompt is part of CLIO core",
+        )
+    return "core", _TEMPLATE.read_text(encoding="utf-8")
 
 
-def render_compaction_prompt(transcript: str, *, focus: str = "", files: str = "") -> str:
-    """The summarizer prompt for ``transcript`` from the configured template.
-
-    Args:
-        transcript: The rendered lines the summary replaces.
-        focus: The user's focus instructions, or ``""``.
-        files: The attached-file inventory lines, or ``""``.
+def render_compaction_prompt(
+    *, focus: str = "", files: str = "", app: Any = None, session_id: str = ""
+) -> str:
+    """The compaction prompt this session sees, filled in.
 
     Raises:
-        CompactionPromptError: the configured template cannot be used.
+        CompactionPromptError: the template cannot be used.
     """
-    _path, template = load_prompt_template()
+    from clio_agent.gact.compaction_policy import keep_policy, kept_verbatim  # noqa: PLC0415
+
+    _scope, template = load_prompt_template(app=app, session_id=session_id)
     values = {
-        "transcript": transcript,
+        "kept": kept_verbatim(keep_policy()),
         "focus": f"\n\nFocus the summary on: {focus}" if focus else "",
         "files": f"\n\n--- attached session files ---\n{files}\n--- end files ---" if files else "",
     }
-    return template.format_map(values)
+    return _PLACEHOLDER.sub(lambda m: values[m.group(1)], template).strip()
 
 
 def probe_compaction_prompt() -> "IntegrationStatus":
-    """A doctor row: the configured compaction prompt file loads and validates."""
+    """A doctor row: the compaction prompt resolves and validates."""
     from clio_agent.runtime.status import IntegrationState, IntegrationStatus  # noqa: PLC0415
 
-    path, source = configured_prompt_path()
     try:
-        load_prompt_template()
+        scope, _text = load_prompt_template()
     except CompactionPromptError as exc:
         return IntegrationStatus(
             name="compaction_prompt",
             state=IntegrationState.MISCONFIGURED,
             summary=str(exc),
-            config_source=source,
-            next_action=(
-                "fix the file, or unset compaction.prompt_file / CLIO_COMPACTION_PROMPT_FILE "
-                "to use the packaged default"
-            ),
+            config_source=exc.scope,
+            next_action=f"unset {_REMOVED_KEY}",
             details=dict(exc.details or {}),
             required=False,
         )
     return IntegrationStatus(
         name="compaction_prompt",
         state=IntegrationState.READY,
-        summary=f"compaction summarizer prompt: {path}",
-        config_source=source,
+        summary=f"compaction prompt: {PROMPT_ID} ({scope})",
+        config_source=scope,
         next_action="none",
-        details={"path": str(path)},
+        details={"prompt_id": PROMPT_ID, "scope": scope},
         required=False,
     )

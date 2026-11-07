@@ -14,6 +14,7 @@ import threading
 import time
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Any
 
 import pytest
 from fastapi.testclient import TestClient
@@ -47,6 +48,10 @@ from clio_agent.gact.hooks import (
 from clio_agent.gact.hooks.config import HookConfigError, _parse_entry
 from clio_agent.gact.hooks.wire import parse_hook_output
 from clio_agent.gact.permission_gate import DenyDecision, _external_mcp_permission_context
+from tests._compaction_summary import (
+    keep_open_request_only,
+    summary_lm,
+)
 from tests.test_gact._hook_fixtures import (
     command_run,
     dispatcher_from_rows,
@@ -664,7 +669,7 @@ def test_read_only_tool_never_gated_by_a_hook(tmp_path: Path) -> None:
     try:
         app = build_app(sessions_path=tmp_path / "s.json")
         gate = _make_permission_gate(app)
-        assert gate("fs_read_file", {"filepath": "x"}) == "allow"
+        assert gate("fs_read_file", {"path": "x"}) == "allow"
     finally:
         install_global_dispatcher(None)
 
@@ -1162,7 +1167,11 @@ def test_pre_compact_fires_once(tmp_path: Path) -> None:
         def forward(self, question: str, session_id: str = "default") -> _Pred:
             return _Pred()
 
-        def _run_chat_agent(self, prompt: str, _ctx: str) -> str:
+        @property
+        def _main_lm(self) -> Any:
+            return summary_lm(self.checkpoint)
+
+        def checkpoint(self, prompt: str) -> str:
             return "COMPACT SUMMARY"
 
     disp = _RecordingDispatcher()
@@ -1372,3 +1381,9 @@ def test_dispatcher_has_hooks_for_model_events(tmp_path: Path) -> None:
         assert model_hooks_active() is True
     finally:
         install_global_dispatcher(None)
+
+
+@pytest.fixture(autouse=True)
+def _open_request_only(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The keep rule these mechanics tests were written for (see the helper)."""
+    keep_open_request_only(monkeypatch)

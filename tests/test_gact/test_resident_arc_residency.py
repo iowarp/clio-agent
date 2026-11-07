@@ -136,7 +136,7 @@ def test_released_and_dropped_scopes_leave_the_accounting() -> None:
     assert rl.arc_bytes == 40
     rl.scope_dropped("s", "a")
     assert rl.arc_bytes == 30
-    rl.session_released("s")
+    rl.scope_dropped("s", "b")
     assert rl.arc_bytes == 0 and rl.arc_session_ids == []
 
 

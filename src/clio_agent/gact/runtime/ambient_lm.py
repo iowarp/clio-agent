@@ -40,6 +40,7 @@ catalog payload shape so the miss stays queryable after the fact.
 from __future__ import annotations
 
 import logging
+import sys
 from typing import TYPE_CHECKING, Any, Optional
 
 if TYPE_CHECKING:
@@ -149,6 +150,11 @@ def active_lm() -> tuple[Any, bool]:
     expert/main profile. ``lm`` may be ``None`` when dspy is unavailable or nothing
     has been configured yet.
     """
+    if "dspy" not in sys.modules:
+        # Nothing in this process has configured an LM, and importing dspy to read
+        # its settings cost a tool server's first call about 2 s (the shell server
+        # measuring its output, 2026-11).
+        return None, True
     try:
         import dspy  # noqa: PLC0415
     except Exception:  # noqa: BLE001 - metering is best-effort

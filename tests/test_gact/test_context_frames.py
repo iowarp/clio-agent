@@ -12,7 +12,7 @@ from clio_agent.gact.app import build_app
 
 # Every session runs its pinned plugin agent (the hermetic ``standard``); route its
 # module to each test's ``build_app(agent=...)`` host fake.
-pytestmark = pytest.mark.usefixtures("host_agent_executor")
+pytestmark = pytest.mark.usefixtures("host_agent_executor", "no_session_facts")
 
 
 @dataclass

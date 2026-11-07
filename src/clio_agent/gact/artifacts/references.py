@@ -136,6 +136,23 @@ def _artifact_resolution(
         "version": version.version,
         "custody": version.custody.value,
         "fetch_path": fetch_url_for(quote(version.artifact_id, safe="")),
+        **_stream_fields(version),
+    }
+
+
+def _stream_fields(version: "ArtifactVersion") -> dict[str, Any]:
+    """A stream artifact's address: a view reads its entries (state included) from
+    ``content_path`` and is told when they change (``stream.updated``)."""
+    from clio_schemas import ArtifactKind  # noqa: PLC0415
+
+    if version.kind != ArtifactKind.STREAM:
+        return {}
+    stream_id = str((version.producer or {}).get("stream_id") or "")
+    return {
+        "stream": {
+            "stream_id": stream_id,
+            "content_path": f"/v1/streams/{quote(stream_id, safe='')}/content",
+        }
     }
 
 

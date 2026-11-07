@@ -39,17 +39,18 @@ def test_staged_generation_persists_each_chunk_once(
     store = arc._segments
     contents = _atoms(23)
     monkeypatch.setattr(part_atoms, "_chunk_capacity", lambda: 7)
-    original = store._store.put
+    original = store._store.put_at
     writes: list[str] = []
     prefix = store._record_name("bulk-generation", part_atoms.MESSAGE_PART_SCOPE + "/g/")
 
-    def persist(kind: str, name: str, payload: bytes, **kwargs: Any) -> None:
+    def persist(kind: str, name: str, payload: bytes, offset: int, **kwargs: Any) -> None:
         if kind == "segments" and name.startswith(prefix):
             writes.append(name)
-        original(kind, name, payload, **kwargs)
+        original(kind, name, payload, offset, **kwargs)
 
-    # Both a staged chunk and a confirmed live append cross this durable boundary.
-    monkeypatch.setattr(store._store, "put", persist)
+    # Both a staged chunk and a confirmed live append cross this durable boundary (a
+    # chunk record put: whole, or appended at its stored end).
+    monkeypatch.setattr(store._store, "put_at", persist)
     replace_lane(
         store,
         "bulk-generation",
@@ -151,16 +152,16 @@ def test_live_atom_is_hidden_until_its_core_write_settles(
     previous = assemble_session_messages(arc, sid)
     scope = current_base(store, sid, part_atoms.MESSAGE_PART_SCOPE)
     record = store._record_name(sid, scope)
-    original_put = store._store.put
+    original_put = store._store.put_at
     entered, release = threading.Event(), threading.Event()
     reading, read_done = threading.Event(), threading.Event()
 
-    def failing_put(kind: str, name: str, payload: bytes, **kwargs: Any) -> None:
+    def failing_put(kind: str, name: str, payload: bytes, offset: int, **kwargs: Any) -> None:
         if kind == "segments" and name == record:
             entered.set()
             assert release.wait(3), "test did not release its native write"
             raise OSError("live chunk write failed")
-        original_put(kind, name, payload, **kwargs)
+        original_put(kind, name, payload, offset, **kwargs)
 
     def reconstruct() -> Any:
         reading.set()
@@ -169,7 +170,7 @@ def test_live_atom_is_hidden_until_its_core_write_settles(
         finally:
             read_done.set()
 
-    monkeypatch.setattr(store._store, "put", failing_put)
+    monkeypatch.setattr(store._store, "put_at", failing_put)
     with ThreadPoolExecutor(max_workers=2) as threads:
         writer = threads.submit(part_atoms.append_part_atom, store, sid, _atoms(3)[-1])
         try:

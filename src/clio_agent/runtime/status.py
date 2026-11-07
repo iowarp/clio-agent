@@ -235,9 +235,9 @@ class RuntimeProbe:
     ) -> RuntimeReport:
         """Collect all currently supported integration statuses (``include_process_census=False``
         skips the ~10s cold psutil census rows for callers serving them from a cache)."""
-        from clio_agent.compaction_prompt import probe_compaction_prompt  # noqa: PLC0415
         from clio_agent.runtime import sandbox_conformance as _sconf  # noqa: PLC0415
         from clio_agent.runtime.clio_core_health import probe_clio_core_health  # noqa: PLC0415
+        from clio_agent.runtime.doctor_rows import optional_rows  # noqa: PLC0415
         from clio_agent.runtime.mcp_launcher import (  # noqa: PLC0415
             probe_mcp_launchers,
             probe_mcp_yaml_declarations,
@@ -259,7 +259,7 @@ class RuntimeProbe:
             *probe_mcp_yaml_declarations(env=self.env, discovered=True),  # ... this reuses
             probe_sandbox(),
             _sconf.probe_sandbox_conformance(),
-            probe_compaction_prompt(),
+            *optional_rows(),
             *probe_process_tree(include_live_census=include_process_census),
         ]
         return RuntimeReport(integrations=integrations)
@@ -301,7 +301,7 @@ class RuntimeProbe:
             name="file_policy",
             state=IntegrationState.READY,
             summary=(
-                f"Local file access allows roots [{roots}], max file size "
+                f"Local file access allows roots [{roots}], max whole-file load (not streamed) "
                 f"{_format_bytes(policy.max_file_size_bytes)}, symlinks {symlink_summary}."
             ),
             config_source=f"{config_source}; {max_source}; {symlink_source}",

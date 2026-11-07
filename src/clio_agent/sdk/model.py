@@ -48,11 +48,16 @@ class Requires:
 
 @dataclass(frozen=True)
 class Prefers:
-    """Soft model preferences. They guide selection but never block a session."""
+    """Soft model preferences. They guide selection but never block a session.
+
+    ``role`` names a fleet role (``explore``) whose model the person picks once in
+    Fleet settings; an unset role inherits the caller's model.
+    """
 
     model: str = ""
     provider: str = ""
     effort: str = ""
+    role: str = ""
 
     def to_dict(self) -> dict[str, Any]:
         return {key: value for key, value in asdict(self).items() if value}

@@ -261,6 +261,10 @@ async def release_runtime_after_drain(
     if boot is not None and not boot.done():
         logger.info("runtime.release_after_drain waiting=boot_attach")
         await asyncio.wait({boot})
+    from clio_agent.gact.recall_index import close_recall_index  # noqa: PLC0415
+
+    # Recall digest maintenance stops while its store is up (dirty sessions keep markers).
+    await asyncio.to_thread(close_recall_index, app)
     if not _app_owns_runtime_client(app):
         logger.info("runtime.release_after_drain outcome=not_owned")
         return "not_owned"

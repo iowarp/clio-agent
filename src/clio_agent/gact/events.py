@@ -29,6 +29,7 @@ adds the event:/id:/data: lines.
 from __future__ import annotations
 
 import asyncio
+import heapq
 import itertools
 import logging
 import threading
@@ -212,6 +213,13 @@ class EventBus:
         # wakes observers without a sleep/poll loop.  It is deliberately tied to
         # the existing event history rather than creating another event store.
         self._history_condition = threading.Condition()
+        # Events published but not yet delivered, by id. An event takes its id when it is
+        # published, under this lock, and every delivery drains the queue in id order: a
+        # worker thread's publish (bridged onto the loop) is delivered before a later one
+        # made on the loop, so history order is id order and the replay filter in
+        # ``subscribe`` never drops a late-delivered event.
+        self._pending: list[tuple[int, Event]] = []
+        self._order_lock = threading.RLock()
 
     def publish(self, event: Event) -> None:
         """Fan-out to every subscriber of event.session_id + record
@@ -249,6 +257,9 @@ class EventBus:
         # before the owning loop runs a bridged callback.
         if not event.transient:
             self._last_publish_monotonic[event.session_id] = time.monotonic()
+        with self._order_lock:
+            event.id = _next_event_id()  # the order publishes are made in
+            heapq.heappush(self._pending, (event.id, event))
 
         try:
             running: asyncio.AbstractEventLoop | None = asyncio.get_running_loop()
@@ -258,14 +269,14 @@ class EventBus:
         if owner is None or running is owner:
             # On the owning loop — or no loop bound yet, in which case no
             # subscriber queues exist and this only appends replay history.
-            self._deliver(event)
+            self._flush()
             return
         # Foreign thread (or a coroutine on a different loop, e.g. the
         # LM-bind worker's private loop): bridge onto the owning loop so
         # queue/history mutations stay single-threaded and waiting getters
         # are woken reliably.
         try:
-            owner.call_soon_threadsafe(self._deliver, event)
+            owner.call_soon_threadsafe(self._flush)
         except RuntimeError as exc:
             # Degraded path: the owning loop is closed (server teardown).
             # Live delivery is impossible; keep the replay record so a
@@ -277,8 +288,19 @@ class EventBus:
                 event.session_id,
                 exc,
             )
-            if not event.transient:
-                self._record_history(event)
+            with self._order_lock:
+                waiting, self._pending = self._pending, []
+            for _, pending in sorted(waiting, key=lambda item: item[0]):
+                if not pending.transient:
+                    self._record_history(pending)
+
+    def _flush(self) -> None:
+        """Deliver every published event not yet delivered, lowest id first."""
+
+        with self._order_lock:
+            while self._pending:
+                _, event = heapq.heappop(self._pending)
+                self._deliver(event)
 
     def _record_history(self, event: Event) -> None:
         """Append to the bounded per-session replay log."""

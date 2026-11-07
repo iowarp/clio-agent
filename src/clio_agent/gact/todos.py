@@ -48,7 +48,11 @@ _TODOS_WRITE_STEP_KEY = "todos_write_step"
 #: stays ``pending``/``in_progress`` (never ``completed``) — see the tool guidance.
 _TODO_STATUSES: tuple[str, ...] = ("pending", "in_progress", "completed")
 
-#: Marker heading the recited checklist block (stable + greppable; #881 marker discipline).
+#: Injection source of the recited checklist, and its reminder ``clio.reminder.todos``.
+TODOS_SOURCE = "todos"
+
+#: The heading the built-in ``todos`` reminder opens with (stable + greppable; #881 marker
+#: discipline). The wording is the template's: a person's edit of it changes the heading.
 TODO_RECITATION_MARKER = "## Todo checklist (your current task list — reconcile before finishing)"
 
 #: Compact status glyphs for the recited checklist.
@@ -192,6 +196,9 @@ def _write_todos(app: "FastAPI", sid: str, session: Any, todos: Any) -> str:
             sid,
             metadata_patch={_TODOS_METADATA_KEY: normalized, _TODOS_WRITE_STEP_KEY: step_key},
         )
+    from clio_agent.gact.work_events import publish_work_updated  # noqa: PLC0415
+
+    publish_work_updated(app, sid, "todos")
     counts = {
         status: sum(1 for t in normalized if t["status"] == status) for status in _TODO_STATUSES
     }
@@ -237,24 +244,15 @@ def build_write_todos_tool(agent_def: Any) -> Any:
     from clio_agent.gact.agents.tool_instrumentation import native_tool  # noqa: PLC0415
 
     def write_todos(todos: list) -> str:
-        """Record your todo checklist for a multi-step job (execution phase only).
+        """Keep a short checklist of the next concrete steps of a multi-step job.
 
-        Pass the COMPLETE list every call — this REPLACES the whole list (there is no per-item
-        update). Each todo is ``{"content": <str>, "status": "pending"|"in_progress"|"completed"}``.
-
-        Guidance:
-        - Always transition a todo pending -> in_progress -> completed; never jump straight from
-          pending to completed (mark it in_progress while you work it).
-        - Multiple todos may be in_progress at once (clio runs parallel subagents), but keep it
-          honest — only mark in_progress what is actually being worked.
-        - blocked work is NOT completed: leave a blocked item pending or in_progress and note the
-          blocker in its content; never mark it completed to move on.
-        - Preserve the requested outcome when revising a todo. A failed attempt does not satisfy
-          the original requirement: do not replace "render and review" with "attempt rendering"
-          and mark it completed. Keep the requirement and blocker visible unless the user waives it.
-        - Reconcile before finishing: no todo should be left pending/in_progress when the task is
-          done — the final list should reflect reality.
-        - Issue exactly ONE write_todos per step with the full list; two in one step is rejected.
+        Each call replaces the whole list; each todo is
+        ``{"content": <str>, "status": "pending"|"in_progress"|"completed"}``. It helps on
+        work with three or more steps; a simple task does not need it. Mark an item
+        in_progress while you work it and completed when it is actually done: blocked or
+        partly done work is not completed, so keep the blocker in its text, and keep the
+        requested outcome when you revise an item. Because a call replaces the list, a
+        second call in the same step would be ambiguous and is rejected.
 
         Not available in Plan mode (plan mode authors the plan file instead)."""
 
@@ -275,6 +273,7 @@ def build_write_todos_tool(agent_def: Any) -> Any:
     return native_tool(
         write_todos,
         name="write_todos",
+        callers="direct",
         presentation="todos",
         domain="planning",
         desc=write_todos.__doc__,
@@ -303,13 +302,15 @@ def todo_recitation(app: "FastAPI", sid: str, session: Any) -> str:
     """The current todo checklist as this turn's CLIO addition during EXECUTION (recitation).
 
     Empty in PLAN mode (the checklist is never recited while planning) and when no todos
-    are recorded. Otherwise a compact, marked block; the agent loop records it as its own
-    message, again only when the list changed (never the system prompt).
+    are recorded. Otherwise a compact, marked block (the reminder ``todos``); the agent loop
+    records it as its own message, again only when the list changed (never the system prompt).
     """
+    from clio_agent import injections  # noqa: PLC0415
 
     if str(getattr(session, "mode", "") or "") == "plan":
         return ""
     todos = recorded_todos(session)
     if not todos:
         return ""
-    return TODO_RECITATION_MARKER + "\n\n" + _render_checklist(todos)
+    checklist = {"checklist": _render_checklist(todos)}
+    return injections.render(TODOS_SOURCE, checklist, app=app, session_id=sid) or ""

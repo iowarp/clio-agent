@@ -29,7 +29,7 @@ from clio_agent.gact.hooks.wire import (
 #: ``Write|Edit`` reads the input it was written for.
 CLAUDE_TOOL_NAMES: dict[str, str] = {
     "fs_read_file": "Read",
-    "fs_list_directory": "Glob",
+    "fs_glob": "Glob",
     "fs_search_text": "Grep",
     "fs_write_file": "Write",
     "fs_edit_file": "Edit",
@@ -39,15 +39,17 @@ CLAUDE_TOOL_NAMES: dict[str, str] = {
     "spawn_agent_task": "Task",
 }
 
-#: CLIO tool argument -> the Claude Code ``tool_input`` key. The write tools already use
-#: Claude Code's ``content`` / ``old_string`` / ``new_string`` / ``replace_all``.
-CLAUDE_INPUT_KEYS: dict[str, str] = {"filepath": "file_path"}
-
-#: Per-tool argument renames on top of :data:`CLAUDE_INPUT_KEYS`. ``fs_search_text``
-#: is Grep on the wire: its literal ``query`` is Grep's ``pattern`` and its
-#: ``file_glob`` is Grep's ``glob``. (``query`` stays ``query`` for WebSearch.)
+#: Per-tool CLIO argument -> Claude Code ``tool_input`` key. The file tools' ``path`` is
+#: Read/Write/Edit's ``file_path``; Glob and Grep already call their folder ``path``.
+#: The write tools already use Claude Code's ``content`` / ``old_string`` /
+#: ``new_string`` / ``replace_all``. ``fs_search_text`` is Grep on the wire: its
+#: ``query`` is Grep's ``pattern``, its ``file_glob`` Grep's ``glob`` and its ``mode``
+#: Grep's ``output_mode``. (``query`` stays ``query`` for WebSearch.)
 CLAUDE_TOOL_INPUT_KEYS: dict[str, dict[str, str]] = {
-    "fs_search_text": {"query": "pattern", "file_glob": "glob"},
+    "fs_read_file": {"path": "file_path"},
+    "fs_write_file": {"path": "file_path"},
+    "fs_edit_file": {"path": "file_path"},
+    "fs_search_text": {"query": "pattern", "file_glob": "glob", "mode": "output_mode"},
 }
 
 _DECISIONS = {"allow": "allow", "approve": "allow", "deny": "deny", "block": "deny", "ask": "ask"}
@@ -65,7 +67,7 @@ def claude_envelope(envelope: HookEnvelope, *, permission_mode: str = "default")
     }
     if envelope.tool_name is not None:
         body["tool_name"] = CLAUDE_TOOL_NAMES.get(envelope.tool_name, envelope.tool_name)
-        renames = {**CLAUDE_INPUT_KEYS, **CLAUDE_TOOL_INPUT_KEYS.get(envelope.tool_name, {})}
+        renames = CLAUDE_TOOL_INPUT_KEYS.get(envelope.tool_name, {})
         body["tool_input"] = {
             renames.get(key, key): value for key, value in (envelope.tool_input or {}).items()
         }
@@ -132,7 +134,7 @@ class ClaudeCodeHookAdapter(SubprocessAdapter):
 
 
 __all__ = [
-    "CLAUDE_INPUT_KEYS",
+    "CLAUDE_TOOL_INPUT_KEYS",
     "CLAUDE_TOOL_NAMES",
     "ClaudeCodeHookAdapter",
     "claude_envelope",

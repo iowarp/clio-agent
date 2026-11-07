@@ -38,9 +38,10 @@ import filelock
 import msgspec
 import pytest
 
+from clio_agent.arc.chunk_records import read_segments
 from clio_agent.arc.memory import ARCMemory
 from clio_agent.arc.replay import reconstruct_arc_segments
-from clio_agent.arc.schema import decode_segments, encode_segments
+from clio_agent.arc.schema import encode_segments
 from clio_agent.arc.segments import SegmentStore
 from clio_agent.arc.storage import ARC_KINDS, make_arc_store
 
@@ -252,9 +253,8 @@ def test_clio_core_segment_store_big_scope_render_and_scan():
     assert ss2.scan_scopes(sid, "agentA/") == [scope]
 
     # The big scope is one physical CTE record; decoding it yields all segments.
-    raw = store.get("segments", SegmentStore._record_name(sid, scope))
-    assert raw is not None
-    assert len(decode_segments(raw)) == iters * 3
+    name = SegmentStore._record_name(sid, scope)
+    assert len(read_segments(store, sid, scope, name)) == iters * 3
 
     # cleanup
     store.delete("segments", SegmentStore._record_name(sid, scope))

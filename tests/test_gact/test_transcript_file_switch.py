@@ -40,6 +40,10 @@ from clio_agent.gact.transcript_file import (
     TranscriptNotReadyError,
 )
 from clio_agent.gact.types import Message, Part, Tokens
+from tests._compaction_summary import (
+    keep_open_request_only,
+    summary_lm,
+)
 
 from .conftest import complete_turn
 from .test_post_messages import FakeClioAgent, _create_session
@@ -50,7 +54,11 @@ pytestmark = pytest.mark.usefixtures("host_agent_executor")
 class _CompactingAgent(FakeClioAgent):
     """The turn fake plus the two hooks the manual compaction calls."""
 
-    def _run_chat_agent(self, question: str, _session_id: str) -> str:
+    @property
+    def _main_lm(self) -> Any:
+        return summary_lm(self.checkpoint)
+
+    def checkpoint(self, question: str) -> str:
         return "the summary"
 
     def _call_with_transient_provider_retries(self, _label: str, call: Callable[[], Any]) -> Any:
@@ -461,3 +469,9 @@ def test_off_the_atom_boot_runs_when_the_process_arc_attaches(
     assert [row["role"] for row in rows] == ["user", "assistant"]
     assert metrics["messages"]["total"] == 2
     _no_message_files(tmp_path)
+
+
+@pytest.fixture(autouse=True)
+def _open_request_only(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The keep rule these mechanics tests were written for (see the helper)."""
+    keep_open_request_only(monkeypatch)

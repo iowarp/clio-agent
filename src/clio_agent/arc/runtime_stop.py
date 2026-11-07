@@ -297,8 +297,13 @@ def cleanup_runtime_after_client_crash(
         time.sleep(min(0.1, max(deadline - time.monotonic(), 0.0)))
 
 
-def stop_runtime_daemon(config_path: str, log_level: str) -> StopOutcome:
+def stop_runtime_daemon(
+    config_path: str, log_level: str, *, ceiling_s: float | None = None
+) -> StopOutcome:
     """Stop the shared daemon cleanly (``clio_run stop``), with a kill fallback.
+
+    ``ceiling_s`` bounds the wait for the clean stop whatever the daemon's CPU does
+    (default ``arc.liveness.max_wait_s``): a wedged daemon spins, which reads as work.
 
     Mirrors the spawn path: the launcher name (``.exe`` on Windows) comes from
     ``_runtime_launcher_path`` and the shared-library env var (``PATH`` /
@@ -362,7 +367,7 @@ def stop_runtime_daemon(config_path: str, log_level: str) -> StopOutcome:
             from clio_agent.arc.daemon_progress import max_wait_s  # noqa: PLC0415 - cycle
             from clio_agent.runtime.progress import process_work  # noqa: PLC0415
 
-            ceiling = max_wait_s()
+            ceiling = max_wait_s() if ceiling_s is None else ceiling_s
             no_progress_s = stop_no_progress_s()
             started = window = time.monotonic()
             last_work = process_work(daemon_pid) if daemon_pid is not None else None
@@ -406,9 +411,10 @@ def stop_runtime_daemon(config_path: str, log_level: str) -> StopOutcome:
                     last_work, window = work, now
                 if now - started >= ceiling:
                     logger.warning(
-                        "clio-core daemon still stopping after %.0fs (arc.liveness.max_wait_s); "
+                        "clio-core daemon still stopping after %.0fs (ceiling %.0fs); "
                         "killing it -- data not yet flushed may be lost",
                         now - started,
+                        ceiling,
                     )
                     path = "stall_kill"
                     break

@@ -42,7 +42,7 @@ from tests.test_arc.child_worker_helpers import commit_model_input, execute_mode
 
 # #948 S4b: turns that POST through the engine now run the session's plugin agent;
 # route it to each test's ``build_app(agent=...)`` host fake.
-pytestmark = pytest.mark.usefixtures("host_agent_executor")
+pytestmark = pytest.mark.usefixtures("host_agent_executor", "no_session_facts")
 
 
 @pytest.fixture(autouse=True)

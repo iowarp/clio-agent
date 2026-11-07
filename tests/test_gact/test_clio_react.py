@@ -29,7 +29,7 @@ from dspy.lm15 import ContextLengthError, Request, ToolCallPart, ToolResultPart
 
 from clio_agent.agent import cancellation_checker
 from clio_agent.errors import MCPMissingRequiredClientCapabilityError
-from clio_agent.gact.agents.clio_react import TOOL_USE_NOTE, ClioReAct, NoLanguageModelError
+from clio_agent.gact.agents.clio_react import ClioReAct, NoLanguageModelError
 from clio_agent.gact.runtime.globals import _TurnCancelled
 from clio_agent.lm.engines.text_tools import INVALID_TOOL_CALL
 from tests._scripted_engine import Reply, ScriptedEngine, calls, scripted_lm, wire
@@ -100,19 +100,18 @@ def test_differential_same_calls_results_and_outputs_as_stock_reactv2() -> None:
 
 # What the harness records first for an agent with tools (an injection, shown in the UI
 # and in the agent's clio-core context): one step may call several tools at once.
-_TOOL_NOTE = ("user", [("text", f"[clio: tool_use]\n{TOOL_USE_NOTE}")])
 
 
 def test_each_step_is_one_request_and_the_wire_is_append_only() -> None:
     _, engine = _run(DIFF_STEPS, [search])
 
     wires = [wire(r) for r in engine.requests]
-    assert wires[0] == [_TOOL_NOTE, ("user", [("text", "what?")])]
-    assert wires[1][2] == (
+    assert wires[0] == [("user", [("text", "what?")])]
+    assert wires[1][1] == (
         "assistant",
         [("text", "look it up"), ("call", "call_0_0", "search", {"query": "x"})],
     )
-    assert wires[1][3] == ("tool", [("result", "call_0_0", "results for x", False)])
+    assert wires[1][2] == ("tool", [("result", "call_0_0", "results for x", False)])
     for prev, cur in zip(wires, wires[1:], strict=False):
         assert cur[: len(prev)] == prev
     assert {r.system for r in engine.requests} == {engine.requests[0].system}
@@ -122,7 +121,7 @@ def test_thinking_goes_back_with_its_step() -> None:
     _, engine = _run(
         [calls(("search", {"query": "x"}), thinking="plan: search"), Reply(text="ok")], [search]
     )
-    assert wire(engine.requests[1])[2] == (
+    assert wire(engine.requests[1])[1] == (
         "assistant",
         [("thinking", "plan: search"), ("call", "call_0_0", "search", {"query": "x"})],
     )
@@ -136,7 +135,7 @@ def test_the_expert_system_prompt_is_the_system_message() -> None:
         )
     request = engine.requests[0]
     assert request.system == "You are the data expert."
-    assert wire(request) == [_TOOL_NOTE, ("user", [("text", "what?")])]
+    assert wire(request) == [("user", [("text", "what?")])]
 
 
 def test_generation_settings_ride_the_request_config() -> None:
@@ -504,13 +503,19 @@ def thoughts(monkeypatch: pytest.MonkeyPatch) -> list[dict[str, Any]]:
 
     seen: list[dict[str, Any]] = []
     write = StepRecorder._write
+    write_many = StepRecorder._write_many
 
     def spy(self: Any, kind: str, content: dict[str, Any], step: int, span: str) -> str:
         if kind == "thought":
             seen.append(content)
         return write(self, kind, content, step, span)
 
+    def spy_many(self: Any, writes: list[Any], step: int, span: str) -> list[str]:
+        seen.extend(content for kind, content in writes if kind == "thought")
+        return write_many(self, writes, step, span)
+
     monkeypatch.setattr(StepRecorder, "_write", spy)
+    monkeypatch.setattr(StepRecorder, "_write_many", spy_many)
     return seen
 
 
@@ -530,7 +535,7 @@ def test_an_inline_think_block_is_thinking_live_recorded_and_logged(
     assert pred.answer == "42"
     # The plane holds the block as thinking and the text clean: the next request
     # (folded from the plane, as a reload is) shows exactly that.
-    assert wire(engine.requests[1])[2] == (
+    assert wire(engine.requests[1])[1] == (
         "assistant",
         [
             ("thinking", "plan: search"),
@@ -664,20 +669,53 @@ def test_the_loop_places_media_by_the_lms_tag(monkeypatch: pytest.MonkeyPatch) -
     lm, engine = scripted_lm([calls(("view", {"path": "p"})), Reply(text="ok")])
     lm._clio_tool_result_media = "user_message"  # type: ignore[attr-defined]
     image = ImagePart(data="aGk=", media_type="image/png")
-    from clio_agent.gact.agents import clio_react_record
+    from clio_agent.gact.agents import clio_react_codec
 
-    original = clio_react_record.result_part
+    original = clio_react_codec.result_part
 
     def with_image(call_id: str, name: str, value: Any, is_error: bool, **kwargs: Any) -> Any:
         part = original(call_id, name, value, is_error, **kwargs)
         return ToolResultPart(id=part.id, name=part.name, content=(*part.content, image))
 
-    monkeypatch.setattr(clio_react_record, "result_part", with_image)
+    monkeypatch.setattr(clio_react_codec, "result_part", with_image)
     with dspy.context(lm=lm):
         ClioReAct("question -> answer", tools=[view])(question="q")
     roles = [m.role for m in engine.requests[1].messages]
-    assert roles == ["user", "user", "assistant", "tool", "user"]  # the tool-use note first
+    assert roles == ["user", "assistant", "tool", "user"]
     assert engine.requests[1].messages[-1].parts[-1] == image
+
+
+def test_an_lm_that_caches_by_marks_asks_for_the_history_every_step() -> None:
+    """The Anthropic Messages API caches only what a block mark covers: every request
+    asks for the growing history (the summarizer, which continues the request, reads
+    it too). An LM without the tag sends no cache config. SABOTAGE: drop the
+    ``_clio_cache_history`` branch in ``_with_cache_key`` and this fails."""
+
+    def search(q: str) -> str:
+        """Search."""
+        return "hit"
+
+    for tagged in (True, False):
+        lm, engine = scripted_lm([calls(("search", {"q": "x"})), Reply(text="ok")])
+        if tagged:
+            lm._clio_cache_history = True  # type: ignore[attr-defined]
+        with dspy.context(lm=lm):
+            ClioReAct("question -> answer", tools=[search])(question="q")
+        caches = [request.config.cache for request in engine.requests]
+        if tagged:
+            assert [c.prefix if c else None for c in caches] == ["history", "history"]
+        else:
+            assert caches == [None, None]
+
+
+def test_only_the_anthropic_messages_api_is_tagged_to_mark_history() -> None:
+    from clio_agent.config import LMProviderConfig
+    from clio_agent.lm.factory import create_lm
+
+    anthropic = create_lm(LMProviderConfig(provider="anthropic", model="claude-x", api_key="k"))
+    openai = create_lm(LMProviderConfig(provider="openai", model="gpt-x", api_key="k"))
+    assert anthropic._clio_cache_history is True  # type: ignore[attr-defined]
+    assert openai._clio_cache_history is False  # type: ignore[attr-defined]
 
 
 # --------------------------------------------------------------------------- #
@@ -714,3 +752,23 @@ def test_every_step_runs_on_one_persistent_loop_in_the_callers_context() -> None
     loops = {loop for loop, _ in seen}
     assert len(seen) == 2 and len(loops) == 1
     assert {session for _, session in seen} == {session_id}
+
+
+def test_the_model_call_sees_every_tool_the_agent_may_call(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A loaded deferred tool is callable unlisted; the reply parser must know it (P8)."""
+    from clio_agent.lm.engines.text_tools import CALLABLE_TOOLS
+    from tests import _scripted_engine
+
+    seen: list[frozenset[str]] = []
+    original = _scripted_engine.ScriptedEngine._next
+
+    def recording(self: Any, request: Request) -> Any:
+        seen.append(CALLABLE_TOOLS.get())
+        return original(self, request)
+
+    monkeypatch.setattr(_scripted_engine.ScriptedEngine, "_next", recording)
+    _run([Reply(text="Ready.")], [search])
+    assert seen and "search" in seen[0]
+    assert CALLABLE_TOOLS.get() == frozenset()  # reset after the step

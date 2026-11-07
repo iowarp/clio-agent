@@ -54,15 +54,32 @@ def _arc_obs_value(value: Any) -> Any:
     return _encode_safe(value)
 
 
+#: Traced (once per source and value) when an auto-compaction setting cannot be used.
+AUTOCOMPACT_PCT_INVALID = "autocompact_pct_invalid"
+AUTOMATIC_COMPACTION_INVALID = "automatic_compaction_invalid"
+_REPORTED_INVALID: set[tuple[str, str, str]] = set()
+
+
+def _report_invalid(reason: str, source: str, raw: Any, used: Any) -> None:
+    """Trace a setting that cannot be used, once per (reason, source, value)."""
+    key = (reason, source, repr(raw))
+    if key in _REPORTED_INVALID:
+        return
+    _REPORTED_INVALID.add(key)
+    from clio_agent.runtime import trace  # noqa: PLC0415
+
+    trace.event("COMPACT", "%s source=%s value=%r using=%r", reason, source, raw, used)
+
+
 def _autocompact_threshold() -> float:
     """The configurable 90%-style auto-compaction trigger fraction (0..1].
 
     Resolved via the config store (file → env ``CLIO_AUTOCOMPACT_PCT`` → the
     shared :data:`DEFAULT_AUTOCOMPACT_PCT`); the design recommends compacting
     below 0.90 so the summary is built from fuller context. A non-numeric or
-    out-of-range value falls back to that same constant (lenient by design: this
-    is a soft tuning knob, not a hard contract, and a typo must never wedge the
-    auto-compaction path).
+    out-of-range value uses that same constant, traced once as
+    :data:`AUTOCOMPACT_PCT_INVALID` (a typo must never wedge the auto-compaction
+    path, nor be ignored silently).
     """
     raw = conf.resolve(
         "autocompact.pct",
@@ -72,8 +89,11 @@ def _autocompact_threshold() -> float:
     try:
         v = conf.as_float(raw)
     except (ValueError, TypeError):
-        return DEFAULT_AUTOCOMPACT_PCT
-    return v if 0.0 < v <= 1.0 else DEFAULT_AUTOCOMPACT_PCT
+        v = -1.0
+    if 0.0 < v <= 1.0:
+        return v
+    _report_invalid(AUTOCOMPACT_PCT_INVALID, "autocompact.pct", raw, DEFAULT_AUTOCOMPACT_PCT)
+    return DEFAULT_AUTOCOMPACT_PCT
 
 
 def _session_autocompact_preferences(
@@ -82,21 +102,28 @@ def _session_autocompact_preferences(
     """Resolve the effective automatic-compaction controls for one session.
 
     Session metadata is the durable override plane; deployments still retain the
-    configured global threshold as the fallback. Invalid persisted values are ignored
-    defensively so an older or manually edited session record cannot wedge a turn.
+    configured global threshold as the fallback. An invalid persisted value (an older
+    or manually edited session record) is not used, so it cannot wedge a turn; it is
+    traced once (:data:`AUTOCOMPACT_PCT_INVALID`, :data:`AUTOMATIC_COMPACTION_INVALID`).
     """
 
     preferences = metadata.get("context_preferences") if isinstance(metadata, Mapping) else None
     if not isinstance(preferences, Mapping):
         return True, _autocompact_threshold()
     enabled = preferences.get("automatic_compaction", True)
-    enabled = enabled if isinstance(enabled, bool) else True
+    if not isinstance(enabled, bool):
+        _report_invalid(AUTOMATIC_COMPACTION_INVALID, "session", enabled, True)
+        enabled = True
+    raw = preferences.get("autocompact_pct")
+    if raw is None:
+        return enabled, _autocompact_threshold()
     try:
-        threshold = conf.as_float(preferences.get("autocompact_pct"))
+        threshold = conf.as_float(raw)
     except (ValueError, TypeError):
-        threshold = _autocompact_threshold()
+        threshold = -1.0
     if not 0.0 < threshold <= 1.0:
         threshold = _autocompact_threshold()
+        _report_invalid(AUTOCOMPACT_PCT_INVALID, "session", raw, threshold)
     return enabled, threshold
 
 
@@ -167,6 +194,14 @@ def _heuristic_message_tokens(messages: Any) -> int:
     return max(1, total // 4)
 
 
+def _input_excludes_cache(lm: Any) -> bool:
+    """Whether the LM's engine reports input tokens without its cached prompt."""
+    return any(
+        getattr(getattr(lm, attr, None), "input_tokens_exclude_cache", False) is True
+        for attr in ("_engine_spec", "_async_engine_spec")
+    )
+
+
 def _last_prompt_tokens() -> int:
     """The LAST LM call's prompt-token count (0 if it cannot be determined).
 
@@ -201,6 +236,13 @@ def _last_prompt_tokens() -> int:
                         entries = v
                         break
             pt = int(entries[-1].get("prompt_tokens", 0) or 0) if entries else 0
+            if pt > 0 and _input_excludes_cache(lm):
+                # The engine reports Anthropic-style usage that DSPy does not fold for
+                # it: the cached part of the prompt is counted apart (claude_code reads
+                # nearly all of a step's prompt from the cache).
+                details = entries[-1].get("prompt_tokens_details") or {}
+                pt += int(details.get("cached_tokens") or 0)
+                pt += int(details.get("cache_creation_tokens") or 0)
             if pt > 0:
                 return pt
         except Exception:  # noqa: BLE001,S110 - cached prompt-token lookup best-effort; falls through

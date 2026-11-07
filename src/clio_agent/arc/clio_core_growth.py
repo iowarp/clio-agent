@@ -78,6 +78,7 @@ def _managed_config(config: Path, text: str) -> dict[str, Any] | None:
             return None
         expected = _DEFAULT_CTE_CONFIG_TEMPLATE.format(
             core_port=document["networking"]["port"],
+            core_threads=document["runtime"]["num_threads"],  # any count CLIO seeded
             conf_dir=_cte_yaml_path(config.parent / "conf"),
             ram_budget=ram["capacity"],
             file_tier=_cte_yaml_path(config.parent / "storage.bin"),

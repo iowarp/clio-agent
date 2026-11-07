@@ -39,6 +39,21 @@ class ARCStore(Protocol):
         """
         ...
 
+    def put_at(
+        self, kind: str, name: str, data: bytes, offset: int, *, search_text: Optional[str] = None
+    ) -> None:
+        """Write raw ``data`` at ``offset`` of the record (no framing; a write past the end
+        grows it, nothing shrinks it). ``search_text`` as for :meth:`put`."""
+        ...
+
+    def put_if_absent(
+        self, kind: str, name: str, data: bytes, *, search_text: Optional[str] = None
+    ) -> bool:
+        """Create the record with raw ``data`` (as :meth:`put_at` at offset 0) only if it
+        does not exist, atomically: ``True`` when this call created it, ``False`` when
+        another writer already had (the stored bytes are unchanged)."""
+        ...
+
     def put_many(self, kind: str, records: Sequence[PutRecord]) -> None:
         """Put independent records together (no order between them).
 
@@ -51,8 +66,17 @@ class ARCStore(Protocol):
         """Return bytes for ``(kind, name)`` or ``None`` if absent."""
         ...
 
+    def get_raw(self, kind: str, name: str, *, length: int = 0) -> Optional[bytes]:
+        """Return the record's stored bytes as written by :meth:`put_at` (``None`` if
+        absent), at least ``length`` of them when the store holds that many."""
+        ...
+
     def exists(self, kind: str, name: str) -> bool:
         """Return whether a record exists for ``(kind, name)``."""
+        ...
+
+    def sizes(self, kind: str, names: Sequence[str]) -> dict[str, int]:
+        """Stored sizes of several records (0 when absent), asked together."""
         ...
 
     def scan(self, kind: str, prefix: str = "") -> Iterator[tuple[str, bytes]]:

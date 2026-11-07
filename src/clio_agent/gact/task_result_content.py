@@ -7,11 +7,11 @@ from collections.abc import Callable
 from typing import Any
 
 from clio_agent.arc.task_types import AssignmentDetails, AssignmentEvidence, CoreReference
+from clio_agent.gact.child_report_fit import report_fits
 from clio_agent.gact.result_selection import result_keys, select_fields, validate_selection
 from clio_agent.gact.task_access import TaskAccessDenied, TaskCaller
 from clio_agent.gact.task_cursors import decode_cursor, encode_cursor
 from clio_agent.gact.task_history import TaskHistory
-from clio_agent.gact.task_result_spill import task_result_inline_chars
 
 SERIALIZATION = "json-sort-unicode-v1"
 
@@ -116,17 +116,22 @@ def result_page(
     offset = position.get("offset", 0)
     if offset > len(encoded):
         raise ValueError("Result cursor offset is outside its pinned content")
-    bound = task_result_inline_chars()
+    # Pages of a version-1 cursor, and of a result with nowhere to be saved, are one tool
+    # result each (at least a character, so a page always advances); a result that fits
+    # the parent's context is returned whole.
+    from clio_agent.tools.result_room import result_room  # noqa: PLC0415
+
+    bound = max(1, result_room().chars)
     result: dict[str, Any] = {"result_reference": reference.model_dump(mode="json")}
     if selection is not None:
         result["result_selection"] = selection
     elif isinstance(original, dict):
         result.update(result_keys(original))
-    if not position and (bound <= 0 or len(encoded) <= bound):
+    if not position and report_fits(encoded):
         return {**result, "result": value, "next_cursor": None}
     if not position and save is not None:
         return {**result, **save(value, encoded)}
-    end = min(len(encoded), offset + bound) if bound > 0 else len(encoded)
+    end = min(len(encoded), offset + bound)
     result.update(
         result={"preview": encoded[offset:end], "truncated": end < len(encoded)},
         chunk_field="result.preview",

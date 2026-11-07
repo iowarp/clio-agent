@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import base64
+import inspect
 import io
 import time
 from concurrent.futures import ThreadPoolExecutor
@@ -35,6 +36,9 @@ from clio_agent.gact.agents.resolution import session_agent_def
 from clio_agent.tools.execution import tool_workspace_context
 from tests.test_gact.test_a2ui_producer import _advertise_workspace_catalog, _session
 
+#: The capture's default timeout, the longest a request can wait to be claimed.
+CAPTURE_TIMEOUT: float = inspect.signature(A2UIVisualFeedback.capture).parameters["timeout"].default
+
 
 def png() -> str:
     """A real, bounded PNG with recognizable pixels for native hydration checks."""
@@ -60,8 +64,12 @@ def viewer(viewer_id: str = "viewer-a", **changes: Any) -> ViewerReport:
 
 
 def claim(bridge: A2UIVisualFeedback, report: ViewerReport, sid: str = "sid") -> dict[str, Any]:
-    """Wait for a real request to be assigned by the bridge, with a bounded budget."""
-    deadline = time.monotonic() + 2
+    """Wait for a real request to be assigned by the bridge, with a bounded budget.
+
+    The capture runs on a pool thread, which a loaded runner can start seconds late, so the
+    budget is the capture's own default timeout: a request it has not posted by then is gone.
+    """
+    deadline = time.monotonic() + CAPTURE_TIMEOUT
     while time.monotonic() < deadline:
         requests = bridge.report(sid, report)
         if requests:

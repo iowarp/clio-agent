@@ -683,10 +683,16 @@ def test_live_observer_keeps_exact_large_mcp_structured_content(tmp_path: Path) 
         assert "structured_content" not in served_result.get("metadata", {})
 
 
-def test_workspace_mcp_root_data_reaches_exact_gact_structured_content(tmp_path: Path) -> None:
+def test_workspace_mcp_root_data_reaches_exact_gact_structured_content(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     """The wire keeps exact Root/data while the model receives a bounded projection."""
 
+    from tests._result_room import pin_result_room
+
     from .conftest import complete_turn
+
+    pin_result_room(monkeypatch, 12_000)  # the 13,000-character payload does not fit
 
     agent = _LiveWorkspaceMcpRootDataAgent(tmp_path / "workspace")
     app = build_app(sessions_path=tmp_path / "s.json", agent=agent)
@@ -702,14 +708,18 @@ def test_workspace_mcp_root_data_reaches_exact_gact_structured_content(tmp_path:
             and event.payload.get("part", {}).get("type") == "tool_result"
         )
 
-        expected = agent.root.model_dump(mode="json", by_alias=True)
-        model_input = json.dumps(expected, allow_nan=False)
-        assert agent.model_text.startswith(
-            f"[clio: result_spilled] This result is {len(model_input):,} characters"
+        # The model reads the server's text block (text first), so its size is the
+        # server's serialization of the same Root/data.
+        size = re.match(
+            r"\[clio: result_spilled\] This result is ([\d,]+) characters", agent.model_text
         )
+        assert size, agent.model_text[:200]
+        assert int(size.group(1).replace(",", "")) > 12_000
         spilled = re.search(r"the full result is in `([^`]+)`", agent.model_text)
         assert spilled, agent.model_text[:400]
-        assert json.loads(Path(spilled.group(1)).read_text(encoding="utf-8")) == expected
+        # The model's copy is the server's text block, spilled whole; the exact
+        # structured data travels on the wire part below.
+        assert Path(spilled.group(1)).read_text(encoding="utf-8") == f"Root({agent.root!s})"
         assert len(agent.model_text) <= 12_000
         assert tool_result["metadata"]["result"]["truncated"] is True
         # #1190: the structured copy is served at the part TOP LEVEL (the UI
@@ -727,9 +737,8 @@ def test_workspace_mcp_root_data_reaches_exact_gact_structured_content(tmp_path:
         # the exact structuredContent payload the wire part carries. The complete
         # structured copy is trace/UI-only.
         assert json.dumps(tool_result["structured_content"]) not in agent.model_text
-        # The native SDK derives data from the declared output schema, including
-        # its public alias. The bounded model preview retains that actual key.
-        assert '"schedulerNativeId"' in agent.model_text
+        # Text first: the preview is the head of the server's own text block.
+        assert "Root(" in agent.model_text
 
 
 def test_live_observer_preserves_failed_structured_tool_result_evidence(tmp_path: Path) -> None:
@@ -924,7 +933,11 @@ def test_tool_result_full_in_trace_but_bounded_in_ledger(tmp_path: Path, monkeyp
     observer("hdf5_dump_all", {"filepath": "x.h5"}, "started", None)
     observer("hdf5_dump_all", {"filepath": "x.h5"}, "completed", None, big_result)
 
-    # T1: durable trace carries the FULL result (all 4000 rows, not a preview).
+    # T1: durable trace carries the FULL result (all 4000 rows, not a preview). Tool-call
+    # events are recorded behind the call; the barrier a turn passes before reading.
+    from clio_agent.gact.highway_writer import flush_session
+
+    flush_session(app, sid)
     app.state.semantic_trace_backend.flush()
     rows = [
         _json.loads(line) for line in (trace_dir / f"{sid}.semantic.jsonl").read_text().splitlines()

@@ -27,19 +27,20 @@ from clio_agent import paths
 # Clean-stop + the shutdown latch live in owner module arc/runtime_stop.py (file-size ratchet,
 # #775/#774), re-exported below. Also imported as a MODULE (not just names) so
 # ``_ensure_runtime_daemon`` reads the latch flag live, not a stale copy frozen at import time.
-from clio_agent.arc import clio_core_attach, runtime_stop
+from clio_agent.arc import clio_core_attach, crashed_clients, runtime_stop
 from clio_agent.arc import clio_core_daemon_version as daemon_version
 
 # Daemon port-resolution + socket-liveness helpers live in the liveness owner
 # module (#892); blob writes ride the bounded rc=13-class retry module (#893).
-from clio_agent.arc.batch_put import BatchPutError, PutRecord
-from clio_agent.arc.blob_frame import BlobNameDecodeError, read_framed_blob, stored_body
+from clio_agent.arc.batch_put import BatchPutError, PutRecord  # noqa: F401 - re-exported
+from clio_agent.arc.blob_frame import BlobNameDecodeError, BlobReadError, read_framed_blob
 from clio_agent.arc.clio_core_async_ops import (
     TagIds,
-    store_delete,
+    store_blob_size,
+    store_blob_sizes,
     store_delete_many,
-    store_put,
-    store_put_many,
+    store_delete_together,
+    store_read,
 )
 
 # CTE config generation + capacity policy (the bounded ram hot-tier cap) live in their own
@@ -67,14 +68,10 @@ from clio_agent.arc.clio_core_liveness import (  # noqa: F401 - re-exported for 
     _resolve_runtime_port,
     _runtime_alive,
 )
-from clio_agent.arc.companion_policy import may_carry_companion
-from clio_agent.arc.companion_write import (
-    companion_body,
-    companion_sizes,
-    drop_shrinking,
-    remember_written,
-)
-from clio_agent.arc.pid_identity import pid_alive as _pid_alive
+from clio_agent.arc.clio_core_writes import SEARCH_SUFFIX, ClioCoreWrites
+from clio_agent.arc.companion_write import companion_sizes
+from clio_agent.arc.native_threads import run_on_native_thread
+from clio_agent.arc.pid_identity import pid_alive as _pid_alive  # noqa: F401 - census seam
 from clio_agent.arc.pid_identity import pidfile_live_pid
 from clio_agent.arc.pid_identity import proc_create_time as _proc_create_time
 
@@ -106,7 +103,6 @@ from clio_agent.arc.runtime_stop import (  # noqa: F401 - re-exported for caller
 )
 from clio_agent.arc.runtime_stop import stop_runtime_daemon as _stop_runtime_daemon
 from clio_agent.arc.store_protocol import ARCStore  # noqa: F401 - the seam callers import
-from clio_agent.runtime.stream_audit import stream_audit
 
 logger = logging.getLogger(__name__)
 
@@ -123,11 +119,12 @@ ARC_KINDS: tuple[str, ...] = (
     "task_open",  # derived open-work obligations, the one small listing done at boot
     "artifact_index",  # artifact registry records, read by exact name only (point gets)
     "session_records",  # one record per session + recent-first index buckets (gact)
+    "recall_index",  # per-session search digests + dirty markers (gact recall_index)
 )
 
 # Suffix for the optional plain-text companion blob (BM25 discovery, Thread D) a
 # backend may store next to a record. NOT a record: scan()/get() skip it.
-_SEARCH_SUFFIX = ".text"
+_SEARCH_SUFFIX = SEARCH_SUFFIX
 
 
 @contextlib.contextmanager
@@ -270,25 +267,7 @@ def _deregister_client() -> None:
 
 def _live_client_pids() -> "list[int]":
     """Return live client PIDs, pruning stale (dead / PID-reused / garbled) entries."""
-    reg = _client_registry_dir()
-    if not reg.is_dir():
-        return []
-    live: list[int] = []
-    for entry in reg.iterdir():
-        if not entry.name.isdigit():
-            continue
-        pid = int(entry.name)
-        try:
-            raw = entry.read_text(encoding="utf-8").strip()
-            recorded: Optional[float] = float(raw) if raw else None
-        except (OSError, ValueError):
-            recorded = None
-        if _pid_alive(pid, recorded):
-            live.append(pid)
-        else:
-            with contextlib.suppress(OSError):
-                entry.unlink()
-    return live
+    return crashed_clients.client_census()[0]
 
 
 def _kill_daemon_pidfile() -> None:
@@ -346,7 +325,9 @@ def _ensure_runtime_daemon(iowarp_core: object, config_path: str, log_level: str
     with _runtime_spawn_lock():
         if runtime_stop._runtime_shutdown_requested:
             raise RuntimeShutdownInProgress("clio-core runtime is shutting down")
-        _register_client()  # prunes nothing here; release-side prunes. We are now live.
+        # A daemon every client crashed on may be wedged: replaced, never adopted.
+        crashed_clients.replace_daemon_left_by_crashed_clients(config_path, log_level)
+        _register_client()  # We are now live.
         state = runtime_state_dir()
         running = daemon_version.running_daemon_config(state, config_path)
         try:
@@ -384,15 +365,16 @@ def _wait_for_daemon_start(port: int, state: Path) -> None:
     )
 
 
-class ClioCoreStore:
+class ClioCoreStore(ClioCoreWrites):
     """ARCStore backed by a **shared** clio-core runtime (connect-or-spawn).
 
-    Maps ``(kind, name)`` -> ``(CTE tag, CTE blob)``. msgpack payloads are base64-wrapped
-    because CTE's ``GetBlob`` UTF-8-decodes in the C++ binding and raises on non-UTF-8 bytes.
+    Maps ``(kind, name)`` -> ``(CTE tag, CTE blob)``. A whole record (``put``/``get``) is
+    framed and base64-wrapped (:mod:`clio_agent.arc.blob_frame`); a segment-list chunk
+    (``put_at``/``get_raw``) is raw append-only records (:mod:`clio_agent.arc.chunk_records`).
 
     A standalone host-global daemon serves process clients on the configured RPC
-    port. Default durability is a DRAM hot tier spilling to a file cold tier;
-    see :func:`default_cte_config_path` and :meth:`_ensure_runtime`.
+    port. By default data lives on one durable file tier, with a bounded RAM working
+    arena; see :func:`default_cte_config_path` and :meth:`_ensure_runtime`.
     """
 
     _namespace = ""  # the default (bare-tag) namespace; set per instance in __init__
@@ -417,7 +399,8 @@ class ClioCoreStore:
         import clio_cte_core_ext as cte  # noqa: PLC0415
 
         self._cte = cte
-        self._client = cte.get_cte_client()
+        # Built on a process-lived thread: the runtime keeps per-thread resources.
+        self._client = run_on_native_thread(cte.get_cte_client)
         type(self)._instances.add(self)
         # Records of one namespace live under ``<namespace>/<kind>`` tags; the default
         # (empty) namespace keeps the bare ``<kind>`` tags every deployment already has.
@@ -436,10 +419,12 @@ class ClioCoreStore:
         # Daemon loss/replacement still requires process restart. A stalled but
         # verified identical daemon may recover through a GIL-free RPC on this
         # existing client; that path must not rebuild its native binding.
+        # The socket probe is trusted for ``arc.clio_core.liveness_ttl_s``: probing on
+        # every op opened a TCP connection per store call under the gate lock (P7:
+        # about a fifth of the server's active time, 2026-11-02).
         self._gate = LivenessGate(
             config_path=config_path,
             log_level=log_level,
-            ttl_s=0.0,
             auto_recover=False,
             attached_identity=type(self)._attached_runtime_identity,
         )
@@ -455,7 +440,7 @@ class ClioCoreStore:
         self._tag_ids.prewarm(self._kinds)
         logger.info(
             "ClioCoreStore active: clio-core is the ARC backend (shared daemon runtime). "
-            "The DEFAULT config is a DRAM hot tier + file cold tier; durable + "
+            "The DEFAULT config is one file data tier with a bounded RAM working arena; durable + "
             "fault-tolerant tiers (replication, erasure coding) are configured in the "
             "CTE config via CLIO_ARC_STORE_CONFIG."
         )
@@ -570,85 +555,41 @@ class ClioCoreStore:
 
     # ---- ARCStore Protocol ----
 
-    def put(
-        self,
-        kind: str,
-        name: str,
-        data: bytes,
-        *,
-        tier: str = "warm",
-        search_text: Optional[str] = None,
-    ) -> None:
-        # Bound each async RPC individually, with the GIL released while awaiting it.
-        # base64-wrap: CTE GetBlob UTF-8-decodes, so store ascii-safe bytes; framed with
-        # its length and padded to a size class so a growing record adds few blocks.
-        payload = stored_body(data)
-        if kind == "segments":  # #1339: live-lane audit evidence (one row per put)
-            stream_audit("store.put", kind=kind, name=name, size=len(payload))
-        guarded_store_rpc(self, "put", store_put, self, kind, name, payload)
-        # Optional BM25 companion (Thread D) at <name>.text; scan()/get() skip it.
-        companion = name + _SEARCH_SUFFIX
-        if search_text is not None:  # padded; a shrinking one is dropped first (MD9)
-            pair = [(companion, companion_body(search_text))]
-            guarded_store_rpc(self, "put", drop_shrinking, self, kind, pair)
-            guarded_store_rpc(self, "put", store_put, self, kind, companion, pair[0][1])
-            remember_written(self, kind, pair)
-        elif may_carry_companion(kind, name):  # #1334: never for the ``_events`` family
-            guarded_store_rpc(self, "put", store_delete, self, kind, companion)  # a stale one
-            companion_sizes(self).forget(kind, companion)
-        # ``tier`` is advisory: the default single DRAM tier makes ReorganizeBlob a no-op.
-
-    def put_many(self, kind: str, records: Sequence[PutRecord]) -> None:
-        """Put independent records concurrently on the async path (one stall-guarded
-        batch: every ``AsyncPutBlob`` -- bodies and search companions -- is issued, then
-        all are awaited). A stale-companion probe runs only for a record that can carry
-        one and has no text.
-
-        Raises:
-            BatchPutError: Some blob was lost after its bounded retry; the others of the
-                batch were written (named in the error).
-        """
-        blobs: list[tuple[str, bytes]] = []
-        companions: list[tuple[str, bytes]] = []
-        stale: list[str] = []
-        for record in records:
-            payload = stored_body(record.data)
-            if kind == "segments":  # #1339: live-lane audit evidence (one row per put)
-                stream_audit("store.put", kind=kind, name=record.name, size=len(payload))
-            blobs.append((record.name, payload))
-            if record.search_text is not None:
-                companions.append(
-                    (record.name + _SEARCH_SUFFIX, companion_body(record.search_text))
-                )
-            elif may_carry_companion(kind, record.name):
-                stale.append(record.name + _SEARCH_SUFFIX)
-        if companions:  # a shrinking companion is dropped before the batch (MD9)
-            guarded_store_rpc(self, "put", drop_shrinking, self, kind, companions)
-        lost = guarded_store_rpc(self, "put", store_put_many, self, kind, blobs + companions)
-        remember_written(self, kind, [pair for pair in companions if pair[0] not in lost])
-        for companion in stale:
-            guarded_store_rpc(self, "put", store_delete, self, kind, companion)
-            companion_sizes(self).forget(kind, companion)
-        if lost:
-            written = [name for name, _ in blobs + companions if name not in lost]
-            raise BatchPutError(kind, written, dict(lost))
-
     def tag(self, kind: str) -> str:
         """The CTE tag holding ``kind`` records in this store's namespace (pure; no RPC)."""
         return f"{self._namespace}/{kind}" if self._namespace else kind
 
-    @guard_store_op("get")
+    @guard_store_op("get", inline_on_kind=True)
     def get(self, kind: str, name: str) -> Optional[bytes]:
-        """Read a validated record, allowing one stale native size-metadata observation."""
-        tag = self._cte.Tag(self.tag(kind))
-        size = tag.GetBlobSize(name)  # 0 for a missing blob (does not raise)
+        """Read a validated record, allowing one stale native size-metadata observation.
+
+        Both RPCs are GIL-free async ones, so a read runs on the caller thread once the
+        kind's tag id is cached."""
+        size = store_blob_size(self, kind, name)  # 0 for a missing blob
         if size == 0:
             return None
-        return read_framed_blob(name, size, lambda length: tag.GetBlob(name, length, 0))
+        return read_framed_blob(name, size, lambda length: store_read(self, kind, name, length))
 
-    @guard_store_op("exists")
+    @guard_store_op("get", inline_on_kind=True)
+    def get_raw(self, kind: str, name: str, *, length: int = 0) -> Optional[bytes]:
+        """The stored bytes as they are (no unframing): a chunk-record blob. ``length``
+        reads at least that many when the size metadata lags (``chunk_records``)."""
+        size = store_blob_size(self, kind, name)  # 0 for a missing blob
+        if size == 0:
+            return None
+        try:
+            return store_read(self, kind, name, max(size, length))
+        except RuntimeError as exc:  # the runtime refused the read
+            raise BlobReadError(name, exc) from exc
+
+    @guard_store_op("exists", inline_on_kind=True)
     def exists(self, kind: str, name: str) -> bool:
-        return self._cte.Tag(self.tag(kind)).GetBlobSize(name) > 0
+        return store_blob_size(self, kind, name) > 0
+
+    @guard_store_op("exists", inline_on_kind=True)
+    def sizes(self, kind: str, names: Sequence[str]) -> dict[str, int]:
+        """Stored sizes of several records (0 when absent), asked together."""
+        return store_blob_sizes(self, kind, names)
 
     def scan(self, kind: str, prefix: str = "") -> Iterator[tuple[str, bytes]]:
         for blob_name in self.scan_names(kind, prefix):
@@ -661,18 +602,19 @@ class ClioCoreStore:
         that prefix only, never the whole kind); no blob body is read."""
         yield from self.query_names(kind, (re.escape(prefix) + ".*") if prefix else "")
 
-    def query_names(self, kind: str, name_re: str = "") -> list[str]:
+    def query_names(self, kind: str, name_re: str = "", *, limit: int = 0) -> list[str]:
         """Record names of ``kind`` fully matching ``name_re`` (``""``: all), asked of
-        clio-core by pattern (``BlobQuery``); search companions are skipped."""
+        clio-core by pattern (``BlobQuery``); search companions are skipped. ``limit``
+        bounds how many names clio-core returns (``0``: all)."""
         self._live()
         tag = self.tag(kind)
 
         def _list() -> list[str]:
             try:  # the binding decodes every name; one corrupt name fails the listing
-                if not name_re:
+                if not name_re and not limit:
                     return list(self._cte.Tag(tag).GetContainedBlobs())
                 pool = self._cte.PoolQuery.Dynamic()
-                rows = self._client.BlobQuery(re.escape(tag), name_re, 0, pool)
+                rows = self._client.BlobQuery(re.escape(tag), name_re or ".*", limit, pool)
                 return [blob for _tag, blob in rows]
             except UnicodeDecodeError as exc:
                 raise BlobNameDecodeError(tag, exc) from exc
@@ -690,8 +632,8 @@ class ClioCoreStore:
     def delete(self, kind: str, name: str) -> None:
         # Tag has no per-blob delete; go through the Client + TagId (async: GIL-free). A
         # missing blob answers a non-zero code (no raise), satisfying the no-op contract.
-        store_delete(self, kind, name)
-        store_delete(self, kind, name + _SEARCH_SUFFIX)  # companion (no-op if absent)
+        # The record and its search companion (no-op if absent) go in one round trip.
+        store_delete_together(self, kind, (name, name + _SEARCH_SUFFIX))
         companion_sizes(self).forget(kind, name + _SEARCH_SUFFIX)
 
     def clear(self) -> None:
@@ -771,7 +713,7 @@ def make_arc_store(
         if not cfg:
             # Per-workspace ``.clio/core`` config if present, else the seeded default.
             ws_cfg = paths.workspace_core_dir() / "cte.yaml"
-            cfg = str(ws_cfg) if ws_cfg.is_file() else default_cte_config_path()
+            cfg = str(ws_cfg) if ws_cfg.is_file() else clio_core_attach.seed_default_config()
         ns = (
             namespace
             if namespace is not None

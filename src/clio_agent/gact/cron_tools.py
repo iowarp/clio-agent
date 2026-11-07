@@ -316,6 +316,7 @@ def build_cron_create_tool() -> Any:
     return native_tool(
         cron_create,
         name="cron_create",
+        callers="direct",
         presentation="schedule_created",
         domain="schedules",
         desc=cron_create.__doc__,
@@ -442,6 +443,7 @@ def build_cron_delete_tool() -> Any:
     return native_tool(
         cron_delete,
         name="cron_delete",
+        callers="direct",
         presentation="schedule_deleted",
         domain="schedules",
         desc=cron_delete.__doc__,

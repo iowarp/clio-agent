@@ -28,6 +28,8 @@ def test_installer_records_only_complete_provisioning(
     monkeypatch.setattr(installer, "prepare_document_runtime", lambda *a, **kw: result)
     monkeypatch.setattr(installer, "prepare_office_runtime", lambda: "private soffice")
     monkeypatch.setattr(installer, "ensure_github_cli", lambda: tmp_path / "gh")
+    monkeypatch.setattr(installer, "ensure_ripgrep", lambda: Path("/usr/bin/rg"))
+    monkeypatch.setattr(installer, "ensure_tectonic", lambda: Path("/usr/bin/tectonic"))
     monkeypatch.setattr(
         installer, "ensure_bundled_codex_windows_helpers", lambda: {"status": "available"}
     )
@@ -57,6 +59,10 @@ def test_installer_records_only_complete_provisioning(
             "Office rendering is ready.",
             "Preparing and checking the GitHub command-line tool...",
             "GitHub command-line tool is ready.",
+            "Preparing and checking ripgrep for file search...",
+            "ripgrep is ready.",
+            "Preparing and checking Tectonic for LaTeX builds...",
+            "Tectonic is ready.",
             "Preparing and checking protected execution...",
         }
         assert stages[-1] == "All managed runtime packages are installed and verified."
@@ -102,6 +108,8 @@ def test_installer_overlaps_independent_work_and_joins_before_receipt(
     monkeypatch.setattr(installer, "prepare_document_runtime", packages)
     monkeypatch.setattr(installer, "prepare_office_runtime", office)
     monkeypatch.setattr(installer, "ensure_github_cli", github)
+    monkeypatch.setattr(installer, "ensure_ripgrep", lambda: Path("/usr/bin/rg"))
+    monkeypatch.setattr(installer, "ensure_tectonic", lambda: Path("/usr/bin/tectonic"))
     monkeypatch.setattr(
         installer, "ensure_bundled_codex_windows_helpers", lambda: {"status": "available"}
     )
@@ -149,6 +157,8 @@ def test_installer_failure_waits_for_other_work_without_publishing_success(
     monkeypatch.setattr(installer, "prepare_document_runtime", packages)
     monkeypatch.setattr(installer, "prepare_office_runtime", office)
     monkeypatch.setattr(installer, "ensure_github_cli", github)
+    monkeypatch.setattr(installer, "ensure_ripgrep", lambda: Path("/usr/bin/rg"))
+    monkeypatch.setattr(installer, "ensure_tectonic", lambda: Path("/usr/bin/tectonic"))
     stages: list[str] = []
     with pytest.raises(RuntimeError, match=f"{failed_step} failed"):
         installer.install_document_runtime(
@@ -178,6 +188,8 @@ def test_installer_explicit_setup_is_forwarded_and_failed_setup_has_no_receipt(
     )
     monkeypatch.setattr(installer, "prepare_office_runtime", lambda: "soffice")
     monkeypatch.setattr(installer, "ensure_github_cli", lambda: tmp_path / "gh")
+    monkeypatch.setattr(installer, "ensure_ripgrep", lambda: Path("/usr/bin/rg"))
+    monkeypatch.setattr(installer, "ensure_tectonic", lambda: Path("/usr/bin/tectonic"))
 
     def fence(**kwargs: Any) -> dict[str, str]:
         assert kwargs["allow_elevation"] is setup
@@ -235,6 +247,8 @@ def test_bootstrap_prepares_real_package_stage_without_fence_or_receipt(
     monkeypatch.setattr(installer, "prepare_document_runtime", lambda *a, **kw: result)
     monkeypatch.setattr(installer, "prepare_office_runtime", lambda: "private soffice")
     monkeypatch.setattr(installer, "ensure_github_cli", lambda: tmp_path / "gh")
+    monkeypatch.setattr(installer, "ensure_ripgrep", lambda: Path("/usr/bin/rg"))
+    monkeypatch.setattr(installer, "ensure_tectonic", lambda: Path("/usr/bin/tectonic"))
 
     def unexpected(*args: Any, **kwargs: Any) -> None:
         pytest.fail("Cache preparation must leave protection and receipt to the installer")

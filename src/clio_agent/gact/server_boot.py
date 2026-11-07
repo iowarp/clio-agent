@@ -183,10 +183,12 @@ def _construct_process_arc(app: "FastAPI") -> Any:
         _record_context_mode(app, mode)
         return None
     from clio_agent.arc.memory import ARCMemory  # noqa: PLC0415
-    from clio_agent.arc.storage import make_arc_store  # noqa: PLC0415
+    from clio_agent.gact.store_format_boot import checked_boot_store  # noqa: PLC0415
 
     data_dir = str(paths.arc_data_dir())
-    arc = ARCMemory(data_dir=data_dir, cache_capacity=1000, store=make_arc_store(data_dir=data_dir))
+    # A store written by CLIO 0.9.5.1 or older is refused here, typed, before any read.
+    store = checked_boot_store(app, data_dir)
+    arc = ARCMemory(data_dir=data_dir, cache_capacity=1000, store=store)
     from clio_agent.gact.runtime.globals import _set_app_arc  # noqa: PLC0415 - import cycle
 
     _set_app_arc(app, arc)
@@ -288,6 +290,9 @@ def start(app: "FastAPI") -> None:
     from clio_agent.gact.routes.system import collect_health_report  # noqa: PLC0415
 
     health_boot.start_boot_collection(app, collect_health_report)
+    from clio_agent.gact import session_scratch_sweep  # noqa: PLC0415
+
+    session_scratch_sweep.start(app)  # stale per-session scratch folders (TD56)
     if getattr(app.state, "arc", None) is not None:
         return
 

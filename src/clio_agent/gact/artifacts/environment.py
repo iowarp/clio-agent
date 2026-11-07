@@ -25,6 +25,7 @@ guaranteed. Every degrade carries a typed reason (no silent fallback).
 
 from __future__ import annotations
 
+import functools
 import hashlib
 import logging
 import platform
@@ -138,7 +139,23 @@ def _clio_repo_root(start: Optional[Path] = None) -> Optional[Path]:
     exists above this module (a wheel/pip install). ``start`` overrides the module
     path for testing a synthetic install layout.
     """
-    here = (start or Path(__file__)).resolve()
+    if start is None:
+        return _module_repo_root()
+    return _find_repo_root(start)
+
+
+@functools.lru_cache(maxsize=1)
+def _module_repo_root() -> Optional[Path]:
+    """This module's repo-root anchor, found once: the module does not move while it runs.
+
+    Every tool call records its environment; resolving the path and reading the
+    pyproject per call was a measurable share of a read-only call burst (P7, 2026-11-03).
+    """
+    return _find_repo_root(Path(__file__))
+
+
+def _find_repo_root(start: Path) -> Optional[Path]:
+    here = start.resolve()
     for parent in here.parents:
         if parent.name in {"site-packages", "dist-packages"}:
             break  # An installed wheel cannot inherit a checkout's environment identity.
@@ -185,13 +202,34 @@ def _sha256_file(path: Path) -> Optional[str]:
         return None
 
 
+# path -> ((size, mtime_ns), digest). Every tool call records its environment, and
+# hashing the lockfile each time was most of transform recording's file reads (P7,
+# 2026-11-02); a changed lockfile changes its stat, so it is hashed again.
+_LOCKFILE_DIGESTS: dict[Path, tuple[tuple[int, int], str]] = {}
+
+
+def _cached_sha256(path: Path) -> Optional[str]:
+    try:
+        stat = path.stat()
+    except OSError:
+        return None
+    key = (stat.st_size, stat.st_mtime_ns)
+    cached = _LOCKFILE_DIGESTS.get(path)
+    if cached is not None and cached[0] == key:
+        return cached[1]
+    digest = _sha256_file(path)
+    if digest is not None:
+        _LOCKFILE_DIGESTS[path] = (key, digest)
+    return digest
+
+
 def _lockfile_hash() -> str:
     """Return ``sha256(uv.lock)`` or ``""`` (with a typed reason logged)."""
     path = _lockfile_path()
     if path is None:
         logger.info("environment tier declared reason=lockfile_unavailable detail=no_clio_anchor")
         return ""
-    digest = _sha256_file(path)
+    digest = _cached_sha256(path)
     if digest is None:
         logger.warning("environment tier declared reason=lockfile_unreadable path=%s", path)
         return ""

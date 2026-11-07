@@ -33,10 +33,12 @@ from typing import TYPE_CHECKING, Any, Optional
 
 from clio_agent.gact.permission_delivery import publish_permission_event as publish_permission
 from clio_agent.gact.runtime.grant_revocation import revoke_root_grant
+from clio_agent.gact.runtime.permission_actions import POLICY_ALLOWING, allows
 from clio_agent.gact.runtime.permission_policies import (
     NETWORK_EGRESS_REQUEST_KIND,
     _host_action_for,
 )
+from clio_agent.runtime.commitment_activity import track
 
 if TYPE_CHECKING:
     from fastapi import FastAPI
@@ -90,9 +92,8 @@ WRITE_METHODS = frozenset({"POST", "PUT", "PATCH", "DELETE"})
 #: registry at boot so a recorded grant survives a restart — RULE 4, no new store).
 GRANTED_ROOTS_CONFIG_KEY = "granted_write_roots"
 
-#: How long a deny-mode egress prompt blocks the chokepoint connection thread before a typed
-#: timeout denial (mirrors ``permission_timeout.PERMISSION_REQUEST_TIMEOUT_S``).
-_EGRESS_GATE_TIMEOUT_S = 600.0
+#: An egress prompt waits for the person's answer, counted as turn progress (CT13); tests only.
+_EGRESS_GATE_TIMEOUT_S: float | None = None
 
 #: Bound on DISTINCT concurrently-pending deny-mode egress prompts (review finding 4): a flood
 #: of unknown-domain CONNECTs must not spawn unbounded blocked prompts. Connects to the SAME
@@ -136,11 +137,11 @@ def _active_session_for_workspace(app: "FastAPI", workspace_id: str) -> str:
     sessions = getattr(app.state, "sessions", None)
     if sessions is None:
         return ""
-    try:
-        rows = sessions.list(workspace_id=workspace_id)
-    except TypeError:
-        rows = [s for s in sessions.list() if getattr(s, "workspace_id", "") == workspace_id]
-    return str(getattr(rows[0], "id", "") or "") if rows else ""
+    from clio_agent.gact.session_records import PageQuery  # noqa: PLC0415
+
+    # The newest created session of the workspace, from the index: no row is read.
+    ids = sessions.ids(PageQuery(workspace_id=workspace_id, archived=None))
+    return ids[0] if ids else ""
 
 
 def _emit_boundary(
@@ -264,7 +265,7 @@ def emit_boundary_for_derived_policy(
         return
     emit_boundary_granted(
         app,
-        kind=KIND_DOMAIN,
+        kind=str(policy.get("kind") or KIND_DOMAIN),  # domain, or browser_host (BR8)
         scope=SCOPE_WORKSPACE if str(policy.get("scope")) == SCOPE_WORKSPACE else SCOPE_SESSION,
         grantor=GRANTOR_MODEL_REQUEST,
         pattern=host,
@@ -441,9 +442,7 @@ def replay_persisted_root_grants(app: "FastAPI") -> None:
                 logger.warning("root grant replay skipped reason=replay_failed error=%r", exc)
 
 
-# --------------------------------------------------------------------------- #
-# Deny-mode egress gate (opt-in per workspace)
-# --------------------------------------------------------------------------- #
+# --- Deny-mode egress gate (opt-in per workspace) ------------------------------- #
 
 
 def workspace_deny_mode(app: "FastAPI", workspace_id: str) -> bool:
@@ -570,7 +569,7 @@ def _egress_gate_decision(app: "FastAPI", rec: "EgressRecord") -> str:
         if action == "deny":
             _record_egress_denied(app, workspace_id, host, reason=REASON_EGRESS_POLICY_DENY)
             return "deny"
-        if action in {"allow", "allow_session", "allow_workspace"}:
+        if action in POLICY_ALLOWING:
             return "allow"
         return _prompt_egress(app, workspace_id, rec)
     except Exception as exc:  # noqa: BLE001 — a deny-mode decision error must fail closed, typed
@@ -610,7 +609,7 @@ def _write_gate_decision(app: "FastAPI", rec: "EgressRecord") -> Optional[str]:
         return None  # write-gate OFF (default) → existing behaviour, no new gating
     host = (rec.host or "").strip().lower()
     action = _host_action_for(app, workspace_id=workspace_id, host=host)
-    if action in {"allow", "allow_session", "allow_workspace"}:
+    if action in POLICY_ALLOWING:
         return "allow"  # already write-granted (sticky) — no prompt
     if action == "deny":
         _record_egress_denied(app, workspace_id, host, reason=REASON_EGRESS_WRITE_POLICY_DENY)
@@ -694,7 +693,8 @@ def _prompt_egress(
             )
             return "deny"
         _emit_egress_requested(app, str(row.get("session_id") or ""), row)
-    resolved = evt.wait(timeout=_EGRESS_GATE_TIMEOUT_S)
+    with track(True, session_id=str(row.get("session_id") or "") or None):
+        resolved = evt.wait(timeout=_EGRESS_GATE_TIMEOUT_S)
     with _PENDING_EGRESS_LOCK:
         prompt["waiters"] -= 1
         if prompt["waiters"] <= 0:
@@ -704,7 +704,7 @@ def _prompt_egress(
         _record_egress_denied(app, workspace_id, host, reason=REASON_EGRESS_TIMEOUT)
         return "deny"
     action = str(row.get("action") or "deny")
-    return "allow" if action in {"allow", "allow_session", "allow_workspace"} else "deny"
+    return "allow" if allows(action) else "deny"
 
 
 def _emit_egress_requested(app: "FastAPI", session_id: str, row: dict[str, Any]) -> None:

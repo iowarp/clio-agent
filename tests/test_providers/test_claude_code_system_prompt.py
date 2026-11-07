@@ -19,7 +19,7 @@ from typing import Any
 import pytest
 from dspy.lm15 import FunctionTool, Message, Request
 
-from clio_agent.providers import claude_code_engine
+from clio_agent.providers import claude_code_conversation
 from clio_agent.providers.claude_code_options import build_sdk_options
 from clio_agent.providers.claude_code_sessions import _reset_sessions_for_tests
 from tests import _fake_claude_sdk as fake
@@ -28,10 +28,10 @@ from tests import _fake_claude_sdk as fake
 @pytest.fixture(autouse=True)
 def _clean_pool() -> Any:
     _reset_sessions_for_tests()
-    claude_code_engine._CONVERSATIONS.clear_for_tests()
+    claude_code_conversation.forward_resets().clear_for_tests()
     yield
     _reset_sessions_for_tests()
-    claude_code_engine._CONVERSATIONS.clear_for_tests()
+    claude_code_conversation.forward_resets().clear_for_tests()
 
 
 def _system(options: Any) -> str:
@@ -68,7 +68,8 @@ async def test_tool_rules_ride_the_system_prompt(monkeypatch: pytest.MonkeyPatch
     await fake.drive(request)
 
     system = _system(sdk.clients[0].options)
-    assert system.startswith("You are clio.\n\n# How you act")
+    # Stable tool text first, the system prompt (ending in per-session facts) last.
+    assert system.startswith("# How you act") and system.endswith("You are clio.")
     assert "- search: Search." in system
     assert "# How you act" not in sdk.queries()[0][0]
 

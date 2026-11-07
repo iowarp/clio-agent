@@ -186,7 +186,7 @@ def test_anonymous_consumed_versions_use_their_exact_retained_objects(
             app,
             session.id,
             tool_name="fs_read_file",
-            args={"filepath": str(source)},
+            args={"path": str(source)},
             call_id=f"read-{i}",
             ok=True,
             result=None,

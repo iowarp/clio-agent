@@ -24,6 +24,7 @@ from fastapi.testclient import TestClient
 
 from clio_agent.gact.agents.resolution import plugin_service
 from clio_agent.gact.app import build_app
+from clio_agent.gact.session_records import PageQuery
 from clio_agent.gact.spotter_arming import (
     REFUSAL_WATCHER_PROVENANCE_UNAVAILABLE,
     REFUSAL_WATCHER_UNMOUNTABLE,
@@ -187,7 +188,7 @@ def test_disabled_provenance_refuses_arming_with_the_remedy(
     assert error["error"] == REFUSAL_WATCHER_PROVENANCE_UNAVAILABLE
     assert "provenance_agentic_disabled" in error["details"]["detail"]
     assert "provenance.agentic.providers" in error["details"]["remedy"]
-    assert app.state.sessions.list() == []
+    assert app.state.sessions.select(PageQuery(archived=None)) == []
 
 
 def test_flowcept_query_default_without_settings_is_a_typed_problem(

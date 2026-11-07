@@ -36,11 +36,12 @@ import pytest
 from hypothesis import HealthCheck, given, settings
 from hypothesis import strategies as st
 
+from clio_agent.arc.chunk_records import full_body
 from clio_agent.arc.context_view import fold_atoms
 from clio_agent.arc.lane_index import INDEX_SCOPE, decode_index
 from clio_agent.arc.live import _MemoryStore
 from clio_agent.arc.memory import ARCMemory
-from clio_agent.arc.schema import Segment, encode_segments
+from clio_agent.arc.schema import Segment
 from clio_agent.arc.storage import ClioCoreStore, make_arc_store
 from clio_agent.arc.working_set_fold import FoldingSegmentStore
 
@@ -210,23 +211,29 @@ def test_a_cold_read_after_compaction_fetches_only_chunks_from_the_anchor() -> N
 
         fetched: list[str] = []
         scans: list[str] = []
-        real_get, real_scan = store.get, store.scan
+        real_get, real_get_raw, real_scan = store.get, store.get_raw, store.scan
 
         def get(kind: str, name: str) -> bytes | None:
             fetched.append(name)
             return real_get(kind, name)
+
+        def get_raw(kind: str, name: str, **kwargs: Any) -> bytes | None:
+            fetched.append(name)  # a chunk record (the append-only format)
+            return real_get_raw(kind, name, **kwargs)
 
         def scan(kind: str, prefix: str = "") -> Any:
             scans.append(prefix)
             return real_scan(kind, prefix)
 
         store.get = get  # type: ignore[method-assign]
+        store.get_raw = get_raw  # type: ignore[method-assign]
         store.scan = scan  # type: ignore[method-assign]
         try:
             cold = ARCMemory(store=store)
             assert _ids(cold.render_segments(sid, "agentA")) == warm
         finally:
             store.get, store.scan = real_get, real_scan  # type: ignore[method-assign]
+            store.get_raw = real_get_raw  # type: ignore[method-assign]
         index_name = f"{sid}__{INDEX_SCOPE.replace('/', '~')}"
         assert index_name in fetched
         lane = [n for n in fetched if "___events~w~" in n and n != index_name]
@@ -271,9 +278,10 @@ def test_a_session_stored_without_the_index_is_migrated_once() -> None:
             "_events/w/span2": [summary, a4],
         }
         for scope, atoms in legacy.items():
-            store.put("segments", f"{sid}__{scope.replace('/', '~')}", encode_segments(atoms))
+            store.put_at("segments", f"{sid}__{scope.replace('/', '~')}", full_body(atoms), 0)
         for scope in ("agentA", "agentB"):  # the old live-text companions
-            store.put("segments", f"{sid}__{scope}", encode_segments([]), search_text="old text")
+            name = f"{sid}__{scope}"
+            store.put_at("segments", name, full_body([]), 0, search_text="old text")
 
         arc = ARCMemory(store=store)
         assert [s.content["text"] for s in arc.render_segments(sid, "agentA")] == ["SUM", "a4"]

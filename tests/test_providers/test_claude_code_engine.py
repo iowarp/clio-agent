@@ -37,7 +37,7 @@ from dspy.lm15 import TimeoutError as LMTimeoutError
 from clio_agent.gact import context as gact_context
 from clio_agent.gact.agents.clio_react import ClioReAct
 from clio_agent.lm.engines.text_tools import FENCE, INVALID_TOOL_CALL, TURN_REMINDER
-from clio_agent.providers import claude_code_engine, stateful_common
+from clio_agent.providers import claude_code_conversation, claude_code_engine, stateful_common
 from clio_agent.providers.claude_code_engine import AsyncClaudeCodeEngine, ClaudeCodeEngine
 from clio_agent.providers.claude_code_errors import ClaudeCodeSignedOutError
 from clio_agent.providers.claude_code_plan_limit import ClaudeCodePlanLimitError
@@ -51,6 +51,13 @@ SEARCH = FunctionTool(
 
 
 # The engine dispatches on the SDK message class names (duck-typed, no SDK import).
+@pytest.fixture(autouse=True)
+def _json_protocol(monkeypatch: pytest.MonkeyPatch) -> None:
+    """These tests cover the fenced JSON call protocol (``lm.text_tool_protocol: json``);
+    the invoke protocol, the default, has its own (``tests/test_lm/test_invoke_calls.py``)."""
+    monkeypatch.setenv("CLIO_TEXT_TOOL_PROTOCOL", "json")
+
+
 class StreamEvent:
     def __init__(self, event: dict[str, Any]) -> None:
         self.event = event
@@ -120,9 +127,18 @@ def _result(**kw: Any) -> ResultMessage:
 
 
 class FakeEntry:
+    """A pooled client: like the real entry, it holds the conversation it was sent."""
+
     def __init__(self, pool: FakePool) -> None:
         self.pool = pool
         self.stderr_ring = SimpleNamespace(tail=lambda: "")
+        self.conversation: Any = None
+        self.pending_reset: str | None = None
+
+    def forget_conversation(self) -> None:
+        from clio_agent.providers.claude_code_sessions import _StreamClientEntry
+
+        _StreamClientEntry.forget_conversation(self)  # type: ignore[arg-type]
 
     async def stream(self, **kwargs: Any) -> Any:
         self.pool.sends.append(kwargs)
@@ -137,9 +153,10 @@ class FakePool:
     def __init__(self) -> None:
         self.turns: list[list[Any] | BaseException] = []
         self.sends: list[dict[str, Any]] = []
+        self.entries: dict[str, FakeEntry] = {}
 
-    def entry_for(self, **_kw: Any) -> FakeEntry:
-        return FakeEntry(self)
+    def entry_for(self, *, session_id: str, **_kw: Any) -> FakeEntry:
+        return self.entries.setdefault(session_id, FakeEntry(self))
 
     def bump_construct(self) -> None:
         return None
@@ -151,10 +168,10 @@ def pool(monkeypatch: pytest.MonkeyPatch) -> Iterator[FakePool]:
     monkeypatch.setattr(claude_code_engine, "_STREAM_CLIENT_POOL", fake)
     # No SDK import/install in a unit test: the pool is faked.
     monkeypatch.setattr(claude_code_engine, "require_claude_agent_sdk", lambda: None)
-    claude_code_engine._CONVERSATIONS.clear_for_tests()
+    claude_code_conversation.forward_resets().clear_for_tests()
     claude_code_engine._SESSION_COST.clear()
     yield fake
-    claude_code_engine._CONVERSATIONS.clear_for_tests()
+    claude_code_conversation.forward_resets().clear_for_tests()
     claude_code_engine._SESSION_COST.clear()
 
 
@@ -216,7 +233,9 @@ def test_the_request_crosses_as_text_with_the_system_on_the_sdk_option(pool: Fak
     response = _run(_request(HEAD))
 
     [send] = pool.sends
-    assert send["system_prompt"].startswith("You are clio.\n\n# How you act")
+    # Stable tool text first, the system prompt (ending in per-session facts) last.
+    assert send["system_prompt"].startswith("# How you act")
+    assert send["system_prompt"].endswith("You are clio.")
     assert send["payload"] == f"[user]\nwhat?\n\n{TURN_REMINDER}"
     assert send["native_blocks"] == []
     parts = response.message.parts
@@ -425,30 +444,25 @@ def test_a_blank_reply_is_a_server_error(pool: FakePool) -> None:
 def test_a_dropped_client_evicts_that_sessions_conversations(
     pool: FakePool, audit: list[dict[str, Any]], loop_scope: None
 ) -> None:
-    """The pool announces a dropped client; the engine resets that GACT session's
-    conversations so the next call is a typed full resend on the fresh client."""
-    from clio_agent.providers import claude_code_sessions
-
+    """A dropped client takes its conversation with it: the next call is a typed full
+    resend. SABOTAGE: make ``forget_conversation`` keep the conversation -> a delta."""
     pool.turns = [[_text("a"), _result()], [_text("b"), _result()]]
     _run(_request(HEAD))
-    claude_code_sessions._notify_client_dropped("sess-a")
+    pool.entries["sess-a"].forget_conversation()
     _run(_request(HEAD, *_step(0)))
 
     first, second = pool.sends
     assert second["session_id"] != first["session_id"]
     assert second["payload"].startswith("[user]\nwhat?")
-    # SABOTAGE: drop the engine's on_client_dropped registration -> a delta -> red.
     assert _stateful(audit)[-1] == ("full", "session_evicted")
 
 
 def test_a_dropped_client_of_another_session_leaves_this_one_kept(
     pool: FakePool, audit: list[dict[str, Any]], loop_scope: None
 ) -> None:
-    from clio_agent.providers import claude_code_sessions
-
     pool.turns = [[_text("a"), _result()], [_text("b"), _result()]]
     _run(_request(HEAD))
-    claude_code_sessions._notify_client_dropped("some-other-session")
+    pool.entry_for(session_id="some-other-session").forget_conversation()
     _run(_request(HEAD, *_step(0)))
     assert _stateful(audit)[-1] == ("delta", None)
 

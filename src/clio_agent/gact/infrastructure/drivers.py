@@ -587,6 +587,7 @@ def _clio_agent_plan(
         str(uuid4()),
         configuration.get("keep_running") == "true",
         configuration.get("desktop_id", ""),
+        target.label,
     )
     commands.append(start_owned_command(launch))
     return DriverPlan(

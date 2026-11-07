@@ -151,6 +151,7 @@ async def connection(
             try:
                 # The connection outlives the turn whose call opened it (enter_connection).
                 host.client = await enter_connection(client)
+                host.tools = None
                 host.stack.push_async_exit(client)
             except BaseException:
                 await host.stack.aclose()

@@ -377,6 +377,10 @@ def _emit_semantic_event(
         )
         trace.event("ARC-AS-SOURCE", "%s", msg)
         raise RuntimeError(msg)
+    from clio_agent.gact.highway_writer import defer_event  # noqa: PLC0415
+
+    if defer_event(app, arc, sid, event, payload):
+        return {}  # recorded behind the call, then projected (gact/highway_writer.py)
     recorded = rec(event)
     if event_type.startswith("artifact."):  # its index record was written first; confirm it
         from clio_agent.gact.artifacts.registry_store import confirm_artifact_event  # noqa: PLC0415
@@ -512,7 +516,8 @@ def _emit_arc_op(
 
     Returns the emitted event dict; its ``event_id`` is stamped onto the written
     segments' ``trace_ref`` (and re-derived identically on replay). ``segments_written``
-    carry FULL segment dicts so replay can reconstruct ARC without prior state;
+    carry FULL segment dicts so replay can reconstruct ARC without prior state (a
+    highway ``semantic_event`` is a reference: see ``arc.replay.logged_segments``);
     ``content`` / ``args`` / ``text`` are in ``SENSITIVE_KEYS`` so SSE redacts them
     while the durable trace keeps them FULL. ``detail_level="off"`` => durable-only
     (these are high-volume, per-segment).
@@ -661,6 +666,9 @@ def _set_app_arc(app: "FastAPI", arc: Any) -> None:
         from clio_agent.gact.resident_ledgers import attach_arc_residency  # noqa: PLC0415
 
         attach_arc_residency(app, arc)  # the one residency owner counts ARC's scopes
+        from clio_agent.gact.recall_index import attach_recall_index  # noqa: PLC0415
+
+        attach_recall_index(app, arc)  # transcript writes keep the recall digests current
 
 
 def _coerce_error_info(value: Any) -> Optional["ErrorInfo"]:

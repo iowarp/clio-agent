@@ -22,6 +22,34 @@ def task_spawn_options(existing: dict[str, Any]) -> dict[str, Any]:
     return options
 
 
+def _group_running(pgid: int) -> bool:
+    """Whether a member of process group ``pgid`` is still running, not just unreaped.
+
+    A descendant that outlived its shell is re-parented to the system's reaper; once
+    it exits it stays in the group as a zombie until that reaper collects it. A
+    zombie holds no pipes and does no work, so it does not keep a task running. Some
+    reapers collect on a timer (a container's init took about 2 s), which every
+    command with a background or substituted process waited out. Where ``/proc`` is
+    not readable the group counts as running, as before.
+    """
+    try:
+        entries = os.listdir("/proc")
+    except OSError:
+        return True
+    for entry in entries:
+        if not entry.isdigit():
+            continue
+        try:
+            with open(f"/proc/{entry}/stat", encoding="ascii", errors="replace") as handle:
+                stat = handle.read()
+        except OSError:
+            continue  # exited while listing
+        fields = stat[stat.rfind(")") + 2 :].split()
+        if len(fields) > 2 and fields[2] == str(pgid) and fields[0] != "Z":
+            return True
+    return False
+
+
 class TaskProcessTree:
     """Own a fresh process group/Job in memory; never reconstruct ownership from a PID."""
 
@@ -115,7 +143,7 @@ class TaskProcessTree:
                 os.killpg(self.pid, 0)
             except ProcessLookupError:
                 return False
-            return True
+            return _group_running(self.pid)
         return False
 
     def terminate(self) -> None:

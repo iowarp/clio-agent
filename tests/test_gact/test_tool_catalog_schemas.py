@@ -67,10 +67,10 @@ def test_gateway_builtins_carry_gateway_description_and_schema() -> None:
 
     rows = {row.name: row for row in _rows()}
     for name, expected_domain, expected_property in (
-        ("fs_read_file", "workspace", "filepath"),
+        ("fs_read_file", "workspace", "path"),
         ("fs_list_directory", "workspace", "path"),
         ("fs_search_text", "workspace", "query"),
-        ("fs_write_file", "workspace", "filepath"),
+        ("fs_write_file", "workspace", "path"),
         ("fs_edit_file", "workspace", "old_string"),
         ("shell_bash", "shell", "command"),
     ):
@@ -216,7 +216,7 @@ def test_catalog_route_serves_schema_rows(client: TestClient) -> None:
     fs_read = rows["fs_read_file"]
     assert fs_read["domain"] == "workspace"
     assert fs_read["input_schema"]["type"] == "object"
-    assert "filepath" in fs_read["input_schema"]["properties"]
+    assert "path" in fs_read["input_schema"]["properties"]
     assert fs_read["output_schema"]
 
     create_artifact = rows["create_artifact"]

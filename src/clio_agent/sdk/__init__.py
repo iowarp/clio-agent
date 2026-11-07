@@ -14,7 +14,7 @@ from clio_agent.sdk.hooks import HOOK_EVENTS, HookEvent, hook
 from clio_agent.sdk.model import Prefers, Requires
 from clio_agent.sdk.plugin import Pack, Plugin
 from clio_agent.sdk.subagent import PromptFile, Subagent
-from clio_agent.sdk.tools import native_tool, tool
+from clio_agent.sdk.tools import host_call, native_tool, tool
 from clio_agent.sdk.versions import PluginRef
 from clio_agent.sdk.workflow import Step, Workflow, WorkflowError
 
@@ -37,6 +37,7 @@ __all__ = [
     "Step",
     "Subagent",
     "hook",
+    "host_call",
     "native_tool",
     "tool",
     "Workflow",

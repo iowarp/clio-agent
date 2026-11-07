@@ -1,0 +1,20 @@
+{
+  "$schema": "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json",
+  "name": "streaming",
+  "version": "1.0.0",
+  "description": "Streams: named artifacts whose entries live in clio-core, written many times a second by a script, shown live in the side panel and by the dashboards bound to them (open_stream, read_stream, stop_stream and the stream binding in run_code).",
+  "author": {"name": "IoWarp Team"},
+  "license": "BSD-3-Clause",
+  "keywords": ["streams", "live", "monitoring", "dashboards"],
+  "extensions": {
+    "ai.iowarp.clio": {
+      "kernel_bindings": {
+        "stream": {
+          "source": "ai.iowarp.clio/kernel/stream.py",
+          "requires": ["open_stream"],
+          "host": "ai.iowarp.clio/host/stream.py"
+        }
+      }
+    }
+  }
+}

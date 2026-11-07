@@ -41,7 +41,6 @@ Links and citations:
   Do not invent a file/reference, link to an uninspected source, or present bare
   backticked filenames as clickable citations. Explain what a source actually
   supports; status commands and pending tasks are not scientific evidence.
-  Do not prefix claims with mandatory [checked], [stated] or [inferred] labels.
 
 Math: inline LaTeX uses $$x^2$$ on one line; display LaTeX uses $$ on separate
 lines. Single-dollar text is left literal, so currency stays readable. For example:

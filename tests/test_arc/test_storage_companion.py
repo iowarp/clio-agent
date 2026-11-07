@@ -146,6 +146,25 @@ def test_events_family_put_is_one_native_call() -> None:
     assert [op for op, _n in cte.calls] == ["PutBlob"]
 
 
+def test_an_offset_put_is_one_raw_native_put_at_that_offset() -> None:
+    """``put_at`` (the chunk records' append) sends the bytes as they are -- no frame,
+    no base64, no padding -- at the offset, and an ``_events`` chunk probes no companion."""
+    cte = _RecordingCte()
+    store = _store(cte)
+    sent: list[tuple[str, bytes, int]] = []
+    client = store._client
+
+    class _Offsets(type(client)):  # type: ignore[misc]
+        def AsyncPutBlob(self, tag_id: int, name: str, data: Any, off: int = 0) -> Any:  # noqa: N802
+            sent.append((name, bytes(data), off))
+            return super().AsyncPutBlob(tag_id, name, data, off)
+
+    store._client = _Offsets(cte.calls)
+    store.put_at("segments", _events_name("_events/m"), b"\x00\x01raw", 4242)
+    assert sent == [(_events_name("_events/m"), b"\x00\x01raw", 4242)]
+    assert [op for op, _n in cte.calls] == ["PutBlob"]
+
+
 def test_indexed_scope_without_text_drops_any_stale_companion() -> None:
     """One async delete of the companion, whether or not it exists (a missing one is a
     no-op): the blocking ``GetBlobSize`` existence probe (GIL-held) is gone, so a stale
@@ -196,6 +215,61 @@ def test_non_segment_kinds_are_untouched_by_the_policy() -> None:
     assert [op for op, _n in cte.calls] == ["PutBlob", "DelBlob"]
 
 
+def test_a_delete_sends_the_record_and_its_companion_in_one_round_trip() -> None:
+    """Both ``DelBlob`` are issued before either reply is awaited (one round trip, not
+    two in a row); each is still awaited, so a stalled reply ends the delete typed.
+
+    SABOTAGE: await the record's delete before issuing the companion's and the calls
+    interleave (issue, await, issue, await).
+    """
+    cte = _RecordingCte()
+    store = _store(cte)
+
+    class _Awaited(_Ready):
+        def __init__(self, name: str) -> None:
+            super().__init__(0)
+            self.name = name
+            self.seen = False
+
+        def done(self) -> bool:
+            if not self.seen:
+                self.seen = True
+                cte.calls.append(("Await", self.name))
+            return True
+
+    class _Deletes(_Client):
+        def AsyncDelBlob(self, _tag_id: int, name: str) -> _Ready:  # noqa: N802
+            cte.calls.append(("DelBlob", name))
+            return _Awaited(name)
+
+    store._client = _Deletes(cte.calls)
+    store.delete("segments", "sess__agentA")
+    assert cte.calls == [
+        ("DelBlob", "sess__agentA"),
+        ("DelBlob", "sess__agentA.text"),
+        ("Await", "sess__agentA"),
+        ("Await", "sess__agentA.text"),
+    ]
+
+
+def test_a_delete_removes_the_record_and_its_companion_on_clio_core(tmp_path: Any) -> None:
+    """Against the real store: the record and its search companion are gone, a record
+    without a companion deletes too, and deleting what is absent is a no-op.
+
+    SABOTAGE: delete only ``name`` in ``ClioCoreStore.delete`` and the companion stays.
+    """
+    store = _clio_core(str(tmp_path / "deletes"))
+    indexed, plain = _events_name("agentA"), _events_name("_events/m")
+    store.put("segments", indexed, b"x", search_text="hello")
+    store.put("segments", plain, b"y")
+    assert store.exists("segments", indexed + ".text")
+    for name in (indexed, plain):
+        store.delete("segments", name)
+        assert store.get("segments", name) is None
+    assert not store.exists("segments", indexed + ".text")
+    store.delete("segments", indexed)  # absent now: a no-op, not an error
+
+
 # --------------------------------------------------------------------------- #
 # #1339 review F4: the live-lane audit evidence -- one append re-puts ONLY the
 # active chunk record, never a sibling. Against the REAL clio-core store (not the
@@ -218,6 +292,30 @@ def test_variant_put_carries_no_store_put_audit_row(
 
     rows = audit_path.read_text().splitlines() if audit_path.exists() else []
     assert not any(json.loads(row)["stage"] == "store.put" for row in rows)
+
+
+def test_an_append_is_one_put_of_its_record_at_the_chunk_end(
+    tmp_path: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The audit row of an append into a chunk that holds records already: one
+    ``store.put`` naming the chunk, at the stored end offset, carrying one record."""
+    from clio_agent.arc.chunk_records import END, MAGIC, encode_records  # noqa: PLC0415
+
+    monkeypatch.setattr(conf, "_STORE", conf.ConfigStore(home=tmp_path, cwd=tmp_path))
+    audit_path = tmp_path / "audit.jsonl"
+    monkeypatch.setenv("CLIO_STREAM_AUDIT_LOG", str(audit_path))
+    sid = "sess-offset-audit"
+    ss = SegmentStore(_clio_core(str(tmp_path / "arc")))
+    first = ss.append(sid, "_events", "semantic_event", {"n": 1})
+    before = len(audit_path.read_text().splitlines())
+    second = ss.append(sid, "_events", "semantic_event", {"n": 2})
+    rows = [json.loads(row) for row in audit_path.read_text().splitlines()[before:]]
+    (row,) = [row for row in rows if row["stage"] == "store.put"]
+    assert row["name"] == SegmentStore._record_name(sid, "_events")
+    assert row["offset"] == len(MAGIC) + len(encode_records([first]))
+    assert row["size"] == len(encode_records([second])) + len(END)
+    cold = SegmentStore(ss._store).list_segments(sid, "_events")
+    assert [s.id for s in cold] == [first.id, second.id]
 
 
 def test_one_append_on_a_full_three_chunk_lane_puts_only_the_active_chunk(
@@ -256,3 +354,15 @@ def test_one_append_on_a_full_three_chunk_lane_puts_only_the_active_chunk(
     for n in (1, 2, 3):
         sibling_name = SegmentStore._record_name(sid, chunk_scope(base, n))
         assert not any(row["name"] == sibling_name for row in put_rows)
+
+
+def test_record_kinds_read_by_exact_name_never_probe_for_a_companion() -> None:
+    """Artifact index records are point lookups; a write must not probe for a companion.
+
+    SABOTAGE: drop ``artifact_index`` from ``NEVER_INDEXED_KINDS`` and this fails.
+    """
+    from clio_agent.arc.companion_policy import may_carry_companion
+
+    for kind in ("task_lookup", "task_open", "session_records", "artifact_index"):
+        assert not may_carry_companion(kind, "any-name")
+    assert may_carry_companion("memories", "any-name")

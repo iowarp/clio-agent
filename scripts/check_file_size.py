@@ -153,8 +153,8 @@ RATCHET_BASELINE: dict[str, int] = {
     # comment lines explaining why the stamp is deliberately absent here.
     # MERGE (PR #1298 x #1310): 1030 -> 1032. Both campaigns' call-site lines
     # coexist; neither side's additions were dropped.
-    "src/clio_agent/agent.py": 905,  # Cooperative cancellation moved to runtime/cancellation.py.
-    "src/clio_agent/arc/memory.py": 1065,  # 11a: the segment-plane surface moved to arc/memory_segments.py
+    # Scope-lock port (c3fbe965): get_session_invocations (no caller) deleted, 1065 -> 1012.
+    "src/clio_agent/arc/memory.py": 1012,  # 11a: the segment-plane surface moved to arc/memory_segments.py
     # #900: +4 for the CREATE_BREAKAWAY_FROM_JOB daemon-spawn flag + its rationale.
     # owner ruling 2026-07-14: +3 to route explicit =local through the loud
     # DEGRADED banner (owner module: arc/init_degradation.py).
@@ -172,13 +172,6 @@ RATCHET_BASELINE: dict[str, int] = {
     # #1439 (C1): 863 -> 843. The version gate + config adoption live in the owner
     # module arc/clio_core_daemon_version.py; the PID-identity helpers moved to
     # arc/pid_identity.py (re-exported here under their old names).
-    # #737 S2 fold owner module. Crossed the 800 new-file cap restoring the FROZEN
-    # arc.op reproducibility contract (§2 / GOAL.md DoD #4): the five working-set write
-    # overrides now emit a per-op arc.op via _emit_op so arc.replay rebuilds the live
-    # plane byte-identically (the S2 slice had dropped these, breaking replay). Footprint
-    # minimized to concise docstrings; the per-op payload passing is irreducible. Ratchet
-    # down with the #714/#767 decomposition.
-    "src/clio_agent/arc/working_set_fold.py": 802,  # 11a: view/index/companion/search in owner modules
     # #948 S4: +14 for the children-must-be-react hierarchy rule (a predict/CoT
     # parent would silently strand its children now that the settle loop routing
     # for it is deleted; typed validation error instead).
@@ -451,7 +444,7 @@ RATCHET_BASELINE: dict[str, int] = {
     # Ratchet down 2469 -> 2467 (naming reversal): removed the now-unneeded
     # codex->chatgpt boot migration call (the provider id never changed).
     # Ratchet down 2435 -> 2419: the transcript-store boot moved to gact/transcript_file.py.
-    "src/clio_agent/gact/app.py": 1820,
+    "src/clio_agent/gact/app.py": 1789,  # -9 (provider swap) and the command table moved to runtime/command_table.py
     # #971 GAP A (S5 live gate): the artifact mint funnel was at the 800 cap; +24
     # adds the designation-by-RESULT channel (ndp_stage_resource writes an
     # intermediate whose path rides only ``local_path`` in the result — the arg
@@ -569,7 +562,7 @@ RATCHET_BASELINE: dict[str, int] = {
     # builders.py above (owner module tools/mcp_header_mismatch.py).
     # MERGE (PR #1298 x #1310): 962 -> 972. The two campaigns' route additions are
     # disjoint and both survive intact.
-    "src/clio_agent/gact/routes/mcp.py": 903,  # declared MCP assembly moved to routes/mcp_specs.py
+    "src/clio_agent/gact/routes/mcp.py": 850,  # -53: the MCP prompt routes became commands
     # #947 DEBT (recorded 2026-07-18, #948 S4 branch): the MCP-apps landing grew
     # these files past their baselines without a ratchet update (it merged to
     # develop with the check job red). Recording current counts makes the debt
@@ -732,7 +725,7 @@ RATCHET_BASELINE: dict[str, int] = {
     # wake_on_parent_activity call site right after the tool.call.completed
     # publish (a lazy import + one call). All gating/coalesce/wake logic lives
     # in the owner module gact/spotter_watcher.py.
-    "src/clio_agent/gact/tool_observer.py": 907,  # Row identity/merging moved to tool_call_merge.
+    "src/clio_agent/gact/tool_observer.py": 904,  # Row identity/merging moved to tool_call_merge.
     # Collector-collapse work already on this branch grew the file to 1303 (>the
     # recorded 986 baseline) before this entry was updated — pre-existing, not
     # introduced here. P5 (wire semantics): +34 for the waited_tasks union-merge
@@ -860,7 +853,7 @@ RATCHET_BASELINE: dict[str, int] = {
     # #1201 (adversarial review, PR #1202): +4 to register the mcp_yaml doctor
     # sub-check (import + the probe_mcp_yaml_declarations() call); the probe
     # logic lives in the owner module runtime/mcp_launcher.py.
-    "src/clio_agent/runtime/status.py": 1101,
+    "src/clio_agent/runtime/status.py": 1101,  # optional rows moved to runtime/doctor_rows.py
     # #932: +62 for preloaded tool definitions (start() without the list_tools
     # fan-out) and namespace-direct call routing with lazy per-namespace
     # clients — the executor IS the owner module for this.
@@ -925,7 +918,11 @@ RATCHET_BASELINE: dict[str, int] = {
     # thin sync delegate to AsyncMCPToolExecutor.merge_namespace_tools
     # (mcp_executor.py), the actual live-tool-table merge target for an
     # on-demand mount (gact/agents/builders.py).
-    "src/clio_agent/tools/execution.py": 1052,  # shared task submission replaces transparent waits
+    # -11: the hook and circuit-breaker notes moved to reminder templates
+    # (tools/harness_notes.py).
+    # -2: a raised call's sandbox-boundary note (#1905) added 4 lines; a magic trailing
+    # comma dropped from one observer call freed 6.
+    "src/clio_agent/tools/execution.py": 983,
     # #1201 (adversarial review, PR #1202): not previously baselined (under the
     # 800 default cap). +24 for the unreadable-mcp.yaml snapshot (a reset-per-
     # call list + lock, mirroring the existing per-server MCPServerSpec.
@@ -1010,7 +1007,6 @@ RATCHET_BASELINE: dict[str, int] = {
     # _tool_visible_to_model moved to the new owner module
     # tools/tool_ui_metadata.py (re-exported here), landing well under either
     # recorded value.
-    "src/clio_agent/tools/mcp_executor.py": 850,
     # AF-FOLD (PR #1298): ratcheted DOWN 817 -> 816. Credential redaction moved to
     # the owner module tools/mcp_redaction.py, which more than paid for the
     # ``declared`` pre-expansion field this file gained.

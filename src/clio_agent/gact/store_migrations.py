@@ -182,6 +182,42 @@ def _run_session_records(app: Any) -> dict[str, Any]:
     return app.state.sessions.import_legacy()
 
 
+_COLUMNS = "session_record_columns"
+
+
+def _session_record_columns_owed(app: Any) -> bool:
+    # Owed without its marker, and again while any index row is unfilled: a row an
+    # older CLIO indexed after the migration ran (a downgrade, then this CLIO again).
+    if app.state.task_history.index.done_marker(_COLUMNS) is None:
+        return True
+    sessions = getattr(app.state, "sessions", None)
+    if sessions is not None:
+        return bool(sessions.index.unfilled_ids())  # the bound index: no record read
+    from clio_agent.gact.session_index_columns import unfilled_in_store  # noqa: PLC0415
+    from clio_agent.gact.session_records import INDEX_BUCKETS, KIND  # noqa: PLC0415
+
+    store = getattr(app.state.task_history.arc, "_store", None)  # `clio-agent migrate`
+    return store is not None and unfilled_in_store(store, KIND, INDEX_BUCKETS) > 0
+
+
+def _run_session_record_columns(app: Any) -> dict[str, Any]:
+    # Fill the extension columns of every unfilled index row from its record (a batch
+    # at a time), here and never at a request; an interrupted run leaves the rest
+    # unfilled for the next. The marker is written last.
+    sessions = app.state.sessions
+    unfilled = sessions.index.unfilled_ids()
+    changed = sum(sessions.reindex(unfilled[at : at + 64]) for at in range(0, len(unfilled), 64))
+    return _mark_session_record_columns(app, {"filled": len(unfilled), "reindexed": changed})
+
+
+def _mark_session_record_columns(app: Any, details: dict[str, Any] | None = None) -> dict[str, Any]:
+    history = app.state.task_history
+    details = details or {"filled": 0, "reindexed": 0}
+    value = {"completed_at": datetime.now(UTC).isoformat(), **details}
+    history.confirm_write(partial(history.index.put_done_marker, _COLUMNS, value))
+    return details
+
+
 def _session_records_input(app: Any) -> bool:
     return _legacy_sessions_file() is not None
 
@@ -249,6 +285,12 @@ def _mark_artifact_index_empty(app: Any) -> dict[str, Any]:
     return {"records": 0, "fold_conflicts": 0}
 
 
+def _run_recall_index(app: Any) -> dict[str, Any]:
+    from clio_agent.gact.recall_index import build_recall_index  # noqa: PLC0415
+
+    return build_recall_index(app)
+
+
 #: Every store migration, in run order. Name = marker name; never rename a shipped one.
 MIGRATIONS: tuple[StoreMigration, ...] = (
     StoreMigration(
@@ -257,6 +299,15 @@ MIGRATIONS: tuple[StoreMigration, ...] = (
         _run_session_records,
         boot_reason="session_records_import_owed",
         has_input=_session_records_input,
+    ),
+    StoreMigration(
+        _COLUMNS,
+        "Fill the session index's counter and control columns from each session record",
+        _run_session_record_columns,
+        _session_record_columns_owed,
+        boot_reason="session_record_columns_owed",
+        has_input=_holds_conversation,
+        mark_empty=_mark_session_record_columns,
     ),
     StoreMigration(
         "task_event_lane",
@@ -297,6 +348,12 @@ MIGRATIONS: tuple[StoreMigration, ...] = (
         _artifact_index_owed,
         has_input=_holds_conversation,
         mark_empty=_mark_artifact_index_empty,
+    ),
+    StoreMigration(
+        "recall_index_build",
+        "Store each conversation's search digest (recall and reference search read it)",
+        _run_recall_index,
+        has_input=_holds_conversation,
     ),
 )
 

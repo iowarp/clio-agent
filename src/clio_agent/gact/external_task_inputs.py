@@ -145,6 +145,9 @@ async def _input(self: ExternalTasks, host: ExternalConnection, params: Any, req
         ):
             inline = None
         if not candidates and inline is not None:
+            lazy = self._lazy.pop(inline.handle, None)
+            if lazy is not None:  # a read-only call asking for input: admit it first
+                lazy.ensure()
             current = self.history.task_snapshot(inline.handle)
             if (
                 current is None
