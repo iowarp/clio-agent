@@ -14,7 +14,7 @@ from typing import Any
 from clio_agent.providers.copilot.errors import teardown_errors
 from clio_agent.providers.usage.capture import COPILOT_ACCOUNT
 from clio_agent.providers.usage.openrouter import poll_interval_s
-from clio_agent.providers.usage.readers import copilot_snapshot
+from clio_agent.providers.usage.readers import copilot_quota_unrecognised, copilot_snapshot
 from clio_agent.providers.usage.snapshot import USAGE_BOARD, unmetered
 
 _TIMEOUT_S = 10.0
@@ -47,8 +47,12 @@ async def read_copilot_quota(client: Any, github_token: str) -> None:
             COPILOT_ACCOUNT, f"copilot_quota_unreadable: {type(exc).__name__}"
         )
         return
-    snapshot = copilot_snapshot(COPILOT_ACCOUNT, getattr(result, "quota_snapshots", None) or {})
-    # None: every quota the account has is unlimited, so nothing is metered.
+    snapshots = getattr(result, "quota_snapshots", None) or {}
+    snapshot = copilot_snapshot(COPILOT_ACCOUNT, snapshots)
+    if snapshot is None and (reason := copilot_quota_unrecognised(snapshots)):
+        USAGE_BOARD.record_failure(COPILOT_ACCOUNT, reason)
+        return
+    # None here: every known quota the account has is unlimited, so nothing is metered.
     USAGE_BOARD.record(snapshot or unmetered(COPILOT_ACCOUNT, source="copilot_account_quota"))
 
 

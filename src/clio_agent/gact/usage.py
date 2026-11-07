@@ -57,7 +57,13 @@ def _usage_cache_tokens(usage: dict[str, Any]) -> tuple[int, int, bool]:
     details = usage.get("prompt_tokens_details") or usage.get("input_tokens_details") or {}
     details = details if isinstance(details, dict) else {}
     read_keys = ("cache_read_input_tokens", "cached_tokens")
-    write_keys = ("cache_creation_input_tokens", "cache_write_input_tokens")
+    # dspy's engine-LM usage (``call_result.usage_dict``) reports writes as
+    # ``prompt_tokens_details.cache_creation_tokens``.
+    write_keys = (
+        "cache_creation_input_tokens",
+        "cache_write_input_tokens",
+        "cache_creation_tokens",
+    )
     cache_read = int(
         usage.get("cache_read_input_tokens")
         or details.get("cached_tokens")
@@ -69,6 +75,7 @@ def _usage_cache_tokens(usage: dict[str, Any]) -> tuple[int, int, bool]:
         or usage.get("cache_write_input_tokens")
         or details.get("cache_creation_input_tokens")
         or details.get("cache_write_input_tokens")
+        or details.get("cache_creation_tokens")
         or 0
     )
     measured = any(key in usage for key in (*read_keys, *write_keys)) or any(

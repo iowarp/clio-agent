@@ -101,7 +101,7 @@ class AsyncCopilotEngine:
     supports_reasoning = True
     tool_protocol = "text_block"
     #: OpenAI-style usage: the runtime's ``input_tokens`` counts the whole prompt,
-    #: cached reads included (unverified live; see docs/providers/copilot.md).
+    #: cache writes included (live: 15059 input with 15049 written).
     input_tokens_exclude_cache = False
 
     def __init__(

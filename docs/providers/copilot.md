@@ -107,10 +107,14 @@ runtimes are reaped after `providers.copilot.session_idle_ttl_s`
 
 Premium models draw on the seat's monthly premium-request allowance. CLIO reads
 the allowance with `account.getQuota` and shows it in the fleet usage view as a
-"Monthly premium" window. An unlimited quota type is left out, and an unreadable
-quota keeps the last reading with `copilot_quota_unreadable` rather than showing
-zero. Each call's `cost` multiplier and tokens are recorded on the
-`provider.call_usage` row. An exhausted allowance raises `copilot_plan_limit`
+"Monthly premium" window. An unlimited quota type is left out. The account is
+shown unmetered only when every known quota type in the reply says it is
+unlimited. An empty or unrecognised reply, or a failed read, keeps the last
+reading and records `copilot_quota_unreadable` with the keys it saw, rather than
+showing zero or unmetered. Each call's `cost` multiplier (premium requests) and
+tokens are recorded on the `provider.call_usage` row. The runtime's input tokens
+count the whole prompt, cache writes included, and CLIO's turn usage shows the
+cache writes separately. An exhausted allowance raises `copilot_plan_limit`
 with the reset time from the last reading.
 
 ## Troubleshooting
