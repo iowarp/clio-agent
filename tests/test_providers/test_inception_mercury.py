@@ -276,3 +276,52 @@ def test_an_append_shaped_model_is_refused_with_its_own_reason(caplog) -> None:
         extras = build_request_kwargs(config)
     assert diffusion.DIFFUSING_FIELD not in _body(extras)
     assert "reason=model_stream_shape_append" in caplog.text
+
+
+# --------------------------------------------------------------------------- #
+# The catalog row (the picker's diffusion tag reads it)
+# --------------------------------------------------------------------------- #
+
+
+def _catalog_row(provider_id: str, api_base: str, model_id: str) -> dict[str, Any]:
+    from clio_agent.gact.provider_catalog import model_catalog_row
+    from clio_agent.gact.types import LMProviderPreset
+    from clio_agent.providers.handshake.model import (
+        AuthState,
+        ConnectivityState,
+        DiscoveredModel,
+        HandshakeReport,
+    )
+
+    preset = LMProviderPreset(
+        id=provider_id, label=provider_id, provider="openai", api_base=api_base, suggested_model=""
+    )
+    report = HandshakeReport(
+        provider_id=provider_id,
+        provider_kind="openai",
+        connectivity=ConnectivityState.OK,
+        auth=AuthState.OK,
+        api_base=api_base,
+    )
+    return model_catalog_row(preset, report, DiscoveredModel(id=model_id))
+
+
+def test_the_catalog_row_states_a_snapshot_stream_with_its_source() -> None:
+    _record(
+        "openrouter",
+        _OPENROUTER_BASE,
+        "inception/mercury-3",
+        "openrouter",
+        _mercury_caps("mercury-3"),
+    )
+    row = _catalog_row("openrouter", _OPENROUTER_BASE, "inception/mercury-3")
+    assert row["stream_shape"] == "snapshot"
+    assert row["capabilities_provenance"]["stream_shape"]["source"] == "overlay"
+
+
+def test_a_model_with_no_stated_stream_shape_reports_null() -> None:
+    plain = ModelCapabilities(model_key="openai/gpt-4o-mini")
+    _record("openrouter", _OPENROUTER_BASE, "openai/gpt-4o-mini", "openrouter", plain)
+    row = _catalog_row("openrouter", _OPENROUTER_BASE, "openai/gpt-4o-mini")
+    assert row["stream_shape"] is None
+    assert row["capabilities_provenance"]["stream_shape"]["decided_by"] == "unknown"
