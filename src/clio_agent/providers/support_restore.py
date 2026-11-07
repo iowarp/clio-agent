@@ -301,6 +301,12 @@ def _not_installed_message(provider_kind: str) -> str:
         from clio_agent.providers.argonne_auth import ARGONNE_NOT_INSTALLED_MESSAGE  # noqa: PLC0415
 
         return ARGONNE_NOT_INSTALLED_MESSAGE
+    if provider_kind == "copilot":
+        from clio_agent.providers.copilot.errors import (
+            COPILOT_NOT_INSTALLED_MESSAGE,  # noqa: PLC0415
+        )
+
+        return COPILOT_NOT_INSTALLED_MESSAGE
     from clio_agent.providers.claude_code_errors import (  # noqa: PLC0415
         CLAUDE_CODE_NOT_INSTALLED_MESSAGE,
     )

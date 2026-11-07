@@ -71,11 +71,47 @@ def _thinking_configuration(app: FastAPI, req: LMProviderRequest) -> LMProviderC
     return cfg
 
 
+async def _apply_subscription_gate(
+    cfg: LMProviderConfig, req: LMProviderRequest, readiness: Readiness, kind: str
+) -> None:
+    """Verify a subscription provider (re-checking once), raising a typed 401/503.
+
+    Fills the account's default model when the request names none.
+    """
+    status, message, verified, default_model = readiness()
+    if not verified:
+        from clio_agent.providers import model_discovery  # noqa: PLC0415
+        from clio_agent.providers.catalog import get_provider  # noqa: PLC0415
+
+        provider = get_provider(req.provider_id or req.provider)
+        if provider is not None:
+            await model_discovery.refresh_all(presets=[provider])
+        status, message, verified, default_model = readiness()
+    if not verified:
+        raise HTTPException(
+            status_code=401 if status in {"auth_check_required", "auth_required"} else 503,
+            detail=ErrorEnvelope(
+                error=ErrorInfo(
+                    error=(
+                        f"{kind}_install_required"
+                        if status in {"install_required", "support_restoring"}
+                        else f"{kind}_auth_required"
+                    ),
+                    message=message,
+                    recoverable=True,
+                )
+            ).model_dump(exclude_none=True),
+        )
+    if not req.model and default_model:
+        cfg.model = default_model
+
+
 async def prepare_bind_configuration(
     app: FastAPI,
     req: LMProviderRequest,
     codex_readiness: Readiness,
     claude_readiness: Readiness,
+    copilot_readiness: Readiness | None = None,
 ) -> tuple[LMProviderConfig, bool]:
     """Return the new binding and whether discovery facts remain unchanged.
 
@@ -125,7 +161,8 @@ async def prepare_bind_configuration(
             ) from auth_exc
 
     is_codex, is_cc = req.provider == "codex", req.provider == "claude_code"
-    if is_codex or is_cc:
+    is_copilot = req.provider == "copilot"
+    if is_codex or is_cc or is_copilot:
         await await_startup_check(app)
     cfg = LMProviderConfig(
         provider=req.provider,  # type: ignore[arg-type]  # str validated at boundary
@@ -146,32 +183,11 @@ async def prepare_bind_configuration(
         # keyless transports (codex, claude_code, local no-auth servers) expect.
         cfg.api_key = req.api_key or "x"
     if is_cc:
-        status, message, verified, default_model = claude_readiness()
-        if not verified:
-            from clio_agent.providers import model_discovery  # noqa: PLC0415
-            from clio_agent.providers.catalog import get_provider  # noqa: PLC0415
-
-            provider = get_provider(req.provider_id or req.provider)
-            if provider is not None:
-                await model_discovery.refresh_all(presets=[provider])
-            status, message, verified, default_model = claude_readiness()
-        if not verified:
-            raise HTTPException(
-                status_code=401 if status in {"auth_check_required", "auth_required"} else 503,
-                detail=ErrorEnvelope(
-                    error=ErrorInfo(
-                        error=(
-                            "claude_code_install_required"
-                            if status in {"install_required", "support_restoring"}
-                            else "claude_code_auth_required"
-                        ),
-                        message=message,
-                        recoverable=True,
-                    )
-                ).model_dump(exclude_none=True),
-            )
-        if not req.model and default_model:
-            cfg.model = default_model
+        await _apply_subscription_gate(cfg, req, claude_readiness, "claude_code")
+    if is_copilot:
+        if copilot_readiness is None:
+            raise RuntimeError("prepare_bind_configuration needs copilot_readiness for copilot")
+        await _apply_subscription_gate(cfg, req, copilot_readiness, "copilot")
     if is_codex:
         await apply_codex_readiness_gate(cfg, req, codex_readiness)
     # Per-provider handshake folds per-model config into cfg (context-aware

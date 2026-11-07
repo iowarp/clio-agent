@@ -64,6 +64,9 @@ def register_connected_storage_routes(app: FastAPI) -> None:
         paths.user_config_dir() / "storage-auth" / "credentials.json",
     )
     app.state.connected_storage = service
+    from clio_agent.gact.routes.provider_auth_copilot import install_copilot_token_source
+
+    install_copilot_token_source(service)
     from clio_agent.gact.routes.knowledge import register_knowledge_routes
 
     register_knowledge_routes(app)

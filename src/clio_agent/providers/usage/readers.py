@@ -10,6 +10,7 @@ that is absent is absent, never guessed from a message.
 * ChatGPT subscription (Codex): the ``x-codex-*`` response headers or the
   ``codex.rate_limits`` stream event (``openai/codex`` ``rate_limits.rs``).
 * OpenRouter: ``GET /api/v1/key`` (``data.limit``, ``limit_remaining``, ``usage``).
+* GitHub Copilot: the runtime's ``account.getQuota`` RPC (``quota_snapshots``).
 """
 
 from __future__ import annotations
@@ -31,6 +32,13 @@ _CLAUDE_WINDOWS = {
     "seven_day": ("Weekly", 7 * 24 * 60),
     "seven_day_opus": ("Weekly (Opus)", 7 * 24 * 60),
     "seven_day_sonnet": ("Weekly (Sonnet)", 7 * 24 * 60),
+}
+
+#: Display names for the Copilot quotas ``account.getQuota`` reports.
+_COPILOT_QUOTAS = {
+    "premium_interactions": "Monthly premium",
+    "chat": "Monthly chat",
+    "completions": "Monthly completions",
 }
 
 
@@ -229,9 +237,62 @@ def openrouter_snapshot(account: str, body: Mapping[str, Any]) -> UsageSnapshot:
     )
 
 
+def _field(row: Any, name: str) -> Any:
+    return row.get(name) if isinstance(row, Mapping) else getattr(row, name, None)
+
+
+def copilot_snapshot(account: str, snapshots: Mapping[str, Any]) -> UsageSnapshot | None:
+    """The snapshot in Copilot's ``account.getQuota`` result, or ``None`` when it has none.
+
+    ``snapshots`` is ``quota_snapshots`` keyed by quota type (``premium_interactions``,
+    ``chat``, ``completions``); each carries ``entitlement_requests``, ``used_requests``,
+    ``remaining_percentage``, ``is_unlimited_entitlement`` and ``reset_date``. An
+    unlimited quota is not a window. Premium requests are the metered one.
+    """
+
+    windows: list[UsageWindow] = []
+    balance: UsageBalance | None = None
+    for key, name in _COPILOT_QUOTAS.items():
+        row = snapshots.get(key)
+        if row is None:
+            continue
+        if _field(row, "is_unlimited_entitlement") is True:
+            continue
+        remaining = _number(_field(row, "remaining_percentage"))
+        if remaining is None:
+            continue
+        windows.append(
+            UsageWindow(
+                name=name,
+                used_percent=round(100.0 - remaining, 1),
+                resets_at=str(_field(row, "reset_date") or ""),
+            )
+        )
+        if key == "premium_interactions":
+            limit = _number(_field(row, "entitlement_requests"))
+            used = _number(_field(row, "used_requests"))
+            balance = UsageBalance(
+                remaining=None if limit is None or used is None else max(0.0, limit - used),
+                limit=limit,
+                used=used,
+                currency="premium requests",
+            )
+    if not windows:
+        return None
+    return UsageSnapshot(
+        account=account,
+        state="metered",
+        observed_at=now_iso(),
+        source="copilot_account_quota",
+        windows=tuple(windows),
+        balance=balance,
+    )
+
+
 __all__ = [
     "claude_snapshot",
     "codex_snapshot_from_event",
     "codex_snapshot_from_headers",
+    "copilot_snapshot",
     "openrouter_snapshot",
 ]

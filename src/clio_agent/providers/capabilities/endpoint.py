@@ -45,6 +45,10 @@ TOOL_CALLING_BY_DIALECT: dict[str, tuple[Literal["native", "text"], str]] = {
         "text",
         "CLIO Claude Code engine renders CLIO tools into the prompt and parses typed tool calls",
     ),
+    "copilot": (
+        "text",
+        "CLIO Copilot engine renders CLIO tools into the prompt; the runtime's own tools are off",
+    ),
 }
 
 
@@ -150,6 +154,7 @@ THINKING_CONTROLS_BY_DIALECT: dict[str, frozenset[str]] = {
     # kwarg (codex_reasoning_effort / claude_code_thinking).
     "codex": frozenset({"reasoning_effort"}),
     "claude_code": frozenset({"effort", "claude_code_thinking"}),
+    "copilot": frozenset({"reasoning_effort"}),
 }
 
 #: Dialect knowledge: structured-output modes a server type offers. Best-effort
@@ -183,6 +188,7 @@ _DIALECT_BY_KIND: dict[str, str] = {
     "anthropic": "anthropic",
     "codex": "codex",
     "claude_code": "claude_code",
+    "copilot": "copilot",
     "argonne": "vllm",
 }
 

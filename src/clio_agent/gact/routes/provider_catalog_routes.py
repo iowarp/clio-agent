@@ -14,6 +14,7 @@ from clio_agent.gact.provider_catalog import probe_api_key
 from clio_agent.gact.provider_catalog_snapshot import invalidate_provider
 from clio_agent.gact.routes._body import json_body
 from clio_agent.gact.routes.provider_auth import handle_auth_action
+from clio_agent.gact.routes.provider_auth_copilot import copilot_handshake_gate, copilot_readiness
 from clio_agent.gact.types import ErrorEnvelope, ErrorInfo, LMProviderPreset
 from clio_agent.providers.dependencies import (
     ProviderDependencyInstallError,
@@ -33,10 +34,12 @@ def _install_failure_copy(provider_kind: str) -> tuple[str, str]:
     from clio_agent.providers.claude_code_errors import (  # noqa: PLC0415
         CLAUDE_CODE_INSTALL_FAILED_MESSAGE,
     )
+    from clio_agent.providers.copilot.errors import COPILOT_INSTALL_FAILED_MESSAGE  # noqa: PLC0415
 
     copy = {
         "argonne": ("argonne_install_failed", ARGONNE_INSTALL_FAILED_MESSAGE),
         "claude_code": ("claude_code_install_failed", CLAUDE_CODE_INSTALL_FAILED_MESSAGE),
+        "copilot": ("copilot_install_failed", COPILOT_INSTALL_FAILED_MESSAGE),
     }
     return copy.get(
         provider_kind,
@@ -47,6 +50,7 @@ def _install_failure_copy(provider_kind: str) -> tuple[str, str]:
 _INSTALL_SUCCESS_INSTRUCTIONS: dict[str, str] = {
     "argonne": "ALCF sign-in support is installed. Check the provider to verify sign-in.",
     "claude_code": "Claude Code support is installed. Check the provider to verify sign-in.",
+    "copilot": "GitHub Copilot support is installed. Sign in to GitHub to use Copilot.",
 }
 
 Readiness = Callable[..., tuple[str, str, bool, str]]
@@ -147,9 +151,13 @@ def register_provider_catalog_routes(
                 ).model_dump(exclude_none=True),
             )
 
-        if preset.provider in {"codex", "claude_code"}:
+        if preset.provider in {"codex", "claude_code", "copilot"}:
             _, message, verified, _ = (
-                _codex_readiness() if preset.provider == "codex" else _claude_code_readiness()
+                _codex_readiness()
+                if preset.provider == "codex"
+                else copilot_readiness(app)
+                if preset.provider == "copilot"
+                else _claude_code_readiness()
             )
             try:
                 overlay = model_discovery.overlay_models_wire(preset.id, preset.provider)
@@ -374,6 +382,10 @@ def register_provider_catalog_routes(
                     "latency_ms": None,
                     "generated_at": datetime.now(timezone.utc).isoformat(),
                 }
+        if preset.provider == "copilot":
+            unverified = await copilot_handshake_gate(app, preset, refresh=refresh)
+            if unverified is not None:
+                return unverified
         ctx = HandshakeContext(
             provider_id=preset.id,
             provider_kind=preset.provider,

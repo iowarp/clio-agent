@@ -22,6 +22,10 @@ from typing import Any
 #: names WHICH surface was consulted, and the reason says what it yielded.
 MODALITY_SOURCES: dict[str, str] = {
     "claude_code_catalog": "CLIO's maintained Claude Code model catalog document",
+    "copilot_list_models": (
+        "the GitHub Copilot runtime's live account model list (``list_models()``, "
+        "``capabilities.supports.vision``)"
+    ),
     "codex_direct_model_list": (
         "the Codex backend's live account model list (``GET /backend-api/codex/models``, "
         "``ModelInfo.input_modalities``)"
