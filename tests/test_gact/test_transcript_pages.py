@@ -109,11 +109,12 @@ def test_a_chunk_read_mid_append_serves_its_committed_messages(arc: ARCMemory) -
     assert [m.id for m in page.messages] == ["m20", "m21", "m22"]
 
 
-def test_an_old_format_chunk_is_a_typed_corrupt_transcript(arc: ARCMemory) -> None:
-    """A chunk in the retired base64 frame is reported, never read as empty."""
+def test_an_old_format_chunk_is_a_typed_old_store_transcript(arc: ARCMemory) -> None:
+    """A chunk in the retired base64 frame is reported as data from CLIO 0.9.5.1 or older
+    (so the person is told to move it aside), never read as empty."""
     from clio_agent.gact.messages import LedgerReadError  # noqa: PLC0415
     from clio_agent.gact.transcript_unreadable import (  # noqa: PLC0415
-        TRANSCRIPT_CORRUPT,
+        STORE_FORMAT_OLD,
         typed_transcript_read,
     )
 
@@ -123,4 +124,4 @@ def test_an_old_format_chunk_is_a_typed_corrupt_transcript(arc: ARCMemory) -> No
     segments._store.put("segments", segments._record_name(SID, last), b"\x90")  # old frame
     with pytest.raises(LedgerReadError) as caught, typed_transcript_read(SID):
         read_lane_page(arc, SID, limit=3, before=None, include_system=True)
-    assert caught.value.cause == TRANSCRIPT_CORRUPT
+    assert caught.value.cause == STORE_FORMAT_OLD
