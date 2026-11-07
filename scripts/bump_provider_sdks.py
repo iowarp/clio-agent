@@ -2,7 +2,8 @@
 """Move the user-updatable provider components to their latest releases (pyproject floor + uv.lock).
 
 Run weekly by ``.github/workflows/provider-sdk-bump.yml`` (and on demand), so a
-release always ships the newest Codex runtime and Claude Code SDK: the providers
+release always ships the newest Codex runtime, Claude Code SDK and GitHub Copilot
+SDK: the providers
 gate new models by client version, and a release that ships a lagging component
 hides models the user's account already serves.
 
@@ -43,6 +44,7 @@ GROUPS: dict[str, tuple[tuple[str, ...], str]] = {
         ("claude-agent-sdk",),
         "https://github.com/anthropics/claude-agent-sdk-python/releases",
     ),
+    "copilot": (("github-copilot-sdk",), "https://github.com/github/copilot-sdk/releases"),
 }
 
 #: Wheel platform tag patterns, one per bundle target

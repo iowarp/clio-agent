@@ -62,23 +62,38 @@ def test_a_release_without_a_windows_wheel_is_never_shipped() -> None:
     assert max(versions, key=bump.release_key) == "0.2.159"
 
 
-def test_plan_bumps_both_groups_to_their_shippable_latest() -> None:
-    floors = {"openai-codex-cli-bin": "0.147.0", "claude-agent-sdk": "0.2.156"}
+def test_plan_bumps_every_group_to_its_shippable_latest() -> None:
+    floors = {
+        "openai-codex-cli-bin": "0.147.0",
+        "claude-agent-sdk": "0.2.156",
+        "github-copilot-sdk": "1.0.27",
+    }
     assert bump.plan(_payloads(), floors) == {
         "openai-codex-cli-bin": "0.157.1",
         "claude-agent-sdk": "0.2.159",
+        "github-copilot-sdk": "1.0.29",
     }
 
 
+def test_a_pre_release_is_never_shipped() -> None:
+    versions = bump.shippable_versions(_payloads()["github-copilot-sdk"])
+    assert "1.0.29rc0" not in versions
+    assert max(versions, key=bump.release_key) == "1.0.29"
+
+
 def test_plan_is_empty_when_current() -> None:
-    floors = {"openai-codex-cli-bin": "0.157.1", "claude-agent-sdk": "0.2.159"}
+    floors = {
+        "openai-codex-cli-bin": "0.157.1",
+        "claude-agent-sdk": "0.2.159",
+        "github-copilot-sdk": "1.0.29",
+    }
     assert bump.plan(_payloads(), floors) == {}
 
 
 def test_floors_are_read_and_rewritten_in_the_real_pyproject() -> None:
     pyproject = (REPO_ROOT / "pyproject.toml").read_text(encoding="utf-8")
     floors = bump.current_floors(pyproject)
-    assert set(floors) == {"openai-codex-cli-bin", "claude-agent-sdk"}
+    assert set(floors) == {"openai-codex-cli-bin", "claude-agent-sdk", "github-copilot-sdk"}
     rewritten = bump.rewrite_floors(pyproject, {"openai-codex-cli-bin": "9.9.9"})
     assert bump.current_floors(rewritten)["openai-codex-cli-bin"] == "9.9.9"
     assert bump.current_floors(rewritten)["claude-agent-sdk"] == floors["claude-agent-sdk"]
@@ -93,8 +108,8 @@ def test_describe_links_release_notes() -> None:
 
 
 @pytest.mark.parametrize(
-    ("codex_floor", "claude_floor", "expected_changed"),
-    [("0.147.0", "0.2.156", True), ("0.157.1", "0.2.159", False)],
+    ("codex_floor", "claude_floor", "copilot_floor", "expected_changed"),
+    [("0.147.0", "0.2.156", "1.0.27", True), ("0.157.1", "0.2.159", "1.0.29", False)],
     ids=["outdated", "current"],
 )
 def test_check_mode_writes_github_outputs_and_changes_nothing(
@@ -102,6 +117,7 @@ def test_check_mode_writes_github_outputs_and_changes_nothing(
     tmp_path: Path,
     codex_floor: str,
     claude_floor: str,
+    copilot_floor: str,
     expected_changed: bool,
 ) -> None:
     project = tmp_path / "proj"
@@ -110,7 +126,11 @@ def test_check_mode_writes_github_outputs_and_changes_nothing(
     # than the moving dependency pins in the repository under test.
     original = bump.rewrite_floors(
         (REPO_ROOT / "pyproject.toml").read_text(encoding="utf-8"),
-        {"openai-codex-cli-bin": codex_floor, "claude-agent-sdk": claude_floor},
+        {
+            "openai-codex-cli-bin": codex_floor,
+            "claude-agent-sdk": claude_floor,
+            "github-copilot-sdk": copilot_floor,
+        },
     )
     (project / "pyproject.toml").write_text(original, encoding="utf-8")
     output = tmp_path / "out.txt"
@@ -126,6 +146,8 @@ def test_check_mode_writes_github_outputs_and_changes_nothing(
         assert "openai-codex-cli-bin 0.157.1" in written
         assert "| 0.2.156 | 0.2.159 |" in written
         assert "| 0.147.0 | 0.157.1 |" in written
+        assert "github-copilot-sdk 1.0.29" in written
+        assert "| 1.0.27 | 1.0.29 |" in written
     else:
         assert written == "changed=false\ntitle=\nbody<<__CLIO_BODY__\n\n__CLIO_BODY__\n"
     assert (project / "pyproject.toml").read_text(encoding="utf-8") == original
