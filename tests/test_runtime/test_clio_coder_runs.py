@@ -109,8 +109,24 @@ async def test_a_run_continues_its_session_in_its_worktree_and_lands_verified_wo
     # Applied, not committed: the person commits it; the run's worktree and branch are gone.
     assert _git(repo, "status", "--porcelain").split() == ["M", "calc.py", "??", ".decision"]
     assert _branches(repo) == ["main"] and not Path(first.workspace).exists()
+    assert not run_path(tmp_path / "state", first.run_id).with_suffix(".lock").exists()
     with pytest.raises(ClioCoderError, match="landed"):
         await _continue(tmp_path, install, first.run_id, "more")
+
+
+async def test_a_run_without_a_change_has_nothing_to_land(
+    repo: Path, tmp_path: Path, install: ClioCoderInstall
+) -> None:
+    (repo / "calc.py").write_text("def add(a, b):\n    return a + b\n")
+    (repo / ".gitignore").write_text(".decision\n")
+    _git(repo, "add", ".gitignore")
+    _git(repo, "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qam", "fixed already")
+    (repo / "notes.txt").write_text("unrelated uncommitted work")
+    first = await _open_run(repo, tmp_path, install)
+    assert first.verified and not first.changed_files
+    with pytest.raises(ClioCoderError, match="changed nothing"):
+        land_run(tmp_path / "state", repo, first.run_id, "apply")
+    assert land_run(tmp_path / "state", repo, first.run_id, "discard").status == "discarded"
 
 
 async def test_a_turn_starts_from_the_branch_and_may_replace_the_check(

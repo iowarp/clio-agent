@@ -24,6 +24,7 @@ from clio_agent.runtime.clio_coder.runs import (
     RunRecord,
     load_run,
     run_lock,
+    run_path,
     save_run,
 )
 
@@ -86,7 +87,10 @@ def land_run(state_root: Path, repo: Path, run_id: str, action: str) -> LandResu
     if action not in (ACTION_APPLY, ACTION_DISCARD):
         raise ValueError(f"action must be {ACTION_APPLY} or {ACTION_DISCARD}")
     with run_lock(state_root, run_id):
-        return _land_locked(state_root, repo, run_id, action)
+        result = _land_locked(state_root, repo, run_id, action)
+        # The run has ended and refuses every later turn or land, so its lock file goes too.
+        run_path(state_root, run_id).with_suffix(".lock").unlink(missing_ok=True)
+        return result
 
 
 def _land_locked(state_root: Path, repo: Path, run_id: str, action: str) -> LandResult:
@@ -124,6 +128,10 @@ def _land_locked(state_root: Path, repo: Path, run_id: str, action: str) -> Land
     files = [
         f for f in _out(checkout, "diff", "--name-only", record.base_commit, tip).split("\n") if f
     ]
+    if not files:
+        raise ClioCoderError(
+            REASON_LAND, f"run {run_id} has no change to land; discard it", {"run": run_id}
+        )
     dirty = [f for f in _out(checkout, "status", "--porcelain", "--", *files).splitlines() if f]
     if dirty:
         raise ClioCoderError(
