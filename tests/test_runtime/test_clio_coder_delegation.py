@@ -109,6 +109,7 @@ FAKE_CLIO_CODER = textwrap.dedent(
         sys.exit(code)
 
     session = {"id": None, "mode": "default", "cancel": False}
+    store = Path(os.environ["CLIO_CODER_STATE_DIR"], "sessions.json")
     for line in sys.stdin:
         msg = json.loads(line)
         method, params = msg.get("method"), msg.get("params") or {}
@@ -123,7 +124,19 @@ FAKE_CLIO_CODER = textwrap.dedent(
             reply = {"protocolVersion": 1, "agentCapabilities": {}, "agentInfo": {"name": "fake"}}
         elif method == "session/new":
             session["id"] = "s-acp"
+            store.write_text(json.dumps({"s-acp": {"turns": 0, "args": args}}))
             reply = {"sessionId": "s-acp", "modes": {"currentModeId": "default"},
+                     "configOptions": [{"id": "model", "currentValue": "fake-model"}]}
+        elif method == "session/resume":
+            known = json.loads(store.read_text()) if store.exists() else {}
+            if params["sessionId"] not in known:
+                out({"jsonrpc": "2.0", "id": msg["id"],
+                     "error": {"code": -32002, "message": "session not found"}})
+                continue
+            session["id"] = params["sessionId"]
+            known[session["id"]]["args"] = args
+            store.write_text(json.dumps(known))
+            reply = {"modes": {"currentModeId": "default"},
                      "configOptions": [{"id": "model", "currentValue": "fake-model"}]}
         elif method == "session/set_mode":
             session["mode"] = params["modeId"]
@@ -131,6 +144,15 @@ FAKE_CLIO_CODER = textwrap.dedent(
             text = params["prompt"][0]["text"]
             update = lambda u: out({"jsonrpc": "2.0", "method": "session/update",
                                     "params": {"sessionId": "s-acp", "update": u}})
+            if "@DIRTY" in text:
+                Path(cwd, "calc.py").write_text("half written")
+                Path(cwd, "scratch.txt").write_text("partial")
+            if "@CRASH" in text:
+                os._exit(3)
+            if "@TURNFAIL" in text:
+                out({"jsonrpc": "2.0", "id": msg["id"],
+                     "error": {"code": -32603, "message": "turn_failed"}})
+                continue
             if "@HANG" in text:
                 while not session["cancel"]:
                     line = sys.stdin.readline()
@@ -152,8 +174,13 @@ FAKE_CLIO_CODER = textwrap.dedent(
             update({"sessionUpdate": "tool_call", "toolCallId": "t1", "title": "edit",
                     "status": "in_progress"})
             fix(cwd, "\\ndef sub(a, b):\\n    return a - b\\n" if "@SUB" in text else "")
+            if "@BREAK" in text:
+                Path(cwd, "calc.py").write_text("def add(a, b):\\n    return a * b\\n")
             update({"sessionUpdate": "tool_call_update", "toolCallId": "t1",
                     "status": "completed"})
+            known = json.loads(store.read_text())
+            known[session["id"]]["turns"] += 1
+            store.write_text(json.dumps(known))
             update({"sessionUpdate": "agent_message_chunk",
                     "content": {"type": "text", "text": "done: " + session["mode"]}})
             reply = {"stopReason": "end_turn", "_meta": {"clio-coder/usage": {"quantities": {

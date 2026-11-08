@@ -121,6 +121,11 @@ class DelegationResult:
     confinement: dict[str, Any] = field(default_factory=dict)
     stderr_tail: str = ""
     error: dict[str, Any] | None = None
+    #: The resumable run this turn belongs to, its 1-based turn number, and the usage of all
+    #: its turns so far (``usage`` is this turn alone).
+    run_id: str | None = None
+    turn: int | None = None
+    run_usage: dict[str, Any] = field(default_factory=dict)
 
     @property
     def verified(self) -> bool:

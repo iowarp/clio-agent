@@ -10,10 +10,18 @@ through one of two surfaces it ships:
 Every instance runs with its own scoped Clio Coder home (config/data/state/cache) under a
 caller-owned state root, never the operator's real home, and works in a disposable git worktree
 whose diff is handed back to the caller together with the run's outcome and accounting.
+An ACP delegation can stay open as a run that later calls continue, and that CLIO lands into
+the checkout (or discards) once its acceptance check passes.
 """
 
-from clio_agent.runtime.clio_coder.delegate import DelegationRequest, delegate_coding_task
+from clio_agent.runtime.clio_coder.delegate import (
+    ContinueRequest,
+    DelegationRequest,
+    continue_run,
+    delegate_coding_task,
+)
 from clio_agent.runtime.clio_coder.drivers import RunOptions
+from clio_agent.runtime.clio_coder.landing import LandResult, land_run
 from clio_agent.runtime.clio_coder.launch import (
     ClioCoderError,
     ClioCoderInstall,
@@ -26,9 +34,13 @@ __all__ = [
     "ClioCoderError",
     "ClioCoderInstall",
     "ClioCoderTarget",
+    "ContinueRequest",
     "DelegationRequest",
     "DelegationResult",
     "InstanceHome",
+    "LandResult",
     "RunOptions",
+    "continue_run",
     "delegate_coding_task",
+    "land_run",
 ]

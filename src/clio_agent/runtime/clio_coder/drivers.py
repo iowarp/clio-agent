@@ -70,6 +70,8 @@ class RunOptions:
     #: Shell commands Clio Coder runs as acceptance checks after its turn (``run --verify``).
     verify: Sequence[str] = ()
     verify_timeout: float | None = None
+    #: How long Clio Coder waits on the parent's answer to an ACP permission ask.
+    permission_timeout: float | None = None
     extra_args: Sequence[str] = field(default_factory=tuple)
 
 
@@ -237,7 +239,7 @@ class _AcpState:
                 _emit(self.sink, {"kind": "notice", **notice})
 
 
-def _add_usage(total: dict[str, Any], more: dict[str, Any]) -> dict[str, Any]:
+def add_usage(total: dict[str, Any], more: dict[str, Any]) -> dict[str, Any]:
     merged = dict(total)
     for key, value in more.items():
         if isinstance(value, (int, float)) and isinstance(merged.get(key), (int, float)):
@@ -255,9 +257,16 @@ async def run_acp(
     options: RunOptions,
     sink: EventSink | None = None,
     on_permission: PermissionHandler = reject_permissions,
+    resume_session: str | None = None,
 ) -> DelegationResult:
-    """One ACP session: each prompt is a turn; a timeout or caller cancel sends ``session/cancel``."""
+    """One ACP session: each prompt is a turn; a timeout or caller cancel sends ``session/cancel``.
+
+    ``resume_session`` continues an earlier session (``session/resume``) instead of opening a
+    new one, so a run can take further turns from a later CLIO turn in a fresh process.
+    """
     args = ["acp", "--cwd", str(cwd)]
+    if options.permission_timeout is not None:
+        args += ["--permission-timeout", str(max(1, int(options.permission_timeout * 1000)))]
     if options.read_only:
         args.append("--read-only")
     if options.allow_tools is not None:
@@ -273,9 +282,17 @@ async def run_acp(
     )
     try:
         await conn.start()
-        session = await conn.request("session/new", {"cwd": str(cwd), "mcpServers": []})
+        opening = {"cwd": str(cwd), "mcpServers": []}
+        if resume_session is not None:
+            session = await conn.request("session/resume", {"sessionId": resume_session, **opening})
+            session = {**session, "sessionId": resume_session}
+        else:
+            session = await conn.request("session/new", opening)
         result.session_id = session["sessionId"]
-        _emit(sink, {"kind": "session", "sessionId": result.session_id})
+        _emit(
+            sink,
+            {"kind": "session", "sessionId": result.session_id, "resumed": bool(resume_session)},
+        )
         result.model = await _configure_session(conn, session, options)
         await asyncio.wait_for(_prompt_all(conn, state, prompts), options.timeout)
     except TimeoutError:
@@ -343,7 +360,7 @@ async def _prompt_all(conn: AcpConnection, state: _AcpState, prompts: Sequence[s
         result.outcome_detail = stop_reason
         result.text = "".join(state.text)
         meta = reply.get("_meta") or {}
-        result.usage = _add_usage(result.usage, summarize_usage(meta.get("clio-coder/usage")))
+        result.usage = add_usage(result.usage, summarize_usage(meta.get("clio-coder/usage")))
         if result.outcome != OUTCOME_SUCCEEDED:
             return
 

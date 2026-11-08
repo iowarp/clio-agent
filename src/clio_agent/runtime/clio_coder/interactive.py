@@ -21,7 +21,6 @@ from typing import Any
 from clio_agent.runtime.clio_coder.delegate import (
     DelegationRequest,
     _commit_message,
-    _new_run_id,
     _path_rebaser,
 )
 from clio_agent.runtime.clio_coder.launch import (
@@ -32,6 +31,7 @@ from clio_agent.runtime.clio_coder.launch import (
     confine,
 )
 from clio_agent.runtime.clio_coder.results import DelegationResult
+from clio_agent.runtime.clio_coder.runs import new_run_id
 from clio_agent.runtime.clio_coder.workspace import (
     Workspace,
     collect_changes,
@@ -120,7 +120,7 @@ def prepare_interactive_session(
     state_root = request.state_root.resolve()
     home = InstanceHome(state_root / "home")
     home.prepare(request.target, template=request.home_template)
-    run_id = request.run_id or _new_run_id()
+    run_id = request.run_id or new_run_id()
     workspace = create_worktree(request.repo, state_root / "worktrees", run_id)
     try:
         rebase = _path_rebaser(workspace.repo or request.repo.resolve(), workspace.path)
