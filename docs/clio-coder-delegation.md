@@ -39,7 +39,7 @@ uv run --frozen --no-sync python -B scripts/clio_coder_golden.py \
 ```
 
 The offline checks print PASS or FAIL for Mode A's checked hand-back and apply,
-Mode C multi-turn, autonomy ceiling refusal, local and catalog model routing,
+Mode C multi-turn with continue and land, autonomy ceiling refusal, local and catalog model routing,
 and cancellation. They use scripted children and do not establish that a real
 parent chooses delegation. The ordinary repository test bootstrap also starts
 its private Core daemon. `--protocol-only` omits the global native Core fixtures
@@ -71,11 +71,17 @@ bypassed approvals for its new, disposable conversation; the child inherits
 that ceiling. Server authentication, if enabled, comes from
 `CLIO_GACT_BEARER_TOKEN` or `CLIO_AUTH_TOKEN`, not command-line arguments.
 
-Mode C is public: `run_clio_coder(continue_run=...)` takes another turn of a
-run, and `land_clio_coder(run=..., action='apply'|'discard')` lands or drops
-it. **The golden script does not drive that entry point yet.** Its Mode C case
-is still the offline multi-turn stub, and the live script reports Mode C as FAIL
-until the stub is replaced. Direct runtime measurements currently use Git apply
+Mode C is checked with two plain requests in a new conversation on a fresh
+repository. The first asks for the same fix and to keep it out of the checkout
+for a follow-up. The second asks for `sub(a, b)` and for the work to go into the
+checkout. It passes only on typed evidence:
+
+- an accepted first turn, with the checkout still clean afterwards
+- an accepted later turn on the same run, which is a continued Clio Coder session
+- a `land_clio_coder` result with status `landed` for that run
+- both functions working in the parent checkout
+
+Neither prompt names a tool or a step. Direct runtime measurements use Git apply
 only in the demo's own scratch repository.
 
 ## Reading the measurements

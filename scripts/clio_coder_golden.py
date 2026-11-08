@@ -23,6 +23,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
 from scripts.clio_coder_latency import (  # noqa: E402
+    FOLLOW_UP,
     TASK,
     cancel_run,
     fixture_repo,
@@ -36,8 +37,10 @@ GROUPS = {
     "Mode A hand-back and apply (scripted child)": [
         "test_headless_delegation_hands_back_a_verified_worktree_diff",
     ],
-    "Mode C multi-turn (scripted ACP stub; not ix-acp qualification)": [
+    "Mode C multi-turn (scripted ACP child)": [
         "test_acp_multi_turn_session_applies_mode_and_permission_policy",
+        "test_a_run_continues_its_session_in_its_worktree_and_lands_verified_work",
+        "test_landing_refuses_unaccepted_or_moved_work_and_discard_cleans_up",
     ],
     "autonomy ceiling refusal": [
         "test_delegated_autonomy_inherits_the_conversation_and_never_exceeds_it",
@@ -50,6 +53,7 @@ GROUPS = {
     "cancel": [
         "test_caller_cancel_stops_headless_child_and_removes_worktree",
         "test_acp_default_policy_rejects_once_and_timeout_cancels_the_turn",
+        "test_a_cancelled_turn_drops_its_partial_edits_and_keeps_the_run_open",
     ],
 }
 
@@ -67,6 +71,7 @@ def offline(out: Path, protocol_only: bool) -> bool:
         "-B",
         "scripts/run_tests.py",
         RUNTIME_TEST,
+        "tests/test_runtime/test_clio_coder_runs.py",
         "tests/test_gact/test_clio_coder_tool.py",
         "tests/test_gact/test_clio_coder_route.py",
         "-q",
@@ -106,12 +111,12 @@ def request(server: str, path: str, body: dict | None = None) -> Any:
         return json.loads(raw) if raw else None
 
 
-def handbacks(messages: list[dict]) -> list[dict]:
+def tool_rows(messages: list[dict], tool: str = "run_clio_coder") -> list[dict]:
     """Accept typed tool results, never a mention of delegation in assistant prose."""
     rows = []
     for message in messages:
         for part in message.get("parts", []):
-            if part.get("type") != "tool_result" or part.get("tool_name") != "run_clio_coder":
+            if part.get("type") != "tool_result" or part.get("tool_name") != tool:
                 continue
             value = part.get("structured_content")
             if isinstance(value, dict):
@@ -129,9 +134,16 @@ def handbacks(messages: list[dict]) -> list[dict]:
     return rows
 
 
-def plain_request(server: str, root: Path) -> dict:
-    """Ask the live parent normally; require a verified headless hand-back and applied fix."""
-    repo = fixture_repo(root)
+def accepted(row: dict) -> bool:
+    """A delegated turn whose outcome, CLIO check and commit all hold."""
+    return (
+        row.get("outcome") == "succeeded"
+        and row.get("verified") is True
+        and bool(row.get("commit"))
+    )
+
+
+def open_session(server: str, repo: Path, title: str) -> tuple[str, str]:
     workspace = request(
         server, "/v1/workspaces", {"name": "Delegation golden", "root_path": str(repo)}
     )
@@ -140,61 +152,112 @@ def plain_request(server: str, root: Path) -> dict:
         "/v1/sessions",
         {
             "workspace_id": workspace["id"],
-            "title": "Plain coding request",
+            "title": title,
             "approval_mode": "bypass",
             "agent": {"id": "clio/standard"},
         },
     )
-    sid = session["id"]
+    return workspace["id"], session["id"]
+
+
+def say(server: str, sid: str, text: str, budget_s: float) -> list[dict]:
+    """Send one plain user message and wait for the parent's next answer; cancel on timeout."""
+
+    def answers(messages: list[dict]) -> int:
+        return sum(item.get("role") == "assistant" for item in messages)
+
+    before = answers(request(server, f"/v1/sessions/{sid}/messages?limit=200").get("messages", []))
+    request(
+        server,
+        f"/v1/sessions/{sid}/messages",
+        {"text": text, "behavior": {"confirmation_policy": "bypass"}},
+    )
+    deadline = time.monotonic() + budget_s
+    while time.monotonic() < deadline:
+        messages = request(server, f"/v1/sessions/{sid}/messages?limit=200").get("messages", [])
+        current = request(server, f"/v1/sessions/{sid}")
+        if current.get("status") in ("error", "idle") and answers(messages) > before:
+            return messages
+        time.sleep(0.5)
+    request(server, f"/v1/sessions/{sid}/cancel", {})
+    raise TimeoutError(f"session {sid} did not answer in {budget_s:.0f}s")
+
+
+def checkout_check(repo: Path, code: str) -> int:
+    return subprocess.run(
+        [sys.executable, "-B", "-c", code], cwd=repo, capture_output=True, text=True, check=False
+    ).returncode
+
+
+def plain_request(server: str, root: Path) -> dict:
+    """Ask the live parent normally; require a verified hand-back and the fix in the checkout."""
+    repo = fixture_repo(root)
+    workspace, sid = open_session(server, repo, "Plain coding request")
     started = time.monotonic()
-    terminal = False
-    try:
-        request(
-            server,
-            f"/v1/sessions/{sid}/messages",
-            {"text": TASK, "behavior": {"confirmation_policy": "bypass"}},
-        )
-        deadline = started + 300
-        while time.monotonic() < deadline:
-            page = request(server, f"/v1/sessions/{sid}/messages?limit=100")
-            messages = page.get("messages", [])
-            current = request(server, f"/v1/sessions/{sid}")
-            if current.get("status") in ("error", "idle") and any(
-                item.get("role") == "assistant" for item in messages
-            ):
-                terminal = True
-                break
-            time.sleep(0.5)
-        if not terminal:
-            raise TimeoutError(f"session {sid} did not finish in 300s")
-        save(root / "messages.json", page)
-        rows = handbacks(messages)
-        accepted = any(
-            row.get("surface") == "headless"
-            and row.get("outcome") == "succeeded"
-            and row.get("verified") is True
-            and row.get("commit")
-            for row in rows
-        )
-        checked = subprocess.run(
-            [sys.executable, "-B", "-c", "import calc; assert calc.add(2, 3) == 5"],
-            cwd=repo,
-            capture_output=True,
-            text=True,
-            check=False,
-        )
-        return {
-            "passed": bool(accepted) and checked.returncode == 0,
-            "session": sid,
-            "workspace": workspace["id"],
-            "total_s": time.monotonic() - started,
-            "handbacks": rows,
-            "checkout_check_exit": checked.returncode,
-            "note": "The parent must choose delegation and apply it; the demo never edits its fix.",
-        }
-    finally:
-        if not terminal:
-            request(server, f"/v1/sessions/{sid}/cancel", {})
+    messages = say(server, sid, TASK, 300)
+    save(root / "messages.json", {"messages": messages})
+    rows = tool_rows(messages)
+    checked = checkout_check(repo, "import calc; assert calc.add(2, 3) == 5")
+    return {
+        "passed": any(accepted(row) for row in rows) and checked == 0,
+        "session": sid,
+        "workspace": workspace,
+        "total_s": time.monotonic() - started,
+        "handbacks": rows,
+        "lands": tool_rows(messages, "land_clio_coder"),
+        "checkout_check_exit": checked,
+        "note": "The parent must choose delegation and land it; the demo never edits its fix.",
+    }
+
+
+def plain_multi_turn(server: str, root: Path) -> dict:
+    """Mode C: two plain requests on one delegated run, then the parent lands it.
+
+    Requires typed evidence: an accepted first turn whose change stays out of the checkout, a
+    second accepted turn on the same run (a continued Clio Coder session), a landed run, and both
+    changes working in the parent checkout.
+    """
+    repo = fixture_repo(root)
+    workspace, sid = open_session(server, repo, "Plain multi-turn coding request")
+    started = time.monotonic()
+    first = say(
+        server,
+        sid,
+        f"{TASK} Keep the change on the side for now; I have a follow-up before it goes into "
+        "my checkout.",
+        600,
+    )
+    held = git(repo, "status", "--porcelain", "--untracked-files=no").strip() == ""
+    first_rows = [row for row in tool_rows(first) if accepted(row)]
+    messages = say(server, sid, f"{FOLLOW_UP} When it checks out, put it into my checkout.", 600)
+    save(root / "messages.json", {"messages": messages})
+    rows = tool_rows(messages)
+    runs = {row.get("run") for row in first_rows if row.get("run")}
+    later = [
+        row for row in rows[len(tool_rows(first)) :] if accepted(row) and row.get("run") in runs
+    ]
+    landed = [
+        row
+        for row in tool_rows(messages, "land_clio_coder")
+        if row.get("status") == "landed" and row.get("run") in runs
+    ]
+    checked = checkout_check(
+        repo, "import calc; assert calc.add(2, 3) == 5; assert calc.sub(5, 3) == 2"
+    )
+    return {
+        "passed": bool(first_rows) and held and bool(later) and bool(landed) and checked == 0,
+        "session": sid,
+        "workspace": workspace,
+        "total_s": time.monotonic() - started,
+        "first_turn_accepted": bool(first_rows),
+        "checkout_untouched_after_first_turn": held,
+        "continued_same_run": bool(later),
+        "landed": bool(landed),
+        "checkout_check_exit": checked,
+        "handbacks": rows,
+        "lands": tool_rows(messages, "land_clio_coder"),
+        "note": "Plain requests only; no tool or step is named to the parent.",
+    }
 
 
 async def live(args: argparse.Namespace) -> bool:
@@ -209,7 +272,7 @@ async def live(args: argparse.Namespace) -> bool:
     sandbox.install_sandbox()
     parent = plain_request(args.server, args.out / "plain-request")
     save(args.out / "plain-request.json", parent)
-    passed = verdict("Mode A plain request, delegation, check and apply", parent["passed"])
+    passed = verdict("plain request, delegation, check and land", parent["passed"])
     rows = []
     for index in range(args.runs):
         row = await measured_run(
@@ -224,12 +287,9 @@ async def live(args: argparse.Namespace) -> bool:
         passed = verdict(f"Mode A runtime sample {index + 1}", row["passed"]) and passed
         if not row["passed"]:
             break
-    # ix-acp owns the persistent Mode C public entry point and the land action.
-    # Wire that surface after its integration, rather than inventing a second owner.
-    passed = (
-        verdict("Mode C live", False, "pending ix-acp integration; offline stub is available")
-        and passed
-    )
+    multi = plain_multi_turn(args.server, args.out / "multi-turn")
+    save(args.out / "multi-turn.json", multi)
+    passed = verdict("Mode C plain multi-turn, continue and land", multi["passed"]) and passed
     canceled = await cancel_run(args.out / "cancel", args.home_template, args.target, args.model)
     save(args.out / "cancel.json", canceled)
     return verdict("live cancel", canceled["passed"], canceled["reason"]) and passed
