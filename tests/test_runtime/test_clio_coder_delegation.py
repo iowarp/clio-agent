@@ -58,7 +58,7 @@ FAKE_CLIO_CODER = textwrap.dedent(
         )
 
     args = sys.argv[1:]
-    cwd = args[args.index("--cwd") + 1]
+    cwd = args[args.index("--cwd") + 1] if "--cwd" in args else os.getcwd()
     env_report(cwd)
     if args[0] == "run":
         task = args[-1]
@@ -375,3 +375,39 @@ def test_exit_codes_and_usage_facts_fold_to_outcomes() -> None:
     ]
     acp = summarize_usage({"quantities": {"input": {"fact": {"measured": 7}}}})
     assert acp["input"] == 7
+
+
+@pytest.mark.skipif(os.name == "nt", reason="the terminal host here is a POSIX shell")
+async def test_a_tui_session_launches_fenced_and_hands_back_like_a_delegation(
+    repo: Path, tmp_path: Path, install: ClioCoderInstall, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from clio_agent.runtime.clio_coder.interactive import (
+        finish_interactive_session,
+        prepare_interactive_session,
+    )
+
+    monkeypatch.setenv("CLIO_AUTH_TOKEN", "parent-secret")
+    session = prepare_interactive_session(
+        _request(repo, tmp_path, install, f"fix {repo.resolve()}/calc.py"), autonomy="yolo"
+    )
+    assert session.launch.cwd == session.workspace.path != repo.resolve()
+    assert session.launch.argv[-2:] == ("--autonomy", "yolo")
+    assert f"fix {session.workspace.path}/calc.py" in session.brief()
+
+    exit_file = tmp_path / "tui.exit"
+    command = session.launch.shell_command(exit_file=exit_file)
+    subprocess.run(["/bin/sh", "-c", command], stdin=subprocess.DEVNULL, check=True, timeout=60)
+    assert exit_file.read_text().strip() == "0"
+    seen = json.loads((tmp_path / "state" / "home" / "state" / "env.json").read_text())
+    assert "CLIO_AUTH_TOKEN" not in seen
+    assert seen["CLIO_CODER_STATE_DIR"] == str(tmp_path / "state" / "home" / "state")
+
+    # What the person and the TUI changed in the worktree is handed back, committed and checked.
+    (session.workspace.path / "calc.py").write_text("def add(a, b):\n    return a + b\n")
+    result = await finish_interactive_session(session)
+    assert (result.surface, result.outcome, result.verified) == ("tui", "succeeded", True)
+    assert result.changed_files == ["calc.py"] and result.commit
+    tip = subprocess.run(
+        ["git", "-C", str(repo), "rev-parse", result.branch], capture_output=True, text=True
+    ).stdout.strip()
+    assert tip == result.commit

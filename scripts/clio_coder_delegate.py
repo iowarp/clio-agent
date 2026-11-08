@@ -8,6 +8,10 @@ Example (isolated home seeded from a template, a scratch repository, a caller-si
         --home-template /scratch/home-template \\
         --verify "python3 -c 'import calc; assert calc.add(2, 3) == 5'" \\
         "calc.py has a bug in add(). Fix it."
+
+With ``--tui`` the script prepares an interactive session instead: it writes the fenced launch to
+``<state-root>/tui-<run>.sh`` for a terminal host to run, waits for the TUI to exit, then hands
+the work back the same way. Keep the script running meanwhile: it owns the instance's egress.
 """
 
 from __future__ import annotations
@@ -17,6 +21,7 @@ import asyncio
 import json
 import shlex
 import sys
+import time
 from pathlib import Path
 from typing import Any
 
@@ -28,6 +33,11 @@ from clio_agent.runtime.clio_coder import (
     delegate_coding_task,
 )
 from clio_agent.runtime.clio_coder.acp import allow_permissions_once, reject_permissions
+from clio_agent.runtime.clio_coder.interactive import (
+    describe_launch,
+    finish_interactive_session,
+    prepare_interactive_session,
+)
 
 
 def _parser() -> argparse.ArgumentParser:
@@ -53,6 +63,7 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--verify", help="command run in the worktree after hand-back")
     parser.add_argument("--approve", action="store_true", help="ACP: allow mediated asks once")
     parser.add_argument("--json", action="store_true", help="print the full result as JSON")
+    parser.add_argument("--tui", action="store_true", help="interactive session for a terminal")
     return parser
 
 
@@ -63,8 +74,32 @@ def _print_event(event: dict[str, Any]) -> None:
     print(f"[clio-coder] {event.get('kind')}: {detail}"[:300], file=sys.stderr, flush=True)
 
 
+async def _run_tui(request: DelegationRequest, args: argparse.Namespace):
+    session = prepare_interactive_session(
+        request, autonomy=None if args.autonomy == "default" else args.autonomy
+    )
+    state_root = request.state_root.resolve()
+    exit_file = state_root / f"tui-{session.run_id}.exit"
+    launch_file = state_root / f"tui-{session.run_id}.sh"
+    launch_file.write_text(session.launch.shell_command(exit_file=exit_file) + "\n", "utf-8")
+    print(json.dumps(describe_launch(session) | {"launch_file": str(launch_file)}), flush=True)
+    deadline = time.monotonic() + args.timeout
+    while not exit_file.exists() and time.monotonic() < deadline:
+        await asyncio.sleep(1)
+    code = int(exit_file.read_text().strip() or 1) if exit_file.exists() else None
+    for path in (exit_file, launch_file):
+        path.unlink(missing_ok=True)
+    return await finish_interactive_session(
+        session, keep_worktree=not args.discard_worktree, exit_code=code
+    )
+
+
 def main() -> int:
+    from clio_agent.runtime import sandbox
+
     args = _parser().parse_args()
+    # Like the server, resolve the OS fence once so every instance this host spawns is confined.
+    sandbox.install_sandbox()
     target = None
     if args.target_url and args.model:
         target = ClioCoderTarget(
@@ -95,8 +130,13 @@ def main() -> int:
         keep_worktree=not args.discard_worktree,
         install=ClioCoderInstall.resolve(args.bin),
     )
-    permission = allow_permissions_once if args.approve else reject_permissions
-    result = asyncio.run(delegate_coding_task(request, sink=_print_event, on_permission=permission))
+    if args.tui:
+        result = asyncio.run(_run_tui(request, args))
+    else:
+        permission = allow_permissions_once if args.approve else reject_permissions
+        result = asyncio.run(
+            delegate_coding_task(request, sink=_print_event, on_permission=permission)
+        )
     if args.json:
         print(json.dumps(result.to_dict(), indent=2))
     else:

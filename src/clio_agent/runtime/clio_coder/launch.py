@@ -188,21 +188,24 @@ class SpawnedInstance:
         if self.tree.active():
             self.tree.terminate()
         self.tree.close()
+        close_egress(self.confinement)
         return self.process.returncode
 
 
-async def spawn_instance(
-    install: ClioCoderInstall,
-    args: Sequence[str],
-    *,
-    cwd: Path,
-    home: InstanceHome,
-    stdin_pipe: bool,
-    base_env: Mapping[str, str] | None = None,
-) -> SpawnedInstance:
-    """Spawn Clio Coder through the sandbox composer, as a fresh cancellable process tree."""
+def close_egress(confinement: Mapping[str, Any]) -> None:
+    """Release the per-child egress channel the fence opened for an instance that has ended."""
+    child_id = str(confinement.get("net_child_id") or "")
+    if child_id:
+        from clio_agent.runtime.net_chokepoint import close_child_channel
+
+        close_child_channel(child_id)
+
+
+def confine(
+    install: ClioCoderInstall, args: Sequence[str], *, cwd: Path, home: InstanceHome
+) -> tuple[list[str], dict[str, str], dict[str, Any]]:
+    """Compose the fenced argv, its environment overlay and the confinement record."""
     from clio_agent.runtime import sandbox
-    from clio_agent.runtime.task_process_tree import TaskProcessTree, task_spawn_options
 
     argv = [*install.argv, *args]
     try:
@@ -216,27 +219,52 @@ async def spawn_instance(
         )
     except sandbox.SandboxCompositionError as exc:
         raise ClioCoderError(REASON_SPAWN_FAILED, f"confinement failed: {exc}") from exc
-    env = {**home.environment(base_env), **confined.env_overlay}
+    if confined.popen_kwargs:
+        close_egress(confined.result.details)
+        raise ClioCoderError(
+            REASON_SPAWN_FAILED,
+            "confinement needs process options this launch cannot apply",
+            {"options": sorted(confined.popen_kwargs)},
+        )
+    record = {
+        "mechanism": confined.result.mechanism,
+        "active": confined.result.active,
+        "reason": confined.result.reason,
+        "net_child_id": str(confined.result.details.get("net_child_id") or ""),
+    }
+    return [confined.command, *confined.args], dict(confined.env_overlay), record
+
+
+async def spawn_instance(
+    install: ClioCoderInstall,
+    args: Sequence[str],
+    *,
+    cwd: Path,
+    home: InstanceHome,
+    stdin_pipe: bool,
+    base_env: Mapping[str, str] | None = None,
+) -> SpawnedInstance:
+    """Spawn Clio Coder through the sandbox composer, as a fresh cancellable process tree."""
+    from clio_agent.runtime.task_process_tree import TaskProcessTree, task_spawn_options
+
+    command, overlay, confinement = confine(install, args, cwd=cwd, home=home)
+    env = {**home.environment(base_env), **overlay}
     try:
         process = await asyncio.create_subprocess_exec(
-            confined.command,
-            *confined.args,
+            *command,
             cwd=str(cwd),
             env=env,
             stdin=asyncio.subprocess.PIPE if stdin_pipe else asyncio.subprocess.DEVNULL,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
             limit=16 * 1024 * 1024,
-            **task_spawn_options(confined.popen_kwargs),
+            **task_spawn_options({}),
         )
     except OSError as exc:
+        close_egress(confinement)
         raise ClioCoderError(REASON_SPAWN_FAILED, f"could not start Clio Coder: {exc}") from exc
     return SpawnedInstance(
         process=process,
         tree=TaskProcessTree(process.pid),
-        confinement={
-            "mechanism": confined.result.mechanism,
-            "active": confined.result.active,
-            "reason": confined.result.reason,
-        },
+        confinement=confinement,
     )
