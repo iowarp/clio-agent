@@ -1,4 +1,4 @@
-"""Prepare default model binds, reusing a verified binding for effort-only edits."""
+"""Prepare default model binds, reusing a verified binding for effort or option edits."""
 
 from __future__ import annotations
 
@@ -22,12 +22,39 @@ Readiness = Callable[[], tuple[str, str, bool, str]]
 logger = logging.getLogger(__name__)
 
 
-def _thinking_configuration(app: FastAPI, req: LMProviderRequest) -> LMProviderConfig | None:
-    """Copy a live binding only when the request changes nothing except effort."""
+def _changed_options(before: dict, after: dict) -> set[str]:
+    return {key for key in {*before, *after} if before.get(key) != after.get(key)}
+
+
+def _connection_neutral(provider_id: str, changed: set[str]) -> bool:
+    """Whether every changed option is declared not to affect the provider check."""
+    from clio_agent.providers.catalog import get_provider  # noqa: PLC0415
+
+    if not changed:
+        return True
+    provider = get_provider(provider_id)
+    if provider is None:
+        return False
+    neutral = {f.id for f in provider.configuration_fields if not f.affects_connection}
+    return changed <= neutral
+
+
+def _reused_binding(app: FastAPI, req: LMProviderRequest) -> LMProviderConfig | None:
+    """Copy a live binding when the request changes only effort or per-request options.
+
+    An option reuses the binding only when the catalog declares it does not affect
+    the connection (``affects_connection=False``, such as Show diffusion); a region
+    or API version still runs the complete check, and so does an unchanged save.
+    """
     from clio_agent.config import LMProviderConfig  # noqa: PLC0415
 
     bound = getattr(getattr(app.state, "agent", None), "_provider_config", None)
-    if not isinstance(bound, LMProviderConfig) or "thinking_level" not in req.model_fields_set:
+    if not isinstance(bound, LMProviderConfig):
+        return None
+    changed = _changed_options(dict(bound.provider_options or {}), dict(req.provider_options))
+    if "thinking_level" not in req.model_fields_set and not changed:
+        return None
+    if not _connection_neutral(req.provider_id or req.provider, changed):
         return None
     current = _effective_lm_config(app)
     fields = (
@@ -35,7 +62,6 @@ def _thinking_configuration(app: FastAPI, req: LMProviderRequest) -> LMProviderC
         "provider",
         "api_base",
         "model",
-        "provider_options",
         *response_settings.SETTING_FIELDS,
         "thinking_budget",
         "turn_timeout_s",
@@ -59,10 +85,11 @@ def _thinking_configuration(app: FastAPI, req: LMProviderRequest) -> LMProviderC
     from clio_agent.providers.capabilities.dialects import claude_code  # noqa: PLC0415
 
     cfg = copy.copy(bound)
+    cfg.provider_options = dict(req.provider_options)
     level = claude_code.shipped_default_thinking_level(
         cfg.provider,
         cfg.model,
-        req.thinking_level,
+        requested_thinking_level(app, req),
         cfg.thinking_budget,
     )
     cfg.thinking_level = (
@@ -115,10 +142,10 @@ async def prepare_bind_configuration(
 ) -> tuple[LMProviderConfig, bool]:
     """Return the new binding and whether discovery facts remain unchanged.
 
-    An effort-only edit preserves credentials, transport and discovered limits.
-    Any other change follows the complete readiness/handshake path.
+    An effort or per-request option edit preserves credentials, transport and
+    discovered limits. Any other change follows the complete readiness/handshake path.
     """
-    if cfg := _thinking_configuration(app, req):
+    if cfg := _reused_binding(app, req):
         return cfg, True
 
     from clio_agent.config import LMProviderConfig  # noqa: PLC0415

@@ -30,6 +30,13 @@ class ProviderConfigurationField:
     description: str = ""
     placeholder: str = ""
     required: bool = False
+    #: The closed set of values the field accepts (a client renders a select).
+    #: Empty: free text.
+    options: tuple[str, ...] = ()
+    #: Whether changing the option changes what the provider check verifies
+    #: (endpoint, region, API version). ``False`` marks a per-request choice that a
+    #: save applies to the bound model without re-running the check.
+    affects_connection: bool = True
 
 
 @dataclass(frozen=True)

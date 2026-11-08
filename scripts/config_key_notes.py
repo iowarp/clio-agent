@@ -870,6 +870,10 @@ KEY_NOTES: dict[str, str] = {
         "Selects the LM backend (lm_studio, ollama, openai, anthropic, argonne, codex, "
         "claude_code); change to switch which provider clio talks to."
     ),
+    "lm.provider_options": (
+        "The selected provider's non-secret options (for example show_diffusion: on); the "
+        "model picker writes it, and an option the provider does not offer is refused at boot."
+    ),
     "lm.stop_sequences": (
         "||-joined override for the DSPy trajectory-regurgitation stop sequences, sent whenever "
         "the endpoint's effective parameter set accepts `stop`; override if a model's trace "

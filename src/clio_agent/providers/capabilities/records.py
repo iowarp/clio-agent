@@ -61,6 +61,11 @@ FactSource = Literal[
     "unknown",
 ]
 
+#: How a model's streamed chunks relate to its answer (see
+#: :attr:`ModelCapabilities.stream_shape`).
+StreamShape = Literal["append", "snapshot"]
+STREAM_SHAPES: frozenset[str] = frozenset(get_args(StreamShape))
+
 
 @dataclass(frozen=True)
 class Fact(Generic[T]):
@@ -304,6 +309,10 @@ class ModelCapabilities:
     #: (OpenRouter ``hugging_face_id``, a models.dev ``weights`` link) -- the
     #: link the Hub layer reads parameters and release date through.
     hf_repo: Fact[str] = field(default_factory=_unknown_field)
+    #: How the model streams when its intermediate steps are requested:
+    #: ``append`` (each chunk extends the text) or ``snapshot`` (each chunk is
+    #: the whole current canvas -- a diffusion model's denoising steps).
+    stream_shape: Fact[StreamShape] = field(default_factory=_unknown_field)
 
 
 @dataclass(frozen=True)
@@ -389,6 +398,8 @@ __all__ = [
     "GENERAL_TASKS",
     "ModelCapabilities",
     "ModelRole",
+    "STREAM_SHAPES",
+    "StreamShape",
     "TASKS",
     "ThinkingMechanism",
     "ThinkingSpec",

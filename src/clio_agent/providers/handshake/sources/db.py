@@ -137,11 +137,24 @@ def _index(db: dict[str, dict[str, Any]]) -> dict[str, dict[str, Any]]:
     return index
 
 
+def _index_key(path: Path) -> tuple[str, str]:
+    """The catalog-check memo key of this DB's lookup index (dropped when the DB is written)."""
+    return ("model_db_index", str(path))
+
+
+def _forget_index(path: Path) -> None:
+    from clio_agent.providers.handshake_memo import forget  # noqa: PLC0415
+
+    forget(_index_key(path))
+
+
 def _lookup_field(model_id: str, field: str) -> int | None:
-    db = _load_merged(db_path())
-    if not db:
+    from clio_agent.providers.handshake_memo import read_once  # noqa: PLC0415
+
+    path = db_path()
+    index = read_once(_index_key(path), lambda: _index(_load_merged(path)))
+    if not index:
         return None
-    index = _index(db)
     for candidate in iter_id_candidates(model_id):
         entry = index.get(candidate)
         if entry is not None:
@@ -175,56 +188,73 @@ def record(
     catalog. Best-effort: an unwritable DB location skips persistence with a
     structured warning — lookups still work from the seed's cache. Never raises.
     """
-    if not (model_id or "").strip() or (not context and not output):
+    _record_many([(model_id, context, output, source, provider)])
+
+
+#: One discovered limit: ``(model_id, context, output, source, provider)``.
+_LimitRow = tuple[str, int | None, int | None, str, str]
+
+
+def _record_many(rows: list[_LimitRow]) -> None:
+    """Record every row with one read and one write of the DB (see :func:`record`)."""
+    rows = [r for r in rows if (r[0] or "").strip() and (r[1] or r[2])]
+    if not rows:
         return
     path = db_path()
     with _LOCK:
         db = _load(path)
-        key = normalize_id(model_id)
         # Compare against the merged view so a live value that disagrees with a
         # seed entry is still surfaced as a mismatch.
-        stored = _load_merged(path).get(key)
-        entry: dict[str, Any] = dict(stored) if isinstance(stored, dict) else {}
+        merged = _load_merged(path)
         mismatches: list[dict[str, Any]] = []
-        for field, value in (("context", context), ("output", output)):
-            if not value or value <= 0:
-                continue
-            existing = entry.get(field)
-            if (
-                isinstance(existing, int)
-                and not isinstance(existing, bool)
-                and existing > 0
-                and existing != value
-            ):
-                mismatches.append(
-                    {
-                        "model": model_id,
-                        "field": field,
-                        "stored": existing,
-                        "discovered": value,
-                        "source": source,
-                        "provider": provider,
-                    }
-                )
-            entry[field] = value
-        entry["source"] = source
-        if provider:
-            entry["provider"] = provider
-        entry["updated_at"] = datetime.now(timezone.utc).isoformat()
-        db[key] = entry
+        stamp = datetime.now(timezone.utc).isoformat()
+        for model_id, context, output, source, provider in rows:
+            key = normalize_id(model_id)
+            stored = merged.get(key)
+            entry: dict[str, Any] = dict(stored) if isinstance(stored, dict) else {}
+            for field, value in (("context", context), ("output", output)):
+                if not value or value <= 0:
+                    continue
+                existing = entry.get(field)
+                if (
+                    isinstance(existing, int)
+                    and not isinstance(existing, bool)
+                    and existing > 0
+                    and existing != value
+                ):
+                    mismatches.append(
+                        {
+                            "model": model_id,
+                            "field": field,
+                            "stored": existing,
+                            "discovered": value,
+                            "source": source,
+                            "provider": provider,
+                        }
+                    )
+                entry[field] = value
+            entry["source"] = source
+            if provider:
+                entry["provider"] = provider
+            entry["updated_at"] = stamp
+            db[key] = entry
+            merged[key] = entry
         try:
             path.parent.mkdir(parents=True, exist_ok=True)
             path.write_text(json.dumps(db, indent=1, sort_keys=True), encoding="utf-8")
         except OSError as exc:
             # Degraded path: lookups keep working (seed + whatever was readable);
-            # only persistence of the newly discovered limit is lost.
+            # only persistence of the newly discovered limits is lost.
             _LOGGER.warning(
-                "model_db_record_skipped reason=db_unwritable path=%s model=%s error=%s",
+                "model_db_record_skipped reason=db_unwritable path=%s models=%d first=%s error=%s",
                 path,
-                model_id,
+                len(rows),
+                rows[0][0],
                 exc,
             )
             return
+        finally:
+            _forget_index(path)
         if mismatches:
             _log_mismatches(path, mismatches)
 
@@ -267,6 +297,8 @@ def forget_context(model_id: str, *, superseded_by: int, provider: str = "") -> 
                 exc,
             )
             return False
+        finally:
+            _forget_index(path)
     _LOGGER.info(
         "model_db_context_purged reason=live_served_context_exceeds_stored model=%s "
         "stored=%s served=%s",
@@ -320,6 +352,8 @@ def record_report(report: Any) -> None:
 
     provider_id = getattr(report, "provider_id", "")
     api_base = getattr(report, "api_base", "")
+    provider_kind = getattr(report, "provider_kind", "")
+    rows: list[_LimitRow] = []
     for discovered in getattr(report, "models", ()) or ():
         model_id = getattr(discovered, "id", "")
         if not model_id:
@@ -355,10 +389,5 @@ def record_report(report: Any) -> None:
         ):
             out = deployment.output_max.value
         if ctx or out:
-            record(
-                model_id,
-                context=ctx,
-                output=out,
-                source="live",
-                provider=getattr(report, "provider_kind", ""),
-            )
+            rows.append((model_id, ctx, out, "live", provider_kind))
+    _record_many(rows)

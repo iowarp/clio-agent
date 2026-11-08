@@ -155,6 +155,10 @@ THINKING_CONTROLS_BY_DIALECT: dict[str, frozenset[str]] = {
     "codex": frozenset({"reasoning_effort"}),
     "claude_code": frozenset({"effort", "claude_code_thinking"}),
     "copilot": frozenset({"reasoning_effort"}),
+    # Inception's own reasoning_effort (instant/low/medium/high), sent as a
+    # request-body field (lm/dialect_wire.py): CLIO's typed effort vocabulary
+    # has no "instant", so it never rides the generic reasoning kwarg.
+    "inception": frozenset({"reasoning_effort"}),
 }
 
 #: Dialect knowledge: structured-output modes a server type offers. Best-effort
@@ -169,6 +173,7 @@ STRUCTURED_OUTPUT_MODES_BY_DIALECT: dict[str, frozenset[str]] = {
     "openrouter": frozenset({"json_schema"}),
     "openai": frozenset({"json_schema", "json_object_schema"}),
     "anthropic": frozenset(),
+    "inception": frozenset({"json_schema"}),
 }
 
 

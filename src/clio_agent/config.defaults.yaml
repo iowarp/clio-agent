@@ -176,6 +176,12 @@ lm.lmstudio_flash_attention: true
 # codex, claude_code); change to switch which provider clio talks to.
 lm.provider: "lm_studio"
 
+# CLIO_LM_PROVIDER_OPTIONS  (mapping)  <- src/clio_agent/config.py
+# The selected provider's non-secret options (for example show_diffusion:
+# on); the model picker writes it, and an option the provider does not offer
+# is refused at boot.
+# lm.provider_options:  # default unset; resolved in code
+
 # CLIO_LM_SENT_PROMPT_SESSIONS  (int)  <- src/clio_agent/lm/sent_prompt.py
 # Sessions whose last request to the model is kept in memory for the exact
 # prompt view; the least recently active is dropped first.

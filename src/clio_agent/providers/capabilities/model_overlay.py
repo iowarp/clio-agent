@@ -53,6 +53,7 @@ from clio_agent.providers.capabilities.model_facts import (
 )
 from clio_agent.providers.capabilities.records import (
     DOMAINS,
+    STREAM_SHAPES,
     Fact,
     ModelCapabilities,
     ThinkingSpec,
@@ -207,13 +208,21 @@ def load_overlay_entries(*, cwd: "str | Path | None" = None) -> list[OverlayEntr
     Load order is NOT precedence order by itself -- :func:`best_overlay_match`
     is what applies the longest-match/later-root-wins rule across the combined
     list.
-    """
 
-    return [
-        *_fetched_entries(),
-        *_entries_from_dir(user_overlay_dir(), root="user"),
-        *_entries_from_dir(project_overlay_dir(cwd), root="project"),
-    ]
+    Read once per catalog check (:mod:`clio_agent.providers.handshake_memo`):
+    every row of one handshake shares the same entries; callers must not mutate them.
+    """
+    from clio_agent.providers.handshake_memo import read_once  # noqa: PLC0415
+
+    root = Path(cwd) if cwd is not None else Path.cwd()
+    return read_once(
+        ("overlay_entries", str(root)),
+        lambda: [
+            *_fetched_entries(),
+            *_entries_from_dir(user_overlay_dir(), root="user"),
+            *_entries_from_dir(project_overlay_dir(root), root="project"),
+        ],
+    )
 
 
 @dataclass(frozen=True)
@@ -349,6 +358,17 @@ def _structured_output_fact(capabilities: dict[str, Any], *, observed_at: str, d
 def _int_fact(capabilities: dict[str, Any], key: str, *, observed_at: str, detail: str) -> Fact:
     value = capabilities.get(key)
     if not isinstance(value, int) or isinstance(value, bool):
+        return unknown()
+    return Fact(value=value, source="overlay", observed_at=observed_at, detail=detail)
+
+
+def _stream_shape_fact(capabilities: dict[str, Any], *, observed_at: str, detail: str) -> Fact:
+    """``streamShape`` (``append``/``snapshot``) when the entry states it."""
+    value = capabilities.get("streamShape")
+    if value is None:
+        return unknown()
+    if value not in STREAM_SHAPES:
+        logger.warning("model_overlay: reason=malformed_streamShape value=%r %s", value, detail)
         return unknown()
     return Fact(value=value, source="overlay", observed_at=observed_at, detail=detail)
 
@@ -503,6 +523,7 @@ def entry_to_model_capabilities(
         description=descriptive.get("description", unknown()),
         released_at=descriptive.get("released_at", unknown()),
         parameters=descriptive.get("parameters", unknown()),
+        stream_shape=_stream_shape_fact(capabilities, observed_at=observed_at, detail=detail),
     )
 
 

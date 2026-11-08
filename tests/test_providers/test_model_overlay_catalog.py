@@ -50,7 +50,7 @@ def test_committed_catalog_file_parses_via_real_validator() -> None:
     families = {row["family"] for row in catalog.entries}
     assert "qwen3.6-27b" in families
     assert {"gemma-3", "gemma-4-e4b", "meta-llama-3.2-vision", "mistral-large-3"} <= families
-    assert len(catalog.entries) == 20
+    assert len(catalog.entries) == 21
 
 
 def test_cold_start_with_no_disk_cache_and_no_network_is_the_typed_offline_state(

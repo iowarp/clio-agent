@@ -542,10 +542,10 @@ def register_providers_routes(app: FastAPI, deps: "GactDeps") -> None:
         try:
             from clio_agent.config import create_lm  # noqa: PLC0415
 
-            cfg, thinking_only = await prepare_bind_configuration(
+            cfg, reused_binding = await prepare_bind_configuration(
                 app, req, _codex_readiness, _claude_code_readiness, readiness_by_kind["copilot"]
             )
-            if not thinking_only:
+            if not reused_binding:
                 await asyncio.get_running_loop().run_in_executor(None, _apply_lm_studio_load_config)
             # Build the new LMs + adapter for the singleton main agent. The
             # process-global dspy default is deliberately NOT rewritten here
@@ -688,7 +688,7 @@ def register_providers_routes(app: FastAPI, deps: "GactDeps") -> None:
         # PREVIOUS provider's capability evidence -- a sticky cache deciding what
         # bytes reach a model it never described. The next GET /v1/provider-catalog
         # repopulates it; until then the planner correctly finds no evidence.
-        if not thinking_only:
+        if not reused_binding:
             app.state.provider_catalog = None
         # Publish so live SSE subscribers see the swap (TUI updates
         # its model chip without polling).

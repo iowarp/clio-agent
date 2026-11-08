@@ -26,6 +26,7 @@ from __future__ import annotations
 
 import json
 import os
+from collections.abc import Callable
 from functools import lru_cache
 from pathlib import Path
 from typing import Any
@@ -189,7 +190,7 @@ def lookup_models_dev(
     catalog = _load_models_dev(path, ttl_s=ttl_s, allow_fetch=allow_fetch)
     if not catalog:
         return None
-    index = _build_index(catalog)
+    index = _pass_index(_build_index, catalog, path, ttl_s, allow_fetch)
     for candidate in iter_id_candidates(model_id):
         window = index.get(candidate)
         if window is not None:
@@ -242,7 +243,7 @@ def lookup_models_dev_output(
     catalog = _load_models_dev(path, ttl_s=ttl_s, allow_fetch=allow_fetch)
     if not catalog:
         return None
-    index = _build_output_index(catalog)
+    index = _pass_index(_build_output_index, catalog, path, ttl_s, allow_fetch)
     for candidate in iter_id_candidates(model_id):
         output = index.get(candidate)
         if output is not None:
@@ -288,12 +289,26 @@ def lookup_models_dev_entry(
     catalog = _load_models_dev(path, ttl_s=ttl_s, allow_fetch=allow_fetch)
     if not catalog:
         return None
-    index = _build_entry_index(catalog)
+    index = _pass_index(_build_entry_index, catalog, path, ttl_s, allow_fetch)
     for candidate in iter_id_candidates(model_id):
         entry = index.get(candidate)
         if entry is not None:
             return entry
     return None
+
+
+def _pass_index(
+    build: Callable[[dict[str, Any]], dict[str, Any]],
+    catalog: dict[str, Any],
+    path: str | os.PathLike[str] | None,
+    ttl_s: float,
+    allow_fetch: bool,
+) -> dict[str, Any]:
+    """``build(catalog)``, built once per catalog check for the same catalog read."""
+    from clio_agent.providers.handshake_memo import read_once  # noqa: PLC0415
+
+    key = ("models_dev", build.__name__, str(path or ""), ttl_s, allow_fetch)
+    return read_once(key, lambda: build(catalog))
 
 
 def _modality_set(raw: object) -> frozenset[str] | None:

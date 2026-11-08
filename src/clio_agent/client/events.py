@@ -146,6 +146,31 @@ class MessagePartCompleted(StreamEvent):
         return str(self.payload.get("final_text", ""))
 
 
+class MessageCanvas(StreamEvent):
+    """``message.canvas`` — one diffusion step's WHOLE answer text (replace, never append).
+
+    Display-only: overwrite the message's live canvas with :attr:`text`; the stream's
+    final text arrives afterwards as an ordinary part and replaces the canvas.
+    """
+
+    @property
+    def message_id(self) -> str:
+        return str(self.payload.get("message_id", ""))
+
+    @property
+    def step(self) -> int:
+        return int(self.payload.get("step") or 0)
+
+    @property
+    def shape(self) -> str:
+        """``snapshot`` (one diffusion step) or ``append`` (the accumulated answer)."""
+        return str(self.payload.get("shape") or "snapshot")
+
+    @property
+    def text(self) -> str:
+        return str(self.payload.get("text", ""))
+
+
 class MessageCompleted(StreamEvent):
     """``message.completed`` — one execution segment settled, identified by its turn ID."""
 
@@ -230,6 +255,7 @@ _EVENT_TYPES: dict[str, type[StreamEvent]] = {
     "message.part.added": MessagePartAdded,
     "message.part.delta": MessagePartDelta,
     "message.part.completed": MessagePartCompleted,
+    "message.canvas": MessageCanvas,
     "message.completed": MessageCompleted,
     "message.deleted": MessageDeleted,
     "tool.call.started": ToolCallStarted,
