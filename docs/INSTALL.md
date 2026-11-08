@@ -50,8 +50,11 @@ its first launch instead.
 
 `--download-only DIR` (`-DownloadOnly DIR` on Windows) stops after the verified download.
 
-The macOS app is ad-hoc signed, not Apple-notarized. A first-launch approval may still
-be needed in System Settings → Privacy & Security → Open Anyway. Neither script
+The macOS app is ad-hoc signed, not Apple-notarized. A copy downloaded in a browser
+carries quarantine, so its first launch needs approval: on macOS 15 and 26 open it once,
+choose Done, then System Settings → Privacy & Security → Security → Open Anyway
+(Control-click → Open no longer bypasses Gatekeeper there). `install.sh --desktop`
+downloads with curl, which sets no quarantine. Neither script
 disables security settings or removes quarantine. Invalid checksums/signatures fail
 before replacing an installed app.
 
@@ -205,7 +208,8 @@ Source installs require a new or explicitly emptied program directory; an
 existing checkout is never erased automatically. Uninstall retains Agent data,
 state, and unknown files. `--purge` / `-Purge` additionally removes the resolved
 Agent config directory, including saved credentials; custom config roots require
-explicit manual removal.
+explicit manual removal. `--purge-caches` (POSIX) removes the resolved Agent cache
+root, and `--desktop` (macOS) removes CLIO Desktop.app and its caches and logs.
 
 The public Agent CI needs a `CLIO_NAMESPACES_READ_TOKEN` repository secret with
 read-only Contents access to the private `iowarp/clio-namespaces` repository.

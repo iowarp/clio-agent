@@ -121,8 +121,10 @@ browser at http://127.0.0.1:17800. `clio stop` stops the service.
 - Stop at the first error. Show the person the last lines of the output.
 - Do not work around a checksum mismatch, a signature error, or an unsupported system.
   Those are reasons not to install.
-- On macOS, the app is ad-hoc signed. If macOS blocks the first launch, the person opens
-  **System Settings → Privacy & Security → Open Anyway**. Do not remove quarantine
+- On macOS, the app is ad-hoc signed. If macOS blocks the first launch of a browser
+  download, the person chooses **Done**, then opens **System Settings → Privacy &
+  Security**, scrolls to **Security** and chooses **Open Anyway** (macOS 15 and newer
+  no longer accept Control-click → Open). Do not remove quarantine
   attributes or change Gatekeeper settings.
 - For a service install, `clio report` prints a diagnostics bundle the person can attach
   to an issue at https://github.com/iowarp/clio-agent/issues.
@@ -131,6 +133,8 @@ browser at http://127.0.0.1:17800. `clio stop` stops the service.
 ## 6. Remove
 
 Service install: `clio uninstall` (add `--purge` to also remove settings and stored
-credentials). Desktop app: uninstall it like any other app on that system.
+credentials, `--purge-caches` to also remove the cache folder). Desktop app on macOS: quit
+it, then run the uninstaller with `--desktop` (or drag it from `~/Applications` to the
+Trash). Elsewhere, uninstall it like any other app on that system.
 
 More: https://clio.iowarp.ai/docs/install/

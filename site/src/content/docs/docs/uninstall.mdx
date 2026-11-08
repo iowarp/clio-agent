@@ -16,7 +16,9 @@ This stops the backend, removes the `clio` command, and deletes the install fold
 | Option | Effect |
 |---|---|
 | `--yes` or `-y` | Skip the confirmation prompt. On Windows, use `-Yes`. |
-| `--purge` | Also delete CLIO's configuration and session folders (see the caution below). On Windows, use `-Purge`. |
+| `--purge` | Also delete CLIO's configuration folder, including stored credentials (see the caution below). On Windows, use `-Purge`. |
+| `--purge-caches` | macOS and Linux: also delete CLIO's cache folder (the document runtime, LibreOffice and tool caches, about 2 GB after first use). CLIO rebuilds it on the next launch. |
+| `--desktop` | macOS: also remove **CLIO Desktop.app** and its caches and logs. With `--purge`, also its settings folder. |
 
 <Tabs syncKey="os">
 <TabItem label="macOS and Linux">
@@ -45,27 +47,50 @@ Run the uninstall script from the install folder.
 <TabItem label="macOS and Linux">
 
 ```sh
-~/.local/share/clio/uninstall.sh
+# macOS
+~/Library/Application\ Support/clio-agent/data/app/uninstall.sh
+# Linux
+~/.local/share/clio-agent/app/uninstall.sh
 ```
 
-It accepts the same `--yes` and `--purge` options.
+Installs made before 0.9.5 keep the script in `~/.local/share/clio/uninstall.sh`. It
+accepts the same options.
 
 </TabItem>
 <TabItem label="Windows">
 
 ```powershell
-& "$env:LOCALAPPDATA\clio\uninstall.ps1"
+& "$env:LOCALAPPDATA\clio-agent\data\app\uninstall.ps1"
 ```
+
+Installs made before 0.9.5 keep it in `%LOCALAPPDATA%\clio\uninstall.ps1`.
 
 It accepts the same `-Yes` and `-Purge` options.
 
 </TabItem>
 </Tabs>
 
+## Remove the desktop app on macOS
+
+Quit **CLIO Desktop** first (**CLIO Desktop → Quit**, or Cmd-Q). Then either drag
+**CLIO Desktop** from `~/Applications` (or `/Applications`) to the Trash, or run the
+uninstaller, which also removes the app's caches and logs:
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/iowarp/clio-agent/main/install/uninstall.sh \
+  -o /tmp/clio-uninstall.sh
+bash /tmp/clio-uninstall.sh --desktop --purge-caches
+```
+
+Add `--purge` to also delete your CLIO settings and stored credentials, and the
+app's own settings folder `~/Library/Application Support/ai.iowarp.clio.desktop`.
+
 ## What stays behind
 
 <Aside type="caution">
-`--purge` removes `~/.config/clio-agent` and `~/.config/gact`. On macOS and Windows, CLIO's real configuration folder is somewhere else, so `--purge` does not delete it. Delete it by hand if you want it gone.
+`--purge` removes CLIO's configuration folder, which holds saved API keys and settings
+(`~/Library/Application Support/clio-agent/config` on macOS, `~/.config/clio-agent` on
+Linux). Sessions and other data under the data folder are kept.
 </Aside>
 
 Delete these yourself if you want a completely clean machine:
@@ -74,10 +99,10 @@ Delete these yourself if you want a completely clean machine:
   - macOS: `~/Library/Application Support/clio-agent`
   - Windows: `%LOCALAPPDATA%\clio-agent`
   - If you set `CLIO_USER_DIR`, delete that folder.
-- **Cache and data folders** that CLIO keeps beside the configuration folder, such as `~/.cache/clio-agent` and `~/.local/share/clio-agent` on Linux, and `~/Library/Caches/clio-agent` on macOS. The cache is safe to delete.
+- **Cache and data folders** that CLIO keeps beside the configuration folder, such as `~/.cache/clio-agent` and `~/.local/share/clio-agent` on Linux, and `~/Library/Caches/clio-agent` on macOS. The cache is safe to delete; `--purge-caches` removes it.
 - **Workspace `.clio` folders.** Each workspace you used has one in its root, with that workspace's sessions and settings. Uninstall never touches them.
 - **clio-kit**, the tool launcher the install script added through uv. Remove it with `uv tool uninstall clio-kit`.
-- **The desktop app.** Uninstall it the usual way for your system, such as Apps and features on Windows, dragging it out of Applications on macOS, or your package manager on Linux. It is separate from the command-line install.
+- **The desktop app.** Uninstall it the usual way for your system, such as Apps and features on Windows, or your package manager on Linux. On macOS, see [Remove the desktop app on macOS](#remove-the-desktop-app-on-macos). It is separate from the command-line install.
 - **uv, Python, and Node.js.** CLIO does not remove tools you installed yourself, including the optional `@openai/codex` package used by the sandbox.
 
 ## Next steps

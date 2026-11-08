@@ -214,8 +214,10 @@ clio completion powershell >> $PROFILE
 
 ```sh
 # Linux / macOS
-clio uninstall            # or: ~/.local/share/clio/uninstall.sh
-clio uninstall --purge    # also removes ~/.config/gact (config + agents.json)
+clio uninstall            # or: <install prefix>/uninstall.sh (see below)
+clio uninstall --purge    # also removes the Agent config folder (settings + credentials)
+clio uninstall --purge-caches   # also removes the Agent cache folder
+bash uninstall.sh --desktop     # macOS: also removes CLIO Desktop.app
 
 # Windows (PowerShell)
 clio uninstall
@@ -223,9 +225,13 @@ clio uninstall -Purge
 ```
 
 Uninstall stops the server, removes the launcher, and deletes the
-install prefix. Config under `~/.config/gact` is kept unless you pass
-`--purge` / `-Purge`. Honors the same `CLIO_PREFIX` / `CLIO_BIN_DIR`
-overrides as the installer.
+application payloads in the install prefix
+(`~/Library/Application Support/clio-agent/data/app` on macOS,
+`~/.local/share/clio-agent/app` on Linux, `%LOCALAPPDATA%\clio-agent\data\app` on
+Windows; pre-0.9.5 installs used `~/.local/share/clio` / `%LOCALAPPDATA%\clio`).
+Agent config is kept unless you pass `--purge` / `-Purge`, and caches
+(`~/Library/Caches/clio-agent` on macOS) unless you pass `--purge-caches`. Honors
+the same `CLIO_PREFIX` / `CLIO_BIN_DIR` overrides as the installer.
 
 ## What `clio` does on launch
 
