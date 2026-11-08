@@ -11,6 +11,8 @@ from typing import Any
 
 import pytest
 
+from clio_agent.gact import clio_coder_land as land
+from clio_agent.gact import clio_coder_relay as relay
 from clio_agent.gact import clio_coder_tool as tool
 from clio_agent.gact.agents import native_tool_registry as registry
 
@@ -131,6 +133,10 @@ async def test_arguments_are_validated_before_any_instance_starts() -> None:
         await tool.run_clio_coder("  ")
     with pytest.raises(ValueError, match="timeout_s"):
         await tool.run_clio_coder("x", timeout_s=5)
+    with pytest.raises(ValueError, match="continue_run must be a run id"):
+        await tool.run_clio_coder("x", continue_run="../other")
+    with pytest.raises(ValueError, match="action must be"):
+        await land.land_clio_coder("20261108-000000-abcdef", action="merge")
 
 
 def test_delegated_autonomy_inherits_the_conversation_and_never_exceeds_it() -> None:
@@ -156,13 +162,14 @@ def test_delegated_autonomy_inherits_the_conversation_and_never_exceeds_it() -> 
 def test_the_tool_is_withheld_when_clio_coder_is_not_installed(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    names = ["run_clio_coder", "land_clio_coder"]
     monkeypatch.setattr(tool, "clio_coder_unavailable_reason", lambda: "clio_coder_not_installed")
-    available, _gateway, withheld = registry.build_native_tools(None, ["run_clio_coder"], {})
-    assert withheld == {"run_clio_coder": "clio_coder_not_installed"}
+    available, _gateway, withheld = registry.build_native_tools(None, names, {})
+    assert withheld == dict.fromkeys(names, "clio_coder_not_installed")
     assert not available
     monkeypatch.setattr(tool, "clio_coder_unavailable_reason", lambda: None)
-    available, _gateway, withheld = registry.build_native_tools(None, ["run_clio_coder"], {})
-    assert list(available) == ["run_clio_coder"] and not withheld
+    available, _gateway, withheld = registry.build_native_tools(None, names, {})
+    assert sorted(available) == sorted(names) and not withheld
 
 
 def test_a_limitation_is_a_delegation_result_not_a_failed_tool_call() -> None:
@@ -187,3 +194,133 @@ def test_the_check_runs_through_the_shell_and_shows_as_written() -> None:
         ARGS, None, _row(verification={"command": argv, "exit_code": 0, "output_tail": ""})
     )
     assert _blocks(view)["verification"]["command"] == "cd sub && pytest -q"
+
+
+RUN = "20261108-000100-abcdef"
+
+
+def test_each_turn_names_its_run_turn_session_and_next_step() -> None:
+    from clio_agent.runtime.clio_coder import DelegationResult
+    from clio_agent.runtime.clio_coder.results import Verification
+
+    result = DelegationResult(
+        surface="acp",
+        outcome="succeeded",
+        session_id="s-1",
+        commit="abc",
+        run_id=RUN,
+        turn=2,
+        run_usage={"totalTokens": 1200, "costUsd": 0.0},
+        verification=Verification(["true"], 0, ""),
+    )
+    row = tool.result_row(result, "add sub", [])
+    assert row["run"] == RUN and row["next"].startswith(f"land_clio_coder(run='{RUN}'")
+    view = tool.clio_coder_presentation({"task": "add sub", "continue_run": RUN}, None, row)
+    assert view["action"] == f"Continue Clio Coder run {RUN}"
+    assert _blocks(view)["run"]["text"] == (
+        f"Run {RUN}, turn 2, Clio Coder session s-1; run total: totalTokens 1200, costUsd 0.0."
+    )
+    result.verification = Verification(["true"], 1, "")
+    assert "continue_run=" in tool.result_row(result, "add sub", [])["next"]
+
+
+OPTIONS = [
+    {"optionId": "allow-once", "kind": "allow_once"},
+    {"optionId": "reject-once", "kind": "reject_once"},
+    {"optionId": "reject-and-stop", "kind": "reject_once"},
+]
+ASK = {
+    "toolCall": {
+        "title": "bash: rm -rf build",
+        "kind": "execute",
+        "rawInput": {"command": "rm -rf build"},
+        "locations": [{"path": "/wt/build"}],
+    },
+    "options": OPTIONS,
+}
+
+
+@pytest.mark.parametrize(("verdict", "chosen"), [("allow", "allow-once"), ("deny", "reject-once")])
+async def test_clio_coder_asks_go_through_the_conversations_own_gate(
+    verdict: str, chosen: str
+) -> None:
+    from types import SimpleNamespace
+
+    seen: list[tuple[str, dict, dict]] = []
+
+    def gate(name: str, args: dict, context: dict) -> str:
+        seen.append((name, dict(args), dict(context)))
+        return verdict
+
+    app = SimpleNamespace(state=SimpleNamespace(pending_permission_gate=gate))
+    answer = await relay.gate_permission_relay(app, tool.TOOL_NAME, RUN)(ASK)
+
+    # A refusal never stops Clio Coder's whole turn; it may try another way.
+    assert answer == chosen
+    name, args, context = seen[0]
+    assert name == "run_clio_coder" and args["run"] == RUN and args["kind"] == "execute"
+    assert args["input"] == '{"command": "rm -rf build"}' and args["locations"] == ["/wt/build"]
+    assert context["summary"].startswith(
+        f"Clio Coder (run {RUN}) asks to bash: rm -rf build (/wt/build)"
+    )
+
+
+def test_progress_streams_session_finished_tools_and_notices_once_each(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from clio_agent.gact import context
+    from clio_agent.gact.tool_observer import _OBSERVER_CALL_IDS
+    from clio_agent.tools import execution
+
+    sent: list[dict] = []
+    monkeypatch.setattr(context, "active_session_id", lambda: "sess")
+    monkeypatch.setattr(
+        execution, "notify_global_tool_observer", lambda *a: sent.append(a[4]) or None
+    )
+    token = _OBSERVER_CALL_IDS.set("call_1")
+    try:
+        sink = relay.progress_sink(tool.TOOL_NAME, {"task": "x"})
+    finally:
+        _OBSERVER_CALL_IDS.reset(token)
+    for event in (
+        {"kind": "session", "sessionId": "s-1", "resumed": True},
+        {"kind": "tool", "name": "edit calc.py", "status": "in_progress"},
+        {"kind": "tool", "name": "edit calc.py", "status": "completed"},
+        {"kind": "tool", "name": "edit calc.py", "status": "completed"},
+        {"kind": "text", "text": "chunk"},
+        {"kind": "notice", "level": "info", "text": "checks passed"},
+    ):
+        sink(event)
+    assert [item["message"] for item in sent] == [
+        "Clio Coder session s-1 resumed",
+        "Clio Coder completed: edit calc.py",
+        "Clio Coder notice: checks passed",
+    ]
+    assert sent[0]["observer_handle"] == {"call_id": "call_1", "session_id": "sess"}
+
+
+def test_landing_shows_what_was_applied_or_discarded() -> None:
+    applied = land.land_presentation(
+        {"run": RUN, "action": "apply"},
+        None,
+        {
+            "action": "apply",
+            "changed_files": ["calc.py"],
+            "diff": DIFF,
+            "commit": "0123456789abcdef",
+            "branch": f"clio-coder/{RUN}",
+            "checkout": "/repo",
+        },
+    )
+    assert applied["action"] == f"Land Clio Coder run {RUN}"
+    assert applied["summary"] == "1 file applied to the working tree"
+    assert _blocks(applied)["landed"]["text"].startswith(
+        f"Applied 0123456789ab from branch clio-coder/{RUN} to /repo (uncommitted)"
+    )
+    discarded = land.land_presentation(
+        {"run": RUN, "action": "discard"}, None, {"action": "discard", "branch": "b"}
+    )
+    assert (discarded["action"], discarded["summary"]) == (
+        f"Discard Clio Coder run {RUN}",
+        "discarded",
+    )

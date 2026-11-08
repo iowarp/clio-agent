@@ -2,7 +2,7 @@
   "$schema": "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json",
   "name": "coding",
   "version": "1.0.0",
-  "description": "Coding work on Clio Coder: run_clio_coder hands a task to a fresh Clio Coder instance in a git worktree and returns its diff and acceptance check.",
+  "description": "Coding work on Clio Coder: run_clio_coder runs a task as a resumable Clio Coder session in a git worktree and returns its diff and acceptance check; land_clio_coder lands or discards the run.",
   "author": {"name": "IoWarp Team"},
   "license": "BSD-3-Clause",
   "keywords": ["coding", "clio-coder", "delegation"]
